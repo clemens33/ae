@@ -118,10 +118,14 @@ pub(crate) enum ResumeForm {
         exact: &'static str,
     },
     /// Strip common flags, append an exact subcommand/id pair, and use the
-    /// stripped fresh start as fallback.
+    /// stripped fresh start as fallback. `after` names the flags whose
+    /// `flag value` pairs ride BEHIND the id: the harness drops them written
+    /// before its subcommand (codex's `-c`, measured 0.159.2), so an empty
+    /// list keeps the whole command where it was.
     Subcommand {
         grammar: SessionFlags,
         command: &'static str,
+        after: &'static [&'static str],
     },
     /// Append an exact flag/id pair. The fallback is a fresh start composed
     /// by `launch::inject_session_id`: an unproven seat starts fresh rather
@@ -662,6 +666,7 @@ const CODEX: ToolAdapter = ToolAdapter {
         form: ResumeForm::Subcommand {
             grammar: SessionFlags::Common,
             command: "resume",
+            after: &["-c", "--config"],
         },
         probe: StoreProbe::DatedRollouts,
     },
@@ -912,6 +917,8 @@ const MUSE: ToolAdapter = ToolAdapter {
         form: ResumeForm::Subcommand {
             grammar: SessionFlags::Common,
             command: "resume",
+            // Measured 2026-09-30: muse honors root options on either side.
+            after: &[],
         },
         // A token-proven directory basename is the session id. Muse logs do
         // not put that id in their `session.jsonl` file name for a store probe.
@@ -1477,6 +1484,7 @@ mod tests {
                         form: ResumeForm::Subcommand {
                             grammar: SessionFlags::Common,
                             command: "resume",
+                            after: &["-c", "--config"],
                         },
                         probe: StoreProbe::DatedRollouts,
                     },
@@ -1689,6 +1697,7 @@ mod tests {
                         form: ResumeForm::Subcommand {
                             grammar: SessionFlags::Common,
                             command: "resume",
+                            after: &[],
                         },
                         probe: StoreProbe::RecordedId,
                     },

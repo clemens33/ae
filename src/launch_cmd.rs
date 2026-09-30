@@ -309,6 +309,49 @@ fn sole_model_flag(command: &SimpleCommand, tool: ToolKind) -> Result<ModelFlag,
     found.ok_or(ModelFlagError::Absent)
 }
 
+/// A command without its `flag value` pairs for `flags`, and those pairs as
+/// written, in order: the words a harness honors only behind its subcommand.
+///
+/// A pair is the flag word plus the word after it, or one `--flag=value` word;
+/// only words after the binary count, up to a `--`. A flag with no word after
+/// it stays put, and so does a command the lexer refuses (a shape the launch
+/// validators already turn away). No `flags` returns `cmd` untouched.
+pub(crate) fn split_flag_pairs(cmd: &str, flags: &[&str]) -> (String, String) {
+    let lexed = (!flags.is_empty()).then(|| lex_simple_command(cmd).ok());
+    let Some(Some(command)) = lexed else {
+        return (cmd.to_owned(), String::new());
+    };
+    let (mut kept, mut moved) = (Vec::new(), Vec::new());
+    let mut operands = false;
+    let mut words = command.words.iter().zip(&command.word_values).enumerate();
+    while let Some((index, (raw, value))) = words.next() {
+        operands |= index > command.binary_index && value == "--";
+        let joined = flags.iter().any(|flag| {
+            value
+                .strip_prefix(flag)
+                .is_some_and(|rest| rest.starts_with('='))
+        });
+        if index <= command.binary_index || operands {
+            kept.push(raw.as_str());
+        } else if joined {
+            moved.push(raw.as_str());
+        } else if flags.contains(&value.as_str())
+            && let Some((_, (next, _))) = words.next()
+        {
+            moved.extend([raw.as_str(), next.as_str()]);
+        } else {
+            kept.push(raw.as_str());
+        }
+    }
+    let head = [command.assign_span.as_str()]
+        .into_iter()
+        .chain(kept)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (head, moved.join(" "))
+}
+
 /// The model a profile command pins, when it pins exactly one.
 #[must_use]
 pub(crate) fn model_flag_value(cmd: &str, tool: ToolKind) -> Option<String> {
@@ -1865,6 +1908,36 @@ mod tests {
                 Err(want),
                 "a label of {len} bytes against a cap of {}",
                 super::FOLLOW_LABEL_MAX
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_named_flag_pairs_after_the_binary_are_split_out() {
+        for (cmd, flags, head, moved) in [
+            (
+                "codex -m m -c a=1 -c 'b=\"x  y\"'",
+                &["-c"][..],
+                "codex -m m",
+                "-c a=1 -c 'b=\"x  y\"'",
+            ),
+            (
+                "codex --config=a=1 -m m",
+                &["-c", "--config"],
+                "codex -m m",
+                "--config=a=1",
+            ),
+            ("codex -m m -c", &["-c"], "codex -m m -c", ""),
+            ("codex x -- -c a=1", &["-c"], "codex x -- -c a=1", ""),
+            ("env A=1 codex -c a=1", &["-c"], "env A=1 codex", "-c a=1"),
+            ("FOO=1 codex -c a=1", &["-c"], "FOO=1 codex", "-c a=1"),
+            ("codex -c a=1", &[], "codex -c a=1", ""),
+            ("codex -c 'a=1", &["-c"], "codex -c 'a=1", ""),
+        ] {
+            assert_eq!(
+                super::split_flag_pairs(cmd, flags),
+                (head.to_owned(), moved.to_owned()),
+                "{cmd}"
             );
         }
     }

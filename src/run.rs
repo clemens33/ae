@@ -1196,9 +1196,19 @@ pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str, fresh: &str) ->
             let clean = launch::strip_session_grammar(cmd, grammar);
             (format!("{clean} {exact} {session_id}"), fallback)
         }
-        ResumeForm::Subcommand { grammar, command } => {
-            let clean = launch::strip_session_grammar(cmd, grammar);
-            (format!("{clean} {command} {session_id}"), fallback)
+        ResumeForm::Subcommand {
+            grammar,
+            command,
+            after,
+        } => {
+            let (head, moved) = crate::launch_cmd::split_flag_pairs(cmd, after);
+            let clean = launch::strip_session_grammar(&head, grammar);
+            let moved = if moved.is_empty() {
+                moved
+            } else {
+                format!(" {moved}")
+            };
+            (format!("{clean} {command} {session_id}{moved}"), fallback)
         }
         ResumeForm::ExactOnly { exact } => (format!("{cmd} {exact} {session_id}"), fallback),
         ResumeForm::None => (cmd.to_owned(), fallback),
@@ -2429,6 +2439,77 @@ mod tests {
         assert_eq!(fallback, "agy --dangerously-skip-permissions");
         assert!(!exact.contains("OLD") && !fallback.contains("OLD"));
         assert!(!exact.contains("--resume"), "agy has no --resume: {exact}");
+    }
+
+    #[test]
+    fn a_codex_exact_resume_carries_its_config_overrides_after_the_resume_id() {
+        // Measured on codex-cli 0.159.2 (`.local/batch-0930/effortkeep/`,
+        // exec and TUI alike): a `-c key=value` written BEFORE `resume <id>` is
+        // dropped when the conversation is resumed — the seat runs at
+        // config.toml's `model_reasoning_effort`, not the profile's — while the
+        // same word AFTER `resume <id>` is honored. The profile's `-c` words
+        // therefore ride behind the id on the exact form; the fresh-start
+        // fallback is a plain launch, where the root position works.
+        let cmd = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh";
+        let (exact, fallback) = resume_forms(cmd, ToolKind::Codex, "u-9", crate::launch::PENDING);
+        let (head, tail) = exact
+            .split_once(" resume u-9")
+            .expect("the exact form names the subcommand and the id");
+        assert!(
+            !head.contains("model_reasoning_effort"),
+            "an effort override before `resume` is lost on resume: {exact}"
+        );
+        assert!(
+            tail.contains("-c model_reasoning_effort=xhigh"),
+            "the effort override must ride after `resume <id>`: {exact}"
+        );
+        assert_eq!(fallback, cmd, "a fresh start keeps the profile as written");
+    }
+
+    #[test]
+    fn a_codex_resume_moves_every_config_pair_in_order_and_keeps_the_other_flags() {
+        let cmd = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh -c 'x=\"a  b\"' --config=y=1";
+        let (exact, _) = resume_forms(cmd, ToolKind::Codex, "u-9", crate::launch::PENDING);
+        assert_eq!(
+            exact,
+            "codex --yolo -m gpt-6-astra resume u-9 -c model_reasoning_effort=xhigh -c 'x=\"a  b\"' --config=y=1",
+            "the pairs keep their order and their quoting, -m and --yolo keep their place"
+        );
+        let muse = "muse --provider meta --model muse-spark-1.3 --reasoning-effort max --yolo";
+        let (exact, _) = resume_forms(muse, ToolKind::Muse, "u-9", crate::launch::PENDING);
+        assert_eq!(
+            exact,
+            format!("{muse} resume u-9"),
+            "muse honors either side"
+        );
+    }
+
+    #[test]
+    fn the_composed_codex_resume_puts_the_context_last_behind_the_overrides() {
+        // `_run` composes the argv of every first resume and every relaunch, and
+        // this is its only composer.
+        let dir = std::env::temp_dir().join(format!("ae-run-resume-order-{}", std::process::id()));
+        let seat = model_seat(
+            "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh",
+            ToolKind::Codex,
+            None,
+            None,
+        );
+        let config_home = crate::launch_cmd::Resolved::Absent;
+        let composed =
+            compose(&dir, "main", &seat, "ctx", Mode::Resume, &config_home).expect("a line");
+        let at = |needle: &str| composed.cmd.find(needle).expect(needle);
+        assert!(at("-m gpt-6-astra") < at("resume sid"), "{}", composed.cmd);
+        assert!(
+            at("resume sid") < at("model_reasoning_effort=xhigh"),
+            "{}",
+            composed.cmd
+        );
+        assert!(
+            at("model_reasoning_effort=xhigh") < at("developer_instructions="),
+            "{}",
+            composed.cmd
+        );
     }
 
     #[test]
