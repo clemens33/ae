@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.193] - 2026-09-30
+- Show a per-window pace in ae quota: burn rate, time to empty, and whether the window empties before it resets
+- Tell the delegation guidance to read the pace column beside EFFECTIVE
+
 ## [v2026.9.192] - 2026-09-30
 - Size the test lane from jobs-budget and run its heavy cargo niced
 - Bound the jobs-budget answer to three digits and name an unset jobs value honestly
