@@ -248,7 +248,9 @@ pub fn read_capped(path: &Path, cap: u64) -> Result<SourceRead, Oversized> {
         Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
     };
     let mut body = Vec::new();
-    if let Err(why) = io::Read::read_to_end(&mut io::Read::take(file, cap + 1), &mut body) {
+    if let Err(why) =
+        io::Read::read_to_end(&mut io::Read::take(file, cap.saturating_add(1)), &mut body)
+    {
         return Ok(SourceRead::Unreadable(why.to_string()));
     }
     if body.len() as u64 > cap {
@@ -1530,6 +1532,11 @@ mod tests {
         );
         std::fs::write(&path, b"abcde").unwrap();
         assert_eq!(read_capped(&path, 4), Err(Oversized));
+        assert_eq!(
+            read_capped(&path, u64::MAX),
+            Ok(SourceRead::Ready(b"abcde".to_vec())),
+            "the largest cap cannot overflow"
+        );
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(dir.join("elsewhere"), &path).unwrap();
         assert_eq!(

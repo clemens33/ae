@@ -3738,7 +3738,22 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
         ] {
             rows.push((after_declaration("watchdog", action, ""), [false; 4], true));
         }
+        rows.extend(console_asks_elsewhere());
         rows
+    }
+
+    /// T1's rows for a console ask to ANOTHER seat: no news to this one,
+    /// confirmed or not.
+    fn console_asks_elsewhere() -> Vec<(String, [bool; 4], bool)> {
+        ["hi", "[unconfirmed] hi"]
+            .iter()
+            .map(|summary| {
+                let record = format!(
+                    r#"{{"ts":"2026-08-29T04:05:00Z","actor":"console:local","action":"ask","target":"colead","target_slot":"worker.0","target_session":"aerewrite","ref":"ae-5","summary":"{summary}"}}"#
+                );
+                (record, [false; 4], true)
+            })
+            .collect()
     }
 
     /// T1's footprint rows, by position: a challenge footprint OLDER than the
