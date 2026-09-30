@@ -141,9 +141,58 @@ fn ae_quota_renders_fixture_caches_missing_scopes_and_unsupported_clients() {
         include_str!("../fixtures/quota/expected.stdout")
     );
     let rendered = include_str!("../fixtures/quota/expected.stdout");
-    assert!(rendered.lines().all(|line| line.chars().count() <= 160));
+    assert!(rendered.lines().all(|line| line.chars().count() <= 200));
     assert_eq!(rendered.matches("unidentified").count(), 2);
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// Regression pin: a planted 5 h rollout, read end to end through `ae quota`.
+#[test]
+fn a_planted_five_hour_rollout_shows_its_pace_once_per_identical_reading() {
+    let root = rig("pace");
+    let record = |time: &str, used: u32| {
+        format!(
+            "{{\"timestamp\":\"2026-09-08T{time}Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"rate_limits\":{{\"limit_id\":\"codex\",\"plan_type\":\"pro\",\"primary\":{{\"used_percent\":{used}.0,\"window_minutes\":300,\"resets_at\":1788861600}},\"secondary\":null}}}}}}\n"
+        )
+    };
+    let rollout: String = [
+        ("08:10:00", 10),
+        ("08:25:00", 13),
+        ("08:40:00", 16),
+        ("08:55:00", 19),
+        ("09:05:00", 21),
+        // Out of order: a newer, higher reading sits BEFORE the file-last one, which the
+        // table shows; the pace endpoint must stay the displayed reading.
+        ("09:06:00", 40),
+        ("09:05:00", 21),
+    ]
+    .iter()
+    .map(|(time, used)| record(time, *used))
+    .collect();
+    for id in [FIRST_ID, SECOND_ID] {
+        std::fs::write(
+            root.join(format!(
+                ".codex/sessions/2026/09/08/rollout-2026-09-08T09-00-00-{id}.jsonl"
+            )),
+            &rollout,
+        )
+        .expect("planted rollout");
+    }
+    let text = run_quota(&root);
+    assert_eq!(
+        text.matches("12.0%/h ~6h35m").count(),
+        1,
+        "11 pp over 55 min; two identical rollouts draw ONE cell: {text}"
+    );
+    assert!(
+        !text.contains('!'),
+        "6.5 h to empty, 55 min to the reset: {text}"
+    );
+    assert!(
+        text.lines().all(|line| line.chars().count() <= 200),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -184,7 +233,7 @@ fn declared_manual_resets_and_reported_credits_drive_the_effective_columns() {
         "one declared reset halves the judged percentage: {text}"
     );
     assert!(
-        text.lines().all(|line| line.chars().count() <= 182),
+        text.lines().all(|line| line.chars().count() <= 200),
         "{text}"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -1695,6 +1744,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         "src/quota.rs",
         "src/quota/codex.rs",
         "src/quota/claude.rs",
+        "src/quota/pace.rs",
         "src/watchdog_daemon.rs",
         "tests/it/quota.rs",
     ] {
@@ -1703,18 +1753,19 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
             "{required} was never visited, so this guard proved nothing about it: {seen:?}"
         );
     }
-    // A census of PHYSICAL PATHS under `src/quota/`, and only that. A third
-    // file there trips this and gets its own review. Two descendants it cannot
-    // see: a module written INLINE inside `src/quota.rs`, because the owner
-    // file is skipped whole, and a `#[path]`-attributed module whose file lives
-    // outside this directory, which is scanned with the Outside needles and
-    // leaves the count at two. Neither is a reach today; both would be a
+    // A census of PHYSICAL PATHS under `src/quota/`, and only that. A fourth
+    // file there trips this and gets its own review (`pace.rs` was the third,
+    // reviewed for exactly this: it judges through `Derived` and builds no
+    // level). Two descendants it cannot see: a module written INLINE inside
+    // `src/quota.rs`, because the owner file is skipped whole, and a
+    // `#[path]`-attributed module whose file lives outside this directory, which is scanned with the Outside needles and
+    // leaves the count at three. Neither is a reach today; both would be a
     // reviewed change to the owner file rather than something a needle catches.
     assert_eq!(
         seen.iter()
             .filter(|name| name.starts_with("src/quota/"))
             .count(),
-        2,
+        3,
         "the quota directory gained or lost a file, and each one needs the \
          child scan: {seen:?}"
     );

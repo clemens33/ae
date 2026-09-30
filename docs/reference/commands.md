@@ -1031,6 +1031,27 @@ With `n` declared resets the same usage is spread over `1 + n` windows, so the c
 does not bind. A reached spend cap reads `100%` and outranks every declared reset: no window reset
 frees it. The watchdog advisory and the delegation guidance read this percentage, not `USED`.
 
+### Pace: `PACE`
+
+`PACE` says how fast a window is filling and whether it empties before it resets: `2.4%/h ~2h10m!`
+is 2.4 judged percentage points per hour, empty in about 2 h 10 min, and `!` means that is before
+`RESETS`. `<2.0%/h` is a bound: the window moved less than 2 points over the span, too little to
+state a rate or an ETA. `unknown` is a trusted row whose history is too short (a window needs a
+span of a third of its lookback: a fifth of the window, 30 min to 12 h). `-` is no verdict, and
+means one of: the row is not trusted (`unknown`, expired or clock-skewed; a `stale` row up to an
+hour old IS trusted), the client reports no quota (grok, agy, opencode, muse, gemini), the account
+is unlimited or spend-capped, another row of the same window is newer or higher (the cell sits
+only beside the USED it was computed from; identical rollouts draw one), or that newest row is in
+a rollout the table does not show.
+
+Both ends of the span are judged under the CURRENT policy, so `manual_resets = n` spreads the
+usage over `1 + n` windows exactly as `EFFECTIVE` does and the ETA is the time to exhaust ALL
+declared capacity: `!` is then rare by design. Only the same window instance counts (a window
+reset restarts the span; a drop of half a point or less is vendor rounding). Codex history comes
+from the same 256 KiB rollout tail, at most 32 spaced readings per window; Claude keeps one
+reading, so its `PACE` is `unknown` until a persisted history exists. A burst can over-extrapolate
+a weekly ETA: read it as a trend, not a promise.
+
 At most three Codex rollout groups appear per scope, newest record observation first. A summary
 line counts hidden rollouts and reports the oldest known record observation among parsed hidden
 rows. Hidden unreadable rollouts are counted and make the summary `read-error`; if discovery or
@@ -1041,9 +1062,9 @@ that could not be read.
 `stale`; expired, missing, or clock-skewed observations are `unknown`. Unexpected file kinds,
 oversized files, and malformed complete records are `read-error`. An invocation stops with
 an explicit `truncated` summary after 4,096 filesystem entries, 16 MiB of reads, or two seconds. All
-table lines are at most 182 columns: the sum of the per-column caps plus the two spaces between
-each pair of columns. The two derived columns were paid for in that ceiling rather than by wrapping
-every scope and status cell.
+table lines are at most 200 columns: the sum of the per-column caps plus the two spaces between
+each pair of columns. The two derived columns and `PACE` were paid for in that ceiling rather than
+by wrapping every scope and status cell.
 The displayed age is when that vendor last wrote its own cache or rollout observation, not when ae
 opened the menu or ran the command. Claude can therefore honestly remain stale while another
 client scope observed more recently is fresh. The cache is refreshed by the CLIENT, and only

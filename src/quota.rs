@@ -5,6 +5,7 @@
 
 pub mod claude;
 pub mod codex;
+mod pace;
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -26,15 +27,15 @@ const CODEX_DISPLAY_ROLLOUTS: usize = 3;
 /// Per-column display caps. Their sum plus two spaces between each pair of
 /// columns is [`TABLE_MAX_LINE`], the table's documented width ceiling: a new
 /// column is paid for here, in width, and the ceiling says what it cost.
-const TABLE_MAX_WIDTHS: [usize; COLUMNS] = [40, 35, 22, 6, 5, 9, 9, 9, 9, 20];
+const TABLE_MAX_WIDTHS: [usize; COLUMNS] = [40, 35, 22, 6, 5, 9, 9, 16, 9, 9, 20];
 
 /// Columns in the operator table.
-const COLUMNS: usize = 10;
+const COLUMNS: usize = 11;
 
 /// The widest line the table can render, cells and separators together. The
 /// caps above produce it; `docs/reference/commands.md` publishes it.
 #[cfg(test)]
-const TABLE_MAX_LINE: usize = 182;
+const TABLE_MAX_LINE: usize = 200;
 
 /// Maximum age of an observation that may be called fresh.
 pub const FRESH_SECS: i64 = 15 * 60;
@@ -1308,6 +1309,8 @@ pub(crate) fn recorded_identity(entry: &crate::meta::RosterEntry) -> Option<Reco
 struct CodexGroups {
     all: Vec<Group>,
     rendered: Vec<Group>,
+    /// Each rollout's window history, with the canonical source it came from.
+    series: Vec<(PathBuf, pace::Series)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1330,6 +1333,8 @@ enum ReadRows {
 struct Observed {
     rows: Vec<Row>,
     account: Account,
+    /// The thinned history of each window, when the source keeps one.
+    series: Vec<pace::Series>,
 }
 
 pub(crate) enum Bounded<T> {
@@ -1413,6 +1418,10 @@ struct RankedGroup {
     observed: Option<i64>,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a table line lives for one render; boxing the cells buys nothing"
+)]
 enum RenderLine {
     Cells([String; COLUMNS]),
     Summary { label: String, status: String },
@@ -1465,10 +1474,22 @@ impl Budget {
 /// The returned data is uncapped even though the operator table deliberately
 /// displays only the three newest Codex rollouts per scope.
 pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config::ConfigError> {
+    observe_full(inputs).map(|(observation, _)| observation)
+}
+
+/// [`observe`], plus the thinned history the sources kept beside their rows.
+///
+/// Only the operator table reads the history: the watchdog, the autoreseat leg
+/// and the settings dialog keep calling [`observe`], so pace can never reach a
+/// level.
+pub(crate) fn observe_full(
+    inputs: &Inputs<'_>,
+) -> Result<(Observation, pace::SeriesSet), crate::config::ConfigError> {
     let cfg = crate::config::read_identity(inputs.global, inputs.local)?;
     let mut scopes = configured_scopes(&cfg, inputs.home);
     let mut groups = Vec::new();
     let mut rendered = Vec::new();
+    let mut series = pace::SeriesSet::default();
     let mut budget = Budget::new();
     let fleet = fleet_rollouts(inputs.sessions, &mut budget);
     add_recorded_codex_scopes(&mut scopes, &fleet);
@@ -1496,6 +1517,9 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
             }
             QuotaSource::CodexRollouts => {
                 let observed = codex_groups(scope, &fleet, inputs.now, &mut budget);
+                for (source, held) in observed.series {
+                    series.add(&source, held);
+                }
                 groups.extend(observed.all);
                 rendered.extend(observed.rendered);
             }
@@ -1532,12 +1556,15 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
                 }
             })
     });
-    Ok(Observation {
-        groups,
-        rendered,
-        home,
-        now: inputs.now,
-    })
+    Ok((
+        Observation {
+            groups,
+            rendered,
+            home,
+            now: inputs.now,
+        },
+        series,
+    ))
 }
 
 /// Read the bounded local sources and return display-ready quota-dialog rows.
@@ -1564,18 +1591,20 @@ pub(crate) fn quota_dialog_rows(inputs: &Inputs<'_>) -> Vec<DialogRow> {
 ///
 /// Returns an I/O error only when the supplied output stream cannot be written.
 pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
-    let observation = match observe(inputs) {
-        Ok(observation) => observation,
+    let (observation, series) = match observe_full(inputs) {
+        Ok(read) => read,
         Err(error) => {
             writeln!(err, "{error}")?;
             return Ok(1);
         }
     };
+    let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
     write!(
         out,
         "{}",
-        render_at(
+        render_with_pace(
             &observation.rendered,
+            &pace,
             observation.home.as_deref().or(inputs.home),
             observation.now
         )
@@ -2077,6 +2106,7 @@ fn read_claude(scope: &Scope, now: i64, budget: &mut Budget) -> ReadRows {
         Ok(Some(snapshot)) if !snapshot.rows.is_empty() => ReadRows::Rows(Observed {
             rows: snapshot.rows,
             account: Account::default(),
+            series: Vec::new(),
         }),
         Ok(_) => ReadRows::Missing,
         Err(_) => ReadRows::Failed,
@@ -2302,6 +2332,7 @@ fn codex_groups(
     let located = locate_rollouts(scope, &candidates, budget, &mut truncated);
 
     let mut ranked = Vec::new();
+    let mut series = Vec::new();
     for located in located {
         let rows = match located.source {
             RolloutSource::File(file) => read_codex_file(&file, now, budget),
@@ -2313,6 +2344,9 @@ fn codex_groups(
             break;
         }
         let read = rows_or_placeholder(rows);
+        if let Some(source) = &scope.source_key {
+            series.extend(read.series.into_iter().map(|held| (source.clone(), held)));
+        }
         let observed = read.rows.iter().filter_map(|row| row.observed_at).max();
         ranked.push(RankedGroup {
             group: Group {
@@ -2341,7 +2375,11 @@ fn codex_groups(
     {
         all.push(placeholder.clone());
     }
-    CodexGroups { all, rendered }
+    CodexGroups {
+        all,
+        rendered,
+        series,
+    }
 }
 
 fn scope_rollouts<'a>(scope: &Scope, fleet: &'a FleetRollouts) -> Vec<&'a FleetRollout> {
@@ -2527,6 +2565,7 @@ fn read_codex_file(file: &RolloutFile, now: i64, budget: &mut Budget) -> ReadRow
         Ok(snapshot) if !snapshot.rows.is_empty() => ReadRows::Rows(Observed {
             rows: snapshot.rows,
             account: snapshot.account,
+            series: snapshot.points,
         }),
         Ok(_) => ReadRows::Missing,
         Err(_) => ReadRows::Failed,
@@ -2543,6 +2582,7 @@ fn rows_or_placeholder(read: ReadRows) -> Observed {
     Observed {
         rows,
         account: Account::default(),
+        series: Vec::new(),
     }
 }
 
@@ -2623,7 +2663,18 @@ fn manual_refresh_hint(
     any.then_some(CLAUDE_REFRESH_HINT)
 }
 
+/// The table with no history behind it: every PACE cell is `-`.
+#[cfg(test)]
 fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
+    render_with_pace(groups, &pace::PaceTable::default(), home, now)
+}
+
+fn render_with_pace(
+    groups: &[Group],
+    pace: &pace::PaceTable,
+    home: Option<&Path>,
+    now: i64,
+) -> String {
     const HEADER: [&str; COLUMNS] = [
         "PROFILES",
         "SCOPE",
@@ -2632,12 +2683,14 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
         "USED",
         "EFFECTIVE",
         "CREDITS",
+        "PACE",
         "RESETS",
         "OBSERVED",
         "STATUS",
     ];
     let mut table = vec![RenderLine::Cells(HEADER.map(str::to_owned))];
     let mut notes: Vec<String> = Vec::new();
+    let mut claimed = std::collections::BTreeSet::new();
     for group in groups {
         for note in group
             .notes
@@ -2694,6 +2747,7 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
                 } else {
                     String::new()
                 },
+                pace.cell_for(group, row, &mut claimed),
                 trustworthy
                     .then(|| row.resets_at.map(|reset| reset_label(reset, now)))
                     .flatten()
@@ -4238,6 +4292,53 @@ mod tests {
     }
 
     #[test]
+    fn observe_is_observe_full_without_the_history() {
+        let root =
+            std::path::PathBuf::from(format!("/tmp/ae-quota-observe-full-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".claude-mic")).expect("claude-mic home");
+        let config = root.join("config");
+        std::fs::write(
+            &config,
+            "[profiles]\nclaude-mic = CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --model fable\n",
+        )
+        .expect("identity config");
+        let now = 1_788_858_600;
+        let cache = format!(
+            "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[\
+             {{\"kind\":\"session\",\"percent\":8,\"resets_at\":\"2026-09-08T11:00:00Z\"}}]}}}}}}",
+            (now - 60) * 1_000
+        );
+        std::fs::write(root.join(".claude-mic/.claude.json"), cache).expect("claude cache");
+        let inputs = super::Inputs {
+            home: Some(&root),
+            global: Some(&config),
+            local: None,
+            sessions: None,
+            now,
+        };
+        let (full, series) = super::observe_full(&inputs).expect("full read");
+        assert_eq!(
+            super::observe(&inputs),
+            Ok(full),
+            "the same observation, exactly"
+        );
+        assert!(series.is_empty(), "a claude cache keeps no history");
+        // The error path is the same one too: a directory is not a config file.
+        let bad = super::Inputs {
+            global: Some(&root),
+            ..inputs
+        };
+        assert!(super::observe(&bad).is_err());
+        assert_eq!(
+            super::observe(&bad).map(|_| ()),
+            super::observe_full(&bad).map(|_| ()),
+            "one failure, whichever door"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn dialog_projection_lists_every_window_under_one_scope_header() {
         let mut older = declared_group(Some(1), "80");
         older.rollout = Some("older".to_owned());
@@ -4928,6 +5029,7 @@ mod tests {
             "bucket".to_owned(),
             "5h".to_owned(),
             "1%".to_owned(),
+            "-".to_owned(),
             "-".to_owned(),
             "-".to_owned(),
             "in 1h".to_owned(),

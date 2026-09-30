@@ -1,19 +1,27 @@
 //! Parser for bounded tails of Codex rollout JSONL files.
 
+use std::collections::BTreeMap;
+
 use crate::json::{self, Value};
 
+use super::pace::{Point, Series, thin};
 use super::{
-    Account, CREDIT_BALANCE_MAX, Credits, ParseError, Row, Status, epoch, freshness, minutes,
-    percent, vendor_timestamp,
+    Account, CREDIT_BALANCE_MAX, Credits, FUTURE_SKEW_SECS, ParseError, Row, Status, epoch,
+    freshness, minutes, percent, vendor_timestamp,
 };
 
+/// Readings of one window by (bucket, plan, window minutes).
+type Readings = BTreeMap<(String, Option<String>, u32), Vec<Point>>;
+
 /// One parsed Codex rollout observation: its windows and its account facts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
     /// Every vendor limit bucket and window the tail reported.
     pub rows: Vec<Row>,
     /// Account-wide credit and spend-control state, when reported.
     pub account: Account,
+    /// The thinned history of every window the tail reported more than once.
+    pub points: Vec<Series>,
 }
 
 /// Parse complete records from a bounded Codex rollout tail.
@@ -45,6 +53,7 @@ pub fn parse(
 
     let mut rows = Vec::new();
     let mut account = Account::default();
+    let mut readings = Readings::new();
     for raw in bytes
         .get(from..complete)
         .unwrap_or_default()
@@ -59,6 +68,7 @@ pub fn parse(
             continue;
         };
         merge_account(&mut account, limits, &record, now);
+        window_points(&mut readings, limits, &record, now);
         let Some(next) = quota_rows(limits, &record, now) else {
             continue;
         };
@@ -71,7 +81,55 @@ pub fn parse(
             .cmp(&right.bucket)
             .then_with(|| left.window_minutes.cmp(&right.window_minutes))
     });
-    Ok(Snapshot { rows, account })
+    let points = readings
+        .into_iter()
+        .map(|((bucket, qualifier, window_minutes), points)| Series {
+            bucket,
+            qualifier,
+            window_minutes,
+            points: thin(points, window_minutes),
+        })
+        .collect();
+    Ok(Snapshot {
+        rows,
+        account,
+        points,
+    })
+}
+
+/// Collect this record's usable window readings, whatever their order in the
+/// file: a window states its length, usage, reset and the record its stamp.
+fn window_points(readings: &mut Readings, limits: &Value, record: &Value, now: i64) {
+    let Some(bucket) = limits.get_str("limit_id") else {
+        return;
+    };
+    let Some(observed_at) = record.get_str("timestamp").and_then(vendor_timestamp) else {
+        return;
+    };
+    if observed_at.saturating_sub(now) >= FUTURE_SKEW_SECS {
+        return;
+    }
+    let qualifier = limits.get_str("plan_type").map(str::to_owned);
+    for window in [limits.get("primary"), limits.get("secondary")]
+        .into_iter()
+        .flatten()
+    {
+        let (Some(window_minutes), Some(used), Some(resets_at)) = (
+            minutes(window.get("window_minutes")),
+            percent(window.get("used_percent")).and_then(|literal| literal.parse::<f64>().ok()),
+            epoch(window.get("resets_at")),
+        ) else {
+            continue;
+        };
+        readings
+            .entry((bucket.to_owned(), qualifier.clone(), window_minutes))
+            .or_default()
+            .push(Point {
+                observed_at,
+                used,
+                resets_at,
+            });
+    }
 }
 
 /// The `rate_limits` OBJECT of a `token_count` record.
@@ -556,6 +614,110 @@ mod tests {
             .rows;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, Status::Unknown);
+    }
+
+    fn reading(ts: &str, windows: &str) -> String {
+        format!(
+            r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"type":"token_count","rate_limits":{{"limit_id":"codex","plan_type":"pro",{windows}}}}}}}
+"#
+        )
+    }
+
+    fn primary(used: &str) -> String {
+        format!(
+            r#""primary":{{"used_percent":{used},"window_minutes":300,"resets_at":1788861600}},"secondary":null"#
+        )
+    }
+
+    #[test]
+    fn readings_are_kept_by_stamp_while_the_row_stays_the_last_record() {
+        let text = [
+            reading("2026-09-08T09:05:00Z", &primary("30.0")),
+            reading("2026-09-08T09:00:00Z", &primary("20.0")),
+            reading("2026-09-08T09:00:00Z", &primary("22.0")),
+        ]
+        .concat();
+        let snapshot = parse(text.as_bytes(), true, epoch("2026-09-08T09:10:00Z")).expect("parses");
+        assert_eq!(snapshot.rows[0].used_percent.as_deref(), Some("22.0"));
+        let [series] = &snapshot.points[..] else {
+            panic!("one window, one series");
+        };
+        assert_eq!(
+            (series.bucket.as_str(), series.window_minutes),
+            ("codex", 300)
+        );
+        assert_eq!(series.qualifier.as_deref(), Some("pro"));
+        let seen: Vec<(i64, f64)> = series
+            .points
+            .iter()
+            .map(|p| (p.observed_at, p.used))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (epoch("2026-09-08T09:00:00Z"), 22.0),
+                (epoch("2026-09-08T09:05:00Z"), 30.0)
+            ],
+            "sorted by stamp; an equal stamp keeps the higher used"
+        );
+    }
+
+    #[test]
+    fn a_reading_missing_a_field_or_from_the_future_is_no_point_and_moves_no_row() {
+        let now = epoch("2026-09-08T09:10:00Z");
+        let good = reading("2026-09-08T09:00:00Z", &primary("20.0"));
+        let baseline = parse(good.as_bytes(), true, now).expect("parses");
+        let windows = [
+            r#""primary":{"used_percent":40.0,"resets_at":1788861600},"secondary":null"#,
+            r#""primary":{"window_minutes":300,"resets_at":1788861600},"secondary":null"#,
+            r#""primary":{"used_percent":40.0,"window_minutes":300},"secondary":null"#,
+            r#""primary":{"used_percent":-1,"window_minutes":300,"resets_at":1788861600},"secondary":null"#,
+        ];
+        for bad in windows {
+            let text = format!("{good}{}", reading("2026-09-08T08:59:00Z", bad));
+            let got = parse(text.as_bytes(), true, now).expect("parses");
+            assert_eq!(got.points, baseline.points, "{bad}");
+        }
+        let future = format!(
+            "{good}{}",
+            reading("2026-09-08T09:15:00Z", &primary("50.0"))
+        );
+        assert_eq!(
+            parse(future.as_bytes(), true, now).expect("parses").points,
+            baseline.points,
+            "a stamp 5 min ahead is skew, not a reading"
+        );
+    }
+
+    #[test]
+    fn every_window_of_a_record_is_its_own_series_and_retention_is_bounded() {
+        let both = r#""primary":{"used_percent":5.0,"window_minutes":300,"resets_at":1788861600},"secondary":{"used_percent":9.0,"window_minutes":10080,"resets_at":1789445400}"#;
+        let one = reading("2026-09-08T09:00:00Z", both);
+        let snapshot = parse(one.as_bytes(), true, epoch("2026-09-08T09:10:00Z")).expect("parses");
+        let windows: Vec<u32> = snapshot.points.iter().map(|s| s.window_minutes).collect();
+        assert_eq!(windows, [300, 10_080]);
+        let long: String = (0..90)
+            .map(|minute| {
+                reading(
+                    &format!("2026-09-08T{:02}:{:02}:00Z", minute / 60 + 6, minute % 60),
+                    &primary(&format!("{minute}.0")),
+                )
+            })
+            .collect();
+        let snapshot = parse(long.as_bytes(), true, epoch("2026-09-08T09:10:00Z")).expect("parses");
+        let [series] = &snapshot.points[..] else {
+            panic!("one window");
+        };
+        assert!(
+            series.points.len() <= 32 && series.points.len() >= 15,
+            "{}",
+            series.points.len()
+        );
+        assert_eq!(
+            series.points.last().map(|p| p.observed_at),
+            Some(epoch("2026-09-08T07:29:00Z")),
+            "the newest reading always survives thinning"
+        );
     }
 
     #[test]
