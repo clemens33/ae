@@ -24,7 +24,7 @@ pub fn header(session: &str, seats: &[Seat]) -> String {
 }
 
 /// The tag a row wears after its time.
-fn tag(kind: &Kind) -> String {
+pub(super) fn tag(kind: &Kind) -> String {
     let prior = |generation: u8| match generation {
         0 => String::new(),
         n => format!(" · prior {n}"),
@@ -41,8 +41,39 @@ fn tag(kind: &Kind) -> String {
         Kind::Said { who } => format!("said {who}"),
         Kind::Card { seat } => format!("DECISION {seat} · waiting-user"),
         Kind::NeedsYou { seat } => format!("NEEDS YOU {seat} · needs you in its pane"),
+        Kind::Asked { to, id, uncertain } => match uncertain {
+            true => format!("you → {to} · {id} · uncertain: check the {to} pane"),
+            false => format!("you → {to} · {id}"),
+        },
+        Kind::NotDelivered { to, id } => format!("you → {to} · {id} · not delivered"),
+        Kind::Closed { id } => format!("you closed {id}"),
+        Kind::Answer {
+            seat,
+            id,
+            follow_up,
+            late,
+            gap,
+        } => {
+            let mut tag = format!("{seat} answers {id}");
+            if *follow_up > 0 {
+                let _ = write!(tag, " · follow-up {follow_up}");
+            }
+            if *late {
+                tag.push_str(" · late (closed)");
+            }
+            if let Some(gap) = gap {
+                let _ = write!(tag, " · {gap} · preview (600-char summary)");
+            }
+            tag
+        }
+        Kind::Unadmitted { from, id, why } => {
+            format!("{from} reply to {id} · not admitted: {why} · preview (600-char summary)")
+        }
     }
 }
+
+/// The memory key of a console-thread row: its record's position in the read.
+const CONSOLE_KEY: &str = "console record ";
 
 /// What a console has already printed: rows by multiplicity (two records of
 /// equal words in one second are two rows), the cards and prompts it printed
@@ -68,7 +99,10 @@ impl Printed {
         }
         let (mut in_lane, mut standing) = (BTreeMap::new(), BTreeMap::new());
         for item in &lane.items {
-            let key = format!("{}|{:?}|{}", item.micros, item.kind, item.body);
+            let key = match &item.record {
+                Some(record) => format!("{CONSOLE_KEY}{record}"),
+                None => format!("{}|{:?}|{}", item.micros, item.kind, item.body),
+            };
             let nth: &mut usize = in_lane.entry(key.clone()).or_default();
             *nth += 1;
             if matches!(item.kind, Kind::Card { .. } | Kind::NeedsYou { .. }) {
@@ -92,6 +126,15 @@ impl Printed {
             self.open = standing;
         }
         terminal_text(&out)
+    }
+
+    /// Forget the printed console-thread rows, whose positions a rewritten journal
+    /// (`before` records, `now` now) no longer names; every other memory stays.
+    pub fn rebase(&mut self, before: usize, now: usize) -> String {
+        self.shown.retain(|key, _| !key.starts_with(CONSOLE_KEY));
+        terminal_text(&format!(
+            "-- journal rewritten ({before} records before, {now} now): the console thread is shown again as the journal stands\n\n"
+        ))
     }
 
     fn row(&mut self, item: &Item, out: &mut String) {
@@ -120,6 +163,7 @@ mod tests {
             micros,
             kind,
             body: body.to_owned(),
+            record: None,
         }
     }
 

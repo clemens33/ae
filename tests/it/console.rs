@@ -195,6 +195,35 @@ fn lead_pair_rig(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (root, dir)
 }
 
+/// A console reply whose stored body is a FIFO is refused by name, never
+/// opened: the one-shot ends and shows the answer's summary.
+#[test]
+fn a_console_reply_body_that_is_a_fifo_is_refused_never_opened() {
+    let (root, dir) = lead_pair_rig("console-fifo");
+    let id = "ae-20260916T091000Z-0000abcd";
+    let fifo = dir.join(format!("messages/{id}.reply.0000aa.txt"));
+    std::fs::create_dir_all(dir.join("messages")).expect("messages");
+    super::cli::mkfifo(&fifo);
+    let uuid = SESSION_ID;
+    let ask = format!(
+        r#"{{"ts":"2026-09-16T09:10:00Z","actor":"console:local","action":"ask","target":"lead","ref":"{id}","target_slot":"main","target_session":"one","target_server":"/t","target_pane":"%1","target_session_uuid":"{uuid}","summary":"q"}}"#
+    );
+    let body = esc(&fifo.display().to_string());
+    let reply = format!(
+        r#"{{"ts":"2026-09-16T09:11:00Z","actor":"lead","action":"reply","target":"console:local","ref":"{id}","actor_slot":"main","actor_session":"one","caller_server":"/t","caller_pane":"%1","caller_session_uuid":"{uuid}","body_file":"{body}","summary":"the summary"}}"#
+    );
+    let journal = std::fs::read_to_string(dir.join("events.jsonl")).expect("journal");
+    let journal = format!("{}\n{ask}\n{reply}\n", journal.trim_end());
+    std::fs::write(dir.join("events.jsonl"), journal).expect("journal");
+    let (code, stdout, stderr) = console(&root, &["one"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    let refused = format!(
+        "lead answers {id} · body refused: a fifo · preview (600-char summary)\n  the summary\n"
+    );
+    assert!(stdout.contains(&refused), "{stdout}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Run `runner`, waiting at most 30 s: a console that follows when it
 /// should print once fails with a red that ARRIVES, never a stalled lane.
 fn bounded_output(runner: &mut super::cli::Runner) -> std::process::Output {

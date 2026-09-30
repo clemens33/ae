@@ -8,10 +8,15 @@
 //! through the board's terminal renderer, the one place a control byte is made
 //! inert.
 
+use std::collections::BTreeMap;
+
 use crate::board::{self, Role};
-use crate::events::Event;
+use crate::events::{Event, RoutingMember};
 use crate::watchdog::{self, HUMAN_BRIDGE_ACTORS, WATCHDOG_ACTOR};
 use crate::{reply, send, tracked};
+
+/// The asker's withdrawal of its own request.
+const CANCEL: &str = "cancel";
 
 /// One seat of the session's lead pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +45,62 @@ pub enum Kind {
     Card { seat: String },
     /// The watchdog's standing `human-prompt` verdict on a seat.
     NeedsYou { seat: String },
+    /// The human's console ask `id` to `to`; `uncertain` when its submit was
+    /// not confirmed.
+    Asked {
+        to: String,
+        id: String,
+        uncertain: bool,
+    },
+    /// A console ask ae gave up delivering.
+    NotDelivered { to: String, id: String },
+    /// The human closed console request `id`.
+    Closed { id: String },
+    /// An ADMITTED reply to console request `id`: `follow_up` 0 is the answer,
+    /// n the nth reply after it; `late` when the request was closed first;
+    /// `gap` names why the body shown is the summary, not the stored whole.
+    Answer {
+        seat: String,
+        id: String,
+        follow_up: usize,
+        late: bool,
+        gap: Option<String>,
+    },
+    /// A reply to console request `id` that is NOT admitted as its answer.
+    Unadmitted {
+        from: String,
+        id: String,
+        why: String,
+    },
+}
+
+/// What the console could read of an admitted answer's stored body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Body {
+    /// The whole body, as the seat wrote it.
+    Whole(String),
+    /// The record names no body file: an older core wrote it.
+    OldCore,
+    /// The named file is not there.
+    Missing,
+    /// Refused, and why: a name or node the console will not read.
+    Refused(String),
+    /// Over [`reply::CONSOLE_BODY_CAP`].
+    Oversized,
+    /// Not UTF-8.
+    NotUtf8,
+}
+
+/// Why an answer shows its summary instead of `body`; `None` for the whole.
+fn body_gap(body: &Body) -> Option<String> {
+    Some(match body {
+        Body::Whole(_) => return None,
+        Body::OldCore => "body missing (old core)".to_owned(),
+        Body::Missing => "body missing".to_owned(),
+        Body::Refused(why) => format!("body refused: {why}"),
+        Body::Oversized => format!("body over {} bytes", reply::CONSOLE_BODY_CAP),
+        Body::NotUtf8 => "body not UTF-8".to_owned(),
+    })
 }
 
 /// One lane row: epoch micros (a journal record's second widened), what it
@@ -49,6 +110,10 @@ pub struct Item {
     pub micros: i64,
     pub kind: Kind,
     pub body: String,
+    /// The position in the read of the journal record a console row came
+    /// from: its identity across re-reads, whatever that record's stamp or
+    /// body read says this time.
+    pub record: Option<usize>,
 }
 
 /// The lane: rows oldest first, and one `<actor> — <reason>` per gap.
@@ -63,6 +128,7 @@ fn item(kind: Kind, micros: i64, body: &str) -> Item {
         micros,
         kind,
         body: body.to_owned(),
+        record: None,
     }
 }
 
@@ -91,9 +157,12 @@ pub fn fold(
     events: &[Event],
     observation: &board::Observation,
     skipped: usize,
+    body: &dyn Fn(&Event) -> Body,
 ) -> Lane {
     let (mut items, other_say) = journal_items(session, seats, events);
     items.extend(standing_items(session, seats, events));
+    let mut body_gaps = Vec::new();
+    let console = console_items(events, body, &mut body_gaps);
     let prefix = format!("{session}:");
     for row in &observation.rows {
         let name = row.actor.strip_prefix(&prefix);
@@ -108,6 +177,15 @@ pub fn fold(
         items.push(item(kind, row.ts, &row.body));
     }
     items.sort_by_key(|item| item.micros);
+    // The console's own thread keeps journal order, whatever its stamps say.
+    let mut rest = std::mem::take(&mut items).into_iter().peekable();
+    for row in console {
+        items.extend(std::iter::from_fn(|| {
+            rest.next_if(|item| item.micros <= row.micros)
+        }));
+        items.push(row);
+    }
+    items.extend(rest);
     let mut coverage: Vec<String> = observation
         .coverage
         .iter()
@@ -122,7 +200,87 @@ pub fn fold(
             coverage.push(format!("{who} — {count} {noun}{plural} {tail}"));
         }
     }
+    coverage.extend(body_gaps);
     Lane { items, coverage }
+}
+
+/// The console's own thread: its asks and what became of them, and every
+/// reply sent to it — the ANSWER only from the complete identity the ask
+/// reached, with the stored whole body where it reads, else the summary and a
+/// named gap. Follow-ups and lateness are by position, so a re-read of the
+/// same journal draws the same rows.
+fn console_items(
+    events: &[Event],
+    body: &dyn Fn(&Event) -> Body,
+    gaps: &mut Vec<String>,
+) -> Vec<Item> {
+    // Per console request: its ask, whether a console cancel came before now,
+    // and how many admitted replies came before now.
+    let mut threads: BTreeMap<&str, (&Event, bool, usize)> = BTreeMap::new();
+    let mut items = Vec::new();
+    for (record, event) in events.iter().enumerate() {
+        let key = event.reference.as_deref().unwrap_or("");
+        let (id, to) = (key.to_owned(), event.target.clone().unwrap_or_default());
+        let mut text = event.summary.clone().unwrap_or_default();
+        let kind = if event.actor == tracked::CONSOLE_SINK {
+            match event.action.as_str() {
+                action if action == tracked::Kind::Ask.action() => {
+                    if !key.is_empty() {
+                        threads.insert(key, (event, false, 0));
+                    }
+                    let uncertain = text.starts_with(tracked::UNCONFIRMED_SUMMARY_PREFIX);
+                    Kind::Asked { to, id, uncertain }
+                }
+                tracked::ABANDONED_ACTION => Kind::NotDelivered { to, id },
+                CANCEL => {
+                    if let Some(thread) = threads.get_mut(key) {
+                        thread.1 = true;
+                    }
+                    Kind::Closed { id }
+                }
+                _ => continue,
+            }
+        } else if event.action == reply::ACTION && to == tracked::CONSOLE_SINK {
+            let from = event.actor.clone();
+            let admitted = match threads.get_mut(key) {
+                None => Err("no console ask with this id in the journal".to_owned()),
+                Some(thread) => admission(thread.0, event).map(|()| thread),
+            };
+            match admitted {
+                Ok(thread) => {
+                    let (late, follow_up) = (thread.1, thread.2);
+                    thread.2 += 1;
+                    let read = body(event);
+                    let gap = body_gap(&read);
+                    if let Body::Whole(whole) = read {
+                        text = whole;
+                    }
+                    if let Some(gap) = &gap {
+                        gaps.push(format!(
+                            "reply {id} — {gap}; its 600-character summary is shown"
+                        ));
+                    }
+                    let seat = from;
+                    Kind::Answer {
+                        seat,
+                        id,
+                        follow_up,
+                        late,
+                        gap,
+                    }
+                }
+                Err(why) => Kind::Unadmitted { from, id, why },
+            }
+        } else {
+            continue;
+        };
+        let record = Some(record);
+        items.push(Item {
+            record,
+            ..item(kind, micros(event), &text)
+        });
+    }
+    items
 }
 
 /// The chat-bridge thread and the `say` lines, plus how many worker `say`
@@ -169,6 +327,54 @@ fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>,
     (items, other_say)
 }
 
+/// Whether `reply` comes from the complete identity `ask` reached: no spawned
+/// seat, no identity gap, and both five-tuples whole and equal. The error names
+/// the first field that fails — `unproven` when a side lacks it, `stale` when
+/// the sides differ.
+fn admission(ask: &Event, reply: &Event) -> Result<(), String> {
+    let spawned = |slot: &RoutingMember| {
+        slot.value()
+            .is_some_and(|slot| slot.starts_with("spawned."))
+    };
+    if spawned(&ask.target_slot) || spawned(&reply.actor_slot) {
+        return Err("spawned seat".to_owned());
+    }
+    if let Some(gap) = &reply.identity_gap {
+        return Err(format!("unproven identity ({gap})"));
+    }
+    let fields = [
+        ("slot", ask.target_slot.value(), reply.actor_slot.value()),
+        (
+            "session",
+            ask.target_session.value(),
+            reply.actor_session.value(),
+        ),
+        (
+            "server",
+            ask.target_server.as_deref(),
+            reply.caller_server.as_deref(),
+        ),
+        (
+            "pane",
+            ask.target_pane.as_deref(),
+            reply.caller_pane.as_deref(),
+        ),
+        (
+            "session uuid",
+            ask.target_session_uuid.as_deref(),
+            reply.caller_session_uuid.as_deref(),
+        ),
+    ];
+    for (field, asked, answered) in fields {
+        match (asked, answered) {
+            (Some(asked), Some(answered)) if asked == answered => {}
+            (Some(_), Some(_)) => return Err(format!("stale {field}")),
+            _ => return Err(format!("unproven {field}")),
+        }
+    }
+    Ok(())
+}
+
 /// What a lead-pair seat still asks of the human: its CURRENT `waiting-user`
 /// declaration, and the watchdog's uncleared `human-prompt`.
 fn standing_items(session: &str, seats: &[Seat], events: &[Event]) -> Vec<Item> {
@@ -210,8 +416,9 @@ fn standing_items(session: &str, seats: &[Seat], events: &[Event]) -> Vec<Item> 
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, Lane, Seat, fold};
+    use super::{Body, Kind, Lane, Seat, fold};
     use crate::board::{Coverage, Observation, Role, Row};
+    use crate::console::view::{Printed, tag};
     use crate::events::Event;
     use crate::tool::ToolKind;
     use std::fmt::Write as _;
@@ -257,7 +464,7 @@ mod tests {
             rows,
             ..Observation::default()
         };
-        let lane = fold(S, &pair(), events, &observation, 0);
+        let lane = fold(S, &pair(), events, &observation, 0, &|_| Body::OldCore);
         lane.items
             .iter()
             .map(|item| {
@@ -269,6 +476,7 @@ mod tests {
                     Kind::Said { who } => format!("said {who}"),
                     Kind::Card { seat } => format!("card {seat}"),
                     Kind::NeedsYou { seat } => format!("needs {seat}"),
+                    other => format!("{other:?}"),
                 };
                 format!("{tag}: {}", item.body)
             })
@@ -333,7 +541,7 @@ mod tests {
             ev(T1, "scout", "chat", "", "and again"),
         ];
         let observation = Observation::default();
-        let lane = fold(S, &pair(), &events, &observation, 0);
+        let lane = fold(S, &pair(), &events, &observation, 0, &|_| Body::OldCore);
         assert_eq!(lane.coverage, ["say — 2 lines from other seats not shown"]);
         assert_eq!(
             shown(&events, Vec::new()),
@@ -388,7 +596,7 @@ mod tests {
             }],
             ..Observation::default()
         };
-        let lane: Lane = fold(S, &pair(), &events, &observation, 1);
+        let lane: Lane = fold(S, &pair(), &events, &observation, 1, &|_| Body::OldCore);
         let bodies: Vec<&str> = lane.items.iter().map(|item| item.body.as_str()).collect();
         assert_eq!(bodies, ["earlier", "later"]);
         assert_eq!(
@@ -398,5 +606,205 @@ mod tests {
                 "journal — 1 unreadable line skipped"
             ]
         );
+    }
+
+    const ID: &str = "ae-20260930T060000Z-0000abcd";
+    const UUID: &str = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+
+    /// A record about console request `ID`; `extra` is appended verbatim.
+    fn about(ts: &str, actor: &str, action: &str, extra: &str) -> Event {
+        let line =
+            format!(r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}","ref":"{ID}"{extra}}}"#);
+        Event::parse_line(&line).unwrap()
+    }
+
+    /// The console's ask to `lead`, whose identity the ask proved: `main`, `%1`.
+    fn asked(summary: &str) -> Event {
+        let target = format!(
+            r#","target":"lead","target_slot":"main","target_session":"{S}","target_server":"/tmp/ae","target_pane":"%1","target_session_uuid":"{UUID}","summary":"{summary}""#
+        );
+        about(T0, "console:local", "ask", &target)
+    }
+
+    /// The caller fields of `slot` in pane `pane` of session `uuid`.
+    fn caller(slot: &str, pane: &str, uuid: &str) -> String {
+        format!(
+            r#","actor_slot":"{slot}","actor_session":"{S}","caller_server":"/tmp/ae","caller_pane":"{pane}","caller_session_uuid":"{uuid}""#
+        )
+    }
+
+    /// `lead`'s reply to the console, stamped with `fields`.
+    fn answered(ts: &str, fields: &str, summary: &str) -> Event {
+        let extra = format!(r#","target":"console:local"{fields},"summary":"{summary}""#);
+        about(ts, "lead", "reply", &extra)
+    }
+
+    fn whole(event: &Event) -> Body {
+        Body::Whole(format!("WHOLE {}", event.summary.as_deref().unwrap_or("")))
+    }
+
+    /// The lane as the view tags it, and its coverage.
+    fn thread(events: &[Event], body: &dyn Fn(&Event) -> Body) -> (Vec<String>, Vec<String>) {
+        let lane = fold(S, &pair(), events, &Observation::default(), 0, body);
+        let rows = lane
+            .items
+            .iter()
+            .map(|item| format!("{}: {}", tag(&item.kind), item.body));
+        (rows.collect(), lane.coverage)
+    }
+
+    fn refused(why: &str) -> String {
+        format!("lead reply to {ID} · not admitted: {why} · preview (600-char summary): x")
+    }
+
+    #[test]
+    fn an_admitted_answer_is_the_whole_body_and_each_later_admitted_reply_a_follow_up() {
+        let me = caller("main", "%1", UUID);
+        let events = [
+            asked("q"),
+            answered(T1, &caller("main", "%2", UUID), "x"),
+            answered(T1, &me, "a1"),
+            answered(T1, &me, "a1"),
+            answered(T2, &me, "a2"),
+        ];
+        assert_eq!(
+            thread(&events, &whole).0,
+            [
+                format!("you → lead · {ID}: q"),
+                refused("stale pane"),
+                format!("lead answers {ID}: WHOLE a1"),
+                format!("lead answers {ID} · follow-up 1: WHOLE a1"),
+                format!("lead answers {ID} · follow-up 2: WHOLE a2"),
+            ],
+            "an unadmitted reply takes no place in the count"
+        );
+    }
+
+    #[test]
+    fn a_reply_is_admitted_only_from_the_whole_identity_the_ask_reached() {
+        let (me, other) = (
+            caller("main", "%1", UUID),
+            "0199c0de-1234-4890-abcd-ef0123456789",
+        );
+        let (bare, gap) = (
+            format!(r#","actor_slot":"main","actor_session":"{S}""#),
+            format!(r#"{me},"identity_gap":"vacant""#),
+        );
+        let cases = [
+            (caller("main", "%1", other), "stale session uuid"),
+            (caller("worker.0", "%1", UUID), "stale slot"),
+            (me.replace("/tmp/ae", "/tmp/other"), "stale server"),
+            (me.replace(S, "elsewhere"), "stale session"),
+            (caller("spawned.0", "%1", UUID), "spawned seat"),
+            (bare, "unproven server"),
+            (gap, "unproven identity (vacant)"),
+        ];
+        for (fields, why) in cases {
+            let events = [asked("q"), answered(T1, &fields, "x")];
+            assert_eq!(thread(&events, &whole).0[1], refused(why), "{why}");
+        }
+        let partial = r#","target":"lead","target_slot":"main","target_session":"aedev","target_server":"/tmp/ae""#;
+        let unproven_ask = about(T0, "console:local", "ask", partial);
+        let events = [unproven_ask, answered(T1, &me, "x")];
+        assert_eq!(thread(&events, &whole).0[1], refused("unproven pane"));
+        // No request id on either side is no join, however whole both identities are.
+        let (mut bare_ask, mut bare_reply) = (asked("q"), answered(T1, &me, "x"));
+        (bare_ask.reference, bare_reply.reference) = (None, None);
+        let rows = thread(&[bare_ask, bare_reply], &whole).0;
+        assert!(rows[1].contains("not admitted: no console ask"), "{rows:?}");
+        let orphan = [answered(T1, &me, "x")];
+        assert_eq!(
+            thread(&orphan, &whole).0,
+            [refused("no console ask with this id in the journal")]
+        );
+    }
+
+    #[test]
+    fn an_uncertain_ask_an_abandoned_one_a_close_and_a_late_answer_each_show() {
+        let me = caller("main", "%1", UUID);
+        let (lost, closed) = (
+            r#","target":"lead","summary":"refused: busy""#,
+            r#","summary":"by you""#,
+        );
+        let events = [
+            asked("[unconfirmed] q"),
+            about(T0, "console:local", "delivery-abandoned", lost),
+            answered(T1, &me, "before"),
+            about(T1, "lead", "cancel", r#","summary":"not the asker""#),
+            about(T2, "console:local", "cancel", closed),
+            answered(T2, &me, "after"),
+        ];
+        assert_eq!(
+            thread(&events, &whole).0,
+            [
+                format!("you → lead · {ID} · uncertain: check the lead pane: [unconfirmed] q"),
+                format!("you → lead · {ID} · not delivered: refused: busy"),
+                format!("lead answers {ID}: WHOLE before"),
+                format!("you closed {ID}: by you"),
+                format!("lead answers {ID} · follow-up 1 · late (closed): WHOLE after"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_answer_whose_body_cannot_be_read_names_why_and_keeps_its_summary() {
+        let cases = [
+            (Body::OldCore, "body missing (old core)"),
+            (Body::Missing, "body missing"),
+            (Body::Refused("x".to_owned()), "body refused: x"),
+            (Body::Oversized, "body over 65536 bytes"),
+            (Body::NotUtf8, "body not UTF-8"),
+        ];
+        let events = [
+            asked("q"),
+            answered(T1, &caller("main", "%1", UUID), "short"),
+        ];
+        for (body, gap) in cases {
+            let (rows, coverage) = thread(&events, &|_| body.clone());
+            let row = format!("lead answers {ID} · {gap} · preview (600-char summary): short");
+            let named = format!("reply {ID} — {gap}; its 600-character summary is shown");
+            assert_eq!((rows[1].as_str(), coverage), (row.as_str(), vec![named]));
+        }
+    }
+
+    /// A console row is its record's place in the read: two identical records
+    /// are two rows, and a re-read prints neither again, whatever its stamp or
+    /// body read says.
+    #[test]
+    fn a_console_row_is_its_record_printed_once_however_its_body_reads_later() {
+        let me = caller("main", "%1", UUID);
+        let events = |ts| [asked("q"), answered(ts, &me, "a"), answered(ts, &me, "a")];
+        let observed = Observation::default();
+        let (first, later) = (events(T1), events(T2));
+        let mut printed = Printed::default();
+        let lane = fold(S, &pair(), &first, &observed, 0, &|_| Body::Missing);
+        let shown = printed.step(&lane, 0, true);
+        assert_eq!(shown.matches(" answers ").count(), 2, "{shown}");
+        let lane = fold(S, &pair(), &later, &observed, 0, &whole);
+        let shown = printed.step(&lane, 0, true);
+        assert_eq!(shown, "", "the same records, restamped and read whole");
+    }
+
+    /// The console's thread keeps journal order: a reply stamped earlier than
+    /// the one appended before it still follows it.
+    #[test]
+    fn the_console_thread_keeps_journal_order_whatever_its_stamps_say() {
+        let me = caller("main", "%1", UUID);
+        let events = [asked("q"), answered(T2, &me, "1"), answered(T1, &me, "2")];
+        let rows = vec![row("lead", Role::Human, 0, MICROS_T1 + 30_000_000, "typed")];
+        let observed = Observation {
+            rows,
+            ..Observation::default()
+        };
+        let lane = fold(S, &pair(), &events, &observed, 0, &whole);
+        let shown: Vec<String> = lane.items.iter().map(|item| tag(&item.kind)).collect();
+        let answer = format!("lead answers {ID}");
+        let expected = [
+            format!("you → lead · {ID}"),
+            "lead pane (transcript)".to_owned(),
+            answer.clone(),
+            format!("{answer} · follow-up 1"),
+        ];
+        assert_eq!(shown, expected);
     }
 }

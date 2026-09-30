@@ -8,7 +8,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::board::{self, Inputs, Row, follow::Follow, terminal_text};
-use crate::{archive, doors, inventory, lifecycle, meta, session, usage, watchdog_daemon};
+use crate::events::Event;
+use crate::store::{self, Oversized, SourceRead};
+use crate::{archive, doors, inventory, lifecycle, meta, reply, session, usage, watchdog_daemon};
 use lane::Seat;
 
 pub mod lane;
@@ -70,6 +72,8 @@ struct Console {
     printed: view::Printed,
     rows: Vec<Row>,
     follow: Option<Follow>,
+    /// The last journal read whole, which every later read must begin with.
+    journal: Option<Vec<Event>>,
 }
 
 impl Console {
@@ -144,11 +148,61 @@ impl Console {
             Some(read) => (read.events, read.skipped.len(), None),
             None => (Vec::new(), 0, Some("journal — unreadable".to_owned())),
         };
-        let mut lane = lane::fold(&self.name, &seats, &events, &observation, skipped);
+        // A journal no longer beginning with the last read was rewritten (resume
+        // trims its head): positions name other records, so the thread reprints.
+        let mut text = String::new();
+        if let (None, Some(last)) = (&read_gap, &self.journal)
+            && !events.starts_with(last)
+        {
+            text = self.printed.rebase(last.len(), events.len());
+        }
+        let body = |event: &Event| body_for(&self.dir, event);
+        let mut lane = lane::fold(&self.name, &seats, &events, &observation, skipped, &body);
         let settled = read_gap.is_none();
         lane.coverage.extend(read_gap);
-        Ok(self.printed.step(&lane, board_gaps, settled))
+        text.push_str(&self.printed.step(&lane, board_gaps, settled));
+        if settled {
+            self.journal = Some(events);
+        }
+        Ok(text)
     }
+}
+
+/// A console reply's stored body, read only from THIS session's `messages/`:
+/// the recorded path must end in a `messages` directory and a name the reply
+/// writer gives this request, and the read takes that name from `dir` itself,
+/// never the recorded directory, so no record can point the console elsewhere.
+fn body_for(dir: &Path, event: &Event) -> lane::Body {
+    const CAP: u64 = reply::CONSOLE_BODY_CAP as u64;
+    let Some(recorded) = event.body_file.as_deref().map(Path::new) else {
+        return lane::Body::OldCore;
+    };
+    let id = event.reference.as_deref().unwrap_or("");
+    let in_messages = recorded.parent().and_then(Path::file_name) == Some("messages".as_ref());
+    let name = recorded.file_name().and_then(|name| name.to_str());
+    let Some(name) = name.filter(|name| in_messages && is_reply_body_name(id, name)) else {
+        return lane::Body::Refused("not a reply body in this session's messages".to_owned());
+    };
+    match store::read_capped_in(&dir.join("messages"), name, CAP) {
+        Ok(SourceRead::Ready(bytes)) => {
+            String::from_utf8(bytes).map_or(lane::Body::NotUtf8, lane::Body::Whole)
+        }
+        Ok(SourceRead::Absent) => lane::Body::Missing,
+        Ok(SourceRead::Invalid(what)) => lane::Body::Refused(what),
+        Ok(SourceRead::Unreadable(why)) => lane::Body::Refused(format!("unreadable ({why})")),
+        Err(Oversized) => lane::Body::Oversized,
+    }
+}
+
+/// `<id>.reply.<six lowercase hex>.txt` — the name `deliver::store_body`
+/// publishes a reply to request `id` under.
+fn is_reply_body_name(id: &str, name: &str) -> bool {
+    let hex = name
+        .strip_prefix(id)
+        .and_then(|rest| rest.strip_prefix(".reply."))
+        .and_then(|rest| rest.strip_suffix(".txt"));
+    let lower_hex = |byte: u8| matches!(byte, b'0'..=b'9' | b'a'..=b'f');
+    !id.is_empty() && hex.is_some_and(|hex| hex.len() == 6 && hex.bytes().all(lower_hex))
 }
 
 /// The session directory `name` records, or why there is none.
@@ -209,6 +263,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         printed: view::Printed::default(),
         rows: Vec::new(),
         follow: None,
+        journal: None,
     };
     match console.seats() {
         Ok(seats) => write!(out, "{}", view::header(&console.name, &seats))?,
@@ -243,11 +298,13 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
 
 #[cfg(test)]
 mod tests {
-    use super::{Console, view::Printed};
+    use super::{Console, lane::Body, view::Printed};
+    use crate::events::Event;
     use std::fs;
     use std::path::PathBuf;
 
     const ID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
+    const REQ: &str = "ae-20260930T060000Z-0000abcd";
 
     /// A lead-pair session directory under a scratch that removes itself.
     struct Rig(PathBuf);
@@ -272,6 +329,7 @@ mod tests {
                 printed: Printed::default(),
                 rows: Vec::new(),
                 follow: None,
+                journal: None,
             }
         }
 
@@ -298,6 +356,86 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// A reply to console request `REQ` naming `path` as its body.
+    fn with_body(path: &str) -> Event {
+        let line = format!(
+            r#"{{"ts":"2026-09-30T06:01:00Z","actor":"lead","action":"reply","target":"console:local","ref":"{REQ}","body_file":"{path}"}}"#
+        );
+        Event::parse_line(&line).expect("a reply record")
+    }
+
+    #[test]
+    fn a_console_reply_body_is_read_only_from_this_sessions_messages() {
+        let rig = Rig::new("bodies");
+        let dir = rig.0.join("s");
+        let name = |hex: &str| format!("{REQ}.reply.{hex}.txt");
+        let messages = dir.join("messages");
+        fs::create_dir_all(&messages).expect("messages");
+        fs::write(messages.join(name("00000a")), "whole ü\n  indented").expect("a body");
+        fs::write(messages.join(name("00000b")), vec![b'x'; 65_537]).expect("a big body");
+        fs::write(messages.join(name("00000c")), [0xff, 0xfe]).expect("bytes");
+        fs::write(rig.0.join("outside"), "secret").expect("outside");
+        std::os::unix::fs::symlink(rig.0.join("outside"), messages.join(name("00000d")))
+            .expect("link");
+        let body = |path: &str| super::body_for(&dir, &with_body(path));
+        let at = |hex: &str| format!("/elsewhere/messages/{}", name(hex));
+        // Read from THIS session's messages, never from the recorded directory,
+        // wherever it is: a foreign `messages`, or one reached through `..`.
+        let foreign = rig.0.join("foreign/messages");
+        fs::create_dir_all(&foreign).expect("a foreign messages dir");
+        fs::write(foreign.join(name("00000a")), "FOREIGN").expect("a foreign body");
+        let whole = Body::Whole("whole ü\n  indented".to_owned());
+        let foreign = format!("{}/{}", foreign.display(), name("00000a"));
+        for path in [
+            at("00000a"),
+            foreign,
+            format!("/x/../y/messages/{}", name("00000a")),
+        ] {
+            assert_eq!(body(&path), whole, "{path}");
+        }
+        assert_eq!(body(&at("00000b")), Body::Oversized);
+        assert_eq!(body(&at("00000c")), Body::NotUtf8);
+        assert_eq!(body(&at("00000d")), Body::Refused("a symlink".to_owned()));
+        assert_eq!(body(&at("00000e")), Body::Missing);
+        let refused = Body::Refused("not a reply body in this session's messages".to_owned());
+        for path in [
+            format!("{}/../outside", messages.display()),
+            format!("/x/messages/../{}", name("00000a")),
+            format!("/x/other/{}", name("00000a")),
+            format!("/x/messages/{REQ}.ask.00000a.txt"),
+            format!("/x/messages/{REQ}.reply.00000A.txt"),
+            "/x/messages/other.reply.00000a.txt".to_owned(),
+        ] {
+            assert_eq!(body(&path), refused, "{path}");
+        }
+        fs::rename(&messages, dir.join("real")).expect("move");
+        std::os::unix::fs::symlink(dir.join("real"), &messages).expect("linked messages");
+        let linked = Body::Refused("its directory is a symlink".to_owned());
+        assert_eq!(body(&at("00000a")), linked);
+        let old = r#"{"ts":"2026-09-30T06:01:00Z","actor":"lead","action":"reply","ref":"r"}"#;
+        let old = Event::parse_line(old).expect("an old-core reply");
+        assert_eq!(super::body_for(&dir, &old), Body::OldCore);
+    }
+
+    #[test]
+    fn a_pass_shows_an_admitted_answer_whole_from_its_stored_body() {
+        let rig = Rig::new("answer");
+        let file = rig.0.join(format!("s/messages/{REQ}.reply.0000aa.txt"));
+        fs::create_dir_all(rig.0.join("s/messages")).expect("messages");
+        fs::write(&file, "line one\nline two").expect("a body");
+        let ask = format!(
+            r#"{{"ts":"2026-09-30T06:00:00Z","actor":"console:local","action":"ask","target":"lead","ref":"{REQ}","target_slot":"main","target_session":"s","target_server":"/t","target_pane":"%1","target_session_uuid":"{ID}","summary":"q"}}"#
+        );
+        let answer = format!(
+            r#"{{"ts":"2026-09-30T06:01:00Z","actor":"lead","action":"reply","target":"console:local","ref":"{REQ}","actor_slot":"main","actor_session":"s","caller_server":"/t","caller_pane":"%1","caller_session_uuid":"{ID}","body_file":"{}","summary":"line one line two"}}"#,
+            file.display()
+        );
+        rig.journal(&[&ask, &answer]);
+        let shown = rig.console().pass().expect("a pass");
+        let whole = format!("lead answers {REQ}\n  line one\n  line two");
+        assert!(shown.contains(&whole), "{shown}");
     }
 
     const ASK: &str = r#"{"ts":"2026-09-30T06:00:00Z","actor":"lead","action":"state","ref":"waiting-user","summary":"ship it?"}"#;
@@ -346,6 +484,49 @@ mod tests {
             second.contains("bbbb") && second.contains("rescanned"),
             "{second}"
         );
+    }
+
+    /// Console ask `n`: its own request id and words.
+    fn asked(n: u8, words: &str) -> String {
+        format!(
+            r#"{{"ts":"2026-09-30T06:0{n}:00Z","actor":"console:local","action":"ask","target":"lead","ref":"ae-20260930T06000{n}Z-0000abcd","summary":"{words}"}}"#
+        )
+    }
+
+    const REWRITTEN: &str = "-- journal rewritten";
+
+    #[test]
+    fn a_journal_trimmed_at_its_head_is_named_and_hides_no_newer_console_row() {
+        let (rig, three) = (Rig::new("trimmed"), asked(3, "charlie"));
+        let mut console = rig.console();
+        rig.journal(&[&asked(1, "alpha"), &asked(2, "bravo"), &three]);
+        assert!(console.pass().expect("first").contains("charlie"));
+        rig.journal(&[&three, &asked(4, "delta")]);
+        let got = console.pass().expect("trimmed");
+        let notice = format!("{REWRITTEN} (3 records before, 2 now)");
+        assert!(got.contains(&notice) && got.contains("delta"), "{got}");
+        assert!(!got.contains("alpha"), "{got}");
+        let quiet = console.pass().expect("unchanged");
+        assert_eq!(quiet, "", "one notice per rewrite");
+    }
+
+    #[test]
+    fn a_rewritten_head_is_named_even_across_an_unreadable_read() {
+        let (rig, two) = (Rig::new("head"), asked(2, "bravo"));
+        let mut console = rig.console();
+        rig.journal(&[&asked(1, "alpha"), &two]);
+        assert!(console.pass().expect("first").contains("alpha"));
+        rig.journal(&[&asked(5, "echo"), &two]);
+        let got = console.pass().expect("swapped");
+        assert!(got.contains(REWRITTEN) && got.contains("echo"), "{got}");
+        let path = rig.0.join("s/events.jsonl");
+        fs::remove_file(&path).expect("remove");
+        fs::create_dir(&path).expect("a directory where the journal was");
+        assert!(!console.pass().expect("unreadable").contains(REWRITTEN));
+        fs::remove_dir(&path).expect("restore");
+        rig.journal(&[&asked(6, "foxtrot"), &two]);
+        let got = console.pass().expect("rewritten while unread");
+        assert!(got.contains(REWRITTEN) && got.contains("foxtrot"), "{got}");
     }
 
     #[test]

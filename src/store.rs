@@ -259,6 +259,36 @@ pub fn read_capped(path: &Path, cap: u64) -> Result<SourceRead, Oversized> {
     Ok(SourceRead::Ready(body))
 }
 
+/// [`read_capped`] of the one file `name` directly inside `dir`, where `dir`
+/// must itself be a directory — a link there is refused, never followed — and
+/// `name` one plain file name. Checking `dir` and opening under it are two
+/// steps: the residual is the one [`refuse_nonregular_lock_path`] names.
+///
+/// # Errors
+///
+/// [`Oversized`] for a regular file longer than `cap`.
+pub fn read_capped_in(dir: &Path, name: &str, cap: u64) -> Result<SourceRead, Oversized> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return Ok(SourceRead::Invalid(format!(
+            "{name:?} is not one file name"
+        )));
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: classifies the directory itself WITHOUT following a link, before any open under it — see clippy.toml"
+    )]
+    let observed = std::fs::symlink_metadata(dir);
+    match observed {
+        Ok(meta) if meta.is_dir() => read_capped(&dir.join(name), cap),
+        Ok(meta) => {
+            let what = nonregular_leg(meta.file_type()).unwrap_or("a regular file");
+            Ok(SourceRead::Invalid(format!("its directory is {what}")))
+        }
+        Err(why) if why.kind() == io::ErrorKind::NotFound => Ok(SourceRead::Absent),
+        Err(why) => Ok(SourceRead::Unreadable(why.to_string())),
+    }
+}
+
 /// Publish `bytes` at `path`, mode 0600, whole or not at all: an exclusive
 /// temp beside it, `fsync`, rename — the shape
 /// [`Store::stamp_launch_attempt`] uses. A failure anywhere leaves what was
@@ -1557,6 +1587,38 @@ mod tests {
             Ok(SourceRead::Invalid("a directory".to_owned()))
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read inside a directory refuses a linked directory and any name that
+    /// is not one plain file name, before it opens anything.
+    #[test]
+    fn a_capped_read_inside_a_directory_never_follows_it_or_leaves_it() {
+        use super::{SourceRead, read_capped_in};
+        let root = scratch("capped-in");
+        let (real, linked) = (root.join("messages"), root.join("linked"));
+        assert_eq!(read_capped_in(&real, "a", 4), Ok(SourceRead::Absent));
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("a"), b"abc").unwrap();
+        std::fs::write(root.join("b"), b"out").unwrap();
+        assert_eq!(
+            read_capped_in(&real, "a", 4),
+            Ok(SourceRead::Ready(b"abc".to_vec()))
+        );
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let refused = |what: &str| Ok(SourceRead::Invalid(what.to_owned()));
+        assert_eq!(
+            read_capped_in(&linked, "a", 4),
+            refused("its directory is a symlink")
+        );
+        assert_eq!(
+            read_capped_in(&root.join("b"), "a", 4),
+            refused("its directory is a regular file")
+        );
+        for name in ["", ".", "..", "../b", "x/a"] {
+            let why = format!("{name:?} is not one file name");
+            assert_eq!(read_capped_in(&real, name, 4), refused(&why), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A private publish is 0600, replaces whole, and a failed replacement —

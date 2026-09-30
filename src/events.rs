@@ -71,6 +71,8 @@ pub struct Event {
     pub caller_session_uuid: Option<String>,
     /// Named failed identity leg, when the triple was not correlated.
     pub identity_gap: Option<String>,
+    /// Where the writer stored the delivered text, when it stored one.
+    pub body_file: Option<String>,
 }
 
 /// One half of a routing key, exactly as the record carries it.
@@ -386,6 +388,7 @@ impl Event {
             caller_pane: optional(value, "caller_pane")?,
             caller_session_uuid: optional(value, "caller_session_uuid")?,
             identity_gap: optional(value, "identity_gap")?,
+            body_file: optional(value, "body_file")?,
         })
     }
 
@@ -505,7 +508,7 @@ fn identity<'a>(
 }
 
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 18] = [
+const KNOWN_KEYS: [&str; 19] = [
     "ts",
     "actor",
     "action",
@@ -524,6 +527,7 @@ const KNOWN_KEYS: [&str; 18] = [
     "caller_pane",
     "caller_session_uuid",
     "identity_gap",
+    "body_file",
 ];
 
 /// Refuse a record that names any KNOWN key twice.
@@ -1297,7 +1301,7 @@ mod tests {
 
     /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 18] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 19] = [
         "ts",
         "actor",
         "action",
@@ -1316,7 +1320,24 @@ mod tests {
         "caller_pane",
         "caller_session_uuid",
         "identity_gap",
+        "body_file",
     ];
+
+    #[test]
+    fn a_body_file_is_a_string_key_or_the_record_is_malformed() {
+        let line = |value: &str| {
+            format!(
+                r#"{{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"reply","body_file":{value}}}"#
+            )
+        };
+        for value in ["1", "true", "null", "[]"] {
+            assert_eq!(
+                Event::parse_line(&line(value)),
+                Err(EventError::WrongType("body_file")),
+                "{value}"
+            );
+        }
+    }
 
     #[test]
     fn the_policed_key_set_is_exactly_the_documented_one() {
