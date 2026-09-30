@@ -1242,6 +1242,19 @@ mod tests {
         assert_eq!(classify(&tip, ToolKind::Codex), HarnessState::Idle);
     }
 
+    /// The Working line proves a turn only WHOLE — its head and its tail: a row
+    /// that starts like it or ends like it is not one.
+    #[test]
+    fn a_half_drawn_working_row_proves_no_turn() {
+        for edited in [
+            WORKING_HINT.replace("esc to interrupt)", "esc to stop)"),
+            WORKING_HINT.replace("• Working (", "• Working on ("),
+        ] {
+            assert_ne!(edited, WORKING_HINT);
+            assert_eq!(classify(&edited, ToolKind::Codex), HarnessState::Idle);
+        }
+    }
+
     /// No frame measured before codex 0.159 draws either row, so setting them
     /// aside changes none of the earlier fixtures.
     #[test]

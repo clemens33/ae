@@ -1432,6 +1432,33 @@ fn the_orchestrator_ignores_legacy_seat_identity_and_uses_the_global_profile() {
     );
 }
 
+/// The dedicated seat's identity is the global config alone, so a legacy seat
+/// overlay whose roster names a profile nobody defines cannot refuse a resume.
+#[test]
+fn a_broken_legacy_seat_overlay_does_not_refuse_an_orchestrator_resume() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("orch-ghost");
+    assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
+    let global = "[profiles]\nglobal = \"claude\"\n\n[roster]\norchestrator = global\n\n[workspace]\nmain = orchestrator\nwatchdog = false\n";
+    assert!(std::fs::write(rig.config(), global).is_ok());
+    let (bin, marker) = rig.fake_profiles();
+    let run = || rig.run_on_with_path(Some(&rig.sock), &bin, &["orchestrator", "--no-attach"]);
+    let (code, stdout, stderr) = run();
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert_agent_launched(&marker, "the first launch reached the executable");
+    let (killed, output) = rig.tmux(&["kill-session", "-t", "=orchestrator"]);
+    assert!(killed, "stop the seat for a resume: {output}");
+    let broken =
+        "[roster]\norchestrator = ghost\n\n[workspace]\nmain = orchestrator\nwatchdog = false\n";
+    assert!(std::fs::write(rig.home.join("orchestrator.config"), broken).is_ok());
+    assert!(std::fs::remove_file(&marker).is_ok(), "clear launch marker");
+    let (code, stdout, stderr) = run();
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert_agent_launched(&marker, "the resumed seat reached the executable");
+}
+
 /// The reserved word is special only when it uses the canonical seat overlay;
 /// an explicit project-local launch named `orchestrator` keeps its roster.
 #[test]
