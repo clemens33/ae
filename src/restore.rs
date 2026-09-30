@@ -167,7 +167,8 @@ fn fact_of(record: &DurableRecord, live: bool) -> Fact {
     }
 }
 
-/// The saved sessions under `roots` to restore, by name; `live` are never.
+/// The saved sessions under `roots` to restore, by name in the scan's own path
+/// order; `live` ones are never.
 #[must_use]
 pub fn restorable(roots: &Roots, live: &[String]) -> Vec<String> {
     let facts: Vec<Fact> = crate::inventory::durable_records(roots)
@@ -176,12 +177,10 @@ pub fn restorable(roots: &Roots, live: &[String]) -> Vec<String> {
         .filter(|record| record.layout == Layout::Canonical)
         .map(|record| fact_of(record, live.contains(&record.name)))
         .collect();
-    let mut names: Vec<String> = facts
+    facts
         .iter()
         .zip(judge(&facts))
         .filter(|(_, decision)| *decision == Decision::Restore)
         .map(|(fact, _)| fact.name.clone())
-        .collect();
-    names.sort();
-    names
+        .collect()
 }
