@@ -158,16 +158,17 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "exit $((status ? status : 1))",
         "export TMPDIR=\"$test_tmux_tmp/tmp\"",
         "export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))",
+        "export CARGO_BUILD_JOBS=\"$budget\"",
         "env -u TMUX -u TMUX_PANE tmux -S \"$test_tmux_tmp/tmux-$(id -u)/ae\" kill-server",
         "keep_or_remove \"$test_tmux_tmp\"",
         "trap cleanup EXIT",
         "export TMUX_TMPDIR=\"$test_tmux_tmp\"",
         "unset TMUX TMUX_PANE",
         "tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry",
-        "detached cargo nextest run --locked --all-features",
-        "detached cargo test --doc --locked --all-features",
-        "detached cargo llvm-cov nextest --locked --all-features",
-        "detached cargo mutants --cargo-arg=--locked --jobs 1 \"$@\"",
+        "detached nice -n 10 cargo nextest run --locked --all-features",
+        "detached nice -n 10 cargo test --doc --locked --all-features",
+        "detached nice -n 10 cargo llvm-cov nextest --locked --all-features",
+        "detached nice -n 10 cargo mutants --cargo-arg=--locked --jobs 1 \"$@\"",
     ];
     if required.iter().any(|needle| position(needle).is_none()) {
         return false;
@@ -245,7 +246,7 @@ fn test_arm_forwards_filter_args(justfile: &str) -> bool {
     };
     let Some(bare) = arm
         .iter()
-        .position(|line| line == "detached cargo nextest run --locked --all-features")
+        .position(|line| line == "detached nice -n 10 cargo nextest run --locked --all-features")
     else {
         return false;
     };
@@ -939,6 +940,144 @@ fn a_lane_run_in_a_terminal_detaches_cargo_and_still_stops_on_ctrl_c() {
         lanes.is_empty(),
         "the Ctrl-C'd lane was not reaped: {lanes:?}"
     );
+}
+
+/// One lane run for the sizing pins, on a `PATH` of its own so no installed
+/// `jobs-budget` leaks in: `<base>/bin` links `just` and `tmux`, holds a fake
+/// `cargo` recording `<tool> <threads> <jobs or unset> <niceness> <parent
+/// niceness>` for a nextest, llvm-cov or mutants run (`detached` forks before
+/// `nice`, so the parent keeps the lane's own), and a `jobs-budget` printing
+/// `budget` when one is given. Returns the recorded words and the lane's stderr.
+fn sized_lane(
+    base: &Path,
+    budget: Option<&str>,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> (Vec<String>, String) {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    let bin = base.join("bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap_or_else(|why| panic!("the fakes' dir: {why}"));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for tool in ["just", "tmux"] {
+        let Some(real) = std::env::split_paths(&path)
+            .map(|dir| dir.join(tool))
+            .find(|file| file.is_file())
+        else {
+            panic!("{tool} must be on PATH");
+        };
+        symlink(real, bin.join(tool)).unwrap_or_else(|why| panic!("the linked {tool}: {why}"));
+    }
+    let mut fakes = vec![(
+        "cargo",
+        "case \"$1\" in nextest|llvm-cov|mutants) ;; *) exit 0 ;; esac\n\
+         echo $1 $NEXTEST_TEST_THREADS ${CARGO_BUILD_JOBS-unset} $(ps -o ni= -p $$) \
+         $(ps -o ni= -p $PPID) >\"$AE_TEST_TMPDIR/seen\"\n"
+            .to_owned(),
+    )];
+    if let Some(answer) = budget {
+        fakes.push(("jobs-budget", format!("echo '{answer}'\n")));
+    }
+    for (name, body) in fakes {
+        let file = bin.join(name);
+        std::fs::write(&file, format!("#!/bin/sh\n{body}"))
+            .and_then(|()| std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)))
+            .unwrap_or_else(|why| panic!("the fake {name}: {why}"));
+    }
+    let mut lane = Invocation::new("just")
+        .env_cleared()
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display()),
+        )
+        .env("HOME", std::env::var_os("HOME").unwrap_or_default())
+        .env("TMPDIR", base)
+        .env("AE_TEST_TMPDIR", base)
+        .arg("_tmux-isolated");
+    for arg in args {
+        lane = lane.arg(arg);
+    }
+    for (key, value) in env {
+        lane = lane.env(key, value);
+    }
+    let _ = std::fs::remove_file(base.join("seen"));
+    let ran = raw::run(&lane, &root(), &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("the lane runs: {why}"));
+    let stderr = read(&base.join("err"));
+    assert!(
+        matches!(ran.outcome(), ExitOutcome::Code(0)),
+        "the lane must end green: {stderr}"
+    );
+    let seen = std::fs::read_to_string(base.join("seen")).unwrap_or_default();
+    let words: Vec<String> = seen.split_whitespace().map(str::to_owned).collect();
+    assert_eq!(words.len(), 5, "{args:?} ran no cargo: {stderr}");
+    (words, stderr)
+}
+
+/// A lane sizes itself from `jobs-budget` (threads capped at the tmux suite's
+/// eight, build jobs not), names it on stderr, and an explicit value wins.
+#[test]
+fn a_lane_sizes_itself_from_jobs_budget_and_an_explicit_value_wins() {
+    let base = super::cli::OwnedScratch::root("gate", "sizing");
+    let explicit = [("NEXTEST_TEST_THREADS", "3"), ("CARGO_BUILD_JOBS", "5")];
+    let none = &[][..];
+    // (budget, env, (threads, source), (jobs, source))
+    for (budget, env, (threads, from), (jobs, jobs_from)) in [
+        ("6", none, ("6", "budget"), ("6", "budget")),
+        ("64", none, ("8", "budget"), ("64", "budget")),
+        ("6", &explicit[..], ("3", "env"), ("5", "env")),
+        ("6", &explicit[..1], ("3", "env"), ("6", "budget")),
+        ("6", &explicit[1..], ("6", "budget"), ("5", "env")),
+    ] {
+        let (seen, stderr) = sized_lane(&base, Some(budget), env, &["test"]);
+        assert_eq!(seen[1..3], [threads, jobs], "budget {budget} env {env:?}");
+        let said = format!("threads {threads} ({from}), cargo jobs {jobs} ({jobs_from})");
+        assert!(
+            stderr.contains(&said),
+            "budget {budget} env {env:?}: {stderr}"
+        );
+    }
+}
+
+/// A `jobs-budget` that is missing or answers anything but one positive integer
+/// is no answer: the CPU count sizes the threads, cargo keeps its own jobs.
+#[test]
+fn an_unusable_jobs_budget_answer_leaves_the_lane_sized_as_before() {
+    let base = super::cli::OwnedScratch::root("gate", "unusable");
+    for answer in [Some("0"), Some("many"), None] {
+        let (seen, stderr) = sized_lane(&base, answer, &[], &["test"]);
+        let threads: usize = seen[1].parse().expect("the recorded threads");
+        assert!((1..=8).contains(&threads), "{answer:?}: {seen:?}");
+        assert_eq!(seen[2], "unset", "{answer:?}: {seen:?}");
+        let said = format!("threads {threads} (cpus), cargo jobs all (cpus)");
+        assert!(stderr.contains(&said), "{answer:?}: {stderr}");
+    }
+}
+
+/// The full test, coverage and mutants runs start cargo at `nice -n 10`; a
+/// filtered `just test <filter>` does not.
+#[test]
+fn the_heavy_lanes_run_cargo_niced_and_a_filtered_run_does_not() {
+    let base = super::cli::OwnedScratch::root("gate", "nice");
+    for args in [
+        &["test"][..],
+        &["cov"][..],
+        &["mutants"][..],
+        &["test", "filter"][..],
+    ] {
+        let (seen, _) = sized_lane(&base, Some("6"), &[], args);
+        let (own, lane): (i32, i32) = (
+            seen[3].parse().expect("niceness"),
+            seen[4].parse().expect("niceness"),
+        );
+        // A lane already at the ceiling cannot be pushed further.
+        let ok = if args.len() == 1 {
+            own > lane || lane >= 19
+        } else {
+            own == lane
+        };
+        assert!(ok, "{args:?}: cargo {own}, lane {lane}");
+    }
 }
 
 /// Whether the `release` recipe refreshes the fuzz crate's lock inside the

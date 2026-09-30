@@ -61,7 +61,8 @@ README.md  VISION.md  AGENTS.md  CLAUDE.md (@AGENTS.md)
 The loop, in order:
 
 1. `just test` — THE GATE. Exactly `just rust-check` (fmt-check + lint + test), ~25s warm.
-   There is no fast/slow split; run the whole thing.
+   There is no fast/slow split; run the whole thing. The lane sizes its threads and build jobs
+   from `jobs-budget` when installed and runs cargo niced (docs/development.md).
 2. `just check` — only when you touched `install` (shellcheck + shfmt).
 3. Cross-model review BEFORE the commit, for anything significant. Route it through ae
    (`<session>/ask`, `<session>/review`, `<session>/spawn <alias>:reviewer`) — never shell

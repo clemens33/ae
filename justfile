@@ -1058,7 +1058,9 @@ rust-lint:
 # under ONE base, AE_TEST_TMPDIR or /tmp: short, because a tmux socket beneath
 # it must fit AF_UNIX's 104 bytes. The lane also points TMPDIR into itself, so
 # what a test, a product child or cargo-mutants' tree copy leaves in the temp
-# dir leaves with the lane. NEXTEST_TEST_THREADS defaults to min(cpus, 8).
+# dir leaves with the lane. NEXTEST_TEST_THREADS defaults to min(free cores, 8)
+# and CARGO_BUILD_JOBS to the free cores, from jobs-budget when it is installed
+# (the CPU count otherwise). The three heavy lanes run cargo at nice 10.
 _tmux-isolated lane *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1210,11 +1212,36 @@ _tmux-isolated lane *args:
     export TMPDIR="$test_tmux_tmp/tmp"
     export TMUX_TMPDIR="$test_tmux_tmp"
     unset TMUX TMUX_PANE
-    if [[ -z "${NEXTEST_TEST_THREADS:-}" ]]; then
-        cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
-        [[ "$cpus" =~ ^[0-9]+$ ]] || cpus=8
-        export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))
+    # Sizing. An explicit NEXTEST_TEST_THREADS or CARGO_BUILD_JOBS wins untouched.
+    # Otherwise jobs-budget, when installed, says how many cores are free right
+    # now: one positive integer, or its answer is ignored. Never blocks on it.
+    threads_from=env
+    jobs_from=env
+    if [[ -z "${NEXTEST_TEST_THREADS:-}" || -z "${CARGO_BUILD_JOBS:-}" ]]; then
+        budget=""
+        if command -v jobs-budget >/dev/null 2>&1; then
+            budget="$(jobs-budget 2>/dev/null || true)"
+            [[ "$budget" =~ ^[1-9][0-9]*$ ]] || budget=""
+        fi
+        if [[ -z "${NEXTEST_TEST_THREADS:-}" ]]; then
+            threads_from=budget
+            cpus="$budget"
+            if [[ -z "$budget" ]]; then
+                threads_from=cpus
+                cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+                [[ "$cpus" =~ ^[0-9]+$ ]] || cpus=8
+            fi
+            export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))
+        fi
+        if [[ -z "${CARGO_BUILD_JOBS:-}" ]]; then
+            jobs_from=cpus
+            if [[ -n "$budget" ]]; then
+                jobs_from=budget
+                export CARGO_BUILD_JOBS="$budget"
+            fi
+        fi
     fi
+    echo "lane $lane: nextest threads $NEXTEST_TEST_THREADS ($threads_from), cargo jobs ${CARGO_BUILD_JOBS:-all} ($jobs_from)" >&2
     # An owned sentry proves every in-process fleet read stays on this run's
     # server. It is deliberately visible: Name(ae) is a real entitlement, and
     # tests asserting whole-fleet cardinality account for this one row.
@@ -1228,12 +1255,12 @@ _tmux-isolated lane *args:
                 detached cargo nextest run --locked --all-features "$@"
                 echo "note: filtered run, skipping doctests" >&2
             else
-                detached cargo nextest run --locked --all-features
-                detached cargo test --doc --locked --all-features
+                detached nice -n 10 cargo nextest run --locked --all-features
+                detached nice -n 10 cargo test --doc --locked --all-features
             fi
             ;;
-        cov) detached cargo llvm-cov nextest --locked --all-features ;;
-        mutants) detached cargo mutants --cargo-arg=--locked --jobs 1 "$@" ;;
+        cov) detached nice -n 10 cargo llvm-cov nextest --locked --all-features ;;
+        mutants) detached nice -n 10 cargo mutants --cargo-arg=--locked --jobs 1 "$@" ;;
         *) echo "Error: unknown isolated test lane '$lane'" >&2; exit 2 ;;
     esac
 
