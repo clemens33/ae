@@ -385,4 +385,36 @@ mod tests {
             "a missing directory is not this session"
         );
     }
+
+    /// The whole argv grammar: every flag arm, the one-session guard and the
+    /// unknown-flag arm, each with the token a refusal names.
+    #[test]
+    fn the_argv_grammar_accepts_flags_and_one_session_in_any_order_and_names_a_refusal() {
+        let args = |session: Option<&str>, follow, all| {
+            Ok(super::Args {
+                session: session.map(str::to_owned),
+                follow,
+                all,
+            })
+        };
+        let refused = |token: &str| Err(super::Usage(Some(token.to_owned())));
+        let cases: [(&[&str], Result<super::Args, super::Usage>); 12] = [
+            (&[], args(None, false, false)),
+            (&["s"], args(Some("s"), false, false)),
+            (&["--follow"], args(None, true, false)),
+            (&["--all"], args(None, false, true)),
+            (&["s", "--follow", "--all"], args(Some("s"), true, true)),
+            (&["--all", "--follow", "s"], args(Some("s"), true, true)),
+            (&["--follow", "s", "--all"], args(Some("s"), true, true)),
+            (&["--frob"], refused("--frob")),
+            (&["-"], refused("-")),
+            (&["s", "--frob"], refused("--frob")),
+            (&["s", "t"], refused("t")),
+            (&["--follow", "s", "t", "--all"], refused("t")),
+        ];
+        for (words, want) in cases {
+            let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            assert_eq!(super::parse(&words), want, "{words:?}");
+        }
+    }
 }
