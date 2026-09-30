@@ -1627,10 +1627,12 @@ fn validate_seat_overrides(
     if resuming && !running {
         let refusal = match &snapshot {
             Some(held) => restored_profiles_refusal(plan, dir, &held.cfg, &held.overrides),
-            // Fail open: an unreadable config is the launch's own refusal.
-            None => override_identity(env, dir, resuming)
-                .ok()
-                .and_then(|cfg| restored_profiles_refusal(plan, dir, &cfg, &[])),
+            // The orchestrator seat reads its identity from the global config
+            // alone, so its own launch decides.
+            None if plan.name.as_deref() == Some(crate::orchestrator::ORCHESTRATOR_SESSION) => None,
+            None => {
+                restored_profiles_refusal(plan, dir, &override_identity(env, dir, resuming)?, &[])
+            }
         };
         if let Some(line) = refusal {
             return Err(SeatOverrideRefusal::Failed(line));
@@ -1766,8 +1768,9 @@ fn seat_override_snapshot(
 /// decided READ-ONLY, before the migration chain writes the meta: the same
 /// [`restore_saved_roster`] the launch runs, over a scratch copy of the seats
 /// `cfg` plans. It reads only the `seat.<slot>` and `profile.<slot>` rows,
-/// which the chain never moves. A config that plans no seats is left to the
-/// launch's own refusal.
+/// which the chain never moves. A config whose roster is not launchable is
+/// refused here with the launch's own text, since that refusal would otherwise
+/// come after the write.
 fn restored_profiles_refusal(
     plan: &Plan,
     dir: &Path,
@@ -1779,9 +1782,12 @@ fn restored_profiles_refusal(
         planned.workers = Some(workers.clone());
     }
     let home = crate::doors::home();
-    let mut seats = config::launch_plan(&planned, plan.main.as_deref(), home.as_deref())
-        .ok()?
-        .seats;
+    let mut seats = match config::launch_plan(&planned, plan.main.as_deref(), home.as_deref()) {
+        Ok(resolved) => resolved.seats,
+        Err(violations) => {
+            return Some(config::render_violations(&violations).trim_end().to_owned());
+        }
+    };
     let session = plan.name.as_deref().unwrap_or_default();
     let replaced: Vec<&str> = replaced.iter().map(|o| o.agent.as_str()).collect();
     restore_saved_roster(dir, session, cfg, home.as_deref(), &replaced, &mut seats).err()

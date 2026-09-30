@@ -2664,6 +2664,17 @@ fn a_resume_heals_a_stale_binary_row_and_keeps_what_the_seat_holds() {
         "claudefix",
         &format!("{} --model fable", fake.display()),
     );
+    // Each fake signals a per-pane tmux channel once it has exec'd, so the
+    // resumed seats are AWAITED rather than polled for their effects.
+    let signal = format!(
+        "close($log);\nsystem('tmux', '-S', '{}', 'wait-for', '-S', \"ae-up-$ENV{{TMUX_PANE}}\");",
+        rig.sock.display()
+    );
+    for tool in ["claude", "codex"] {
+        let path = rig.bin.join(tool);
+        let body = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(std::fs::write(&path, body.replacen("close($log);", &signal, 1)).is_ok());
+    }
     let (code, stdout, stderr) = rig.launch(&[
         "--local",
         "lnheal",
@@ -2701,20 +2712,19 @@ fn a_resume_heals_a_stale_binary_row_and_keeps_what_the_seat_holds() {
 
     let (code, stdout, stderr) = rig.launch(&["--local", "lnheal"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    let plan = rig.plan("lnheal", "worker.0");
-    assert!(
-        plan.contains("--resume") && plan.contains(id),
-        "the repaired colead resumes its conversation exactly: {plan}"
-    );
-    // The resumed lead's own start retires the foreign observation.
-    let mut healed = String::new();
-    for _ in 0..100 {
-        healed = rig.meta("lnheal");
-        if !healed.contains("observed_model.main=") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
+    for (pane, _, _) in rig
+        .panes("lnheal")
+        .iter()
+        .filter(|(_, slot, _)| !slot.is_empty())
+    {
+        rig.tmux(&["wait-for", &format!("ae-up-{pane}")]);
     }
+    let argv = rig.launch_argv();
+    assert!(
+        argv.contains(&format!("--resume {id}")),
+        "the repaired colead resumed its conversation exactly: {argv}"
+    );
+    let healed = rig.meta("lnheal");
     for row in [
         "profile.main=codex\n",
         "profile.worker.0=claudefix\n",
@@ -2776,9 +2786,10 @@ fn a_recorded_client_label_on_one_seat_does_not_freeze_another_seats_configured_
 }
 
 /// A resume whose recorded profile the config no longer defines refuses before
-/// any write and names both ways out; the explicit override it names proceeds.
+/// any write, migration included, and names both ways out; the explicit
+/// override it names proceeds.
 #[test]
-fn resume_after_profile_removal_refuses_and_the_named_override_proceeds() {
+fn a_resume_refuses_before_any_write_and_the_named_override_proceeds() {
     if skip() {
         return;
     }
@@ -2811,6 +2822,22 @@ fn resume_after_profile_removal_refuses_and_the_named_override_proceeds() {
     let (code, stdout, stderr) = rig.launch(&["--local", "lngone", "--colead", "codex"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(rig.meta("lngone").contains("profile.worker.0=codex\n"));
+
+    // A roster that names a profile the config no longer defines refuses the
+    // same way, with the launch's own text, on a meta that would still migrate.
+    stop(&rig, "lngone");
+    assert!(ae::meta::rewrite(&rig.dir("lngone"), "meta_version", Some("3")).is_ok());
+    let config = std::fs::read_to_string(&rig.config).unwrap_or_default();
+    let removed: Vec<&str> = config
+        .lines()
+        .filter(|line| !line.starts_with("codex = "))
+        .collect();
+    assert!(std::fs::write(&rig.config, removed.join("\n") + "\n").is_ok());
+    let before = rig.meta("lngone");
+    let (code, _, stderr) = rig.launch(&["--local", "lngone"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("not launchable") && stderr.contains("'codex'"));
+    assert_eq!(rig.meta("lngone"), before, "the refusal wrote nothing");
 }
 
 #[test]
