@@ -1604,16 +1604,41 @@ fn run_bare_attach(
         )?;
         return Ok(0);
     }
+    let verdicts = restore::restorable(&inventory::Roots::under(&preamble.home));
+    let mut restored = restore::Report::default();
+    if verdicts.iter().any(|verdict| {
+        matches!(
+            verdict.decision,
+            restore::Decision::Restore | restore::Decision::Unproven
+        )
+    }) {
+        if verdicts.iter().any(|verdict| verdict.guard.is_some()) {
+            let deps = doctor::check_deps(&[], err)?;
+            if deps != 0 {
+                err.flush()?;
+                return Ok(deps);
+            }
+        }
+        restored = restore::run(preamble, &verdicts, out, err)?;
+    }
+    let failed = u8::from(restored.failed > 0);
     if transport::session_names(server).is_some_and(|names| !names.is_empty()) {
         if attach {
-            return Ok(transport::attach(server));
+            return Ok(transport::attach(server).max(failed));
         }
         writeln!(
             out,
             "ae: attach with: {}",
             session_launch::server_attach_hint(server)
         )?;
-        return Ok(0);
+        return Ok(failed);
+    }
+    if restored.restored > 0 {
+        writeln!(
+            err,
+            "ae: restored sessions live on another tmux server; see: ae list"
+        )?;
+        return Ok(failed);
     }
     writeln!(err, "ae: no running ae session. Start one with: ae <name>")?;
     let (_, world) = current_world(&preamble.home);

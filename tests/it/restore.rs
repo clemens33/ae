@@ -11,7 +11,9 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use ae::meta::{Selector, ServerSelector};
-use ae::restore::{Decision, Fact, Ledger, WINDOW_SECS, judge, ledger, pins_clean_stop};
+use ae::restore::{
+    Decision, Fact, Guard, Ledger, Proof, WINDOW_SECS, judge, ledger, order, pins_clean_stop,
+};
 use ae::session::SessionRead;
 use ae::tmux::Evidence;
 use ae::watchdog_glue::{beat_modified, beat_path, touch_beat};
@@ -63,7 +65,7 @@ fn the_crashed_cohort_restores_and_every_other_class_is_named_and_skipped() {
     // The live, stopped and damaged beats are all newer than `newest` and none
     // of them may move the window: only unstopped, unlive, readable beats do.
     assert_eq!(
-        judge(&facts),
+        judge(&facts, |_| Proof::Absent),
         [
             Restore, Restore, Abandoned, Stopped, Damaged, NoBeat, NoBeat, Live, Unlaunched,
             NoServer, Restore
@@ -129,6 +131,111 @@ fn the_ledger_fails_closed_and_counts_only_stops_since_the_launch() {
     let (_scratch, got) = scratch_with("junk", &[("stop-result", 999, CLEAN)], true);
     assert_eq!(got, Ledger::Damaged);
     assert_eq!(ledger(None, 1000), Ledger::Damaged, "an unreadable ledger");
+}
+
+#[test]
+fn a_proof_gap_is_named_and_a_present_name_never_moves_the_window() {
+    use Decision::{Live, NoBeat, Restore, Unproven};
+    let clear = Ledger::Clear;
+    let top = 90_000;
+    let facts = [
+        fact("gap", "s", 1000, clear, Some(top)),
+        fact("older", "s", 1000, clear, Some(top - WINDOW_SECS - 100)),
+        fact("taken", "s", 1000, clear, Some(top + 1000)),
+        fact("bare", "s", 1000, clear, None),
+    ];
+    let mut asked = Vec::new();
+    let got = judge(&facts, |index| {
+        asked.push(index);
+        match index {
+            0 => Proof::Unknown,
+            2 => Proof::Present,
+            _ => Proof::Absent,
+        }
+    });
+    // The gap's and the taken name's beats are the freshest, yet neither
+    // evicts `older`; only a session past every other gate is ever proved.
+    assert_eq!(got, [Unproven, Restore, Live, NoBeat]);
+    assert_eq!(asked, [0, 1, 2]);
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "a fixture builder: a failed write fails the test"
+)]
+fn saved(tag: &str, launched: i64, beat: Option<i64>, lines: &[Line], junk: bool) -> OwnedScratch {
+    let (scratch, _) = scratch_with(tag, lines, junk);
+    let meta = "tmux_server_kind=socket\ntmux_server=/tmp/guard.sock\n";
+    std::fs::write(scratch.join("meta"), meta).expect("meta");
+    std::fs::write(scratch.join(".launch-attempt"), format!("{launched}\n")).expect("stamp");
+    if let Some(at) = beat {
+        touch_beat(&scratch).expect("beat");
+        let when = SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(at).expect("epoch"));
+        std::fs::File::options()
+            .write(true)
+            .open(beat_path(&scratch))
+            .and_then(|file| file.set_modified(when))
+            .expect("beat mtime");
+    }
+    scratch
+}
+
+#[test]
+fn the_lock_time_guard_rereads_the_disk_and_fails_closed() {
+    type Case<'a> = (Option<i64>, &'a [Line], bool, Option<&'a str>);
+    let guard = Guard {
+        launched: 1000,
+        cutoff: 5000,
+        server: Selector::Socket("/tmp/guard.sock".into()),
+    };
+    let req = ("stop-request", 1500, "stop requested");
+    let clean = (
+        "stop-result",
+        1500,
+        "stopped: verified gone on its recorded server",
+    );
+    let failed = ("stop-result", 1600, "FAILED: no");
+    let cases: [Case; 8] = [
+        (Some(6000), &[], false, None),
+        (Some(5000), &[], false, None),
+        (Some(4999), &[], false, Some("beat")),
+        (None, &[], false, Some("beat")),
+        (Some(6000), &[clean], false, Some("stopped")),
+        (Some(6000), &[req], false, Some("stopped")),
+        (Some(6000), &[req, failed], false, None),
+        (Some(6000), &[], true, Some("ledger unreadable")),
+    ];
+    for (index, (beat, lines, junk, want)) in cases.into_iter().enumerate() {
+        let dir = saved(&format!("g{index}"), 1000, beat, lines, junk);
+        let got = guard.refuse(&dir);
+        assert!(
+            got.map(str::to_owned).is_some() == want.is_some()
+                && want.is_none_or(|word| got.is_some_and(|why| why.contains(word))),
+            "case {index}: {got:?} vs {want:?}"
+        );
+    }
+    let dir = saved("gmove", 1000, Some(6000), &[], false);
+    assert_eq!(guard.refuse(&dir), None);
+    std::fs::write(dir.join(".launch-attempt"), "1001\n").expect("relaunch");
+    assert!(guard.refuse(&dir).is_some_and(|why| why.contains("launch")));
+    std::fs::write(dir.join(".launch-attempt"), "1000\n").expect("restamp");
+    let moved = "tmux_server_kind=socket\ntmux_server=/tmp/elsewhere.sock\n";
+    std::fs::write(dir.join("meta"), moved).expect("moved server");
+    assert!(guard.refuse(&dir).is_some_and(|why| why.contains("server")));
+    std::fs::remove_file(dir.join("meta")).expect("rm meta");
+    assert!(guard.refuse(&dir).is_some_and(|why| why.contains("record")));
+}
+
+#[test]
+fn restore_order_is_the_fleet_order_then_the_name() {
+    let place = |name: &str| {
+        ["zed", "amy"]
+            .iter()
+            .position(|n| *n == name)
+            .unwrap_or(usize::MAX)
+    };
+    let names = ["bob", "amy", "cat", "zed"].map(str::to_owned).to_vec();
+    assert_eq!(order(names, place), ["zed", "amy", "bob", "cat"]);
 }
 
 fn mtime(path: &Path) -> SystemTime {
@@ -226,8 +333,12 @@ fn resume_retention_keeps_only_the_newest_clean_stop_when_the_window_dropped_it(
     );
 }
 
-#[test]
-fn only_the_watchdog_cycle_writes_the_beat() {
+/// The source files under `src/` whose text contains `needle`.
+#[allow(
+    clippy::expect_used,
+    reason = "a source scan: an unreadable src tree fails the test"
+)]
+fn callers_of(needle: &str) -> Vec<String> {
     let mut callers = Vec::new();
     let mut stack = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
     while let Some(dir) = stack.pop() {
@@ -235,17 +346,23 @@ fn only_the_watchdog_cycle_writes_the_beat() {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if std::fs::read_to_string(&path)
-                .is_ok_and(|text| text.contains("watchdog_glue::touch_beat("))
-            {
-                callers.push(
-                    path.file_name()
-                        .expect("name")
-                        .to_string_lossy()
-                        .into_owned(),
-                );
+            } else if std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle)) {
+                let name = path.file_name().expect("name");
+                callers.push(name.to_string_lossy().into_owned());
             }
         }
     }
+    callers
+}
+
+#[test]
+fn only_the_watchdog_cycle_writes_the_beat() {
+    let callers = callers_of("watchdog_glue::touch_beat(");
     assert_eq!(callers, ["watchdog_daemon.rs"], "the beat has one writer");
+}
+
+#[test]
+fn only_the_restore_loop_starts_a_guarded_launch() {
+    let callers = callers_of("session_launch::run_restore(");
+    assert_eq!(callers, ["restore.rs"], "a restore launch has one caller");
 }

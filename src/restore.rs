@@ -3,16 +3,20 @@
 //! ledger) plus the watchdog's mtime-only beat; nothing persisted is parsed
 //! here — the ledger arrives through the shared event reader.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::Path;
 
+use crate::entry::Preamble;
 use crate::events::Event;
-use crate::inventory::{DurableRecord, Layout, Roots};
+use crate::inventory::{DurableRecord, Layout, Roots, ServerId};
 use crate::lifecycle::{
     ALREADY_STOPPED_SUMMARY, STOP_REQUEST_ACTION, STOP_RESULT_ACTION, STOPPED_SUMMARY,
 };
-use crate::meta::{Selector, ServerSelector};
+use crate::meta::{Meta, Selector, ServerSelector};
 use crate::session::SessionRead;
-use crate::tmux::Evidence;
+use crate::tmux::{Evidence, StopProbe};
 
 /// How far behind its cohort's newest beat a session's beat may sit. Fixed: one
 /// crash silences a fleet within a cycle; a longer window resurrects the abandoned.
@@ -52,6 +56,67 @@ pub enum Decision {
     Damaged,
     NoBeat,
     Abandoned,
+    Unproven,
+}
+
+/// What the recorded server says about a session that passed every other gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proof {
+    Absent,
+    Present,
+    Unknown,
+}
+
+/// What a restore carries from the scan to the lifecycle lock: the session's
+/// own facts and the cohort's window edge, re-read there and never recomputed.
+#[derive(Debug, Clone)]
+pub struct Guard {
+    pub launched: i64,
+    pub cutoff: i64,
+    pub server: Selector,
+}
+
+impl Guard {
+    /// Why a restore must not go on, read afresh from `dir` under the lock.
+    #[must_use]
+    pub fn refuse(&self, dir: &Path) -> Option<&'static str> {
+        let Ok(bytes) = crate::meta::read_bytes(dir) else {
+            return Some("saved record unreadable");
+        };
+        let server = Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector();
+        if server != ServerSelector::Positive(self.server.clone()) {
+            return Some("recorded server changed since the scan");
+        }
+        if crate::store::open(dir).launch_attempt() != Evidence::At(self.launched) {
+            return Some("launched again since the scan");
+        }
+        match ledger(SessionRead::open(dir).ok().as_ref(), self.launched) {
+            Ledger::Clear => {}
+            Ledger::Stopped => return Some("stopped through ae since its launch"),
+            Ledger::Damaged => return Some("stop ledger unreadable"),
+        }
+        match crate::watchdog_glue::beat_modified(dir) {
+            Evidence::At(beat) if beat >= self.launched && beat >= self.cutoff => None,
+            _ => Some("watchdog beat missing or outside the crashed cohort window"),
+        }
+    }
+}
+
+/// One saved session's scan result: the verdict, the reason a proof gap gives,
+/// and — for a restore — the guard the lock will re-check.
+#[derive(Debug, Clone)]
+pub struct Verdict {
+    pub name: String,
+    pub decision: Decision,
+    pub why: Option<String>,
+    pub guard: Option<Guard>,
+}
+
+/// `names` in restore order: the human's fleet order, then by name.
+#[must_use]
+pub fn order(mut names: Vec<String>, place: impl Fn(&str) -> usize) -> Vec<String> {
+    names.sort_by(|a, b| place(a).cmp(&place(b)).then_with(|| a.cmp(b)));
+    names
 }
 
 /// A stop-result that says the session is gone. A FAILED one is not.
@@ -106,8 +171,8 @@ pub fn ledger(read: Option<&SessionRead>, launched: i64) -> Ledger {
 /// beat on its recorded server; live sessions are no candidates, so one the
 /// human already resumed cannot push the window past the crash's sessions.
 #[must_use]
-pub fn judge(facts: &[Fact]) -> Vec<Decision> {
-    let gate = |fact: &Fact| -> Result<(Selector, i64), Decision> {
+pub fn judge(facts: &[Fact], mut prove: impl FnMut(usize) -> Proof) -> Vec<Decision> {
+    let mut gate = |index: usize, fact: &Fact| -> Result<(Selector, i64), Decision> {
         let ServerSelector::Positive(server) = &fact.server else {
             return Err(Decision::NoServer);
         };
@@ -123,11 +188,19 @@ pub fn judge(facts: &[Fact]) -> Vec<Decision> {
             Ledger::Clear => {}
         }
         match fact.beat {
-            Evidence::At(beat) if beat >= launched => Ok((server.clone(), beat)),
+            Evidence::At(beat) if beat >= launched => match prove(index) {
+                Proof::Absent => Ok((server.clone(), beat)),
+                Proof::Present => Err(Decision::Live),
+                Proof::Unknown => Err(Decision::Unproven),
+            },
             _ => Err(Decision::NoBeat),
         }
     };
-    let gated: Vec<_> = facts.iter().map(gate).collect();
+    let gated: Vec<_> = facts
+        .iter()
+        .enumerate()
+        .map(|(index, fact)| gate(index, fact))
+        .collect();
     let mut newest: BTreeMap<&Selector, i64> = BTreeMap::new();
     for (server, beat) in gated.iter().flatten() {
         let slot = newest.entry(server).or_insert(*beat);
@@ -162,20 +235,197 @@ fn fact_of(record: &DurableRecord, live: bool) -> Fact {
     }
 }
 
-/// The saved sessions under `roots` to restore, by name in the scan's own path
-/// order; `live` ones are never.
+/// One verdict per saved session under `roots`, in the scan's path order. A name
+/// its recorded server lists is live; one it answers without is proven absent;
+/// only when that server gave no listing does the launch's own proof decide.
 #[must_use]
-pub fn restorable(roots: &Roots, live: &[String]) -> Vec<String> {
-    let facts: Vec<Fact> = crate::inventory::durable_records(roots)
+pub fn restorable(roots: &Roots) -> Vec<Verdict> {
+    let scan = crate::inventory::durable_records(roots);
+    let records: Vec<&DurableRecord> = scan
         .records
         .iter()
         .filter(|record| record.layout == Layout::Canonical)
-        .map(|record| fact_of(record, live.contains(&record.name)))
         .collect();
-    facts
+    let mut listed: BTreeMap<Selector, Option<Vec<String>>> = BTreeMap::new();
+    for record in &records {
+        if let ServerSelector::Positive(server) = &record.server {
+            listed.entry(server.clone()).or_insert_with(|| {
+                crate::transport::session_names(&ServerId::Selected(server.clone()))
+            });
+        }
+    }
+    let facts: Vec<Fact> = records
         .iter()
-        .zip(judge(&facts))
-        .filter(|(_, decision)| *decision == Decision::Restore)
-        .map(|(fact, _)| fact.name.clone())
-        .collect()
+        .map(|record| {
+            let names = match &record.server {
+                ServerSelector::Positive(server) => listed.get(server).and_then(Option::as_ref),
+                _ => None,
+            };
+            fact_of(
+                record,
+                names.is_some_and(|names| names.contains(&record.name)),
+            )
+        })
+        .collect();
+    let mut gaps: BTreeMap<usize, String> = BTreeMap::new();
+    let decisions = judge(&facts, |index| {
+        let record = records[index];
+        let ServerSelector::Positive(server) = &record.server else {
+            return Proof::Unknown;
+        };
+        if listed.get(server).is_some_and(Option::is_some) {
+            return Proof::Absent;
+        }
+        let recorded = ServerId::Selected(server.clone());
+        match crate::session_launch::resume_absence(&recorded, &record.name, &record.path) {
+            (StopProbe::Absent, _) => Proof::Absent,
+            (StopProbe::Present, _) => Proof::Present,
+            (StopProbe::Unknown, why) => {
+                gaps.insert(index, why.unwrap_or_default());
+                Proof::Unknown
+            }
+        }
+    });
+    let mut top: BTreeMap<&Selector, i64> = BTreeMap::new();
+    for (fact, decision) in facts.iter().zip(&decisions) {
+        if let (Decision::Restore, ServerSelector::Positive(server), Evidence::At(beat)) =
+            (decision, &fact.server, fact.beat)
+        {
+            let slot = top.entry(server).or_insert(beat);
+            *slot = (*slot).max(beat);
+        }
+    }
+    let mut verdicts = Vec::with_capacity(facts.len());
+    for (index, (fact, decision)) in facts.iter().zip(decisions).enumerate() {
+        let guard = match (decision, &fact.server, fact.launched) {
+            (Decision::Restore, ServerSelector::Positive(server), Evidence::At(launched)) => {
+                top.get(server).map(|top| Guard {
+                    launched,
+                    cutoff: top - WINDOW_SECS,
+                    server: server.clone(),
+                })
+            }
+            _ => None,
+        };
+        let why = gaps.remove(&index);
+        verdicts.push(Verdict {
+            name: fact.name.clone(),
+            decision,
+            why,
+            guard,
+        });
+    }
+    verdicts
+}
+
+/// A restore launch in flight: its guard, and the skip the lock-time checks
+/// decided, which is an outcome and not a failure.
+pub struct Attempt {
+    pub guard: Guard,
+    skipped: Cell<Option<String>>,
+}
+
+impl Attempt {
+    pub fn skip(&self, why: impl Into<String>) {
+        self.skipped.set(Some(why.into()));
+    }
+}
+
+/// What a restore pass did.
+#[derive(Default)]
+pub struct Report {
+    pub restored: usize,
+    pub failed: usize,
+}
+
+/// How a proof gap reads in a skip line, at the scan and under the lock alike.
+#[must_use]
+pub fn unproven(why: Option<&str>) -> String {
+    format!(
+        "recorded server unproven: {}",
+        why.unwrap_or("no reason given")
+    )
+}
+
+/// The stderr line a session that is not restored gets.
+fn skip_line(verdict: &Verdict) -> Option<String> {
+    let why = match verdict.decision {
+        Decision::Restore | Decision::Live => return None,
+        Decision::NoServer => "no recorded tmux server".to_owned(),
+        Decision::Unlaunched => "no launch record".to_owned(),
+        Decision::Stopped => "stopped through ae".to_owned(),
+        Decision::Damaged => "stop ledger unreadable".to_owned(),
+        Decision::NoBeat => "no watchdog beat since its last launch".to_owned(),
+        Decision::Abandoned => "watchdog beat older than the crashed cohort window".to_owned(),
+        Decision::Unproven => unproven(verdict.why.as_deref()),
+    };
+    Some(format!("ae: skipped {}: {why}", verdict.name))
+}
+
+/// Restore every `Restore` verdict, one session at a time, and say so as it
+/// goes: the progress line is flushed BEFORE the launch takes its lock.
+///
+/// # Errors
+///
+/// Only a failure to write `out` or `err`; a failed launch is counted.
+pub fn run(
+    preamble: &Preamble,
+    verdicts: &[Verdict],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<Report> {
+    let restoring = verdicts.iter().any(|v| v.guard.is_some());
+    for verdict in verdicts
+        .iter()
+        .filter(|v| restoring || v.decision == Decision::Unproven)
+    {
+        if let Some(line) = skip_line(verdict) {
+            writeln!(err, "{line}")?;
+        }
+    }
+    let fleet = crate::fleet_order();
+    let due = verdicts.iter().filter(|v| v.guard.is_some());
+    let names = order(due.map(|v| v.name.clone()).collect(), |name| {
+        fleet.place(name)
+    });
+    let mut report = Report::default();
+    for name in names {
+        let Some(guard) = verdicts
+            .iter()
+            .find(|v| v.name == name)
+            .and_then(|v| v.guard.clone())
+        else {
+            continue;
+        };
+        let label = crate::tmux_floor::server_label(&ServerId::Selected(guard.server.clone()));
+        writeln!(out, "ae: restoring {name} ({label})")?;
+        out.flush()?;
+        let attempt = Attempt {
+            guard,
+            skipped: Cell::new(None),
+        };
+        let (mut launch_out, mut launch_err) = (Vec::new(), Vec::new());
+        let code = crate::session_launch::run_restore(
+            preamble,
+            &name,
+            &attempt,
+            &mut launch_out,
+            &mut launch_err,
+        )?;
+        match (code, attempt.skipped.take()) {
+            (0, None) => {
+                writeln!(out, "ae: restored {name} ({label})")?;
+                report.restored += 1;
+            }
+            (0, Some(why)) => writeln!(err, "ae: skipped {name}: {why}")?,
+            _ => {
+                report.failed += 1;
+                writeln!(err, "ae: restore failed {name}:")?;
+                for line in String::from_utf8_lossy(&launch_err).lines() {
+                    writeln!(err, "  {line}")?;
+                }
+            }
+        }
+    }
+    Ok(report)
 }

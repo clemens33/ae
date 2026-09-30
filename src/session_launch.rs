@@ -598,7 +598,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
 ///
 /// Only a failure to write `out` or `err`. Every refusal is an exit code.
 pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
-    run_with_expected(tail, None, out, err)
+    run_with_expected(tail, None, None, out, err)
 }
 
 /// Settings-only entry into the same launch owner with a locked expectation.
@@ -610,7 +610,21 @@ pub(crate) fn run_expected(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let argv = expected_launch_argv(preamble, user, expected);
-    run_with_expected(&argv[1..], Some(expected), out, err)
+    run_with_expected(&argv[1..], Some(expected), None, out, err)
+}
+
+/// One restored session: the ordinary launch owner, told the saved facts the
+/// scan judged by so it can re-check them under the lifecycle lock.
+pub(crate) fn run_restore(
+    preamble: &crate::entry::Preamble,
+    name: &str,
+    attempt: &crate::restore::Attempt,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let user = [name.to_owned(), "--no-attach".to_owned()];
+    let argv = preamble.launch_argv(&user);
+    run_with_expected(&argv[1..], None, Some(attempt), out, err)
 }
 
 fn expected_launch_argv(
@@ -637,6 +651,7 @@ fn expected_launch_argv(
 fn run_with_expected(
     tail: &[String],
     expected: Option<&ExpectedLaunch>,
+    restore: Option<&crate::restore::Attempt>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -686,7 +701,7 @@ fn run_with_expected(
     if let Some(attach) = plan.attach {
         env.attach = attach;
     }
-    launch(&env, &plan, None, expected, out, err)
+    launch(&env, &plan, None, expected, restore, out, err)
 }
 
 /// The facts a `compact` relaunch carries across the boundary.
@@ -754,7 +769,7 @@ pub fn relaunch(
         dir: None,
         attach: None,
     };
-    launch(&env, &launch_plan, Some(plan.proof), None, out, err)
+    launch(&env, &launch_plan, Some(plan.proof), None, None, out, err)
 }
 
 /// Split `main=<name> workers=<a,b|->` into its two overrides.
@@ -1910,6 +1925,7 @@ fn launch(
     plan: &Plan,
     expected_proof: Option<&str>,
     expected_launch: Option<&ExpectedLaunch>,
+    restore: Option<&crate::restore::Attempt>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -1973,6 +1989,7 @@ fn launch(
     }
 
     let proposed_server = env.server();
+    let in_place = expected_launch.is_some_and(ExpectedLaunch::is_resume) || restore.is_some();
     let settings_start = expected_launch.is_some_and(ExpectedLaunch::is_start);
     if settings_start && session != crate::orchestrator::ORCHESTRATOR_SESSION {
         writeln!(
@@ -2008,14 +2025,14 @@ fn launch(
             ServerSelector::Positive(selector) => {
                 let recorded = ServerId::Selected(selector);
                 match resume_absence(&recorded, &session, &dir) {
-                    (tmux::StopProbe::Absent, _)
-                        if expected_launch.is_some_and(ExpectedLaunch::is_resume) =>
-                    {
-                        recorded
-                    }
+                    (tmux::StopProbe::Absent, _) if in_place => recorded,
                     (tmux::StopProbe::Absent, _) => proposed_server.clone(),
                     (tmux::StopProbe::Present, _) => recorded,
                     (tmux::StopProbe::Unknown, why) => {
+                        if let Some(attempt) = restore {
+                            attempt.skip(crate::restore::unproven(why.as_deref()));
+                            return Ok(0);
+                        }
                         writeln!(
                             err,
                             "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
@@ -2113,6 +2130,18 @@ fn launch(
     } else {
         preflight_meta_present
     };
+    if let Some(attempt) = restore {
+        let gone = lifecycle.is_none() || !meta_present;
+        let why = if gone {
+            Some("saved record gone before the lifecycle lock")
+        } else {
+            attempt.guard.refuse(&dir)
+        };
+        if let Some(why) = why {
+            attempt.skip(why);
+            return Ok(0);
+        }
+    }
 
     if let Some(expected) = expected_launch {
         if let Err(why) = expected.check_action(crate::time::Timestamp::now().epoch()) {
@@ -2181,6 +2210,10 @@ fn launch(
                 let recorded = ServerId::Selected(selector);
                 match resume_absence(&recorded, &session, &dir) {
                     (tmux::StopProbe::Present, _) => {
+                        if let Some(attempt) = restore {
+                            attempt.skip("already running");
+                            return Ok(0);
+                        }
                         if !plan.seat_profiles.is_empty() {
                             writeln!(err, "{}", running_override_refusal(&session))?;
                             return Ok(EXIT_USAGE);
@@ -2189,8 +2222,7 @@ fn launch(
                         running_server = Some(recorded);
                     }
                     (tmux::StopProbe::Absent, _) => {
-                        let destination = if expected_launch.is_some_and(ExpectedLaunch::is_resume)
-                        {
+                        let destination = if in_place {
                             &recorded
                         } else {
                             &proposed_server
@@ -2198,11 +2230,15 @@ fn launch(
                         if !destination_is_absent(destination, &session, err)? {
                             return Ok(EXIT_FAILED);
                         }
-                        if expected_launch.is_some_and(ExpectedLaunch::is_resume) {
+                        if in_place {
                             set_env_server(&mut env, &recorded);
                         }
                     }
                     (tmux::StopProbe::Unknown, why) => {
+                        if let Some(attempt) = restore {
+                            attempt.skip(crate::restore::unproven(why.as_deref()));
+                            return Ok(0);
+                        }
                         writeln!(
                             err,
                             "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
@@ -5177,7 +5213,7 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
 /// one can only WIDEN: every answer it gives beyond the strict one rests on
 /// evidence ae itself wrote, and every gap in that evidence is
 /// [`tmux::StopProbe::Unknown`].
-fn resume_absence(
+pub(crate) fn resume_absence(
     server: &ServerId,
     session: &str,
     dir: &Path,
