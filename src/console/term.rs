@@ -84,13 +84,12 @@ fn still(pair: &[Seat], seats: Result<Vec<Seat>, String>) -> Result<(), String> 
     if pair_of(seats?)? == pair {
         return Ok(());
     }
-    Err("the lead pair changed since this console opened - reopen it with prefix h".to_owned())
+    Err("the lead pair changed since this console opened - restart this console".to_owned())
 }
 
 /// A console that takes input from its terminal.
 pub(super) struct Term {
     input: Input,
-    /// The lead pair this console opened with.
     pair: Vec<Seat>,
     reads: Reads,
     server: Option<ServerId>,
@@ -278,7 +277,7 @@ mod tests {
             server,
             me,
         };
-        let changed = "the lead pair changed since this console opened - reopen it with prefix h";
+        let changed = "the lead pair changed since this console opened - restart this console";
         for (main, colead, why) in [
             ("lead", "other", changed),
             ("colead", "lead", changed),

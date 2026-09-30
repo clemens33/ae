@@ -1,4 +1,4 @@
-console: one — lead pair lead, colead · preview of existing data: transcript turns are mirrors, chat-bridge replies are 600-character summaries, nothing here submits or answers · scope: current conversations plus recorded predecessors, board limits; agent-to-agent turns are not shown
+console: one — lead pair lead, colead · preview of existing data: transcript turns are mirrors, chat-bridge replies are 600-character summaries, nothing here answers and only lines typed in the owner console ask · scope: current conversations plus recorded predecessors, board limits; agent-to-agent turns are not shown
 coverage incomplete: one:colead — torn last record
 coverage incomplete: journal — 1 unreadable line skipped
 coverage incomplete: say — 1 line from other seats not shown

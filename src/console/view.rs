@@ -18,7 +18,7 @@ use crate::board::{clock_text, terminal_text};
 pub fn header(session: &str, seats: &[Seat]) -> String {
     let names: Vec<&str> = seats.iter().map(|seat| seat.name.as_str()).collect();
     terminal_text(&format!(
-        "console: {session} — lead pair {} · preview of existing data: transcript turns are mirrors, chat-bridge replies are 600-character summaries, nothing here submits or answers · scope: current conversations plus recorded predecessors, board limits; agent-to-agent turns are not shown\n",
+        "console: {session} — lead pair {} · preview of existing data: transcript turns are mirrors, chat-bridge replies are 600-character summaries, nothing here answers and only lines typed in the owner console ask · scope: current conversations plus recorded predecessors, board limits; agent-to-agent turns are not shown\n",
         names.join(", ")
     ))
 }
