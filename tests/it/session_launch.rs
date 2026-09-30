@@ -20,7 +20,7 @@ use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use super::cli::{OwnedChild, OwnedScratch, Runner, ae, git_in, helper};
+use super::cli::{OwnedChild, OwnedScratch, Runner, ae, git_in, helper, tmux_signalled};
 use super::phase2::run_tmux;
 
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
@@ -2717,7 +2717,12 @@ fn a_resume_heals_a_stale_binary_row_and_keeps_what_the_seat_holds() {
         .iter()
         .filter(|(_, slot, _)| !slot.is_empty())
     {
-        rig.tmux(&["wait-for", &format!("ae-up-{pane}")]);
+        let channel = format!("ae-up-{pane}");
+        let limit = std::time::Duration::from_secs(30);
+        assert!(
+            tmux_signalled(&rig.sock, &channel, limit),
+            "{pane} never exec'd"
+        );
     }
     let argv = rig.launch_argv();
     assert!(

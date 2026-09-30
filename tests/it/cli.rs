@@ -931,22 +931,39 @@ pub(crate) fn mkfifo(path: &std::path::Path) {
 /// attention half of the quiet gate reads. Killed on drop. Piped stdin stays
 /// open so the attach never sees EOF; output is discarded, so it never
 /// blocks on a full pipe either.
-#[allow(
-    clippy::disallowed_types,
-    reason = "the black-box tests' sixth door: an attached client must be a real process to be listed; see clippy.toml"
-)]
 pub(crate) fn tmux_attached_client(
     sock: &std::path::Path,
     session: &str,
 ) -> std::io::Result<OwnedChild> {
+    tmux_client(sock, &["-C", "attach-session", "-t", session])
+}
+
+/// `true` once `channel` is signalled (`wait-for -S`) on the server at `sock`,
+/// `false` at `limit` or if the server goes: a signal that never comes is a
+/// red that ARRIVES, never a stalled lane.
+pub(crate) fn tmux_signalled(
+    sock: &std::path::Path,
+    channel: &str,
+    limit: std::time::Duration,
+) -> bool {
+    tmux_client(sock, &["wait-for", channel])
+        .ok()
+        .and_then(|child| bounded(child, limit))
+        .is_some_and(|out| out.status.success())
+}
+
+/// A real tmux client on `sock` running `tail`: the sixth door, shared by the
+/// attach above and the bounded signal wait.
+#[allow(
+    clippy::disallowed_types,
+    reason = "the black-box tests' sixth door: an attached client must be a real process to be listed; see clippy.toml"
+)]
+fn tmux_client(sock: &std::path::Path, tail: &[&str]) -> std::io::Result<OwnedChild> {
     let mut runner = Runner::new(Command::new("tmux"), None);
     runner
         .arg("-S")
         .arg(sock)
-        .arg("-C")
-        .arg("attach-session")
-        .arg("-t")
-        .arg(session)
+        .args(tail)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

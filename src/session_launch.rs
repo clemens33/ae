@@ -1627,8 +1627,9 @@ fn validate_seat_overrides(
     if resuming && !running {
         let refusal = match &snapshot {
             Some(held) => restored_profiles_refusal(plan, dir, &held.cfg, &held.overrides),
-            // The orchestrator seat reads its identity from the global config
-            // alone, so its own launch decides.
+            // NAMED RESIDUAL: the orchestrator seat reads its identity from the
+            // global config alone, so only its own launch refuses, after the
+            // migration writes (version step, v2 `tag_priors` prior-row tags).
             None if plan.name.as_deref() == Some(crate::orchestrator::ORCHESTRATOR_SESSION) => None,
             None => {
                 restored_profiles_refusal(plan, dir, &override_identity(env, dir, resuming)?, &[])
