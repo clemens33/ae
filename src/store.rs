@@ -725,12 +725,16 @@ impl SessionStore {
 
     /// Cap the event container to its newest `keep` lines on resume.
     ///
+    /// `pin` names the one kind of line a cut may not take: when the cut drops
+    /// it and nothing newer that it names sits in the kept window, the newest
+    /// dropped one is kept in front. Retention cannot forget a clean stop.
+    ///
     /// The lock is held from the read through the staged sibling's rename, so
     /// an appender cannot land bytes between the snapshot and replacement. A
     /// failed lock, read, write or rename leaves the original container alone
     /// and is deliberately ignored: resume retention has always been a best
     /// effort step.
-    pub fn retain_events(&self, keep: usize) {
+    pub fn retain_events(&self, keep: usize, pin: impl Fn(&str) -> bool) {
         let path = self.events_path();
         let Ok(_held) = lock(&lock_path(&path), LOCK_WAIT) else {
             return;
@@ -747,8 +751,14 @@ impl SessionStore {
         if lines.len() <= keep {
             return;
         }
+        let (dropped, window) = lines.split_at(lines.len() - keep);
+        let pinned = dropped
+            .iter()
+            .rposition(|line| pin(line))
+            .filter(|_| !window.iter().any(|line| pin(line)))
+            .map(|at| dropped[at]);
         let mut retained = String::new();
-        for line in &lines[lines.len() - keep..] {
+        for line in pinned.into_iter().chain(window.iter().copied()) {
             retained.push_str(line);
             retained.push('\n');
         }

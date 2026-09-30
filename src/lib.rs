@@ -66,6 +66,7 @@ pub mod render;
 pub mod reply;
 pub mod requests;
 mod reseat;
+pub mod restore;
 pub mod roster;
 pub mod run;
 pub mod sanitize;
@@ -1546,7 +1547,8 @@ fn run_entry(
         entry::Route::Compact(tail) => {
             return run_compact(preamble, &tail, out, err);
         }
-        entry::Route::Attach => return run_bare_attach(preamble, out, err),
+        entry::Route::Attach => return run_bare_attach(preamble, true, out, err),
+        entry::Route::BareDetached => return run_bare_attach(preamble, false, out, err),
         entry::Route::Launch(user) => {
             if user.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION) {
                 let Some(flags) = orchestrator::parse_launch_tail(&user[1..]) else {
@@ -1572,9 +1574,11 @@ fn run_entry(
 
 /// Bare `ae`: list when already on the launch server, print the cross-server
 /// attach hint from another tmux, or attach this terminal and let tmux choose
-/// its most recently used session.
+/// its most recently used session. `attach` false (`ae --no-attach`) stops short
+/// of the attach and says how to make it instead.
 fn run_bare_attach(
     preamble: &entry::Preamble,
+    attach: bool,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
@@ -1602,7 +1606,15 @@ fn run_bare_attach(
         return Ok(0);
     }
     if transport::session_names(server).is_some_and(|names| !names.is_empty()) {
-        return Ok(transport::attach(server));
+        if attach {
+            return Ok(transport::attach(server));
+        }
+        writeln!(
+            out,
+            "ae: attach with: {}",
+            session_launch::server_attach_hint(server)
+        )?;
+        return Ok(0);
     }
     writeln!(err, "ae: no running ae session. Start one with: ae <name>")?;
     let (_, world) = current_world(&preamble.home);

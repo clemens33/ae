@@ -42,6 +42,7 @@ mod reader;
 mod refusal_rig;
 mod reseat;
 mod reseat_carry;
+mod restore;
 mod restore_spec;
 mod run;
 mod sanitize;

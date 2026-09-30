@@ -3692,6 +3692,7 @@ fn watch(
                 .map(Path::to_path_buf)
         })
         .map(|root| crate::doors::config_file(crate::shape::current(), &root));
+    let mut beat_failed = false;
     loop {
         let read = crate::meta::read_bytes(meta_dir);
         // ONE parse per cycle, and it happens BEFORE the probe because the
@@ -3750,6 +3751,9 @@ fn watch(
             // is how that is spelled without an unwrap rather than a branch
             // anyone expects to take.
             Continuation::Run => {
+                // The restore predicate's heartbeat: the session is proven present
+                // THIS cycle, so this is the one place the beat is written.
+                refresh_beat(meta_dir, &mut beat_failed, err)?;
                 if let (Ok(bytes), Some(meta)) = (&read, &parsed) {
                     let local_config = meta
                         .origin()
@@ -3804,6 +3808,21 @@ fn watch(
             std::thread::sleep(Duration::from_secs(knobs.interval_secs));
         }
     }
+}
+
+/// Refresh the restore beat, and say so ONCE per failure streak: a beat that
+/// cannot be written only makes the session skip a restore, so it never stops
+/// the watcher.
+fn refresh_beat(meta_dir: &Path, failing: &mut bool, err: &mut impl Write) -> crate::Result<()> {
+    match crate::watchdog_glue::touch_beat(meta_dir) {
+        Ok(()) => *failing = false,
+        Err(why) if !*failing => {
+            *failing = true;
+            writeln!(err, "ae: watchdog: beat not refreshed: {why}")?;
+        }
+        Err(_) => {}
+    }
+    Ok(())
 }
 
 /// Wait for the next verdict cycle while publishing motion at its own cadence.

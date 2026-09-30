@@ -1077,7 +1077,6 @@ fn launch_flags_without_a_session_name_are_usage_errors_before_any_write() {
         vec!["--local"],
         vec!["--copy"],
         vec!["--worktree"],
-        vec!["--no-attach"],
         vec!["--solo"],
         vec!["use", "lead"],
         vec!["--from", "0199c0de-1234-4890-abcd-ef0123456789"],
@@ -1124,6 +1123,36 @@ fn bare_ae_outside_tmux_attaches_when_the_server_has_sessions() {
     assert!(stdout.is_empty(), "{stdout}");
     assert!(!stderr.contains("no running ae session"), "{stderr}");
     assert!(!rig.sessions().exists(), "attach created state");
+}
+
+/// `ae --no-attach` is the bare form minus the attach: with sessions running it
+/// says how to attach and exits 0; with none it is the same refusal as bare `ae`.
+#[test]
+fn bare_no_attach_prints_the_attach_command_instead_of_attaching() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("bare-detached");
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["--no-attach"]);
+    assert_eq!(code, Some(1), "{stdout}\n{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert_eq!(
+        stderr,
+        "ae: no running ae session. Start one with: ae <name>\n"
+    );
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "one"])
+            .0
+    );
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+    assert_eq!(
+        stdout,
+        format!("ae: attach with: tmux -S {} attach\n", sock.display())
+    );
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(!rig.sessions().exists(), "a bare form created state");
 }
 
 #[test]

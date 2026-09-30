@@ -680,12 +680,12 @@ fn stop_summary(outcome: &StopOutcome, captured_err: &[u8]) -> String {
             // warnings; retain every captured warning in the durable result.
             let warning = String::from_utf8_lossy(captured_err).trim().to_owned();
             if warning.is_empty() {
-                "stopped: verified gone on its recorded server".to_owned()
+                STOPPED_SUMMARY.to_owned()
             } else {
-                format!("stopped: verified gone on its recorded server; {warning}")
+                format!("{STOPPED_SUMMARY}; {warning}")
             }
         }
-        StopOutcome::AlreadyStopped => "already stopped".to_owned(),
+        StopOutcome::AlreadyStopped => ALREADY_STOPPED_SUMMARY.to_owned(),
         StopOutcome::Failed => format!("FAILED: {}", String::from_utf8_lossy(captured_err).trim()),
         // NOT OURS TO WRITE TO. A refused identity leaves the directory alone,
         // and this summary is never emitted for it.
@@ -710,8 +710,12 @@ enum StopOutcome {
 
 /// The event a self-stop records before it hands over, and the one the
 /// supervisor records when it is done.
-const STOP_REQUEST_ACTION: &str = "stop-request";
-const STOP_RESULT_ACTION: &str = "stop-result";
+pub(crate) const STOP_REQUEST_ACTION: &str = "stop-request";
+pub(crate) const STOP_RESULT_ACTION: &str = "stop-result";
+
+/// The two summaries of a CLEAN stop-result; `restore` reads them, so the spelling has one owner.
+pub(crate) const STOPPED_SUMMARY: &str = "stopped: verified gone on its recorded server";
+pub(crate) const ALREADY_STOPPED_SUMMARY: &str = "already stopped";
 
 /// A `nohup` argv minted ONLY by [`supervisor_argv`].
 pub(crate) struct DetachedArgv(Vec<String>);
@@ -1660,7 +1664,7 @@ fn stop_one(
             ExpectCheck::Absent => {
                 // Proven ae's and proven already gone: this directory IS the
                 // confirmed one, so the durable result belongs in it.
-                emit_stop_event(&dir, name, STOP_RESULT_ACTION, "already stopped");
+                emit_stop_event(&dir, name, STOP_RESULT_ACTION, ALREADY_STOPPED_SUMMARY);
                 writeln!(err, "Session '{name}' is not running.")?;
                 return Ok(StopOutcome::AlreadyStopped);
             }

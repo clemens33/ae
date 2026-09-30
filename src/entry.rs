@@ -556,6 +556,8 @@ pub enum Route {
     Compact(Vec<String>),
     /// An EMPTY argv: attach to the ae tmux server or list from inside it.
     Attach,
+    /// Exactly `ae --no-attach`: the bare form, minus the attach.
+    BareDetached,
     /// Everything else: create or resume an explicitly named session.
     Launch(Vec<String>),
 }
@@ -582,6 +584,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
     let tail = || argv[1..].to_vec();
     match argv.first().map(String::as_str) {
         None => Route::Attach,
+        Some("--no-attach") if argv.len() == 1 => Route::BareDetached,
         Some("list" | "ls") => {
             if argv[1..]
                 .iter()
@@ -821,6 +824,20 @@ mod tests {
                     Route::Core(_)
                 ),
                 "{flag} must remain a core usage error"
+            );
+        }
+    }
+
+    #[test]
+    fn exactly_bare_no_attach_is_the_detached_bare_form() {
+        assert_eq!(
+            route(&preamble(), &argv(&["--no-attach"]), None),
+            Route::BareDetached
+        );
+        for more in [["--no-attach", "demo"], ["demo", "--no-attach"]] {
+            assert_eq!(
+                route(&preamble(), &argv(&more), None),
+                Route::Launch(argv(&more))
             );
         }
     }

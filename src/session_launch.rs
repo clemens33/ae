@@ -5288,7 +5288,7 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Cap `events.jsonl` to its newest lines on resume.
 fn trim_events(dir: &Path) {
-    crate::store::open(dir).retain_events(EVENTS_KEEP);
+    crate::store::open(dir).retain_events(EVENTS_KEEP, crate::restore::pins_clean_stop);
 }
 
 /// One spawned seat recovered from a resuming session's own meta.
