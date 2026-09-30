@@ -720,3 +720,63 @@ fn a_console_opens_only_for_the_stamped_id_and_one_that_dies_at_once_keeps_its_p
     let kept = wait_for("the dead console", read, |rows| rows.ends_with("|1"));
     assert!(kept.contains(&format!("|{CONSOLE_ID}|1")), "{kept}");
 }
+
+#[test]
+fn the_jump_key_goes_only_to_a_lead_pane_this_session_still_holds() {
+    let scratch = scratch("jump");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the jump key cannot be proven");
+    }
+    let socket = scratch.join("sock");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let source = stage_source(&socket, &scratch);
+    let set = |words: &[&str]| assert!(tmux(&socket, &scratch, words).0, "{words:?}");
+    let pane_of = |target: &str| {
+        let words = ["display-message", "-p", "-t", target, "#{pane_id}"];
+        tmux(&socket, &scratch, &words).1.trim().to_owned()
+    };
+    // A pane on this server that is not this session's, and a second window
+    // in this one, so a jump has somewhere to go.
+    set(&["new-session", "-d", "-s", "t", "-x", "100", "-y", "30"]);
+    let foreign = pane_of("t");
+    set(&["new-window", "-t", "s:"]);
+    let second = pane_of("s");
+    assert_ne!(second, source);
+    let jump = || {
+        let mut runner = ae();
+        runner
+            .env("AE_HOME", &scratch)
+            .env("AE_TMUX_SERVER_KIND", "socket")
+            .env("AE_TMUX_SERVER", &socket)
+            .env("TMUX", format!("{},1,0", socket.display()))
+            .env("TMUX_PANE", &source)
+            .args(["_console", "--jump"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let child = runner.spawn().expect("the ae binary runs");
+        super::cli::bounded(child, Duration::from_secs(30)).expect("the jump exits within 30 s")
+    };
+    // The recorded lead pane must be one this session holds: another
+    // session's pane, or one that no longer exists, is refused by name and
+    // moves nothing.
+    for stale in [foreign.as_str(), "%99999"] {
+        set(&["set-option", "-t", "s", "@ae_main_pane", stale]);
+        let out = jump();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(1), "{stale}: {stderr}");
+        assert!(
+            stderr.contains("no lead pane to jump to"),
+            "{stale}: {stderr}"
+        );
+        assert_eq!(pane_of("s"), second, "{stale} moved the window");
+    }
+    set(&["set-option", "-t", "s", "@ae_main_pane", &source]);
+    let out = jump();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(pane_of("s"), source, "the lead pane is selected");
+}
