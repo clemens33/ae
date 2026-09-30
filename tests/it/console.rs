@@ -271,3 +271,42 @@ fn a_session_without_a_canonical_id_is_refused_before_anything_is_read() {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+/// The key verb reads `[--jump] [--client <name>]` and nothing else: anything
+/// more is a usage error (exit 2) before tmux is asked; a well-formed argv goes
+/// on to the pane it cannot find on a socket nothing listens at (exit 1).
+#[test]
+fn the_key_verb_argv_is_a_usage_error_unless_it_is_jump_and_client_alone() {
+    let root = rig("console-key-argv");
+    let socket = root.join("nothing-listens.sock");
+    let cases: [(&[&str], i32); 10] = [
+        (&[], 1),
+        (&["--jump"], 1),
+        (&["--client", "c"], 1),
+        (&["--jump", "--client", "c"], 1),
+        (&["--frob"], 2),
+        (&["--frob", "c"], 2),
+        (&["--jump", "--frob"], 2),
+        (&["--jump", "--jump"], 2),
+        (&["--client"], 2),
+        (&["--client", "c", "d"], 2),
+    ];
+    for (words, code) in cases {
+        let out = super::cli::ae()
+            .env("HOME", &root)
+            .env("AE_HOME", &root)
+            .env("AE_TMUX_SERVER_KIND", "socket")
+            .env("AE_TMUX_SERVER", &socket)
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .arg("_console")
+            .args(words)
+            .output()
+            .expect("the ae binary should run");
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(code), "{words:?}: {stderr}");
+        let usage = stderr.starts_with("usage: ae _console [--jump] [--client <name>]");
+        assert_eq!(usage, code == 2, "{words:?}: {stderr}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
