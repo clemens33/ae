@@ -735,8 +735,10 @@ fn the_jump_key_goes_only_to_a_lead_pane_this_session_still_holds() {
     };
     let source = stage_source(&socket, &scratch);
     let set = |words: &[&str]| assert!(tmux(&socket, &scratch, words).0, "{words:?}");
-    let pane_of = |target: &str| {
-        let words = ["display-message", "-p", "-t", target, "#{pane_id}"];
+    // Exact session targets: a bare `s` also matches a window named `sh`.
+    let pane_of = |session: &str| {
+        let target = format!("={session}:");
+        let words = ["display-message", "-p", "-t", &target, "#{pane_id}"];
         tmux(&socket, &scratch, &words).1.trim().to_owned()
     };
     // A pane on this server that is not this session's, and a second window
@@ -764,7 +766,13 @@ fn the_jump_key_goes_only_to_a_lead_pane_this_session_still_holds() {
     // session's pane, or one that no longer exists, is refused by name and
     // moves nothing.
     for stale in [foreign.as_str(), "%99999"] {
-        set(&["set-option", "-t", "s", "@ae_main_pane", stale]);
+        set(&["set-option", "-t", "=s:", "@ae_main_pane", stale]);
+        let held = ["show-options", "-t", "=s:", "-qv", "@ae_main_pane"];
+        assert_eq!(
+            tmux(&socket, &scratch, &held).1.trim(),
+            stale,
+            "the option landed"
+        );
         let out = jump();
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         assert_eq!(out.status.code(), Some(1), "{stale}: {stderr}");
@@ -774,7 +782,7 @@ fn the_jump_key_goes_only_to_a_lead_pane_this_session_still_holds() {
         );
         assert_eq!(pane_of("s"), second, "{stale} moved the window");
     }
-    set(&["set-option", "-t", "s", "@ae_main_pane", &source]);
+    set(&["set-option", "-t", "=s:", "@ae_main_pane", &source]);
     let out = jump();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(out.status.code(), Some(0), "{stderr}");
