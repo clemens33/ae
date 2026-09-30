@@ -109,11 +109,11 @@ kept …`) and left for the next lane: that transient race never turns an all-gr
 `cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
 config: nextest runs at most eight tests (`.config/nextest.toml`), `just rust-mutants` one
 mutant at a time on four (`.cargo/mutants.toml`). The lane sizes itself at start from the free
-cores: `jobs-budget` when that helper is on PATH and prints one positive integer, else the
-online CPU count. An unset `NEXTEST_TEST_THREADS` becomes min(free cores, 8), an unset
+cores: `jobs-budget` when that helper is on PATH and prints one positive integer of at most
+three digits, else the online CPU count. An unset `NEXTEST_TEST_THREADS` becomes min(free cores, 8), an unset
 `CARGO_BUILD_JOBS` the free cores (left to cargo when the helper is absent); an explicit
 value of either wins, so CI and a bare clone size as before. The choice and its source
-(`budget`, `cpus`, `env`) print on stderr, and the full test, coverage and mutants runs start
+(`budget`, `cpus`, `env`; an unset jobs value reads `unset (cargo default)`) print on stderr, and the full test, coverage and mutants runs start
 cargo at `nice -n 10` (a filtered `just test <filter>` does not). The lane runs cargo in a session of
 its own, with no controlling terminal, so no test can take the terminal `just test` was typed
 in for a tmux pane it sits in (#149); a `cargo nextest` run straight from a terminal has no

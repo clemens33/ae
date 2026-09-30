@@ -1024,7 +1024,7 @@ fn a_lane_sizes_itself_from_jobs_budget_and_an_explicit_value_wins() {
     // (budget, env, (threads, source), (jobs, source))
     for (budget, env, (threads, from), (jobs, jobs_from)) in [
         ("6", none, ("6", "budget"), ("6", "budget")),
-        ("64", none, ("8", "budget"), ("64", "budget")),
+        ("999", none, ("8", "budget"), ("999", "budget")),
         ("6", &explicit[..], ("3", "env"), ("5", "env")),
         ("6", &explicit[..1], ("3", "env"), ("6", "budget")),
         ("6", &explicit[1..], ("6", "budget"), ("5", "env")),
@@ -1040,16 +1040,19 @@ fn a_lane_sizes_itself_from_jobs_budget_and_an_explicit_value_wins() {
 }
 
 /// A `jobs-budget` that is missing or answers anything but one positive integer
-/// is no answer: the CPU count sizes the threads, cargo keeps its own jobs.
+/// of at most three digits is no answer: the CPU count sizes the threads, cargo
+/// keeps its own jobs. A 20-digit answer used to wrap the lane's arithmetic to
+/// zero threads (2^64) or a negative number.
 #[test]
 fn an_unusable_jobs_budget_answer_leaves_the_lane_sized_as_before() {
     let base = super::cli::OwnedScratch::root("gate", "unusable");
-    for answer in [Some("0"), Some("many"), None] {
+    let answers = ["0", "many", "", "6\n6", "1000", "18446744073709551616"];
+    for answer in answers.map(Some).into_iter().chain([None]) {
         let (seen, stderr) = sized_lane(&base, answer, &[], &["test"]);
         let threads: usize = seen[1].parse().expect("the recorded threads");
         assert!((1..=8).contains(&threads), "{answer:?}: {seen:?}");
         assert_eq!(seen[2], "unset", "{answer:?}: {seen:?}");
-        let said = format!("threads {threads} (cpus), cargo jobs all (cpus)");
+        let said = format!("threads {threads} (cpus), cargo jobs unset (cargo default)");
         assert!(stderr.contains(&said), "{answer:?}: {stderr}");
     }
 }

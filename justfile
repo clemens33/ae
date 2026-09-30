@@ -1060,7 +1060,8 @@ rust-lint:
 # what a test, a product child or cargo-mutants' tree copy leaves in the temp
 # dir leaves with the lane. NEXTEST_TEST_THREADS defaults to min(free cores, 8)
 # and CARGO_BUILD_JOBS to the free cores, from jobs-budget when it is installed
-# (the CPU count otherwise). The three heavy lanes run cargo at nice 10.
+# (without it the CPU count sizes the threads and the jobs stay cargo's own
+# default). The three heavy lanes run cargo at nice 10.
 _tmux-isolated lane *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1214,14 +1215,15 @@ _tmux-isolated lane *args:
     unset TMUX TMUX_PANE
     # Sizing. An explicit NEXTEST_TEST_THREADS or CARGO_BUILD_JOBS wins untouched.
     # Otherwise jobs-budget, when installed, says how many cores are free right
-    # now: one positive integer, or its answer is ignored. Never blocks on it.
+    # now: one positive integer of at most three digits (a longer one wraps the
+    # arithmetic below), or its answer is ignored. Never blocks on it.
     threads_from=env
     jobs_from=env
     if [[ -z "${NEXTEST_TEST_THREADS:-}" || -z "${CARGO_BUILD_JOBS:-}" ]]; then
         budget=""
         if command -v jobs-budget >/dev/null 2>&1; then
             budget="$(jobs-budget 2>/dev/null || true)"
-            [[ "$budget" =~ ^[1-9][0-9]*$ ]] || budget=""
+            [[ "$budget" =~ ^[1-9][0-9]{0,2}$ ]] || budget=""
         fi
         if [[ -z "${NEXTEST_TEST_THREADS:-}" ]]; then
             threads_from=budget
@@ -1234,14 +1236,14 @@ _tmux-isolated lane *args:
             export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))
         fi
         if [[ -z "${CARGO_BUILD_JOBS:-}" ]]; then
-            jobs_from=cpus
+            jobs_from="cargo default"
             if [[ -n "$budget" ]]; then
                 jobs_from=budget
                 export CARGO_BUILD_JOBS="$budget"
             fi
         fi
     fi
-    echo "lane $lane: nextest threads $NEXTEST_TEST_THREADS ($threads_from), cargo jobs ${CARGO_BUILD_JOBS:-all} ($jobs_from)" >&2
+    echo "lane $lane: nextest threads $NEXTEST_TEST_THREADS ($threads_from), cargo jobs ${CARGO_BUILD_JOBS:-unset} ($jobs_from)" >&2
     # An owned sentry proves every in-process fleet read stays on this run's
     # server. It is deliberately visible: Name(ae) is a real entitlement, and
     # tests asserting whole-fleet cardinality account for this one row.
