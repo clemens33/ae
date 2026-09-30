@@ -3445,6 +3445,7 @@ pub fn run_with(
         cli::Request::Next { tail } => run_next(tail, world, out, err)?,
         cli::Request::Brief { tail } => run_brief(tail, world, out, err)?,
         cli::Request::Board { tail } => run_board(tail, world, out, err)?,
+        cli::Request::Console { tail } => console::run(tail, out, err)?,
         // A parsed `--popup` is answered before `run_dispatch` reaches this
         // generic arm. Only a direct `run_with` caller can bring one here.
         cli::Request::Orchestrator { tail } => {

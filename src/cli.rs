@@ -687,6 +687,12 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `console [session] [--follow] [--all]` — validated by
+    /// [`crate::console::parse`], which owns the flag grammar and its usage text.
+    Console {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `_quota <dir>` — read configured clients' local quota snapshots.
     Quota {
         /// The session directory the helper derives from `$0`.
@@ -838,6 +844,9 @@ impl Request {
                 tail: args[1..].to_vec(),
             },
             Some("board") => Self::Board {
+                tail: args[1..].to_vec(),
+            },
+            Some("console") => Self::Console {
                 tail: args[1..].to_vec(),
             },
             Some(QUOTA) => match &args[1..] {
@@ -1406,6 +1415,7 @@ impl Request {
             | Self::Orchestrator { .. }
             | Self::Brief { .. }
             | Self::Board { .. }
+            | Self::Console { .. }
             | Self::Quota { .. }
             | Self::Usage { .. }
             | Self::LaunchCandidate(_)

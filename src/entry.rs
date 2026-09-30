@@ -250,6 +250,10 @@ Usage:
                          5 s until interrupted (the selection is fixed at start)
                          --lines clips each text body to its first <n> lines, with a
                          `… +k lines` marker for the dropped remainder (not with --json)
+  ae console [session] [--follow] [--all]
+                         The human lane of one session: lead-pair pane turns, chat-bridge
+                         asks and replies, say lines, and live decision cards. Read only;
+                         --follow keeps printing what is new every 5 s, --all adds replies
   ae quota               Show local cached quota windows for configured agent profiles
   ae usage [name…] [--json]
                          Show API-equivalent list-price usage for live sessions
@@ -370,6 +374,7 @@ pub const ROUTED_VERBS: &[&str] = &[
     "board",
     "brief",
     "compact",
+    "console",
     "doctor",
     "end",
     "help",
@@ -590,6 +595,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("next" | "jump") => Route::Core(with_head("next", &tail())),
         Some("brief") => Route::Core(with_head("brief", &tail())),
         Some("board") => Route::Core(with_head("board", &tail())),
+        Some("console") => Route::Core(with_head("console", &tail())),
         Some("quota") => Route::Core(with_head("quota", &tail())),
         Some("usage") => Route::Core(with_head("usage", &tail())),
         Some("reboot") => Route::Core(with_head(crate::cli::COMPACT, &tail())),

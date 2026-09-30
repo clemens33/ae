@@ -1,0 +1,37 @@
+console: one — lead pair lead, colead · preview of existing data: transcript turns are mirrors, chat-bridge replies are 600-character summaries, nothing here submits or answers · scope: current conversations plus recorded predecessors, board limits; agent-to-agent turns are not shown
+coverage incomplete: one:colead — torn last record
+coverage incomplete: journal — 1 unreadable line skipped
+coverage incomplete: say — 1 line from other seats not shown
+# 2026-09-16 UTC
+## 09:00:00 lead pane (transcript)
+  human one
+
+## 09:03:00 lead pane (transcript)
+  code:
+  	indented
+    two
+
+## 09:04:00 colead pane (transcript)
+  colead words
+
+## 09:10:00 telegram:42 → lead
+  deploy now?
+
+## 09:10:30 telegram:9�]52;c;AAAA� → colead�[2J
+  hi�there
+
+## 09:11:00 lead → telegram:42 · preview (600-char summary)
+  deploy started
+
+## 09:12:00 said colead
+  colead announces
+
+## 09:12:30 said ae
+  moved a seat
+
+## 09:16:00 DECISION colead · waiting-user
+  pick a name	for v2
+
+## 09:17:00 NEEDS YOU colead · needs you in its pane
+  Trust this folder?
+
