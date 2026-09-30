@@ -9,8 +9,9 @@
 //!   mutual exclusion silently becomes two, so `tests/it/doors.rs` trips when
 //!   production code names one of these files in one of its guarded forms.
 //! * **one locked append, one retention transaction.**
-//!   [`SessionStore::append_event`] and [`SessionStore::append_memo`] are the
-//!   only appenders of a session file, and [`SessionStore::retain_events`] is
+//!   [`SessionStore::append_event`], [`SessionStore::append_event_decided`]
+//!   and [`SessionStore::append_memo`] are the only appenders of a session
+//!   file, and [`SessionStore::retain_events`] is
 //!   the only replacement of the event container. The primitives under them
 //!   are private, so the owned append and replacement paths stay explicit.
 //!   Each append is one transaction: take `<file>.lock`, append, `fdatasync`,
@@ -635,6 +636,29 @@ impl SessionStore {
     /// [`Error`] — which step failed, on which path.
     pub fn append_event(&self, line: &str) -> Result<(), Error> {
         append_locked(&self.events_path(), line.as_bytes())
+    }
+
+    /// Append the event line `decide` chooses from the container as it stands
+    /// ([`read_source`]'s classification), under ONE hold of the container's
+    /// lock from that read through the append; `decide`'s `Err` appends nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error`] when the lock or the append fails; the inner `Err` is `decide`'s.
+    pub fn append_event_decided<R>(
+        &self,
+        decide: impl FnOnce(SourceRead) -> Result<String, R>,
+    ) -> Result<Result<(), R>, Error> {
+        let path = self.events_path();
+        let lock_path = lock_path(&path);
+        let _held = lock(&lock_path, LOCK_WAIT)
+            .map_err(|why| Error::Lock(lock_path.display().to_string(), why))?;
+        match decide(read_source(&path)) {
+            Ok(line) => append(&path, line.as_bytes())
+                .map(Ok)
+                .map_err(|why| Error::Append(path.display().to_string(), why)),
+            Err(refused) => Ok(Err(refused)),
+        }
     }
 
     /// Append one memo record to `memo.tsv` under its lock.
@@ -1586,6 +1610,48 @@ mod tests {
             read_capped(&path, 4),
             Ok(SourceRead::Invalid("a directory".to_owned()))
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A decided append is one transaction: another holder of the journal lock
+    /// is refused while the decision runs, an append racing it lands after the
+    /// decided line, and a refusal writes nothing.
+    #[test]
+    fn a_decided_append_holds_the_journal_lock_from_its_read_through_its_write() {
+        let dir = scratch("decided");
+        let store = open(&dir);
+        store.append_event("first\n").unwrap();
+        let (events, (ready, go)) = (store.events_path(), std::sync::mpsc::channel());
+        let racer = open(&dir);
+        let racer = std::thread::spawn(move || {
+            go.recv_timeout(Duration::from_secs(30))
+                .map(|()| racer.append_event("racer\n"))
+        });
+        let mut competing = None;
+        let decided = store.append_event_decided(|journal| {
+            let fd = std::fs::File::options()
+                .append(true)
+                .open(lock_path(&events));
+            competing = Some(fd.map(|fd| fd.try_lock()));
+            ready.send(()).unwrap();
+            match journal {
+                super::SourceRead::Ready(bytes) if bytes == b"first\n" => {
+                    Ok("decided\n".to_owned())
+                }
+                _ => Err("not the journal as it stood"),
+            }
+        });
+        let landed = racer.join().unwrap();
+        assert!(matches!(decided, Ok(Ok(()))), "{decided:?}");
+        assert!(matches!(landed, Ok(Ok(()))), "{landed:?}");
+        assert!(
+            matches!(competing, Some(Ok(Err(std::fs::TryLockError::WouldBlock)))),
+            "another fd took the journal lock while the decision ran: {competing:?}"
+        );
+        assert_eq!(std::fs::read(&events).unwrap(), b"first\ndecided\nracer\n");
+        let refused = store.append_event_decided(|_| Err::<String, _>("no"));
+        assert!(matches!(refused, Ok(Err("no"))), "{refused:?}");
+        assert_eq!(std::fs::read(&events).unwrap(), b"first\ndecided\nracer\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

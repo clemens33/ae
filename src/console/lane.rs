@@ -16,7 +16,7 @@ use crate::watchdog::{self, HUMAN_BRIDGE_ACTORS, WATCHDOG_ACTOR};
 use crate::{reply, send, tracked};
 
 /// The asker's withdrawal of its own request.
-const CANCEL: &str = "cancel";
+pub(super) const CANCEL: &str = "cancel";
 
 /// One seat of the session's lead pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +281,34 @@ fn console_items(
         });
     }
     items
+}
+
+/// Whether `/close` may withdraw console request `id`: the console's own ask
+/// in this journal, not answered by an admitted reply and not closed — read
+/// from the same fold that draws the thread.
+///
+/// # Errors
+///
+/// Why not, by name.
+pub fn may_close(events: &[Event], id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("a close needs a request id".to_owned());
+    }
+    let mut open = None;
+    for item in console_items(events, &|_| Body::OldCore, &mut Vec::new()) {
+        let still_open = open == Some(Ok(()));
+        match item.kind {
+            Kind::Asked { id: asked, .. } if asked == id => open = Some(Ok(())),
+            Kind::Answer { id: answered, .. } if answered == id && still_open => {
+                open = Some(Err(format!("{id} is already answered")));
+            }
+            Kind::Closed { id: closed } if closed == id && still_open => {
+                open = Some(Err(format!("{id} is already closed")));
+            }
+            _ => {}
+        }
+    }
+    open.unwrap_or_else(|| Err(format!("no console ask {id} in this journal")))
 }
 
 /// The chat-bridge thread and the `say` lines, plus how many worker `say`
@@ -744,6 +772,49 @@ mod tests {
                 format!("lead answers {ID} · follow-up 1 · late (closed): WHOLE after"),
             ]
         );
+    }
+
+    #[test]
+    fn a_close_needs_the_consoles_own_ask_unanswered_and_unclosed() {
+        let me = caller("main", "%1", UUID);
+        let stale = caller("main", "%2", UUID);
+        let lead_asks = about(T0, "lead", "ask", r#","target":"colead""#);
+        let cancel = |actor| about(T1, actor, "cancel", "");
+        let (none, answered_, closed) = (
+            format!("no console ask {ID} in this journal"),
+            format!("{ID} is already answered"),
+            format!("{ID} is already closed"),
+        );
+        let cases = [
+            (vec![asked("q")], Ok(())),
+            (vec![], Err(none.clone())),
+            (vec![lead_asks], Err(none)),
+            (vec![asked("q"), answered(T1, &stale, "a")], Ok(())),
+            (vec![asked("q"), cancel("lead")], Ok(())),
+            (vec![asked("q"), answered(T1, &me, "a")], Err(answered_)),
+            (
+                vec![asked("q"), cancel("console:local")],
+                Err(closed.clone()),
+            ),
+            (
+                vec![asked("q"), cancel("console:local"), answered(T2, &me, "a")],
+                Err(closed),
+            ),
+            (
+                vec![asked("q"), answered(T1, &me, "a"), asked("again")],
+                Ok(()),
+            ),
+        ];
+        for (events, verdict) in cases {
+            assert_eq!(super::may_close(&events, ID), verdict, "{events:?}");
+        }
+        let other = super::may_close(&[asked("q")], "ae-other");
+        let none = Err("no console ask ae-other in this journal".to_owned());
+        assert_eq!(other, none);
+        let refless = r#"{"ts":"2026-09-30T06:00:00Z","actor":"console:local","action":"ask"}"#;
+        let refless = Event::parse_line(refless).unwrap();
+        let empty = super::may_close(&[refless], "");
+        assert_eq!(empty, Err("a close needs a request id".to_owned()));
     }
 
     #[test]

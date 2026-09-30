@@ -1,7 +1,7 @@
 //! `ae console` — the human's lane of a session, as a program.
 //!
-//! Phase 1 is a READ view of data ae already keeps: nothing here submits,
-//! answers or writes an event.
+//! A READ view of data ae already keeps: nothing here submits or answers,
+//! and the one event it writes is `/close`'s withdrawal of its own ask.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use crate::board::{self, Inputs, Row, follow::Follow, terminal_text};
 use crate::events::Event;
 use crate::store::{self, Oversized, SourceRead};
-use crate::{archive, doors, inventory, lifecycle, meta, reply, session, usage, watchdog_daemon};
+use crate::{
+    archive, doors, inventory, lifecycle, meta, reply, session, tracked, usage, watchdog_daemon,
+};
 use lane::Seat;
 
 pub mod lane;
@@ -203,6 +205,45 @@ fn is_reply_body_name(id: &str, name: &str) -> bool {
         .and_then(|rest| rest.strip_suffix(".txt"));
     let lower_hex = |byte: u8| matches!(byte, b'0'..=b'9' | b'a'..=b'f');
     !id.is_empty() && hex.is_some_and(|hex| hex.len() == 6 && hex.bytes().all(lower_hex))
+}
+
+/// `/close <id>`: one `cancel` for the console's own request `id`, appended only
+/// when the journal read under its lock holds that ask unanswered and unclosed.
+///
+/// # Errors
+///
+/// Why nothing was appended, by name.
+pub fn close(dir: &Path, id: &str) -> Result<(), String> {
+    let decided = store::open(dir).append_event_decided(|journal| {
+        lane::may_close(&snapshot(journal)?, id)?;
+        let (now, summary) = (crate::time::Timestamp::now(), "closed from the console");
+        let line = crate::state::event_line(now, tracked::CONSOLE_SINK, lane::CANCEL, id, summary);
+        Ok(line)
+    });
+    decided.map_err(|why| why.to_string())?
+}
+
+/// The journal as `/close` decides on it: every complete line an [`Event`],
+/// or a refusal naming the first that is not — never a guess past it.
+fn snapshot(journal: SourceRead) -> Result<Vec<Event>, String> {
+    let bytes = match journal {
+        SourceRead::Ready(bytes) => bytes,
+        SourceRead::Absent => Vec::new(),
+        SourceRead::Invalid(what) => return Err(format!("the journal is {what}")),
+        SourceRead::Unreadable(why) => return Err(format!("the journal is unreadable ({why})")),
+    };
+    let text = String::from_utf8(bytes).map_err(|_| "the journal is not UTF-8".to_owned())?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err("the journal ends in a partial record".to_owned());
+    }
+    let lines = text.lines().enumerate();
+    lines
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(at, line)| {
+            Event::parse_line(line)
+                .map_err(|why| format!("journal line {} is not a record ({why})", at + 1))
+        })
+        .collect()
 }
 
 /// The session directory `name` records, or why there is none.
@@ -436,6 +477,82 @@ mod tests {
         let shown = rig.console().pass().expect("a pass");
         let whole = format!("lead answers {REQ}\n  line one\n  line two");
         assert!(shown.contains(&whole), "{shown}");
+    }
+
+    /// `/close` appends one console `cancel` only to an open console ask of
+    /// THIS journal; any refusal, a journal it cannot read whole included,
+    /// leaves every journal byte-identical.
+    #[test]
+    fn a_close_withdraws_only_an_open_console_ask_of_this_journal() {
+        let rig = Rig::new("close");
+        let (dir, other) = (rig.0.join("s"), rig.0.join("t"));
+        let journal = |dir: &PathBuf| crate::store::open(dir).container();
+        let ask = format!(
+            r#"{{"ts":"2026-09-30T06:00:00Z","actor":"console:local","action":"ask","target":"lead","ref":"{REQ}","target_slot":"main","target_session":"s","target_server":"/t","target_pane":"%1","target_session_uuid":"{ID}"}}"#
+        );
+        let answer = format!(
+            r#"{{"ts":"2026-09-30T06:01:00Z","actor":"lead","action":"reply","target":"console:local","ref":"{REQ}","actor_slot":"main","actor_session":"s","caller_server":"/t","caller_pane":"%1","caller_session_uuid":"{ID}"}}"#
+        );
+        fs::create_dir_all(&other).expect("another session");
+        fs::write(other.join("events.jsonl"), format!("{ask}\n")).expect("its journal");
+        rig.journal(&[&ask]);
+        assert_eq!(super::close(&dir, REQ), Ok(()));
+        let closed = journal(&dir);
+        let cancel = format!(r#""actor":"console:local","action":"cancel","ref":"{REQ}","#);
+        assert!(
+            String::from_utf8_lossy(&closed)
+                .lines()
+                .last()
+                .is_some_and(|l| l.contains(&cancel))
+        );
+        let states = crate::requests::states(&closed);
+        assert_eq!(states.len(), 1, "{states:?}");
+        assert_eq!(states[0].status, crate::requests::Status::Cancelled);
+        for (bytes, why) in [
+            (closed, format!("{REQ} is already closed")),
+            (
+                format!("{WORK}\n\n").into(),
+                format!("no console ask {REQ} in this journal"),
+            ),
+            (
+                format!("{ask}\n{answer}\n").into(),
+                format!("{REQ} is already answered"),
+            ),
+            (
+                format!("{ask}\n{{not json\n").into(),
+                "journal line 2 is not a record".to_owned(),
+            ),
+            (
+                format!("{ask}\n{{\"ts\"").into(),
+                "the journal ends in a partial record".to_owned(),
+            ),
+            (
+                b"{}\n\xff\n".to_vec(),
+                "the journal is not UTF-8".to_owned(),
+            ),
+        ] {
+            fs::write(dir.join("events.jsonl"), &bytes).expect("a journal");
+            let result = super::close(&dir, REQ);
+            assert!(
+                result.as_ref().is_err_and(|got| got.starts_with(&why)),
+                "{result:?}"
+            );
+            assert_eq!(journal(&dir), bytes, "a refusal writes nothing");
+        }
+        assert_eq!(
+            journal(&other),
+            format!("{ask}\n").as_bytes(),
+            "never another session's"
+        );
+        let refless =
+            b"{\"ts\":\"2026-09-30T06:00:00Z\",\"actor\":\"console:local\",\"action\":\"ask\"}\n";
+        fs::write(dir.join("events.jsonl"), refless).expect("a journal");
+        assert!(super::close(&dir, "").is_err(), "a close needs an id");
+        assert_eq!(journal(&dir), refless, "and writes nothing");
+        fs::rename(dir.join("events.jsonl"), rig.0.join("real")).expect("move");
+        std::os::unix::fs::symlink(rig.0.join("real"), dir.join("events.jsonl")).expect("link");
+        let linked = Err("the journal is a symlink".to_owned());
+        assert_eq!(super::close(&dir, REQ), linked);
     }
 
     const ASK: &str = r#"{"ts":"2026-09-30T06:00:00Z","actor":"lead","action":"state","ref":"waiting-user","summary":"ship it?"}"#;
