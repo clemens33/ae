@@ -1737,16 +1737,79 @@ fn validate_seat_overrides(
     Ok(Some(SeatOverrideSnapshot { cfg, overrides }))
 }
 
+/// Replace every command-derived field of `seat` with a resolved profile's.
+fn rebind_command(
+    seat: &mut Seat,
+    command: &config::ResolvedCommand,
+    parsed: &crate::launch_cmd::SimpleCommand,
+) {
+    command.clone_into(&mut seat.command);
+    seat.assign_span.clone_from(&parsed.assign_span);
+    seat.argv_span.clone_from(&parsed.argv_span);
+    seat.binary.clone_from(&parsed.binary);
+    seat.tool = parsed.tool();
+}
+
 /// Replace one resolved seat's profile and every command-derived field.
 fn reprofile_seat(seat: &mut Seat, replacement: &ResolvedSeatOverride) {
     replacement.profile.clone_into(&mut seat.profile);
     seat.client_override.clone_from(&replacement.client);
     seat.store_proven = replacement.store_proven;
-    replacement.command.clone_into(&mut seat.command);
-    seat.assign_span.clone_from(&replacement.parsed.assign_span);
-    seat.argv_span.clone_from(&replacement.parsed.argv_span);
-    seat.binary.clone_from(&replacement.parsed.binary);
-    seat.tool = replacement.parsed.tool();
+    rebind_command(seat, &replacement.command, &replacement.parsed);
+}
+
+/// A RESUME RESTORES THE ROSTER IT SAVED: each seat's recorded name and profile
+/// replace what the current config binds, and the seat's command-derived facts
+/// (command, spans, binary, tool) are re-resolved from that RESTORED profile —
+/// they are what `agent_bin.<slot>` and every launch decision read, so they must
+/// name the tool the recorded profile actually launches, never the tool the
+/// config's own binding for the slot would. A seat an explicit or recorded-label
+/// override will replace is left to that override.
+///
+/// # Errors
+///
+/// The refusal line for a restored profile that no longer resolves, before any
+/// write.
+fn restore_saved_roster(
+    dir: &Path,
+    session: &str,
+    cfg: &IdentityConfig,
+    home: Option<&Path>,
+    overridden: &[&str],
+    seats: &mut [Seat],
+) -> Result<(), String> {
+    for seat in seats {
+        if let Some(saved) =
+            meta_value(dir, &format!("seat.{}", seat.slot)).filter(|v| !v.is_empty())
+        {
+            seat.name = saved;
+        }
+        let Some(saved) =
+            meta_value(dir, &format!("profile.{}", seat.slot)).filter(|v| !v.is_empty())
+        else {
+            continue;
+        };
+        if saved != seat.profile && !overridden.contains(&seat.name.as_str()) {
+            let refuse = |cause: String| {
+                format!(
+                    "Error: session '{session}' cannot resume: seat '{}' ({}) records profile \
+                     '{saved}', but {cause} — nothing was resumed. Restore the profile in the \
+                     config, or resume with an explicit override (ae {session} --seat {}=<profile>).",
+                    seat.name, seat.slot, seat.name
+                )
+            };
+            let command = cfg
+                .command(&saved, home)
+                .map_err(|why| refuse(why.to_string()))?;
+            let command =
+                command.ok_or_else(|| refuse("[profiles] no longer defines it".into()))?;
+            let parsed = crate::launch_cmd::lex_simple_command(command.as_str())
+                .map_err(|why| refuse(format!("it is not one simple command — it has {why}")))?;
+            rebind_command(seat, &command, &parsed);
+        }
+        saved.clone_into(&mut seat.profile);
+    }
+    Ok(())
 }
 
 /// Apply already-preflighted overrides to final, possibly restored seats.
@@ -2691,17 +2754,23 @@ fn launch(
     };
     // A RESUME RESTORES THE ROSTER IT SAVED.
     if resuming {
-        for seat in &mut seats {
-            if let Some(saved) =
-                meta_value(&dir, &format!("seat.{}", seat.slot)).filter(|v| !v.is_empty())
-            {
-                seat.name = saved;
-            }
-            if let Some(saved) =
-                meta_value(&dir, &format!("profile.{}", seat.slot)).filter(|v| !v.is_empty())
-            {
-                seat.profile = saved;
-            }
+        let overridden: Vec<&str> = seat_overrides.as_ref().map_or_else(Vec::new, |snapshot| {
+            snapshot
+                .overrides
+                .iter()
+                .map(|replacement| replacement.agent.as_str())
+                .collect()
+        });
+        if let Err(line) = restore_saved_roster(
+            &dir,
+            &session,
+            &cfg,
+            home.as_deref(),
+            &overridden,
+            &mut seats,
+        ) {
+            writeln!(err, "{line}")?;
+            return Ok(EXIT_FAILED);
         }
     }
     if let Some(snapshot) = seat_overrides.as_ref()
