@@ -12,6 +12,7 @@ use crate::{archive, doors, inventory, lifecycle, meta, session, usage, watchdog
 use lane::Seat;
 
 pub mod lane;
+pub(crate) mod toggle;
 pub mod view;
 
 /// The usage text.
@@ -151,13 +152,20 @@ impl Console {
 }
 
 /// The session directory `name` records, or why there is none.
-fn locate(root: &Path, name: &str) -> Option<PathBuf> {
+pub(crate) fn locate(root: &Path, name: &str) -> Option<PathBuf> {
     let roots = inventory::Roots::under(root);
     let scan = inventory::durable_meta_records(&roots);
     scan.records
         .iter()
         .find(|record| record.name == name)
         .map(|record| record.path.clone())
+}
+
+/// The canonical `session_id` the session's meta records, or empty.
+pub(crate) fn recorded_uuid(dir: &Path) -> String {
+    meta::read_bytes(dir)
+        .map(|bytes| archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id")))
+        .unwrap_or_default()
 }
 
 /// `ae console [session] [--follow] [--all]`.
@@ -192,13 +200,10 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         )?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
-    let uuid = meta::read_bytes(&dir)
-        .map(|bytes| archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id")))
-        .unwrap_or_default();
     let mut console = Console {
+        uuid: recorded_uuid(&dir),
         name,
         dir,
-        uuid,
         assistant: args.all,
         home: doors::home(),
         printed: view::Printed::default(),

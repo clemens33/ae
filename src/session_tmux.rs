@@ -21,9 +21,9 @@ use crate::inventory::ServerId;
 use crate::meta::Selector;
 use crate::tmux::{
     MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
-    MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, hotkey_picker_shell, hotkey_reader_shell,
-    mouse_dispatch_literal, server_args, session_target, status_picker_command,
-    status_settings_command, tmux_current_format_double_quote,
+    MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, hotkey_console_shell, hotkey_picker_shell,
+    hotkey_reader_shell, mouse_dispatch_literal, server_args, session_target,
+    status_picker_command, status_settings_command, tmux_current_format_double_quote,
 };
 
 /// The `-P -F` format every pane-creating call here prints.
@@ -218,6 +218,10 @@ pub(crate) enum Op<'a> {
     SetReaderCloseHook { reader: &'a str },
     /// Bind the reader toggle to mnemonic `prefix v` on an ae-owned server.
     BindReaderHotkey { shell: &'a str },
+    /// Bind one console key (`prefix h` toggle, `prefix H` jump) on an ae-owned server.
+    BindConsoleHotkey { key: &'a str, shell: &'a str },
+    /// `last-window -t <session>:` — the console toggle's way back.
+    LastWindow { session: &'a str },
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
@@ -467,6 +471,15 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             args.extend(
                 ["bind-key", "-T", "prefix", "v", "run-shell", "-b", shell].map(ToOwned::to_owned),
             );
+        }
+        Op::BindConsoleHotkey { key, shell } => {
+            args.extend(
+                ["bind-key", "-T", "prefix", key, "run-shell", "-b", shell].map(ToOwned::to_owned),
+            );
+        }
+        Op::LastWindow { session } => {
+            args.extend(["last-window", "-t"].map(ToOwned::to_owned));
+            args.push(format!("{}:", session_target(session)));
         }
         Op::RenameSession { target, name } => {
             args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
@@ -809,6 +822,10 @@ pub(crate) fn status_bindings_argv(
                     shell: &reader_hotkey,
                 },
             ));
+            for (key, jump) in [("h", false), ("H", true)] {
+                let shell = hotkey_console_shell(launcher, jump);
+                bindings.push(argv(server, &Op::BindConsoleHotkey { key, shell: &shell }));
+            }
             bindings
         }
     }
@@ -1195,6 +1212,10 @@ mod tests {
                 "'/opt/ae'"
             ]
         );
+        assert_eq!(
+            words(&Op::LastWindow { session: "demo" }),
+            ["last-window", "-t", "=demo:"]
+        );
     }
 
     #[test]
@@ -1207,8 +1228,8 @@ mod tests {
         let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], true);
         assert_eq!(
             bindings.len(),
-            15,
-            "mouse-aware servers assert Down bindings, remove every stock right-click menu, and carry the wheel map plus the reader hotkey"
+            17,
+            "mouse-aware servers assert Down bindings, remove every stock right-click menu, and carry the wheel map plus the reader and console hotkeys"
         );
         assert_eq!(
             bindings[0].as_args(),
@@ -1342,8 +1363,8 @@ mod tests {
         let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
         assert_eq!(
             keyboard.len(),
-            15,
-            "keyboard-driven servers bind release, remove every stock right-click menu, and carry the wheel map plus the reader hotkey"
+            17,
+            "keyboard-driven servers bind release, remove every stock right-click menu, and carry the wheel map plus the reader and console hotkeys"
         );
         assert_eq!(
             keyboard[0].as_args(),
@@ -1464,6 +1485,18 @@ mod tests {
             ],
             "the reader hotkey is identical on both capabilities"
         );
+        for (set, name) in [(&bindings, "mouse-aware"), (&keyboard, "keyboard-driven")] {
+            for (at, key, jump) in [(15, "h", ""), (16, "H", " '--jump'")] {
+                let want = format!(
+                    "-L ae bind-key -T prefix {key} run-shell -b '/opt/ae' '_console'{jump} '--client' #{{q:client_name}}"
+                );
+                assert_eq!(
+                    set[at].as_args().join(" "),
+                    want,
+                    "{name} console key {key}"
+                );
+            }
+        }
         assert!(
             status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()], true).is_empty(),
             "an ambient server's root table belongs to its user"
@@ -1709,6 +1742,8 @@ mod tests {
                 wheel("copy-mode-vi", "WheelUpPane", "scroll-up"),
                 wheel("copy-mode-vi", "WheelDownPane", "scroll-down"),
                 entry("prefix", "v", false, true),
+                entry("prefix", "h", false, true),
+                entry("prefix", "H", false, true),
                 entry("root", "MouseUp1Status", true, false),
                 entry("root", "MouseUp3Status", true, false),
             ]
@@ -1726,6 +1761,8 @@ mod tests {
                 wheel("copy-mode-vi", "WheelUpPane", "scroll-up"),
                 wheel("copy-mode-vi", "WheelDownPane", "scroll-down"),
                 entry("prefix", "v", false, true),
+                entry("prefix", "h", false, true),
+                entry("prefix", "H", false, true),
             ]
         );
     }

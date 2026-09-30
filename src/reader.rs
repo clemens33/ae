@@ -150,7 +150,7 @@ fn open(server: &ServerId, source: &str) -> Option<String> {
 }
 
 /// The source pane: the explicit client's current pane, else `$TMUX_PANE`.
-fn source_pane(server: &ServerId, client: Option<&str>) -> Option<String> {
+pub(crate) fn source_pane(server: &ServerId, client: Option<&str>) -> Option<String> {
     let Some(client) = client else {
         return crate::doors::calling_pane_id();
     };
@@ -162,7 +162,7 @@ fn source_pane(server: &ServerId, client: Option<&str>) -> Option<String> {
 
 /// The session a pane belongs to, through the one server-wide listing that
 /// already reads it.
-fn session_of(server: &ServerId, pane: &str) -> Option<String> {
+pub(crate) fn session_of(server: &ServerId, pane: &str) -> Option<String> {
     transport::observe_fleet_panes(server)?
         .into_iter()
         .find(|observed| observed.pane == pane)

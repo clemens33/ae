@@ -1528,8 +1528,22 @@ pub(crate) fn hotkey_picker_shell(launcher: &[String]) -> String {
 /// resolves the client that pressed the key.
 #[must_use]
 pub(crate) fn hotkey_reader_shell(launcher: &[String]) -> String {
+    hotkey_verb_shell(launcher, &[crate::cli::READER, "--client"])
+}
+
+/// The console keys' shell (`prefix h`, and `prefix H` with `--jump`), on the
+/// same launcher boundary as the reader hotkey.
+#[must_use]
+pub(crate) fn hotkey_console_shell(launcher: &[String], jump: bool) -> String {
+    let mut verb = vec![crate::cli::CONSOLE_TOGGLE];
+    verb.extend(jump.then_some("--jump"));
+    verb.push("--client");
+    hotkey_verb_shell(launcher, &verb)
+}
+
+fn hotkey_verb_shell(launcher: &[String], verb: &[&str]) -> String {
     let mut argv = launcher.to_vec();
-    argv.extend([crate::cli::READER, "--client"].map(ToOwned::to_owned));
+    argv.extend(verb.iter().map(|word| (*word).to_owned()));
     argv.iter()
         .map(|word| menu_literal(&crate::launch::shell_quote(word)))
         .chain(std::iter::once("#{q:client_name}".to_owned()))
@@ -3376,11 +3390,10 @@ pub fn interpret_session_identity(
 /// The theme stamp rides along because the alternative is a second listing:
 /// the watchdog has to know which windows are already dressed, and a user
 /// option set on the WINDOW resolves in a pane's format context.
-pub const WINDOW_PANE_FORMAT: &str =
-    "#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_agent}";
+pub const WINDOW_PANE_FORMAT: &str = "#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{@ae_agent}";
 
 /// The number of fields [`WINDOW_PANE_FORMAT`] yields.
-const WINDOW_PANE_FIELDS: usize = 5;
+const WINDOW_PANE_FIELDS: usize = 7;
 
 /// One pane as the window grouping reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3394,6 +3407,11 @@ pub struct WindowPane {
     /// `@ae_reader_src` — the source a READER pane shows, or `None` when the
     /// pane carries no reader stamp.
     pub reader_src: Option<String>,
+    /// `@ae_console` — the session UUID a console pane is stamped with, or
+    /// `None` for every other pane.
+    pub console: Option<String>,
+    /// `#{pane_dead}` — the pane's process has exited and the pane remains.
+    pub dead: bool,
     /// `@ae_agent`, or `None` when unstamped.
     pub agent: Option<String>,
 }
@@ -3423,7 +3441,9 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
                 // could carry the separator, so a longer line is that name and
                 // not a corrupt row.
                 let fields: Vec<&str> = line.splitn(WINDOW_PANE_FIELDS, FIELD_SEPARATOR).collect();
-                let [pane_id, window_id, theme, reader_src, agent] = fields.as_slice() else {
+                let [pane_id, window_id, theme, reader_src, console, dead, agent] =
+                    fields.as_slice()
+                else {
                     return None;
                 };
                 let reader_src = reader_src.trim_end();
@@ -3433,6 +3453,9 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
                     window_id: (*window_id).to_owned(),
                     theme: (*theme).to_owned(),
                     reader_src: (!reader_src.is_empty()).then(|| reader_src.to_owned()),
+                    console: (!console.trim_end().is_empty())
+                        .then(|| console.trim_end().to_owned()),
+                    dead: dead.trim_end() == "1",
                     agent: (!agent.is_empty()).then(|| agent.to_owned()),
                 })
             })
@@ -4470,8 +4493,7 @@ mod tests {
                 super::WINDOW_PANE_FORMAT
             ]
         );
-        let listing =
-            "%1 | @0 | 1 |  | cl:lead\n%2 | @0 | 1 | %1 | \n%4 | @2 |  |  | cl:y\n%3 @1 cl:x\n";
+        let listing = "%1 | @0 | 1 |  |  | 0 | cl:lead\n%2 | @0 | 1 | %1 |  | 0 | \n%4 | @2 |  |  |  | 0 | cl:y\n%5 | @3 |  |  | u | 1 | \n%3 @1 cl:x\n";
         let panes = interpret_window_panes(true, listing).expect("a successful run");
         assert_eq!(
             panes,
@@ -4481,6 +4503,8 @@ mod tests {
                     window_id: "@0".to_owned(),
                     theme: "1".to_owned(),
                     reader_src: None,
+                    console: None,
+                    dead: false,
                     agent: Some("cl:lead".to_owned()),
                 },
                 // A READER pane: its stamp names the source it shows.
@@ -4489,6 +4513,8 @@ mod tests {
                     window_id: "@0".to_owned(),
                     theme: "1".to_owned(),
                     reader_src: Some("%1".to_owned()),
+                    console: None,
+                    dead: false,
                     agent: None,
                 },
                 // An UNDRESSED window: the stamp is empty, which is the fact
@@ -4498,7 +4524,19 @@ mod tests {
                     window_id: "@2".to_owned(),
                     theme: String::new(),
                     reader_src: None,
+                    console: None,
+                    dead: false,
                     agent: Some("cl:y".to_owned()),
+                },
+                // A CONSOLE pane whose process exited but whose pane remains.
+                WindowPane {
+                    pane_id: "%5".to_owned(),
+                    window_id: "@3".to_owned(),
+                    theme: String::new(),
+                    reader_src: None,
+                    console: Some("u".to_owned()),
+                    dead: true,
+                    agent: None,
                 },
             ],
             "the space-delimited line is corruption, not a pane"

@@ -140,6 +140,10 @@ pub const STOP: &str = "_stop";
 /// Internal — a status binding runs it, never a helper and never a human.
 pub const SESSION_MENU: &str = "_session-menu";
 
+/// The console window toggle and lead jump: `_console [--jump] [--client <name>]`.
+/// Internal — the server-global `prefix h` and `prefix H` bindings run it.
+pub const CONSOLE_TOGGLE: &str = "_console";
+
 /// The pane reader toggle: `_reader [--client <name>]`. Internal — the
 /// server-global `prefix v` binding runs it, and a shell inside a pane may run
 /// it with `$TMUX_PANE` instead of a client.
@@ -256,6 +260,11 @@ pub enum Request {
     },
     /// `orchestrator` with the flags its tail named.
     Orchestrator {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_console [--jump] [--client <name>]` — the console toggle and jump, as typed.
+    ConsoleToggle {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
@@ -1304,6 +1313,9 @@ impl Request {
             Some(READER) => Self::Reader {
                 tail: args[1..].to_vec(),
             },
+            Some(CONSOLE_TOGGLE) => Self::ConsoleToggle {
+                tail: args[1..].to_vec(),
+            },
             Some(COMPACT) => Self::Compact {
                 tail: args[1..].to_vec(),
             },
@@ -1477,6 +1489,7 @@ impl Request {
             | Self::Stop { .. }
             | Self::SessionMenu { .. }
             | Self::Reader { .. }
+            | Self::ConsoleToggle { .. }
             | Self::Compact { .. }
             | Self::ManifestRender { .. }
             | Self::Context { .. } => None,

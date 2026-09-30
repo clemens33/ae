@@ -656,3 +656,67 @@ fn doctor_names_the_mode_table_wheel_bindings_it_expects() {
         "the asserted map clears both mode-table entries: {stdout}"
     );
 }
+
+const CONSOLE_ID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
+
+/// `pane_id|stamp|dead` of every pane of session `s` that carries a console stamp.
+fn consoles(socket: &Path, dir: &Path) -> Vec<String> {
+    let format = "#{pane_id}|#{@ae_console}|#{pane_dead}";
+    let (ok, out) = tmux(socket, dir, &["list-panes", "-s", "-t", "s", "-F", format]);
+    assert!(ok, "list-panes: {out}");
+    let stamped = out.lines().filter(|line| !line.contains("||"));
+    stamped.map(str::to_owned).collect()
+}
+
+#[test]
+fn a_console_opens_only_for_the_stamped_id_and_one_that_dies_at_once_keeps_its_pane() {
+    let scratch = scratch("console");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the console toggle cannot be proven");
+    }
+    let socket = scratch.join("sock");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let source = stage_source(&socket, &scratch);
+    let dir = scratch.join("sessions").join("s");
+    fs::create_dir_all(&dir).expect("session dir");
+    let meta = |id: &str| {
+        let body = format!("schema=2\nsession_id={id}\nlayout=lead-pair\nseat.main=lead\n");
+        fs::write(dir.join("meta"), body).expect("meta");
+    };
+    let toggle = || {
+        let mut runner = ae();
+        runner
+            .env("AE_HOME", &scratch)
+            .env("AE_TMUX_SERVER_KIND", "socket")
+            .env("AE_TMUX_SERVER", &socket)
+            .env("TMUX", format!("{},1,0", socket.display()))
+            .env("TMUX_PANE", &source);
+        runner.arg("_console").output().expect("the ae binary runs")
+    };
+    let set = |words: &[&str]| assert!(tmux(&socket, &scratch, words).0, "{words:?}");
+    set(&["set-option", "-t", "s", "@ae_session_uuid", CONSOLE_ID]);
+
+    meta("0199c0de-bbbb-4890-abcd-ef0123456789");
+    assert_eq!(toggle().status.code(), Some(1), "another meta id refuses");
+    assert!(consoles(&socket, &scratch).is_empty(), "and starts nothing");
+
+    // The console finds no session once its window exists, so it exits before
+    // a slow `new-window` returns: the stamp and `remain-on-exit` must already
+    // be on the shell the window started as.
+    meta(CONSOLE_ID);
+    let hook = format!(
+        "run-shell \"rm -f {}; sleep 1\"",
+        dir.join("meta").display()
+    );
+    set(&["set-hook", "-g", "after-new-window", &hook]);
+    let out = toggle();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let read = || consoles(&socket, &scratch).join("\n");
+    let kept = wait_for("the dead console", read, |rows| rows.ends_with("|1"));
+    assert!(kept.contains(&format!("|{CONSOLE_ID}|1")), "{kept}");
+}

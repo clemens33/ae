@@ -3241,6 +3241,7 @@ pub fn run_with(
             }
         }
         cli::Request::Reader { tail } => reader::run(tail, out, err)?,
+        cli::Request::ConsoleToggle { tail } => console::toggle::run(tail, out, err)?,
         cli::Request::Compact { tail } => {
             if let Some(root) = state_root() {
                 lifecycle::compaction::run(&root, tail, out, err)?
