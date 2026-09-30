@@ -322,3 +322,85 @@ fn the_key_verb_argv_is_a_usage_error_unless_it_is_jump_and_client_alone() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Run a helper ENTRY against `dir` with no pane and no server, and
+/// `override_as` as `AE_SENDER_OVERRIDE` when given.
+fn helper_run(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    entry: &str,
+    tail: &[&str],
+    override_as: Option<&str>,
+) -> (Option<i32>, String) {
+    let mut runner = super::cli::ae();
+    runner
+        .env("HOME", root)
+        .env("AE_HOME", root)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("AE_SENDER_OVERRIDE")
+        .arg(entry)
+        .arg(dir)
+        .args(tail);
+    if let Some(value) = override_as {
+        runner.env("AE_SENDER_OVERRIDE", value);
+    }
+    let out = bounded_output(&mut runner);
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The console sink takes replies only, and no helper may speak AS the
+/// console: both are refused as usage, before a pane, a server or the
+/// journal is touched.
+#[test]
+fn nothing_speaks_as_the_console_and_only_a_reply_is_sent_to_it() {
+    let (root, dir) = lead_pair_rig("console-sink");
+    let before = super::cli::byte_tree(&root);
+    for target in ["console:local", "console:x", "console:"] {
+        for entry in [ae::cli::SEND, ae::cli::ASK, ae::cli::REVIEW] {
+            let (code, err) = helper_run(&root, &dir, entry, &[target, "hello"], None);
+            assert_eq!(code, Some(2), "{entry} {target}: {err}");
+            assert!(
+                err.contains("reply <id>") && err.contains("say") && err.contains("waiting-user"),
+                "{entry} {target} names the working channels: {err}"
+            );
+        }
+    }
+    let calls: [(&str, &[&str]); 8] = [
+        (ae::cli::SEND, &["lead", "hi"]),
+        (ae::cli::ASK, &["lead", "q"]),
+        (ae::cli::REVIEW, &["lead", "r"]),
+        (ae::cli::REPLY, &["ae-20260930T120000Z-0000abcd", "a"]),
+        (ae::cli::SAY, &["hi"]),
+        (ae::cli::STATE, &["working", "x"]),
+        (ae::cli::MEMO, &["read"]),
+        (ae::cli::REQUESTS, &["all"]),
+    ];
+    for value in ["console:local", "console:x"] {
+        for (entry, tail) in calls {
+            let (code, err) = helper_run(&root, &dir, entry, tail, Some(value));
+            assert_eq!(code, Some(2), "{entry} as {value}: {err}");
+            assert!(err.contains("AE_SENDER_OVERRIDE"), "{entry}: {err}");
+        }
+    }
+    // The short form is the same ingress as the link and the entry.
+    let session = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let mut runner = super::cli::ae();
+    runner
+        .env("HOME", &root)
+        .env("AE_HOME", &root)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("AE_SENDER_OVERRIDE", "console:local")
+        .args([format!("@{session}").as_str(), "send", "lead", "hi"]);
+    let out = bounded_output(&mut runner);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(super::cli::byte_tree(&root), before, "nothing was written");
+    let _ = std::fs::remove_dir_all(&root);
+}

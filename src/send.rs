@@ -282,6 +282,10 @@ pub fn run(
         write!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
     };
+    if let Some(refusal) = tracked::console_target_refusal(ACTION, &parsed.target) {
+        write!(err, "{refusal}")?;
+        return Ok(EXIT_USAGE);
+    }
     if is_brief_retry(env) {
         return crate::brief_retry::run(dir, &parsed.target, own_session, now, out, err);
     }

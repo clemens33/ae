@@ -388,15 +388,7 @@ pub fn run(
         "",
     );
     if tracked::is_external(&reply_target) {
-        // An event-only sink: record, paste nothing. No durable cut, so one
-        // observation at write time is the proof consumed.
-        let outcome = tracked::CorrelationOutcome::from_observation(tracked::observe_caller(dir));
-        fields = tracked::stamp_caller(&fields, &outcome);
-        if let Err(why) = store::open(dir).append_event(&tracked::event_line(&fields)) {
-            writeln!(err, "ae: reply {} not recorded: {why}", parsed.id)?;
-            return Ok(EXIT_FAILED);
-        }
-        return Ok(0);
+        return record_for_sink(dir, &fields, &reply_target, &parsed, err);
     }
     let (resolved, server) = match tracked::resolve_on(&reply_target, own_session, dir) {
         Ok(resolved) => resolved,
@@ -441,6 +433,59 @@ pub fn run(
         target: &resolved.session,
     });
     tracked::record_tracked_delivery(dir, &fields, delivery, cross_session, err)
+}
+
+/// A reply to an event-only sink: record, paste nothing. The console reads
+/// its answer whole from the body file, so a body that cannot be kept there
+/// records nothing at all.
+fn record_for_sink(
+    dir: &Path,
+    fields: &EventFields<'_>,
+    sink: &str,
+    parsed: &Parsed,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let body_file = if sink == tracked::CONSOLE_SINK {
+        match console_body(dir, parsed) {
+            Ok(path) => path,
+            Err(why) => {
+                writeln!(err, "ae: reply {} not recorded: {why}", parsed.id)?;
+                return Ok(EXIT_FAILED);
+            }
+        }
+    } else {
+        String::new()
+    };
+    let fields = EventFields {
+        body_file: &body_file,
+        ..*fields
+    };
+    // No durable cut, so one observation at write time is the proof consumed.
+    let outcome = tracked::CorrelationOutcome::from_observation(tracked::observe_caller(dir));
+    let fields = tracked::stamp_caller(&fields, &outcome);
+    if let Err(why) = store::open(dir).append_event(&tracked::event_line(&fields)) {
+        writeln!(err, "ae: reply {} not recorded: {why}", parsed.id)?;
+        return Ok(EXIT_FAILED);
+    }
+    Ok(0)
+}
+
+/// The most a console reply body may hold — the durable-retry bound spawn
+/// already keeps.
+pub const CONSOLE_BODY_CAP: usize = 65_536;
+
+/// Keep a console reply's whole body beside the session, refusing one over
+/// [`CONSOLE_BODY_CAP`] before anything is written.
+fn console_body(dir: &Path, parsed: &Parsed) -> Result<String, String> {
+    let size = parsed.body.len();
+    if size > CONSOLE_BODY_CAP {
+        return Err(format!(
+            "a console reply body holds at most {CONSOLE_BODY_CAP} bytes, this one {size}"
+        ));
+    }
+    crate::deliver::store_body(dir, &parsed.id, ACTION, &parsed.body)
+        .map(|path| path.display().to_string())
+        .map_err(|why| format!("its body could not be stored: {why}"))
 }
 
 /// Bytes as text: the comparison never sees an invalid byte from ae's own
@@ -882,6 +927,162 @@ mod tests {
             "deleting stamp_caller from reply::run must drop this: {events}"
         );
         tracked::clear_test_hooks();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session directory holding ONE ask from `asker` to `lead` (`main` in
+    /// `s`), as a pane-less sender records it; returns the dir and the id.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test plants the journal the production reply reads"
+    )]
+    fn one_ask_from(asker: &str, tag: &str) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("ae-reply-{tag}.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("meta"),
+            "session_id=1b4e28ba-2fa1-11d2-883f-0016d3cc4321\n",
+        )
+        .unwrap();
+        let id = "ae-20260930T120000Z-0000abcd".to_owned();
+        std::fs::write(
+            dir.join("events.jsonl"),
+            format!(
+                "{{\"ts\":\"2026-09-30T12:00:00Z\",\"actor\":\"{asker}\",\"action\":\"ask\",\"target\":\"lead\",\"ref\":\"{id}\",\"target_slot\":\"main\",\"target_session\":\"s\",\"summary\":\"q\"}}\n"
+            ),
+        )
+        .unwrap();
+        (dir, id)
+    }
+
+    /// `lead` in `main` replies `body` to `id`, its caller triple observed
+    /// once, as the event-only arm consumes it.
+    fn lead_replies(dir: &std::path::Path, id: &str, body: &str) -> (u8, String) {
+        crate::tracked::clear_test_hooks();
+        crate::tracked::queue_observe(Ok(crate::tracked::IdentityTriple {
+            server: "/tmp/ae".to_owned(),
+            pane: "%3".to_owned(),
+            session_uuid: "1b4e28ba-2fa1-11d2-883f-0016d3cc4321".to_owned(),
+        }));
+        let observed = ObservedViewer {
+            slot: Some("main".into()),
+            session: Some("s".into()),
+            agent: Some("lead".into()),
+            ..ObservedViewer::default()
+        };
+        let mut err = Vec::new();
+        let code = super::run(
+            dir,
+            &[id.to_owned(), body.to_owned()],
+            Some(&observed),
+            "s",
+            Timestamp::parse("2026-09-30T12:01:00Z").unwrap(),
+            crate::deliver::DEFAULT_DEFER,
+            &mut err,
+        )
+        .expect("reply run");
+        crate::tracked::clear_test_hooks();
+        (code, String::from_utf8_lossy(&err).into_owned())
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back what the production reply wrote"
+    )]
+    fn journal(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the body file the production reply stored"
+    )]
+    fn body_of(line: &str) -> Option<Vec<u8>> {
+        let path = line.split("\"body_file\":\"").nth(1)?.split('"').next()?;
+        std::fs::read(path).ok()
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test lists what the production reply stored"
+    )]
+    fn stored(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir.join("messages")).map_or(0, Iterator::count)
+    }
+
+    #[test]
+    fn a_console_reply_keeps_its_whole_body_and_still_closes_the_request() {
+        let (dir, id) = one_ask_from("console:local", "console-body");
+        let body = format!(
+            "first line é 中文 🎉\n    indented code\n\ttabbed\n\n{}",
+            "ü".repeat(700)
+        );
+        assert_eq!(lead_replies(&dir, &id, &body), (0, String::new()));
+        let events = journal(&dir);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(events[1].contains("\"action\":\"reply\""), "{}", events[1]);
+        assert!(
+            events[1].contains("\"target\":\"console:local\""),
+            "{}",
+            events[1]
+        );
+        assert_eq!(body_of(&events[1]), Some(body.into_bytes()));
+        assert_eq!(
+            super::find(&dir, &id).map(|request| request.status),
+            Some(Status::Replied)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_console_reply_over_64_kib_is_refused_before_anything_is_written() {
+        let (dir, id) = one_ask_from("console:local", "console-cap");
+        let exact = "a".repeat(65_536);
+        assert_eq!(lead_replies(&dir, &id, &exact).0, 0);
+        assert_eq!(body_of(&journal(&dir)[1]), Some(exact.into_bytes()));
+        let (dir, id) = one_ask_from("console:local", "console-cap");
+        let before = journal(&dir);
+        let (code, err) = lead_replies(&dir, &id, &"a".repeat(65_537));
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains("65536"), "{err}");
+        assert_eq!(journal(&dir), before);
+        assert_eq!(stored(&dir), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test plants a node where the body store must create its directory"
+    )]
+    fn a_console_reply_whose_body_cannot_be_stored_records_nothing() {
+        let (dir, id) = one_ask_from("console:local", "console-store");
+        std::fs::write(dir.join("messages"), "not a directory").unwrap();
+        let before = journal(&dir);
+        let (code, err) = lead_replies(&dir, &id, "the answer");
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains(&id), "{err}");
+        assert_eq!(journal(&dir), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_chat_bridge_reply_stays_an_event_only_record() {
+        let (dir, id) = one_ask_from("telegram:42", "bridge-bytes");
+        assert_eq!(lead_replies(&dir, &id, "the answer"), (0, String::new()));
+        let events = journal(&dir);
+        assert_eq!(
+            events[1],
+            format!(
+                "{{\"ts\":\"2026-09-30T12:01:00Z\",\"actor\":\"lead\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"s\",\"caller_server\":\"/tmp/ae\",\"caller_pane\":\"%3\",\"caller_session_uuid\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"summary\":\"the answer\"}}"
+            )
+        );
+        assert_eq!(stored(&dir), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

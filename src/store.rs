@@ -211,6 +211,93 @@ pub fn read_source(path: &Path) -> SourceRead {
     }
 }
 
+/// A node over the cap a capped read was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Oversized;
+
+/// [`read_source`] with a ceiling: the same classification, never opening a
+/// non-regular node, and never reading past `cap` bytes — one byte more is
+/// [`Oversized`], checked on the read itself because the size a stat saw was
+/// a different moment.
+///
+/// # Errors
+///
+/// [`Oversized`] for a regular file longer than `cap`.
+pub fn read_capped(path: &Path, cap: u64) -> Result<SourceRead, Oversized> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: classifies the node itself WITHOUT following a link, before any open — see clippy.toml"
+    )]
+    let observed = std::fs::symlink_metadata(path);
+    let shape = match observed {
+        Ok(meta) => meta,
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(SourceRead::Absent),
+        Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
+    };
+    if let Some(what) = nonregular_leg(shape.file_type()) {
+        return Ok(SourceRead::Invalid(what.to_owned()));
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the classified, capped read of a file ae keeps for the console — see clippy.toml"
+    )]
+    let opened = File::open(path);
+    let file = match opened {
+        Ok(file) => file,
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(SourceRead::Absent),
+        Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
+    };
+    let mut body = Vec::new();
+    if let Err(why) = io::Read::read_to_end(&mut io::Read::take(file, cap + 1), &mut body) {
+        return Ok(SourceRead::Unreadable(why.to_string()));
+    }
+    if body.len() as u64 > cap {
+        return Err(Oversized);
+    }
+    Ok(SourceRead::Ready(body))
+}
+
+/// Publish `bytes` at `path`, mode 0600, whole or not at all: an exclusive
+/// temp beside it, `fsync`, rename — the shape
+/// [`Store::stamp_launch_attempt`] uses. A failure anywhere leaves what was
+/// at `path` untouched.
+///
+/// # Errors
+///
+/// A temp name that is taken, or the write, the `fsync` or the rename.
+pub fn publish_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    publish_private_with(path, bytes, |from, to| std::fs::rename(from, to))
+}
+
+/// [`publish_private`] with its last step handed in, so a test can fail the
+/// rename itself.
+pub(crate) fn publish_private_with(
+    path: &Path,
+    bytes: &[u8],
+    finish: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(format!(".tmp.{}", std::process::id()));
+    let temp = PathBuf::from(temp);
+    // EXCLUSIVE, for the reason the launch stamp gives: `create_new` never
+    // follows a link planted at the predictable name, and what is behind a
+    // taken name may not be ours to remove.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp)?;
+    let publish = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| finish(&temp, path));
+    if let Err(why) = publish {
+        let _ = std::fs::remove_file(&temp);
+        return Err(why);
+    }
+    Ok(())
+}
+
 /// Whether a node is at a path, from its own metadata alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourcePresence {
@@ -1425,6 +1512,71 @@ mod tests {
         let held = acquire(&store);
         std::fs::remove_file(&path).unwrap();
         assert!(!held.matches(), "unlinked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The capped read never opens a non-regular node and never allocates past
+    /// its cap: exactly the cap is read, one byte more is `Oversized`.
+    #[test]
+    fn a_capped_read_names_every_refusal_and_stops_at_its_cap() {
+        use super::{Oversized, SourceRead, read_capped};
+        let dir = scratch("capped");
+        let path = dir.join("draft");
+        assert_eq!(read_capped(&path, 4), Ok(SourceRead::Absent));
+        std::fs::write(&path, b"abcd").unwrap();
+        assert_eq!(
+            read_capped(&path, 4),
+            Ok(SourceRead::Ready(b"abcd".to_vec()))
+        );
+        std::fs::write(&path, b"abcde").unwrap();
+        assert_eq!(read_capped(&path, 4), Err(Oversized));
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere"), &path).unwrap();
+        assert_eq!(
+            read_capped(&path, 4),
+            Ok(SourceRead::Invalid("a symlink".to_owned()))
+        );
+        std::fs::remove_file(&path).unwrap();
+        let socket = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert_eq!(
+            read_capped(&path, 4),
+            Ok(SourceRead::Invalid("a socket".to_owned()))
+        );
+        drop(socket);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(
+            read_capped(&path, 4),
+            Ok(SourceRead::Invalid("a directory".to_owned()))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A private publish is 0600, replaces whole, and a failed replacement —
+    /// at the temp or at the rename — leaves the old bytes and no temp.
+    #[test]
+    fn a_private_publish_replaces_whole_or_keeps_the_old_bytes() {
+        use super::{publish_private, publish_private_with};
+        let dir = scratch("private");
+        let path = dir.join("console.draft");
+        publish_private(&path, b"first").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        publish_private(&path, b"second, longer").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second, longer");
+        let refused = publish_private_with(&path, b"third", |_, _| {
+            Err(std::io::Error::other("rename refused"))
+        });
+        assert!(refused.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"second, longer");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1, "no temp is left behind: {left:?}");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let sealed = publish_private(&path, b"fourth");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(sealed.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"second, longer");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

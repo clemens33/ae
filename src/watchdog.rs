@@ -806,6 +806,9 @@ pub(crate) const HUMAN_BRIDGE_ACTORS: [&str; 2] = ["telegram:", "discord:"];
 ///   flags instead;
 /// - the seat's own newer declaration always does;
 /// - a human through a chat bridge always does;
+/// - the human through the console does by an `ask` it recorded to the seat,
+///   an unconfirmed one included, and by nothing else it writes — an
+///   abandoned delivery or a withdrawal reached no one;
 /// - `waiting-user` and `blocked` hold through everything else — the seat's
 ///   own chasing, a peer's message, pane churn;
 /// - `waiting-agent` also ends on a reply to one of the seat's OWN asks or
@@ -818,6 +821,9 @@ pub fn ends_quiet(state: &str, event: &Event, is_own: bool, own_requests: &[&str
     }
     if is_own && event.declared_state().is_some() {
         return true;
+    }
+    if !is_own && event.actor == crate::tracked::CONSOLE_SINK {
+        return event.action == crate::tracked::Kind::Ask.action();
     }
     if !is_own
         && HUMAN_BRIDGE_ACTORS
@@ -3655,6 +3661,24 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
             ("telegram:42", "send", "", [true; 4]),
             ("discord:42", "send", "", [true; 4]),
             ("ae:compact:0199c0de", "ask", r#","ref":"ae-3""#, DONE_ONLY),
+            // The console wakes a seat only by an ask it recorded to it —
+            // unconfirmed included — and nothing else it writes is news.
+            ("console:local", "ask", r#","ref":"ae-5""#, [true; 4]),
+            (
+                "console:local",
+                "ask",
+                r#","ref":"ae-6","summary":"[unconfirmed] hi""#,
+                [true; 4],
+            ),
+            (
+                "console:local",
+                "delivery-abandoned",
+                r#","ref":"ae-4""#,
+                [false; 4],
+            ),
+            ("console:local", "cancel", r#","ref":"ae-5""#, [false; 4]),
+            ("console:local", "send", "", [false; 4]),
+            ("console:x", "ask", r#","ref":"ae-3""#, DONE_ONLY),
         ];
         let blocked_tag = r#","ref":"launch-1","summary":"blocked confirmation 1/2""#;
         let footprints = [

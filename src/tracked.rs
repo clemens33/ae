@@ -167,18 +167,57 @@ pub fn refusal(action: &str) -> String {
 pub const NO_IDENTITY_WARNING: &str = "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead.\n";
 
 /// Whether `target` is an event-only sink that is never resolved:
-/// `telegram:*`, `discord:*` or exactly one of the three permanent `ae:`
-/// ledger namespaces — `ae:compact:` (legacy-only, never written again),
-/// `ae:reboot:` (the destructive writer) and `ae:seats:` (reserved) — a
-/// whitelist, because the failure this family can produce is a silent no-op
-/// delivery, so an `ae:`-shaped typo must still fail loudly.
+/// `telegram:*`, `discord:*`, exactly [`CONSOLE_SINK`], or exactly one of
+/// the three permanent `ae:` ledger namespaces — `ae:compact:` (legacy-only,
+/// never written again), `ae:reboot:` (the destructive writer) and
+/// `ae:seats:` (reserved) — a whitelist, because the failure this family can
+/// produce is a silent no-op delivery, so an `ae:`-shaped typo must still fail
+/// loudly.
 #[must_use]
 pub fn is_external(target: &str) -> bool {
     target.starts_with("telegram:")
         || target.starts_with("discord:")
+        || target == CONSOLE_SINK
         || target.starts_with("ae:compact:")
         || target.starts_with("ae:reboot:")
         || target.starts_with("ae:seats:")
+}
+
+/// The actor the human's console asks as, and the ONE sink a `reply` to such
+/// an ask names. Only the console's own submit builds it: no helper speaks as
+/// it and nothing but a `reply` is addressed to it.
+pub const CONSOLE_SINK: &str = "console:local";
+
+/// The namespace no `send`, `ask` or `review` may address, and no
+/// `AE_SENDER_OVERRIDE` may name.
+pub(crate) const CONSOLE_NAMESPACE: &str = "console:";
+
+/// The refusals the words alone decide, before any identity or pane: a
+/// request to the console is a usage error, an empty body a failure.
+fn refused_words(action: &str, parsed: &Parsed, err: &mut impl Write) -> io::Result<Option<u8>> {
+    if let Some(refusal) = console_target_refusal(action, &parsed.target) {
+        write!(err, "{refusal}")?;
+        return Ok(Some(EXIT_USAGE));
+    }
+    if is_blank(&parsed.body) {
+        write!(err, "{}", refusal(action))?;
+        return Ok(Some(EXIT_FAILED));
+    }
+    Ok(None)
+}
+
+/// The refusal for a `verb` addressed to the console, or `None` when `target`
+/// is outside its namespace. An ask there would be an event nobody reads, so
+/// it names the channels that do reach the human.
+#[must_use]
+pub(crate) fn console_target_refusal(verb: &str, target: &str) -> Option<String> {
+    target.starts_with(CONSOLE_NAMESPACE).then(|| {
+        format!(
+            "ae: {verb} to the console REFUSED — it takes replies only: answer a console ask \
+             with `reply <id> <text>`, and reach the human with `say <text>` or \
+             `state waiting-user <reason>`.\n"
+        )
+    })
 }
 
 /// `ae_make_req_id`: `<prefix>-<YYYYMMDDTHHMMSSZ>-<8 lowercase hex>`. The
@@ -1541,9 +1580,8 @@ pub fn run(
         write!(err, "{}", kind.usage())?;
         return Ok(EXIT_USAGE);
     };
-    if is_blank(&parsed.body) {
-        write!(err, "{}", refusal(action))?;
-        return Ok(EXIT_FAILED);
+    if let Some(code) = refused_words(action, &parsed, err)? {
+        return Ok(code);
     }
     let Some(sender) = sender else {
         // The fallback: a plain send, which writes its own event.
@@ -1911,6 +1949,21 @@ mod tests {
             "ae:seatsx:",
             "ae:reboots:",
             "ae:other:x",
+        ] {
+            assert!(!is_external(refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn the_console_sink_is_external_by_exact_spelling_only() {
+        assert!(is_external(super::CONSOLE_SINK));
+        for refused in [
+            "console:",
+            "console:x",
+            "console:localx",
+            "console:local:",
+            "Console:local",
+            "console:orchestrator",
         ] {
             assert!(!is_external(refused), "{refused}");
         }
