@@ -5,6 +5,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod grok;
 mod pace;
 
 use std::fmt::Write as _;

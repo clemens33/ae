@@ -77,6 +77,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quota_grok_log"
+path = "fuzz_targets/quota_grok_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "usage_claude_transcript"
 path = "fuzz_targets/usage_claude_transcript.rs"
 test = false

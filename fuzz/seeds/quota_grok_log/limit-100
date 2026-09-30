@@ -1,0 +1,1 @@
+1{"ts":"2026-09-19T12:24:44.712Z","src":"shell","pid":7,"ver":"1.0.34","lvl":"info","msg":"billing: fetched credits config","ctx":{"config":{"creditUsagePercent":100.0,"billingPeriodStart":"2026-09-28T00:00:00Z","billingPeriodEnd":"2026-10-05T00:00:00Z"},"onDemandEnabled":false,"subscriptionTier":"SuperGrok"}}

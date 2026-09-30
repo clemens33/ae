@@ -1,0 +1,2 @@
+1ÿþ billing: fetched credits config À
+{"ts":"2026-09-30T07:08:44Z","src":"shell","pid":7,"ver":"1.0.44","lvl":"info","msg":"billing: fetched credits config","ctx":{"config":{"creditUsagePercent":4.0,"billingPeriodStart":"2026-09-28T00:00:00Z","billingPeriodEnd":"2026-10-05T00:00:00Z"},"onDemandEnabled":false,"subscriptionTier":"SuperGrok"}}
