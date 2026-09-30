@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.192] - 2026-09-30
+- Size the test lane from jobs-budget and run its heavy cargo niced
+- Bound the jobs-budget answer to three digits and name an unset jobs value honestly
+- Put codex config overrides behind the resume id so a resumed seat keeps its effort
+- Re-resolve a resumed seat from its restored profile
+- Read codex 0.159 frames through the shortcuts hint row
+- Read a codex Working line through the tip row under it
+- Prove a resume's restored profiles before the migration writes
+- Refuse an unlaunchable roster and an unreadable config before the migration writes
+- Bound the heal test signal wait and name the orchestrator resume residual
+- Say the orchestrator preflight skip covers any session named orchestrator
+- Pin the half-drawn Working row and a broken seat overlay on an orchestrator resume
+
 ## [v2026.9.191] - 2026-09-30
 - Add the console lane fold and a seat-filtered board read
 - Add the ae console read view with follow
