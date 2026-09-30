@@ -325,6 +325,10 @@ fn read_codex(capture: &str) -> Option<FrameReading> {
 /// The codex composer's placeholder, which it draws only while the box is empty.
 const CODEX_PLACEHOLDER: &str = "› Ask Codex to do anything";
 
+/// The hint row codex 0.159 draws under the footer, alone or with a right-aligned
+/// `⚠ N warning` cell; the only row [`codex_frame`] skips below the footer.
+const CODEX_HINT_ROW: &str = "? for shortcuts";
+
 /// Codex's last two inked rows, read as its composer and footer, and the row
 /// above the composer.
 struct CodexFrame {
@@ -340,11 +344,21 @@ struct CodexFrame {
 /// the footer read as blanks, so neither the Working line nor the footer parse
 /// can be broken by one. The composer row stays RAW, because a dot there may
 /// stand in for a placeholder letter ([`codex_placeholder`]).
+///
+/// ONE trailing [`CODEX_HINT_ROW`] is set aside first, so the composer and
+/// footer are still the last two rows under it. A row quoting the hint anywhere
+/// but last is transcript and moves nothing.
 fn codex_frame(capture: &str) -> Option<CodexFrame> {
-    let lines: Vec<Cow<'_, str>> = clean_lines(capture)
+    let mut lines: Vec<Cow<'_, str>> = clean_lines(capture)
         .into_iter()
         .filter(|line| !crate::deliver::region::is_furniture(line))
         .collect();
+    if lines
+        .last()
+        .is_some_and(|line| line.starts_with(CODEX_HINT_ROW))
+    {
+        lines.pop();
+    }
     let (before, [prompt, footer]) = lines.as_slice().split_last_chunk::<2>()?;
     Some(CodexFrame {
         above: before.last().map(|line| braille_blanked(line)),
@@ -565,13 +579,14 @@ fn codex_footer_parts(line: &str) -> Option<(&str, &str, &str)> {
 /// name (`GPT-6-Sol`), which its API refuses as a model, and codex's
 /// observation is replayed into `-m` — so a footer model is matched ignoring
 /// ASCII case and read as THIS list's spelling, never as drawn.
-const CODEX_MODELS: [&str; 6] = [
+const CODEX_MODELS: [&str; 7] = [
     "gpt-5.6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-6-astra",
     "gpt-6-luna",
     "gpt-6-sol",
+    "gpt-6.1-sol",
 ];
 
 fn parse_codex_identity(line: &str) -> HarnessIdentity {
@@ -788,9 +803,9 @@ fn valid_effort(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        HarnessIdentity, HarnessState, IdleCarry, classify, claude_input_frame, clean_lines,
-        current_identity, decode_idle, encode_idle, has_human_draft, is_effort_word, observable,
-        observed_from_option, observed_identity, read_frame,
+        CODEX_HINT_ROW, HarnessIdentity, HarnessState, IdleCarry, classify, claude_input_frame,
+        clean_lines, current_identity, decode_idle, encode_idle, has_human_draft, is_effort_word,
+        observable, observed_from_option, observed_identity, read_frame,
     };
     use crate::tool::ToolKind;
 
@@ -1149,6 +1164,77 @@ mod tests {
                 effort: Some("xhigh".to_owned())
             }
         );
+    }
+
+    const WORKING_HINT: &str =
+        include_str!("../tests/fixtures/harness-state/codex-working-hint-0.159.2-215w.txt");
+    const IDLE_HINT: &str =
+        include_str!("../tests/fixtures/harness-state/codex-idle-hint-0.159.2.txt");
+
+    fn without_hint(capture: &str) -> String {
+        let rows: Vec<&str> = capture
+            .lines()
+            .filter(|row| !row.trim_start().starts_with(CODEX_HINT_ROW))
+            .collect();
+        rows.join("\n") + "\n"
+    }
+
+    /// The profile a lead launches on today is `-m gpt-6.1-sol`, so the model a
+    /// human switches TO in that pane is one the closed list must already know:
+    /// a footer id outside it proves no model, the drift row is never written
+    /// and the manual choice is never followed. The frames are live codex
+    /// 0.159 captures drawing the catalog name `GPT-6.1-Sol`, and each reads
+    /// the same with and without the `? for shortcuts` row under its footer.
+    #[test]
+    fn a_measured_gpt_6_1_sol_frame_reads_as_the_id_the_profile_launches() {
+        for (capture, effort) in [(WORKING_HINT, "high"), (IDLE_HINT, "xhigh")] {
+            let bare = without_hint(capture);
+            assert!(!bare.contains(CODEX_HINT_ROW));
+            for frame in [capture, bare.as_str()] {
+                if capture == IDLE_HINT {
+                    assert_eq!(classify(frame, ToolKind::Codex), HarnessState::Idle);
+                }
+                assert_eq!(
+                    current_identity(frame, ToolKind::Codex),
+                    HarnessIdentity {
+                        model: Some("gpt-6.1-sol".to_owned()),
+                        effort: Some(effort.to_owned())
+                    }
+                );
+            }
+            assert!(!has_human_draft(capture, ToolKind::Codex));
+        }
+    }
+
+    /// Only a LAST hint row is set aside: a quoted one above the frame, or one
+    /// drawn between the composer and the footer, is read as it always was.
+    #[test]
+    fn a_quoted_hint_row_moves_nothing() {
+        let idle = without_hint(IDLE_HINT);
+        let quoted = format!("  ? for shortcuts quoted\n{idle}");
+        assert_eq!(classify(&quoted, ToolKind::Codex), HarnessState::Idle);
+        let between = idle.replace("\n\n  GPT-6.1-Sol", "\n  ? for shortcuts\n  GPT-6.1-Sol");
+        assert_ne!(between, idle);
+        assert_eq!(classify(&between, ToolKind::Codex), HarnessState::Unknown);
+    }
+
+    /// No frame measured before codex 0.159 draws the hint row, so setting it
+    /// aside changes none of the earlier fixtures.
+    #[test]
+    fn no_earlier_codex_fixture_draws_the_hint_row() {
+        for capture in [
+            include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-idle-112x20.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-idle-wrapped-112x40.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-idle-old-busy-280x40.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-modal-112x40.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-starfield-216x6.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
+        ] {
+            assert!(!capture.contains(CODEX_HINT_ROW));
+        }
     }
 
     #[test]
