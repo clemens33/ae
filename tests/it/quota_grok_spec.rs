@@ -105,35 +105,36 @@ fn quota_cli_reads_only_its_scratch_home() {
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn fresh_credits_show_used_reset_and_observation_age() {
     let rig = Rig::new("fresh");
     rig.plant(record(FRESH, "37.0", false));
     let text = rig.quota();
     // Main 17afa2af: quota.rs:2932-2939 wraps non-weekly_scoped qualifiers;
     // quota.rs:273-276 shows EFFECTIVE as '-' when no reset is declared.
+    // Main 2e23ba38: quota/pace.rs:153-166 requires sufficient history;
+    // one observation leaves PACE unknown, spelled at pace.rs:203.
     assert!(
-        compact(&text).contains("credits (super) 7d 37% - - in 6d 23h 5m ago fresh"),
+        compact(&text).contains("credits (super) 7d 37% - - unknown in 6d 23h 5m ago fresh"),
         "{text}"
     );
     assert!(!text.contains("unsupported"), "{text}");
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn idle_log_is_stale_and_keeps_its_actual_age() {
     let rig = Rig::new("stale");
     rig.plant(record("2026-09-08T07:05:00.000Z", "37", false));
     let text = rig.quota();
+    // Main 2e23ba38: quota/pace.rs:396-405 refuses pace after 60 minutes;
+    // PACE is '-', while USED and the actual stale age stay visible.
     assert!(
-        compact(&text).contains("37% - - in 6d 23h 2h05m ago stale"),
+        compact(&text).contains("37% - - - in 6d 23h 2h05m ago stale"),
         "{text}"
     );
     assert!(!text.contains(" fresh"), "{text}");
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn newest_timestamp_wins_even_when_older_record_is_last() {
     let rig = Rig::new("order");
     rig.plant(format!(
@@ -143,7 +144,7 @@ fn newest_timestamp_wins_even_when_older_record_is_last() {
     ));
     let text = rig.quota();
     assert!(
-        compact(&text).contains("37% - - in 6d 23h 5m ago fresh"),
+        compact(&text).contains("37% - - unknown in 6d 23h 5m ago fresh"),
         "{text}"
     );
     assert!(!text.contains("91%"), "{text}");
@@ -154,7 +155,6 @@ fn newest_timestamp_wins_even_when_older_record_is_last() {
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn newest_unusable_percentage_never_resurrects_an_older_number() {
     for (tag, percent) in [("null", "null"), ("negative", "-1"), ("overflow", "1e999")] {
         let rig = Rig::new(tag);
@@ -172,7 +172,6 @@ fn newest_unusable_percentage_never_resurrects_an_older_number() {
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn future_at_inclusive_five_minute_boundary_is_unknown_without_numbers_or_age() {
     let rig = Rig::new("future");
     rig.plant(format!(
@@ -194,7 +193,6 @@ fn future_at_inclusive_five_minute_boundary_is_unknown_without_numbers_or_age() 
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn shared_log_noise_and_malformed_candidates_do_not_blind_quota() {
     let rig = Rig::new("noise");
     let mut bytes = format!(
@@ -211,13 +209,12 @@ fn shared_log_noise_and_malformed_candidates_do_not_blind_quota() {
     rig.plant(bytes);
     let text = rig.quota();
     assert!(
-        compact(&text).contains("37% - - in 6d 23h 5m ago fresh"),
+        compact(&text).contains("37% - - unknown in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn candidate_prefilter_accepts_spacing_and_key_order_changes() {
     let rig = Rig::new("spacing");
     let spaced = record(FRESH, "37", false)
@@ -227,13 +224,12 @@ fn candidate_prefilter_accepts_spacing_and_key_order_changes() {
     rig.plant(spaced);
     let text = rig.quota();
     assert!(
-        compact(&text).contains("37% - - in 6d 23h 5m ago fresh"),
+        compact(&text).contains("37% - - unknown in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn no_billing_candidate_preserves_unsupported_without_echoing_noise() {
     let rig = Rig::new("empty");
     rig.plant(format!(
@@ -243,13 +239,12 @@ fn no_billing_candidate_preserves_unsupported_without_echoing_noise() {
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn on_demand_note_does_not_replace_the_full_window_percentage() {
     let rig = Rig::new("demand");
     rig.plant(record(FRESH, "100.0", true));
     let text = rig.quota();
     assert!(
-        compact(&text).contains("100% - - in 6d 23h 5m ago fresh"),
+        compact(&text).contains("100% - - unknown in 6d 23h 5m ago fresh"),
         "{text}"
     );
     assert_eq!(
@@ -264,7 +259,6 @@ fn on_demand_note_does_not_replace_the_full_window_percentage() {
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn declared_manual_reset_uses_the_same_effective_headroom_rule() {
     let rig = Rig::new("reset");
     std::fs::write(
@@ -275,13 +269,12 @@ fn declared_manual_reset_uses_the_same_effective_headroom_rule() {
     rig.plant(record(FRESH, "96", false));
     let text = rig.quota();
     assert!(
-        compact(&text).contains("96% 48% x1 - in 6d 23h 5m ago fresh"),
+        compact(&text).contains("96% 48% x1 - unknown in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn tail_read_keeps_a_complete_record_inside_the_last_512_kib() {
     let rig = Rig::new("tail");
     let mut bytes = vec![b'x'; 550 * 1024];
@@ -292,13 +285,12 @@ fn tail_read_keeps_a_complete_record_inside_the_last_512_kib() {
     rig.plant(bytes);
     let text = rig.quota();
     assert!(
-        compact(&text).contains("37% - - in 6d 23h 5m ago fresh"),
+        compact(&text).contains("37% - - unknown in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn record_cut_by_the_tail_cap_is_dropped_without_older_fallback() {
     let rig = Rig::new("cut");
     let candidate = record(FRESH, "37", false);
@@ -314,7 +306,6 @@ fn record_cut_by_the_tail_cap_is_dropped_without_older_fallback() {
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn missing_period_end_is_unsupported_without_older_fallback() {
     let rig = Rig::new("noend");
     let newest = record(FRESH, "37", false).replace(
@@ -326,7 +317,6 @@ fn missing_period_end_is_unsupported_without_older_fallback() {
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn implausible_period_is_unknown_without_window_numbers() {
     let rig = Rig::new("period");
     rig.plant(
@@ -345,7 +335,6 @@ fn implausible_period_is_unknown_without_window_numbers() {
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 fn rejected_tier_bytes_never_reach_a_cell_or_note() {
     let rig = Rig::new("tier");
     rig.plant(
@@ -353,13 +342,12 @@ fn rejected_tier_bytes_never_reach_a_cell_or_note() {
     );
     let text = rig.quota();
     assert!(
-        compact(&text).contains("credits 7d 37% - - in 6d 23h 5m ago fresh"),
+        compact(&text).contains("credits 7d 37% - - unknown in 6d 23h 5m ago fresh"),
         "{text}"
     );
 }
 
 #[test]
-#[ignore = "grok phase 2"]
 #[cfg(unix)]
 fn symlinked_log_is_refused_without_using_its_window() {
     let rig = Rig::new("symlink");
