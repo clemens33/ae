@@ -3,6 +3,7 @@
 //! Parsing stays separate from discovery and rendering: the client files are
 //! hostile persisted state, while this module is a pure bytes-to-rows boundary.
 
+pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod grok;

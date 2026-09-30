@@ -60,6 +60,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `quota_claude_cache` | `quota::claude::parse` | one Claude settings file, at a fixed and a chosen clock |
 | `quota_codex_rollout` | `quota::codex::parse` (rows, account facts and the thinned per-window history) | first byte the record boundary, the rest a rollout tail |
 | `quota_grok_log` | `quota::grok::parse` | first byte the line boundary, the rest a grok debug-log tail, at a fixed and a chosen clock |
+| `quota_agy_output` | `quota::agy::{version, supports_quota, parse}` | one agy stdout capture: a `--version` answer and a `/quota` report, at a fixed and a chosen clock |
 | `usage_claude_transcript` | `usage::claude::parse` | one Claude assistant transcript JSONL stream |
 | `usage_codex_rollout` | `usage::codex::parse_with_head` | first byte the record boundary, then split bounded head/tail Codex rollout bytes |
 | `usage_prices` | `usage::prices::parse_row` | one `[prices]` alias row |

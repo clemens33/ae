@@ -84,6 +84,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quota_agy_output"
+path = "fuzz_targets/quota_agy_output.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "usage_claude_transcript"
 path = "fuzz_targets/usage_claude_transcript.rs"
 test = false

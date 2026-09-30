@@ -1,0 +1,1 @@
+{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":1,"reset_time":"2000-01-01T00:00:00Z"}]}]}}}

@@ -1742,6 +1742,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     // the descendants are the whole reason this guard exists.
     for required in [
         "src/quota.rs",
+        "src/quota/agy.rs",
         "src/quota/codex.rs",
         "src/quota/claude.rs",
         "src/quota/pace.rs",
@@ -1754,20 +1755,21 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
             "{required} was never visited, so this guard proved nothing about it: {seen:?}"
         );
     }
-    // A census of PHYSICAL PATHS under `src/quota/`, and only that. A fifth
+    // A census of PHYSICAL PATHS under `src/quota/`, and only that. A sixth
     // file there trips this and gets its own review (`pace.rs` was the third,
     // reviewed for exactly this: it judges through `Derived` and builds no
     // level; `grok.rs` the fourth: it reads one bounded log tail and builds no
-    // level). Two descendants it cannot see: a module written INLINE inside
+    // level; `agy.rs` the fifth, a pure bytes-to-rows parser that builds no
+    // level either). Two descendants it cannot see: a module written INLINE inside
     // `src/quota.rs`, because the owner file is skipped whole, and a
     // `#[path]`-attributed module whose file lives outside this directory, which is scanned with the Outside needles and
-    // leaves the count at four. Neither is a reach today; both would be a
+    // leaves the count at five. Neither is a reach today; both would be a
     // reviewed change to the owner file rather than something a needle catches.
     assert_eq!(
         seen.iter()
             .filter(|name| name.starts_with("src/quota/"))
             .count(),
-        4,
+        5,
         "the quota directory gained or lost a file, and each one needs the \
          child scan: {seen:?}"
     );
