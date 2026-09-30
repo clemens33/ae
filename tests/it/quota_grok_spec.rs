@@ -217,9 +217,10 @@ fn shared_log_noise_and_malformed_candidates_do_not_blind_quota() {
 #[test]
 fn candidate_prefilter_accepts_spacing_and_key_order_changes() {
     let rig = Rig::new("spacing");
+    // Change separators only; message and timestamp values stay literal.
     let spaced = record(FRESH, "37", false)
-        .replace(':', ": ")
-        .replace(',', ", ")
+        .replace("\":", "\": ")
+        .replace(",\"", ", \"")
         .replace("{\"ts\":", "{\"ignored\": true, \"ts\":");
     rig.plant(spaced);
     let text = rig.quota();
