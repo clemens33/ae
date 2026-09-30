@@ -187,3 +187,10 @@ path = "fuzz_targets/challenge_summary.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "console_command"
+path = "fuzz_targets/console_command.rs"
+test = false
+doc = false
+bench = false

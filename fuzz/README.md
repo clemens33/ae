@@ -77,6 +77,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `board_opencode` | `board::opencode::read` (whole document) at a fixed session id + `board::collect` | first byte is the `--assistant` flag (`& 1`), the rest ONE `opencode export` JSON document. No chunk-size byte, deliberately: this reader has no splitter, because an export is one JSON document, never JSONL (synthetic records in the real shape; content is hand-written, never copied) |
 | `brief_retry_record` | `brief_retry::parse`, plus `render` on whatever parsed | one seat's undelivered-brief retry record; a parse that succeeds must render back to bytes that parse identically |
 | `challenge_summary` | `watchdog::challenge_named` | one watchdog record's summary: a done or wait challenge as written, `[unconfirmed]`, with a refused-pre-paste tail, or behind a delivery-abandoned refusal reason |
+| `console_command` | `console::input::Input` (chunked feeds) + `console::input::command` + `console::input::paint` | first byte sizes the reads 1..=256, the rest what a terminal sent an owning console: a read boundary changes no effect, every ask re-reads as itself, and nothing drawn carries a control byte but a newline |
 
 NOTE — production also emits `chat`, `focus`, `refused`, `delivery-failed` and `telegram_autostart_refused`, which carry no seeds: `from_json` never branches on `action`, so they add zero coverage to THIS target — but a future target driving `ref_meaning` or `alert_meaning` would need them.
 

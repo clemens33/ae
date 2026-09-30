@@ -15,6 +15,7 @@ use crate::{
 };
 use lane::Seat;
 
+pub mod input;
 pub mod lane;
 pub mod submit;
 pub(crate) mod toggle;
