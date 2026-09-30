@@ -260,6 +260,21 @@ mod tests {
     }
 
     #[test]
+    fn the_boards_own_gaps_print_on_every_tick_and_a_lane_gap_only_once() {
+        let mut printed = Printed::default();
+        let both = lane(vec![], &["board gap", "lane gap"]);
+        assert_eq!(
+            printed.step(&both, 1, true),
+            "coverage incomplete: board gap\ncoverage incomplete: lane gap\n"
+        );
+        assert_eq!(
+            printed.step(&both, 1, true),
+            "coverage incomplete: board gap\n",
+            "only the board's own gap comes back"
+        );
+    }
+
+    #[test]
     fn a_card_that_stops_standing_is_closed_out_loud_and_a_newer_one_prints() {
         let mut printed = Printed::default();
         let asks = lane(vec![item(card("lead"), T, "ship v2?")], &[]);
