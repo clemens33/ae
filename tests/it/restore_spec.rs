@@ -709,7 +709,59 @@ fn a_private_server_crash_restores_the_previously_running_session() {
 }
 
 #[test]
-#[ignore = "restore phase 3"]
+fn a_project_restore_off_cannot_override_the_global_restore_policy() {
+    let fleet = Fleet::new("local-off");
+    std::fs::write(fleet.home.join("config"), format!("{CONFIG}restore = on\n"))
+        .expect("global restore policy");
+    let local = fleet.project.join(".ae");
+    std::fs::create_dir_all(&local).expect("project config directory");
+    std::fs::write(local.join("config"), "[workspace]\nrestore = off\n")
+        .expect("project opt-out must not vote");
+    fleet.missing("saved", 600, Some(60));
+    let out = fleet.run(&["--no-attach"]);
+    success(&out);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("ae: restored saved"));
+    assert_eq!(fleet.names(), ["keeper", "saved"]);
+}
+
+#[test]
+fn unusable_restore_values_stay_on_and_are_named_once_on_stderr() {
+    // An unquoted empty value fails the shared reader; its reason names "invalid".
+    for (value, seen) in [
+        ("OFF", "OFF"),
+        ("ascii", "ascii"),
+        ("no", "no"),
+        ("", "invalid"),
+    ] {
+        let fleet = Fleet::new("bad-restore");
+        fleet.missing("saved", 600, Some(60));
+        std::fs::write(
+            fleet.home.join("config"),
+            format!("{CONFIG}restore = {value}\n"),
+        )
+        .expect("unusable global declaration");
+        let out = fleet.run(&["--no-attach"]);
+        success(&out);
+        assert!(String::from_utf8_lossy(&out.stdout).contains("ae: restored saved"));
+        assert_eq!(fleet.names(), ["keeper", "saved"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| {
+                    line.contains("restore")
+                        && line
+                            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+                            .any(|token| token == seen)
+                })
+                .count(),
+            1,
+            "one note must name unusable declaration {value:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn restore_off_preserves_the_empty_server_hint_and_saved_state_byte_for_byte() {
     let fleet = Fleet::new("off");
     fleet.launch("saved");
