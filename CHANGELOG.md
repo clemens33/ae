@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.191] - 2026-09-30
+- Add the console lane fold and a seat-filtered board read
+- Add the ae console read view with follow
+- Add the console window toggle and the lead-pane jump keys
+- Pin the whole console argv grammar
+- Pin the console key verb argv from outside
+- Bound the console binary tests with a deadline
+- Pin the jump key to a lead pane its session still holds
+- Address the jump pin sessions by exact tmux target
+- Pin that the board own coverage gaps print on every tick
+
 ## [v2026.9.190] - 2026-09-29
 - Give the watchdog nudge arm its own 40 s budget
 
