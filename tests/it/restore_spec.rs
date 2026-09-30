@@ -6,11 +6,12 @@
     reason = "acceptance fixtures create and inspect their own isolated session state"
 )]
 
+use std::io::{BufRead as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
-use super::cli::{OwnedScratch, Runner, ae, bounded};
+use super::cli::{OwnedChild, OwnedScratch, Runner, ae, bounded};
 use super::phase2::run_tmux;
 
 const CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n[roster]\nlead = idle\n\
@@ -153,13 +154,20 @@ impl Fleet {
 
     fn identity(&self, name: &str) -> String {
         let (ok, identity) = self.tmux(&[
-            "display-message",
-            "-p",
+            "list-panes",
+            "-s",
             "-t",
             &format!("={name}"),
+            "-F",
             "#{session_id}|#{@ae_session_uuid}|#{pane_id}",
         ]);
-        assert!(ok, "live identity of {name}");
+        assert!(
+            ok && identity
+                .lines()
+                .next()
+                .is_some_and(|row| row.starts_with('$')),
+            "live identity of {name}: {identity}"
+        );
         identity
     }
 
@@ -195,6 +203,84 @@ fn unchanged(path: &Path, before: &[u8]) {
         std::fs::read(path).unwrap_or_else(|why| panic!("retained state: {why}")),
         before
     );
+}
+
+fn skip_reason(stderr: &str, name: &str) -> String {
+    // Per-session explanations precede summaries that may name several sessions.
+    stderr
+        .lines()
+        .find(|line| {
+            line.split(|character: char| !character.is_ascii_alphanumeric() && character != '-')
+                .any(|token| token == name)
+        })
+        .unwrap_or_else(|| panic!("skipped {name} unnamed on stderr: {stderr}"))
+        .replacen(name, "", 1)
+        .to_ascii_lowercase()
+}
+
+fn waiting_restore(
+    fleet: &Fleet,
+    name: &str,
+) -> (std::fs::File, OwnedChild, std::thread::JoinHandle<String>) {
+    let held = ae::store::lock(
+        &fleet
+            .home
+            .join("sessions")
+            .join(format!(".lifecycle.{name}.lock")),
+        Duration::from_secs(1),
+    )
+    .unwrap_or_else(|why| panic!("hold fixture lifecycle lock: {why}"));
+    let mut command = fleet.command(&["--no-attach"]);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|why| panic!("restore waiting on lifecycle lock: {why}"));
+    let stdout = child
+        .stdout
+        .take()
+        .unwrap_or_else(|| panic!("restore stdout pipe"));
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut transcript = String::new();
+        let _ = reader.read_line(&mut transcript);
+        let _ = sender.send(transcript.clone());
+        reader
+            .read_to_string(&mut transcript)
+            .unwrap_or_else(|why| panic!("restore progress stream: {why}"));
+        transcript
+    });
+    // Public progress follows the advisory scan and precedes the lock. The
+    // pipe/channel barrier makes the following ledger/beat change a real race.
+    let first = receiver.recv_timeout(Duration::from_secs(10));
+    let expected = format!("ae: restoring {name}");
+    let started = first.as_ref().is_ok_and(|line| {
+        line.trim_end()
+            .strip_prefix(&expected)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(' '))
+    });
+    if !started {
+        let _ = child.kill();
+        let failed = bounded(child, Duration::from_secs(5));
+        let transcript = reader.join().unwrap_or_default();
+        panic!("restore progress missing: first={first:?}, out={failed:?}, stdout={transcript}");
+    }
+    (held, child, reader)
+}
+
+fn finish_restore(
+    child: OwnedChild,
+    reader: std::thread::JoinHandle<String>,
+) -> std::process::Output {
+    let output = bounded(child, Duration::from_mins(2));
+    let stdout = reader
+        .join()
+        .unwrap_or_else(|why| panic!("restore reader: {why:?}"));
+    let mut output = output.unwrap_or_else(|| panic!("restore must terminate"));
+    output.stdout = stdout.into_bytes();
+    output
 }
 
 #[test]
@@ -240,7 +326,6 @@ fn resume_retains_latest_clean_stop_even_behind_a_later_failed_stop() {
 }
 
 #[test]
-#[ignore = "restore phase 2"]
 fn bare_restore_resumes_only_the_recent_unstopped_watched_cohort() {
     let fleet = Fleet::new("cohort");
     for name in ["alpha", "beta", "failed"] {
@@ -248,20 +333,20 @@ fn bare_restore_resumes_only_the_recent_unstopped_watched_cohort() {
     }
     fleet.event("failed", 500, "stop-result", "FAILED: unavailable");
     fleet.missing("edge", 1800, Some(960)); // W=900 inclusive.
-    fleet.missing("abandoned", 1800, Some(961)); // W+1 excluded.
-    fleet.missing("stopped", 600, Some(60));
-    fleet.event("stopped", 500, "stop-result", "already stopped");
-    fleet.missing("equal", 600, Some(60));
+    fleet.missing("s-old", 1800, Some(961)); // W+1 excluded.
+    fleet.missing("s-clean", 600, Some(60));
+    fleet.event("s-clean", 500, "stop-result", "already stopped");
+    fleet.missing("s-equal", 600, Some(60));
     fleet.event(
-        "equal",
+        "s-equal",
         600,
         "stop-result",
         "stopped: verified gone on its recorded server",
     );
-    fleet.missing("unwatched", 600, None);
+    fleet.missing("s-nobeat", 600, None);
     // Lead ruling 2026-09-30: a pre-launch beat belongs to the prior incarnation.
-    fleet.missing("priorbeat", 30, Some(60));
-    let frozen = ["abandoned", "stopped", "equal", "unwatched", "priorbeat"].map(|name| {
+    fleet.missing("s-prior", 30, Some(60));
+    let frozen = ["s-old", "s-clean", "s-equal", "s-nobeat", "s-prior"].map(|name| {
         (
             name,
             std::fs::read(fleet.dir(name).join("meta")).expect("saved meta"),
@@ -274,13 +359,23 @@ fn bare_restore_resumes_only_the_recent_unstopped_watched_cohort() {
     for name in ["alpha", "beta", "edge", "failed"] {
         assert!(progress.contains(name), "{progress}");
     }
+    let skipped = String::from_utf8_lossy(&out.stderr);
     for (name, before) in frozen {
         unchanged(&fleet.dir(name).join("meta"), &before);
+        let explanation = skip_reason(&skipped, name);
+        let causes: &[&str] = match name {
+            "s-old" => &["beat", "window", "old", "abandoned"],
+            "s-clean" | "s-equal" => &["stop", "shutdown"],
+            _ => &["beat", "watch", "incarnation", "launch"],
+        };
+        assert!(
+            causes.iter().any(|cause| explanation.contains(cause)),
+            "skipped {name} lacks its eligibility reason: {skipped}"
+        );
     }
 }
 
 #[test]
-#[ignore = "restore phase 2"]
 fn a_fresh_live_sibling_does_not_evict_or_replace_the_crashed_cohort() {
     let fleet = Fleet::new("live");
     fleet.launch("live");
@@ -295,7 +390,34 @@ fn a_fresh_live_sibling_does_not_evict_or_replace_the_crashed_cohort() {
 }
 
 #[test]
-#[ignore = "restore phase 2"]
+fn a_present_non_ae_session_cannot_evict_the_crashed_cohort() {
+    let fleet = Fleet::new("occupied");
+    fleet.missing("occupied", 7200, Some(0));
+    assert!(
+        fleet
+            .tmux(&["new-session", "-d", "-s", "occupied", "sleep 600"])
+            .0
+    );
+    // Lead ruling: every Present name is outside the cohort, including a
+    // same-name replacement without ae's ownership marker (tmux.rs:33).
+    assert!(
+        fleet
+            .tmux(&["set-environment", "-u", "-t", "=occupied", "AE_SESSION"])
+            .0
+    );
+    let (ok, _) = fleet.tmux(&["show-environment", "-t", "=occupied", "AE_SESSION"]);
+    assert!(!ok, "non-ae fixture retains AE_SESSION ownership marker");
+    let identity = fleet.identity("occupied");
+    fleet.missing("lost", 7200, Some(3600));
+    let path = fleet.dir("occupied").join("meta");
+    let before = std::fs::read(&path).expect("saved occupied meta");
+    success(&fleet.run(&["--no-attach"]));
+    assert_eq!(fleet.names(), ["keeper", "lost", "occupied"]);
+    assert_eq!(fleet.identity("occupied"), identity);
+    unchanged(&path, &before);
+}
+
+#[test]
 fn two_concurrent_bare_restores_and_a_later_repeat_keep_one_incarnation() {
     let fleet = Fleet::new("double");
     for name in ["alpha", "beta", "gamma"] {
@@ -331,7 +453,6 @@ fn two_concurrent_bare_restores_and_a_later_repeat_keep_one_incarnation() {
 }
 
 #[test]
-#[ignore = "restore phase 2"]
 fn a_session_stopped_through_ae_stays_stopped_beside_a_restored_sibling() {
     let fleet = Fleet::new("cleanstop");
     fleet.missing("lost", 600, Some(60));
@@ -349,7 +470,6 @@ fn a_session_stopped_through_ae_stays_stopped_beside_a_restored_sibling() {
 }
 
 #[test]
-#[ignore = "restore phase 2"]
 fn a_failed_restore_is_reported_without_preventing_the_next_session() {
     let fleet = Fleet::new("partial");
     fleet.missing("a-invalid", 600, Some(60));
@@ -371,7 +491,6 @@ fn a_failed_restore_is_reported_without_preventing_the_next_session() {
 }
 
 #[test]
-#[ignore = "restore phase 2"]
 fn a_pending_stop_request_is_not_overridden_by_bare_restore() {
     let fleet = Fleet::new("stopping");
     fleet.missing("stopping", 600, Some(60));
@@ -384,7 +503,6 @@ fn a_pending_stop_request_is_not_overridden_by_bare_restore() {
 }
 
 #[test]
-#[ignore = "restore phase 2"]
 fn a_failed_stop_request_allows_a_later_bare_restore() {
     let fleet = Fleet::new("failstop");
     fleet.missing("retry", 600, Some(60));
@@ -395,12 +513,11 @@ fn a_failed_stop_request_allows_a_later_bare_restore() {
 }
 
 #[test]
-#[ignore = "restore phase 2"]
 fn unproven_recorded_server_is_reported_and_skipped_beside_a_success() {
     let fleet = Fleet::new("unknown");
     fleet.missing("proven", 600, Some(60));
-    fleet.missing("unproven", 600, Some(60));
-    let path = fleet.dir("unproven").join("meta");
+    fleet.missing("u-saved", 600, Some(60));
+    let path = fleet.dir("u-saved").join("meta");
     let before = std::fs::read_to_string(&path).expect("saved server record");
     let missing = fleet.scratch.join("missing.sock");
     let edited = before
@@ -423,18 +540,154 @@ fn unproven_recorded_server_is_reported_and_skipped_beside_a_success() {
     assert_eq!(fleet.names(), ["keeper", "proven"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("unproven"),
-        "skipped session unnamed: {stderr}"
-    );
-    assert!(
-        stderr.contains("missing.sock"),
+        skip_reason(&stderr, "u-saved").contains("missing.sock"),
         "absence reason missing: {stderr}"
     );
     unchanged(&path, edited.as_bytes());
 }
 
 #[test]
-#[ignore = "restore phase 2"]
+fn a_clean_stop_landing_after_the_scan_is_rechecked_under_the_lifecycle_lock() {
+    let fleet = Fleet::new("lock-stop");
+    fleet.missing("held", 600, Some(60));
+    let path = fleet.dir("held").join("meta");
+    let before = std::fs::read(&path).expect("saved meta");
+    let (held, child, reader) = waiting_restore(&fleet, "held");
+    // Fixture epoch may precede scan wall time. This stop follows the advisory
+    // scan in ledger order and is newer than the controlled launch stamp.
+    fleet.event("held", 0, "stop-result", "already stopped");
+    drop(held);
+    let out = finish_restore(child, reader);
+    success(&out); // Keeper remains live; only this restore was skipped.
+    assert_eq!(fleet.names(), ["keeper"]);
+    assert!(skip_reason(&String::from_utf8_lossy(&out.stderr), "held").contains("stop"));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("ae: restored held"));
+    unchanged(&path, &before);
+}
+
+#[test]
+fn a_beat_moved_outside_the_carried_window_is_rechecked_under_the_lifecycle_lock() {
+    let fleet = Fleet::new("lock-beat");
+    fleet.missing("held", 1800, Some(60));
+    let path = fleet.dir("held").join("meta");
+    let before = std::fs::read(&path).expect("saved meta");
+    let (held, child, reader) = waiting_restore(&fleet, "held");
+    // Still newer than the launch, but older than the pre-scan cutoff at -960.
+    fleet.beat("held", fleet.epoch - 1200);
+    drop(held);
+    let out = finish_restore(child, reader);
+    success(&out);
+    assert_eq!(fleet.names(), ["keeper"]);
+    let reason = skip_reason(&String::from_utf8_lossy(&out.stderr), "held");
+    assert!(reason.contains("beat") || reason.contains("window"));
+    unchanged(&path, &before);
+}
+
+#[test]
+fn a_recorded_server_changed_after_the_scan_cannot_reuse_the_old_cohort_cutoff() {
+    let fleet = Fleet::new("lock-server");
+    let destination = Fleet::new("lock-server-target");
+    fleet.missing("held", 600, Some(60));
+    let path = fleet.dir("held").join("meta");
+    let before = std::fs::read_to_string(&path).expect("saved recorded server");
+    let edited = before
+        .lines()
+        .map(|line| {
+            if line.starts_with("tmux_server=") {
+                format!("tmux_server={}", destination.socket.display())
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_ne!(edited, before, "recorded server fixture key");
+    let (held, child, reader) = waiting_restore(&fleet, "held");
+    // Both private servers prove this name absent, so either preflight view
+    // succeeds. The locked recheck must bind the cutoff to the scanned server.
+    std::fs::write(&path, &edited).expect("change only the recorded server");
+    drop(held);
+    let out = finish_restore(child, reader);
+    success(&out);
+    assert_eq!(fleet.names(), ["keeper"]);
+    assert_eq!(destination.names(), ["keeper"]);
+    let reason = skip_reason(&String::from_utf8_lossy(&out.stderr), "held");
+    assert!(reason.contains("server") || reason.contains("record") || reason.contains("changed"));
+    unchanged(&path, edited.as_bytes());
+}
+
+#[test]
+fn a_manual_resume_and_bare_restore_create_one_incarnation() {
+    let fleet = Fleet::new("manual-race");
+    fleet.launch("joined");
+    let previous = fleet.identity("joined");
+    let previous = previous
+        .lines()
+        .next()
+        .expect("first identity row")
+        .split('|')
+        .next()
+        .expect("session id")
+        .trim_start_matches('$')
+        .parse::<u64>()
+        .expect("numeric session id");
+    assert!(fleet.tmux(&["kill-session", "-t", "=joined"]).0);
+    fleet.stamp("joined", fleet.epoch - 600);
+    fleet.beat("joined", fleet.epoch - 60);
+    let mut manual = fleet.command(&["joined", "--no-attach"]);
+    let manual = manual
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("manual resume");
+    let mut bare = fleet.command(&["--no-attach"]);
+    let bare = bare
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("bare restore beside manual resume");
+    success(&bounded(manual, Duration::from_mins(2)).expect("manual resume terminates"));
+    success(&bounded(bare, Duration::from_mins(2)).expect("bare restore terminates"));
+    assert_eq!(fleet.names(), ["joined", "keeper"]);
+    let identity = fleet.identity("joined");
+    // Same private server stayed alive: one new tmux session advances its id once.
+    assert_eq!(
+        identity
+            .lines()
+            .next()
+            .and_then(|row| row.split('|').next()),
+        Some(format!("${}", previous + 1).as_str())
+    );
+    success(&fleet.run(&["--no-attach"]));
+    assert_eq!(fleet.identity("joined"), identity);
+}
+
+#[test]
+fn only_unknown_candidates_on_an_empty_target_keep_the_exit_one_hint() {
+    let fleet = Fleet::new("unknown-empty");
+    fleet.missing("saved", 600, Some(60));
+    assert!(fleet.tmux(&["kill-session", "-t", "=keeper"]).0);
+    let path = fleet.dir("saved").join("meta");
+    let before = std::fs::read(&path).expect("saved meta");
+    let out = fleet.run(&["--no-attach"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let reason = skip_reason(&stderr, "saved");
+    assert!(
+        ["unproven", "unknown", "not before boot", "socket missing"]
+            .iter()
+            .any(|cause| reason.contains(cause)),
+        "missing absence explanation: {stderr}"
+    );
+    assert!(stderr.contains("ae: no running ae session. Start one with: ae <name>\n"));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("ae: restored"));
+    unchanged(&path, &before);
+}
+
+#[test]
 fn a_private_server_crash_restores_the_previously_running_session() {
     let fleet = Fleet::new("crash-on");
     fleet.launch("saved");
