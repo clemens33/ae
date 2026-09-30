@@ -25,6 +25,10 @@ const QUOTA_MAX_FILES: usize = 4_096;
 const QUOTA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const QUOTA_MAX_ELAPSED: Duration = Duration::from_secs(2);
 const CODEX_DISPLAY_ROLLOUTS: usize = 3;
+/// Where the grok CLI keeps its shared debug log, under its config home.
+const GROK_LOG: &str = "logs/unified.jsonl";
+/// Says why a full grok window may not block work.
+const ON_DEMAND_NOTE: &str = "on-demand spend enabled: a full window may not block work";
 /// Per-column display caps. Their sum plus two spaces between each pair of
 /// columns is [`TABLE_MAX_LINE`], the table's documented width ceiling: a new
 /// column is paid for here, in width, and the ceiling says what it cost.
@@ -1292,7 +1296,7 @@ pub(crate) fn recorded_identity(entry: &crate::meta::RosterEntry) -> Option<Reco
             }
             _ => return None,
         },
-        QuotaSource::Unsupported => return None,
+        QuotaSource::GrokLog | QuotaSource::Unsupported => return None,
     };
     // A Codex seat without a recorded conversation is not a proven identity;
     // the id itself is not part of the identity, because the window it would
@@ -1524,7 +1528,26 @@ pub(crate) fn observe_full(
                 groups.extend(observed.all);
                 rendered.extend(observed.rendered);
             }
-            QuotaSource::Unsupported => {
+            QuotaSource::Unsupported | QuotaSource::GrokLog => {
+                let (read, on_demand) = match quota.source {
+                    QuotaSource::GrokLog => read_grok(scope, inputs.now, &mut budget),
+                    _ => (ReadRows::Missing, false),
+                };
+                // No readable window is the row this tool always had.
+                let unsupported = matches!(read, ReadRows::Missing);
+                let observed = if unsupported {
+                    Observed {
+                        rows: vec![placeholder(Status::Unsupported)],
+                        account: Account::default(),
+                        series: Vec::new(),
+                    }
+                } else {
+                    rows_or_placeholder(read)
+                };
+                let mut notes = scope.notes.clone();
+                if on_demand {
+                    notes.push(ON_DEMAND_NOTE.to_owned());
+                }
                 let group = Group {
                     profiles: scope.profiles.clone(),
                     tool: scope.tool,
@@ -1533,14 +1556,16 @@ pub(crate) fn observe_full(
                     clients: scope.clients.clone(),
                     rollout: None,
                     owner: None,
-                    rows: vec![placeholder(Status::Unsupported)],
-                    hint: scope
-                        .hint
-                        .clone()
-                        .or_else(|| quota.unsupported_hint.map(str::to_owned)),
+                    rows: observed.rows,
+                    hint: scope.hint.clone().or_else(|| {
+                        quota
+                            .unsupported_hint
+                            .filter(|_| unsupported)
+                            .map(str::to_owned)
+                    }),
                     summary: None,
-                    policy: Policy::new(scope.manual_resets, Account::default()),
-                    notes: scope.notes.clone(),
+                    policy: Policy::new(scope.manual_resets, observed.account),
+                    notes,
                 };
                 rendered.push(group.clone());
                 groups.push(group);
@@ -1962,7 +1987,10 @@ fn resolved_scope_paths(
         crate::launch_cmd::Resolved::Absent => (None, None),
         crate::launch_cmd::Resolved::Unknown(reason) => (None, Some(reason)),
     };
-    if tool.adapter().quota.source == QuotaSource::Unsupported {
+    if matches!(
+        tool.adapter().quota.source,
+        QuotaSource::Unsupported | QuotaSource::GrokLog
+    ) {
         let fallback = tool
             .adapter()
             .quota
@@ -1978,10 +2006,16 @@ fn resolved_scope_paths(
             }
             None => None,
         };
+        // Grok has no config-home variable, so its log is only ever under the
+        // default home: one HOME, one source, one account.
+        let source = (tool.adapter().quota.source == QuotaSource::GrokLog)
+            .then(|| fallback.as_ref().map(|grok| grok.join(GROK_LOG)))
+            .flatten();
+        let source_key = source.clone().map(canonical_source).transpose()?;
         return Ok(ScopePaths {
             home: fallback,
-            source: None,
-            source_key: None,
+            source,
+            source_key,
             hint,
         });
     }
@@ -2008,7 +2042,7 @@ fn resolved_scope_paths(
         QuotaSource::CodexRollouts => home
             .as_ref()
             .map(|config_home| config_home.join("sessions")),
-        QuotaSource::Unsupported => None,
+        QuotaSource::GrokLog | QuotaSource::Unsupported => None,
     };
     let source_key = source.clone().map(canonical_source).transpose()?;
     Ok(ScopePaths {
@@ -2111,6 +2145,35 @@ fn read_claude(scope: &Scope, now: i64, budget: &mut Budget) -> ReadRows {
         }),
         Ok(_) => ReadRows::Missing,
         Err(_) => ReadRows::Failed,
+    }
+}
+
+/// The newest billing record in the Grok debug log, as one window.
+///
+/// A missing log or a record that names no usable window is `Missing`, which
+/// the caller shows as the row this tool always had; the flag is the vendor
+/// saying a full window does not stop spend.
+fn read_grok(scope: &Scope, now: i64, budget: &mut Budget) -> (ReadRows, bool) {
+    let Some(path) = scope.source.as_deref() else {
+        return (ReadRows::Missing, false);
+    };
+    let (bytes, boundary) = match bounded_tail(path, grok::TAIL_CAP, budget) {
+        Ok(Bounded::Ready(read)) => read,
+        Ok(Bounded::Truncated) => return (ReadRows::Truncated, false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return (ReadRows::Missing, false),
+        Err(_) => return (ReadRows::Failed, false),
+    };
+    let snapshot = grok::parse(&bytes, boundary, now);
+    match snapshot.row {
+        Some(row) => (
+            ReadRows::Rows(Observed {
+                rows: vec![row],
+                account: Account::default(),
+                series: Vec::new(),
+            }),
+            snapshot.on_demand_enabled,
+        ),
+        None => (ReadRows::Missing, false),
     }
 }
 
@@ -3111,7 +3174,6 @@ fn bounded_whole_file(
     Ok(Bounded::Ready(Some(bytes)))
 }
 
-#[cfg(test)]
 fn bounded_tail(
     path: &Path,
     cap: u64,
@@ -3122,7 +3184,7 @@ fn bounded_tail(
     }
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: quota lstat refuses a symlink or non-file before opening one ae-owned Codex rollout"
+        reason = "a door: quota lstat refuses a symlink or non-file before opening one ae-owned Codex rollout or the Grok debug log"
     )]
     let metadata = std::fs::symlink_metadata(path)?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
@@ -3153,7 +3215,7 @@ pub(crate) fn bounded_tail_after_lstat(
     }
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: opens only the exact rollout named by an ae-recorded harness session id"
+        reason = "a door: opens only the exact rollout named by an ae-recorded harness session id, or the lstat-proven Grok debug log"
     )]
     let mut file = File::open(&rollout.path)?;
     let opened = file.metadata()?;
@@ -4335,6 +4397,48 @@ mod tests {
             super::observe(&bad).map(|_| ()),
             super::observe_full(&bad).map(|_| ()),
             "one failure, whichever door"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_grok_log_observes_one_credit_window_and_clients_on_one_home_share_it() {
+        let root = std::path::PathBuf::from(format!("/tmp/ae-quota-grok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".grok/logs")).expect("grok logs");
+        let config = root.join("config");
+        std::fs::write(
+            &config,
+            "[clients]\ngx = grok\ngy = grok\n[profiles]\na = gx --model grok-4.6\nb = gy --model grok-4.6\n",
+        )
+        .expect("identity config");
+        let now = 1_790_769_600;
+        let record = "{\"ts\":\"2026-09-30T11:55:00Z\",\"msg\":\"billing: fetched credits config\",\"ctx\":{\"config\":{\"creditUsagePercent\":37,\"billingPeriodStart\":\"2026-09-28T00:00:00Z\",\"billingPeriodEnd\":\"2026-10-05T00:00:00Z\"},\"onDemandEnabled\":true,\"subscriptionTier\":\"SuperGrok\"}}\n";
+        std::fs::write(root.join(".grok/logs/unified.jsonl"), record).expect("grok log");
+        let observation = super::observe(&super::Inputs {
+            home: Some(&root),
+            global: Some(&config),
+            local: None,
+            sessions: None,
+            now,
+        })
+        .expect("observation");
+        let groups: Vec<&Group> = observation
+            .groups
+            .iter()
+            .filter(|group| group.tool == ToolKind::Grok)
+            .collect();
+        assert_eq!(groups.len(), 1, "one HOME is one account: {groups:?}");
+        let group = groups[0];
+        assert!(group.source.is_some(), "the advisory path needs a source");
+        assert_eq!(group.profiles, ["a", "b"]);
+        assert_eq!(group.rows.len(), 1);
+        assert_eq!(group.rows[0].bucket, "credits");
+        assert_eq!(group.rows[0].used_percent.as_deref(), Some("37"));
+        assert_eq!(group.rows[0].status, Status::Fresh);
+        assert_eq!(
+            group.notes,
+            ["on-demand spend enabled: a full window may not block work"]
         );
         let _ = std::fs::remove_dir_all(root);
     }

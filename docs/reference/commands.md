@@ -943,7 +943,8 @@ identity only — one canonical vendor source is one account, whatever labels re
 that resolved NO source is never joined to another, because failing to resolve is not evidence of
 being the same account, and two refusals shown as one would assert what ae cannot observe; they
 render as separate rows, each stating its own refusal. A tool with no local quota source, such as
-`grok` or `agy`, can never prove one, so each of its profiles is its own row. The same holds for a
+`agy`, can never prove one, so each of its profiles is its own row; Grok's source is the one debug
+log under the default home, so its profiles and clients share one scope. The same holds for a
 retained Codex rollout whose recorded config home did not resolve: two seats that failed for the
 same reason are two failures that read alike, not one account, so each keeps its own row and its own
 rollout. The settings quota dialog groups by the same rule, so the two surfaces never disagree about
@@ -1039,7 +1040,8 @@ is 2.4 judged percentage points per hour, empty in about 2 h 10 min, and `!` mea
 state a rate or an ETA. `unknown` is a trusted row whose history is too short (a window needs a
 span of a third of its lookback: a fifth of the window, 30 min to 12 h). `-` is no verdict, and
 means one of: the row is not trusted (`unknown`, expired or clock-skewed; a `stale` row up to an
-hour old IS trusted), the client reports no quota (grok, agy, opencode, muse, gemini), the account
+hour old IS trusted), the client reports no quota (agy, opencode, muse, gemini, or a grok whose log
+holds no usable window), the account
 is unlimited or spend-capped, another row of the same window is newer or higher (the cell sits
 only beside the USED it was computed from; identical rollouts draw one), or that newest row is in
 a rollout the table does not show.
@@ -1079,10 +1081,30 @@ Cached Claude numbers become `unknown` when the file's current and cached accoun
 the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
 are reduced to printable table cells before widths or wrapping are calculated.
 
-Grok Build, Antigravity, Muse Code, OpenCode, and Gemini CLI have no verified reusable local subscription
-quota source. They render `unsupported` with an operator hint rather than treating token or cost
-history as quota. This command makes no network request, reads no credentials, invokes neither
-tmux nor a vendor process, and writes no state.
+Grok Build reports its weekly credit window in its own debug log, `~/.grok/logs/unified.jsonl`
+(the record `billing: fetched credits config`). ae reads only the last 512 KiB of that file and
+shows its newest such record (the later line on a tied timestamp) as one `credits` row: the used
+percentage, the reset time and the age of the observation. Grok writes that record only while its
+TUI runs, so an idle Grok's observation keeps aging: the row turns `stale` and the watchdog stops
+judging it once it is more than an hour old.
+
+The log is shared with everything Grok writes, so most lines are not evidence. A malformed,
+non-UTF-8 or oversized (over 64 KiB) line, a line with no readable timestamp, and the first line
+of the tail when the cap cut it are skipped, as is an unfinished last line; none of them blinds
+the scope or hides an older complete record. What the newest valid record says decides the row,
+never an older one: with no such record at all, or with a newest record that has no usable
+percentage or period end, the row reads `unsupported` (below). A usable percentage and end but an
+unusable start, or a period outside one hour to 31 days, is `unknown` with no numbers, and so is a
+record dated five or more minutes ahead of the clock. The subscription tier shows only when it is
+a short label of letters, digits, spaces and `_ . + -`, and the log's `onDemandEnabled` flag adds
+a note that a full window may not block work. A symlinked or non-regular log is `read-error`. The
+watchdog advisory reaches the lead pair as for any other client, but a Grok seat gets no
+checkpoint ask and no throttle line, because its config home is not recorded.
+
+Antigravity, Muse Code, OpenCode, and Gemini CLI, and a Grok with no readable window, have no
+verified reusable local subscription quota source. They render `unsupported` with an operator hint
+rather than treating token or cost history as quota. This command makes no network request, reads
+no credentials, invokes neither tmux nor a vendor process, and writes no state.
 
 ### Advisories
 

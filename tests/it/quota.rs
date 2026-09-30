@@ -1848,28 +1848,28 @@ fn unsupported_tool_profiles_render_one_row_each() {
         root.join("config"),
         concat!(
             "[profiles]\n",
-            "grok46 = grok --model grok-4.6\n",
-            "grokbuild = grok --build\n",
-            "grok46-review = grok --review\n",
+            "muse46 = muse --model a\n",
+            "musebuild = muse --build\n",
+            "muse46-review = muse --review\n",
         ),
     )
     .expect("unsupported config");
     let text = run_quota(&root);
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(
-        text.matches("grok · ~/.grok").count(),
+        text.matches("muse · ~/.config/muse").count(),
         3,
         "three profiles, three rows: {text}"
     );
     assert_eq!(
-        text.matches("grok46 grokbuild grok46-review").count(),
+        text.matches("muse46 musebuild muse46-review").count(),
         0,
         "they are no longer presented as one account: {text}"
     );
-    for profile in ["grok46", "grokbuild", "grok46-review"] {
+    for profile in ["muse46", "musebuild", "muse46-review"] {
         assert!(
             text.lines()
-                .any(|line| line.starts_with(profile) && line.contains("grok · ~/.grok")),
+                .any(|line| line.starts_with(profile) && line.contains("muse · ~/.config/muse")),
             "{profile} has its own row: {text}"
         );
     }

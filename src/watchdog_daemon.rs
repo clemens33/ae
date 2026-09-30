@@ -7422,6 +7422,105 @@ mod tests {
         );
     }
 
+    /// A Grok window read the way production reads it: a planted log in a
+    /// scratch HOME through `observe`, never a hand-built group.
+    #[test]
+    fn a_grok_window_reaching_96_percent_books_one_critical_advisory_from_a_real_observation() {
+        let root = PathBuf::from(format!("/tmp/ae-wd-grok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".grok/logs")).expect("grok logs");
+        let config = root.join("config");
+        std::fs::write(
+            &config,
+            "[clients]\ngx = grok\n[profiles]\ng = gx --model grok-4.6\n",
+        )
+        .expect("identity config");
+        let noon = 1_790_769_600_i64;
+        let observe = |used: &str, stamp: &str, now: i64| {
+            let record = format!(
+                "{{\"ts\":\"{stamp}\",\"msg\":\"billing: fetched credits config\",\"ctx\":{{\"config\":{{\"creditUsagePercent\":{used},\"billingPeriodStart\":\"2026-09-28T00:00:00Z\",\"billingPeriodEnd\":\"2026-10-05T00:00:00Z\"}},\"onDemandEnabled\":true,\"subscriptionTier\":\"SuperGrok\"}}}}\n"
+            );
+            std::fs::write(root.join(".grok/logs/unified.jsonl"), record).expect("grok log");
+            crate::quota::observe(&crate::quota::Inputs {
+                home: Some(&root),
+                global: Some(&config),
+                local: None,
+                sessions: None,
+                now,
+            })
+            .expect("observation")
+        };
+        let recipients = [quota_recipient("main", "lead")];
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        assert!(
+            carry
+                .reconcile(
+                    &observe("50", "2026-09-30T11:59:00Z", noon),
+                    &recipients,
+                    meta
+                )
+                .is_empty(),
+            "first sight is the baseline"
+        );
+        let booked = carry.reconcile(
+            &observe("96", "2026-09-30T12:01:00Z", noon + 120),
+            &recipients,
+            meta,
+        );
+        assert_eq!(transition_deliveries(&booked).len(), 1, "{booked:?}");
+        assert_eq!(carry.tracked[0].classified.level(), QuotaLevel::Critical);
+        let pending = transition_deliveries(&booked)[0].clone();
+        assert!(
+            carry
+                .record_delivery(&pending, QuotaDelivery::Delivered, meta, noon + 120)
+                .is_none()
+        );
+        let again = carry.reconcile(
+            &observe("96", "2026-09-30T12:01:00Z", noon + 180),
+            &recipients,
+            meta,
+        );
+        assert!(
+            again.is_empty(),
+            "the same observation books nothing more: {again:?}"
+        );
+        // An idle grok: its log stopped moving over an hour ago, so nothing is
+        // judged. The carry above already sits at Critical, which would hide a
+        // missing bound, so the same read is also fed to an independent Headroom
+        // baseline, where adopting it would book a delivery.
+        let idle = observe("99", "2026-09-30T12:02:00Z", noon + 120 + 3_700);
+        assert!(
+            super::quota_samples_at(&idle, idle.now).is_empty(),
+            "a window older than the staleness bound yields no sample"
+        );
+        let mut quiet = QuotaCarry::default();
+        let _ = quiet.reconcile(
+            &observe("50", "2026-09-30T11:59:00Z", noon),
+            &recipients,
+            meta,
+        );
+        let skipped = quiet.reconcile(&idle, &recipients, meta);
+        assert!(
+            skipped.is_empty(),
+            "an idle window books nothing: {skipped:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_grok_seat_has_no_recorded_quota_identity_so_it_gets_no_ask_or_throttle_line() {
+        let seat = ask_entry(
+            "spawned.1",
+            "g",
+            "grok",
+            RecordedConfigHome::Path(PathBuf::from("/tmp/gk")),
+            RecordedConfigHomeBase::Missing,
+            None,
+        );
+        assert!(crate::quota::recorded_identity(&seat).is_none());
+    }
+
     /// A roster seat for the checkpoint fan-out. `rollout` is what makes a
     /// Codex identity provable; a Claude seat does not need one.
     fn ask_entry(

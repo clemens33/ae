@@ -348,6 +348,8 @@ pub(crate) enum QuotaSource {
     ClaudeCache,
     /// Codex rollout response records.
     CodexRollouts,
+    /// The grok CLI's shared debug log, read only for its one billing record.
+    GrokLog,
     /// No verified local quota source exists.
     Unsupported,
 }
@@ -882,7 +884,7 @@ const GROK: ToolAdapter = ToolAdapter {
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
     quota: QuotaSpec {
-        source: QuotaSource::Unsupported,
+        source: QuotaSource::GrokLog,
         config_home_env: None,
         default_home: Some(".grok"),
         unsupported_hint: Some("run /usage in grok"),
@@ -1664,7 +1666,7 @@ mod tests {
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
                     quota: QuotaSpec {
-                        source: QuotaSource::Unsupported,
+                        source: QuotaSource::GrokLog,
                         config_home_env: None,
                         default_home: Some(".grok"),
                         unsupported_hint: Some("run /usage in grok"),
