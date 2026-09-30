@@ -105,6 +105,27 @@ impl Fleet {
         }
     }
 
+    fn crash(&self) {
+        let (ok, pid) = self.tmux(&["display-message", "-p", "#{pid}"]);
+        assert!(ok, "private server pid");
+        let pid = pid
+            .trim()
+            .parse::<u32>()
+            .unwrap_or_else(|why| panic!("numeric private server pid: {why}"));
+        assert!(pid > 1);
+        // This command runs on the fixture's private -S server only. A crash
+        // keeps its socket, unlike a clean kill-server or last-session exit.
+        let _ = self.tmux(&["run-shell", &format!("kill -KILL {pid}")]);
+        assert!(!self.tmux(&["list-sessions"]).0, "server must be gone");
+        // phase2::run_tmux writes command stderr here (phase2.rs:1022).
+        let diagnostic = std::fs::read_to_string(self.scratch.join("stderr"))
+            .unwrap_or_else(|why| panic!("private crash diagnostic: {why}"));
+        assert!(
+            diagnostic.starts_with("no server running on "),
+            "stale socket must prove absence: {diagnostic}"
+        );
+    }
+
     fn stamp(&self, name: &str, epoch: i64) {
         assert!(
             std::fs::write(self.dir(name).join(".launch-attempt"), format!("{epoch}\n")).is_ok(),
@@ -413,23 +434,39 @@ fn unproven_recorded_server_is_reported_and_skipped_beside_a_success() {
 }
 
 #[test]
+#[ignore = "restore phase 2"]
+fn a_private_server_crash_restores_the_previously_running_session() {
+    let fleet = Fleet::new("crash-on");
+    fleet.launch("saved");
+    fleet.stamp("saved", fleet.epoch - 600);
+    fleet.beat("saved", fleet.epoch - 60);
+    fleet.crash();
+    success(&fleet.run(&["--no-attach"]));
+    assert_eq!(fleet.names(), ["saved"]);
+}
+
+#[test]
 #[ignore = "restore phase 3"]
 fn restore_off_preserves_the_empty_server_hint_and_saved_state_byte_for_byte() {
     let fleet = Fleet::new("off");
-    fleet.missing("saved", 600, Some(60));
+    fleet.launch("saved");
+    fleet.stamp("saved", fleet.epoch - 600);
+    fleet.beat("saved", fleet.epoch - 60);
     std::fs::write(
         fleet.home.join("config"),
         format!("{CONFIG}restore = off\n"),
     )
     .expect("global opt-out");
-    assert!(fleet.tmux(&["kill-session", "-t", "=keeper"]).0);
+    fleet.crash();
     let before = std::fs::read(fleet.dir("saved").join("meta")).expect("saved meta");
     let out = fleet.run(&[]);
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
+    // Baseline listing keeps a crashed recorded server Unknown (lib.rs:1373),
+    // even though ordinary resume proves absence from the stale socket.
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "ae: no running ae session. Start one with: ae <name>\nStopped sessions: saved\n"
+        "ae: no running ae session. Start one with: ae <name>\n"
     );
     unchanged(&fleet.dir("saved").join("meta"), &before);
     assert!(!fleet.tmux(&["has-session", "-t", "=saved"]).0);
