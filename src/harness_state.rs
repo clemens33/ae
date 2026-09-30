@@ -309,9 +309,7 @@ fn read_codex(capture: &str) -> Option<FrameReading> {
     {
         return None;
     }
-    let state = if above
-        .is_some_and(|line| line.starts_with("• Working (") && line.ends_with("esc to interrupt)"))
-    {
+    let state = if above.is_some_and(codex_working) {
         HarnessState::Busy
     } else {
         HarnessState::Idle
@@ -324,6 +322,14 @@ fn read_codex(capture: &str) -> Option<FrameReading> {
 
 /// The codex composer's placeholder, which it draws only while the box is empty.
 const CODEX_PLACEHOLDER: &str = "› Ask Codex to do anything";
+
+/// The `└ Tip:` row codex 0.159 draws between the Working row and the composer.
+const CODEX_TIP_ROW: &str = "└ Tip:";
+
+/// Whether `row` is codex's Working line, the only row that proves a turn runs.
+fn codex_working(row: &str) -> bool {
+    row.starts_with("• Working (") && row.ends_with("esc to interrupt)")
+}
 
 /// The hint row codex 0.159 draws under the footer, alone or with a right-aligned
 /// `⚠ N warning` cell; the only row [`codex_frame`] skips below the footer.
@@ -346,8 +352,10 @@ struct CodexFrame {
 /// stand in for a placeholder letter ([`codex_placeholder`]).
 ///
 /// ONE trailing [`CODEX_HINT_ROW`] is set aside first, so the composer and
-/// footer are still the last two rows under it. A row quoting the hint anywhere
-/// but last is transcript and moves nothing.
+/// footer are still the last two rows under it, and ONE [`CODEX_TIP_ROW`] that
+/// sits directly under the Working line is set aside too, so that line stays
+/// the row above the composer. A row quoting either anywhere else is transcript
+/// and moves nothing.
 fn codex_frame(capture: &str) -> Option<CodexFrame> {
     let mut lines: Vec<Cow<'_, str>> = clean_lines(capture)
         .into_iter()
@@ -358,6 +366,12 @@ fn codex_frame(capture: &str) -> Option<CodexFrame> {
         .is_some_and(|line| line.starts_with(CODEX_HINT_ROW))
     {
         lines.pop();
+    }
+    if let [.., working, tip, _, _] = lines.as_slice()
+        && braille_blanked(tip).starts_with(CODEX_TIP_ROW)
+        && codex_working(&braille_blanked(working))
+    {
+        lines.remove(lines.len() - 3);
     }
     let (before, [prompt, footer]) = lines.as_slice().split_last_chunk::<2>()?;
     Some(CodexFrame {
@@ -803,9 +817,10 @@ fn valid_effort(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CODEX_HINT_ROW, HarnessIdentity, HarnessState, IdleCarry, classify, claude_input_frame,
-        clean_lines, current_identity, decode_idle, encode_idle, has_human_draft, is_effort_word,
-        observable, observed_from_option, observed_identity, read_frame,
+        CODEX_HINT_ROW, CODEX_TIP_ROW, HarnessIdentity, HarnessState, IdleCarry, classify,
+        claude_input_frame, clean_lines, current_identity, decode_idle, encode_idle,
+        has_human_draft, is_effort_word, observable, observed_from_option, observed_identity,
+        read_frame,
     };
     use crate::tool::ToolKind;
 
@@ -1184,16 +1199,19 @@ mod tests {
     /// a footer id outside it proves no model, the drift row is never written
     /// and the manual choice is never followed. The frames are live codex
     /// 0.159 captures drawing the catalog name `GPT-6.1-Sol`, and each reads
-    /// the same with and without the `? for shortcuts` row under its footer.
+    /// the same with and without the `? for shortcuts` row under its footer —
+    /// the working one, whose `└ Tip:` row sits between the Working line and
+    /// the composer, as BUSY.
     #[test]
     fn a_measured_gpt_6_1_sol_frame_reads_as_the_id_the_profile_launches() {
-        for (capture, effort) in [(WORKING_HINT, "high"), (IDLE_HINT, "xhigh")] {
+        for (capture, state, effort) in [
+            (WORKING_HINT, HarnessState::Busy, "high"),
+            (IDLE_HINT, HarnessState::Idle, "xhigh"),
+        ] {
             let bare = without_hint(capture);
             assert!(!bare.contains(CODEX_HINT_ROW));
             for frame in [capture, bare.as_str()] {
-                if capture == IDLE_HINT {
-                    assert_eq!(classify(frame, ToolKind::Codex), HarnessState::Idle);
-                }
+                assert_eq!(classify(frame, ToolKind::Codex), state);
                 assert_eq!(
                     current_identity(frame, ToolKind::Codex),
                     HarnessIdentity {
@@ -1206,22 +1224,28 @@ mod tests {
         }
     }
 
-    /// Only a LAST hint row is set aside: a quoted one above the frame, or one
-    /// drawn between the composer and the footer, is read as it always was.
+    /// Only a LAST hint row and a Tip row directly under the Working line are
+    /// set aside: a quoted hint, a hint between composer and footer, an OLD
+    /// Working row further up, and a Tip with no Working row above are read as
+    /// they always were.
     #[test]
-    fn a_quoted_hint_row_moves_nothing() {
+    fn a_quoted_hint_or_tip_row_moves_nothing() {
         let idle = without_hint(IDLE_HINT);
         let quoted = format!("  ? for shortcuts quoted\n{idle}");
         assert_eq!(classify(&quoted, ToolKind::Codex), HarnessState::Idle);
         let between = idle.replace("\n\n  GPT-6.1-Sol", "\n  ? for shortcuts\n  GPT-6.1-Sol");
         assert_ne!(between, idle);
         assert_eq!(classify(&between, ToolKind::Codex), HarnessState::Unknown);
+        let old = format!("• Working (9s • esc to interrupt)\n  └ Tip: old\nanswer\n{idle}");
+        assert_eq!(classify(&old, ToolKind::Codex), HarnessState::Idle);
+        let tip = format!("answer\n  └ Tip: quoted\n{idle}");
+        assert_eq!(classify(&tip, ToolKind::Codex), HarnessState::Idle);
     }
 
-    /// No frame measured before codex 0.159 draws the hint row, so setting it
+    /// No frame measured before codex 0.159 draws either row, so setting them
     /// aside changes none of the earlier fixtures.
     #[test]
-    fn no_earlier_codex_fixture_draws_the_hint_row() {
+    fn no_earlier_codex_fixture_draws_the_hint_or_tip_row() {
         for capture in [
             include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt"),
             include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
@@ -1233,7 +1257,7 @@ mod tests {
             include_str!("../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
             include_str!("../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
         ] {
-            assert!(!capture.contains(CODEX_HINT_ROW));
+            assert!(!capture.contains(CODEX_HINT_ROW) && !capture.contains(CODEX_TIP_ROW));
         }
     }
 
