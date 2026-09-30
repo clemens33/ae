@@ -1614,7 +1614,32 @@ fn flagless_honor_needed(recorded: Option<&Meta>, resuming: bool, running: bool)
         })
 }
 
+/// Every refusal a launch owes BEFORE it writes anything: its seat overrides,
+/// then — for a resume of a stopped session — its restored profiles.
 fn validate_seat_overrides(
+    env: &Env,
+    plan: &Plan,
+    dir: &Path,
+    resuming: bool,
+    running: bool,
+) -> Result<Option<SeatOverrideSnapshot>, SeatOverrideRefusal> {
+    let snapshot = seat_override_snapshot(env, plan, dir, resuming, running)?;
+    if resuming && !running {
+        let refusal = match &snapshot {
+            Some(held) => restored_profiles_refusal(plan, dir, &held.cfg, &held.overrides),
+            // Fail open: an unreadable config is the launch's own refusal.
+            None => override_identity(env, dir, resuming)
+                .ok()
+                .and_then(|cfg| restored_profiles_refusal(plan, dir, &cfg, &[])),
+        };
+        if let Some(line) = refusal {
+            return Err(SeatOverrideRefusal::Failed(line));
+        }
+    }
+    Ok(snapshot)
+}
+
+fn seat_override_snapshot(
     env: &Env,
     plan: &Plan,
     dir: &Path,
@@ -1735,6 +1760,31 @@ fn validate_seat_overrides(
         }
     }
     Ok(Some(SeatOverrideSnapshot { cfg, overrides }))
+}
+
+/// The refusal a resume owes for a restored profile that no longer resolves,
+/// decided READ-ONLY, before the migration chain writes the meta: the same
+/// [`restore_saved_roster`] the launch runs, over a scratch copy of the seats
+/// `cfg` plans. It reads only the `seat.<slot>` and `profile.<slot>` rows,
+/// which the chain never moves. A config that plans no seats is left to the
+/// launch's own refusal.
+fn restored_profiles_refusal(
+    plan: &Plan,
+    dir: &Path,
+    cfg: &IdentityConfig,
+    replaced: &[ResolvedSeatOverride],
+) -> Option<String> {
+    let mut planned = cfg.clone();
+    if let Some(workers) = &plan.workers {
+        planned.workers = Some(workers.clone());
+    }
+    let home = crate::doors::home();
+    let mut seats = config::launch_plan(&planned, plan.main.as_deref(), home.as_deref())
+        .ok()?
+        .seats;
+    let session = plan.name.as_deref().unwrap_or_default();
+    let replaced: Vec<&str> = replaced.iter().map(|o| o.agent.as_str()).collect();
+    restore_saved_roster(dir, session, cfg, home.as_deref(), &replaced, &mut seats).err()
 }
 
 /// Replace every command-derived field of `seat` with a resolved profile's.

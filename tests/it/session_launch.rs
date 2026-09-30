@@ -2644,70 +2644,53 @@ fn pair_rig(tag: &str) -> Rig {
 }
 
 /// A flagless resume restores the roster it saved, and a seat's binary row is
-/// part of that identity: `agent_bin.<slot>` names the tool the RESTORED
-/// profile resolves to, never the tool the config's default profile for that
-/// slot resolves to. Each seat starts on the OTHER seat's tool, so the swap
-/// shows in both directions — the shape a session that outlived a config
-/// re-bind carries.
+/// part of that identity: it names the tool the RESTORED profile launches, never
+/// the tool the config binds to the slot. Metas whose seats carry binary rows
+/// naming the wrong tool — what a resume before the restore re-resolved the
+/// seats wrote — heal on the next resume without touching what the seats
+/// legitimately hold. The colead (recorded claude, exactly resumable, valid manual model)
+/// keeps its conversation, store, launch id, empty predecessor list and model
+/// pair; the lead (recorded codex) has a claude-vocabulary observation, which
+/// is foreign to it and is retired.
 #[test]
-fn a_flagless_resume_keeps_each_seats_binary_row_with_its_restored_profile() {
-    if skip() {
-        return;
-    }
-    let rig = pair_rig("binrow");
-    let (code, stdout, stderr) = rig.launch(&[
-        "--local", "lnbinrow", "--lead", "codex", "--colead", "claude",
-    ]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    let fresh = rig.meta("lnbinrow");
-    for row in [
-        "profile.main=codex\n",
-        "agent_bin.main=codex\n",
-        "profile.worker.0=claude\n",
-        "agent_bin.worker.0=claude\n",
-    ] {
-        assert!(fresh.contains(row), "the launch records {row:?}:\n{fresh}");
-    }
-
-    assert!(
-        rig.tmux(&["kill-session", "-t", "=lnbinrow"]).0,
-        "the session stops"
-    );
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnbinrow"]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    let resumed = rig.meta("lnbinrow");
-    for row in ["profile.main=codex\n", "profile.worker.0=claude\n"] {
-        assert!(
-            resumed.contains(row),
-            "the resume restores {row:?}:\n{resumed}"
-        );
-    }
-    for row in ["agent_bin.main=codex\n", "agent_bin.worker.0=claude\n"] {
-        assert!(
-            resumed.contains(row),
-            "the resume rewrote the binary row from the configured profile, not the restored \
-             one — expected {row:?}:\n{resumed}"
-        );
-    }
-}
-
-/// A meta whose colead carries a binary row naming the wrong tool for its
-/// recorded profile — what a resume before the restore re-resolved the seat
-/// wrote — heals on the next resume, and the conversation is not touched: the
-/// lead's exactly-resumable conversation and both launch ids carry, and no
-/// predecessor row is written.
-#[test]
-fn a_resume_heals_a_stale_binary_row_and_keeps_the_conversation() {
+fn a_resume_heals_a_stale_binary_row_and_keeps_what_the_seat_holds() {
     if skip() {
         return;
     }
     let rig = pair_rig("selfheal");
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnheal", "--colead", "claude"]);
+    let fake = rig.bin.join("claude");
+    add_profile(
+        &rig,
+        "claudefix",
+        &format!("{} --model fable", fake.display()),
+    );
+    let (code, stdout, stderr) = rig.launch(&[
+        "--local",
+        "lnheal",
+        "--lead",
+        "codex",
+        "--colead",
+        "claudefix",
+    ]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     stop(&rig, "lnheal");
     let work = std::fs::canonicalize(&rig.project).unwrap_or_default();
-    let (_, id) = pin_explicit_home(&rig, "lnheal", &work);
-    assert!(ae::meta::rewrite(&rig.dir("lnheal"), "agent_bin.worker.0", Some("codex")).is_ok());
+    let home = rig.scratch.join("tool-home");
+    let id = "e795c9e9-1234-4890-abcd-ef0123456789";
+    plant_transcript(&home, &work, id);
+    let store = home.display().to_string();
+    for (key, value) in [
+        ("agent_bin.main", Some("claude")),
+        ("agent_bin.worker.0", Some("codex")),
+        ("config_home.worker.0", Some(store.as_str())),
+        ("config_home_base.worker.0", None),
+        ("harness_session.worker.0", Some(id)),
+        ("observed_model.worker.0", Some("Opus 5")),
+        ("observed_model_pin.worker.0", Some("fable")),
+        ("observed_model.main", Some("Opus 5")),
+    ] {
+        assert!(ae::meta::rewrite(&rig.dir("lnheal"), key, value).is_ok());
+    }
     let launch_ids: Vec<String> = rig
         .meta("lnheal")
         .lines()
@@ -2718,18 +2701,42 @@ fn a_resume_heals_a_stale_binary_row_and_keeps_the_conversation() {
 
     let (code, stdout, stderr) = rig.launch(&["--local", "lnheal"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    let healed = rig.meta("lnheal");
+    let plan = rig.plan("lnheal", "worker.0");
+    assert!(
+        plan.contains("--resume") && plan.contains(id),
+        "the repaired colead resumes its conversation exactly: {plan}"
+    );
+    // The resumed lead's own start retires the foreign observation.
+    let mut healed = String::new();
+    for _ in 0..100 {
+        healed = rig.meta("lnheal");
+        if !healed.contains("observed_model.main=") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     for row in [
-        "profile.worker.0=claude\n",
+        "profile.main=codex\n",
+        "profile.worker.0=claudefix\n",
+        "agent_bin.main=codex\n",
         "agent_bin.worker.0=claude\n",
-        &format!("harness_session.main={id}\n"),
+        &format!("harness_session.worker.0={id}\n"),
+        "observed_model.worker.0=Opus 5\n",
+        "observed_model_pin.worker.0=fable\n",
     ] {
         assert!(healed.contains(row), "the resume keeps {row:?}:\n{healed}");
     }
     for row in &launch_ids {
         assert!(healed.contains(row), "the resume keeps {row:?}:\n{healed}");
     }
-    assert!(!healed.contains("harness_session_prior.main"), "{healed}");
+    assert!(
+        healed
+            .lines()
+            .any(|line| line.starts_with("config_home.worker.0=") && line.ends_with("/tool-home")),
+        "the colead keeps its store: {healed}"
+    );
+    assert!(!healed.contains("harness_session_prior."), "{healed}");
+    assert!(!healed.contains("observed_model.main="), "{healed}");
 }
 
 /// A recorded client label on ONE seat makes every seat's command a snapshot
@@ -2779,8 +2786,11 @@ fn resume_after_profile_removal_refuses_and_the_named_override_proceeds() {
     let (code, stdout, stderr) = rig.launch(&["--local", "lngone"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     stop(&rig, "lngone");
-    // What a reseat leaves: a recorded profile the config never defined.
-    assert!(ae::meta::rewrite(&rig.dir("lngone"), "profile.worker.0", Some("retired")).is_ok());
+    // What a reseat leaves: a recorded profile the config never defined, on a
+    // meta the migration chain would still write (v3 steps to v4).
+    for (key, value) in [("profile.worker.0", "retired"), ("meta_version", "3")] {
+        assert!(ae::meta::rewrite(&rig.dir("lngone"), key, Some(value)).is_ok());
+    }
     let before = rig.meta("lngone");
     let (code, _, stderr) = rig.launch(&["--local", "lngone"]);
     assert_eq!(code, Some(1), "{stderr}");
@@ -2792,7 +2802,11 @@ fn resume_after_profile_removal_refuses_and_the_named_override_proceeds() {
     ] {
         assert!(stderr.contains(word), "{word:?} in: {stderr}");
     }
-    assert_eq!(rig.meta("lngone"), before, "the refusal rewrote nothing");
+    assert_eq!(
+        rig.meta("lngone"),
+        before,
+        "the refusal wrote nothing, migration included"
+    );
     assert!(!rig.sessions().contains(&"lngone".to_owned()));
     let (code, stdout, stderr) = rig.launch(&["--local", "lngone", "--colead", "codex"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
