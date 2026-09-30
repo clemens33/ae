@@ -2709,7 +2709,7 @@ fn sender_override() -> Option<String> {
 
 /// `AE_SEND_DEFER_SEC`: how long a send waits for a busy target before it
 /// abandons.
-fn send_defer() -> std::time::Duration {
+pub(crate) fn send_defer() -> std::time::Duration {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the frozen AE_SEND_DEFER_SEC tunable of the send body — see clippy.toml"
@@ -2747,7 +2747,7 @@ fn send_env() -> send::Env {
 
 /// Sixty-four bits nobody chose: `RandomState` is seeded from the OS per
 /// process, and needs no door.
-fn entropy() -> u64 {
+pub(crate) fn entropy() -> u64 {
     use std::hash::{BuildHasher, RandomState};
     RandomState::new().hash_one(std::process::id())
 }
@@ -2835,7 +2835,7 @@ fn session_key(dir: &std::path::Path) -> Option<String> {
 
 /// The session a helper serves — [`session_key`], or the directory's own name
 /// when the key is missing, because that is what the directory IS named.
-fn own_session(dir: &std::path::Path) -> String {
+pub(crate) fn own_session(dir: &std::path::Path) -> String {
     session_key(dir).unwrap_or_else(|| {
         dir.file_name()
             .map(|name| name.to_string_lossy().into_owned())

@@ -118,9 +118,8 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
                 return Err("ae cannot name its own state".to_owned());
             };
             let config = crate::doors::config_file(crate::shape::current(), &root);
-            let mut command =
-                picker_launcher(crate::shape::current(), &core, &root, &config, &server);
-            command.extend(["console", &session, "--follow"].map(ToOwned::to_owned));
+            let launcher = picker_launcher(crate::shape::current(), &core, &root, &config, &server);
+            let command = console_command(launcher, &session);
             // A new window is a shell first: the stamp and `remain-on-exit`
             // land before the console runs, so one that stops at once still
             // leaves its pane and its hint.
@@ -165,9 +164,22 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
     tmux(&Op::SelectPane { pane: &pane }).map(drop)
 }
 
+/// Sets the pane's terminal to hand the console each key as it is typed, with
+/// no echo and no flow control — ^C still interrupts and Enter still reads as a
+/// newline — then execs the console named by its own arguments.
+const TTY_SETUP: &str = "stty -icanon -echo -ixon -iexten min 1 time 0 && exec \"$0\" \"$@\"";
+
+/// The console window's argv: the terminal set up, then `launcher` running
+/// the console of `session` with its input.
+fn console_command(launcher: Vec<String>, session: &str) -> Vec<String> {
+    let setup = ["/bin/sh", "-c", TTY_SETUP].map(ToOwned::to_owned);
+    let console = ["console", session, "--follow", "--input"].map(ToOwned::to_owned);
+    setup.into_iter().chain(launcher).chain(console).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Plan, plan};
+    use super::{Plan, TTY_SETUP, console_command, plan};
     use crate::console::submit::tests::pane;
     use crate::tmux::WindowPane;
 
@@ -258,5 +270,13 @@ mod tests {
             let panes: Vec<WindowPane> = std::iter::once(lead.clone()).chain(consoles).collect();
             assert_eq!(plan(&panes, from, "u", "u"), want, "{from} {panes:?}");
         }
+    }
+
+    #[test]
+    fn the_console_window_runs_its_launcher_on_a_terminal_set_up_for_keys() {
+        let launcher = vec!["env".to_owned(), "/core".to_owned()];
+        let want = ["/bin/sh", "-c", TTY_SETUP, "env", "/core", "console", "s"];
+        let want = [&want[..], &["--follow", "--input"]].concat();
+        assert_eq!(console_command(launcher, "s"), want);
     }
 }

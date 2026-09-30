@@ -18,6 +18,7 @@ use lane::Seat;
 pub mod input;
 pub mod lane;
 pub mod submit;
+mod term;
 pub(crate) mod toggle;
 pub mod view;
 
@@ -30,6 +31,8 @@ pub struct Args {
     pub session: Option<String>,
     pub follow: bool,
     pub all: bool,
+    /// Hidden: take input from the terminal, as the console window does.
+    pub input: bool,
 }
 
 /// The argv did not parse; the offending token, when there is one.
@@ -58,6 +61,7 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
         match token.as_str() {
             "--follow" => args.follow = true,
             "--all" => args.all = true,
+            "--input" => args.input = true,
             flag if flag.starts_with('-') => return Err(Usage(Some(token.clone()))),
             name if args.session.is_none() => args.session = Some(name.to_owned()),
             _ => return Err(Usage(Some(token.clone()))),
@@ -319,41 +323,93 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             return Ok(crate::EXIT_UNAVAILABLE);
         }
     }
-    loop {
-        match console.pass() {
-            Ok(text) => write!(out, "{text}")?,
-            Err(why) => {
-                let text = format!(
-                    "ae console: {}: {why} — this console no longer follows it; reopen it with prefix h (or ae console <session>)",
-                    console.name
-                );
-                writeln!(err, "{}", terminal_text(&text))?;
-                return Ok(crate::EXIT_UNAVAILABLE);
-            }
+    let mut term = None;
+    if args.input {
+        match term::Term::start(&console) {
+            Ok(started) => term = args.follow.then_some(started),
+            Err(off) => write!(out, "{off}")?,
         }
+    }
+    let code = pump(&mut console, term.as_mut(), args.follow, out, err);
+    if term.is_some() {
+        write!(out, "{}", input::RESTORE)?;
         out.flush()?;
-        if !args.follow {
-            return Ok(0);
+    }
+    code
+}
+
+/// Print each pass, and between passes take the terminal's input when there
+/// is a `term`, until the console stops following.
+fn pump(
+    console: &mut Console,
+    mut term: Option<&mut term::Term>,
+    follow: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let poll = std::time::Duration::from_secs(board::follow::POLL_SECS);
+    let mut next = std::time::Instant::now();
+    loop {
+        if std::time::Instant::now() >= next {
+            let text = match console.pass() {
+                Ok(text) => text,
+                Err(why) => {
+                    let text = format!(
+                        "ae console: {}: {why} — this console no longer follows it; reopen it with prefix h (or ae console <session>)",
+                        console.name
+                    );
+                    writeln!(err, "{}", terminal_text(&text))?;
+                    return Ok(crate::EXIT_UNAVAILABLE);
+                }
+            };
+            match term.as_deref_mut() {
+                Some(term) => {
+                    let effects = term.tick(console);
+                    write!(
+                        out,
+                        "{}",
+                        input::paint(&text, &effects, term.line().as_deref())
+                    )?;
+                }
+                None => write!(out, "{text}")?,
+            }
+            out.flush()?;
+            if !follow {
+                return Ok(0);
+            }
+            next = std::time::Instant::now() + poll;
         }
-        std::thread::sleep(std::time::Duration::from_secs(board::follow::POLL_SECS));
+        match term.as_deref_mut() {
+            Some(term) => {
+                if let Some(effects) = term.wait(console, next) {
+                    write!(
+                        out,
+                        "{}",
+                        input::paint("", &effects, term.line().as_deref())
+                    )?;
+                    out.flush()?;
+                }
+            }
+            None => std::thread::sleep(next.saturating_duration_since(std::time::Instant::now())),
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::{Console, lane::Body, view::Printed};
     use crate::events::Event;
     use std::fs;
     use std::path::PathBuf;
 
-    const ID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
+    pub(super) const ID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
     const REQ: &str = "ae-20260930T060000Z-0000abcd";
 
     /// A lead-pair session directory under a scratch that removes itself.
-    struct Rig(PathBuf);
+    pub(super) struct Rig(pub(super) PathBuf);
 
     impl Rig {
-        fn new(tag: &str) -> Self {
+        pub(super) fn new(tag: &str) -> Self {
             let root =
                 std::env::temp_dir().join(format!("ae-console-{}-{tag}", std::process::id()));
             let _ = fs::remove_dir_all(&root);
@@ -362,7 +418,7 @@ mod tests {
             Self(root)
         }
 
-        fn console(&self) -> Console {
+        pub(super) fn console(&self) -> Console {
             Console {
                 name: "s".to_owned(),
                 dir: self.0.join("s"),
@@ -695,10 +751,16 @@ mod tests {
                 session: session.map(str::to_owned),
                 follow,
                 all,
+                input: false,
             })
         };
         let refused = |token: &str| Err(super::Usage(Some(token.to_owned())));
-        let cases: [(&[&str], Result<super::Args, super::Usage>); 12] = [
+        let input = Ok(super::Args {
+            input: true,
+            ..super::Args::default()
+        });
+        let cases: [(&[&str], Result<super::Args, super::Usage>); 13] = [
+            (&["--input"], input),
             (&[], args(None, false, false)),
             (&["s"], args(Some("s"), false, false)),
             (&["--follow"], args(None, true, false)),

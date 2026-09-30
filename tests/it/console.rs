@@ -257,6 +257,7 @@ fn console(root: &std::path::Path, tail: &[&str]) -> (Option<i32>, String, Strin
         .env("HOME", root)
         .env("AE_HOME", root)
         .env_remove("TMUX_PANE")
+        .stdin(std::process::Stdio::null())
         .args(["console"])
         .args(tail);
     let out = bounded_output(&mut runner);
@@ -284,6 +285,27 @@ fn the_console_prints_the_lane_golden_and_writes_nothing() {
         all.contains("## 09:04:30 colead assistant (transcript)\n  colead answers\n"),
         "{all}"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_console_asked_for_input_on_no_terminal_says_so_and_only_reads() {
+    let (root, dir) = lead_pair_rig("console-no-tty");
+    let before = std::fs::read(dir.join("events.jsonl")).expect("journal");
+    let (code, stdout, stderr) = console(&root, &["one", "--input"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    let off = "input off: stdin is not a terminal; this console only reads\n";
+    let golden = include_str!("../fixtures/console/lane.txt");
+    assert!(stdout.contains(off), "{stdout}");
+    assert_eq!(stdout.replacen(off, "", 1), golden);
+    let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+    let bad = meta.replace("seat.main=lead\n", "seat.main=%3\n");
+    std::fs::write(dir.join("meta"), bad).expect("a main seat that is no agent name");
+    let (code, stdout, _) = console(&root, &["one", "--input"]);
+    let refused = "input off: the main seat is not an agent name; this console only reads\n";
+    assert!(code == Some(0) && stdout.contains(refused), "{stdout}");
+    let after = std::fs::read(dir.join("events.jsonl")).expect("journal");
+    assert_eq!(after, before);
     let _ = std::fs::remove_dir_all(&root);
 }
 
