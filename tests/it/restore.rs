@@ -96,55 +96,38 @@ fn scratch_with(tag: &str, lines: &[Line], junk: bool) -> (OwnedScratch, Ledger)
 #[test]
 fn the_ledger_fails_closed_and_counts_only_stops_since_the_launch() {
     const CLEAN: &str = "stopped: verified gone on its recorded server";
-    let cases: [(&[Line], bool, Ledger); 10] = [
-        (&[("stop-result", 999, CLEAN)], false, Ledger::Clear),
-        (&[("stop-result", 1000, CLEAN)], false, Ledger::Stopped),
+    const FAILED: &str = "FAILED: unavailable";
+    let req = |at| ("stop-request", at, "stop requested");
+    let cases: [(&[Line], Ledger); 13] = [
+        (&[("stop-result", 999, CLEAN)], Ledger::Clear),
+        (&[("stop-result", 1000, CLEAN)], Ledger::Stopped),
+        (&[("stop-result", 1001, "already stopped")], Ledger::Stopped),
+        (&[("stop-result", 1001, FAILED)], Ledger::Clear),
+        (&[req(1001)], Ledger::Stopped),
+        (&[req(900)], Ledger::Clear),
+        (&[req(1001), ("stop-result", 1002, FAILED)], Ledger::Clear),
         (
-            &[("stop-result", 1001, "already stopped")],
-            false,
+            &[req(1001), ("stop-result", 1002, FAILED), req(1003)],
             Ledger::Stopped,
         ),
+        // Seconds are the clock's grain; the LEDGER's order decides inside one.
+        (&[req(1001), ("stop-result", 1001, FAILED)], Ledger::Clear),
+        (&[("stop-result", 1001, FAILED), req(1001)], Ledger::Stopped),
         (
-            &[("stop-result", 1001, "FAILED: unavailable")],
-            false,
-            Ledger::Clear,
-        ),
-        (
-            &[("stop-request", 1001, "stop requested")],
-            false,
-            Ledger::Stopped,
-        ),
-        (
-            &[("stop-request", 900, "stop requested")],
-            false,
-            Ledger::Clear,
-        ),
-        (
-            &[
-                ("stop-request", 1001, "x"),
-                ("stop-result", 1002, "FAILED: a"),
-            ],
-            false,
-            Ledger::Clear,
-        ),
-        (
-            &[
-                ("stop-request", 1001, "x"),
-                ("stop-result", 1002, "FAILED: a"),
-                ("stop-request", 1003, "x"),
-            ],
-            false,
+            &[req(1001), ("stop-result", 1001, FAILED), req(1001)],
             Ledger::Stopped,
         ),
         // A memo that QUOTES a clean stop is not one.
-        (&[("memo", 1500, CLEAN)], false, Ledger::Clear),
-        // One unreadable line may have been the stop: unknown, not clear.
-        (&[("stop-result", 999, CLEAN)], true, Ledger::Damaged),
+        (&[("memo", 1500, CLEAN)], Ledger::Clear),
+        (&[("stop-result", 998, CLEAN), req(999)], Ledger::Clear),
     ];
-    for (index, (lines, junk, want)) in cases.into_iter().enumerate() {
-        let (_scratch, got) = scratch_with(&format!("l{index}"), lines, junk);
-        assert_eq!(got, want, "case {index}: {lines:?} junk={junk}");
+    for (index, (lines, want)) in cases.into_iter().enumerate() {
+        let (_scratch, got) = scratch_with(&format!("l{index}"), lines, false);
+        assert_eq!(got, want, "case {index}: {lines:?}");
     }
+    // One unreadable line may have been the stop: unknown, not clear.
+    let (_scratch, got) = scratch_with("junk", &[("stop-result", 999, CLEAN)], true);
+    assert_eq!(got, Ledger::Damaged);
     assert_eq!(ledger(None, 1000), Ledger::Damaged, "an unreadable ledger");
 }
 

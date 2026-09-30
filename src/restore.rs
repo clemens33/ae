@@ -70,33 +70,28 @@ pub fn pins_clean_stop(line: &str) -> bool {
         && Event::parse_line(line).is_ok_and(|event| is_clean_stop(&event))
 }
 
-/// What `read` says about a stop since the launch at `launched`. A clean stop,
-/// or a stop request nothing has answered since, reads as stopped; a request a
-/// FAILED result answered changed nothing. A ledger not read whole — a refused
-/// line may have been the stop — is damaged, never clear.
+/// What `read` says about a stop since the launch at `launched`. Read in ledger
+/// ORDER, because a second is too coarse to order two events inside it: a clean
+/// stop, or a request no LATER result answered, reads as stopped. A FAILED
+/// result answers the request before it and changes nothing. A ledger not read
+/// whole — a refused line may have been the stop — is damaged, never clear.
 #[must_use]
 pub fn ledger(read: Option<&SessionRead>, launched: i64) -> Ledger {
     let Some(read) = read.filter(|read| read.skipped.is_empty()) else {
         return Ledger::Damaged;
     };
-    let since = |event: &&Event| event.ts.epoch() >= launched;
-    if read.events.iter().filter(since).any(is_clean_stop) {
-        return Ledger::Stopped;
+    let mut asked = false;
+    for event in read.events.iter().filter(|e| e.ts.epoch() >= launched) {
+        if is_clean_stop(event) {
+            return Ledger::Stopped;
+        }
+        match event.action.as_str() {
+            STOP_REQUEST_ACTION => asked = true,
+            STOP_RESULT_ACTION => asked = false,
+            _ => {}
+        }
     }
-    let asked = read
-        .events
-        .iter()
-        .filter(since)
-        .filter(|event| event.action == STOP_REQUEST_ACTION)
-        .map(|event| event.ts.epoch())
-        .max();
-    let unanswered = asked.is_some_and(|at| {
-        !read
-            .events
-            .iter()
-            .any(|event| event.action == STOP_RESULT_ACTION && event.ts.epoch() >= at)
-    });
-    if unanswered {
+    if asked {
         Ledger::Stopped
     } else {
         Ledger::Clear
