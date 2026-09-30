@@ -27,13 +27,13 @@ const SCOPE: &str = "scope: current conversations plus each seat's recorded pred
 const CLAUDE_ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
 const OTHER_ID: &str = "0199c0de-1234-4890-abcd-ef0123456790";
 
-fn rig(tag: &str) -> PathBuf {
+pub(super) fn rig(tag: &str) -> PathBuf {
     super::cli::OwnedScratch::root("board", tag).keep()
 }
 
 /// One synthetic Claude user turn. Bodies are plain fixture prose; the helper
 /// escapes what JSON strings forbid.
-fn user(ts: &str, body: &str) -> String {
+pub(super) fn user(ts: &str, body: &str) -> String {
     let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         r#"{{"type":"user","timestamp":"{ts}","message":{{"role":"user","content":"{escaped}"}}}}"#
@@ -48,7 +48,7 @@ fn claude_assistant(ts: &str, content: &str) -> String {
 }
 
 /// Plant `sessions/<name>/meta` carrying exactly these roster rows.
-fn plant_session(root: &Path, name: &str, roster: &str) -> PathBuf {
+pub(super) fn plant_session(root: &Path, name: &str, roster: &str) -> PathBuf {
     let dir = root.join("sessions").join(name);
     std::fs::create_dir_all(&dir).expect("session dir");
     std::fs::write(dir.join("meta"), format!("schema=2\n{roster}")).expect("meta");
@@ -56,7 +56,7 @@ fn plant_session(root: &Path, name: &str, roster: &str) -> PathBuf {
 }
 
 /// Plant `<store>/projects/<slug>/<id>.jsonl` with these newline-terminated lines.
-fn plant_transcript(store: &Path, slug: &str, id: &str, lines: &[String]) -> PathBuf {
+pub(super) fn plant_transcript(store: &Path, slug: &str, id: &str, lines: &[String]) -> PathBuf {
     let dir = store.join("projects").join(slug);
     std::fs::create_dir_all(&dir).expect("project dir");
     let path = dir.join(format!("{id}.jsonl"));
@@ -68,7 +68,7 @@ fn plant_transcript(store: &Path, slug: &str, id: &str, lines: &[String]) -> Pat
     path
 }
 
-fn claude_roster(slot: &str, seat: &str, id: &str, store: &Path) -> String {
+pub(super) fn claude_roster(slot: &str, seat: &str, id: &str, store: &Path) -> String {
     format!(
         "seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=claude\nconfig_home.{slot}={}\n",
         store.display()

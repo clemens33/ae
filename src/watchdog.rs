@@ -795,7 +795,7 @@ fn wait_challenge_names(summary: Option<&str>, state: WaitState) -> bool {
 
 /// The actor prefixes of the chat bridges: a delivery carrying one is a human
 /// writing to the seat from outside the terminal.
-const HUMAN_BRIDGE_ACTORS: [&str; 2] = ["telegram:", "discord:"];
+pub(crate) const HUMAN_BRIDGE_ACTORS: [&str; 2] = ["telegram:", "discord:"];
 
 /// Whether `event`, relevant to the seat and NEWER than its `state`
 /// declaration, ends that declaration — the ONE table the currency walk and

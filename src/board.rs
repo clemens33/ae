@@ -579,6 +579,19 @@ pub fn observe_with_meta(
     since_micros: Option<i64>,
     supplied: Option<&SuppliedMeta<'_>>,
 ) -> Observation {
+    observe_selected(inputs, since_micros, supplied, &|_| true)
+}
+
+/// [`observe_with_meta`] over the roster seats `keep` names, and only those:
+/// a seat it refuses is never located, read or reported. The whole board is
+/// this with every seat kept, so a filtered read is the same read.
+#[must_use]
+pub fn observe_selected(
+    inputs: &Inputs<'_>,
+    since_micros: Option<i64>,
+    supplied: Option<&SuppliedMeta<'_>>,
+    keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
+) -> Observation {
     let mut rows = Vec::new();
     let mut coverage = Vec::new();
     let mut seeds = Vec::new();
@@ -599,7 +612,7 @@ pub fn observe_with_meta(
             };
             meta
         };
-        for entry in meta.roster() {
+        for entry in meta.roster().iter().filter(|entry| keep(entry)) {
             let priors = meta.harness_session_prior(&entry.slot);
             hidden_rows.extend(observe_seat(
                 session,
@@ -1087,6 +1100,16 @@ fn locate_agy_transcript(
 /// seat, read the bytes the held offsets ask for through the ONE door, and step
 /// the state. Selection itself is the caller's and is fixed for the follow.
 pub fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observation {
+    follow_poll_selected(inputs, follow, &|_| true)
+}
+
+/// [`follow_poll`] over the seats `keep` names: the SAME seats the first pass
+/// read, so a seat never read is never polled either.
+pub fn follow_poll_selected(
+    inputs: &Inputs<'_>,
+    follow: &mut follow::Follow,
+    keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
+) -> Observation {
     let mut snapshots = Vec::new();
     for session in inputs.sessions {
         let Ok(meta) = crate::session::read_meta(&session.path) else {
@@ -1098,7 +1121,7 @@ pub fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observat
             });
             continue;
         };
-        for entry in meta.roster() {
+        for entry in meta.roster().iter().filter(|entry| keep(entry)) {
             snapshots.push(follow_seat(
                 session,
                 entry,
@@ -1345,10 +1368,10 @@ const BODY_INDENT: &str = "  ";
 /// `event_text::display_cell` keeps printable ASCII only, parses escape
 /// sequences and bounds to a cell count; `sanitize::sanitize` is the compact
 /// verb's terminal-INPUT strip (drops, normalizes CR and NEL, strict UTF-8).
-/// This is the one owner for terminal OUTPUT, and [`render_batch_text`] is its
-/// one call site.
+/// This is the one owner for terminal OUTPUT: [`render_batch_text`] and the
+/// console lane's view are its callers.
 #[must_use]
-fn terminal_text(text: &str) -> String {
+pub(crate) fn terminal_text(text: &str) -> String {
     text.chars()
         .map(|ch| {
             if ch == '\n' || ch == '\t' || !ch.is_control() {

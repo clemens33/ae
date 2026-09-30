@@ -16,6 +16,7 @@ mod callerident;
 mod capture;
 mod cli;
 mod compact;
+mod console;
 mod daemons;
 mod deliver;
 mod doctor;

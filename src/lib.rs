@@ -20,6 +20,7 @@ pub mod carry;
 pub mod cli;
 mod compact;
 pub mod config;
+pub mod console;
 pub mod deliver;
 pub mod digest;
 pub mod doctor;
