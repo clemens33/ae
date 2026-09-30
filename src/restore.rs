@@ -1,9 +1,7 @@
-//! Which saved sessions were RUNNING when their recorded tmux server died.
-//!
-//! Bare `ae` restores those. The predicate reads facts ae already keeps — the
-//! launch stamp, the stop ledger — plus ONE mtime-only fact the watchdog adds,
-//! [`crate::watchdog_glue::beat_modified`]. Nothing persisted is parsed here:
-//! the ledger comes through the event reader every consumer shares.
+//! Which saved sessions were RUNNING when their recorded tmux server died, for
+//! bare `ae` to restore. Facts are what ae already keeps (launch stamp, stop
+//! ledger) plus the watchdog's mtime-only beat; nothing persisted is parsed
+//! here — the ledger arrives through the shared event reader.
 
 use std::collections::BTreeMap;
 
@@ -16,10 +14,8 @@ use crate::meta::{Selector, ServerSelector};
 use crate::session::SessionRead;
 use crate::tmux::Evidence;
 
-/// How far behind the newest beat of its cohort a session's own beat may sit.
-/// Fixed: the sessions one crash takes down stop beating within one cycle of
-/// each other, and a longer window would resurrect a session abandoned earlier
-/// the same hour.
+/// How far behind its cohort's newest beat a session's beat may sit. Fixed: one
+/// crash silences a fleet within a cycle; a longer window resurrects the abandoned.
 pub const WINDOW_SECS: i64 = 15 * 60;
 
 /// What a session's stop ledger says since its current launch.
@@ -58,9 +54,7 @@ pub enum Decision {
     Abandoned,
 }
 
-/// A stop-result that says the session is gone: `stopped: …` or `already
-/// stopped`. A FAILED stop, and anything else, is not — the session may well
-/// still be running.
+/// A stop-result that says the session is gone. A FAILED one is not.
 #[must_use]
 pub fn is_clean_stop(event: &Event) -> bool {
     event.action == STOP_RESULT_ACTION
@@ -69,22 +63,17 @@ pub fn is_clean_stop(event: &Event) -> bool {
         })
 }
 
-/// Whether a raw ledger line is the kind resume retention must never drop: the
-/// newest clean stop. It asks the reader every consumer shares; a line the
-/// reader refuses pins nothing.
+/// Whether a raw ledger line is a clean stop, which resume retention keeps.
 #[must_use]
 pub fn pins_clean_stop(line: &str) -> bool {
     line.contains(STOP_RESULT_ACTION)
         && Event::parse_line(line).is_ok_and(|event| is_clean_stop(&event))
 }
 
-/// What `read` says about a stop since the launch at `launched`.
-///
-/// A clean stop at or after the launch, or a stop request nothing has answered
-/// since (a stop in flight, or one that died), reads as stopped: doubt skips.
-/// A request answered by a FAILED result changed nothing. A ledger that could
-/// not be read whole — or held a line the reader refused, which may have been
-/// the stop — is damaged, never clear.
+/// What `read` says about a stop since the launch at `launched`. A clean stop,
+/// or a stop request nothing has answered since, reads as stopped; a request a
+/// FAILED result answered changed nothing. A ledger not read whole — a refused
+/// line may have been the stop — is damaged, never clear.
 #[must_use]
 pub fn ledger(read: Option<&SessionRead>, launched: i64) -> Ledger {
     let Some(read) = read.filter(|read| read.skipped.is_empty()) else {
@@ -116,13 +105,11 @@ pub fn ledger(read: Option<&SessionRead>, launched: i64) -> Ledger {
 
 /// One verdict per fact, in order.
 ///
-/// The CANDIDATES are the sessions that are not live, were launched, have a
-/// readable ledger with no stop since, and beat at or after that launch (an
-/// older beat belongs to a previous run, which says nothing about this one).
-/// A candidate restores when its beat is within [`WINDOW_SECS`] of the newest
-/// candidate beat on the same recorded server. Live, stopped and damaged
-/// sessions are not candidates, so a session the human already resumed — whose
-/// beat is fresh — cannot push the window past the ones the crash took.
+/// CANDIDATES are sessions not live, launched, with a readable ledger showing no
+/// stop since, and a beat at or after that launch (an older one is a previous
+/// run's). A candidate restores within [`WINDOW_SECS`] of the newest candidate
+/// beat on its recorded server; live sessions are no candidates, so one the
+/// human already resumed cannot push the window past the crash's sessions.
 #[must_use]
 pub fn judge(facts: &[Fact]) -> Vec<Decision> {
     let gate = |fact: &Fact| -> Result<(Selector, i64), Decision> {
@@ -180,8 +167,7 @@ fn fact_of(record: &DurableRecord, live: bool) -> Fact {
     }
 }
 
-/// The saved sessions under `roots` that bare `ae` should restore, by name.
-/// `live` names the sessions already running, which are never restored.
+/// The saved sessions under `roots` to restore, by name; `live` are never.
 #[must_use]
 pub fn restorable(roots: &Roots, live: &[String]) -> Vec<String> {
     let facts: Vec<Fact> = crate::inventory::durable_records(roots)

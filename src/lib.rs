@@ -1574,8 +1574,7 @@ fn run_entry(
 
 /// Bare `ae`: list when already on the launch server, print the cross-server
 /// attach hint from another tmux, or attach this terminal and let tmux choose
-/// its most recently used session. `attach` false (`ae --no-attach`) stops short
-/// of the attach and says how to make it instead.
+/// its most recent session. `attach` false (`ae --no-attach`) only names the command.
 fn run_bare_attach(
     preamble: &entry::Preamble,
     attach: bool,

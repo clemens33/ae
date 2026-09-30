@@ -3751,8 +3751,7 @@ fn watch(
             // is how that is spelled without an unwrap rather than a branch
             // anyone expects to take.
             Continuation::Run => {
-                // The restore predicate's heartbeat: the session is proven present
-                // THIS cycle, so this is the one place the beat is written.
+                // The restore beat: the ONE writer, once presence is proven.
                 refresh_beat(meta_dir, &mut beat_failed, err)?;
                 if let (Ok(bytes), Some(meta)) = (&read, &parsed) {
                     let local_config = meta
@@ -3810,9 +3809,7 @@ fn watch(
     }
 }
 
-/// Refresh the restore beat, and say so ONCE per failure streak: a beat that
-/// cannot be written only makes the session skip a restore, so it never stops
-/// the watcher.
+/// Refresh the restore beat; a failure never stops the watcher and is said once.
 fn refresh_beat(meta_dir: &Path, failing: &mut bool, err: &mut impl Write) -> crate::Result<()> {
     match crate::watchdog_glue::touch_beat(meta_dir) {
         Ok(()) => *failing = false,

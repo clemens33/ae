@@ -1125,8 +1125,7 @@ fn bare_ae_outside_tmux_attaches_when_the_server_has_sessions() {
     assert!(!rig.sessions().exists(), "attach created state");
 }
 
-/// `ae --no-attach` is the bare form minus the attach: with sessions running it
-/// says how to attach and exits 0; with none it is the same refusal as bare `ae`.
+/// `ae --no-attach` is bare `ae` minus the attach: it names the command, exit 0.
 #[test]
 fn bare_no_attach_prints_the_attach_command_instead_of_attaching() {
     if skip() {

@@ -707,9 +707,8 @@ pub fn pidfile_modified(meta_dir: &Path) -> crate::tmux::Evidence {
     Evidence::at_mtime(meta.modified())
 }
 
-/// The heartbeat file: EMPTY, and its mtime is the only thing it says. The daemon
-/// refreshes it each cycle its session is proven present and nothing else ever
-/// writes or removes it, so a crash leaves it frozen at the crash.
+/// The heartbeat: an EMPTY file whose mtime is all it says. Only the daemon
+/// writes it, each cycle its session is proven present; a crash freezes it.
 const BEAT_NAME: &str = ".watchdog-beat";
 
 /// The beat's path under `meta_dir`.
@@ -718,13 +717,9 @@ pub fn beat_path(meta_dir: &Path) -> PathBuf {
     meta_dir.join(BEAT_NAME)
 }
 
-/// Refresh the beat: a staged empty file renamed over it.
-///
-/// The temp name is predictable and sits in session state a human edits, so it
-/// is created EXCLUSIVELY — a link planted there is refused, never truncated —
-/// and a taken name is not ours to remove. The rename replaces a link planted
-/// at the beat itself instead of following it. No `fsync`: a beat lost with the
-/// machine only makes the session skip a restore.
+/// Refresh the beat: an empty temp, created EXCLUSIVELY (a planted link is
+/// refused, never truncated; a taken name is not ours to remove), renamed over
+/// it (a link at the beat is replaced, not followed). No `fsync`.
 ///
 /// # Errors
 ///
@@ -742,8 +737,7 @@ pub fn touch_beat(meta_dir: &Path) -> std::io::Result<()> {
     })
 }
 
-/// When the beat was last refreshed — [`pidfile_modified`]'s reading: a link,
-/// a directory or any other non-file is DAMAGE, never absence.
+/// When the beat was last refreshed; a link or other non-file is DAMAGE.
 #[must_use]
 pub fn beat_modified(meta_dir: &Path) -> crate::tmux::Evidence {
     use crate::tmux::Evidence;

@@ -725,9 +725,8 @@ impl SessionStore {
 
     /// Cap the event container to its newest `keep` lines on resume.
     ///
-    /// `pin` names the one kind of line a cut may not take: when the cut drops
-    /// it and nothing newer that it names sits in the kept window, the newest
-    /// dropped one is kept in front. Retention cannot forget a clean stop.
+    /// `pin` names a line a cut may not take: when the cut drops every one, the
+    /// newest dropped is kept in front.
     ///
     /// The lock is held from the read through the staged sibling's rename, so
     /// an appender cannot land bytes between the snapshot and replacement. A
