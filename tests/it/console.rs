@@ -195,15 +195,27 @@ fn lead_pair_rig(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (root, dir)
 }
 
+/// Run `runner`, waiting at most 30 s: a console that follows when it
+/// should print once fails with a red that ARRIVES, never a stalled lane.
+fn bounded_output(runner: &mut super::cli::Runner) -> std::process::Output {
+    let child = runner
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the ae binary should run");
+    let limit = std::time::Duration::from_secs(30);
+    super::cli::bounded(child, limit).expect("the ae binary did not exit within 30 s")
+}
+
 fn console(root: &std::path::Path, tail: &[&str]) -> (Option<i32>, String, String) {
-    let out = super::cli::ae()
+    let mut runner = super::cli::ae();
+    runner
         .env("HOME", root)
         .env("AE_HOME", root)
         .env_remove("TMUX_PANE")
         .args(["console"])
-        .args(tail)
-        .output()
-        .expect("the ae binary should run");
+        .args(tail);
+    let out = bounded_output(&mut runner);
     let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
     (out.status.code(), text(&out.stdout), text(&out.stderr))
 }
@@ -292,7 +304,8 @@ fn the_key_verb_argv_is_a_usage_error_unless_it_is_jump_and_client_alone() {
         (&["--client", "c", "d"], 2),
     ];
     for (words, code) in cases {
-        let out = super::cli::ae()
+        let mut runner = super::cli::ae();
+        runner
             .env("HOME", &root)
             .env("AE_HOME", &root)
             .env("AE_TMUX_SERVER_KIND", "socket")
@@ -300,9 +313,8 @@ fn the_key_verb_argv_is_a_usage_error_unless_it_is_jump_and_client_alone() {
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .arg("_console")
-            .args(words)
-            .output()
-            .expect("the ae binary should run");
+            .args(words);
+        let out = bounded_output(&mut runner);
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         assert_eq!(out.status.code(), Some(code), "{words:?}: {stderr}");
         let usage = stderr.starts_with("usage: ae _console [--jump] [--client <name>]");
