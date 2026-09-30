@@ -8,6 +8,7 @@
 
 use std::io::Write;
 
+use super::submit::first_console;
 use crate::reader::{session_of, source_pane};
 use crate::session_tmux::{Op, argv, interpret_pane_id, picker_launcher};
 use crate::tmux::{OptionScope, WindowPane, session_target};
@@ -26,20 +27,26 @@ enum Plan {
 }
 
 /// The toggle's move for a key pressed in `source`; only a console stamped
-/// with `uuid` counts, and one is started only when the meta records `bound`
+/// with `uuid` counts. The live one that owns the session's input is selected
+/// (from itself, the key goes back); only with none live is the first dead
+/// one respawned, and a console is started only when the meta records `bound`
 /// as that same id. `None` when `source` is not in the listing.
 fn plan(panes: &[WindowPane], source: &str, uuid: &str, bound: &str) -> Option<Plan> {
-    let here = panes.iter().find(|pane| pane.pane_id == source)?;
-    let mine = |pane: &&WindowPane| pane.console.as_deref() == Some(uuid);
-    let starts = panes.iter().find(mine).is_none_or(|pane| pane.dead);
-    if starts && (bound.is_empty() || bound != uuid) {
+    panes.iter().find(|pane| pane.pane_id == source)?;
+    if let Some(owner) = first_console(panes, uuid, true) {
+        let back = owner.pane_id == source;
+        return Some(if back {
+            Plan::Back
+        } else {
+            Plan::Select(owner.pane_id.clone())
+        });
+    }
+    if bound.is_empty() || bound != uuid {
         return Some(Plan::Unbound);
     }
-    Some(match panes.iter().find(mine) {
+    Some(match first_console(panes, uuid, false) {
         None => Plan::Open,
-        Some(found) if found.dead => Plan::Respawn(found.pane_id.clone()),
-        Some(found) if found.window_id == here.window_id => Plan::Back,
-        Some(found) => Plan::Select(found.pane_id.clone()),
+        Some(dead) => Plan::Respawn(dead.pane_id.clone()),
     })
 }
 
@@ -154,27 +161,15 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
             pane
         }
     };
-    tmux(&Op::SelectWindow { pane: &pane }).map(drop)
+    tmux(&Op::SelectWindow { pane: &pane })?;
+    tmux(&Op::SelectPane { pane: &pane }).map(drop)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Plan, plan};
+    use crate::console::submit::tests::pane;
     use crate::tmux::WindowPane;
-
-    fn pane(id: &str, window: &str, console: Option<&str>, dead: bool) -> WindowPane {
-        let console = console.map(str::to_owned);
-        let (pane_id, window_id) = (id.to_owned(), window.to_owned());
-        WindowPane {
-            pane_id,
-            window_id,
-            theme: String::new(),
-            reader_src: None,
-            console,
-            dead,
-            agent: None,
-        }
-    }
 
     #[test]
     fn the_toggle_opens_selects_returns_respawns_and_ignores_a_foreign_stamp() {
@@ -219,5 +214,49 @@ mod tests {
         let panes = [lead, live];
         let got = plan(&panes, "%1", "u", "other");
         assert_eq!(got, Some(Plan::Select("%3".to_owned())));
+    }
+
+    #[test]
+    fn the_toggle_takes_the_owner_by_index_never_by_listing_order() {
+        let lead = pane("%1", "@0", None, false);
+        let at = |id, window, dead| pane(id, window, Some("u"), dead);
+        let first = WindowPane {
+            window_index: 1,
+            ..at("%9", "@9", false)
+        };
+        let select = |id: &str| Some(Plan::Select(id.to_owned()));
+        let respawn = Some(Plan::Respawn("%3".to_owned()));
+        let cases = [
+            (
+                vec![at("%7", "@5", false), at("%3", "@2", false)],
+                "%1",
+                select("%3"),
+            ),
+            (vec![at("%7", "@5", false), first], "%1", select("%9")),
+            (
+                vec![at("%3", "@2", true), at("%7", "@5", false)],
+                "%1",
+                select("%7"),
+            ),
+            (
+                vec![at("%4", "@2", false), at("%3", "@2", false)],
+                "%4",
+                select("%3"),
+            ),
+            (
+                vec![at("%4", "@2", false), at("%3", "@2", false)],
+                "%3",
+                Some(Plan::Back),
+            ),
+            (
+                vec![at("%7", "@5", true), at("%3", "@2", true)],
+                "%1",
+                respawn,
+            ),
+        ];
+        for (consoles, from, want) in cases {
+            let panes: Vec<WindowPane> = std::iter::once(lead.clone()).chain(consoles).collect();
+            assert_eq!(plan(&panes, from, "u", "u"), want, "{from} {panes:?}");
+        }
     }
 }

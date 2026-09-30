@@ -224,6 +224,21 @@ fn a_console_reply_body_that_is_a_fifo_is_refused_never_opened() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A console draft that is a FIFO is classified and refused, never opened: no
+/// writer ever comes, so an open would wait for good.
+#[test]
+fn a_console_draft_that_is_a_fifo_is_refused_never_opened() {
+    let root = rig("console-draft-fifo");
+    super::cli::mkfifo(&root.join(ae::store::CONSOLE_DRAFT));
+    let (read, done) = std::sync::mpsc::channel();
+    let dir = root.clone();
+    std::thread::spawn(move || read.send(ae::store::open(&dir).console_draft()));
+    let got = done.recv_timeout(std::time::Duration::from_secs(10));
+    let refused = Ok(Ok(ae::store::SourceRead::Invalid("a fifo".to_owned())));
+    assert_eq!(got, refused, "classified before any open");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Run `runner`, waiting at most 30 s: a console that follows when it
 /// should print once fails with a red that ARRIVES, never a stalled lane.
 fn bounded_output(runner: &mut super::cli::Runner) -> std::process::Output {

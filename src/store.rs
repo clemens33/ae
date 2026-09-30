@@ -37,6 +37,15 @@ pub const MEMO: &str = "memo.tsv";
 /// The session's own record — roster, mode, origin, goal.
 pub const META: &str = "meta";
 
+/// What the console's composer holds and has not had delivered.
+pub const CONSOLE_DRAFT: &str = "console.draft";
+
+/// The most a console draft may be.
+pub const CONSOLE_DRAFT_CAP: u64 = 65_536;
+
+/// The console's admission lock, beside the journal's and never it.
+const CONSOLE_ADMISSION: &str = ".console-admission.lock";
+
 /// The LAUNCH-ATTEMPT stamp: when ae last tried to put this session on a tmux
 /// server.
 ///
@@ -668,6 +677,50 @@ impl SessionStore {
     /// [`Error`] — which step failed, on which path.
     pub fn append_memo(&self, record: &[u8]) -> Result<(), Error> {
         append_locked(&self.memo_path(), record)
+    }
+
+    /// The console's unsent input, classified and capped like any source.
+    ///
+    /// # Errors
+    ///
+    /// [`Oversized`] past [`CONSOLE_DRAFT_CAP`].
+    pub fn console_draft(&self) -> Result<SourceRead, Oversized> {
+        read_capped(&self.dir.join(CONSOLE_DRAFT), CONSOLE_DRAFT_CAP)
+    }
+
+    /// Keep `bytes` as the console's draft, whole or not at all.
+    ///
+    /// # Errors
+    ///
+    /// A draft over [`CONSOLE_DRAFT_CAP`], or the publication's own failure.
+    pub fn publish_console_draft(&self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() as u64 > CONSOLE_DRAFT_CAP {
+            let why = format!("a draft over {CONSOLE_DRAFT_CAP} bytes");
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, why));
+        }
+        publish_private(&self.dir.join(CONSOLE_DRAFT), bytes)
+    }
+
+    /// Drop the console's draft; none there is no failure.
+    ///
+    /// # Errors
+    ///
+    /// The removal's own failure.
+    pub fn clear_console_draft(&self) -> io::Result<()> {
+        match std::fs::remove_file(self.dir.join(CONSOLE_DRAFT)) {
+            Err(why) if why.kind() == io::ErrorKind::NotFound => Ok(()),
+            done => done,
+        }
+    }
+
+    /// The lock every console act that decides from the journal holds
+    /// throughout: its own file, taken BEFORE the journal's, never inside it.
+    ///
+    /// # Errors
+    ///
+    /// [`lock`]'s.
+    pub fn console_admission(&self) -> io::Result<File> {
+        lock(&self.dir.join(CONSOLE_ADMISSION), LOCK_WAIT)
     }
 
     /// Cap the event container to its newest `keep` lines on resume.
@@ -1712,6 +1765,43 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(sealed.is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"second, longer");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The console draft round-trips whole, is never kept past what reads back,
+    /// keeps the old bytes on a failed replacement, clears quietly, and names
+    /// every node it will not read.
+    #[test]
+    fn a_console_draft_round_trips_and_names_every_refusal() {
+        use super::{CONSOLE_DRAFT, CONSOLE_DRAFT_CAP, Oversized, SourceRead};
+        let dir = scratch("draft");
+        let (store, path) = (open(&dir), dir.join(CONSOLE_DRAFT));
+        let kept = || Ok(SourceRead::Ready(b"@colead two\nlines".to_vec()));
+        assert_eq!(store.console_draft(), Ok(SourceRead::Absent));
+        store.publish_console_draft(b"@colead two\nlines").unwrap();
+        assert_eq!(store.console_draft(), kept());
+        let over = vec![b'x'; usize::try_from(CONSOLE_DRAFT_CAP).unwrap() + 1];
+        assert!(store.publish_console_draft(&over).is_err());
+        assert_eq!(store.console_draft(), kept());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let sealed = store.publish_console_draft(b"new");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(sealed.is_err());
+        assert_eq!(store.console_draft(), kept());
+        store.clear_console_draft().unwrap();
+        store.clear_console_draft().unwrap();
+        assert_eq!(store.console_draft(), Ok(SourceRead::Absent));
+        std::fs::write(&path, &over).unwrap();
+        assert_eq!(store.console_draft(), Err(Oversized));
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere"), &path).unwrap();
+        let link = Ok(SourceRead::Invalid("a symlink".to_owned()));
+        assert_eq!(store.console_draft(), link);
+        std::fs::remove_file(&path).unwrap();
+        let socket = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let socket_read = Ok(SourceRead::Invalid("a socket".to_owned()));
+        assert_eq!(store.console_draft(), socket_read);
+        drop(socket);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

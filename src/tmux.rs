@@ -3389,11 +3389,13 @@ pub fn interpret_session_identity(
 ///
 /// The theme stamp rides along because the alternative is a second listing:
 /// the watchdog has to know which windows are already dressed, and a user
-/// option set on the WINDOW resolves in a pane's format context.
-pub const WINDOW_PANE_FORMAT: &str = "#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{@ae_agent}";
+/// option set on the WINDOW resolves in a pane's format context. The two
+/// indexes order the panes the way the session shows them, which tmux's
+/// listing order does not promise.
+pub const WINDOW_PANE_FORMAT: &str = "#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{window_index} | #{pane_index} | #{@ae_agent}";
 
 /// The number of fields [`WINDOW_PANE_FORMAT`] yields.
-const WINDOW_PANE_FIELDS: usize = 7;
+const WINDOW_PANE_FIELDS: usize = 9;
 
 /// One pane as the window grouping reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3412,6 +3414,10 @@ pub struct WindowPane {
     pub console: Option<String>,
     /// `#{pane_dead}` — the pane's process has exited and the pane remains.
     pub dead: bool,
+    /// `#{window_index}` — the window's place in the session.
+    pub window_index: u32,
+    /// `#{pane_index}` — the pane's place in its window.
+    pub pane_index: u32,
     /// `@ae_agent`, or `None` when unstamped.
     pub agent: Option<String>,
 }
@@ -3427,7 +3433,7 @@ pub fn window_panes_args(server: &ServerId, session: &str) -> Vec<String> {
 }
 
 /// One [`WindowPane`] per line that split into exactly [`WINDOW_PANE_FIELDS`]
-/// fields; `None` on a failed run.
+/// fields with numeric indexes; `None` on a failed run.
 #[must_use]
 pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<WindowPane>> {
     if !succeeded {
@@ -3441,9 +3447,21 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
                 // could carry the separator, so a longer line is that name and
                 // not a corrupt row.
                 let fields: Vec<&str> = line.splitn(WINDOW_PANE_FIELDS, FIELD_SEPARATOR).collect();
-                let [pane_id, window_id, theme, reader_src, console, dead, agent] =
-                    fields.as_slice()
+                let [
+                    pane_id,
+                    window_id,
+                    theme,
+                    reader_src,
+                    console,
+                    dead,
+                    window,
+                    pane,
+                    agent,
+                ] = fields.as_slice()
                 else {
+                    return None;
+                };
+                let (Ok(window_index), Ok(pane_index)) = (window.parse(), pane.parse()) else {
                     return None;
                 };
                 let reader_src = reader_src.trim_end();
@@ -3456,6 +3474,8 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
                     console: (!console.trim_end().is_empty())
                         .then(|| console.trim_end().to_owned()),
                     dead: dead.trim_end() == "1",
+                    window_index,
+                    pane_index,
                     agent: (!agent.is_empty()).then(|| agent.to_owned()),
                 })
             })
@@ -4493,7 +4513,7 @@ mod tests {
                 super::WINDOW_PANE_FORMAT
             ]
         );
-        let listing = "%1 | @0 | 1 |  |  | 0 | cl:lead\n%2 | @0 | 1 | %1 |  | 0 | \n%4 | @2 |  |  |  | 0 | cl:y\n%5 | @3 |  |  | u | 1 | \n%3 @1 cl:x\n";
+        let listing = "%1 | @0 | 1 |  |  | 0 | 0 | 0 | cl:lead\n%2 | @0 | 1 | %1 |  | 0 | 0 | 1 | \n%4 | @2 |  |  |  | 0 | 2 | 0 | cl:y\n%5 | @3 |  |  | u | 1 | 3 | 0 | \n%6 | @4 |  |  |  | 0 | x | 0 | \n%3 @1 cl:x\n";
         let panes = interpret_window_panes(true, listing).expect("a successful run");
         assert_eq!(
             panes,
@@ -4505,6 +4525,8 @@ mod tests {
                     reader_src: None,
                     console: None,
                     dead: false,
+                    window_index: 0,
+                    pane_index: 0,
                     agent: Some("cl:lead".to_owned()),
                 },
                 // A READER pane: its stamp names the source it shows.
@@ -4515,6 +4537,8 @@ mod tests {
                     reader_src: Some("%1".to_owned()),
                     console: None,
                     dead: false,
+                    window_index: 0,
+                    pane_index: 1,
                     agent: None,
                 },
                 // An UNDRESSED window: the stamp is empty, which is the fact
@@ -4526,6 +4550,8 @@ mod tests {
                     reader_src: None,
                     console: None,
                     dead: false,
+                    window_index: 2,
+                    pane_index: 0,
                     agent: Some("cl:y".to_owned()),
                 },
                 // A CONSOLE pane whose process exited but whose pane remains.
@@ -4536,10 +4562,12 @@ mod tests {
                     reader_src: None,
                     console: Some("u".to_owned()),
                     dead: true,
+                    window_index: 3,
+                    pane_index: 0,
                     agent: None,
                 },
             ],
-            "the space-delimited line is corruption, not a pane"
+            "the space-delimited line and a non-numeric index are corruption, not panes"
         );
         assert!(interpret_window_panes(false, listing).is_none());
     }

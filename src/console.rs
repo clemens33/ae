@@ -1,7 +1,7 @@
 //! `ae console` — the human's lane of a session, as a program.
 //!
-//! A READ view of data ae already keeps: nothing here submits or answers,
-//! and the one event it writes is `/close`'s withdrawal of its own ask.
+//! A READ view of data ae already keeps: it answers nothing, and what it
+//! writes is its own — an ask it submits and `/close`'s withdrawal of one.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -16,6 +16,7 @@ use crate::{
 use lane::Seat;
 
 pub mod lane;
+pub mod submit;
 pub(crate) mod toggle;
 pub mod view;
 

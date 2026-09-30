@@ -311,6 +311,34 @@ pub fn may_close(events: &[Event], id: &str) -> Result<(), String> {
     open.unwrap_or_else(|| Err(format!("no console ask {id} in this journal")))
 }
 
+/// The ids of the console's asks still open in `session`'s journal, oldest
+/// first. One forward pass: an ask with an id opens, and only three records close it —
+/// an ADMITTED reply, the console's own cancel, and a retire
+/// [`crate::session::retired`] judges. A stale, unproven or spawned reply is
+/// not the answer, so its ask stays open.
+#[must_use]
+pub fn open_asks<'a>(events: &'a [Event], session: &str) -> Vec<&'a str> {
+    let mut open: Vec<&Event> = Vec::new();
+    for event in events {
+        let key = event.reference.as_deref().filter(|key| !key.is_empty());
+        let console = event.actor == tracked::CONSOLE_SINK;
+        let answer =
+            event.action == reply::ACTION && event.target.as_deref() == Some(tracked::CONSOLE_SINK);
+        if event.action == "retire" {
+            open.retain(|ask| !crate::session::retired(ask, event, session));
+        } else if console && event.action == tracked::Kind::Ask.action() && key.is_some() {
+            open.retain(|ask| ask.reference.as_deref() != key);
+            open.push(event);
+        } else if (console && event.action == CANCEL) || answer {
+            let closes = |ask: &Event| !answer || admission(ask, event).is_ok();
+            open.retain(|ask| ask.reference.as_deref() != key || !closes(ask));
+        }
+    }
+    open.iter()
+        .filter_map(|ask| ask.reference.as_deref())
+        .collect()
+}
+
 /// The chat-bridge thread and the `say` lines, plus how many worker `say`
 /// lines were left out.
 fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>, usize) {
@@ -815,6 +843,54 @@ mod tests {
         let refless = Event::parse_line(refless).unwrap();
         let empty = super::may_close(&[refless], "");
         assert_eq!(empty, Err("a close needs a request id".to_owned()));
+    }
+
+    #[test]
+    fn an_ask_stays_open_until_its_answer_its_close_or_its_seats_retire() {
+        let (me, stale) = (caller("main", "%1", UUID), caller("main", "%2", UUID));
+        let unproven = format!(r#"{me},"identity_gap":"vacant""#);
+        let spawned = caller("spawned.0", "%1", UUID);
+        let retire =
+            |slot: &str| about(T1, "lead", "retire", &format!(r#","target_slot":"{slot}""#));
+        let mut refless = asked("q");
+        refless.reference = Some(String::new());
+        let cases = [
+            (vec![asked("q")], S, 1),
+            (vec![asked("[unconfirmed] q")], S, 1),
+            (vec![refless], S, 0),
+            (
+                vec![about(T0, "console:local", "delivery-abandoned", "")],
+                S,
+                0,
+            ),
+            (vec![asked("q"), answered(T1, &me, "a")], S, 0),
+            (vec![answered(T0, &me, "a"), asked("q")], S, 1),
+            (vec![asked("q"), answered(T1, &stale, "a")], S, 1),
+            (vec![asked("q"), answered(T1, &unproven, "a")], S, 1),
+            (vec![asked("q"), answered(T1, &spawned, "a")], S, 1),
+            (
+                vec![asked("q"), about(T1, "console:local", "cancel", "")],
+                S,
+                0,
+            ),
+            (vec![asked("q"), about(T1, "lead", "cancel", "")], S, 1),
+            (vec![asked("q"), retire("main")], S, 0),
+            (vec![asked("q"), retire("main")], "elsewhere", 1),
+            (vec![asked("q"), retire("worker.0")], S, 1),
+            (
+                vec![asked("q"), answered(T1, &me, "a"), asked("again")],
+                S,
+                1,
+            ),
+        ];
+        for (events, session, want) in cases {
+            let open = super::open_asks(&events, session);
+            assert_eq!(open.len(), want, "{session} {events:?}");
+        }
+        let mut other = asked("other");
+        other.reference = Some("ae-other".to_owned());
+        let events = [asked("q"), other, answered(T1, &me, "a")];
+        assert_eq!(super::open_asks(&events, S), ["ae-other"]);
     }
 
     #[test]

@@ -1264,7 +1264,7 @@ pub(crate) fn open_requests<'a>(events: &'a [Event], session: &str) -> Vec<&'a E
 /// A missing key on either side matches nothing: a retire that names no slot,
 /// and a request missing either half of its own key, which is
 /// [`Identity::Unassociated`].
-fn retired(request: &Event, retire: &Event, session: &str) -> bool {
+pub(crate) fn retired(request: &Event, retire: &Event, session: &str) -> bool {
     let Some(slot) = retire.target_slot.value() else {
         return false;
     };
