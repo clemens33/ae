@@ -114,8 +114,8 @@ impl Fleet {
             .parse::<u32>()
             .unwrap_or_else(|why| panic!("numeric private server pid: {why}"));
         assert!(pid > 1);
-        // This command runs on the fixture's private -S server only. A crash
-        // keeps its socket, unlike a clean kill-server or last-session exit.
+        // This command runs on the fixture's private -S server only. SIGKILL
+        // leaves a stale socket; a clean exit can leave one too.
         let _ = self.tmux(&["run-shell", &format!("kill -KILL {pid}")]);
         assert!(!self.tmux(&["list-sessions"]).0, "server must be gone");
         // phase2::run_tmux writes command stderr here (phase2.rs:1022).
@@ -670,6 +670,16 @@ fn only_unknown_candidates_on_an_empty_target_keep_the_exit_one_hint() {
     let fleet = Fleet::new("unknown-empty");
     fleet.missing("saved", 600, Some(60));
     assert!(fleet.tmux(&["kill-session", "-t", "=keeper"]).0);
+    // A clean exit can leave a stale socket and therefore prove absence.
+    // This fixture deliberately tests SocketMissing, whose boot proof is Unknown.
+    if let Err(why) = std::fs::remove_file(&fleet.socket) {
+        assert_eq!(why.kind(), std::io::ErrorKind::NotFound, "{why}");
+    }
+    assert!(
+        std::fs::symlink_metadata(&fleet.socket)
+            .is_err_and(|why| why.kind() == std::io::ErrorKind::NotFound),
+        "fixture socket must be explicitly missing"
+    );
     let path = fleet.dir("saved").join("meta");
     let before = std::fs::read(&path).expect("saved meta");
     let out = fleet.run(&["--no-attach"]);
