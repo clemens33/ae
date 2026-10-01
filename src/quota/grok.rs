@@ -264,6 +264,48 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_record_with_no_newline_after_it_is_still_open() {
+        let open = format!("{}{}", line(STALE, "4.0"), line(FRESH, "9.0").trim_end());
+        assert_eq!(used(&open).as_deref(), Some("4.0"));
+    }
+
+    #[test]
+    fn a_tail_cut_exactly_at_a_line_end_keeps_the_whole_next_record() {
+        let tail = format!("\n{}", line(FRESH, "5.0"));
+        assert_eq!(used_tail(tail.as_bytes(), false).as_deref(), Some("5.0"));
+    }
+
+    #[test]
+    fn a_line_is_read_up_to_64_kib_and_not_a_byte_past_it() {
+        let sized = |pct: &str, len: usize| {
+            let whole = line(FRESH, pct);
+            let body = whole.trim_end();
+            format!("{body}{}\n", " ".repeat(len - body.len()))
+        };
+        let older = line(STALE, "4.0");
+        let at = sized("9.0", 64 * 1024);
+        assert_eq!(at.len(), 64 * 1024 + 1);
+        assert_eq!(used(&format!("{older}{at}")).as_deref(), Some("9.0"));
+        let past = sized("9.0", 64 * 1024 + 1);
+        assert_eq!(used(&format!("{older}{past}")).as_deref(), Some("4.0"));
+    }
+
+    #[test]
+    fn a_message_not_spelled_in_the_record_bytes_is_no_candidate() {
+        let escaped = line(FRESH, "9.0").replace("billing:", "billing\\u003a");
+        assert!(escaped.contains("billing\\u003a fetched"));
+        assert_eq!(
+            used(&format!("{}{escaped}", line(STALE, "4.0"))).as_deref(),
+            Some("4.0")
+        );
+    }
+
+    #[test]
+    fn the_tail_cap_is_512_kib() {
+        assert_eq!(super::TAIL_CAP, 524_288);
+    }
+
+    #[test]
     fn hostile_lines_never_blind_the_scope_and_spacing_never_hides_the_record() {
         let mut log = line(FRESH, "6.0").into_bytes();
         log.extend_from_slice(format!("{{\"msg\":\"{MSG}\",\"ts\":\n").as_bytes());
