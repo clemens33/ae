@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use crate::board::{self, Role};
 use crate::events::{Event, RoutingMember};
 use crate::watchdog::{self, HUMAN_BRIDGE_ACTORS, WATCHDOG_ACTOR};
-use crate::{reply, send, tracked};
+use crate::{reply, reseat, send, tracked};
 
 /// The asker's withdrawal of its own request.
 pub(super) const CANCEL: &str = "cancel";
@@ -25,6 +25,8 @@ pub struct Seat {
     pub slot: String,
     /// The seat's name.
     pub name: String,
+    /// `profile.<slot>` as the roster records it now.
+    pub profile: Option<String>,
 }
 
 /// What one lane item is.
@@ -56,15 +58,18 @@ pub enum Kind {
     NotDelivered { to: String, id: String },
     /// The human closed console request `id`.
     Closed { id: String },
-    /// An ADMITTED reply to console request `id`: `follow_up` 0 is the answer,
-    /// n the nth reply after it; `late` when the request was closed first;
-    /// `gap` names why the body shown is the summary, not the stored whole.
+    /// An ADMITTED reply to console request `id`, named by the seat the ask
+    /// reached: `follow_up` 0 is the answer, n the nth reply after it; `late`
+    /// when the request was closed first; `gap` names why the body shown is the
+    /// summary, not the stored whole; `speaker` is the seat's profile now when a
+    /// reseat moved it after the ask.
     Answer {
         seat: String,
         id: String,
         follow_up: usize,
         late: bool,
         gap: Option<String>,
+        speaker: Option<String>,
     },
     /// A reply to console request `id` that is NOT admitted as its answer.
     Unadmitted {
@@ -162,7 +167,7 @@ pub fn fold(
     let (mut items, other_say) = journal_items(session, seats, events);
     items.extend(standing_items(session, seats, events));
     let mut body_gaps = Vec::new();
-    let console = console_items(events, body, &mut body_gaps);
+    let console = console_items(seats, events, body, &mut body_gaps);
     let prefix = format!("{session}:");
     for row in &observation.rows {
         let name = row.actor.strip_prefix(&prefix);
@@ -204,21 +209,41 @@ pub fn fold(
     Lane { items, coverage }
 }
 
+/// What the fold knows of one console request so far.
+struct Thread<'a> {
+    ask: &'a Event,
+    /// A console cancel came before now.
+    closed: bool,
+    /// How many admitted replies came before now.
+    replies: usize,
+    /// A reseat moved the asked seat after the ask.
+    moved: bool,
+}
+
 /// The console's own thread: its asks and what became of them, and every
 /// reply sent to it — the ANSWER only from the complete identity the ask
 /// reached, with the stored whole body where it reads, else the summary and a
-/// named gap. Follow-ups and lateness are by position, so a re-read of the
-/// same journal draws the same rows.
+/// named gap. Follow-ups, lateness and a reseat are by position, so a re-read
+/// of the same journal draws the same rows.
 fn console_items(
+    seats: &[Seat],
     events: &[Event],
     body: &dyn Fn(&Event) -> Body,
     gaps: &mut Vec<String>,
 ) -> Vec<Item> {
-    // Per console request: its ask, whether a console cancel came before now,
-    // and how many admitted replies came before now.
-    let mut threads: BTreeMap<&str, (&Event, bool, usize)> = BTreeMap::new();
+    let mut threads: BTreeMap<&str, Thread<'_>> = BTreeMap::new();
     let mut items = Vec::new();
     for (record, event) in events.iter().enumerate() {
+        if event.action == reseat::RESEAT_ACTION
+            && event.summary.as_deref().is_some_and(reseat::moved_seat)
+        {
+            let moved = event.target_slot.value();
+            for thread in threads.values_mut() {
+                let asked = thread.ask.target_slot.value();
+                thread.moved |= moved.is_some_and(|slot| asked == Some(slot));
+            }
+            continue;
+        }
         let key = event.reference.as_deref().unwrap_or("");
         let (id, to) = (key.to_owned(), event.target.clone().unwrap_or_default());
         let mut text = event.summary.clone().unwrap_or_default();
@@ -226,7 +251,14 @@ fn console_items(
             match event.action.as_str() {
                 action if action == tracked::Kind::Ask.action() => {
                     if !key.is_empty() {
-                        threads.insert(key, (event, false, 0));
+                        let (closed, replies, moved) = (false, 0, false);
+                        let thread = Thread {
+                            ask: event,
+                            closed,
+                            replies,
+                            moved,
+                        };
+                        threads.insert(key, thread);
                     }
                     let uncertain = text.starts_with(tracked::UNCONFIRMED_SUMMARY_PREFIX);
                     Kind::Asked { to, id, uncertain }
@@ -234,7 +266,7 @@ fn console_items(
                 tracked::ABANDONED_ACTION => Kind::NotDelivered { to, id },
                 CANCEL => {
                     if let Some(thread) = threads.get_mut(key) {
-                        thread.1 = true;
+                        thread.closed = true;
                     }
                     Kind::Closed { id }
                 }
@@ -244,12 +276,19 @@ fn console_items(
             let from = event.actor.clone();
             let admitted = match threads.get_mut(key) {
                 None => Err("no console ask with this id in the journal".to_owned()),
-                Some(thread) => admission(thread.0, event).map(|()| thread),
+                Some(thread) => admission(thread.ask, event).map(|()| thread),
             };
             match admitted {
                 Ok(thread) => {
-                    let (late, follow_up) = (thread.1, thread.2);
-                    thread.2 += 1;
+                    let (late, follow_up) = (thread.closed, thread.replies);
+                    thread.replies += 1;
+                    let asked = thread.ask.target_slot.value();
+                    let speaker = thread.moved.then(|| {
+                        let seat = seats.iter().find(|seat| Some(seat.slot.as_str()) == asked);
+                        let profile = seat.and_then(|seat| seat.profile.clone());
+                        profile.unwrap_or_else(|| "unrecorded".to_owned())
+                    });
+                    let seat = thread.ask.target.clone().unwrap_or_default();
                     let read = body(event);
                     let gap = body_gap(&read);
                     if let Body::Whole(whole) = read {
@@ -260,13 +299,13 @@ fn console_items(
                             "reply {id} — {gap}; its 600-character summary is shown"
                         ));
                     }
-                    let seat = from;
                     Kind::Answer {
                         seat,
                         id,
                         follow_up,
                         late,
                         gap,
+                        speaker,
                     }
                 }
                 Err(why) => Kind::Unadmitted { from, id, why },
@@ -295,7 +334,7 @@ pub fn may_close(events: &[Event], id: &str) -> Result<(), String> {
         return Err("a close needs a request id".to_owned());
     }
     let mut open = None;
-    for item in console_items(events, &|_| Body::OldCore, &mut Vec::new()) {
+    for item in console_items(&[], events, &|_| Body::OldCore, &mut Vec::new()) {
         let still_open = open == Some(Ok(()));
         match item.kind {
             Kind::Asked { id: asked, .. } if asked == id => open = Some(Ok(())),
@@ -385,8 +424,8 @@ fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>,
 
 /// Whether `reply` comes from the complete identity `ask` reached: no spawned
 /// seat, no identity gap, and both five-tuples whole and equal. The error names
-/// the first field that fails — `unproven` when a side lacks it, `stale` when
-/// the sides differ.
+/// the first field that fails — `unproven` when a side lacks it or stamps it
+/// empty, `stale` when the sides differ.
 fn admission(ask: &Event, reply: &Event) -> Result<(), String> {
     let spawned = |slot: &RoutingMember| {
         slot.value()
@@ -421,7 +460,12 @@ fn admission(ask: &Event, reply: &Event) -> Result<(), String> {
             reply.caller_session_uuid.as_deref(),
         ),
     ];
+    // An empty stamp proves nothing, so two of them never compare equal.
     for (field, asked, answered) in fields {
+        let (asked, answered) = (
+            asked.filter(|v| !v.is_empty()),
+            answered.filter(|v| !v.is_empty()),
+        );
         match (asked, answered) {
             (Some(asked), Some(answered)) if asked == answered => {}
             (Some(_), Some(_)) => return Err(format!("stale {field}")),
@@ -511,6 +555,7 @@ mod tests {
         [("main", "lead"), ("worker.0", "colead")].map(|(slot, name)| Seat {
             slot: slot.to_owned(),
             name: name.to_owned(),
+            profile: None,
         })
     }
 
@@ -800,6 +845,38 @@ mod tests {
                 format!("lead answers {ID} · follow-up 1 · late (closed): WHOLE after"),
             ]
         );
+    }
+
+    /// A reseat labels the replies after it, each by its own place, with the
+    /// profile the roster records now for the slot the ask reached.
+    #[test]
+    fn a_reseat_labels_only_the_replies_after_it_with_the_asked_slots_profile() {
+        let me = caller("main", "%1", UUID);
+        let reseat = r#","target":"lead","target_slot":"main","summary":"reseated lead to m1""#;
+        let events = [
+            asked("q"),
+            answered(T1, &me, "before"),
+            about(T1, "human", "reseat", reseat),
+            answered(T2, &me, "after"),
+        ];
+        let seats =
+            [("main", "lead", "m1"), ("worker.0", "colead", "w1")].map(|(slot, name, p)| {
+                let (slot, name, profile) = (slot.to_owned(), name.to_owned(), Some(p.to_owned()));
+                Seat {
+                    slot,
+                    name,
+                    profile,
+                }
+            });
+        let lane = fold(S, &seats, &events, &Observation::default(), 0, &whole);
+        let tags: Vec<String> = lane.items.iter().map(|item| tag(&item.kind)).collect();
+        let answer = format!("lead answers {ID}");
+        let expected = [
+            format!("you → lead · {ID}"),
+            answer.clone(),
+            format!("{answer} · follow-up 1 · speaker lead now m1"),
+        ];
+        assert_eq!(tags, expected);
     }
 
     #[test]

@@ -65,7 +65,23 @@ pub const RESEAT_USAGE: &str =
     "Usage: ae reseat <session> <agent> --using <profile> [--stop-unknown]";
 
 /// The event action a reseat records, whatever its outcome.
-const RESEAT_ACTION: &str = "reseat";
+pub(crate) const RESEAT_ACTION: &str = "reseat";
+
+/// The outcome words of every record a reseat writes AFTER the seat's meta
+/// moved: the move whose tool started, and the two whose tool did not. The
+/// stop record is written before the move and begins with none of them.
+const MOVED: &str = "reseated ";
+const NOT_SEEN: &str = "pasted, tool not seen";
+const STOPPED_AFTER: &str = "tool stopped after the reseat";
+
+/// Whether a `reseat` record's summary says the seat now records another
+/// profile.
+#[must_use]
+pub(crate) fn moved_seat(summary: &str) -> bool {
+    [MOVED, NOT_SEEN, STOPPED_AFTER]
+        .iter()
+        .any(|outcome| summary.starts_with(outcome))
+}
 
 /// How long the stop waits for the pane to come back to an idle shell.
 const STOP_POLLS: u32 = 50;
@@ -1380,13 +1396,7 @@ fn run_parsed(
             Ok(Ended::Failed)
         }
         Started::NotSeen => {
-            record(
-                &dir,
-                &at,
-                &target,
-                "pasted, tool not seen",
-                Mentions::Conversation,
-            );
+            record(&dir, &at, &target, NOT_SEEN, Mentions::Conversation);
             writeln!(
                 err,
                 "Error: '{}' moved to '{}' and its tool was not seen: look at the pane; \
@@ -1484,13 +1494,7 @@ fn finish(
     // LAST: the new tool may have died while the turns were delivered, and
     // exit 0 means the seat is up NOW.
     if !crate::seat_relaunch::observe_identity(target, &proven.agent_bin, true) {
-        record(
-            dir,
-            at,
-            target,
-            "tool stopped after the reseat",
-            Mentions::Conversation,
-        );
+        record(dir, at, target, STOPPED_AFTER, Mentions::Conversation);
         writeln!(
             err,
             "Error: '{}' started on '{}' and is gone again (pane {}) — look at the pane.",
@@ -1512,7 +1516,7 @@ fn finish(
         format!(", launch turn {launch_word}")
     };
     let line = format!(
-        "reseated {} (pane {}, slot {}) to {}{launch_note}{seed_note}",
+        "{MOVED}{} (pane {}, slot {}) to {}{launch_note}{seed_note}",
         target.agent, target.pane, target.slot, parsed.profile
     );
     record(dir, at, target, &line, Mentions::Conversation);
@@ -1899,6 +1903,24 @@ mod tests {
             super::Carried::Seeded("no transcript".to_owned()).word(),
             "seeded (no transcript)"
         );
+    }
+
+    /// The console reads a reseat's own words to know a seat moved after an
+    /// ask: every record written past the meta move says so, the stop record
+    /// written before it does not.
+    #[test]
+    fn only_a_record_written_after_the_move_says_the_seat_moved() {
+        let record = |outcome: &str| {
+            let (carry, mentions) = (super::Carried::No, super::Mentions::Conversation);
+            super::summary(outcome, "a", "b", "", &carry, mentions)
+        };
+        let started = format!("{}lead (pane %1, slot main) to b", super::MOVED);
+        for outcome in [started.as_str(), super::NOT_SEEN, super::STOPPED_AFTER] {
+            assert!(super::moved_seat(&record(outcome)), "{outcome}");
+        }
+        for outcome in ["stopped claude in place (pane %1)", "reseat", ""] {
+            assert!(!super::moved_seat(&record(outcome)), "{outcome}");
+        }
         assert!(super::Carried::No.word().is_empty());
     }
 

@@ -14,7 +14,13 @@ terminal renderer; only its [input](#input) writes an event.
   with its target named. A reply is the journal's 600-character summary,
   tagged `preview (600-char summary)`.
 - **Console asks** as `you → <seat>`, each answer whole from the reply's stored
-  body (at most 65536 bytes), and each `/close` as `you closed <id>`.
+  body (at most 65536 bytes), and each `/close` as `you closed <id>`. An answer
+  counts only from the slot, session, server, pane and session uuid the ask
+  reached; any other reply shows as `not admitted: stale|unproven <field>`.
+  Answers after a reseat of the asked seat add `speaker <seat> now <profile>`,
+  the profile the roster records NOW: a move back to the ask-time profile still
+  labels, and a move whose start failed before any record, finished by
+  `relaunch`, does not.
 - **`say` lines** as `said <seat>` (or `ae` for ae's own notices); a worker's
   is counted in a coverage row, never shown.
 - **Decision cards**: a lead-pair seat's CURRENT `waiting-user` declaration as

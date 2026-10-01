@@ -106,6 +106,7 @@ impl Console {
             .map(|entry| Seat {
                 slot: entry.slot.clone(),
                 name: entry.name.clone(),
+                profile: entry.profile.clone(),
             })
             .collect())
     }

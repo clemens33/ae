@@ -53,6 +53,7 @@ pub(super) fn tag(kind: &Kind) -> String {
             follow_up,
             late,
             gap,
+            speaker,
         } => {
             let mut tag = format!("{seat} answers {id}");
             if *follow_up > 0 {
@@ -60,6 +61,9 @@ pub(super) fn tag(kind: &Kind) -> String {
             }
             if *late {
                 tag.push_str(" · late (closed)");
+            }
+            if let Some(profile) = speaker {
+                let _ = write!(tag, " · speaker {seat} now {profile}");
             }
             if let Some(gap) = gap {
                 let _ = write!(tag, " · {gap} · preview (600-char summary)");
@@ -267,6 +271,7 @@ mod tests {
             &[Seat {
                 slot: "main".to_owned(),
                 name: format!("l{hostile}"),
+                profile: None,
             }],
         );
         assert!(!head.trim_end().chars().any(char::is_control), "{head:?}");

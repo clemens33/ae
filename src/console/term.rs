@@ -253,6 +253,7 @@ mod tests {
         let seat = |slot: &str, name: &str| Seat {
             slot: slot.to_owned(),
             name: name.to_owned(),
+            profile: None,
         };
         let (lead, colead) = (seat("main", "lead"), seat("worker.0", "colead"));
         let pair = Ok(vec![lead.clone(), colead.clone()]);
