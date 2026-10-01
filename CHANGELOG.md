@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.4] - 2026-10-01
+- Pin on-demand agy quota acceptance behavior
+- Parse agy /quota output and gate the call on agy --version
+- Add the agy quota leg to the process door
+- Activate agy quota acceptance tests
+- Show agy's live quota windows in ae quota
+- Pin the four agy quota mutation survivors
+
 ## [v2026.10.3] - 2026-10-01
 - Pin fleet restore acceptance before implementation
 - Contrast crash restore with explicit opt-out
