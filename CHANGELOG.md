@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.5] - 2026-10-01
+- **console**: Specify binding proof and leadership return contract
+- Bind console answers to the asked seat and label replies after a reseat
+- **console**: Activate leadership instruction acceptance
+- Tell the lead pair how to answer a console turn
+
 ## [v2026.10.4] - 2026-10-01
 - Pin on-demand agy quota acceptance behavior
 - Parse agy /quota output and gate the call on agy --version
