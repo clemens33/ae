@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.2] - 2026-10-01
+- Specify Grok quota output from shared logs
+- Activate Grok quota acceptance with the pace column
+- Preserve values in the Grok spacing fixture
+- Add the grok debug-log billing parser and its fuzz target
+- Show the Grok weekly credit window in ae quota and feed it to the watchdog
+- Pin the Grok parser's cut-head, open-tail, line-size and message-prefilter edges
+
 ## [v2026.10.1] - 2026-10-01
 - Keep a console reply's whole body and fence the console sink
 - Tighten the console sink pins and saturate the capped read bound
