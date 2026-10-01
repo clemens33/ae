@@ -585,7 +585,6 @@ const SAY: &str =
     "announce what the human must see with `say` (unthreaded; the Telegram bridge forwards it too)";
 
 #[test]
-#[ignore = "activate with Phase 3b"]
 fn p3b_only_leadership_contexts_carry_the_console_route_and_return_contract() {
     for (tag, layout, leadership) in [
         ("solo", "vertical", vec!["main"]),
