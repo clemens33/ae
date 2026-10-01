@@ -715,7 +715,11 @@ fn a_clean_stop_before_the_latest_launch_does_not_block_its_crashed_incarnation(
     fleet.stamp("reborn", fleet.epoch - 600);
     fleet.beat("reborn", fleet.epoch - 60);
     let path = fleet.dir("reborn").join("events.jsonl");
-    let current = std::fs::read_to_string(&path).expect("current incarnation ledger");
+    // With autostart disabled, a launch may leave its current ledger empty.
+    let current = std::fs::read_to_string(&path).unwrap_or_else(|why| {
+        assert_eq!(why.kind(), std::io::ErrorKind::NotFound, "ledger: {why}");
+        String::new()
+    });
     // A retained clean stop belongs to the incarnation before the latest launch.
     let prior = line(
         fleet.epoch - 900,
