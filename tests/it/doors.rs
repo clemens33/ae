@@ -305,13 +305,13 @@ fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
     let mut holders: Vec<_> = rust_sources()
         .into_iter()
         .filter(|p| p.starts_with(root.join("src")))
-        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_agy_quota(")))
+        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_agy_quota")))
         .collect();
     holders.sort();
     // A scan that found nothing fails here too: the expected list is not empty.
     assert_eq!(
         holders,
-        [root.join("src/transport.rs")],
+        [root.join("src/quota.rs"), root.join("src/transport.rs")],
         "the agy process leg gained (or lost) a product holder"
     );
     let text = fs::read_to_string(root.join("src/transport.rs"))

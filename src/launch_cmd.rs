@@ -753,6 +753,19 @@ pub(crate) fn config_home_resolution(
     }
 }
 
+/// Whether `cmd` runs its tool under the HOME `lookup` names: no prefix assigns,
+/// unsets or clears it. A command that does not parse fails closed.
+pub(crate) fn inherits_home(
+    cmd: &ResolvedCommand,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> bool {
+    let inherited = lookup("HOME").map(|home| absolute_value("HOME", &home));
+    command_environment(cmd, lookup).is_ok_and(|environment| {
+        matches!(inherited, Some(Resolved::Path(_)))
+            && Some(effective_home(&environment, lookup)) == inherited
+    })
+}
+
 struct CommandEnvironment {
     clear: bool,
     unset: Vec<String>,
@@ -1593,6 +1606,25 @@ mod tests {
         assert_eq!(explicit.home, Resolved::Path(PathBuf::from("/account")));
         assert_eq!(explicit.base, Resolved::Path(PathBuf::from("/other")));
         assert!(explicit.explicit);
+    }
+
+    #[test]
+    fn only_a_command_that_keeps_the_callers_home_inherits_it() {
+        let pane = |name: &str| (name == "HOME").then(|| "/pane".to_owned());
+        for (text, inherits) in [
+            ("agy --model gemini", true),
+            ("FOO=1 agy", true),
+            ("HOME=/x agy", false),
+            ("env -i agy", false),
+            ("env -u HOME agy", false),
+            ("agy 'unterminated", false),
+        ] {
+            let command = crate::config::IdentityConfig::resolved_snapshot(text);
+            assert_eq!(super::inherits_home(&command, &pane), inherits, "{text}");
+        }
+        let plain = crate::config::IdentityConfig::resolved_snapshot("agy");
+        // No HOME is no proof.
+        assert!(!super::inherits_home(&plain, &|_| None));
     }
 
     #[test]

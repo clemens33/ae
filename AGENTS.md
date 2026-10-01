@@ -333,7 +333,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `AE_TEST_BOOT_TIME` | the host boot time the absence proof compares against | CHECKOUT only |
 | `AE_TEST_QUOTA_TRACE` | when set to a path, each quota pass appends one attestation line there (`skipped`, or `observed max=<pct> booked=<n>`) — a due cadence pass and the limit-release recovery pass alike; test seam, unset in production | CHECKOUT only |
 | `AE_TEST_RENAME_CRASH_AT` | when set to exactly one of `after-intent`, `after-work-move`, `after-state-move`, `after-meta`, `after-assets`, `after-result`, a stopped rename attests `rename-crash-boundary: <value>` on stderr past the named facts, then parks at most 60s and exits `1` with `rename-crash-timeout: <value>`; test seam, unset in production | CHECKOUT only |
-| `TMPDIR` | where a captured child's scratch file lands: the opencode export capture (`transport::run_opencode`, whose child abandons a pipe at exit), and upgrade's older scratch directory (`upgrade::Scratch`) | both |
+| `TMPDIR` | where a captured child's scratch file lands: the opencode export capture (`transport::run_opencode`, whose child abandons a pipe at exit), the agy quota leg's stdout (`transport::run_agy_quota`), and upgrade's older scratch directory (`upgrade::Scratch`) | both |
 | `TMUX` / `TMUX_PANE` | which pane this shell is, for `stop` and `watchdog` | both |
 
 `doors::boot_time` is the one door with two spellings and no variable of its own: Linux's
@@ -341,6 +341,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 leg of the EXISTING process door (`sysctl -n kern.boottime`, no argument a caller chooses), so
 the `std::process::Command` inventory is unchanged. `tests/it/doors.rs` pins its one product
 caller beside `run_git`'s and `run_ps`'s.
+`transport::run_agy_quota` is that door's on-demand quota leg; `quota::run` is its one caller.
 
 `doors::canonical_strict_dir` / `canonical_optional_ae` are the strict directory classifier with
 no variable of its own: lstat, canonicalize and metadata proving a recorded worker target or root

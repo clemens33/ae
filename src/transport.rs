@@ -8,7 +8,7 @@
 //! no argv of its own and interprets no bytes of its own.
 
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::inventory::{DiscoveredSession, Discovery, QueryFailed, ServerId};
@@ -361,7 +361,6 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
 }
 
 /// How a deadline-bounded run ended.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
 enum Ran {
     /// It exited by itself: its status and its stdout, at most `cap` bytes.
     Exited(std::process::ExitStatus, Vec<u8>),
@@ -378,7 +377,6 @@ enum Ran {
 /// stderr are closed, and stdout is a scratch file whose length each `POLL`
 /// reads from ae's own handle. A stopped child is killed, then reaped; a
 /// grandchild outlives it and can write only into the unlinked scratch inode.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
 fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     program: &str,
     args: &[A],
@@ -611,11 +609,10 @@ pub(crate) fn run_sysctl() -> (bool, String) {
 }
 
 /// What the on-demand agy quota leg came back with.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgyRun {
-    /// `/quota`'s stdout, whole and UTF-8, and both calls' monotonic run time.
-    Done { text: String, elapsed: Duration },
+    /// `/quota`'s stdout, whole and UTF-8.
+    Done { text: String },
     /// No `agy` on `PATH`.
     Absent,
     /// `--version` did not PROVE a release at or above the floor: `/quota` never ran.
@@ -628,24 +625,26 @@ pub(crate) enum AgyRun {
 
 /// The deadlines of `--version` (0.27 s measured) and `/quota` (3-5 s
 /// measured), agy 1.2.14 on 2026-10-01.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
 const AGY_DEADLINES: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(8)];
 
 /// The agy leg of the one process door, program and argvs FIXED here, and the
 /// only leg that reaches the network (through agy's own login). An agy below
 /// [`crate::quota::agy::FLOOR`] reads `/quota` as a prompt and starts an agent
 /// turn, so `/quota` runs only once `--version` PROVED a release at or above it.
-#[expect(dead_code, reason = "wired by A3")]
-pub(crate) fn run_agy_quota() -> AgyRun {
-    agy_quota_with(&[], AGY_DEADLINES)
+/// The child runs with `HOME=home`: the account asked is the one ae judged.
+pub(crate) fn run_agy_quota(home: &Path) -> AgyRun {
+    agy_quota_with(home, &[], AGY_DEADLINES)
 }
 
 /// [`run_agy_quota`] with the child's environment and deadlines passed in, so
-/// the leg's own tests can put a fake first on the child's `PATH`.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
-fn agy_quota_with(envs: &[(&str, &str)], deadlines: [Duration; 2]) -> AgyRun {
+/// the leg's own tests can put a fake first on the child's `PATH`. A HOME that
+/// is not UTF-8 cannot be handed over, so agy is not started.
+fn agy_quota_with(home: &Path, envs: &[(&str, &str)], deadlines: [Duration; 2]) -> AgyRun {
+    let Some(home) = home.to_str() else {
+        return AgyRun::Failed;
+    };
+    let envs = &[envs, &[("HOME", home)]].concat();
     let [version_deadline, quota_deadline] = deadlines;
-    let started = std::time::Instant::now();
     match spawn_until("agy", &["--version"], envs, 4096, version_deadline) {
         Ran::Absent => return AgyRun::Absent,
         Ran::Exited(exit, out) if exit.success() && crate::quota::agy::supports_quota(&out) => {}
@@ -654,10 +653,7 @@ fn agy_quota_with(envs: &[(&str, &str)], deadlines: [Duration; 2]) -> AgyRun {
     let quota = ["-p", "/quota", "--output-format", "json"];
     match spawn_until("agy", &quota, envs, 65_536, quota_deadline) {
         Ran::Exited(exit, out) if exit.success() => {
-            String::from_utf8(out).map_or(AgyRun::Failed, |text| AgyRun::Done {
-                text,
-                elapsed: started.elapsed(),
-            })
+            String::from_utf8(out).map_or(AgyRun::Failed, |text| AgyRun::Done { text })
         }
         Ran::TimedOut => AgyRun::TimedOut,
         Ran::Exited(..) | Ran::Absent | Ran::Failed => AgyRun::Failed,
@@ -1501,7 +1497,7 @@ mod tests {
 
         fn run(&self, deadlines: [Duration; 2]) -> AgyRun {
             let path = self.dir.display().to_string();
-            agy_quota_with(&[("PATH", path.as_str())], deadlines)
+            agy_quota_with(&self.dir, &[("PATH", path.as_str())], deadlines)
         }
 
         /// What the fake wrote into `name` beside itself; empty when nothing.
@@ -1532,6 +1528,19 @@ mod tests {
         let full = FakeAgy::new("full", VERSION_OK, "exec /usr/bin/head -c 65536 /dev/zero");
         assert!(matches!(full.run(SHORT), AgyRun::Done { text, .. } if text.len() == 65_536));
         assert_eq!(AGY_DEADLINES.map(|deadline| deadline.as_secs()), [3, 8]);
+    }
+
+    #[test]
+    fn the_agy_leg_asks_the_account_of_the_home_it_was_handed() {
+        // A fresh scratch dir, so never this process's own HOME.
+        let fake = FakeAgy::new("home", VERSION_OK, "printf '%s' \"$HOME\"");
+        let home = fake.dir.display().to_string();
+        assert!(matches!(fake.run(SHORT), AgyRun::Done { text } if text == home));
+        let raw = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/tmp/\xff");
+        let path = [("PATH", home.as_str())];
+        // A HOME agy cannot be handed starts nothing: one run in the log.
+        assert_eq!(agy_quota_with(raw.as_ref(), &path, SHORT), AgyRun::Failed);
+        assert_eq!(fake.read("argv"), BOTH_CALLS);
     }
 
     #[test]

@@ -34,7 +34,6 @@ fn rig(tag: &str) -> PathBuf {
             "astrax = codex --model astra\n",
             "solx = codex --model sol\n",
             "grok46 = grok --model grok-4.6\n",
-            "agy = agy\n",
             "opencode = opencode\n",
             "gemini = gemini\n",
         ),
@@ -73,6 +72,15 @@ fn rig(tag: &str) -> PathBuf {
         .expect("Codex rollout");
     }
     root
+}
+
+/// `ae::quota::run` in this process would start the real agy on the caller's account.
+#[test]
+fn the_shared_rig_names_no_agy_command() {
+    let root = rig("no-agy");
+    let config = std::fs::read_to_string(root.join("config")).expect("rig config");
+    assert!(!config.split_whitespace().any(|word| word == "agy"));
+    let _ = std::fs::remove_dir_all(root);
 }
 
 fn run_quota(root: &std::path::Path) -> String {

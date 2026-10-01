@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::json::Value;
 use crate::time::Timestamp;
 use crate::tool::{QuotaSource, ToolKind};
+use crate::transport::AgyRun;
 
 const CLAUDE_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const CODEX_TAIL_BYTES: u64 = 256 * 1024;
@@ -681,6 +682,8 @@ struct Scope {
     hint: Option<String>,
     manual_resets: Option<u8>,
     notes: Vec<String>,
+    /// An agy command that keeps the caller's HOME: [`run`] may ask agy itself.
+    leg: bool,
 }
 
 /// What one `[clients]` row declared about its own extra headroom.
@@ -1492,7 +1495,11 @@ pub(crate) fn observe_full(
     inputs: &Inputs<'_>,
 ) -> Result<(Observation, pace::SeriesSet), crate::config::ConfigError> {
     let cfg = crate::config::read_identity(inputs.global, inputs.local)?;
-    let mut scopes = configured_scopes(&cfg, inputs.home);
+    Ok(observe_scopes(inputs, configured_scopes(&cfg, inputs.home)))
+}
+
+/// [`observe_full`] over scopes already read from the config.
+fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, pace::SeriesSet) {
     let mut groups = Vec::new();
     let mut rendered = Vec::new();
     let mut series = pace::SeriesSet::default();
@@ -1583,7 +1590,7 @@ pub(crate) fn observe_full(
                 }
             })
     });
-    Ok((
+    (
         Observation {
             groups,
             rendered,
@@ -1591,7 +1598,7 @@ pub(crate) fn observe_full(
             now: inputs.now,
         },
         series,
-    ))
+    )
 }
 
 /// Read the bounded local sources and return display-ready quota-dialog rows.
@@ -1609,22 +1616,50 @@ pub(crate) fn quota_dialog_rows(inputs: &Inputs<'_>) -> Vec<DialogRow> {
     )
 }
 
-/// Read configured client scopes and print the local quota table.
+/// Read configured client scopes and print the quota table.
 ///
-/// The operation is deliberately observational: it opens only client cache
-/// files, writes only to the supplied streams, and never starts a process.
+/// It opens client cache files and writes only to the supplied streams. The
+/// one process it may start is agy, once, when a scope's agy command keeps the
+/// caller's HOME ([`crate::transport::run_agy_quota`]); every row is then
+/// judged at the instant that call returned. [`observe`] never starts it.
 ///
 /// # Errors
 ///
 /// Returns an I/O error only when the supplied output stream cannot be written.
 pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
-    let (observation, series) = match observe_full(inputs) {
-        Ok(read) => read,
+    run_with(inputs, out, err, crate::transport::run_agy_quota)
+}
+
+/// [`run`] with the agy leg passed in, so a test can count its calls.
+fn run_with(
+    inputs: &Inputs<'_>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+    leg: impl FnOnce(&Path) -> AgyRun,
+) -> crate::Result<u8> {
+    // ONE config read: the scopes the leg was judged on are the scopes folded.
+    let scopes = match crate::config::read_identity(inputs.global, inputs.local) {
+        Ok(cfg) => configured_scopes(&cfg, inputs.home),
         Err(error) => {
             writeln!(err, "{error}")?;
             return Ok(1);
         }
     };
+    let legs: Vec<Leg> = scopes
+        .iter()
+        .filter(|scope| scope.leg)
+        .map(|scope| (scope.profiles.clone(), scope.clients.clone()))
+        .collect();
+    let started = Instant::now();
+    let answer = inputs.home.filter(|_| !legs.is_empty()).map(leg);
+    let now = match answer {
+        Some(_) => completed(inputs.now, started.elapsed()),
+        None => inputs.now,
+    };
+    let (mut observation, series) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
+    if let Some(answer) = answer {
+        answer_agy(&mut observation.rendered, &legs, answer, now);
+    }
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
     write!(
         out,
@@ -1637,6 +1672,51 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
         )
     )?;
     Ok(0)
+}
+
+/// `now` plus `elapsed` rounded UP to whole seconds: no row is judged before agy returned.
+fn completed(now: i64, elapsed: Duration) -> i64 {
+    let seconds = elapsed.as_nanos().div_ceil(1_000_000_000);
+    now.saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX))
+}
+
+/// One scope the agy leg answers for: its profiles and its clients.
+type Leg = (Vec<String>, Vec<String>);
+
+/// agy's one answer replaces the placeholder of every scope it speaks for, as ONE group (the
+/// leg asked one login). Absent leaves today's rows; only the operator table is touched.
+fn answer_agy(rendered: &mut Vec<Group>, legs: &[Leg], answer: AgyRun, now: i64) {
+    const UNREADABLE: &str = "agy /quota gave no usable answer";
+    let mark = |status, hint| (vec![placeholder(status)], Some(hint));
+    let (rows, hint) = match answer {
+        AgyRun::Absent => return,
+        AgyRun::Done { text } => match agy::parse(text.as_bytes(), now) {
+            Ok(rows) if rows.is_empty() => (vec![placeholder(Status::Unknown)], None),
+            Ok(rows) => (rows, None),
+            Err(_) => mark(Status::ReadError, UNREADABLE),
+        },
+        AgyRun::TooOld => mark(Status::Unsupported, "agy 1.1.11+ required for /quota"),
+        AgyRun::TimedOut => mark(Status::Truncated, "agy /quota passed its 8 s deadline"),
+        AgyRun::Failed => mark(Status::ReadError, UNREADABLE),
+    };
+    let spoken = |group: &Group| {
+        group.tool == ToolKind::Agy
+            && legs.contains(&(group.profiles.clone(), group.clients.clone()))
+    };
+    let first = rendered.iter().position(spoken);
+    let spoke = rendered
+        .extract_if(.., |group| spoken(group))
+        .reduce(|mut merged, group| {
+            merged.profiles.extend(group.profiles);
+            merged.clients.extend(group.clients);
+            merged
+        });
+    if let (Some(first), Some(mut merged)) = (first, spoke) {
+        let mut seen = std::collections::BTreeSet::new();
+        merged.clients.retain(|client| seen.insert(client.clone()));
+        (merged.rows, merged.hint) = (rows, hint.map(str::to_owned));
+        rendered.insert(first, merged);
+    }
 }
 
 /// Every quota scope the config declares.
@@ -1804,7 +1884,7 @@ fn absorb_resolved(
     }
     let unknown_variable = std::cell::RefCell::new(None);
     let account_variable = tool.adapter().config_home_env;
-    let resolution = crate::launch_cmd::config_home_resolution(resolved, tool, &|name| {
+    let lookup = |name: &str| {
         if name == "HOME" {
             return home.map(|path| path.display().to_string());
         }
@@ -1816,7 +1896,10 @@ fn absorb_resolved(
             *unknown = Some(name.to_owned());
         }
         None
-    });
+    };
+    let resolution = crate::launch_cmd::config_home_resolution(resolved, tool, &lookup);
+    // Read `unknown_variable` after both readers: agy's resolution alone never asks.
+    let leg = tool == ToolKind::Agy && crate::launch_cmd::inherits_home(resolved, &lookup);
     if let Some(variable) = unknown_variable.into_inner() {
         scopes.push(unknown_scope(
             owner,
@@ -1840,6 +1923,7 @@ fn absorb_resolved(
         source_key,
         hint,
     } = paths;
+    let leg = leg && config_home.is_some();
     // A PROVEN source is the whole of the correlation. `source_key: None` means
     // this discovery resolved none, not that it has no distinguishing identity,
     // and matching two of those would join accounts on the absence of evidence
@@ -1867,6 +1951,7 @@ fn absorb_resolved(
             hint,
             manual_resets: None,
             notes: Vec::new(),
+            leg,
         });
         return scopes.len() - 1;
     };
@@ -2083,6 +2168,7 @@ fn unknown_scope(
         hint,
         manual_resets: None,
         notes: Vec::new(),
+        leg: false,
     }
 }
 
@@ -2310,6 +2396,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         hint: None,
                         manual_resets: None,
                         notes: Vec::new(),
+                        leg: false,
                     });
                 }
             }
@@ -2332,6 +2419,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                     hint: Some(reason.clone()),
                     manual_resets: None,
                     notes: Vec::new(),
+                    leg: false,
                 });
             }
         }
@@ -3600,6 +3688,7 @@ mod tests {
             hint: None,
             manual_resets: None,
             notes: Vec::new(),
+            leg: false,
         }
     }
 
@@ -3622,6 +3711,7 @@ mod tests {
             hint: None,
             manual_resets: None,
             notes: Vec::new(),
+            leg: false,
         };
         let default = scope(&["solx"], &["codex"]);
         let mic = scope(&[], &["codex-mic"]);
@@ -3857,6 +3947,7 @@ mod tests {
             hint: Some("configured scope hint".to_owned()),
             manual_resets: None,
             notes: Vec::new(),
+            leg: false,
         };
 
         let project = |groups: super::CodexGroups| {
@@ -3998,6 +4089,7 @@ mod tests {
                 hint: None,
                 manual_resets: None,
                 notes: Vec::new(),
+                leg: false,
             };
             match read_claude(&scope, 1_001, &mut Budget::new()) {
                 ReadRows::Rows(observed) => observed
@@ -4441,6 +4533,60 @@ mod tests {
             group.notes,
             ["on-demand spend enabled: a full window may not block work"]
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn only_an_agy_command_on_the_callers_home_asks_agy_once() {
+        use {super::AgyRun, std::path::Path, std::time::Duration};
+        let root = std::path::PathBuf::from(format!("/tmp/ae-agy-leg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch home");
+        let config = root.join("config");
+        // A claude cache 900 s old is fresh at `now` and stale one second later.
+        let now = 1_788_858_600;
+        let cache = format!(
+            "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[\
+             {{\"kind\":\"session\",\"percent\":8,\"resets_at\":\"2026-09-08T11:00:00Z\"}}]}}}}}}",
+            (now - 900) * 1_000
+        );
+        std::fs::write(root.join(".claude.json"), cache).expect("claude cache");
+        // No antigravity-cli store: agy is still asked. The last leg edits the config.
+        let here = Some(root.as_path());
+        for (profiles, home, edit, calls) in [
+            ("c = claude\na = agy\nb = agy -m\n", here, "", 1),
+            ("c = claude\na = HOME=/x agy\n", here, "", 0),
+            ("c = claude\na = agy\n", None, "", 0),
+            ("c = claude\na = agy\n", here, "[profiles]\nb = claude\n", 1),
+        ] {
+            std::fs::write(&config, format!("[profiles]\n{profiles}")).expect("identity config");
+            let inputs = super::Inputs {
+                home,
+                global: Some(&config),
+                local: None,
+                sessions: None,
+                now,
+            };
+            let unasked = [placeholder(Status::Unsupported)];
+            for group in super::observe(&inputs).expect("observation").groups {
+                assert!(group.tool != ToolKind::Agy || group.rows == unasked);
+            }
+            let asked = std::cell::Cell::new(0);
+            let leg = |home: &Path| {
+                asked.set(asked.get() + usize::from(home == root));
+                std::thread::sleep(Duration::from_millis(1));
+                assert!(edit.is_empty() || std::fs::write(&config, edit).is_ok());
+                AgyRun::Failed
+            };
+            let mut out = Vec::new();
+            let code = super::run_with(&inputs, &mut out, &mut Vec::new(), leg).ok();
+            let table = String::from_utf8_lossy(&out);
+            let (errors, stale) = (table.matches("read-error").count(), table.contains("stale"));
+            let want = (Some(0), calls, calls, calls == 1);
+            assert_eq!((code, asked.get(), errors, stale), want, "{table}");
+        }
+        let ceil = |millis| super::completed(10, Duration::from_millis(millis));
+        assert_eq!([0, 1, 1000, 1001].map(ceil), [10, 11, 11, 12]);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4944,6 +5090,7 @@ mod tests {
                 hint: None,
                 manual_resets: first,
                 notes: Vec::new(),
+                leg: false,
             };
             merge_declaration(
                 &mut scope,

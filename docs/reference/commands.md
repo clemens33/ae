@@ -945,7 +945,7 @@ identity only — one canonical vendor source is one account, whatever labels re
 that resolved NO source is never joined to another, because failing to resolve is not evidence of
 being the same account, and two refusals shown as one would assert what ae cannot observe; they
 render as separate rows, each stating its own refusal. A tool with no local quota source, such as
-`agy`, can never prove one, so each of its profiles is its own row; Grok's source is the one debug
+`agy`, can never prove one, so each of its profiles is its own scope; Grok's source is the one debug
 log under the default home, so its profiles and clients share one scope. The same holds for a
 retained Codex rollout whose recorded config home did not resolve: two seats that failed for the
 same reason are two failures that read alike, not one account, so each keeps its own row and its own
@@ -1042,8 +1042,8 @@ is 2.4 judged percentage points per hour, empty in about 2 h 10 min, and `!` mea
 state a rate or an ETA. `unknown` is a trusted row whose history is too short (a window needs a
 span of a third of its lookback: a fifth of the window, 30 min to 12 h). `-` is no verdict, and
 means one of: the row is not trusted (`unknown`, expired or clock-skewed; a `stale` row up to an
-hour old IS trusted), the client reports no quota (agy, opencode, muse, gemini, or a grok whose log
-holds no usable window), the account
+hour old IS trusted), no reusable local history (agy) or no quota (opencode, muse, gemini, or a
+grok whose log holds no usable window), the account
 is unlimited or spend-capped, another row of the same window is newer or higher (the cell sits
 only beside the USED it was computed from; identical rollouts draw one), or that newest row is in
 a rollout the table does not show.
@@ -1105,8 +1105,12 @@ checkpoint ask and no throttle line, because its config home is not recorded.
 
 Antigravity, Muse Code, OpenCode, and Gemini CLI, and a Grok with no readable window, have no
 verified reusable local subscription quota source. They render `unsupported` with an operator hint
-rather than treating token or cost history as quota. This command makes no network request, reads
-no credentials, invokes neither tmux nor a vendor process, and writes no state.
+rather than treating token or cost history as quota. For an agy profile whose command keeps the
+caller's HOME, it asks agy once per run under that HOME: `agy --version` (3 s), then on 1.1.11+ `agy
+-p /quota --output-format json` (8 s). One answer fills every such profile, every row is judged when
+it returns, and a refusal reads `unsupported`, `truncated` or `read-error`, never vendor bytes.
+Beyond that call it makes no network request, reads no credentials, invokes neither tmux nor another
+vendor process, and writes no state; the watchdog and the settings dialog never make it.
 
 ### Advisories
 
