@@ -1609,6 +1609,19 @@ mod tests {
         assert_eq!(fake.read("argv"), "");
     }
 
+    /// Only a missing program is absent: an `agy` the child may not execute is
+    /// an install ae cannot ask, so the version gate stays shut.
+    #[test]
+    fn an_agy_that_cannot_be_executed_is_too_old_not_absent() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fake = FakeAgy::new("noexec", VERSION_OK, "exit 96");
+        let mode = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(fake.dir.join("agy"), mode)
+            .expect("the fake agy is not executable");
+        assert_eq!(fake.run(SHORT), AgyRun::TooOld);
+        assert_eq!(fake.read("argv"), "");
+    }
+
     #[test]
     fn a_program_that_ran_reports_success_and_its_output() {
         // THE CONTROL, AND IT COMES FIRST.

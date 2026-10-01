@@ -4553,11 +4553,19 @@ mod tests {
         std::fs::write(root.join(".claude.json"), cache).expect("claude cache");
         // No antigravity-cli store: agy is still asked. The last leg edits the config.
         let here = Some(root.as_path());
-        for (profiles, home, edit, calls) in [
-            ("c = claude\na = agy\nb = agy -m\n", here, "", 1),
-            ("c = claude\na = HOME=/x agy\n", here, "", 0),
-            ("c = claude\na = agy\n", None, "", 0),
-            ("c = claude\na = agy\n", here, "[profiles]\nb = claude\n", 1),
+        // `kept` counts the agy profiles left unasked, each still on its own `unsupported` row.
+        for (profiles, home, edit, calls, kept) in [
+            ("c = claude\na = agy\nb = agy -m\n", here, "", 1, 0),
+            ("c = claude\na = HOME=/x agy\n", here, "", 0, 1),
+            ("c = claude\na = agy\n", None, "", 0, 1),
+            (
+                "c = claude\na = agy\n",
+                here,
+                "[profiles]\nb = claude\n",
+                1,
+                0,
+            ),
+            ("c = claude\na = agy\nb = HOME=/x agy\n", here, "", 1, 1),
         ] {
             std::fs::write(&config, format!("[profiles]\n{profiles}")).expect("identity config");
             let inputs = super::Inputs {
@@ -4582,8 +4590,9 @@ mod tests {
             let code = super::run_with(&inputs, &mut out, &mut Vec::new(), leg).ok();
             let table = String::from_utf8_lossy(&out);
             let (errors, stale) = (table.matches("read-error").count(), table.contains("stale"));
-            let want = (Some(0), calls, calls, calls == 1);
-            assert_eq!((code, asked.get(), errors, stale), want, "{table}");
+            let unsupported = table.matches("unsupported").count();
+            let got = (code, asked.get(), errors, stale, unsupported);
+            assert_eq!(got, (Some(0), calls, calls, calls == 1, kept), "{table}");
         }
         let ceil = |millis| super::completed(10, Duration::from_millis(millis));
         assert_eq!([0, 1, 1000, 1001].map(ceil), [10, 11, 11, 12]);
