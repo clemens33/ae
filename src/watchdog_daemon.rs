@@ -6889,10 +6889,10 @@ mod tests {
         launch_id_for, live_model, motion_cadence, motion_failure, motion_observation_due,
         motion_publish_failure, motion_ticker_enabled, nudge_text, observed_option,
         proven_ownership, quota_ask_candidates, quota_delivery, quota_observation_due,
-        quota_recipients, quota_seconds, read_events, rebind, record_nudge, restore_idle, run,
-        session_name, slot_latched, slot_mark, stale_display, static_observe_cadence,
-        sweep_effects, sweep_seconds, system_time_from_epoch, throttle_quota_line, ticker_mode,
-        wait_challenge_text, window_agents_line,
+        quota_recipients, quota_seconds, read_events, rebind, record_nudge, refresh_beat,
+        restore_idle, run, session_name, slot_latched, slot_mark, stale_display,
+        static_observe_cadence, sweep_effects, sweep_seconds, system_time_from_epoch,
+        throttle_quota_line, ticker_mode, wait_challenge_text, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -15428,6 +15428,45 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn a_failing_beat_warns_once_and_a_success_rearms_the_warning() {
+        let scratch = Scratch::new("beat-warns-once");
+        // The staged name `touch_beat` takes exclusively: taken, the refresh really fails.
+        let staged = scratch
+            .0
+            .join(format!(".watchdog-beat.tmp.{}", std::process::id()));
+        let warnings = |err: &[u8]| {
+            String::from_utf8_lossy(err)
+                .matches("beat not refreshed")
+                .count()
+        };
+        let (mut failing, mut err) = (false, Vec::new());
+        std::fs::write(&staged, b"").expect("occupy the staged name");
+        refresh_beat(&scratch.0, &mut failing, &mut err)
+            .expect("a failed beat is said, not raised");
+        assert!(failing && warnings(&err) == 1, "the first failure warns");
+        refresh_beat(&scratch.0, &mut failing, &mut err).expect("repeat");
+        assert!(
+            failing && warnings(&err) == 1,
+            "a repeat failure stays quiet"
+        );
+        std::fs::remove_file(&staged).expect("free the staged name");
+        refresh_beat(&scratch.0, &mut failing, &mut err).expect("success");
+        assert!(
+            !failing
+                && matches!(
+                    crate::watchdog_glue::beat_modified(&scratch.0),
+                    crate::tmux::Evidence::At(_)
+                )
+        );
+        std::fs::write(&staged, b"").expect("occupy again");
+        refresh_beat(&scratch.0, &mut failing, &mut err).expect("failed again");
+        assert!(
+            failing && warnings(&err) == 2,
+            "a success re-arms the warning"
+        );
     }
 
     fn at(secs: u64) -> SystemTime {

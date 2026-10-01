@@ -3,11 +3,14 @@
 
 #![allow(
     clippy::disallowed_methods,
-    reason = "fixtures build and inspect real directories; the boundary is about what PRODUCT code may reach"
+    clippy::expect_used,
+    reason = "fixtures build and inspect real directories with expect on the fixture I/O; \
+              the boundary is about what PRODUCT code may reach"
 )]
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::time::{Duration, SystemTime};
 
 use ae::meta::{Selector, ServerSelector};
@@ -18,7 +21,8 @@ use ae::session::SessionRead;
 use ae::tmux::Evidence;
 use ae::watchdog_glue::{beat_modified, beat_path, touch_beat};
 
-use super::cli::OwnedScratch;
+use super::cli::{OwnedScratch, ae};
+use super::phase2::run_tmux;
 
 fn fact(name: &str, on: &str, launched: i64, ledger: Ledger, beat: Option<i64>) -> Fact {
     Fact {
@@ -356,6 +360,18 @@ fn callers_of(needle: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_beat_under_a_non_directory_is_damage_not_absence() {
+    let scratch = OwnedScratch::root("rt", "beat-enotdir");
+    let plain = scratch.join("plain");
+    std::fs::write(&plain, b"").unwrap_or_else(|why| panic!("fixture file: {why}"));
+    assert_eq!(
+        beat_modified(&plain),
+        Evidence::Unreadable,
+        "ENOTDIR is not NotFound"
+    );
+}
+
+#[test]
 fn only_the_watchdog_cycle_writes_the_beat() {
     let callers = callers_of("watchdog_glue::touch_beat(");
     assert_eq!(callers, ["watchdog_daemon.rs"], "the beat has one writer");
@@ -365,4 +381,130 @@ fn only_the_watchdog_cycle_writes_the_beat() {
 fn only_the_restore_loop_starts_a_guarded_launch() {
     let callers = callers_of("session_launch::run_restore(");
     assert_eq!(callers, ["restore.rs"], "a restore launch has one caller");
+}
+
+/// A crashed `saved` on its RECORDED server whose recorded profile the config
+/// has since dropped, and a live non-ae `saved` on the TARGET server a bare run
+/// proposes: the one place the recorded-vs-proposed preflight choice shows.
+struct Split {
+    scratch: OwnedScratch,
+    home: PathBuf,
+    project: PathBuf,
+    recorded: PathBuf,
+    target: PathBuf,
+}
+
+impl Split {
+    fn new(tag: &str) -> Self {
+        let mut scratch = OwnedScratch::root("rt", tag);
+        let (home, project) = (scratch.join("state"), scratch.join("project"));
+        let (recorded, target) = (scratch.join("s1"), scratch.join("s2"));
+        scratch.add_tmux_server(recorded.clone());
+        scratch.add_tmux_server(target.clone());
+        std::fs::create_dir_all(&home).expect("state root");
+        std::fs::create_dir_all(&project).expect("project");
+        let config = "[profiles]\nidle = \"sleep 600\"\n[roster]\nlead = idle\n[workspace]\nmain = lead\nlayout = vertical\n";
+        std::fs::write(home.join("config"), config).expect("config");
+        Self {
+            scratch,
+            home,
+            project,
+            recorded,
+            target,
+        }
+    }
+
+    fn run(&self, server: &Path, args: &[&str]) -> Output {
+        ae().env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env("HOME", &self.scratch)
+            .env("AE_HOME", &self.home)
+            .env("CONFIG_FILE", self.home.join("config"))
+            .env("TMUX_TMPDIR", &self.scratch)
+            .env("AE_TMUX_SERVER_KIND", "socket")
+            .env("AE_TMUX_SERVER", server)
+            .env("AE_NO_AUTOSTART", "1")
+            .current_dir(&self.project)
+            .args(args)
+            .output()
+            .expect("real ae entry")
+    }
+
+    fn tmux(&self, server: &Path, words: &[&str]) -> (bool, String) {
+        let mut argv = vec!["-S".to_owned(), server.display().to_string()];
+        argv.extend(words.iter().map(|word| (*word).to_owned()));
+        run_tmux(&argv, &self.scratch)
+    }
+
+    /// `saved` launched on the recorded server, aged into a crashed cohort, its
+    /// server killed, and its recorded profile renamed to one the config lacks.
+    fn crash_saved_with_a_dropped_profile(&self) {
+        let launched = self.run(&self.recorded, &["--local", "saved", "--no-attach"]);
+        assert!(launched.status.success(), "{launched:?}");
+        let dir = self.home.join("sessions").join("saved");
+        let now = ae::time::Timestamp::now().epoch();
+        std::fs::write(dir.join(".launch-attempt"), format!("{}\n", now - 600)).expect("stamp");
+        let beat = std::fs::File::create(dir.join(".watchdog-beat")).expect("beat");
+        let at =
+            SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(now - 60).expect("epoch"));
+        beat.set_modified(at).expect("beat mtime");
+        let (ok, pid) = self.tmux(&self.recorded, &["display-message", "-p", "#{pid}"]);
+        assert!(ok, "recorded server pid");
+        let _ = self.tmux(
+            &self.recorded,
+            &["run-shell", &format!("kill -KILL {}", pid.trim())],
+        );
+        assert!(
+            !self.tmux(&self.recorded, &["list-sessions"]).0,
+            "server gone"
+        );
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        let dropped: Vec<String> = meta
+            .lines()
+            .map(|line| match line.split_once('=') {
+                Some((key, _)) if key.starts_with("profile.") => format!("{key}=vanished"),
+                Some((ae::migrate::KEY, _)) => {
+                    format!("{}={}", ae::migrate::KEY, ae::migrate::CURRENT - 1)
+                }
+                _ => line.to_owned(),
+            })
+            .collect();
+        std::fs::write(dir.join("meta"), dropped.join("\n") + "\n").expect("meta rewrite");
+        let held = self.tmux(
+            &self.target,
+            &["-f", "/dev/null", "new-session", "-d", "-s", "saved"],
+        );
+        assert!(held.0, "a live non-ae saved on the target: {}", held.1);
+    }
+}
+
+#[test]
+fn a_restore_preflights_its_recorded_server_not_the_one_a_live_namesake_sits_on() {
+    let split = Split::new("route-restore");
+    split.crash_saved_with_a_dropped_profile();
+    let meta = split.home.join("sessions").join("saved").join("meta");
+    let before = std::fs::read(&meta).expect("meta before");
+    let bare = split.run(&split.target, &["--no-attach"]);
+    let err = String::from_utf8_lossy(&bare.stderr);
+    assert!(
+        err.contains("ae: restore failed saved:") && err.contains("vanished"),
+        "the dropped profile refuses the restore: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&meta).expect("meta after"),
+        before,
+        "the refusal came before the migration chain wrote the meta: {err}"
+    );
+}
+
+#[test]
+fn an_ordinary_launch_preflights_the_proposed_server_where_its_namesake_lives() {
+    let split = Split::new("route-ordinary");
+    split.crash_saved_with_a_dropped_profile();
+    let launch = split.run(&split.target, &["saved", "--no-attach"]);
+    let err = String::from_utf8_lossy(&launch.stderr);
+    assert!(
+        err.contains("exists but is not an ae session") && !err.contains("vanished"),
+        "the live namesake is the refusal: {err}"
+    );
 }
