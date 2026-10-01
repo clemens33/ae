@@ -99,7 +99,6 @@ fn assert_call(rig: &Rig) {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn explicit_quota_renders_four_live_windows_with_resets_and_observed_age() {
     let rig = Rig::new("live", AGY, "1.2.14", "exec /bin/cat \"$agy_payload\"");
     let text = rig.run();
@@ -146,7 +145,6 @@ fn explicit_quota_renders_four_live_windows_with_resets_and_observed_age() {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn old_or_unparseable_versions_never_receive_a_quota_prompt() {
     for (tag, version) in [
         ("old", "1.1.9"),
@@ -166,7 +164,6 @@ fn old_or_unparseable_versions_never_receive_a_quota_prompt() {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn minimum_supported_version_runs_quota() {
     let rig = Rig::new("min", AGY, "1.1.11", "exec /bin/cat \"$agy_payload\"");
     assert!(rig.run().contains("gemini-5h"));
@@ -188,7 +185,6 @@ fn absent_agy_preserves_the_table_and_an_unsupported_hint() {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn a_deadline_returns_truncated_instead_of_waiting_for_the_vendor() {
     let rig = Rig::new(
         "hang",
@@ -225,7 +221,6 @@ fn a_deadline_returns_truncated_instead_of_waiting_for_the_vendor() {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn vendor_failure_or_garbage_is_read_error_without_echoing_stderr() {
     for (tag, body) in [
         ("fail", "printf '%s\\n' VENDOR_STDERR_SENTINEL >&2\nexit 7"),
@@ -241,7 +236,6 @@ fn vendor_failure_or_garbage_is_read_error_without_echoing_stderr() {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn a_reported_agent_turn_is_refused() {
     let rig = Rig::new("turn", AGY, "1.2.14", "exec /bin/cat \"$agy_payload\"");
     rig.payload(&PAYLOAD.replace("\"num_turns\":0", "\"num_turns\":1"));
@@ -255,7 +249,6 @@ fn a_reported_agent_turn_is_refused() {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn two_profiles_on_one_login_share_one_live_call() {
     let rig = Rig::new(
         "shared",
@@ -282,7 +275,6 @@ fn non_agy_scopes_do_not_start_any_agy_process() {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn an_empty_successful_report_has_unknown_windows() {
     let rig = Rig::new("empty", AGY, "1.2.14", "exec /bin/cat \"$agy_payload\"");
     rig.payload(
@@ -298,7 +290,6 @@ fn an_empty_successful_report_has_unknown_windows() {
 }
 
 #[test]
-#[ignore = "agy phase 3"]
 fn oversized_stdout_is_refused_without_echoing_vendor_bytes() {
     let rig = Rig::new("large", AGY, "1.2.14", "exec /bin/cat \"$agy_payload\"");
     rig.payload(&format!(
