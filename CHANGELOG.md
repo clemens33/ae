@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.3] - 2026-10-01
+- Pin fleet restore acceptance before implementation
+- Contrast crash restore with explicit opt-out
+- Activate restore acceptance and lifecycle races
+- Make the unknown restore fixture explicitly socket-missing
+- Activate restore configuration acceptance
+- Pin restoration after a prior stop and onto a foreign server
+- Accept a missing current ledger in the prior-stop fixture
+- Record a watchdog beat and a restorable-session predicate, and keep the last clean stop through resume retention
+- Shorten the restore doc comments to the P1 line cap
+- Let restorable keep the scan's path order instead of sorting again
+- Order the stop ledger by its append position so a same-second request is not answered by an earlier result
+- Restore the sessions a crashed tmux server held when bare ae runs, re-checking each one under its lifecycle lock
+- Pin the restore guard's ledger read in the read-function inventory
+- Add the global restore = on|off opt-out for bare ae and name an unusable value once
+- Pin the beat warning, the beat ENOTDIR damage and the recorded-versus-proposed preflight route
+
 ## [v2026.10.2] - 2026-10-01
 - Specify Grok quota output from shared logs
 - Activate Grok quota acceptance with the pace column
