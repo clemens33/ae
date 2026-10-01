@@ -709,6 +709,58 @@ fn a_private_server_crash_restores_the_previously_running_session() {
 }
 
 #[test]
+fn a_clean_stop_before_the_latest_launch_does_not_block_its_crashed_incarnation() {
+    let fleet = Fleet::new("prior-clean");
+    fleet.launch("reborn");
+    fleet.stamp("reborn", fleet.epoch - 600);
+    fleet.beat("reborn", fleet.epoch - 60);
+    let path = fleet.dir("reborn").join("events.jsonl");
+    let current = std::fs::read_to_string(&path).expect("current incarnation ledger");
+    // A retained clean stop belongs to the incarnation before the latest launch.
+    let prior = line(
+        fleet.epoch - 900,
+        "reborn",
+        "stop-result",
+        "already stopped",
+    );
+    std::fs::write(&path, format!("{prior}{current}")).expect("prior incarnation stop");
+    fleet.crash();
+    let out = fleet.run(&["--no-attach"]);
+    success(&out);
+    assert_eq!(fleet.names(), ["reborn"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("ae: restored reborn"));
+}
+
+#[test]
+fn a_restore_on_the_recorded_server_succeeds_with_an_empty_attach_target() {
+    let mut fleet = Fleet::new("foreign-only");
+    fleet.launch("saved");
+    fleet.stamp("saved", fleet.epoch - 600);
+    fleet.beat("saved", fleet.epoch - 60);
+    fleet.crash();
+    let target = fleet.scratch.join("empty-target");
+    fleet.scratch.add_tmux_server(target.clone());
+    let mut command = fleet.command(&["--no-attach"]);
+    command.env("AE_TMUX_SERVER", &target);
+    let out = command
+        .output()
+        .expect("bare restore with a foreign recorded server");
+    success(&out);
+    assert_eq!(fleet.names(), ["saved"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("ae: restored saved"));
+    // Lead ruling: restore on the recorded server, attach only the launch target.
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("ae: restored sessions live on another tmux server; see: ae list\n")
+    );
+    assert!(
+        std::fs::symlink_metadata(&target)
+            .is_err_and(|why| why.kind() == std::io::ErrorKind::NotFound),
+        "restore must leave the empty attach target alone"
+    );
+}
+
+#[test]
 fn a_project_restore_off_cannot_override_the_global_restore_policy() {
     let fleet = Fleet::new("local-off");
     std::fs::write(fleet.home.join("config"), format!("{CONFIG}restore = on\n"))
