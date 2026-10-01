@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.1] - 2026-10-01
+- Keep a console reply's whole body and fence the console sink
+- Tighten the console sink pins and saturate the capped read bound
+- Admit console answers from the seat the ask reached and show them whole
+- Let the console close its own open request in one journal transaction
+- Submit a console ask only from the owner console under one admission lock
+- Pin console input behavior through real terminal delivery
+- Parse console keystrokes into a composed line and an ask command
+- Take console input from its terminal and carry it to the lead pair as asks
+- Document console input and correct the console header and restart hint
+- Pin the console's poll wait, key runs, ownership repeats, foreign closes, failed reads and capped-read refusals
+
 ## [v2026.9.193] - 2026-09-30
 - Show a per-window pace in ae quota: burn rate, time to empty, and whether the window empties before it resets
 - Tell the delegation guidance to read the pace column beside EFFECTIVE
