@@ -808,6 +808,8 @@ mod tests {
         let stale = caller("main", "%2", UUID);
         let lead_asks = about(T0, "lead", "ask", r#","target":"colead""#);
         let cancel = |actor| about(T1, actor, "cancel", "");
+        let mut elsewhere = cancel("console:local");
+        elsewhere.reference = Some("ae-other".to_owned());
         let (none, answered_, closed) = (
             format!("no console ask {ID} in this journal"),
             format!("{ID} is already answered"),
@@ -819,6 +821,7 @@ mod tests {
             (vec![lead_asks], Err(none)),
             (vec![asked("q"), answered(T1, &stale, "a")], Ok(())),
             (vec![asked("q"), cancel("lead")], Ok(())),
+            (vec![asked("q"), elsewhere], Ok(())),
             (vec![asked("q"), answered(T1, &me, "a")], Err(answered_)),
             (
                 vec![asked("q"), cancel("console:local")],
@@ -849,6 +852,8 @@ mod tests {
     fn an_ask_stays_open_until_its_answer_its_close_or_its_seats_retire() {
         let (me, stale) = (caller("main", "%1", UUID), caller("main", "%2", UUID));
         let unproven = format!(r#"{me},"identity_gap":"vacant""#);
+        let to_colead = format!(r#","target":"colead"{me},"summary":"a""#);
+        let not_to_me = about(T1, "lead", "reply", &to_colead);
         let spawned = caller("spawned.0", "%1", UUID);
         let retire =
             |slot: &str| about(T1, "lead", "retire", &format!(r#","target_slot":"{slot}""#));
@@ -866,6 +871,7 @@ mod tests {
             (vec![asked("q"), answered(T1, &me, "a")], S, 0),
             (vec![answered(T0, &me, "a"), asked("q")], S, 1),
             (vec![asked("q"), answered(T1, &stale, "a")], S, 1),
+            (vec![asked("q"), not_to_me], S, 1),
             (vec![asked("q"), answered(T1, &unproven, "a")], S, 1),
             (vec![asked("q"), answered(T1, &spawned, "a")], S, 1),
             (

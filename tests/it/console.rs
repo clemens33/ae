@@ -469,6 +469,8 @@ fn nothing_speaks_as_the_console_and_only_a_reply_is_sent_to_it() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("AE_SENDER_OVERRIDE"), "short form: {err}");
+    let (_, err) = helper_run(&root, &dir, "_console", &[], Some("console:local"));
+    assert!(err.starts_with("usage: ae _console"), "{err}");
     assert_eq!(super::cli::byte_tree(&root), before, "nothing was written");
     let _ = std::fs::remove_dir_all(&root);
 }

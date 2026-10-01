@@ -214,9 +214,9 @@ impl Term {
 
 #[cfg(test)]
 mod tests {
-    use super::{Got, Input, Reads, Seat, Term, pair_of};
+    use super::{Got, Input, Reads, Seat, Term, pair_of, reader};
     use crate::console::tests::{ID, Rig};
-    use std::sync::mpsc::sync_channel;
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -234,6 +234,18 @@ mod tests {
             assert_eq!(reads.wait(start + Duration::from_millis(40)), Got::Due);
         }
         assert!(start.elapsed() >= Duration::from_millis(40), "no spin");
+    }
+
+    #[test]
+    fn a_read_that_fails_ends_the_input_and_is_never_retried() {
+        let dir = std::fs::File::options()
+            .read(true)
+            .open(std::env::temp_dir())
+            .unwrap();
+        let (send, reads) = sync_channel(1);
+        std::thread::spawn(move || reader(dir, &send));
+        let ended = reads.recv_timeout(Duration::from_secs(5));
+        assert_eq!(ended, Err(RecvTimeoutError::Disconnected));
     }
 
     #[test]
@@ -270,7 +282,7 @@ mod tests {
         store.publish_console_draft(b"an earlier draft").unwrap();
         let pair = console.seats().and_then(pair_of).unwrap();
         let (input, reads, server, me) = (Input::default(), Reads(None), None, None);
-        let term = Term {
+        let mut term = Term {
             input,
             pair,
             reads,
@@ -295,5 +307,12 @@ mod tests {
             "the draft is untouched"
         );
         assert_eq!(store.container(), journal.to_vec(), "no ask was recorded");
+        let deadline = Instant::now() + Duration::from_millis(20);
+        assert_eq!(
+            term.wait(&console, deadline),
+            None,
+            "a quiet terminal says nothing"
+        );
+        assert!(Instant::now() >= deadline, "and says it at its deadline");
     }
 }

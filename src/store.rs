@@ -1644,6 +1644,11 @@ mod tests {
             Ok(SourceRead::Ready(b"abcde".to_vec())),
             "the largest cap cannot overflow"
         );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unread = |read| matches!(read, Ok(SourceRead::Unreadable(_)));
+        let x = path.join("x");
+        assert!(unread(read_capped(&path, 4)) && unread(read_capped(&x, 4)));
+        assert!(unread(super::read_capped_in(&x, "a", 4)));
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(dir.join("elsewhere"), &path).unwrap();
         assert_eq!(
@@ -1788,6 +1793,7 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(sealed.is_err());
         assert_eq!(store.console_draft(), kept());
+        store.publish_console_draft(&over[1..]).unwrap();
         store.clear_console_draft().unwrap();
         store.clear_console_draft().unwrap();
         assert_eq!(store.console_draft(), Ok(SourceRead::Absent));

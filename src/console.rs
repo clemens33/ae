@@ -723,6 +723,47 @@ pub(super) mod tests {
         assert_eq!(console.pass().expect("recovered"), "");
     }
 
+    /// A following console sleeps its poll out between passes: the deadline
+    /// it waits for is ahead of it, never behind.
+    #[test]
+    fn a_following_console_waits_its_poll_out_before_it_passes_again() {
+        use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
+        use std::time::{Duration, Instant};
+        struct Flushes(Sender<Instant>);
+        impl std::io::Write for Flushes {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                let gone = |_| std::io::ErrorKind::BrokenPipe.into();
+                self.0.send(Instant::now()).map_err(gone)
+            }
+        }
+        let rig = Rig::new("cadence");
+        let (mut console, (send, flushed)) = (rig.console(), channel());
+        let pump = std::thread::spawn(move || {
+            let (out, err) = (&mut Flushes(send), &mut std::io::sink());
+            super::pump(&mut console, None, true, out, err)
+        });
+        let first = flushed
+            .recv_timeout(Duration::from_secs(30))
+            .expect("a first pass");
+        let again = flushed.recv_timeout(Duration::from_secs(1));
+        assert_eq!(
+            again,
+            Err(RecvTimeoutError::Timeout),
+            "a pass inside the poll"
+        );
+        fs::write(rig.0.join("s/meta"), "schema=2\n").expect("the session ends");
+        let code = pump.join().expect("the pump returns").expect("its writes");
+        assert_eq!(code, crate::EXIT_UNAVAILABLE);
+        let poll = Duration::from_secs(super::board::follow::POLL_SECS);
+        assert!(
+            first.elapsed() >= poll,
+            "the next pass waited the whole poll"
+        );
+    }
+
     #[test]
     fn a_console_stops_when_its_session_is_replaced_renamed_or_gone() {
         let rig = Rig::new("bound");

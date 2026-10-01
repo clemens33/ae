@@ -472,6 +472,15 @@ mod tests {
     }
 
     #[test]
+    fn a_run_is_one_key_and_a_paste_holds_back_only_what_may_still_close_it() {
+        let base = Instant::now();
+        let stream = b"ab\x1b[200~\x1b\x1b[201~\r\x1b[200~\x1b[X";
+        let text = |bytes: &[u8]| (Key::Text(bytes.to_vec()), base);
+        let want = [text(b"ab\x1b"), (Key::Enter, base), text(b"\x1b[X")];
+        assert_eq!(Keys::default().feed(stream, base), want);
+    }
+
+    #[test]
     fn outside_a_paste_escapes_are_consumed_and_one_left_open_is_dropped_whole() {
         let closed = [b"\x1b[".as_slice(), &[b'1'; 13], b"m"].concat();
         let open = [b"\x1b[".as_slice(), &[b'1'; 15]].concat();
@@ -564,6 +573,12 @@ mod tests {
         assert_eq!(input.tick(Reading::Owner, at(base, 4)), promoted);
         assert_eq!(input.line().as_deref(), Some("to lead> "));
         assert_eq!(input.chunk(b"half", at(base, 5)), []);
+        assert_eq!(
+            input.tick(Reading::Owner, at(base, 6)),
+            [],
+            "still the owner"
+        );
+        assert_eq!(input.line().as_deref(), Some("to lead> half"));
         assert_eq!(input.tick(not(), at(base, 6)), demoted());
         assert_eq!(input.tick(Reading::Owner, at(base, 7)), promoted);
         assert_eq!(input.chunk(b"\r", at(base, 8)), [], "draft dropped");
@@ -574,6 +589,10 @@ mod tests {
         assert_eq!(shown, want);
         let want = format!("\r\x1b[K\x1b[?2004lread-only: {WHY} - prefix h opens it\n");
         assert_eq!(paint("", &demoted(), None), want);
+        assert_eq!(
+            (paint("", &[], None), paint("x", &[], None)),
+            (String::new(), "\r\x1b[Kx".to_owned())
+        );
         assert_eq!(super::RESTORE, "\x1b[?7h\x1b[?2004l");
     }
 
