@@ -297,6 +297,38 @@ fn run_sysctl_has_exactly_one_product_caller() {
     );
 }
 
+/// `transport::run_agy_quota`, the network-reaching agy leg, runs on demand only,
+/// and its child's streams are never pipes that could block ae past a deadline.
+#[test]
+fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut holders: Vec<_> = rust_sources()
+        .into_iter()
+        .filter(|p| p.starts_with(root.join("src")))
+        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_agy_quota(")))
+        .collect();
+    holders.sort();
+    // A scan that found nothing fails here too: the expected list is not empty.
+    assert_eq!(
+        holders,
+        [root.join("src/transport.rs")],
+        "the agy process leg gained (or lost) a product holder"
+    );
+    let text = fs::read_to_string(root.join("src/transport.rs"))
+        .expect("the transport source is readable");
+    let code = strip_literals(&strip_comments(&text));
+    let body = &code[body_of(&code, "fn spawn_until")];
+    assert_eq!(
+        body.matches("Stdio::null()").count(),
+        2,
+        "stdin and stderr are no longer both closed to the agy child"
+    );
+    assert!(
+        !body.contains("piped") && !body.contains("inherit"),
+        "the agy leg gained a pipe or an inherited stream"
+    );
+}
+
 /// The opencode leg captures through a SCRATCH FILE, never a pipe: the real
 /// `opencode export` exits before its stdout pipe drains (measured on 1.18.31,
 /// 2026-09-18: 131072 of 3949726 bytes arrived through a pipe, the whole

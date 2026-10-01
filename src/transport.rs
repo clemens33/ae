@@ -9,6 +9,7 @@
 
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::inventory::{DiscoveredSession, Discovery, QueryFailed, ServerId};
 use crate::meta::Selector;
@@ -243,20 +244,20 @@ fn addressable(server: &ServerId) -> bool {
     }
 }
 
-/// Run `program` with `args`; report whether it succeeded, and what it printed.
+/// The one child every leg starts, `-u` first for a tmux client ae reads and
+/// the inherited variables removed; [`spawn`] and [`spawn_until`] wire it.
 #[allow(
     clippy::disallowed_types,
-    reason = "the product's door: ae cannot answer a liveness question without running tmux, nor deliver a tracked request without the session's send helper, nor derive an archive preview's git facts without running git"
+    reason = "the product's door: ae cannot answer a liveness question without running tmux, nor deliver a tracked request without the session's send helper, nor derive an archive preview's git facts without running git, nor read agy's quota windows without running agy"
 )]
-fn spawn<A: AsRef<std::ffi::OsStr>>(
+fn command_for<A: AsRef<std::ffi::OsStr>>(
     program: &str,
     args: &[A],
     envs: &[(&str, &str)],
-    streams: Streams<'_>,
-    feed: Option<&[u8]>,
-) -> Option<std::process::Output> {
+    utf8_client: bool,
+) -> std::process::Command {
     let mut command = std::process::Command::new(program);
-    if declares_utf8(program, streams) {
+    if utf8_client {
         // tmux prints `_` for every non-ASCII character and control byte to a
         // client it does not judge UTF-8, and it judges that from `$TMUX` or a
         // UTF-8 locale alone. A plain shell may have neither, yet ae reads what
@@ -273,6 +274,18 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
             command.env_remove(var);
         }
     }
+    command
+}
+
+/// Run `program` with `args`; report whether it succeeded, and what it printed.
+fn spawn<A: AsRef<std::ffi::OsStr>>(
+    program: &str,
+    args: &[A],
+    envs: &[(&str, &str)],
+    streams: Streams<'_>,
+    feed: Option<&[u8]>,
+) -> Option<std::process::Output> {
+    let mut command = command_for(program, args, envs, declares_utf8(program, streams));
     if matches!(streams, Streams::InheritStderr) {
         command.stderr(std::process::Stdio::inherit());
     }
@@ -347,6 +360,83 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     child.wait_with_output().ok()
 }
 
+/// How a deadline-bounded run ended.
+#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
+enum Ran {
+    /// It exited by itself: its status and its stdout, at most `cap` bytes.
+    Exited(std::process::ExitStatus, Vec<u8>),
+    /// The deadline passed first; the child was killed and reaped.
+    TimedOut,
+    /// No such program on the child's `PATH`.
+    Absent,
+    /// Not started, watched or read back, or its stdout grew past `cap`.
+    Failed,
+}
+
+/// [`spawn`]'s sibling for the one leg that talks to the network: it stops
+/// waiting at `deadline`. No stream is a pipe, so nothing blocks: stdin and
+/// stderr are closed, and stdout is a scratch file whose length each `POLL`
+/// reads from ae's own handle. A stopped child is killed, then reaped; a
+/// grandchild outlives it and can write only into the unlinked scratch inode.
+#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
+fn spawn_until<A: AsRef<std::ffi::OsStr>>(
+    program: &str,
+    args: &[A],
+    envs: &[(&str, &str)],
+    cap: u64,
+    deadline: Duration,
+) -> Ran {
+    const POLL: Duration = Duration::from_millis(25);
+    fn halt(child: &mut std::process::Child, ended: Ran) -> Ran {
+        let _ = child.kill();
+        let _ = child.wait();
+        ended
+    }
+    let Some(scratch) = CaptureScratch::tagged("agy") else {
+        return Ran::Failed;
+    };
+    let Ok(handle) = scratch.file().try_clone() else {
+        return Ran::Failed;
+    };
+    // Never a tmux client, so never `-u`.
+    let mut command = command_for(program, args, envs, false);
+    command.stdin(std::process::Stdio::null());
+    command.stdout(std::process::Stdio::from(handle));
+    command.stderr(std::process::Stdio::null());
+    let started = std::time::Instant::now();
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ran::Absent,
+        Err(_) => return Ran::Failed,
+    };
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => return halt(&mut child, Ran::Failed),
+        }
+        match scratch.file().metadata() {
+            Ok(written) if written.len() <= cap => {}
+            // Past its cap, or ae's own handle cannot be read.
+            Ok(_) | Err(_) => return halt(&mut child, Ran::Failed),
+        }
+        if started.elapsed() >= deadline {
+            return halt(&mut child, Ran::TimedOut);
+        }
+        std::thread::sleep(POLL);
+    };
+    // Rewound, as the file capture above is, and read to at most `cap + 1`.
+    let mut cursor = scratch.file();
+    let (limit, mut stdout) = (cap.saturating_add(1), Vec::new());
+    let read = std::io::Seek::seek(&mut cursor, std::io::SeekFrom::Start(0)).and_then(|_| {
+        std::io::Read::read_to_end(&mut std::io::Read::take(cursor, limit), &mut stdout)
+    });
+    match read {
+        Ok(len) if u64::try_from(len).is_ok_and(|len| len <= cap) => Ran::Exited(status, stdout),
+        Ok(_) | Err(_) => Ran::Failed,
+    }
+}
+
 /// Whether a leg starts `program` as a UTF-8 tmux client: every tmux leg ae
 /// reads, never `Terminal`, whose client draws on the human's own terminal.
 fn declares_utf8(program: &str, streams: Streams<'_>) -> bool {
@@ -389,10 +479,10 @@ impl CaptureScratch {
     /// name it; `create_new` refuses a pre-planted node — a symlink included —
     /// and a collision retries the next name, the house loop
     /// `upgrade::Scratch` runs.
-    fn new() -> Option<Self> {
+    fn tagged(tag: &str) -> Option<Self> {
         let base = std::env::temp_dir();
         for attempt in 0..64_u32 {
-            let path = base.join(format!("ae-opencode.{}.{attempt}.json", std::process::id()));
+            let path = base.join(format!("ae-{tag}.{}.{attempt}.json", std::process::id()));
             let opened = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -406,6 +496,11 @@ impl CaptureScratch {
             }
         }
         None
+    }
+
+    /// The opencode capture's: `ae-opencode.<pid>.<n>.json`.
+    fn new() -> Option<Self> {
+        Self::tagged("opencode")
     }
 
     /// The handle the door clones for the child's stdout and reads back.
@@ -512,6 +607,60 @@ pub(crate) fn run_sysctl() -> (bool, String) {
             String::from_utf8_lossy(&output.stdout).into_owned(),
         ),
         None => (false, String::new()),
+    }
+}
+
+/// What the on-demand agy quota leg came back with.
+#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgyRun {
+    /// `/quota`'s stdout, whole and UTF-8, and both calls' monotonic run time.
+    Done { text: String, elapsed: Duration },
+    /// No `agy` on `PATH`.
+    Absent,
+    /// `--version` did not PROVE a release at or above the floor: `/quota` never ran.
+    TooOld,
+    /// `/quota` ran past its deadline and was killed.
+    TimedOut,
+    /// `/quota` failed, or wrote past 64 KiB or not UTF-8.
+    Failed,
+}
+
+/// The deadlines of `--version` (0.27 s measured) and `/quota` (3-5 s
+/// measured), agy 1.2.14 on 2026-10-01.
+#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
+const AGY_DEADLINES: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(8)];
+
+/// The agy leg of the one process door, program and argvs FIXED here, and the
+/// only leg that reaches the network (through agy's own login). An agy below
+/// [`crate::quota::agy::FLOOR`] reads `/quota` as a prompt and starts an agent
+/// turn, so `/quota` runs only once `--version` PROVED a release at or above it.
+#[expect(dead_code, reason = "wired by A3")]
+pub(crate) fn run_agy_quota() -> AgyRun {
+    agy_quota_with(&[], AGY_DEADLINES)
+}
+
+/// [`run_agy_quota`] with the child's environment and deadlines passed in, so
+/// the leg's own tests can put a fake first on the child's `PATH`.
+#[cfg_attr(not(test), expect(dead_code, reason = "wired by A3"))]
+fn agy_quota_with(envs: &[(&str, &str)], deadlines: [Duration; 2]) -> AgyRun {
+    let [version_deadline, quota_deadline] = deadlines;
+    let started = std::time::Instant::now();
+    match spawn_until("agy", &["--version"], envs, 4096, version_deadline) {
+        Ran::Absent => return AgyRun::Absent,
+        Ran::Exited(exit, out) if exit.success() && crate::quota::agy::supports_quota(&out) => {}
+        Ran::Exited(..) | Ran::TimedOut | Ran::Failed => return AgyRun::TooOld,
+    }
+    let quota = ["-p", "/quota", "--output-format", "json"];
+    match spawn_until("agy", &quota, envs, 65_536, quota_deadline) {
+        Ran::Exited(exit, out) if exit.success() => {
+            String::from_utf8(out).map_or(AgyRun::Failed, |text| AgyRun::Done {
+                text,
+                elapsed: started.elapsed(),
+            })
+        }
+        Ran::TimedOut => AgyRun::TimedOut,
+        Ran::Exited(..) | Ran::Absent | Ran::Failed => AgyRun::Failed,
     }
 }
 
@@ -1314,11 +1463,142 @@ pub(crate) fn spawn_detached(
 #[cfg(test)]
 mod tests {
     use super::{
-        CaptureScratch, GIT_LOCAL_ENV_VARS, PROGRAM, Streams, Tmux, declares_utf8, run, spawn,
+        AGY_DEADLINES, AgyRun, CaptureScratch, GIT_LOCAL_ENV_VARS, PROGRAM, Streams, Tmux,
+        agy_quota_with, declares_utf8, run, spawn,
     };
     use crate::inventory::{Discovery, QueryFailed, ServerId};
     use crate::meta::Selector;
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    /// A fake `agy`, written at test time and ALONE on the child's `PATH`: it
+    /// appends its argv to `argv` beside it, then runs the version or the quota
+    /// script. Only absolute programs reach it, so nothing real can.
+    struct FakeAgy {
+        dir: PathBuf,
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants its own fake agy, and reads what it wrote, in its own scratch dir"
+    )]
+    impl FakeAgy {
+        fn new(tag: &str, version: &str, quota: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = std::env::temp_dir().join(format!("ae-agy-leg-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("the scratch dir");
+            let script = format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${{0%/*}}/argv\"\n\
+                 if [ \"$1\" = --version ]; then {version}; exit 0; fi\n{quota}\n"
+            );
+            let fake = dir.join("agy");
+            std::fs::write(&fake, script).expect("the fake agy");
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+                .expect("the fake agy is executable");
+            Self { dir }
+        }
+
+        fn run(&self, deadlines: [Duration; 2]) -> AgyRun {
+            let path = self.dir.display().to_string();
+            agy_quota_with(&[("PATH", path.as_str())], deadlines)
+        }
+
+        /// What the fake wrote into `name` beside itself; empty when nothing.
+        fn read(&self, name: &str) -> String {
+            std::fs::read_to_string(self.dir.join(name)).unwrap_or_default()
+        }
+    }
+
+    impl Drop for FakeAgy {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    const SHORT: [Duration; 2] = [Duration::from_millis(400), Duration::from_millis(600)];
+    const VERSION_OK: &str = "printf '%s\\n' 1.2.14";
+    const BOTH_CALLS: &str = "--version\n-p /quota --output-format json\n";
+
+    #[test]
+    fn the_agy_leg_runs_the_version_gate_then_the_fixed_quota_call() {
+        let fake = FakeAgy::new("ok", VERSION_OK, "printf '%s' '{\"status\":\"SUCCESS\"}'");
+        match fake.run(SHORT) {
+            AgyRun::Done { text, .. } => assert_eq!(text, "{\"status\":\"SUCCESS\"}"),
+            other => panic!("the call answered: {other:?}"),
+        }
+        assert_eq!(fake.read("argv"), BOTH_CALLS);
+        // Exactly 64 KiB is still an answer; one byte more is refused below.
+        let full = FakeAgy::new("full", VERSION_OK, "exec /usr/bin/head -c 65536 /dev/zero");
+        assert!(matches!(full.run(SHORT), AgyRun::Done { text, .. } if text.len() == 65_536));
+        assert_eq!(AGY_DEADLINES.map(|deadline| deadline.as_secs()), [3, 8]);
+    }
+
+    #[test]
+    fn a_version_gate_that_proves_nothing_never_sends_the_quota_prompt() {
+        for (tag, version) in [
+            ("old", "printf '%s\\n' 1.1.9"),
+            ("fails", "printf '%s\\n' 1.2.14; exit 3"),
+            ("hangs", "exec /bin/sleep 30"),
+        ] {
+            let fake = FakeAgy::new(tag, version, "exit 96");
+            assert_eq!(fake.run(SHORT), AgyRun::TooOld, "{tag}");
+            assert_eq!(fake.read("argv"), "--version\n", "{tag}: the prompt ran");
+        }
+    }
+
+    #[test]
+    fn a_quota_call_past_its_deadline_is_killed_and_reaped() {
+        let fake = FakeAgy::new(
+            "hang",
+            VERSION_OK,
+            "printf '%s' \"$$\" > \"${0%/*}/pid\"; exec /bin/sleep 30",
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(fake.run(SHORT), AgyRun::TimedOut);
+        let took = started.elapsed();
+        assert!(
+            took >= SHORT[1] && took < Duration::from_secs(10),
+            "{took:?}"
+        );
+        let pid: u32 = fake.read("pid").parse().expect("its pid");
+        let table = crate::procs::snapshot().expect("the process table");
+        assert!(
+            table.iter().all(|row| row.pid != pid),
+            "{pid} survived or was not reaped"
+        );
+        assert_eq!(fake.read("argv"), BOTH_CALLS);
+    }
+
+    /// The deadline is generous, so each row is refused on its own merits; the
+    /// `growth` row proves the cap bounds the FILE while the child still runs.
+    #[test]
+    fn a_quota_answer_ae_cannot_use_is_a_failure() {
+        for (tag, quota) in [
+            ("nonzero", "printf '%s' '{}'; exit 7"),
+            ("not-utf8", "printf '\\377'"),
+            ("oversize", "exec /usr/bin/head -c 65537 /dev/zero"),
+            (
+                "growth",
+                "/usr/bin/head -c 70000 /dev/zero; exec /bin/sleep 30",
+            ),
+        ] {
+            let fake = FakeAgy::new(tag, VERSION_OK, quota);
+            let started = std::time::Instant::now();
+            let generous = [SHORT[0], Duration::from_secs(20)];
+            assert_eq!(fake.run(generous), AgyRun::Failed, "{tag}");
+            assert!(started.elapsed() < Duration::from_secs(10), "{tag}");
+            assert_eq!(fake.read("argv"), BOTH_CALLS, "{tag}");
+        }
+    }
+
+    #[test]
+    fn no_agy_on_the_path_is_absent() {
+        let fake = FakeAgy::new("absent", VERSION_OK, "exit 96");
+        let _ = std::fs::remove_file(fake.dir.join("agy"));
+        assert_eq!(fake.run(SHORT), AgyRun::Absent);
+        assert_eq!(fake.read("argv"), "");
+    }
 
     #[test]
     fn a_program_that_ran_reports_success_and_its_output() {
