@@ -18,6 +18,7 @@ mod cli;
 mod compact;
 mod console;
 mod console_input_spec;
+mod console_p3_spec;
 mod daemons;
 mod deliver;
 mod doctor;
