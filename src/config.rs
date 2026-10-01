@@ -1841,6 +1841,34 @@ pub fn global_fleet_order(global: Option<&Path>) -> String {
         .unwrap_or_default()
 }
 
+/// The global `[workspace] restore` ruling: whether bare `ae` restores the
+/// sessions a crashed tmux server held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restore {
+    On,
+    Off,
+    /// Restores like `On`; carries the escaped reason for the one note.
+    Unusable(String),
+}
+
+/// GLOBAL ONLY, through the reader `auto_upgrade` uses, so a project
+/// `.ae/config` never votes. Absent and exact `on` restore silently, exact
+/// `off` disables; any other value and every reader error restores and is named.
+#[must_use]
+pub fn global_restore(global: Option<&Path>) -> Restore {
+    let Some(file) = global else {
+        return Restore::On;
+    };
+    match read_global_workspace_key(file, "restore") {
+        Err(why) => Restore::Unusable(why.escape_debug().to_string()),
+        Ok(value) => match value.as_deref().map(str::trim) {
+            None | Some("on") => Restore::On,
+            Some("off") => Restore::Off,
+            Some(other) => Restore::Unusable(format!("{other:?} is not on or off")),
+        },
+    }
+}
+
 /// Split a `fleet_order` value into the names ae will order by and the entries
 /// it threw away.
 ///
@@ -2169,6 +2197,54 @@ mod tests {
             "aedev",
             "the global-only reader is unmoved"
         );
+    }
+
+    /// PIN: the `restore` ruling is exact lowercase `on` / `off`, trimmed, last
+    /// line wins. Absent and `on` restore silently, `off` disables; every other
+    /// value and every reader error restores too and carries the one reason the
+    /// caller prints — escaped, so a control byte never reaches the terminal.
+    #[test]
+    fn the_restore_ruling_is_exact_and_every_unusable_declaration_is_named() {
+        let read = |text: &str| global_restore(Some(NamedTemp::new("restore", text).path()));
+        let unusable = |text: &str| match read(text) {
+            Restore::Unusable(why) => why,
+            other => panic!("{text:?} must be unusable, got {other:?}"),
+        };
+        assert_eq!(global_restore(None), Restore::On);
+        for (text, want) in [
+            ("[workspace]\nlayout = vertical\n", Restore::On),
+            ("[workspace]\nrestore = on\n", Restore::On),
+            ("[workspace]\nrestore =   off  \n", Restore::Off),
+            ("[workspace]\nrestore = \" off \"\n", Restore::Off),
+            ("[workspace]\nrestore = off\nrestore = on\n", Restore::On),
+            ("[workspace]\nrestore = on\nrestore = off\n", Restore::Off),
+        ] {
+            assert_eq!(read(text), want, "{text:?}");
+        }
+        for (value, text) in [
+            ("OFF", "OFF"),
+            ("No", "No"),
+            ("ascii", "ascii"),
+            ("0", "0"),
+            ("\"\"", ""),
+        ] {
+            let why = unusable(&format!("[workspace]\nrestore = {value}\n"));
+            assert_eq!(why, format!("{text:?} is not on or off"));
+        }
+        assert!(unusable("[workspace]\nrestore =\n").contains("invalid"));
+        assert!(unusable("[workspace]\nrestore\n").contains("malformed"));
+        assert!(unusable("[workspace]\nrestore = off\nrestore\n").contains("malformed"));
+        // A config the lexer refuses never reads as an opt-out.
+        let torn = "[workspace]\nrestore = off\n[prompt]\ninstructions = \"\"\"\nopen\n";
+        assert!(matches!(read(torn), Restore::Unusable(_)));
+        let named = NamedTemp::new("\u{1b}[2J", torn);
+        let Restore::Unusable(why) = global_restore(Some(named.path())) else {
+            panic!("a torn config must be unusable");
+        };
+        assert!(why.contains("\\u{1b}") && !why.contains('\u{1b}'));
+        let unreadable = global_restore(Some(&std::env::temp_dir()));
+        assert!(matches!(unreadable, Restore::Unusable(why) if why.contains("could not read")));
+        assert!(!unusable("[workspace]\nrestore = x\u{1b}[2J\n").contains('\u{1b}'));
     }
 
     #[test]

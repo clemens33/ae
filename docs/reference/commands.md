@@ -216,7 +216,9 @@ tmux -L ae attach -t "=my-feature"
 ```
 
 Outside tmux, bare `ae` attaches to this server without a session target, so tmux chooses its most
-recently used session. Inside the same server, it behaves as `ae list`. From another tmux server it
+recently used session. Inside the same server, it behaves as `ae list`. When the server
+crashed it first resumes the sessions it held (`restore` in the config guide; `--no-attach` prints
+the attach command instead). From another tmux server it
 prints this line; a declared socket uses the corresponding `tmux -S <path> attach` form:
 
 ```text

@@ -86,6 +86,9 @@ watchdog = true
 # first, in this order, and the rest follow in creation order. Global-only, and a
 # running session's watchdog picks up an edit within one cycle.
 # fleet_order = aedev, thinking, infra
+# Bare ae outside tmux first resumes the sessions a crashed tmux server held.
+# Global-only, exact lowercase: on (the default) or off.
+# restore = on
 # The session's LOOK, applied at launch and refreshed by the watchdog. Both are
 # session-scoped: a non-ae session on the same tmux server keeps your own theme.
 # palette = darcula (the default) | a (neutral dark) | b (warmer neutrals).

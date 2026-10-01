@@ -1604,7 +1604,15 @@ fn run_bare_attach(
         )?;
         return Ok(0);
     }
-    let verdicts = restore::restorable(&inventory::Roots::under(&preamble.home));
+    let verdicts = match config::global_restore(preamble.global.as_deref()) {
+        config::Restore::Off => Vec::new(),
+        ruling => {
+            if let config::Restore::Unusable(why) = &ruling {
+                writeln!(err, "ae: restore: {why}; restoring as on")?;
+            }
+            restore::restorable(&inventory::Roots::under(&preamble.home))
+        }
+    };
     let mut restored = restore::Report::default();
     if verdicts.iter().any(|verdict| {
         matches!(

@@ -197,6 +197,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
 | `fleet_order` | The order your sessions are drawn in on the fleet strip, as a comma-separated list of session names; global config only | creation order |
+| `restore` | Let bare `ae` resume the sessions a crashed tmux server held (`on` / `off`); global config only | `on` |
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
@@ -242,6 +243,32 @@ automatic upgrades disabled until corrected. Checkout builds never
 auto-upgrade, and `AE_NO_AUTOSTART=1` suppresses scheduling along with the other
 companions. `ae version` and `ae doctor` report policy plus last check/result;
 they never trigger a check.
+
+### Restoring after a tmux crash
+
+Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held,
+then attaches (`ae --no-attach` prints the attach command instead). A session
+qualifies when it has not been stopped through `ae` since its latest launch, had
+a watchdog running, its recorded server is proven gone, and its watchdog beat is
+within 15 minutes of the newest beat among the qualifying candidates on that
+same recorded server. Each candidate is re-checked under its own lifecycle
+lock, so a concurrent `ae <name>`, `ae stop` or second bare `ae` leaves exactly
+one incarnation. Sessions still live are left alone; a candidate skipped during
+a restore run is named on stderr as `ae: skipped <name>: <reason>`, and a failed
+attempt as `ae: restore failed <name>:`.
+
+`restore` is machine policy like `auto_upgrade`: ae reads it only from
+`~/.ae/config`. Only the exact lowercase `off` disables it; absence and `on`
+restore silently. Any other value (`OFF`, `no`, an empty value) or an unreadable
+line still restores and says so once per run, beginning `ae: restore: `.
+
+Known limits: a session killed by hand with `tmux kill-session` looks like a
+crash; a lone old unstopped session is its own cohort; a recorded server whose
+state ae cannot prove is reported and skipped on every bare run until it is;
+when a server gives no session listing, each candidate on it is proven by its
+own tmux call; a saved record whose metadata is unreadable, or whose recorded
+server selector is missing or ambiguous, before the launch's preflight can count
+as a failed attempt (exit 1, nothing written) rather than a skip.
 
 ### Auto reseat
 

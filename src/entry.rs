@@ -189,6 +189,9 @@ watchdog = true
 # first, in this order; the rest follow in creation order. Global-only, and picked
 # up by a running session's watchdog within one cycle.
 # fleet_order = aedev, thinking, infra
+# Bare ae outside tmux first resumes the sessions a crashed tmux server held.
+# Global-only, exact lowercase: on (the default) or off.
+# restore = on
 
 [prompt]
 # ae already injects the full workspace protocol into every agent — the roster, the helper
@@ -216,7 +219,8 @@ pub const COMPACT_USAGE: &str =
 pub const HELP: &str = r"ae - agentic engineering: tmux multi-agent workspace
 
 Usage:
-  ae                     Attach to the ae tmux server
+  ae                     Attach to the ae tmux server, restoring crashed sessions
+  ae --no-attach         Same, print the attach command instead of attaching
   ae <name>              Start or reattach a named session
   ae <name> --solo       lead only, no colead
   ae <name> --dir <path> Start or reattach using an explicit origin directory

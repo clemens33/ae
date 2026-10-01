@@ -84,6 +84,9 @@ ae my-feature --solo           # lead only, no colead
 ae                             # attach to the fleet server's most recent session
 ```
 
+Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held, then attaches;
+`restore = off` in the global config disables that (`ae --no-attach` prints the attach command).
+
 Inside the fleet's tmux server, bare `ae` shows `ae list` instead of switching. From another
 tmux server it prints this line (or the declared `tmux -S <path> attach` form):
 
