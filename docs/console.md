@@ -47,3 +47,8 @@ The window runs `--input` behind a fixed `stty` wrapper; only the owner console
 seat, `@<seat> text` either lead-pair seat, `/close <id>` withdraws an open ask,
 other `/word`s are refused, five asks open at most. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
+
+Both lead-pair seats — never a worker — are told in their context that a turn
+whose first line is `⟦ae:msg from console:local⟧` is the human's words, to be
+answered once with the reply command it carries, and that text typed in their
+pane is mirrored but not threaded, so what the human must see goes out by `say`.
