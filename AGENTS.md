@@ -202,7 +202,7 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |
 | `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked`. Both. nextest does not run doctests |
 | `just rust-deny` / `rust-vet` | supply chain. The TLS graph is EXEMPTED, not audited (docs/history.md §11) |
-| `just rust-mutants` | does the suite discriminate? CI runs it diff-bounded per push. `rust-cov` reports, never gates |
+| `just rust-mutants` | does the suite discriminate? CI runs it diff-bounded per push. Bounded in config: 2 tests, 60 s kill, RSS watcher (`AE_MUTANTS_RSS_MAX_MB`, default 2048). `rust-cov` reports, never gates |
 | `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. Refuses on an unpinned tool or a stale `fuzz/Cargo.lock`, ends on the cutover evidence line, and REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |
 | `just rust-build-release` / `bundles` | native release binary (native only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` (needs the musl cross toolchain) |
 | `just release` | the whole release, locally. Pre-flight refuses before any state is written |

@@ -1168,6 +1168,7 @@ _tmux-isolated lane *args:
     test_tmux_tmp="$(mktemp -d "$base/ae-rust-test.$$.XXXXXX")"
     cleanup() {
         local status=$? tries=30
+        [[ -z "${watcher:-}" ]] || kill "$watcher" 2>/dev/null || true
         # Explicit socket, never a short -L: outside this directory that name is the live fleet server.
         env -u TMUX -u TMUX_PANE tmux -S "$test_tmux_tmp/tmux-$(id -u)/ae" kill-server >/dev/null 2>&1 || true
         reap_dead_scratch
@@ -1243,11 +1244,65 @@ _tmux-isolated lane *args:
             fi
         fi
     fi
+    # A mutation run is memory-bounded in config (the nextest `mutants` profile:
+    # two tests, a 60 s kill), and an env value beats a profile. So the lane may
+    # TIGHTEN to one but never widen: anything but a plain 1 or 2 (a wider count,
+    # `num-cpus`, a negative) becomes 2, said on stderr, because refusing would
+    # make an inherited NEXTEST_TEST_THREADS=8 stop an unattended run.
+    if [[ "$lane" == mutants && ! "$NEXTEST_TEST_THREADS" =~ ^[12]$ ]]; then
+        threads_from="$threads_from, was $NEXTEST_TEST_THREADS, capped"
+        export NEXTEST_TEST_THREADS=2
+    fi
     echo "lane $lane: nextest threads $NEXTEST_TEST_THREADS ($threads_from), cargo jobs ${CARGO_BUILD_JOBS:-unset} ($jobs_from)" >&2
     # An owned sentry proves every in-process fleet read stays on this run's
     # server. It is deliberately visible: Name(ae) is a real entitlement, and
     # tests asserting whole-fleet cardinality account for this one row.
     tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry
+    # The mutation lane's memory ceiling. A mutant that turns a loop bound into
+    # an unbounded allocation drives one test to ~2 GB/s, which no timeout
+    # outruns and no rlimit stops on macOS, so this polls the process table
+    # twice a second and SIGKILLs a TEST BINARY (first argv word under
+    # target/*/deps/) that is a descendant of this lane's cargo-mutants and
+    # holds more than AE_MUTANTS_RSS_MAX_MB (default 2048; an unusable value
+    # is ignored). Never cargo, rustc, nextest, a linker or another lane's
+    # tree. nextest then reports the test failed, so cargo-mutants will call the
+    # mutant CAUGHT: every kill is therefore also appended to the receipt
+    # mutants.out/ae-rss-kills.log (utc pid rss_mb binary args), which is what a
+    # freeze reads to reclassify it as memory growth. `args`, not `comm`: macOS
+    # prints a full path there and Linux a 15-character basename. No pid is
+    # remembered past the next cycle (a recycled pid must stay bounded; a dying
+    # process that still shows its rss is not logged twice), and the process is
+    # re-read by pid just before the signal: a different `args` skips it. The
+    # residual is a pid recycled into an identical command line inside the
+    # milliseconds between that read and the kill.
+    rss_watch() {
+        local ceiling="${AE_MUTANTS_RSS_MAX_MB:-}" pid rss args line killed=" " now
+        [[ "$ceiling" =~ ^[1-9][0-9]{0,5}$ ]] || ceiling=2048
+        while sleep 0.5; do
+            now=" "
+            while read -r pid rss args; do
+                [[ "$killed" != *" $pid "* ]] || continue
+                [[ "$(ps -wwo args= -p "$pid" 2>/dev/null)" == "$args" ]] || continue
+                kill -KILL "$pid" 2>/dev/null || continue
+                now="$now$pid "
+                line="$(date -u +%Y-%m-%dT%H:%M:%SZ) $pid $((rss / 1024)) $args"
+                mkdir -p mutants.out
+                echo "$line" >>mutants.out/ae-rss-kills.log
+                echo "lane mutants: killed over the ${ceiling} MB ceiling: $line" >&2
+            done < <(ps -axwwo pid=,ppid=,rss=,args= 2>/dev/null | awk -v root="$$" -v cap="$((ceiling * 1024))" '
+                { p = $1; par[p] = $2; rss[p] = $3; exe[p] = $4; a = $0; sub(/^ *[0-9]+ +[0-9]+ +[0-9]+ +/, "", a); args[p] = a }
+                function owned(p,   n, cm) {
+                    for (n = 0; n < 64 && p + 0 > 1; n++) {
+                        if (exe[p] ~ /(^|\/)cargo-mutants$/) cm = 1
+                        if (p == root) return cm
+                        p = par[p]
+                    }
+                    return 0
+                }
+                END { for (p in exe) if (exe[p] ~ /\/target\/.*\/deps\/[^\/]+$/ && rss[p] + 0 > cap && owned(p)) print p, rss[p], args[p] }')
+            killed="$now"
+        done
+    }
     case "$lane" in
         test)
             # A filtered run is a receipt, not the gate: nextest only, no
@@ -1262,7 +1317,14 @@ _tmux-isolated lane *args:
             fi
             ;;
         cov) detached nice -n 10 cargo llvm-cov nextest --locked --all-features ;;
-        mutants) detached nice -n 10 cargo mutants --cargo-arg=--locked --jobs 1 "$@" ;;
+        mutants)
+            rss_watch &
+            watcher=$!
+            status=0
+            detached nice -n 10 cargo mutants --cargo-arg=--locked --jobs 1 "$@" || status=$?
+            kill "$watcher" 2>/dev/null || true
+            exit "$status"
+            ;;
         *) echo "Error: unknown isolated test lane '$lane'" >&2; exit 2 ;;
     esac
 

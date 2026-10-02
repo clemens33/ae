@@ -108,7 +108,16 @@ A root the sweep cannot delete because a child is still writing into it is named
 kept …`) and left for the next lane: that transient race never turns an all-green lane red.
 `cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
 config: nextest runs at most eight tests (`.config/nextest.toml`), `just rust-mutants` one
-mutant at a time on four (`.cargo/mutants.toml`). The lane sizes itself at start from the free
+mutant at a time on at most two tests, each killed after 60 s (the nextest `mutants` profile,
+which `.cargo/mutants.toml` selects, with SIGKILL at the bound and no grace period;
+`NEXTEST_TEST_THREADS=1` tightens it, and the lane caps anything wider than two. Arguments
+after the lane's `--` reach nextest as typed, so `-- --test-threads N` is the explicit,
+unscanned way past the cap). A mutant that grows a buffer without bound outruns any timeout (about
+2 GB/s, and macOS has no usable rlimit), so the mutants lane also polls its `cargo-mutants`
+subtree twice a second and SIGKILLs a test binary above `AE_MUTANTS_RSS_MAX_MB` (default 2048),
+printing the kill and appending it to `mutants.out/ae-rss-kills.log`: nextest sees a failed test,
+so cargo-mutants calls that mutant caught; a freeze reclassifies it from the receipt as memory
+growth. The lane sizes itself at start from the free
 cores: `jobs-budget` when that helper is on PATH and prints one positive integer of at most
 three digits, else the online CPU count. An unset `NEXTEST_TEST_THREADS` becomes min(free cores, 8), an unset
 `CARGO_BUILD_JOBS` the free cores (left to cargo when the helper is absent); an explicit

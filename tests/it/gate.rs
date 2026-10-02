@@ -536,23 +536,76 @@ fn stale_lane_sweep_reaps_a_nested_socket_owned_by_a_dead_lane() {
     drop(fixture);
 }
 
-/// Whether both lanes cap their test threads in CONFIG (#159): nextest at most
-/// eight, every mutation run at most four.
-fn thread_caps_ok(nextest: &str, mutants: &str) -> bool {
-    let cap = |text: &str, key: &str, max: u32| {
-        text.lines().any(|line| {
-            line.trim()
-                .strip_prefix(key)
-                .and_then(|rest| rest.trim_end_matches(['"', ']']).parse::<u32>().ok())
-                .is_some_and(|threads| (1..=max).contains(&threads))
-        })
+/// The lines of one TOML table: after its exact `[header]` line, up to the next
+/// table header, each trimmed.
+fn toml_table<'a>(text: &'a str, header: &str) -> Vec<&'a str> {
+    text.lines()
+        .map(str::trim)
+        .skip_while(|line| *line != header)
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .collect()
+}
+
+/// The number a `<key><N>` line of a table carries (the key spelled with its ` = `).
+fn table_number(lines: &[&str], key: &str) -> Option<u32> {
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix(key)?.trim().parse().ok())
+}
+
+/// The seconds one test lives under a table's
+/// `slow-timeout = { period = "<N>s", terminate-after = <M>, grace-period = "<G>s" }`
+/// before nextest KILLS it: N x M plus G. nextest sends SIGTERM at N x M and
+/// SIGKILL only a grace period later, 10 s when none is named (nexte.st/docs/
+/// features/slow-tests). `None` for no termination (a period alone only WARNS) or
+/// a time not spelled in whole seconds.
+fn kill_after_secs(lines: &[&str]) -> Option<u32> {
+    let line = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("slow-timeout = "))?;
+    let seconds = |key: &str| {
+        line.split_once(key)?
+            .1
+            .split_once("s\"")?
+            .0
+            .parse::<u32>()
+            .ok()
     };
-    cap(nextest, "test-threads = ", 8)
-        && cap(
-            mutants,
-            "additional_cargo_test_args = [\"--test-threads=",
-            4,
-        )
+    let count = line.split_once("terminate-after = ")?.1;
+    let count: String = count.chars().take_while(char::is_ascii_digit).collect();
+    let grace = if line.contains("grace-period = ") {
+        seconds("grace-period = \"")?
+    } else {
+        10
+    };
+    seconds(" period = \"")?
+        .checked_mul(count.parse().ok()?)?
+        .checked_add(grace)
+}
+
+/// Whether both lanes are bounded in CONFIG (#159): nextest at most eight tests
+/// at once; every mutation run (the `mutants` profile `.cargo/mutants.toml`
+/// selects) at most two, each hard-killed within a minute. The thread count is
+/// never a `--test-threads` flag in `mutants.toml`, because a flag beats
+/// `NEXTEST_TEST_THREADS` and the operator could not tighten a run.
+fn thread_caps_ok(nextest: &str, mutants: &str) -> bool {
+    let default = toml_table(nextest, "[profile.default]");
+    let bounded = toml_table(nextest, "[profile.mutants]");
+    let config: Vec<&str> = mutants
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .collect();
+    table_number(&default, "test-threads = ").is_some_and(|threads| (1..=8).contains(&threads))
+        && table_number(&bounded, "test-threads = ")
+            .is_some_and(|threads| (1..=2).contains(&threads))
+        && kill_after_secs(&bounded).is_some_and(|secs| (1..=60).contains(&secs))
+        && config.iter().any(|line| {
+            line.starts_with("additional_cargo_test_args = [")
+                && line.contains("\"--profile\", \"mutants\"")
+        })
+        && !config.iter().any(|line| line.contains("test-threads"))
 }
 
 #[test]
@@ -561,19 +614,64 @@ fn the_lanes_cap_their_test_threads_in_config() {
         &read(&root().join(".config/nextest.toml")),
         &read(&root().join(".cargo/mutants.toml"))
     ));
-    let mutants = "additional_cargo_test_args = [\"--test-threads=4\"]\n";
+    let nextest = |default: &str, bounded: &str| {
+        format!("[profile.default]\n{default}\n\n[profile.mutants]\n{bounded}\n")
+    };
+    let default = "test-threads = 8";
+    let bounded = "test-threads = 2\nslow-timeout = { period = \"30s\", terminate-after = 2, grace-period = \"0s\" }";
+    let mutants = "additional_cargo_test_args = [\"--profile\", \"mutants\"]\n";
+    assert!(thread_caps_ok(&nextest(default, bounded), mutants));
     // RED — nextest's own default is every core; so is an explicit wide one.
-    assert!(!thread_caps_ok("[profile.default]\n", mutants));
-    assert!(!thread_caps_ok("test-threads = 18\n", mutants));
-    // RED — a mutation run with no cap of its own.
+    assert!(!thread_caps_ok(&nextest("", bounded), mutants));
     assert!(!thread_caps_ok(
-        "test-threads = 8\n",
+        &nextest("test-threads = 18", bounded),
+        mutants
+    ));
+    // RED — a mutation run with no bound of its own: no profile at all, none
+    // selected, or a profile that sizes itself wider than two.
+    assert!(!thread_caps_ok(
+        "[profile.default]\ntest-threads = 8\n",
+        mutants
+    ));
+    assert!(!thread_caps_ok(
+        &nextest(default, bounded),
         "timeout_multiplier = 5.0\n"
     ));
+    let wide = bounded.replace("= 2\n", "= 4\n");
+    assert!(!thread_caps_ok(&nextest(default, &wide), mutants));
     assert!(!thread_caps_ok(
-        "test-threads = 8\n",
-        "additional_cargo_test_args = [\"--test-threads=8\"]\n"
+        &nextest(default, bounded.lines().nth(1).unwrap_or_default()),
+        mutants
     ));
+    // RED — a thread FLAG in mutants.toml beats NEXTEST_TEST_THREADS, so the
+    // operator could never tighten a run, even with the profile selected.
+    assert!(!thread_caps_ok(
+        &nextest(default, bounded),
+        "additional_cargo_test_args = [\"--test-threads=4\"]\n"
+    ));
+    assert!(!thread_caps_ok(
+        &nextest(default, bounded),
+        "additional_cargo_test_args = [\"--profile\", \"mutants\", \"--test-threads=1\"]\n"
+    ));
+    // RED — no hard kill under mutants: a warning-only period, a SIGTERM with no
+    // grace-period (SIGKILL comes 10 s late), a stray test outliving a minute,
+    // times not in whole seconds, no timeout at all.
+    for slow in [
+        "slow-timeout = { period = \"30s\" }",
+        "slow-timeout = { period = \"30s\", terminate-after = 2 }",
+        "slow-timeout = { period = \"30s\", terminate-after = 2, grace-period = \"5s\" }",
+        "slow-timeout = { period = \"30s\", terminate-after = 2, grace-period = \"1m\" }",
+        "slow-timeout = { period = \"30s\", terminate-after = 5, grace-period = \"0s\" }",
+        "slow-timeout = { period = \"2m\", terminate-after = 1, grace-period = \"0s\" }",
+        "slow-timeout = \"30s\"",
+        "",
+    ] {
+        let bounded = format!("test-threads = 2\n{slow}");
+        assert!(
+            !thread_caps_ok(&nextest(default, &bounded), mutants),
+            "{slow}"
+        );
+    }
 }
 
 /// The child half of the killed-test pins: a scratch root under the base the
@@ -942,18 +1040,11 @@ fn a_lane_run_in_a_terminal_detaches_cargo_and_still_stops_on_ctrl_c() {
     );
 }
 
-/// One lane run for the sizing pins, on a `PATH` of its own so no installed
-/// `jobs-budget` leaks in: `<base>/bin` links `just` and `tmux`, holds a fake
-/// `cargo` recording `<tool> <threads> <jobs or unset> <niceness> <parent
-/// niceness>` for a nextest, llvm-cov or mutants run (`detached` forks before
-/// `nice`, so the parent keeps the lane's own), and a `jobs-budget` printing
-/// `budget` when one is given. Returns the recorded words and the lane's stderr.
-fn sized_lane(
-    base: &Path,
-    budget: Option<&str>,
-    env: &[(&str, &str)],
-    args: &[&str],
-) -> (Vec<String>, String) {
+/// A lane run on a `PATH` of its own so no installed `jobs-budget` leaks in:
+/// `<base>/bin` links `just` and `tmux`, holds the fake `cargo` with the shell
+/// body `cargo`, and a `jobs-budget` printing `budget` when one is given. The
+/// returned invocation has its environment and no arguments yet.
+fn lane_over(base: &Path, budget: Option<&str>, cargo: &str) -> Invocation {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
     let bin = base.join("bin");
     let _ = std::fs::remove_dir_all(&bin);
@@ -968,13 +1059,7 @@ fn sized_lane(
         };
         symlink(real, bin.join(tool)).unwrap_or_else(|why| panic!("the linked {tool}: {why}"));
     }
-    let mut fakes = vec![(
-        "cargo",
-        "case \"$1\" in nextest|llvm-cov|mutants) ;; *) exit 0 ;; esac\n\
-         echo $1 $NEXTEST_TEST_THREADS ${CARGO_BUILD_JOBS-unset} $(ps -o ni= -p $$) \
-         $(ps -o ni= -p $PPID) >\"$AE_TEST_TMPDIR/seen\"\n"
-            .to_owned(),
-    )];
+    let mut fakes = vec![("cargo", cargo.to_owned())];
     if let Some(answer) = budget {
         fakes.push(("jobs-budget", format!("echo '{answer}'\n")));
     }
@@ -984,7 +1069,7 @@ fn sized_lane(
             .and_then(|()| std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)))
             .unwrap_or_else(|why| panic!("the fake {name}: {why}"));
     }
-    let mut lane = Invocation::new("just")
+    Invocation::new("just")
         .env_cleared()
         .env(
             "PATH",
@@ -993,7 +1078,22 @@ fn sized_lane(
         .env("HOME", std::env::var_os("HOME").unwrap_or_default())
         .env("TMPDIR", base)
         .env("AE_TEST_TMPDIR", base)
-        .arg("_tmux-isolated");
+}
+
+/// One lane run for the sizing pins: the fake `cargo` records `<tool> <threads>
+/// <jobs or unset> <niceness> <parent niceness>` for a nextest, llvm-cov or
+/// mutants run (`detached` forks before `nice`, so the parent keeps the lane's
+/// own). Returns the recorded words and the lane's stderr.
+fn sized_lane(
+    base: &Path,
+    budget: Option<&str>,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> (Vec<String>, String) {
+    let cargo = "case \"$1\" in nextest|llvm-cov|mutants) ;; *) exit 0 ;; esac\n\
+         echo $1 $NEXTEST_TEST_THREADS ${CARGO_BUILD_JOBS-unset} $(ps -o ni= -p $$) \
+         $(ps -o ni= -p $PPID) >\"$AE_TEST_TMPDIR/seen\"\n";
+    let mut lane = lane_over(base, budget, cargo).arg("_tmux-isolated");
     for arg in args {
         lane = lane.arg(arg);
     }
@@ -1036,6 +1136,240 @@ fn a_lane_sizes_itself_from_jobs_budget_and_an_explicit_value_wins() {
             stderr.contains(&said),
             "budget {budget} env {env:?}: {stderr}"
         );
+    }
+}
+
+/// A mutation run is never wider than two tests. An env value beats a profile,
+/// so the lane itself must not hand nextest a wider one: it tightens to one on
+/// request and caps anything else at two, said on stderr. The `test` lane is
+/// untouched.
+#[test]
+fn a_mutants_lane_never_runs_wider_than_two_tests() {
+    let base = super::cli::OwnedScratch::root("gate", "mutcap");
+    let with = |threads: &'static str| [("NEXTEST_TEST_THREADS", threads)];
+    let none = &[][..];
+    // (budget, env, threads, how the lane says it got there)
+    for (budget, env, threads, said) in [
+        ("6", none, "2", "threads 2 (budget, was 6, capped)"),
+        ("1", none, "1", "threads 1 (budget)"),
+        ("6", &with("1")[..], "1", "threads 1 (env)"),
+        ("6", &with("2")[..], "2", "threads 2 (env)"),
+        ("6", &with("3")[..], "2", "threads 2 (env, was 3, capped)"),
+        ("6", &with("8")[..], "2", "threads 2 (env, was 8, capped)"),
+        (
+            "6",
+            &with("num-cpus")[..],
+            "2",
+            "(env, was num-cpus, capped)",
+        ),
+        ("6", &with("-1")[..], "2", "(env, was -1, capped)"),
+    ] {
+        let (seen, stderr) = sized_lane(&base, Some(budget), env, &["mutants"]);
+        assert_eq!(seen[1], threads, "budget {budget} env {env:?}: {stderr}");
+        assert!(
+            stderr.contains(said),
+            "budget {budget} env {env:?}: {stderr}"
+        );
+    }
+    // The `test` lane keeps its eight-wide ceiling: the cap is the mutants lane's.
+    let (seen, _) = sized_lane(&base, Some("6"), &with("8")[..], &["test"]);
+    assert_eq!(seen[1], "8");
+}
+
+/// Whether the mutants arm of the isolated lane starts the memory watcher
+/// BEFORE cargo-mutants, the watcher's ceiling defaults to 2048 MB, it forgets
+/// every pid it killed after one cycle (a recycled pid must stay bounded) and it
+/// re-reads a process by pid before the signal.
+fn mutants_arm_watches_memory(justfile: &str) -> bool {
+    let lines = recipe_text(justfile, "_tmux-isolated lane *args:");
+    let arm: Vec<&str> = lines
+        .iter()
+        .map(String::as_str)
+        .skip_while(|line| *line != "mutants)")
+        .skip(1)
+        .take_while(|line| *line != ";;")
+        .collect();
+    let watch = arm.iter().position(|line| *line == "rss_watch &");
+    let mutants = arm.iter().position(|line| line.contains("cargo mutants"));
+    let has = |text: &str| lines.iter().any(|line| line.contains(text));
+    has("|| ceiling=2048")
+        && watch.is_some()
+        && watch < mutants
+        && lines.iter().any(|line| line == "killed=\"$now\"")
+        && !has("killed=\"$killed")
+        && has("ps -wwo args= -p \"$pid\"")
+}
+
+#[test]
+fn the_mutants_arm_starts_the_memory_watcher_with_a_2048_mb_default() {
+    assert!(mutants_arm_watches_memory(&read(&root().join("justfile"))));
+    let recipe = |ceiling: &str, arm: &str| {
+        format!(
+            "_tmux-isolated lane *args:\n    #!/usr/bin/env bash\n    rss_watch() {{\n        \
+             {ceiling}\n        [[ \"$(ps -wwo args= -p \"$pid\")\" == \"$args\" ]]\n        killed=\"$now\"\n    }}\n    case \"$lane\" in\n        mutants)\n{arm}            ;;\n    esac\n"
+        )
+    };
+    let default = "[[ \"$ceiling\" =~ ^[1-9][0-9]{0,5}$ ]] || ceiling=2048";
+    let arm = "            rss_watch &\n            detached nice -n 10 cargo mutants \"$@\"\n";
+    assert!(mutants_arm_watches_memory(&recipe(default, arm)));
+    // RED — no watcher, a watcher started after the run it must bound, a watcher
+    // in another arm only, a different default.
+    let bare = "            detached nice -n 10 cargo mutants \"$@\"\n";
+    assert!(!mutants_arm_watches_memory(&recipe(default, bare)));
+    let late = "            detached cargo mutants \"$@\"\n            rss_watch &\n";
+    assert!(!mutants_arm_watches_memory(&recipe(default, late)));
+    let other = format!("{bare}            ;;\n        cov)\n{arm}");
+    assert!(!mutants_arm_watches_memory(&recipe(default, &other)));
+    let wide = default.replace("2048", "8192");
+    assert!(!mutants_arm_watches_memory(&recipe(&wide, arm)));
+    // RED — a lifetime pid list (a recycled pid would be exempt for the whole
+    // run), a pid signalled without being re-read first.
+    let good = recipe(default, arm);
+    let lifetime = good.replace("killed=\"$now\"", "killed=\"$killed$pid \"");
+    assert!(!mutants_arm_watches_memory(&lifetime));
+    let unread = good.replace("ps -wwo args= -p", "ps -o comm= -p");
+    assert!(!mutants_arm_watches_memory(&unread));
+}
+
+/// The mutants lane's memory watcher kills exactly one kind of process: a test
+/// binary (first argv word under `target/*/deps/`) below the lane's own
+/// `cargo-mutants` that holds more than the ceiling, and it leaves a receipt.
+/// A same-size process outside `deps/`, a small test binary and an over-size
+/// test binary outside the cargo-mutants tree all live; an unusable ceiling
+/// falls back to the default, under which a 60 MB process lives. The "tools"
+/// are symlinks to bash, so `ps` shows them by the path they were started as.
+#[test]
+fn the_mutants_watcher_kills_only_an_over_ceiling_test_binary_below_its_cargo_mutants() {
+    use std::os::unix::fs::symlink;
+    let base = super::cli::OwnedScratch::root("gate", "rsskill");
+    let (watch, work) = (base.join("watch"), base.join("work"));
+    for dir in ["target/debug/deps", "other"] {
+        std::fs::create_dir_all(watch.join(dir)).unwrap_or_else(|why| panic!("{dir}: {why}"));
+    }
+    std::fs::create_dir_all(&work).unwrap_or_else(|why| panic!("work: {why}"));
+    for name in [
+        "cargo-mutants",
+        "target/debug/deps/ae-hog",
+        "target/debug/deps/ae-small",
+        "target/debug/deps/ae-orphan",
+        "other/rustc-hog",
+    ] {
+        let _ = std::fs::remove_file(watch.join(name));
+        symlink("/bin/bash", watch.join(name)).unwrap_or_else(|why| panic!("{name}: {why}"));
+    }
+    let script = |name: &str, body: &str| {
+        std::fs::write(watch.join(name), body).unwrap_or_else(|why| panic!("{name}: {why}"));
+    };
+    // `kid.sh <pidfile> <bytes>`: publish the pid, hold that much memory in this
+    // very process (no fork the watcher could mistake for the holder), say so in
+    // `<pidfile>.ready`, then stay until the release file appears (or a minute
+    // passes, so a harness that died leaves nothing behind).
+    script(
+        "kid.sh",
+        "echo $$ >\"$1.tmp\" && mv \"$1.tmp\" \"$1\"\nprintf -v x '%*s' \"$2\" ''\n: >\"$1.ready\"\n\
+         i=0\nwhile [ ! -e \"$AE_FAKE_W/release\" ] && [ \"$i\" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done\n",
+    );
+    script(
+        "root.sh",
+        "\"$AE_FAKE_W/target/debug/deps/ae-hog\" \"$AE_FAKE_W/kid.sh\" \"$AE_FAKE_W/hog.pid\" 60000000 &\n\
+         \"$AE_FAKE_W/target/debug/deps/ae-small\" \"$AE_FAKE_W/kid.sh\" \"$AE_FAKE_W/small.pid\" 1000 &\n\
+         \"$AE_FAKE_W/other/rustc-hog\" \"$AE_FAKE_W/kid.sh\" \"$AE_FAKE_W/rustc.pid\" 60000000 &\n\
+         wait\n",
+    );
+    // The fake cargo waits for the three processes that must SURVIVE to say they
+    // hold their memory, then (when a kill is expected) for the receipt, then a
+    // few watcher polls more, and only then reads who is alive. Every wait is
+    // bounded and the EXIT trap releases and kills whatever is left.
+    let cargo = "case \"$1\" in mutants) ;; *) exit 0 ;; esac\n\
+         W=$AE_FAKE_W\n\
+         trap 'touch \"$W/release\"; kill $(cat \"$W\"/*.pid 2>/dev/null) 2>/dev/null' EXIT\n\
+         \"$W/target/debug/deps/ae-orphan\" \"$W/kid.sh\" \"$W/orphan.pid\" 60000000 &\n\
+         \"$W/cargo-mutants\" \"$W/root.sh\" &\n\
+         i=0\n\
+         until [ -e \"$W/small.pid.ready\" ] && [ -e \"$W/rustc.pid.ready\" ] && [ -e \"$W/orphan.pid.ready\" ]; do\n\
+           i=$((i + 1)); [ \"$i\" -lt 300 ] || exit 3; sleep 0.2\n\
+         done\n\
+         if [ \"$AE_FAKE_KILLED\" = 1 ]; then\n\
+           i=0\n\
+           while [ ! -s mutants.out/ae-rss-kills.log ]; do i=$((i + 1)); [ \"$i\" -lt 300 ] || exit 4; sleep 0.2; done\n\
+         fi\n\
+         sleep 3\n\
+         for k in hog small rustc orphan; do\n\
+           p=$(cat \"$W/$k.pid\" 2>/dev/null)\n\
+           if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then echo \"$k alive\"; else echo \"$k dead\"; fi\n\
+         done >\"$AE_TEST_TMPDIR/seen.tmp\"\n\
+         mv \"$AE_TEST_TMPDIR/seen.tmp\" \"$AE_TEST_TMPDIR/seen\"\n\
+         exit 0\n";
+    // (the ceiling as typed, whether the hog is killed, who is alive after)
+    for (ceiling, killed, seen) in [
+        (
+            "32",
+            true,
+            "hog dead\nsmall alive\nrustc alive\norphan alive\n",
+        ),
+        (
+            "lots",
+            false,
+            "hog alive\nsmall alive\nrustc alive\norphan alive\n",
+        ),
+    ] {
+        for stale in ["hog", "small", "rustc", "orphan"] {
+            for ext in ["pid", "pid.ready"] {
+                let _ = std::fs::remove_file(watch.join(format!("{stale}.{ext}")));
+            }
+        }
+        let _ = std::fs::remove_file(watch.join("release"));
+        let _ = std::fs::remove_dir_all(work.join("mutants.out"));
+        let _ = std::fs::remove_file(base.join("seen"));
+        let lane = lane_over(&base, Some("6"), cargo)
+            .env("AE_FAKE_W", &watch)
+            .env("AE_MUTANTS_RSS_MAX_MB", ceiling)
+            .env("AE_FAKE_KILLED", if killed { "1" } else { "0" })
+            .arg("--working-directory")
+            .arg(&work)
+            .arg("--justfile")
+            .arg(root().join("justfile"))
+            .arg("_tmux-isolated")
+            .arg("mutants");
+        let ran = raw::run(&lane, &work, &base.join("out"), &base.join("err"))
+            .unwrap_or_else(|why| panic!("the lane runs: {why}"));
+        let stderr = read(&base.join("err"));
+        assert!(
+            matches!(ran.outcome(), ExitOutcome::Code(0)),
+            "{ceiling}: {stderr}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("seen")).unwrap_or_default(),
+            seen,
+            "{ceiling}: {stderr}"
+        );
+        let receipt = std::fs::read_to_string(work.join("mutants.out/ae-rss-kills.log"));
+        if killed {
+            let receipt = receipt.unwrap_or_default();
+            // A fork of the hog (its `$(...)` subshell) is the same test binary,
+            // so one or more lines, every one of them the hog.
+            assert!(!receipt.is_empty(), "no receipt: {stderr}");
+            for line in receipt.lines() {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                assert!(
+                    fields.get(2).and_then(|mb| mb.parse::<u32>().ok()) >= Some(32),
+                    "{line:?}"
+                );
+                assert!(
+                    fields
+                        .get(3)
+                        .is_some_and(|binary| binary.ends_with("/target/debug/deps/ae-hog")),
+                    "{line:?}"
+                );
+            }
+            assert!(
+                stderr.contains("lane mutants: killed over the 32 MB ceiling"),
+                "{stderr}"
+            );
+        } else {
+            assert!(receipt.is_err(), "{receipt:?}");
+            assert!(!stderr.contains("killed over"), "{stderr}");
+        }
     }
 }
 
