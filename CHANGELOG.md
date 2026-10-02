@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.9] - 2026-10-02
+- Rename the public console feature to chat
+
 ## [v2026.10.8] - 2026-10-02
 - Introduce the reply mode the board reads: Replies replaces the assistant flag on Inputs
 - **console**: Pin replies to human pane turns
