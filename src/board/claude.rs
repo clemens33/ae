@@ -18,6 +18,13 @@
 //! `missing_ts` coverage. The reply path classifies NO markers: a model may
 //! legitimately quote one.
 //!
+//! A line the human typed while a turn ran has no user record of its own: when
+//! the running turn takes it in, a `queue-operation` `remove` with reason
+//! `absorbed_mid_turn` carries its text and is read as the human row, through
+//! the same filters. The `enqueue`/`dequeue` pair around an idle line is
+//! followed by an ordinary user record and stays neutral, as does every
+//! `attachment`.
+//!
 //! Plumbing filter, verified 2026-09-16 against a 15,435-line local transcript
 //! (567 string user turns; shapes only, content never quoted):
 //!
@@ -29,7 +36,8 @@
 //!   would over-drop. FIELD-CONFIRMED.
 //! * `<task-notification>` requires `promptSource == "system"` AND the prefix:
 //!   2/2 carry it, 4 other `promptSource == "system"` records match no prefix
-//!   and are KEPT. FIELD-CONFIRMED.
+//!   and are KEPT. FIELD-CONFIRMED. A queue record carries no such field, so
+//!   there the prefix alone decides.
 //! * `<command-name>` and `<local-command-stdout>` have no structured twin in
 //!   any observed record — first-line prefix only. LOSSY: a human turn opening
 //!   with that exact prefix is dropped, pinned by a collision test below.
@@ -182,6 +190,7 @@ impl Sink<'_> {
         };
         match value.get_str("type") {
             Some("user") => self.push_user(&value, offset),
+            Some("queue-operation") => self.push_queued(&value, offset),
             Some("assistant") if self.assistant => self.push_assistant(&value, offset),
             None => self.unkept(offset),
             _ => {}
@@ -209,6 +218,27 @@ impl Sink<'_> {
         }
     }
 
+    /// One `type == "queue-operation"` record. A line the human typed while a
+    /// turn ran is journaled as an `enqueue` and a `dequeue` (answered by an
+    /// ordinary user record, the one row) or, when the running turn takes it in,
+    /// a `remove` with reason `absorbed_mid_turn`: that record alone is the
+    /// human row. One that yields none closes the window like any unkept turn.
+    /// Every other operation is Claude's own bookkeeping and leaves no trace.
+    fn push_queued(&mut self, value: &crate::json::Value, offset: u64) {
+        if value.get_str("operation") != Some("remove")
+            || value.get_str("reason") != Some("absorbed_mid_turn")
+        {
+            return;
+        }
+        let before = self.rows.len();
+        if let Some(crate::json::Value::Str(content)) = value.get("content") {
+            self.push_text(value, content, offset, true);
+        }
+        if self.rows.len() == before {
+            self.unkept(offset);
+        }
+    }
+
     /// One `type == "user"` record: the human path, markers and plumbing
     /// filtered, reminders stripped, empties dropped.
     fn push_human(&mut self, value: &crate::json::Value, offset: u64) {
@@ -228,11 +258,19 @@ impl Sink<'_> {
             // Array content is a tool result or structured turn, never prose.
             return;
         };
+        self.push_text(value, content, offset, false);
+    }
+
+    /// The text of one human line, wherever the record carries it: markers and
+    /// plumbing filtered, reminders stripped, empties dropped. `queued` says it
+    /// came from a queue record, which has none of the fields a user record's
+    /// plumbing test confirms by.
+    fn push_text(&mut self, value: &crate::json::Value, content: &str, offset: u64, queued: bool) {
         let first = content.lines().next().unwrap_or_default();
         if crate::provenance::is_ae_turn(first) {
             return;
         }
-        if is_plumbing(value, first) {
+        if is_plumbing(value, first, queued) {
             return;
         }
         let Some(ts) = value
@@ -324,8 +362,10 @@ fn is_tool_result(value: &crate::json::Value) -> bool {
             .all(|part| part.get_str("type") == Some("tool_result"))
 }
 
-/// Claude's own harness turns, by structured field where one exists.
-fn is_plumbing(value: &crate::json::Value, first: &str) -> bool {
+/// Claude's own harness turns, by structured field where one exists. A queue
+/// record carries no field to confirm by, so its task notification goes by
+/// the prefix alone.
+fn is_plumbing(value: &crate::json::Value, first: &str, queued: bool) -> bool {
     const CAVEAT: &str = "<local-command-caveat>";
     const TASK: &str = "<task-notification>";
     // LOSSY: no structured twin observed — a human turn opening with one of
@@ -344,7 +384,7 @@ fn is_plumbing(value: &crate::json::Value, first: &str) -> bool {
     if flagged("isMeta") && first.starts_with(CAVEAT) {
         return true;
     }
-    if value.get_str("promptSource") == Some("system") && first.starts_with(TASK) {
+    if (queued || value.get_str("promptSource") == Some("system")) && first.starts_with(TASK) {
         return true;
     }
     LOSSY.iter().any(|prefix| first.starts_with(prefix))
@@ -831,6 +871,109 @@ mod tests {
                     .all(|row| row.role != crate::board::Role::Boundary)
             );
         }
+    }
+
+    /// A line the human typed while a turn ran, as the running turn took it in.
+    fn absorbed(content: &str) -> String {
+        format!(
+            r#"{{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":{content},"timestamp":"2026-09-16T09:00:00.500Z"}}"#
+        )
+    }
+
+    #[test]
+    fn an_absorbed_queue_line_is_a_human_row_that_opens_the_window() {
+        let line = absorbed(r#""typed mid-turn""#);
+        let (rows, coverage) = read_one(&line);
+        assert!(coverage.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].role, crate::board::Role::Human);
+        assert_eq!(rows[0].body, "typed mid-turn");
+        assert_eq!(rows[0].ts, 1_789_549_200_500_000);
+        let lines = [user(r#""earlier""#), said("one"), line, said("answer")];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            replies_to_human(&lines),
+            ["H:earlier", "A:one", "H:typed mid-turn", "A:answer"]
+        );
+    }
+
+    #[test]
+    fn every_other_queue_record_and_attachment_is_neutral() {
+        let stamped = r#""timestamp":"2026-09-16T09:00:00.500Z""#;
+        let neutral = [
+            format!(
+                r#"{{"type":"queue-operation","operation":"enqueue","content":"queued",{stamped}}}"#
+            ),
+            format!(
+                r#"{{"type":"queue-operation","operation":"dequeue","content":"queued",{stamped}}}"#
+            ),
+            format!(
+                r#"{{"type":"queue-operation","operation":"remove","reason":"other","content":"queued",{stamped}}}"#
+            ),
+            format!(
+                r#"{{"type":"queue-operation","operation":"enqueue","reason":"absorbed_mid_turn","content":"queued",{stamped}}}"#
+            ),
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued"}}"#
+                .to_owned(),
+            r#"{"type":"attachment","attachment":{"type":"total_tokens_reminder","text":"x"}}"#
+                .to_owned(),
+        ];
+        for record in neutral {
+            let lines = [user(r#""typed""#), record.clone(), said("answer")];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(
+                replies_to_human(&lines),
+                ["H:typed", "A:answer"],
+                "{record}"
+            );
+            let (rows, coverage) = read_lines_with(&lines, false);
+            assert!(coverage.is_empty(), "{record}");
+            assert_eq!(rows.len(), 1, "{record} is no row");
+        }
+    }
+
+    #[test]
+    fn an_absorbed_line_the_human_path_drops_closes_the_window() {
+        let marked = absorbed(r#""⟦ae:msg from lead⟧\nping""#);
+        let task = absorbed(r#""<task-notification>done""#);
+        let reminder = absorbed(r#""<system-reminder>only</system-reminder>""#);
+        let lossy = absorbed(r#""[Request interrupted by user]""#);
+        let blank = absorbed(r#""  ""#);
+        let unstamped = r#"{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"words"}"#;
+        for dropped in [
+            marked,
+            task,
+            reminder,
+            lossy,
+            blank,
+            absorbed("null"),
+            absorbed("[]"),
+            r#"{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","timestamp":"2026-09-16T09:00:00.500Z"}"#.to_owned(),
+            unstamped.to_owned(),
+        ] {
+            let lines = [
+                user(r#""typed""#),
+                said("kept"),
+                dropped.clone(),
+                said("dropped"),
+            ];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{dropped}");
+        }
+        let (rows, coverage) = read_one(unstamped);
+        assert!(rows.is_empty());
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].reason, "1 record without a timestamp");
+    }
+
+    #[test]
+    fn a_task_notification_needs_its_field_on_a_user_record_and_not_on_a_queue_one() {
+        // A queue record has no `promptSource` to confirm by: the prefix alone.
+        let (rows, _) = read_one(&absorbed(r#""<task-notification>done""#));
+        assert!(rows.is_empty());
+        // A user record keeps the proof it always needed.
+        let (rows, _) = read_one(&user(r#""<task-notification>typed by a human""#));
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]

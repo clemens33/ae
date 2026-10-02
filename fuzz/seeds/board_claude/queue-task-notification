@@ -1,0 +1,3 @@
+{${"type":"user","timestamp":"2026-10-02T12:00:01.000Z","message":{"role":"user","content":"dummy earlier question"}}
+{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification>dummy task done</task-notification>","timestamp":"2026-10-02T12:00:03.000Z"}
+{"type":"assistant","timestamp":"2026-10-02T12:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"dummy answer"}]}}

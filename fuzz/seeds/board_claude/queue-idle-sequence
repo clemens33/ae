@@ -1,0 +1,4 @@
+{${"type":"queue-operation","operation":"enqueue","content":"dummy typed line","sessionId":"dummy","timestamp":"2026-10-02T12:00:02.000Z"}
+{"type":"queue-operation","operation":"dequeue","content":"dummy typed line","timestamp":"2026-10-02T12:00:02.500Z"}
+{"type":"user","timestamp":"2026-10-02T12:00:03.000Z","message":{"role":"user","content":"dummy typed line"}}
+{"type":"assistant","timestamp":"2026-10-02T12:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"dummy answer"}]}}
