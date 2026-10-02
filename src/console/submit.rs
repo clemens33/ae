@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::lane;
 use crate::events::Event;
-use crate::store;
+use crate::store::{self, Oversized, SourceRead};
 use crate::tmux::WindowPane;
 use crate::tracked;
 
@@ -88,6 +88,30 @@ pub fn read_back(events: &[Event], id: &str, said: &str) -> Outcome {
     }
 }
 
+/// The kept draft as promotion finds it: never acted on, only shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Draft {
+    Nothing,
+    Kept(Vec<u8>),
+    /// Why the kept draft is not put back.
+    Refused(String),
+}
+
+/// The session's kept draft, by the store's bounded read: a plain read, no
+/// lock, so a submit still in flight can leave a line that is already sent.
+#[must_use]
+pub fn restore(dir: &Path) -> Draft {
+    let no = |what: String| Draft::Refused(format!("the kept draft {what} and was not restored"));
+    match store::open(dir).console_draft() {
+        Ok(SourceRead::Absent) => Draft::Nothing,
+        Ok(SourceRead::Ready(bytes)) if bytes.is_empty() => Draft::Nothing,
+        Ok(SourceRead::Ready(bytes)) => Draft::Kept(bytes),
+        Ok(SourceRead::Invalid(what)) => no(format!("is not a regular file ({what})")),
+        Ok(SourceRead::Unreadable(why)) => no(format!("could not be read ({why})")),
+        Err(Oversized) => no(format!("is over {} bytes", store::CONSOLE_DRAFT_CAP)),
+    }
+}
+
 /// Carry `raw`, the composer's literal bytes kept as the draft, to a seat as
 /// console ask `id`; only [`Outcome::Sent`] clears the draft.
 ///
@@ -149,7 +173,7 @@ fn admission(dir: &Path) -> Result<std::fs::File, String> {
 
 #[cfg(test)]
 pub(in crate::console) mod tests {
-    use super::{Outcome, close_owned, owner, submit};
+    use super::{Draft, Outcome, close_owned, owner, restore, submit};
     use crate::store::{self, SourceRead};
     use crate::tmux::WindowPane;
     use std::fs;
@@ -238,6 +262,41 @@ pub(in crate::console) mod tests {
 
     fn never() -> String {
         panic!("nothing is delivered past a refusal")
+    }
+
+    #[test]
+    fn a_kept_draft_comes_back_whole_or_as_a_named_refusal_and_never_changes() {
+        let dir = session("restore", 0);
+        let path = dir.join(store::CONSOLE_DRAFT);
+        let no = |what: &str| Draft::Refused(format!("the kept draft {what} and was not restored"));
+        assert_eq!(restore(&dir), Draft::Nothing, "none kept");
+        fs::write(&path, b"").unwrap();
+        assert_eq!(restore(&dir), Draft::Nothing, "an empty file");
+        fs::write(&path, b"@colead a\nb").unwrap();
+        assert_eq!(restore(&dir), Draft::Kept(b"@colead a\nb".to_vec()));
+        let cap = usize::try_from(store::CONSOLE_DRAFT_CAP).unwrap();
+        fs::write(&path, vec![b'x'; cap]).unwrap();
+        assert!(matches!(restore(&dir), Draft::Kept(bytes) if bytes.len() == cap));
+        fs::write(&path, vec![b'x'; cap + 1]).unwrap();
+        assert_eq!(restore(&dir), no("is over 65536 bytes"));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(restore(&dir), no("is not a regular file (a directory)"));
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, b"kept").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
+        let got = restore(&dir);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            matches!(&got, Draft::Refused(why) if why.starts_with("the kept draft could not be read (")),
+            "{got:?}"
+        );
+        assert_eq!(
+            draft(&dir),
+            SourceRead::Ready(b"kept".to_vec()),
+            "a read changes nothing"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

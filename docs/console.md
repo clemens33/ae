@@ -43,10 +43,27 @@ only the watchdog daemon ends a wait on pane input.
 ## Input
 
 The window runs `--input` behind a fixed `stty` wrapper; only the owner console
-(first live stamped pane) takes keys, another is read-only. A line asks the main
-seat, `@<seat> text` either lead-pair seat, `/close <id>` withdraws an open ask,
+(first live stamped pane) takes keys, another is read-only. A line asks the
+speaker, `@<seat> text` either lead-pair seat, `/close <id>` withdraws an open ask,
 other `/word`s are refused, five asks open at most. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
+
+The speaker is the seat of the last `@<seat> text` line that asked (`@<main> text`
+included); it is the prompt (`to <speaker>> `) and where an unprefixed line goes.
+A refused line, `/close` and a demotion change nothing; a restarted console
+speaks to the main seat (the speaker is process memory only).
+
+When a console becomes the owner it puts a kept draft back in the composer
+literally — a line kept before a crash or an unconfirmed ask — under `Kept line,
+maybe already sent: check <every lead-pair seat> panes (prefix H) before Enter`.
+Nothing in it is read as a command until you press Enter; the file stays until an
+ask is confirmed (`^U` clears the composer, not the file, so a later promotion
+shows it again). A draft over 65536 bytes, a non-file or an unreadable one is
+refused by name and not restored. A read-only console restores nothing.
+Residual: the draft keeps only the bytes you typed, not who they were for, so a
+restored line without an `@<seat>` prefix goes to the speaker at that Enter — the
+main seat after a restart — even if it was first asked of the other seat; the
+banner names every lead-pair seat for that reason.
 
 Both lead-pair seats — never a worker — are told in their context that a turn
 whose first line is `⟦ae:msg from console:local⟧` is the human's words, to be

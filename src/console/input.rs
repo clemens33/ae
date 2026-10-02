@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use super::submit::Outcome;
+use super::submit::{Draft, Outcome};
 use crate::board::terminal_text;
 
 /// The most bytes one composed line holds: the draft file's own cap.
@@ -209,10 +209,15 @@ pub enum Command {
 /// carries a slash to a seat; anything else asks `pair[0]`, the main seat.
 #[must_use]
 pub fn command(raw: &[u8], pair: &[String]) -> Command {
+    command_to(raw, pair, pair.first().map_or("", String::as_str))
+}
+
+/// [`command`] with an unprefixed line asking `speaker`, the seat last addressed.
+#[must_use]
+pub fn command_to(raw: &[u8], pair: &[String], speaker: &str) -> Command {
     let Ok(text) = std::str::from_utf8(raw) else {
         return Command::Refused("the line is not UTF-8".to_owned());
     };
-    let main = pair.first().map_or("", String::as_str);
     if let Some(routed) = text.strip_prefix('@') {
         let (seat, body) = routed
             .split_once(char::is_whitespace)
@@ -233,11 +238,11 @@ pub fn command(raw: &[u8], pair: &[String]) -> Command {
             ("/close", [id]) => Command::Close((*id).to_owned()),
             ("/close", _) => Command::Refused("/close takes exactly one request id".to_owned()),
             _ => Command::Refused(format!(
-                "unknown command {word}; to send it, name a seat: @{main} {word}"
+                "unknown command {word}; to send it, name a seat: @{speaker} {word}"
             )),
         };
     }
-    ask(main, text)
+    ask(speaker, text)
 }
 
 fn ask(seat: &str, body: &str) -> Command {
@@ -281,6 +286,9 @@ pub enum Effect {
 #[derive(Debug, Default)]
 pub struct Input {
     pair: Vec<String>,
+    /// The seat an unprefixed line asks: where `pair` last had an `@seat` ask
+    /// go, main until then. Process memory only.
+    speaker: usize,
     keys: Keys,
     composer: Composer,
     /// Since when this console takes input; `None` while it does not.
@@ -328,6 +336,27 @@ impl Input {
         }
     }
 
+    /// The kept `draft` put back in the composer, literally, and the line saying
+    /// it may already be sent: no byte of it is read as a command until a fresh
+    /// Enter, and a console that takes no input restores nothing.
+    pub fn restore(&mut self, draft: Draft) -> Vec<Effect> {
+        if self.since.is_none() {
+            return Vec::new();
+        }
+        let said = match draft {
+            Draft::Nothing => return Vec::new(),
+            Draft::Kept(bytes) => {
+                let _ = self.composer.key(Key::Text(bytes));
+                let seats = self.pair.join(", ");
+                format!(
+                    "Kept line, maybe already sent: check {seats} panes (prefix H) before Enter"
+                )
+            }
+            Draft::Refused(why) => format!("refused: {why}"),
+        };
+        vec![Effect::Print(said)]
+    }
+
     /// One terminal read, stamped when the read returned.
     pub fn chunk(&mut self, bytes: &[u8], stamp: Instant) -> Vec<Effect> {
         let keys = self.keys.feed(bytes, stamp);
@@ -344,8 +373,12 @@ impl Input {
                 Some(Entered::Over) => Effect::Print(format!(
                     "refused: the draft is over {CAP} bytes - ^U clears it"
                 )),
-                Some(Entered::Line(raw)) => match command(&raw, &self.pair) {
-                    Command::Ask { seat, body } => Effect::Ask { raw, seat, body },
+                Some(Entered::Line(raw)) => match command_to(&raw, &self.pair, self.speaker()) {
+                    Command::Ask { seat, body } => {
+                        let at = self.pair.iter().position(|name| *name == seat);
+                        self.speaker = at.filter(|_| raw.starts_with(b"@")).unwrap_or(self.speaker);
+                        Effect::Ask { raw, seat, body }
+                    }
                     Command::Close(id) => Effect::Close(id),
                     Command::Refused(why) => Effect::Print(format!("refused: {why}")),
                 },
@@ -364,12 +397,17 @@ impl Input {
         vec![Effect::Paste(false), Effect::Print(line)]
     }
 
+    /// The seat an unprefixed line asks.
+    fn speaker(&self) -> &str {
+        self.pair.get(self.speaker).map_or("", String::as_str)
+    }
+
     /// The composer line, while this console takes input. The seat name is
     /// the meta's, kept verbatim there, so it is made inert here.
     #[must_use]
     pub fn line(&self) -> Option<String> {
-        let main = terminal_text(self.pair.first().map_or("", String::as_str));
-        let prompt = format!("to {}> ", main.replace(['\n', '\t'], " "));
+        let speaker = terminal_text(self.speaker());
+        let prompt = format!("to {}> ", speaker.replace(['\n', '\t'], " "));
         self.since.map(|_| self.composer.line(&prompt))
     }
 }
@@ -417,8 +455,8 @@ pub fn paint(text: &str, effects: &[Effect], line: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAP, Command, Composer, Effect, Entered, Input, Key, Keys, Outcome, Reading, command,
-        outcome_line, paint,
+        CAP, Command, Composer, Draft, Effect, Entered, Input, Key, Keys, Outcome, Reading,
+        command, command_to, outcome_line, paint,
     };
     use std::time::{Duration, Instant};
 
@@ -552,6 +590,107 @@ mod tests {
             let got = command(raw, &pair());
             assert_eq!(got, want, "{}", String::from_utf8_lossy(raw));
         }
+    }
+
+    #[test]
+    fn an_at_line_that_asks_moves_the_speaker_and_nothing_else_does_but_a_restart() {
+        let base = Instant::now();
+        let mut input = owner(base);
+        let say = |input: &mut Input, line: &[u8]| match input.chunk(line, base).as_slice() {
+            [Effect::Ask { seat, body, .. }] => format!("ask {seat} {body}"),
+            [Effect::Close(id)] => format!("close {id}"),
+            [Effect::Print(said)] => said.clone(),
+            other => format!("{other:?}"),
+        };
+        let cases = [
+            ("hi", "ask lead hi", "lead"),
+            ("@colead a", "ask colead a", "colead"),
+            ("b", "ask colead b", "colead"),
+            ("/close x", "close x", "colead"),
+            ("@colead", "refused: nothing to ask @colead", "colead"),
+            ("@zz q", "refused: @zz is not a lead-pair seat", "colead"),
+            (
+                "@a:b q",
+                "refused: @a:b names another session; this console asks its own lead pair",
+                "colead",
+            ),
+            (
+                "/w",
+                "refused: unknown command /w; to send it, name a seat: @colead /w",
+                "colead",
+            ),
+            (" ", "refused: nothing to ask @colead", "colead"),
+            ("@lead m", "ask lead m", "lead"),
+        ];
+        for (line, want, speaker) in cases {
+            assert_eq!(
+                say(&mut input, &[line.as_bytes(), b"\r"].concat()),
+                want,
+                "{line}"
+            );
+            assert_eq!(input.line(), Some(format!("to {speaker}> ")), "{line}");
+        }
+        let _ = say(&mut input, b"@colead a\r");
+        let _ = input.tick(Reading::NotOwner(WHY.to_owned()), base);
+        let _ = input.tick(Reading::Owner, base);
+        assert_eq!(
+            input.line().as_deref(),
+            Some("to colead> "),
+            "kept across a demotion"
+        );
+        assert_eq!(
+            owner(base).line().as_deref(),
+            Some("to lead> "),
+            "a restart is main"
+        );
+        let to_colead = command_to(b"hi", &pair(), "colead");
+        assert_eq!(
+            to_colead,
+            Command::Ask {
+                seat: "colead".to_owned(),
+                body: "hi".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn a_restored_draft_is_literal_until_a_fresh_enter_and_only_an_owner_takes_one() {
+        let base = Instant::now();
+        let kept = |bytes: &[u8]| Draft::Kept(bytes.to_vec());
+        let mut idle = Input::new(pair());
+        assert_eq!(idle.restore(kept(b"x")), [], "no input, no restore");
+        let trio = ["lead", "colead", "third"].map(str::to_owned).to_vec();
+        let mut input = Input::new(trio);
+        let _ = input.tick(Reading::Owner, base);
+        let line = "Kept line, maybe already sent: check lead, colead, third panes (prefix H) before Enter";
+        let raw = b"@colead /close x";
+        assert_eq!(input.restore(kept(raw)), [Effect::Print(line.to_owned())]);
+        assert_eq!(input.line().as_deref(), Some("to lead> @colead /close x"));
+        let ask = Effect::Ask {
+            raw: raw.to_vec(),
+            seat: "colead".to_owned(),
+            body: "/close x".to_owned(),
+        };
+        assert_eq!(input.chunk(b"\r", base), [ask], "the body stays literal");
+        assert_eq!(input.line().as_deref(), Some("to colead> "));
+        let mut input = owner(base);
+        assert_eq!(input.restore(Draft::Nothing), []);
+        let why = "the kept draft is over 65536 bytes and was not restored";
+        let refused = [Effect::Print(format!("refused: {why}"))];
+        assert_eq!(input.restore(Draft::Refused(why.to_owned())), refused);
+        assert_eq!(input.line().as_deref(), Some("to lead> "));
+        let _ = input.restore(kept(b"\xff"));
+        let not_utf8 = [Effect::Print("refused: the line is not UTF-8".to_owned())];
+        assert_eq!(input.chunk(b"\r", base), not_utf8);
+        let _ = input.restore(kept(&vec![b'a'; CAP]));
+        assert_eq!(
+            asks(&input.chunk(b"\r", base))[0].len(),
+            CAP,
+            "exactly the cap"
+        );
+        let _ = input.restore(kept(&vec![b'a'; CAP + 1]));
+        let over = "to lead> draft over 65536 bytes - ^U clears";
+        assert_eq!(input.line().as_deref(), Some(over));
     }
 
     #[test]

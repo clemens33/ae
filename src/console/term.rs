@@ -141,7 +141,12 @@ impl Term {
             Some(Ok(())) => Reading::Owner,
             Some(Err(why)) => Reading::NotOwner(why),
         };
-        self.input.tick(reading, Instant::now())
+        let was = self.input.line().is_some();
+        let mut effects = self.input.tick(reading, Instant::now());
+        if !was && self.input.line().is_some() {
+            effects.extend(self.input.restore(submit::restore(&console.dir)));
+        }
+        effects
     }
 
     /// Wait for the terminal until `deadline`; what its input did, every ask
@@ -267,6 +272,29 @@ mod tests {
             let bad = Err("the main seat is not an agent name".to_owned());
             assert_eq!(pair_of(vec![seat("main", main), colead.clone()]), bad);
         }
+    }
+
+    #[test]
+    fn a_tick_that_cannot_prove_ownership_promotes_and_restores_nothing() {
+        let rig = Rig::new("term-restore");
+        let meta =
+            format!("session_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n");
+        std::fs::write(rig.0.join("s/meta"), meta).unwrap();
+        let console = rig.console();
+        crate::store::open(&console.dir)
+            .publish_console_draft(b"kept")
+            .unwrap();
+        let pair = console.seats().and_then(pair_of).unwrap();
+        let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
+        let mut term = Term {
+            input,
+            pair,
+            reads: Reads(None),
+            server: None,
+            me: None,
+        };
+        assert_eq!(term.tick(&console), [], "tmux unanswered is Unknown");
+        assert_eq!(term.line(), None);
     }
 
     #[test]
