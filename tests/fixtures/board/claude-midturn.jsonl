@@ -1,0 +1,6 @@
+{"type":"queue-operation","operation":"enqueue","content":"Dummy mid-turn question.","sessionId":"0199c0de-aaaa-4890-abcd-ef0123456789","timestamp":"2026-10-02T12:00:01.000Z"}
+{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","commandUuid":"0199c0de-bbbb-4890-abcd-ef0123456789","deliveryId":"dummy-delivery","content":"Dummy mid-turn question.","sessionId":"0199c0de-aaaa-4890-abcd-ef0123456789","timestamp":"2026-10-02T12:00:02.000Z"}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"Dummy mid-turn question.","humanTurn":true,"commandMode":"prompt","delivery_id":"dummy-delivery","origin":"dummy","source_uuid":"0199c0de-bbbb-4890-abcd-ef0123456789","timestamp":"2026-10-02T12:00:02.000Z"},"renderedRole":"system","uuid":"0199c0de-cccc-4890-abcd-ef0123456789","parentUuid":"0199c0de-dddd-4890-abcd-ef0123456789"}
+{"type":"attachment","attachment":{"type":"total_tokens_reminder","text":"Dummy token reminder."},"renderedRole":"system"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"dummy-tool","content":"Dummy tool output."}]},"timestamp":"2026-10-02T12:00:03.000Z"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Dummy mid-turn answer."}]},"timestamp":"2026-10-02T12:00:04.000Z"}
