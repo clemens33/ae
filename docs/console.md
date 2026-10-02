@@ -55,8 +55,9 @@ speaks to the main seat (the speaker is process memory only).
 
 The composer shows the whole draft wrapped at the pane's width: the prompt on
 the first row, the rest indented under it, each pasted line break its own row.
-It grows to ten rows (fewer in a short pane) and elides the top as `… +N lines
-above`; the last row is always the cursor's. Lane output prints above it — ae
+It grows to ten rows (fewer in a short pane); a longer draft shows the window
+that holds the cursor's row, with the rows cut off named as `… +N lines above`
+and `… +N lines below`, markers included in the ten. Lane output prints above it — ae
 takes away exactly the composer's rows, prints, and draws it again — and a resize
 is honoured at the next paint. The size comes from tmux (80x24 when it will not
 say); every non-ASCII character counts as two cells, so a row breaks early, never
