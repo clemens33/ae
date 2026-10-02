@@ -83,12 +83,14 @@ enum Arm {
 }
 
 /// The held per-seat state: the identity offsets bind to, the commit point
-/// after the last complete line, and the mtime last seen.
+/// after the last complete line, the mtime last seen, and whether the window of
+/// replies to the human was open there.
 #[derive(Debug, Clone, Copy)]
 struct Seat {
     identity: (u64, u64),
     mtime: Option<SystemTime>,
     committed: u64,
+    window: bool,
 }
 
 /// Decide the arm from the held state and this poll's lstat facts. Identity
@@ -156,6 +158,7 @@ impl Follow {
                             identity: seed.identity,
                             mtime: seed.mtime,
                             committed: seed.committed,
+                            window: seed.window,
                         },
                     )
                 })
@@ -223,14 +226,23 @@ impl Follow {
                                 identity: loaded.observed.identity,
                                 mtime: loaded.observed.mtime,
                                 committed: 0,
+                                window: false,
                             },
                         );
                     }
                     self.steady(&actor, vec![reason.to_owned()], &mut coverage);
                 }
                 Some(Ok(streamed)) => {
-                    let (seat_rows, seat_coverage) =
+                    let (mut seat_rows, seat_coverage) =
                         reader_for(loaded.source)(&streamed, &actor, &loaded.file, loaded.source);
+                    // The window of replies to the human continues from where the
+                    // last poll ended it; a first sight or a rescan starts shut.
+                    let mut window = false;
+                    if streamed.windowed {
+                        let held = matches!(arm, Arm::Append)
+                            && self.seats.get(&actor).is_some_and(|seat| seat.window);
+                        (seat_rows, window) = super::answered(seat_rows, passive.as_deref(), held);
+                    }
                     self.steady(
                         &actor,
                         seat_coverage.into_iter().map(|item| item.reason).collect(),
@@ -260,6 +272,7 @@ impl Follow {
                             identity: loaded.observed.identity,
                             mtime: loaded.observed.mtime,
                             committed,
+                            window,
                         },
                     );
                 }
@@ -304,7 +317,7 @@ impl Follow {
 mod tests {
     use super::{Follow, Loaded, Located, Plan, Snapshot};
     use crate::board::{
-        Coverage, Hidden, Inputs, Observation, SeatSeed, Splitter, follow_poll, observe,
+        Coverage, Hidden, Inputs, Observation, Replies, SeatSeed, Splitter, follow_poll, observe,
         render_batch,
     };
     use crate::tool::ToolKind;
@@ -441,6 +454,7 @@ mod tests {
                 mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                 committed: first.len() as u64,
                 last_row_ts: None,
+                window: false,
             }],
             &[],
             None,
@@ -634,6 +648,7 @@ mod tests {
                 mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                 committed: first.len() as u64,
                 last_row_ts: Some(1_789_549_200_000_000),
+                window: false,
             }],
             &[],
             None,
@@ -672,6 +687,7 @@ mod tests {
                 mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                 committed: first.len() as u64,
                 last_row_ts: Some(1_789_549_200_000_000),
+                window: false,
             }],
             &[],
             Some(1_789_549_200_000_001),
@@ -816,5 +832,184 @@ mod tests {
             &more,
         );
         assert!(batch.hidden.is_empty(), "nothing hidden this batch");
+    }
+
+    fn said(ts: &str, body: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"text","text":"{body}"}}]}}}}"#
+        )
+    }
+
+    /// One poll of a seat read for `replies`, exactly as the driver drives it.
+    fn poll_for(
+        follow: &mut Follow,
+        source: ToolKind,
+        observed: Located,
+        full: &str,
+        replies: Replies,
+    ) -> Observation {
+        let from = match follow.plan("s:lead", &observed) {
+            Plan::Read(from) => from,
+            Plan::Hold => panic!("this poll should read"),
+        };
+        let mut splitter = Splitter::at(from);
+        let at = usize::try_from(from).expect("test offsets fit a usize");
+        splitter.feed(&full.as_bytes()[at..]);
+        follow.step(vec![Snapshot {
+            actor: "s:lead".to_owned(),
+            located: Ok(Loaded {
+                source,
+                ..loaded(observed)
+            }),
+            streamed: Some(Ok(splitter.finish().with_replies(replies))),
+            passive: None,
+        }])
+    }
+
+    /// Append one record to the growing claude transcript and poll for the
+    /// bodies it prints.
+    fn grow(follow: &mut Follow, full: &mut String, line: &str) -> Vec<String> {
+        full.push_str(line);
+        full.push('\n');
+        let seen = located(1, full.len() as u64, full.len() as u64);
+        let batch = poll_for(follow, ToolKind::Claude, seen, full, Replies::ToHuman);
+        batch.rows.into_iter().map(|row| row.body).collect()
+    }
+
+    #[test]
+    fn the_window_of_replies_to_the_human_carries_across_polls() {
+        let mut follow = Follow::seeded(&[], &[], None);
+        let mut full = String::new();
+        let marked = human("2026-09-16T09:00:03Z", &crate::provenance::peer("worker"));
+        let steps = [
+            (human("2026-09-16T09:00:00Z", "typed"), vec!["typed"]),
+            (said("2026-09-16T09:00:01Z", "answer"), vec!["answer"]),
+            (said("2026-09-16T09:00:02Z", "more"), vec!["more"]),
+            (marked, vec![]),
+            (said("2026-09-16T09:00:04Z", "to the worker"), vec![]),
+            (said("2026-09-16T09:00:05Z", "still not yours"), vec![]),
+            (
+                human("2026-09-16T09:00:06Z", "typed again"),
+                vec!["typed again"],
+            ),
+            (
+                said("2026-09-16T09:00:07Z", "answer again"),
+                vec!["answer again"],
+            ),
+        ];
+        for (line, shown) in steps {
+            assert_eq!(grow(&mut follow, &mut full, &line), shown, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_seed_hands_its_window_to_the_first_poll_and_a_rescan_starts_shut() {
+        let first = format!("{}\n", human("2026-09-16T09:00:00Z", "typed"));
+        let full = format!("{first}{}\n", said("2026-09-16T09:00:01Z", "answer"));
+        for (window, shown) in [(true, vec!["answer"]), (false, vec![])] {
+            let mut follow = Follow::seeded(
+                &[SeatSeed {
+                    actor: "s:lead".to_owned(),
+                    identity: (1, 7),
+                    mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+                    committed: first.len() as u64,
+                    last_row_ts: None,
+                    window,
+                }],
+                &[],
+                None,
+            );
+            let seen = located(1, full.len() as u64, 2);
+            let batch = poll_for(&mut follow, ToolKind::Claude, seen, &full, Replies::ToHuman);
+            let bodies: Vec<&str> = batch.rows.iter().map(|row| row.body.as_str()).collect();
+            assert_eq!(bodies, shown, "the seed window {window}");
+        }
+        // The held window is open here, yet a rescan reads from zero and shut.
+        let mut follow = Follow::seeded(
+            &[SeatSeed {
+                actor: "s:lead".to_owned(),
+                identity: (1, 7),
+                mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+                committed: 10,
+                last_row_ts: None,
+                window: true,
+            }],
+            &[],
+            None,
+        );
+        let replaced = format!("{}\n", said("2026-09-16T09:00:02Z", "orphan"));
+        let seen = located(2, replaced.len() as u64 + 10, 3);
+        let batch = poll_for(
+            &mut follow,
+            ToolKind::Claude,
+            seen,
+            &replaced,
+            Replies::ToHuman,
+        );
+        assert_eq!(batch.coverage[0].reason, "transcript replaced — rescanned");
+        assert!(batch.rows.is_empty(), "a rescan opens no window by itself");
+    }
+
+    #[test]
+    fn a_grok_reply_held_open_keeps_its_window_until_the_run_completes() {
+        let typed = grok_line("user_message_chunk", Some("human words"));
+        let marked = grok_line("user_message_chunk", Some(&crate::provenance::peer("x")));
+        let mut follow = Follow::seeded(&[], &[], None);
+        let mut full = format!(
+            "{typed}\n{}\n",
+            grok_line("agent_message_chunk", Some("syn"))
+        );
+        let seen = located(1, full.len() as u64, 1);
+        let batch = poll_for(&mut follow, ToolKind::Grok, seen, &full, Replies::ToHuman);
+        let bodies: Vec<&str> = batch.rows.iter().map(|row| row.body.as_str()).collect();
+        assert_eq!(bodies, ["human words"], "the open run is held back");
+        let at = (typed.len() + 1) as u64;
+        assert_eq!(
+            follow.plan("s:lead", &seen),
+            Plan::Read(at),
+            "held at the run"
+        );
+        let _ = write!(
+            full,
+            "{}\n{}\n{marked}\n{}\n{}\n",
+            grok_line("agent_message_chunk", Some("thetic")),
+            grok_line("turn_completed", None),
+            grok_line("agent_message_chunk", Some("for the worker")),
+            grok_line("turn_completed", None),
+        );
+        let seen = located(1, full.len() as u64, 2);
+        let batch = poll_for(&mut follow, ToolKind::Grok, seen, &full, Replies::ToHuman);
+        let bodies: Vec<&str> = batch.rows.iter().map(|row| row.body.as_str()).collect();
+        assert_eq!(
+            bodies,
+            ["synthetic"],
+            "joined once, the marked turn's run hidden"
+        );
+    }
+
+    #[test]
+    fn a_damaged_line_inside_a_held_grok_run_hides_the_whole_joined_run() {
+        let typed = grok_line("user_message_chunk", Some("human words"));
+        let mut follow = Follow::seeded(&[], &[], None);
+        let mut full = format!(
+            "{typed}\n{}\n",
+            grok_line("agent_message_chunk", Some("syn"))
+        );
+        let seen = located(1, full.len() as u64, 1);
+        let batch = poll_for(&mut follow, ToolKind::Grok, seen, &full, Replies::ToHuman);
+        assert_eq!(batch.rows.len(), 1, "only the human line: the run is held");
+        let _ = write!(
+            full,
+            "not json\n{}\n{}\n",
+            grok_line("agent_message_chunk", Some("thetic")),
+            grok_line("turn_completed", None),
+        );
+        let seen = located(1, full.len() as u64, 2);
+        let batch = poll_for(&mut follow, ToolKind::Grok, seen, &full, Replies::ToHuman);
+        assert!(batch.rows.is_empty(), "the damaged run shows in no part");
+        let _ = writeln!(full, "{}", grok_line("agent_message_chunk", Some("later")));
+        let seen = located(1, full.len() as u64, 3);
+        let batch = poll_for(&mut follow, ToolKind::Grok, seen, &full, Replies::ToHuman);
+        assert!(batch.rows.is_empty(), "and the window stays shut after it");
     }
 }

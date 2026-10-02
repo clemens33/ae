@@ -1,0 +1,10 @@
+{${"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"synthetic human turn"}}
+{"type":"assistant","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"assistant","content":[{"type":"text","text":"synthetic reply"}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"tool_result","content":"synthetic tool output"}]}}
+{"type":"assistant","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"assistant","content":[{"type":"text","text":"synthetic reply"}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"⟦ae:msg from lead⟧\nsynthetic peer body"}}
+{"type":"assistant","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"assistant","content":[{"type":"text","text":"synthetic reply"}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"AA=="}}]}}
+{"type":"assistant","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"assistant","content":[{"type":"text","text":"synthetic reply"}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"synthetic human turn"}}
+{"type":"assistant","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"assistant","content":[{"type":"text","text":"synthetic reply"}]}}

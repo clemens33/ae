@@ -49,13 +49,16 @@ pub fn read_stream(
         file,
         source,
         assistant: streamed.assistant,
+        windowed: streamed.windowed,
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
     };
     for line in &streamed.lines {
-        if let LineBody::Full(bytes) = &line.body {
-            sink.push_line(bytes, line.offset);
+        match &line.body {
+            LineBody::Full(bytes) => sink.push_line(bytes, line.offset),
+            // Too long to be a record: it may have been a user turn.
+            LineBody::Overlong(_) => sink.unkept(line.offset),
         }
     }
     if let Some(overlong) = super::overlong_coverage(streamed, actor) {
@@ -83,6 +86,9 @@ struct Sink<'a> {
     /// `--assistant`: the reply path is live. Off, an assistant record is
     /// classified and dropped exactly as before the flag existed.
     assistant: bool,
+    /// `Replies::ToHuman`: a user turn the read does not keep leaves a
+    /// [`Role::Boundary`], so the window of replies to a human line can close.
+    windowed: bool,
     rows: Vec<Row>,
     coverage: Vec<Coverage>,
     missing_ts: u64,
@@ -97,28 +103,58 @@ impl Sink<'_> {
     }
 
     /// Attempt one newline-terminated `Full` line at byte `offset`: the loop
-    /// skips `Overlong` lines, so no cap check lives in this function.
+    /// hands `Overlong` lines to `unkept`, so no cap check lives in this
+    /// function.
     fn push_line(&mut self, line: &[u8], offset: u64) {
-        // Not UTF-8 or not JSON is not a record — skipped silently.
+        // Not UTF-8 or not JSON is not a record — skipped silently, though a
+        // windowed read marks it: it may have been a user turn.
         let Ok(text) = str::from_utf8(line) else {
+            self.unkept(offset);
             return;
         };
         let Ok(value) = crate::json::parse(text) else {
+            self.unkept(offset);
             return;
         };
-        if value.get_str("type") != Some("response_item") {
-            return;
+        match value.get_str("type") {
+            Some("response_item") => {}
+            Some(_) => return,
+            None => {
+                self.unkept(offset);
+                return;
+            }
         }
         let Some(payload) = value.get("payload") else {
+            self.unkept(offset);
             return;
         };
-        if payload.get_str("type") != Some("message") {
-            return;
+        match payload.get_str("type") {
+            Some("message") => {}
+            Some(_) => return,
+            None => {
+                self.unkept(offset);
+                return;
+            }
         }
         match payload.get_str("role") {
-            Some("user") => self.push_human(&value, payload, offset),
+            Some("user") => {
+                let before = self.rows.len();
+                self.push_human(&value, payload, offset);
+                if self.rows.len() == before {
+                    self.unkept(offset);
+                }
+            }
             Some("assistant") if self.assistant => self.push_assistant(&value, payload, offset),
+            None => self.unkept(offset),
             _ => {}
+        }
+    }
+
+    /// A read for the replies to the human marks a user turn it does not keep,
+    /// so the window closes there; every other read leaves no trace.
+    fn unkept(&mut self, offset: u64) {
+        if self.windowed {
+            super::close_window(&mut self.rows, self.actor, self.file, self.source, offset);
         }
     }
 
@@ -553,5 +589,151 @@ mod tests {
         assert!(rows.is_empty());
         assert_eq!(coverage.len(), 1);
         assert_eq!(coverage[0].reason, "1 record without a timestamp");
+    }
+
+    /// One windowed read of these lines, run through the window.
+    fn replies_to_human(lines: &[&str]) -> Vec<String> {
+        let mut bytes = lines.join("\n").into_bytes();
+        bytes.push(b'\n');
+        replies_to_human_bytes(&bytes)
+    }
+
+    fn replies_to_human_bytes(bytes: &[u8]) -> Vec<String> {
+        let (rows, _) = windowed_rows(bytes);
+        crate::board::window_labels(rows)
+    }
+
+    fn windowed_rows(bytes: &[u8]) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
+        let mut splitter = super::Splitter::new();
+        splitter.feed(bytes);
+        let streamed = splitter
+            .finish()
+            .with_replies(crate::board::Replies::ToHuman);
+        super::read_stream(&streamed, ACTOR, FILE, crate::tool::ToolKind::Codex)
+    }
+
+    fn typed(text: &str) -> String {
+        user(&format!("[{}]", part(text)))
+    }
+
+    fn said(text: &str) -> String {
+        assistant(&format!("[{}]", output(text)))
+    }
+
+    /// A response item that is no message: `kind` names its payload type.
+    fn item(kind: &str) -> String {
+        format!(
+            r#"{{"timestamp":"{TS}","type":"response_item","payload":{{"type":"{kind}","summary":[]}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_reply_shows_only_while_the_last_user_turn_is_a_human_line() {
+        let lines = [
+            typed("typed"),
+            said("one"),
+            typed("⟦ae:msg from lead⟧\nping"),
+            said("to the agent"),
+            typed("typed again"),
+            said("two"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            replies_to_human(&lines),
+            ["H:typed", "A:one", "H:typed again", "A:two"]
+        );
+    }
+
+    #[test]
+    fn reasoning_calls_events_and_developer_text_are_no_turns() {
+        let developer = r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"response_item","payload":{"type":"message","role":"developer","content":[]}}"#;
+        let event = r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"event_msg","payload":{"type":"user_message","message":"echo"}}"#;
+        let lines = [
+            typed("typed"),
+            item("reasoning"),
+            item("function_call"),
+            item("function_call_output"),
+            developer.to_owned(),
+            event.to_owned(),
+            said("done"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(replies_to_human(&lines), ["H:typed", "A:done"]);
+    }
+
+    #[test]
+    fn every_user_message_the_human_path_drops_closes_the_window() {
+        for dropped in [
+            typed("<environment_context>cwd</environment_context>"),
+            typed("# AGENTS.md instructions for /work"),
+            typed("⟦ae:ctx⟧\nsetup"),
+            user("[]"),
+            user("7"),
+            user(&format!("[{}]", r#"{"type":"input_image"}"#)),
+            format!(
+                r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{}]}}}}"#,
+                part("no stamp")
+            ),
+        ] {
+            let lines = [
+                typed("typed"),
+                said("kept"),
+                dropped.clone(),
+                said("dropped"),
+            ];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{dropped}");
+        }
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_classified_closes_the_window_once() {
+        let mut bytes = Vec::new();
+        for piece in [
+            typed("typed"),
+            said("kept"),
+            "not json".to_owned(),
+            r#"{"payload":{}}"#.to_owned(),
+            r#"{"type":"response_item"}"#.to_owned(),
+            r#"{"type":"response_item","payload":{"role":"user"}}"#.to_owned(),
+            r#"{"type":"response_item","payload":{"type":"message"}}"#.to_owned(),
+        ] {
+            bytes.extend_from_slice(piece.as_bytes());
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(b"\xff\xfe broken\n");
+        bytes.extend_from_slice(&vec![b'x'; crate::board::LINE_CAP + 1]);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(said("dropped").as_bytes());
+        bytes.push(b'\n');
+        assert_eq!(replies_to_human_bytes(&bytes), ["H:typed", "A:kept"]);
+        let (rows, _) = windowed_rows(&bytes);
+        let boundaries = rows
+            .iter()
+            .filter(|row| row.role == crate::board::Role::Boundary)
+            .count();
+        assert_eq!(boundaries, 1, "unreadable records in a row cost one row");
+    }
+
+    #[test]
+    fn off_and_all_reads_carry_no_boundary_and_keep_their_rows() {
+        let lines = [
+            typed("typed"),
+            typed("⟦ae:msg from lead⟧\nping"),
+            said("reply"),
+            "not json".to_owned(),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let (all, _) = read_lines_with(&lines, true);
+        let bodies: Vec<&str> = all.iter().map(|row| row.body.as_str()).collect();
+        assert_eq!(bodies, ["typed", "reply"], "--all keeps today's rows");
+        let (off, _) = read_lines_with(&lines, false);
+        assert_eq!(off.len(), 1);
+        for rows in [&all, &off] {
+            assert!(
+                rows.iter()
+                    .all(|row| row.role != crate::board::Role::Boundary)
+            );
+        }
     }
 }

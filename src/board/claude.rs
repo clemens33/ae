@@ -69,13 +69,16 @@ pub fn read_stream(
         file,
         source,
         assistant: streamed.assistant,
+        windowed: streamed.windowed,
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
     };
     for line in &streamed.lines {
-        if let LineBody::Full(bytes) = &line.body {
-            sink.push_line(bytes, line.offset);
+        match &line.body {
+            LineBody::Full(bytes) => sink.push_line(bytes, line.offset),
+            // Too long to be a record: it may have been a user turn.
+            LineBody::Overlong(_) => sink.unkept(line.offset),
         }
     }
     if let Some(overlong) = super::overlong_coverage(streamed, actor) {
@@ -144,6 +147,9 @@ struct Sink<'a> {
     /// `--assistant`: the reply path is live. Off, an assistant record is
     /// classified and dropped exactly as before the flag existed.
     assistant: bool,
+    /// `Replies::ToHuman`: a user turn the read does not keep leaves a
+    /// [`Role::Boundary`], so the window of replies to a human line can close.
+    windowed: bool,
     rows: Vec<Row>,
     coverage: Vec<Coverage>,
     missing_ts: u64,
@@ -159,21 +165,47 @@ impl Sink<'_> {
 
     /// Attempt one newline-terminated line at byte `offset`. Only `Full`
     /// lines arrive here — the splitter trips longer ones into `Overlong`,
-    /// which the loop skips — so no cap check lives in this function.
+    /// which the loop hands to `unkept` — so no cap check lives in this
+    /// function.
     fn push_line(&mut self, line: &[u8], offset: u64) {
         // Not UTF-8 or not JSON is not a record — skipped silently, like the usage
-        // reader skips malformed lines. Only a line that COULD be a turn and is
-        // refused for a stated reason earns coverage.
+        // reader skips malformed lines, though a windowed read marks it: it may
+        // have been a user turn. Only a line that COULD be a turn and is refused
+        // for a stated reason earns coverage.
         let Ok(text) = str::from_utf8(line) else {
+            self.unkept(offset);
             return;
         };
         let Ok(value) = crate::json::parse(text) else {
+            self.unkept(offset);
             return;
         };
         match value.get_str("type") {
-            Some("user") => self.push_human(&value, offset),
+            Some("user") => self.push_user(&value, offset),
             Some("assistant") if self.assistant => self.push_assistant(&value, offset),
+            None => self.unkept(offset),
             _ => {}
+        }
+    }
+
+    /// A read for the replies to the human marks a user turn it does not keep,
+    /// so the window closes there; every other read leaves no trace.
+    fn unkept(&mut self, offset: u64) {
+        if self.windowed {
+            super::close_window(&mut self.rows, self.actor, self.file, self.source, offset);
+        }
+    }
+
+    /// One `type == "user"` record: a tool result is no turn at all; any other
+    /// that the human path does not keep closes the window.
+    fn push_user(&mut self, value: &crate::json::Value, offset: u64) {
+        if is_tool_result(value) {
+            return;
+        }
+        let before = self.rows.len();
+        self.push_human(value, offset);
+        if self.rows.len() == before {
+            self.unkept(offset);
         }
     }
 
@@ -274,6 +306,22 @@ impl Sink<'_> {
             generation: 0,
         });
     }
+}
+
+/// Whether a `user` record is a tool result, not a turn: array content whose
+/// every part is a `tool_result`. Any other array — text, an image, nothing —
+/// is a turn the human path cannot read, and the window closes on it.
+fn is_tool_result(value: &crate::json::Value) -> bool {
+    let Some(crate::json::Value::Arr(parts)) = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+    else {
+        return false;
+    };
+    !parts.is_empty()
+        && parts
+            .iter()
+            .all(|part| part.get_str("type") == Some("tool_result"))
 }
 
 /// Claude's own harness turns, by structured field where one exists.
@@ -603,5 +651,185 @@ mod tests {
         let (rows, _) = read_lines_with(&[&line], true);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].body.contains("synthetic reply"));
+    }
+
+    /// One windowed read of these lines, run through the window.
+    fn replies_to_human(lines: &[&str]) -> Vec<String> {
+        let mut bytes = lines.join("\n").into_bytes();
+        bytes.push(b'\n');
+        replies_to_human_bytes(&bytes)
+    }
+
+    fn replies_to_human_bytes(bytes: &[u8]) -> Vec<String> {
+        let mut splitter = super::Splitter::new();
+        splitter.feed(bytes);
+        let streamed = splitter
+            .finish()
+            .with_replies(crate::board::Replies::ToHuman);
+        let (rows, _) = super::read_stream(&streamed, ACTOR, FILE, crate::tool::ToolKind::Claude);
+        crate::board::window_labels(rows)
+    }
+
+    fn said(body: &str) -> String {
+        assistant(&format!(r#"[{{"type":"text","text":"{body}"}}]"#))
+    }
+
+    const TOOL_USE: &str = r#"[{"type":"tool_use","id":"t","name":"x","input":{}}]"#;
+    const TOOL_RESULT: &str = r#"[{"type":"tool_result","tool_use_id":"t","content":"ok"}]"#;
+
+    #[test]
+    fn a_reply_shows_only_while_the_last_user_turn_is_a_human_line() {
+        let lines = [
+            user(r#""typed""#),
+            said("one"),
+            user(r#""⟦ae:msg from lead⟧\nping""#),
+            said("to the agent"),
+            user(r#""typed again""#),
+            said("two"),
+            said("three"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            replies_to_human(&lines),
+            ["H:typed", "A:one", "H:typed again", "A:two", "A:three"]
+        );
+    }
+
+    #[test]
+    fn a_reply_before_any_user_turn_is_not_an_answer() {
+        assert!(replies_to_human(&[&said("unprompted")]).is_empty());
+    }
+
+    #[test]
+    fn a_tool_result_is_no_turn_and_the_window_stays_open() {
+        let lines = [
+            user(r#""typed""#),
+            assistant(TOOL_USE),
+            user(TOOL_RESULT),
+            said("done"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(replies_to_human(&lines), ["H:typed", "A:done"]);
+    }
+
+    #[test]
+    fn any_other_array_user_record_closes_the_window() {
+        for content in [
+            r#"[{"type":"text","text":"interrupted"}]"#,
+            r#"[{"type":"image","source":{}}]"#,
+            r#"[{"type":"tool_result","tool_use_id":"t"},{"type":"text","text":"x"}]"#,
+            "[]",
+        ] {
+            let lines = [
+                user(r#""typed""#),
+                said("kept"),
+                user(content),
+                said("dropped"),
+            ];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{content}");
+        }
+    }
+
+    #[test]
+    fn every_user_turn_the_human_path_drops_closes_the_window() {
+        let stamped = r#""timestamp":"2026-09-16T09:00:00.500Z""#;
+        for dropped in [
+            format!(
+                r#"{{"type":"user","isCompactSummary":true,{stamped},"message":{{"content":"summary"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","isMeta":true,{stamped},"message":{{"content":"<local-command-caveat>x"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","promptSource":"system",{stamped},"message":{{"content":"<task-notification>x"}}}}"#
+            ),
+            user(r#""[Request interrupted by user]""#),
+            user(r#""<system-reminder>only reminders</system-reminder>""#),
+            user(r#""⟦ae:ctx⟧\nsetup""#),
+            r#"{"type":"user","message":{"content":"no stamp"}}"#.to_owned(),
+            format!(r#"{{"type":"user",{stamped},"message":{{"content":7}}}}"#),
+            format!(r#"{{"type":"user",{stamped}}}"#),
+        ] {
+            let lines = [
+                user(r#""typed""#),
+                said("kept"),
+                dropped.clone(),
+                said("dropped"),
+            ];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{dropped}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_cannot_be_classified_closes_the_window_once() {
+        let mut bytes = Vec::new();
+        for piece in [
+            user(r#""typed""#),
+            said("kept"),
+            "not json".to_owned(),
+            "{".to_owned(),
+            r#"{"typo":"user"}"#.to_owned(),
+        ] {
+            bytes.extend_from_slice(piece.as_bytes());
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(b"\xff\xfe broken\n");
+        bytes.extend_from_slice(&vec![b'x'; crate::board::LINE_CAP + 1]);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(said("dropped").as_bytes());
+        bytes.push(b'\n');
+        assert_eq!(replies_to_human_bytes(&bytes), ["H:typed", "A:kept"]);
+        let mut splitter = super::Splitter::new();
+        splitter.feed(&bytes);
+        let streamed = splitter
+            .finish()
+            .with_replies(crate::board::Replies::ToHuman);
+        let (rows, _) = super::read_stream(&streamed, ACTOR, FILE, crate::tool::ToolKind::Claude);
+        let boundaries = rows
+            .iter()
+            .filter(|row| row.role == crate::board::Role::Boundary)
+            .count();
+        assert_eq!(boundaries, 1, "five unreadable lines in a row cost one row");
+    }
+
+    #[test]
+    fn a_boundary_between_two_replies_does_not_hide_the_second_human_answer() {
+        let lines = [
+            user(r#""first""#),
+            user(r#""⟦ae:msg from lead⟧\nping""#),
+            user(r#""second""#),
+            said("answer"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            replies_to_human(&lines),
+            ["H:first", "H:second", "A:answer"]
+        );
+    }
+
+    #[test]
+    fn off_and_all_reads_carry_no_boundary_and_keep_their_rows() {
+        let lines = [
+            user(r#""typed""#),
+            user(r#""⟦ae:msg from lead⟧\nping""#),
+            said("reply"),
+            "not json".to_owned(),
+            user(TOOL_RESULT),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let (all, _) = read_lines_with(&lines, true);
+        let bodies: Vec<&str> = all.iter().map(|row| row.body.as_str()).collect();
+        assert_eq!(bodies, ["typed", "reply"], "--all keeps today's rows");
+        let (off, _) = read_lines_with(&lines, false);
+        let bodies: Vec<&str> = off.iter().map(|row| row.body.as_str()).collect();
+        assert_eq!(bodies, ["typed"]);
+        for rows in [&all, &off] {
+            assert!(
+                rows.iter()
+                    .all(|row| row.role != crate::board::Role::Boundary)
+            );
+        }
     }
 }

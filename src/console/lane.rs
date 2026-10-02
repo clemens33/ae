@@ -34,7 +34,8 @@ pub struct Seat {
 pub enum Kind {
     /// A human turn from a seat's transcript; `generation` > 0 is a predecessor.
     Pane { seat: String, generation: u8 },
-    /// A model reply from a seat's transcript (`--all`).
+    /// A model reply from a seat's transcript: with `--all` every one, else
+    /// only an answer to a line the human typed in that seat's pane.
     Assistant { seat: String, generation: u8 },
     /// A chat-bridge message, from the journal, to whichever seat it names.
     Inbound { from: String, to: String },
@@ -178,6 +179,7 @@ pub fn fold(
         let kind = match row.role {
             Role::Human => Kind::Pane { seat, generation },
             Role::Assistant => Kind::Assistant { seat, generation },
+            Role::Boundary => continue,
         };
         items.push(item(kind, row.ts, &row.body));
     }

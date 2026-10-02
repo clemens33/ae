@@ -23,7 +23,7 @@ pub(crate) mod toggle;
 pub mod view;
 
 /// The usage text.
-pub const USAGE: &str = "Usage: ae console [session] [--follow] [--all]\n\n  session   the session to read (default: the session this pane belongs to)\n  --follow  keep printing what is new every 5 s until interrupted (Ctrl-C to stop)\n  --all     add the lead pair's assistant replies (off by default)\n";
+pub const USAGE: &str = "Usage: ae console [session] [--follow] [--all]\n\n  session   the session to read (default: the session this pane belongs to)\n  --follow  keep printing what is new every 5 s until interrupted (Ctrl-C to stop)\n  --all     show every assistant reply of the lead pair (default: only the replies to lines you typed in its pane)\n";
 
 /// A parsed `ae console` argv.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -306,7 +306,11 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         uuid: recorded_uuid(&dir),
         name,
         dir,
-        replies: if args.all { Replies::All } else { Replies::Off },
+        replies: if args.all {
+            Replies::All
+        } else {
+            Replies::ToHuman
+        },
         home: doors::home(),
         printed: view::Printed::default(),
         rows: Vec::new(),

@@ -1,0 +1,7 @@
+{${"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic human turn"}]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic reply"}]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"⟦ae:msg from lead⟧\nsynthetic peer turn"}]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic reply"}]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"reasoning","content":[{"type":"reasoning_text"}]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic human turn"}]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic reply"}]}}

@@ -35,6 +35,10 @@ pub enum Role {
     /// A model turn from the harness's own transcript, read only with
     /// `--assistant`: text parts joined, thinking and tool calls never read.
     Assistant,
+    /// A user turn the board does not keep — an ae-marked or plumbing turn,
+    /// a record that could not be classified. Only a read for [`Replies::ToHuman`]
+    /// emits one, and `answered` consumes it before any row reaches a caller.
+    Boundary,
 }
 
 /// Which of the model's replies a read keeps.
@@ -55,6 +59,12 @@ impl Replies {
     #[must_use]
     pub(crate) fn read(self) -> bool {
         self != Self::Off
+    }
+
+    /// Whether the readers also mark the user turns they do not keep.
+    #[must_use]
+    pub(crate) fn windowed(self) -> bool {
+        self == Self::ToHuman
     }
 }
 
@@ -140,6 +150,72 @@ fn passive_turn(tool: ToolKind, meta_dir: &Path, slot: &str) -> Option<String> {
     let prompt = crate::launch::initial_prompt_for(tool, meta_dir, slot);
     let (_, body) = prompt.split_once('\n')?;
     Some(body.to_owned())
+}
+
+/// THE window of replies to the human, run on one reader's rows in TRANSCRIPT
+/// ORDER before the [`hidden`] partition: a human row the board keeps opens it,
+/// a [`Role::Boundary`] or a human row [`hidden`] removes closes it, and an
+/// assistant row survives only while it is open. `open` is where the read
+/// begins — a follow tail carries the state it ended on — and the state it ends
+/// on comes back. Boundaries are consumed here; none reaches a caller.
+#[must_use]
+pub(crate) fn answered(rows: Vec<Row>, passive: Option<&str>, mut open: bool) -> (Vec<Row>, bool) {
+    let mut kept = Vec::with_capacity(rows.len());
+    for row in rows {
+        match row.role {
+            Role::Human => {
+                open = !hidden(&row, passive);
+                kept.push(row);
+            }
+            Role::Boundary => open = false,
+            Role::Assistant if open => kept.push(row),
+            Role::Assistant => {}
+        }
+    }
+    (kept, open)
+}
+
+/// Mark one user turn the read does not keep, for a windowed read. A boundary
+/// straight after a boundary closes nothing new and is not stored, so a
+/// transcript of junk lines costs one row.
+pub(crate) fn close_window(
+    rows: &mut Vec<Row>,
+    actor: &str,
+    file: &str,
+    source: ToolKind,
+    offset: u64,
+) {
+    if rows.last().is_some_and(|last| last.role == Role::Boundary) {
+        return;
+    }
+    rows.push(Row {
+        ts: 0,
+        actor: actor.to_owned(),
+        role: Role::Boundary,
+        body: String::new(),
+        source,
+        file: file.to_owned(),
+        offset,
+        generation: 0,
+    });
+}
+
+/// Test seam: one windowed read's rows run through the window, each as
+/// `H:`, `A:` or `B:` and its body, so a reader test names what survived.
+#[cfg(test)]
+pub(crate) fn window_labels(rows: Vec<Row>) -> Vec<String> {
+    answered(rows, None, false)
+        .0
+        .iter()
+        .map(|row| {
+            let tag = match row.role {
+                Role::Human => 'H',
+                Role::Assistant => 'A',
+                Role::Boundary => 'B',
+            };
+            format!("{tag}:{}", row.body)
+        })
+        .collect()
 }
 
 /// Count hidden rows into one [`Hidden`] per seat, first-encountered order.
@@ -317,6 +393,10 @@ pub struct Streamed {
     /// were read once on the first pass and are not followed. False until
     /// the caller binds it; only the agy follow arm ever does.
     pub(crate) assistant_read_once: bool,
+    /// [`Replies::ToHuman`]: the readers also emit a [`Role::Boundary`] for
+    /// every user turn they do not keep, so the window of replies to a human
+    /// line can close. False until bound; `Off` and `All` never see one.
+    pub(crate) windowed: bool,
 }
 
 impl Streamed {
@@ -338,9 +418,11 @@ impl Streamed {
     }
 
     /// Bind the reply mode to this read: any mode but [`Replies::Off`] lets
-    /// the readers emit the model's replies.
+    /// the readers emit the model's replies, and [`Replies::ToHuman`] also
+    /// has them mark the user turns they drop.
     #[must_use]
-    pub fn with_replies(self, replies: Replies) -> Self {
+    pub fn with_replies(mut self, replies: Replies) -> Self {
+        self.windowed = replies.windowed();
         self.with_assistant(replies.read())
     }
 
@@ -423,6 +505,7 @@ impl Splitter {
             assistant: false,
             assistant_rows_found: false,
             assistant_read_once: false,
+            windowed: false,
         }
     }
 
@@ -557,6 +640,9 @@ pub struct SeatSeed {
     /// The newest row timestamp this read observed, if it observed any row.
     /// The follow seeds its divider day from these, `--since` applied there.
     pub(crate) last_row_ts: Option<i64>,
+    /// A windowed read ended with the window of replies to the human OPEN:
+    /// the follow starts its next tail from this state.
+    pub(crate) window: bool,
 }
 
 /// One board: every row read plus every seat that could not be read fully.
@@ -799,7 +885,8 @@ fn observe_generation(
     // and `follow_seat` covers it after that. String dispatch, as `reader_for`
     // does: the adapter's own name, never a `ToolKind::` arm.
     if tool.adapter().name == "opencode" {
-        let (seat_rows, seat_coverage) = read_opencode(&actor, entry, tool, replies.read());
+        let (seat_rows, seat_coverage) =
+            read_opencode(&actor, entry, tool, replies == Replies::All);
         let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) =
             seat_rows.into_iter().partition(|row| !hidden(row, None));
         for row in &mut seat_rows {
@@ -821,8 +908,10 @@ fn observe_generation(
     // The agy transcript leg runs before the history READ (never before its
     // locate, so an invalid id still refuses exactly once): it reports
     // whether assistant rows were produced, and the history stream binds
-    // that verdict. With the flag off the leg never runs.
-    let (mut leg_rows, leg_coverage) = if replies.read() && tool.adapter().name == "agy" {
+    // that verdict. With the flag off the leg never runs, and a read for the
+    // replies to the human skips it: the transcript carries no human turn to
+    // attribute a reply to.
+    let (mut leg_rows, leg_coverage) = if replies == Replies::All && tool.adapter().name == "agy" {
         read_agy_transcript(&actor, entry, home, tool)
     } else {
         (Vec::new(), Vec::new())
@@ -850,6 +939,10 @@ fn observe_generation(
     let file = file_identity(&path, &metadata);
     let passive = passive_turn(tool, &session.path, &entry.slot);
     let (mut seat_rows, mut seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
+    let mut window = false;
+    if streamed.windowed {
+        (seat_rows, window) = answered(seat_rows, passive.as_deref(), false);
+    }
     seat_rows.extend(leg_rows);
     seat_coverage.extend(leg_coverage);
     let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) = seat_rows
@@ -859,7 +952,7 @@ fn observe_generation(
         row.generation = generation;
     }
     if generation == 0 {
-        seeds.push(seed(&actor, &metadata, &streamed, tool, &seat_rows));
+        seeds.push(seed(&actor, &metadata, &streamed, tool, &seat_rows, window));
     }
     rows.append(&mut seat_rows);
     for item in seat_coverage {
@@ -1211,16 +1304,20 @@ fn follow_seat(
     // polls tail history only. Store EXISTENCE (not a row count — the poll
     // reads nothing) decides the steady line; the reader's wins-rule keeps
     // it singular, and an empty store's first pass already said "no records".
-    let read_once = agy_read_once(replies.read(), tool.adapter().name == "agy", || {
-        matches!(
-            locate_agy_transcript(
-                tool,
-                home,
-                entry.harness_session.as_deref().unwrap_or_default()
-            ),
-            Ok(Some(_))
-        )
-    });
+    let read_once = agy_read_once(
+        replies == Replies::All,
+        tool.adapter().name == "agy",
+        || {
+            matches!(
+                locate_agy_transcript(
+                    tool,
+                    home,
+                    entry.harness_session.as_deref().unwrap_or_default()
+                ),
+                Ok(Some(_))
+            )
+        },
+    );
     let observed = follow::Located::of(&metadata);
     let streamed = match follow.plan(&actor, &observed) {
         follow::Plan::Hold => None,
@@ -1492,7 +1589,7 @@ fn render_batch_json(observation: &Observation) -> String {
     }
     for row in &observation.rows {
         let role = match row.role {
-            Role::Human => "human",
+            Role::Human | Role::Boundary => "human",
             Role::Assistant => "assistant",
         };
         let line = Value::obj([
@@ -1545,6 +1642,7 @@ fn seed(
     streamed: &Streamed,
     tool: ToolKind,
     seat_rows: &[Row],
+    window: bool,
 ) -> SeatSeed {
     SeatSeed {
         actor: actor.to_owned(),
@@ -1552,6 +1650,7 @@ fn seed(
         mtime: metadata.modified().ok(),
         committed: hold_at(streamed, tool).unwrap_or(streamed.committed),
         last_row_ts: seat_rows.iter().map(|row| row.ts).max(),
+        window,
     }
 }
 
@@ -2383,5 +2482,209 @@ mod tests {
             assert!(usage.contains("--lines is text-only"), "{usage}");
         }
         assert!(super::parse(&words(&["--lines", "--json"])).is_err());
+    }
+
+    fn turn(role: Role, body: &str) -> Row {
+        let mut turn = row(0, "f", 0, body);
+        turn.role = role;
+        turn
+    }
+
+    /// What `answered` kept (bodies, in order) and the state it ended on.
+    fn answer(turns: &[(Role, &str)], passive: Option<&str>, open: bool) -> (Vec<String>, bool) {
+        let rows = turns.iter().map(|(role, body)| turn(*role, body)).collect();
+        let (kept, end) = super::answered(rows, passive, open);
+        (kept.into_iter().map(|row| row.body).collect(), end)
+    }
+
+    #[test]
+    fn a_reply_survives_only_while_a_kept_human_row_is_the_last_turn() {
+        use Role::{Assistant as A, Boundary as B, Human as H};
+        let none: Vec<String> = Vec::new();
+        assert_eq!(answer(&[(A, "x")], None, false), (none.clone(), false));
+        assert_eq!(answer(&[], None, false), (none.clone(), false));
+        assert_eq!(answer(&[], None, true), (none, true), "the state carries");
+        assert_eq!(
+            answer(&[(A, "x")], None, true),
+            (vec!["x".to_owned()], true)
+        );
+        assert_eq!(
+            answer(&[(H, "h"), (A, "x"), (B, ""), (A, "y")], None, false),
+            (vec!["h".to_owned(), "x".to_owned()], false)
+        );
+        assert_eq!(
+            answer(&[(B, ""), (H, "h"), (A, "x"), (A, "y")], None, true),
+            (vec!["h".to_owned(), "x".to_owned(), "y".to_owned()], true)
+        );
+        assert_eq!(
+            answer(&[(A, "x"), (B, ""), (A, "y")], None, true),
+            (vec!["x".to_owned()], false),
+            "a carried window closes on the first boundary"
+        );
+    }
+
+    #[test]
+    fn a_human_row_the_board_hides_closes_the_window_and_stays_for_the_count() {
+        use Role::{Assistant as A, Human as H};
+        let marked = format!("{}\nping", crate::provenance::peer("lead"));
+        let marked = marked.as_str();
+        let (kept, end) = answer(
+            &[(H, "typed"), (A, "one"), (H, marked), (A, "two")],
+            None,
+            false,
+        );
+        assert_eq!(
+            kept,
+            ["typed", "one", marked],
+            "the hidden row goes on to be counted"
+        );
+        assert!(!end);
+        let launch = "launch words";
+        let (kept, end) = answer(&[(H, launch), (A, "to the launch")], Some(launch), false);
+        assert_eq!(kept, [launch], "a passive launch turn is not a human line");
+        assert!(!end);
+        let (kept, end) = answer(&[(H, "launch words too"), (A, "x")], Some(launch), false);
+        assert_eq!(kept, ["launch words too", "x"]);
+        assert!(end);
+    }
+
+    #[test]
+    fn a_boundary_is_stored_once_per_run_and_never_after_a_stored_boundary() {
+        let mut rows = vec![row(1, "f", 0, "h")];
+        for offset in [10, 20, 30] {
+            super::close_window(&mut rows, "s:seat", "f", ToolKind::Claude, offset);
+        }
+        assert_eq!(rows.len(), 2, "one human row and one boundary");
+        assert_eq!(rows[1].role, Role::Boundary);
+        assert_eq!(rows[1].offset, 10, "the first one stands");
+        rows.push(row(2, "f", 40, "h2"));
+        super::close_window(&mut rows, "s:seat", "f", ToolKind::Claude, 50);
+        assert_eq!(rows.len(), 4);
+    }
+
+    const WINDOW_ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
+    const WINDOW_PRIOR: &str = "0199c0de-1234-4890-abcd-ef0123456790";
+
+    fn claude_line(role: &str, body: &str) -> String {
+        let mut escaped = String::new();
+        crate::json::escape_into(body, &mut escaped);
+        if role == "user" {
+            format!(
+                r#"{{"type":"user","timestamp":"2026-09-16T09:00:00.500Z","message":{{"role":"user","content":"{escaped}"}}}}"#
+            )
+        } else {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-09-16T09:00:00.500Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{escaped}"}}]}}}}"#
+            )
+        }
+    }
+
+    /// A one-seat session `s` whose current Claude conversation holds
+    /// `current` and whose recorded predecessor holds `prior`.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants its own scratch session"
+    )]
+    fn windowed_rig(
+        tag: &str,
+        current: &[String],
+        prior: &[String],
+    ) -> (PathBuf, Vec<crate::usage::SessionInput>) {
+        let root =
+            std::env::temp_dir().join(format!("ae-board-window-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let store = root.join("claude");
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\nseat.main=lead\nagent_bin.main=claude\nharness_session.main={WINDOW_ID}\nharness_session_prior.main=claude:{WINDOW_PRIOR}\nconfig_home.main={}\n",
+                store.display()
+            ),
+        )
+        .expect("meta");
+        let project = store.join("projects").join("work");
+        std::fs::create_dir_all(&project).expect("project dir");
+        for (id, lines) in [(WINDOW_ID, current), (WINDOW_PRIOR, prior)] {
+            std::fs::write(project.join(format!("{id}.jsonl")), lines.join("\n") + "\n")
+                .expect("transcript");
+        }
+        let sessions = vec![crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        (root, sessions)
+    }
+
+    fn windowed_bodies(observation: &super::Observation) -> Vec<(u8, Role, &str)> {
+        observation
+            .rows
+            .iter()
+            .map(|row| (row.generation, row.role, row.body.as_str()))
+            .collect()
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: removes its own scratch session"
+    )]
+    fn a_seat_read_for_the_human_keeps_only_replies_to_human_lines_in_every_generation() {
+        let wrapped = include_str!("../tests/fixtures/board/claude-wrapped-ae-turn.txt");
+        let current = [
+            claude_line("user", "typed"),
+            claude_line("assistant", "answer"),
+            claude_line(
+                "user",
+                &format!("{}\nping", crate::provenance::peer("worker")),
+            ),
+            claude_line("assistant", "to the worker"),
+            claude_line("user", wrapped),
+            claude_line("assistant", "to the wrapped paste"),
+            claude_line("user", "typed again"),
+            claude_line("assistant", "answer again"),
+        ];
+        let prior = [
+            claude_line("assistant", "before any turn"),
+            claude_line("user", "old words"),
+            claude_line("assistant", "old answer"),
+        ];
+        let (root, sessions) = windowed_rig("seat", &current, &prior);
+        let inputs = |replies| super::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            replies,
+        };
+        let seen = super::observe(&inputs(super::Replies::ToHuman), None);
+        assert!(seen.coverage.is_empty(), "{:?}", seen.coverage);
+        assert_eq!(
+            windowed_bodies(&seen),
+            [
+                (0, Role::Human, "typed"),
+                (0, Role::Assistant, "answer"),
+                (0, Role::Human, "typed again"),
+                (0, Role::Assistant, "answer again"),
+                (1, Role::Human, "old words"),
+                (1, Role::Assistant, "old answer"),
+            ]
+        );
+        assert!(seen.rows.iter().all(|row| row.role != Role::Boundary));
+        assert_eq!(
+            seen.hidden.len(),
+            1,
+            "the wrapped paste still counts as hidden"
+        );
+        let all = super::observe(&inputs(super::Replies::All), None);
+        let off = super::observe(&inputs(super::Replies::Off), None);
+        assert_eq!(
+            all.rows
+                .iter()
+                .filter(|row| row.role == Role::Assistant)
+                .count(),
+            6
+        );
+        assert!(off.rows.iter().all(|row| row.role == Role::Human));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

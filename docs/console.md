@@ -10,6 +10,16 @@ terminal renderer; only its [input](#input) writes an event.
 - **Pane turns** of both lead-pair seats, from their transcripts, as
   `<seat> pane (transcript)` (` · prior n` for a recorded predecessor).
   Workers are not mirrored; an ae-injected turn never renders as one.
+- **Replies to your pane lines**: the lead pair's assistant text, as
+  `<seat> assistant (transcript)`, only while it answers a line you typed in
+  that pane: from your line up to the next user turn of any kind (an agent
+  message, a console ask, a watchdog challenge, launch context), so an answer
+  to an agent never shows. Claude, Codex, Muse and Grok seats give replies;
+  OpenCode and Antigravity seats give none by default (an OpenCode export
+  carries no proven order, Antigravity keeps prompts and replies in separate
+  stores). A transcript line the reader cannot classify closes the window, and
+  a Claude turn that carries an image hides its reply. Text parts only; tool
+  calls and thinking never show.
 - **Chat-bridge asks and replies** (`telegram:` / `discord:`), every thread
   with its target named. A reply is the journal's 600-character summary,
   tagged `preview (600-char summary)`.
@@ -28,7 +38,8 @@ terminal renderer; only its [input](#input) writes an event.
   `--follow` prints `-- closed: …` when one stops standing.
 - **Coverage rows** for anything it cannot read: a torn or absent transcript,
   an unsupported harness, an unreadable journal, skipped journal lines.
-- `--all` adds the lead pair's assistant replies.
+- `--all` shows every assistant reply of the lead pair, answers to agents
+  included, and reads OpenCode and Antigravity replies too.
 
 ## Keys
 

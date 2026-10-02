@@ -45,14 +45,17 @@ pub fn read_stream(
         file,
         source,
         assistant: streamed.assistant,
+        windowed: streamed.windowed,
         run: None,
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
     };
     for line in &streamed.lines {
-        if let LineBody::Full(bytes) = &line.body {
-            sink.push_line(bytes, line.offset);
+        match &line.body {
+            LineBody::Full(bytes) => sink.push_line(bytes, line.offset),
+            // Too long to be a record: it may have been a user turn.
+            LineBody::Overlong(_) => sink.unkept(line.offset),
         }
     }
     // EOF ends the last turn: the one-shot prints the open run as-is. The
@@ -83,6 +86,9 @@ struct Sink<'a> {
     /// `--assistant`: the run path is live. Off, an agent chunk is
     /// classified and dropped exactly as before the flag existed.
     assistant: bool,
+    /// `Replies::ToHuman`: a user turn the read does not keep leaves a
+    /// [`Role::Boundary`], so the window of replies to a human line can close.
+    windowed: bool,
     /// The turn's open assistant run, joined across chunk lines.
     run: Option<Run>,
     rows: Vec<Row>,
@@ -98,18 +104,35 @@ impl Sink<'_> {
         });
     }
 
+    /// A read for the replies to the human marks a user turn it does not keep,
+    /// so the window closes there; every other read leaves no trace.
+    fn unkept(&mut self, offset: u64) {
+        if self.windowed {
+            super::close_window(&mut self.rows, self.actor, self.file, self.source, offset);
+        }
+    }
+
     /// Attempt one newline-terminated `Full` line at byte `offset`: the loop
-    /// skips `Overlong` lines, so no cap check lives in this function.
+    /// routes `Overlong` lines to `unkept`, so no cap check lives here.
     fn push_line(&mut self, line: &[u8], offset: u64) {
-        let Some((kind, value)) = split_line(line) else {
-            return;
+        let (kind, value) = match split_line(line) {
+            Ok(split) => split,
+            Err(Skip::Junk) => {
+                self.unkept(offset);
+                return;
+            }
+            Err(Skip::Foreign) => return,
         };
         match kind {
             // Every user chunk is a turn boundary, even one the human path
             // then skips as non-text: the run it ends still closes here.
             Turn::Human => {
                 self.flush_run();
+                let before = self.rows.len();
                 self.push_human(&value, offset);
+                if self.rows.len() == before {
+                    self.unkept(offset);
+                }
             }
             Turn::Agent if self.assistant => self.push_agent(&value, offset),
             Turn::Close => self.flush_run(),
@@ -240,19 +263,33 @@ enum Turn {
     Other,
 }
 
-/// Parse one line into its turn role plus the parsed record. `None` is not a
-/// `session/update` record at all — skipped silently by every consumer.
-fn split_line(line: &[u8]) -> Option<(Turn, crate::json::Value)> {
-    let text = str::from_utf8(line).ok()?;
-    let value = crate::json::parse(text).ok()?;
-    if value.get_str("method") != Some("session/update") {
-        return None;
+/// Why a line is not a `session/update` record.
+enum Skip {
+    /// A record of another method: nothing a turn can hide in.
+    Foreign,
+    /// Not UTF-8, not JSON, or a `session/update` too broken to classify: it
+    /// may have been a user turn.
+    Junk,
+}
+
+/// Parse one line into its turn role plus the parsed record, or say why it is
+/// not a `session/update` record.
+fn split_line(line: &[u8]) -> Result<(Turn, crate::json::Value), Skip> {
+    let text = str::from_utf8(line).map_err(|_| Skip::Junk)?;
+    let value = crate::json::parse(text).map_err(|_| Skip::Junk)?;
+    match value.get_str("method") {
+        Some("session/update") => {}
+        Some(_) => return Err(Skip::Foreign),
+        None => return Err(Skip::Junk),
     }
-    let update = value.get("params")?.get("update")?;
-    let kind = match update.get_str("sessionUpdate") {
-        Some("user_message_chunk") => Turn::Human,
-        Some("turn_completed") => Turn::Close,
-        Some("agent_message_chunk") => {
+    let update = value
+        .get("params")
+        .and_then(|params| params.get("update"))
+        .ok_or(Skip::Junk)?;
+    let kind = match update.get_str("sessionUpdate").ok_or(Skip::Junk)? {
+        "user_message_chunk" => Turn::Human,
+        "turn_completed" => Turn::Close,
+        "agent_message_chunk" => {
             let text_chunk = update.get("content").is_some_and(|content| {
                 content.get_str("type") == Some("text") && content.get_str("text").is_some()
             });
@@ -260,7 +297,7 @@ fn split_line(line: &[u8]) -> Option<(Turn, crate::json::Value)> {
         }
         _ => Turn::Other,
     };
-    Some((kind, value))
+    Ok((kind, value))
 }
 
 /// One turn's in-progress assistant run: the FIRST chunk's identity plus the
@@ -285,10 +322,10 @@ pub fn open_run_start(streamed: &Streamed) -> Option<u64> {
             continue;
         };
         match split_line(bytes).map(|(kind, _)| kind) {
-            Some(Turn::Agent) => {
+            Ok(Turn::Agent) => {
                 open.get_or_insert(line.offset);
             }
-            Some(Turn::Human | Turn::Close) => open = None,
+            Ok(Turn::Human | Turn::Close) => open = None,
             _ => {}
         }
     }
@@ -565,5 +602,211 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].body, "ac");
         assert_eq!(coverage[0].reason, "1 record without a timestamp");
+    }
+
+    fn windowed_rows(bytes: &[u8]) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
+        let mut splitter = super::Splitter::new();
+        splitter.feed(bytes);
+        let streamed = splitter
+            .finish()
+            .with_replies(crate::board::Replies::ToHuman);
+        super::read_stream(&streamed, ACTOR, FILE, crate::tool::ToolKind::Grok)
+    }
+
+    /// One windowed read of these lines, run through the window.
+    fn replies_to_human(lines: &[&str]) -> Vec<String> {
+        let mut bytes = lines.join("\n").into_bytes();
+        bytes.push(b'\n');
+        crate::board::window_labels(windowed_rows(&bytes).0)
+    }
+
+    fn said(text: &str) -> String {
+        agent(text, &stamped())
+    }
+
+    #[test]
+    fn a_reply_shows_only_while_the_last_user_turn_is_a_human_line() {
+        let lines = [
+            user("typed"),
+            said("one"),
+            bare("turn_completed"),
+            user("⟦ae:msg from lead⟧\nping"),
+            said("to the agent"),
+            bare("turn_completed"),
+            user("typed again"),
+            said("two"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            replies_to_human(&lines),
+            ["H:typed", "A:one", "H:typed again", "A:two"]
+        );
+    }
+
+    #[test]
+    fn a_completed_turn_is_no_user_turn_so_the_window_stays_open() {
+        let lines = [
+            user("typed"),
+            said("one"),
+            bare("turn_completed"),
+            said("two"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(replies_to_human(&lines), ["H:typed", "A:one", "A:two"]);
+    }
+
+    #[test]
+    fn a_user_chunk_the_human_path_drops_closes_the_window() {
+        let image = format!(
+            r#"{{"timestamp":{SECS},"method":"session/update","params":{{"update":{{"sessionUpdate":"user_message_chunk","content":{{"type":"image"}}}}}}}}"#
+        );
+        let unstamped = rec("user_message_chunk", "no stamp", "");
+        for dropped in [image, unstamped, user(""), user("⟦ae:ctx⟧\nsetup")] {
+            let lines = [
+                user("typed"),
+                said("kept"),
+                dropped.clone(),
+                said("dropped"),
+            ];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{dropped}");
+        }
+    }
+
+    #[test]
+    fn a_record_of_another_method_is_no_turn() {
+        let lines = [
+            user("typed"),
+            r#"{"method":"session/request_permission","params":{}}"#.to_owned(),
+            said("done"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(replies_to_human(&lines), ["H:typed", "A:done"]);
+    }
+
+    #[test]
+    fn an_unreadable_line_inside_a_run_drops_the_whole_run() {
+        let lines = [
+            user("typed"),
+            said("before "),
+            "not json".to_owned(),
+            said("after"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(replies_to_human(&lines), ["H:typed"]);
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_classified_closes_the_window_once() {
+        let mut bytes = Vec::new();
+        for piece in [
+            user("typed"),
+            said("kept"),
+            bare("turn_completed"),
+            "not json".to_owned(),
+            r#"{"timestamp":1}"#.to_owned(),
+            r#"{"method":"session/update"}"#.to_owned(),
+        ] {
+            bytes.extend_from_slice(piece.as_bytes());
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(b"\xff\xfe broken\n");
+        bytes.extend_from_slice(&vec![b'x'; crate::board::LINE_CAP + 1]);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(said("dropped").as_bytes());
+        bytes.push(b'\n');
+        assert_eq!(
+            crate::board::window_labels(windowed_rows(&bytes).0),
+            ["H:typed", "A:kept"]
+        );
+        let boundaries = windowed_rows(&bytes)
+            .0
+            .iter()
+            .filter(|row| row.role == crate::board::Role::Boundary)
+            .count();
+        assert_eq!(boundaries, 1, "unreadable records in a row cost one row");
+    }
+
+    #[test]
+    fn off_and_all_reads_carry_no_boundary_and_keep_their_rows() {
+        let lines = [
+            user("typed"),
+            user("⟦ae:msg from lead⟧\nping"),
+            said("reply"),
+            "not json".to_owned(),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let (all, _) = read_lines_with(&lines, true);
+        let bodies: Vec<&str> = all.iter().map(|row| row.body.as_str()).collect();
+        assert_eq!(bodies, ["typed", "reply"], "--all keeps today's rows");
+        let (off, _) = read_lines_with(&lines, false);
+        assert_eq!(off.len(), 1);
+        for rows in [&all, &off] {
+            assert!(
+                rows.iter()
+                    .all(|row| row.role != crate::board::Role::Boundary)
+            );
+        }
+    }
+
+    /// Read these bytes with every reply on, for the controls that `--all`
+    /// and the board keep their rows.
+    fn all_rows(bytes: &[u8]) -> Vec<crate::board::Row> {
+        let mut splitter = super::Splitter::new();
+        splitter.feed(bytes);
+        let streamed = splitter.finish().with_replies(crate::board::Replies::All);
+        super::read_stream(&streamed, ACTOR, FILE, crate::tool::ToolKind::Grok).0
+    }
+
+    #[test]
+    fn each_record_shape_that_cannot_be_classified_closes_the_window_by_itself() {
+        let session = |params: &str| {
+            format!(r#"{{"timestamp":{SECS},"method":"session/update","params":{params}}}"#)
+                .into_bytes()
+        };
+        let mut shapes: Vec<Vec<u8>> = vec![
+            b"not json".to_vec(),
+            b"\xff\xfe broken".to_vec(),
+            vec![b'x'; crate::board::LINE_CAP + 1],
+            br#"{"timestamp":1}"#.to_vec(),
+            br#"{"method":"session/update"}"#.to_vec(),
+        ];
+        for params in [
+            "null",
+            "{}",
+            r#"{"update":null}"#,
+            r#"{"update":"x"}"#,
+            r#"{"update":{}}"#,
+            r#"{"update":{"sessionUpdate":null}}"#,
+            r#"{"update":{"sessionUpdate":7}}"#,
+        ] {
+            shapes.push(session(params));
+        }
+        for shape in shapes {
+            let mut bytes = Vec::new();
+            for piece in [
+                user("typed").into_bytes(),
+                said("kept").into_bytes(),
+                bare("turn_completed").into_bytes(),
+                shape.clone(),
+                said("dropped").into_bytes(),
+            ] {
+                bytes.extend_from_slice(&piece);
+                bytes.push(b'\n');
+            }
+            let shown = String::from_utf8_lossy(&shape[..shape.len().min(60)]).into_owned();
+            assert_eq!(
+                crate::board::window_labels(windowed_rows(&bytes).0),
+                ["H:typed", "A:kept"],
+                "{shown}"
+            );
+            let all = all_rows(&bytes);
+            let bodies: Vec<&str> = all.iter().map(|row| row.body.as_str()).collect();
+            assert_eq!(bodies, ["typed", "kept", "dropped"], "--all skips: {shown}");
+            assert!(
+                all.iter()
+                    .all(|row| row.role != crate::board::Role::Boundary)
+            );
+        }
     }
 }
