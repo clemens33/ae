@@ -290,13 +290,16 @@ fn dress(name: &str, seats: &[Seat]) -> view::Style {
             .and_then(|server| transport::observe_zone(server, name))
     };
     let zone = view::Style::wanted(tty, look).then(zone).flatten();
-    let main = seats.iter().find(|seat| seat.slot == "main");
-    view::Style::resolve(
-        tty,
-        look,
-        zone.as_deref(),
-        main.map_or("", |seat| seat.name.as_str()),
-    )
+    view::Style::resolve(tty, look, zone.as_deref(), lead_name(seats))
+}
+
+/// The name of the seat in the `main` slot, whose rows wear the lead hue; empty
+/// when no seat holds it.
+fn lead_name(seats: &[Seat]) -> &str {
+    seats
+        .iter()
+        .find(|seat| seat.slot == "main")
+        .map_or("", |seat| seat.name.as_str())
 }
 
 /// `ae chat [session] [--follow] [--all]`.
@@ -852,5 +855,18 @@ pub(super) mod tests {
             let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
             assert_eq!(super::parse(&words), want, "{words:?}");
         }
+    }
+
+    #[test]
+    fn the_lead_hue_belongs_to_the_main_slot_whatever_order_the_seats_come_in() {
+        let seat = |slot: &str, name: &str| super::Seat {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: None,
+        };
+        let pair = [seat("worker.0", "colead"), seat("main", "lead")];
+        assert_eq!(super::lead_name(&pair), "lead");
+        assert_eq!(super::lead_name(&pair[..1]), "");
+        assert_eq!(super::lead_name(&[]), "");
     }
 }

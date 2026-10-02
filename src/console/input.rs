@@ -970,7 +970,7 @@ pub fn paint(
 mod tests {
     use super::{
         CAP, Command, Composer, Draft, Effect, Entered, Input, Key, Keys, Outcome, Reading, Screen,
-        Seen, Size, View, anchor_up, command, command_to, outcome_line, paint, window,
+        Seen, Size, View, anchor_up, command, command_to, draw, outcome_line, paint, window,
     };
     use std::time::{Duration, Instant};
 
@@ -1895,6 +1895,29 @@ mod tests {
         assert_eq!(
             paint(&mut plain, "", &line, None, big, None),
             "\r\x1b[Krefused: no\n"
+        );
+    }
+
+    #[test]
+    fn only_the_first_row_wears_the_prompt_hue_even_when_a_later_row_starts_with_it() {
+        use crate::console::view::Style;
+        let style = Style::resolve(true, None, None, "lead");
+        let view = View {
+            rows: vec!["to lead> hi".to_owned(), "to lead> again".to_owned()],
+            cursor_row: 1,
+            before: "to lead> ag".to_owned(),
+            anchor: "to lead> ".to_owned(),
+        };
+        let drawn = draw(&view, &style);
+        let tone = hue(crate::theme::Palette::DARCULA.title);
+        assert_eq!(drawn.matches("\x1b[38;2;").count(), 1, "{drawn:?}");
+        assert!(
+            drawn.contains(&format!("\r{tone}to lead> \x1b[0mhi\r\n")),
+            "the first row wears the hue: {drawn:?}"
+        );
+        assert!(
+            drawn.contains("\r\nto lead> ag\x1b7ain\x1b8"),
+            "a later row stays plain, the cursor mark where it was: {drawn:?}"
         );
     }
 }
