@@ -14,6 +14,7 @@ mod brief;
 mod brief_retry;
 mod callerident;
 mod capture;
+mod chat_polish_spec;
 mod cli;
 mod compact;
 mod console;
