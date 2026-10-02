@@ -141,6 +141,11 @@ impl Term {
             Some(Ok(())) => Reading::Owner,
             Some(Err(why)) => Reading::NotOwner(why),
         };
+        self.take(console, reading)
+    }
+
+    /// Take a fresh ownership `reading`; a promotion also restores the kept draft.
+    fn take(&mut self, console: &Console, reading: Reading) -> Vec<Effect> {
         let was = self.input.line().is_some();
         let mut effects = self.input.tick(reading, Instant::now());
         if !was && self.input.line().is_some() {
@@ -219,7 +224,7 @@ impl Term {
 
 #[cfg(test)]
 mod tests {
-    use super::{Got, Input, Reads, Seat, Term, pair_of, reader};
+    use super::{Effect, Got, Input, Reading, Reads, Seat, Term, pair_of, reader};
     use crate::console::tests::{ID, Rig};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     use std::time::{Duration, Instant};
@@ -295,6 +300,50 @@ mod tests {
         };
         assert_eq!(term.tick(&console), [], "tmux unanswered is Unknown");
         assert_eq!(term.line(), None);
+    }
+
+    #[test]
+    fn only_a_promotion_restores_the_kept_draft_and_each_promotion_restores_it_again() {
+        let rig = Rig::new("term-promote");
+        let meta =
+            format!("session_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n");
+        std::fs::write(rig.0.join("s/meta"), meta).unwrap();
+        let console = rig.console();
+        crate::store::open(&console.dir)
+            .publish_console_draft(b"kept")
+            .unwrap();
+        let pair = console.seats().and_then(pair_of).unwrap();
+        let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
+        let mut term = Term {
+            input,
+            pair,
+            reads: Reads(None),
+            server: None,
+            me: None,
+        };
+        let said =
+            "Kept line, maybe already sent: check lead, colead panes (prefix H) before Enter";
+        let banner = Effect::Print(said.to_owned());
+        assert_eq!(
+            term.take(&console, Reading::Owner),
+            [Effect::Paste(true), banner.clone()]
+        );
+        assert_eq!(term.line().as_deref(), Some("to lead> kept"));
+        assert_eq!(
+            term.take(&console, Reading::Owner),
+            [],
+            "an owner stays one"
+        );
+        assert_eq!(
+            term.line().as_deref(),
+            Some("to lead> kept"),
+            "restored once"
+        );
+        let _ = term.take(&console, Reading::NotOwner("owned elsewhere".to_owned()));
+        let accepting = Effect::Print("accepting input".to_owned());
+        let again = [Effect::Paste(true), accepting, banner];
+        assert_eq!(term.take(&console, Reading::Owner), again);
+        assert_eq!(term.line().as_deref(), Some("to lead> kept"));
     }
 
     #[test]
