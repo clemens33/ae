@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.13] - 2026-10-02
+- Add the console Style: palette, bar, zone and status hues as one value
+- Pin terminal chat look and plain output
+- Pin styled chat outcomes and input paths
+- Dress the chat on a terminal: speaker hues, left bars, local-zone stamps, status tones
+- Keep the chat pane rigs on the plain look
+- Pin styled composer cells in a narrow pane
+- Pin the lead seat pick and the first-row prompt hue the mutation run found loose
+- Pin exact configured chat speaker colours
+
 ## [v2026.10.12] - 2026-10-02
 - Pin Claude mid-turn reply visibility
 - **board**: Read a line typed mid-turn from its absorbed queue record
