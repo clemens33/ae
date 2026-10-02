@@ -128,6 +128,7 @@ use std::time::Duration;
 struct Rig {
     scratch: super::cli::OwnedScratch,
     bin: PathBuf,
+    stdin_off: bool,
 }
 
 fn quote(text: &str) -> String {
@@ -196,10 +197,53 @@ else { exit 1; }
         )
         .expect("look answer");
         fs::write(root.join("zone"), zone).expect("zone answer");
-        Self { scratch, bin }
+        Self {
+            scratch,
+            bin,
+            stdin_off: false,
+        }
     }
 
     fn run(&self, tty: bool) -> String {
+        self.run_mode(tty, false, false)
+    }
+
+    fn run_input(&self) -> String {
+        self.run_mode(true, true, false)
+    }
+
+    fn run_ask(&self) -> String {
+        self.run_mode(true, true, true)
+    }
+
+    fn type_after_prompt(
+        &self,
+        child: &mut super::cli::OwnedChild,
+    ) -> std::thread::JoinHandle<std::process::ChildStdin> {
+        let mut stdin = child.stdin.take().expect("PTY input pipe");
+        let record = self.scratch.path().join("record");
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(8);
+            loop {
+                if fs::read_to_string(&record)
+                    .unwrap_or_default()
+                    .contains("to lead>")
+                {
+                    std::io::Write::write_all(&mut stdin, b"fixture-typed-ask\n")
+                        .expect("type after ownership prompt");
+                    // The join packet keeps the pipe open until bounded() ends.
+                    return stdin;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "prompt before typed ask"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })
+    }
+
+    fn run_mode(&self, tty: bool, input: bool, asking: bool) -> String {
         let root = self.scratch.path();
         let mut runner = if tty {
             super::cli::helper_by_name("script")
@@ -207,7 +251,20 @@ else { exit 1; }
             super::cli::ae()
         };
         if tty {
-            let command = format!("exec {} chat one", quote(env!("CARGO_BIN_EXE_ae")));
+            let command = if input {
+                format!(
+                    "exec /usr/bin/perl {} {} chat one --follow --input",
+                    quote(&root.join("supervise.pl").to_string_lossy()),
+                    quote(env!("CARGO_BIN_EXE_ae"))
+                )
+            } else if self.stdin_off {
+                format!(
+                    "exec {} chat one --input </dev/null",
+                    quote(env!("CARGO_BIN_EXE_ae"))
+                )
+            } else {
+                format!("exec {} chat one", quote(env!("CARGO_BIN_EXE_ae")))
+            };
             if cfg!(target_os = "macos") {
                 runner
                     .args(["-F", "-q"])
@@ -231,6 +288,10 @@ else { exit 1; }
             .env("AE_TMUX_SERVER_KIND", "socket")
             .env("AE_TMUX_SERVER", root.join("no-server/tmux.sock"))
             .env("LOOK_CALLS", root.join("calls"))
+            .env("LOOK_RECORD", root.join("record"))
+            .env("LOOK_SOCK", root.join("no-server/tmux.sock"))
+            .env("LOOK_ASK", if asking { "on" } else { "off" })
+            .env("AE_SEND_DEFER_SEC", "0")
             .env(
                 "LOOK_ANSWER",
                 fs::read_to_string(root.join("look")).expect("look"),
@@ -245,9 +306,16 @@ else { exit 1; }
             .stdin(if tty { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let child = runner.spawn().expect("chat fixture starts");
+        if input {
+            runner.env("TMUX_PANE", "%99");
+        }
+        let mut child = runner.spawn().expect("chat fixture starts");
+        let typer = asking.then(|| self.type_after_prompt(&mut child));
         let output = super::cli::bounded(child, Duration::from_secs(20))
-            .expect("one-shot exits within 20 s");
+            .expect("chat fixture exits within 20 s");
+        if let Some(typer) = typer {
+            let _stdin = typer.join().expect("readiness-gated typer finishes");
+        }
         assert!(
             output.status.success(),
             "chat exit: {:?}\n{}\n{}",
@@ -424,4 +492,388 @@ fn chat_look_cli_invalid_zone_keeps_utc_and_never_prints_answer() {
 fn rgb(hex: &str) -> [u8; 3] {
     let channel = |start| u8::from_str_radix(&hex[start..start + 2], 16).expect("palette RGB");
     [channel(1), channel(3), channel(5)]
+}
+
+fn styled_printed(palette: ae::theme::Palette) -> Printed {
+    Printed::styled(ae::console::view::Style::resolve(
+        true,
+        Some(ae::theme::Look {
+            palette,
+            icons: true,
+            drawn: true,
+            motion: false,
+        }),
+        Some("+0200"),
+        "lead",
+    ))
+}
+
+#[test]
+fn chat_look_print_status_tones_follow_canonical_outcomes_and_system_words() {
+    let palette = ae::theme::Palette::NEUTRAL;
+    let style = ae::console::view::Style::resolve(
+        true,
+        Some(ae::theme::Look {
+            palette,
+            icons: true,
+            drawn: true,
+            motion: false,
+        }),
+        None,
+        "lead",
+    );
+    let unknown = ae::console::input::outcome_line(
+        &ae::console::submit::Outcome::Unknown("unknown-id".into(), "fixture".into()),
+        "lead",
+    );
+    for (line, expected) in [
+        (unknown.as_str(), palette.waiting_agent),
+        ("refused: fixture", palette.dead),
+        ("closed close-id", palette.dim),
+        ("accepting input", palette.dim),
+    ] {
+        assert_eq!(colour_of(&style.status(line), line), rgb(expected));
+    }
+}
+
+#[test]
+fn chat_look_status_colours_follow_kind_and_attach_after_the_question() {
+    use ae::console::submit::Outcome;
+    let palette = ae::theme::Palette::NEUTRAL;
+    for (outcome, prefix, expected) in [
+        (
+            Outcome::Sent("status-id".into(), None),
+            "sent status-id",
+            palette.done,
+        ),
+        (
+            Outcome::Uncertain("status-id".into()),
+            "uncertain status-id",
+            palette.waiting_agent,
+        ),
+        (
+            Outcome::NotDelivered("status-id".into()),
+            "not delivered status-id",
+            palette.dead,
+        ),
+    ] {
+        let mut printed = styled_printed(palette);
+        printed.outcome(
+            "status-id",
+            ae::console::input::outcome_line(&outcome, "lead"),
+        );
+        let lane = Lane {
+            items: vec![item(
+                Kind::Asked {
+                    to: "lead".into(),
+                    id: "status-id".into(),
+                    uncertain: false,
+                },
+                "question-before-outcome",
+            )],
+            coverage: vec![],
+        };
+        let text = printed.step(&lane, 0, true);
+        assert_eq!(
+            colour_of(&text, prefix),
+            rgb(expected),
+            "outcome kind determines tone"
+        );
+        assert_eq!(
+            bar_colour_before(&text, prefix),
+            rgb(palette.title),
+            "pending outcome keeps human message bar"
+        );
+        let plain = strip_sgr(&text);
+        assert!(
+            plain.find("you → lead").expect("ask header")
+                < plain.find("question-before-outcome").expect("question")
+        );
+        assert!(
+            plain.find("question-before-outcome").expect("question")
+                < plain.find(prefix).expect("status")
+        );
+        assert_eq!(
+            printed.step(&lane, 0, true),
+            "",
+            "outcome and row shown once"
+        );
+    }
+}
+
+fn bar_colour_before(text: &str, marker: &str) -> [u8; 3] {
+    let at = text.find(marker).expect("body marker");
+    let row = text[..at].rfind('\n').map_or(0, |newline| newline + 1);
+    let bar = text[row..at].find('▌').expect("message row has bar") + row;
+    sgr_state_at(text, bar).0.expect("message bar coloured")
+}
+
+#[test]
+fn chat_look_pending_flush_keeps_submission_order_and_status_tones() {
+    let palette = ae::theme::Palette::WARM;
+    let mut printed = styled_printed(palette);
+    printed.outcome("z", "sent z".into());
+    printed.outcome("a", "uncertain a: check lead pane (prefix H)".into());
+    printed.outcome("n", "not delivered n".into());
+    let text = printed.flush_outcomes();
+    assert_eq!(colour_of(&text, "sent z"), rgb(palette.done));
+    assert_eq!(colour_of(&text, "uncertain a"), rgb(palette.waiting_agent));
+    assert_eq!(colour_of(&text, "not delivered n"), rgb(palette.dead));
+    let plain = strip_sgr(&text);
+    assert!(plain.find("sent z") < plain.find("uncertain a"));
+    assert!(plain.find("uncertain a") < plain.find("not delivered n"));
+    printed.outcome("z", "sent z twice".into());
+    assert_eq!(
+        printed.flush_outcomes(),
+        "",
+        "flush never repeats a submission"
+    );
+}
+
+#[test]
+fn chat_look_coverage_closure_and_rebase_use_system_colour_and_safe_text() {
+    for palette in [
+        ae::theme::Palette::DARCULA,
+        ae::theme::Palette::NEUTRAL,
+        ae::theme::Palette::WARM,
+    ] {
+        let mut printed = styled_printed(palette);
+        let card = Lane {
+            items: vec![item(
+                Kind::Card {
+                    seat: "lead".into(),
+                },
+                "card-body",
+            )],
+            coverage: vec!["gap \x1b[31m hostile".into()],
+        };
+        let first = printed.step(&card, 0, true);
+        assert_eq!(colour_of(&first, "coverage incomplete:"), rgb(palette.dim));
+        assert!(
+            first.contains("gap �[31m hostile"),
+            "coverage safe before style"
+        );
+        assert_eq!(
+            colour_of(&first, "DECISION lead"),
+            rgb(palette.working),
+            "card keeps lead speaker colour"
+        );
+        let empty = Lane {
+            items: vec![],
+            coverage: vec![],
+        };
+        assert_eq!(
+            printed.step(&empty, 0, false),
+            "",
+            "unread pass closes nothing"
+        );
+        let closed = printed.step(&empty, 0, true);
+        assert_eq!(colour_of(&closed, "-- closed:"), rgb(palette.dim));
+        assert_eq!(printed.step(&empty, 0, true), "", "closure once");
+        let rewrite = printed.rebase(2, 1);
+        assert_eq!(
+            colour_of(&rewrite, "-- journal rewritten"),
+            rgb(palette.dim)
+        );
+    }
+}
+
+#[test]
+fn chat_look_resolved_plain_paths_preserve_default_bytes() {
+    let lane = Lane {
+        items: vec![item(Kind::Said { who: "lead".into() }, "body")],
+        coverage: vec!["gap".into()],
+    };
+    let plain = Printed::default().step(&lane, 0, true);
+    for (tty, drawn) in [(false, true), (true, false)] {
+        let look = ae::theme::Look {
+            palette: ae::theme::Palette::WARM,
+            icons: true,
+            drawn,
+            motion: false,
+        };
+        let style = ae::console::view::Style::resolve(tty, Some(look), Some("+0200"), "lead");
+        let mut printed = Printed::styled(style);
+        assert_eq!(
+            printed.step(&lane, 0, true),
+            plain,
+            "plain path stays UTC and byte-identical"
+        );
+        printed.outcome("plain-id", "sent plain-id".into());
+        assert_eq!(printed.flush_outcomes(), "sent plain-id\n");
+        assert_eq!(printed.rebase(2, 1), Printed::default().rebase(2, 1));
+    }
+}
+
+#[test]
+fn chat_look_cli_prompt_and_refusal_use_human_and_dead_palette_colours() {
+    let rig = Rig::new("prompt-refusal", "a", true, true, "+0200");
+    rig.prepare_input();
+    let text = rig.run_input();
+    let text = composer_controls_removed(&text);
+    assert!(
+        text.contains("to lead>"),
+        "composer ready before colour assertion"
+    );
+    assert!(
+        text.contains("refused: the kept draft is not a regular file"),
+        "refusal path ready"
+    );
+    let palette = ae::theme::Palette::NEUTRAL;
+    assert_eq!(
+        colour_of(&text, "to lead>"),
+        rgb(palette.title),
+        "prompt uses human colour"
+    );
+    assert_eq!(
+        colour_of(&text, "refused:"),
+        rgb(palette.dead),
+        "actual Print refusal uses red"
+    );
+    assert_eq!(
+        colour_of(&text, "chat: one"),
+        rgb(palette.dim),
+        "session header uses system colour"
+    );
+    let _ = strip_sgr(&text);
+}
+
+#[test]
+fn chat_look_cli_input_off_notice_uses_the_system_colour() {
+    let mut rig = Rig::new("input-off", "a", true, true, "+0200");
+    rig.stdin_off = true;
+    let text = rig.run(true);
+    assert!(
+        text.contains("input off: stdin is not a terminal"),
+        "stdin-off path reached before colour assertion"
+    );
+    assert_eq!(
+        colour_of(&text, "input off:"),
+        rgb(ae::theme::Palette::NEUTRAL.dim)
+    );
+    let _ = strip_sgr(&text);
+}
+
+fn composer_controls_removed(text: &str) -> String {
+    let mut text = text.to_owned();
+    // Only the commander's documented terminal controls may bypass the SGR
+    // oracle. This fixture draws one short row; vertical movement is rejected
+    // loudly. Message-only tests still reject every non-SGR escape.
+    for control in [
+        "\x1b[?2004h",
+        "\x1b[?2004l",
+        "\x1b[?7l",
+        "\x1b[?7h",
+        "\x1b[K",
+        "\x1b[J",
+        "\x1b7",
+        "\x1b8",
+    ] {
+        text = text.replace(control, "");
+    }
+    text.replace('\r', "")
+}
+
+#[test]
+fn chat_look_cli_typed_ask_keeps_styled_lane_and_red_outcome() {
+    let rig = Rig::new("typed-ask", "a", true, true, "+0200");
+    rig.prepare_follow(true);
+    let text = composer_controls_removed(&rig.run_ask());
+    let journal = fs::read_to_string(rig.scratch.path().join("sessions/one/events.jsonl"))
+        .expect("typed ask journal");
+    assert!(
+        journal.contains("delivery-abandoned") && journal.contains("fixture-typed-ask"),
+        "real submission recorded before colour assertion"
+    );
+    assert!(
+        text.contains("fixture-typed-ask"),
+        "typed ask body reached output"
+    );
+    assert!(
+        text.contains("not delivered "),
+        "bounded delivery produced an outcome"
+    );
+    // The header tag ends with "not delivered"; the following space selects
+    // the canonical outcome line, where the request id follows those words.
+    let palette = ae::theme::Palette::NEUTRAL;
+    assert_eq!(
+        colour_of(&text, "not delivered "),
+        rgb(palette.dead),
+        "typed ask's Lane retains ae SGR"
+    );
+    assert_eq!(
+        bar_colour_before(&text, "not delivered "),
+        rgb(palette.title)
+    );
+    assert!(
+        !text.contains("�[38;2;"),
+        "ae SGR is never neutralised twice"
+    );
+    let _ = strip_sgr(&text);
+}
+
+impl Rig {
+    fn prepare_input(&self) {
+        self.prepare_follow(false);
+    }
+
+    fn prepare_follow(&self, asking: bool) {
+        let root = self.scratch.path();
+        if !asking {
+            fs::create_dir(root.join("sessions/one/console.draft")).expect("refused kept draft");
+        }
+        let meta = root.join("sessions/one/meta");
+        fs::write(
+            &meta,
+            format!(
+                "{}tmux_server_kind=socket\ntmux_server={}\n",
+                fs::read_to_string(&meta).expect("fixture meta"),
+                root.join("no-server/tmux.sock").display()
+            ),
+        )
+        .expect("record fixture server");
+        fs::write(self.bin.join("tmux"), r#"#!/usr/bin/perl
+use strict;
+use warnings;
+open my $log, '>>', $ENV{LOOK_CALLS} or die $!;
+print $log join(' ', @ARGV), "\n";
+my $format = $ARGV[-1] // '';
+if ((grep { $_ eq 'list-panes' } @ARGV) && $format =~ /ae_console/) { print "%99 | \@9 |  |  | 0199c0de-aaaa-4890-abcd-ef0123456789 | 0 | 0 | 0 | \n"; }
+elsif ((grep { $_ eq 'list-panes' } @ARGV) && $format =~ /ae_agent/) { print "%5 | lead\n"; }
+elsif (grep { $_ eq 'show-options' } @ARGV) { print "0199c0de-aaaa-4890-abcd-ef0123456789\n"; }
+elsif ($format =~ /ae_slot/) { print "main | one | lead | 0199c0de-aaaa-4890-abcd-ef0123456789 | $ENV{LOOK_SOCK}\n"; }
+elsif ($format =~ /t\/f\//) { print $ENV{LOOK_ZONE}, "\n"; }
+elsif ($format =~ /ae_palette|ae_theme|ae_icons/) { print $ENV{LOOK_ANSWER}, "\n"; }
+elsif ($format =~ /pane_width/) { print "80 | 24 | 0\n"; }
+elsif (grep { $_ eq 'capture-pane' } @ARGV) { exit 0; }
+else { exit 1; }
+"#).expect("owned-input tmux fixture");
+        fs::write(
+            root.join("supervise.pl"),
+            r#"use strict;
+use warnings;
+use POSIX qw(WNOHANG);
+use Time::HiRes qw(time sleep);
+my $pid = fork();
+defined $pid or die "fork: $!";
+if (!$pid) { exec @ARGV; die "exec: $!"; }
+my $ready = 0;
+my $alive = 1;
+my $deadline = time() + 8;
+while (time() < $deadline) {
+    if (open my $record, '<', $ENV{LOOK_RECORD}) {
+        local $/;
+        my $bytes = <$record> // '';
+        my $marker = $ENV{LOOK_ASK} eq 'on' ? 'not delivered ' : 'refused: the kept draft';
+        if (index($bytes, 'to lead>') >= 0 && index($bytes, $marker) >= 0) { $ready = 1; last; }
+    }
+    if (waitpid($pid, WNOHANG) == $pid) { $alive = 0; last; }
+    sleep 0.02;
+}
+if ($alive) { kill 'TERM', $pid; waitpid($pid, 0); }
+exit($ready ? 0 : 2);
+"#,
+        )
+        .expect("bounded follow supervisor");
+    }
 }
