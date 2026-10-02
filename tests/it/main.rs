@@ -19,6 +19,7 @@ mod compact;
 mod console;
 mod console_input_spec;
 mod console_p35_spec;
+mod console_p36_spec;
 mod console_p3_spec;
 mod daemons;
 mod deliver;
