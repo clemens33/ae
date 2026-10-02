@@ -278,7 +278,7 @@ impl ConsoleRig {
     }
 
     fn asked(&self, output: &mut Output, body: &str) -> Event {
-        output.wait("typed text records a real console ask", |_| {
+        output.wait("typed text records a real chat ask", |_| {
             self.asks()
                 .iter()
                 .any(|event| event.summary.as_deref() == Some(body))
@@ -341,6 +341,19 @@ impl ConsoleRig {
 fn typed_text_uses_the_real_console_ask_and_marker_path() {
     let rig = ConsoleRig::new("specask");
     let pane = rig.toggle();
+    assert_eq!(
+        rig.tmux(&["display-message", "-p", "-t", &pane, "#{window_name}"])
+            .trim(),
+        "chat"
+    );
+    rig.tmux(&["rename-window", "-t", &pane, "console"]);
+    assert_eq!(rig.toggle(), pane, "an old window is found by its stamp");
+    assert_eq!(
+        rig.tmux(&["display-message", "-p", "-t", &pane, "#{window_name}"])
+            .trim(),
+        "console",
+        "the toggle does not rename an existing window"
+    );
     let mut output = Output::attach(&rig, &pane, "w1");
     rig.ready(&pane, &mut output);
     rig.type_line(&pane, "independent typed request");
@@ -366,7 +379,7 @@ fn typed_text_uses_the_real_console_ask_and_marker_path() {
         "{received}"
     );
     let id = ask.reference.as_deref().expect("request id");
-    output.wait("the console reports its submitted request id", |text| {
+    output.wait("the chat reports its submitted request id", |text| {
         text.contains(&format!("sent {id}"))
     });
     assert_eq!(rig.asks().len(), 1);
@@ -408,7 +421,7 @@ fn a_prefixed_slash_is_literal_and_only_a_bare_close_withdraws_the_ask() {
     assert!(rig.tool.submitted().contains("/close literal"));
     output.clear();
     rig.type_line(&pane, &format!("/close {id}"));
-    output.wait("bare close records the console's scoped withdrawal", |_| {
+    output.wait("bare close records the chat's scoped withdrawal", |_| {
         rig.tool
             .events()
             .lines()
@@ -657,7 +670,7 @@ fn the_fixed_shell_literal_is_present_and_the_opened_pane_uses_it() {
     for part in [
         "/bin/sh",
         "stty -icanon -echo -ixon -iexten min 1 time 0",
-        "console",
+        " chat ",
         &rig.name,
         "--follow",
         "--input",

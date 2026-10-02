@@ -696,7 +696,7 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
-    /// `console [session] [--follow] [--all]` — validated by
+    /// `chat [session] [--follow] [--all]` (`console` is a deprecated alias) — validated by
     /// [`crate::console::parse`], which owns the flag grammar and its usage text.
     Console {
         /// Everything after the subcommand, as typed.
@@ -855,7 +855,7 @@ impl Request {
             Some("board") => Self::Board {
                 tail: args[1..].to_vec(),
             },
-            Some("console") => Self::Console {
+            Some("chat" | "console") => Self::Console {
                 tail: args[1..].to_vec(),
             },
             Some(QUOTA) => match &args[1..] {

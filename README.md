@@ -112,7 +112,7 @@ ae list --json                 # machine-readable digest (for scripts/agents)
 ae next                        # name the top session needing attention (--attach jumps to it)
 ae brief [name] [--all]        # why a session needs you: goal, latest note per memo topic,
                                # each agent's declared state, and every unanswered ask
-ae console [session] [--follow]
+ae chat [session] [--follow]
                                # the human lane: lead-pair turns, bridge asks, say lines, cards
 ae orchestrator                # start or reattach the local orchestrator seat
 ae orchestrator --popup --client <name>

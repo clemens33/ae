@@ -84,7 +84,7 @@ fn still(pair: &[Seat], seats: Result<Vec<Seat>, String>) -> Result<(), String> 
     if pair_of(seats?)? == pair {
         return Ok(());
     }
-    Err("the lead pair changed since this console opened - restart this console".to_owned())
+    Err("the lead pair changed since this chat opened - restart this chat".to_owned())
 }
 
 /// A console that takes input from its terminal.
@@ -103,7 +103,7 @@ impl Term {
     /// Input on this process's terminal for `console`'s lead pair. `Err` is
     /// the line saying why there is none: no usable pair, or no terminal.
     pub(super) fn start(console: &Console) -> Result<Self, String> {
-        let off = |why: &str| format!("input off: {why}; this console only reads\n");
+        let off = |why: &str| format!("input off: {why}; this chat only reads\n");
         let pair = console.seats().and_then(pair_of).map_err(|why| off(&why))?;
         let stdin = std::io::stdin();
         let owned = stdin
@@ -474,7 +474,7 @@ mod tests {
             me,
             screen,
         };
-        let changed = "the lead pair changed since this console opened - restart this console";
+        let changed = "the lead pair changed since this chat opened - restart this chat";
         for (main, colead, why) in [
             ("lead", "other", changed),
             ("colead", "lead", changed),

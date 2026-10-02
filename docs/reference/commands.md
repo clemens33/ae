@@ -34,6 +34,9 @@ ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>] [--assist
                        --follow keeps printing new rows and coverage changes every 5 s
                        --lines clips each text body to its first <n> lines, with a
                        marker for the dropped remainder (refused with --json)
+ae chat [session] [--follow] [--all]
+                       The human lane of one session: lead-pair pane turns,
+                       chat asks and replies, and live decision cards
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
@@ -103,6 +106,14 @@ otherwise create a session called `status`.
 
 Any other `_`-prefixed word nobody serves also fails closed with exit 2, for the same
 fall-through reason.
+
+## `ae chat`
+
+`ae chat [session] [--follow] [--all]` opens the human lane of one session.
+`prefix h` toggles its `chat` window; `prefix H` jumps to the lead pane.
+See [Chat](../chat.md) for input, replies, coverage, and the follow view.
+
+`ae console` is a deprecated alias of `ae chat`, with the same flags and output.
 
 ## `ae init`
 

@@ -535,7 +535,7 @@ pub fn command_to(raw: &[u8], pair: &[String], speaker: &str) -> Command {
             .split_once(char::is_whitespace)
             .unwrap_or((routed, ""));
         if seat.contains(':') {
-            let why = format!("@{seat} names another session; this console asks its own lead pair");
+            let why = format!("@{seat} names another session; this chat asks its own lead pair");
             return Command::Refused(why);
         }
         if !pair.iter().any(|name| name == seat) {
@@ -705,7 +705,7 @@ impl Input {
     pub fn closed(&mut self) -> Vec<Effect> {
         (self.keys, self.composer) = (Keys::default(), Composer::default());
         (self.since, self.closed) = (None, true);
-        let line = "input closed; this console only reads now".to_owned();
+        let line = "input closed; this chat only reads now".to_owned();
         vec![Effect::Paste(false), Effect::Print(line)]
     }
 
@@ -1421,7 +1421,7 @@ mod tests {
             ("@zz q", "refused: @zz is not a lead-pair seat", "colead"),
             (
                 "@a:b q",
-                "refused: @a:b names another session; this console asks its own lead pair",
+                "refused: @a:b names another session; this chat asks its own lead pair",
                 "colead",
             ),
             (
@@ -1632,7 +1632,7 @@ mod tests {
         let base = Instant::now();
         let mut input = owner(base);
         assert_eq!(input.chunk(b"\x1b[200~half\r", at(base, 1)), []);
-        let closed = "input closed; this console only reads now".to_owned();
+        let closed = "input closed; this chat only reads now".to_owned();
         assert_eq!(
             input.closed(),
             [Effect::Paste(false), Effect::Print(closed)]

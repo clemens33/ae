@@ -252,17 +252,37 @@ fn bounded_output(runner: &mut super::cli::Runner) -> std::process::Output {
 }
 
 fn console(root: &std::path::Path, tail: &[&str]) -> (Option<i32>, String, String) {
+    lane_command(root, "chat", tail)
+}
+
+fn lane_command(
+    root: &std::path::Path,
+    verb: &str,
+    tail: &[&str],
+) -> (Option<i32>, String, String) {
     let mut runner = super::cli::ae();
     runner
         .env("HOME", root)
         .env("AE_HOME", root)
         .env_remove("TMUX_PANE")
         .stdin(std::process::Stdio::null())
-        .args(["console"])
+        .arg(verb)
         .args(tail);
     let out = bounded_output(&mut runner);
     let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
     (out.status.code(), text(&out.stdout), text(&out.stderr))
+}
+
+#[test]
+fn chat_and_its_deprecated_console_alias_print_identical_lane_bytes() {
+    let (root, _) = lead_pair_rig("chat-alias");
+    for (tail, code) in [(&["one"][..], 0), (&["one", "--all"], 0), (&["--help"], 2)] {
+        let chat = lane_command(&root, "chat", tail);
+        let alias = lane_command(&root, "console", tail);
+        assert_eq!(chat.0, Some(code), "{}", chat.2);
+        assert_eq!(chat, alias, "same command and flags: {tail:?}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -295,7 +315,7 @@ fn a_console_asked_for_input_on_no_terminal_says_so_and_only_reads() {
     let before = std::fs::read(dir.join("events.jsonl")).expect("journal");
     let (code, stdout, stderr) = console(&root, &["one", "--input"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
-    let off = "input off: stdin is not a terminal; this console only reads\n";
+    let off = "input off: stdin is not a terminal; this chat only reads\n";
     let golden = include_str!("../fixtures/console/lane.txt");
     assert!(stdout.contains(off), "{stdout}");
     assert_eq!(stdout.replacen(off, "", 1), golden);
@@ -303,7 +323,7 @@ fn a_console_asked_for_input_on_no_terminal_says_so_and_only_reads() {
     let bad = meta.replace("seat.main=lead\n", "seat.main=%3\n");
     std::fs::write(dir.join("meta"), bad).expect("a main seat that is no agent name");
     let (code, stdout, _) = console(&root, &["one", "--input"]);
-    let refused = "input off: the main seat is not an agent name; this console only reads\n";
+    let refused = "input off: the main seat is not an agent name; this chat only reads\n";
     assert!(code == Some(0) && stdout.contains(refused), "{stdout}");
     let after = std::fs::read(dir.join("events.jsonl")).expect("journal");
     assert_eq!(after, before);
@@ -316,10 +336,10 @@ fn a_bad_flag_is_a_usage_error_and_an_unknown_session_is_one_line() {
     std::fs::create_dir_all(root.join("sessions")).expect("sessions");
     let (code, stdout, stderr) = console(&root, &["--frobnicate"]);
     assert_eq!((code, stdout.as_str()), (Some(2), ""), "{stderr}");
-    assert!(stderr.starts_with("ae console: unexpected --frobnicate\nUsage: ae console"));
+    assert!(stderr.starts_with("ae chat: unexpected --frobnicate\nUsage: ae chat"));
     let (code, stdout, stderr) = console(&root, &["nosuch"]);
     assert_eq!((code, stdout.as_str()), (Some(1), ""));
-    assert_eq!(stderr, "ae console: no session named nosuch\n");
+    assert_eq!(stderr, "ae chat: no session named nosuch\n");
     let hostile = "--x\u{1b}]52;c;AAAA\u{7}\r";
     let (code, _, stderr) = console(&root, &[hostile]);
     assert_eq!(code, Some(2));

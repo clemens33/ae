@@ -254,7 +254,7 @@ Usage:
                          5 s until interrupted (the selection is fixed at start)
                          --lines clips each text body to its first <n> lines, with a
                          `… +k lines` marker for the dropped remainder (not with --json)
-  ae console [session] [--follow] [--all]
+  ae chat [session] [--follow] [--all]
                          The human lane of one session: lead-pair pane turns, chat-bridge
                          asks and replies, say lines, and live decision cards. Read only;
                          --follow keeps printing what is new every 5 s, --all adds replies
@@ -377,6 +377,7 @@ pub const ROUTED_VERBS: &[&str] = &[
     "archive",
     "board",
     "brief",
+    "chat",
     "compact",
     "console",
     "doctor",
@@ -602,7 +603,9 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("next" | "jump") => Route::Core(with_head("next", &tail())),
         Some("brief") => Route::Core(with_head("brief", &tail())),
         Some("board") => Route::Core(with_head("board", &tail())),
-        Some("console") => Route::Core(with_head("console", &tail())),
+        // Keep the deprecated console alias routed so it cannot launch a
+        // session named after the old command.
+        Some("chat" | "console") => Route::Core(with_head("chat", &tail())),
         Some("quota") => Route::Core(with_head("quota", &tail())),
         Some("usage") => Route::Core(with_head("usage", &tail())),
         Some("reboot") => Route::Core(with_head(crate::cli::COMPACT, &tail())),
@@ -720,6 +723,7 @@ mod tests {
     #[test]
     fn the_canonical_orchestrator_is_the_one_routed_word_a_session_may_be_named() {
         let seat = crate::orchestrator::ORCHESTRATOR_SESSION;
+        assert!(ROUTED_VERBS.contains(&"chat"), "chat is a command");
         assert!(ROUTED_VERBS.contains(&seat), "the route answers it");
         // ...and yet a session IS named that: `ae orchestrator` reaches its own
         // seat rather than stealing the word.

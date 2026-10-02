@@ -1,4 +1,4 @@
-//! `ae console` — the human's lane of a session, as a program.
+//! `ae chat` — the human's lane of a session, as a program.
 //!
 //! A READ view of data ae already keeps: it answers nothing, and what it
 //! writes is its own — an ask it submits and `/close`'s withdrawal of one.
@@ -23,9 +23,9 @@ pub(crate) mod toggle;
 pub mod view;
 
 /// The usage text.
-pub const USAGE: &str = "Usage: ae console [session] [--follow] [--all]\n\n  session   the session to read (default: the session this pane belongs to)\n  --follow  keep printing what is new every 5 s until interrupted (Ctrl-C to stop)\n  --all     show every assistant reply of the lead pair (default: only the replies to lines you typed in its pane)\n";
+pub const USAGE: &str = "Usage: ae chat [session] [--follow] [--all]\n\n  session   the session to read (default: the session this pane belongs to)\n  --follow  keep printing what is new every 5 s until interrupted (Ctrl-C to stop)\n  --all     show every assistant reply of the lead pair (default: only the replies to lines you typed in its pane)\n";
 
-/// A parsed `ae console` argv.
+/// A parsed `ae chat` argv.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Args {
     pub session: Option<String>,
@@ -44,13 +44,13 @@ impl Usage {
     #[must_use]
     pub fn render(&self) -> String {
         match &self.0 {
-            Some(token) => format!("ae console: unexpected {token}\n{USAGE}"),
+            Some(token) => format!("ae chat: unexpected {token}\n{USAGE}"),
             None => USAGE.to_owned(),
         }
     }
 }
 
-/// Read `tail` — everything after the word `console`.
+/// Read `tail` — everything after the word `chat` (or its alias `console`).
 ///
 /// # Errors
 ///
@@ -270,7 +270,7 @@ pub(crate) fn recorded_uuid(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// `ae console [session] [--follow] [--all]`.
+/// `ae chat [session] [--follow] [--all]`.
 ///
 /// # Errors
 ///
@@ -290,7 +290,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     let Some(name) = args.session.clone().or_else(crate::calling_session_name) else {
         writeln!(
             err,
-            "ae console: no session named and this pane is in none\n{USAGE}"
+            "ae chat: no session named and this pane is in none\n{USAGE}"
         )?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
@@ -298,7 +298,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         writeln!(
             err,
             "{}",
-            terminal_text(&format!("ae console: no session named {name}"))
+            terminal_text(&format!("ae chat: no session named {name}"))
         )?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
@@ -323,7 +323,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             writeln!(
                 err,
                 "{}",
-                terminal_text(&format!("ae console: {}: {why}", console.name))
+                terminal_text(&format!("ae chat: {}: {why}", console.name))
             )?;
             return Ok(crate::EXIT_UNAVAILABLE);
         }
@@ -360,7 +360,7 @@ fn pump(
                 Ok(text) => text,
                 Err(why) => {
                     let text = format!(
-                        "ae console: {}: {why} — this console no longer follows it; reopen it with prefix h (or ae console <session>)",
+                        "ae chat: {}: {why} — this chat no longer follows it; reopen it with prefix h (or ae chat <session>)",
                         console.name
                     );
                     if let Some(term) = term.as_deref_mut() {
@@ -571,7 +571,7 @@ pub(super) mod tests {
             (closed, format!("{REQ} is already closed")),
             (
                 format!("{WORK}\n\n").into(),
-                format!("no console ask {REQ} in this journal"),
+                format!("no chat ask {REQ} in this journal"),
             ),
             (
                 format!("{ask}\n{answer}\n").into(),

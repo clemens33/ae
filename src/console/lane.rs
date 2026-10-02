@@ -277,7 +277,7 @@ fn console_items(
         } else if event.action == reply::ACTION && to == tracked::CONSOLE_SINK {
             let from = event.actor.clone();
             let admitted = match threads.get_mut(key) {
-                None => Err("no console ask with this id in the journal".to_owned()),
+                None => Err("no chat ask with this id in the journal".to_owned()),
                 Some(thread) => admission(thread.ask, event).map(|()| thread),
             };
             match admitted {
@@ -349,7 +349,7 @@ pub fn may_close(events: &[Event], id: &str) -> Result<(), String> {
             _ => {}
         }
     }
-    open.unwrap_or_else(|| Err(format!("no console ask {id} in this journal")))
+    open.unwrap_or_else(|| Err(format!("no chat ask {id} in this journal")))
 }
 
 /// The ids of the console's asks still open in `session`'s journal, oldest
@@ -814,11 +814,11 @@ mod tests {
         let (mut bare_ask, mut bare_reply) = (asked("q"), answered(T1, &me, "x"));
         (bare_ask.reference, bare_reply.reference) = (None, None);
         let rows = thread(&[bare_ask, bare_reply], &whole).0;
-        assert!(rows[1].contains("not admitted: no console ask"), "{rows:?}");
+        assert!(rows[1].contains("not admitted: no chat ask"), "{rows:?}");
         let orphan = [answered(T1, &me, "x")];
         assert_eq!(
             thread(&orphan, &whole).0,
-            [refused("no console ask with this id in the journal")]
+            [refused("no chat ask with this id in the journal")]
         );
     }
 
@@ -890,7 +890,7 @@ mod tests {
         let mut elsewhere = cancel("console:local");
         elsewhere.reference = Some("ae-other".to_owned());
         let (none, answered_, closed) = (
-            format!("no console ask {ID} in this journal"),
+            format!("no chat ask {ID} in this journal"),
             format!("{ID} is already answered"),
             format!("{ID} is already closed"),
         );
@@ -919,7 +919,7 @@ mod tests {
             assert_eq!(super::may_close(&events, ID), verdict, "{events:?}");
         }
         let other = super::may_close(&[asked("q")], "ae-other");
-        let none = Err("no console ask ae-other in this journal".to_owned());
+        let none = Err("no chat ask ae-other in this journal".to_owned());
         assert_eq!(other, none);
         let refless = r#"{"ts":"2026-09-30T06:00:00Z","actor":"console:local","action":"ask"}"#;
         let refless = Event::parse_line(refless).unwrap();

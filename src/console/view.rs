@@ -18,7 +18,7 @@ use crate::board::{clock_text, terminal_text};
 pub fn header(session: &str, seats: &[Seat]) -> String {
     let names: Vec<&str> = seats.iter().map(|seat| seat.name.as_str()).collect();
     terminal_text(&format!(
-        "console: {session} — lead pair {} · preview of existing data: transcript turns are mirrors, chat-bridge replies are 600-character summaries, nothing here answers and only lines typed in the owner console ask · scope: current conversations plus recorded predecessors, board limits; agent-to-agent turns are not shown\n",
+        "chat: {session} — lead pair {} · preview of existing data: transcript turns are mirrors, chat-bridge replies are 600-character summaries, nothing here answers and only lines typed in the owner chat ask · scope: current conversations plus recorded predecessors, board limits; agent-to-agent turns are not shown\n",
         names.join(", ")
     ))
 }
@@ -137,7 +137,7 @@ impl Printed {
     pub fn rebase(&mut self, before: usize, now: usize) -> String {
         self.shown.retain(|key, _| !key.starts_with(CONSOLE_KEY));
         terminal_text(&format!(
-            "-- journal rewritten ({before} records before, {now} now): the console thread is shown again as the journal stands\n\n"
+            "-- journal rewritten ({before} records before, {now} now): the chat thread is shown again as the journal stands\n\n"
         ))
     }
 

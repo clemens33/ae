@@ -1,6 +1,6 @@
-# The console
+# The chat
 
-`ae console [session] [--follow] [--all]` is the human's lane of one session
+`ae chat [session] [--follow] [--all]` is the human's lane of one session
 as text: what the lead pair said to you and what it needs from you. It is a
 labelled **preview of data ae already keeps**, every field passing the board's
 terminal renderer; only its [input](#input) writes an event.
@@ -13,7 +13,7 @@ terminal renderer; only its [input](#input) writes an event.
 - **Replies to your pane lines**: the lead pair's assistant text, as
   `<seat> assistant (transcript)`, only while it answers a line you typed in
   that pane: from your line up to the next user turn of any kind (an agent
-  message, a console ask, a watchdog challenge, launch context), so an answer
+  message, a chat ask, a watchdog challenge, launch context), so an answer
   to an agent never shows. Claude, Codex, Muse and Grok seats give replies;
   OpenCode and Antigravity seats give none by default (an OpenCode export
   carries no proven order, Antigravity keeps prompts and replies in separate
@@ -23,7 +23,7 @@ terminal renderer; only its [input](#input) writes an event.
 - **Chat-bridge asks and replies** (`telegram:` / `discord:`), every thread
   with its target named. A reply is the journal's 600-character summary,
   tagged `preview (600-char summary)`.
-- **Console asks** as `you → <seat>`, each answer whole from the reply's stored
+- **Chat asks** as `you → <seat>`, each answer whole from the reply's stored
   body (at most 65536 bytes), and each `/close` as `you closed <id>`. An answer
   counts only from the slot, session, server, pane and session uuid the ask
   reached; any other reply shows as `not admitted: stale|unproven <field>`.
@@ -43,17 +43,17 @@ terminal renderer; only its [input](#input) writes an event.
 
 ## Keys
 
-`prefix h` opens (or returns from) a `console` window running
-`ae console <session> --follow`; `prefix H` jumps to the lead pane. The window
+`prefix h` opens (or returns from) a `chat` window running
+`ae chat <session> --follow`; `prefix H` jumps to the lead pane. The window
 is stamped `@ae_console` (the session uuid), never `@ae_agent`, so the watchdog
-reads no agent in it. `remain-on-exit` keeps a console that stopped following
+reads no agent in it. `remain-on-exit` keeps a chat that stopped following
 (a renamed or replaced session) on screen with its reopen hint; `prefix h`
 respawns it. Residual: a card can outlive input typed in its pane, because
 only the watchdog daemon ends a wait on pane input.
 
 ## Input
 
-The window runs `--input` behind a fixed `stty` wrapper; only the owner console
+The window runs `--input` behind a fixed `stty` wrapper; only the owner chat
 (first live stamped pane) takes keys, another is read-only. A line asks the
 speaker, `@<seat> text` either lead-pair seat, `/close <id>` withdraws an open ask,
 other `/word`s are refused, five asks open at most. A lead pair changed since
@@ -61,7 +61,7 @@ opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off
 
 The speaker is the seat of the last `@<seat> text` line that asked (`@<main> text`
 included); it is the prompt (`to <speaker>> `) and where an unprefixed line goes.
-A refused line, `/close` and a demotion change nothing; a restarted console
+A refused line, `/close` and a demotion change nothing; a restarted chat
 speaks to the main seat (the speaker is process memory only).
 
 The composer shows the whole draft wrapped at the pane's width: the prompt on
@@ -91,13 +91,13 @@ cursor is. Up, Down, Insert, PgUp, PgDn and modified navigation keys are
 consumed and do nothing; any other plain control byte is a literal draft byte.
 Inside a bracketed paste every byte stays literal, an Enter included.
 
-When a console becomes the owner it puts a kept draft back in the composer
+When a chat becomes the owner it puts a kept draft back in the composer
 literally — a line kept before a crash or an unconfirmed ask — under `Kept line,
 maybe already sent: check <every lead-pair seat> panes (prefix H) before Enter`.
 Nothing in it is read as a command until you press Enter; the file stays until an
 ask is confirmed (`^U` clears the composer, not the file, so a later promotion
 shows it again). A draft over 65536 bytes, a non-file or an unreadable one is
-refused by name and not restored. A read-only console restores nothing.
+refused by name and not restored. A read-only chat restores nothing.
 Residual: the draft keeps only the bytes you typed, not who they were for, so a
 restored line without an `@<seat>` prefix goes to the speaker at that Enter — the
 main seat after a restart — even if it was first asked of the other seat; the

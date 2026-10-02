@@ -529,7 +529,7 @@ fn a_preamble_flag_is_no_longer_a_flag_ae_answers_to() {
 #[test]
 fn a_word_the_route_answers_is_refused_as_a_session_name() {
     let rig = Rig::new("verbname");
-    for verb in ["list", "brief", "rename", "watchdog"] {
+    for verb in ["list", "brief", "chat", "console", "rename", "watchdog"] {
         let (code, stdout, stderr) = rig.run(&["--local", verb]);
         assert_eq!(code, Some(2), "{verb}: stdout: {stdout}\nstderr: {stderr}");
         assert!(

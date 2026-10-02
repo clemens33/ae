@@ -204,7 +204,7 @@ impl Rig {
             let (pane, stamp) = row.split_once('|')?;
             (stamp == UUID).then(|| pane.to_owned())
         })
-        .expect("stamped console pane")
+        .expect("stamped chat pane")
     }
 
     fn second(&self) -> String {

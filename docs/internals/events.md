@@ -109,7 +109,7 @@ Additive facts that prove a pane's session across servers and tmux incarnations.
 
 ### Body file
 
-`body_file` is the path of the text a delivery stored under the session's `messages/` (`<ref>.<action>.<6 hex>.txt`, mode 0600), when it stored one: a `send` / `ask` / `review` / `interrupt` delivery, and a `reply` to `console:local`, which keeps its whole body (at most 65536 bytes) there. A string key, policed for duplicates like every known key; an older core steps over it as unknown data and keeps the record, summary included. `ae console` reads it by NAME from its own session's `messages/`, never through the recorded directory, a link or a separator, and a body it cannot read shows as a named gap beside the 600-character summary.
+`body_file` is the path of the text a delivery stored under the session's `messages/` (`<ref>.<action>.<6 hex>.txt`, mode 0600), when it stored one: a `send` / `ask` / `review` / `interrupt` delivery, and a `reply` to `console:local`, which keeps its whole body (at most 65536 bytes) there. A string key, policed for duplicates like every known key; an older core steps over it as unknown data and keeps the record, summary included. `ae chat` reads it by NAME from its own session's `messages/`, never through the recorded directory, a link or a separator, and a body it cannot read shows as a named gap beside the 600-character summary.
 
 ## Actions
 
@@ -117,7 +117,7 @@ Additive facts that prove a pane's session across servers and tmux incarnations.
 |---|---|---|
 | `send` | `send` helper | One-way message between agents (or from human / watchdog). |
 | `relay` | `relay` helper | Orchestrator-only bare human-authority text. Caller ledger carries target + full text; refused attempts are audited too. |
-| `ask` | `ask` helper; `ae console` input as `console:local` | Tracked request expecting a reply. Carries `ref`. |
+| `ask` | `ask` helper; `ae chat` input as `console:local` | Tracked request expecting a reply. Carries `ref`. |
 | `review` | `review` helper | Like `ask`, with the critical-review prompt template. Carries `ref`. |
 | `reply` | `reply` helper | Reply to an `ask` / `review`. Same `ref`. |
 | `state` | `state` helper | Agent declares its work state — `working` / `waiting-user` / `waiting-agent` / `blocked` / `done` (in `ref`). The watchdog honors quiet states; a `waiting-agent` past its ceiling reads as `blocked`. |

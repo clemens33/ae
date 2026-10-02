@@ -79,14 +79,14 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
     let declared = crate::doors::declared_server(crate::shape::current());
     let server = crate::doors::launch_target(declared.as_ref())
         .ok_or("the tmux server pair is ambiguous")?;
-    let source = source_pane(&server, client).ok_or("no calling pane for the console key")?;
+    let source = source_pane(&server, client).ok_or("no calling pane for the chat key")?;
     let session =
         session_of(&server, &source).ok_or("the calling pane is not on this tmux server")?;
     let panes = transport::observe_window_panes(&server, &session)
         .ok_or("tmux did not answer the pane listing")?;
     let tmux = |op: &Op<'_>| match transport::run_tmux_op(&argv(&server, op)) {
         (true, out) => Ok(out),
-        _ => Err("tmux refused the console move".to_owned()),
+        _ => Err("tmux refused the chat move".to_owned()),
     };
     let option = |name| transport::observe_session_option(&server, &session, name);
     if jump {
@@ -106,7 +106,7 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
     let pane = match &plan {
         Plan::Unbound => {
             return Err(
-                "the session id in its meta is not the one tmux carries, so no console is started"
+                "the session id in its meta is not the one tmux carries, so no chat is started"
                     .to_owned(),
             );
         }
@@ -129,12 +129,12 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
                 let target = format!("{}:", session_target(&session));
                 let window = Op::NewWindow {
                     target: &target,
-                    name: "console",
+                    name: "chat",
                     work_dir: "",
                     command: &[],
                 };
                 let pane = interpret_pane_id(true, &tmux(&window)?)
-                    .ok_or("tmux did not name the console pane")?;
+                    .ok_or("tmux did not name the chat pane")?;
                 if !transport::publish_option(
                     &server,
                     OptionScope::Pane,
@@ -143,7 +143,7 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
                     &uuid,
                 ) {
                     let _ = transport::kill_pane(&server, &pane);
-                    return Err("tmux refused to stamp the console pane".to_owned());
+                    return Err("tmux refused to stamp the chat pane".to_owned());
                 }
                 tmux(&Op::SetWindowOption {
                     target: &pane,
@@ -173,7 +173,7 @@ const TTY_SETUP: &str = "stty -icanon -echo -ixon -iexten min 1 time 0 && exec \
 /// the console of `session` with its input.
 fn console_command(launcher: Vec<String>, session: &str) -> Vec<String> {
     let setup = ["/bin/sh", "-c", TTY_SETUP].map(ToOwned::to_owned);
-    let console = ["console", session, "--follow", "--input"].map(ToOwned::to_owned);
+    let console = ["chat", session, "--follow", "--input"].map(ToOwned::to_owned);
     setup.into_iter().chain(launcher).chain(console).collect()
 }
 
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn the_console_window_runs_its_launcher_on_a_terminal_set_up_for_keys() {
         let launcher = vec!["env".to_owned(), "/core".to_owned()];
-        let want = ["/bin/sh", "-c", TTY_SETUP, "env", "/core", "console", "s"];
+        let want = ["/bin/sh", "-c", TTY_SETUP, "env", "/core", "chat", "s"];
         let want = [&want[..], &["--follow", "--input"]].concat();
         assert_eq!(console_command(launcher, "s"), want);
     }

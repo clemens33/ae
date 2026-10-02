@@ -41,14 +41,15 @@ pub fn owner(
     bound: &str,
 ) -> Result<(), String> {
     let Some(me) = me else {
-        return Err("this console cannot name its own pane, so it takes no input".to_owned());
+        return Err("this chat cannot name its own pane, so it takes no input".to_owned());
     };
     if bound.is_empty() || bound != stamp {
-        let why = "the session id in its meta is not the one tmux carries, so this console takes no input";
+        let why =
+            "the session id in its meta is not the one tmux carries, so this chat takes no input";
         return Err(why.to_owned());
     }
     match first_console(panes, stamp, true) {
-        None => Err("no live console window holds this session".to_owned()),
+        None => Err("no live chat window holds this session".to_owned()),
         Some(owner) if owner.pane_id == me => Ok(()),
         Some(owner) => Err(format!("input owned by window {}", owner.window_id)),
     }
@@ -168,7 +169,7 @@ pub fn close_owned(
 
 fn admission(dir: &Path) -> Result<std::fs::File, String> {
     let held = store::open(dir).console_admission();
-    held.map_err(|why| format!("the console admission lock is not free ({why})"))
+    held.map_err(|why| format!("the chat admission lock is not free ({why})"))
 }
 
 #[cfg(test)]
@@ -321,9 +322,10 @@ pub(in crate::console) mod tests {
             "an unstamped console"
         );
         assert_eq!(owner(&[lead.clone(), late, dead], Some("%7"), U, U), Ok(()));
-        let unnamed = "this console cannot name its own pane, so it takes no input";
+        let unnamed = "this chat cannot name its own pane, so it takes no input";
         assert_eq!(owner(&panes, None, U, U), refused(unnamed));
-        let gap = "the session id in its meta is not the one tmux carries, so this console takes no input";
+        let gap =
+            "the session id in its meta is not the one tmux carries, so this chat takes no input";
         for (stamp, bound) in [(U, ""), (U, "other"), ("", U)] {
             assert_eq!(
                 owner(&panes, Some("%3"), stamp, bound),
@@ -331,7 +333,7 @@ pub(in crate::console) mod tests {
                 "{stamp:?} {bound:?}"
             );
         }
-        let none = refused("no live console window holds this session");
+        let none = refused("no live chat window holds this session");
         assert_eq!(owner(&[lead], Some("%1"), U, U), none);
     }
 

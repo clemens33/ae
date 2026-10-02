@@ -244,7 +244,7 @@ fn claude_ae_marker_closes_the_window() {
 fn console_local_ask_closes_the_pane_reply_window() {
     boundary_case(
         "console-local",
-        &user("claude", 2, "⟦ae:msg from console:local⟧\nconsole ask"),
+        &user("claude", 2, "⟦ae:msg from console:local⟧\nchat ask"),
     );
 }
 
