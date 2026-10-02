@@ -1131,11 +1131,6 @@ mod tests {
         assert_eq!(hostile(stray, past), line(b"\xc3\xa9!"), "Delete after it");
         let whole = hostile(stray, vec![home, text(b"\xc3"), Key::Backspace]);
         assert_eq!(whole, line(b"x"), "Backspace erases it whole");
-        let (over, once) = (text(&vec![b'a'; CAP + 1]), Key::Left);
-        assert_eq!(
-            hostile(b"", vec![over, once, Key::Home, Key::Delete]),
-            Some(Entered::Over)
-        );
     }
 
     #[test]
@@ -1171,6 +1166,8 @@ mod tests {
                 (0, "to> abcdef"),
             ),
             ("中中中中", left.repeat(2), (0, "to> 中中")),
+            ("abcde", String::new(), (0, "to> abcde")),
+            ("abcdef", String::new(), (1, "    ")),
         ];
         for (draft, stream, (row, before)) in cases {
             let shown = view(draft, &stream);
@@ -1180,6 +1177,11 @@ mod tests {
                 "{draft:?}"
             );
         }
+        let mut mixed = drafted(b"ab\xffcd");
+        for key in [Key::Home, Key::Right, Key::Right, Key::Right, Key::Right] {
+            let _ = mixed.key(key);
+        }
+        assert_eq!(mixed.view("to> ", size(10, 24)).before, "to> ab\u{fffd}c");
         let draft = (0..20)
             .map(|n| format!("l{n}"))
             .collect::<Vec<_>>()
@@ -1243,6 +1245,28 @@ mod tests {
         let _ = composer.key(Key::Text("a🎉".as_bytes().to_vec()));
         let _ = composer.key(Key::Backspace);
         assert_eq!(composer.key(Key::Enter), Some(Entered::Line(b"a".to_vec())));
+    }
+    #[test]
+    fn an_over_draft_ignores_text_and_edit_keys_at_a_unit_boundary() {
+        let mut composer = drafted(b"ab");
+        let _ = (composer.key(Key::Home), composer.key(Key::Right));
+        assert_eq!(composer.key(Key::Text(vec![b'x'; CAP])), None);
+        let keys = [
+            Key::Backspace,
+            Key::Delete,
+            Key::Left,
+            Key::Right,
+            Key::Home,
+            Key::End,
+        ];
+        for key in [Key::Text(b"c".to_vec())].into_iter().chain(keys) {
+            assert_eq!(composer.key(key), None);
+            assert_eq!(
+                (composer.bytes.as_slice(), composer.cursor),
+                (&b"ab"[..], 1)
+            );
+        }
+        assert_eq!(composer.key(Key::Enter), Some(Entered::Over));
     }
 
     #[test]
@@ -1709,6 +1733,22 @@ mod tests {
         assert_eq!(sent, b"xto lead> z", "a fresh Enter sends the whole draft");
         let (screen, _) = drawn(&owner(Instant::now()), size(40, 24));
         assert!(!screen.needs_seen(size(40, 24)) && !screen.needs_seen(size(60, 24)));
+    }
+
+    #[test]
+    fn a_screen_is_drawn_from_its_first_composer_until_it_is_settled() {
+        assert!(!Screen::default().drawn());
+        let (mut screen, _) = drawn(&owner(Instant::now()), size(40, 24));
+        assert!(screen.drawn());
+        let _ = screen.settle();
+        assert!(!screen.drawn());
+    }
+
+    #[test]
+    fn a_pane_that_did_not_narrow_is_erased_as_drawn_whatever_the_screen_says() {
+        let (read, from, _) = narrowed(b"abcdefghij", (20, 20), "to lead> x\nlane\nlane", 2);
+        assert!(!read, "no screen read was owed");
+        assert_eq!(from, 2, "one row drawn: no climb, the rows above are lane");
     }
 
     #[test]

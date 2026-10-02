@@ -183,8 +183,19 @@ impl Term {
     /// again for the pane as it is now: its size read every paint, its screen
     /// only after a narrowing.
     pub(super) fn paint(&mut self, text: &str, effects: &[Effect]) -> String {
+        self.painted(text, effects, Self::pane)
+    }
+
+    /// `paint` with the pane read through `read`, asked only while a composer is
+    /// taken or on the screen.
+    fn painted(
+        &mut self,
+        text: &str,
+        effects: &[Effect],
+        read: impl Fn(&Self) -> Option<tmux::PaneSize>,
+    ) -> String {
         let live = self.input.taking() || self.screen.drawn();
-        let pane = if live { self.pane() } else { None };
+        let pane = if live { read(self) } else { None };
         let size = pane.map_or(Size::FALLBACK, |pane| Size {
             width: pane.width,
             height: pane.height,
@@ -386,23 +397,51 @@ mod tests {
         assert_eq!(term.input.line().as_deref(), Some("to lead> kept"));
     }
 
-    #[test]
-    fn a_paint_with_no_tmux_answer_assumes_80_by_24_and_a_settle_ends_the_composer() {
-        let rig = Rig::new("term-paint");
+    /// A terminal-less `Term` over a rig's lead pair.
+    fn bare_term(tag: &str) -> (Rig, crate::console::Console, Term) {
+        let rig = Rig::new(tag);
         let meta =
             format!("session_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n");
         std::fs::write(rig.0.join("s/meta"), meta).unwrap();
         let console = rig.console();
         let pair = console.seats().and_then(pair_of).unwrap();
         let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
-        let mut term = Term {
+        let (reads, screen) = (Reads(None), Screen::default());
+        let term = Term {
             input,
             pair,
-            reads: Reads(None),
+            reads,
             server: None,
             me: None,
-            screen: Screen::default(),
+            screen,
         };
+        (rig, console, term)
+    }
+
+    #[test]
+    fn the_pane_is_read_only_while_a_composer_is_taken_or_on_screen() {
+        let (_rig, console, mut term) = bare_term("term-live");
+        let calls = std::cell::Cell::new(0);
+        let read = |_: &Term| {
+            calls.set(calls.get() + 1);
+            None
+        };
+        let _ = term.painted("", &[], read);
+        assert_eq!(calls.get(), 0, "nothing taken, nothing drawn");
+        let _ = term.take(&console, Reading::Owner);
+        let _ = term.painted("", &[], read);
+        assert_eq!(calls.get(), 1, "taken, not yet drawn");
+        let _ = term.take(&console, Reading::NotOwner("elsewhere".to_owned()));
+        let _ = term.painted("", &[], read);
+        assert_eq!(calls.get(), 2, "no longer taken, still on the screen");
+        let _ = term.settle();
+        let _ = term.painted("", &[], read);
+        assert_eq!(calls.get(), 2, "settled and not taken");
+    }
+
+    #[test]
+    fn a_paint_with_no_tmux_answer_assumes_80_by_24_and_a_settle_ends_the_composer() {
+        let (_rig, console, mut term) = bare_term("term-paint");
         assert_eq!(term.paint("", &[]), "", "nothing taken, nothing drawn");
         let _ = term.take(&console, Reading::Owner);
         let drawn = "\x1b[?7l\rto lead> \x1b7\x1b8\x1b[?7h";
