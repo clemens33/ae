@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.11] - 2026-10-02
+- Bound every cargo-mutants run in config: two tests, a 60 s kill and an RSS watcher
+
 ## [v2026.10.10] - 2026-10-02
 - **chat**: RED acceptance for polish #5 order and #6 word wrap
 - **chat**: Correct wide-char and full-final-row wrap oracles
