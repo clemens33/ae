@@ -812,6 +812,176 @@ fn chat_look_cli_typed_ask_keeps_styled_lane_and_red_outcome() {
     let _ = strip_sgr(&text);
 }
 
+fn pane_look_tmux(root: &std::path::Path, tail: &[&str]) -> String {
+    let mut args = vec!["-S".to_owned(), root.join("sock").display().to_string()];
+    args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+    let (ok, out) = super::phase2::run_tmux(&args, root);
+    assert!(ok, "private tmux {tail:?}: {out}");
+    out
+}
+
+fn open_look_composer(tool: &super::deliver::Rig, drawn: bool, body: &str) -> String {
+    const UUID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
+    let root = tool.dir.parent().expect("sessions").parent().expect("root");
+    let name = tool
+        .dir
+        .file_name()
+        .expect("session")
+        .to_str()
+        .expect("UTF-8");
+    let tmux = |tail: &[&str]| pane_look_tmux(root, tail);
+    fs::write(tool.dir.join("meta"), format!(
+        "session={name}\nmode=local\nsession_id={UUID}\nlayout=lead-pair\ntmux_server_kind=socket\ntmux_server={}\nseat.main=lead\nagent_bin.main=codex\nseat.worker.0=colead\nagent_bin.worker.0=codex\n",
+        root.join("sock").display()
+    )).expect("lead pair meta");
+    fs::write(root.join("config"), "").expect("private config");
+    fs::write(tool.dir.join("console.draft"), body).expect("kept literal draft");
+    tmux(&["set-option", "-t", name, "@ae_session_uuid", UUID]);
+    tmux(&["set-option", "-t", name, "@ae_main_pane", &tool.pane]);
+    tmux(&["set-option", "-p", "-t", &tool.pane, "@ae_agent", "lead"]);
+    tmux(&[
+        "set-option",
+        "-t",
+        name,
+        "@ae_look",
+        if drawn { "on" } else { "off" },
+    ]);
+    tmux(&["set-option", "-t", name, "@ae_palette", "darcula"]);
+    tmux(&["set-option", "-t", name, "@ae_icons", "on"]);
+    tmux(&["set-option", "-t", name, "@ae_motion", "off"]);
+    tmux(&["set-option", "-t", name, "default-size", "12x60"]);
+    let output = super::cli::ae()
+        .env("AE_HOME", root)
+        .env("CONFIG_FILE", root.join("config"))
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", root.join("sock"))
+        .env("TMUX", format!("{},1,0", root.join("sock").display()))
+        .env("TMUX_PANE", &tool.pane)
+        .arg("_console")
+        .output()
+        .expect("console opens in private terminal");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let panes = tmux(&[
+        "list-panes",
+        "-s",
+        "-t",
+        name,
+        "-F",
+        "#{pane_id}|#{@ae_console}",
+    ]);
+    let pane = panes
+        .lines()
+        .find_map(|row| {
+            let (pane, stamp) = row.split_once('|')?;
+            (stamp == UUID).then(|| pane.to_owned())
+        })
+        .expect("stamped console pane");
+    assert_eq!(
+        tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{pane_width}x#{pane_height}"
+        ])
+        .trim(),
+        "12x60",
+        "narrow fixture"
+    );
+    pane
+}
+
+fn narrow_composer_snapshot(drawn: bool) -> (Vec<String>, (usize, usize)) {
+    const BODY: &str = "QZXQZXQZXQZXQZXQZ";
+    // Equal-length session names keep the headline's physical wrapping equal.
+    let tool = super::deliver::Rig::new(if drawn { "lookdrawn" } else { "lookplain" }, "codex", 0);
+    let root = tool.dir.parent().expect("sessions").parent().expect("root");
+    let tmux = |tail: &[&str]| pane_look_tmux(root, tail);
+    let pane = open_look_composer(&tool, drawn, BODY);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let screen = loop {
+        let screen = tmux(&["capture-pane", "-p", "-t", &pane]);
+        let literal: String = screen
+            .chars()
+            .filter(|ch| matches!(ch, 'Q' | 'Z' | 'X'))
+            .collect();
+        if screen.contains("to lead>") && literal == BODY {
+            break screen;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "literal draft readiness: {screen}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let raw = tmux(&["capture-pane", "-e", "-p", "-t", &pane]);
+    if drawn {
+        assert_eq!(
+            colour_of(&raw, "to lead>"),
+            rgb(ae::theme::Palette::DARCULA.title),
+            "real prompt painted"
+        );
+    } else {
+        assert!(!raw.contains('\x1b'), "plain comparison has no styling");
+    }
+    let lines: Vec<_> = screen.lines().collect();
+    let first = lines
+        .iter()
+        .rposition(|row| row.starts_with("to lead>"))
+        .expect("composer anchor");
+    let rows = lines[first..]
+        .iter()
+        .map(|row| row.trim_end().to_owned())
+        .take_while(|row| !row.is_empty())
+        .collect();
+    let cursor = tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &pane,
+        "#{cursor_x},#{cursor_y}",
+    ]);
+    let (x, y) = cursor.trim().split_once(',').expect("cursor coordinates");
+    (
+        rows,
+        (
+            x.parse().expect("cursor column"),
+            y.parse().expect("cursor row"),
+        ),
+    )
+}
+
+#[test]
+fn chat_look_dressed_narrow_pane_keeps_plain_composer_rows_and_cursor() {
+    let (plain_rows, plain_cursor) = narrow_composer_snapshot(false);
+    let expected = [
+        "to lead> QZX",
+        "         QZX",
+        "         QZX",
+        "         QZX",
+        "         QZX",
+        "         QZ",
+    ];
+    assert_eq!(
+        plain_rows, expected,
+        "plain narrow draft uses terminal cells"
+    );
+    assert_eq!(plain_cursor.0, 11, "nine-cell indent plus final two cells");
+    let (drawn_rows, drawn_cursor) = narrow_composer_snapshot(true);
+    assert_eq!(
+        drawn_rows, plain_rows,
+        "SGR cannot add composer cells or rows"
+    );
+    assert_eq!(
+        drawn_cursor, plain_cursor,
+        "SGR cannot move physical cursor"
+    );
+}
+
 impl Rig {
     fn prepare_input(&self) {
         self.prepare_follow(false);
