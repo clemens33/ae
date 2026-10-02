@@ -832,4 +832,44 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn each_record_without_a_string_type_closes_the_window_by_itself() {
+        for shape in [
+            r#"{"typo":"user"}"#,
+            r#"{"type":7}"#,
+            r#"{"type":null}"#,
+            "[]",
+            "7",
+            r#""user""#,
+        ] {
+            let lines = [
+                user(r#""typed""#),
+                said("kept"),
+                shape.to_owned(),
+                said("dropped"),
+            ];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{shape}");
+            let (all, _) = read_lines_with(&lines, true);
+            let bodies: Vec<&str> = all.iter().map(|row| row.body.as_str()).collect();
+            assert_eq!(bodies, ["typed", "kept", "dropped"], "--all skips {shape}");
+            assert!(
+                all.iter()
+                    .all(|row| row.role != crate::board::Role::Boundary)
+            );
+        }
+        let lines = [
+            user(r#""typed""#),
+            said("kept"),
+            r#"{"type":"summary"}"#.to_owned(),
+            said("still"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            replies_to_human(&lines),
+            ["H:typed", "A:kept", "A:still"],
+            "a record of another type is no turn"
+        );
+    }
 }

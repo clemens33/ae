@@ -736,4 +736,32 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn each_record_the_reader_cannot_classify_closes_the_window_by_itself() {
+        let record = |payload: &str| {
+            format!(r#"{{"timestamp":"{TS}","type":"response_item","payload":{payload}}}"#)
+        };
+        let shapes = [
+            r#"{"timestamp":"2026-09-16T09:00:00.500Z"}"#.to_owned(),
+            r#"{"type":7}"#.to_owned(),
+            format!(r#"{{"timestamp":"{TS}","type":"response_item"}}"#),
+            record("{}"),
+            record(r#"{"type":"message"}"#),
+            record(r#"{"type":"message","role":7}"#),
+            record(r#"{"type":"message","role":null}"#),
+        ];
+        for shape in shapes {
+            let lines = [typed("typed"), said("kept"), shape.clone(), said("dropped")];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{shape}");
+            let (all, _) = read_lines_with(&lines, true);
+            let bodies: Vec<&str> = all.iter().map(|row| row.body.as_str()).collect();
+            assert_eq!(bodies, ["typed", "kept", "dropped"], "--all skips {shape}");
+            assert!(
+                all.iter()
+                    .all(|row| row.role != crate::board::Role::Boundary)
+            );
+        }
+    }
 }
