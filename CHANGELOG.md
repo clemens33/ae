@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.12] - 2026-10-02
+- Pin Claude mid-turn reply visibility
+- **board**: Read a line typed mid-turn from its absorbed queue record
+
 ## [v2026.10.11] - 2026-10-02
 - Bound every cargo-mutants run in config: two tests, a 60 s kill and an RSS watcher
 
