@@ -14,6 +14,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ae::console::input::{Effect, Input, Reading};
 use ae::events::Event;
 
 const UUID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
@@ -183,6 +184,18 @@ impl Rig {
 
     fn key(&self, key: &str) {
         self.tmux(&["send-keys", "-t", &self.pane, key]);
+    }
+
+    fn cursor(&self) -> (usize, usize) {
+        let at = self.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &self.pane,
+            "#{cursor_x},#{cursor_y}",
+        ]);
+        let (x, y) = at.trim().split_once(',').expect("cursor coordinates");
+        (x.parse().expect("x"), y.parse().expect("y"))
     }
 
     fn submit(&self, literal: &str) {
@@ -583,4 +596,209 @@ fn resizing_below_the_old_prompt_width_erases_old_rows_and_keeps_the_lane() {
         "widen does not duplicate old draft: {screen}"
     );
     assert!(screen.contains("vvv"), "widen keeps lane: {screen}");
+}
+#[test]
+fn the_visible_cursor_moves_left_on_a_wrapped_row_and_edit_inserts_there() {
+    let rig = Rig::new("p36cursor", 40, 30);
+    let body = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJK";
+    rig.paste(body);
+    let want = rows(body, 40);
+    rig.wait("wrapped draft", |screen| contains_rows(screen, &want));
+    let (x, y) = rig.cursor();
+    assert_eq!(
+        x, 15,
+        "six characters on continuation after nine-cell indent"
+    );
+    rig.key("Left");
+    rig.wait("cursor changed", |_| rig.cursor() == (14, y));
+    rig.paste("!");
+    let edited = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ!K";
+    rig.wait("insert before final K", |screen| {
+        contains_rows(screen, &rows(edited, 40))
+    });
+    rig.submit(edited);
+}
+
+fn edited(chunks: &[&[u8]]) -> Effect {
+    let now = Instant::now();
+    let mut input = Input::new(vec!["lead".to_owned(), "colead".to_owned()]);
+    let _ = input.tick(Reading::Owner, now);
+    for chunk in chunks {
+        assert!(input.chunk(chunk, now).is_empty(), "editing never submits");
+    }
+    let got = input.chunk(b"\r", now);
+    assert_eq!(got.len(), 1, "one Enter sends one whole draft: {got:?}");
+    got.into_iter().next().expect("one effect")
+}
+
+fn ask(body: &str) -> Effect {
+    Effect::Ask {
+        raw: body.as_bytes().to_vec(),
+        seat: "lead".to_owned(),
+        body: body.to_owned(),
+    }
+}
+
+#[test]
+fn left_right_insert_delete_and_backspace_edit_utf8_at_the_cursor() {
+    // a é 中 z -> left twice -> insert ! -> delete 中 -> backspace !
+    // -> right across z -> insert ?; untouched é remains byte-for-byte.
+    assert_eq!(
+        edited(&[
+            "aé中z".as_bytes(),
+            b"\x1b[D\x1b[D",
+            b"!",
+            b"\x1b[3~",
+            b"\x7f",
+            b"\x1b[C",
+            b"?"
+        ]),
+        ask("aéz?")
+    );
+}
+
+#[test]
+fn home_end_and_control_a_e_move_across_the_whole_multiline_draft() {
+    for (home, end) in [
+        (b"\x1b[H".as_slice(), b"\x1b[F".as_slice()),
+        (b"\x01", b"\x05"),
+        (b"\x1bOH", b"\x1bOF"),
+        (b"\x1b[1~", b"\x1b[4~"),
+    ] {
+        assert_eq!(
+            edited(&[b"\x1b[200~alpha\nbeta\x1b[201~", home, b"!", end, b"?"]),
+            ask("!alpha\nbeta?")
+        );
+    }
+}
+
+#[test]
+fn navigation_sequences_split_across_reads_still_edit_one_literal_draft() {
+    // Unsupported keys are consumed whole. A suffix-based CSI-D matcher
+    // would move Left for 1;5D and insert before c instead of appending.
+    assert_eq!(
+        edited(&[
+            b"abc",
+            b"\x1b[1;5D",
+            b"\x1b[A",
+            b"\x1bOA",
+            b"\x1b[2~",
+            b"\x1b[5~",
+            b"!"
+        ]),
+        ask("abc!")
+    );
+    assert_eq!(
+        edited(&[b"abc", b"\x1b", b"[", b"D", b"!", b"\x1b[", b"3", b"~"]),
+        ask("ab!")
+    );
+}
+
+#[test]
+fn cursor_boundaries_are_noops_and_motions_cross_a_pasted_newline_as_one_unit() {
+    assert_eq!(
+        edited(&[
+            b"\x1b[200~ab\ncd\x1b[201~",
+            b"\x1b[H",
+            b"\x1b[D",
+            b"\x7f",
+            b"\x1b[F",
+            b"\x1b[C",
+            b"\x1b[3~",
+            b"\x1b[D",
+            b"\x1b[D",
+            b"\x1b[D",
+            b"\x1b[C",
+            b"\x1b[D",
+            b"!"
+        ]),
+        ask("ab!\ncd")
+    );
+}
+
+#[test]
+fn home_keeps_a_cursor_above_the_tail_visible_and_insertion_edits_that_row() {
+    let rig = Rig::new("p36homewindow", 40, 30);
+    let body = (0..14)
+        .map(|n| format!("edit-row-{n:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    rig.paste(&body);
+    rig.wait("initial tail window", |screen| {
+        screen.contains("lines above") && screen.contains("edit-row-13")
+    });
+    rig.key("Home");
+    let screen = rig.wait("home reveals first row and below marker", |screen| {
+        screen.contains("to lead> edit-row-00") && screen.contains("lines below")
+    });
+    assert!(
+        !screen.contains("edit-row-13"),
+        "tail lies below window: {screen}"
+    );
+    let prompt_y = screen
+        .lines()
+        .position(|row| row.starts_with("to lead> edit-row-00"))
+        .expect("cursor row");
+    assert_eq!(
+        rig.cursor(),
+        (9, prompt_y),
+        "Home terminal cursor at first draft byte"
+    );
+    rig.paste("!");
+    rig.wait("insertion at first row", |screen| {
+        screen.contains("to lead> !edit-row-00")
+    });
+    rig.key("End");
+    rig.wait("end reveals edited draft tail", |screen| {
+        screen.contains("lines above") && screen.contains("edit-row-13")
+    });
+    rig.submit(&format!("!{body}"));
+}
+
+#[test]
+fn resizing_with_an_interior_unicode_cursor_keeps_one_draft_and_the_lane() {
+    let rig = Rig::new("p36interior", 40, 30);
+    rig.lane_reply("vvv");
+    rig.wait("nearby lane", |screen| screen.contains("vvv"));
+    let body = "中中中中中中中中中中中中ABCDEFGHIJK-END";
+    rig.paste(body);
+    rig.wait("wrapped true-wide draft", |screen| {
+        screen.contains("HIJK-END")
+    });
+    rig.key("Home");
+    rig.wait("home on first row", |_| rig.cursor().0 == 9);
+    for _ in 0..5 {
+        rig.key("Right");
+    }
+    rig.wait("cursor after five CJK scalars", |_| rig.cursor().0 == 19);
+    rig.resize(24, 30);
+    let at24 = vec![
+        "to lead> 中中中中中中中".to_owned(),
+        "         中中中中中ABCDE".to_owned(),
+        "         FGHIJK-END".to_owned(),
+    ];
+    let screen = rig.wait("interior shrink rewrap", |screen| {
+        contains_rows(screen, &at24)
+    });
+    assert_eq!(
+        screen.matches('中').count(),
+        12,
+        "no old true-wide pieces: {screen}"
+    );
+    assert_eq!(screen.matches("-END").count(), 1, "one tail: {screen}");
+    assert!(
+        screen.contains("vvv"),
+        "interior resize preserves lane: {screen}"
+    );
+    let prompt_y = screen
+        .lines()
+        .position(|row| row.starts_with(PROMPT))
+        .expect("prompt row");
+    assert_eq!(
+        rig.cursor(),
+        (19, prompt_y),
+        "cursor remains after five CJK scalars"
+    );
+    rig.paste("!");
+    rig.submit("中中中中中!中中中中中中中ABCDEFGHIJK-END");
 }
