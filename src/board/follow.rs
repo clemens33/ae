@@ -741,7 +741,7 @@ mod tests {
         let inputs = Inputs {
             home: Some(root.as_path()),
             sessions: &sessions,
-            assistant: false,
+            replies: crate::board::Replies::Off,
         };
         let first = observe(&inputs, None);
         assert_eq!(first.rows.len(), 2, "current plus its predecessor");

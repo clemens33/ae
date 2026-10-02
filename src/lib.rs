@@ -2524,7 +2524,11 @@ fn run_board(
     let inputs = board::Inputs {
         home: home.as_deref(),
         sessions: &selected,
-        assistant: args.assistant,
+        replies: if args.assistant {
+            board::Replies::All
+        } else {
+            board::Replies::Off
+        },
     };
     let observation = board::observe(&inputs, args.since_micros);
     let rendered = board::render(&observation, args.json, args.lines);

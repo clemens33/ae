@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::board::{self, Inputs, Row, follow::Follow, terminal_text};
+use crate::board::{self, Inputs, Replies, Row, follow::Follow, terminal_text};
 use crate::events::Event;
 use crate::store::{self, Oversized, SourceRead};
 use crate::{
@@ -75,7 +75,7 @@ struct Console {
     name: String,
     dir: PathBuf,
     uuid: String,
-    assistant: bool,
+    replies: Replies,
     home: Option<PathBuf>,
     printed: view::Printed,
     rows: Vec<Row>,
@@ -126,7 +126,7 @@ impl Console {
         let inputs = Inputs {
             home: self.home.as_deref(),
             sessions: &sessions,
-            assistant: self.assistant,
+            replies: self.replies,
         };
         let seen = match self.follow.as_mut() {
             None => {
@@ -306,7 +306,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         uuid: recorded_uuid(&dir),
         name,
         dir,
-        assistant: args.all,
+        replies: if args.all { Replies::All } else { Replies::Off },
         home: doors::home(),
         printed: view::Printed::default(),
         rows: Vec::new(),
@@ -394,7 +394,7 @@ fn pump(
 
 #[cfg(test)]
 pub(super) mod tests {
-    use super::{Console, lane::Body, view::Printed};
+    use super::{Console, Replies, lane::Body, view::Printed};
     use crate::events::Event;
     use std::fs;
     use std::path::PathBuf;
@@ -420,7 +420,7 @@ pub(super) mod tests {
                 name: "s".to_owned(),
                 dir: self.0.join("s"),
                 uuid: ID.to_owned(),
-                assistant: false,
+                replies: Replies::Off,
                 home: Some(self.0.clone()),
                 printed: Printed::default(),
                 rows: Vec::new(),

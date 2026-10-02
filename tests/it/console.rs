@@ -43,7 +43,7 @@ fn a_seat_filtered_read_yields_lead_human_turns_and_never_a_marked_or_worker_one
     let inputs = Inputs {
         home: Some(&root),
         sessions: &sessions,
-        assistant: false,
+        replies: board::Replies::Off,
     };
     let bodies = |keep: &dyn Fn(&ae::meta::RosterEntry) -> bool| -> Vec<String> {
         let seen = board::observe_selected(&inputs, None, None, keep);

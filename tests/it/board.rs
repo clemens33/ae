@@ -96,7 +96,11 @@ fn observe_with(
         &Inputs {
             home: Some(root),
             sessions: &inputs,
-            assistant,
+            replies: if assistant {
+                board::Replies::All
+            } else {
+                board::Replies::Off
+            },
         },
         since,
     )
@@ -1847,7 +1851,7 @@ fn dividers_mark_utc_days_and_follow_polls_carry_the_day() {
     let inputs = Inputs {
         home: Some(root.as_path()),
         sessions: &sessions,
-        assistant: false,
+        replies: board::Replies::Off,
     };
     let first_pass = board::observe(&inputs, None);
     let mut follow = board::follow::Follow::seeded(&first_pass.seeds, &first_pass.coverage, None);
@@ -2396,7 +2400,7 @@ fn observe_with_a_matching_supplied_snapshot_matches_the_disk_read() {
         &Inputs {
             home: Some(root.as_path()),
             sessions: &inputs,
-            assistant: false,
+            replies: board::Replies::Off,
         },
         None,
         Some(&board::SuppliedMeta {
@@ -2505,7 +2509,7 @@ fn observe_ignores_a_supplied_snapshot_bound_elsewhere() {
         &Inputs {
             home: Some(root.as_path()),
             sessions: &inputs,
-            assistant: false,
+            replies: board::Replies::Off,
         },
         None,
         Some(&board::SuppliedMeta {

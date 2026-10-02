@@ -37,6 +37,27 @@ pub enum Role {
     Assistant,
 }
 
+/// Which of the model's replies a read keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Replies {
+    /// None: the board's default.
+    #[default]
+    Off,
+    /// Every text reply (`ae board --assistant`, `ae console --all`).
+    All,
+    /// Only a reply that answers a line the human typed in the seat's pane:
+    /// from that line to the next user turn of any kind in the transcript.
+    ToHuman,
+}
+
+impl Replies {
+    /// Whether the readers' reply path is live at all.
+    #[must_use]
+    pub(crate) fn read(self) -> bool {
+        self != Self::Off
+    }
+}
+
 /// One board row: one turn — a human's, or with `--assistant` a model's text
 /// reply — from one harness transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +337,13 @@ impl Streamed {
         self
     }
 
+    /// Bind the reply mode to this read: any mode but [`Replies::Off`] lets
+    /// the readers emit the model's replies.
+    #[must_use]
+    pub fn with_replies(self, replies: Replies) -> Self {
+        self.with_assistant(replies.read())
+    }
+
     /// Bind whether the caller already produced assistant rows for this
     /// read: the history reader's missing-replies line answers to it.
     #[must_use]
@@ -510,8 +538,8 @@ pub struct Inputs<'a> {
     pub home: Option<&'a Path>,
     /// The sessions to read, caller order.
     pub sessions: &'a [crate::usage::SessionInput],
-    /// `--assistant`: read the model's replies (text only) beside the humans.
-    pub assistant: bool,
+    /// Which of the model's replies (text only) to read beside the humans.
+    pub replies: Replies,
 }
 
 /// One seat's read facts, exactly as a read observed them: the follow seed, so
@@ -618,7 +646,7 @@ pub fn observe_selected(
                 session,
                 entry,
                 inputs.home,
-                inputs.assistant,
+                inputs.replies,
                 &priors,
                 &mut rows,
                 &mut coverage,
@@ -669,7 +697,7 @@ pub(crate) fn observe_seat_turns(
         session,
         entry,
         home,
-        true,
+        Replies::All,
         0,
         &mut rows,
         &mut coverage,
@@ -692,13 +720,13 @@ fn observe_seat(
     session: &crate::usage::SessionInput,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
-    assistant: bool,
+    replies: Replies,
     priors: &[&str],
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
     seeds: &mut Vec<SeatSeed>,
 ) -> Vec<Row> {
-    let mut hidden = observe_generation(session, entry, home, assistant, 0, rows, coverage, seeds);
+    let mut hidden = observe_generation(session, entry, home, replies, 0, rows, coverage, seeds);
     let mut generation: u8 = 0;
     for element in priors.iter().rev().take(crate::meta::PRIOR_MAX) {
         generation += 1;
@@ -725,7 +753,7 @@ fn observe_seat(
             None => prior.harness_session = Some((*element).to_owned()),
         }
         hidden.extend(observe_generation(
-            session, &prior, home, assistant, generation, rows, coverage, seeds,
+            session, &prior, home, replies, generation, rows, coverage, seeds,
         ));
     }
     hidden
@@ -747,7 +775,7 @@ fn observe_generation(
     session: &crate::usage::SessionInput,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
-    assistant: bool,
+    replies: Replies,
     generation: u8,
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
@@ -771,7 +799,7 @@ fn observe_generation(
     // and `follow_seat` covers it after that. String dispatch, as `reader_for`
     // does: the adapter's own name, never a `ToolKind::` arm.
     if tool.adapter().name == "opencode" {
-        let (seat_rows, seat_coverage) = read_opencode(&actor, entry, tool, assistant);
+        let (seat_rows, seat_coverage) = read_opencode(&actor, entry, tool, replies.read());
         let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) =
             seat_rows.into_iter().partition(|row| !hidden(row, None));
         for row in &mut seat_rows {
@@ -794,7 +822,7 @@ fn observe_generation(
     // locate, so an invalid id still refuses exactly once): it reports
     // whether assistant rows were produced, and the history stream binds
     // that verdict. With the flag off the leg never runs.
-    let (mut leg_rows, leg_coverage) = if assistant && tool.adapter().name == "agy" {
+    let (mut leg_rows, leg_coverage) = if replies.read() && tool.adapter().name == "agy" {
         read_agy_transcript(&actor, entry, home, tool)
     } else {
         (Vec::new(), Vec::new())
@@ -802,7 +830,7 @@ fn observe_generation(
     let streamed = match stream_transcript(&path, &metadata, 0) {
         Ok(streamed) => streamed
             .for_seat(entry.harness_session.as_deref().unwrap_or_default())
-            .with_assistant(assistant)
+            .with_replies(replies)
             .with_assistant_rows_found(!leg_rows.is_empty()),
         Err(failure) => {
             // A failed history door refuses the generation — but the leg
@@ -1127,7 +1155,7 @@ pub fn follow_poll_selected(
                 entry,
                 inputs.home,
                 follow,
-                inputs.assistant,
+                inputs.replies,
             ));
         }
     }
@@ -1152,7 +1180,7 @@ fn follow_seat(
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     follow: &follow::Follow,
-    assistant: bool,
+    replies: Replies,
 ) -> follow::Snapshot {
     let actor = format!("{}:{}", session.name, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
@@ -1183,7 +1211,7 @@ fn follow_seat(
     // polls tail history only. Store EXISTENCE (not a row count — the poll
     // reads nothing) decides the steady line; the reader's wins-rule keeps
     // it singular, and an empty store's first pass already said "no records".
-    let read_once = agy_read_once(assistant, tool.adapter().name == "agy", || {
+    let read_once = agy_read_once(replies.read(), tool.adapter().name == "agy", || {
         matches!(
             locate_agy_transcript(
                 tool,
@@ -1202,7 +1230,7 @@ fn follow_seat(
                 .map(|streamed| {
                     streamed
                         .for_seat(entry.harness_session.as_deref().unwrap_or_default())
-                        .with_assistant(assistant)
+                        .with_replies(replies)
                         .with_assistant_read_once(read_once)
                 }),
         ),
@@ -2083,7 +2111,7 @@ mod tests {
             &session,
             entry,
             Some(root),
-            false,
+            super::Replies::Off,
             priors,
             &mut rows,
             &mut coverage,
@@ -2158,7 +2186,7 @@ mod tests {
         let inputs = crate::board::Inputs {
             home: Some(root.as_path()),
             sessions: &sessions,
-            assistant: false,
+            replies: crate::board::Replies::Off,
         };
         let mut follow = super::follow::Follow::seeded(&[], &[], None);
         let batch = super::follow_poll(&inputs, &mut follow);
@@ -2215,7 +2243,7 @@ mod tests {
         let inputs = crate::board::Inputs {
             home: Some(root.as_path()),
             sessions: &sessions,
-            assistant: true,
+            replies: crate::board::Replies::All,
         };
         let mut follow = super::follow::Follow::seeded(&[], &[], None);
         let batch = super::follow_poll(&inputs, &mut follow);
@@ -2231,7 +2259,7 @@ mod tests {
         let off = crate::board::Inputs {
             home: Some(root.as_path()),
             sessions: &sessions,
-            assistant: false,
+            replies: crate::board::Replies::Off,
         };
         let mut follow = super::follow::Follow::seeded(&[], &[], None);
         let batch = super::follow_poll(&off, &mut follow);
@@ -2296,7 +2324,7 @@ mod tests {
         let inputs = crate::board::Inputs {
             home: Some(root.as_path()),
             sessions: &sessions,
-            assistant: true,
+            replies: crate::board::Replies::All,
         };
         let mut follow = super::follow::Follow::seeded(&[], &[], None);
         let batch = super::follow_poll(&inputs, &mut follow);

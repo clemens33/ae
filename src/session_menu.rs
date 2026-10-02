@@ -1026,7 +1026,7 @@ pub fn board_cells(
     let inputs = crate::board::Inputs {
         home,
         sessions: &[input],
-        assistant: false,
+        replies: crate::board::Replies::Off,
     };
     let MetaSource::Parsed { meta: held, .. } = meta else {
         let reason = correlation_gap(option, meta).unwrap_or_else(|| "meta: unreadable".to_owned());
