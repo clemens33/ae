@@ -149,6 +149,8 @@ impl Rig {
             .as_secs();
         fs::write(rig.tool.dir.join(".launch-attempt"), epoch.to_string()).expect("launch stamp");
         rig.tmux(&["set-option", "-t", &rig.name, "@ae_session_uuid", UUID]);
+        rig.tmux(&["set-option", "-t", &rig.name, "@ae_look", "off"]);
+        rig.tmux(&["set-option", "-t", &rig.name, "@ae_motion", "off"]);
         rig.tmux(&[
             "set-option",
             "-t",
