@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.6] - 2026-10-02
+- **console**: Pin draft restore and sticky speaker
+- Restore a kept console draft at owner promotion and keep the speaker between asks
+- Describe the console_command harness as it is now
+- Pin the console promotion edge so a draft is restored once per promotion
+
 ## [v2026.10.5] - 2026-10-01
 - **console**: Specify binding proof and leadership return contract
 - Bind console answers to the asked seat and label replies after a reseat
