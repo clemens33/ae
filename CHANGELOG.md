@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.10] - 2026-10-02
+- **chat**: RED acceptance for polish #5 order and #6 word wrap
+- **chat**: Correct wide-char and full-final-row wrap oracles
+- **chat**: Phase-2 hold, bound and flush acceptance
+- **chat**: Order ask outcomes and wrap composer words
+
 ## [v2026.10.9] - 2026-10-02
 - Rename the public console feature to chat
 
