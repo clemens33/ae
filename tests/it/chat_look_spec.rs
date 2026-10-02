@@ -353,6 +353,21 @@ fn chat_look_cli_tty_uses_fixed_speaker_colours_bars_dim_time_and_bold_you() {
     let lead = colour_of(&text, "said lead");
     let colead = colour_of(&text, "said colead");
     let human = colour_of(&text, "you → lead");
+    assert_eq!(
+        lead,
+        rgb(ae::theme::Palette::DARCULA.working),
+        "main seat wears lead hue"
+    );
+    assert_eq!(
+        colead,
+        rgb(ae::theme::Palette::DARCULA.stale),
+        "other pair seat wears colead hue"
+    );
+    assert_eq!(
+        human,
+        rgb(ae::theme::Palette::DARCULA.title),
+        "human wears title hue"
+    );
     assert_ne!(lead, colead, "speakers remain distinct");
     assert_ne!(human, lead, "human remains distinct");
     assert_ne!(human, colead, "human remains distinct");
