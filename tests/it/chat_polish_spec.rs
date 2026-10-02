@@ -353,11 +353,12 @@ fn a_hard_break_scopes_word_wrap_to_its_segment() {
             "         bb cc",
             "         dd ",
             "         ee ff",
+            "         ",
         ],
-        "no row crosses the newline"
+        "no row crosses the newline; a full final row leaves the end cursor on the empty row after it"
     );
-    assert_eq!(view.cursor_row, 3);
-    assert_eq!(view.before, "         ee ff");
+    assert_eq!(view.cursor_row, 4);
+    assert_eq!(view.before, "         ");
 }
 
 #[test]
@@ -370,9 +371,12 @@ fn wide_characters_still_break_early_at_spaces() {
             height: 24,
         })
         .expect("taking input");
-    assert_eq!(view.rows, vec!["to lead> aa ", "         é bb"]);
-    assert_eq!(view.cursor_row, 1);
-    assert_eq!(view.before, "         é bb");
+    assert_eq!(
+        view.rows,
+        vec!["to lead> aa ", "         éé ", "         bb"]
+    );
+    assert_eq!(view.cursor_row, 2);
+    assert_eq!(view.before, "         bb");
 }
 
 #[test]
