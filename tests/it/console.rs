@@ -101,6 +101,7 @@ fn lead_pair_rig(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         user("2026-09-16T09:00:00Z", "human one"),
         human("2026-09-16T09:01:30Z", wrapped),
         human("2026-09-16T09:02:00Z", &marked),
+        r#"{"type":"assistant","timestamp":"2026-09-16T09:02:30Z","message":{"role":"assistant","content":[{"type":"text","text":"answer to worker turn"}]}}"#.to_owned(),
         human("2026-09-16T09:03:00Z", "code:\n\tindented\n  two"),
     ];
     plant_transcript(&store, "work", LEAD_ID, &lead);
@@ -125,7 +126,6 @@ fn lead_pair_rig(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         claude_roster("worker.1", "scout", SCOUT_ID, &store)
     );
     let dir = plant_session(&root, "one", &roster);
-    let hostile = "telegram:9\u{1b}]52;c;AAAA\u{7}";
     let journal = [
         line(
             "2026-09-16T09:10:00Z",
@@ -136,7 +136,7 @@ fn lead_pair_rig(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         ),
         line(
             "2026-09-16T09:10:30Z",
-            hostile,
+            "telegram:9\u{1b}]52;c;AAAA\u{7}",
             "send",
             "colead\u{1b}[2J",
             "hi\rthere",
@@ -277,12 +277,13 @@ fn the_console_prints_the_lane_golden_and_writes_nothing() {
         before
     );
     assert!(
-        !stdout.contains("colead answers"),
-        "assistant rows are off by default"
+        stdout.contains("colead answers") && !stdout.contains("answer to worker turn"),
+        "human pane replies show; replies to ae-marked turns stay hidden"
     );
     let (_, all, _) = console(&root, &["one", "--all"]);
     assert!(
-        all.contains("## 09:04:30 colead assistant (transcript)\n  colead answers\n"),
+        all.contains("## 09:04:30 colead assistant (transcript)\n  colead answers\n")
+            && all.contains("answer to worker turn"),
         "{all}"
     );
     let _ = std::fs::remove_dir_all(&root);

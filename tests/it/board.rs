@@ -986,24 +986,24 @@ const AGY_ID: &str = "0199c0de-ffff-4890-abcd-ef0123456789";
 const AGY_OTHER: &str = "0199c0de-0000-4890-abcd-ef0123456790";
 
 /// One synthetic agy history record: `{id}` absent when no conversation id.
-fn agy_record(id: Option<&str>, body: &str, millis: i64) -> String {
+pub(super) fn agy_record(id: Option<&str>, body: &str, millis: i64) -> String {
     let id = id.map_or(String::new(), |id| format!(r#""conversationId":"{id}","#));
     format!(r#"{{"display":"{body}","timestamp":{millis},{id}"workspace":"/work"}}"#)
 }
 
-fn agy_roster(slot: &str, seat: &str, id: &str) -> String {
+pub(super) fn agy_roster(slot: &str, seat: &str, id: &str) -> String {
     format!("seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=agy\n")
 }
 
 /// One synthetic agy planner reply at the fixed stamp; odd shapes inline.
-fn agy_tr(step: u64, body: &str) -> String {
+pub(super) fn agy_tr(step: u64, body: &str) -> String {
     format!(
         r#"{{"step_index":{step},"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"{body}"}}"#
     )
 }
 
 /// Plant `brain/<id>/.system_generated/logs/<file>` with these lines.
-fn plant_agy_transcript(root: &Path, id: &str, file: &str, lines: &[String]) {
+pub(super) fn plant_agy_transcript(root: &Path, id: &str, file: &str, lines: &[String]) {
     let dir = root
         .join(".gemini/antigravity-cli")
         .join("brain")
@@ -1882,7 +1882,7 @@ const OC_SID: &str = "ses_00000000000000000000000000";
 
 /// One synthetic `opencode export` document; `messages` are hand-written
 /// message records, never copied transcript text.
-fn export_doc(id: &str, messages: &[String]) -> String {
+pub(super) fn export_doc(id: &str, messages: &[String]) -> String {
     format!(
         r#"{{"info":{{"id":"{id}","slug":"probe","directory":"/probe"}},"messages":[{}]}}"#,
         messages.join(",")
@@ -1913,7 +1913,7 @@ fn oc_roster(slot: &str, seat: &str, id: &str) -> String {
 }
 
 /// Plant `<root>/bin/opencode`, executable, with this exact script body.
-fn fake_opencode(root: &Path, script: &str) {
+pub(super) fn fake_opencode(root: &Path, script: &str) {
     use std::os::unix::fs::PermissionsExt;
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).expect("fake bin dir");
@@ -1923,7 +1923,7 @@ fn fake_opencode(root: &Path, script: &str) {
 }
 
 /// An `opencode` that answers every import with one export document.
-fn exporting(export: &str) -> String {
+pub(super) fn exporting(export: &str) -> String {
     format!("#!/bin/sh\ncat <<'JSON'\n{export}\nJSON\n")
 }
 

@@ -14,6 +14,9 @@ coverage incomplete: say — 1 line from other seats not shown
 ## 09:04:00 colead pane (transcript)
   colead words
 
+## 09:04:30 colead assistant (transcript)
+  colead answers
+
 ## 09:10:00 telegram:42 → lead
   deploy now?
 
