@@ -364,7 +364,7 @@ fn pump(
                         console.name
                     );
                     if let Some(term) = term.as_deref_mut() {
-                        write!(out, "{}", term.settle())?;
+                        write!(out, "{}{}", term.settle(), console.printed.flush_outcomes())?;
                         out.flush()?;
                     }
                     writeln!(err, "{}", terminal_text(&text))?;

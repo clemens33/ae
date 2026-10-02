@@ -352,6 +352,8 @@ struct Rows {
     done: Vec<String>,
     line: String,
     used: usize,
+    /// Shown units of the current hard-break segment, with draft byte offsets.
+    pending: Vec<(usize, char)>,
     /// The byte offset the cursor is at.
     cursor: usize,
     /// The row and text before the cursor, once its offset is reached.
@@ -380,6 +382,35 @@ impl Rows {
         }
     }
 
+    /// Finalize rows before locating the cursor: an overflowing prefix ends
+    /// at its last space, otherwise at its last fitting character.
+    fn flush(&mut self) {
+        let units = std::mem::take(&mut self.pending);
+        let mut start = 0;
+        while start < units.len() {
+            let (mut end, mut used, mut space) = (start, 0, None);
+            while end < units.len() && used + cells(units[end].1) <= self.area {
+                used += cells(units[end].1);
+                if units[end].1 == ' ' {
+                    space = Some(end + 1);
+                }
+                end += 1;
+            }
+            if end < units.len() {
+                end = space.unwrap_or(end);
+            }
+            for &(at, shown) in &units[start..end] {
+                self.mark(at);
+                self.line.push(shown);
+                self.used += cells(shown);
+            }
+            start = end;
+            if start < units.len() {
+                self.end_row();
+            }
+        }
+    }
+
     /// The unit at byte `at`: `orig` as typed, `shown` as drawn. A two-cell one
     /// in a one-cell area is drawn as `?`: no row is wider than its area.
     fn unit(&mut self, at: usize, orig: char, mut shown: char) {
@@ -388,10 +419,12 @@ impl Rows {
         }
         match orig {
             '\r' => {
+                self.flush();
                 self.mark(at);
                 self.cr = true;
             }
             '\n' => {
+                self.flush();
                 self.mark(at);
                 self.end_row();
             }
@@ -399,16 +432,10 @@ impl Rows {
                 if shown == '\t' {
                     shown = ' ';
                 }
-                let mut width = cells(shown);
-                if width > self.area {
-                    (shown, width) = ('?', 1);
+                if cells(shown) > self.area {
+                    shown = '?';
                 }
-                if self.used + width > self.area {
-                    self.end_row();
-                }
-                self.mark(at);
-                self.line.push(shown);
-                self.used += width;
+                self.pending.push((at, shown));
             }
         }
     }
@@ -416,6 +443,7 @@ impl Rows {
     /// The rows, the cursor row and its text before it; a cursor at the end of
     /// a full row is on the empty row after it.
     fn finish(mut self, len: usize) -> (Vec<String>, usize, String) {
+        self.flush();
         if std::mem::take(&mut self.cr) {
             self.end_row();
         }
@@ -581,6 +609,8 @@ pub enum Effect {
     /// Bracketed paste on or off, written before the line that announces it.
     Paste(bool),
     Print(String),
+    /// Lane text whose header, body and outcome keep their line breaks.
+    Lane(String),
     /// Submit `raw`, the entered bytes, as an ask of `seat`.
     Ask {
         raw: Vec<u8>,
@@ -897,6 +927,7 @@ pub fn paint(
     for effect in effects {
         match effect {
             Effect::Paste(on) => out.push_str(if *on { PASTE_ON } else { PASTE_OFF }),
+            Effect::Lane(text) => out.push_str(&terminal_text(text)),
             Effect::Print(said) => {
                 out.push_str(&terminal_text(said).replace(['\n', '\t'], " "));
                 out.push('\n');
@@ -1581,6 +1612,34 @@ mod tests {
         assert_eq!(
             none, "\x1b[2A\r\x1b[J",
             "a composer that goes is taken away"
+        );
+    }
+
+    #[test]
+    fn lane_effects_keep_header_body_and_outcome_on_separate_inert_lines() {
+        let effects = [Effect::Lane(
+            "## ask\n  q\t\x1b[2J\n  sent id\n\n".to_owned(),
+        )];
+        let out = paint(
+            &mut Screen::default(),
+            "",
+            &effects,
+            None,
+            size(80, 24),
+            None,
+        );
+        assert_eq!(out, "\r\x1b[K## ask\n  q\t\u{fffd}[2J\n  sent id\n\n");
+    }
+
+    #[test]
+    fn tabs_and_repeated_spaces_wrap_without_changing_the_entered_bytes() {
+        let mut composer = drafted(b"aa\tbb  cc");
+        let view = composer.view("", size(5, 24));
+        assert_eq!(view.rows, ["aa ", "bb  ", "cc"]);
+        assert_eq!((view.cursor_row, view.before.as_str()), (2, "cc"));
+        assert_eq!(
+            composer.key(Key::Enter),
+            Some(Entered::Line(b"aa\tbb  cc".to_vec()))
         );
     }
 

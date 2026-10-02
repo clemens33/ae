@@ -58,6 +58,9 @@ The window runs `--input` behind a fixed `stty` wrapper; only the owner chat
 speaker, `@<seat> text` either lead-pair seat, `/close <id>` withdraws an open ask,
 other `/word`s are refused, five asks open at most. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
+Recorded asks show their header and body before the submit result. If the row
+stays missing for two readable passes, the result prints with its request id;
+unknown results and refusals print immediately.
 
 The speaker is the seat of the last `@<seat> text` line that asked (`@<main> text`
 included); it is the prompt (`to <speaker>> `) and where an unprefixed line goes.
@@ -66,6 +69,8 @@ speaks to the main seat (the speaker is process memory only).
 
 The composer shows the whole draft wrapped at the pane's width: the prompt on
 the first row, the rest indented under it, each pasted line break its own row.
+Rows break at the last space that fits; a word longer than a row splits by
+character. Wrapping changes only the display, never the bytes Enter sends.
 It grows to ten rows (fewer in a short pane); a longer draft shows the window
 that holds the cursor's row, with the rows cut off named as `… +N lines above`
 and `… +N lines below`, markers included in the ten. Lane output prints above it — ae

@@ -159,14 +159,14 @@ impl Term {
 
     /// Wait for the terminal until `deadline`; what its input did, every ask
     /// and close already carried out, or `None` when it did nothing.
-    pub(super) fn wait(&mut self, console: &Console, deadline: Instant) -> Option<Vec<Effect>> {
+    pub(super) fn wait(&mut self, console: &mut Console, deadline: Instant) -> Option<Vec<Effect>> {
         let effects = match self.reads.wait(deadline) {
             Got::Read(stamp, bytes) => self.input.chunk(&bytes, stamp),
             Got::Ended => self.input.closed(),
             Got::Due => return None,
         };
         let act = |effect| match effect {
-            Effect::Ask { raw, seat, body } => Effect::Print(self.ask(console, &raw, &seat, body)),
+            Effect::Ask { raw, seat, body } => self.ask(console, &raw, &seat, body),
             Effect::Close(id) => {
                 let owns = || self.owned(console);
                 Effect::Print(match submit::close_owned(&console.dir, &id, owns) {
@@ -236,7 +236,7 @@ impl Term {
     }
 
     /// Carry one ask through the helpers' own tracked path, as the console.
-    fn ask(&self, console: &Console, raw: &[u8], seat: &str, body: String) -> String {
+    fn ask(&self, console: &mut Console, raw: &[u8], seat: &str, body: String) -> Effect {
         let (now, entropy) = (time::Timestamp::now(), crate::entropy());
         let id = tracked::request_id(tracked::Kind::Ask.id_prefix(), now, entropy);
         let sender = tracked::Sender {
@@ -264,9 +264,21 @@ impl Term {
             String::from_utf8_lossy(&said).into_owned()
         };
         let owns = || still(&self.pair, console.seats()).and_then(|()| self.owned(console));
-        match submit::submit(&console.dir, &console.name, raw, &id, owns, deliver) {
-            Ok(outcome) => input::outcome_line(&outcome, seat),
-            Err(why) => format!("refused: {why}"),
+        let outcome = match submit::submit(&console.dir, &console.name, raw, &id, owns, deliver) {
+            Ok(outcome) => outcome,
+            Err(why) => return Effect::Print(format!("refused: {why}")),
+        };
+        let line = input::outcome_line(&outcome, seat);
+        if matches!(outcome, submit::Outcome::Unknown(..)) {
+            return Effect::Print(line);
+        }
+        console.printed.outcome(&id, line);
+        match console.pass() {
+            Ok(text) => Effect::Lane(text),
+            Err(why) => Effect::Lane(format!(
+                "coverage incomplete: {why}\n{}",
+                console.printed.flush_outcomes()
+            )),
         }
     }
 }
@@ -459,7 +471,7 @@ mod tests {
         );
         let meta = |m: &str, c: &str| format!("{head}\nseat.main={m}\nseat.worker.0={c}\n");
         std::fs::write(rig.0.join("s/meta"), meta("lead", "colead")).unwrap();
-        let console = rig.console();
+        let mut console = rig.console();
         let (store, journal) = (crate::store::open(&console.dir), b"{\"ts\":\"x\"}\n");
         std::fs::write(rig.0.join("s/events.jsonl"), journal).unwrap();
         store.publish_console_draft(b"an earlier draft").unwrap();
@@ -482,8 +494,12 @@ mod tests {
             ("lead", "colead", "tmux did not answer who owns the input"),
         ] {
             std::fs::write(rig.0.join("s/meta"), meta(main, colead)).unwrap();
-            let said = term.ask(&console, b"hi", "lead", "hi".to_owned());
-            assert_eq!(said, format!("refused: {why}"), "{main} {colead}");
+            let said = term.ask(&mut console, b"hi", "lead", "hi".to_owned());
+            assert_eq!(
+                said,
+                Effect::Print(format!("refused: {why}")),
+                "{main} {colead}"
+            );
         }
         let (draft, kept) = (store.console_draft().unwrap(), b"an earlier draft".to_vec());
         assert_eq!(
@@ -494,10 +510,31 @@ mod tests {
         assert_eq!(store.container(), journal.to_vec(), "no ask was recorded");
         let deadline = Instant::now() + Duration::from_millis(20);
         assert_eq!(
-            term.wait(&console, deadline),
+            term.wait(&mut console, deadline),
             None,
             "a quiet terminal says nothing"
         );
         assert!(Instant::now() >= deadline, "and says it at its deadline");
+    }
+
+    #[test]
+    fn a_fatal_follow_pass_prints_held_outcomes_before_exiting() {
+        let (_rig, mut console, mut term) = bare_term("term-fatal-hold");
+        console.printed.outcome("id", "sent id".to_owned());
+        std::fs::write(
+            console.dir.join("meta"),
+            "session_id=0199c0de-bbbb-4890-abcd-ef0123456789\n",
+        )
+        .unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code =
+            crate::console::pump(&mut console, Some(&mut term), true, &mut out, &mut err).unwrap();
+        assert_eq!(code, crate::EXIT_UNAVAILABLE);
+        assert_eq!(out, b"sent id\n", "fatal exit never drops a held outcome");
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .contains("no longer follows")
+        );
     }
 }

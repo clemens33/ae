@@ -88,9 +88,41 @@ pub struct Printed {
     open: BTreeMap<String, String>,
     gaps: BTreeSet<String>,
     day: Option<String>,
+    pending: Vec<Pending>,
+    /// Submission ids survive a journal rebase; their outcomes print once.
+    outcomes: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct Pending {
+    id: String,
+    line: String,
+    passes: u8,
 }
 
 impl Printed {
+    /// Keep an outcome until its ask row prints, or two readable passes have
+    /// found no row. Repeated submission ids never queue another outcome.
+    pub fn outcome(&mut self, id: &str, line: String) {
+        if self.outcomes.insert(id.to_owned()) {
+            self.pending.push(Pending {
+                id: id.to_owned(),
+                line,
+                passes: 2,
+            });
+        }
+    }
+
+    /// Flush held outcomes when this follow cannot continue. Their ids stay
+    /// remembered, so a late row or another queue attempt cannot repeat them.
+    pub fn flush_outcomes(&mut self) -> String {
+        let mut out = String::new();
+        for pending in std::mem::take(&mut self.pending) {
+            let _ = writeln!(out, "{}", pending.line);
+        }
+        terminal_text(&out)
+    }
+
     /// Print what `lane` holds that this console has not: `board_gaps` is how
     /// many leading coverage rows are the board's own — its follow already
     /// names each once, so they always print — and the rest are named once.
@@ -121,6 +153,14 @@ impl Printed {
         // Only a lane whose journal was READ can say a card stopped standing; a
         // card that closes and stands again is news, so it is forgotten as printed.
         if settled {
+            for mut pending in std::mem::take(&mut self.pending) {
+                pending.passes -= 1;
+                if pending.passes == 0 {
+                    let _ = writeln!(out, "{}", pending.line);
+                } else {
+                    self.pending.push(pending);
+                }
+            }
             for (key, label) in &self.open {
                 if !standing.contains_key(key) {
                     let _ = writeln!(out, "-- closed: {label} is no longer standing\n");
@@ -150,6 +190,12 @@ impl Printed {
         let _ = writeln!(out, "## {time} {}", tag(&item.kind));
         for line in item.body.lines() {
             let _ = writeln!(out, "  {line}");
+        }
+        if let Kind::Asked { id, .. } | Kind::NotDelivered { id, .. } = &item.kind
+            && let Some(at) = self.pending.iter().position(|pending| pending.id == *id)
+        {
+            let pending = self.pending.remove(at);
+            let _ = writeln!(out, "  {}", pending.line);
         }
         out.push('\n');
     }
@@ -360,6 +406,55 @@ mod tests {
             );
             assert!(printed.step(&empty, 0, true).contains("-- closed"));
             assert!(printed.step(&asks, 0, true).contains(tag), "back, so news");
+        }
+    }
+
+    #[test]
+    fn held_outcomes_age_only_on_readable_passes_and_flush_in_submission_order() {
+        let mut printed = Printed::default();
+        let empty = lane(vec![], &[]);
+        printed.outcome("z", "sent z".to_owned());
+        printed.outcome("a", "uncertain a".to_owned());
+        for _ in 0..5 {
+            assert_eq!(printed.step(&empty, 0, false), "");
+        }
+        assert_eq!(
+            printed.step(&empty, 0, true),
+            "",
+            "first readable pass holds"
+        );
+        assert_eq!(printed.step(&empty, 0, false), "", "gap does not age");
+        assert_eq!(printed.step(&empty, 0, true), "sent z\nuncertain a\n");
+        printed.outcome("z", "sent z again".to_owned());
+        assert_eq!(printed.step(&empty, 0, true), "", "one outcome per id");
+    }
+
+    #[test]
+    fn held_outcomes_attach_to_their_own_rows_and_never_repeat_after_rebase() {
+        for kind in [
+            Kind::Asked {
+                to: "lead".to_owned(),
+                id: "id".to_owned(),
+                uncertain: false,
+            },
+            Kind::NotDelivered {
+                to: "lead".to_owned(),
+                id: "id".to_owned(),
+            },
+        ] {
+            let mut printed = Printed::default();
+            printed.outcome("id", "outcome id".to_owned());
+            let mut ask = item(kind, T, "question");
+            ask.record = Some(0);
+            let ask = lane(vec![ask], &[]);
+            let text = printed.step(&ask, 0, true);
+            assert!(text.contains("  question\n  outcome id\n\n"));
+            assert_eq!(printed.step(&ask, 0, true), "");
+            let _ = printed.rebase(1, 1);
+            printed.outcome("id", "outcome id".to_owned());
+            let again = printed.step(&ask, 0, true);
+            assert!(again.contains("question"));
+            assert!(!again.contains("outcome id"));
         }
     }
 }
