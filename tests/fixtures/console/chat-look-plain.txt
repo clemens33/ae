@@ -1,0 +1,11 @@
+coverage incomplete: fixture gap
+# 2026-10-03 UTC
+## 04:47:00 said lead
+  hello
+  	code
+    indent
+
+## 04:47:00 you → lead · id-one
+  ship?
+  sent id-one
+

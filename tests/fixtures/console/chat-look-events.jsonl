@@ -1,0 +1,4 @@
+{"ts":"2026-10-02T23:30:00Z","actor":"lead","action":"chat","summary":"lead-one\nlead-two"}
+{"ts":"2026-10-02T23:30:01Z","actor":"lead","action":"chat","summary":"safe \u001b[31mBAD\u001b]52;c;AAAA\u0007 tail\u009b"}
+{"ts":"2026-10-02T23:30:02Z","actor":"colead","action":"chat","summary":"colead-one"}
+{"ts":"2026-10-02T23:30:03Z","actor":"console:local","action":"ask","target":"lead","ref":"look-id","summary":"human-question"}
