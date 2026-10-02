@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.8] - 2026-10-02
+- Introduce the reply mode the board reads: Replies replaces the assistant flag on Inputs
+- **console**: Pin replies to human pane turns
+- Show the lead pair replies that answer a line the human typed in their pane
+- Pin the typeless and roleless records the replies window must close on
+
 ## [v2026.10.7] - 2026-10-02
 - **console**: Specify wrapped composer behavior
 - Wrap the console composer across rows and redraw it above lane output
