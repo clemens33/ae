@@ -359,6 +359,10 @@ fn pump(
                         "ae console: {}: {why} — this console no longer follows it; reopen it with prefix h (or ae console <session>)",
                         console.name
                     );
+                    if let Some(term) = term.as_deref_mut() {
+                        write!(out, "{}", term.settle())?;
+                        out.flush()?;
+                    }
                     writeln!(err, "{}", terminal_text(&text))?;
                     return Ok(crate::EXIT_UNAVAILABLE);
                 }
@@ -366,11 +370,7 @@ fn pump(
             match term.as_deref_mut() {
                 Some(term) => {
                     let effects = term.tick(console);
-                    write!(
-                        out,
-                        "{}",
-                        input::paint(&text, &effects, term.line().as_deref())
-                    )?;
+                    write!(out, "{}", term.paint(&text, &effects))?;
                 }
                 None => write!(out, "{text}")?,
             }
@@ -383,11 +383,7 @@ fn pump(
         match term.as_deref_mut() {
             Some(term) => {
                 if let Some(effects) = term.wait(console, next) {
-                    write!(
-                        out,
-                        "{}",
-                        input::paint("", &effects, term.line().as_deref())
-                    )?;
+                    write!(out, "{}", term.paint("", &effects))?;
                     out.flush()?;
                 }
             }

@@ -6,11 +6,11 @@ use std::os::fd::AsFd as _;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::time::Instant;
 
-use super::input::{self, Effect, Input, Reading};
+use super::input::{self, Effect, Input, Reading, Screen, Seen, Size};
 use super::lane::Seat;
 use super::{Console, submit};
 use crate::inventory::ServerId;
-use crate::{doors, theme, time, tracked, transport};
+use crate::{doors, theme, time, tmux, tracked, transport};
 
 /// Stamped terminal reads, until the terminal's input ends.
 struct Reads(Option<Receiver<(Instant, Vec<u8>)>>);
@@ -95,6 +95,8 @@ pub(super) struct Term {
     server: Option<ServerId>,
     /// This console's own pane.
     me: Option<String>,
+    /// What the last paint left on the terminal.
+    screen: Screen,
 }
 
 impl Term {
@@ -120,6 +122,7 @@ impl Term {
             reads: Reads(Some(reads)),
             server: doors::launch_target(declared.as_ref()),
             me: doors::calling_pane_id(),
+            screen: Screen::default(),
         })
     }
 
@@ -146,9 +149,9 @@ impl Term {
 
     /// Take a fresh ownership `reading`; a promotion also restores the kept draft.
     fn take(&mut self, console: &Console, reading: Reading) -> Vec<Effect> {
-        let was = self.input.line().is_some();
+        let was = self.input.taking();
         let mut effects = self.input.tick(reading, Instant::now());
-        if !was && self.input.line().is_some() {
+        if !was && self.input.taking() {
             effects.extend(self.input.restore(submit::restore(&console.dir)));
         }
         effects
@@ -176,9 +179,44 @@ impl Term {
         Some(effects.into_iter().map(act).collect())
     }
 
-    /// The composer line, while this console takes input.
-    pub(super) fn line(&self) -> Option<String> {
-        self.input.line()
+    /// The write that shows `text` and `effects` above the composer, drawn
+    /// again for the pane as it is now: its size read every paint, its screen
+    /// only after a narrowing.
+    pub(super) fn paint(&mut self, text: &str, effects: &[Effect]) -> String {
+        let live = self.input.taking() || self.screen.drawn();
+        let pane = if live { self.pane() } else { None };
+        let size = pane.map_or(Size::FALLBACK, |pane| Size {
+            width: pane.width,
+            height: pane.height,
+        });
+        let view = self.input.view(size);
+        let seen = pane
+            .filter(|_| self.screen.needs_seen(size))
+            .and_then(|pane| self.seen(pane.cursor_y));
+        input::paint(
+            &mut self.screen,
+            text,
+            effects,
+            view.as_ref(),
+            size,
+            seen.as_ref(),
+        )
+    }
+
+    /// The write that leaves the cursor below the composer.
+    pub(super) fn settle(&mut self) -> String {
+        self.screen.settle()
+    }
+
+    fn pane(&self) -> Option<tmux::PaneSize> {
+        let (server, pane) = self.server.as_ref().zip(self.me.as_deref())?;
+        transport::observe_pane_size(server, pane)
+    }
+
+    fn seen(&self, cursor_y: usize) -> Option<Seen> {
+        let (server, pane) = self.server.as_ref().zip(self.me.as_deref())?;
+        let capture = transport::capture_screen(server, pane, tmux::Styling::Plain)?;
+        Some(Seen { cursor_y, capture })
     }
 
     fn owned(&self, console: &Console) -> Result<(), String> {
@@ -224,7 +262,7 @@ impl Term {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effect, Got, Input, Reading, Reads, Seat, Term, pair_of, reader};
+    use super::{Effect, Got, Input, Reading, Reads, Screen, Seat, Term, pair_of, reader};
     use crate::console::tests::{ID, Rig};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     use std::time::{Duration, Instant};
@@ -297,9 +335,10 @@ mod tests {
             reads: Reads(None),
             server: None,
             me: None,
+            screen: Screen::default(),
         };
         assert_eq!(term.tick(&console), [], "tmux unanswered is Unknown");
-        assert_eq!(term.line(), None);
+        assert_eq!(term.input.line(), None);
     }
 
     #[test]
@@ -320,6 +359,7 @@ mod tests {
             reads: Reads(None),
             server: None,
             me: None,
+            screen: Screen::default(),
         };
         let said =
             "Kept line, maybe already sent: check lead, colead panes (prefix H) before Enter";
@@ -328,14 +368,14 @@ mod tests {
             term.take(&console, Reading::Owner),
             [Effect::Paste(true), banner.clone()]
         );
-        assert_eq!(term.line().as_deref(), Some("to lead> kept"));
+        assert_eq!(term.input.line().as_deref(), Some("to lead> kept"));
         assert_eq!(
             term.take(&console, Reading::Owner),
             [],
             "an owner stays one"
         );
         assert_eq!(
-            term.line().as_deref(),
+            term.input.line().as_deref(),
             Some("to lead> kept"),
             "restored once"
         );
@@ -343,7 +383,33 @@ mod tests {
         let accepting = Effect::Print("accepting input".to_owned());
         let again = [Effect::Paste(true), accepting, banner];
         assert_eq!(term.take(&console, Reading::Owner), again);
-        assert_eq!(term.line().as_deref(), Some("to lead> kept"));
+        assert_eq!(term.input.line().as_deref(), Some("to lead> kept"));
+    }
+
+    #[test]
+    fn a_paint_with_no_tmux_answer_assumes_80_by_24_and_a_settle_ends_the_composer() {
+        let rig = Rig::new("term-paint");
+        let meta =
+            format!("session_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n");
+        std::fs::write(rig.0.join("s/meta"), meta).unwrap();
+        let console = rig.console();
+        let pair = console.seats().and_then(pair_of).unwrap();
+        let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
+        let mut term = Term {
+            input,
+            pair,
+            reads: Reads(None),
+            server: None,
+            me: None,
+            screen: Screen::default(),
+        };
+        assert_eq!(term.paint("", &[]), "", "nothing taken, nothing drawn");
+        let _ = term.take(&console, Reading::Owner);
+        let drawn = "\x1b[?7l\rto lead> \x1b7\x1b8\x1b[?7h";
+        assert_eq!(term.paint("", &[]), drawn);
+        assert_eq!(term.paint("x\n", &[]), format!("\r\x1b[Jx\n{drawn}"));
+        assert_eq!(term.settle(), "\r\n");
+        assert_eq!(term.settle(), "");
     }
 
     #[test]
@@ -360,12 +426,14 @@ mod tests {
         store.publish_console_draft(b"an earlier draft").unwrap();
         let pair = console.seats().and_then(pair_of).unwrap();
         let (input, reads, server, me) = (Input::default(), Reads(None), None, None);
+        let screen = Screen::default();
         let mut term = Term {
             input,
             pair,
             reads,
             server,
             me,
+            screen,
         };
         let changed = "the lead pair changed since this console opened - restart this console";
         for (main, colead, why) in [

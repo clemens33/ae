@@ -53,6 +53,20 @@ included); it is the prompt (`to <speaker>> `) and where an unprefixed line goes
 A refused line, `/close` and a demotion change nothing; a restarted console
 speaks to the main seat (the speaker is process memory only).
 
+The composer shows the whole draft wrapped at the pane's width: the prompt on
+the first row, the rest indented under it, each pasted line break its own row.
+It grows to ten rows (fewer in a short pane) and elides the top as `… +N lines
+above`; the last row is always the cursor's. Lane output prints above it — ae
+takes away exactly the composer's rows, prints, and draws it again — and a resize
+is honoured at the next paint. The size comes from tmux (80x24 when it will not
+say); every non-ASCII character counts as two cells, so a row breaks early, never
+late, and no row is wider than the pane. Residual: after the pane narrows ae finds
+the composer's top on the screen by its prompt. When the composer was drawn in six
+columns or fewer, or the draft itself spells the prompt where tmux split a row,
+ae may erase too few rows and leave stale composer rows until they scroll away;
+it never erases lane output, never draws a row wider than the pane and never
+touches the draft.
+
 When a console becomes the owner it puts a kept draft back in the composer
 literally — a line kept before a crash or an unconfirmed ask — under `Kept line,
 maybe already sent: check <every lead-pair seat> panes (prefix H) before Enter`.

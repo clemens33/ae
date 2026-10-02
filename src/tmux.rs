@@ -3527,6 +3527,43 @@ pub fn interpret_pane_probe(succeeded: bool, stdout: &str) -> Option<ObservedPan
     })
 }
 
+/// A pane's size and cursor row: the console composer's wrap, cap and erase.
+pub const PANE_SIZE_FORMAT: &str = "#{pane_width} | #{pane_height} | #{cursor_y}";
+
+/// The readings of [`PANE_SIZE_FORMAT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneSize {
+    pub width: usize,
+    pub height: usize,
+    pub cursor_y: usize,
+}
+
+/// The full argument list for one pane's [`PANE_SIZE_FORMAT`] readings.
+#[must_use]
+pub fn pane_size_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "-t", pane, PANE_SIZE_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// What a completed [`pane_size_args`] run means: three numbers, a pane at
+/// least one cell each way, or nothing.
+#[must_use]
+pub fn interpret_pane_size(succeeded: bool, stdout: &str) -> Option<PaneSize> {
+    if !succeeded {
+        return None;
+    }
+    let mut fields = stdout.lines().next()?.split(FIELD_SEPARATOR);
+    let mut next = || fields.next()?.parse::<usize>().ok();
+    let (width, height, cursor_y) = (next()?, next()?, next()?);
+    let size = PaneSize {
+        width,
+        height,
+        cursor_y,
+    };
+    (fields.next().is_none() && width > 0 && height > 0).then_some(size)
+}
+
 /// Whether a pane is a DEAD pane tmux is keeping on screen (`remain-on-exit`).
 ///
 /// Its own read rather than a field on [`PANE_PROBE_FORMAT`]: every existing
@@ -3850,6 +3887,39 @@ mod tests {
             "the free-text command is last, so it may carry the separator"
         );
         assert_eq!(interpret_pane_probe(true, ""), None);
+    }
+
+    #[test]
+    fn a_pane_size_is_three_numbers_from_a_run_that_succeeded() {
+        use super::{PANE_SIZE_FORMAT, PaneSize, interpret_pane_size, pane_size_args};
+
+        let size = |width, height, cursor_y| PaneSize {
+            width,
+            height,
+            cursor_y,
+        };
+        assert_eq!(
+            pane_size_args(&ServerId::Ambient, "%3"),
+            vec!["display-message", "-p", "-t", "%3", PANE_SIZE_FORMAT]
+        );
+        assert_eq!(
+            interpret_pane_size(true, "80 | 24 | 5\n"),
+            Some(size(80, 24, 5))
+        );
+        assert_eq!(interpret_pane_size(true, "1 | 1 | 0"), Some(size(1, 1, 0)));
+        for bad in [
+            "",
+            "80 | 24\n",
+            "80 | 24 | 5 | 9",
+            "0 | 24 | 5",
+            "80 | 0 | 5",
+        ] {
+            assert_eq!(interpret_pane_size(true, bad), None, "{bad:?}");
+        }
+        for bad in ["80 | x | 5", "-1 | 24 | 5", "80 |  24 | 5", "80 | 24 |"] {
+            assert_eq!(interpret_pane_size(true, bad), None, "{bad:?}");
+        }
+        assert_eq!(interpret_pane_size(false, "80 | 24 | 5"), None);
     }
 
     #[test]

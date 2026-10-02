@@ -1,13 +1,16 @@
 #![no_main]
 
-use ae::console::input::{self, Effect, Input, Reading};
+use ae::console::input::{self, Effect, Input, Reading, Screen, Size, View};
 use ae::console::submit::Draft;
 use libfuzzer_sys::fuzz_target;
 use std::time::Instant;
 
+type Taken = (Vec<Effect>, Option<String>, Option<View>);
+
 /// Every effect one owning console takes from `stream`, read `chunk` bytes at
-/// a time, all at one stamp, after `kept` was restored as its draft.
-fn effects(kept: &[u8], stream: &[u8], chunk: usize, at: Instant) -> (Vec<Effect>, Option<String>) {
+/// a time, all at one stamp, after `kept` was restored as its draft; then its
+/// composer on one line and laid out for `size`.
+fn effects(kept: &[u8], stream: &[u8], chunk: usize, at: Instant, size: Size) -> Taken {
     let mut input = Input::new(vec!["lead".to_owned(), "colead".to_owned()]);
     let _ = input.tick(Reading::Owner, at);
     let draft = if kept.is_empty() {
@@ -23,28 +26,80 @@ fn effects(kept: &[u8], stream: &[u8], chunk: usize, at: Instant) -> (Vec<Effect
         "a restored draft only prints: {taken:?}"
     );
     taken.extend(stream.chunks(chunk).flat_map(|read| input.chunk(read, at)));
-    (taken, input.line())
+    let (line, view) = (input.line(), input.view(size));
+    (taken, line, view)
+}
+
+/// Panics unless `out` is printable text, line breaks and the few sequences
+/// the composer draws with: autowrap and bracketed paste switches, relative
+/// moves up or down, clear, and the cursor save and restore.
+fn assert_drawn(out: &str) {
+    let mut rest = out;
+    while let Some(ch) = rest.chars().next() {
+        let after = &rest[ch.len_utf8()..];
+        rest = if ch != '\x1b' {
+            assert!(!ch.is_control() || ch == '\n' || ch == '\r', "{out:?}");
+            after
+        } else if let Some(tail) = after.strip_prefix(['7', '8']) {
+            tail
+        } else {
+            let body = after.strip_prefix('[').expect("an escape draws");
+            let fixed = ["?7l", "?7h", "?2004h", "?2004l", "J", "K"];
+            if let Some(tail) = fixed.iter().find_map(|seq| body.strip_prefix(seq)) {
+                tail
+            } else {
+                let digits = body.bytes().take_while(u8::is_ascii_digit).count();
+                assert!(digits > 0, "{out:?}");
+                body[digits..].strip_prefix(['A', 'B']).expect("a move")
+            }
+        };
+    }
+}
+
+/// Panics unless `view` fits `size`: within the row cap, no row wider than the
+/// pane (a non-ASCII character counted two cells), none with a control, and
+/// the cursor on a row that begins with the text before it.
+fn assert_view(view: &View, size: Size) {
+    let cap = input::ROWS_MAX.min(size.height.saturating_sub(1).max(1));
+    assert!(view.rows.len() <= cap && view.cursor_row < view.rows.len());
+    for row in &view.rows {
+        let cells: usize = row
+            .chars()
+            .map(|ch| if ch.is_ascii() { 1 } else { 2 })
+            .sum();
+        assert!(
+            cells <= size.width && !row.chars().any(char::is_control),
+            "{row:?}"
+        );
+    }
+    assert!(view.rows[view.cursor_row].starts_with(&view.before));
 }
 
 fuzz_target!(|data: &[u8]| {
     // The first byte sizes the reads, 1..=256; the second sizes the kept draft
-    // restored before any key, taken from the front of the rest; what is left
-    // is what the terminal sent. A read boundary must never change a key, a
-    // restored draft only prints, and nothing the console draws or prints may
-    // carry a byte the terminal would act on.
+    // restored before any key, taken from the front of the rest; the third
+    // sizes the pane, 1..=120 wide and 1..=24 high; what is left is what the
+    // terminal sent. A read boundary must never change a key or the layout, a
+    // restored draft only prints, no row is wider than its pane, and nothing
+    // the console draws or prints may carry a byte the terminal would act on.
     let (chunk, rest) = match data.split_first() {
         Some((size, rest)) => (usize::from(*size) % 256 + 1, rest),
         None => (1, data),
     };
-    let (kept, stream) = match rest.split_first() {
-        Some((size, rest)) => rest.split_at(usize::from(*size).min(rest.len())),
-        None => (rest, rest),
+    let (kept_len, rest) = rest.split_first().map_or((0, rest), |(n, rest)| (*n, rest));
+    let (shape, rest) = rest
+        .split_first()
+        .map_or((79, rest), |(n, rest)| (*n, rest));
+    let size = Size {
+        width: usize::from(shape) % 120 + 1,
+        height: usize::from(shape) / 5 % 24 + 1,
     };
+    let (kept, stream) = rest.split_at(usize::from(kept_len).min(rest.len()));
     let at = Instant::now();
-    let (whole, line) = effects(kept, stream, stream.len().max(1), at);
+    let (whole, line, view) = effects(kept, stream, stream.len().max(1), at, size);
     assert_eq!(
-        effects(kept, stream, chunk, at),
-        (whole.clone(), line.clone())
+        effects(kept, stream, chunk, at, size),
+        (whole.clone(), line.clone(), view.clone())
     );
     let pair = ["lead".to_owned(), "colead".to_owned()];
     let mut speaker = "lead".to_owned();
@@ -80,13 +135,23 @@ fuzz_target!(|data: &[u8]| {
             Effect::Close(_) | Effect::Paste(_) => {}
         }
     }
-    let drawn = input::paint("", &whole, line.as_deref());
-    let known = [input::DRAW_OPEN, input::DRAW_CLOSE, "\r\x1b[K"];
-    let bare = known.iter().fold(drawn, |text, seq| text.replace(seq, ""));
+    let line = line.expect("an owner has a composer line");
+    assert!(!line.chars().any(|ch| ch.is_control()), "{line:?}");
+    let view = view.expect("an owner has a composer");
+    assert_view(&view, size);
+    let mut screen = Screen::default();
+    let first = input::paint(&mut screen, "", &whole, Some(&view), size, None);
+    let settled = screen.settle();
     assert!(
-        !bare.chars().any(|ch| ch.is_control() && ch != '\n'),
-        "{bare:?}"
+        !settled.is_empty(),
+        "a drawn composer settles with a line break"
     );
+    let drawn = input::paint(&mut screen, "", &[], Some(&view), size, None);
+    let again = input::paint(&mut screen, "lane\n", &[], Some(&view), size, None);
+    let gone = input::paint(&mut screen, "", &[], None, size, None);
+    for text in [&first, &settled, &drawn, &again, &gone, &screen.settle()] {
+        assert_drawn(text);
+    }
     if std::str::from_utf8(stream).is_err() {
         let refused = input::command(stream, &pair);
         assert!(matches!(refused, input::Command::Refused(_)));

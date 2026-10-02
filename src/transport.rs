@@ -1365,6 +1365,16 @@ pub fn observe_pane_probe(server: &ServerId, pane: &str) -> Option<tmux::Observe
     tmux::interpret_pane_probe(succeeded, &stdout)
 }
 
+/// `pane`'s size and cursor row, or `None` when tmux did not answer.
+#[must_use]
+pub fn observe_pane_size(server: &ServerId, pane: &str) -> Option<tmux::PaneSize> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_size_args(server, pane));
+    tmux::interpret_pane_size(succeeded, &stdout)
+}
+
 /// `pane`'s visible screen, or `None` when the capture failed.
 #[must_use]
 pub fn capture_screen(server: &ServerId, pane: &str, styling: tmux::Styling) -> Option<String> {
