@@ -33,6 +33,11 @@ pub enum Key {
     /// Literal bytes: a typed run, or anything inside a paste.
     Text(Vec<u8>),
     Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
     ClearLine,
     Enter,
 }
@@ -83,12 +88,15 @@ impl Keys {
                     self.paste = self.begun.take();
                     self.pending.clear();
                 } else if escape_done(&self.pending) || self.pending.len() > PENDING_MAX {
-                    self.pending.clear();
-                    self.begun = None;
+                    let began = self.begun.take();
+                    let key = editing(&std::mem::take(&mut self.pending));
+                    keys.extend(key.zip(began));
                 }
             } else {
                 let key = match byte {
                     0x7f | 0x08 => Key::Backspace,
+                    0x01 => Key::Home,
+                    0x05 => Key::End,
                     0x15 => Key::ClearLine,
                     b'\r' | b'\n' => Key::Enter,
                     _ => {
@@ -124,6 +132,19 @@ fn escape_done(seq: &[u8]) -> bool {
     }
 }
 
+/// The editing key a complete escape sequence spells, in either cursor-key
+/// mode; any other sequence is no key.
+fn editing(seq: &[u8]) -> Option<Key> {
+    Some(match seq {
+        b"\x1b[D" | b"\x1bOD" => Key::Left,
+        b"\x1b[C" | b"\x1bOC" => Key::Right,
+        b"\x1b[H" | b"\x1bOH" | b"\x1b[1~" | b"\x1b[7~" => Key::Home,
+        b"\x1b[F" | b"\x1bOF" | b"\x1b[4~" | b"\x1b[8~" => Key::End,
+        b"\x1b[3~" => Key::Delete,
+        _ => return None,
+    })
+}
+
 /// What Enter made of the composed bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entered {
@@ -132,39 +153,102 @@ pub enum Entered {
     Empty,
 }
 
-/// One composed line: literal bytes up to [`CAP`]. Past the cap it is over —
-/// later bytes are dropped and Enter refuses — until ^U clears it.
+/// One composed line: literal bytes up to [`CAP`], and the byte offset the
+/// cursor is at, where text goes in and an erase takes out. Past the cap it is
+/// over — later bytes are dropped and Enter refuses — until ^U clears it.
 #[derive(Debug, Default)]
 pub struct Composer {
     bytes: Vec<u8>,
+    cursor: usize,
     over: bool,
 }
 
 impl Composer {
     /// Take one key; `Some` for Enter alone.
     pub fn key(&mut self, key: Key) -> Option<Entered> {
+        if !matches!(key, Key::Text(_)) {
+            self.snap();
+        }
         match key {
             Key::Text(text) if !self.over => {
                 if self.bytes.len() + text.len() > CAP {
                     self.over = true;
                 } else {
-                    self.bytes.extend(text);
+                    self.bytes
+                        .splice(self.cursor..self.cursor, text.iter().copied());
+                    self.cursor += text.len();
                 }
             }
             Key::Backspace if !self.over => {
-                while let Some(byte) = self.bytes.pop() {
-                    if byte & 0xc0 != 0x80 {
-                        break;
-                    }
-                }
+                let from = self.unit(false);
+                self.bytes.drain(from..self.cursor);
+                self.cursor = from;
             }
-            Key::Text(_) | Key::Backspace => {}
+            Key::Delete if !self.over => {
+                self.bytes.drain(self.cursor..self.unit(true));
+            }
+            Key::Left if !self.over => self.cursor = self.unit(false),
+            Key::Right if !self.over => self.cursor = self.unit(true),
+            Key::Home if !self.over => self.cursor = 0,
+            Key::End if !self.over => self.cursor = self.bytes.len(),
             Key::ClearLine => *self = Self::default(),
             Key::Enter if self.over => return Some(Entered::Over),
             Key::Enter if self.bytes.is_empty() => return Some(Entered::Empty),
-            Key::Enter => return Some(Entered::Line(std::mem::take(&mut self.bytes))),
+            Key::Enter => {
+                self.cursor = 0;
+                return Some(Entered::Line(std::mem::take(&mut self.bytes)));
+            }
+            Key::Text(_)
+            | Key::Backspace
+            | Key::Delete
+            | Key::Left
+            | Key::Right
+            | Key::Home
+            | Key::End => {}
         }
         None
+    }
+
+    /// Where each unit of the draft ends, 0 first: a character, or a byte that
+    /// is not UTF-8.
+    fn ends(&self) -> Vec<usize> {
+        let mut ends = vec![0];
+        for chunk in self.bytes.utf8_chunks() {
+            let valid = chunk.valid().chars().map(char::len_utf8);
+            for len in valid.chain(chunk.invalid().iter().map(|_| 1)) {
+                ends.push(ends[ends.len() - 1] + len);
+            }
+        }
+        ends
+    }
+
+    /// The cursor as a key that is not text and the layout read it: on the end of
+    /// the character it sits inside, since text goes in at any byte offset.
+    fn snapped(&self) -> usize {
+        let next = self.ends().into_iter().find(|&end| end >= self.cursor);
+        next.unwrap_or(self.bytes.len())
+    }
+
+    fn snap(&mut self) {
+        self.cursor = self.snapped();
+    }
+
+    /// The offset one unit from the cursor, the cursor itself at either end.
+    fn unit(&self, forward: bool) -> usize {
+        let ends = self.ends();
+        let beyond = |end: &usize| {
+            if forward {
+                *end > self.cursor
+            } else {
+                *end < self.cursor
+            }
+        };
+        let found = if forward {
+            ends.into_iter().find(beyond)
+        } else {
+            ends.into_iter().rev().find(beyond)
+        };
+        found.unwrap_or(self.cursor)
     }
 
     /// `prompt`, then the whole draft on one line — never a byte a terminal
@@ -222,7 +306,7 @@ impl Composer {
     /// that row up to it. A break is `\n` or a `\r` not followed by `\n`; a
     /// byte that is not UTF-8 is its own unit, drawn as U+FFFD.
     fn wrapped(&self, area: usize) -> (Vec<String>, usize, String) {
-        let mut rows = Rows::new(area, self.bytes.len());
+        let mut rows = Rows::new(area, self.snapped());
         let mut at = 0;
         for chunk in self.bytes.utf8_chunks() {
             let valid = chunk.valid();
@@ -291,7 +375,7 @@ impl Rows {
     }
 
     fn mark(&mut self, at: usize) {
-        if at == self.cursor {
+        if self.seen.is_none() && at >= self.cursor {
             self.seen = Some((self.done.len(), self.line.clone()));
         }
     }
@@ -927,6 +1011,7 @@ mod tests {
             b"\x08",
         ];
         let want = [
+            Key::Left,
             Key::Text(b"a".to_vec()),
             Key::Backspace,
             Key::ClearLine,
@@ -935,6 +1020,210 @@ mod tests {
             Key::Backspace,
         ];
         assert_eq!(joined(&mut Keys::default(), &reads, Instant::now()), want);
+    }
+
+    #[test]
+    fn every_spelling_of_an_editing_key_is_that_key_however_the_reads_split_it() {
+        let keys: [(&[u8], Option<Key>); 22] = [
+            (b"\x1b[D", Some(Key::Left)),
+            (b"\x1bOD", Some(Key::Left)),
+            (b"\x1b[C", Some(Key::Right)),
+            (b"\x1bOC", Some(Key::Right)),
+            (b"\x1b[H", Some(Key::Home)),
+            (b"\x1bOH", Some(Key::Home)),
+            (b"\x1b[1~", Some(Key::Home)),
+            (b"\x1b[7~", Some(Key::Home)),
+            (b"\x01", Some(Key::Home)),
+            (b"\x1b[F", Some(Key::End)),
+            (b"\x1bOF", Some(Key::End)),
+            (b"\x1b[4~", Some(Key::End)),
+            (b"\x1b[8~", Some(Key::End)),
+            (b"\x05", Some(Key::End)),
+            (b"\x1b[3~", Some(Key::Delete)),
+            (b"\x1b[1;5D", None),
+            (b"\x1b[A", None),
+            (b"\x1bOB", None),
+            (b"\x1b[2~", None),
+            (b"\x1b[5~", None),
+            (b"\x1b[6~", None),
+            (b"\x1bx", None),
+        ];
+        for (seq, key) in keys {
+            let stream = [b"a", seq, b"b"].concat();
+            let want = match key {
+                Some(key) => vec![Key::Text(b"a".to_vec()), key, Key::Text(b"b".to_vec())],
+                None => vec![Key::Text(b"ab".to_vec())],
+            };
+            for cut in 0..=stream.len() {
+                let reads = [&stream[..cut], &stream[cut..]];
+                let got = joined(&mut Keys::default(), &reads, Instant::now());
+                assert_eq!(got, want, "{seq:?} cut at {cut}");
+            }
+        }
+    }
+
+    /// `draft` typed, `stream` read as keys, then what Enter sends.
+    fn edited(draft: &[u8], stream: &[u8]) -> Vec<u8> {
+        let mut composer = drafted(draft);
+        for (key, _) in Keys::default().feed(stream, Instant::now()) {
+            assert_eq!(composer.key(key), None);
+        }
+        match composer.key(Key::Enter) {
+            Some(Entered::Line(bytes)) => bytes,
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn text_goes_in_and_comes_out_at_the_cursor_a_unit_at_a_time() {
+        let cases: [(&str, &[u8], &[u8]); 8] = [
+            (
+                "aé中z",
+                b"\x1b[D\x1b[D!\x1b[3~\x7f\x1b[C?",
+                "aéz?".as_bytes(),
+            ),
+            ("ab", b"\x01\x7f\x1b[D\x05\x1b[3~\x1b[C!", b"ab!"),
+            ("a\nb", b"\x01!\x05?", b"!a\nb?"),
+            (
+                "a\nb",
+                b"\x1b[D\x1b[D\x1b[D!\x1b[C\x1b[C\x1b[C\x1b[C?",
+                b"!a\nb?",
+            ),
+            ("a中", b"\x1b[D\x7f", "中".as_bytes()),
+            ("ab", b"\x01\x1b[C\x1b[3~\x1b[3~\x1b[3~", b"a"),
+            ("abc", b"\x1b[D\x15x", b"x"),
+            ("ab", b"\x1b[D\x1b[200~\x1b[D\x1b[201~!", b"a\x1b[D!b"),
+        ];
+        for (draft, stream, want) in cases {
+            assert_eq!(edited(draft.as_bytes(), stream), want, "{draft:?}");
+        }
+        let text = |bytes: &[u8]| Key::Text(bytes.to_vec());
+        let hostile = |draft: &[u8], keys: Vec<Key>| {
+            let mut composer = drafted(draft);
+            for key in keys {
+                drop(composer.key(key));
+            }
+            composer.key(Key::Enter)
+        };
+        let line = |bytes: &[u8]| Some(Entered::Line(bytes.to_vec()));
+        let split = vec![Key::Left, text(b"\xe4"), text(b"\xb8\xad"), text(b"!")];
+        assert_eq!(
+            hostile(b"ab", split),
+            line("a中!b".as_bytes()),
+            "split in two reads"
+        );
+        let bad = b"a\xff\xb8";
+        assert_eq!(
+            hostile(bad, vec![Key::Left, Key::Backspace]),
+            line(b"a\xb8")
+        );
+        let walk = vec![Key::Home, Key::Right, Key::Delete, Key::Delete];
+        assert_eq!(hostile(bad, walk), line(b"a"), "each stray byte is a unit");
+        // Text goes in contiguously at the byte offset, however the reads split
+        // it, even when it completes a character with what follows; only a key
+        // that is not text moves the cursor on to the end of that character.
+        let (home, stray) = (Key::Home, b"\xa9x");
+        let block = hostile(stray, vec![home.clone(), text(b"\xc3\xa9Z")]);
+        let parts = hostile(stray, vec![home.clone(), text(b"\xc3"), text(b"\xa9Z")]);
+        let want = line(b"\xc3\xa9Z\xa9x");
+        assert_eq!((&block, &parts), (&want, &want));
+        let past = vec![home.clone(), text(b"\xc3"), Key::Delete, text(b"!")];
+        assert_eq!(hostile(stray, past), line(b"\xc3\xa9!"), "Delete after it");
+        let whole = hostile(stray, vec![home, text(b"\xc3"), Key::Backspace]);
+        assert_eq!(whole, line(b"x"), "Backspace erases it whole");
+        let (over, once) = (text(&vec![b'a'; CAP + 1]), Key::Left);
+        assert_eq!(
+            hostile(b"", vec![over, once, Key::Home, Key::Delete]),
+            Some(Entered::Over)
+        );
+    }
+
+    #[test]
+    fn a_restored_draft_leaves_the_cursor_at_its_end() {
+        let base = Instant::now();
+        let mut input = owner(base);
+        let _ = input.restore(Draft::Kept(b"ab".to_vec()));
+        assert_eq!(
+            asks(&input.chunk(b"!\x1b[D\x1b[D?\r", at(base, 1))),
+            ["a?b!"]
+        );
+    }
+
+    #[test]
+    fn the_cursor_is_where_the_next_byte_goes_on_the_row_it_lands_on() {
+        let left = "\x1b[D";
+        let view = |draft: &str, stream: &str| {
+            let mut composer = drafted(draft.as_bytes());
+            for (key, _) in Keys::default().feed(stream.as_bytes(), Instant::now()) {
+                let _ = composer.key(key);
+            }
+            composer.view("to> ", size(10, 24))
+        };
+        let cases = [
+            ("abcdefghij", "\x01".to_owned(), (0, "to> ")),
+            ("abcdefghij", left.repeat(4), (1, "    ")),
+            ("abcdefghij", left.repeat(5), (0, "to> abcde")),
+            ("a\nbc", left.to_string(), (1, "    b")),
+            ("a\nbc", left.repeat(3), (0, "to> a")),
+            (
+                "abcdef\nz",
+                format!("\x01{}", "\x1b[C".repeat(6)),
+                (0, "to> abcdef"),
+            ),
+            ("中中中中", left.repeat(2), (0, "to> 中中")),
+        ];
+        for (draft, stream, (row, before)) in cases {
+            let shown = view(draft, &stream);
+            assert_eq!(
+                (shown.cursor_row, shown.before.as_str()),
+                (row, before),
+                "{draft:?}"
+            );
+        }
+        let draft = (0..20)
+            .map(|n| format!("l{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tall = view(&draft, "\x01");
+        assert_eq!((tall.cursor_row, tall.rows.len()), (0, 10));
+        assert!(
+            tall.rows[9].starts_with("    … +11"),
+            "a below marker, clipped to the area"
+        );
+        // A cursor inside the final character, the byte offset text leaves it at,
+        // is drawn where the end of that character is: after it, on a row of its own.
+        let mut inside = drafted(b"\xb8\xad");
+        let _ = (
+            inside.key(Key::Home),
+            inside.key(Key::Text(b"\xe4".to_vec())),
+        );
+        let seen = inside.view("", size(2, 24));
+        let _ = inside.key(Key::End);
+        assert_eq!(seen, inside.view("", size(2, 24)));
+        assert_eq!((seen.cursor_row, seen.rows.len()), (1, 2));
+    }
+
+    #[test]
+    fn an_interior_cursor_is_where_a_paint_climbs_to_and_a_settle_comes_down_from() {
+        let base = Instant::now();
+        let mut input = owner(base);
+        let _ = input.chunk(b"\x1b[200~a\nb\nc\x1b[201~\x1b[H", at(base, 1));
+        let big = size(40, 24);
+        let (mut screen, first) = drawn(&input, big);
+        assert!(
+            first.contains("to lead> \x1b7a\r\n"),
+            "saved on the cursor row: {first:?}"
+        );
+        let again = paint(&mut screen, "", &[], input.view(big).as_ref(), big, None);
+        assert!(
+            again.starts_with("\r\x1b[J"),
+            "already on the first row: {again:?}"
+        );
+        assert_eq!(
+            screen.settle(),
+            "\x1b[2B\r\n",
+            "down the rows below the cursor"
+        );
     }
 
     #[test]

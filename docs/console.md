@@ -67,6 +67,18 @@ ae may erase too few rows and leave stale composer rows until they scroll away;
 it never erases lane output, never draws a row wider than the pane and never
 touches the draft.
 
+Keys edit at a cursor, which the terminal cursor shows where the next character
+goes: Left and Right move one character (a byte that is not UTF-8 is its own),
+Home and End — also `^A` and `^E` — go to the start or end of the whole draft,
+not of a row, Delete and Backspace erase the character at or before it, and
+typed or pasted text goes in at it byte for byte, even where it completes a
+character with the bytes after it; the next arrow or erase key then acts from
+the end of that character. A cursor before a line break at the end of a full
+row is drawn on that row's last cell. `^U` clears the whole draft, wherever the
+cursor is. Up, Down, Insert, PgUp, PgDn and modified navigation keys are
+consumed and do nothing; any other plain control byte is a literal draft byte.
+Inside a bracketed paste every byte stays literal, an Enter included.
+
 When a console becomes the owner it puts a kept draft back in the composer
 literally — a line kept before a crash or an unconfirmed ask — under `Kept line,
 maybe already sent: check <every lead-pair seat> panes (prefix H) before Enter`.
