@@ -3,6 +3,10 @@
 //! spaces with a per-character fallback. Real tmux judges order; the
 //! composer's public [`Input::view`] judges wrapping against hand-computed
 //! rows, never production layout helpers. Private sockets only.
+//!
+//! Phase 2 pins the hold itself through [`Printed`]'s public seam: attach
+//! once under the matching row, standalone with id after two readable passes
+//! without one, unsettled passes age nothing, rebase never repeats.
 
 #![allow(
     clippy::disallowed_methods,
@@ -15,6 +19,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ae::console::input::{Effect, Input, Reading, Size};
+use ae::console::lane::{Item, Kind, Lane};
+use ae::console::view::Printed;
 use ae::events::Event;
 
 const UUID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
@@ -511,4 +517,192 @@ fn two_asks_keep_header_outcome_pairs_in_sequence() {
         positions.windows(2).all(|pair| pair[0] < pair[1]),
         "h1, o1, h2, o2 in order:\n{screen}"
     );
+}
+
+const T0: i64 = 1_790_748_060_000_000;
+
+fn asked(id: &str, body: &str) -> Item {
+    Item {
+        micros: T0,
+        kind: Kind::Asked {
+            to: "lead".to_owned(),
+            id: id.to_owned(),
+            uncertain: false,
+        },
+        body: body.to_owned(),
+        record: None,
+    }
+}
+
+fn lane(items: Vec<Item>) -> Lane {
+    Lane {
+        items,
+        coverage: Vec::new(),
+    }
+}
+
+#[test]
+fn a_held_outcome_attaches_under_its_ask_row_once() {
+    let mut printed = Printed::default();
+    printed.outcome("ae-1", "sent ae-1".to_owned());
+    let row = lane(vec![asked("ae-1", "order probe")]);
+    let text = printed.step(&row, 0, true);
+    let positions = [
+        text.find("you → lead · ae-1").expect("header"),
+        text.find("  order probe").expect("body"),
+        text.find("  sent ae-1").expect("outcome"),
+    ];
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "header, body, outcome:\n{text}"
+    );
+    assert_eq!(
+        printed.step(&row, 0, true),
+        "",
+        "a consumed outcome never repeats"
+    );
+}
+
+#[test]
+fn an_outcome_without_a_row_prints_standalone_after_two_readable_passes() {
+    let mut printed = Printed::default();
+    printed.outcome("ae-2", "sent ae-2".to_owned());
+    let empty = lane(Vec::new());
+    assert!(
+        !printed.step(&empty, 0, true).contains("sent ae-2"),
+        "first readable pass still holds"
+    );
+    assert!(
+        printed.step(&empty, 0, true).contains("sent ae-2"),
+        "second readable pass flushes standalone"
+    );
+    assert_eq!(printed.step(&empty, 0, true), "", "standalone prints once");
+}
+
+#[test]
+fn unreadable_passes_do_not_age_a_hold() {
+    let mut printed = Printed::default();
+    printed.outcome("ae-3", "sent ae-3".to_owned());
+    let empty = lane(Vec::new());
+    assert_eq!(
+        printed.step(&empty, 0, false),
+        "",
+        "unreadable pass one holds"
+    );
+    assert_eq!(
+        printed.step(&empty, 0, false),
+        "",
+        "unreadable pass two holds"
+    );
+    assert!(
+        !printed.step(&empty, 0, true).contains("sent ae-3"),
+        "first readable pass still holds"
+    );
+    assert!(
+        printed.step(&empty, 0, true).contains("sent ae-3"),
+        "second readable pass flushes"
+    );
+}
+
+#[test]
+fn a_standalone_flush_keeps_submit_order() {
+    let mut printed = Printed::default();
+    printed.outcome("ae-4a", "sent ae-4a".to_owned());
+    printed.outcome("ae-4b", "sent ae-4b".to_owned());
+    let empty = lane(Vec::new());
+    let _ = printed.step(&empty, 0, true);
+    let text = printed.step(&empty, 0, true);
+    let (first, second) = (
+        text.find("sent ae-4a").expect("first"),
+        text.find("sent ae-4b").expect("second"),
+    );
+    assert!(first < second, "submit order:\n{text}");
+}
+
+#[test]
+fn a_rebase_never_repeats_a_consumed_outcome() {
+    let mut printed = Printed::default();
+    printed.outcome("ae-5", "sent ae-5".to_owned());
+    let mut item = asked("ae-5", "order probe");
+    item.record = Some(0);
+    let row = lane(vec![item]);
+    assert!(
+        printed.step(&row, 0, true).contains("  sent ae-5"),
+        "outcome attaches first"
+    );
+    let _ = printed.rebase(1, 1);
+    let text = printed.step(&row, 0, true);
+    assert!(
+        text.contains("you → lead · ae-5"),
+        "the ask row prints again:\n{text}"
+    );
+    assert!(
+        !text.contains("sent ae-5"),
+        "its outcome never repeats:\n{text}"
+    );
+}
+
+#[test]
+fn an_outcome_attaches_under_a_not_delivered_row() {
+    let mut printed = Printed::default();
+    printed.outcome("ae-6", "not delivered ae-6".to_owned());
+    let row = lane(vec![Item {
+        micros: T0,
+        kind: Kind::NotDelivered {
+            to: "lead".to_owned(),
+            id: "ae-6".to_owned(),
+        },
+        body: "order probe".to_owned(),
+        record: None,
+    }]);
+    let text = printed.step(&row, 0, true);
+    assert!(
+        text.contains("you → lead · ae-6 · not delivered"),
+        "lane status tag stands:\n{text}"
+    );
+    assert!(
+        text.contains("  not delivered ae-6"),
+        "outcome prints beside it:\n{text}"
+    );
+}
+
+#[test]
+fn flush_outcomes_drains_every_hold_in_submit_order_once() {
+    let mut printed = Printed::default();
+    printed.outcome("ae-8a", "sent ae-8a".to_owned());
+    printed.outcome("ae-8b", "sent ae-8b".to_owned());
+    let text = printed.flush_outcomes();
+    let (first, second) = (
+        text.find("sent ae-8a").expect("first"),
+        text.find("sent ae-8b").expect("second"),
+    );
+    assert!(first < second, "submit order:\n{text}");
+    assert_eq!(printed.flush_outcomes(), "", "drained holds never repeat");
+    printed.outcome("ae-8a", "sent ae-8a; again".to_owned());
+    let row = lane(vec![asked("ae-8a", "order probe")]);
+    let text = printed.step(&row, 0, true);
+    assert!(
+        text.contains("you → lead · ae-8a"),
+        "a late row still prints:\n{text}"
+    );
+    assert!(
+        !text.contains("sent ae-8a"),
+        "flushed ids stay consumed:\n{text}"
+    );
+}
+
+#[test]
+fn a_repeated_outcome_for_one_id_queues_once() {
+    let mut printed = Printed::default();
+    printed.outcome("ae-7", "sent ae-7".to_owned());
+    printed.outcome("ae-7", "sent ae-7; again".to_owned());
+    let empty = lane(Vec::new());
+    let _ = printed.step(&empty, 0, true);
+    let text = printed.step(&empty, 0, true);
+    assert_eq!(
+        text.matches("sent ae-7").count(),
+        1,
+        "one queueing:\n{text}"
+    );
+    assert!(!text.contains("again"), "second line never prints:\n{text}");
 }
