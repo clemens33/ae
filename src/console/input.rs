@@ -5,6 +5,7 @@
 use std::time::Instant;
 
 use super::submit::{Draft, Outcome};
+use super::view::{Style, Styled};
 use crate::board::terminal_text;
 
 /// The most bytes one composed line holds: the draft file's own cap.
@@ -611,6 +612,8 @@ pub enum Effect {
     Print(String),
     /// Lane text whose header, body and outcome keep their line breaks.
     Lane(String),
+    /// Lane text a dressed console has already neutralised and coloured.
+    Styled(Styled),
     /// Submit `raw`, the entered bytes, as an ask of `seat`.
     Ask {
         raw: Vec<u8>,
@@ -789,6 +792,8 @@ pub fn outcome_line(outcome: &Outcome, seat: &str) -> String {
 #[derive(Debug, Default)]
 pub struct Screen {
     drawn: Option<Drawn>,
+    /// How this console draws its composer and the lines it prints.
+    style: Style,
 }
 
 #[derive(Debug)]
@@ -810,6 +815,12 @@ pub struct Seen {
 }
 
 impl Screen {
+    /// A screen whose paints are drawn in `style`.
+    #[must_use]
+    pub fn styled(style: Style) -> Self {
+        Self { drawn: None, style }
+    }
+
     /// Whether a composer is on the terminal.
     #[must_use]
     pub fn drawn(&self) -> bool {
@@ -884,7 +895,7 @@ fn erase(drawn: &Drawn, size: Size, seen: Option<&Seen>) -> String {
 
 /// The composer's rows, made to exist first by a newline each, which scrolls a
 /// composer at the screen's foot, so the cursor saved on its row stays true.
-fn draw(view: &View) -> String {
+fn draw(view: &View, style: &Style) -> String {
     let below = view.rows.len().saturating_sub(1);
     let mut out = String::from(DRAW_OPEN);
     if below > 0 {
@@ -892,11 +903,18 @@ fn draw(view: &View) -> String {
     }
     out.push('\r');
     for (at, row) in view.rows.iter().enumerate() {
+        // The prompt leads the first row; dressed, it wears the human's hue.
+        let dress = |piece: &str| match piece.strip_prefix(view.anchor.as_str()) {
+            Some(rest) if at == 0 && !view.anchor.is_empty() => {
+                format!("{}{rest}", style.human(&view.anchor))
+            }
+            _ => piece.to_owned(),
+        };
         if at == view.cursor_row {
             let (head, tail) = row.split_at_checked(view.before.len()).unwrap_or((row, ""));
-            out.extend([head, "\x1b7", tail]);
+            out.extend([dress(head).as_str(), "\x1b7", tail]);
         } else {
-            out.push_str(row);
+            out.push_str(&dress(row));
         }
         if at < below {
             out.push_str("\r\n");
@@ -928,15 +946,16 @@ pub fn paint(
         match effect {
             Effect::Paste(on) => out.push_str(if *on { PASTE_ON } else { PASTE_OFF }),
             Effect::Lane(text) => out.push_str(&terminal_text(text)),
+            Effect::Styled(text) => out.push_str(text.as_str()),
             Effect::Print(said) => {
-                out.push_str(&terminal_text(said).replace(['\n', '\t'], " "));
+                out.push_str(&screen.style.status(&said.replace(['\n', '\t'], " ")));
                 out.push('\n');
             }
             Effect::Ask { .. } | Effect::Close(_) => {}
         }
     }
     if let Some(view) = view {
-        out.push_str(&draw(view));
+        out.push_str(&draw(view, &screen.style));
         screen.drawn = Some(Drawn {
             rows: view.rows.len(),
             up: view.cursor_row,
@@ -1829,5 +1848,53 @@ mod tests {
         ] {
             assert_eq!(outcome_line(&outcome, "lead"), line);
         }
+    }
+
+    /// A dressed screen's 24-bit foreground escape for a palette colour.
+    fn hue(hex: &str) -> String {
+        let at = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex");
+        format!("\x1b[38;2;{};{};{}m", at(1), at(3), at(5))
+    }
+
+    #[test]
+    fn a_dressed_screen_wears_the_prompt_tones_what_it_prints_and_keeps_lane_text_inert() {
+        use crate::console::view::{Printed, Style};
+        use crate::theme::Palette;
+        let palette = Palette::DARCULA;
+        let style = Style::resolve(true, None, None, "lead");
+        let (base, big) = (Instant::now(), size(40, 24));
+        let input = owner(base);
+        let mut screen = Screen::styled(style.clone());
+        let prompt = paint(&mut screen, "", &[], input.view(big).as_ref(), big, None);
+        let want = format!(
+            "\x1b[?7l\r{}to lead> \x1b[0m\x1b7\x1b8\x1b[?7h",
+            hue(palette.title)
+        );
+        assert_eq!(
+            prompt, want,
+            "the prompt wears the human's hue, the cursor mark stays"
+        );
+        let effects = [
+            Effect::Print("refused: no\nmore".to_owned()),
+            Effect::Print("no record of id; check".to_owned()),
+            Effect::Print("accepting input".to_owned()),
+            Effect::Lane("a\x1b[2Jb\n".to_owned()),
+            Printed::styled(style).lane("\x1b[0mdressed\n".to_owned()),
+        ];
+        let shown = paint(&mut screen, "", &effects, None, big, None);
+        let said = |hex: &str, line: &str| format!("{}{line}\x1b[0m\n", hue(hex));
+        let want = format!(
+            "\r\x1b[J{}{}{}a\u{fffd}[2Jb\n\x1b[0mdressed\n",
+            said(palette.dead, "refused: no more"),
+            said(palette.waiting_agent, "no record of id; check"),
+            said(palette.dim, "accepting input"),
+        );
+        assert_eq!(shown, want);
+        let mut plain = Screen::default();
+        let line = [Effect::Print("refused: no".to_owned())];
+        assert_eq!(
+            paint(&mut plain, "", &line, None, big, None),
+            "\r\x1b[Krefused: no\n"
+        );
     }
 }

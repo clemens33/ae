@@ -11,7 +11,8 @@ use crate::board::{self, Inputs, Replies, Row, follow::Follow, terminal_text};
 use crate::events::Event;
 use crate::store::{self, Oversized, SourceRead};
 use crate::{
-    archive, doors, inventory, lifecycle, meta, reply, session, tracked, usage, watchdog_daemon,
+    archive, doors, inventory, lifecycle, meta, reply, session, theme, tracked, transport, usage,
+    watchdog_daemon,
 };
 use lane::Seat;
 
@@ -270,6 +271,34 @@ pub(crate) fn recorded_uuid(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// How this chat is drawn: plain unless stdout is a terminal and the session's
+/// look is drawn. Only then does it ask tmux — for the session's palette and
+/// icons, and once for the viewer's clock zone.
+fn dress(name: &str, seats: &[Seat]) -> view::Style {
+    use std::io::IsTerminal as _;
+    let tty = std::io::stdout().is_terminal();
+    let declared = doors::declared_server(crate::shape::current());
+    let server = doors::launch_target(declared.as_ref()).filter(|_| tty);
+    let look = server
+        .as_ref()
+        .and_then(|server| transport::observe_look(server, name));
+    let look =
+        look.map(|read| theme::Look::read(&read.icons, &read.palette, &read.drawn, &read.motion));
+    let zone = || {
+        server
+            .as_ref()
+            .and_then(|server| transport::observe_zone(server, name))
+    };
+    let zone = view::Style::wanted(tty, look).then(zone).flatten();
+    let main = seats.iter().find(|seat| seat.slot == "main");
+    view::Style::resolve(
+        tty,
+        look,
+        zone.as_deref(),
+        main.map_or("", |seat| seat.name.as_str()),
+    )
+}
+
 /// `ae chat [session] [--follow] [--all]`.
 ///
 /// # Errors
@@ -318,7 +347,10 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         journal: None,
     };
     match console.seats() {
-        Ok(seats) => write!(out, "{}", view::header(&console.name, &seats))?,
+        Ok(seats) => {
+            console.printed = view::Printed::styled(dress(&console.name, &seats));
+            write!(out, "{}", console.printed.headline(&console.name, &seats))?;
+        }
         Err(why) => {
             writeln!(
                 err,
@@ -332,7 +364,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     if args.input {
         match term::Term::start(&console) {
             Ok(started) => term = args.follow.then_some(started),
-            Err(off) => write!(out, "{off}")?,
+            Err(off) => write!(out, "{}", console.printed.style().dim(&off))?,
         }
     }
     let code = pump(&mut console, term.as_mut(), args.follow, out, err);

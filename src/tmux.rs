@@ -3186,6 +3186,34 @@ pub fn interpret_look(succeeded: bool, stdout: &str) -> Option<LookOptions> {
     })
 }
 
+/// The numeric zone tmux formats its server's clock in (`+0200`): the time
+/// zone a viewer of that server lives in.
+pub const ZONE_FORMAT: &str = "#{t/f/%z:start_time}";
+
+/// The arguments asking the server of `session` for its [`ZONE_FORMAT`].
+#[must_use]
+pub fn zone_args(server: &ServerId, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "-t"].map(ToOwned::to_owned));
+    args.push(format!("{}:", session_target(session)));
+    args.push(ZONE_FORMAT.to_owned());
+    args
+}
+
+/// The zone answer of a completed [`zone_args`] run, or `None` when it did not
+/// run or said nothing. The text is unvalidated: a tmux without the `t/f/`
+/// modifier prints something else, and the caller keeps only `[+-]HHMM`.
+///
+/// ```
+/// assert_eq!(ae::tmux::interpret_zone(true, "+0200\n"), Some("+0200".to_owned()));
+/// assert_eq!(ae::tmux::interpret_zone(true, "\n"), None);
+/// assert_eq!(ae::tmux::interpret_zone(false, "+0200\n"), None);
+/// ```
+#[must_use]
+pub fn interpret_zone(succeeded: bool, stdout: &str) -> Option<String> {
+    interpret_session_option(succeeded, stdout)
+}
+
 /// `#{pane_tty}` — the tty of every pane on the server, one per line.
 pub const PANE_TTY_FORMAT: &str = "#{pane_tty}";
 
@@ -4338,6 +4366,41 @@ mod tests {
         assert_eq!(super::settings_menu_x(74, 26), 48);
         assert_eq!(super::settings_menu_x(25, 26), 0);
         assert_eq!(super::settings_menu_x(0, 1), 0);
+    }
+
+    #[test]
+    fn the_zone_question_asks_the_sessions_server_for_its_clock_offset_and_nothing_else() {
+        use super::{ZONE_FORMAT, zone_args};
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        assert_eq!(
+            zone_args(&server, "one"),
+            [
+                "-L",
+                "ae",
+                "display-message",
+                "-p",
+                "-t",
+                "=one:",
+                ZONE_FORMAT
+            ]
+        );
+        assert_eq!(ZONE_FORMAT, "#{t/f/%z:start_time}");
+    }
+
+    #[test]
+    fn a_zone_answer_is_the_first_line_of_a_completed_run_and_nothing_else() {
+        use super::interpret_zone;
+        let raw = Some("not a zone\x1b[31m".to_owned());
+        assert_eq!(interpret_zone(true, "not a zone\x1b[31m\nsecond\n"), raw);
+        assert_eq!(interpret_zone(true, "+0200  \n"), Some("+0200".to_owned()));
+        assert_eq!(
+            interpret_zone(false, "+0200\n"),
+            None,
+            "a run that failed says nothing"
+        );
+        assert_eq!(interpret_zone(true, ""), None);
     }
 
     #[test]

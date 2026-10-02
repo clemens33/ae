@@ -41,6 +41,32 @@ terminal renderer; only its [input](#input) writes an event.
 - `--all` shows every assistant reply of the lead pair, answers to agents
   included, and reads OpenCode and Antigravity replies too.
 
+## Look
+
+On a terminal the chat is drawn like a group chat. Each speaker keeps one
+colour from the session's own palette: you, the lead seat, the other lead-pair
+seat, and ae itself (`said ae`, coverage rows, `-- closed:` and the rewrite
+notice, all dim). A bar (`▌`, or `|` when `icons` is off) runs down the left of
+every message, its header in the speaker's colour after a dim time; headers of
+`you → <seat>` are bold. Status lines are green (`sent`), amber (`uncertain`,
+`no record of`) or red (`not delivered`, `refused`), and the input prompt wears
+your colour. Times and the day divider use the viewer's zone: the chat asks
+the session's tmux once for `#{t/f/%z:start_time}` and keeps only a `[+-]HHMM`
+answer (`# 2026-10-03 +0200`); any other answer, or a tmux without that
+modifier, keeps `UTC`. A zone change mid-session (daylight saving) is not
+followed.
+
+Colour comes only from ae's own printing: every record byte is neutralised
+before an escape is added, and no escape is written inside a message. When
+stdout is a pipe or a file, the output is exactly the plain text above, in
+UTC, and the chat asks tmux for neither look nor zone; with `[workspace]
+theme = off` on a terminal it reads the look, finds it undrawn, and prints the
+same plain text without asking for the zone. The colours are
+the palette's accents drawn on the terminal's own background, which ae cannot
+see; against the palette's `base` every hue clears 3.0:1, and on Darcula the
+`working`, `stale`, `dim` and `done` hues stay under the 4.5:1 text bar (`dim`
+also on palettes `a` and `b`).
+
 ## Keys
 
 `prefix h` opens (or returns from) a `chat` window running

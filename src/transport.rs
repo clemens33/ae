@@ -1299,6 +1299,17 @@ pub fn observe_look_here(server: &ServerId) -> Option<tmux::LookOptions> {
     tmux::interpret_look(succeeded, &stdout)
 }
 
+/// The zone offset `session`'s server formats its clock in, as it answered, or
+/// `None` when it did not answer.
+#[must_use]
+pub fn observe_zone(server: &ServerId, session: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::zone_args(server, session));
+    tmux::interpret_zone(succeeded, &stdout)
+}
+
 /// The ttys of every pane on `server`, or `None` when it did not answer.
 #[must_use]
 pub fn observe_pane_ttys(server: &ServerId) -> Option<Vec<String>> {

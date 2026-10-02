@@ -10,9 +10,23 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use super::input::Effect;
 use super::lane::{Item, Kind, Lane, Seat};
 use crate::board::{clock_text, terminal_text};
 use crate::theme::{Look, Palette};
+
+/// Lane text a [`Style`] has already neutralised and dressed: the one text a
+/// paint writes as it is. Only [`Printed::lane`] makes one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Styled(String);
+
+impl Styled {
+    /// The text, escapes included.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Who a row speaks for, which fixes the hue it wears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,6 +361,23 @@ impl Printed {
         &self.style
     }
 
+    /// The first line of the console, drawn in this console's style.
+    #[must_use]
+    pub fn headline(&self, session: &str, seats: &[Seat]) -> String {
+        self.style.dim(&header(session, seats))
+    }
+
+    /// `text`, which one of this console's own prints produced, as the effect
+    /// that shows it. A dressed console's text carries its own escapes, so it
+    /// travels as [`Styled`] and is written as it is; a plain one stays inert
+    /// lane text.
+    pub(super) fn lane(&self, text: String) -> Effect {
+        match self.style {
+            Style(None) => Effect::Lane(text),
+            Style(Some(_)) => Effect::Styled(Styled(text)),
+        }
+    }
+
     /// Keep an outcome until its ask row prints, or two readable passes have
     /// found no row. Repeated submission ids never queue another outcome.
     pub fn outcome(&mut self, id: &str, line: String) {
@@ -364,9 +395,9 @@ impl Printed {
     pub fn flush_outcomes(&mut self) -> String {
         let mut out = String::new();
         for pending in std::mem::take(&mut self.pending) {
-            let _ = writeln!(out, "{}", pending.line);
+            let _ = writeln!(out, "{}", self.style.status(&pending.line));
         }
-        terminal_text(&out)
+        out
     }
 
     /// Print what `lane` holds that this console has not: `board_gaps` is how
@@ -376,7 +407,7 @@ impl Printed {
         let mut out = String::new();
         for (index, gap) in lane.coverage.iter().enumerate() {
             if index < board_gaps || self.gaps.insert(gap.clone()) {
-                let _ = writeln!(out, "coverage incomplete: {gap}");
+                out.push_str(&self.style.dim(&format!("coverage incomplete: {gap}\n")));
             }
         }
         let (mut in_lane, mut standing) = (BTreeMap::new(), BTreeMap::new());
@@ -402,46 +433,47 @@ impl Printed {
             for mut pending in std::mem::take(&mut self.pending) {
                 pending.passes -= 1;
                 if pending.passes == 0 {
-                    let _ = writeln!(out, "{}", pending.line);
+                    let _ = writeln!(out, "{}", self.style.status(&pending.line));
                 } else {
                     self.pending.push(pending);
                 }
             }
             for (key, label) in &self.open {
                 if !standing.contains_key(key) {
-                    let _ = writeln!(out, "-- closed: {label} is no longer standing\n");
+                    let closed = format!("-- closed: {label} is no longer standing\n\n");
+                    out.push_str(&self.style.dim(&closed));
                     self.shown.remove(key);
                 }
             }
             self.open = standing;
         }
-        terminal_text(&out)
+        out
     }
 
     /// Forget the printed console-thread rows, whose positions a rewritten journal
     /// (`before` records, `now` now) no longer names; every other memory stays.
     pub fn rebase(&mut self, before: usize, now: usize) -> String {
         self.shown.retain(|key, _| !key.starts_with(CONSOLE_KEY));
-        terminal_text(&format!(
+        self.style.dim(&format!(
             "-- journal rewritten ({before} records before, {now} now): the chat thread is shown again as the journal stands\n\n"
         ))
     }
 
     fn row(&mut self, item: &Item, out: &mut String) {
-        let (day, time) = clock_text(item.micros);
+        let (day, time) = clock_text(self.style.shift(item.micros));
         if self.day.as_deref() != Some(day.as_str()) {
-            let _ = writeln!(out, "# {day} UTC");
+            out.push_str(&self.style.day(&day));
             self.day = Some(day);
         }
-        let _ = writeln!(out, "## {time} {}", tag(&item.kind));
+        out.push_str(&self.style.head(&item.kind, &time));
         for line in item.body.lines() {
-            let _ = writeln!(out, "  {line}");
+            out.push_str(&self.style.line(&item.kind, line));
         }
         if let Kind::Asked { id, .. } | Kind::NotDelivered { id, .. } = &item.kind
             && let Some(at) = self.pending.iter().position(|pending| pending.id == *id)
         {
             let pending = self.pending.remove(at);
-            let _ = writeln!(out, "  {}", pending.line);
+            out.push_str(&self.style.under(&item.kind, &pending.line));
         }
         out.push('\n');
     }
@@ -1014,5 +1046,74 @@ mod tests {
             }
         }
         assert_eq!(under_text, UNDER_TEXT_BAR);
+    }
+
+    fn unstyled(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(at) = rest.find('\x1b') {
+            out.push_str(&rest[..at]);
+            let after = &rest[at..];
+            rest = &after[after.find('m').expect("a terminated escape") + 1..];
+        }
+        out + rest
+    }
+
+    #[test]
+    fn a_dressed_console_bars_every_line_dims_its_notices_and_routes_its_text_by_style() {
+        use crate::console::input::Effect;
+        let mut printed = Printed::styled(dressed("on", ""));
+        printed.outcome("id", "sent id".to_owned());
+        let kind = Kind::Asked {
+            to: "lead".to_owned(),
+            id: "id".to_owned(),
+            uncertain: false,
+        };
+        let got = printed.step(&lane(vec![item(kind, T, "q\n  r")], &["gap"]), 0, true);
+        let want = "coverage incomplete: gap\n# 2026-09-30 +0200\n▌ 08:01:00 you → lead · id\n▌  q\n▌    r\n▌  sent id\n\n";
+        assert_eq!(unstyled(&got), want);
+        let p = Palette::DARCULA;
+        assert!(
+            got.starts_with(&format!("{}coverage incomplete: gap\x1b[0m\n", sgr(p.dim))),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&format!("{}sent id\x1b[0m\n\n", sgr(p.done))),
+            "{got:?}"
+        );
+        let seats = [Seat {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: None,
+        }];
+        assert_eq!(
+            unstyled(&printed.headline("s", &seats)),
+            header("s", &seats)
+        );
+        assert_eq!(
+            Printed::default().headline("s", &seats),
+            header("s", &seats)
+        );
+        assert!(
+            matches!(Printed::default().lane("x".to_owned()), Effect::Lane(text) if text == "x")
+        );
+        assert!(
+            matches!(printed.lane("x".to_owned()), Effect::Styled(text) if text.as_str() == "x")
+        );
+        let closed = printed.step(&lane(vec![], &[]), 0, true);
+        assert_eq!(
+            closed, "",
+            "an ask is not a card, so nothing stood to close"
+        );
+        let rebased = printed.rebase(2, 1);
+        assert!(
+            rebased.starts_with(&sgr(p.dim)) && rebased.ends_with("stands\x1b[0m\n\n"),
+            "{rebased:?}"
+        );
+    }
+
+    fn sgr(hex: &str) -> String {
+        let at = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex");
+        format!("\x1b[38;2;{};{};{}m", at(1), at(3), at(5))
     }
 }

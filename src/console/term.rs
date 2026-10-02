@@ -122,7 +122,7 @@ impl Term {
             reads: Reads(Some(reads)),
             server: doors::launch_target(declared.as_ref()),
             me: doors::calling_pane_id(),
-            screen: Screen::default(),
+            screen: Screen::styled(console.printed.style().clone()),
         })
     }
 
@@ -274,11 +274,15 @@ impl Term {
         }
         console.printed.outcome(&id, line);
         match console.pass() {
-            Ok(text) => Effect::Lane(text),
-            Err(why) => Effect::Lane(format!(
-                "coverage incomplete: {why}\n{}",
-                console.printed.flush_outcomes()
-            )),
+            Ok(text) => console.printed.lane(text),
+            Err(why) => {
+                let gap = console
+                    .printed
+                    .style()
+                    .dim(&format!("coverage incomplete: {why}\n"));
+                let held = console.printed.flush_outcomes();
+                console.printed.lane(format!("{gap}{held}"))
+            }
         }
     }
 }
