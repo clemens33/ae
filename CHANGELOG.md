@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.7] - 2026-10-02
+- **console**: Specify wrapped composer behavior
+- Wrap the console composer across rows and redraw it above lane output
+- **console**: Specify cursor editing behavior
+- Edit the console composer at a cursor with Left, Right, Home, End and Delete
+- Describe the composer window as the cursor row with markers above and below
+- Pin the composer guards, offsets and pane reads the first mutant pass left unchecked
+
 ## [v2026.10.6] - 2026-10-02
 - **console**: Pin draft restore and sticky speaker
 - Restore a kept console draft at owner promotion and keep the speaker between asks
