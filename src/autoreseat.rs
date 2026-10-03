@@ -514,33 +514,7 @@ impl Episode {
 /// The episode the seat is in now, or `None` when it has none.
 #[must_use]
 pub fn episode(events: &[Event], session: &str, slot: &str, agent: &str) -> Option<Episode> {
-    let mut current: Option<Episode> = None;
-    for event in events {
-        if !event_is_addressed_to(event, session, slot, agent) {
-            continue;
-        }
-        if event.action == SPAWN_ACTION {
-            current = None;
-            continue;
-        }
-        if event.actor != WATCHDOG_ACTOR {
-            continue;
-        }
-        match event.action.as_str() {
-            CLEARED_ACTION => current = None,
-            LIMIT_ACTION => {
-                if current.is_none() {
-                    current = Some(Episode::opened(event.ts));
-                }
-            }
-            _ => {
-                if let Some(open) = current.as_mut() {
-                    open.absorb(event);
-                }
-            }
-        }
-    }
-    current
+    episodes(events, session, slot, agent).0
 }
 
 /// The headroom episode the seat is in now, or `None` when it is armed.
@@ -556,42 +530,121 @@ pub fn headroom_episode(
     slot: &str,
     agent: &str,
 ) -> Option<Episode> {
-    let mut current: Option<Episode> = None;
+    episodes(events, session, slot, agent).1
+}
+
+/// The seat's limit episode and its headroom episode, folded in ONE pass,
+/// because a seat has one auto reseat path: an outcome under the live key of
+/// either — or a move, whatever its ref — closes every episode still open
+/// beside it. An outcome under a key neither holds closes nothing. A closed
+/// limit episode waits for its `alert-cleared`, a closed headroom one for its
+/// re-arm, before a new one opens.
+fn episodes(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+) -> (Option<Episode>, Option<Episode>) {
+    let mut limit: Option<Episode> = None;
+    let mut headroom: Option<Episode> = None;
     for event in events {
         if !event_is_addressed_to(event, session, slot, agent) {
             continue;
         }
         if event.action == SPAWN_ACTION {
-            current = None;
+            (limit, headroom) = (None, None);
             continue;
         }
         if event.actor != WATCHDOG_ACTOR {
             continue;
         }
+        let live = |found: &Option<Episode>| {
+            found.as_ref().is_some_and(|open| {
+                open.terminal.is_none() && event.reference.as_deref() == Some(open.reference())
+            })
+        };
         match event.action.as_str() {
+            CLEARED_ACTION => limit = None,
+            LIMIT_ACTION => {
+                if limit.is_none() {
+                    limit = Some(Episode::opened(event.ts));
+                }
+            }
             HEADROOM_ACTION => {
-                if current.is_none() {
+                if headroom.is_none() {
                     let cause = event.summary.clone().unwrap_or_default();
-                    current = Some(Episode::opened_by(event.ts, Trigger::Headroom, cause));
+                    headroom = Some(Episode::opened_by(event.ts, Trigger::Headroom, cause));
                 }
             }
             REARMED_ACTION => {
-                if current
+                if headroom
                     .as_ref()
                     .is_some_and(|open| event.reference.as_deref() == Some(open.reference()))
                 {
-                    current = None;
+                    headroom = None;
                 }
             }
-            DONE_ACTION => current = None,
+            DONE_ACTION => {
+                if let Some(open) = limit.as_mut() {
+                    open.absorb(event);
+                }
+                headroom = None;
+            }
+            REFUSED_ACTION | FAILED_ACTION if live(&limit) || live(&headroom) => {
+                let outcome = if event.action == REFUSED_ACTION {
+                    Outcome::Refused
+                } else {
+                    Outcome::Failed
+                };
+                for open in [limit.as_mut(), headroom.as_mut()].into_iter().flatten() {
+                    if open.terminal.is_none() {
+                        open.close(outcome);
+                    }
+                }
+            }
             _ => {
-                if let Some(open) = current.as_mut() {
+                for open in [limit.as_mut(), headroom.as_mut()].into_iter().flatten() {
                     open.absorb(event);
                 }
             }
         }
     }
-    current
+    (limit, headroom)
+}
+
+/// The episode, of either kind, whose attempt is in flight: opened, no
+/// outcome yet. It alone decides the seat until that attempt ends, so no second
+/// attempt opens beside it; a limit drawn meanwhile supersedes only a headroom
+/// episode no attempt is moving.
+#[must_use]
+pub fn flying(limit: Option<&Episode>, headroom: Option<&Episode>) -> Option<Episode> {
+    [limit, headroom]
+        .into_iter()
+        .flatten()
+        .find(|found| found.open.is_some() && found.terminal.is_none())
+        .cloned()
+}
+
+/// The episode keyed `key` that a leg acts under. A limit and a headroom
+/// episode opened in the same second share a key, so the one whose attempt is
+/// in flight is taken first; otherwise the limit episode, then the headroom one.
+#[must_use]
+pub fn keyed(
+    events: &[Event],
+    (session, slot, agent): (&str, &str, &str),
+    key: Timestamp,
+) -> Option<Episode> {
+    let (limit, headroom) = episodes(events, session, slot, agent);
+    owning(limit, headroom, &key.to_string())
+}
+
+/// Of the two episodes, the one whose `ref` is `reference`, by [`keyed`]'s rule.
+fn owning(limit: Option<Episode>, headroom: Option<Episode>, reference: &str) -> Option<Episode> {
+    let named = |found: &Episode| found.reference() == reference;
+    let (limit, headroom) = (limit.filter(named), headroom.filter(named));
+    flying(limit.as_ref(), headroom.as_ref())
+        .or(limit)
+        .or(headroom)
 }
 
 /// Each profile this seat left by auto reseat since its newest `spawn`, with
@@ -627,15 +680,15 @@ fn left_moves(
     agent: &str,
 ) -> Vec<(String, Timestamp, Trigger)> {
     let mut left: Vec<(String, Timestamp, Trigger)> = Vec::new();
-    let mut headroom_keys: Vec<String> = Vec::new();
-    let mut attempted: Option<&str> = None;
-    for event in events {
+    // The kind of the newest attempt, judged when it was journaled: a later
+    // opener under the same second cannot change which move it was.
+    let mut attempted: Option<Trigger> = None;
+    for (index, event) in events.iter().enumerate() {
         if !event_is_addressed_to(event, session, slot, agent) {
             continue;
         }
         if event.action == SPAWN_ACTION {
             left.clear();
-            headroom_keys.clear();
             attempted = None;
             continue;
         }
@@ -643,20 +696,21 @@ fn left_moves(
             continue;
         }
         match event.action.as_str() {
-            HEADROOM_ACTION => headroom_keys.push(event.ts.to_string()),
-            ATTEMPT_ACTION => attempted = event.reference.as_deref(),
+            ATTEMPT_ACTION => {
+                let (limit, headroom) = episodes(&events[..=index], session, slot, agent);
+                attempted = event
+                    .reference
+                    .as_deref()
+                    .and_then(|reference| owning(limit, headroom, reference))
+                    .map(|found| found.trigger);
+            }
             DONE_ACTION => {
                 if let Some(profile) = event.reference.as_deref() {
-                    let trigger = if attempted
-                        .is_some_and(|key| headroom_keys.iter().any(|taken| taken == key))
-                    {
-                        Trigger::Headroom
-                    } else {
-                        Trigger::Limit
-                    };
+                    let trigger = attempted.unwrap_or(Trigger::Limit);
                     left.retain(|(taken, _, _)| taken != profile);
                     left.push((profile.to_owned(), event.ts, trigger));
                 }
+                attempted = None;
             }
             _ => {}
         }
@@ -2531,5 +2585,122 @@ mod tests {
             seat,
             key_epoch() + 6
         ));
+    }
+
+    #[test]
+    fn an_outcome_under_either_live_key_closes_every_open_episode_and_a_stale_one_none() {
+        let late = after_key(30).to_string();
+        let both = [limit(), crossed(30)];
+        let terminal = |found: Option<Episode>| found.expect("still the seat's").terminal;
+        for (action, reference, outcome) in [
+            (REFUSED_ACTION, KEY, Some(Outcome::Refused)),
+            (REFUSED_ACTION, late.as_str(), Some(Outcome::Refused)),
+            (FAILED_ACTION, KEY, Some(Outcome::Failed)),
+            (FAILED_ACTION, late.as_str(), Some(Outcome::Failed)),
+            (REFUSED_ACTION, OTHER_KEY, None),
+            (FAILED_ACTION, OTHER_KEY, None),
+        ] {
+            let mut events = both.to_vec();
+            events.push(routed(40, action, reference));
+            let (limit, headroom) = episodes(&events, SESSION, SLOT, AGENT);
+            assert_eq!(terminal(limit), outcome, "{action} {reference}");
+            assert_eq!(terminal(headroom), outcome, "{action} {reference}");
+        }
+        // A move closes both, whatever its ref names.
+        let mut moved = both.to_vec();
+        moved.push(routed(40, DONE_ACTION, "fake-claude"));
+        let (limit, headroom) = episodes(&moved, SESSION, SLOT, AGENT);
+        assert_eq!(terminal(limit), Some(Outcome::Done));
+        assert_eq!(headroom, None);
+        // Closed, each waits for its own arming: a fresh latch, a strict relief.
+        let mut refused = both.to_vec();
+        refused.extend([
+            routed(40, REFUSED_ACTION, KEY),
+            watchdog(50, CLEARED_ACTION, None),
+            watchdog(60, LIMIT_ACTION, None),
+        ]);
+        let (limit, headroom) = episodes(&refused, SESSION, SLOT, AGENT);
+        assert_eq!(
+            limit.map(|found| (found.key, found.terminal)),
+            Some((after_key(60), None))
+        );
+        assert_eq!(terminal(headroom), Some(Outcome::Refused));
+        // The closed key is stale now: it closes nothing of the fresh episode.
+        refused.push(routed(70, FAILED_ACTION, KEY));
+        assert_eq!(terminal(episode(&refused, SESSION, SLOT, AGENT)), None);
+        refused.push(watchdog(80, REARMED_ACTION, Some(&late)));
+        assert_eq!(headroom_episode(&refused, SESSION, SLOT, AGENT), None);
+    }
+
+    #[test]
+    fn an_attempt_in_flight_of_either_kind_decides_and_an_equal_key_takes_the_flying_kind() {
+        let seat = (SESSION, SLOT, AGENT);
+        // A headroom attempt in flight, and a limit latched in the same second
+        // after it: both episodes are keyed alike, only one has the attempt.
+        let events = [crossed(0), routed(0, ATTEMPT_ACTION, KEY), limit()];
+        let (limit_now, headroom_now) = episodes(&events, SESSION, SLOT, AGENT);
+        assert_eq!(limit_now.as_ref().map(|found| found.open), Some(None));
+        let moving = flying(limit_now.as_ref(), headroom_now.as_ref()).expect("one flies");
+        assert_eq!(moving.trigger, Trigger::Headroom);
+        let found = keyed(&events, seat, after_key(0)).expect("keyed");
+        assert_eq!(found.trigger, Trigger::Headroom);
+        // Nothing in flight: the limit episode under the key, then headroom.
+        let still = keyed(&[limit(), crossed(0)], seat, after_key(0)).expect("keyed");
+        assert_eq!(still.trigger, Trigger::Limit);
+        let only = keyed(&[crossed(0)], seat, after_key(0)).expect("keyed");
+        assert_eq!(only.trigger, Trigger::Headroom);
+        assert_eq!(keyed(&[crossed(0)], seat, after_key(1)), None);
+        // An ended attempt flies no more.
+        let ended = [
+            crossed(0),
+            routed(5, ATTEMPT_ACTION, KEY),
+            routed(9, FAILED_ACTION, KEY),
+        ];
+        let (limit_now, headroom_now) = episodes(&ended, SESSION, SLOT, AGENT);
+        assert_eq!(flying(limit_now.as_ref(), headroom_now.as_ref()), None);
+        assert_eq!(flying(None, None), None);
+    }
+
+    /// The kind of a move is the kind of the attempt it closed, judged when
+    /// that attempt was journaled: an opener under the same second afterwards
+    /// changes nothing.
+    #[test]
+    fn a_leave_is_the_kind_of_its_attempt_whatever_opens_after_it() {
+        let limit_first = [
+            limit(),
+            routed(0, ATTEMPT_ACTION, KEY),
+            crossed(0),
+            routed(5, DONE_ACTION, "sol6x"),
+        ];
+        assert!(left_on_headroom(&limit_first, SESSION, SLOT, AGENT).is_empty());
+        let headroom_first = [
+            crossed(0),
+            routed(0, ATTEMPT_ACTION, KEY),
+            limit(),
+            routed(5, DONE_ACTION, "sol6x"),
+        ];
+        assert_eq!(
+            left_on_headroom(&headroom_first, SESSION, SLOT, AGENT),
+            ["sol6x"]
+        );
+        // Both open before the attempt: the limit takes it, as a leg would.
+        let both = [
+            limit(),
+            crossed(0),
+            routed(0, ATTEMPT_ACTION, KEY),
+            routed(5, DONE_ACTION, "sol6x"),
+        ];
+        assert!(left_on_headroom(&both, SESSION, SLOT, AGENT).is_empty());
+        // A done with no attempt before it is a limit leave, and a done ends
+        // the attempt it closed.
+        let bare = [crossed(0), routed(5, DONE_ACTION, "sol6x")];
+        assert!(left_on_headroom(&bare, SESSION, SLOT, AGENT).is_empty());
+        let twice = [
+            crossed(0),
+            routed(1, ATTEMPT_ACTION, KEY),
+            routed(5, DONE_ACTION, "sol6x"),
+            routed(20, DONE_ACTION, "opus55x"),
+        ];
+        assert_eq!(left_on_headroom(&twice, SESSION, SLOT, AGENT), ["sol6x"]);
     }
 }

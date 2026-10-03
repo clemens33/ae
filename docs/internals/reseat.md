@@ -363,10 +363,15 @@ Past the grace the daemon hands at most one due seat per cycle to the trigger,
 through the session's own `send` helper with the action `auto-reseat` — the
 trigger re-derives the whole decision under the seat's lock, so a forged call
 does exactly what the daemon would do now. The trigger journals `auto-reseat`
-BEFORE it spawns the detached `_auto-reseat <dir> <slot> <key>` leg; a leg that
-could not start closes the attempt `failed` at once. The leg recomputes the
-key: a seat gone, or an episode that is not the key's, REFUSES; an attempt
-already closed, or none open, is not its to act on and journals nothing. It
+BEFORE it spawns the detached `_auto-reseat <dir> <slot> <key>` leg, and
+releases the seat's lock between the two, so the leg can take it itself; a leg
+that could not start closes the attempt `failed` at once, under the lock taken
+again and only while the journal still shows that attempt open. The leg takes
+the seat's lock without waiting before it reads anything — held by another
+writer, it writes nothing. It recomputes the key: a seat gone, or an episode
+that is not the key's, REFUSES; an attempt already closed, or none open, is not
+its to act on and journals nothing. A limit and a headroom episode opened in the
+same second share a key, and the leg takes the one whose attempt is in flight. It
 re-chooses from the global config, then moves through `reseat::run_as_watchdog`
 with `StopPolicy::Proven` — a running tool is stopped only on a frame proven
 idle, or proven on the vendor's usage limit over an empty box, on both
@@ -387,9 +392,12 @@ waits for a window read after the move that proves relief: a usable reading
 below critical, or a reset that has passed. Residual, named not fixed: a capped
 account with no usable window reads Unknown.
 
-Every writer of the path's records takes the seat's lock WITHOUT waiting, and
-takes it BEFORE the journal is re-read and appended to, never after. A writer
-that finds it held skips, and the next cycle asks again.
+Every writer of the path's records — the daemon, the trigger and the leg —
+takes the seat's lock WITHOUT waiting, and takes it BEFORE the journal is
+re-read and appended to, never after. A daemon or trigger write that finds it
+held skips, and the next cycle asks again. A leg that finds it held writes
+nothing and is not retried: its attempt stays open until the daemon books it
+`failed` past 180 s.
 
 Each ending is said once on the human's chat and told to the lead pair minus
 the moved seat, plus the seat's spawner when that names another roster seat not
@@ -439,6 +447,18 @@ each candidate it passed over. A drawn limit outranks the whole path: a latched
 seat is the limit path's alone, which moves exactly as before, and a limit move
 still takes a candidate past the threshold. The move's shell is no death and
 books no limit.
+
+The two kinds are ONE path for the seat. An attempt in flight under either
+kind decides the seat until it has an outcome, so a limit drawn meanwhile books
+no second attempt and an unlatched seat opens nothing; a limit supersedes only
+a headroom episode no attempt is moving. An `auto-reseat-refused` or
+`-failed` under the live key of either kind closes EVERY episode still open on
+the seat, and a move closes both whatever its `ref`; an outcome under a key
+neither holds closes nothing. A closed limit episode waits for its
+`alert-cleared` and a fresh `limit`, a closed headroom one for its re-arm. The
+kind a profile was left on is the kind of the attempt that moved it, judged when
+that attempt was journaled, so an opener booked in the same second afterwards
+cannot relabel the move.
 
 A seeded successor is handed the seat pack, whose declared-state section reads
 `ae reads this as YOUR declaration until you re-declare`: the predecessor's

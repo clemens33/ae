@@ -4578,14 +4578,20 @@ fn auto_acts(
         if crate::autoreseat::eligible(settings, &asked).is_err() {
             continue;
         }
-        let found = if seat.limited {
-            crate::autoreseat::episode(events, session, &seat.slot, &seat.agent)
+        let limit = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent);
+        let headroom =
+            crate::autoreseat::headroom_episode(events, session, &seat.slot, &seat.agent);
+        // An attempt in flight, of either kind, decides the seat until it ends.
+        let flying = crate::autoreseat::flying(limit.as_ref(), headroom.as_ref());
+        let found = if flying.is_some() {
+            flying
+        } else if seat.limited {
+            limit
         } else {
             if settings.headroom_at.is_none() {
                 continue;
             }
-            let found =
-                crate::autoreseat::headroom_episode(events, session, &seat.slot, &seat.agent);
+            let found = headroom;
             let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
             match (&found, &seat.room) {
                 (None, Room::Crossed(window)) => {
@@ -13284,6 +13290,27 @@ mod tests {
         flying.push(record(210, ATTEMPT_ACTION, &format!(r#","ref":"{key}""#)));
         let relieved = || clear(Room::Relieved(window(10.0)));
         assert!(acts(&on, relieved(), &flying, 300).is_empty(), "in flight");
+        // A limit latched while it flies books no second attempt: the attempt
+        // in flight decides the seat, overdue under its own kind.
+        let latched = || seat(Frame::Clear, true, Room::Unread);
+        let mut both = flying.clone();
+        both.push(record(220, "limit", ""));
+        assert!(acts(&on, latched(), &both, 300).is_empty(), "one in flight");
+        assert_eq!(
+            acts(&on, latched(), &both, 210 + IN_FLIGHT_SECS),
+            [AutoAct::Overdue {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                key,
+                trigger: Trigger::Headroom,
+            }]
+        );
+        // And a limit attempt in flight keeps an unlatched seat from opening one.
+        let limit_flying = [
+            record(100, "limit", ""),
+            record(210, ATTEMPT_ACTION, &format!(r#","ref":"{key}""#)),
+        ];
+        assert!(acts(&on, clear(crossed.clone()), &limit_flying, 300).is_empty());
         assert_eq!(
             acts(&on, relieved(), &flying, 210 + IN_FLIGHT_SECS),
             [AutoAct::Overdue {

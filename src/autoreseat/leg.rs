@@ -8,6 +8,7 @@
 use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use crate::reseat::{Ended, Resolved};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
@@ -337,6 +338,18 @@ pub(crate) fn run(
     };
     let key = argv.key.to_string();
     let dir = argv.dir.as_path();
+    // THE SEAT'S LOCK, without waiting and before anything is read: the leg is
+    // a writer of this path's records like every other. The trigger released
+    // it before starting this leg, so a lock held now is another writer's, and
+    // this leg writes nothing.
+    let Ok(_held) = crate::store::lock(&super::lock_path(dir, &argv.slot), Duration::ZERO) else {
+        writeln!(
+            err,
+            "ae: auto reseat: another writer holds {} — nothing written.",
+            argv.slot
+        )?;
+        return Ok(EXIT_FAILED);
+    };
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
     let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let Some(seat) = meta.roster().iter().find(|row| row.slot == argv.slot) else {
@@ -348,13 +361,7 @@ pub(crate) fn run(
     };
     let (agent, profile) = (seat.name.clone(), seat.profile.clone().unwrap_or_default());
     let events = crate::watchdog_daemon::read_events(dir);
-    let keyed = |found: &super::Episode| found.key == argv.key;
-    let Some(found) = super::episode(&events, &argv.session, &argv.slot, &agent)
-        .filter(keyed)
-        .or_else(|| {
-            super::headroom_episode(&events, &argv.session, &argv.slot, &agent).filter(keyed)
-        })
-    else {
+    let Some(found) = super::keyed(&events, (&argv.session, &argv.slot, &agent), argv.key) else {
         let why = format!("refused: the seat is in no limit episode keyed {key}");
         return close(&argv, &agent, now, (REFUSED_ACTION, &why), err);
     };
@@ -541,16 +548,21 @@ pub(crate) fn plan(
         Ok(list) => list,
         Err(why) => return Plan::Decline(format!("not eligible ({why:?})")),
     };
+    let limit = super::episode(events, seat.session, seat.slot, seat.agent);
+    let headroom = super::headroom_episode(events, seat.session, seat.slot, seat.agent);
+    if super::flying(limit.as_ref(), headroom.as_ref()).is_some() {
+        return Plan::Decline("an attempt is in flight".to_owned());
+    }
     let room = settings.headroom_at.filter(|_| !sight.limited);
     let found = match room {
         None if !sight.limited => return Plan::Decline("no usage limit is drawn".to_owned()),
-        None => super::episode(events, seat.session, seat.slot, seat.agent),
+        None => limit,
         Some(_) if !sight.near => {
             return Plan::Decline(
                 "no usage limit is drawn and the account has headroom".to_owned(),
             );
         }
-        Some(_) => super::headroom_episode(events, seat.session, seat.slot, seat.agent),
+        Some(_) => headroom,
     };
     let decision = super::decide(
         found.as_ref(),
@@ -663,14 +675,21 @@ fn tell(argv: &Argv, now: Timestamp, told: Told<'_>, text: &str) {
     }
 }
 
-/// Journal the attempt, THEN start the leg: the leg acts only under an attempt
-/// it can read. A leg that could not start closes the attempt at once.
+/// Journal the attempt, release the seat's lock `held`, THEN start the leg:
+/// the leg acts only under an attempt it can read, and takes that lock itself
+/// without waiting. A leg that could not start closes the attempt at once,
+/// under the lock taken again, while the journal still shows it open.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the handoff's facts, each read once by the trigger"
+)]
 fn commit(
     argv: &Argv,
     agent: &str,
     (from, to): (&str, &str),
     (note, cause): (&str, &str),
     now: Timestamp,
+    held: std::fs::File,
     spawn: impl FnOnce() -> bool,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -683,8 +702,26 @@ fn commit(
         &key,
         &format!("from {from} to {to}{note}"),
     );
+    drop(held);
     if spawn() {
         return Ok(0);
+    }
+    let lock = super::lock_path(&argv.dir, &argv.slot);
+    let Ok(_held) = crate::store::lock(&lock, Duration::ZERO) else {
+        writeln!(
+            err,
+            "ae: auto reseat: the move could not be started and another writer holds {}",
+            argv.slot
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    let events = crate::watchdog_daemon::read_events(&argv.dir);
+    let seat = (argv.session.as_str(), argv.slot.as_str(), agent);
+    let open = super::keyed(&events, seat, argv.key)
+        .is_some_and(|found| found.open.is_some() && found.terminal.is_none());
+    if !open {
+        writeln!(err, "ae: auto reseat: the move could not be started")?;
+        return Ok(EXIT_FAILED);
     }
     let why = tagged("failed: the move could not be started", cause);
     let code = close(argv, agent, now, (FAILED_ACTION, &why), err)?;
@@ -724,8 +761,7 @@ pub(crate) fn trigger(
         _ => return decline(err, "not a seat of this session"),
     };
     let slot = resolved.slot.as_str();
-    let Ok(_held) = crate::store::lock(&super::lock_path(dir, slot), std::time::Duration::ZERO)
-    else {
+    let Ok(held) = crate::store::lock(&super::lock_path(dir, slot), Duration::ZERO) else {
         return decline(err, "another writer holds the seat");
     };
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
@@ -829,6 +865,7 @@ pub(crate) fn trigger(
                 (&profile, &to),
                 (&note, &cause),
                 now,
+                held,
                 spawn,
                 err,
             )
@@ -1557,6 +1594,10 @@ mod tests {
     /// under an attempt it can read; a leg that could not start closes the
     /// attempt at once instead of leaving it to age out.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one handoff, its start and both failed starts"
+    )]
     fn the_attempt_is_journaled_before_the_leg_starts_and_a_leg_that_cannot_start_closes_it() {
         use crate::autoreseat::ATTEMPT_ACTION;
         let root = Root(std::env::temp_dir().join(format!("ae-leg-commit-{}", std::process::id())));
@@ -1581,7 +1622,22 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let now = Timestamp::from_epoch(argv.key.epoch() + 700);
+        let lock = crate::autoreseat::lock_path(&dir, "spawned.3");
+        let held = || crate::store::lock(&lock, Duration::ZERO).expect("the trigger's lock");
+        // The limit the trigger moves under, opened at the key.
+        let opener =
+            format!(r#"{{"ts":"{KEY}","actor":"watchdog","action":"limit","target":"scout"}}"#)
+                + "\n";
+        let open = || {
+            let _ = std::fs::remove_file(dir.join(crate::store::EVENTS));
+            assert!(
+                crate::store::open(&dir).append_event(&opener).is_ok(),
+                "the opener"
+            );
+        };
+        open();
         let mut before = Vec::new();
+        let mut released = false;
         let mut err = Vec::new();
         let code = commit(
             &argv,
@@ -1589,12 +1645,15 @@ mod tests {
             ("sol6x", "opus55x"),
             ("", ""),
             now,
+            held(),
             || {
                 before = journal();
+                released = crate::store::lock(&lock, Duration::ZERO).is_ok();
                 false
             },
             &mut err,
         );
+        let limit = ("limit".to_owned(), String::new(), String::new());
         let attempt = (
             ATTEMPT_ACTION.to_owned(),
             KEY.to_owned(),
@@ -1602,14 +1661,16 @@ mod tests {
         );
         assert_eq!(
             before,
-            std::slice::from_ref(&attempt),
+            [limit.clone(), attempt.clone()],
             "durable before the start"
         );
+        assert!(released, "the leg finds the seat's lock free");
         assert_eq!(code.ok(), Some(EXIT_FAILED));
         let why = "failed: the move could not be started";
         assert_eq!(
             journal(),
             [
+                limit.clone(),
                 attempt.clone(),
                 (FAILED_ACTION.to_owned(), KEY.to_owned(), why.to_owned()),
                 (
@@ -1630,18 +1691,54 @@ mod tests {
             chat.target.as_deref().unwrap_or_default().is_empty(),
             "target-less: {chat:?}"
         );
-        let _ = std::fs::remove_file(dir.join(crate::store::EVENTS));
+        open();
         let started = commit(
             &argv,
             "scout",
             ("sol6x", "opus55x"),
             ("", ""),
             now,
+            held(),
             || true,
             &mut err,
         );
         assert_eq!(started.ok(), Some(0));
-        assert_eq!(journal(), [attempt]);
+        assert_eq!(journal(), [limit.clone(), attempt.clone()]);
+        // A failed start writes nothing when another writer holds the lock, or
+        // when the journal no longer shows the attempt open.
+        for (rival, closed) in [(true, false), (false, true)] {
+            open();
+            let mut err = Vec::new();
+            let mut taken = None;
+            let code = commit(
+                &argv,
+                "scout",
+                ("sol6x", "opus55x"),
+                ("", ""),
+                now,
+                held(),
+                || {
+                    if rival {
+                        taken = Some(held());
+                    }
+                    if closed {
+                        let line = format!(
+                            r#"{{"ts":"{KEY}","actor":"watchdog","action":"{FAILED_ACTION}","target":"scout","ref":"{KEY}"}}"#
+                        ) + "\n";
+                        assert!(crate::store::open(&dir).append_event(&line).is_ok());
+                    }
+                    false
+                },
+                &mut err,
+            );
+            drop(taken);
+            assert_eq!(code.ok(), Some(EXIT_FAILED));
+            let failed = journal()
+                .iter()
+                .filter(|(action, _, _)| action == FAILED_ACTION)
+                .count();
+            assert_eq!(failed, usize::from(closed), "{rival} {closed}");
+        }
     }
     /// The trigger acts only for a seat of its OWN session: `@session:agent`
     /// resolves across sessions, and a foreign seat — or a pane with no slot —
@@ -1826,6 +1923,20 @@ mod tests {
                 ),
                 "{why}"
             );
+        }
+        // An attempt in flight of either kind declines a second one.
+        let mut flying = crossed.to_vec();
+        flying.push(record(
+            5,
+            crate::autoreseat::ATTEMPT_ACTION,
+            &format!(r#","ref":"{KEY}""#),
+        ));
+        flying.extend(limit.iter().cloned());
+        for sight in [sight(Frame::Clear, true, true), near] {
+            assert!(matches!(
+                plan(&settings(Some(95)), &seat, &sight, &flying, at(10.0), now),
+                Plan::Decline(_)
+            ));
         }
         // A drawn limit moves by the limit episode, with its own spelling and
         // its own chooser: the 96% candidate a headroom move passes over.
