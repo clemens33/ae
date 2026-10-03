@@ -17,7 +17,9 @@ use ae::time::Timestamp;
 
 use super::seat_relaunch::Rig;
 
-const WAIT: Duration = Duration::from_secs(20);
+// Quota checkpoint delivery can defer 30 seconds twice before the same
+// watchdog reaches its pane/action phase. Keep barriers bounded above that.
+const WAIT: Duration = Duration::from_secs(90);
 
 fn configure(rig: &Rig, knobs: &str, from: &str, candidates: &str) {
     let path = rig.scratch.join("config");
@@ -86,8 +88,36 @@ fn rebind(rig: &Rig, key: &str, value: &str) {
 fn seat(rig: &Rig, profile: &str) -> String {
     rig.seat_rows("spawned.0", "scout", profile, "claude");
     let pane = rig.new_pane("spawned.0", "scout");
+    isolate(rig, &pane);
     rig.start(&pane, "spawned.0", "claude");
     pane
+}
+
+/// Start the fixture shell with scratch identity BEFORE `_run` records it.
+/// The tmux server inherits the test runner's environment; daemon-only HOME
+/// isolation would leave the pane's recorded scope pointing outside scratch.
+fn isolate(rig: &Rig, pane: &str) {
+    let home = rig.scratch.join("home");
+    std::fs::create_dir_all(&home).expect("scratch home");
+    assert!(
+        rig.tmux(&[
+            "respawn-pane",
+            "-k",
+            "-t",
+            pane,
+            "env",
+            "-u",
+            "CLAUDE_CONFIG_DIR",
+            "-u",
+            "CODEX_HOME",
+            &format!("HOME={}", home.display()),
+            &format!("AE_HOME={}", rig.scratch.display()),
+            &format!("CONFIG_FILE={}", rig.scratch.join("config").display()),
+            "/bin/sh",
+        ])
+        .0,
+        "atomic scratch shell environment"
+    );
 }
 
 fn records(rig: &Rig) -> Vec<Event> {
@@ -138,6 +168,8 @@ fn watch(rig: &Rig) -> super::cli::OwnedChild {
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .env_remove("AE_SENDER_OVERRIDE")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
         .stdout(std::process::Stdio::null())
         .stderr(log)
         .spawn()
@@ -825,6 +857,20 @@ fn post_move_relief_uses_the_configured_threshold_even_when_the_number_is_critic
         until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
     }
     std::thread::sleep(Duration::from_millis(1_100));
+    // The fake never writes its newly minted conversation. A real Claude
+    // seat has this source transcript before a later account carry checks it.
+    let current = rig.meta_row("harness_session.spawned.0");
+    let id = current.strip_prefix("claude:").unwrap_or(&current);
+    let work = std::path::PathBuf::from(rig.meta_row("work_dir"));
+    let transcript = rig
+        .scratch
+        .join("home-b")
+        .join("projects")
+        .join(ae::carry::project_key(&work))
+        .join(format!("{id}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().expect("transcript parent"))
+        .expect("source project");
+    std::fs::write(transcript, b"{\"type\":\"user\"}\n").expect("synthetic return conversation");
     configure(
         &rig,
         "auto_reseat_at = 100",
@@ -891,6 +937,7 @@ fn main_requires_all_and_project_overlay_cannot_change_global_threshold() {
         )
         .expect("project overlay");
         quota(&rig, "home", &[("weekly_all", 98.0)], 0);
+        isolate(&rig, &rig.main_pane);
         rig.start(&rig.main_pane, "main", "claude");
         let pid = rig.tool_pid(&rig.main_pane, "claude");
         let _watch = watch(&rig);
