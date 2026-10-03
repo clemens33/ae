@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.18] - 2026-10-03
+- Pin proactive auto reseat headroom
+- Move an auto reseat seat before its own account runs out of headroom
+- Pin the headroom episode, chooser, trigger and daemon arms in unit tests
+- Say an unusable auto_reseat_at falls back to 95 instead of turning auto reseat off
+- Isolate headroom fixture identities and return carry
+- Pin shared reseat attempts and nonblocking leg locks
+- Keep one auto reseat attempt per seat across limit and headroom episodes
+- Pin a threshold disabled after a headroom attempt
+- Pin the auto reseat journal writer, the late-attempt re-arm and the failed start after a hold
+
 ## [v2026.10.17] - 2026-10-03
 - Display chat sender as human:chat, reserve human:* senders
 - Prefix h opens and moves the chat to the first window
