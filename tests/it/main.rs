@@ -54,6 +54,7 @@ mod reader;
 mod refusal_rig;
 mod reseat;
 mod reseat_carry;
+mod reseat_headroom_spec;
 mod restore;
 mod restore_spec;
 mod run;
