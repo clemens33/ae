@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.16] - 2026-10-03
+- Pin default first-window chat launch behavior
+- Mirror launch config and supply a deliverable spawn fixture
+- Open the chat as the first window of a new or resumed session
+- Pin chat refusal when the host and meta UUIDs differ
+- Keep meta-agent sessions without a default chat
+- Use real launch inputs for chat exclusions and UUID refusal
+
 ## [v2026.10.15] - 2026-10-03
 - Pin chat wrapping and id-free close behavior
 - Correct chat outcome selector and spec lint
