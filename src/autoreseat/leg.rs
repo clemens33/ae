@@ -1739,6 +1739,33 @@ mod tests {
                 .count();
             assert_eq!(failed, usize::from(closed), "{rival} {closed}");
         }
+        // Nor when a hold for the key landed since: the episode then shows no
+        // attempt open, so this start has nothing left to close.
+        open();
+        let mut err = Vec::new();
+        let code = commit(
+            &argv,
+            "scout",
+            ("sol6x", "opus55x"),
+            ("", ""),
+            now,
+            held(),
+            || {
+                let line = format!(
+                    r#"{{"ts":"{now}","actor":"watchdog","action":"{HELD_ACTION}","target":"scout","ref":"{KEY}"}}"#
+                ) + "\n";
+                assert!(crate::store::open(&dir).append_event(&line).is_ok());
+                false
+            },
+            &mut err,
+        );
+        assert_eq!(code.ok(), Some(EXIT_FAILED));
+        assert!(
+            journal()
+                .iter()
+                .all(|(action, _, _)| action != FAILED_ACTION),
+            "a hold since"
+        );
     }
     /// The trigger acts only for a seat of its OWN session: `@session:agent`
     /// resolves across sessions, and a foreign seat — or a pane with no slot —

@@ -500,8 +500,11 @@ above, and lets its due seats share the one trigger with the limit ones. An
 attempt in flight of either kind decides its seat until it ends, so no second
 attempt opens beside it, and a refusal or failure under either live key closes
 both kinds. An unusable `auto_reseat_at` is journaled once per daemon start. A
-headroom attempt in flight keeps its shell from reading as a death, and books no
-limit.
+headroom attempt whose leg finds `auto_reseat_at` turned `off` since the trigger
+moves nothing and closes `auto-reseat-held` (`ref` the key) with exactly
+`held: auto_reseat_at is off (headroom <pct>% <window>)`, the parentheses
+quoting the episode's opener summary. A headroom attempt in flight keeps its
+shell from reading as a death, and books no limit.
 
 With `auto_reseat` absent or `off`, the path is inert: the daemon books no
 auto-reseat record, takes no seat lock, execs no leg, and `alert-cleared`

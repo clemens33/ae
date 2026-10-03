@@ -12940,6 +12940,220 @@ mod tests {
         );
     }
 
+    /// The auto step's journal writer re-reads the journal under the seat's
+    /// lock and writes only what that read still owes, whatever the cycle
+    /// decided from its earlier read: a re-arm only for the headroom episode
+    /// open NOW with no attempt in flight, a headroom hold the journal already
+    /// ends on never again, a limit hold as it always was, an overdue failure
+    /// only past the bound, and nothing at all for an episode already ended.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one table of the writer's rows")]
+    fn the_auto_writer_records_only_what_the_journal_still_owes_under_the_lock() {
+        use super::AutoAct;
+        use crate::autoreseat::{
+            ATTEMPT_ACTION, FAILED_ACTION, HEADROOM_ACTION, HELD_ACTION, HoldReason,
+            IN_FLIGHT_SECS, REARMED_ACTION, REFUSED_ACTION, Settings, Switch, Trigger,
+        };
+        let scratch = Scratch::new("auto-record-owed");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: Vec::new(),
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            auto: Settings {
+                switch: Switch::On,
+                sessions: None,
+                grace_secs: 0,
+                map: Vec::new(),
+                headroom_at: Some(95),
+                headroom_note: None,
+                notes: Vec::new(),
+            },
+            meta_agent: false,
+            launch_ids: Vec::new(),
+        };
+        let now = crate::time::Timestamp::now().epoch();
+        // The episode keys, both well inside today's journal.
+        let (key, stale) = (now - 600, now - 900);
+        let at = crate::time::Timestamp::from_epoch;
+        let cause = "headroom 96% weekly_all 7d";
+        let line = |when: i64, action: &str, reference: Option<i64>, summary: &str| {
+            let reference =
+                reference.map_or_else(String::new, |value| format!(r#","ref":"{}""#, at(value)));
+            format!(
+                r#"{{"ts":"{}","actor":"{ACTOR}","action":"{action}","target":"builder"{reference},"summary":"{summary}"}}"#,
+                at(when)
+            )
+        };
+        let opened = line(key, HEADROOM_ACTION, None, cause);
+        let limited = line(key, "limit", None, "");
+        let said = crate::autoreseat::leg::tagged(HoldReason::Busy.summary(), cause);
+        let slot = || "spawned.3".to_owned();
+        let agent = || "builder".to_owned();
+        let held = |reason, trigger| AutoAct::Held {
+            slot: slot(),
+            agent: agent(),
+            key: at(key),
+            reason,
+            trigger,
+        };
+        let rearm = |episode: i64| AutoAct::Rearm {
+            slot: slot(),
+            agent: agent(),
+            key: at(episode),
+            summary: "headroom cleared: 80% weekly_all 7d".to_owned(),
+        };
+        let reference = at(key).to_string();
+        for (journal, act, written, why) in [
+            (
+                vec![opened.clone()],
+                rearm(key),
+                vec![(REARMED_ACTION, Some(reference.clone()))],
+                "the episode open now with no attempt is re-armed",
+            ),
+            (
+                vec![
+                    opened.clone(),
+                    line(key + 60, ATTEMPT_ACTION, Some(key), "from a to b"),
+                ],
+                rearm(key),
+                vec![],
+                "an attempt opened since the cycle's read is not re-armed under",
+            ),
+            (
+                vec![opened.clone()],
+                rearm(stale),
+                vec![],
+                "a re-arm for an episode no longer open names nothing",
+            ),
+            (
+                vec![],
+                AutoAct::Open {
+                    slot: slot(),
+                    agent: agent(),
+                    cause: cause.to_owned(),
+                },
+                vec![(HEADROOM_ACTION, None)],
+                "a crossing with no episode opens one",
+            ),
+            (
+                vec![opened.clone()],
+                AutoAct::Open {
+                    slot: slot(),
+                    agent: agent(),
+                    cause: cause.to_owned(),
+                },
+                vec![],
+                "an episode opened since the cycle's read is not opened twice",
+            ),
+            (
+                vec![
+                    opened.clone(),
+                    line(key + 60, HELD_ACTION, Some(key), &said),
+                ],
+                held(HoldReason::Busy, Trigger::Headroom),
+                vec![],
+                "a headroom hold the journal already ends on is not named again",
+            ),
+            (
+                vec![
+                    opened.clone(),
+                    line(key + 60, HELD_ACTION, Some(key), &said),
+                ],
+                held(HoldReason::Draft, Trigger::Headroom),
+                vec![(HELD_ACTION, Some(reference.clone()))],
+                "another reason is news",
+            ),
+            (
+                vec![
+                    limited.clone(),
+                    line(key + 60, HELD_ACTION, Some(key), HoldReason::Busy.summary()),
+                ],
+                held(HoldReason::Busy, Trigger::Limit),
+                vec![(HELD_ACTION, Some(reference.clone()))],
+                "a limit hold is named as it always was, a restart included",
+            ),
+            (
+                vec![
+                    limited.clone(),
+                    line(key + 60, ATTEMPT_ACTION, Some(key), "from a to b"),
+                    line(
+                        key + 120,
+                        REFUSED_ACTION,
+                        Some(key),
+                        "refused: no usable candidate",
+                    ),
+                ],
+                held(HoldReason::Busy, Trigger::Limit),
+                vec![],
+                "an episode that already ended owes no hold",
+            ),
+            (
+                vec![
+                    limited.clone(),
+                    line(
+                        now - IN_FLIGHT_SECS - 60,
+                        ATTEMPT_ACTION,
+                        Some(key),
+                        "from a to b",
+                    ),
+                ],
+                AutoAct::Overdue {
+                    slot: slot(),
+                    agent: agent(),
+                    key: at(key),
+                    trigger: Trigger::Limit,
+                },
+                vec![(FAILED_ACTION, Some(reference.clone()))],
+                "an attempt past its bound is closed as overdue",
+            ),
+            (
+                vec![
+                    limited.clone(),
+                    line(now - 10, ATTEMPT_ACTION, Some(key), "from a to b"),
+                ],
+                AutoAct::Overdue {
+                    slot: slot(),
+                    agent: agent(),
+                    key: at(key),
+                    trigger: Trigger::Limit,
+                },
+                vec![],
+                "an attempt still inside its bound is not overdue under the lock",
+            ),
+        ] {
+            std::fs::write(
+                scratch.0.join("events.jsonl"),
+                journal
+                    .iter()
+                    .fold(String::new(), |text, record| text + record + "\n"),
+            )
+            .expect("events");
+            let before = read_events(&scratch.0).len();
+            let mut err = Vec::new();
+            cycle.auto_record(&act, now, &mut err).expect("the writer");
+            let recorded: Vec<(String, Option<String>)> = read_events(&scratch.0)
+                .into_iter()
+                .skip(before)
+                .map(|event| (event.action, event.reference))
+                .collect();
+            let expected: Vec<(String, Option<String>)> = written
+                .into_iter()
+                .map(|(action, reference)| (action.to_owned(), reference))
+                .collect();
+            assert_eq!(recorded, expected, "{why}");
+            assert!(err.is_empty(), "{why}: {}", String::from_utf8_lossy(&err));
+        }
+    }
+
     /// The auto reseat step's decisions, one table: nothing while the switch is
     /// off or the seat is not eligible, ONE trigger a cycle for the oldest due
     /// episode (the slot breaks a tie), each hold named once per episode and
@@ -13290,6 +13504,20 @@ mod tests {
         flying.push(record(210, ATTEMPT_ACTION, &format!(r#","ref":"{key}""#)));
         let relieved = || clear(Room::Relieved(window(10.0)));
         assert!(acts(&on, relieved(), &flying, 300).is_empty(), "in flight");
+        // Nor under an attempt the journal shows after the episode ended, a
+        // stream no writer of ae's produces: an attempt still reads open, so
+        // relief re-arms nothing.
+        let mut late = flying.clone();
+        late.push(record(
+            220,
+            crate::autoreseat::REFUSED_ACTION,
+            &format!(r#","ref":"{key}""#),
+        ));
+        late.push(record(230, ATTEMPT_ACTION, &format!(r#","ref":"{key}""#)));
+        assert!(
+            acts(&on, relieved(), &late, 300).is_empty(),
+            "a late attempt"
+        );
         // A limit latched while it flies books no second attempt: the attempt
         // in flight decides the seat, overdue under its own kind.
         let latched = || seat(Frame::Clear, true, Room::Unread);
