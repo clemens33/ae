@@ -279,9 +279,51 @@ fn chat_and_its_deprecated_console_alias_print_identical_lane_bytes() {
         let chat = lane_command(&root, "chat", tail);
         let alias = lane_command(&root, "console", tail);
         assert_eq!(chat.0, Some(code), "{}", chat.2);
-        assert_eq!(chat, alias, "same command and flags: {tail:?}");
+        assert_eq!(chat.0, alias.0, "same exit code: {tail:?}");
+        assert_eq!(chat.2, alias.2, "same diagnostics: {tail:?}");
+        assert_eq!(
+            split_needs_snapshot(&chat.1),
+            split_needs_snapshot(&alias.1),
+            "same lane and attention bytes apart from each snapshot's clock: {tail:?}"
+        );
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+fn split_needs_snapshot(text: &str) -> (&str, &str) {
+    let Some((lane, section)) = text.split_once("-- needs you: ") else {
+        return (text, "");
+    };
+    let (header, body) = section.split_once('\n').expect("section has body rows");
+    let clock = header
+        .strip_prefix("3 seats · as of ")
+        .expect("fixture seat count + snapshot time");
+    let bytes = clock.as_bytes();
+    assert!(
+        bytes.len() == 8
+            && bytes[2] == b':'
+            && bytes[5] == b':'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| index == 2 || index == 5 || byte.is_ascii_digit()),
+        "snapshot time is HH:MM:SS: {header}"
+    );
+    assert!(clock[..2].parse::<u8>().expect("hours") < 24);
+    assert!(clock[3..5].parse::<u8>().expect("minutes") < 60);
+    assert!(clock[6..].parse::<u8>().expect("seconds") < 60);
+    (lane, body)
+}
+
+fn assert_lane_golden_with_attention(text: &str) {
+    let (lane, attention) = split_needs_snapshot(text);
+    assert_eq!(lane, include_str!("../fixtures/console/lane.txt"));
+    assert_eq!(
+        attention,
+        "  colead (lead pair) · waiting-user · /open colead · declared since 09:16:00 (>7d) · stale: watchdog off\n\
+         \x20   pick a name for v2\n\
+         \x20 unverified: watchdog off · 2 seats: lead, scout\n"
+    );
 }
 
 #[test]
@@ -290,7 +332,7 @@ fn the_console_prints_the_lane_golden_and_writes_nothing() {
     let before = std::fs::read(dir.join("events.jsonl")).expect("journal");
     let (code, stdout, stderr) = console(&root, &["one"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
-    assert_eq!(stdout, include_str!("../fixtures/console/lane.txt"));
+    assert_lane_golden_with_attention(&stdout);
     assert_eq!(
         std::fs::read(dir.join("events.jsonl")).expect("journal"),
         before
@@ -315,9 +357,8 @@ fn a_console_asked_for_input_on_no_terminal_says_so_and_only_reads() {
     let (code, stdout, stderr) = console(&root, &["one", "--input"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
     let off = "input off: stdin is not a terminal; this chat only reads\n";
-    let golden = include_str!("../fixtures/console/lane.txt");
     assert!(stdout.contains(off), "{stdout}");
-    assert_eq!(stdout.replacen(off, "", 1), golden);
+    assert_lane_golden_with_attention(&stdout.replacen(off, "", 1));
     let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
     let bad = meta.replace("seat.main=lead\n", "seat.main=%3\n");
     std::fs::write(dir.join("meta"), bad).expect("a main seat that is no agent name");
