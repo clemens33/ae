@@ -102,8 +102,8 @@ impl Rig {
     }
 
     fn launch(&self, session: &str) -> String {
-        let output = self
-            .command()
+        let mut command = self.command();
+        command
             .arg(ae::cli::LAUNCH)
             .args(["--home"])
             .arg(&self.home)
@@ -113,7 +113,13 @@ impl Rig {
             .arg(&self.config)
             .args(["--server-kind", "socket", "--server"])
             .arg(&self.sock)
-            .args(["--no-attach", "--no-autostart", "--", "--local", session])
+            .args(["--no-attach", "--no-autostart"]);
+        let local = self.project.join(".ae/config");
+        if local.is_file() {
+            command.arg("--local-config").arg(&local);
+        }
+        let output = command
+            .args(["--", "--local", session])
             .output()
             .unwrap_or_else(|why| panic!("private launch runs: {why}"));
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -562,7 +568,26 @@ fn chat_window0_workspace_on_overrides_global_off() {
 
 #[test]
 fn chat_window0_spawning_keeps_chat_and_lead_in_their_windows() {
+    use std::os::unix::fs::PermissionsExt as _;
     let rig = Rig::new("spawn", Shape::Pair, Some("on"));
+    // Mock only the external harness. A sleeper has no composer and cannot
+    // receive the mandatory spawn brief; the real spawn/tmux path stays live.
+    let fake = rig.scratch.join("claude");
+    assert!(std::fs::write(&fake, include_str!("../fixtures/chat-window0/claude.pl")).is_ok());
+    assert!(std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).is_ok());
+    let config =
+        std::fs::read_to_string(&rig.config).unwrap_or_else(|why| panic!("spawn config: {why}"));
+    assert!(
+        std::fs::write(
+            &rig.config,
+            config.replacen(
+                "[profiles]\n",
+                &format!("[profiles]\nspawnspec = \"{}\"\n", fake.display()),
+                1
+            )
+        )
+        .is_ok()
+    );
     rig.launch("cwSpawn");
     let chat = rig.chat("cwSpawn");
     let main = rig.main("cwSpawn");
@@ -570,7 +595,7 @@ fn chat_window0_spawning_keeps_chat_and_lead_in_their_windows() {
         .command()
         .env("TMUX", format!("{},1,0", rig.sock.display()))
         .env("TMUX_PANE", &main)
-        .args(["@cwSpawn", "spawn", "extra", "--using", "idle"])
+        .args(["@cwSpawn", "spawn", "extra", "--using", "spawnspec"])
         .output()
         .unwrap_or_else(|why| panic!("spawn helper runs: {why}"));
     assert!(
