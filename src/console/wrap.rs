@@ -139,6 +139,8 @@ mod tests {
         assert_eq!(wrap("a\tb", 40, 2), [row(2, "a    b")]);
         assert_eq!(wrap("\tb", 40, 2), [row(7, "b")]);
         assert_eq!(wrap("a\tb", 40, 1), [row(1, "a     b")]);
+        assert_eq!(wrap("\t\tb", 40, 2), [row(15, "b")]);
+        assert_eq!(wrap("ab\tc\td", 40, 2), [row(2, "ab   c       d")]);
     }
 
     #[test]
