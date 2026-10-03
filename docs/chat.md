@@ -46,6 +46,44 @@ the window on demand. See [Keys](#keys).
   an unsupported harness, an unreadable journal, skipped journal lines.
 - `--all` shows every assistant reply of the lead pair, answers to agents
   included, and reads OpenCode and Antigravity replies too.
+- **Needs you**, after the lane: see [below](#needs-you).
+
+## Needs you
+
+The conversation stays the lead pair's, but the section that follows it lists
+EVERY roster seat, workers included, whose attention verdict says you are
+needed. The verdict is the one `ae list` reads (dead, stale, `waiting-user`,
+`blocked`, an escalated `waiting-agent`, a usage limit, a throttle, unanswered
+asks); the chat derives none of its own. A row reads
+
+```
+  scout · blocked · /open scout · human prompt since 17:50:00 (10m)
+    Trust this folder?
+```
+
+the seat (`(lead pair)` marks the pair), its reason, the `/open` that shows
+its pane, where the verdict comes from (`declared`, the alert's action, `no pane
+carries <slot>`, or `source unattributed`) with its time and age, and the
+declaration's reason or the alert's words on a line of their own. Rows sort by
+the reason's rank as `ae list` ranks it, then oldest first.
+
+Doubt is shown, never hidden. A verdict standing on a fact ae cannot trust adds
+`· stale: <cause>`; a seat with no verdict but such a fact is counted under one
+line per cause, `unverified: <cause> · <n> seats: <names>`. The causes, in
+precedence: `watchdog off` (no beat), `watchdog beat unreadable`, `watchdog
+silent since <time>` (no beat for three default verdict intervals, 180 s),
+`tmux did not list the panes`, `pane unproven`, `journal partial, <n> lines
+unread`. Residual: a watchdog started with a custom `--interval` is judged by
+the default, because the override is not recorded.
+
+The header counts the seats and says when it was read, `-- needs you: 3 seats ·
+as of 18:02:11`. In a pane the section takes at most a third of the height,
+whole entries only, the header saying `<k> more: ae list` for the seats it left
+out; without a pane size (a pipe, `theme = off`) it shows twelve lines at most. Each row is clipped to the pane's width
+when the chat knows it. The section prints again only when it changes: a need
+that clears prints `-- needs you: nothing standing (as of …)` once, an
+unreadable meta or journal, or a damaged meta that may have lost a seat, prints
+one warning that keeps the rows shown earlier standing, and a first read with nothing standing prints nothing.
 
 ## Look
 
@@ -105,11 +143,12 @@ only the watchdog daemon ends a wait on pane input.
 ## Input
 
 The window runs `--input` behind a fixed `stty` wrapper; only the owner chat
-(first live stamped pane) takes keys, another is read-only. A line asks the
+(first live stamped pane) asks, another is read-only and takes only `/open`. A line asks the
 speaker, `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
 `/close <id>` a named one (ids are not drawn, a script may still name one), other
 `/word`s are refused, five asks open at most. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
+`/open <seat>` selects any roster seat's pane, see [Open](#open).
 Recorded asks show their header and body before the submit result. If the row
 stays missing for two readable passes, the result prints on a line of its own;
 unknown results and refusals print immediately.
@@ -159,6 +198,22 @@ Residual: the draft keeps only the bytes you typed, not who they were for, so a
 restored line without an `@<seat>` prefix goes to the speaker at that Enter — the
 main seat after a restart — even if it was first asked of the other seat; the
 banner names every lead-pair seat for that reason.
+
+## Open
+
+`/open <seat>` selects a seat's pane in this session, from the owner chat or a
+read-only one; a read-only chat composes `/open` lines and refuses anything
+else. It types nothing into the pane and writes no record. ae proves the seat
+against the meta and tmux at that moment — the roster still seats that name in
+that slot, the session uuid still matches the chat's, exactly one live pane
+carries the slot and the name, and the server lists that pane in this session
+— then selects its window and pane behind a tmux guard that checks the same
+facts again, so every client viewing the session follows and none other moves.
+`opened <seat> - prefix h returns` on success; `refused: /open <seat>: <why>;
+nothing selected` when a proof or the guard fails; `uncertain: …` when tmux
+does not confirm. The seats `/open` knows are those of the last meta read;
+another session's seat (`session:agent`) is refused. Residual: a pane whose
+window is also linked into another session is refused as changed.
 
 Both lead-pair seats — never a worker — are told in their context that a turn
 whose first line is `⟦ae:msg from human:chat⟧` is the human's words, to be

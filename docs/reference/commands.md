@@ -36,7 +36,8 @@ ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>] [--assist
                        marker for the dropped remainder (refused with --json)
 ae chat [session] [--follow] [--all]
                        The human lane of one session: lead-pair pane turns,
-                       chat asks and replies, and live decision cards
+                       chat asks and replies, live decision cards, and every
+                       seat that needs you; /open <seat> selects its pane
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
