@@ -214,10 +214,12 @@ id and uuid and the pane's slot, name and liveness again, so every client
 viewing the session follows and none other moves.
 `opened <seat> - prefix h returns` on success; `refused: /open <seat>: <why>;
 nothing selected` when a proof or the guard fails; `uncertain: …` when tmux
-does not confirm. The seats `/open` knows are those of the last settled read of the meta and
-journal;
-another session's seat (`session:agent`) is refused. Residual: a pane whose
-window is also linked into another session is refused as changed.
+does not confirm. The seats `/open` knows are those of the last settled read of
+the meta and journal. A line with no name or more than one word is refused as
+`refused: /open takes one agent name`, and another session's seat by name:
+`refused: /open <session:agent> names another session; this chat opens its own
+seats`. Residual: a pane whose window is also linked into another session is
+refused as changed.
 
 Both lead-pair seats — never a worker — are told in their context that a turn
 whose first line is `⟦ae:msg from human:chat⟧` is the human's words, to be
