@@ -73,8 +73,10 @@ not every fan-out worker. Apply it to every selected surface: launch
 choices; and `spawn --using`. Never knowingly choose a profile whose applicable
 effective window is exhausted or blocked. If configured defaults are unsuitable,
 pass explicit profile overrides; ae never substitutes a profile for you. Missing,
-stale, ambiguous, or uncorrelated evidence is unknown: report it and prefer a
-known-usable alternative. Correlation remains agent inference, not product
+stale, ambiguous, or uncorrelated evidence is unknown: report it, and treat an
+unknown quota as usable, for every client alike: a profile whose scope ae
+cannot read (unsupported, stale, no window) is chosen like one with headroom
+until its own pane shows a usage limit; then step away from it. Correlation remains agent inference, not product
 mapping: an account-wide window applies to all profiles on its client scope; a
 model-scoped qualifier applies only when it clearly matches the selected
 profile's model family. An unclear qualifier neither proves nor blocks
