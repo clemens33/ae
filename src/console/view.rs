@@ -12,6 +12,7 @@ use std::fmt::Write as _;
 
 use super::input::Effect;
 use super::lane::{Item, Kind, Lane, Seat};
+use super::wrap::wrap;
 use crate::board::{clock_text, terminal_text};
 use crate::theme::{Look, Palette};
 
@@ -136,6 +137,76 @@ impl Style {
         format!("{} {stamp} {words}\n", self.bar(kind))
     }
 
+    /// [`Style::head`] for a pane `width` cells wide: every visual row keeps the bar,
+    /// a dressed style wrapping the header like a body row.
+    fn head_in(&self, kind: &Kind, time: &str, width: Option<usize>) -> String {
+        let (Some(dress), Some(width)) = (&self.0, width) else {
+            return self.head(kind, time);
+        };
+        let (voice, mut stamp) = (dress.voice(kind), time.len());
+        let bold = matches!(
+            kind,
+            Kind::Asked { .. } | Kind::NotDelivered { .. } | Kind::Closed { .. }
+        );
+        let text = terminal_text(&format!("{time} {}", tag(kind)));
+        let mut out = String::new();
+        for (gap, piece) in wrap(&text, width, 1) {
+            let (dim, words) = piece
+                .split_at_checked(stamp.min(piece.len()))
+                .unwrap_or(("", &piece));
+            stamp -= dim.len();
+            let (sep, words) = words.split_at(words.len() - words.trim_start().len());
+            let words = self.paint(|p| Dress::hue(p, voice), bold, words);
+            let dim = self.paint(|p| p.dim, false, dim);
+            let _ = writeln!(
+                out,
+                "{}{}{dim}{sep}{words}",
+                self.bar(kind),
+                " ".repeat(gap)
+            );
+        }
+        out
+    }
+
+    /// [`Style::line`] for a pane `width` cells wide: every visual row keeps the bar.
+    fn line_in(&self, kind: &Kind, text: &str, width: Option<usize>) -> String {
+        let (Some(_), Some(width)) = (&self.0, width) else {
+            return self.line(kind, text);
+        };
+        self.rows(kind, &terminal_text(text), width, str::to_owned)
+    }
+
+    /// [`Style::under`] for a pane `width` cells wide: every visual row keeps the bar.
+    fn under_in(&self, kind: &Kind, line: &str, width: Option<usize>) -> String {
+        let (Some(_), Some(width)) = (&self.0, width) else {
+            return self.under(kind, line);
+        };
+        self.rows(kind, &terminal_text(line), width, |piece| {
+            self.status_as(line, piece)
+        })
+    }
+
+    /// `text` wrapped, each row behind the bar of `kind`, its piece dressed by `dress`.
+    fn rows(
+        &self,
+        kind: &Kind,
+        text: &str,
+        width: usize,
+        dress: impl Fn(&str) -> String,
+    ) -> String {
+        let mut out = String::new();
+        for (gap, piece) in wrap(text, width, 2) {
+            let _ = writeln!(
+                out,
+                "{}{}{}",
+                self.bar(kind),
+                " ".repeat(gap),
+                dress(&piece)
+            );
+        }
+        out
+    }
+
     /// One body line of a row, with its own newline.
     #[must_use]
     pub fn line(&self, kind: &Kind, text: &str) -> String {
@@ -152,7 +223,12 @@ impl Style {
     /// delivered`, `refused`), without a newline.
     #[must_use]
     pub fn status(&self, line: &str) -> String {
-        self.paint(|palette| Dress::tone(palette, line), false, line)
+        self.status_as(line, line)
+    }
+
+    /// `piece` of a status `line`, in the hue the whole line says.
+    fn status_as(&self, line: &str, piece: &str) -> String {
+        self.paint(|palette| Dress::tone(palette, line), false, piece)
     }
 
     /// A quiet notice, its trailing newlines kept outside the colour.
@@ -218,12 +294,16 @@ impl Dress {
     }
 
     fn tone(palette: &Palette, line: &str) -> &'static str {
-        let starts = |word: &str| line.starts_with(word);
-        if starts("sent ") {
+        // A word, not a prefix: `sentinel` is no outcome.
+        let starts = |word: &str| {
+            let rest = line.strip_prefix(word);
+            rest.is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', ';', ':']))
+        };
+        if starts("sent") {
             palette.done
-        } else if starts("uncertain ") || starts("no record of ") {
+        } else if starts("uncertain") || starts("no record of") {
             palette.waiting_agent
-        } else if starts("not delivered ") || starts("refused") {
+        } else if starts("not delivered") || starts("refused") {
             palette.dead
         } else {
             palette.dim
@@ -285,21 +365,21 @@ pub(super) fn tag(kind: &Kind) -> String {
         Kind::Said { who } => format!("said {who}"),
         Kind::Card { seat } => format!("DECISION {seat} · waiting-user"),
         Kind::NeedsYou { seat } => format!("NEEDS YOU {seat} · needs you in its pane"),
-        Kind::Asked { to, id, uncertain } => match uncertain {
-            true => format!("you → {to} · {id} · uncertain: check the {to} pane"),
-            false => format!("you → {to} · {id}"),
+        Kind::Asked { to, uncertain, .. } => match uncertain {
+            true => format!("you → {to} · uncertain: check the {to} pane"),
+            false => format!("you → {to}"),
         },
-        Kind::NotDelivered { to, id } => format!("you → {to} · {id} · not delivered"),
-        Kind::Closed { id } => format!("you closed {id}"),
+        Kind::NotDelivered { to, .. } => format!("you → {to} · not delivered"),
+        Kind::Closed { .. } => "you closed an ask".to_owned(),
         Kind::Answer {
             seat,
-            id,
             follow_up,
             late,
             gap,
             speaker,
+            ..
         } => {
-            let mut tag = format!("{seat} answers {id}");
+            let mut tag = format!("{seat} answers");
             if *follow_up > 0 {
                 let _ = write!(tag, " · follow-up {follow_up}");
             }
@@ -314,8 +394,8 @@ pub(super) fn tag(kind: &Kind) -> String {
             }
             tag
         }
-        Kind::Unadmitted { from, id, why } => {
-            format!("{from} reply to {id} · not admitted: {why} · preview (600-char summary)")
+        Kind::Unadmitted { from, why, .. } => {
+            format!("{from} reply · not admitted: {why} · preview (600-char summary)")
         }
     }
 }
@@ -336,6 +416,7 @@ pub struct Printed {
     /// Submission ids survive a journal rebase; their outcomes print once.
     outcomes: BTreeSet<String>,
     style: Style,
+    width: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -359,6 +440,17 @@ impl Printed {
     #[must_use]
     pub fn style(&self) -> &Style {
         &self.style
+    }
+
+    /// Whether this console is dressed: only a dressed console asks tmux for its pane.
+    #[must_use]
+    pub fn dressed(&self) -> bool {
+        self.style.0.is_some()
+    }
+
+    /// The pane width, in cells, the rows printed from now on are wrapped to.
+    pub fn set_width(&mut self, width: Option<usize>) {
+        self.width = width;
     }
 
     /// The first line of the console, drawn in this console's style.
@@ -465,15 +557,15 @@ impl Printed {
             out.push_str(&self.style.day(&day));
             self.day = Some(day);
         }
-        out.push_str(&self.style.head(&item.kind, &time));
+        out.push_str(&self.style.head_in(&item.kind, &time, self.width));
         for line in item.body.lines() {
-            out.push_str(&self.style.line(&item.kind, line));
+            out.push_str(&self.style.line_in(&item.kind, line, self.width));
         }
         if let Kind::Asked { id, .. } | Kind::NotDelivered { id, .. } = &item.kind
             && let Some(at) = self.pending.iter().position(|pending| pending.id == *id)
         {
             let pending = self.pending.remove(at);
-            out.push_str(&self.style.under(&item.kind, &pending.line));
+            out.push_str(&self.style.under_in(&item.kind, &pending.line, self.width));
         }
         out.push('\n');
     }

@@ -240,7 +240,12 @@ fuzz_target!(|data: &[u8]| {
                     said.starts_with("Kept line, maybe already sent: check lead, colead");
                 assert!(restored || said.starts_with("refused: "), "{said:?}");
             }
-            Effect::Close(_) | Effect::Paste(_) => {}
+            Effect::Close(id) => assert!(
+                id.as_deref()
+                    .is_none_or(|id| !id.is_empty() && !id.contains(char::is_whitespace)),
+                "a named close is one word"
+            ),
+            Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => {}
         }
     }
     let line = line.expect("an owner has a composer line");

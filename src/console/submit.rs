@@ -136,8 +136,10 @@ pub fn submit(
     let events = super::snapshot(store.events_source())?;
     let open = lane::open_asks(&events, session);
     if open.len() >= OPEN_CAP {
-        let (count, ids) = (open.len(), open.join(", "));
-        return Err(format!("{count} requests open: {ids}; /close one first"));
+        let count = open.len();
+        return Err(format!(
+            "{count} requests open; /close withdraws the newest"
+        ));
     }
     let said = deliver();
     let outcome = match super::snapshot(store.events_source()) {
@@ -152,19 +154,20 @@ pub fn submit(
     Ok(Outcome::Sent(id, kept))
 }
 
-/// `/close id` under the same admission and ownership as a submit.
+/// `/close [id]` under the same admission and ownership as a submit.
 ///
 /// # Errors
 ///
 /// Why nothing was closed.
 pub fn close_owned(
     dir: &Path,
-    id: &str,
+    session: &str,
+    which: Option<&str>,
     owns: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     let _admitted = admission(dir)?;
     owns()?;
-    super::close(dir, id)
+    super::close(dir, session, which)
 }
 
 fn admission(dir: &Path) -> Result<std::fs::File, String> {

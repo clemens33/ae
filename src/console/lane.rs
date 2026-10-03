@@ -298,7 +298,7 @@ fn console_items(
                     }
                     if let Some(gap) = &gap {
                         gaps.push(format!(
-                            "reply {id} — {gap}; its 600-character summary is shown"
+                            "reply from {seat} — {gap}; its 600-character summary is shown"
                         ));
                     }
                     Kind::Answer {
@@ -341,15 +341,15 @@ pub fn may_close(events: &[Event], id: &str) -> Result<(), String> {
         match item.kind {
             Kind::Asked { id: asked, .. } if asked == id => open = Some(Ok(())),
             Kind::Answer { id: answered, .. } if answered == id && still_open => {
-                open = Some(Err(format!("{id} is already answered")));
+                open = Some(Err("that ask is already answered".to_owned()));
             }
             Kind::Closed { id: closed } if closed == id && still_open => {
-                open = Some(Err(format!("{id} is already closed")));
+                open = Some(Err("that ask is already closed".to_owned()));
             }
             _ => {}
         }
     }
-    open.unwrap_or_else(|| Err(format!("no chat ask {id} in this journal")))
+    open.unwrap_or_else(|| Err("no chat ask with that id in this journal".to_owned()))
 }
 
 /// The ids of the console's asks still open in `session`'s journal, oldest

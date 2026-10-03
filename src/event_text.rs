@@ -379,6 +379,19 @@ pub fn display_cell(text: &str, max: usize) -> String {
     clip_to_width(&sanitize_menu_text(text), max, Cut::MiddleDots)
 }
 
+/// The cells `ch` can take in a terminal row: a SAFE UPPER BOUND, no width
+/// table. Printable ASCII is one, a tab eight (the widest a tab stop is), any
+/// other scalar two, so a row measured by it never overflows and may only wrap
+/// early.
+#[must_use]
+pub fn cell(ch: char) -> usize {
+    match ch {
+        ' '..='~' => 1,
+        '\t' => 8,
+        _ => 2,
+    }
+}
+
 /// The head-keeping projection for one column: an over-budget value keeps its
 /// head and ends in `…`, so a clipped column still reads left to right.
 #[must_use]
@@ -647,5 +660,17 @@ mod tests {
             b"review-20260820T161305Z-dc302d09",
             "the A6 capture's 31-character id overflows its column"
         );
+    }
+
+    #[test]
+    fn a_cell_is_a_safe_upper_bound_ascii_one_tab_eight_anything_else_two() {
+        use super::cell;
+        for ch in [' ', 'a', '~', '0'] {
+            assert_eq!(cell(ch), 1, "{ch:?}");
+        }
+        assert_eq!(cell('\t'), 8);
+        for ch in ['\n', '\u{7f}', '\u{fffd}', 'é', '中', '→', '\u{1b}'] {
+            assert_eq!(cell(ch), 2, "{ch:?}");
+        }
     }
 }

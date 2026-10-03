@@ -540,14 +540,15 @@ pub struct View {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Ask { seat: String, body: String },
-    Close(String),
+    Close(Option<String>),
     Refused(String),
 }
 
 /// Read one entered line. `@<seat> <body>` asks that lead-pair seat, its body
-/// literal whatever it begins with; a bare `/close <id>` withdraws one of this
-/// console's asks and any other bare `/word` is refused, so only a seat prefix
-/// carries a slash to a seat; anything else asks `pair[0]`, the main seat.
+/// literal whatever it begins with; a bare `/close` withdraws this console's
+/// newest open ask, `/close <id>` a named one, and any other bare `/word` is
+/// refused, so only a seat prefix carries a slash to a seat; anything else asks
+/// `pair[0]`, the main seat.
 #[must_use]
 pub fn command(raw: &[u8], pair: &[String]) -> Command {
     command_to(raw, pair, pair.first().map_or("", String::as_str))
@@ -576,8 +577,9 @@ pub fn command_to(raw: &[u8], pair: &[String], speaker: &str) -> Command {
         let mut words = text.split_whitespace();
         let word = words.next().unwrap_or(text);
         return match (word, words.collect::<Vec<_>>().as_slice()) {
-            ("/close", [id]) => Command::Close((*id).to_owned()),
-            ("/close", _) => Command::Refused("/close takes exactly one request id".to_owned()),
+            ("/close", []) => Command::Close(None),
+            ("/close", [id]) => Command::Close(Some((*id).to_owned())),
+            ("/close", _) => Command::Refused("/close takes at most one request id".to_owned()),
             _ => Command::Refused(format!(
                 "unknown command {word}; to send it, name a seat: @{speaker} {word}"
             )),
@@ -620,8 +622,8 @@ pub enum Effect {
         seat: String,
         body: String,
     },
-    /// Withdraw this console's ask by id.
-    Close(String),
+    /// Withdraw this console's ask: the named one, or the newest open one.
+    Close(Option<String>),
 }
 
 /// The console's input as a step machine. It composes only while it owns the
@@ -778,13 +780,11 @@ impl Input {
 pub fn outcome_line(outcome: &Outcome, seat: &str) -> String {
     let check = format!("check {seat} pane (prefix H)");
     match outcome {
-        Outcome::Sent(id, None) => format!("sent {id}"),
-        Outcome::Sent(id, Some(kept)) => format!("sent {id}; {kept}"),
-        Outcome::Uncertain(id) => format!("uncertain {id}: {check}"),
-        Outcome::NotDelivered(id) => format!("not delivered {id}"),
-        Outcome::Unknown(id, _) => {
-            format!("no record of {id}; it may have been delivered - {check}")
-        }
+        Outcome::Sent(_, None) => "sent".to_owned(),
+        Outcome::Sent(_, Some(kept)) => format!("sent; {kept}"),
+        Outcome::Uncertain(_) => format!("uncertain: {check}"),
+        Outcome::NotDelivered(_) => "not delivered".to_owned(),
+        Outcome::Unknown(..) => format!("no record of it; it may have been delivered - {check}"),
     }
 }
 

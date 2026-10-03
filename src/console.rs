@@ -22,6 +22,7 @@ pub mod submit;
 mod term;
 pub(crate) mod toggle;
 pub mod view;
+mod wrap;
 
 /// The usage text.
 pub const USAGE: &str = "Usage: ae chat [session] [--follow] [--all]\n\n  session   the session to read (default: the session this pane belongs to)\n  --follow  keep printing what is new every 5 s until interrupted (Ctrl-C to stop)\n  --all     show every assistant reply of the lead pair (default: only the replies to lines you typed in its pane)\n";
@@ -167,6 +168,7 @@ impl Console {
             text = self.printed.rebase(last.len(), events.len());
         }
         let body = |event: &Event| body_for(&self.dir, event);
+        self.printed.set_width(pane_width(&self.printed));
         let mut lane = lane::fold(&self.name, &seats, &events, &observation, skipped, &body);
         let settled = read_gap.is_none();
         lane.coverage.extend(read_gap);
@@ -215,15 +217,23 @@ fn is_reply_body_name(id: &str, name: &str) -> bool {
     !id.is_empty() && hex.is_some_and(|hex| hex.len() == 6 && hex.bytes().all(lower_hex))
 }
 
-/// `/close <id>`: one `cancel` for the console's own request `id`, appended only
-/// when the journal read under its lock holds that ask unanswered and unclosed.
+/// `/close [id]`: one `cancel` for the console's own request `which`, or the
+/// newest of its open asks in `session` when there is none, appended only when
+/// the journal read under its lock holds that ask unanswered and unclosed. The
+/// newest is chosen from that same read, so a reply landing meanwhile cannot
+/// make it name an ask already closed.
 ///
 /// # Errors
 ///
 /// Why nothing was appended, by name.
-pub fn close(dir: &Path, id: &str) -> Result<(), String> {
+pub fn close(dir: &Path, session: &str, which: Option<&str>) -> Result<(), String> {
     let decided = store::open(dir).append_event_decided(|journal| {
-        lane::may_close(&snapshot(journal)?, id)?;
+        let events = snapshot(journal)?;
+        let newest = lane::open_asks(&events, session).last().copied();
+        let id = which
+            .or(newest)
+            .ok_or_else(|| "no open ask to close".to_owned())?;
+        lane::may_close(&events, id)?;
         let (now, summary) = (crate::time::Timestamp::now(), "closed from the console");
         let line = crate::state::event_line(now, tracked::CONSOLE_SINK, lane::CANCEL, id, summary);
         Ok(line)
@@ -376,6 +386,19 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         out.flush()?;
     }
     code
+}
+
+/// The width in cells of the pane this chat draws in, asked of tmux through the
+/// pane-size door; `None` when the console is not dressed, is in no tmux pane or
+/// tmux does not answer, and then its rows are not wrapped.
+fn pane_width(printed: &view::Printed) -> Option<usize> {
+    if !printed.dressed() {
+        return None;
+    }
+    let declared = doors::declared_server(crate::shape::current());
+    let server = doors::launch_target(declared.as_ref())?;
+    let pane = doors::calling_pane_id()?;
+    transport::observe_pane_size(&server, &pane).map(|size| size.width)
 }
 
 /// Print each pass, and between passes take the terminal's input when there

@@ -24,7 +24,8 @@ terminal renderer; only its [input](#input) writes an event.
   with its target named. A reply is the journal's 600-character summary,
   tagged `preview (600-char summary)`.
 - **Chat asks** as `you → <seat>`, each answer whole from the reply's stored
-  body (at most 65536 bytes), and each `/close` as `you closed <id>`. An answer
+  body (at most 65536 bytes), and each `/close` as `you closed an ask`. No row
+  draws a request id: the journal keeps it, the chat pairs by it. An answer
   counts only from the slot, session, server, pane and session uuid the ask
   reached; any other reply shows as `not admitted: stale|unproven <field>`.
   Answers after a reseat of the asked seat add `speaker <seat> now <profile>`,
@@ -56,12 +57,26 @@ answer (`# 2026-10-03 +0200`); any other answer, or a tmux without that
 modifier, keeps `UTC`. A zone change mid-session (daylight saving) is not
 followed.
 
+The chat wraps what it prints to its pane's width. Each pass it asks tmux for
+`#{pane_width}` of its own pane; with a known width, every header, body and
+status row breaks at the last space that fits (else between characters), and
+every row it makes starts with the entry's bar in the speaker's colour, after
+the same indent (a line's own leading spaces, tabs spent as spaces to the next
+stop of eight, give way first in a narrow pane). Width is counted
+conservatively, ASCII one cell, a tab eight, any other character two, so a row
+never overflows and accented Latin may wrap early. When tmux gives no width (no
+tmux pane, no answer) the chat stays dressed but unwrapped and the terminal
+soft-wraps it, the continuation rows without a bar. Rows already printed are
+never reflowed when the pane is resized; the next pass wraps new rows at the
+new width. Only a pane narrower than 3 cells can overflow, a row then holding
+the bar and one character.
+
 Colour comes only from ae's own printing: every record byte is neutralised
 before an escape is added, and no escape is written inside a message. When
 stdout is a pipe or a file, the output is exactly the plain text above, in
-UTC, and the chat asks tmux for neither look nor zone; with `[workspace]
-theme = off` on a terminal it reads the look, finds it undrawn, and prints the
-same plain text without asking for the zone. The colours are
+UTC, and the chat asks tmux for none of look, zone or pane width; with
+`[workspace] theme = off` on a terminal it reads the look, finds it undrawn, and
+prints the same plain text without asking for the zone or the width. The colours are
 the palette's accents drawn on the terminal's own background, which ae cannot
 see; against the palette's `base` every hue clears 3.0:1, and on Darcula the
 `working`, `stale`, `dim` and `done` hues stay under the 4.5:1 text bar (`dim`
@@ -81,11 +96,12 @@ only the watchdog daemon ends a wait on pane input.
 
 The window runs `--input` behind a fixed `stty` wrapper; only the owner chat
 (first live stamped pane) takes keys, another is read-only. A line asks the
-speaker, `@<seat> text` either lead-pair seat, `/close <id>` withdraws an open ask,
-other `/word`s are refused, five asks open at most. A lead pair changed since
+speaker, `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
+`/close <id>` a named one (ids are not drawn, a script may still name one), other
+`/word`s are refused, five asks open at most. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
 Recorded asks show their header and body before the submit result. If the row
-stays missing for two readable passes, the result prints with its request id;
+stays missing for two readable passes, the result prints on a line of its own;
 unknown results and refusals print immediately.
 
 The speaker is the seat of the last `@<seat> text` line that asked (`@<main> text`

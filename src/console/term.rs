@@ -169,10 +169,12 @@ impl Term {
             Effect::Ask { raw, seat, body } => self.ask(console, &raw, &seat, body),
             Effect::Close(id) => {
                 let owns = || self.owned(console);
-                Effect::Print(match submit::close_owned(&console.dir, &id, owns) {
-                    Ok(()) => format!("closed {id}"),
-                    Err(why) => format!("refused: {why}"),
-                })
+                Effect::Print(
+                    match submit::close_owned(&console.dir, &console.name, id.as_deref(), owns) {
+                        Ok(()) => "closed an ask".to_owned(),
+                        Err(why) => format!("refused: {why}"),
+                    },
+                )
             }
             effect => effect,
         };
