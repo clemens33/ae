@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.17] - 2026-10-03
+- Display chat sender as human:chat, reserve human:* senders
+- Prefix h opens and moves the chat to the first window
+
 ## [v2026.10.16] - 2026-10-03
 - Pin default first-window chat launch behavior
 - Mirror launch config and supply a deliverable spawn fixture
