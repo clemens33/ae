@@ -2119,12 +2119,15 @@ fn the_critical_section_bills_two_calls_per_enter() {
     });
     assert!(matches!(done, Ok(deliver::Outcome::Sent(_))), "{done:?}");
     // Five calls are fixed; every Enter bills exactly one send plus one
-    // submit capture — judged on `born` itself; the TUI receipt may lag.
+    // submit capture — judged on `born` itself.
     // BIRTHS, not frees: tmux logs `new client` on accept, before the client
     // can finish, so a call made before `prove` is always logged before the
     // mark. `free client` is deferred one server loop past the client's exit,
     // so under load the pre-lock list-clients' free landed AFTER the mark —
-    // one extra, an even count (measured on tmux 3.7b).
+    // one extra, an even count (measured on tmux 3.7b). The TUI's receipt
+    // lags the count under load, so the same bounded loop also waits for
+    // its FIRST Enter instead of reading it once; it never exceeds the
+    // Enters billed.
     let mut born = 0;
     let mut steady = 0;
     for _ in 0..600 {
@@ -2134,7 +2137,7 @@ fn the_critical_section_bills_two_calls_per_enter() {
             .count();
         steady = if now == born { steady + 1 } else { 0 };
         born = now;
-        if matches!(born, 7 | 9 | 11) && steady >= 5 {
+        if matches!(born, 7 | 9 | 11) && steady >= 5 && rig.enter_count() >= 1 {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
