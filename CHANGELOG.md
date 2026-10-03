@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.14] - 2026-10-03
+- Treat unknown quota as usable in delegation guidance
+- Reflow delegation quota paragraph to column width
+
 ## [v2026.10.13] - 2026-10-02
 - Add the console Style: palette, bar, zone and status hues as one value
 - Pin terminal chat look and plain output
