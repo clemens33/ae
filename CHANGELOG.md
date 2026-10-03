@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.15] - 2026-10-03
+- Pin chat wrapping and id-free close behavior
+- Correct chat outcome selector and spec lint
+- Wrap the chat lane at the pane width with the bar on every row, hide request ids, add bare /close
+- Pin tab columns and a timestamp split across wrapped header rows
+
 ## [v2026.10.14] - 2026-10-03
 - Treat unknown quota as usable in delegation guidance
 - Reflow delegation quota paragraph to column width
