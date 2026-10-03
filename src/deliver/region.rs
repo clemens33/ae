@@ -44,7 +44,8 @@ pub struct Segment {
 pub enum Occupancy {
     /// Real typed or staged content sits in the input box.
     Occupied,
-    /// A bare ornament, or a dim placeholder suggestion only.
+    /// A bare ornament, a dim placeholder suggestion only, or claude's
+    /// queued-messages affordance alone ([`queued_submission`]).
     Idle,
     /// No live prompt in view, or nothing to read.
     Unreadable,
@@ -487,6 +488,12 @@ pub fn read(region: &str, model: InputModel) -> Reading {
         gather(&parse(region), model)
     };
     match found {
+        // Chrome like the placeholder: no cell of it is ever evidence.
+        Some(found) if queued_affordance(&found, model) => Reading {
+            occupancy: Occupancy::Idle,
+            cells: 0,
+            rows: 0,
+        },
         Some(found) => {
             let cells = squeezed(&found.text).chars().count();
             Reading {
@@ -946,17 +953,26 @@ fn is_empty_prompt_row(row: &str) -> bool {
 /// Does Claude's live prompt say it accepted a message into its turn queue?
 ///
 /// The phrase is an affordance the TUI draws after a mid-turn submit, not
-/// draft text. It must therefore never make submit verification retry Enter.
-/// It is the box's WHOLE content, read as occupancy reads it: claude draws it
-/// after an NBSP in its own dim run (measured, 2.1.280).
+/// draft text. It must therefore never make submit verification retry Enter,
+/// and [`read`] never counts it as a draft. It is the box's WHOLE content,
+/// read as occupancy reads it: claude draws it after an NBSP in its own dim
+/// run (measured, 2.1.280).
 #[must_use]
 pub fn queued_submission(region: &str, model: InputModel) -> bool {
     if model != InputModel::BorderDelimited {
         return false;
     }
-    gather(&parse(region), model).is_some_and(|found| {
-        trim_posix(&found.text.replace('\u{a0}', " ")) == "Press up to edit queued messages"
-    })
+    gather(&parse(region), model).is_some_and(|found| queued_affordance(&found, model))
+}
+
+/// Whether the gathered box holds claude's queued-messages affordance and
+/// nothing else — the ONE spelling of the phrase, asked by occupancy and by
+/// submit verification alike. Any other cell beside it is a draft. Named
+/// residual: style is not consulted, so a human draft typed as exactly this
+/// phrase, alone, reads as the affordance.
+fn queued_affordance(found: &Gathered, model: InputModel) -> bool {
+    model == InputModel::BorderDelimited
+        && trim_posix(&found.text.replace('\u{a0}', " ")) == "Press up to edit queued messages"
 }
 
 /// Everything after the first `needle` in `text`, or all of it when there is
@@ -1459,6 +1475,42 @@ mod tests {
             InputModel::BorderDelimited
         ));
         assert!(!queued_submission(QUEUED, InputModel::StyleDelimited));
+    }
+
+    #[test]
+    fn a_bare_queued_affordance_is_no_draft_and_anything_beside_it_is_one() {
+        const QUEUED: &str =
+            include_str!("../../tests/fixtures/claude-composer/claude-queued-busy.esc");
+        let border = InputModel::BorderDelimited;
+        let idle = Reading {
+            occupancy: Occupancy::Idle,
+            cells: 0,
+            rows: 0,
+        };
+        assert_eq!(read(QUEUED, border), idle);
+        assert_eq!(
+            read(&claude_frame("Press up to edit queued messages"), border),
+            idle
+        );
+        assert_eq!(
+            read(
+                &claude_frame("Press up to edit queued messages, then this draft"),
+                border
+            ),
+            Reading {
+                occupancy: Occupancy::Occupied,
+                cells: 41,
+                rows: 1,
+            }
+        );
+        // The phrase is claude's alone: in a codex box it is typed text.
+        assert_eq!(
+            occupancy(
+                &codex_frame("\u{1b}[1m›\u{1b}[0m ", "Press up to edit queued messages"),
+                InputModel::StyleDelimited
+            ),
+            Occupancy::Occupied
+        );
     }
 
     #[test]
