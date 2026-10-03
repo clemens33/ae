@@ -234,14 +234,14 @@ impl Term {
     }
 
     /// `paint` with the pane read through `read`, asked only while a composer is
-    /// taken or on the screen.
+    /// shown or on the screen.
     fn painted(
         &mut self,
         text: &str,
         effects: &[Effect],
         read: impl Fn(&Self) -> Option<tmux::PaneSize>,
     ) -> String {
-        let live = self.input.taking() || self.screen.drawn();
+        let live = self.input.composing() || self.screen.drawn();
         let pane = if live { read(self) } else { None };
         let size = pane.map_or(Size::FALLBACK, |pane| Size {
             width: pane.width,

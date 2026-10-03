@@ -94,7 +94,7 @@ pub fn target(facts: &Facts<'_>) -> Result<Target, Refusal> {
     }
     let session_id = facts
         .session_id
-        .filter(|_| facts.uuid_stamp == Some(facts.bound_uuid))
+        .filter(|_| canonical(facts.bound_uuid) && facts.uuid_stamp == Some(facts.bound_uuid))
         .ok_or(Refusal::SessionReplaced)?;
     let slots = facts
         .slots
@@ -134,6 +134,11 @@ pub fn target(facts: &Facts<'_>) -> Result<Target, Refusal> {
     })
 }
 
+/// Whether `uuid` is a canonical session uuid, never an empty one.
+fn canonical(uuid: &str) -> bool {
+    !uuid.is_empty() && crate::archive::canonical_uuid(uuid) == uuid
+}
+
 /// Whether `text` is `sigil` followed by one or more ASCII digits.
 fn numbered(text: &str, sigil: char) -> bool {
     text.strip_prefix(sigil)
@@ -154,7 +159,7 @@ pub fn select_args(server: &ServerId, target: &Target) -> Option<Vec<String>> {
         && numbered(session_id, '$')
         && crate::requests::is_slot(&seat.slot)
         && crate::config::is_agent_name(&seat.name)
-        && crate::archive::canonical_uuid(uuid) == *uuid;
+        && canonical(uuid);
     if !proven {
         return None;
     }

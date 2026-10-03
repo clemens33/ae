@@ -161,7 +161,8 @@ impl Console {
         };
         let snapshot = session::RecordSnapshot::read(&self.dir);
         let needs = self.needs(&snapshot, &seats);
-        if let Some(meta) = &snapshot.meta {
+        // Only a settled read replaces the seats `/open` may name.
+        if let (Ok(_), Some(meta)) = (&needs, &snapshot.meta) {
             let seat = |entry: &meta::RosterEntry| needs::SeatRef {
                 slot: entry.slot.clone(),
                 name: entry.name.clone(),
