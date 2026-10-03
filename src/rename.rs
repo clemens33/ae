@@ -1243,6 +1243,7 @@ fn restart_chats(root: &Path, server: &ServerId, session: &str, dir: &Path) -> R
     let home = crate::console::toggle::Home {
         root,
         config: &config,
+        app: crate::console::toggle::app_window(dir, &config),
     };
     let detail = match transport::observe_window_panes(server, session) {
         None => "tmux did not answer the pane listing, so a chat may still name the old session"

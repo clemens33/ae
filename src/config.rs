@@ -1875,19 +1875,46 @@ pub fn global_restore(global: Option<&Path>) -> Restore {
 pub enum ChatWindow {
     On,
     Off,
+    /// Window 0 runs `ae app` in place of the chat.
+    App,
     /// Opens like `On`; carries the escaped reason for the one note.
     Unusable(String),
 }
 
 /// Absent and exact `on` open the chat window silently, exact `off` keeps the
-/// layout without it; any other value opens it and is named.
+/// layout without it, exact `app` runs `ae app` there; any other value opens
+/// the chat and is named.
 #[must_use]
 pub fn chat_window(value: Option<&str>) -> ChatWindow {
     match value.map(str::trim) {
         None | Some("on") => ChatWindow::On,
         Some("off") => ChatWindow::Off,
-        Some(other) => ChatWindow::Unusable(format!("{other:?} is not on or off")),
+        Some("app") => ChatWindow::App,
+        Some(other) => ChatWindow::Unusable(format!("{other:?} is not on, off or app")),
     }
+}
+
+/// The `chat` ruling of the session recorded at `dir`, read as its launch read
+/// it: the global config its meta recorded, else `global`, under the local
+/// overlay the meta selects. A meta naming no origin and no overlay reads no
+/// local file, so the caller's working directory never decides.
+#[must_use]
+pub(crate) fn session_chat_window(dir: &Path, global: &Path) -> ChatWindow {
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let value = |key| crate::lifecycle::meta_value(&bytes, key);
+    let recorded = value("config");
+    let global = if recorded.is_empty() {
+        global.to_path_buf()
+    } else {
+        PathBuf::from(recorded)
+    };
+    let origin = value("origin");
+    let local = if origin.is_empty() && value(LOCAL_CONFIG_KEY).is_empty() {
+        None
+    } else {
+        local_overlay(dir, &origin)
+    };
+    workspace_chat_window(Some(&global), local.as_deref())
 }
 
 /// The `chat` ruling a launch reads: `local` over `global`, through the reader
@@ -2088,6 +2115,36 @@ mod tests {
         }
     }
 
+    /// A session's `chat` ruling is read as its launch read it: the global
+    /// config its meta recorded (else the caller's), under the local overlay
+    /// its origin selects; a meta naming neither reads the caller's global.
+    #[test]
+    fn a_sessions_chat_window_is_read_from_what_its_meta_recorded() {
+        let tree = NamedDir::new("chat-window");
+        let (session, origin) = (tree.path().join("session"), tree.path().join("origin"));
+        std::fs::create_dir_all(origin.join(".ae")).expect("origin tree");
+        std::fs::create_dir_all(&session).expect("session dir");
+        let (recorded, caller) = (tree.path().join("recorded"), tree.path().join("caller"));
+        std::fs::write(&recorded, "[workspace]\nchat = off\n").expect("recorded config");
+        std::fs::write(&caller, "[workspace]\nchat = app\n").expect("caller config");
+        let meta = |body: String| std::fs::write(session.join("meta"), body).expect("meta");
+        meta(format!("config={}\n", recorded.display()));
+        assert_eq!(session_chat_window(&session, &caller), ChatWindow::Off);
+        meta(String::new());
+        assert_eq!(session_chat_window(&session, &caller), ChatWindow::App);
+        std::fs::write(
+            origin.join(".ae").join("config"),
+            "[workspace]\nchat = app\n",
+        )
+        .expect("local config");
+        meta(format!(
+            "config={}\norigin={}\n",
+            recorded.display(),
+            origin.display()
+        ));
+        assert_eq!(session_chat_window(&session, &caller), ChatWindow::App);
+    }
+
     #[test]
     fn local_overlay_prefers_the_record_then_falls_back_then_answers_none() {
         let recorded = NamedDir::new("recorded");
@@ -2273,15 +2330,18 @@ mod tests {
             (Some("  on "), ChatWindow::On),
             (Some("off"), ChatWindow::Off),
             (Some(" off\t"), ChatWindow::Off),
+            (Some("app"), ChatWindow::App),
+            (Some(" app "), ChatWindow::App),
         ] {
             assert_eq!(chat_window(value), want, "{value:?}");
         }
         for (value, why) in [
-            ("OFF", "\"OFF\" is not on or off"),
-            ("no", "\"no\" is not on or off"),
-            ("0", "\"0\" is not on or off"),
-            ("", "\"\" is not on or off"),
-            ("\u{1b}[2J", "\"\\u{1b}[2J\" is not on or off"),
+            ("OFF", "\"OFF\" is not on, off or app"),
+            ("App", "\"App\" is not on, off or app"),
+            ("no", "\"no\" is not on, off or app"),
+            ("0", "\"0\" is not on, off or app"),
+            ("", "\"\" is not on, off or app"),
+            ("\u{1b}[2J", "\"\\u{1b}[2J\" is not on, off or app"),
         ] {
             assert_eq!(
                 chat_window(Some(value)),

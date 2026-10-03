@@ -2928,7 +2928,7 @@ fn launch(
 
     let chat = !(meta_agent || orchestrator_seat)
         && match config::workspace_chat_window(env.global.as_deref(), env.local.as_deref()) {
-            config::ChatWindow::On => true,
+            config::ChatWindow::On | config::ChatWindow::App => true,
             config::ChatWindow::Off => false,
             config::ChatWindow::Unusable(why) => {
                 writeln!(
@@ -3545,6 +3545,7 @@ fn build(
         let home = crate::console::toggle::Home {
             root: &env.home,
             config: &config,
+            app: crate::console::toggle::app_window(&dir, &config),
         };
         open_first_chat(&server, &shape.name, &dir, home, err)?
     } else {

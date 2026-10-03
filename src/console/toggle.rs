@@ -120,9 +120,11 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
         Plan::Open | Plan::Respawn(_) => {
             let root = crate::state_root().ok_or("ae cannot name its own state")?;
             let config = crate::doors::config_file(crate::shape::current(), &root);
+            let dir = super::locate(&root, &session);
             let home = Home {
                 root: &root,
                 config: &config,
+                app: dir.is_some_and(|dir| app_window(&dir, &config)),
             };
             if let Plan::Respawn(pane) = &plan {
                 respawn(&server, pane, &session, home)?;
@@ -213,11 +215,18 @@ fn move_chat_first(
     Ok(())
 }
 
-/// The ae a chat's launcher runs: its state root and its global config.
+/// The ae a chat's launcher runs: its state root and its global config, and
+/// whether the session's `chat = app` puts `ae app` in the window.
 #[derive(Clone, Copy)]
 pub(crate) struct Home<'a> {
     pub(crate) root: &'a Path,
     pub(crate) config: &'a Path,
+    pub(crate) app: bool,
+}
+
+/// Whether the session recorded at `dir` runs `ae app` in its chat window.
+pub(crate) fn app_window(dir: &Path, config: &Path) -> bool {
+    crate::config::session_chat_window(dir, config) == crate::config::ChatWindow::App
 }
 
 /// Opens a chat window for `session`, stamped with `uuid`, and reports its
@@ -357,7 +366,18 @@ fn command(server: &ServerId, session: &str, home: Home<'_>) -> Result<Vec<Strin
     let core = crate::shape::resolved_exe().ok_or("ae cannot name its own binary")?;
     let shape = crate::shape::current();
     let launcher = picker_launcher(shape, &core, home.root, home.config, server);
-    Ok(console_command(launcher, session))
+    Ok(window_command(launcher, session, home.app))
+}
+
+/// The window's argv: the app under `chat = app` — it sets its own terminal
+/// up and always reads keys — else the chat.
+fn window_command(launcher: Vec<String>, session: &str, app: bool) -> Vec<String> {
+    if app {
+        let words = ["app", session].map(ToOwned::to_owned);
+        launcher.into_iter().chain(words).collect()
+    } else {
+        console_command(launcher, session)
+    }
 }
 
 /// Sets the pane's terminal to hand the console each key as it is typed, with
@@ -375,7 +395,9 @@ fn console_command(launcher: Vec<String>, session: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Owner, Plan, TTY_SETUP, console_command, move_to_first, owner, plan};
+    use super::{
+        Owner, Plan, TTY_SETUP, console_command, move_to_first, owner, plan, window_command,
+    };
     use crate::console::submit::tests::pane;
     use crate::tmux::WindowPane;
 
@@ -511,6 +533,21 @@ mod tests {
         ] {
             assert_eq!(owner(&panes, id, "u", created), want, "{id} {created}");
         }
+    }
+
+    /// F4: under `chat = app` the window runs the app, which sets its own
+    /// terminal up and always reads keys; otherwise the chat, unchanged.
+    #[test]
+    fn under_chat_app_the_window_runs_the_app_on_its_own_terminal() {
+        let launcher = vec!["env".to_owned(), "/core".to_owned()];
+        assert_eq!(
+            window_command(launcher.clone(), "s", true),
+            ["env", "/core", "app", "s"]
+        );
+        assert_eq!(
+            window_command(launcher.clone(), "s", false),
+            console_command(launcher, "s")
+        );
     }
 
     #[test]
