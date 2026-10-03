@@ -17,8 +17,8 @@ use crate::tracked::EventFields;
 use crate::watchdog::WATCHDOG_ACTOR;
 
 use super::{
-    ATTEMPT_ACTION, Candidate, DONE_ACTION, FAILED_ACTION, HELD_ACTION, Ineligible, REFUSED_ACTION,
-    Room, Seat, Skip, Trigger,
+    ATTEMPT_ACTION, Candidate, DONE_ACTION, FAILED_ACTION, HELD_ACTION, Ineligible, Provenance,
+    REFUSED_ACTION, Room, Seat, Shape, Skip, Store, Trigger,
 };
 
 /// The usage line.
@@ -132,15 +132,114 @@ pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
         Ineligible::Session => "held: auto_reseat_sessions does not name this session",
         Ineligible::Slot => "held: the seat's slot is not one auto reseat moves",
         Ineligible::Class => "held: the main seat moves only when auto_reseat = all",
-        Ineligible::Unmapped => "held: [auto_reseat] names no candidates for this profile",
+        Ineligible::Unmapped => "held: no declared or derived candidate for this profile",
     }
 }
 
-/// The declared candidates as the chooser judges them, joined with `quota`:
+/// The seat's candidates, `declared` then derived from its own family by
+/// [`super::listed`], read as a move of it reads them: the session's identity
+/// config, the seat's recorded profile through its recorded client, and the
+/// store the seat RECORDS — never a model it was followed to. A config or a
+/// seat command ae cannot read derives nothing.
+pub(crate) fn listed(
+    dir: &Path,
+    bytes: &[u8],
+    seat: &crate::meta::RosterEntry,
+    declared: &[String],
+) -> Vec<(String, Provenance)> {
+    let home = crate::doors::home();
+    let home = home.as_deref();
+    let derived = crate::reseat::identity_config(dir, bytes)
+        .ok()
+        .and_then(|cfg| {
+            let profile = seat.profile.as_deref()?;
+            let command = crate::run::read_seat_command(
+                &cfg,
+                profile,
+                &seat.name,
+                &seat.slot,
+                &seat.client,
+                home,
+            )
+            .ok()?;
+            let (words, pin, tool) = skeleton(&command)?;
+            let store = match (tool.adapter().config_home_env, &seat.config_home) {
+                (None, _) => Store::Shared,
+                (
+                    Some(_),
+                    crate::meta::RecordedConfigHome::Path(path)
+                    | crate::meta::RecordedConfigHome::Implicit(path),
+                ) => Store::Proven(path.clone()),
+                (Some(_), _) => Store::Unknown,
+            };
+            let profiles: Vec<(String, Shape)> = cfg
+                .profiles
+                .iter()
+                .filter_map(|(name, _)| Some((name.clone(), shape(&cfg, name, home)?)))
+                .collect();
+            let raw = command.as_str().to_owned();
+            Some(super::listed(
+                declared,
+                (
+                    profile,
+                    &Shape {
+                        words,
+                        pin,
+                        store,
+                        raw,
+                    },
+                ),
+                &profiles,
+            ))
+        });
+    derived.unwrap_or_else(|| {
+        declared
+            .iter()
+            .map(|name| (name.clone(), Provenance::Declared))
+            .collect()
+    })
+}
+
+/// A resolved command's family skeleton and its tool.
+fn skeleton(
+    command: &crate::config::ResolvedCommand,
+) -> Option<(Vec<String>, Option<String>, crate::tool::ToolKind)> {
+    let tool = crate::launch_cmd::lex_simple_command(command.as_str())
+        .ok()?
+        .tool();
+    let (words, pin) = crate::launch_cmd::family_skeleton(
+        command.as_str(),
+        tool,
+        crate::launch_cmd::Account::Drop,
+    )?;
+    Some((words, pin, tool))
+}
+
+/// Profile `name` as derivation compares it, its store resolved as a move to
+/// it would resolve it.
+fn shape(cfg: &crate::config::IdentityConfig, name: &str, home: Option<&Path>) -> Option<Shape> {
+    let command = cfg.command(name, home).ok()??;
+    let (words, pin, tool) = skeleton(&command)?;
+    let store = if tool.adapter().config_home_env.is_none() {
+        Store::Shared
+    } else {
+        crate::reseat::account_of(&command, tool, home)
+            .map_or(Store::Unknown, |account| Store::Proven(account.path))
+    };
+    let raw = command.as_str().to_owned();
+    Some(Shape {
+        words,
+        pin,
+        store,
+        raw,
+    })
+}
+
+/// The listed candidates as the chooser judges them, joined with `quota`:
 /// the windows that bind each one's account and whether another seat of the
 /// session is latched on it.
 pub(crate) fn candidates(
-    list: &[String],
+    list: &[(String, Provenance)],
     resolve: impl Fn(&str) -> Option<Resolved>,
     (left, left_on_headroom): (&[(String, Timestamp)], &[String]),
     quota: Option<&crate::quota::Observation>,
@@ -149,7 +248,7 @@ pub(crate) fn candidates(
 ) -> Vec<Candidate> {
     let groups = quota.map_or(&[][..], |seen| seen.groups.as_slice());
     list.iter()
-        .map(|profile| {
+        .map(|(profile, provenance)| {
             let resolved = resolve(profile);
             let pin = resolved.as_ref().and_then(|found| found.pin.as_deref());
             // Every reading of the candidate's account, rollouts together: one
@@ -161,6 +260,7 @@ pub(crate) fn candidates(
                 .collect();
             Candidate {
                 profile: profile.clone(),
+                provenance: *provenance,
                 configured: resolved.is_some(),
                 peer_latched: accounts.iter().any(|(group, source)| {
                     latched
@@ -250,7 +350,7 @@ pub(crate) fn own_room(
 /// The quota readings the chooser judges by, read as the session's own
 /// `quota` helper reads them. None when the session is not quota-aware, since
 /// `quota = off` says ae must not act on vendor numbers, and when the read
-/// fails: every candidate is then unknown and taken in declared order.
+/// fails: every candidate is then unknown and taken in listed order.
 pub(crate) fn read_quota(
     dir: &Path,
     inputs: &crate::quota::Inputs<'_>,
@@ -402,9 +502,17 @@ pub(crate) fn run(
         .headroom_at
         .filter(|_| found.trigger == Trigger::Headroom);
     let eligible = match super::eligible(&settings, &asked) {
-        Err(why) => Err(ineligible_summary(why)),
-        Ok(_) if found.trigger == Trigger::Headroom && threshold.is_none() => Err(HEADROOM_OFF),
-        Ok(list) => Ok(list),
+        Err(why) if why != Ineligible::Unmapped => Err(ineligible_summary(why)),
+        declared => {
+            let list = listed(dir, &bytes, seat, declared.unwrap_or_default());
+            if list.is_empty() {
+                Err(ineligible_summary(Ineligible::Unmapped))
+            } else if found.trigger == Trigger::Headroom && threshold.is_none() {
+                Err(HEADROOM_OFF)
+            } else {
+                Ok(list)
+            }
+        }
     };
     let list = match eligible {
         Ok(list) => list,
@@ -420,7 +528,7 @@ pub(crate) fn run(
     let quota = read_quota_at(root, dir, &meta, now);
     let latched = super::latched_identities(meta.roster(), &events, &argv.session, &argv.slot);
     let judged = candidates(
-        list,
+        &list,
         |to| crate::reseat::resolved(dir, to),
         (&left, &left_on_headroom),
         quota.as_ref(),
@@ -428,6 +536,7 @@ pub(crate) fn run(
         now.epoch(),
     );
     let choice = super::choose_with(&judged, now.epoch(), threshold);
+    let named = |pick: &str| format!("{pick}{}", choice.provenance.word());
     let Some((pick, tier)) = choice.pick else {
         let why = tagged(&no_candidate(&choice.skipped), &cause);
         let code = close(&argv, &agent, now, (REFUSED_ACTION, &why), err)?;
@@ -462,7 +571,7 @@ pub(crate) fn run(
         ended,
         &key,
         &profile,
-        &pick,
+        &named(&pick),
         &String::from_utf8_lossy(&said),
     );
     let summary = tagged(&summary, &cause);
@@ -481,7 +590,7 @@ pub(crate) fn run(
                 .is_ok_and(|wdir| crate::git::work_tree_dirty(wdir.as_bytes()));
             notice(super::Ending::Moved(super::Move {
                 from: &profile,
-                to: &pick,
+                to: &named(&pick),
                 tool: (&tool_before, &tool_after),
                 model: (&model_before, &model_after),
                 carried,
@@ -518,11 +627,12 @@ pub(crate) struct Sight {
 pub(crate) enum Plan {
     /// Nothing, and nothing is written: why, for the trigger's error stream.
     Decline(String),
-    /// Close the episode keyed `key`: nothing declared is usable.
+    /// Close the episode keyed `key`: nothing listed is usable.
     Refuse { key: Timestamp, why: String },
     /// Open an attempt under `key` and start the leg that moves the seat to
-    /// `to`; `note` follows `from <profile> to <to>` in the attempt's summary,
-    /// and `cause` names a headroom trigger (empty for a limit).
+    /// `to`; `note` follows `from <profile> to <to>` in the attempt's summary —
+    /// the pick's provenance first — and `cause` names a headroom trigger
+    /// (empty for a limit).
     Attempt {
         key: Timestamp,
         to: String,
@@ -535,7 +645,9 @@ pub(crate) enum Plan {
 /// own rule: the seat is eligible, and either the limit row is drawn and its
 /// limit episode decides [`super::Decision::Attempt`] NOW, or — with no limit
 /// drawn — its headroom episode does, while its own account still reads within
-/// [`super::REARM_GAP`] of the threshold.
+/// [`super::REARM_GAP`] of the threshold. `gather` is handed the seat's
+/// declared row — empty when it names none — and judges its whole list; a seat
+/// it lists nothing for declines as unmapped, writing nothing.
 pub(crate) fn plan(
     settings: &super::Settings,
     seat: &Seat<'_>,
@@ -546,6 +658,7 @@ pub(crate) fn plan(
 ) -> Plan {
     let list = match super::eligible(settings, seat) {
         Ok(list) => list,
+        Err(Ineligible::Unmapped) => &[],
         Err(why) => return Plan::Decline(format!("not eligible ({why:?})")),
     };
     let limit = super::episode(events, seat.session, seat.slot, seat.agent);
@@ -575,13 +688,22 @@ pub(crate) fn plan(
     };
     let left = super::left_profiles(events, seat.session, seat.slot, seat.agent);
     let left_on_headroom = super::left_on_headroom(events, seat.session, seat.slot, seat.agent);
-    let choice = super::choose_with(&gather(list, (&left, &left_on_headroom)), now.epoch(), room);
+    let judged = gather(list, (&left, &left_on_headroom));
+    if judged.is_empty() {
+        let why = Ineligible::Unmapped;
+        return Plan::Decline(format!("not eligible ({why:?})"));
+    }
+    let choice = super::choose_with(&judged, now.epoch(), room);
     let cause = found.cause();
     match choice.pick {
         Some((to, _)) => Plan::Attempt {
             key: found.key,
             to,
-            note: attempt_note(cause, &choice.skipped),
+            note: format!(
+                "{}{}",
+                choice.provenance.word(),
+                attempt_note(cause, &choice.skipped)
+            ),
             cause: cause.to_owned(),
         },
         None => Plan::Refuse {
@@ -608,7 +730,7 @@ fn attempt_note(cause: &str, skipped: &[(String, Skip)]) -> String {
     }
 }
 
-/// The refusal that names each declared candidate passed over, and why.
+/// The refusal that names each candidate passed over, and why.
 fn no_candidate(skipped: &[(String, Skip)]) -> String {
     format!("refused: {}", unusable(skipped))
 }
@@ -622,7 +744,7 @@ fn unusable(skipped: &[(String, Skip)]) -> String {
 }
 
 /// The line a seat's first-sight limit notice gains when auto reseat may move
-/// it: where to and when, or that nothing declared is usable. A forecast: the
+/// it: where to and when, or that nothing listed is usable. A forecast: the
 /// legs choose again when they act.
 pub(crate) fn deadline(agent: &str, choice: &super::Choice, grace_secs: u64) -> String {
     let Some((to, tier)) = &choice.pick else {
@@ -634,7 +756,8 @@ pub(crate) fn deadline(agent: &str, choice: &super::Choice, grace_secs: u64) -> 
     } else {
         ""
     };
-    format!("ae will move {agent} to {to} in {grace}{critical}")
+    let named = choice.provenance.word();
+    format!("ae will move {agent} to {to}{named} in {grace}{critical}")
 }
 
 /// The environment of every notice delivery, whole. The leg runs under the
@@ -821,7 +944,7 @@ pub(crate) fn trigger(
     let gather = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
         let latched = super::latched_identities(meta.roster(), &events, own_session, slot);
         candidates(
-            list,
+            &listed(dir, &bytes, row, list),
             |to| crate::reseat::resolved(dir, to),
             left,
             observed(),
@@ -934,6 +1057,13 @@ mod tests {
         argv.iter().map(|word| (*word).to_owned()).collect()
     }
 
+    /// `list` as a row declares it.
+    fn declared(list: &[String]) -> Vec<(String, Provenance)> {
+        list.iter()
+            .map(|profile| (profile.clone(), Provenance::Declared))
+            .collect()
+    }
+
     #[test]
     fn the_argv_is_proven_before_anything_is_read() {
         let root = Root(std::env::temp_dir().join(format!("ae-leg-{}", std::process::id())));
@@ -1042,7 +1172,10 @@ mod tests {
         let left = left_profiles(&[done], "aedev", "spawned.3", "scout");
         let list = words(&["ghost", "sol6x", "opus55x", "astrax"]);
         let resolve = |profile: &str| (profile != "ghost").then_some(Resolved { pin: None });
-        let choice = choose(&candidates(&list, resolve, (&left, &[]), None, &[], 0), 0);
+        let choice = choose(
+            &candidates(&declared(&list), resolve, (&left, &[]), None, &[], 0),
+            0,
+        );
         assert_eq!(choice.pick, Some(("opus55x".to_owned(), Tier::Unknown)));
         assert_eq!(
             choice.skipped,
@@ -1123,7 +1256,7 @@ mod tests {
         };
         choose(
             &candidates(
-                &words(list),
+                &declared(&words(list)),
                 resolve,
                 (left, &[]),
                 Some(quota),
@@ -1348,6 +1481,7 @@ mod tests {
     fn the_first_sight_line_names_the_target_and_the_grace_or_why_nothing_is_usable() {
         let to = |tier| crate::autoreseat::Choice {
             pick: picked("opus55x", tier),
+            provenance: Provenance::Declared,
             skipped: Vec::new(),
         };
         assert_eq!(
@@ -1364,11 +1498,57 @@ mod tests {
         );
         let none = crate::autoreseat::Choice {
             pick: None,
+            provenance: Provenance::Declared,
             skipped: passed(&[("opus55x", Skip::Exhausted), ("ghost", Skip::Unconfigured)]),
         };
         assert_eq!(
             deadline("scout", &none, 600),
             "ae cannot move scout: no usable candidate: opus55x (exhausted), ghost (not configured here)"
+        );
+    }
+
+    #[test]
+    fn the_forecast_and_the_attempt_name_a_derived_candidate_by_its_provenance() {
+        let candidate = |profile: &str, provenance, judged: f64| Candidate {
+            profile: profile.to_owned(),
+            provenance,
+            configured: true,
+            peer_latched: false,
+            windows: vec![crate::autoreseat::Window {
+                judged,
+                critical: judged >= 95.0,
+                observed_at: 0,
+                resets_at: None,
+                status: crate::quota::Status::Fresh,
+                label: "weekly_all 7d".to_owned(),
+            }],
+            left_at: None,
+            left_on_headroom: false,
+        };
+        let full = candidate(
+            "full",
+            Provenance::Derived(crate::autoreseat::Kin::Sibling),
+            100.0,
+        );
+        let twin = candidate(
+            "twin",
+            Provenance::Derived(crate::autoreseat::Kin::Twin),
+            10.0,
+        );
+        let choice = choose(&[full.clone(), twin], 0);
+        assert_eq!(
+            deadline("scout", &choice, 600),
+            "ae will move scout to twin, derived twin in 10m"
+        );
+        assert_eq!(
+            attempt_note("headroom 95% weekly_all 7d", &choice.skipped),
+            " (headroom 95% weekly_all 7d); passed over full, derived sibling (exhausted)"
+        );
+        let none = choose(&[full, candidate("spent", Provenance::Declared, 100.0)], 0);
+        assert_eq!(
+            deadline("scout", &none, 600),
+            "ae cannot move scout: no usable candidate: full, derived sibling (exhausted), \
+             spent (exhausted)"
         );
     }
 
@@ -1403,7 +1583,7 @@ mod tests {
             let quota = read_quota(&dir, &inputs);
             let resolve = |_: &str| Some(Resolved { pin: None });
             let judged = candidates(
-                &words(&["spent"]),
+                &declared(&words(&["spent"])),
                 resolve,
                 (&[], &[]),
                 quota.as_ref(),
@@ -1505,7 +1685,14 @@ mod tests {
             cause: String::new(),
         };
         let usable = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
-            candidates(list, |_| Some(Resolved { pin: None }), left, None, &[], 0)
+            candidates(
+                &declared(list),
+                |_| Some(Resolved { pin: None }),
+                left,
+                None,
+                &[],
+                0,
+            )
         };
         let plan_of = |settings: &Settings, sight: &Sight, events: &[Event]| {
             plan(settings, &seat, sight, events, usable, now)
@@ -1580,7 +1767,7 @@ mod tests {
                 &seat,
                 &clear,
                 &limit,
-                |list, left| candidates(list, |_| None, left, None, &[], 0),
+                |list, left| candidates(&declared(list), |_| None, left, None, &[], 0),
                 now
             ),
             Plan::Refuse {
@@ -1886,6 +2073,7 @@ mod tests {
                 list.iter()
                     .map(|profile| Candidate {
                         profile: profile.clone(),
+                        provenance: Provenance::Declared,
                         configured: true,
                         peer_latched: false,
                         windows: vec![Window {

@@ -4512,6 +4512,8 @@ struct AutoSeat {
     /// Its own account against the headroom threshold, from this cycle's held
     /// quota observation.
     room: crate::autoreseat::Room,
+    /// Its `[auto_reseat]` row names nothing, but its own family does.
+    derives: bool,
 }
 
 /// What the auto reseat step does this cycle.
@@ -4578,8 +4580,10 @@ fn auto_acts(
             profile: &seat.profile,
             orchestrator,
         };
-        if crate::autoreseat::eligible(settings, &asked).is_err() {
-            continue;
+        match crate::autoreseat::eligible(settings, &asked) {
+            Err(crate::autoreseat::Ineligible::Unmapped) if seat.derives => {}
+            Err(_) => continue,
+            Ok(_) => {}
         }
         let limit = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent);
         let headroom =
@@ -5197,7 +5201,17 @@ impl Cycle<'_> {
             profile: &profile,
             orchestrator: self.meta_agent,
         };
-        let list = crate::autoreseat::eligible(&self.auto, &seat).ok()?;
+        let declared = match crate::autoreseat::eligible(&self.auto, &seat) {
+            Ok(list) => list,
+            Err(crate::autoreseat::Ineligible::Unmapped) => &[],
+            Err(_) => return None,
+        };
+        let row = self.roster.iter().find(|row| row.slot == slot)?;
+        let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
+        let list = crate::autoreseat::leg::listed(self.meta_dir, &bytes, row, declared);
+        if list.is_empty() {
+            return None;
+        }
         let left = crate::autoreseat::left_profiles(events, self.session, slot, agent);
         let left_on_headroom =
             crate::autoreseat::left_on_headroom(events, self.session, slot, agent);
@@ -5205,7 +5219,7 @@ impl Cycle<'_> {
             crate::autoreseat::latched_identities(&self.roster, events, self.session, slot);
         // `quota = off` holds no observation here: `QuotaCarry::clear_held`.
         let judged = crate::autoreseat::leg::candidates(
-            list,
+            &list,
             |to| crate::reseat::resolved(self.meta_dir, to),
             (&left, &left_on_headroom),
             quota.last_observation.as_ref(),
@@ -5218,6 +5232,36 @@ impl Cycle<'_> {
             &choice,
             self.auto.grace_secs,
         ))
+    }
+
+    /// Whether the seat at `slot`, eligible but for an `[auto_reseat]` row that
+    /// names nothing, has a candidate in its own family. Asked only while the
+    /// seat could act — `active` (on its limit, or near or past its threshold),
+    /// or inside an episode — so a quiet or filtered seat costs no config read.
+    fn derives(&self, events: &[Event], (slot, agent): (&str, &str), active: bool) -> bool {
+        use crate::autoreseat::{Ineligible, Seat, eligible, episode, headroom_episode};
+        let profile = self.seat_profile(slot);
+        let seat = Seat {
+            session: self.session,
+            slot,
+            agent,
+            profile: &profile,
+            orchestrator: self.meta_agent,
+        };
+        if eligible(&self.auto, &seat) != Err(Ineligible::Unmapped) {
+            return false;
+        }
+        let live = active
+            || headroom_episode(events, self.session, slot, agent).is_some()
+            || episode(events, self.session, slot, agent).is_some_and(|found| found.open.is_some());
+        live && self
+            .roster
+            .iter()
+            .find(|row| row.slot == slot)
+            .is_some_and(|row| {
+                let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
+                !crate::autoreseat::leg::listed(self.meta_dir, &bytes, row, &[]).is_empty()
+            })
     }
 
     /// One quota-cadence pass: the vendor-quota observation and advisory
@@ -5527,6 +5571,15 @@ impl Cycle<'_> {
                             .and_then(|(_, at)| i64::try_from(at).ok()),
                     },
                     limited: carried.limit_since.is_some(),
+                    derives: self.derives(
+                        &events,
+                        (&slot, agent),
+                        carried.limit_since.is_some()
+                            || matches!(
+                                own_room,
+                                crate::autoreseat::Room::Crossed(_) | crate::autoreseat::Room::Near
+                            ),
+                    ),
                     room: own_room,
                 });
             }
@@ -13187,6 +13240,7 @@ mod tests {
             },
             limited: true,
             room: crate::autoreseat::Room::Unread,
+            derives: false,
         };
         let on = Settings {
             switch: Switch::On,
@@ -13394,6 +13448,7 @@ mod tests {
             },
             limited,
             room,
+            derives: false,
         };
         let on = Settings {
             switch: Switch::On,

@@ -1,10 +1,11 @@
 //! Auto reseat: move a seat PROVEN stuck on its vendor usage limit — or, before
 //! that, one whose own account crossed the headroom threshold — in place, to
-//! the first usable profile the human declared for it, and say so.
+//! the first usable profile the human declared for it, else one of its own
+//! family, and say so.
 //!
 //! This file holds the DECISIONS and reads nothing but its arguments and the
 //! global config: which limit episode a seat is in, whether that episode is due
-//! for a move, and which declared candidate to take. The watchdog asks them to
+//! for a move, and which listed candidate to take. The watchdog asks them to
 //! trigger, and the legs that act ask them again, so a forged trigger can do no
 //! more than the daemon would do at that moment.
 //!
@@ -400,6 +401,127 @@ pub fn eligible<'s>(settings: &'s Settings, seat: &Seat<'_>) -> Result<&'s [Stri
     settings
         .candidates(seat.profile)
         .ok_or(Ineligible::Unmapped)
+}
+
+/// How a derived candidate is related to the seat it would move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kin {
+    /// The seat's own setup on another, proven account.
+    Twin,
+    /// The seat's own tool and flags, pinned to another model.
+    Sibling,
+}
+
+/// How a candidate came to be on a seat's list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Provenance {
+    /// The `[auto_reseat]` row names it.
+    #[default]
+    Declared,
+    /// Derived from the seat's own profile.
+    Derived(Kin),
+}
+
+impl Provenance {
+    /// What a record adds after the candidate's name: nothing for a declared
+    /// one, so every record a declared row writes reads as it always did.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Declared => "",
+            Self::Derived(Kin::Twin) => ", derived twin",
+            Self::Derived(Kin::Sibling) => ", derived sibling",
+        }
+    }
+}
+
+/// Where a profile's tool keeps the account it runs on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Store {
+    /// The canonical config home.
+    Proven(std::path::PathBuf),
+    /// The tool has one, but ae cannot name it: proof of nothing.
+    Unknown,
+    /// The tool has no account variable: every profile of it shares one.
+    Shared,
+}
+
+/// One profile as family derivation compares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shape {
+    /// The command without its account variable and its model flag's value:
+    /// [`crate::launch_cmd::family_skeleton`].
+    pub words: Vec<String>,
+    pub pin: Option<String>,
+    pub store: Store,
+    /// The resolved command, byte for byte.
+    pub raw: String,
+}
+
+impl Shape {
+    /// The same setup on the same store, PROVEN: an unknown account is never
+    /// the same as another, and on a shared store only the same command byte
+    /// for byte is, since a respelled flag proves nothing.
+    fn same(&self, other: &Self) -> bool {
+        self.words == other.words
+            && self.pin == other.pin
+            && match (&self.store, &other.store) {
+                (Store::Proven(one), Store::Proven(two)) => one == two,
+                (Store::Shared, Store::Shared) => self.raw == other.raw,
+                _ => false,
+            }
+    }
+}
+
+/// The seat's candidates: `declared` in its own order, then the seat's own
+/// family among `profiles` — every twin, then every sibling, each in
+/// `profiles` order. A profile is listed once, where it first appears, and a
+/// derived one that is the [`Shape::same`] as one listed before it is dropped:
+/// its windows are that one's. The seat's own profile is never listed.
+#[must_use]
+pub fn listed(
+    declared: &[String],
+    (profile, seat): (&str, &Shape),
+    profiles: &[(String, Shape)],
+) -> Vec<(String, Provenance)> {
+    let shape = |name: &str| {
+        profiles
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, shape)| shape)
+    };
+    let mut list: Vec<(String, Provenance)> = declared
+        .iter()
+        .map(|name| (name.clone(), Provenance::Declared))
+        .collect();
+    let mut kept: Vec<&Shape> = declared.iter().filter_map(|name| shape(name)).collect();
+    for kin in [Kin::Twin, Kin::Sibling] {
+        for (name, candidate) in profiles {
+            let family = candidate.words == seat.words
+                && match kin {
+                    Kin::Twin => {
+                        candidate.pin == seat.pin
+                            && matches!(
+                                (&seat.store, &candidate.store),
+                                (Store::Proven(one), Store::Proven(two)) if one != two
+                            )
+                    }
+                    Kin::Sibling => {
+                        seat.pin.is_some() && candidate.pin.is_some() && candidate.pin != seat.pin
+                    }
+                };
+            if !family
+                || name == profile
+                || list.iter().any(|(taken, _)| taken == name)
+                || kept.iter().any(|shape| shape.same(candidate))
+            {
+                continue;
+            }
+            kept.push(candidate);
+            list.push((name.clone(), Provenance::Derived(kin)));
+        }
+    }
+    list
 }
 
 /// What ended an episode's auto path.
@@ -935,10 +1057,11 @@ pub struct Window {
     pub label: String,
 }
 
-/// What the leg knows about one declared candidate.
+/// What the leg knows about one candidate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
     pub profile: String,
+    pub provenance: Provenance,
     /// The profile resolves the way a launch resolves one.
     pub configured: bool,
     /// Another seat of the session is latched on this candidate's account.
@@ -962,14 +1085,19 @@ pub enum Skip {
     LeftOnHeadroom,
 }
 
-/// The candidate taken, and every one passed over with its reason.
+/// The candidate taken, and every one passed over with its reason, named as a
+/// record names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     pub pick: Option<(String, Tier)>,
+    /// How the pick came to be listed.
+    pub provenance: Provenance,
     pub skipped: Vec<(String, Skip)>,
 }
 
-/// Take the first usable candidate of the best tier, in declared order.
+/// Take the first usable candidate of the best tier, in listed order — a
+/// declared one before any derived one, whatever its tier: the row is the
+/// human's own preference, derivation only ae's fallback.
 #[must_use]
 pub fn choose(candidates: &[Candidate], now: i64) -> Choice {
     choose_with(candidates, now, None)
@@ -980,19 +1108,24 @@ pub fn choose(candidates: &[Candidate], now: i64) -> Choice {
 #[must_use]
 pub fn choose_with(candidates: &[Candidate], now: i64, room: Option<u8>) -> Choice {
     let mut skipped = Vec::new();
-    let mut best: Option<(&Candidate, Tier)> = None;
+    let mut best: Option<(&Candidate, (bool, Tier))> = None;
     for candidate in candidates {
         if let Some(skip) = passed_over(candidate, now, room) {
-            skipped.push((candidate.profile.clone(), skip));
+            let named = format!("{}{}", candidate.profile, candidate.provenance.word());
+            skipped.push((named, skip));
             continue;
         }
-        let tier = tier(&candidate.windows);
-        if best.is_none_or(|(_, held)| tier < held) {
-            best = Some((candidate, tier));
+        let rank = (
+            candidate.provenance != Provenance::Declared,
+            tier(&candidate.windows),
+        );
+        if best.is_none_or(|(_, held)| rank < held) {
+            best = Some((candidate, rank));
         }
     }
     Choice {
-        pick: best.map(|(candidate, tier)| (candidate.profile.clone(), tier)),
+        pick: best.map(|(candidate, (_, tier))| (candidate.profile.clone(), tier)),
+        provenance: best.map_or(Provenance::Declared, |(candidate, _)| candidate.provenance),
         skipped,
     }
 }
@@ -1834,9 +1967,125 @@ mod tests {
         }
     }
 
+    fn shape(pin: Option<&str>, store: Store) -> Shape {
+        Shape {
+            words: vec!["claude".to_owned(), "--model".to_owned()],
+            pin: pin.map(ToOwned::to_owned),
+            store,
+            raw: String::new(),
+        }
+    }
+
+    fn proven(path: &str) -> Store {
+        Store::Proven(std::path::PathBuf::from(path))
+    }
+
+    fn rows<T: Clone>(rows: &[(&str, T)]) -> Vec<(String, T)> {
+        rows.iter()
+            .map(|(name, value)| ((*name).to_owned(), value.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn the_family_lists_twins_then_siblings_and_collapses_only_a_proven_alias() {
+        let seat = shape(Some("opus"), proven("/a"));
+        let twin = Provenance::Derived(Kin::Twin);
+        let sibling = Provenance::Derived(Kin::Sibling);
+        let other = Shape {
+            words: vec!["claude".to_owned(), "--model".to_owned(), "low".to_owned()],
+            ..shape(Some("opus"), proven("/d"))
+        };
+        let all = rows(&[
+            ("source", seat.clone()),
+            ("sonnet", shape(Some("sonnet"), proven("/a"))),
+            ("b", shape(Some("opus"), proven("/b"))),
+            ("dup", shape(Some("opus"), proven("/b"))),
+            ("same", shape(Some("opus"), proven("/a"))),
+            ("unknown", shape(Some("opus"), Store::Unknown)),
+            ("pinless", shape(None, proven("/c"))),
+            ("other", other),
+        ]);
+        assert_eq!(
+            listed(&[], ("source", &seat), &all),
+            rows(&[("b", twin), ("sonnet", sibling)])
+        );
+        assert_eq!(
+            listed(&["dup".to_owned(), "x".to_owned()], ("source", &seat), &all),
+            rows(&[
+                ("dup", Provenance::Declared),
+                ("x", Provenance::Declared),
+                ("sonnet", sibling),
+            ]),
+            "declared first; a derived alias of a declared one adds nothing"
+        );
+        let pinless_seat = shape(None, proven("/a"));
+        assert_eq!(
+            listed(&[], ("source", &pinless_seat), &all),
+            rows(&[("pinless", twin)]),
+            "a pinless seat has pinless twins and no sibling"
+        );
+    }
+
+    #[test]
+    fn distinct_unknown_accounts_never_collapse_even_against_a_declared_one() {
+        let seat = shape(Some("opus"), proven("/a"));
+        let sibling = Provenance::Derived(Kin::Sibling);
+        let unknown = rows(&[
+            ("first", shape(Some("sonnet"), Store::Unknown)),
+            ("second", shape(Some("sonnet"), Store::Unknown)),
+        ]);
+        assert_eq!(
+            listed(&[], ("source", &seat), &unknown),
+            rows(&[("first", sibling), ("second", sibling)])
+        );
+        assert_eq!(
+            listed(&["first".to_owned()], ("source", &seat), &unknown),
+            rows(&[("first", Provenance::Declared), ("second", sibling)])
+        );
+        // An unknown account is no proof of ANOTHER account either.
+        let copy = rows(&[("copy", shape(Some("opus"), Store::Unknown))]);
+        assert!(listed(&[], ("source", &seat), &copy).is_empty());
+        let unknown_seat = shape(Some("opus"), Store::Unknown);
+        let proven_b = rows(&[("b", shape(Some("opus"), proven("/b")))]);
+        assert!(listed(&[], ("source", &unknown_seat), &proven_b).is_empty());
+        // A tool with no account variable has one store: no twin, and the
+        // same command collapses.
+        let shared = shape(Some("opus"), Store::Shared);
+        let commands = rows(&[
+            ("same", shape(Some("opus"), Store::Shared)),
+            ("one", shape(Some("sonnet"), Store::Shared)),
+            ("two", shape(Some("sonnet"), Store::Shared)),
+        ]);
+        assert_eq!(
+            listed(&[], ("source", &shared), &commands),
+            rows(&[("one", sibling)])
+        );
+    }
+
+    #[test]
+    fn a_respelled_model_flag_on_a_shared_store_is_never_an_alias() {
+        let sibling = Provenance::Derived(Kin::Sibling);
+        let on = |pin: &str, raw: &str| Shape {
+            raw: raw.to_owned(),
+            ..shape(Some(pin), Store::Shared)
+        };
+        let seat = on("opus", "tool --model opus");
+        let commands = rows(&[
+            ("equals", on("sonnet", "tool --model=sonnet")),
+            ("spaced", on("sonnet", "tool --model sonnet")),
+            ("copy", on("sonnet", "tool --model=sonnet")),
+        ]);
+        assert_eq!(
+            listed(&[], ("source", &seat), &commands),
+            rows(&[("equals", sibling), ("spaced", sibling)]),
+            "only the byte-identical copy adds nothing"
+        );
+    }
+
     fn candidate(profile: &str, windows: Vec<Window>) -> Candidate {
         Candidate {
             profile: profile.to_owned(),
+            provenance: Provenance::Declared,
             configured: true,
             peer_latched: false,
             windows,

@@ -348,6 +348,33 @@ fn resolve(dir: &Path, agent: &str, session: &str) -> Result<Target, String> {
     })
 }
 
+/// The profiles a seat of the session at `dir` may be moved to: the global
+/// file its meta records plus the origin's overlay — never the orchestrator
+/// seat's own overlay, exactly as `read_seat` has it, because reading it here
+/// would offer a profile the launch would then refuse.
+///
+/// # Errors
+///
+/// The identity config's own refusal.
+pub(crate) fn identity_config(
+    dir: &Path,
+    bytes: &[u8],
+) -> Result<crate::config::IdentityConfig, String> {
+    let value = |key: &str| crate::lifecycle::meta_value(bytes, key);
+    let global = value("config");
+    let local = crate::config::local_overlay(dir, &value("origin"));
+    let orchestrator_seat = local.as_deref().is_some_and(|path| {
+        dir.parent()
+            .and_then(Path::parent)
+            .is_some_and(|home| crate::orchestrator::is_seat_overlay(path, home))
+    });
+    crate::config::read_identity(
+        (!global.is_empty()).then(|| Path::new(&global)),
+        (!orchestrator_seat).then_some(local.as_deref()).flatten(),
+    )
+    .map_err(|why| why.to_string())
+}
+
 /// The new profile resolved to the two facts the meta records.
 ///
 /// The SAME resolution `crate::run::read_seat` makes for a seat that records no
@@ -355,22 +382,7 @@ fn resolve(dir: &Path, agent: &str, session: &str) -> Result<Target, String> {
 /// asked BEFORE anything is written, because a profile that does not lex is a
 /// refusal and not a half-moved seat.
 fn resolve_profile(dir: &Path, bytes: &[u8], profile: &str, agent: &str) -> Result<Moving, String> {
-    let value = |key: &str| crate::lifecycle::meta_value(bytes, key);
-    let global = value("config");
-    let local = crate::config::local_overlay(dir, &value("origin"));
-    // The orchestrator seat's own overlay is not a profile source, exactly as
-    // `read_seat` has it: reading it here would offer a profile the launch
-    // would then refuse.
-    let orchestrator_seat = local.as_deref().is_some_and(|path| {
-        dir.parent()
-            .and_then(Path::parent)
-            .is_some_and(|home| crate::orchestrator::is_seat_overlay(path, home))
-    });
-    let cfg = crate::config::read_identity(
-        (!global.is_empty()).then(|| Path::new(&global)),
-        (!orchestrator_seat).then_some(local.as_deref()).flatten(),
-    )
-    .map_err(|why| why.to_string())?;
+    let cfg = identity_config(dir, bytes)?;
     let home = crate::doors::home();
     let command = cfg
         .command(profile, home.as_deref())
@@ -409,9 +421,9 @@ struct Moving {
 /// Held together because they are one identity — an implicit store and an
 /// explicit one over the same path are different accounts, and a row published
 /// without its base would say the wrong one.
-struct Account {
+pub(crate) struct Account {
     /// The canonical directory itself.
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     /// `config_home.<slot>`, in [`crate::meta::RecordedConfigHome`]'s grammar.
     row: String,
     /// `config_home_base.<slot>` — the canonical effective `HOME` an implicit
@@ -431,7 +443,7 @@ struct Account {
 /// `None` means ae cannot name this profile's account: a `$VAR` only the pane
 /// can see, no effective `HOME`, or a path that will not canonicalize. Nothing
 /// is refused on it — a move whose account ae cannot name simply cannot carry.
-fn account_of(
+pub(crate) fn account_of(
     command: &crate::config::ResolvedCommand,
     tool: ToolKind,
     home: Option<&Path>,

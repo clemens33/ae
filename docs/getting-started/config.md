@@ -314,6 +314,26 @@ candidate that is not a profile name, the profile itself, or a repeat; a
 profile left with no usable candidate is ignored too. A profile keyed twice
 keeps its later row.
 
+Every listed seat also gets the profiles of its OWN family, after its row — and
+with no usable row, those alone. A TWIN is the seat's setup on another account:
+the same command word for word, the account variable aside, on a config home ae
+can prove is a different one. A SIBLING is the same tool and flags pinned to
+another model, on any account. Twins are listed first, then siblings, each in
+`[profiles]` order. A declared candidate always comes before a derived one, even
+when its account is worse off — to prefer the family, change the row. Among
+derived ones the better-off account wins, and a twin beats a sibling only when
+the two are equally well off. The seat's own profile, a profile listed already,
+and one that runs the same setup on a store ae proves is the same as one listed
+before it add nothing; an account ae cannot name is never proof of either, and
+on a tool with no account variable only a byte-identical command is the same
+setup. Another tool, another spelling of the executable, a reordered argv,
+another effort or permission, or a model flag ae cannot read is not family: name
+such a profile in the row. Records and notices spell a derived pick `<profile>,
+derived twin` or `<profile>, derived sibling`; a declared one reads as it always
+did. The family is read from the seat's RECORDED profile and client, so a model
+the human switched to in the pane does not travel, and a seat launched on
+another client of its profile is never moved back to that profile.
+
 Names show in pane borders and are how agents address each other. Each window
 keeps its first agent's name as its stable tmux routing name; later splits do
 not rename it.

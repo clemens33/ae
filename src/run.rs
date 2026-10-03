@@ -1444,7 +1444,7 @@ pub(crate) struct Seat {
 /// launch preflight owns the adapter gate and the store re-take — this read
 /// trusts the meta it refuses to launch from, exactly as it already trusts
 /// the profile row.
-fn read_seat_command(
+pub(crate) fn read_seat_command(
     cfg: &crate::config::IdentityConfig,
     profile: &str,
     name: &str,

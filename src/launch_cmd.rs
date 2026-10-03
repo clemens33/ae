@@ -430,30 +430,66 @@ impl FollowRefusal {
 /// `usage::is_model_id` already bounds a model name by.
 const FOLLOW_LABEL_MAX: usize = 256;
 
+/// What a [`family_skeleton`] keeps of the account a command runs against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Account {
+    /// Every assignment stays, and the model flag is required: the follow's
+    /// skeleton, which must never cross a login.
+    Keep,
+    /// The tool's own config-home assignment is dropped, so two logins of one
+    /// setup compare equal, and a command with no model flag pins nothing.
+    Drop,
+}
+
 /// One command reduced to everything BUT its model flag's VALUE, plus that value.
 ///
-/// The leading assignments are PART of the skeleton, because they carry the
-/// ACCOUNT the tool runs against: a `CLAUDE_CONFIG_DIR=` prefix is the difference
-/// between two logins, and a candidate that changed it would move the seat's
-/// conversation and its quota window. Both flag forms reduce to the flag NAME.
-fn model_skeleton(cmd: &str, tool: ToolKind) -> Option<(Vec<String>, String)> {
+/// Under [`Account::Keep`] the leading assignments are PART of the skeleton,
+/// because they carry the ACCOUNT the tool runs against: a `CLAUDE_CONFIG_DIR=`
+/// prefix is the difference between two logins, and a candidate that changed it
+/// would move the seat's conversation and its quota window. Both flag forms
+/// reduce to the flag NAME. Every other word stays, in its order, so an argv
+/// that differs in anything else — an effort, a permission, an executable
+/// spelled another way, a reordering — is another skeleton.
+pub(crate) fn family_skeleton(
+    cmd: &str,
+    tool: ToolKind,
+    account: Account,
+) -> Option<(Vec<String>, Option<String>)> {
     let command = lex_simple_command(cmd).ok()?;
-    let flag = sole_model_flag(&command, tool).ok()?;
-    if flag.value.is_empty() {
-        return None;
-    }
-    let mut parts: Vec<String> = command.assignments.clone();
+    let flag = match sole_model_flag(&command, tool) {
+        Ok(flag) if flag.value.is_empty() => return None,
+        Ok(flag) => Some(flag),
+        Err(ModelFlagError::Absent | ModelFlagError::Unsupported) if account == Account::Drop => {
+            None
+        }
+        Err(_) => return None,
+    };
+    let dropped = tool
+        .adapter()
+        .config_home_env
+        .filter(|_| account == Account::Drop);
+    let mut parts: Vec<String> = command
+        .assignments
+        .iter()
+        .filter(|word| {
+            dropped.is_none_or(|name| word.split_once('=').map(|(key, _)| key) != Some(name))
+        })
+        .cloned()
+        .collect();
     for (index, value) in command.word_values.iter().enumerate() {
-        if index == flag.value_index.unwrap_or(usize::MAX) {
-            continue;
-        }
-        if index == flag.index {
-            parts.push(flag.name.to_owned());
-        } else {
-            parts.push(value.clone());
+        match &flag {
+            Some(flag) if flag.value_index == Some(index) => {}
+            Some(flag) if flag.index == index => parts.push(flag.name.to_owned()),
+            _ => parts.push(value.clone()),
         }
     }
-    Some((parts, flag.value))
+    Some((parts, flag.map(|flag| flag.value)))
+}
+
+/// [`family_skeleton`] under [`Account::Keep`]: the pin is required.
+fn model_skeleton(cmd: &str, tool: ToolKind) -> Option<(Vec<String>, String)> {
+    let (parts, pin) = family_skeleton(cmd, tool, Account::Keep)?;
+    Some((parts, pin?))
 }
 
 /// The configured pin value a seat's OBSERVED model follows — PURE, over the
@@ -1879,6 +1915,85 @@ mod tests {
             Err(FollowRefusal::NoCandidate),
             "effort is PRESERVED, never voted on"
         );
+    }
+
+    #[test]
+    fn only_a_family_skeleton_asked_to_drop_the_account_loses_it() {
+        let skeleton = |cmd: &str, account| super::family_skeleton(cmd, ToolKind::Claude, account);
+        let words = |argv: &[&str]| {
+            argv.iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let home_a = "CLAUDE_CONFIG_DIR=/a claude --model opus --effort high";
+        let home_b = "CLAUDE_CONFIG_DIR=/b claude --model=opus --effort high";
+        // The follow's skeleton keeps the account, so it can never cross one.
+        assert_ne!(
+            skeleton(home_a, super::Account::Keep),
+            skeleton(home_b, super::Account::Keep)
+        );
+        assert_eq!(
+            super::model_skeleton(home_a, ToolKind::Claude),
+            Some((
+                words(&[
+                    "CLAUDE_CONFIG_DIR=/a",
+                    "claude",
+                    "--model",
+                    "--effort",
+                    "high"
+                ]),
+                "opus".to_owned()
+            ))
+        );
+        let family = Some((
+            words(&["claude", "--model", "--effort", "high"]),
+            Some("opus".to_owned()),
+        ));
+        assert_eq!(skeleton(home_a, super::Account::Drop), family);
+        assert_eq!(
+            skeleton(home_b, super::Account::Drop),
+            family,
+            "both flag forms"
+        );
+        // Drop removes the tool's own account variable and nothing else.
+        assert_eq!(
+            skeleton(&format!("OTHER=x {home_a}"), super::Account::Drop),
+            Some((
+                words(&["OTHER=x", "claude", "--model", "--effort", "high"]),
+                Some("opus".to_owned())
+            ))
+        );
+        assert_eq!(
+            super::family_skeleton(
+                "CODEX_HOME=/c codex -m gpt",
+                ToolKind::Codex,
+                super::Account::Drop
+            ),
+            Some((words(&["codex", "-m"]), Some("gpt".to_owned())))
+        );
+        // No model flag pins nothing under Drop and is no follow skeleton.
+        let pinless = "CLAUDE_CONFIG_DIR=/a claude --effort high";
+        assert_eq!(
+            skeleton(pinless, super::Account::Drop),
+            Some((words(&["claude", "--effort", "high"]), None))
+        );
+        assert_eq!(skeleton(pinless, super::Account::Keep), None);
+        for unreadable in [
+            "claude --model a --model b",
+            "claude --effort high --model",
+            "claude 'x",
+        ] {
+            assert_eq!(
+                skeleton(unreadable, super::Account::Drop),
+                None,
+                "{unreadable}"
+            );
+            assert_eq!(
+                skeleton(unreadable, super::Account::Keep),
+                None,
+                "{unreadable}"
+            );
+        }
     }
 
     #[test]

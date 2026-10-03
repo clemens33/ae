@@ -485,9 +485,11 @@ restarted mid-move re-latches the seat on the same key and re-books `limit`.
 At a limit's first sight the Notify gains one forecast line, and only then: the
 `limit` record itself is byte-identical. `ae will move <agent> to <to> in
 <grace>` names the candidate the chooser ranks first over this cycle's held
-quota observation; `, target already critical` is appended when that candidate
-is already critical; `ae cannot move <agent>: <why>` names each declared
-candidate passed over and why. It is a forecast — the legs choose again when
+quota observation — its name followed by `, derived twin` or `, derived sibling`
+when it is derived;
+`, target already critical` is appended when that candidate is already
+critical; `ae cannot move <agent>: <why>` names each candidate passed over and
+why. It is a forecast — the legs choose again when
 they act — and a seat the switch does not admit gets no line at all.
 
 The same step also judges every eligible seat whose limit latch does not stand

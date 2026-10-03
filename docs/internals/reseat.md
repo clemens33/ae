@@ -380,9 +380,28 @@ one closes nothing new. An episode gets at most two attempts: one, and one more
 after a transient hold; an attempt still open past 180 s is booked `failed` by
 the daemon.
 
-The chooser takes the first usable candidate of the best tier, in declared
-order. A candidate is judged by its EFFECTIVE percentage, never the raw
-window: a reached spend cap judges 100 and reads exhausted, and only a FRESH
+The candidates are the `[auto_reseat]` row, then the seat's own family —
+`autoreseat::listed`, which `leg::listed` feeds from the session's identity
+config, the seat's recorded profile through its recorded client, and the store
+its meta records. ONE comparer decides the family: `launch_cmd::family_skeleton`
+reduces a command to every word but its model flag's value, under `Drop` without
+the tool's config-home assignment — the follow keeps it, under `Keep`, so a
+followed model never crosses an account. A store is `reseat::account_of`'s
+canonical path: equal paths are one account, and an unknown one equals nothing.
+A tool with no account variable has one shared store, where only a
+byte-identical command is the same profile: a respelled flag is not. A seat with
+no row and no family is unmapped: the daemon skips it without a record, and a
+leg that finds it so holds with `held: no declared or derived candidate for this
+profile`. The daemon asks for a family only for a seat eligible but for its row,
+and only while it could act — on its limit, at or near its threshold, or inside
+an episode — reading the identity config once for each such seat per cycle.
+
+The chooser takes the first usable candidate of the best tier, in listed order —
+and every declared candidate outranks every derived one: a declared candidate on
+a worse tier still wins over a fresh twin, and an operator who wants the family
+first changes the row. Among derived candidates twins come before siblings only
+on an equal tier. A candidate is judged by its EFFECTIVE percentage, never the
+raw window: a reached spend cap judges 100 and reads exhausted, and only a FRESH
 window places a tier — below critical first, then unknown, then critical. A
 window scoped to another model family binds no one else, while a pinless
 candidate stays bound. Another seat of the session still on its limit passes
