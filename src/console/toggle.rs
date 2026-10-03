@@ -113,7 +113,10 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
             );
         }
         Plan::Back => return tmux(&Op::LastWindow { session: &session }).map(drop),
-        Plan::Select(pane) => pane.clone(),
+        Plan::Select(pane) => {
+            move_chat_first(&server, &session, &panes, pane, &uuid)?;
+            pane.clone()
+        }
         Plan::Open | Plan::Respawn(_) => {
             let root = crate::state_root().ok_or("ae cannot name its own state")?;
             let config = crate::doors::config_file(crate::shape::current(), &root);
@@ -123,14 +126,91 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
             };
             if let Plan::Respawn(pane) = &plan {
                 respawn(&server, pane, &session, home)?;
+                move_chat_first(&server, &session, &panes, pane, &uuid)?;
                 pane.clone()
             } else {
-                open(&server, &session, &uuid, false, home)?
+                open(&server, &session, &uuid, true, home)?
             }
         }
     };
     tmux(&Op::SelectWindow { pane: &pane })?;
-    tmux(&Op::SelectPane { pane: &pane }).map(drop)
+    tmux(&Op::SelectPane { pane: &pane })?;
+    let main =
+        option(theme::MAIN_PANE_OPTION).filter(|id| panes.iter().any(|pane| &pane.pane_id == id));
+    let Some(main) = main else {
+        return Err(
+            "this session names no usable lead pane, so the attach hook was left unchanged"
+                .to_owned(),
+        );
+    };
+    crate::session_launch::stamp_client_session_hook(&server, &session, &main, true);
+    Ok(())
+}
+
+/// The window-id pair exchanging the owner's chat window with the session's
+/// first window: `None` when the owner is already first. First is the lowest
+/// index present, the same definition the attach hook reads back.
+fn move_to_first(panes: &[WindowPane], owner: &WindowPane) -> Option<(String, String)> {
+    let first = panes.iter().map(|pane| pane.window_index).min()?;
+    if owner.window_index == first {
+        return None;
+    }
+    let target = panes
+        .iter()
+        .filter(|pane| pane.window_index == first)
+        .min_by_key(|pane| pane.pane_index)?;
+    Some((owner.window_id.clone(), target.window_id.clone()))
+}
+
+/// Moves the chat in `owner_pane` to the session's first window, when it is
+/// not already there. Only a pane still stamped `uuid` moves, and a second
+/// listing proves the move; anything else fails loud.
+///
+/// # Errors
+///
+/// The owner is gone or unstamped, tmux refused the swap, or the move could
+/// not be proven.
+fn move_chat_first(
+    server: &ServerId,
+    session: &str,
+    panes: &[WindowPane],
+    owner_pane: &str,
+    uuid: &str,
+) -> Result<(), String> {
+    let owner = panes
+        .iter()
+        .find(|row| row.pane_id == owner_pane)
+        .ok_or_else(|| {
+            "the chat pane left its session before it could move to the first window".to_owned()
+        })?;
+    if owner.console.as_deref() != Some(uuid) {
+        return Err(
+            "the chat pane no longer carries this session's stamp, so it was not moved".to_owned(),
+        );
+    }
+    let Some((source, target)) = move_to_first(panes, owner) else {
+        return Ok(());
+    };
+    let op = Op::SwapWindow {
+        source: &source,
+        target: &target,
+    };
+    match transport::run_tmux_op(&argv(server, &op)) {
+        (true, _) => {}
+        _ => return Err("tmux refused to move the chat to the first window".to_owned()),
+    }
+    let fresh = transport::observe_window_panes(server, session)
+        .ok_or_else(|| "tmux did not answer the pane listing after the chat move".to_owned())?;
+    let first = fresh.iter().map(|pane| pane.window_index).min();
+    let moved = fresh.iter().find(|row| row.pane_id == owner_pane);
+    match (first, moved) {
+        (Some(first), Some(row))
+            if row.window_index == first && row.console.as_deref() == Some(uuid) => {}
+        _ => {
+            return Err("the chat move to the first window could not be proven".to_owned());
+        }
+    }
+    Ok(())
 }
 
 /// The ae a chat's launcher runs: its state root and its global config.
@@ -295,7 +375,7 @@ fn console_command(launcher: Vec<String>, session: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Owner, Plan, TTY_SETUP, console_command, owner, plan};
+    use super::{Owner, Plan, TTY_SETUP, console_command, move_to_first, owner, plan};
     use crate::console::submit::tests::pane;
     use crate::tmux::WindowPane;
 
@@ -386,6 +466,26 @@ mod tests {
             let panes: Vec<WindowPane> = std::iter::once(lead.clone()).chain(consoles).collect();
             assert_eq!(plan(&panes, from, "u", "u"), want, "{from} {panes:?}");
         }
+    }
+
+    #[test]
+    fn only_a_chat_below_the_first_window_moves_and_by_window_id() {
+        let at = |id, window| pane(id, window, Some("u"), false);
+        let owner = at("%3", "@1");
+        let panes = [pane("%1", "@0", None, false), owner.clone()];
+        assert_eq!(
+            move_to_first(&panes, &owner),
+            Some(("@1".to_owned(), "@0".to_owned()))
+        );
+        let first = at("%3", "@0");
+        let panes = [pane("%1", "@1", None, false), first.clone()];
+        assert_eq!(move_to_first(&panes, &first), None);
+        let gapped = [pane("%1", "@2", None, false), at("%3", "@3")];
+        assert_eq!(
+            move_to_first(&gapped, &gapped[1]),
+            Some(("@3".to_owned(), "@2".to_owned()))
+        );
+        assert_eq!(move_to_first(&[], &owner), None);
     }
 
     #[test]

@@ -233,6 +233,11 @@ pub(crate) enum Op<'a> {
     BindConsoleHotkey { key: &'a str, shell: &'a str },
     /// `last-window -t <session>:` — the console toggle's way back.
     LastWindow { session: &'a str },
+    /// `swap-window -s <source> -t <target>` — exchange two windows' indices
+    /// by window id; pane ids, window ids and names stay where they are. The
+    /// console toggle's way of moving a legacy chat to the first index:
+    /// `move-window` refuses an occupied index.
+    SwapWindow { source: &'a str, target: &'a str },
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
@@ -499,6 +504,9 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         Op::LastWindow { session } => {
             args.extend(["last-window", "-t"].map(ToOwned::to_owned));
             args.push(format!("{}:", session_target(session)));
+        }
+        Op::SwapWindow { source, target } => {
+            args.extend(["swap-window", "-s", source, "-t", target].map(ToOwned::to_owned));
         }
         Op::RenameSession { target, name } => {
             args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
@@ -1279,6 +1287,13 @@ mod tests {
         assert_eq!(
             words(&Op::LastWindow { session: "demo" }),
             ["last-window", "-t", "=demo:"]
+        );
+        assert_eq!(
+            words(&Op::SwapWindow {
+                source: "@7",
+                target: "@0"
+            }),
+            ["swap-window", "-s", "@7", "-t", "@0"]
         );
     }
 

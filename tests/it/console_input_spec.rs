@@ -548,9 +548,44 @@ fn a_second_console_is_read_only_and_its_enter_never_opens_a_request() {
     rig.ready(&first, &mut first_output);
     rig.tmux(&["set-option", "-p", "-t", &first, "@ae_console", "foreign"]);
     let second = rig.toggle();
+    // The toggle opens at the first index, above the demoted first console.
+    // The read-only oracle needs the first console to own input, and the
+    // owner is the lowest index, so the setup swaps the first back below.
+    let first_win = rig.tmux(&["display-message", "-p", "-t", &first, "#{window_id}"]);
+    let second_win = rig.tmux(&["display-message", "-p", "-t", &second, "#{window_id}"]);
+    rig.tmux(&[
+        "swap-window",
+        "-s",
+        first_win.trim(),
+        "-t",
+        second_win.trim(),
+    ]);
+    let order = rig.tmux(&[
+        "list-panes",
+        "-s",
+        "-t",
+        &rig.name,
+        "-F",
+        "#{pane_id}|#{window_index}",
+    ]);
+    let index_of = |pane: &str| {
+        order
+            .lines()
+            .find_map(|line| {
+                let (id, index) = line.split_once('|')?;
+                (id == pane).then(|| index.parse::<u32>().ok())?
+            })
+            .unwrap_or_else(|| panic!("window index of {pane}: {order}"))
+    };
+    assert!(
+        index_of(&first) < index_of(&second),
+        "first console owns the lower index: {order}"
+    );
     let mut second_output = Output::attach(&rig, &second, "w2");
     rig.ready(&second, &mut second_output);
     rig.tmux(&["set-option", "-p", "-t", &first, "@ae_console", UUID]);
+    rig.tmux(&["select-window", "-t", &second]);
+    rig.tmux(&["select-pane", "-t", &second]);
     second_output.wait("second console names its input owner", |text| {
         text.contains("read-only") && text.contains("input owned by window")
     });

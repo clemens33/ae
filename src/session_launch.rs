@@ -3760,7 +3760,7 @@ pub(crate) fn stamp_main_pane(
 /// runtime predicate prevents that stale pane from selecting a foreign
 /// session's window. Reattach and migration pass through here too, replacing
 /// the unguarded hook published by an older core.
-fn stamp_client_session_hook(
+pub(crate) fn stamp_client_session_hook(
     server: &ServerId,
     session: &str,
     main_pane: &str,

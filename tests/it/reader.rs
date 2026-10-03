@@ -699,6 +699,9 @@ fn a_console_opens_only_for_the_stamped_id_and_one_that_dies_at_once_keeps_its_p
     };
     let set = |words: &[&str]| assert!(tmux(&socket, &scratch, words).0, "{words:?}");
     set(&["set-option", "-t", "s", "@ae_session_uuid", CONSOLE_ID]);
+    // The toggle restamps the attach hook through the lead pane, so the rig
+    // names its source pane as the session's main; exit and oracle unchanged.
+    set(&["set-option", "-t", "s", "@ae_main_pane", source.as_str()]);
 
     meta("0199c0de-bbbb-4890-abcd-ef0123456789");
     assert_eq!(toggle().status.code(), Some(1), "another meta id refuses");
