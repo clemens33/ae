@@ -142,7 +142,8 @@ impl Rig {
         let root = scratch.path();
         let store = root.join("claude");
         let roster = format!(
-            "session_id=0199c0de-aaaa-4890-abcd-ef0123456789\nlayout=lead-pair\n{}{}",
+            "session_id=0199c0de-aaaa-4890-abcd-ef0123456789\nlayout=lead-pair\ntmux_server_kind=socket\ntmux_server={}\n{}{}",
+            root.join("no-server/tmux.sock").display(),
             super::board::claude_roster(
                 "main",
                 "lead",
@@ -168,6 +169,7 @@ impl Rig {
             include_str!("../fixtures/console/chat-look-events.jsonl"),
         )
         .expect("fixture journal");
+        ae::watchdog_glue::touch_beat(&dir).expect("fresh fixture verdict");
         fs::write(root.join("config"), "").expect("private config");
         let bin = root.join("bin");
         fs::create_dir(&bin).expect("private PATH");
@@ -182,6 +184,7 @@ print $log join(' ', @ARGV), "\n";
 my $format = $ARGV[-1] // '';
 if ($format =~ /t\/f\//) { print $ENV{LOOK_ZONE}, "\n"; }
 elsif ($format =~ /ae_palette|ae_theme|ae_icons/) { print $ENV{LOOK_ANSWER}, "\n"; }
+elsif ((grep { $_ eq 'list-panes' } @ARGV) && $format =~ /pane_current_command/) { print "0 | main |  | claude\n0 | worker.0 |  | claude\n"; }
 else { exit 1; }
 "#,
         )
@@ -305,6 +308,8 @@ else { exit 1; }
             .env("TERM", "xterm-256color")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
             .stdin(if tty { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -893,6 +898,20 @@ fn open_look_composer(tool: &super::deliver::Rig, drawn: bool, body: &str) -> St
     tmux(&["set-option", "-t", name, "@ae_icons", "on"]);
     tmux(&["set-option", "-t", name, "@ae_motion", "off"]);
     tmux(&["set-option", "-t", name, "default-size", "12x60"]);
+    ae::watchdog_glue::touch_beat(&tool.dir).expect("fresh fixture verdict");
+    let colead = tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        name,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep 600",
+    ]);
+    let colead = colead.trim();
+    tmux(&["set-option", "-p", "-t", colead, "@ae_slot", "worker.0"]);
+    tmux(&["set-option", "-p", "-t", colead, "@ae_agent", "colead"]);
     let output = super::cli::ae()
         .env("AE_HOME", root)
         .env("CONFIG_FILE", root.join("config"))
@@ -1035,16 +1054,6 @@ impl Rig {
         if !asking {
             fs::create_dir(root.join("sessions/one/console.draft")).expect("refused kept draft");
         }
-        let meta = root.join("sessions/one/meta");
-        fs::write(
-            &meta,
-            format!(
-                "{}tmux_server_kind=socket\ntmux_server={}\n",
-                fs::read_to_string(&meta).expect("fixture meta"),
-                root.join("no-server/tmux.sock").display()
-            ),
-        )
-        .expect("record fixture server");
         fs::write(self.bin.join("tmux"), r#"#!/usr/bin/perl
 use strict;
 use warnings;

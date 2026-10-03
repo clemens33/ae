@@ -436,6 +436,33 @@ fn needs_fold_missing_roster_and_partial_or_unproven_facts_cannot_clear_silently
     );
 }
 
+#[test]
+fn needs_fold_damaged_roster_retains_prior_rows_and_names_the_read_gap() {
+    let mut rig = FoldRig::new(&[("spawned.0", "scout")], Vec::new());
+    rig.snapshot.meta = Some(Meta::parse("schema=2\nseat.spawned.0=\n"));
+    rig.entry = ae::session::entry_from(&rig.snapshot, "one", &rig.runtime, now(), 1800);
+    assert!(
+        rig.entry.degraded,
+        "existing owner recognises roster damage"
+    );
+    let read = rig.read(Evidence::At(now().epoch()), true);
+    assert!(
+        read.is_err(),
+        "damaged roster cannot prove an empty section"
+    );
+    let mut printed = Printed::default();
+    let standing = Ok(Section {
+        rows: vec![row("scout", "spawned.0", Reason::Blocked, "KEEP-SCOUT")],
+    });
+    assert!(printed.needs(&standing, None, now()).contains("KEEP-SCOUT"));
+    let gap = printed.needs(&read, None, now());
+    assert!(
+        gap.contains("needs you") && gap.contains("roster") && !gap.contains("nothing standing"),
+        "roster damage must keep earlier rows and name uncertainty: {gap}"
+    );
+    assert!(printed.needs(&standing, None, now()).is_empty());
+}
+
 fn row(name: &str, slot: &str, reason: Reason, detail: &str) -> Row {
     Row {
         seat: SeatRef {
@@ -704,6 +731,67 @@ fn needs_view_long_roster_reports_omissions_and_tiny_pane_keeps_count() {
     assert!(
         tiny.contains("20") && tiny.contains("ae list"),
         "tiny header carries count + next step: {tiny}"
+    );
+}
+
+#[test]
+fn needs_view_small_budget_names_uncertainty_before_known_rows() {
+    let mut rows = vec![row("lead", "main", Reason::Dead, "")];
+    for index in 0..3 {
+        let mut unknown = row(
+            &format!("w{index}"),
+            &format!("spawned.{index}"),
+            Reason::Blocked,
+            "",
+        );
+        unknown.verdict = Verdict::Unknown(Cause::WatchdogOff);
+        unknown.source = Source::Unverified;
+        rows.push(unknown);
+    }
+    let text = Printed::default().needs(
+        &Ok(Section { rows }),
+        Some(Size {
+            width: 120,
+            height: 6,
+        }),
+        now(),
+    );
+    assert!(text.lines().count() <= 2, "physical budget: {text}");
+    assert!(
+        text.contains("unverified") && text.contains("watchdog off"),
+        "N3 uncertainty cause survives a bounded section: {text}"
+    );
+    assert!(
+        text.contains("4 seats") && text.contains("1 more"),
+        "{text}"
+    );
+}
+
+#[test]
+fn needs_view_one_body_line_keeps_seat_and_drops_its_detail() {
+    let text = Printed::default().needs(
+        &Ok(Section {
+            rows: vec![row(
+                "scout",
+                "spawned.0",
+                Reason::Dead,
+                "DETAIL-DOES-NOT-FIT",
+            )],
+        }),
+        Some(Size {
+            width: 120,
+            height: 6,
+        }),
+        now(),
+    );
+    assert!(text.lines().count() <= 2, "physical budget: {text}");
+    assert!(
+        text.contains("scout") && text.contains("dead") && text.contains("/open scout"),
+        "one free body line must show the seat: {text}"
+    );
+    assert!(
+        !text.contains("DETAIL-DOES-NOT-FIT"),
+        "detail yielded space: {text}"
     );
 }
 
@@ -1510,7 +1598,7 @@ fn open_execution_rechecks_replaced_seat_uuid_membership_and_dead_pane() {
         chat,
         "foreign membership fails execution guard"
     );
-    rig.tmux(&["move-window", "-s", &rig.scout, "-t", "one:"]);
+    rig.tmux(&["move-window", "-d", "-s", &rig.scout, "-t", "one:"]);
     rig.tmux(&[
         "set-window-option",
         "-t",
