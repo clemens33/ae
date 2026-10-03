@@ -127,6 +127,57 @@ fn records(rig: &Rig) -> Vec<Event> {
         .collect()
 }
 
+/// A valid watchdog record, before any daemon runs. This fixes the ordering
+/// of competing episodes without racing real processes to the same second.
+fn seed(rig: &Rig, ts: Timestamp, action: &str, reference: Option<Timestamp>) {
+    let reference = reference
+        .map(|key| format!(r#","ref":"{key}""#))
+        .unwrap_or_default();
+    let summary = if action == "auto-reseat-headroom" {
+        r#","summary":"headroom 95% weekly_all 7d""#
+    } else {
+        ""
+    };
+    let line = format!(
+        "{}{{\"ts\":\"{ts}\",\"actor\":\"watchdog\",\"action\":\"{action}\",\"target\":\"scout\",\"target_slot\":\"spawned.0\",\"target_session\":\"{}\"{reference}{summary}}}\n",
+        rig.events(),
+        rig.session,
+    );
+    std::fs::write(rig.dir.join("events.jsonl"), line).expect("ordered fixture journal");
+}
+
+fn core(rig: &Rig) -> super::cli::Runner {
+    let mut command = super::cli::ae();
+    command
+        .env("HOME", rig.scratch.join("home"))
+        .env("AE_HOME", &rig.scratch)
+        .env("CONFIG_FILE", rig.scratch.join("config"))
+        .env("TMUX", format!("{},0,0", rig.sock.display()))
+        .env("TMUX_PANE", &rig.main_pane)
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .env_remove("AE_SENDER_OVERRIDE");
+    command
+}
+
+fn leg(rig: &Rig, key: Timestamp) -> std::process::Output {
+    core(rig)
+        .arg("_auto-reseat")
+        .arg(&rig.dir)
+        .args(["spawned.0", &key.to_string()])
+        .output()
+        .expect("real detached-leg entry")
+}
+
+fn trigger(rig: &Rig) -> std::process::Output {
+    core(rig)
+        .args([&format!("@{}", rig.session), "send", "scout", "auto reseat"])
+        .env("AE_SENDER_OVERRIDE", "watchdog")
+        .env("_AE_EVENT_ACTION", ATTEMPT_ACTION)
+        .output()
+        .expect("real watchdog-trigger entry")
+}
+
 fn booked(rig: &Rig, action: &str) -> Vec<Event> {
     records(rig)
         .into_iter()
@@ -389,6 +440,135 @@ fn a_vendor_limit_during_a_headroom_hold_moves_once_across_both_episode_kinds() 
     assert_eq!(booked(&rig, DONE_ACTION).len(), 1, "one shared terminal");
     assert!(booked(&rig, REFUSED_ACTION).is_empty());
     assert!(booked(&rig, ae::autoreseat::FAILED_ACTION).is_empty());
+}
+
+#[test]
+fn reseat_shared_leg_backs_off_without_waiting_or_writing_while_the_seat_is_locked() {
+    for (tag, opener) in [
+        ("hrleglocklimit", "limit"),
+        ("hrleglockroom", "auto-reseat-headroom"),
+    ] {
+        let rig = Rig::new(tag);
+        configure(&rig, "", "fake-claude", "fake-opencode");
+        quota(&rig, "home", &[("weekly_all", 95.0)], 0);
+        let pane = seat(&rig, "claude");
+        let pid = rig.tool_pid(&pane, "claude");
+        let key = Timestamp::from_epoch(Timestamp::now().epoch() - 10);
+        seed(&rig, key, opener, None);
+        seed(
+            &rig,
+            Timestamp::from_epoch(key.epoch() + 1),
+            ATTEMPT_ACTION,
+            Some(key),
+        );
+        let held = ae::store::lock(&rig.dir.join("auto-reseat.spawned.0.lock"), Duration::ZERO)
+            .expect("fixture owns the seat lock");
+        let before = rig.events();
+        let started = Instant::now();
+        let out = leg(&rig, key);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert_eq!(rig.events(), before, "a contended leg writes no outcome");
+        assert!(started.elapsed() < Duration::from_secs(2), "no lock wait");
+        assert_eq!(rig.tool_pid(&pane, "claude"), pid);
+        drop(held);
+        let out = leg(&rig, key);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert_eq!(booked(&rig, DONE_ACTION).len(), 1);
+        assert_eq!(booked(&rig, ATTEMPT_ACTION).len(), 1);
+        assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    }
+}
+
+#[test]
+fn reseat_shared_open_attempt_blocks_the_other_trigger_kind() {
+    for (tag, active, other, drawn) in [
+        ("hrflylimit", "auto-reseat-headroom", "limit", true),
+        ("hrflyroom", "limit", "auto-reseat-headroom", false),
+    ] {
+        let rig = Rig::new(tag);
+        configure(&rig, "", "fake-claude", "fake-opencode");
+        quota(&rig, "home", &[("weekly_all", 95.0)], 0);
+        let pane = seat(&rig, "claude");
+        let pid = rig.tool_pid(&pane, "claude");
+        if drawn {
+            rig.mark_limited(&pane);
+        }
+        let key = Timestamp::from_epoch(Timestamp::now().epoch() - 10);
+        seed(&rig, key, active, None);
+        seed(
+            &rig,
+            Timestamp::from_epoch(key.epoch() + 1),
+            ATTEMPT_ACTION,
+            Some(key),
+        );
+        seed(&rig, Timestamp::from_epoch(key.epoch() + 2), other, None);
+        let before = rig.events();
+        let out = trigger(&rig);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert_eq!(rig.events(), before, "one open attempt per seat");
+        assert_eq!(rig.tool_pid(&pane, "claude"), pid);
+        assert_eq!(booked(&rig, ATTEMPT_ACTION).len(), 1);
+    }
+}
+
+#[test]
+fn reseat_shared_equal_keys_resolve_the_kind_with_an_open_attempt() {
+    for (tag, active, other, headroom) in [
+        ("hrtieroom", "auto-reseat-headroom", "limit", true),
+        ("hrtielimit", "limit", "auto-reseat-headroom", false),
+    ] {
+        let rig = Rig::new(tag);
+        configure(&rig, "", "fake-claude", "fake-opencode");
+        quota(&rig, "home", &[("weekly_all", 95.0)], 0);
+        seat(&rig, "claude");
+        let key = Timestamp::from_epoch(Timestamp::now().epoch() - 10);
+        seed(&rig, key, active, None);
+        seed(&rig, key, ATTEMPT_ACTION, Some(key));
+        seed(&rig, key, other, None);
+        let out = leg(&rig, key);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let done = booked(&rig, DONE_ACTION);
+        assert_eq!(done.len(), 1);
+        assert_eq!(booked(&rig, ATTEMPT_ACTION).len(), 1);
+        assert_eq!(booked(&rig, REFUSED_ACTION).len(), 0);
+        assert_eq!(
+            done[0]
+                .summary
+                .as_deref()
+                .unwrap_or_default()
+                .contains("headroom"),
+            headroom,
+            "terminal names the winning trigger"
+        );
+        assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    }
+}
+
+#[test]
+fn reseat_shared_refused_limit_also_closes_the_open_headroom_episode() {
+    let rig = Rig::new("hrrefuseboth");
+    configure(&rig, "", "fake-claude", "fake-claude-b");
+    quota(&rig, "home", &[("weekly_all", 95.0)], 0);
+    // At 100% this candidate is exhausted for the LIMIT chooser too.
+    quota(&rig, "home-b", &[("weekly_all", 100.0)], 0);
+    let pane = seat(&rig, "claude");
+    let pid = rig.tool_pid(&pane, "claude");
+    rig.mark_limited(&pane);
+    let key = Timestamp::from_epoch(Timestamp::now().epoch() - 10);
+    seed(&rig, key, "auto-reseat-headroom", None);
+    seed(&rig, Timestamp::from_epoch(key.epoch() + 2), "limit", None);
+    let out = trigger(&rig);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(booked(&rig, REFUSED_ACTION).len(), 1);
+    assert!(booked(&rig, ATTEMPT_ACTION).is_empty());
+    rig.unmark_limited(&pane);
+    let _watch = watch(&rig);
+    sweeps(&rig);
+    sweeps(&rig);
+    assert_eq!(booked(&rig, REFUSED_ACTION).len(), 1, "one shared terminal");
+    assert_eq!(booked(&rig, "auto-reseat-headroom").len(), 1);
+    assert!(booked(&rig, ATTEMPT_ACTION).is_empty());
+    assert_eq!(rig.tool_pid(&pane, "claude"), pid);
 }
 
 #[test]
