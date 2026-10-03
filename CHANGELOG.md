@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.21] - 2026-10-03
+- Bump rustls =0.23.35 to =0.23.45, clear RUSTSEC-2026-0285
+- Scaffold the needs-you section and open-target seams
+- Pin all-roster needs and safe open acceptance
+- Pin attention gaps and preserve chat fixture invariants
+- Preserve lane goldens around attention snapshots
+- List every seat that needs you, with its source and age
+- Open a seat's pane with /open
+- Describe the needs-you section and /open
+- Settle /open seats, refuse an empty uuid, size a read-only draft
+- Say how the needs-you section fits and what /open re-checks
+- Pin settled navigation identity and empty session refusals
+- Pin the first read-only open draft to the pane size
+- Pin layout labels and named open refusals
+- Name the /open usage and cross-session refusals
+- Normalize footer clock in reply comparison
+- Count the critical section's tmux calls as births, not frees
+- Wait for the fake TUI's first Enter before judging its receipt
+
 ## [v2026.10.20] - 2026-10-03
 - Print the request id an ask or review opens on stdout
 - Spell the ask id capture with a runnable helper form
