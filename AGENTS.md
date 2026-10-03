@@ -337,6 +337,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `AE_TEST_RENAME_CRASH_AT` | when set to exactly one of `after-intent`, `after-work-move`, `after-state-move`, `after-meta`, `after-assets`, `after-result`, a stopped rename attests `rename-crash-boundary: <value>` on stderr past the named facts, then parks at most 60s and exits `1` with `rename-crash-timeout: <value>`; test seam, unset in production | CHECKOUT only |
 | `TMPDIR` | where a captured child's scratch file lands: the opencode export capture (`transport::run_opencode`, whose child abandons a pipe at exit), the agy quota leg's stdout (`transport::run_agy_quota`), and upgrade's older scratch directory (`upgrade::Scratch`) | both |
 | `TMUX` / `TMUX_PANE` | which pane this shell is, for `stop` and `watchdog` | both |
+| the controlling terminal (stdin) | `ae app`'s raw mode, the mode restored on exit and on panic, and the window size — rustix `termios`, confined by `clippy.toml` | both |
 
 `doors::boot_time` is the one door with two spellings and no variable of its own: Linux's
 `/proc/stat` `btime` when that file exists, otherwise `transport::run_sysctl` — a fixed-program

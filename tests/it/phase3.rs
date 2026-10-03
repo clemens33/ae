@@ -1713,6 +1713,10 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     assert_eq!(
         product,
         vec![
+            // THE terminal door of `ae app`: rustix termios takes raw mode,
+            // restores the saved mode and reads the window size, on the
+            // terminal the app was started in and nowhere else.
+            "src/app/tty.rs".to_owned(),
             // The read-only archive-preview tracer's own reads: the `-f`-gated
             // meta/memo reads, the messages/*.txt selection glob, and the
             // fingerprint/size stats.

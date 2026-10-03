@@ -117,7 +117,8 @@ disallowed-methods = [
   # THE TERMINAL DOOR (`ae app`, 2026-10-03, lead ruling D2 on the sideapp
   # plan). rustix's termios module is how the app takes raw mode, puts the mode
   # back and reads the window size without libc or `unsafe`, and every entry
-  # point it exports is listed, not only the three the app calls, so a second
+  # point it exports under these features is listed (`ttyname` needs `procfs`,
+  # which is off), not only the three the app calls, so a second
   # caller of ANY of them is a review rather than a diff. The one allowed site is
   # `src/app/tty.rs`, carrying its reason at the allow, and it is inventoried in
   # tests/it/phase3.rs like every door above. rustix is a THIRD-PARTY reader:
@@ -137,7 +138,6 @@ disallowed-methods = [
   "rustix::termios::tcflush",
   "rustix::termios::tcflow",
   "rustix::termios::isatty",
-  "rustix::termios::ttyname",
   "rustix::termios::ioctl_tiocexcl",
   "rustix::termios::ioctl_tiocnxcl",
 ]

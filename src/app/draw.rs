@@ -124,8 +124,10 @@ struct Ctx<'s, 'a> {
     icons: bool,
 }
 
-/// Draw `screen` into `buf`, over `buf.area`.
-pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) {
+/// Draw `screen` into `buf`, whose area starts at the origin — the app hands
+/// it the terminal's whole frame. The answer is how many pages back the chat
+/// can scroll in this frame, which bounds the model's scroll.
+pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
     let area = buf.area;
     let ctx = Ctx {
         screen,
@@ -139,7 +141,7 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) {
             MIN.0, MIN.1, area.width, area.height
         );
         put(buf, area.x, area.y, &line, area.width, dim);
-        return;
+        return 0;
     }
     buf.set_style(area, ctx.paint.ground(|p| p.base));
     let (height, width) = (area.height, area.width);
@@ -160,8 +162,9 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) {
     };
     let ground = Rect::new(chat.start, 1, chat.end - chat.start, height - 2);
     buf.set_style(ground, ctx.paint.ground(|p| p.ink));
-    chat_column(&ctx, buf, chat.start + 2..width - 2, chat.start > 0);
+    let pages = chat_column(&ctx, buf, chat.start + 2..width - 2, chat.start > 0);
     keys_row(&ctx, buf);
+    pages
 }
 
 /// The sidebar's width, which is where its rule stands, or `None` when the
@@ -571,7 +574,7 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry) -> Vec<Cells> {
 
 /// The chat column over `columns`: the header, the turns anchored to the
 /// bottom, the composer. `beside` says a sidebar stands to its left.
-fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, beside: bool) {
+fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, beside: bool) -> usize {
     let screen = ctx.screen;
     let paint = ctx.paint;
     let height = buf.area.height;
@@ -618,6 +621,9 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, beside:
     let (address, hint) = composer_lines(ctx);
     put_line(buf, left, height - 4, &address, room);
     put(buf, left, height - 3, &hint, room, dim);
+    rows.len()
+        .saturating_sub(room_rows)
+        .div_ceil(room_rows.max(1))
 }
 
 /// The chat header: the session, its pair or where it is viewed from, and
@@ -763,13 +769,22 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer) {
 // cells
 // ---------------------------------------------------------------------------
 
-/// `text` and its age when both fit `room`; else the text alone, clipped.
+/// `text · <age>` in `room` cells: a clipped text keeps its age.
 fn aged(text: &str, since: Option<i64>, room: u16) -> String {
-    let full = format!("{text} · {}", age(since));
-    if full.chars().count() <= usize::from(room) {
-        full
-    } else {
-        clip_head(text, usize::from(room))
+    let room = usize::from(room);
+    let tail = format!(" · {}", age(since));
+    let (text_cells, tail_cells) = (text.chars().count(), tail.chars().count());
+    if text_cells + tail_cells <= room {
+        return format!("{text}{tail}");
+    }
+    // A whole text beats its age; a text clipped anyway keeps its age (F7),
+    // while one character and its ellipsis still fit beside it.
+    if text_cells <= room {
+        return text.to_owned();
+    }
+    match room.checked_sub(tail_cells) {
+        Some(left) if left >= 2 => format!("{}{tail}", clip_head(text, left)),
+        _ => clip_head(text, room),
     }
 }
 
@@ -799,4 +814,137 @@ fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line<'_>, max: u16) -> u16 
         return x;
     }
     buf.set_line(x, y, line, max).0
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+
+    use super::{Composer, Screen, aged, draw};
+    use crate::app::fleet::{Counts, Fleet, Line2, Row};
+    use crate::app::model::Model;
+    use crate::app::overview::{Open, Overview};
+    use crate::brief::TopicLine;
+    use crate::console::lane::{Item, Kind, Lane};
+    use crate::digest::{SessionEntry, Status};
+    use crate::theme::{Look, Mark};
+    use crate::time::Timestamp;
+
+    fn row(name: &str, index: usize, needy: bool) -> Row {
+        Row {
+            name: name.to_owned(),
+            index,
+            mark: if needy { Mark::NeedsYou } else { Mark::Working },
+            needy,
+            counts: Counts::Marks(vec![(Mark::Working, false, 3), (Mark::Done, true, 12)]),
+            line2: Line2::Question {
+                text: "a question long enough to be clipped at every width it meets".to_owned(),
+                age_secs: Some(240),
+            },
+            home: index == 1,
+        }
+    }
+
+    /// Every write is bounds-checked, so no size panics: a populated screen
+    /// is drawn across both fallbacks and every threshold, with
+    /// fleets of one and of many and the chat scrolled past its top.
+    #[test]
+    fn no_size_panics() {
+        let topic = TopicLine {
+            topic: "parking".to_owned(),
+            age_secs: Some(60),
+            author: "lead".to_owned(),
+            text: "resume here: a topic text long enough to clip".to_owned(),
+        };
+        let overview = Overview {
+            goal: Some((
+                "a goal long enough to clip in the narrow sidebar".to_owned(),
+                Some(9),
+            )),
+            open: vec![Open {
+                seat: "colead".to_owned(),
+                text: "an open question long enough to clip".to_owned(),
+                age_secs: Some(5),
+            }],
+            decided: Some(topic.clone()),
+            topics: vec![topic; 4],
+            memo_gap: None,
+        };
+        let item = Item {
+            micros: 1_759_500_000_000_000,
+            kind: Kind::Said {
+                who: "lead".to_owned(),
+            },
+            body: "a turn long enough to wrap over several rows of the chat column ".repeat(6),
+            record: None,
+        };
+        let lane = Lane {
+            items: vec![item; 9],
+            coverage: vec!["colead — transcript unreadable".to_owned()],
+        };
+        let entry = SessionEntry::new("s1", Status::Running);
+        let pair = ["lead".to_owned(), "colead".to_owned()];
+        let look = Look::read("on", "darcula", "on", "on");
+        for count in [1, 12] {
+            let fleet = Fleet {
+                rows: (1..=count)
+                    .map(|at| row(&format!("s{at}"), at, at % 3 == 0))
+                    .collect(),
+                home: Some("s1".to_owned()),
+            };
+            let mut model = Model::new(&fleet);
+            for _ in 0..40 {
+                let _ = model.key(crate::app::model::Key::PageUp, &fleet, false, true);
+            }
+            let screen = Screen {
+                fleet: &fleet,
+                model: &model,
+                overview: &overview,
+                selected: Some(&entry),
+                pair: &pair,
+                agents: None,
+                lane: &lane,
+                composer: Composer::ReadOnly {
+                    why: "owned elsewhere",
+                },
+                look: Some(look),
+                zone: None,
+                now: Timestamp::from_epoch(1_759_500_600),
+            };
+            // Every width at the heights around each threshold, and every
+            // height at the widths around each one.
+            let heights = [
+                0, 1, 2, 5, 6, 7, 8, 9, 12, 19, 20, 21, 25, 30, 39, 40, 41, 45, 50,
+            ];
+            let widths = [0, 1, 39, 40, 41, 89, 90, 91, 139, 140, 141, 170];
+            let sizes = (0..=170)
+                .flat_map(|width| heights.map(|height| (width, height)))
+                .chain(
+                    widths
+                        .into_iter()
+                        .flat_map(|width| (0..=50).map(move |height| (width, height))),
+                );
+            for (width, height) in sizes {
+                let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+                draw(&screen, &mut buf);
+            }
+        }
+    }
+
+    /// F7: a text that must be clipped keeps its age, the ellipsis on the
+    /// text; a text that fits whole without its age stays whole (the frozen
+    /// 100x28 topic line); a room the age cannot share clips the text alone.
+    #[test]
+    fn a_tight_line_keeps_its_age_and_clips_the_text() {
+        let text = "resume at scope checks";
+        assert_eq!(aged(text, Some(120), 27), "resume at scope checks · 2m");
+        assert_eq!(aged(text, Some(120), 26), "resume at scope checks");
+        assert_eq!(aged(text, Some(120), 22), "resume at scope checks");
+        assert_eq!(aged(text, Some(120), 21), "resume at scope… · 2m");
+        assert_eq!(aged(text, Some(120), 20), "resume at scop… · 2m");
+        assert_eq!(aged(text, Some(7_200), 8), "re… · 2h");
+        assert_eq!(aged(text, Some(120), 6), "resum…");
+        assert_eq!(aged(text, None, 10), "resum… · -");
+    }
 }

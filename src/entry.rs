@@ -258,6 +258,9 @@ Usage:
                          The human lane of one session: lead-pair pane turns, chat-bridge
                          asks and replies, say lines, and live decision cards. Read only;
                          --follow keeps printing what is new every 5 s, --all adds replies
+  ae app [session]       The fleet in a sidebar beside one session's overview, agents and
+                         chat, drawn in this terminal; typing reaches only the home
+                         session's lead pair
   ae quota               Show local cached quota windows for configured agent profiles
   ae usage [name…] [--json]
                          Show API-equivalent list-price usage for live sessions
@@ -374,6 +377,7 @@ pub const EXIT_FAILED: u8 = 1;
 /// The flag spellings (`-h`, `--help`, `--version`, `-V`) are deliberately
 /// absent: the name grammar refuses a leading `-` already.
 pub const ROUTED_VERBS: &[&str] = &[
+    "app",
     "archive",
     "board",
     "brief",
@@ -606,6 +610,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         // Keep the deprecated console alias routed so it cannot launch a
         // session named after the old command.
         Some("chat" | "console") => Route::Core(with_head("chat", &tail())),
+        Some("app") => Route::Core(with_head("app", &tail())),
         Some("quota") => Route::Core(with_head("quota", &tail())),
         Some("usage") => Route::Core(with_head("usage", &tail())),
         Some("reboot") => Route::Core(with_head(crate::cli::COMPACT, &tail())),

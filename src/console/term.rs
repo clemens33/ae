@@ -65,6 +65,20 @@ fn reader(mut stdin: std::fs::File, reads: &SyncSender<(Instant, Vec<u8>)>) {
     }
 }
 
+/// Stdin's raw reads, stamped, from a reader thread; `None` when stdin is
+/// not a terminal ae can hold.
+pub(crate) fn stdin_reads() -> Option<Receiver<(Instant, Vec<u8>)>> {
+    let stdin = std::io::stdin();
+    let owned = stdin
+        .is_terminal()
+        .then(|| stdin.as_fd().try_clone_to_owned())?
+        .ok()?;
+    let (send, reads) = sync_channel(8);
+    let file = std::fs::File::from(owned);
+    std::thread::spawn(move || reader(file, &send));
+    Some(reads)
+}
+
 /// The lead pair a console asks, main seat first: exactly one seat in slot
 /// `main`, and every name one an agent name may be — refused by name, never
 /// dropped. The meta keeps a name verbatim, and an ask would read `%3` as a
@@ -107,16 +121,9 @@ impl Term {
     pub(super) fn start(console: &Console) -> Result<Self, String> {
         let off = |why: &str| format!("input off: {why}; this chat only reads\n");
         let pair = console.seats().and_then(pair_of).map_err(|why| off(&why))?;
-        let stdin = std::io::stdin();
-        let owned = stdin
-            .is_terminal()
-            .then(|| stdin.as_fd().try_clone_to_owned());
-        let Some(Ok(owned)) = owned else {
+        let Some(reads) = stdin_reads() else {
             return Err(off("stdin is not a terminal"));
         };
-        let (send, reads) = sync_channel(8);
-        let file = std::fs::File::from(owned);
-        std::thread::spawn(move || reader(file, &send));
         let declared = doors::declared_server(crate::shape::current());
         Ok(Self {
             input: Input::new(pair.iter().map(|seat| seat.name.clone()).collect()),

@@ -696,6 +696,11 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `app [session]` — the terminal UI; [`crate::app::run`] owns its argv.
+    App {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `chat [session] [--follow] [--all]` (`console` is a deprecated alias) — validated by
     /// [`crate::console::parse`], which owns the flag grammar and its usage text.
     Console {
@@ -856,6 +861,9 @@ impl Request {
                 tail: args[1..].to_vec(),
             },
             Some("chat" | "console") => Self::Console {
+                tail: args[1..].to_vec(),
+            },
+            Some("app") => Self::App {
                 tail: args[1..].to_vec(),
             },
             Some(QUOTA) => match &args[1..] {
@@ -1428,6 +1436,7 @@ impl Request {
             | Self::Brief { .. }
             | Self::Board { .. }
             | Self::Console { .. }
+            | Self::App { .. }
             | Self::Quota { .. }
             | Self::Usage { .. }
             | Self::LaunchCandidate(_)

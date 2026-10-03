@@ -21,7 +21,7 @@ pub mod lane;
 pub mod needs;
 pub mod open;
 pub mod submit;
-mod term;
+pub(crate) mod term;
 pub(crate) mod toggle;
 pub mod view;
 pub(crate) mod wrap;
@@ -75,7 +75,7 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
 }
 
 /// One console: the session it is bound to and what it has printed of it.
-struct Console {
+pub(crate) struct Console {
     name: String,
     dir: PathBuf,
     uuid: String,
@@ -90,10 +90,42 @@ struct Console {
     roster: Option<Vec<needs::SeatRef>>,
 }
 
+/// One read of a console's session: the lane, the "needs you" section and
+/// what the print needs to know about how settled the read was.
+pub(crate) struct Read {
+    pub(crate) lane: lane::Lane,
+    pub(crate) needs: Result<needs::Section, String>,
+    board_gaps: usize,
+    settled: bool,
+    /// The journal was rewritten: the last read's length and this one's.
+    rebased: Option<(usize, usize)>,
+}
+
 impl Console {
+    /// A console on session `name` recorded at `dir`, nothing read yet.
+    pub(crate) fn open(name: String, dir: PathBuf) -> Self {
+        Self {
+            uuid: recorded_uuid(&dir),
+            name,
+            dir,
+            replies: Replies::ToHuman,
+            home: doors::home(),
+            printed: view::Printed::default(),
+            rows: Vec::new(),
+            follow: None,
+            journal: None,
+            roster: None,
+        }
+    }
+
+    /// The session this console follows.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// The session's identity and lead-pair seats, read from its meta NOW:
     /// `Err` says why this console no longer follows the session it opened.
-    fn seats(&self) -> Result<Vec<Seat>, String> {
+    pub(crate) fn seats(&self) -> Result<Vec<Seat>, String> {
         let bytes =
             meta::read_bytes(&self.dir).map_err(|err| format!("meta unreadable ({err})"))?;
         let uuid = archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id"));
@@ -117,11 +149,26 @@ impl Console {
             .collect())
     }
 
-    /// One pass: the first reads everything, each later one asks the board's
-    /// follow for the new transcript bytes and re-reads the whole journal, so a
-    /// replaced or shrunk journal can never hide a record. The text is what
-    /// this console has not printed yet.
+    /// One pass: [`Console::read`], then the text this console has not
+    /// printed yet.
     fn pass(&mut self) -> Result<String, String> {
+        let read = self.read()?;
+        let mut text = read
+            .rebased
+            .map(|(last, now)| self.printed.rebase(last, now))
+            .unwrap_or_default();
+        let size = pane_size(&self.printed);
+        self.printed.set_width(size.map(|size| size.width));
+        text.push_str(&self.printed.step(&read.lane, read.board_gaps, read.settled));
+        let now = crate::time::Timestamp::now();
+        text.push_str(&self.printed.needs(&read.needs, size, now));
+        Ok(text)
+    }
+
+    /// One read: the first reads everything, each later one asks the board's
+    /// follow for the new transcript bytes and re-reads the whole journal, so a
+    /// replaced or shrunk journal can never hide a record.
+    pub(crate) fn read(&mut self) -> Result<Read, String> {
         let seats = self.seats()?;
         let slots: Vec<&str> = seats.iter().map(|seat| seat.slot.as_str()).collect();
         let keep = |entry: &meta::RosterEntry| slots.contains(&entry.slot.as_str());
@@ -175,28 +222,24 @@ impl Console {
         };
         // A journal no longer beginning with the last read was rewritten (resume
         // trims its head): positions name other records, so the thread reprints.
-        let mut text = String::new();
-        if let (None, Some(last)) = (&read_gap, &self.journal)
-            && !events.starts_with(last)
-        {
-            text = self.printed.rebase(last.len(), events.len());
-        }
+        let rebased = match (&read_gap, &self.journal) {
+            (None, Some(last)) if !events.starts_with(last) => Some((last.len(), events.len())),
+            _ => None,
+        };
         let body = |event: &Event| body_for(&self.dir, event);
-        let size = pane_size(&self.printed);
-        self.printed.set_width(size.map(|size| size.width));
         let mut lane = lane::fold(&self.name, &seats, &events, &observation, skipped, &body);
         let settled = read_gap.is_none();
         lane.coverage.extend(read_gap);
-        text.push_str(&self.printed.step(&lane, board_gaps, settled));
-        text.push_str(
-            &self
-                .printed
-                .needs(&needs, size, crate::time::Timestamp::now()),
-        );
         if settled {
             self.journal = Some(events);
         }
-        Ok(text)
+        Ok(Read {
+            lane,
+            needs,
+            board_gaps,
+            settled,
+            rebased,
+        })
     }
 
     /// The "needs you" section: EVERY roster seat's verdict, as `ae list` reads
@@ -207,37 +250,57 @@ impl Console {
         snapshot: &session::RecordSnapshot,
         seats: &[Seat],
     ) -> Result<needs::Section, String> {
-        let meta = snapshot.meta.as_ref();
-        let server = meta
-            .and_then(|meta| meta.server_selector().entitles().cloned())
-            .map(inventory::ServerId::Selected);
-        let agents = server
-            .as_ref()
-            .zip(meta)
-            .and_then(|(server, meta)| crate::observed_agents(server, &self.name, meta));
-        let runtime_read = agents.is_some();
-        let mut runtime = session::SessionRuntime::new(if runtime_read {
-            crate::digest::Status::Running
-        } else {
-            crate::digest::Status::Unknown
-        });
-        runtime.agents = agents.unwrap_or_default();
-        let now = crate::time::Timestamp::now();
-        let unanswered = session::DEFAULT_UNANSWERED_SECS;
-        let entry = session::entry_from(snapshot, &self.name, &runtime, now, unanswered);
-        needs::fold(&needs::Inputs {
-            session: &self.name,
-            snapshot,
-            entry: &entry,
-            runtime: &runtime,
-            runtime_read,
-            beat: crate::watchdog_glue::beat_modified(&self.dir),
-            // The seats are the lead pair, so `worker.0` is among them exactly
-            // when the layout is `lead-pair`.
-            lead_pair: seats.iter().any(|seat| seat.slot == "worker.0"),
-            now,
-        })
+        // The seats are the lead pair, so `worker.0` is among them exactly
+        // when the layout is `lead-pair`.
+        let lead_pair = seats.iter().any(|seat| seat.slot == "worker.0");
+        needs_in(&self.name, &self.dir, snapshot, lead_pair)
     }
+}
+
+/// The "needs you" section of session `name` at `dir`, from the records
+/// `snapshot` holds: [`Console::needs`]'s fold, for a caller with no console.
+pub(crate) fn needs_in(
+    name: &str,
+    dir: &Path,
+    snapshot: &session::RecordSnapshot,
+    lead_pair: bool,
+) -> Result<needs::Section, String> {
+    let meta = snapshot.meta.as_ref();
+    let server = meta
+        .and_then(|meta| meta.server_selector().entitles().cloned())
+        .map(inventory::ServerId::Selected);
+    let agents = server
+        .as_ref()
+        .zip(meta)
+        .and_then(|(server, meta)| crate::observed_agents(server, name, meta));
+    let runtime_read = agents.is_some();
+    let mut runtime = session::SessionRuntime::new(if runtime_read {
+        crate::digest::Status::Running
+    } else {
+        crate::digest::Status::Unknown
+    });
+    runtime.agents = agents.unwrap_or_default();
+    let now = crate::time::Timestamp::now();
+    let unanswered = session::DEFAULT_UNANSWERED_SECS;
+    let entry = session::entry_from(snapshot, name, &runtime, now, unanswered);
+    needs::fold(&needs::Inputs {
+        session: name,
+        snapshot,
+        entry: &entry,
+        runtime: &runtime,
+        runtime_read,
+        beat: crate::watchdog_glue::beat_modified(dir),
+        lead_pair,
+        now,
+    })
+}
+
+/// The "needs you" section of session `name` at `dir`, read now: the meta
+/// says whether it runs a lead pair, the records say the rest.
+pub(crate) fn needs_of(name: &str, dir: &Path) -> Result<needs::Section, String> {
+    let bytes = meta::read_bytes(dir).map_err(|err| format!("meta unreadable ({err})"))?;
+    let lead_pair = lifecycle::meta_value(&bytes, "layout") == "lead-pair";
+    needs_in(name, dir, &session::RecordSnapshot::read(dir), lead_pair)
 }
 
 /// A console reply's stored body, read only from THIS session's `messages/`:
@@ -347,6 +410,14 @@ pub(crate) fn recorded_uuid(dir: &Path) -> String {
 fn dress(name: &str, seats: &[Seat]) -> view::Style {
     use std::io::IsTerminal as _;
     let tty = std::io::stdout().is_terminal();
+    let (look, zone) = look_of(name, tty);
+    view::Style::resolve(tty, look, zone.as_deref(), lead_name(seats))
+}
+
+/// Session `name`'s drawn look and the viewer's zone, asked of tmux only for
+/// a terminal (`tty`) and the zone only for a look that is drawn: the ONE
+/// reading the chat and `ae app` both dress by.
+pub(crate) fn look_of(name: &str, tty: bool) -> (Option<theme::Look>, Option<String>) {
     let declared = doors::declared_server(crate::shape::current());
     let server = doors::launch_target(declared.as_ref()).filter(|_| tty);
     let look = server
@@ -360,7 +431,7 @@ fn dress(name: &str, seats: &[Seat]) -> view::Style {
             .and_then(|server| transport::observe_zone(server, name))
     };
     let zone = view::Style::wanted(tty, look).then(zone).flatten();
-    view::Style::resolve(tty, look, zone.as_deref(), lead_name(seats))
+    (look, zone)
 }
 
 /// The name of the seat in the `main` slot, whose rows wear the lead hue; empty
@@ -404,22 +475,10 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         )?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
-    let mut console = Console {
-        uuid: recorded_uuid(&dir),
-        name,
-        dir,
-        replies: if args.all {
-            Replies::All
-        } else {
-            Replies::ToHuman
-        },
-        home: doors::home(),
-        printed: view::Printed::default(),
-        rows: Vec::new(),
-        follow: None,
-        journal: None,
-        roster: None,
-    };
+    let mut console = Console::open(name, dir);
+    if args.all {
+        console.replies = Replies::All;
+    }
     match console.seats() {
         Ok(seats) => {
             console.printed = view::Printed::styled(dress(&console.name, &seats));
