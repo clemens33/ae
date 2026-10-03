@@ -18,6 +18,8 @@ use lane::Seat;
 
 pub mod input;
 pub mod lane;
+pub mod needs;
+pub mod open;
 pub mod submit;
 mod term;
 pub(crate) mod toggle;

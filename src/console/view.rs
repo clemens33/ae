@@ -10,11 +10,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use super::input::Effect;
+use super::input::{Effect, Size};
 use super::lane::{Item, Kind, Lane, Seat};
+use super::needs::Section;
 use super::wrap::wrap;
 use crate::board::{clock_text, terminal_text};
 use crate::theme::{Look, Palette};
+use crate::time::Timestamp;
 
 /// Lane text a [`Style`] has already neutralised and dressed: the one text a
 /// paint writes as it is. Only [`Printed::lane`] makes one.
@@ -540,6 +542,19 @@ impl Printed {
             self.open = standing;
         }
         out
+    }
+
+    /// The "needs you" section of `read`, for a pane of `size` (`None`: a pipe
+    /// or a file), as of `now`: what this console has not printed of it yet.
+    #[must_use]
+    pub fn needs(
+        &mut self,
+        read: &Result<Section, String>,
+        size: Option<Size>,
+        now: Timestamp,
+    ) -> String {
+        let _ = (read, size, now);
+        String::new()
     }
 
     /// Forget the printed console-thread rows, whose positions a rewritten journal

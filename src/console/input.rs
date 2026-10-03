@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 
+use super::needs::SeatRef;
 use super::submit::{Draft, Outcome};
 use super::view::{Style, Styled};
 use crate::board::terminal_text;
@@ -654,6 +655,12 @@ impl Input {
             pair,
             ..Self::default()
         }
+    }
+
+    /// The seats `/open` names: the roster of the chat's last SETTLED read,
+    /// replaced whole by each one.
+    pub fn set_seats(&mut self, seats: Vec<SeatRef>) {
+        let _ = (self, seats);
     }
 
     /// A fresh ownership `reading`, completed at `now`. Only a positive one
