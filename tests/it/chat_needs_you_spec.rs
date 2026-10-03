@@ -1025,6 +1025,34 @@ fn open_target_proves_fold_identity_live_pane_uuid_and_membership_without_a_clie
 }
 
 #[test]
+fn open_target_refuses_an_empty_session_identity_even_when_stamps_match() {
+    let rig = ProofRig::new();
+    let mut facts = rig.facts();
+    facts.bound_uuid = "";
+    facts.uuid_stamp = Some("");
+    assert_eq!(
+        open::target(&facts),
+        Err(Refusal::SessionReplaced),
+        "two missing UUIDs do not prove session identity"
+    );
+}
+
+#[test]
+fn open_act_refuses_an_empty_session_identity_before_building_argv() {
+    let target = Target {
+        seat: ProofRig::new().seat,
+        session_id: "$1".to_owned(),
+        pane: "%7".to_owned(),
+        uuid: String::new(),
+    };
+    let server = ServerId::Selected(Selector::Socket(PathBuf::from("/tmp/fixture/tmux.sock")));
+    assert!(
+        open::select_args(&server, &target).is_none(),
+        "missing UUID refuses before any select command exists"
+    );
+}
+
+#[test]
 fn open_target_refuses_replaced_dead_ambiguous_foreign_and_missing_panes_by_name() {
     let base = ProofRig::new();
     let mut replaced = base.clone();
@@ -1504,6 +1532,49 @@ fn open_chat_input_selects_session_for_two_viewers_without_typing_or_journal_wri
         target_before,
         "target receives no typed bytes"
     );
+}
+
+#[test]
+fn open_chat_unsettled_read_keeps_the_last_settled_roster() {
+    let rig = ChatRig::new("open-unsettled");
+    let chat = rig.chat(true);
+    let before = rig.journal();
+    let late = rig.pane("late");
+    rig.stamp(&late, "spawned.9", "late");
+    let saved = rig.dir.join("saved-events.jsonl");
+    std::fs::rename(rig.dir.join("events.jsonl"), &saved).expect("save private journal");
+    std::fs::create_dir(rig.dir.join("events.jsonl")).expect("unreadable journal fixture");
+    let mut meta = std::fs::read_to_string(rig.dir.join("meta")).expect("private meta");
+    meta.push_str("seat.spawned.8=\nseat.spawned.9=late\n");
+    let next_meta = rig.dir.join("next-meta");
+    std::fs::write(&next_meta, meta).expect("damaged roster with new seat");
+    std::fs::rename(next_meta, rig.dir.join("meta")).expect("publish new meta atomically");
+    assert!(
+        ChatRig::wait(|| rig.screen(&chat).contains("roster may be incomplete")),
+        "fixture reads the new damaged roster before command: {}",
+        rig.screen(&chat)
+    );
+    rig.type_line(&chat, "/open late");
+    assert!(
+        ChatRig::wait(|| {
+            let screen = rig.screen(&chat);
+            screen.contains("refused: /open late: not a seat of this session")
+                || screen.contains("opened late")
+        }),
+        "command completes: {}",
+        rig.screen(&chat)
+    );
+    assert!(
+        rig.screen(&chat)
+            .contains("refused: /open late: not a seat of this session"),
+        "unsettled new seat cannot replace last settled roster: {}",
+        rig.screen(&chat)
+    );
+    assert_eq!(rig.current(), chat, "refusal leaves chat selected");
+    assert_eq!(std::fs::read(&saved).expect("saved journal"), before);
+    std::fs::remove_dir(rig.dir.join("events.jsonl")).expect("remove unreadable fixture");
+    std::fs::rename(saved, rig.dir.join("events.jsonl")).expect("restore private journal");
+    assert_eq!(rig.journal(), before, "navigation writes no journal record");
 }
 
 #[test]
