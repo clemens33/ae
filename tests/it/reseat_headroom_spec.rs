@@ -416,6 +416,46 @@ fn threshold_off_disables_headroom_but_preserves_the_vendor_limit_path() {
 }
 
 #[test]
+fn threshold_turned_off_after_a_headroom_attempt_holds_without_moving_the_seat() {
+    let rig = Rig::new("hrlegthresholdoff");
+    configure(&rig, "", "fake-claude", "fake-opencode");
+    quota(&rig, "home", &[("weekly_all", 95.0)], 0);
+    let pane = seat(&rig, "claude");
+    let pid = rig.tool_pid(&pane, "claude");
+    assert!(pid.is_some(), "the fixture tool is running");
+    let key = Timestamp::from_epoch(Timestamp::now().epoch() - 10);
+    seed(&rig, key, "auto-reseat-headroom", None);
+    seed(
+        &rig,
+        Timestamp::from_epoch(key.epoch() + 1),
+        ATTEMPT_ACTION,
+        Some(key),
+    );
+    // The daemon booked its attempt while enabled. Its detached leg must
+    // honor a threshold switched off before that leg reads the settings.
+    configure(&rig, "auto_reseat_at = off", "fake-claude", "fake-opencode");
+    let out = leg(&rig, key);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let held = booked(&rig, HELD_ACTION);
+    assert_eq!(held.len(), 1, "{}", rig.events());
+    assert_eq!(held[0].reference.as_deref(), Some(key.to_string().as_str()));
+    assert_eq!(
+        held[0].summary.as_deref(),
+        Some("held: auto_reseat_at is off (headroom 95% weekly_all 7d)")
+    );
+    assert_eq!(booked(&rig, ATTEMPT_ACTION).len(), 1);
+    assert!(booked(&rig, DONE_ACTION).is_empty());
+    assert!(booked(&rig, REFUSED_ACTION).is_empty());
+    assert!(booked(&rig, ae::autoreseat::FAILED_ACTION).is_empty());
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude");
+    assert_eq!(
+        rig.tool_pid(&pane, "claude"),
+        pid,
+        "the tool was not stopped"
+    );
+}
+
+#[test]
 fn a_vendor_limit_during_a_headroom_hold_moves_once_across_both_episode_kinds() {
     let rig = Rig::new("hrovertaken");
     configure(&rig, "", "fake-claude", "fake-opencode");
