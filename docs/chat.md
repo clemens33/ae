@@ -164,5 +164,8 @@ Both lead-pair seats — never a worker — are told in their context that a tur
 whose first line is `⟦ae:msg from human:chat⟧` is the human's words, to be
 answered once with the reply command it carries, and that text typed in their
 pane is mirrored but not threaded, so what the human must see goes out by `say`.
+The same context tells them how to shape that reply for a glance — answer first
+in one short line, short lines, numbered lines for choices, no tables or bold
+markers — and a chat ask's footer repeats the guidance in one line.
 `human:chat` is display only: the journal still records the ask as
 `console:local`, and older records show that spelling for the same route.

@@ -193,6 +193,12 @@ pub const CONSOLE_SINK: &str = "console:local";
 /// byte for byte; only rendering maps through [`display_sender`].
 pub const CONSOLE_DISPLAY: &str = "human:chat";
 
+/// The ONE wording telling an agent how to shape a reply the human reads in
+/// ae chat: the chat-asker footer in [`compose`] and the seats' context in
+/// `render::console_turns` both read this, so the guidance cannot drift. One
+/// plain-ASCII line, no quotes or apostrophes a shell could read.
+pub const CHAT_REPLY_STYLE: &str = "The human reads this reply in ae chat: answer first in one short line, then short lines, a blank line between points, numbered lines for choices, no tables, headings or bold markers, about 15 lines unless asked for more.";
+
 /// The ONE stored-identity-to-display mapping. Exactly [`CONSOLE_SINK`] reads as
 /// [`CONSOLE_DISPLAY`]; every other sender, `console:localx` included, passes
 /// through byte for byte. Callers render with this and persist the stored form.
@@ -367,7 +373,9 @@ fn reply_footer_command(
 }
 
 /// The delivered text, before the provenance envelope `send` prepends: `<header> <id> from <sender>: <body>`, the instructions block
-/// for a review, and the REQUIRED footer.
+/// for a review, and the REQUIRED footer. `sender` is the DISPLAY sender, so
+/// a chat ask reads as [`CONSOLE_DISPLAY`] and its footer carries one extra
+/// [`CHAT_REPLY_STYLE`] line; every other footer stays byte-identical.
 ///
 /// ```
 /// use ae::tracked::{Kind, compose};
@@ -391,6 +399,10 @@ pub fn compose(kind: Kind, req_id: &str, sender: &str, body: &str, reply_cmd: &s
     );
     text.push_str(reply_cmd);
     text.push_str("\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.");
+    if sender == CONSOLE_DISPLAY {
+        text.push('\n');
+        text.push_str(CHAT_REPLY_STYLE);
+    }
     text
 }
 
@@ -2012,6 +2024,37 @@ mod tests {
         ] {
             assert_eq!(display_sender(passthrough), passthrough, "{passthrough}");
         }
+    }
+
+    #[test]
+    fn a_non_chat_asker_footer_is_byte_identical_without_the_style_line() {
+        let text = super::compose(
+            super::Kind::Ask,
+            "ae-1",
+            "cl:lead",
+            "why?",
+            "/s/reply --as \"cl:w\" \"ae-1\" \"<your reply>\"",
+        );
+        assert_eq!(
+            text,
+            "REQUEST ae-1 from cl:lead: why?\n\nREQUIRED: When you have finished, you MUST run this exact command to reply:\n/s/reply --as \"cl:w\" \"ae-1\" \"<your reply>\"\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism."
+        );
+    }
+
+    #[test]
+    fn a_chat_asker_footer_carries_the_one_reply_style_line() {
+        use super::{CHAT_REPLY_STYLE, CONSOLE_DISPLAY};
+        assert!(
+            CHAT_REPLY_STYLE.is_ascii() && !CHAT_REPLY_STYLE.contains('\n'),
+            "one plain-ASCII line: {CHAT_REPLY_STYLE:?}"
+        );
+        let text = super::compose(super::Kind::Ask, "ae-1", CONSOLE_DISPLAY, "why?", "cmd");
+        assert!(
+            text.ends_with(&format!(
+                "\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.\n{CHAT_REPLY_STYLE}"
+            )),
+            "{text}"
+        );
     }
 
     #[test]

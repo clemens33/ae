@@ -245,6 +245,6 @@ ae @<name> reply --as "codex:coworker" "ae-2026..." "<your reply>"
 Do not reply any other way. Do NOT use peek/peak as a reply mechanism.
 ```
 
-Installed ae uses this short spelling when its command link exists and the session name is canonical; checkout ae and retained pre-grammar names keep the full helper path. The seed pack's pending-request reply lines (`ae brief --seat`) follow the same rule: one chooser decides the spelling wherever ae tells an agent what to run.
+Installed ae uses this short spelling when its command link exists and the session name is canonical; checkout ae and retained pre-grammar names keep the full helper path. The seed pack's pending-request reply lines (`ae brief --seat`) follow the same rule: one chooser decides the spelling wherever ae tells an agent what to run. A request asked from ae chat carries one extra footer line telling the agent how to shape the reply for a glance — answer first in one short line, short lines, no tables or bold markers; every other asker's footer is exactly the block above.
 
 Agents are instructed to run that command verbatim. If they do, `requests` changes the row from `pending` to `replied`; an authorized `cancel` shows `cancelled`, and either party's seat retirement shows `retired`.
