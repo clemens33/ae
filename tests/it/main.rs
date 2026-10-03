@@ -8,6 +8,8 @@ mod archive;
 mod archive_from;
 mod archive_publish;
 mod archive_purge;
+mod app_cli_spec;
+mod app_spec;
 mod autoreseat;
 mod board;
 mod brief;
