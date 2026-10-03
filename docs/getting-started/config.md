@@ -278,9 +278,12 @@ When a seat is proven stuck on its vendor usage limit, the watchdog can move it
 in place to another profile — the same move `ae reseat` makes by hand, decided
 from the journal and the live quota readings. The four knobs above are
 global-config only: a project overlay never steers spend, and the switch is
-read on every decision, so turning it off stops the next move. A knob ae cannot
-use turns the whole path off with its one note, beginning
-`auto reseat stays off: `.
+read on every decision, so turning it off stops the next move. An
+`auto_reseat`, `auto_reseat_sessions` or `auto_reseat_grace_secs` value ae
+cannot use turns the whole path off with its one note, beginning
+`auto reseat stays off: `. An unusable `auto_reseat_at` does NOT: the threshold
+falls back to `95`, the watchdog journals that once per start as an
+`auto-reseat-notice`, and limit and headroom moves both go on.
 
 A seat can also move BEFORE its limit, to keep headroom in its subscription:
 once a usable window of the seat's own account judges at or past
