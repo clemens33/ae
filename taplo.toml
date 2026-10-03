@@ -10,4 +10,5 @@ include = ["**/*.toml"]
 # rewrites config.toml/audits.toml on its own runs. taplo and cargo-vet would
 # fight over their layout every run, so taplo stays out (same reasoning as
 # cliff.toml). cargo-vet's own writer is their formatter.
-exclude = ["cliff.toml", "target/**", "supply-chain/**"]
+# .local/ is git-ignored scratch; a stray unformatted TOML there must never fail the lane.
+exclude = ["cliff.toml", "target/**", "supply-chain/**", ".local/**"]
