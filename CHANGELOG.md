@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.19] - 2026-10-03
+- Nudge chat replies into a glanceable shape
+- Exclude .local scratch from the taplo lane
+
 ## [v2026.10.18] - 2026-10-03
 - Pin proactive auto reseat headroom
 - Move an auto reseat seat before its own account runs out of headroom
