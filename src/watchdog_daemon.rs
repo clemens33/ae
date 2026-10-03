@@ -105,10 +105,13 @@ pub struct Knobs {
     pub tg_supervise_secs: u64,
 }
 
+/// Seconds between two verdict cycles when no `--interval` says otherwise.
+pub(crate) const DEFAULT_INTERVAL_SECS: u64 = 60;
+
 impl Default for Knobs {
     fn default() -> Self {
         Self {
-            interval_secs: 60,
+            interval_secs: DEFAULT_INTERVAL_SECS,
             quota_every_secs: 300,
             quota_aware: true,
             idle_nudge_secs: crate::watchdog::DEFAULT_IDLE_NUDGE_SECS,

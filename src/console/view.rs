@@ -12,8 +12,8 @@ use std::fmt::Write as _;
 
 use super::input::{Effect, Size};
 use super::lane::{Item, Kind, Lane, Seat};
-use super::needs::Section;
-use super::wrap::wrap;
+use super::needs::{Cause, Row, Section, Source, Verdict};
+use super::wrap::{clip, wrap};
 use crate::board::{clock_text, terminal_text};
 use crate::theme::{Look, Palette};
 use crate::time::Timestamp;
@@ -419,6 +419,10 @@ pub struct Printed {
     outcomes: BTreeSet<String>,
     style: Style,
     width: Option<usize>,
+    /// The "needs you" section last printed from a settled read, by its rows.
+    needs: Option<String>,
+    /// The reason the section's current unsettled episode was named for.
+    needs_gap: Option<String>,
 }
 
 #[derive(Debug)]
@@ -553,8 +557,85 @@ impl Printed {
         size: Option<Size>,
         now: Timestamp,
     ) -> String {
-        let _ = (read, size, now);
-        String::new()
+        let width = size.map(|size| size.width);
+        let section = match read {
+            Err(why) => {
+                if self.needs_gap.as_deref() == Some(why.as_str()) {
+                    return String::new();
+                }
+                self.needs_gap = Some(why.clone());
+                let line = format!("-- needs you: {why}: rows shown earlier stand, none cleared");
+                return self.needs_line(&line, width, |palette| palette.dim);
+            }
+            Ok(section) => section,
+        };
+        let gap = self.needs_gap.take();
+        let key = format!("{:?}", section.rows);
+        let cold = self.needs.is_none() && gap.is_none() && section.rows.is_empty();
+        if cold || self.needs.as_deref() == Some(key.as_str()) {
+            self.needs = Some(key);
+            return String::new();
+        }
+        self.needs = Some(key);
+        let (_, time) = clock_text(self.style.shift(micros_of(now)));
+        let as_of = format!("as of {time}");
+        if section.rows.is_empty() {
+            let line = format!("-- needs you: nothing standing ({as_of})");
+            return self.needs_line(&line, width, |palette| palette.dim);
+        }
+        let entries = entries(&section.rows, &self.style, now);
+        let budget = size.map_or(NEEDS_LINES, |size| (size.height / 3).max(1));
+        let lines: usize = entries.iter().map(|entry| entry.lines.len()).sum();
+        // The rows under the header go to the unverified causes first, then to
+        // the reason rows in rank order, a row short of room keeping its seat
+        // line before its detail.
+        let mut room = if lines >= budget { budget - 1 } else { lines };
+        let mut kept = vec![0; entries.len()];
+        for verified in [false, true] {
+            for (entry, keep) in entries.iter().zip(&mut kept) {
+                if entry.verified == verified {
+                    *keep = entry.lines.len().min(room);
+                    room -= *keep;
+                }
+            }
+        }
+        let hidden: usize = entries
+            .iter()
+            .zip(&kept)
+            .filter(|(_, keep)| **keep == 0)
+            .map(|(entry, _)| entry.seats)
+            .sum();
+        let mut head = format!("-- needs you: {}", seats(section.rows.len()));
+        if hidden > 0 {
+            let _ = write!(head, " · {hidden} more: ae list");
+        }
+        let _ = write!(head, " · {as_of}");
+        let mut out = self.needs_line(&head, width, |palette| palette.dim);
+        for (entry, keep) in entries.iter().zip(kept) {
+            for line in &entry.lines[..keep] {
+                out.push_str(&self.needs_line(line, width, |palette| {
+                    if entry.verified {
+                        palette.needs_you
+                    } else {
+                        palette.dim
+                    }
+                }));
+            }
+        }
+        out
+    }
+
+    /// One section line: neutralised, flattened to one row of `width` cells
+    /// when it is known, painted in `hue`, with its newline.
+    fn needs_line(
+        &self,
+        line: &str,
+        width: Option<usize>,
+        hue: impl Fn(&Palette) -> &'static str,
+    ) -> String {
+        let text = terminal_text(&clip(line, usize::MAX));
+        let text = width.map_or_else(|| text.clone(), |width| clip(&text, width));
+        format!("{}\n", self.style.paint(hue, false, &text))
     }
 
     /// Forget the printed console-thread rows, whose positions a rewritten journal
@@ -586,11 +667,127 @@ impl Printed {
     }
 }
 
+/// The most lines the section takes where no pane height bounds it.
+const NEEDS_LINES: usize = 12;
+
+/// One entry of the section: a seat's row, its record's words on a line of
+/// their own, or one cause's unverified seats.
+struct Entry {
+    lines: Vec<String>,
+    /// How many seats the line stands for.
+    seats: usize,
+    /// A reason row, rather than a gap no verdict could be read for.
+    verified: bool,
+}
+
+/// The section's lines, rows first in the fold's order, then ONE line per
+/// cause no verdict could be trusted for, in the order the causes first appear.
+fn entries(rows: &[Row], style: &Style, now: Timestamp) -> Vec<Entry> {
+    let mut lines = Vec::new();
+    let mut gaps: Vec<(Cause, Vec<&str>)> = Vec::new();
+    for row in rows {
+        match row.verdict {
+            Verdict::Reason(reason) => lines.push(Entry {
+                lines: reason_lines(row, reason, style, now),
+                seats: 1,
+                verified: true,
+            }),
+            Verdict::Unknown(cause) => match gaps.iter_mut().find(|(seen, _)| *seen == cause) {
+                Some((_, names)) => names.push(&row.seat.name),
+                None => gaps.push((cause, vec![&row.seat.name])),
+            },
+        }
+    }
+    for (cause, names) in gaps {
+        lines.push(Entry {
+            lines: vec![format!(
+                "  unverified: {} · {}: {}",
+                cause_text(cause, style),
+                seats(names.len()),
+                names.join(", ")
+            )],
+            seats: names.len(),
+            verified: false,
+        });
+    }
+    lines
+}
+
+/// A seat's reason row: who, what, how to open it, from which evidence since
+/// when and how fresh that evidence is — the order a narrow pane cuts it in —
+/// then the record's own words on their own line.
+fn reason_lines(
+    row: &Row,
+    reason: crate::attention::Reason,
+    style: &Style,
+    now: Timestamp,
+) -> Vec<String> {
+    let mut text = format!("  {}", row.seat.name);
+    if row.lead_pair {
+        text.push_str(" (lead pair)");
+    }
+    let _ = write!(text, " · {reason} · /open {} · ", row.seat.name);
+    match &row.source {
+        Source::Alert { action } => text.push_str(&action.replace('-', " ")),
+        Source::Declaration => text.push_str("declared"),
+        Source::NoPane => {
+            let _ = write!(text, "no pane carries {}", row.seat.slot);
+        }
+        Source::Unattributed | Source::Unverified => text.push_str("source unattributed"),
+    }
+    if let Some(since) = row.since_micros {
+        let (_, time) = clock_text(style.shift(since));
+        let age = crate::brief::age(Some(now.epoch() - since.div_euclid(1_000_000)));
+        let _ = write!(text, " since {time} ({age})");
+    }
+    if let Some(stale) = row.stale {
+        let _ = write!(text, " · stale: {}", cause_text(stale, style));
+    }
+    let mut lines = vec![text];
+    if !row.detail.is_empty() {
+        lines.push(format!("    {}", row.detail));
+    }
+    lines
+}
+
+/// Why a verdict cannot be trusted, in words.
+fn cause_text(cause: Cause, style: &Style) -> String {
+    match cause {
+        Cause::WatchdogOff => "watchdog off".to_owned(),
+        Cause::WatchdogUnreadable => "watchdog beat unreadable".to_owned(),
+        Cause::WatchdogStale { last_micros } => {
+            let (_, time) = clock_text(style.shift(last_micros));
+            format!("watchdog silent since {time}")
+        }
+        Cause::RuntimeUnread => "tmux did not list the panes".to_owned(),
+        Cause::PaneUnproven => "pane unproven".to_owned(),
+        Cause::JournalPartial { skipped } => format!("journal partial, {skipped} lines unread"),
+    }
+}
+
+/// `n seats`, singular for one.
+fn seats(n: usize) -> String {
+    if n == 1 {
+        "1 seat".to_owned()
+    } else {
+        format!("{n} seats")
+    }
+}
+
+/// `now` on the lane's clock.
+fn micros_of(now: Timestamp) -> i64 {
+    now.epoch().saturating_mul(1_000_000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Printed, Style, Zone, header};
+    use crate::attention::Reason;
+    use crate::console::input::Size;
     use crate::console::lane::{Item, Kind, Lane, Seat};
+    use crate::console::needs::{Cause, Row, SeatRef, Section, Source, Verdict};
     use crate::theme::{Look, Palette};
+    use crate::time::Timestamp;
 
     const T: i64 = 1_790_748_060_000_000;
     const UNDER_TEXT_BAR: [&str; 6] = [
@@ -1235,5 +1432,108 @@ mod tests {
     fn sgr(hex: &str) -> String {
         let at = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex");
         format!("\x1b[38;2;{};{};{}m", at(1), at(3), at(5))
+    }
+    fn seat_row(name: &str, slot: &str, verdict: Verdict, source: Source, detail: &str) -> Row {
+        Row {
+            seat: SeatRef {
+                slot: slot.to_owned(),
+                name: name.to_owned(),
+            },
+            lead_pair: slot == "main",
+            verdict,
+            source,
+            stale: None,
+            since_micros: Some(T),
+            detail: detail.to_owned(),
+            record: Some(0),
+        }
+    }
+
+    fn unverified(name: &str, slot: &str) -> Row {
+        let mut row = seat_row(
+            name,
+            slot,
+            Verdict::Unknown(Cause::WatchdogOff),
+            Source::Unverified,
+            "",
+        );
+        row.since_micros = None;
+        row.record = None;
+        row
+    }
+
+    #[test]
+    fn the_needs_section_prints_one_snapshot_with_its_source_age_and_open_hint() {
+        let now = Timestamp::from_epoch(T / 1_000_000 + 600);
+        let section = Section {
+            rows: vec![
+                seat_row(
+                    "lead",
+                    "main",
+                    Verdict::Reason(Reason::WaitingUser),
+                    Source::Declaration,
+                    "which layout?",
+                ),
+                seat_row(
+                    "scout",
+                    "spawned.0",
+                    Verdict::Reason(Reason::Blocked),
+                    Source::Alert {
+                        action: "human-prompt".to_owned(),
+                    },
+                    "",
+                ),
+                unverified("a", "spawned.1"),
+                unverified("b", "spawned.2"),
+            ],
+        };
+        let mut printed = Printed::default();
+        assert_eq!(
+            printed.needs(&Ok(section.clone()), None, now),
+            "-- needs you: 4 seats · as of 06:11:00\n\
+             \x20 lead (lead pair) · waiting-user · /open lead · declared since 06:01:00 (10m)\n\
+             \x20   which layout?\n\
+             \x20 scout · blocked · /open scout · human prompt since 06:01:00 (10m)\n\
+             \x20 unverified: watchdog off · 2 seats: a, b\n"
+        );
+        let later = Timestamp::from_epoch(now.epoch() + 60);
+        assert_eq!(
+            printed.needs(&Ok(section), None, later),
+            "",
+            "age alone is no news"
+        );
+        assert_eq!(
+            printed.needs(&Ok(Section::default()), None, later),
+            "-- needs you: nothing standing (as of 06:12:00)\n"
+        );
+        assert_eq!(
+            Printed::default().needs(&Ok(Section::default()), None, now),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_small_section_names_its_uncertainty_before_a_known_row() {
+        let now = Timestamp::from_epoch(T / 1_000_000);
+        let mut rows = vec![seat_row(
+            "lead",
+            "main",
+            Verdict::Reason(Reason::Dead),
+            Source::NoPane,
+            "",
+        )];
+        rows.extend((0..3).map(|at| unverified(&format!("w{at}"), &format!("spawned.{at}"))));
+        let small = Some(Size {
+            width: 80,
+            height: 6,
+        });
+        let text = Printed::default().needs(&Ok(Section { rows }), small, now);
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(
+            text.contains("4 seats · 1 more: ae list")
+                && text.contains("unverified: watchdog off · 3 seats: w0, w1, w2"),
+            "{text}"
+        );
+        assert!(!text.contains("no pane carries main"), "{text}");
     }
 }

@@ -467,6 +467,25 @@ pub fn alert_reason_in(
     alert_reason_since_in(events, session, slot, reference, None)
 }
 
+/// The declaration a seat's entry reads, and whether it is CURRENT: the newest
+/// relevant event when it is the seat's own current declaration, else the
+/// latest declaration, which still feeds the raw state cell.
+pub(crate) fn declaration_of<'a>(
+    events: &'a [Event],
+    session: &str,
+    slot: &str,
+    reference: &str,
+) -> Option<(&'a Event, bool)> {
+    crate::watchdog::latest_relevant_event(events, session, slot, reference)
+        // The ownership VERDICT travels with the record; this filter consumes
+        // it and never re-derives identity by display.
+        .filter(crate::watchdog::declaration_current)
+        .map(|relevant| (relevant.event, true))
+        .or_else(|| {
+            latest_declaration_in(events, session, slot, reference).map(|event| (event, false))
+        })
+}
+
 /// The durable verdict after the latest launch boundary, when one is known.
 fn alert_reason_since_in(
     events: &[Event],
@@ -475,22 +494,35 @@ fn alert_reason_since_in(
     reference: &str,
     started_epoch: Option<i64>,
 ) -> Option<Reason> {
+    alert_record_since_in(events, session, slot, reference, started_epoch).map(|(_, reason)| reason)
+}
+
+/// [`alert_reason_since_in`] with the position in `events` of the record that
+/// raised it: the one fold both answers come from.
+pub(crate) fn alert_record_since_in(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    reference: &str,
+    started_epoch: Option<i64>,
+) -> Option<(usize, Reason)> {
     match events
         .iter()
-        .filter_map(|event| {
+        .enumerate()
+        .filter_map(|(at, event)| {
             let verdict = decisive_verdict(event, session, slot, reference)?;
             if matches!(verdict, Verdict::Raised(_))
                 && started_epoch.is_some_and(|started| event.ts.epoch() < started)
             {
                 None
             } else {
-                Some(verdict)
+                Some((at, verdict))
             }
         })
         .next_back()
     {
-        Some(Verdict::Raised(reason)) => Some(reason),
-        Some(Verdict::Clear) | None => None,
+        Some((at, Verdict::Raised(reason))) => Some((at, reason)),
+        Some((_, Verdict::Clear)) | None => None,
     }
 }
 
@@ -974,27 +1006,13 @@ fn agent_entries(
             // still read as current here and, past its ceiling, escalate on
             // the human-marker surfaces; the pane's own border follows the
             // daemon. This residual is named in AGENTS.md.
-            let current_declaration = read.and_then(|read| {
-                crate::watchdog::latest_relevant_event(
-                    &read.events,
-                    session,
-                    &slot.slot,
-                    &reference,
-                )
-                // The ownership VERDICT travels with the record; this filter
-                // consumes it and never re-derives identity by display.
-                .filter(crate::watchdog::declaration_current)
-                .map(|relevant| relevant.event)
-            });
-            let declared = current_declaration.or_else(|| {
-                read.and_then(|read| {
-                    latest_declaration_in(&read.events, session, &slot.slot, &reference)
-                })
-            });
+            let declaration =
+                read.and_then(|read| declaration_of(&read.events, session, &slot.slot, &reference));
+            let declared = declaration.map(|(event, _)| event);
             let declared_state = declared.and_then(Event::declared_state);
             let declared_age_secs =
                 declared.map(|event| u64::try_from(event.ts.seconds_until(now)).unwrap_or(0));
-            let declared_current = current_declaration.is_some();
+            let declared_current = declaration.is_some_and(|(_, current)| current);
             let runtime_agent = runtime.agent(&slot.slot);
             // Model drift: only the two harnesses whose live model ae can read
             // are ever marked with an observation; every other tool's model is
@@ -1120,7 +1138,7 @@ fn agent_entries(
 }
 
 /// Whether a meta's anomalies degrade the session, per anomaly KIND.
-fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
+pub(crate) fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
     anomalies.iter().any(|anomaly| match anomaly {
         Anomaly::UnknownKey { .. } => false,
         Anomaly::MalformedLine { .. }

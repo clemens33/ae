@@ -157,7 +157,9 @@ impl Console {
             coverage: seen.coverage,
             ..board::Observation::default()
         };
-        let (events, skipped, read_gap) = match session::RecordSnapshot::read(&self.dir).events {
+        let snapshot = session::RecordSnapshot::read(&self.dir);
+        let needs = self.needs(&snapshot, &seats);
+        let (events, skipped, read_gap) = match snapshot.events {
             Some(read) => (read.events, read.skipped.len(), None),
             None => (Vec::new(), 0, Some("journal — unreadable".to_owned())),
         };
@@ -170,15 +172,61 @@ impl Console {
             text = self.printed.rebase(last.len(), events.len());
         }
         let body = |event: &Event| body_for(&self.dir, event);
-        self.printed.set_width(pane_width(&self.printed));
+        let size = pane_size(&self.printed);
+        self.printed.set_width(size.map(|size| size.width));
         let mut lane = lane::fold(&self.name, &seats, &events, &observation, skipped, &body);
         let settled = read_gap.is_none();
         lane.coverage.extend(read_gap);
         text.push_str(&self.printed.step(&lane, board_gaps, settled));
+        text.push_str(
+            &self
+                .printed
+                .needs(&needs, size, crate::time::Timestamp::now()),
+        );
         if settled {
             self.journal = Some(events);
         }
         Ok(text)
+    }
+
+    /// The "needs you" section: EVERY roster seat's verdict, as `ae list` reads
+    /// it, from the records `snapshot` holds, what tmux lists of the session's
+    /// panes now and the watchdog's beat. The conversation stays the lead pair's.
+    fn needs(
+        &self,
+        snapshot: &session::RecordSnapshot,
+        seats: &[Seat],
+    ) -> Result<needs::Section, String> {
+        let meta = snapshot.meta.as_ref();
+        let server = meta
+            .and_then(|meta| meta.server_selector().entitles().cloned())
+            .map(inventory::ServerId::Selected);
+        let agents = server
+            .as_ref()
+            .zip(meta)
+            .and_then(|(server, meta)| crate::observed_agents(server, &self.name, meta));
+        let runtime_read = agents.is_some();
+        let mut runtime = session::SessionRuntime::new(if runtime_read {
+            crate::digest::Status::Running
+        } else {
+            crate::digest::Status::Unknown
+        });
+        runtime.agents = agents.unwrap_or_default();
+        let now = crate::time::Timestamp::now();
+        let unanswered = session::DEFAULT_UNANSWERED_SECS;
+        let entry = session::entry_from(snapshot, &self.name, &runtime, now, unanswered);
+        needs::fold(&needs::Inputs {
+            session: &self.name,
+            snapshot,
+            entry: &entry,
+            runtime: &runtime,
+            runtime_read,
+            beat: crate::watchdog_glue::beat_modified(&self.dir),
+            // The seats are the lead pair, so `worker.0` is among them exactly
+            // when the layout is `lead-pair`.
+            lead_pair: seats.iter().any(|seat| seat.slot == "worker.0"),
+            now,
+        })
     }
 }
 
@@ -390,17 +438,21 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     code
 }
 
-/// The width in cells of the pane this chat draws in, asked of tmux through the
+/// The size in cells of the pane this chat draws in, asked of tmux through the
 /// pane-size door; `None` when the console is not dressed, is in no tmux pane or
 /// tmux does not answer, and then its rows are not wrapped.
-fn pane_width(printed: &view::Printed) -> Option<usize> {
+fn pane_size(printed: &view::Printed) -> Option<input::Size> {
     if !printed.dressed() {
         return None;
     }
     let declared = doors::declared_server(crate::shape::current());
     let server = doors::launch_target(declared.as_ref())?;
     let pane = doors::calling_pane_id()?;
-    transport::observe_pane_size(&server, &pane).map(|size| size.width)
+    let size = transport::observe_pane_size(&server, &pane)?;
+    Some(input::Size {
+        width: size.width,
+        height: size.height,
+    })
 }
 
 /// Print each pass, and between passes take the terminal's input when there

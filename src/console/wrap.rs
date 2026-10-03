@@ -79,9 +79,44 @@ fn split_row(text: &str, room: usize) -> (&str, &str) {
     (text, "")
 }
 
+/// `text` as ONE row of at most `width` cells: tab, carriage return and line
+/// feed flattened to a space first, then cut after the last scalar that fits,
+/// a cut row ending in `…`. Measured by `cell`, the bound [`wrap`] keeps.
+pub(super) fn clip(text: &str, width: usize) -> String {
+    let flat: String = text
+        .chars()
+        .map(|ch| {
+            if matches!(ch, '\t' | '\r' | '\n') {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect();
+    if flat.chars().map(cell).sum::<usize>() <= width {
+        return flat;
+    }
+    let room = width.saturating_sub(cell(ELLIPSIS));
+    let mut used = 0;
+    let mut row: String = flat
+        .chars()
+        .take_while(|ch| {
+            used += cell(*ch);
+            used <= room
+        })
+        .collect();
+    if width >= cell(ELLIPSIS) {
+        row.push(ELLIPSIS);
+    }
+    row
+}
+
+/// What a cut row ends in.
+const ELLIPSIS: char = '…';
+
 #[cfg(test)]
 mod tests {
-    use super::wrap;
+    use super::{clip, wrap};
     use crate::event_text::cell;
 
     fn row(gap: usize, text: &str) -> (usize, String) {
@@ -179,5 +214,23 @@ mod tests {
         assert_eq!(wrap("中ab", 2, 2), [row(0, "中"), row(0, "a"), row(0, "b")]);
         assert_eq!(wrap("中a", 1, 2), [row(0, "中"), row(0, "a")]);
         assert_eq!(wrap("", 0, 2), [row(0, "")]);
+    }
+
+    #[test]
+    fn a_clipped_row_is_one_row_within_its_cells_and_says_it_was_cut() {
+        for text in ["alpha\tbeta\r\ngamma", "中中中中中中 tail", "short", ""] {
+            for width in 0..=24 {
+                let row = clip(text, width);
+                assert!(
+                    row.chars().map(cell).sum::<usize>() <= width,
+                    "{width}: {row:?}"
+                );
+                assert!(!row.contains(['\t', '\r', '\n']), "{row:?}");
+            }
+        }
+        assert_eq!(clip("a\tb\nc", 10), "a b c");
+        assert_eq!(clip("abcdefgh", 6), "abcd…");
+        assert_eq!(clip("中中中", 5), "中…");
+        assert_eq!(clip("abc", 1), "");
     }
 }

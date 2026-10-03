@@ -3057,20 +3057,33 @@ fn observed_runtimes(snapshot: &liveness::Snapshot) -> Vec<session::SessionRunti
             };
             let server = inventory::ServerId::Selected(selector.clone());
             runtime.branch = transport::observe_branch(&server, &record.name);
-            if let (Some(panes), Some(meta)) = (
-                transport::observe_panes(&server, &record.name),
-                record.snapshot.meta.as_ref(),
-            ) {
-                let slots: Vec<String> = meta
-                    .roster()
-                    .iter()
-                    .map(|entry| entry.slot.clone())
-                    .collect();
-                runtime.agents = liveness::agent_runtimes(&panes, &slots);
+            if let Some(agents) = record
+                .snapshot
+                .meta
+                .as_ref()
+                .and_then(|meta| observed_agents(&server, &record.name, meta))
+            {
+                runtime.agents = agents;
             }
             runtime
         })
         .collect()
+}
+
+/// What tmux says RIGHT NOW of each roster seat of session `name` on `server`;
+/// `None` when it did not list the session's panes.
+pub(crate) fn observed_agents(
+    server: &inventory::ServerId,
+    name: &str,
+    meta: &meta::Meta,
+) -> Option<Vec<session::AgentRuntime>> {
+    let panes = transport::observe_panes(server, name)?;
+    let slots: Vec<String> = meta
+        .roster()
+        .iter()
+        .map(|entry| entry.slot.clone())
+        .collect();
+    Some(liveness::agent_runtimes(&panes, &slots))
 }
 
 #[cfg(debug_assertions)]
