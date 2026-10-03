@@ -299,9 +299,11 @@ pub struct Observation {
     /// What this seat is still owed by somebody else: requests it SENT that
     /// nobody answered, agents it SPAWNED that still hold a seat.
     pub own_work: crate::session::OwnWork,
-    /// An auto reseat attempt runs for this latched seat inside its bound: the
-    /// shell its respawn leaves is the move, not a death and not a release.
-    pub auto_in_flight: bool,
+    /// An auto reseat attempt runs for this seat inside its bound, and what
+    /// opened it: the shell its respawn leaves is the move, not a death — and,
+    /// for a latched seat's limit move, not a release either. A headroom move
+    /// latches no limit.
+    pub auto_in_flight: Option<crate::autoreseat::Trigger>,
     /// Where and when auto reseat will move this seat, for the notice of its
     /// limit's first sight; `None` when auto reseat may not move it.
     pub auto_deadline: Option<String>,
@@ -1878,7 +1880,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
     // 2. The shell an auto reseat's respawn leaves is the move, not a death;
     //    and a shell read while the launch still settles is a seat starting.
     let graced = launch_grace(seen.launch_attempt, seen.now_epoch, knobs.interval_secs);
-    if seen.is_dead && !seen.auto_in_flight && !graced {
+    if seen.is_dead && seen.auto_in_flight.is_none() && !graced {
         next.dead_latched = true;
         effects.push(Effect::Emit {
             action: "alert",
@@ -1951,7 +1953,7 @@ fn account_ordinary(
     if prior.limit_since.is_some()
         && seen.capture_ok
         && seen.throttle != Some(Throttle::LimitReached)
-        && !seen.auto_in_flight
+        && seen.auto_in_flight != Some(crate::autoreseat::Trigger::Limit)
     {
         next.limit_since = None;
         effects.push(Effect::Emit {
@@ -2091,7 +2093,7 @@ fn account_ordinary(
     //    whose capture FAILED this cycle keeps the verdict too: no reading is
     //    not a clearing. So does a seat an auto reseat is moving, latched
     //    again by a daemon that restarted mid-move.
-    if limited(prior, seen) || seen.auto_in_flight {
+    if limited(prior, seen) || seen.auto_in_flight == Some(crate::autoreseat::Trigger::Limit) {
         book_limit(&mut next, &mut effects, seen);
         return Accounting {
             next,
@@ -4197,7 +4199,11 @@ struct Carry {
     brief_cursor: Option<String>,
     /// Each auto reseat hold already named, per seat, episode and reason. In
     /// memory on purpose: a restart names each once more, as `limit` re-books.
+    /// A headroom hold is also not named again while the journal's newest
+    /// record of its episode is that same hold.
     auto_named: Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
+    /// The `auto_reseat_at` notes this daemon journaled: each once per start.
+    auto_noted: Vec<String>,
     /// The last look this daemon actually READ, and `None` until one answers.
     ///
     /// Carried so that a cycle whose read failed draws in the look it saw last
@@ -4219,6 +4225,7 @@ impl Carry {
             adoption: Adoption::default(),
             brief_cursor: None,
             auto_named: Vec::new(),
+            auto_noted: Vec::new(),
             look: None,
         }
     }
@@ -4490,14 +4497,18 @@ fn remember_input(
     kept.max(observed).map(|at| (identity, at))
 }
 
-/// One seat whose usage-limit latch stands after this cycle's accounting, as
-/// the auto reseat step reads it.
+/// One seat after this cycle's accounting, as the auto reseat step reads it.
 #[derive(Debug, Clone)]
 struct AutoSeat {
     slot: String,
     agent: String,
     profile: String,
     pane: crate::autoreseat::Pane,
+    /// Its usage-limit latch stands: the seat is the limit path's alone.
+    limited: bool,
+    /// Its own account against the headroom threshold, from this cycle's held
+    /// quota observation.
+    room: crate::autoreseat::Room,
 }
 
 /// What the auto reseat step does this cycle.
@@ -4511,12 +4522,27 @@ enum AutoAct {
         agent: String,
         key: Timestamp,
         reason: crate::autoreseat::HoldReason,
+        trigger: crate::autoreseat::Trigger,
     },
     /// Close an attempt that passed its bound with no outcome.
     Overdue {
         slot: String,
         agent: String,
         key: Timestamp,
+        trigger: crate::autoreseat::Trigger,
+    },
+    /// Open a headroom episode: `cause` names the crossing.
+    Open {
+        slot: String,
+        agent: String,
+        cause: String,
+    },
+    /// End the headroom episode keyed `key`: the account reads relieved.
+    Rearm {
+        slot: String,
+        agent: String,
+        key: Timestamp,
+        summary: String,
     },
 }
 
@@ -4524,6 +4550,11 @@ enum AutoAct {
 /// admits is decided by [`crate::autoreseat::decide`], each hold is named once
 /// per episode and reason (`named` is that memory), and at most ONE seat is
 /// triggered — the oldest episode, the slot breaking a tie.
+///
+/// A seat whose latch does not stand is the HEADROOM path's: its episode opens
+/// on a crossing, re-arms on relief, and is decided like a limit episode while
+/// its account still reads within the gap of the threshold. A headroom hold the
+/// journal already ends on is not named again, a restart included.
 fn auto_acts(
     settings: &crate::autoreseat::Settings,
     seats: &[AutoSeat],
@@ -4532,7 +4563,7 @@ fn auto_acts(
     now: i64,
     named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
 ) -> Vec<AutoAct> {
-    use crate::autoreseat::Decision;
+    use crate::autoreseat::{Decision, Room, Trigger};
     named.retain(|(slot, _, _)| seats.iter().any(|seat| seat.slot == *slot));
     let mut acts = Vec::new();
     let mut due: Option<(Timestamp, &AutoSeat)> = None;
@@ -4547,22 +4578,71 @@ fn auto_acts(
         if crate::autoreseat::eligible(settings, &asked).is_err() {
             continue;
         }
-        let Some(found) = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent)
-        else {
+        let found = if seat.limited {
+            crate::autoreseat::episode(events, session, &seat.slot, &seat.agent)
+        } else {
+            if settings.headroom_at.is_none() {
+                continue;
+            }
+            let found =
+                crate::autoreseat::headroom_episode(events, session, &seat.slot, &seat.agent);
+            let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
+            match (&found, &seat.room) {
+                (None, Room::Crossed(window)) => {
+                    let cause = crate::autoreseat::headroom_words(window);
+                    acts.push(AutoAct::Open { slot, agent, cause });
+                    continue;
+                }
+                (Some(open), Room::Relieved(window)) if open.open.is_none() => {
+                    let summary = crate::autoreseat::relieved_words(window);
+                    let key = open.key;
+                    acts.push(AutoAct::Rearm {
+                        slot,
+                        agent,
+                        key,
+                        summary,
+                    });
+                    continue;
+                }
+                _ => {}
+            }
+            found
+        };
+        let Some(found) = found else {
             continue;
         };
-        let (slot, agent, key) = (seat.slot.clone(), seat.agent.clone(), found.key);
+        let (slot, agent, key, trigger) = (
+            seat.slot.clone(),
+            seat.agent.clone(),
+            found.key,
+            found.trigger,
+        );
+        // A headroom episode moves only while its account reads within the gap
+        // of the threshold; an attempt already open is judged whatever it reads.
+        let near = matches!(seat.room, Room::Crossed(_) | Room::Near);
         match crate::autoreseat::decide(Some(&found), settings.grace_secs, &seat.pane, now) {
-            Decision::Overdue => acts.push(AutoAct::Overdue { slot, agent, key }),
+            Decision::Overdue => acts.push(AutoAct::Overdue {
+                slot,
+                agent,
+                key,
+                trigger,
+            }),
+            Decision::Hold(_) | Decision::Attempt if trigger == Trigger::Headroom && !near => {}
             Decision::Hold(reason) => {
+                let said = trigger == Trigger::Headroom
+                    && found.holds_with(&crate::autoreseat::leg::tagged(
+                        reason.summary(),
+                        found.cause(),
+                    ));
                 named.retain(|(at, held, _)| *at != slot || *held == key);
-                if !named.contains(&(slot.clone(), key, reason)) {
+                if !said && !named.contains(&(slot.clone(), key, reason)) {
                     named.push((slot.clone(), key, reason));
                     acts.push(AutoAct::Held {
                         slot,
                         agent,
                         key,
                         reason,
+                        trigger,
                     });
                 }
             }
@@ -5110,13 +5190,15 @@ impl Cycle<'_> {
         };
         let list = crate::autoreseat::eligible(&self.auto, &seat).ok()?;
         let left = crate::autoreseat::left_profiles(events, self.session, slot, agent);
+        let left_on_headroom =
+            crate::autoreseat::left_on_headroom(events, self.session, slot, agent);
         let latched =
             crate::autoreseat::latched_identities(&self.roster, events, self.session, slot);
         // `quota = off` holds no observation here: `QuotaCarry::clear_held`.
         let judged = crate::autoreseat::leg::candidates(
             list,
             |to| crate::reseat::resolved(self.meta_dir, to),
-            &left,
+            (&left, &left_on_headroom),
             quota.last_observation.as_ref(),
             &latched,
             now,
@@ -5293,6 +5375,7 @@ impl Cycle<'_> {
             self.note_model(&capture, tool, &slot, pin.as_deref());
             let throttle = throttle_class(&capture, agent_bin.as_deref().unwrap_or_default());
             let throttle_quota = self.throttle_quota(&carry.quota, &slot, now, throttle.is_some());
+            let own_room = self.own_room(&carry.quota, &slot, pin.as_deref(), now);
             // ONE process-tree reading: the dead verdict and the unknown-snapshot
             // counter are two questions about the same answer.
             let descendancy = descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref());
@@ -5384,12 +5467,22 @@ impl Cycle<'_> {
                 // branch can reach it.
                 sweep: self.sweep_observation(&slot, agent, &events, overview.as_ref(), now),
                 own_work: outstanding.of(Seat::new(self.session, &slot, agent)),
-                auto_in_flight: crate::autoreseat::in_flight(
+                auto_in_flight: if crate::autoreseat::in_flight(
                     &self.auto,
                     &events,
                     (self.session, &slot, agent),
                     now,
-                ),
+                ) {
+                    Some(crate::autoreseat::Trigger::Limit)
+                } else {
+                    crate::autoreseat::headroom_in_flight(
+                        &self.auto,
+                        &events,
+                        (self.session, &slot, agent),
+                        now,
+                    )
+                    .then_some(crate::autoreseat::Trigger::Headroom)
+                },
                 // Forecast once, at the limit's first sight: the Notify that
                 // carries it is booked only then.
                 auto_deadline: (throttle == Some(Throttle::LimitReached)
@@ -5407,7 +5500,7 @@ impl Cycle<'_> {
             let booked = account(carried, &seen, &self.knobs);
             *carried = booked.next;
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
-            if carried.limit_since.is_some() {
+            {
                 let frame = seen.harness.frame;
                 auto_seats.push(AutoSeat {
                     slot: slot.clone(),
@@ -5424,6 +5517,8 @@ impl Cycle<'_> {
                             .client_activity
                             .and_then(|(_, at)| i64::try_from(at).ok()),
                     },
+                    limited: carried.limit_since.is_some(),
+                    room: own_room,
                 });
             }
             counts.record(booked.verdict);
@@ -5459,6 +5554,7 @@ impl Cycle<'_> {
         };
         self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &inputs, now, err)?;
         self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
+        self.auto_note(&mut carry.auto_noted, err)?;
         self.auto_reseat(&mut carry.auto_named, &auto_seats, &events, now, err)?;
         self.close(
             carry,
@@ -6227,32 +6323,17 @@ impl Cycle<'_> {
         Ok(())
     }
 
-    /// Journal one hold or overdue failure under the seat's lock, and only
-    /// while the journal as it reads NOW still owes it: a trigger may have
-    /// opened an attempt, or the leg ended one, since this cycle's read.
+    /// Journal one hold, overdue failure, headroom opening or re-arm under the
+    /// seat's lock, and only while the journal as it reads NOW still owes it: a
+    /// trigger may have opened an attempt, or the leg ended one, since this
+    /// cycle's read.
     fn auto_record(&self, act: &AutoAct, now: i64, err: &mut impl Write) -> crate::Result<()> {
-        let (slot, agent, key, overdue, action, summary) = match act {
-            AutoAct::Held {
-                slot,
-                agent,
-                key,
-                reason,
-            } => (
-                slot,
-                agent,
-                *key,
-                false,
-                crate::autoreseat::HELD_ACTION,
-                reason.summary(),
-            ),
-            AutoAct::Overdue { slot, agent, key } => (
-                slot,
-                agent,
-                *key,
-                true,
-                crate::autoreseat::FAILED_ACTION,
-                OVERDUE_SUMMARY,
-            ),
+        use crate::autoreseat::Trigger;
+        let (slot, agent) = match act {
+            AutoAct::Held { slot, agent, .. }
+            | AutoAct::Overdue { slot, agent, .. }
+            | AutoAct::Open { slot, agent, .. }
+            | AutoAct::Rearm { slot, agent, .. } => (slot, agent),
             AutoAct::Trigger { .. } => return Ok(()),
         };
         let lock = crate::autoreseat::lock_path(self.meta_dir, slot);
@@ -6260,15 +6341,108 @@ impl Cycle<'_> {
             return Ok(());
         };
         let events = read_events(self.meta_dir);
-        let found = crate::autoreseat::episode(&events, self.session, slot, agent);
-        if crate::autoreseat::owed(found.as_ref(), key, overdue, now) {
-            let journal = Journal {
-                meta_dir: self.meta_dir,
-                session: self.session,
-            };
-            journal.record_referring(action, agent, &key.to_string(), summary, err)?;
+        let journal = Journal {
+            meta_dir: self.meta_dir,
+            session: self.session,
+        };
+        let headroom = crate::autoreseat::headroom_episode(&events, self.session, slot, agent);
+        match act {
+            AutoAct::Open { cause, .. } => {
+                if headroom.is_none() {
+                    journal.record(crate::autoreseat::HEADROOM_ACTION, agent, cause, err)?;
+                }
+                return Ok(());
+            }
+            AutoAct::Rearm { key, summary, .. } => {
+                if headroom.is_some_and(|open| open.key == *key && open.open.is_none()) {
+                    let action = crate::autoreseat::REARMED_ACTION;
+                    journal.record_referring(action, agent, &key.to_string(), summary, err)?;
+                }
+                return Ok(());
+            }
+            AutoAct::Held { .. } | AutoAct::Overdue { .. } | AutoAct::Trigger { .. } => {}
+        }
+        let (key, overdue, action, summary, trigger) = match act {
+            AutoAct::Held {
+                key,
+                reason,
+                trigger,
+                ..
+            } => (
+                *key,
+                false,
+                crate::autoreseat::HELD_ACTION,
+                reason.summary(),
+                *trigger,
+            ),
+            AutoAct::Overdue { key, trigger, .. } => (
+                *key,
+                true,
+                crate::autoreseat::FAILED_ACTION,
+                OVERDUE_SUMMARY,
+                *trigger,
+            ),
+            _ => return Ok(()),
+        };
+        let found = match trigger {
+            Trigger::Limit => crate::autoreseat::episode(&events, self.session, slot, agent),
+            Trigger::Headroom => headroom,
+        };
+        let cause = found
+            .as_ref()
+            .map(|open| open.cause().to_owned())
+            .unwrap_or_default();
+        let summary = crate::autoreseat::leg::tagged(summary, &cause);
+        let said = trigger == Trigger::Headroom
+            && !overdue
+            && found.as_ref().is_some_and(|open| open.holds_with(&summary));
+        if !said && crate::autoreseat::owed(found.as_ref(), key, overdue, now) {
+            journal.record_referring(action, agent, &key.to_string(), &summary, err)?;
         }
         Ok(())
+    }
+
+    /// Journal the note an unusable `auto_reseat_at` left, target-less, once
+    /// per daemon start and note: the operator sees the threshold ae fell back
+    /// to without a move having to say it.
+    fn auto_note(&self, noted: &mut Vec<String>, err: &mut impl Write) -> crate::Result<()> {
+        let Some(note) = self.auto.headroom_note.as_ref() else {
+            return Ok(());
+        };
+        if noted.contains(note) {
+            return Ok(());
+        }
+        noted.push(note.clone());
+        let journal = Journal {
+            meta_dir: self.meta_dir,
+            session: self.session,
+        };
+        journal.record(crate::autoreseat::NOTICE_ACTION, "", note, err)
+    }
+
+    /// The seat at `slot`'s own account against the headroom threshold, from
+    /// the held quota observation; unread whenever headroom may not act.
+    fn own_room(
+        &self,
+        quota: &QuotaCarry,
+        slot: &str,
+        pin: Option<&str>,
+        now: i64,
+    ) -> crate::autoreseat::Room {
+        let at = self
+            .auto
+            .headroom_at
+            .filter(|_| self.auto.switch != crate::autoreseat::Switch::Off);
+        match (at, self.roster.iter().find(|entry| entry.slot == slot)) {
+            (Some(at), Some(entry)) => crate::autoreseat::leg::own_room(
+                quota.last_observation.as_ref(),
+                entry,
+                pin,
+                at,
+                now,
+            ),
+            _ => crate::autoreseat::Room::Unread,
+        }
     }
 
     /// One brief-retry pass: set aside what is permanently damaged, then spend
@@ -7231,7 +7405,7 @@ mod tests {
             declared_age_secs: 0,
             sweep: None,
             own_work: crate::session::OwnWork::default(),
-            auto_in_flight: false,
+            auto_in_flight: None,
             auto_deadline: None,
         }
     }
@@ -12665,7 +12839,7 @@ mod tests {
         };
         for frame in [&shell, &seen(), &row] {
             let moving = Observation {
-                auto_in_flight: true,
+                auto_in_flight: Some(crate::autoreseat::Trigger::Limit),
                 ..frame.clone()
             };
             let cycle = account(&latched, &moving, &knobs);
@@ -12679,7 +12853,7 @@ mod tests {
         let restarted = account(
             &PaneState::default(),
             &Observation {
-                auto_in_flight: true,
+                auto_in_flight: Some(crate::autoreseat::Trigger::Limit),
                 ..shell.clone()
             },
             &knobs,
@@ -12788,12 +12962,16 @@ mod tests {
                 human_prompt: false,
                 client_input: None,
             },
+            limited: true,
+            room: crate::autoreseat::Room::Unread,
         };
         let on = Settings {
             switch: Switch::On,
             sessions: Some(vec!["dev".to_owned()]),
             grace_secs: 0,
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            headroom_at: None,
+            headroom_note: None,
             notes: Vec::new(),
         };
         let (one, two) = (
@@ -12877,6 +13055,7 @@ mod tests {
             agent: "one".to_owned(),
             key: key(at),
             reason,
+            trigger: crate::autoreseat::Trigger::Limit,
         };
         let mut named = Vec::new();
         let first = auto_acts(&on, &busy, &limits, ("dev", false), 300, &mut named);
@@ -12940,6 +13119,7 @@ mod tests {
                 slot: "spawned.1".to_owned(),
                 agent: "one".to_owned(),
                 key: key(200),
+                trigger: crate::autoreseat::Trigger::Limit,
             }]
         );
         let refused = [

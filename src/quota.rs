@@ -3136,6 +3136,14 @@ fn wrap_cell(value: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// A window as the quota table names it, bucket then span: `weekly_all 7d`.
+pub(crate) fn window_name(row: &Row) -> String {
+    row.window_minutes.map_or_else(
+        || bucket_label(row),
+        |minutes| format!("{} {}", bucket_label(row), window_label(minutes)),
+    )
+}
+
 fn bucket_label(row: &Row) -> String {
     match row.qualifier.as_deref() {
         Some(qualifier) if row.bucket == "weekly_scoped" => {

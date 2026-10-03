@@ -490,6 +490,14 @@ is already critical; `ae cannot move <agent>: <why>` names each declared
 candidate passed over and why. It is a forecast — the legs choose again when
 they act — and a seat the switch does not admit gets no line at all.
 
+The same step also judges every eligible seat whose limit latch does not stand
+against its own account, over the cycle's held quota observation, for the
+HEADROOM path ([Moving a seat](reseat.md#headroom-episodes)): it books the
+opening and the re-arm records under the seat's lock, decides a due episode as
+above, and lets its due seats share the one trigger with the limit ones. An
+unusable `auto_reseat_at` is journaled once per daemon start. A headroom
+attempt in flight keeps its shell from reading as a death, and books no limit.
+
 With `auto_reseat` absent or `off`, the path is inert: the daemon books no
 auto-reseat record, takes no seat lock, execs no leg, and `alert-cleared`
 behaves exactly as without the feature.

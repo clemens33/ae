@@ -1,5 +1,6 @@
-//! Auto reseat: move a seat PROVEN stuck on its vendor usage limit, in place,
-//! to the first usable profile the human declared for it, and say so.
+//! Auto reseat: move a seat PROVEN stuck on its vendor usage limit — or, before
+//! that, one whose own account crossed the headroom threshold — in place, to
+//! the first usable profile the human declared for it, and say so.
 //!
 //! This file holds the DECISIONS and reads nothing but its arguments and the
 //! global config: which limit episode a seat is in, whether that episode is due
@@ -17,8 +18,15 @@
 //! its outcome. Every record this path writes carries the key as its `ref`,
 //! except `auto-reseat-done`, whose `ref` is the profile the seat LEFT.
 //!
-//! The fold compares action words, the seat's identity and whole `ref` values
-//! by equality. It never splits or parses a `ref` or a `summary`.
+//! A HEADROOM episode is the same path with another opener: it starts at the
+//! first `auto-reseat-headroom` the watchdog booked for the seat after its
+//! newest `spawn`, re-arm or move, and its KEY is that record's timestamp. It
+//! ends at the re-arm record, which the watchdog books once the seat's own
+//! account reads more than [`REARM_GAP`] below the threshold, or at a move. A
+//! limit outranks it: a seat on its limit is the limit path's alone.
+//!
+//! The folds compare action words, the seat's identity, whole `ref` values and
+//! whole hold summaries by equality. They never split or parse either.
 
 use std::path::Path;
 
@@ -41,8 +49,21 @@ pub const DONE_ACTION: &str = "auto-reseat-done";
 pub const REFUSED_ACTION: &str = "auto-reseat-refused";
 /// The move failed and the episode gets no further attempt. `ref` = the key.
 pub const FAILED_ACTION: &str = "auto-reseat-failed";
-/// A notice sent to a recipient about an outcome.
+/// A notice sent to a recipient about an outcome; target-less, a config note.
 pub const NOTICE_ACTION: &str = "auto-reseat-notice";
+/// A headroom episode opens; its `ts` is the key and its summary the trigger.
+pub const HEADROOM_ACTION: &str = "auto-reseat-headroom";
+/// A headroom episode ends and the seat is armed again. `ref` = the key.
+pub const REARMED_ACTION: &str = "auto-reseat-headroom-cleared";
+
+/// The threshold an absent or unusable `auto_reseat_at` means.
+pub const DEFAULT_HEADROOM_AT: u8 = 95;
+/// How far below the threshold the seat's own account must read, strictly,
+/// before a crossing can open another episode: jitter around the line cannot.
+pub const REARM_GAP: f64 = 5.0;
+/// The lowest threshold `auto_reseat_at` accepts.
+const HEADROOM_FLOOR: u8 = 50;
+const HEADROOM_KEY: &str = "auto_reseat_at";
 
 /// Attempts one episode may make: one, and one more after a transient hold.
 pub const MAX_ATTEMPTS: u8 = 2;
@@ -82,6 +103,12 @@ pub struct Settings {
     /// `[auto_reseat]`: a profile and the candidates it may move to, in the
     /// order declared.
     pub map: Vec<(String, Vec<String>)>,
+    /// `auto_reseat_at`: the judged percentage of the seat's own account that
+    /// moves it before its limit; `None` is off.
+    pub headroom_at: Option<u8>,
+    /// The note an unusable `auto_reseat_at` left, also in `notes`: the one
+    /// note the watchdog journals.
+    pub headroom_note: Option<String>,
     /// One line per entry ignored or knob refused, for the operator.
     pub notes: Vec<String>,
 }
@@ -93,6 +120,8 @@ impl Settings {
             sessions: None,
             grace_secs: DEFAULT_GRACE_SECS,
             map: Vec::new(),
+            headroom_at: None,
+            headroom_note: None,
             notes,
         }
     }
@@ -115,12 +144,54 @@ pub fn settings_in(file: &Path, text: &str) -> Settings {
     match parse_switch(read("auto_reseat")) {
         Ok(Switch::Off) => Settings::off(Vec::new()),
         Err(note) => Settings::off(vec![note]),
-        Ok(switch) => settle(
-            switch,
-            read("auto_reseat_sessions"),
-            read("auto_reseat_grace_secs"),
-            crate::config::section_entries(file, text, "auto_reseat"),
-        ),
+        Ok(switch) => {
+            let mut settled = settle(
+                switch,
+                read("auto_reseat_sessions"),
+                read("auto_reseat_grace_secs"),
+                crate::config::section_entries(file, text, "auto_reseat"),
+            );
+            if settled.switch != Switch::Off {
+                let times = crate::config::section_entries(file, text, "workspace")
+                    .map(|rows| rows.iter().filter(|row| row.key == HEADROOM_KEY).count());
+                let (at, note) = parse_headroom(read(HEADROOM_KEY), times);
+                settled.headroom_at = at;
+                settled.notes.extend(note.clone());
+                settled.headroom_note = note;
+            }
+            settled
+        }
+    }
+}
+
+/// `auto_reseat_at` as written, or the default with the one note that says why.
+/// A key written twice is no value at all. A value is echoed escaped.
+fn parse_headroom(
+    raw: Result<Option<String>, String>,
+    times: Result<usize, String>,
+) -> (Option<u8>, Option<String>) {
+    let fallback = |why: String| {
+        (
+            Some(DEFAULT_HEADROOM_AT),
+            Some(format!("{why}; {DEFAULT_HEADROOM_AT} used")),
+        )
+    };
+    match (raw, times) {
+        (Err(why), _) | (_, Err(why)) => fallback(why),
+        (Ok(_), Ok(times)) if times > 1 => fallback(format!("{HEADROOM_KEY} is set {times} times")),
+        (Ok(None), _) => (Some(DEFAULT_HEADROOM_AT), None),
+        (Ok(Some(raw)), _) => match raw.trim() {
+            "off" => (None, None),
+            value => match value.parse::<u8>() {
+                Ok(at) if (HEADROOM_FLOOR..=100).contains(&at) && !value.starts_with('+') => {
+                    (Some(at), None)
+                }
+                _ => fallback(format!(
+                    "{HEADROOM_KEY} = {value:?} is not off or a whole percent from \
+                     {HEADROOM_FLOOR} to 100"
+                )),
+            },
+        },
     }
 }
 
@@ -184,6 +255,8 @@ fn settle(
         sessions,
         grace_secs,
         map,
+        headroom_at: None,
+        headroom_note: None,
         notes,
     }
 }
@@ -337,12 +410,25 @@ pub enum Outcome {
     Failed,
 }
 
-/// One limit episode of one seat, as the journal records it.
+/// What opened an episode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// The vendor's usage limit, drawn in the seat's pane.
+    Limit,
+    /// The seat's own account read at or past `auto_reseat_at`.
+    Headroom,
+}
+
+/// One episode of one seat, as the journal records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Episode {
-    /// The `ts` of the episode's first `limit` record.
+    /// The `ts` of the episode's opening record.
     pub key: Timestamp,
     reference: String,
+    pub trigger: Trigger,
+    /// The opener's summary, quoted whole by every record that names the
+    /// trigger; empty for a limit episode, whose records stay as they were.
+    cause: String,
     pub attempts: u8,
     /// The newest attempt that has no outcome yet.
     pub open: Option<Timestamp>,
@@ -350,6 +436,8 @@ pub struct Episode {
     pub terminal: Option<Outcome>,
     /// The newest record of this path is a hold.
     pub held: bool,
+    /// The summary of the newest hold, whole.
+    last_hold: Option<String>,
 }
 
 impl Episode {
@@ -359,14 +447,35 @@ impl Episode {
         &self.reference
     }
 
+    /// What every record of a headroom episode names its trigger by; empty for
+    /// a limit episode.
+    #[must_use]
+    pub fn cause(&self) -> &str {
+        &self.cause
+    }
+
+    /// Whether the newest record of this path is a hold summarised `summary`:
+    /// naming it again would say nothing new, a daemon restart included.
+    #[must_use]
+    pub fn holds_with(&self, summary: &str) -> bool {
+        self.held && self.last_hold.as_deref() == Some(summary)
+    }
+
     fn opened(key: Timestamp) -> Self {
+        Self::opened_by(key, Trigger::Limit, String::new())
+    }
+
+    fn opened_by(key: Timestamp, trigger: Trigger, cause: String) -> Self {
         Self {
             key,
             reference: key.to_string(),
+            trigger,
+            cause,
             attempts: 0,
             open: None,
             terminal: None,
             held: false,
+            last_hold: None,
         }
     }
 
@@ -385,6 +494,7 @@ impl Episode {
             HELD_ACTION if ours => {
                 self.open = None;
                 self.held = true;
+                self.last_hold.clone_from(&event.summary);
             }
             DONE_ACTION => self.close(Outcome::Done),
             REFUSED_ACTION if ours => self.close(Outcome::Refused),
@@ -433,6 +543,57 @@ pub fn episode(events: &[Event], session: &str, slot: &str, agent: &str) -> Opti
     current
 }
 
+/// The headroom episode the seat is in now, or `None` when it is armed.
+///
+/// A terminal outcome keeps the episode until its re-arm record: a seat whose
+/// candidates all refused is refused once, not once per cycle. A move ends it
+/// whatever opened the move, because the seat's account is no longer the one
+/// that crossed.
+#[must_use]
+pub fn headroom_episode(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+) -> Option<Episode> {
+    let mut current: Option<Episode> = None;
+    for event in events {
+        if !event_is_addressed_to(event, session, slot, agent) {
+            continue;
+        }
+        if event.action == SPAWN_ACTION {
+            current = None;
+            continue;
+        }
+        if event.actor != WATCHDOG_ACTOR {
+            continue;
+        }
+        match event.action.as_str() {
+            HEADROOM_ACTION => {
+                if current.is_none() {
+                    let cause = event.summary.clone().unwrap_or_default();
+                    current = Some(Episode::opened_by(event.ts, Trigger::Headroom, cause));
+                }
+            }
+            REARMED_ACTION => {
+                if current
+                    .as_ref()
+                    .is_some_and(|open| event.reference.as_deref() == Some(open.reference()))
+                {
+                    current = None;
+                }
+            }
+            DONE_ACTION => current = None,
+            _ => {
+                if let Some(open) = current.as_mut() {
+                    open.absorb(event);
+                }
+            }
+        }
+    }
+    current
+}
+
 /// Each profile this seat left by auto reseat since its newest `spawn`, with
 /// the time of the newest such move, ordered by that move, oldest first.
 #[must_use]
@@ -442,21 +603,62 @@ pub fn left_profiles(
     slot: &str,
     agent: &str,
 ) -> Vec<(String, Timestamp)> {
-    let mut left: Vec<(String, Timestamp)> = Vec::new();
+    left_moves(events, session, slot, agent)
+        .into_iter()
+        .map(|(profile, at, _)| (profile, at))
+        .collect()
+}
+
+/// The profiles of [`left_profiles`] whose newest move closed a HEADROOM
+/// episode: the attempt before it named a headroom key.
+#[must_use]
+pub fn left_on_headroom(events: &[Event], session: &str, slot: &str, agent: &str) -> Vec<String> {
+    left_moves(events, session, slot, agent)
+        .into_iter()
+        .filter(|(_, _, trigger)| *trigger == Trigger::Headroom)
+        .map(|(profile, _, _)| profile)
+        .collect()
+}
+
+fn left_moves(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+) -> Vec<(String, Timestamp, Trigger)> {
+    let mut left: Vec<(String, Timestamp, Trigger)> = Vec::new();
+    let mut headroom_keys: Vec<String> = Vec::new();
+    let mut attempted: Option<&str> = None;
     for event in events {
         if !event_is_addressed_to(event, session, slot, agent) {
             continue;
         }
         if event.action == SPAWN_ACTION {
             left.clear();
+            headroom_keys.clear();
+            attempted = None;
             continue;
         }
-        if event.actor != WATCHDOG_ACTOR || event.action != DONE_ACTION {
+        if event.actor != WATCHDOG_ACTOR {
             continue;
         }
-        if let Some(profile) = event.reference.as_deref() {
-            left.retain(|(taken, _)| taken != profile);
-            left.push((profile.to_owned(), event.ts));
+        match event.action.as_str() {
+            HEADROOM_ACTION => headroom_keys.push(event.ts.to_string()),
+            ATTEMPT_ACTION => attempted = event.reference.as_deref(),
+            DONE_ACTION => {
+                if let Some(profile) = event.reference.as_deref() {
+                    let trigger = if attempted
+                        .is_some_and(|key| headroom_keys.iter().any(|taken| taken == key))
+                    {
+                        Trigger::Headroom
+                    } else {
+                        Trigger::Limit
+                    };
+                    left.retain(|(taken, _, _)| taken != profile);
+                    left.push((profile.to_owned(), event.ts, trigger));
+                }
+            }
+            _ => {}
         }
     }
     left
@@ -467,6 +669,9 @@ pub fn left_profiles(
 pub enum Frame {
     /// Read, idle, with an empty input box.
     Clear,
+    /// Read, not busy and no draft, but the frame is not one ae can prove
+    /// idle: a limit move treats it as clear, a headroom move holds.
+    Unproven,
     Busy,
     /// A human's text sits in the input box.
     Draft,
@@ -492,6 +697,7 @@ pub enum HoldReason {
     Draft,
     HumanPrompt,
     ClientInput,
+    Unproven,
 }
 
 impl HoldReason {
@@ -504,6 +710,7 @@ impl HoldReason {
             Self::Draft => "held: a human draft sits in the input box",
             Self::HumanPrompt => "held: the seat waits on a prompt only the human may answer",
             Self::ClientInput => "held: a human gave input in the pane",
+            Self::Unproven => "held: the seat's frame is not proven idle",
         }
     }
 }
@@ -525,11 +732,14 @@ pub enum Decision {
     Overdue,
 }
 
-/// Decide for one seat whose limit latch stands.
+/// Decide for one seat whose limit latch stands, or whose headroom episode is
+/// still due.
 ///
 /// An open attempt is judged before the spent count, so the second attempt
 /// keeps its bound; the grace is judged before the pane, so nothing about the
-/// pane is read into a hold while the human still has time to react.
+/// pane is read into a hold while the human still has time to react. A
+/// headroom move never ends a turn, so it also holds on a frame ae cannot
+/// prove idle; a limit move reads that frame as clear, as it always has.
 #[must_use]
 pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64) -> Decision {
     let Some(episode) = episode.filter(|found| found.terminal.is_none()) else {
@@ -556,19 +766,22 @@ pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64)
     let touched = pane
         .client_input
         .is_some_and(|at| now < at.saturating_add(grace));
+    let headroom = episode.trigger == Trigger::Headroom;
     let reason = match pane.frame {
         Frame::Unread => Some(HoldReason::Unread),
         Frame::Busy => Some(HoldReason::Busy),
         Frame::Draft => Some(HoldReason::Draft),
-        Frame::Clear if pane.human_prompt => Some(HoldReason::HumanPrompt),
-        Frame::Clear if touched => Some(HoldReason::ClientInput),
-        Frame::Clear => None,
+        Frame::Clear | Frame::Unproven if pane.human_prompt => Some(HoldReason::HumanPrompt),
+        Frame::Unproven if headroom => Some(HoldReason::Unproven),
+        Frame::Clear | Frame::Unproven if touched => Some(HoldReason::ClientInput),
+        Frame::Clear | Frame::Unproven => None,
     };
     reason.map_or(Decision::Attempt, Decision::Hold)
 }
 
 /// The frame one capture proves: a read that failed proves nothing, a running
-/// turn is busy, and a human's text in the box is theirs.
+/// turn is busy, a human's text in the box is theirs, and only a frame the
+/// classifier reads idle is clear.
 #[must_use]
 pub fn frame_of(read: bool, state: HarnessState, draft: bool) -> Frame {
     if !read {
@@ -577,8 +790,10 @@ pub fn frame_of(read: bool, state: HarnessState, draft: bool) -> Frame {
         Frame::Busy
     } else if draft {
         Frame::Draft
-    } else {
+    } else if state == HarnessState::Idle {
         Frame::Clear
+    } else {
+        Frame::Unproven
     }
 }
 
@@ -604,6 +819,21 @@ pub fn in_flight(
             &unread,
             now,
         ) == Decision::InFlight
+}
+
+/// [`in_flight`] for the seat's headroom episode: the shell its move leaves is
+/// the move, not a death. It holds no limit latch.
+#[must_use]
+pub fn headroom_in_flight(
+    settings: &Settings,
+    events: &[Event],
+    (session, slot, agent): (&str, &str, &str),
+    now: i64,
+) -> bool {
+    settings.switch != Switch::Off
+        && headroom_episode(events, session, slot, agent)
+            .and_then(|found| found.open)
+            .is_some_and(|started| now.saturating_sub(started.epoch()) < IN_FLIGHT_SECS)
 }
 
 /// Whether a hold (or, with `overdue`, an overdue failure) is still owed to the
@@ -647,6 +877,8 @@ pub struct Window {
     pub observed_at: i64,
     pub resets_at: Option<i64>,
     pub status: Status,
+    /// The window as the quota table names it, for a record.
+    pub label: String,
 }
 
 /// What the leg knows about one declared candidate.
@@ -660,6 +892,8 @@ pub struct Candidate {
     pub windows: Vec<Window>,
     /// When this seat last left this profile by auto reseat.
     pub left_at: Option<i64>,
+    /// That move closed a headroom episode.
+    pub left_on_headroom: bool,
 }
 
 /// Why a candidate was passed over.
@@ -669,6 +903,9 @@ pub enum Skip {
     PeerLatched,
     Exhausted,
     LeftOnLimit,
+    /// A usable window judged at or past the headroom threshold.
+    NoRoom,
+    LeftOnHeadroom,
 }
 
 /// The candidate taken, and every one passed over with its reason.
@@ -681,10 +918,17 @@ pub struct Choice {
 /// Take the first usable candidate of the best tier, in declared order.
 #[must_use]
 pub fn choose(candidates: &[Candidate], now: i64) -> Choice {
+    choose_with(candidates, now, None)
+}
+
+/// [`choose`] for an episode opened at the headroom threshold `room`: a
+/// candidate must have room below it. `None` is a limit episode's chooser.
+#[must_use]
+pub fn choose_with(candidates: &[Candidate], now: i64, room: Option<u8>) -> Choice {
     let mut skipped = Vec::new();
     let mut best: Option<(&Candidate, Tier)> = None;
     for candidate in candidates {
-        if let Some(skip) = passed_over(candidate, now) {
+        if let Some(skip) = passed_over(candidate, now, room) {
             skipped.push((candidate.profile.clone(), skip));
             continue;
         }
@@ -705,16 +949,27 @@ pub fn choose(candidates: &[Candidate], now: i64) -> Choice {
 /// that proves relief — a usable reading below critical, or a reset that has
 /// passed — and for no usable reading after the move to still sit at critical:
 /// a move back onto a nearly spent account would only move the seat again. A
-/// number ae cannot use proves nothing either way. A spend cap needs no rule
-/// of its own, because it judges as exhausted.
-fn passed_over(candidate: &Candidate, now: i64) -> Option<Skip> {
+/// profile left on headroom waits the same way, its bar the threshold `room`
+/// names rather than critical. A number ae cannot use proves nothing either
+/// way. A spend cap needs no rule of its own, because it judges as exhausted.
+/// With `room`, a candidate with any usable window at or past it has none.
+fn passed_over(candidate: &Candidate, now: i64, room: Option<u8>) -> Option<Skip> {
     if !candidate.configured {
         return Some(Skip::Unconfigured);
     }
     if candidate.peer_latched {
         return Some(Skip::PeerLatched);
     }
+    let crossed = |window: &Window| room.is_some_and(|at| window.judged >= f64::from(at));
     if let Some(left) = candidate.left_at {
+        let bar = room.filter(|_| candidate.left_on_headroom);
+        let spent =
+            |window: &Window| bar.map_or(window.critical, |at| window.judged >= f64::from(at));
+        let still = if candidate.left_on_headroom {
+            Skip::LeftOnHeadroom
+        } else {
+            Skip::LeftOnLimit
+        };
         let mut relieved = false;
         for window in candidate
             .windows
@@ -724,22 +979,74 @@ fn passed_over(candidate: &Candidate, now: i64) -> Option<Skip> {
             if window.resets_at.is_some_and(|at| at <= now) {
                 relieved = true;
             } else if usable(window) {
-                if window.critical {
-                    return Some(Skip::LeftOnLimit);
+                if spent(window) {
+                    return Some(still);
                 }
                 relieved = true;
             }
         }
         if !relieved {
-            return Some(Skip::LeftOnLimit);
+            return Some(still);
         }
     }
-    candidate
-        .windows
+    let usable_windows = || candidate.windows.iter().filter(|window| usable(window));
+    if usable_windows().any(|window| window.judged >= EXHAUSTED_PERCENT) {
+        return Some(Skip::Exhausted);
+    }
+    usable_windows().any(crossed).then_some(Skip::NoRoom)
+}
+
+/// What the seat's OWN account says about its headroom, judged against the
+/// threshold `at`: the worst usable window decides.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Room {
+    /// No usable window of the seat's own account: nothing is decided.
+    Unread,
+    /// The worst window is at or past the threshold.
+    Crossed(Window),
+    /// The worst window is below the threshold, but not by [`REARM_GAP`].
+    Near,
+    /// Every usable window reads more than [`REARM_GAP`] below the threshold.
+    Relieved(Window),
+}
+
+/// Judge the seat's own `windows` against the threshold `at`.
+#[must_use]
+pub fn room(windows: &[Window], at: u8) -> Room {
+    let worst = windows
         .iter()
         .filter(|window| usable(window))
-        .any(|window| window.judged >= EXHAUSTED_PERCENT)
-        .then_some(Skip::Exhausted)
+        .max_by(|left, right| left.judged.total_cmp(&right.judged));
+    let at = f64::from(at);
+    match worst {
+        None => Room::Unread,
+        Some(window) if window.judged >= at => Room::Crossed(window.clone()),
+        Some(window) if window.judged < at - REARM_GAP => Room::Relieved(window.clone()),
+        Some(_) => Room::Near,
+    }
+}
+
+/// How a record names a reading: `headroom <pct>% <window>`.
+#[must_use]
+pub fn headroom_words(window: &Window) -> String {
+    format!("headroom {}% {}", percent(window.judged), window.label)
+}
+
+/// The re-arm record's summary.
+#[must_use]
+pub fn relieved_words(window: &Window) -> String {
+    format!(
+        "headroom cleared: {}% {}",
+        percent(window.judged),
+        window.label
+    )
+}
+
+/// One decimal, a whole number without it.
+fn percent(value: f64) -> String {
+    let text = format!("{value:.1}");
+    text.strip_suffix(".0")
+        .map_or_else(|| text.clone(), ToOwned::to_owned)
 }
 
 /// A window whose number still stands: read before its reset. The status
@@ -843,6 +1150,8 @@ pub struct Move<'a> {
     pub critical: bool,
     /// The seat's work tree has tracked changes.
     pub dirty: bool,
+    /// The headroom trigger, as its episode names it; empty for a limit.
+    pub cause: &'a str,
 }
 
 /// The widest a notice may be, in characters.
@@ -853,10 +1162,15 @@ pub const NOTICE_CHARS: usize = 400;
 pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
     let line = match ending {
         Ending::Moved(moved) => format!(
-            "{agent} moved {} -> {} (tool {} -> {}, model {} -> {}), {}{}; work tree {}. If \
+            "{agent} moved {} -> {}{} (tool {} -> {}, model {} -> {}), {}{}; work tree {}. If \
              {agent} is half of a review pair, re-check its gate provider. Next: {}.",
             moved.from,
             moved.to,
+            if moved.cause.is_empty() {
+                String::new()
+            } else {
+                format!(" on {}", moved.cause)
+            },
             moved.tool.0,
             moved.tool.1,
             moved.model.0,
@@ -1110,6 +1424,8 @@ mod tests {
             sessions: None,
             grace_secs: DEFAULT_GRACE_SECS,
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            headroom_at: Some(DEFAULT_HEADROOM_AT),
+            headroom_note: None,
             notes: Vec::new(),
         }
     }
@@ -1460,6 +1776,7 @@ mod tests {
             observed_at,
             resets_at: None,
             status,
+            label: "weekly_all 7d".to_owned(),
         }
     }
 
@@ -1470,6 +1787,7 @@ mod tests {
             peer_latched: false,
             windows,
             left_at: None,
+            left_on_headroom: false,
         }
     }
 
@@ -1610,7 +1928,7 @@ mod tests {
             (true, Idle, true, Frame::Draft),
             (true, Unknown, true, Frame::Draft),
             (true, Idle, false, Frame::Clear),
-            (true, Unknown, false, Frame::Clear),
+            (true, Unknown, false, Frame::Unproven),
         ] {
             assert_eq!(
                 frame_of(read, state, draft),
@@ -1814,6 +2132,7 @@ mod tests {
             carried: true,
             critical: false,
             dirty: false,
+            cause: "",
         };
         assert_eq!(
             notice(SESSION, AGENT, &Ending::Moved(moved)),

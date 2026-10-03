@@ -17,7 +17,7 @@ use crate::watchdog::WATCHDOG_ACTOR;
 
 use super::{
     ATTEMPT_ACTION, Candidate, DONE_ACTION, FAILED_ACTION, HELD_ACTION, Ineligible, REFUSED_ACTION,
-    Seat, Skip,
+    Room, Seat, Skip, Trigger,
 };
 
 /// The usage line.
@@ -107,6 +107,22 @@ pub(crate) fn outcome(
     }
 }
 
+/// `summary` naming its episode's trigger: unchanged for a limit episode, whose
+/// `cause` is empty, and for a headroom one the cause appended inside the
+/// summary bound, so a cut never takes the trigger.
+pub(crate) fn tagged(summary: &str, cause: &str) -> String {
+    if cause.is_empty() {
+        return summary.to_owned();
+    }
+    let tag = format!(" ({cause})");
+    let room = SUMMARY_CHARS.saturating_sub(tag.chars().count());
+    let head: String = bounded(summary).chars().take(room).collect();
+    format!("{head}{tag}")
+}
+
+/// The hold a headroom attempt is closed with once `auto_reseat_at` is off.
+const HEADROOM_OFF: &str = "held: auto_reseat_at is off";
+
 /// The summary of the hold journaled when the seat is no longer eligible.
 pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
     match why {
@@ -125,7 +141,7 @@ pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
 pub(crate) fn candidates(
     list: &[String],
     resolve: impl Fn(&str) -> Option<Resolved>,
-    left: &[(String, Timestamp)],
+    (left, left_on_headroom): (&[(String, Timestamp)], &[String]),
     quota: Option<&crate::quota::Observation>,
     latched: &[crate::quota::RecordedIdentity],
     now: i64,
@@ -170,6 +186,7 @@ pub(crate) fn candidates(
                     .iter()
                     .find(|(taken, _)| taken == profile)
                     .map(|(_, at)| at.epoch()),
+                left_on_headroom: left_on_headroom.iter().any(|taken| taken == profile),
             }
         })
         .collect()
@@ -192,7 +209,41 @@ fn window(group: &crate::quota::Group, row: &crate::quota::Row, now: i64) -> Opt
         observed_at: judged.observed_at(),
         resets_at: row.resets_at,
         status,
+        label: crate::quota::window_name(row),
     })
+}
+
+/// The seat's OWN account against the threshold `at`, from `quota`: the
+/// windows of the one scope its recorded identity names — the join the
+/// throttle line and the checkpoint ask make — that bind its model family.
+/// No proven identity, no observation: nothing is read.
+pub(crate) fn own_room(
+    quota: Option<&crate::quota::Observation>,
+    entry: &crate::meta::RosterEntry,
+    pin: Option<&str>,
+    at: u8,
+    now: i64,
+) -> Room {
+    let (Some(seen), Some(identity)) = (quota, crate::quota::recorded_identity(entry)) else {
+        return Room::Unread;
+    };
+    let windows: Vec<super::Window> = seen
+        .groups
+        .iter()
+        .filter(|group| {
+            group.tool == identity.tool && group.source.as_ref() == Some(&identity.source)
+        })
+        .flat_map(|group| {
+            group
+                .rows
+                .iter()
+                .filter(|row| {
+                    !crate::quota::scoped_elsewhere(group.tool, row.qualifier.as_deref(), pin)
+                })
+                .filter_map(|row| window(group, row, now))
+        })
+        .collect();
+    super::room(&windows, at)
 }
 
 /// The quota readings the chooser judges by, read as the session's own
@@ -238,6 +289,8 @@ const fn skip_word(skip: Skip) -> &'static str {
         Skip::PeerLatched => "another seat is latched on its account",
         Skip::Exhausted => "exhausted",
         Skip::LeftOnLimit => "left on its limit",
+        Skip::NoRoom => "no headroom",
+        Skip::LeftOnHeadroom => "left on headroom",
     }
 }
 
@@ -295,12 +348,17 @@ pub(crate) fn run(
     };
     let (agent, profile) = (seat.name.clone(), seat.profile.clone().unwrap_or_default());
     let events = crate::watchdog_daemon::read_events(dir);
+    let keyed = |found: &super::Episode| found.key == argv.key;
     let Some(found) = super::episode(&events, &argv.session, &argv.slot, &agent)
-        .filter(|found| found.key == argv.key)
+        .filter(keyed)
+        .or_else(|| {
+            super::headroom_episode(&events, &argv.session, &argv.slot, &agent).filter(keyed)
+        })
     else {
         let why = format!("refused: the seat is in no limit episode keyed {key}");
         return close(&argv, &agent, now, (REFUSED_ACTION, &why), err);
     };
+    let cause = found.cause().to_owned();
     if found.terminal.is_some() || found.open.is_none() {
         writeln!(
             err,
@@ -333,29 +391,38 @@ pub(crate) fn run(
         super::spawner(&events, &argv.session, &argv.slot, &agent),
     );
     let notice = |ending| super::notice(&argv.session, &agent, &ending);
-    let list = match super::eligible(&settings, &asked) {
+    let threshold = settings
+        .headroom_at
+        .filter(|_| found.trigger == Trigger::Headroom);
+    let eligible = match super::eligible(&settings, &asked) {
+        Err(why) => Err(ineligible_summary(why)),
+        Ok(_) if found.trigger == Trigger::Headroom && threshold.is_none() => Err(HEADROOM_OFF),
+        Ok(list) => Ok(list),
+    };
+    let list = match eligible {
         Ok(list) => list,
-        Err(why) => {
-            let summary = ineligible_summary(why);
-            let code = close(&argv, &agent, now, (HELD_ACTION, summary), err)?;
-            tell(&argv, now, told, &notice(super::Ending::Held(summary)));
+        Err(summary) => {
+            let summary = tagged(summary, &cause);
+            let code = close(&argv, &agent, now, (HELD_ACTION, &summary), err)?;
+            tell(&argv, now, told, &notice(super::Ending::Held(&summary)));
             return Ok(code);
         }
     };
     let left = super::left_profiles(&events, &argv.session, &argv.slot, &agent);
+    let left_on_headroom = super::left_on_headroom(&events, &argv.session, &argv.slot, &agent);
     let quota = read_quota_at(root, dir, &meta, now);
     let latched = super::latched_identities(meta.roster(), &events, &argv.session, &argv.slot);
     let judged = candidates(
         list,
         |to| crate::reseat::resolved(dir, to),
-        &left,
+        (&left, &left_on_headroom),
         quota.as_ref(),
         &latched,
         now.epoch(),
     );
-    let choice = super::choose(&judged, now.epoch());
+    let choice = super::choose_with(&judged, now.epoch(), threshold);
     let Some((pick, tier)) = choice.pick else {
-        let why = no_candidate(&choice.skipped);
+        let why = tagged(&no_candidate(&choice.skipped), &cause);
         let code = close(&argv, &agent, now, (REFUSED_ACTION, &why), err)?;
         tell(&argv, now, told, &notice(super::Ending::Refused(&why)));
         return Ok(code);
@@ -391,6 +458,7 @@ pub(crate) fn run(
         &pick,
         &String::from_utf8_lossy(&said),
     );
+    let summary = tagged(&summary, &cause);
     record(&argv, &agent, now, action, &reference, &summary);
     let text = match ended {
         Ended::Moved { carried } => {
@@ -412,6 +480,7 @@ pub(crate) fn run(
                 carried,
                 critical: tier == super::Tier::Critical,
                 dirty,
+                cause: &cause,
             }))
         }
         Ended::Refused { transient: true } => notice(super::Ending::Held(&summary)),
@@ -432,6 +501,9 @@ pub(crate) struct Sight {
     pub pane: super::Pane,
     /// The vendor's limit row is drawn in that same capture.
     pub limited: bool,
+    /// The seat's own account, read now, is at or within the re-arm gap of the
+    /// headroom threshold.
+    pub near: bool,
 }
 
 /// What the trigger does for one seat.
@@ -441,29 +513,45 @@ pub(crate) enum Plan {
     Decline(String),
     /// Close the episode keyed `key`: nothing declared is usable.
     Refuse { key: Timestamp, why: String },
-    /// Open an attempt under `key` and start the leg that moves the seat to `to`.
-    Attempt { key: Timestamp, to: String },
+    /// Open an attempt under `key` and start the leg that moves the seat to
+    /// `to`; `note` follows `from <profile> to <to>` in the attempt's summary,
+    /// and `cause` names a headroom trigger (empty for a limit).
+    Attempt {
+        key: Timestamp,
+        to: String,
+        note: String,
+        cause: String,
+    },
 }
 
 /// Decide the trigger from the records and one fresh sight, by the daemon's
-/// own rule: the seat is eligible, the limit row is drawn, and its episode
-/// decides [`super::Decision::Attempt`] NOW.
+/// own rule: the seat is eligible, and either the limit row is drawn and its
+/// limit episode decides [`super::Decision::Attempt`] NOW, or — with no limit
+/// drawn — its headroom episode does, while its own account still reads within
+/// [`super::REARM_GAP`] of the threshold.
 pub(crate) fn plan(
     settings: &super::Settings,
     seat: &Seat<'_>,
     sight: &Sight,
     events: &[crate::events::Event],
-    gather: impl Fn(&[String], &[(String, Timestamp)]) -> Vec<Candidate>,
+    gather: impl Fn(&[String], (&[(String, Timestamp)], &[String])) -> Vec<Candidate>,
     now: Timestamp,
 ) -> Plan {
     let list = match super::eligible(settings, seat) {
         Ok(list) => list,
         Err(why) => return Plan::Decline(format!("not eligible ({why:?})")),
     };
-    if !sight.limited {
-        return Plan::Decline("no usage limit is drawn".to_owned());
-    }
-    let found = super::episode(events, seat.session, seat.slot, seat.agent);
+    let room = settings.headroom_at.filter(|_| !sight.limited);
+    let found = match room {
+        None if !sight.limited => return Plan::Decline("no usage limit is drawn".to_owned()),
+        None => super::episode(events, seat.session, seat.slot, seat.agent),
+        Some(_) if !sight.near => {
+            return Plan::Decline(
+                "no usage limit is drawn and the account has headroom".to_owned(),
+            );
+        }
+        Some(_) => super::headroom_episode(events, seat.session, seat.slot, seat.agent),
+    };
     let decision = super::decide(
         found.as_ref(),
         settings.grace_secs,
@@ -474,13 +562,37 @@ pub(crate) fn plan(
         return Plan::Decline(format!("not due ({decision:?})"));
     };
     let left = super::left_profiles(events, seat.session, seat.slot, seat.agent);
-    let choice = super::choose(&gather(list, &left), now.epoch());
+    let left_on_headroom = super::left_on_headroom(events, seat.session, seat.slot, seat.agent);
+    let choice = super::choose_with(&gather(list, (&left, &left_on_headroom)), now.epoch(), room);
+    let cause = found.cause();
     match choice.pick {
-        Some((to, _)) => Plan::Attempt { key: found.key, to },
+        Some((to, _)) => Plan::Attempt {
+            key: found.key,
+            to,
+            note: attempt_note(cause, &choice.skipped),
+            cause: cause.to_owned(),
+        },
         None => Plan::Refuse {
             key: found.key,
-            why: no_candidate(&choice.skipped),
+            why: tagged(&no_candidate(&choice.skipped), cause),
         },
+    }
+}
+
+/// What a headroom attempt's summary adds after `from <a> to <b>`: its trigger,
+/// then each candidate passed over and why. A limit attempt adds nothing.
+fn attempt_note(cause: &str, skipped: &[(String, Skip)]) -> String {
+    if cause.is_empty() {
+        return String::new();
+    }
+    let named: Vec<String> = skipped
+        .iter()
+        .map(|(to, skip)| format!("{to} ({})", skip_word(*skip)))
+        .collect();
+    if named.is_empty() {
+        format!(" ({cause})")
+    } else {
+        format!(" ({cause}); passed over {}", named.join(", "))
     }
 }
 
@@ -557,6 +669,7 @@ fn commit(
     argv: &Argv,
     agent: &str,
     (from, to): (&str, &str),
+    (note, cause): (&str, &str),
     now: Timestamp,
     spawn: impl FnOnce() -> bool,
     err: &mut impl Write,
@@ -568,17 +681,17 @@ fn commit(
         now,
         ATTEMPT_ACTION,
         &key,
-        &format!("from {from} to {to}"),
+        &format!("from {from} to {to}{note}"),
     );
     if spawn() {
         return Ok(0);
     }
-    let why = "failed: the move could not be started";
-    let code = close(argv, agent, now, (FAILED_ACTION, why), err)?;
+    let why = tagged("failed: the move could not be started", cause);
+    let code = close(argv, agent, now, (FAILED_ACTION, &why), err)?;
     said(
         argv,
         now,
-        &super::notice(&argv.session, agent, &super::Ending::Failed(why)),
+        &super::notice(&argv.session, agent, &super::Ending::Failed(&why)),
     );
     Ok(code)
 }
@@ -591,6 +704,10 @@ fn commit(
 /// # Errors
 ///
 /// Only a failure to write `err`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the trigger's reads and its one decision are kept in one place, as the leg's"
+)]
 pub(crate) fn trigger(
     dir: &Path,
     target: &str,
@@ -622,6 +739,27 @@ pub(crate) fn trigger(
     let text = capture.as_deref().unwrap_or_default();
     let clients = crate::transport::observe_clients(&server);
     let input = crate::watchdog_daemon::viewing_input(clients.as_deref(), &resolved.pane);
+    let config =
+        crate::state_root().map(|root| crate::doors::config_file(crate::shape::current(), &root));
+    let settings = super::settings(config.as_deref());
+    let profile = row.profile.clone().unwrap_or_default();
+    // ONE quota read, and only once a decision needs it.
+    let quota = std::cell::OnceCell::new();
+    let observed = || {
+        quota
+            .get_or_init(|| {
+                crate::state_root().and_then(|root| read_quota_at(&root, dir, &meta, now))
+            })
+            .as_ref()
+    };
+    let limited = crate::watchdog::limit_notice(text, &bin).is_some();
+    let near = settings.headroom_at.filter(|_| !limited).is_some_and(|at| {
+        let pin = crate::reseat::resolved(dir, &profile).and_then(|found| found.pin);
+        matches!(
+            own_room(observed(), row, pin.as_deref(), at, now.epoch()),
+            Room::Crossed(_) | Room::Near
+        )
+    });
     let sight = Sight {
         pane: super::Pane {
             frame: super::frame_of(
@@ -632,11 +770,9 @@ pub(crate) fn trigger(
             human_prompt: crate::watchdog::human_prompt_class(text, &bin).is_some(),
             client_input: input.and_then(|at| i64::try_from(at).ok()),
         },
-        limited: crate::watchdog::limit_notice(text, &bin).is_some(),
+        limited,
+        near,
     };
-    let config =
-        crate::state_root().map(|root| crate::doors::config_file(crate::shape::current(), &root));
-    let profile = row.profile.clone().unwrap_or_default();
     let seat = Seat {
         session: own_session,
         slot,
@@ -646,14 +782,13 @@ pub(crate) fn trigger(
     };
     let events = crate::watchdog_daemon::read_events(dir);
     // Read only once the plan reaches the chooser.
-    let gather = |list: &[String], left: &[(String, Timestamp)]| {
-        let quota = crate::state_root().and_then(|root| read_quota_at(&root, dir, &meta, now));
+    let gather = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
         let latched = super::latched_identities(meta.roster(), &events, own_session, slot);
         candidates(
             list,
             |to| crate::reseat::resolved(dir, to),
             left,
-            quota.as_ref(),
+            observed(),
             &latched,
             now.epoch(),
         )
@@ -664,14 +799,7 @@ pub(crate) fn trigger(
         slot: slot.to_owned(),
         key,
     };
-    match plan(
-        &super::settings(config.as_deref()),
-        &seat,
-        &sight,
-        &events,
-        gather,
-        now,
-    ) {
+    match plan(&settings, &seat, &sight, &events, gather, now) {
         Plan::Decline(why) => decline(err, &why),
         Plan::Refuse { key, why } => {
             let argv = argv(key);
@@ -680,7 +808,12 @@ pub(crate) fn trigger(
             said(&argv, now, &super::notice(own_session, &row.name, &ending));
             Ok(code)
         }
-        Plan::Attempt { key, to } => {
+        Plan::Attempt {
+            key,
+            to,
+            note,
+            cause,
+        } => {
             let exe = crate::shape::resolved_exe();
             let leg = crate::session_launch::capture::auto_reseat_argv(dir, slot, key);
             // No core path, no argv (unreachable here: eligibility asked the
@@ -690,7 +823,15 @@ pub(crate) fn trigger(
                 exe.zip(leg)
                     .is_some_and(|(exe, leg)| crate::transport::spawn_detached(&exe, &leg))
             };
-            commit(&argv(key), &row.name, (&profile, &to), now, spawn, err)
+            commit(
+                &argv(key),
+                &row.name,
+                (&profile, &to),
+                (&note, &cause),
+                now,
+                spawn,
+                err,
+            )
         }
     }
 }
@@ -864,7 +1005,7 @@ mod tests {
         let left = left_profiles(&[done], "aedev", "spawned.3", "scout");
         let list = words(&["ghost", "sol6x", "opus55x", "astrax"]);
         let resolve = |profile: &str| (profile != "ghost").then_some(Resolved { pin: None });
-        let choice = choose(&candidates(&list, resolve, &left, None, &[], 0), 0);
+        let choice = choose(&candidates(&list, resolve, (&left, &[]), None, &[], 0), 0);
         assert_eq!(choice.pick, Some(("opus55x".to_owned(), Tier::Unknown)));
         assert_eq!(
             choice.skipped,
@@ -944,7 +1085,14 @@ mod tests {
             })
         };
         choose(
-            &candidates(&words(list), resolve, left, Some(quota), latched, NOW),
+            &candidates(
+                &words(list),
+                resolve,
+                (left, &[]),
+                Some(quota),
+                latched,
+                NOW,
+            ),
             NOW,
         )
     }
@@ -1217,7 +1365,14 @@ mod tests {
             };
             let quota = read_quota(&dir, &inputs);
             let resolve = |_: &str| Some(Resolved { pin: None });
-            let judged = candidates(&words(&["spent"]), resolve, &[], quota.as_ref(), &[], now);
+            let judged = candidates(
+                &words(&["spent"]),
+                resolve,
+                (&[], &[]),
+                quota.as_ref(),
+                &[],
+                now,
+            );
             let choice = choose(&judged, now);
             assert_eq!(
                 (choice.pick, choice.skipped),
@@ -1284,6 +1439,8 @@ mod tests {
             sessions: None,
             grace_secs,
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            headroom_at: None,
+            headroom_note: None,
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -1300,14 +1457,17 @@ mod tests {
                 client_input,
             },
             limited,
+            near: false,
         };
         let clear = sight(Frame::Clear, false, None, true);
         let now = Timestamp::from_epoch(key.epoch() + 700);
         let attempt = Plan::Attempt {
             key,
             to: "opus55x".to_owned(),
+            note: String::new(),
+            cause: String::new(),
         };
-        let usable = |list: &[String], left: &[(String, Timestamp)]| {
+        let usable = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
             candidates(list, |_| Some(Resolved { pin: None }), left, None, &[], 0)
         };
         let plan_of = |settings: &Settings, sight: &Sight, events: &[Event]| {
@@ -1427,6 +1587,7 @@ mod tests {
             &argv,
             "scout",
             ("sol6x", "opus55x"),
+            ("", ""),
             now,
             || {
                 before = journal();
@@ -1470,7 +1631,15 @@ mod tests {
             "target-less: {chat:?}"
         );
         let _ = std::fs::remove_file(dir.join(crate::store::EVENTS));
-        let started = commit(&argv, "scout", ("sol6x", "opus55x"), now, || true, &mut err);
+        let started = commit(
+            &argv,
+            "scout",
+            ("sol6x", "opus55x"),
+            ("", ""),
+            now,
+            || true,
+            &mut err,
+        );
         assert_eq!(started.ok(), Some(0));
         assert_eq!(journal(), [attempt]);
     }

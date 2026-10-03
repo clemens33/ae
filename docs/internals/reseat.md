@@ -346,8 +346,9 @@ The watchdog moves a seat PROVEN stuck on its vendor usage limit the same way,
 through the same verb: the only difference is who types it. The decisions live
 in `src/autoreseat.rs`, the legs in `src/autoreseat/leg.rs`, the daemon step in
 `src/watchdog_daemon.rs::auto_reseat`. The config is `[workspace] auto_reseat`
-(`off` by default), `auto_reseat_sessions`, `auto_reseat_grace_secs`, and the
-`[auto_reseat]` map; see [Configuration](../getting-started/config.md).
+(`off` by default), `auto_reseat_sessions`, `auto_reseat_grace_secs`,
+`auto_reseat_at`, and the `[auto_reseat]` map; see
+[Configuration](../getting-started/config.md).
 
 One episode is the journal suffix starting at the first `limit` the watchdog
 booked for a seat after its newest `alert-cleared` or `spawn`; its KEY is that
@@ -404,6 +405,40 @@ The records are `auto-reseat` (the attempt, quoting from and to),
 episode), and `auto-reseat-notice` (one per delivery). A move interrupted
 between the stop and the tool starting is finished the same way a manual one
 is: `relaunch <agent>` — the failed notice says so by name.
+
+### Headroom episodes
+
+A seat can be moved BEFORE its limit. With `[workspace] auto_reseat_at` (global,
+`95` by default, `off` disables, `50`-`100`; anything else is `95` with one note
+the daemon journals target-less as `auto-reseat-notice` once per start), the
+daemon judges every eligible seat whose limit latch does NOT stand against its
+OWN client scope — the one `quota::recorded_identity` join the throttle line and
+the checkpoint ask make — over its held quota observation: the worst usable
+(fresh or stale) window, rows scoped to another model family left out, by the
+one derived percentage. At or past the threshold it books
+`auto-reseat-headroom`, whose `ts` is the episode KEY and whose summary,
+`headroom <pct>% <window>`, every later record of the episode quotes whole. The
+episode stays due under that key while the scope reads within 5 points of the
+threshold, and is re-armed by `auto-reseat-headroom-cleared` (`ref` the key)
+only once it reads strictly below threshold minus 5 with no attempt open; a
+terminal outcome therefore stays until then — one refusal per episode, not per
+cycle — while a move ends it, since the seat's account changed. No usable reading
+decides nothing either way.
+
+The rest is the limit path's: the same grace from the key, the same holds — plus
+`held: the seat's frame is not proven idle`, because a headroom move never ends a
+turn and a frame the classifier cannot prove idle (muse, a fresh claude) is not
+one — the same two attempts, the same trigger, leg, records and endings, each
+summary naming the trigger. A hold the journal already ends on is not named
+again, a daemon restart included. The trigger re-reads the scope and declines
+once it has relief. The chooser adds two skips: `no headroom` for a candidate
+with a usable window at or past the threshold, and `left on headroom` for a
+profile the seat left on headroom until a reading after the move proves it
+below the threshold, or its reset passed. A successful headroom attempt names
+each candidate it passed over. A drawn limit outranks the whole path: a latched
+seat is the limit path's alone, which moves exactly as before, and a limit move
+still takes a candidate past the threshold. The move's shell is no death and
+books no limit.
 
 A seeded successor is handed the seat pack, whose declared-state section reads
 `ae reads this as YOUR declaration until you re-declare`: the predecessor's

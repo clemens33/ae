@@ -192,7 +192,8 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `done_confirmations` | Delivered proof challenges a later `done`/`waiting-agent`/`blocked` must answer (`waiting-user` never challenged; `0` disables; range `0`–`9`) | `2` |
 | `auto_reseat` | Which seats the watchdog may move off a vendor usage limit (`off` / `on` / `all`); absent means `off`. `on` moves fixed non-main and spawned seats, `all` moves the main seat too; an orchestrator session's seats never move. Global config only | `off` |
 | `auto_reseat_sessions` | Comma-separated sessions auto reseat acts in; absent means every session. An entry that is not a session name, or is named twice, is ignored with a note | every session |
-| `auto_reseat_grace_secs` | Whole seconds a usage-limit episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
+| `auto_reseat_grace_secs` | Whole seconds a usage-limit or headroom episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
+| `auto_reseat_at` | The judged percentage of a seat's OWN account at which auto reseat moves it before any limit (`50`-`100`, or `off`). Any usable window counts, the session and the weekly one alike, judged as `ae quota`'s `EFFECTIVE` column. An unusable value means `95`, with one note the watchdog journals once per start. Global config only | `95` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
@@ -275,11 +276,26 @@ as a failed attempt (exit 1, nothing written) rather than a skip.
 
 When a seat is proven stuck on its vendor usage limit, the watchdog can move it
 in place to another profile — the same move `ae reseat` makes by hand, decided
-from the journal and the live quota readings. The three knobs above are
+from the journal and the live quota readings. The four knobs above are
 global-config only: a project overlay never steers spend, and the switch is
 read on every decision, so turning it off stops the next move. A knob ae cannot
 use turns the whole path off with its one note, beginning
 `auto reseat stays off: `.
+
+A seat can also move BEFORE its limit, to keep headroom in its subscription:
+once a usable window of the seat's own account judges at or past
+`auto_reseat_at`, a headroom episode opens, and after the grace the seat moves
+at the first cycle that proves its frame IDLE — a running turn, a draft, a
+human's input, a prompt only the human may answer, or a frame ae cannot model
+holds it, and a hold spends no attempt. The episode stays due while the account
+reads within 5 points of the threshold, and a new one can open only after it has
+read strictly more than 5 points below it, so jitter on the line moves nothing
+twice. A headroom move takes only a candidate with room: one with a usable
+window at or past the threshold is passed over, and a profile the seat left on
+headroom waits for a reading after the move that proves it below the threshold,
+or a passed reset. A seat on its vendor limit is the limit path's alone, which
+moves as it always did. With `quota = off`, or a seat whose account ae cannot
+read, nothing opens.
 
 The `[auto_reseat]` map names where each profile may move, in order:
 
