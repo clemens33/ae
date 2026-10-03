@@ -9,6 +9,7 @@
 //! assert_eq!(request.exit_code(), Some(0));
 //! ```
 
+pub mod app;
 pub mod archive;
 pub mod attention;
 pub mod autoreseat;

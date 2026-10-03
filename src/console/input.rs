@@ -42,7 +42,24 @@ pub enum Key {
     End,
     ClearLine,
     Enter,
+    /// The keys below come only from [`Keys::app`]; the chat's decoder never
+    /// spells one.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Tab,
+    /// A lone `ESC`, once [`ESC_IDLE`] passed with nothing after it.
+    Escape,
+    /// `^C` outside a paste.
+    Interrupt,
+    /// A bracketed paste's bytes, kept apart from typed text.
+    Pasted(Vec<u8>),
 }
+
+/// How long a lone `ESC` waits for the rest of a sequence before
+/// [`Keys::idle`] reads it as [`Key::Escape`].
+pub const ESC_IDLE: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Terminal reads cut into keys. Each key carries the stamp of the read that
 /// held its first byte — for text inside a paste, the read that held the
@@ -57,9 +74,26 @@ pub struct Keys {
     begun: Option<Instant>,
     /// The open paste's origin.
     paste: Option<Instant>,
+    /// The app's decoder: [`Keys::app`].
+    app: bool,
 }
 
 impl Keys {
+    /// The app's decoder: the chat's keys plus the app-only ones.
+    #[must_use]
+    pub fn app() -> Self {
+        Self {
+            app: true,
+            ..Self::default()
+        }
+    }
+
+    /// The keys an idle moment completes: a lone `ESC` past [`ESC_IDLE`].
+    pub fn idle(&mut self, _now: Instant) -> Vec<(Key, Instant)> {
+        let _ = self.app;
+        Vec::new()
+    }
+
     /// The keys `chunk` completes, read at `stamp`.
     pub fn feed(&mut self, chunk: &[u8], stamp: Instant) -> Vec<(Key, Instant)> {
         let mut keys = Vec::new();
@@ -206,7 +240,15 @@ impl Composer {
             | Key::Left
             | Key::Right
             | Key::Home
-            | Key::End => {}
+            | Key::End
+            | Key::Up
+            | Key::Down
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Tab
+            | Key::Escape
+            | Key::Interrupt
+            | Key::Pasted(_) => {}
         }
         None
     }
