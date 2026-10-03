@@ -258,17 +258,28 @@ impl Request {
         self.recorded.as_ref().map(RecordedTarget::triple)
     }
 
-    /// The table line for this row, `\n` included.
+    /// The table line for this row, `\n` included. The identity cells render
+    /// through the ONE display mapping; the row keeps the stored bytes.
     fn write_line(&self, out: &mut Vec<u8>) {
         write_row(
             out,
             self.status.token().as_bytes(),
             &self.kind,
             &self.id,
-            &self.from,
-            &self.to,
+            displayed(&self.from),
+            displayed(&self.to),
             &self.summary,
         );
+    }
+}
+
+/// One identity cell as the agent reads it: exactly the stored console sink
+/// renders as the human's display; anything else, invalid UTF-8 included,
+/// passes through byte for byte.
+fn displayed(stored: &[u8]) -> &[u8] {
+    match std::str::from_utf8(stored) {
+        Ok(text) => crate::tracked::display_sender(text).as_bytes(),
+        Err(_) => stored,
     }
 }
 
@@ -781,6 +792,34 @@ mod tests {
         let out = render(&scratch.0, Mode::All, &Viewer::default());
         assert_eq!(out.code, 0);
         assert!(text(&out.stdout).contains("the question"));
+    }
+
+    #[test]
+    fn a_console_ask_folds_into_the_table_reading_as_the_human() {
+        let shown = text(&table(
+            &container(&[
+                r#"{"ts":"t1","actor":"console:local","action":"ask","target":"a:lead","ref":"r1","summary":"the question"}"#,
+            ]),
+            Mode::All,
+            &Viewer::default(),
+        ));
+        assert!(shown.contains("human:chat"), "{shown}");
+        assert!(shown.contains("the question"), "{shown}");
+        assert!(!shown.contains("console:local"), "{shown}");
+    }
+
+    #[test]
+    fn identity_cells_pass_everything_but_the_exact_sink_through() {
+        use super::displayed;
+        assert_eq!(displayed(b"console:local"), b"human:chat".as_slice());
+        for passthrough in [
+            b"console:".as_slice(),
+            b"console:localx".as_slice(),
+            b"lead".as_slice(),
+            b"\xff\xfe".as_slice(),
+        ] {
+            assert_eq!(displayed(passthrough), passthrough, "{passthrough:?}");
+        }
     }
 
     #[test]

@@ -188,9 +188,32 @@ pub fn is_external(target: &str) -> bool {
 /// it and nothing but a `reply` is addressed to it.
 pub const CONSOLE_SINK: &str = "console:local";
 
+/// How the console sink reads wherever an AGENT sees it: the first-line marker,
+/// the `REQUEST` line, the `requests` table. Stored records keep [`CONSOLE_SINK`]
+/// byte for byte; only rendering maps through [`display_sender`].
+pub const CONSOLE_DISPLAY: &str = "human:chat";
+
+/// The ONE stored-identity-to-display mapping. Exactly [`CONSOLE_SINK`] reads as
+/// [`CONSOLE_DISPLAY`]; every other sender, `console:localx` included, passes
+/// through byte for byte. Callers render with this and persist the stored form.
+#[must_use]
+pub fn display_sender(stored: &str) -> &str {
+    if stored == CONSOLE_SINK {
+        CONSOLE_DISPLAY
+    } else {
+        stored
+    }
+}
+
 /// The namespace no `send`, `ask` or `review` may address, and no
 /// `AE_SENDER_OVERRIDE` may name.
 pub(crate) const CONSOLE_NAMESPACE: &str = "console:";
+
+/// The namespace no `AE_SENDER_OVERRIDE` may name either: the console sink
+/// renders to agents as [`CONSOLE_DISPLAY`], so a helper speaking as any
+/// `human:*` sender would emit the human's own marker. Agent names cannot
+/// contain a colon ([`crate::config::is_agent_name`]), so no real seat collides.
+pub(crate) const HUMAN_NAMESPACE: &str = "human:";
 
 /// The refusals the words alone decide, before any identity or pane: a
 /// request to the console is a usage error, an empty body a failure.
@@ -1633,10 +1656,14 @@ pub fn run(
     };
     let reply_cmd =
         reply_footer_command(dir, own_session, &target_name, &req_id, kind.reply_label());
-    let message = compose(kind, &req_id, &sender.display, &parsed.body, &reply_cmd);
+    // Rendered, not stored: the composed line and the envelope name the DISPLAY
+    // sender, so a console ask reads as the human's; the event below keeps the
+    // stored form.
+    let rendered = display_sender(&sender.display);
+    let message = compose(kind, &req_id, rendered, &parsed.body, &reply_cmd);
     // The action and ref name the recovery file the body store writes; the
-    // envelope names the same VERIFIED sender the composed message and the
-    // event do, so a request cannot be framed as coming from someone else.
+    // envelope names the same verified DISPLAY sender the composed message
+    // does, so a request cannot be framed as coming from someone else.
     let request = crate::deliver::Request {
         dir,
         server: &server,
@@ -1647,7 +1674,7 @@ pub fn run(
         own_session,
         action,
         reference: &req_id,
-        actor: &sender.display,
+        actor: rendered,
         body: &message,
         shape: crate::deliver::Shape::Send,
         defer,
@@ -1966,6 +1993,24 @@ mod tests {
             "console:orchestrator",
         ] {
             assert!(!is_external(refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn only_the_exact_sink_reads_as_the_human_and_everyone_else_passes_through() {
+        use super::{CONSOLE_DISPLAY, display_sender};
+        assert_eq!(display_sender(super::CONSOLE_SINK), CONSOLE_DISPLAY);
+        for passthrough in [
+            "console:",
+            "console:x",
+            "console:localx",
+            "console:local:",
+            "Console:local",
+            "lead",
+            "cl:lead",
+            "telegram:123",
+        ] {
+            assert_eq!(display_sender(passthrough), passthrough, "{passthrough}");
         }
     }
 

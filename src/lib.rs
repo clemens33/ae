@@ -495,10 +495,10 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
 
 /// The ordinary argv dispatch: [`cli::Request::parse`] and the world it needs.
 fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
-    if speaks_as_the_console(args) {
+    if speaks_as_reserved(args) {
         writeln!(
             err,
-            "ae: AE_SENDER_OVERRIDE REFUSED — it names the console, and no helper speaks as the console: only the console's own input does."
+            "ae: AE_SENDER_OVERRIDE REFUSED — it names the console or the human sender, and no helper speaks as either: only the console's own input does."
         )?;
         err.flush()?;
         return Ok(entry::EXIT_USAGE);
@@ -2732,15 +2732,18 @@ fn run_tracked(
 }
 
 /// Whether `args` run a session helper while `AE_SENDER_OVERRIDE` names the
-/// console — refused at this one ingress, for every helper, before anything
-/// is parsed or read, because the console's actor is built only by its own
-/// submit.
-fn speaks_as_the_console(args: &[String]) -> bool {
+/// console or the human sender — refused at this one ingress, for every
+/// helper, before anything is parsed or read, because the console's actor is
+/// built only by its own submit and the human's display only by that actor.
+fn speaks_as_reserved(args: &[String]) -> bool {
     let helper = args
         .first()
         .is_some_and(|entry| shim::HELPERS.iter().any(|helper| helper.entry == entry));
     helper
-        && sender_override().is_some_and(|display| display.starts_with(tracked::CONSOLE_NAMESPACE))
+        && sender_override().is_some_and(|display| {
+            display.starts_with(tracked::CONSOLE_NAMESPACE)
+                || display.starts_with(tracked::HUMAN_NAMESPACE)
+        })
 }
 
 /// `AE_SENDER_OVERRIDE`: how an external actor with no pane (a chat bridge, a

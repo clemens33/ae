@@ -161,6 +161,8 @@ main seat after a restart — even if it was first asked of the other seat; the
 banner names every lead-pair seat for that reason.
 
 Both lead-pair seats — never a worker — are told in their context that a turn
-whose first line is `⟦ae:msg from console:local⟧` is the human's words, to be
+whose first line is `⟦ae:msg from human:chat⟧` is the human's words, to be
 answered once with the reply command it carries, and that text typed in their
 pane is mirrored but not threaded, so what the human must see goes out by `say`.
+`human:chat` is display only: the journal still records the ask as
+`console:local`, and older records show that spelling for the same route.

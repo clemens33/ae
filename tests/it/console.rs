@@ -465,7 +465,7 @@ fn nothing_speaks_as_the_console_and_only_a_reply_is_sent_to_it() {
         (ae::cli::MEMO, &["read"]),
         (ae::cli::REQUESTS, &["all"]),
     ];
-    for value in ["console:local", "console:x"] {
+    for value in ["console:local", "console:x", "human:chat", "human:other"] {
         for (entry, tail) in calls {
             let (code, err) = helper_run(&root, &dir, entry, tail, Some(value));
             assert_eq!(code, Some(2), "{entry} as {value}: {err}");

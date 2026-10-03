@@ -236,7 +236,7 @@ impl Rig {
         )
         .expect("stored delivered bytes");
         assert!(
-            delivered.contains(&format!("from console:local: {literal}\n\nREQUIRED:")),
+            delivered.contains(&format!("from human:chat: {literal}\n\nREQUIRED:")),
             "whole literal body before reply footer: {delivered}"
         );
         assert_eq!(asks[0].target.as_deref(), Some("lead"));

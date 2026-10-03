@@ -366,7 +366,7 @@ fn typed_text_uses_the_real_console_ask_and_marker_path() {
     );
     let received = rig.tool.submitted();
     assert!(
-        received.starts_with("⟦ae:msg from console:local⟧"),
+        received.starts_with("⟦ae:msg from human:chat⟧"),
         "{received}"
     );
     assert!(received.contains("independent typed request"), "{received}");
@@ -374,8 +374,10 @@ fn typed_text_uses_the_real_console_ask_and_marker_path() {
         received.contains("REQUIRED:") && received.contains(" reply "),
         "{received}"
     );
+    let id = ask.reference.as_deref().expect("request id");
+    assert!(received.contains(id), "{received}");
     assert!(
-        received.contains(ask.reference.as_deref().expect("request id")),
+        received.contains(&format!("REQUEST {id} from human:chat:")),
         "{received}"
     );
     output.wait("the chat reports the ask outcome after its body", |text| {
@@ -398,7 +400,7 @@ fn an_explicit_colead_prefix_routes_the_literal_body_to_the_colead_seat() {
     assert_eq!(ask.target.as_deref(), Some("colead"));
     assert_eq!(ask.target_slot, RoutingMember::Value("worker.0".to_owned()));
     let body = fs::read_to_string(received).expect("what colead received");
-    assert!(body.starts_with("⟦ae:msg from console:local⟧"), "{body}");
+    assert!(body.starts_with("⟦ae:msg from human:chat⟧"), "{body}");
     assert!(body.contains("@literal body"), "{body}");
     assert!(
         fs::read(rig.root.join("received"))
@@ -505,7 +507,7 @@ fn the_external_tool_fixtures_receive_console_marked_tracked_asks() {
         assert_eq!(code, 0, "{target}: {}", String::from_utf8_lossy(&err));
         let received = fs::read_to_string(receipt).expect("submitted control receipt");
         assert!(
-            received.starts_with("⟦ae:msg from console:local⟧"),
+            received.starts_with("⟦ae:msg from human:chat⟧"),
             "{received}"
         );
         assert!(received.contains(body), "{received}");
