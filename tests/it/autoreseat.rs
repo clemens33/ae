@@ -11,6 +11,7 @@
               PRODUCT code may reach"
 )]
 
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
@@ -66,6 +67,30 @@ fn configure_from(rig: &Rig, switch: &str, from: &str, to: &str) {
         )
         .is_ok(),
         "a config"
+    );
+}
+
+/// Keep a no-room fixture's declared candidates as its whole family universe.
+fn remove_unused_profiles(rig: &Rig, profiles: &[&str]) {
+    let path = rig.scratch.join("config");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|why| panic!("fixture config: {why}"));
+    let mut in_profiles = false;
+    let mut kept = String::new();
+    for line in text.lines() {
+        if line.starts_with('[') {
+            in_profiles = line == "[profiles]";
+        }
+        let unused = in_profiles
+            && profiles
+                .iter()
+                .any(|profile| line.starts_with(&format!("{profile} =")));
+        if !unused {
+            assert!(writeln!(kept, "{line}").is_ok(), "fixture config line");
+        }
+    }
+    assert!(
+        std::fs::write(path, kept).is_ok(),
+        "fixture candidate universe"
     );
 }
 
@@ -471,6 +496,7 @@ fn a_candidate_on_a_spent_account_is_passed_over_for_the_next_declared_one() {
         ("legspentall", "fake-claude-a"),
     ] {
         let (rig, pane) = limited_on(tag, "claude-b", "on", to);
+        remove_unused_profiles(&rig, &["fake-claude"]);
         spend(&rig, "home-a");
 
         let (code, out, err) = leg(&rig, "spawned.0", KEY);
@@ -495,6 +521,7 @@ fn a_candidate_on_a_spent_account_is_passed_over_for_the_next_declared_one() {
 #[test]
 fn a_seat_with_no_usable_candidate_is_refused_where_it_stands() {
     let (rig, pane) = limited("legnone", "on", "ghost");
+    remove_unused_profiles(&rig, &["fake-claude-a", "fake-claude-b"]);
 
     let (code, out, err) = leg(&rig, "spawned.0", KEY);
 
@@ -742,6 +769,27 @@ fn limit_notices(rig: &Rig) -> Vec<String> {
 fn the_first_sight_limit_notice_forecasts_the_move_of_a_seat_the_path_would_move() {
     let rig = Rig::new("autoforecast");
     configure(&rig, "on", "fake-opencode");
+    // The other seat has no declared row or family: effort differs from scout.
+    let path = rig.scratch.join("config");
+    let text = std::fs::read_to_string(&path).expect("forecast fixture config");
+    let distinct = format!(
+        "fake-claude-b = \"CLAUDE_CONFIG_DIR={} {} {} --effort high\"",
+        rig.scratch.join("home-b").display(),
+        rig.scratch.join("tools/claude").display(),
+        rig.scratch.join("claude.pl").display(),
+    );
+    let text = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("fake-claude-b =") {
+                distinct.as_str()
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(path, format!("{text}\n")).expect("distinct forecast profile");
     attach_viewer(&rig);
     let scout = rig.seat("spawned.0", "scout", "claude");
     rig.seat_rows("spawned.1", "other", "claude-b", "claude");
@@ -816,6 +864,7 @@ fn with_the_switch_absent_or_off_a_limit_is_booked_and_released_as_it_always_was
 fn a_refused_episode_stays_refused_across_a_daemon_restart() {
     let rig = Rig::new("autorefuse");
     configure(&rig, ON_NOW, "ghost");
+    remove_unused_profiles(&rig, &["fake-claude-a", "fake-claude-b"]);
     let pane = rig.seat("spawned.0", "scout", "claude");
     rig.mark_limited(&pane);
     let refused = watch_until(&rig, || booked(&rig, REFUSED_ACTION) == 1);

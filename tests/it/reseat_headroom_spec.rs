@@ -365,6 +365,8 @@ fn headroom_skip_does_not_change_a_limit_move_onto_the_same_96_percent_candidate
     for (tag, limited) in [("hrlimit96", true), ("hr96", false)] {
         let rig = Rig::new(tag);
         configure(&rig, "", "fake-claude-a", "fake-claude-b");
+        // Both arms judge the same account pair; no spare implicit-account twin.
+        phase1_remove_unused_profile(&rig, "fake-claude");
         quota(&rig, "home-a", &[("weekly_all", 96.0)], 0);
         quota(&rig, "home-b", &[("weekly_all", 96.0)], 0);
         let pane = seat(&rig, "claude-a");
