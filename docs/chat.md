@@ -77,10 +77,12 @@ unread`. Residual: a watchdog started with a custom `--interval` is judged by
 the default, because the override is not recorded.
 
 The header counts the seats and says when it was read, `-- needs you: 3 seats ·
-as of 18:02:11`. In a pane the section takes at most a third of the height,
-whole entries only, the header saying `<k> more: ae list` for the seats it left
-out; without a pane size (a pipe, `theme = off`) it shows twelve lines at most. Each row is clipped to the pane's width
-when the chat knows it. The section prints again only when it changes: a need
+as of 18:02:11`. In a pane the section takes at most a third of the height;
+without a pane size (a pipe, `theme = off`) it shows twelve lines at most. The
+`unverified` lines get that room first, then the seat rows in rank order; a row
+short of room keeps its seat line and drops its detail, and the header says
+`<k> more: ae list` for the seats it left out. Each row is clipped to the pane's
+width when the chat knows it. The section prints again only when it changes: a need
 that clears prints `-- needs you: nothing standing (as of …)` once, an
 unreadable meta or journal, or a damaged meta that may have lost a seat, prints
 one warning that keeps the rows shown earlier standing, and a first read with nothing standing prints nothing.
@@ -207,11 +209,13 @@ else. It types nothing into the pane and writes no record. ae proves the seat
 against the meta and tmux at that moment — the roster still seats that name in
 that slot, the session uuid still matches the chat's, exactly one live pane
 carries the slot and the name, and the server lists that pane in this session
-— then selects its window and pane behind a tmux guard that checks the same
-facts again, so every client viewing the session follows and none other moves.
+— then selects its window and pane behind a tmux guard that checks the session
+id and uuid and the pane's slot, name and liveness again, so every client
+viewing the session follows and none other moves.
 `opened <seat> - prefix h returns` on success; `refused: /open <seat>: <why>;
 nothing selected` when a proof or the guard fails; `uncertain: …` when tmux
-does not confirm. The seats `/open` knows are those of the last meta read;
+does not confirm. The seats `/open` knows are those of the last settled read of the meta and
+journal;
 another session's seat (`session:agent`) is refused. Residual: a pane whose
 window is also linked into another session is refused as changed.
 
