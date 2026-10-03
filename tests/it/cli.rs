@@ -2880,11 +2880,11 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
         &["worker", "the", "question"],
         &[],
     );
-    assert_eq!(asked, (Some(0), String::new(), String::new()));
     let events = fx.events();
     assert_eq!(events.len(), 1, "{events:?}");
     let id = event_ref(&fx);
     assert!(is_request_id(&id, "ae"), "{id}");
+    assert_eq!(asked, (Some(0), format!("{id}\n"), String::new()));
     let reply_cmd = format!(
         "{}/reply --as \"worker\" \"{id}\" \"<your reply>\"",
         fx.dir.display()
@@ -2945,6 +2945,35 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
     );
 }
 
+/// The asker learns its request id from the helper itself: an `ask` or a
+/// `review` that opened a request prints exactly that id on stdout, and the
+/// core's own `requests` lists the same id as pending.
+#[test]
+fn a_delivered_ask_or_review_prints_the_id_requests_lists_as_pending() {
+    let fx = Tracked::new("aid");
+    for (helper, from, to, prefix) in [
+        (ae::cli::ASK, &fx.main, "worker", "ae"),
+        (ae::cli::REVIEW, &fx.worker, "lead", "review"),
+    ] {
+        let (code, stdout, stderr) = fx.run(helper, Some(from), &[to, "the", "question"], &[]);
+        assert_eq!((code, stderr.as_str()), (Some(0), ""), "{helper}");
+        let id = event_ref(&fx);
+        assert!(is_request_id(&id, prefix), "{id}");
+        assert_eq!(
+            stdout,
+            format!("{id}\n"),
+            "{helper}: one line, the id alone"
+        );
+        let listed = requests_all(&fx);
+        assert!(
+            listed
+                .lines()
+                .any(|line| line.contains(&id) && line.contains("pending")),
+            "requests lists {id} as pending: {listed}"
+        );
+    }
+}
+
 /// The REQUEST half of the retire rule, against the writer that really records
 /// one: `ask` runs for real here, and what it wrote is what the reader judges.
 ///
@@ -2962,7 +2991,10 @@ fn a_retired_seat_closes_the_request_the_real_ask_writer_recorded() {
         &["worker", "still", "there"],
         &[],
     );
-    assert_eq!(asked, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        asked,
+        (Some(0), format!("{}\n", event_ref(&fx)), String::new())
+    );
 
     let open = ae::session::SessionRead::open(&fx.dir).expect("the log reads");
     assert_eq!(
@@ -3016,9 +3048,9 @@ fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_hel
         &["lead", "look", "at", "x"],
         &[],
     );
-    assert_eq!(reviewed, (Some(0), String::new(), String::new()));
     let id = event_ref(&fx);
     assert!(is_request_id(&id, "review"), "{id}");
+    assert_eq!(reviewed, (Some(0), format!("{id}\n"), String::new()));
     let message = pasted(&fx, "main");
     assert!(
         message.starts_with(&format!(
@@ -3180,7 +3212,10 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
     // target and the caller's slot.
     fx.forget();
     let external = fx.run(ae::cli::ASK, Some(&fx.main), &["telegram:42", "hello"], &[]);
-    assert_eq!(external, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        external,
+        (Some(0), format!("{}\n", event_ref(&fx)), String::new())
+    );
     assert!(
         fx.received_now("worker").is_empty() && fx.stub().0.is_empty(),
         "an event-only sink is delivered to nobody"
@@ -3206,7 +3241,10 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
         &["worker", "from", "the", "bridge"],
         &[("AE_SENDER_OVERRIDE", "bridge")],
     );
-    assert_eq!(bridged, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        bridged,
+        (Some(0), format!("{}\n", event_ref(&fx)), String::new())
+    );
     let message = pasted(&fx, "worker");
     assert!(
         message.starts_with("⟦ae:msg from bridge⟧\nREVIEW REQUEST review-")
@@ -3230,9 +3268,9 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
 /// An `ask` from the main pane to the worker: its request id.
 fn ask_from_main(fx: &Tracked, body: &str) -> String {
     let asked = fx.run(ae::cli::ASK, Some(&fx.main), &["worker", body], &[]);
-    assert_eq!(asked, (Some(0), String::new(), String::new()));
     let id = event_ref(fx);
     assert!(is_request_id(&id, "ae"), "{id}");
+    assert_eq!(asked, (Some(0), format!("{id}\n"), String::new()));
     fx.forget();
     id
 }

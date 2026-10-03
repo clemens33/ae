@@ -1589,7 +1589,8 @@ fn admitted_route(
     Ok(Ok((resolved, server, cross_session)))
 }
 
-/// Run a tracked request end to end.
+/// Run a tracked request end to end; a request it opens prints its id, as
+/// `opened` says.
 ///
 /// # Errors
 ///
@@ -1654,7 +1655,7 @@ pub fn run(
             writeln!(err, "ae: {action} {req_id} not recorded: {why}")?;
             return Ok(EXIT_FAILED);
         }
-        return Ok(0);
+        return opened(out, &req_id, 0);
     }
     let (resolved, server, cross_session) =
         match admitted_route(kind, dir, &parsed, sender, own_session, now, err)? {
@@ -1717,7 +1718,18 @@ pub fn run(
         caller: caller_session,
         target: &resolved.session,
     });
-    record_tracked_delivery(dir, &fields, delivery, cross, err)
+    let code = record_tracked_delivery(dir, &fields, delivery, cross, err)?;
+    opened(out, &req_id, code)
+}
+
+/// The asker's handle on what it opened: on exit 0 the request is recorded,
+/// so pending (an unconfirmed paste included), and its id alone is the one
+/// line on `out`. Any other exit prints nothing there.
+fn opened(out: &mut impl Write, req_id: &str, code: u8) -> io::Result<u8> {
+    if code == 0 {
+        writeln!(out, "{req_id}")?;
+    }
+    Ok(code)
 }
 
 /// Record the event for a tracked delivery, including a delivery whose submit
@@ -3405,6 +3417,137 @@ mod tests {
         );
         assert!(!events.contains("target_server"), "{events}");
         super::clear_test_hooks();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Drive one production `run` to a resolved worker with `delivery`
+    /// injected: its exit, its stdout, its stderr and its state directory.
+    fn run_delivering(
+        kind: Kind,
+        tag: &str,
+        target: &str,
+        delivery: Result<crate::deliver::Delivered, crate::deliver::Failure>,
+    ) -> (u8, String, String, std::path::PathBuf) {
+        super::clear_test_hooks();
+        let dir = meta_dir(tag, &format!("session_id={UUID}\n"));
+        let held = triple("/tmp/ae", "%9", UUID);
+        super::queue_observe(Ok(held.clone()));
+        super::queue_observe(Ok(held));
+        super::set_test_resolve(
+            Resolved {
+                pane: "%9".to_owned(),
+                agent: "w".to_owned(),
+                slot: "worker.0".to_owned(),
+                session: "s".to_owned(),
+            },
+            ServerId::Ambient,
+        );
+        super::set_test_delivery(delivery);
+        let sender = Sender {
+            display: "lead".to_owned(),
+            slot: "main".to_owned(),
+            session: "s".to_owned(),
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run(
+            kind,
+            &dir,
+            &[target.to_owned(), "q".to_owned()],
+            Some(&sender),
+            "s",
+            Timestamp::parse("2026-08-27T07:11:12Z").expect("ts"),
+            7,
+            crate::deliver::DEFAULT_DEFER,
+            &mut out,
+            &mut err,
+        )
+        .expect("the run writes its streams");
+        super::clear_test_hooks();
+        let text = |bytes: Vec<u8>| String::from_utf8(bytes).expect("utf-8");
+        (code, text(out), text(err), dir)
+    }
+
+    fn the_id(kind: Kind) -> String {
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
+        request_id(kind.id_prefix(), ts, 7)
+    }
+
+    fn delivered() -> crate::deliver::Delivered {
+        crate::deliver::Delivered {
+            body_file: String::new(),
+            framed: "q".to_owned(),
+            verification: crate::deliver::DeliveryVerification::Verified,
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the event ledger the production run wrote"
+    )]
+    fn a_delivered_ask_or_review_prints_exactly_its_recorded_id_on_stdout() {
+        for (kind, tag) in [(Kind::Ask, "idask"), (Kind::Review, "idrev")] {
+            let (code, out, err, dir) = run_delivering(kind, tag, "w", Ok(delivered()));
+            let id = the_id(kind);
+            assert_eq!((code, err.as_str()), (0, ""), "{tag}");
+            assert_eq!(out, format!("{id}\n"), "one line, the id as minted: {tag}");
+            let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+            assert!(events.contains(&format!(r#""ref":"{id}""#)), "{events}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn an_unconfirmed_ask_prints_its_pending_id_and_keeps_its_stderr_byte_identical() {
+        let unconfirmed = Err(crate::deliver::Failure::Unconfirmed {
+            body_file: "/messages/x.ask.body.txt".to_owned(),
+            framed: "framed".to_owned(),
+            notice: false,
+        });
+        let (code, out, err, dir) = run_delivering(Kind::Ask, "idunc", "w", unconfirmed);
+        let id = the_id(Kind::Ask);
+        assert_eq!(code, 0);
+        assert_eq!(out, format!("{id}\n"));
+        assert_eq!(
+            err,
+            format!(
+                "ae: ask {id} recorded as pending; re-send only if peek shows the body still in the input box.\n"
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_refused_or_unrecorded_ask_prints_nothing_on_stdout() {
+        let refusals = [
+            crate::deliver::Failure::DeadPane,
+            crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            },
+            crate::deliver::Failure::Unconfirmed {
+                body_file: "/messages/x.ask.body.txt".to_owned(),
+                framed: "framed".to_owned(),
+                notice: true,
+            },
+        ];
+        for (n, refusal) in refusals.into_iter().enumerate() {
+            let (code, out, _, dir) =
+                run_delivering(Kind::Ask, &format!("idref{n}"), "w", Err(refusal));
+            assert_eq!(
+                (code, out.as_str()),
+                (crate::state::EXIT_FAILED, ""),
+                "refusal {n}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn an_ask_to_an_external_sink_prints_the_id_it_recorded() {
+        let (code, out, err, dir) =
+            run_delivering(Kind::Ask, "idext", "telegram:42", Ok(delivered()));
+        assert_eq!((code, err.as_str()), (0, ""));
+        assert_eq!(out, format!("{}\n", the_id(Kind::Ask)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

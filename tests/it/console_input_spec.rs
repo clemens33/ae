@@ -388,6 +388,27 @@ fn typed_text_uses_the_real_console_ask_and_marker_path() {
     assert_eq!(rig.asks().len(), 1);
 }
 
+/// The chat asks through the helpers' own tracked path, which prints the
+/// request id on stdout for a seat to capture. The chat hands that path a
+/// sink, so the id never reaches the chat pane.
+#[test]
+fn a_typed_ask_never_prints_its_request_id_into_the_chat_pane() {
+    let rig = ConsoleRig::new("specaskid");
+    let pane = rig.toggle();
+    let mut output = Output::attach(&rig, &pane, "w1");
+    rig.ready(&pane, &mut output);
+    rig.type_line(&pane, "an id free request");
+    let ask = rig.asked(&mut output, "an id free request");
+    let id = ask.reference.expect("request id");
+    output.wait("the chat reports the ask outcome after its body", |text| {
+        text.find("an id free request")
+            .zip(text.rfind("sent"))
+            .is_some_and(|(body, outcome)| body < outcome)
+    });
+    let shown = String::from_utf8_lossy(&output.bytes);
+    assert!(!shown.contains(&id), "{shown}");
+}
+
 #[test]
 fn an_explicit_colead_prefix_routes_the_literal_body_to_the_colead_seat() {
     let rig = ConsoleRig::new("speccolead");
