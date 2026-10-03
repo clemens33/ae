@@ -1,5 +1,10 @@
 //! Independent acceptance pins for chat-wrap, A1, and R-A2/R-A3.
 
+#![allow(
+    clippy::expect_used,
+    reason = "acceptance owns isolated journal and terminal fixtures"
+)]
+
 use ae::console::input::{Command, command, outcome_line};
 use ae::console::lane::{Item, Kind, Lane};
 use ae::console::submit::{Outcome, close_owned, submit};
@@ -33,7 +38,7 @@ fn unstyled(text: &str) -> String {
     out
 }
 
-/// Requirement oracle, independent of event_text's implementation. The bar is
+/// Requirement oracle, independent of `event_text`'s implementation. The bar is
 /// ae's known one-cell glyph; text uses the conservative rule in R-A2/R-A3.
 fn row_cells(row: &str) -> usize {
     let mut chars = row.chars();

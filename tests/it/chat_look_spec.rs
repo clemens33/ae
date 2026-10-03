@@ -834,10 +834,10 @@ fn chat_look_cli_typed_ask_keeps_styled_lane_and_red_outcome() {
         text.contains("not delivered"),
         "bounded delivery produced an outcome"
     );
-    // Select the outcome after the question body: the header also contains
-    // "not delivered", and visible ids no longer distinguish those rows.
+    // The composer echoes this marker first; its final occurrence is the lane
+    // body. Select the outcome after it, beyond the "not delivered" header.
     let after_body =
-        &text[text.find("fixture-typed-ask").expect("ask body") + "fixture-typed-ask".len()..];
+        &text[text.rfind("fixture-typed-ask").expect("ask body") + "fixture-typed-ask".len()..];
     let palette = ae::theme::Palette::NEUTRAL;
     assert_eq!(
         colour_of(after_body, "not delivered"),
@@ -1078,7 +1078,7 @@ while (time() < $deadline) {
         local $/;
         my $bytes = <$record> // '';
         my $marker = $ENV{LOOK_ASK} eq 'on' ? 'not delivered' : 'refused: the kept draft';
-        my $start = $ENV{LOOK_ASK} eq 'on' ? index($bytes, 'fixture-typed-ask') : 0;
+        my $start = $ENV{LOOK_ASK} eq 'on' ? rindex($bytes, 'fixture-typed-ask') : 0;
         if (index($bytes, 'to lead>') >= 0 && $start >= 0 && index($bytes, $marker, $start) >= 0) { $ready = 1; last; }
     }
     if (waitpid($pid, WNOHANG) == $pid) { $alive = 0; last; }
