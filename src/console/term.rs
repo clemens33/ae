@@ -503,6 +503,35 @@ mod tests {
     }
 
     #[test]
+    fn needs_open_first_read_only_draft_reads_pane_size_before_drawing() {
+        let (_rig, console, mut term) = bare_term("term-open-first-reader");
+        let _ = term.take(&console, Reading::NotOwner("elsewhere".to_owned()));
+        let effects = term.input.chunk(b"/open scout", Instant::now());
+        assert!(effects.is_empty(), "unfinished draft performs no act");
+        assert!(!term.input.taking(), "read-only chat owns no input");
+        assert!(term.input.composing(), "read-only draft is visible");
+        assert!(!term.screen.drawn(), "this is the first draft paint");
+        let calls = std::cell::Cell::new(0);
+        let drawn = term.painted("", &[], |_| {
+            calls.set(calls.get() + 1);
+            Some(crate::tmux::PaneSize {
+                width: 12,
+                height: 8,
+                cursor_y: 0,
+            })
+        });
+        assert_eq!(
+            calls.get(),
+            1,
+            "first read-only draft reads actual pane dimensions"
+        );
+        assert!(
+            drawn.contains("\r\n"),
+            "first draft draws more than one row in the narrow pane: {drawn:?}"
+        );
+    }
+
+    #[test]
     fn a_paint_with_no_tmux_answer_assumes_80_by_24_and_a_settle_ends_the_composer() {
         let (_rig, console, mut term) = bare_term("term-paint");
         assert_eq!(term.paint("", &[]), "", "nothing taken, nothing drawn");
