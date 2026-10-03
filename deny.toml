@@ -52,7 +52,30 @@ confidence-threshold = 0.9
 # widening the allow-list above, deliberately: CDLA is a data license, and
 # nothing else in ae's graph should acquire it by a silent pass.
 # Ref: https://spdx.org/licenses/CDLA-Permissive-2.0.html
-exceptions = [{ crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] }]
+# The terminal UI graph (`ae app`, ratatui-core + rustix, 2026-10-03) brings two
+# licenses the allow-list above does not hold, each SCOPED to the one crate that
+# carries it, by the same rule as webpki-roots — a license enters through a
+# named crate, never by widening the list:
+#   - foldhash (Zlib): the hasher under hashbrown, which ratatui-core's layout
+#     cache (lru) and solver (kasuari) use at RUNTIME. Zlib is permissive (no
+#     copyleft, no patent clause); it asks only that the notice is kept and that
+#     a modified source is not misrepresented.
+#     Ref: https://spdx.org/licenses/Zlib.html
+#   - unicode-ident ((MIT OR Apache-2.0) AND Unicode-3.0): BUILD-TIME only, under
+#     proc-macro2/syn for the strum and thiserror derives; nothing of it reaches
+#     the shipped binary. Unicode-3.0 is the Unicode data license, permissive.
+#     Ref: https://spdx.org/licenses/Unicode-3.0.html
+exceptions = [
+  { crate = "webpki-roots", allow = [
+    "CDLA-Permissive-2.0",
+  ] },
+  { crate = "foldhash", allow = [
+    "Zlib",
+  ] },
+  { crate = "unicode-ident", allow = [
+    "Unicode-3.0",
+  ] },
+]
 
 [licenses.private]
 # `ae` itself is `publish = false`; it is still MIT and still checked.

@@ -108,6 +108,44 @@ rustls = { version = "=0.23.45", default-features = false, features = [
 # digest on every helper call is a cost the product will not pay.
 ring = { version = "=0.17.14", default-features = false }
 
+# THE TERMINAL UI ROWS (`ae app`, 2026-10-03; human ruling 21:05Z "with ratatui
+# etc.", lead ruling on the sideapp plan). `ae chat` prints a lane; `ae app`
+# draws a sidebar, tabs and the chat column in cells, and a cell grid with a
+# diffing terminal is exactly what ratatui is. Measured in scratch crates before
+# choosing (the plan's dependency table carries every crate, license and unsafe
+# count):
+#   - ratatui 0.30 umbrella + crossterm: ~75 crates, a second keyboard parser.
+#   - ratatui 0.29 umbrella: 43 lock entries, no thiserror, but the line gets no
+#     fixes and carries `paste` (RUSTSEC-2024-0436, unmaintained).
+#   - ratatui-core 0.1.2 alone: 31 lock entries, the maintained line. CHOSEN.
+# ratatui-core holds everything the app draws with: `Buffer`, `Layout`,
+# `Text`/`Line`/`Span`, the `Widget` and `Backend` traits, `Terminal` and
+# `TestBackend`. ratatui-widgets is NOT taken: the app lays its lines out itself
+# through `console::wrap`, so a second crate of widgets would be graph for nothing.
+#
+# `default-features = false` and NO features: `std` only switches the error
+# types of its dependencies to std's, which nothing here reads. The crate is
+# `no_std + alloc` underneath and builds on both targets as it stands.
+#
+# THE thiserror CARVE-OUT (lead, under the human ruling): `thiserror` sits in
+# this graph TRANSITIVELY ONLY — kasuari 0.4.12 (the layout solver) and
+# ratatui-core itself. It is never a direct ae dependency and no ae code imports
+# it; AGENTS.md's hard rule says so in one sentence. Revisit trigger: upstream
+# drops thiserror, and the carve-out note goes with it.
+ratatui-core = { version = "=0.1.2", default-features = false }
+# Raw mode and the window size, through a SAFE termios API, for `ae app` in any
+# terminal: `unsafe_code = "forbid"` closes libc for ae's own code, and the
+# chat's pane argv (`stty` through `TTY_SETUP`) only exists inside window 0.
+# rustix is the crate docs/history.md §11 already named for this class
+# ("flock, signals or unix sockets: rustix, not nix"), and it is three crates
+# where crossterm is a dozen plus a second input parser. Only `termios` (+ `std`
+# for the `AsFd` impls) is enabled. Every call is confined to the terminal door
+# `src/app/tty.rs` by clippy.toml's `disallowed-methods`.
+rustix = { version = "=1.1.5", default-features = false, features = [
+  "std",
+  "termios",
+] }
+
 # The fake Telegram server the outbound gate runs against is a `std::net`
 # TcpListener in the test module itself: a test double that needed a dependency
 # would be a second network stack to trust.

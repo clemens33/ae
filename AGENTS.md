@@ -156,6 +156,8 @@ Other rules of the loop:
   and calls through an existing door add no site.
 - No clap, serde, anyhow, thiserror, chrono or nix. Adding any runtime dependency is a
   ruling, not a commit. See docs/history.md §11 for the researched line and its triggers.
+  thiserror is carved out TRANSITIVELY only (kasuari and ratatui-core, under `ae app`): it is
+  never a direct ae dependency and no ae code imports it (docs/history.md §11).
 - **No new Bash.** `install` is policy-frozen. There is no other bash file and none may
   be added. The ONE shell literal is the chat's pane argv `src/console/toggle.rs::TTY_SETUP`
   (`stty`, then `exec`; termios needs libc or `unsafe`): not a bash file, not a door, one site.

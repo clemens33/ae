@@ -16,16 +16,40 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
+[[exemptions.allocator-api2]]
+version = "0.2.20"
+criteria = "safe-to-deploy"
+
 [[exemptions.base64]]
 version = "0.23.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.bitflags]]
+version = "2.13.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.bytes]]
 version = "1.12.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.castaway]]
+version = "0.2.4"
+criteria = "safe-to-deploy"
+
 [[exemptions.cc]]
 version = "1.4.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.compact_str]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.either]]
+version = "1.18.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.errno]]
+version = "0.3.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.find-msvc-tools]]
@@ -36,6 +60,14 @@ criteria = "safe-to-deploy"
 version = "0.2.17"
 criteria = "safe-to-deploy"
 
+[[exemptions.hashbrown]]
+version = "0.15.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.heck]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.http]]
 version = "1.5.0"
 criteria = "safe-to-deploy"
@@ -44,16 +76,32 @@ criteria = "safe-to-deploy"
 version = "1.10.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.itertools]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.itoa]]
 version = "1.0.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.kasuari]]
+version = "0.4.12"
 criteria = "safe-to-deploy"
 
 [[exemptions.libc]]
 version = "0.2.189"
 criteria = "safe-to-deploy"
 
+[[exemptions.linux-raw-sys]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.log]]
 version = "0.4.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.lru]]
+version = "0.18.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.once_cell]]
@@ -64,8 +112,20 @@ criteria = "safe-to-deploy"
 version = "2.3.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.proc-macro2]]
+version = "1.0.107"
+criteria = "safe-to-deploy"
+
+[[exemptions.ratatui-core]]
+version = "0.1.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.ring]]
 version = "0.17.14"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustix]]
+version = "1.1.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls]]
@@ -80,7 +140,47 @@ criteria = "safe-to-deploy"
 version = "0.103.15"
 criteria = "safe-to-deploy"
 
+[[exemptions.rustversion]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+
+[[exemptions.ryu]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+
 [[exemptions.shlex]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.strum]]
+version = "0.28.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.strum_macros]]
+version = "0.28.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.syn]]
+version = "2.0.119"
+criteria = "safe-to-deploy"
+
+[[exemptions.syn]]
+version = "3.0.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.thiserror]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.thiserror-impl]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-ident]]
+version = "1.0.26"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-truncate]]
 version = "2.0.1"
 criteria = "safe-to-deploy"
 

@@ -114,4 +114,30 @@ disallowed-methods = [
   "std::path::Path::is_file",
   "std::env::var",
   "std::env::var_os",
+  # THE TERMINAL DOOR (`ae app`, 2026-10-03, lead ruling D2 on the sideapp
+  # plan). rustix's termios module is how the app takes raw mode, puts the mode
+  # back and reads the window size without libc or `unsafe`, and every entry
+  # point it exports is listed, not only the three the app calls, so a second
+  # caller of ANY of them is a review rather than a diff. The one allowed site is
+  # `src/app/tty.rs`, carrying its reason at the allow, and it is inventoried in
+  # tests/it/phase3.rs like every door above. rustix is a THIRD-PARTY reader:
+  # the note above the list applies to it exactly as to ureq — over ae's own
+  # source this is an enumeration, over the compiled artifact a convention.
+  # Only the `termios` feature is enabled (Cargo.toml), so no other rustix
+  # module exists in the graph to route around this list.
+  "rustix::termios::tcgetattr",
+  "rustix::termios::tcsetattr",
+  "rustix::termios::tcgetwinsize",
+  "rustix::termios::tcsetwinsize",
+  "rustix::termios::tcgetpgrp",
+  "rustix::termios::tcsetpgrp",
+  "rustix::termios::tcgetsid",
+  "rustix::termios::tcsendbreak",
+  "rustix::termios::tcdrain",
+  "rustix::termios::tcflush",
+  "rustix::termios::tcflow",
+  "rustix::termios::isatty",
+  "rustix::termios::ttyname",
+  "rustix::termios::ioctl_tiocexcl",
+  "rustix::termios::ioctl_tiocnxcl",
 ]

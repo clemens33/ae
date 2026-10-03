@@ -827,6 +827,63 @@ slice, not mid-flight: `cast_possible_truncation`, `cast_sign_loss`, `dbg_macro`
 `unimplemented`, `panic_in_result_fn` — evaluation means running them against the tree,
 not appending them to the table.
 
+### The terminal UI graph (2026-10-03)
+
+`ae app` draws a sidebar, tabs and a chat column in cells; the human ruled it is
+built "with ratatui etc.", and lead ruled the dependency shape on the sideapp
+plan. Two direct rows: **`ratatui-core =0.1.2`** (`default-features` off, no
+features) and **`rustix =1.1.5`** (`std` + `termios` only). The candidates were
+measured in scratch crates on the pinned compiler, both targets, before choosing:
+
+| Candidate | Lock entries | thiserror | Why not / why |
+|---|---|---|---|
+| ratatui 0.30 umbrella + crossterm | ~90 | yes | crossterm is a second keyboard parser beside the fuzzed `console_command`, plus mio, signal-hook, parking_lot |
+| ratatui 0.29 umbrella (+ rustix) | 43 | no | the line gets no fixes and carries `paste` (RUSTSEC-2024-0436, unmaintained) |
+| **ratatui-core 0.1.2 (+ rustix)** | **+32** | **transitive** | **chosen**: the maintained line, the smallest graph, everything the app draws with (`Buffer`, `Layout`, `Text`, `Widget`, `Backend`, `Terminal`, `TestBackend`) |
+
+ratatui-widgets is NOT taken: the app lays its own lines out. If ratatui-core
+lacks a piece, the slice stops and asks; it does not reach for the widgets crate.
+crossterm is NOT taken: ae writes its own `Backend` (an ANSI writer), and raw mode
+and the window size go through rustix's safe termios API — the crate the Unix/fs
+row above already named for this class. Every termios entry point is listed in
+clippy.toml's `disallowed-methods`, so the terminal door is one file
+(`src/app/tty.rs`) and inventoried like every other world read.
+
+**THE thiserror CARVE-OUT (lead ruling under the human's, 2026-10-03).** The
+hard rule "no thiserror" holds for ae: it is never a direct dependency and no ae
+code imports it. It enters this graph TRANSITIVELY ONLY, as `thiserror 2.0.21`
+under `kasuari 0.4.12` (ratatui-core's layout solver) and `ratatui-core 0.1.2`
+itself — `cargo tree -i thiserror` names exactly those two parents. The cost is
+compile time (thiserror-impl, syn 3) and nothing in the shipped binary's
+behaviour. **Revisit trigger:** upstream drops thiserror — then the carve-out
+note in AGENTS.md and here goes with it.
+
+**Costs, paid knowingly:**
+- Two licenses enter, each SCOPED to its one crate in deny.toml's `exceptions`
+  rather than widening the allow-list: `foldhash` (Zlib, runtime under
+  hashbrown) and `unicode-ident` (Unicode-3.0, build-time under proc-macro2/syn).
+- Duplicate versions: `hashbrown` 0.16/0.17 and `syn` 2/3 (cargo-deny warns,
+  `multiple-versions` stays a warning).
+- Proc-macro crates run at build time: strum_macros, thiserror-impl,
+  rustversion, over proc-macro2/quote/syn.
+- `linux-raw-sys` (musl only) is rustix's syscall table: large, generated, and
+  the reason rustix needs no libc there.
+
+**cargo-vet: imported where possible, EXEMPTED otherwise — the same accepted
+risk as the TLS graph, recorded the same way.** Of the 32 new crates, 6 are
+fully covered by imported audits (equivalent, foldhash, quote,
+static_assertions, unicode-segmentation, unicode-width), 4 partially (an
+exempted base version plus imported deltas: allocator-api2, errno, both
+hashbrowns), and 22 are exempted, ratatui-core and rustix among them
+(`cargo vet regenerate exemptions`; the summary moved from 7 fully audited and
+29 exempted to 13 fully, 4 partially and 51 exempted). The exemptions encode an
+accepted risk, not an audit claim: established crates, exact pins, an exact
+lockfile, `default-features` off, the smallest measured graph, `forbid(unsafe)`
+in ae's own code, the termios calls behind one door, and cargo-deny gating the
+whole graph for advisories. **Revisit triggers:** any version change, a new
+advisory, a feature expansion, or an imported audit becoming available for an
+exempted version — replace the exemption the moment one is possible.
+
 
 ---
 
