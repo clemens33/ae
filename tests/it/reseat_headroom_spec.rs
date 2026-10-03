@@ -588,6 +588,8 @@ fn reseat_shared_equal_keys_resolve_the_kind_with_an_open_attempt() {
 fn reseat_shared_refused_limit_also_closes_the_open_headroom_episode() {
     let rig = Rig::new("hrrefuseboth");
     configure(&rig, "", "fake-claude", "fake-claude-b");
+    // R9 now appends family members: keep this candidate set exhausted.
+    phase1_remove_unused_profile(&rig, "fake-claude-a");
     quota(&rig, "home", &[("weekly_all", 95.0)], 0);
     // At 100% this candidate is exhausted for the LIMIT chooser too.
     quota(&rig, "home-b", &[("weekly_all", 100.0)], 0);
@@ -963,6 +965,7 @@ fn a_readable_unknown_frame_holds_headroom_instead_of_stopping_the_tool() {
 fn no_candidate_refuses_once_and_jitter_survives_a_daemon_restart() {
     let rig = Rig::new("hrjitter");
     configure(&rig, "", "fake-claude", "fake-claude-a");
+    phase1_remove_unused_profile(&rig, "fake-claude-b");
     quota(&rig, "home", &[("weekly_all", 95.1)], 0);
     quota(&rig, "home-a", &[("weekly_all", 96.0)], 0);
     let _pane = seat(&rig, "claude");
@@ -1030,6 +1033,7 @@ fn an_open_episode_keeps_its_first_crossing_key_until_strict_relief() {
 fn a_profile_left_on_headroom_cannot_ping_pong_on_an_old_low_reading() {
     let rig = Rig::new("hrreturn");
     configure(&rig, "", "fake-claude-a", "fake-claude-b");
+    phase1_remove_unused_profile(&rig, "fake-claude");
     quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
     quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
     let _pane = seat(&rig, "claude-a");
@@ -1168,5 +1172,1044 @@ fn main_requires_all_and_project_overlay_cannot_change_global_threshold() {
             assert_eq!(rig.tool_pid(&rig.main_pane, "claude"), pid);
             assert!(auto_records(&rig).is_empty(), "on excludes main");
         }
+    }
+}
+
+// Phase 2: independent R8-R11 acceptance contract. Only these scratch profiles
+// enter the identity config, so unrelated Rig defaults cannot supply a twin.
+fn phase1_remove_unused_profile(rig: &Rig, profile: &str) {
+    let path = rig.scratch.join("config");
+    let text = std::fs::read_to_string(&path).expect("fixture config");
+    let mut profiles = false;
+    let mut kept = String::new();
+    let prefix = format!("{profile} =");
+    for line in text.lines() {
+        if line.starts_with('[') {
+            profiles = line == "[profiles]";
+        }
+        if !(profiles && line.starts_with(&prefix)) {
+            writeln!(kept, "{line}").expect("fixture config line");
+        }
+    }
+    std::fs::write(path, kept).expect("fixed phase1 candidate universe");
+}
+
+fn family_command(rig: &Rig, home: &str, flags: &str) -> String {
+    format!(
+        "CLAUDE_CONFIG_DIR={} {} {} {flags}",
+        rig.scratch.join(home).display(),
+        rig.scratch.join("tools/claude").display(),
+        rig.scratch.join("claude.pl").display(),
+    )
+}
+
+fn family_config(rig: &Rig, profiles: &[(&str, String)], row: Option<&str>, knobs: &str) {
+    let mut text = String::from("[profiles]\n");
+    for (name, command) in profiles {
+        writeln!(text, "fake-{name} = \"{command}\"").expect("profile fixture");
+    }
+    writeln!(text, "[workspace]\nmain = lead\nlayout = vertical").expect("workspace fixture");
+    if !knobs.lines().any(|line| line.starts_with("auto_reseat =")) {
+        text.push_str("auto_reseat = on\n");
+    }
+    writeln!(text, "auto_reseat_grace_secs = 0\n{knobs}").expect("policy fixture");
+    if let Some(row) = row {
+        writeln!(text, "[auto_reseat]\nfake-source = {row}").expect("declared row fixture");
+    }
+    std::fs::write(rig.scratch.join("config"), text).expect("family fixture config");
+}
+
+fn family_source(rig: &Rig) -> String {
+    let pane = seat(rig, "source");
+    plant_conversation(rig);
+    pane
+}
+
+fn family_open(rig: &Rig, pane: &str, limit: bool) -> Timestamp {
+    let key = Timestamp::from_epoch(Timestamp::now().epoch() - 10);
+    if limit {
+        rig.mark_limited(pane);
+        seed(rig, key, "limit", None);
+    } else {
+        seed(rig, key, "auto-reseat-headroom", None);
+    }
+    key
+}
+
+fn family_move(rig: &Rig, pane: &str, limit: bool, to: &str, provenance: &str) {
+    let key = family_open(rig, pane, limit);
+    let out = trigger(rig);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the real trigger must list this candidate: {}\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        rig.events(),
+    );
+    until(rig, || !booked(rig, DONE_ACTION).is_empty());
+    assert_eq!(rig.meta_row("profile.spawned.0"), to);
+    let tool = if to == "fake-opencode" {
+        "opencode"
+    } else {
+        "claude"
+    };
+    assert!(
+        rig.tool_pid(pane, tool).is_some(),
+        "the chosen tool owns the seat"
+    );
+    let attempts = booked(rig, ATTEMPT_ACTION);
+    assert_eq!(attempts.len(), 1, "{}", rig.events());
+    assert_eq!(
+        attempts[0].reference.as_deref(),
+        Some(key.to_string().as_str())
+    );
+    let suffix = if provenance.is_empty() {
+        String::new()
+    } else {
+        format!(", derived {provenance}")
+    };
+    assert!(
+        attempts[0].summary.as_deref().is_some_and(
+            |summary| summary.starts_with(&format!("from fake-source to {to}{suffix}"))
+        ),
+        "attempt names selection and provenance: {}",
+        rig.events(),
+    );
+    let done = booked(rig, DONE_ACTION);
+    assert_eq!(done.len(), 1);
+    assert!(
+        done[0]
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.starts_with(&format!("to {to}{suffix}"))),
+        "done names the same provenance: {}",
+        rig.events(),
+    );
+    until(rig, || {
+        records(rig).iter().any(|event| {
+            event.action == "chat"
+                && event.summary.as_deref().is_some_and(|summary| {
+                    summary.starts_with(&format!(
+                        "auto reseat: scout moved fake-source -> {to}{suffix}"
+                    ))
+                })
+        })
+    });
+}
+
+#[test]
+fn phase2_a_declared_pick_keeps_phase1_record_bytes() {
+    let rig = Rig::new("hr2declared");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("twin", family_command(&rig, "home-b", "--model opus")),
+        ],
+        Some("fake-twin"),
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-twin", "");
+    assert_eq!(
+        booked(&rig, ATTEMPT_ACTION)[0].summary.as_deref(),
+        Some("from fake-source to fake-twin (headroom 95% weekly_all 7d)"),
+    );
+    assert_eq!(
+        booked(&rig, DONE_ACTION)[0].summary.as_deref(),
+        Some("to fake-twin, carried (headroom 95% weekly_all 7d)"),
+    );
+}
+
+#[test]
+fn phase2_a_twin_without_a_declared_row_moves_and_carries_at_headroom() {
+    let rig = Rig::new("hr2daemon");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("twin", family_command(&rig, "home-b", "--model opus")),
+        ],
+        None,
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+    let pane = family_source(&rig);
+    let id = rig.meta_row("harness_session.spawned.0");
+    let transcript = rig
+        .scratch
+        .join("home-a/projects")
+        .join(ae::carry::project_key(Path::new(&rig.meta_row("work_dir"))))
+        .join(format!("{id}.jsonl"));
+    let original = std::fs::read(&transcript).expect("synthetic source transcript");
+    let _watch = watch(&rig);
+    until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-twin");
+    assert!(rig.tool_pid(&pane, "claude").is_some());
+    assert_eq!(rig.meta_row("harness_session.spawned.0"), id);
+    let relative = transcript
+        .strip_prefix(rig.scratch.join("home-a"))
+        .expect("relative store");
+    assert_eq!(
+        std::fs::read(rig.scratch.join("home-b").join(relative)).expect("carried transcript"),
+        original
+    );
+    assert!(
+        booked(&rig, ATTEMPT_ACTION)[0]
+            .summary
+            .as_deref()
+            .is_some_and(|s| s.contains("to fake-twin, derived twin (headroom"))
+    );
+    assert_eq!(
+        booked(&rig, DONE_ACTION)[0].summary.as_deref(),
+        Some("to fake-twin, derived twin, carried (headroom 95% weekly_all 7d)")
+    );
+    until(&rig, || {
+        records(&rig).iter().any(|event| {
+            event.action == "chat"
+                && event.summary.as_deref().is_some_and(|s| {
+                    s.contains("scout moved fake-source -> fake-twin, derived twin on headroom")
+                })
+        })
+    });
+}
+
+#[test]
+fn phase2_twins_precede_siblings_and_keep_declaration_order() {
+    for (tag, first_used, chosen) in [
+        ("hr2tierfirst", 10.0, "fake-z"),
+        ("hr2tiernext", 96.0, "fake-a"),
+    ] {
+        let rig = Rig::new(tag);
+        family_config(
+            &rig,
+            &[
+                ("source", family_command(&rig, "home-a", "--model opus")),
+                ("sibling", family_command(&rig, "home-b", "--model sonnet")),
+                ("z", family_command(&rig, "home-c", "--model opus")),
+                ("a", family_command(&rig, "home-d", "--model opus")),
+            ],
+            None,
+            "",
+        );
+        for (home, used) in [
+            ("home-a", 95.0),
+            ("home-b", 10.0),
+            ("home-c", first_used),
+            ("home-d", 10.0),
+        ] {
+            quota(&rig, home, &[("weekly_all", used)], 0);
+        }
+        let pane = family_source(&rig);
+        family_move(&rig, &pane, false, chosen, "twin");
+        if first_used > 95.0 {
+            assert!(
+                booked(&rig, ATTEMPT_ACTION)[0]
+                    .summary
+                    .as_deref()
+                    .is_some_and(|s| s.contains("fake-z, derived twin (no headroom)")),
+                "{}",
+                rig.events()
+            );
+        }
+    }
+}
+
+#[test]
+fn phase2_siblings_keep_declaration_order_after_model_value_normalization() {
+    let rig = Rig::new("hr2siblings");
+    family_config(
+        &rig,
+        &[
+            (
+                "source",
+                family_command(&rig, "home-a", "--model=opus --effort high"),
+            ),
+            (
+                "z",
+                family_command(&rig, "home-b", "--model sonnet --effort high"),
+            ),
+            (
+                "a",
+                family_command(&rig, "home-c", "--model haiku --effort high"),
+            ),
+        ],
+        None,
+        "",
+    );
+    for (home, used) in [("home-a", 95.0), ("home-b", 10.0), ("home-c", 10.0)] {
+        quota(&rig, home, &[("weekly_all", used)], 0);
+    }
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-z", "sibling");
+}
+
+#[test]
+fn phase2_pinless_profiles_can_have_twins() {
+    let rig = Rig::new("hr2pinless");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "")),
+            ("twin", family_command(&rig, "home-b", "")),
+        ],
+        None,
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-twin", "twin");
+}
+
+#[test]
+fn phase2_only_the_model_value_and_account_may_differ() {
+    for (tag, bad_flags, assignment) in [
+        (
+            "hr2effort",
+            "--model opus --effort low --permission-mode acceptEdits",
+            "",
+        ),
+        (
+            "hr2permission",
+            "--model opus --effort high --permission-mode plan",
+            "",
+        ),
+        (
+            "hr2extra",
+            "--model opus --effort high --permission-mode acceptEdits --verbose",
+            "",
+        ),
+        (
+            "hr2reorder",
+            "--effort high --model opus --permission-mode acceptEdits",
+            "",
+        ),
+        (
+            "hr2env",
+            "--model opus --effort high --permission-mode acceptEdits",
+            "OTHER=fixture ",
+        ),
+        (
+            "hr2ambiguous",
+            "--model opus --model sonnet --effort high --permission-mode acceptEdits",
+            "",
+        ),
+        (
+            "hr2missing",
+            "--effort high --permission-mode acceptEdits --model",
+            "",
+        ),
+    ] {
+        let rig = Rig::new(tag);
+        let source_flags = "--model opus --effort high --permission-mode acceptEdits";
+        family_config(
+            &rig,
+            &[
+                ("source", family_command(&rig, "home-a", source_flags)),
+                (
+                    "bad",
+                    format!("{assignment}{}", family_command(&rig, "home-b", bad_flags)),
+                ),
+                ("twin", family_command(&rig, "home-c", source_flags)),
+            ],
+            None,
+            "",
+        );
+        for (home, used) in [("home-a", 95.0), ("home-b", 10.0), ("home-c", 10.0)] {
+            quota(&rig, home, &[("weekly_all", used)], 0);
+        }
+        let pane = family_source(&rig);
+        family_move(&rig, &pane, false, "fake-twin", "twin");
+        assert!(
+            !booked(&rig, ATTEMPT_ACTION)[0]
+                .summary
+                .as_deref()
+                .unwrap_or_default()
+                .contains("fake-bad"),
+            "non-family profile must not enter the passed-over list"
+        );
+    }
+}
+
+#[test]
+fn phase2_declared_cross_tool_choices_precede_derived_family_choices() {
+    let rig = Rig::new("hr2crossdeclared");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("twin", family_command(&rig, "home-b", "--model opus")),
+            (
+                "opencode",
+                format!(
+                    "{} {}",
+                    rig.scratch.join("tools/opencode").display(),
+                    rig.scratch.join("opencode.pl").display()
+                ),
+            ),
+        ],
+        Some("fake-opencode"),
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-opencode", "");
+    assert!(
+        !rig.events().contains("derived"),
+        "declared provenance retains old spelling"
+    );
+}
+
+#[test]
+fn phase2_declared_dedup_wins_and_room_rules_fall_through_to_derived() {
+    let rig = Rig::new("hr2declaredskip");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("first", family_command(&rig, "home-b", "--model opus")),
+            ("twin", family_command(&rig, "home-c", "--model opus")),
+        ],
+        Some("fake-first"),
+        "",
+    );
+    for (home, used) in [("home-a", 95.0), ("home-b", 100.0), ("home-c", 10.0)] {
+        quota(&rig, home, &[("weekly_all", used)], 0);
+    }
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-twin", "twin");
+    let attempts = booked(&rig, ATTEMPT_ACTION);
+    let summary = attempts[0].summary.as_deref().expect("attempt text");
+    assert_eq!(
+        summary.matches("fake-first").count(),
+        1,
+        "name dedup: {summary}"
+    );
+    assert!(
+        summary.contains("fake-first (exhausted)"),
+        "declared position and provenance win: {summary}"
+    );
+}
+
+#[test]
+fn phase2_limit_episodes_also_derive_and_keep_the_old_critical_room_rule() {
+    let rig = Rig::new("hr2limit");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("twin", family_command(&rig, "home-b", "--model opus")),
+        ],
+        None,
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 96.0)], 0);
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, true, "fake-twin", "twin");
+    assert_eq!(
+        booked(&rig, ATTEMPT_ACTION)[0].summary.as_deref(),
+        Some("from fake-source to fake-twin, derived twin")
+    );
+    assert_eq!(
+        booked(&rig, DONE_ACTION)[0].summary.as_deref(),
+        Some("to fake-twin, derived twin, carried")
+    );
+}
+
+#[test]
+fn phase2_empty_or_ignored_rows_derive_without_erasing_the_existing_note() {
+    for (tag, row) in [("hr2empty", ""), ("hr2ignored", "bad?profile")] {
+        let rig = Rig::new(tag);
+        family_config(
+            &rig,
+            &[
+                ("source", family_command(&rig, "home-a", "--model opus")),
+                ("twin", family_command(&rig, "home-b", "--model opus")),
+            ],
+            Some(row),
+            "",
+        );
+        let text = std::fs::read_to_string(rig.scratch.join("config")).expect("fixture config");
+        assert!(
+            !settings_in(Path::new("scratch-config"), &text)
+                .notes
+                .is_empty(),
+            "ignored row retains its note"
+        );
+        quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+        quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+        let pane = family_source(&rig);
+        family_move(&rig, &pane, false, "fake-twin", "twin");
+    }
+}
+
+#[test]
+fn phase2_default_off_and_explicit_off_do_not_open_derived_episodes() {
+    for (tag, absent) in [("hr2defaultoff", true), ("hr2off", false)] {
+        let rig = Rig::new(tag);
+        family_config(
+            &rig,
+            &[
+                ("source", family_command(&rig, "home-a", "--model opus")),
+                ("twin", family_command(&rig, "home-b", "--model opus")),
+            ],
+            None,
+            "auto_reseat = off",
+        );
+        if absent {
+            let path = rig.scratch.join("config");
+            let text = std::fs::read_to_string(&path).expect("fixture config");
+            std::fs::write(path, text.replace("auto_reseat = off\n", ""))
+                .expect("absent product switch");
+        }
+        quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+        quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+        let pane = family_source(&rig);
+        let pid = rig.tool_pid(&pane, "claude");
+        let _watch = watch(&rig);
+        sweeps(&rig);
+        unchanged(&rig, &pane, "fake-source", pid);
+        assert!(auto_records(&rig).is_empty());
+        assert!(!ae::autoreseat::lock_path(&rig.dir, "spawned.0").exists());
+    }
+}
+
+#[test]
+fn phase2_a_leg_with_no_declared_or_derived_candidate_names_the_hold() {
+    let rig = Rig::new("hr2unmappedleg");
+    family_config(
+        &rig,
+        &[("source", family_command(&rig, "home-a", "--model opus"))],
+        None,
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    let pane = family_source(&rig);
+    let pid = rig.tool_pid(&pane, "claude");
+    let key = family_open(&rig, &pane, false);
+    seed(&rig, key, ATTEMPT_ACTION, Some(key));
+    let out = leg(&rig, key);
+    assert_eq!(out.status.code(), Some(1));
+    let held = booked(&rig, HELD_ACTION);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].reference.as_deref(), Some(key.to_string().as_str()));
+    assert_eq!(
+        held[0].summary.as_deref(),
+        Some(
+            "held: no declared or derived candidate for this profile (headroom 95% weekly_all 7d)"
+        )
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-source");
+    assert_eq!(rig.tool_pid(&pane, "claude"), pid);
+    assert!(booked(&rig, DONE_ACTION).is_empty());
+    assert!(booked(&rig, REFUSED_ACTION).is_empty());
+}
+
+fn family_row(rig: &Rig, key: &str, value: &str) {
+    let text = rig.meta();
+    let prefix = format!("{key}=");
+    let mut kept = String::new();
+    for line in text.lines().filter(|line| !line.starts_with(&prefix)) {
+        writeln!(kept, "{line}").expect("fixture row");
+    }
+    writeln!(kept, "{key}={value}").expect("single fixture row");
+    std::fs::write(rig.dir.join("meta"), kept).expect("fixture metadata");
+}
+
+#[test]
+fn phase2_a_same_account_sibling_can_escape_a_different_models_window() {
+    let rig = Rig::new("hr2scoped");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("sibling", family_command(&rig, "home-a", "--model sonnet")),
+        ],
+        None,
+        "",
+    );
+    quota(
+        &rig,
+        "home-a",
+        &[("weekly_scoped", 95.0), ("weekly_all", 10.0)],
+        0,
+    );
+    let cache = rig.scratch.join("home-a/.claude.json");
+    let text = std::fs::read_to_string(&cache).expect("scratch quota");
+    // Only the first, model-scoped window gets a qualifier. The account-wide
+    // window stays unqualified and continues to bind both model families.
+    std::fs::write(
+        cache,
+        text.replacen(
+            "\"scope\":null",
+            "\"scope\":{\"model\":{\"display_name\":\"Opus\"}}",
+            1,
+        ),
+    )
+    .expect("model-scoped fixture");
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-sibling", "sibling");
+}
+
+#[test]
+fn phase2_a_canonical_alias_of_the_seats_account_is_not_a_candidate() {
+    let rig = Rig::new("hr2seatalias");
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-c", &[("weekly_all", 10.0)], 0);
+    std::os::unix::fs::symlink(rig.scratch.join("home-a"), rig.scratch.join("alias-a"))
+        .expect("scratch account alias");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("same", family_command(&rig, "alias-a", "--model opus")),
+            ("twin", family_command(&rig, "home-c", "--model opus")),
+        ],
+        None,
+        "",
+    );
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-twin", "twin");
+    assert!(
+        !booked(&rig, ATTEMPT_ACTION)[0]
+            .summary
+            .as_deref()
+            .expect("attempt")
+            .contains("fake-same"),
+        "an alias must be excluded, not offered then skipped"
+    );
+}
+
+#[test]
+fn phase2_proven_derived_aliases_collapse_against_the_earliest_candidate() {
+    for (tag, row) in [
+        ("hr2aliasderived", None),
+        ("hr2aliasdeclared", Some("fake-b")),
+    ] {
+        let rig = Rig::new(tag);
+        for (home, used) in [("home-a", 95.0), ("home-b", 95.0), ("home-c", 10.0)] {
+            quota(&rig, home, &[("weekly_all", used)], 0);
+        }
+        std::os::unix::fs::symlink(rig.scratch.join("home-b"), rig.scratch.join("alias-b"))
+            .expect("scratch account alias");
+        family_config(
+            &rig,
+            &[
+                ("source", family_command(&rig, "home-a", "--model opus")),
+                ("b", family_command(&rig, "home-b", "--model opus")),
+                ("dup", family_command(&rig, "alias-b", "--model opus")),
+                ("c", family_command(&rig, "home-c", "--model opus")),
+            ],
+            row,
+            "",
+        );
+        let pane = family_source(&rig);
+        family_move(&rig, &pane, false, "fake-c", "twin");
+        let attempts = booked(&rig, ATTEMPT_ACTION);
+        let summary = attempts[0].summary.as_deref().expect("attempt");
+        assert_eq!(summary.matches("fake-b").count(), 1);
+        assert!(
+            !summary.contains("fake-dup"),
+            "proven alias collapse: {summary}"
+        );
+        assert!(
+            summary.contains(if row.is_some() {
+                "fake-b (no headroom)"
+            } else {
+                "fake-b, derived twin (no headroom)"
+            }),
+            "earliest provenance wins: {summary}"
+        );
+    }
+}
+
+#[test]
+fn phase2_unknown_accounts_do_not_collapse_as_if_none_were_an_identity() {
+    for (tag, row) in [
+        ("hr2unknownpair", None),
+        ("hr2unknowndeclared", Some("fake-first")),
+    ] {
+        let rig = Rig::new(tag);
+        // Missing normal paths have provable canonical ancestors. Dangling
+        // links make these two distinct scratch accounts truly unprovable.
+        for name in ["first", "second"] {
+            std::os::unix::fs::symlink(
+                rig.scratch.join(format!("missing-{name}")),
+                rig.scratch.join(format!("unknown-{name}")),
+            )
+            .expect("unprovable scratch account");
+        }
+        family_config(
+            &rig,
+            &[
+                ("source", family_command(&rig, "home-a", "--model opus")),
+                (
+                    "first",
+                    family_command(&rig, "unknown-first", "--model sonnet"),
+                ),
+                (
+                    "second",
+                    family_command(&rig, "unknown-second", "--model sonnet"),
+                ),
+            ],
+            row,
+            "",
+        );
+        quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+        let pane = family_source(&rig);
+        let old = Timestamp::from_epoch(Timestamp::now().epoch() - 100);
+        seed(&rig, old, "limit", None);
+        seed(&rig, old, ATTEMPT_ACTION, Some(old));
+        let done = format!(
+            "{}{{\"ts\":\"{}\",\"actor\":\"watchdog\",\"action\":\"{DONE_ACTION}\",\"target\":\"scout\",\"target_slot\":\"spawned.0\",\"target_session\":\"{}\",\"ref\":\"fake-first\",\"summary\":\"to fake-source, seeded\"}}\n",
+            rig.events(),
+            Timestamp::from_epoch(old.epoch() + 1),
+            rig.session
+        );
+        std::fs::write(rig.dir.join("events.jsonl"), done).expect("prior limit leave");
+        let key = family_open(&rig, &pane, false);
+        let out = trigger(&rig);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the second unknown account must remain listed: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            rig.events()
+        );
+        let attempts = booked(&rig, ATTEMPT_ACTION);
+        let selected = attempts
+            .iter()
+            .find(|event| event.reference.as_deref() == Some(key.to_string().as_str()))
+            .expect("new attempt");
+        assert!(
+            selected
+                .summary
+                .as_deref()
+                .is_some_and(|s| s.starts_with("from fake-source to fake-second, derived sibling")),
+            "distinct unknown homes survive: {}",
+            rig.events()
+        );
+        assert!(
+            selected
+                .summary
+                .as_deref()
+                .is_some_and(|s| s.contains("left on its limit")),
+            "first account remains left: {}",
+            rig.events()
+        );
+        // The selected tool cannot start on a dangling store. Await its
+        // existing terminal path so no detached fixture writer escapes the
+        // Rig; this pin judges candidate selection, not a successful launch.
+        until(&rig, || {
+            records(&rig).iter().any(|event| {
+                [REFUSED_ACTION, ae::autoreseat::FAILED_ACTION].contains(&event.action.as_str())
+                    && event.reference.as_deref() == Some(key.to_string().as_str())
+            })
+        });
+    }
+}
+
+#[test]
+fn phase2_derivation_uses_the_recorded_client_and_excludes_the_source_profile() {
+    let rig = Rig::new("hr2client");
+    let suffix = format!("{} --model opus", rig.scratch.join("claude.pl").display());
+    family_config(
+        &rig,
+        &[
+            ("source", format!("alpha {suffix}")),
+            ("same", format!("beta {suffix}")),
+            ("return", format!("alpha {suffix}")),
+        ],
+        None,
+        "",
+    );
+    let path = rig.scratch.join("config");
+    let profiles = std::fs::read_to_string(&path).expect("fixture profiles");
+    std::fs::write(
+        path,
+        format!(
+            "[clients]\nalpha = {} config_home={}\nbeta = {} config_home={}\n{profiles}",
+            rig.scratch.join("tools/claude").display(),
+            rig.scratch.join("home-a").display(),
+            rig.scratch.join("tools/claude").display(),
+            rig.scratch.join("home-b").display()
+        ),
+    )
+    .expect("scratch client bindings");
+    quota(&rig, "home-a", &[("weekly_all", 10.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 95.0)], 0);
+    rig.seat_rows("spawned.0", "scout", "source", "claude");
+    family_row(&rig, "client.spawned.0", "beta");
+    let pane = rig.new_pane("spawned.0", "scout");
+    isolate(&rig, &pane);
+    rig.start(&pane, "spawned.0", "claude");
+    let recorded = rig.meta_row("config_home.spawned.0");
+    assert_eq!(
+        recorded,
+        std::fs::canonicalize(rig.scratch.join("home-b"))
+            .expect("client account")
+            .display()
+            .to_string()
+    );
+    let (_, relative) = plant_conversation(&rig);
+    let target = rig.scratch.join("home-b").join(&relative);
+    std::fs::create_dir_all(target.parent().expect("synthetic transcript parent"))
+        .expect("scratch source store");
+    std::fs::copy(rig.scratch.join("home-a").join(relative), target)
+        .expect("synthetic source transcript");
+    rebind(&rig, "config_home.spawned.0", &recorded);
+    family_move(&rig, &pane, false, "fake-return", "twin");
+    let attempts = booked(&rig, ATTEMPT_ACTION);
+    let summary = attempts[0].summary.as_deref().expect("attempt");
+    assert!(
+        !summary.contains("fake-same"),
+        "recorded-client account alias is excluded: {summary}"
+    );
+}
+
+#[test]
+fn phase2_derivation_ignores_a_followed_model_and_uses_the_recorded_pin() {
+    let rig = Rig::new("hr2recordedpin");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("observed", family_command(&rig, "home-b", "--model sonnet")),
+            ("twin", family_command(&rig, "home-c", "--model opus")),
+            (
+                "followable",
+                family_command(&rig, "home-a", "--model sonnet"),
+            ),
+        ],
+        None,
+        "",
+    );
+    for (home, used) in [("home-a", 95.0), ("home-b", 10.0), ("home-c", 10.0)] {
+        quota(&rig, home, &[("weekly_all", used)], 0);
+    }
+    let pane = family_source(&rig);
+    family_row(&rig, "observed_model.spawned.0", "Sonnet 5");
+    family_row(&rig, "observed_model_pin.spawned.0", "opus");
+    family_move(&rig, &pane, false, "fake-twin", "twin");
+}
+
+#[test]
+fn phase2_an_equivalent_executable_spelled_differently_is_not_family() {
+    let rig = Rig::new("hr2executable");
+    std::fs::create_dir_all(rig.scratch.join("other")).expect("second executable path");
+    std::fs::hard_link(
+        rig.scratch.join("tools/claude"),
+        rig.scratch.join("other/claude"),
+    )
+    .expect("same fake at another executable spelling");
+    let bad = family_command(&rig, "home-b", "--model opus").replace(
+        &rig.scratch.join("tools/claude").display().to_string(),
+        &rig.scratch.join("other/claude").display().to_string(),
+    );
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("bad", bad),
+            ("twin", family_command(&rig, "home-c", "--model opus")),
+        ],
+        None,
+        "",
+    );
+    for (home, used) in [("home-a", 95.0), ("home-b", 10.0), ("home-c", 10.0)] {
+        quota(&rig, home, &[("weekly_all", used)], 0);
+    }
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-twin", "twin");
+    assert!(
+        !booked(&rig, ATTEMPT_ACTION)[0]
+            .summary
+            .as_deref()
+            .expect("attempt")
+            .contains("fake-bad")
+    );
+}
+
+#[test]
+fn phase2_derived_profiles_use_the_same_origin_overlay_as_the_move() {
+    let rig = Rig::new("hr2overlay");
+    family_config(
+        &rig,
+        &[("source", family_command(&rig, "home-a", "--model opus"))],
+        None,
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+    std::fs::create_dir_all(rig.scratch.join(".ae")).expect("scratch overlay");
+    std::fs::write(
+        rig.scratch.join(".ae/config"),
+        format!(
+            "[profiles]\nfake-twin = \"{}\"\n",
+            family_command(&rig, "home-b", "--model opus")
+        ),
+    )
+    .expect("overlay-only twin");
+    let pane = family_source(&rig);
+    family_move(&rig, &pane, false, "fake-twin", "twin");
+}
+
+#[test]
+fn phase2_no_family_or_declared_row_remains_silent_and_never_crosses_tools() {
+    let rig = Rig::new("hr2unmapped");
+    family_config(
+        &rig,
+        &[
+            (
+                "source",
+                family_command(&rig, "home-a", "--model opus --effort high"),
+            ),
+            (
+                "other",
+                family_command(&rig, "home-b", "--model sonnet --effort low"),
+            ),
+            (
+                "opencode",
+                format!(
+                    "{} {}",
+                    rig.scratch.join("tools/opencode").display(),
+                    rig.scratch.join("opencode.pl").display()
+                ),
+            ),
+        ],
+        None,
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+    let pane = family_source(&rig);
+    let pid = rig.tool_pid(&pane, "claude");
+    let _watch = watch(&rig);
+    sweeps(&rig);
+    unchanged(&rig, &pane, "fake-source", pid);
+    assert!(
+        auto_records(&rig).is_empty(),
+        "Unmapped remains silent: {}",
+        rig.events()
+    );
+}
+
+#[test]
+fn phase2_derived_refusal_names_the_candidate_and_its_room_reason() {
+    let rig = Rig::new("hr2refused");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("twin", family_command(&rig, "home-b", "--model opus")),
+        ],
+        None,
+        "",
+    );
+    quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+    quota(&rig, "home-b", &[("weekly_all", 95.0)], 0);
+    let pane = family_source(&rig);
+    let pid = rig.tool_pid(&pane, "claude");
+    let key = family_open(&rig, &pane, false);
+    let out = trigger(&rig);
+    assert_eq!(out.status.code(), Some(1));
+    let refused = booked(&rig, REFUSED_ACTION);
+    assert_eq!(
+        refused.len(),
+        1,
+        "a mapped but full family must refuse, not disappear: {}",
+        rig.events()
+    );
+    assert_eq!(
+        refused[0].reference.as_deref(),
+        Some(key.to_string().as_str())
+    );
+    assert!(
+        refused[0]
+            .summary
+            .as_deref()
+            .is_some_and(|s| s.contains("fake-twin, derived twin (no headroom)")),
+        "{}",
+        rig.events()
+    );
+    unchanged(&rig, &pane, "fake-source", pid);
+}
+
+#[test]
+fn phase2_a_derived_twin_on_a_peers_latched_account_is_skipped() {
+    let rig = Rig::new("hr2peer");
+    family_config(
+        &rig,
+        &[
+            ("source", family_command(&rig, "home-a", "--model opus")),
+            ("first", family_command(&rig, "home-b", "--model opus")),
+            ("twin", family_command(&rig, "home-c", "--model opus")),
+        ],
+        None,
+        "",
+    );
+    for (home, used) in [("home-a", 95.0), ("home-b", 10.0), ("home-c", 10.0)] {
+        quota(&rig, home, &[("weekly_all", used)], 0);
+    }
+    let pane = family_source(&rig);
+    rig.seat_rows("spawned.1", "peer", "first", "claude");
+    family_row(
+        &rig,
+        "config_home.spawned.1",
+        &std::fs::canonicalize(rig.scratch.join("home-b"))
+            .expect("peer store")
+            .display()
+            .to_string(),
+    );
+    let old = Timestamp::from_epoch(Timestamp::now().epoch() - 100);
+    std::fs::write(rig.dir.join("events.jsonl"), format!("{}{{\"ts\":\"{old}\",\"actor\":\"watchdog\",\"action\":\"limit\",\"target\":\"peer\",\"target_slot\":\"spawned.1\",\"target_session\":\"{}\"}}\n", rig.events(), rig.session)).expect("peer limit latch");
+    family_move(&rig, &pane, false, "fake-twin", "twin");
+    assert!(
+        booked(&rig, ATTEMPT_ACTION)[0]
+            .summary
+            .as_deref()
+            .is_some_and(
+                |s| s.contains("fake-first, derived twin (another seat is latched on its account)")
+            ),
+        "{}",
+        rig.events()
+    );
+}
+
+#[test]
+fn phase2_an_ambiguous_missing_or_absent_model_does_not_invent_a_sibling() {
+    for (tag, flags) in [
+        ("hr2badpinamb", "--model opus --model sonnet"),
+        ("hr2badpinmissing", "--model"),
+        ("hr2badpinabsent", ""),
+    ] {
+        let rig = Rig::new(tag);
+        family_config(
+            &rig,
+            &[
+                ("source", family_command(&rig, "home-a", "--model opus")),
+                ("bad", family_command(&rig, "home-b", flags)),
+            ],
+            None,
+            "",
+        );
+        quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
+        quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
+        let pane = family_source(&rig);
+        let pid = rig.tool_pid(&pane, "claude");
+        let _watch = watch(&rig);
+        sweeps(&rig);
+        unchanged(&rig, &pane, "fake-source", pid);
+        assert!(
+            auto_records(&rig).is_empty(),
+            "invalid model shape is not family: {}",
+            rig.events()
+        );
     }
 }
