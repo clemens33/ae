@@ -411,6 +411,72 @@ fn chat_window0_unusable_config_defaults_on_with_one_note() {
 }
 
 #[test]
+fn chat_window0_uuid_mismatch_keeps_seats_and_names_chat_refusal_once() {
+    let rig = Rig::new("uuid-mismatch", Shape::Solo, Some("on"));
+    let foreign_uuid = "00000000-0000-4000-8000-000000000001";
+    // A real inherited option makes the vacant-only UUID seed hold. No
+    // production fault seam: this private server owns every session here.
+    rig.tmux(&["new-session", "-d", "-s", "keepUuid", "sleep 600"]);
+    rig.tmux(&["set-option", "-g", "@ae_session_uuid", foreign_uuid]);
+    let stderr = rig.launch("cwUuidMismatch");
+    assert_eq!(
+        rig.windows("cwUuidMismatch"),
+        Shape::Solo.off(),
+        "a host/meta UUID mismatch must not open a chat"
+    );
+    let main = rig.main("cwUuidMismatch");
+    assert_eq!(rig.current("cwUuidMismatch"), main);
+    assert_eq!(
+        rig.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &main,
+            "#{pane_dead}|#{@ae_agent}|#{@ae_slot}",
+        ])
+        .trim(),
+        "0|lead|main",
+        "the launch remains up after its chat is refused"
+    );
+    let host = rig.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "cwUuidMismatch",
+        "#{@ae_session_uuid}",
+    ]);
+    assert_eq!(host.trim(), foreign_uuid, "foreign UUID is not overwritten");
+    let dir = rig.home.join("sessions/cwUuidMismatch");
+    let meta = std::fs::read_to_string(dir.join("meta")).expect("launch meta");
+    let recorded = meta
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .expect("recorded session UUID");
+    assert_ne!(recorded, foreign_uuid, "mismatch was actually exercised");
+    let notes: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("chat"))
+        .collect();
+    assert_eq!(notes.len(), 1, "one visible chat refusal: {stderr}");
+    assert!(notes[0].contains("session id in its meta"), "{stderr}");
+    assert!(notes[0].contains("prefix h opens the chat"), "{stderr}");
+    let journal = std::fs::read_to_string(dir.join("events.jsonl")).expect("launch journal");
+    let failed: Vec<_> = journal
+        .lines()
+        .map(|line| ae::events::Event::parse_line(line).expect("journal event"))
+        .filter(|event| event.action == "chat-window-failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "one durable chat refusal: {journal}");
+    assert!(
+        failed[0]
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("session id in its meta")),
+        "journal names the UUID mismatch: {journal}"
+    );
+}
+
+#[test]
 fn chat_window0_resume_rebuilds_chat_before_selecting_it() {
     let rig = Rig::new("resume", Shape::Pair, Some("on"));
     rig.launch("cwResume");
