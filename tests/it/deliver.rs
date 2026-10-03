@@ -2098,9 +2098,9 @@ fn server_log(scratch: &Path) -> Option<PathBuf> {
 fn the_critical_section_bills_two_calls_per_enter() {
     // R10 pin: over a live seat steps 3+4 are ONE pane probe, ONE busy
     // capture, ONE client list, load, paste, then one send plus one capture
-    // PER Enter — COUNTED as the verbose server's completed clients, never
-    // wall time. `prove` checkpoints the log offset. Verdict is any Sent;
-    // the count relation is the claim. Both locks release.
+    // PER Enter — COUNTED as the clients the verbose server accepted after
+    // `prove` checkpoints the log offset, never wall time. Verdict is any
+    // Sent; the count relation is the claim. Both locks release.
     //
     // Why the server log and not a socket proxy: tmux clients pass stdio
     // fds over the socket, and a byte relay without recvmsg leaks the
@@ -2119,29 +2119,34 @@ fn the_critical_section_bills_two_calls_per_enter() {
     });
     assert!(matches!(done, Ok(deliver::Outcome::Sent(_))), "{done:?}");
     // Five calls are fixed; every Enter bills exactly one send plus one
-    // submit capture — judged on `freed` itself; the TUI receipt may lag.
-    let mut freed = 0;
+    // submit capture — judged on `born` itself; the TUI receipt may lag.
+    // BIRTHS, not frees: tmux logs `new client` on accept, before the client
+    // can finish, so a call made before `prove` is always logged before the
+    // mark. `free client` is deferred one server loop past the client's exit,
+    // so under load the pre-lock list-clients' free landed AFTER the mark —
+    // one extra, an even count (measured on tmux 3.7b).
+    let mut born = 0;
     let mut steady = 0;
     for _ in 0..600 {
         let bytes = std::fs::read(&log).expect("the log reads");
         let now = String::from_utf8_lossy(&bytes[mark.get()..])
-            .matches("free client")
+            .matches("new client")
             .count();
-        steady = if now == freed { steady + 1 } else { 0 };
-        freed = now;
-        if matches!(freed, 7 | 9 | 11) && steady >= 5 {
+        steady = if now == born { steady + 1 } else { 0 };
+        born = now;
+        if matches!(born, 7 | 9 | 11) && steady >= 5 {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     let enters = rig.enter_count();
     assert!(
-        matches!(freed, 7 | 9 | 11),
-        "five fixed, then send + capture per Enter: freed={freed} enters={enters}"
+        matches!(born, 7 | 9 | 11),
+        "five fixed, then send + capture per Enter: born={born} enters={enters}"
     );
     assert!(
-        (1..=(freed - 5) / 2).contains(&enters),
-        "TUI receipt lags, never exceeds: freed={freed} enters={enters}"
+        (1..=(born - 5) / 2).contains(&enters),
+        "TUI receipt lags, never exceeds: born={born} enters={enters}"
     );
     let free_send = lock_is_free(&rig.send_lock_path());
     let free_life = lock_is_free(&rig.lifecycle_lock_path());
