@@ -88,7 +88,7 @@ ureq = { version = "=3.4.0", default-features = false, features = [
 # inherited. `std` is stated rather than relied upon — feature unification would
 # supply it from ureq today, and a pin that depends on another crate's feature
 # list is not a pin.
-rustls = { version = "=0.23.35", default-features = false, features = [
+rustls = { version = "=0.23.45", default-features = false, features = [
   "ring",
   "std",
 ] }
