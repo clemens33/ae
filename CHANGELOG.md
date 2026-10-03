@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.20] - 2026-10-03
+- Print the request id an ask or review opens on stdout
+- Spell the ask id capture with a runnable helper form
+- Read claude's queued-messages affordance as an idle composer
+- Pin the queued affordance as no draft, and a draft beside it as one
+
 ## [v2026.10.19] - 2026-10-03
 - Nudge chat replies into a glanceable shape
 - Exclude .local scratch from the taplo lane
