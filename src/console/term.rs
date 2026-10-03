@@ -8,9 +8,11 @@ use std::time::Instant;
 
 use super::input::{self, Effect, Input, Reading, Screen, Seen, Size};
 use super::lane::Seat;
+use super::needs::SeatRef;
+use super::open::{self, Refusal};
 use super::{Console, submit};
 use crate::inventory::ServerId;
-use crate::{doors, theme, time, tmux, tracked, transport};
+use crate::{archive, doors, lifecycle, meta, theme, time, tmux, tracked, transport};
 
 /// Stamped terminal reads, until the terminal's input ends.
 struct Reads(Option<Receiver<(Instant, Vec<u8>)>>);
@@ -139,6 +141,9 @@ impl Term {
 
     /// Read ownership now and take the answer.
     pub(super) fn tick(&mut self, console: &Console) -> Vec<Effect> {
+        if let Some(seats) = &console.roster {
+            self.input.set_seats(seats.clone());
+        }
         let reading = match self.owns(console) {
             None => Reading::Unknown,
             Some(Ok(())) => Reading::Owner,
@@ -176,9 +181,49 @@ impl Term {
                     },
                 )
             }
+            Effect::Open(seat) => Effect::Print(self.open(console, &seat)),
             effect => effect,
         };
         Some(effects.into_iter().map(act).collect())
+    }
+
+    /// `/open`: prove `seat`'s pane against the meta and tmux NOW, then select
+    /// it inside this session, its identity guarded again by the select itself.
+    fn open(&self, console: &Console, seat: &SeatRef) -> String {
+        let name = &seat.name;
+        let Some(server) = self.server.as_ref() else {
+            return Refusal::Unread("tmux".to_owned()).line(name);
+        };
+        let Ok(bytes) = meta::read_bytes(&console.dir) else {
+            return Refusal::Unread("the meta".to_owned()).line(name);
+        };
+        if archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id")) != console.uuid {
+            return Refusal::SessionReplaced.line(name);
+        }
+        let meta = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+        let session = &console.name;
+        let session_id = transport::observe_session_id(server, session);
+        let stamp = transport::observe_session_option(server, session, theme::SESSION_ID_OPTION);
+        let slots = transport::observe_slots(server, session);
+        let panes = transport::observe_window_panes(server, session);
+        let members = transport::observe_picker_panes(server);
+        let facts = open::Facts {
+            seat,
+            roster: meta.roster(),
+            bound_uuid: &console.uuid,
+            session_id: session_id.as_deref(),
+            uuid_stamp: stamp.as_deref(),
+            slots: slots.as_deref(),
+            panes: panes.as_deref(),
+            members: members.as_deref(),
+        };
+        match open::target(&facts).map(|target| transport::open_seat(server, &target)) {
+            Err(refusal) => refusal.line(name),
+            Ok(None) => {
+                format!("refused: /open {name}: a fact failed its grammar; nothing selected")
+            }
+            Ok(Some((ran, stdout))) => open::outcome(ran, &stdout, name),
+        }
     }
 
     /// The write that shows `text` and `effects` above the composer, drawn

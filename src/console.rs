@@ -86,6 +86,8 @@ struct Console {
     follow: Option<Follow>,
     /// The last journal read whole, which every later read must begin with.
     journal: Option<Vec<Event>>,
+    /// Every roster seat as the last meta read named them: what `/open` takes.
+    roster: Option<Vec<needs::SeatRef>>,
 }
 
 impl Console {
@@ -159,6 +161,13 @@ impl Console {
         };
         let snapshot = session::RecordSnapshot::read(&self.dir);
         let needs = self.needs(&snapshot, &seats);
+        if let Some(meta) = &snapshot.meta {
+            let seat = |entry: &meta::RosterEntry| needs::SeatRef {
+                slot: entry.slot.clone(),
+                name: entry.name.clone(),
+            };
+            self.roster = Some(meta.roster().iter().map(seat).collect());
+        }
         let (events, skipped, read_gap) = match snapshot.events {
             Some(read) => (read.events, read.skipped.len(), None),
             None => (Vec::new(), 0, Some("journal — unreadable".to_owned())),
@@ -408,6 +417,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         rows: Vec::new(),
         follow: None,
         journal: None,
+        roster: None,
     };
     match console.seats() {
         Ok(seats) => {
@@ -542,6 +552,7 @@ pub(super) mod tests {
                 rows: Vec::new(),
                 follow: None,
                 journal: None,
+                roster: None,
             }
         }
 

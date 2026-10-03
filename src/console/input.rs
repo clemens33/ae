@@ -540,14 +540,20 @@ pub struct View {
 /// What one entered line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Ask { seat: String, body: String },
+    Ask {
+        seat: String,
+        body: String,
+    },
     Close(Option<String>),
+    /// Select the pane of the seat by this name, in this chat's session.
+    Open(String),
     Refused(String),
 }
 
 /// Read one entered line. `@<seat> <body>` asks that lead-pair seat, its body
 /// literal whatever it begins with; a bare `/close` withdraws this console's
-/// newest open ask, `/close <id>` a named one, and any other bare `/word` is
+/// newest open ask, `/close <id>` a named one, `/open <agent>` selects that
+/// seat's pane without a word to it, and any other bare `/word` is
 /// refused, so only a seat prefix carries a slash to a seat; anything else asks
 /// `pair[0]`, the main seat.
 #[must_use]
@@ -581,6 +587,13 @@ pub fn command_to(raw: &[u8], pair: &[String], speaker: &str) -> Command {
             ("/close", []) => Command::Close(None),
             ("/close", [id]) => Command::Close(Some((*id).to_owned())),
             ("/close", _) => Command::Refused("/close takes at most one request id".to_owned()),
+            ("/open", [name]) if name.contains(':') => Command::Refused(format!(
+                "/open {name} names another session; this chat opens its own seats"
+            )),
+            ("/open", [name]) if crate::config::is_agent_name(name) => {
+                Command::Open((*name).to_owned())
+            }
+            ("/open", _) => Command::Refused("/open takes one agent name".to_owned()),
             _ => Command::Refused(format!(
                 "unknown command {word}; to send it, name a seat: @{speaker} {word}"
             )),
@@ -625,12 +638,15 @@ pub enum Effect {
     },
     /// Withdraw this console's ask: the named one, or the newest open one.
     Close(Option<String>),
+    /// Select this seat's pane, as the chat's last settled read named it.
+    Open(SeatRef),
 }
 
-/// The console's input as a step machine. It composes only while it owns the
-/// session's input, and then only keys whose first byte was read after it took
-/// ownership: nothing typed at a read-only console — queued, or split across
-/// that moment — is ever composed or sent.
+/// The console's input as a step machine. It composes asks only while it owns
+/// the session's input, and then only keys whose first byte was read after it
+/// took ownership: nothing typed at a read-only console — queued, or split
+/// across that moment — is ever sent. A read-only console composes for
+/// `/open` alone, and promotion drops that draft.
 #[derive(Debug, Default)]
 pub struct Input {
     pair: Vec<String>,
@@ -643,6 +659,10 @@ pub struct Input {
     since: Option<Instant>,
     /// The reason last printed for being read-only, so a tick repeats none.
     read_only: Option<String>,
+    /// Since when this read-only console composes `/open` lines.
+    reading: Option<Instant>,
+    /// The seats `/open` may name; `None` until a settled read.
+    seats: Option<Vec<SeatRef>>,
     /// The terminal's input has ended.
     closed: bool,
 }
@@ -660,7 +680,7 @@ impl Input {
     /// The seats `/open` names: the roster of the chat's last SETTLED read,
     /// replaced whole by each one.
     pub fn set_seats(&mut self, seats: Vec<SeatRef>) {
-        let _ = (self, seats);
+        self.seats = Some(seats);
     }
 
     /// A fresh ownership `reading`, completed at `now`. Only a positive one
@@ -671,7 +691,7 @@ impl Input {
         }
         match reading {
             Reading::Owner if self.since.is_none() => {
-                self.since = Some(now);
+                (self.since, self.reading) = (Some(now), None);
                 self.composer = Composer::default();
                 let mut effects = vec![Effect::Paste(true)];
                 if self.read_only.take().is_some() {
@@ -680,7 +700,7 @@ impl Input {
                 effects
             }
             Reading::NotOwner(why) if self.read_only.as_ref() != Some(&why) => {
-                self.since = None;
+                (self.since, self.reading) = (None, Some(now));
                 self.composer = Composer::default();
                 let line = format!("read-only: {why} - prefix h opens it");
                 self.read_only = Some(why);
@@ -714,7 +734,7 @@ impl Input {
     /// One terminal read, stamped when the read returned.
     pub fn chunk(&mut self, bytes: &[u8], stamp: Instant) -> Vec<Effect> {
         let keys = self.keys.feed(bytes, stamp);
-        let Some(since) = self.since else {
+        let Some(since) = self.since.or(self.reading) else {
             return Vec::new();
         };
         let mut effects = Vec::new();
@@ -727,6 +747,18 @@ impl Input {
                 Some(Entered::Over) => Effect::Print(format!(
                     "refused: the draft is over {CAP} bytes - ^U clears it"
                 )),
+                Some(Entered::Line(raw)) if self.since.is_none() => {
+                    match command_to(&raw, &self.pair, self.speaker()) {
+                        Command::Open(name) => self.open(&name),
+                        Command::Refused(why) if raw.split(|b| *b == b' ').next() == Some(b"/open") => {
+                            Effect::Print(format!("refused: {why}"))
+                        }
+                        _ => Effect::Print(
+                            "refused: read-only: only /open <agent> works here - prefix h opens the owner chat"
+                                .to_owned(),
+                        ),
+                    }
+                }
                 Some(Entered::Line(raw)) => match command_to(&raw, &self.pair, self.speaker()) {
                     Command::Ask { seat, body } => {
                         let at = self.pair.iter().position(|name| *name == seat);
@@ -734,6 +766,7 @@ impl Input {
                         Effect::Ask { raw, seat, body }
                     }
                     Command::Close(id) => Effect::Close(id),
+                    Command::Open(name) => self.open(&name),
                     Command::Refused(why) => Effect::Print(format!("refused: {why}")),
                 },
             };
@@ -742,11 +775,26 @@ impl Input {
         effects
     }
 
+    /// `/open name`: the seat of that name in the last settled roster, or why not.
+    fn open(&self, name: &str) -> Effect {
+        let seat = self
+            .seats
+            .as_ref()
+            .map(|seats| seats.iter().find(|seat| seat.name == name));
+        match seat {
+            Some(Some(seat)) => Effect::Open(seat.clone()),
+            Some(None) => {
+                Effect::Print(format!("refused: /open {name}: not a seat of this session"))
+            }
+            None => Effect::Print(format!("refused: /open {name}: no roster read yet")),
+        }
+    }
+
     /// The end of the terminal's input: paste off, the draft dropped, and no
     /// key taken again.
     pub fn closed(&mut self) -> Vec<Effect> {
         (self.keys, self.composer) = (Keys::default(), Composer::default());
-        (self.since, self.closed) = (None, true);
+        (self.since, self.reading, self.closed) = (None, None, true);
         let line = "input closed; this chat only reads now".to_owned();
         vec![Effect::Paste(false), Effect::Print(line)]
     }
@@ -762,23 +810,34 @@ impl Input {
         self.since.is_some()
     }
 
+    /// Whether a composer is shown: always for the owner, while a draft is
+    /// typed for a read-only console.
+    #[must_use]
+    pub fn composing(&self) -> bool {
+        self.since.is_some() || (self.reading.is_some() && !self.composer.bytes.is_empty())
+    }
+
     /// The prompt. The seat name is the meta's, kept verbatim there, so it is
     /// made inert here.
     fn prompt(&self) -> String {
+        if self.since.is_none() {
+            return "open> ".to_owned();
+        }
         let speaker = terminal_text(self.speaker());
         format!("to {}> ", speaker.replace(['\n', '\t'], " "))
     }
 
-    /// The composer on one line, while this console takes input.
+    /// The composer on one line, while it is shown.
     #[must_use]
     pub fn line(&self) -> Option<String> {
-        self.since.map(|_| self.composer.line(&self.prompt()))
+        self.composing().then(|| self.composer.line(&self.prompt()))
     }
 
-    /// The composer wrapped for a pane of `size`, while this console takes input.
+    /// The composer wrapped for a pane of `size`, while it is shown.
     #[must_use]
     pub fn view(&self, size: Size) -> Option<View> {
-        self.since.map(|_| self.composer.view(&self.prompt(), size))
+        self.composing()
+            .then(|| self.composer.view(&self.prompt(), size))
     }
 }
 
@@ -958,7 +1017,8 @@ pub fn paint(
                 out.push_str(&screen.style.status(&said.replace(['\n', '\t'], " ")));
                 out.push('\n');
             }
-            Effect::Ask { .. } | Effect::Close(_) => {}
+            // The console acts on these before it paints; nothing is drawn.
+            Effect::Ask { .. } | Effect::Close(_) | Effect::Open(_) => {}
         }
     }
     if let Some(view) = view {
@@ -1575,7 +1635,13 @@ mod tests {
         let promoted = [Effect::Paste(true), accepting];
         assert_eq!(input.tick(not(), at(base, 1)), demoted());
         assert_eq!(input.tick(not(), at(base, 2)), []);
-        assert_eq!(input.chunk(b"typed\r", at(base, 3)), []);
+        // A read-only console composes for `/open` alone and refuses the rest.
+        let refused =
+            "refused: read-only: only /open <agent> works here - prefix h opens the owner chat";
+        assert_eq!(
+            input.chunk(b"typed\r", at(base, 3)),
+            [Effect::Print(refused.to_owned())]
+        );
         assert_eq!(input.line(), None);
         assert_eq!(input.tick(Reading::Owner, at(base, 4)), promoted);
         assert_eq!(input.line().as_deref(), Some("to lead> "));

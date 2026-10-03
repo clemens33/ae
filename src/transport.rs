@@ -985,6 +985,21 @@ pub fn display_message(server: &ServerId, target: &str, text: &str) -> bool {
     succeeded
 }
 
+/// Select a proven `/open` target inside its own session, guarded again by
+/// tmux at the select: whether tmux ran it and what it printed, or `None` when
+/// a fact of the target fails its grammar and nothing ran.
+#[must_use]
+pub fn open_seat(
+    server: &ServerId,
+    target: &crate::console::open::Target,
+) -> Option<(bool, String)> {
+    let args = crate::console::open::select_args(server, target)?;
+    if !addressable(server) {
+        return Some((false, String::new()));
+    }
+    Some(run(PROGRAM, &args))
+}
+
 /// Show a transient message on one attached client.
 #[must_use]
 pub fn display_client_message(server: &ServerId, client: &str, text: &str) -> bool {

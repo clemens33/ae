@@ -245,6 +245,7 @@ fuzz_target!(|data: &[u8]| {
                     .is_none_or(|id| !id.is_empty() && !id.contains(char::is_whitespace)),
                 "a named close is one word"
             ),
+            Effect::Open(seat) => panic!("no roster was set, so nothing opens: {seat:?}"),
             Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => {}
         }
     }
