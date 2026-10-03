@@ -5,6 +5,11 @@ as text: what the lead pair said to you and what it needs from you. It is a
 labelled **preview of data ae already keeps**, every field passing the board's
 terminal renderer; only its [input](#input) writes an event.
 
+A new or resumed session opens it as its **first window**, `chat`, after the
+seats, and attaching lands there (`[workspace] chat = off` keeps the old
+layout). Running sessions are not changed by an upgrade; `prefix h` gives them
+the window on demand. See [Keys](#keys).
+
 ## What it shows
 
 - **Pane turns** of both lead-pair seats, from their transcripts, as
@@ -88,8 +93,13 @@ also on palettes `a` and `b`).
 `ae chat <session> --follow`; `prefix H` jumps to the lead pane. The window
 is stamped `@ae_console` (the session uuid), never `@ae_agent`, so the watchdog
 reads no agent in it. `remain-on-exit` keeps a chat that stopped following
-(a renamed or replaced session) on screen with its reopen hint; `prefix h`
-respawns it. Residual: a card can outlive input typed in its pane, because
+(a replaced session) on screen with its reopen hint; `prefix h` respawns it.
+A launch opens the window itself, at the session's first index. Attaching or
+switching to the session lands on that chat while it is live there, and on
+the lead pane once it has exited or is gone. `ae rename` restarts every chat
+under the new name; one it cannot restart is closed, and the rename exits 1.
+A launch whose chat cannot open still starts, says so once and journals
+`chat-window-failed`. Residual: a card can outlive input typed in its pane, because
 only the watchdog daemon ends a wait on pane input.
 
 ## Input

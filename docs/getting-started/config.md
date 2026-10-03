@@ -183,7 +183,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 |-----------|------------------------------------------------------|---------------|
 | `main`    | `[roster]` name for the standing main seat. Under `lead-pair` this is a *technical* lifecycle anchor (reboot handover, non-retirable), not a rank | `lead` |
 | `workers` | Comma-separated `[roster]` names launched at startup. Under `lead-pair` the FIRST worker is the colead seat — an equal leadership peer of the lead (interchangeable, same level). Recommended default: the colead ONLY — builders/reviewers are spawned on demand per slice and retired when done | `colead` |
-| `layout`  | `lead-pair` (lead and colead each get 50% in window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
+| `layout`  | `lead-pair` (lead and colead each get 50% of the leads' window, other workers share the next one), `lead-solo` (lead alone in its window, workers in the next one), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
 | `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory, sends no checkpoint ask and renders no quota throttle line, and the settings menu carries no quota entry. While `on`, a scope entering `low` or worse asks every seat on it, once, to write a durable checkpoint before its subscription runs dry. `ae quota` works identically in both states. `off` wins over `quota_every_secs`; the auto reseat chooser then reads no vendor numbers and moves in declared order | `on` |
@@ -202,6 +202,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
 | `motion`  | `off` freezes the working `●` at its accent colour   | `on`          |
+| `chat`    | `off` launches without the [chat](../chat.md) as the session's first window; any value other than `on` / `off` opens it and prints one note. The orchestrator's own session never gets one | `on` |
 
 Set `orchestrator = true` only in the dedicated overview seat. It authorizes
 unenveloped `relay` delivery, whose target treats the text as human input.

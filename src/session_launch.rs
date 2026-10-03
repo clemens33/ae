@@ -170,6 +170,10 @@ const EVENTS_KEEP: usize = 1000;
 /// on it.
 const LAUNCH_FAILED_ACTION: &str = "launch-delivery-failed";
 
+/// The `chat-window-failed` action: a launch or a rename that could not leave
+/// the session's chat window running names the failure here.
+pub(crate) const CHAT_FAILED_ACTION: &str = "chat-window-failed";
+
 // ---------------------------------------------------------------------------
 // argv
 // ---------------------------------------------------------------------------
@@ -1909,6 +1913,9 @@ struct Session {
     /// What this session is drawn in, and whether it is drawn at all —
     /// `[workspace]`'s `palette`, `icons`, `theme` and `motion`.
     look: crate::theme::Look,
+    /// Whether the chat opens as the session's first window — `[workspace]
+    /// chat`, never for the orchestrator's own session.
+    chat: bool,
     resuming: bool,
     /// Whether THIS attempt created the session directory — the ownership fact
     /// the rollback keys on, recorded at the `mkdir` and never derived from
@@ -2919,6 +2926,18 @@ fn launch(
         }
     }
 
+    let chat = !(meta_agent || orchestrator_seat)
+        && match config::workspace_chat_window(env.global.as_deref(), env.local.as_deref()) {
+            config::ChatWindow::On => true,
+            config::ChatWindow::Off => false,
+            config::ChatWindow::Unusable(why) => {
+                writeln!(
+                    err,
+                    "Note: [workspace] chat: {why}; the chat window opens, as when it is unset."
+                )?;
+                true
+            }
+        };
     let mut shape = Session {
         name: session.clone(),
         mode,
@@ -2926,6 +2945,7 @@ fn launch(
         origin,
         layout,
         look,
+        chat,
         resuming,
         dir_created: false,
     };
@@ -3513,6 +3533,27 @@ fn build(
         start_watchdog_pane(shape, &dir, &server, anchor, env.no_autostart);
     }
 
+    // ---- the chat, as the session's first window ----
+    // A VIEW, not a seat: opened once every seat and monitor window exists,
+    // ahead of the look sweep and the phase-2 waits. One that cannot be
+    // opened leaves the launch standing, named on stderr and in the journal.
+    let chat = if shape.chat {
+        let config = env
+            .global
+            .clone()
+            .unwrap_or_else(|| env.home.join("config"));
+        let home = crate::console::toggle::Home {
+            root: &env.home,
+            config: &config,
+        };
+        open_first_chat(&server, &shape.name, &dir, home, err)?
+    } else {
+        None
+    };
+    if chat.is_some() {
+        stamp_client_session_hook(&server, &shape.name, &main_pane, true);
+    }
+
     // ---- the per-window half of the look ----
     // Every window a layout, a seat or a monitor created is stamped; the
     // phase-2 deliveries create no window, so stamping ahead of them keeps
@@ -3557,6 +3598,9 @@ fn build(
     }
 
     let _ = transport::run_tmux_op(&argv(&server, &Op::SelectPane { pane: &main_pane }));
+    if let Some(chat) = &chat {
+        let _ = transport::run_tmux_op(&argv(&server, &Op::SelectWindow { pane: chat }));
+    }
     crate::autoupgrade::schedule();
     if !env.attach {
         writeln!(
@@ -3612,6 +3656,7 @@ fn new_window(server: &ServerId, target: &str, name: &str, work_dir: &str) -> Op
         server,
         &Op::NewWindow {
             target,
+            before: false,
             name: "",
             work_dir,
             command: &[],
@@ -3732,11 +3777,17 @@ fn stamp_client_session_hook(
         return;
     };
     if pane_belongs && !main_pane.is_empty() {
+        let uuid =
+            transport::observe_session_option(server, session, crate::theme::SESSION_ID_OPTION)
+                .unwrap_or_default();
+        let panes = transport::observe_window_panes(server, session).unwrap_or_default();
+        let chat = window_zero_chat(&panes, &uuid).map(|pane| (pane.as_str(), uuid.as_str()));
         let _ = transport::run_tmux_op(&argv(
             server,
             &Op::SetClientSessionHook {
                 session_id: &session_id,
                 pane: main_pane,
+                chat,
             },
         ));
     } else {
@@ -3747,6 +3798,65 @@ fn stamp_client_session_hook(
             },
         ));
     }
+}
+
+/// The chat pane a client entering the session lands on: one stamped with the
+/// session's canonical `uuid` in its FIRST window, live or not — the hook
+/// itself falls back to the lead whenever that pane is dead or gone.
+fn window_zero_chat<'a>(panes: &'a [tmux::WindowPane], uuid: &str) -> Option<&'a String> {
+    if uuid.is_empty() || crate::archive::canonical_uuid(uuid) != uuid {
+        return None;
+    }
+    let first = panes.iter().map(|pane| pane.window_index).min()?;
+    panes
+        .iter()
+        .filter(|pane| pane.window_index == first && pane.console.as_deref() == Some(uuid))
+        .min_by_key(|pane| pane.pane_index)
+        .map(|pane| &pane.pane_id)
+}
+
+/// Opens the chat at the session's first index once the meta binds it: the
+/// `@ae_session_uuid` tmux carries must be the `session_id` the meta records.
+/// A failure is named once on `err` and once in the journal, and leaves no
+/// window behind.
+fn open_first_chat(
+    server: &ServerId,
+    session: &str,
+    dir: &Path,
+    home: crate::console::toggle::Home<'_>,
+    err: &mut impl Write,
+) -> io::Result<Option<String>> {
+    let uuid = transport::observe_session_option(server, session, crate::theme::SESSION_ID_OPTION)
+        .unwrap_or_default();
+    let opened = if uuid.is_empty() || uuid != crate::console::recorded_uuid(dir) {
+        Err("the session id in its meta is not the one tmux carries".to_owned())
+    } else {
+        crate::console::toggle::open(server, session, &uuid, true, home)
+    };
+    let why = match opened {
+        Ok(pane) => return Ok(Some(pane)),
+        Err(why) => why,
+    };
+    writeln!(
+        err,
+        "Warning: the chat window could not be opened ({why}); prefix h opens the chat."
+    )?;
+    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
+        &crate::tracked::EventFields::new(
+            crate::time::Timestamp::now(),
+            "ae",
+            CHAT_FAILED_ACTION,
+            "chat",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &format!("the chat window could not be opened: {why}"),
+            "",
+        ),
+    ));
+    Ok(None)
 }
 
 fn assert_status_bindings(server: &ServerId, env: &Env, core: &Path) {
@@ -4945,6 +5055,7 @@ fn new_window_running(
         server,
         &Op::NewWindow {
             target,
+            before: false,
             name,
             work_dir: "",
             command,
@@ -5537,6 +5648,56 @@ mod tests {
             .iter()
             .map(|command| command.as_args().to_vec())
             .collect()
+    }
+
+    /// PIN (R10): a client entering the session is sent to a chat only when
+    /// one stamped with the session's own uuid sits in its FIRST window; a
+    /// chat anywhere else, a foreign stamp or a non-canonical uuid keeps the
+    /// lead hook. A dead one still counts: the hook falls back when it fires.
+    #[test]
+    fn only_a_chat_in_the_first_window_is_where_a_client_lands() {
+        let uuid = "0e3c0a4e-7f7e-4c8e-9a3b-2d1f00000001";
+        let pane = |id: &str, window: u32, index: u32, console: Option<&str>, dead| {
+            crate::tmux::WindowPane {
+                pane_id: id.to_owned(),
+                window_id: format!("@{window}"),
+                theme: String::new(),
+                reader_src: None,
+                console: console.map(str::to_owned),
+                dead,
+                window_index: window,
+                pane_index: index,
+                agent: None,
+            }
+        };
+        let lead = pane("%1", 1, 0, None, false);
+        let landing = |panes: &[crate::tmux::WindowPane], uuid: &str| {
+            super::window_zero_chat(panes, uuid).cloned()
+        };
+        let chat = |id: &str, window, stamp, dead| pane(id, window, 0, Some(stamp), dead);
+        for (dead, want) in [(false, "%4"), (true, "%4")] {
+            let panes = [lead.clone(), chat("%4", 0, uuid, dead)];
+            assert_eq!(landing(&panes, uuid).as_deref(), Some(want), "dead {dead}");
+        }
+        let cases = [
+            vec![lead.clone()],
+            vec![lead.clone(), chat("%4", 2, uuid, false)],
+            vec![lead.clone(), chat("%4", 0, "other", false)],
+        ];
+        for panes in cases {
+            assert_eq!(landing(&panes, uuid), None, "{panes:?}");
+        }
+        let panes = [lead.clone(), chat("%4", 0, "x", false)];
+        for stamp in ["", "x", "0E3C0A4E-7F7E-4C8E-9A3B-2D1F00000001"] {
+            assert_eq!(landing(&panes, stamp), None, "{stamp:?}");
+        }
+        let split = [
+            lead,
+            pane("%6", 0, 1, Some(uuid), false),
+            pane("%5", 0, 0, None, false),
+            pane("%4", 0, 2, Some(uuid), false),
+        ];
+        assert_eq!(landing(&split, uuid).as_deref(), Some("%6"));
     }
 
     #[test]
@@ -6226,6 +6387,7 @@ mod tests {
             origin: PathBuf::from("/o"),
             layout: "vertical".to_owned(),
             look: crate::theme::Look::DEFAULT,
+            chat: false,
             resuming: true,
             dir_created: false,
         };
@@ -6304,6 +6466,7 @@ mod tests {
             origin: PathBuf::from("/o"),
             layout: "vertical".to_owned(),
             look: crate::theme::Look::DEFAULT,
+            chat: false,
             resuming: true,
             dir_created: false,
         };

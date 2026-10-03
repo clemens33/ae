@@ -457,6 +457,7 @@ palette = darcula          # darcula (default), a = neutral dark, b = warmer
 icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*
 motion = on                # off freezes the spinner
+chat = on                  # off: no chat as window 0 of a new or resumed session
 quota = on                 # off stops ae acting on vendor quota (advisories and the
                            # Low-entry checkpoint ask alike); ae quota stays
 quota_every_secs = 300     # watchdog quota advisory cadence; 0 disables

@@ -171,7 +171,7 @@ orchestrator = gpt56luna
 # The leads delegate by rule (see docs/reference/delegation.md — spawn workers on demand).
 # Standing seats are the JUDGMENT PAIR only: under lead-pair the FIRST worker (worker.0)
 # is the COLEAD seat — an EQUAL leadership peer of the lead (interchangeable, same level,
-# sharing the leads window 0:leads); main stays the technical lifecycle anchor (reboot
+# sharing the leads window); main stays the technical lifecycle anchor (reboot
 # handover), which is infrastructure, not seniority. Builders and reviewers are NOT
 # standing seats: either peer spawns them per slice (spawn builder --using opus5 / spawn
 # reviewer --using grok46) and retires its own spawns when the work is verified — every spawn

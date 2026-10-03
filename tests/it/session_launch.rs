@@ -154,6 +154,17 @@ impl Rig {
         rig
     }
 
+    /// The config as written, plus `chat = off`: every config here ends in its
+    /// `[workspace]` section. For a test that pins the seats' own layout or
+    /// reads the session's current window.
+    fn without_chat(&self) {
+        let config = std::fs::read_to_string(&self.config).unwrap_or_default();
+        assert!(
+            std::fs::write(&self.config, format!("{config}chat = off\n")).is_ok(),
+            "a chat-off config"
+        );
+    }
+
     fn tmux(&self, tail: &[&str]) -> (bool, String) {
         self.tmux_on(&self.sock, tail)
     }
@@ -2573,6 +2584,7 @@ fn solo_overrides_configured_workers_and_the_frozen_roster_stays_solo() {
         std::fs::write(&rig.config, SOLO_OVERRIDE_CONFIG).is_ok(),
         "a configured lead pair"
     );
+    rig.without_chat();
 
     let (code, stdout, stderr) =
         rig.launch(&["--local", "lnsolooverride", "--solo", "--lead", "solx"]);
@@ -3470,6 +3482,7 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
         return;
     }
     let rig = Rig::idle("focus");
+    rig.without_chat();
     let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
@@ -3817,6 +3830,7 @@ fn a_renamed_worktree_resume_uses_its_recorded_dir_and_existing_meta() {
         return;
     }
     let rig = Rig::idle("renamed-worktree-resume");
+    rig.without_chat();
     git_in(&rig.project, &["init", "-q"]);
     assert!(std::fs::write(rig.project.join("f"), "x").is_ok());
     git_in(&rig.project, &["add", "-A"]);
@@ -4884,6 +4898,7 @@ fn a_pending_same_session_request_refuses_the_stopped_rename() {
         rig.bin.join("claude").display()
     );
     assert!(std::fs::write(&rig.config, config).is_ok());
+    rig.without_chat();
     let (code, stdout, stderr) = rig.launch(&["psess"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
@@ -4960,6 +4975,7 @@ fn a_pending_cross_session_request_refuses_either_rename() {
         return;
     }
     let rig = Rig::new("pendcross", &["claude"], None);
+    rig.without_chat();
     for session in ["pxa", "pxb"] {
         let (code, stdout, stderr) = rig.launch(&["--local", session]);
         assert_eq!(
@@ -7711,6 +7727,7 @@ fn a_hostile_seat_name_in_a_resumed_meta_cannot_style_a_pane_border() {
         return;
     }
     let rig = Rig::idle("hostile");
+    rig.without_chat();
     let session = "lnhost";
     let _keep = bare_session(&rig, &rig.sock, "keep-ln-host");
     let dir = rig.dir(session);
@@ -7922,6 +7939,7 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
         std::fs::write(&solo.config, lead_config("lead-solo", &["w1", "w2"])).is_ok(),
         "a lead-solo config"
     );
+    solo.without_chat();
     let (code, stdout, stderr) = solo.launch(&["--local", "lsolo"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert_eq!(
@@ -7956,6 +7974,7 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
         .is_ok(),
         "a lead-pair config"
     );
+    pair.without_chat();
     let (code, stdout, stderr) = pair.launch(&["--local", "lpair"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert_eq!(
@@ -8015,6 +8034,7 @@ fn a_running_lead_pair_reasserts_the_resize_policy_without_a_restart() {
         std::fs::write(&pair.config, lead_config("lead-pair", &["colead"])).is_ok(),
         "a lead-pair config"
     );
+    pair.without_chat();
     let (code, stdout, stderr) = pair.launch(&["--local", "lpairlive"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     let main_pane = pair
@@ -8289,6 +8309,7 @@ fn an_agent_named_ae_monitor_keeps_its_window_while_the_plumbing_window_stays_hi
         std::fs::write(&rig.config, config).is_ok(),
         "a valid agent name that matches the plumbing window"
     );
+    rig.without_chat();
     let (code, stdout, stderr) = rig.launch(&["--local", "monitor-name"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
@@ -8338,6 +8359,7 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
         return;
     }
     let rig = Rig::idle("bar");
+    rig.without_chat();
     let (code, stdout, stderr) = rig.launch(&["--local", "lnbar"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 

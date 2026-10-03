@@ -5303,7 +5303,9 @@ fn clicking_the_menu_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     assert!(
         fs::write(
             &config,
-            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+            // A row lands on the lead only without a first-window chat: with
+            // one, the session's focus hook sends the client on to it.
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\nchat = off\n",
         )
         .is_ok()
     );

@@ -124,11 +124,13 @@ pub(crate) enum Op<'a> {
         /// The command the new pane runs, or empty for a shell.
         command: &'a [String],
     },
-    /// `new-window -d -t <target> [-n <name>] -c <dir> -P -F '#{pane_id}' [command]`.
+    /// `new-window -d [-b] -t <target> [-n <name>] -c <dir> -P -F '#{pane_id}' [command]`.
     NewWindow {
         /// `<session>:` for "next free index", `<session>:99` for the pinned
-        /// monitor window.
+        /// monitor window, `<session>:^` with `before` for the first index.
         target: &'a str,
+        /// `-b`: insert BEFORE `target`, moving the windows from there up.
+        before: bool,
         /// The window name, or empty for tmux's default.
         name: &'a str,
         /// The working directory, or empty to inherit.
@@ -167,7 +169,16 @@ pub(crate) enum Op<'a> {
     /// session, while the pane still belongs to the captured session id.
     /// `set-hook` takes a target-PANE, so the pane id makes this session-scoped
     /// without a name target (and without prefix matching).
-    SetClientSessionHook { session_id: &'a str, pane: &'a str },
+    ///
+    /// With `chat` — the window-0 chat's pane and the session uuid it is
+    /// stamped with — the hook decides when it FIRES: that pane while it is
+    /// still a live, stamped pane of the session's first window (any of its
+    /// panes, not only the active one), else the lead.
+    SetClientSessionHook {
+        session_id: &'a str,
+        pane: &'a str,
+        chat: Option<(&'a str, &'a str)>,
+    },
     /// Remove the session-scoped focus hook when its pane or session identity
     /// cannot be proven.
     UnsetClientSessionHook { target: &'a str },
@@ -295,11 +306,16 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         }
         Op::NewWindow {
             target,
+            before,
             name,
             work_dir,
             command,
         } => {
-            args.extend(["new-window", "-d", "-t", target].map(ToOwned::to_owned));
+            args.extend(["new-window", "-d"].map(ToOwned::to_owned));
+            if before {
+                args.push("-b".to_owned());
+            }
+            args.extend(["-t", target].map(ToOwned::to_owned));
             if !name.is_empty() {
                 args.extend(["-n", name].map(ToOwned::to_owned));
             }
@@ -352,20 +368,23 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         Op::SelectWindow { pane } => {
             args.extend(["select-window", "-t", pane].map(ToOwned::to_owned));
         }
-        Op::SetClientSessionHook { session_id, pane } => {
-            args.extend(
-                [
-                    "set-hook",
-                    "-t",
-                    pane,
-                    "client-session-changed",
-                    &format!(
-                        "if-shell -F -t {pane} \"#{{==:#{{session_id}},{session_id}}}\" \
-                         \"select-window -t {pane} ; select-pane -t {pane}\""
-                    ),
-                ]
-                .map(ToOwned::to_owned),
-            );
+        Op::SetClientSessionHook {
+            session_id,
+            pane,
+            chat,
+        } => {
+            let guard = format!("if-shell -F -t {pane} \"#{{==:#{{session_id}},{session_id}}}\"");
+            let command = match chat {
+                None => format!("{guard} \"select-window -t {pane} ; select-pane -t {pane}\""),
+                Some((chat, uuid)) => format!(
+                    "{guard} {{ if-shell -F -t '{session_id}:^' \
+                     \"#{{P:#{{?#{{&&:#{{==:#{{pane_id}},{chat}}},#{{&&:#{{==:#{{@ae_console}},{uuid}}},#{{!=:#{{pane_dead}},1}}}}}},1,}}}}\" \
+                     {{ select-window -t {chat} ; select-pane -t {chat} }} \
+                     {{ select-window -t {pane} ; select-pane -t {pane} }} }}"
+                ),
+            };
+            args.extend(["set-hook", "-t", pane, "client-session-changed"].map(ToOwned::to_owned));
+            args.push(command);
         }
         Op::UnsetClientSessionHook { target } => {
             args.extend(
@@ -979,6 +998,25 @@ mod tests {
     }
 
     #[test]
+    fn a_new_window_inserts_before_its_target_only_when_asked() {
+        let window = |before| {
+            words(&Op::NewWindow {
+                target: "=s:^",
+                before,
+                name: "chat",
+                work_dir: "",
+                command: &[],
+            })
+        };
+        let tail = ["-t", "=s:^", "-n", "chat", "-P", "-F", "#{pane_id}"];
+        assert_eq!(window(false), [&["new-window", "-d"][..], &tail].concat());
+        assert_eq!(
+            window(true),
+            [&["new-window", "-d", "-b"][..], &tail].concat()
+        );
+    }
+
+    #[test]
     fn the_watchdog_split_is_above_its_target() {
         let cmd = vec!["/m/watchdog".to_owned()];
         assert_eq!(
@@ -1075,11 +1113,37 @@ mod tests {
     }
 
     #[test]
+    fn a_session_with_a_window_zero_chat_lands_on_it_only_while_it_is_live() {
+        let uuid = "0e3c0a4e-7f7e-4c8e-9a3b-2d1f00000001";
+        assert_eq!(
+            words(&Op::SetClientSessionHook {
+                session_id: "$7",
+                pane: "%9",
+                chat: Some(("%3", uuid)),
+            }),
+            vec![
+                "set-hook".to_owned(),
+                "-t".to_owned(),
+                "%9".to_owned(),
+                "client-session-changed".to_owned(),
+                format!(
+                    "if-shell -F -t %9 \"#{{==:#{{session_id}},$7}}\" \
+                     {{ if-shell -F -t '$7:^' \
+                     \"#{{P:#{{?#{{&&:#{{==:#{{pane_id}},%3}},#{{&&:#{{==:#{{@ae_console}},{uuid}}},#{{!=:#{{pane_dead}},1}}}}}},1,}}}}\" \
+                     {{ select-window -t %3 ; select-pane -t %3 }} \
+                     {{ select-window -t %9 ; select-pane -t %9 }} }}"
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn the_session_focus_hook_targets_the_lead_pane_and_keeps_its_command_one_argv_element() {
         assert_eq!(
             words(&Op::SetClientSessionHook {
                 session_id: "$7",
                 pane: "%9",
+                chat: None,
             }),
             vec![
                 "set-hook",

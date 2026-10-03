@@ -1155,6 +1155,13 @@ fn locked(
         let watchdog_expected = crate::session_launch::watchdog_enabled_for_session(&new_dir);
         let mut monitors =
             crate::session_launch::rebind_monitor_panes(root, &server, new, &new_dir).map(|_| ());
+        let chat = restart_chats(root, &server, new, &new_dir);
+        if let Err(why) = &chat {
+            writeln!(
+                err,
+                "Error: the session was renamed to '{new}', but its chat could not be restarted under the new name ({why}); prefix h opens the chat."
+            )?;
+        }
         // Manifest publication is CHECKED: an incompatible workspace.md
         // destination must fail the rename, not print success over it.
         if let Err(why) = publish_manifest(&new_dir, new) {
@@ -1213,10 +1220,75 @@ fn locked(
             }
             return Ok(EXIT_FAILED);
         }
+        if chat.is_err() {
+            return Ok(EXIT_FAILED);
+        }
     }
 
     writeln!(out, "Renamed '{old}' → '{new}'")?;
     Ok(0)
+}
+
+/// Restarts every chat stamped with the renamed session's uuid under its new
+/// name, because the chat's argv names the session. When one cannot be
+/// restarted every such chat is closed rather than left running for a name
+/// that is gone; the error and the journal say whether the close held.
+fn restart_chats(root: &Path, server: &ServerId, session: &str, dir: &Path) -> Result<(), String> {
+    let uuid = transport::observe_session_option(server, session, crate::theme::SESSION_ID_OPTION)
+        .unwrap_or_default();
+    if uuid.is_empty() {
+        return Ok(());
+    }
+    let config = crate::doors::config_file(crate::shape::current(), root);
+    let home = crate::console::toggle::Home {
+        root,
+        config: &config,
+    };
+    let detail = match transport::observe_window_panes(server, session) {
+        None => "tmux did not answer the pane listing, so a chat may still name the old session"
+            .to_owned(),
+        Some(panes) => {
+            let chats: Vec<String> = panes
+                .into_iter()
+                .filter(|pane| pane.console.as_deref() == Some(uuid.as_str()))
+                .map(|pane| pane.pane_id)
+                .collect();
+            let Some(why) = chats.iter().find_map(|pane| {
+                crate::console::toggle::respawn(server, pane, session, home).err()
+            }) else {
+                return Ok(());
+            };
+            let open: Vec<&str> = chats
+                .iter()
+                .filter(|pane| !crate::console::toggle::close(server, session, pane, &uuid, false))
+                .map(String::as_str)
+                .collect();
+            if open.is_empty() {
+                format!("{why}; its chat window was closed")
+            } else {
+                format!(
+                    "{why}; chat pane {} could not be closed and may still name the old session",
+                    open.join(", ")
+                )
+            }
+        }
+    };
+    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
+        &crate::tracked::EventFields::new(
+            crate::time::Timestamp::now(),
+            crate::watchdog_lifecycle::RENAME_ACTOR,
+            crate::session_launch::CHAT_FAILED_ACTION,
+            "chat",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &format!("the chat could not be restarted under '{session}': {detail}"),
+            "",
+        ),
+    ));
+    Err(detail)
 }
 
 // ---- stopped preflight: reads that must all hold before the intent ------

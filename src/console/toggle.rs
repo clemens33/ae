@@ -7,8 +7,10 @@
 //! screen with its reopen hint; the same key respawns it.
 
 use std::io::Write;
+use std::path::Path;
 
 use super::submit::first_console;
+use crate::inventory::ServerId;
 use crate::reader::{session_of, source_pane};
 use crate::session_tmux::{Op, argv, interpret_pane_id, picker_launcher};
 use crate::tmux::{OptionScope, WindowPane, session_target};
@@ -113,55 +115,169 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
         Plan::Back => return tmux(&Op::LastWindow { session: &session }).map(drop),
         Plan::Select(pane) => pane.clone(),
         Plan::Open | Plan::Respawn(_) => {
-            let (root, core) = (crate::state_root(), crate::shape::resolved_exe());
-            let (Some(root), Some(core)) = (root, core) else {
-                return Err("ae cannot name its own state".to_owned());
-            };
+            let root = crate::state_root().ok_or("ae cannot name its own state")?;
             let config = crate::doors::config_file(crate::shape::current(), &root);
-            let launcher = picker_launcher(crate::shape::current(), &core, &root, &config, &server);
-            let command = console_command(launcher, &session);
-            // A new window is a shell first: the stamp and `remain-on-exit`
-            // land before the console runs, so one that stops at once still
-            // leaves its pane and its hint.
-            let pane = if let Plan::Respawn(pane) = &plan {
+            let home = Home {
+                root: &root,
+                config: &config,
+            };
+            if let Plan::Respawn(pane) = &plan {
+                respawn(&server, pane, &session, home)?;
                 pane.clone()
             } else {
-                let target = format!("{}:", session_target(&session));
-                let window = Op::NewWindow {
-                    target: &target,
-                    name: "chat",
-                    work_dir: "",
-                    command: &[],
-                };
-                let pane = interpret_pane_id(true, &tmux(&window)?)
-                    .ok_or("tmux did not name the chat pane")?;
-                if !transport::publish_option(
-                    &server,
-                    OptionScope::Pane,
-                    &pane,
-                    "@ae_console",
-                    &uuid,
-                ) {
-                    let _ = transport::kill_pane(&server, &pane);
-                    return Err("tmux refused to stamp the chat pane".to_owned());
-                }
-                tmux(&Op::SetWindowOption {
-                    target: &pane,
-                    name: "remain-on-exit",
-                    value: "on",
-                })?;
-                pane
-            };
-            tmux(&Op::RespawnPane {
-                pane: &pane,
-                work_dir: "",
-                command: &command,
-            })?;
-            pane
+                open(&server, &session, &uuid, false, home)?
+            }
         }
     };
     tmux(&Op::SelectWindow { pane: &pane })?;
     tmux(&Op::SelectPane { pane: &pane }).map(drop)
+}
+
+/// The ae a chat's launcher runs: its state root and its global config.
+#[derive(Clone, Copy)]
+pub(crate) struct Home<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) config: &'a Path,
+}
+
+/// Opens a chat window for `session`, stamped with `uuid`, and reports its
+/// pane: at the session's FIRST index when `first`, else at the next free one.
+///
+/// A new window is a shell first: the stamp and `remain-on-exit` land before
+/// the chat runs, so one that stops at once still leaves its pane and its
+/// hint. A window that cannot be finished is killed, never left half-built.
+///
+/// # Errors
+///
+/// What failed, before or after the window existed.
+pub(crate) fn open(
+    server: &ServerId,
+    session: &str,
+    uuid: &str,
+    first: bool,
+    home: Home<'_>,
+) -> Result<String, String> {
+    let command = command(server, session, home)?;
+    let target = format!(
+        "{}:{}",
+        session_target(session),
+        if first { "^" } else { "" }
+    );
+    let window = Op::NewWindow {
+        target: &target,
+        before: first,
+        name: "chat",
+        work_dir: "",
+        command: &[],
+    };
+    let (created, out) = transport::run_tmux_op(&argv(server, &window));
+    let pane = interpret_pane_id(created, &out).ok_or("tmux did not open the chat window")?;
+    let finished =
+        if transport::publish_option(server, OptionScope::Pane, &pane, "@ae_console", uuid) {
+            let tmux = |op: &Op<'_>| transport::run_tmux_op(&argv(server, op)).0;
+            let kept = tmux(&Op::SetWindowOption {
+                target: &pane,
+                name: "remain-on-exit",
+                value: "on",
+            });
+            let started = kept
+                && tmux(&Op::RespawnPane {
+                    pane: &pane,
+                    work_dir: "",
+                    command: &command,
+                });
+            if started {
+                Ok(())
+            } else {
+                Err("tmux refused to start the chat in its window")
+            }
+        } else {
+            Err("tmux refused to stamp the chat pane")
+        };
+    let Err(why) = finished else {
+        return Ok(pane);
+    };
+    if close(server, session, &pane, uuid, true) {
+        Err(format!("{why}; its window was closed"))
+    } else {
+        Err(format!("{why}; its window ({pane}) could not be closed"))
+    }
+}
+
+/// Whose `pane` is, read from one listing of its session.
+#[derive(Debug, PartialEq, Eq)]
+enum Owner {
+    Gone,
+    /// A chat stamped `uuid` — or, for the caller that just `created` it,
+    /// the still unstamped shell.
+    Chat,
+    Other,
+}
+
+fn owner(panes: &[WindowPane], pane: &str, uuid: &str, created: bool) -> Owner {
+    let ours = |row: &WindowPane| match row.console.as_deref() {
+        Some(stamp) => stamp == uuid,
+        None => created,
+    };
+    match panes.iter().find(|row| row.pane_id == pane) {
+        None => Owner::Gone,
+        Some(row) if row.agent.is_none() && ours(row) => Owner::Chat,
+        Some(_) => Owner::Other,
+    }
+}
+
+/// Closes the chat in `pane` of `session` only while it is still the chat of
+/// `uuid` — an unstamped shell only when this caller `created` it — and says
+/// whether it is gone: a second listing proves it, so a kill tmux refused or
+/// never ran reads false.
+pub(crate) fn close(
+    server: &ServerId,
+    session: &str,
+    pane: &str,
+    uuid: &str,
+    created: bool,
+) -> bool {
+    let read = || transport::observe_window_panes(server, session);
+    let owned = |panes: Vec<WindowPane>| owner(&panes, pane, uuid, created);
+    match read().map(owned) {
+        Some(Owner::Gone) => true,
+        Some(Owner::Chat) => {
+            transport::kill_pane(server, pane) && read().map(owned) == Some(Owner::Gone)
+        }
+        Some(Owner::Other) | None => false,
+    }
+}
+
+/// Restarts the chat in `pane` as the chat of `session`.
+///
+/// # Errors
+///
+/// What failed.
+pub(crate) fn respawn(
+    server: &ServerId,
+    pane: &str,
+    session: &str,
+    home: Home<'_>,
+) -> Result<(), String> {
+    let command = command(server, session, home)?;
+    let op = Op::RespawnPane {
+        pane,
+        work_dir: "",
+        command: &command,
+    };
+    match transport::run_tmux_op(&argv(server, &op)) {
+        (true, _) => Ok(()),
+        _ => Err("tmux refused to restart the chat".to_owned()),
+    }
+}
+
+/// The chat window's argv, the same for every opener: the terminal set up,
+/// then this core's launcher running the chat of `session` with its input.
+fn command(server: &ServerId, session: &str, home: Home<'_>) -> Result<Vec<String>, String> {
+    let core = crate::shape::resolved_exe().ok_or("ae cannot name its own binary")?;
+    let shape = crate::shape::current();
+    let launcher = picker_launcher(shape, &core, home.root, home.config, server);
+    Ok(console_command(launcher, session))
 }
 
 /// Sets the pane's terminal to hand the console each key as it is typed, with
@@ -179,7 +295,7 @@ fn console_command(launcher: Vec<String>, session: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Plan, TTY_SETUP, console_command, plan};
+    use super::{Owner, Plan, TTY_SETUP, console_command, owner, plan};
     use crate::console::submit::tests::pane;
     use crate::tmux::WindowPane;
 
@@ -269,6 +385,31 @@ mod tests {
         for (consoles, from, want) in cases {
             let panes: Vec<WindowPane> = std::iter::once(lead.clone()).chain(consoles).collect();
             assert_eq!(plan(&panes, from, "u", "u"), want, "{from} {panes:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_chat_of_this_session_or_the_shell_its_opener_made_is_closed() {
+        let seat = WindowPane {
+            agent: Some("lead".to_owned()),
+            ..pane("%1", "@0", None, false)
+        };
+        let panes = [
+            seat,
+            pane("%2", "@1", None, false),
+            pane("%3", "@2", Some("u"), true),
+            pane("%4", "@3", Some("other"), false),
+        ];
+        for (id, created, want) in [
+            ("%9", false, Owner::Gone),
+            ("%2", true, Owner::Chat),
+            ("%2", false, Owner::Other),
+            ("%3", false, Owner::Chat),
+            ("%3", true, Owner::Chat),
+            ("%1", true, Owner::Other),
+            ("%4", true, Owner::Other),
+        ] {
+            assert_eq!(owner(&panes, id, "u", created), want, "{id} {created}");
         }
     }
 

@@ -1869,6 +1869,44 @@ pub fn global_restore(global: Option<&Path>) -> Restore {
     }
 }
 
+/// The `[workspace] chat` ruling: whether a launch opens the chat as the
+/// session's first window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatWindow {
+    On,
+    Off,
+    /// Opens like `On`; carries the escaped reason for the one note.
+    Unusable(String),
+}
+
+/// Absent and exact `on` open the chat window silently, exact `off` keeps the
+/// layout without it; any other value opens it and is named.
+#[must_use]
+pub fn chat_window(value: Option<&str>) -> ChatWindow {
+    match value.map(str::trim) {
+        None | Some("on") => ChatWindow::On,
+        Some("off") => ChatWindow::Off,
+        Some(other) => ChatWindow::Unusable(format!("{other:?} is not on or off")),
+    }
+}
+
+/// The `chat` ruling a launch reads: `local` over `global`, through the reader
+/// that keeps a malformed entry, so a declaration the generic overlay would
+/// skip is named rather than read as absent.
+#[must_use]
+pub fn workspace_chat_window(global: Option<&Path>, local: Option<&Path>) -> ChatWindow {
+    let read =
+        |file: Option<&Path>| file.map_or(Ok(None), |file| read_global_workspace_key(file, "chat"));
+    let value = match read(local) {
+        Ok(None) => read(global),
+        declared => declared,
+    };
+    match value {
+        Err(why) => ChatWindow::Unusable(why.escape_debug().to_string()),
+        Ok(value) => chat_window(value.as_deref()),
+    }
+}
+
 /// Split a `fleet_order` value into the names ae will order by and the entries
 /// it threw away.
 ///
@@ -2197,6 +2235,60 @@ mod tests {
             "aedev",
             "the global-only reader is unmoved"
         );
+    }
+
+    /// PIN: `[workspace] chat` is exact lowercase `on` / `off`, trimmed. Absent
+    /// and `on` open the window silently, `off` keeps today's layout, and every
+    /// other value opens it too and carries the one escaped reason to print.
+    #[test]
+    fn the_chat_window_setting_is_on_unless_exactly_off() {
+        let file = |text: &str| NamedTemp::new("chat", text);
+        let (on, off) = (
+            file("[workspace]\nchat = on\n"),
+            file("[workspace]\nchat = off\n"),
+        );
+        let blank = file("[workspace]\nlayout = vertical\n");
+        let read = |global: Option<&NamedTemp>, local: Option<&NamedTemp>| {
+            workspace_chat_window(global.map(NamedTemp::path), local.map(NamedTemp::path))
+        };
+        assert_eq!(read(None, None), ChatWindow::On);
+        assert_eq!(read(Some(&blank), Some(&blank)), ChatWindow::On);
+        assert_eq!(read(Some(&off), None), ChatWindow::Off);
+        assert_eq!(read(Some(&off), Some(&blank)), ChatWindow::Off);
+        assert_eq!(read(Some(&off), Some(&on)), ChatWindow::On);
+        assert_eq!(read(Some(&on), Some(&off)), ChatWindow::Off);
+        // A declaration the generic overlay would skip is named, never absent.
+        for text in ["[workspace]\nchat =\n", "[workspace]\nchat\n"] {
+            let bad = file(text);
+            for (global, local) in [(Some(&bad), None), (Some(&off), Some(&bad))] {
+                assert!(
+                    matches!(read(global, local), ChatWindow::Unusable(_)),
+                    "{text:?}"
+                );
+            }
+        }
+        for (value, want) in [
+            (None, ChatWindow::On),
+            (Some("on"), ChatWindow::On),
+            (Some("  on "), ChatWindow::On),
+            (Some("off"), ChatWindow::Off),
+            (Some(" off\t"), ChatWindow::Off),
+        ] {
+            assert_eq!(chat_window(value), want, "{value:?}");
+        }
+        for (value, why) in [
+            ("OFF", "\"OFF\" is not on or off"),
+            ("no", "\"no\" is not on or off"),
+            ("0", "\"0\" is not on or off"),
+            ("", "\"\" is not on or off"),
+            ("\u{1b}[2J", "\"\\u{1b}[2J\" is not on or off"),
+        ] {
+            assert_eq!(
+                chat_window(Some(value)),
+                ChatWindow::Unusable(why.to_owned()),
+                "{value:?}"
+            );
+        }
     }
 
     /// PIN: the `restore` ruling is exact lowercase `on` / `off`, trimmed, last
