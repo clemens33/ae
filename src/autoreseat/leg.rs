@@ -1686,4 +1686,177 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_headroom_summary_keeps_its_trigger_inside_the_bound_and_a_limit_one_is_untouched() {
+        let cause = "headroom 95% weekly_all 7d";
+        assert_eq!(tagged("from a to b", ""), "from a to b");
+        assert_eq!(
+            tagged("from a to b", cause),
+            "from a to b (headroom 95% weekly_all 7d)"
+        );
+        let long = tagged(&"x".repeat(400), cause);
+        assert_eq!(long.chars().count(), SUMMARY_CHARS);
+        assert!(long.ends_with(" (headroom 95% weekly_all 7d)"), "{long}");
+        let skipped = [
+            ("a".to_owned(), Skip::NoRoom),
+            ("b".to_owned(), Skip::LeftOnHeadroom),
+        ];
+        assert_eq!(attempt_note("", &skipped), "");
+        assert_eq!(attempt_note(cause, &[]), " (headroom 95% weekly_all 7d)");
+        assert_eq!(
+            attempt_note(cause, &skipped),
+            " (headroom 95% weekly_all 7d); passed over a (no headroom), b (left on headroom)"
+        );
+    }
+
+    /// The trigger's headroom arm: due only with no limit drawn, the account
+    /// still near the threshold and a proven idle frame; a candidate without
+    /// room is passed over by name, and a drawn limit takes the limit spelling.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one table of the arm's rows")]
+    fn the_trigger_moves_on_headroom_only_while_near_idle_and_unlimited() {
+        use crate::autoreseat::{Frame, HEADROOM_ACTION, Pane, Settings, Switch, Window};
+        let key = Timestamp::parse(KEY).expect("the key parses");
+        let record = |since: i64, action: &str, rest: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"{action}","target":"scout"{rest}}}"#,
+                Timestamp::from_epoch(key.epoch() + since)
+            ))
+            .expect("a well-formed record")
+        };
+        let crossed = [record(
+            0,
+            HEADROOM_ACTION,
+            r#","summary":"headroom 96% weekly_all 7d""#,
+        )];
+        let limit = [record(0, "limit", "")];
+        let settings = |headroom_at| Settings {
+            switch: Switch::On,
+            sessions: None,
+            grace_secs: 0,
+            map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            headroom_at,
+            headroom_note: None,
+            notes: Vec::new(),
+        };
+        let seat = Seat {
+            session: "aedev",
+            slot: "spawned.3",
+            agent: "scout",
+            profile: "sol6x",
+            orchestrator: false,
+        };
+        let sight = |frame, limited, near| Sight {
+            pane: Pane {
+                frame,
+                human_prompt: false,
+                client_input: None,
+            },
+            limited,
+            near,
+        };
+        let now = Timestamp::from_epoch(key.epoch() + 10);
+        let at = |judged: f64| {
+            move |list: &[String], _: (&[(String, Timestamp)], &[String])| {
+                list.iter()
+                    .map(|profile| Candidate {
+                        profile: profile.clone(),
+                        configured: true,
+                        peer_latched: false,
+                        windows: vec![Window {
+                            judged,
+                            critical: judged >= 95.0,
+                            observed_at: now.epoch(),
+                            resets_at: None,
+                            status: crate::quota::Status::Fresh,
+                            label: "weekly_all 7d".to_owned(),
+                        }],
+                        left_at: None,
+                        left_on_headroom: false,
+                    })
+                    .collect()
+            }
+        };
+        let near = sight(Frame::Clear, false, true);
+        assert_eq!(
+            plan(&settings(Some(95)), &seat, &near, &crossed, at(10.0), now),
+            Plan::Attempt {
+                key,
+                to: "opus55x".to_owned(),
+                note: " (headroom 96% weekly_all 7d)".to_owned(),
+                cause: "headroom 96% weekly_all 7d".to_owned(),
+            }
+        );
+        assert_eq!(
+            plan(&settings(Some(95)), &seat, &near, &crossed, at(96.0), now),
+            Plan::Refuse {
+                key,
+                why: "refused: no usable candidate: opus55x (no headroom) \
+                      (headroom 96% weekly_all 7d)"
+                    .to_owned(),
+            }
+        );
+        for (settings, sight, events, why) in [
+            (settings(None), near, &crossed[..], "threshold off"),
+            (
+                settings(Some(95)),
+                sight(Frame::Clear, false, false),
+                &crossed[..],
+                "relieved since",
+            ),
+            (
+                settings(Some(95)),
+                sight(Frame::Unproven, false, true),
+                &crossed[..],
+                "unproven frame",
+            ),
+            (settings(Some(95)), near, &[][..], "no episode"),
+            (
+                settings(Some(95)),
+                sight(Frame::Clear, true, true),
+                &crossed[..],
+                "a drawn limit asks the limit episode",
+            ),
+        ] {
+            assert!(
+                matches!(
+                    plan(&settings, &seat, &sight, events, at(10.0), now),
+                    Plan::Decline(_)
+                ),
+                "{why}"
+            );
+        }
+        // A drawn limit moves by the limit episode, with its own spelling and
+        // its own chooser: the 96% candidate a headroom move passes over.
+        let mut both = crossed.to_vec();
+        both.extend(limit.iter().cloned());
+        assert_eq!(
+            plan(
+                &settings(Some(95)),
+                &seat,
+                &sight(Frame::Unproven, true, true),
+                &limit,
+                at(96.0),
+                now
+            ),
+            Plan::Attempt {
+                key,
+                to: "opus55x".to_owned(),
+                note: String::new(),
+                cause: String::new(),
+            }
+        );
+        assert!(matches!(
+            plan(
+                &settings(Some(95)),
+                &seat,
+                &sight(Frame::Clear, true, true),
+                &both,
+                at(96.0),
+                now
+            ),
+            Plan::Attempt { ref cause, .. } if cause.is_empty()
+        ));
+    }
 }

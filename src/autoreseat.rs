@@ -2209,4 +2209,327 @@ mod tests {
             assert_eq!(settings_in(path, text), settings(Some(path)), "{text:?}");
         }
     }
+
+    #[test]
+    fn the_headroom_threshold_is_off_or_a_whole_percent_and_anything_else_is_95_noted() {
+        assert_eq!(parse_headroom(Ok(None), Ok(0)), (Some(95), None));
+        assert_eq!(parse_headroom(Ok(Some("off".into())), Ok(1)), (None, None));
+        for (raw, at) in [(" 96 ", 96), ("50", 50), ("100", 100), ("95", 95)] {
+            assert_eq!(
+                parse_headroom(Ok(Some(raw.into())), Ok(1)),
+                (Some(at), None),
+                "{raw:?}"
+            );
+        }
+        for bad in ["49", "101", "+96", "95.5", "", "OFF", "\u{1b}[31m", "256"] {
+            let (at, note) = parse_headroom(Ok(Some(bad.into())), Ok(1));
+            assert_eq!(at, Some(95), "{bad:?}");
+            let note = note.expect("a fallback is noted");
+            assert!(note.contains("auto_reseat_at"), "{note}");
+            assert!(note.ends_with("; 95 used"), "{note}");
+            assert!(
+                !note.contains('\u{1b}'),
+                "a note echoes no control byte: {note:?}"
+            );
+        }
+        let (at, note) = parse_headroom(Ok(Some("96".into())), Ok(2));
+        assert_eq!(at, Some(95));
+        assert_eq!(
+            note.as_deref(),
+            Some("auto_reseat_at is set 2 times; 95 used")
+        );
+        let (at, note) = parse_headroom(Err("unreadable".into()), Ok(1));
+        assert_eq!(
+            (at, note.as_deref()),
+            (Some(95), Some("unreadable; 95 used"))
+        );
+        let (at, note) = parse_headroom(Ok(Some("96".into())), Err("unlisted".into()));
+        assert_eq!((at, note.as_deref()), (Some(95), Some("unlisted; 95 used")));
+    }
+
+    #[test]
+    fn the_threshold_is_read_only_behind_a_switch_that_is_on() {
+        let file = Path::new("/nonexistent/ae-config");
+        let off = settings_in(
+            file,
+            "[workspace]\nauto_reseat = off\nauto_reseat_at = bad\n",
+        );
+        assert_eq!((off.headroom_at, off.notes.len()), (None, 0));
+        let on = settings_in(
+            file,
+            "[workspace]\nauto_reseat = on\nauto_reseat_at = bad\n",
+        );
+        assert_eq!(on.headroom_at, Some(95));
+        assert_eq!(on.notes.len(), 1, "{:?}", on.notes);
+        assert_eq!(on.headroom_note.as_ref(), on.notes.first());
+        let twice = settings_in(
+            file,
+            "[workspace]\nauto_reseat = all\nauto_reseat_at = 60\nauto_reseat_at = 70\n",
+        );
+        assert_eq!(twice.headroom_at, Some(95));
+        let absent = settings_in(file, "[workspace]\nauto_reseat = on\n");
+        assert_eq!((absent.headroom_at, absent.headroom_note), (Some(95), None));
+    }
+
+    /// A headroom opener, `since` seconds after the key, naming its reading.
+    fn crossed(since: i64) -> Event {
+        record(
+            since,
+            WATCHDOG_ACTOR,
+            HEADROOM_ACTION,
+            AGENT,
+            r#","summary":"headroom 95% weekly_all 7d""#,
+        )
+    }
+
+    fn headroom(events: &[Event]) -> Option<Episode> {
+        headroom_episode(events, SESSION, SLOT, AGENT)
+    }
+
+    #[test]
+    fn a_headroom_episode_is_keyed_by_its_first_crossing_and_ends_on_relief_a_move_or_a_spawn() {
+        let opened = headroom(&[crossed(0), crossed(30)]).expect("an open episode");
+        assert_eq!(opened.key, after_key(0));
+        assert_eq!(opened.trigger, Trigger::Headroom);
+        assert_eq!(opened.cause(), "headroom 95% weekly_all 7d");
+        assert_eq!(
+            fold(&[limit()]).map(|found| (found.trigger, found.cause().to_owned())),
+            Some((Trigger::Limit, String::new()))
+        );
+        // A limit opens no headroom episode, and only the watchdog opens one.
+        assert_eq!(headroom(&[limit()]), None);
+        let forged = record(0, "lead", HEADROOM_ACTION, AGENT, "");
+        assert_eq!(headroom(&[forged]), None);
+        // Relief for ANOTHER key re-arms nothing; its own key does.
+        let other = watchdog(10, REARMED_ACTION, Some(OTHER_KEY));
+        assert!(headroom(&[crossed(0), other]).is_some());
+        let own = watchdog(10, REARMED_ACTION, Some(KEY));
+        assert_eq!(headroom(&[crossed(0), own.clone()]), None);
+        let reopened = headroom(&[crossed(0), own, crossed(20)]).expect("a new episode");
+        assert_eq!(reopened.key, after_key(20));
+        // A move ends it whatever its ref names; so does the seat's spawn.
+        let done = routed(10, DONE_ACTION, "fake-claude");
+        assert_eq!(headroom(&[crossed(0), done]), None);
+        assert_eq!(headroom(&[crossed(0), spawned(10)]), None);
+        // A terminal outcome keeps the episode until relief: one refusal.
+        let refused = routed(10, REFUSED_ACTION, KEY);
+        let rests = headroom(&[crossed(0), routed(5, ATTEMPT_ACTION, KEY), refused])
+            .expect("a terminal episode stays");
+        assert_eq!(rests.terminal, Some(Outcome::Refused));
+        assert_eq!(rests.attempts, 1);
+    }
+
+    #[test]
+    fn a_hold_is_named_once_by_its_whole_summary() {
+        let held = record(
+            10,
+            WATCHDOG_ACTOR,
+            HELD_ACTION,
+            AGENT,
+            &format!(r#","ref":"{KEY}","summary":"held: busy""#),
+        );
+        let found = headroom(&[crossed(0), held]).expect("an open episode");
+        assert!(found.holds_with("held: busy"));
+        assert!(!found.holds_with("held: busy on headroom"));
+        let moved_on = headroom(&[
+            crossed(0),
+            routed(5, HELD_ACTION, KEY),
+            routed(9, ATTEMPT_ACTION, KEY),
+        ])
+        .expect("an open episode");
+        assert!(!moved_on.held);
+        assert!(!moved_on.holds_with(""));
+    }
+
+    #[test]
+    fn only_a_move_that_closed_a_headroom_episode_leaves_its_profile_on_headroom() {
+        let late = after_key(30).to_string();
+        let events = [
+            limit(),
+            routed(10, ATTEMPT_ACTION, KEY),
+            routed(20, DONE_ACTION, "sol6x"),
+            crossed(30),
+            routed(40, ATTEMPT_ACTION, &late),
+            routed(50, DONE_ACTION, "opus55x"),
+        ];
+        assert_eq!(left_on_headroom(&events, SESSION, SLOT, AGENT), ["opus55x"]);
+        let all: Vec<String> = left_profiles(&events, SESSION, SLOT, AGENT)
+            .into_iter()
+            .map(|(profile, _)| profile)
+            .collect();
+        assert_eq!(all, ["sol6x", "opus55x"]);
+        // Leaving the same profile again on a limit makes it a limit leave.
+        let mut again = events.to_vec();
+        again.extend([
+            watchdog(60, LIMIT_ACTION, None),
+            routed(70, ATTEMPT_ACTION, &after_key(60).to_string()),
+            routed(80, DONE_ACTION, "opus55x"),
+        ]);
+        assert!(left_on_headroom(&again, SESSION, SLOT, AGENT).is_empty());
+        // A spawn forgets every leave.
+        again.push(spawned(90));
+        assert!(left_profiles(&again, SESSION, SLOT, AGENT).is_empty());
+    }
+
+    #[test]
+    fn a_headroom_move_holds_an_unproven_frame_where_a_limit_move_takes_it() {
+        let events = [crossed(0)];
+        let found = headroom(&events);
+        let decide_on = |pane: &Pane| decide(found.as_ref(), 600, pane, key_epoch() + 650);
+        let unproven = pane(Frame::Unproven, false, None);
+        assert_eq!(decide_on(&unproven), Decision::Hold(HoldReason::Unproven));
+        assert_eq!(at(&[limit()], &unproven, 650), Decision::Attempt);
+        assert_eq!(decide_on(&CLEAR), Decision::Attempt);
+        // The prompt still outranks it; it outranks the client's input.
+        let prompted = pane(Frame::Unproven, true, Some(100));
+        assert_eq!(
+            decide_on(&prompted),
+            Decision::Hold(HoldReason::HumanPrompt)
+        );
+        let touched = pane(Frame::Unproven, false, Some(100));
+        assert_eq!(decide_on(&touched), Decision::Hold(HoldReason::Unproven));
+        assert_eq!(
+            at(&[limit()], &touched, 650),
+            Decision::Hold(HoldReason::ClientInput)
+        );
+        let summary = HoldReason::Unproven.summary();
+        assert!(summary.starts_with("held: "), "{summary}");
+        assert_ne!(summary, HoldReason::Unread.summary());
+        // Under the grace a headroom episode waits like a limit one.
+        let early = decide(found.as_ref(), 600, &CLEAR, key_epoch() + 599);
+        assert_eq!(
+            early,
+            Decision::Wait {
+                due_at: key_epoch() + 600
+            }
+        );
+    }
+
+    #[test]
+    fn the_worst_usable_window_decides_room_with_a_five_point_gap_below_the_threshold() {
+        let fresh = |judged| window(judged, false, 1, Status::Fresh);
+        assert_eq!(room(&[], 95), Room::Unread);
+        assert_eq!(
+            room(&[window(99.0, true, 1, Status::Unknown)], 95),
+            Room::Unread
+        );
+        assert_eq!(room(&[fresh(95.0)], 95), Room::Crossed(fresh(95.0)));
+        assert_eq!(room(&[fresh(94.9)], 95), Room::Near);
+        assert_eq!(room(&[fresh(90.0)], 95), Room::Near);
+        assert_eq!(room(&[fresh(89.9)], 95), Room::Relieved(fresh(89.9)));
+        assert_eq!(room(&[fresh(99.0)], 100), Room::Near);
+        assert_eq!(room(&[fresh(100.0)], 100), Room::Crossed(fresh(100.0)));
+        // A stale number still binds; one ae cannot use is no reading.
+        let stale = window(97.0, true, 1, Status::Stale);
+        assert_eq!(
+            room(&[fresh(10.0), stale.clone()], 95),
+            Room::Crossed(stale)
+        );
+        assert_eq!(
+            room(&[fresh(10.0), window(99.0, true, 1, Status::Unknown)], 95),
+            Room::Relieved(fresh(10.0))
+        );
+        assert_eq!(headroom_words(&fresh(95.0)), "headroom 95% weekly_all 7d");
+        assert_eq!(
+            headroom_words(&fresh(95.06)),
+            "headroom 95.1% weekly_all 7d"
+        );
+        assert_eq!(
+            relieved_words(&fresh(89.9)),
+            "headroom cleared: 89.9% weekly_all 7d"
+        );
+    }
+
+    #[test]
+    fn a_headroom_episode_passes_over_a_candidate_without_room_where_a_limit_takes_it() {
+        let near = candidate("near", vec![window(96.0, true, 6_000, Status::Fresh)]);
+        let headroom = choose_with(std::slice::from_ref(&near), NOW, Some(95));
+        assert_eq!(headroom.pick, None);
+        assert_eq!(headroom.skipped, [("near".to_owned(), Skip::NoRoom)]);
+        assert!(
+            pick(std::slice::from_ref(&near)).is_some(),
+            "a limit move takes it"
+        );
+        let stale = candidate("stale", vec![window(95.0, true, 6_000, Status::Stale)]);
+        let unknown = candidate("unknown", vec![window(99.0, true, 6_000, Status::Unknown)]);
+        let roomy = candidate("roomy", vec![window(94.9, false, 6_000, Status::Fresh)]);
+        let choice = choose_with(&[stale, unknown, roomy], NOW, Some(95));
+        assert_eq!(choice.skipped, [("stale".to_owned(), Skip::NoRoom)]);
+        assert_eq!(choice.pick, Some(("roomy".to_owned(), Tier::BelowCritical)));
+        // Exhausted outranks the lack of room.
+        let spent = candidate("spent", vec![window(100.0, true, 6_000, Status::Fresh)]);
+        let choice = choose_with(&[spent], NOW, Some(95));
+        assert_eq!(choice.skipped, [("spent".to_owned(), Skip::Exhausted)]);
+    }
+
+    #[test]
+    fn a_profile_left_on_headroom_waits_for_a_later_reading_below_the_threshold() {
+        let left = |windows| Candidate {
+            left_at: Some(5_000),
+            left_on_headroom: true,
+            ..candidate("opus55x", windows)
+        };
+        let skipped = |windows, room| choose_with(&[left(windows)], NOW, room).skipped;
+        let still = vec![("opus55x".to_owned(), Skip::LeftOnHeadroom)];
+        assert_eq!(skipped(Vec::new(), Some(95)), still);
+        assert_eq!(
+            skipped(vec![window(10.0, false, 4_000, Status::Fresh)], Some(95)),
+            still,
+            "a reading from before the move proves nothing"
+        );
+        assert_eq!(
+            skipped(vec![window(95.0, true, 6_000, Status::Fresh)], Some(95)),
+            still
+        );
+        // The bar is the threshold, not critical: 99 relieves at 100.
+        let critical = vec![window(99.0, true, 6_000, Status::Fresh)];
+        assert_eq!(
+            choose_with(&[left(critical.clone())], NOW, Some(100)).pick,
+            Some(("opus55x".to_owned(), Tier::Critical))
+        );
+        // A limit episode judges the same leave by the critical bar.
+        assert_eq!(skipped(critical, None), still);
+        let low = vec![window(20.0, false, 6_000, Status::Fresh)];
+        assert!(choose_with(&[left(low)], NOW, None).pick.is_some());
+        // A passed reset relieves it as it relieves a limit leave.
+        let reset = Window {
+            resets_at: Some(NOW - 1),
+            ..window(100.0, true, 6_000, Status::Unknown)
+        };
+        assert!(
+            choose_with(&[left(vec![reset])], NOW, Some(95))
+                .pick
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_headroom_attempt_is_in_flight_only_inside_its_bound_and_only_while_on() {
+        let events = [crossed(0), routed(5, ATTEMPT_ACTION, KEY)];
+        let on = with_map(Switch::On);
+        let seat = (SESSION, SLOT, AGENT);
+        assert!(headroom_in_flight(&on, &events, seat, key_epoch() + 6));
+        let bound = key_epoch() + 5 + IN_FLIGHT_SECS;
+        assert!(headroom_in_flight(&on, &events, seat, bound - 1));
+        assert!(!headroom_in_flight(&on, &events, seat, bound));
+        assert!(!headroom_in_flight(
+            &with_map(Switch::Off),
+            &events,
+            seat,
+            key_epoch() + 6
+        ));
+        assert!(!headroom_in_flight(
+            &on,
+            &[crossed(0)],
+            seat,
+            key_epoch() + 6
+        ));
+        // A limit attempt is not a headroom move.
+        assert!(!headroom_in_flight(
+            &on,
+            &[limit(), routed(5, ATTEMPT_ACTION, KEY)],
+            seat,
+            key_epoch() + 6
+        ));
+    }
 }

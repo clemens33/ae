@@ -13132,6 +13132,169 @@ mod tests {
         );
     }
 
+    /// The headroom arm of the same step: a crossing opens an episode, relief
+    /// past the gap re-arms it, and an open episode is decided while its
+    /// account reads near — an unproven frame held once, a reading ae cannot
+    /// use deciding nothing, and an attempt past its bound closed as overdue.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one table of the arm's rows")]
+    fn the_headroom_arm_opens_rearms_and_decides_only_while_near() {
+        use super::{AutoAct, AutoSeat, auto_acts};
+        use crate::autoreseat::{
+            ATTEMPT_ACTION, Frame, HEADROOM_ACTION, HoldReason, IN_FLIGHT_SECS, Pane, Room,
+            Settings, Switch, Trigger, Window,
+        };
+        let record = |at: i64, action: &str, rest: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"{ACTOR}","action":"{action}","target":"one"{rest}}}"#,
+                crate::time::Timestamp::from_epoch(at)
+            ))
+            .expect("a journal line")
+        };
+        let key = crate::time::Timestamp::from_epoch(100);
+        let window = |judged: f64| Window {
+            judged,
+            critical: judged >= 95.0,
+            observed_at: 90,
+            resets_at: None,
+            status: crate::quota::Status::Fresh,
+            label: "weekly_all 7d".to_owned(),
+        };
+        let seat = |frame: Frame, limited: bool, room: Room| AutoSeat {
+            slot: "spawned.1".to_owned(),
+            agent: "one".to_owned(),
+            profile: "sol6x".to_owned(),
+            pane: Pane {
+                frame,
+                human_prompt: false,
+                client_input: None,
+            },
+            limited,
+            room,
+        };
+        let on = Settings {
+            switch: Switch::On,
+            sessions: None,
+            grace_secs: 0,
+            map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            headroom_at: Some(95),
+            headroom_note: None,
+            notes: Vec::new(),
+        };
+        let acts = |settings: &Settings, seat: AutoSeat, events: &[Event], now: i64| {
+            auto_acts(
+                settings,
+                &[seat],
+                events,
+                ("dev", false),
+                now,
+                &mut Vec::new(),
+            )
+        };
+        let crossed = Room::Crossed(window(96.0));
+        let clear = |room| seat(Frame::Clear, false, room);
+        assert_eq!(
+            acts(&on, clear(crossed.clone()), &[], 300),
+            [AutoAct::Open {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                cause: "headroom 96% weekly_all 7d".to_owned(),
+            }]
+        );
+        let off = Settings {
+            headroom_at: None,
+            ..on.clone()
+        };
+        assert!(acts(&off, clear(crossed.clone()), &[], 300).is_empty());
+        for room in [Room::Near, Room::Unread, Room::Relieved(window(10.0))] {
+            assert!(
+                acts(&on, clear(room.clone()), &[], 300).is_empty(),
+                "{room:?}"
+            );
+        }
+        // A latched seat is the limit arm's alone, a crossing included.
+        assert!(acts(&on, seat(Frame::Clear, true, crossed.clone()), &[], 300).is_empty());
+        let opened = [record(
+            100,
+            HEADROOM_ACTION,
+            r#","summary":"headroom 96% weekly_all 7d""#,
+        )];
+        let trigger = vec![AutoAct::Trigger {
+            agent: "one".to_owned(),
+        }];
+        assert_eq!(acts(&on, clear(crossed.clone()), &opened, 300), trigger);
+        assert_eq!(
+            acts(&on, clear(Room::Near), &opened, 300),
+            trigger,
+            "near keeps it due"
+        );
+        assert!(acts(&on, clear(Room::Unread), &opened, 300).is_empty());
+        assert_eq!(
+            acts(&on, clear(Room::Relieved(window(89.9))), &opened, 300),
+            [AutoAct::Rearm {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                key,
+                summary: "headroom cleared: 89.9% weekly_all 7d".to_owned(),
+            }]
+        );
+        // An unproven frame holds once; a restart that reads the same hold
+        // in the journal names it no more.
+        let unproven = seat(Frame::Unproven, false, crossed.clone());
+        let held = AutoAct::Held {
+            slot: "spawned.1".to_owned(),
+            agent: "one".to_owned(),
+            key,
+            reason: HoldReason::Unproven,
+            trigger: Trigger::Headroom,
+        };
+        let mut named = Vec::new();
+        let first = auto_acts(
+            &on,
+            std::slice::from_ref(&unproven),
+            &opened,
+            ("dev", false),
+            300,
+            &mut named,
+        );
+        assert_eq!(first, [held]);
+        let again = auto_acts(
+            &on,
+            std::slice::from_ref(&unproven),
+            &opened,
+            ("dev", false),
+            360,
+            &mut named,
+        );
+        assert!(again.is_empty(), "named once: {again:?}");
+        let summary = crate::autoreseat::leg::tagged(
+            HoldReason::Unproven.summary(),
+            "headroom 96% weekly_all 7d",
+        );
+        let mut journaled = opened.to_vec();
+        journaled.push(record(
+            200,
+            crate::autoreseat::HELD_ACTION,
+            &format!(r#","ref":"{key}","summary":"{summary}""#),
+        ));
+        assert!(acts(&on, unproven, &journaled, 300).is_empty(), "a restart");
+        // An open attempt is never re-armed under it, and past its bound it
+        // is closed whatever the account reads now.
+        let mut flying = opened.to_vec();
+        flying.push(record(210, ATTEMPT_ACTION, &format!(r#","ref":"{key}""#)));
+        let relieved = || clear(Room::Relieved(window(10.0)));
+        assert!(acts(&on, relieved(), &flying, 300).is_empty(), "in flight");
+        assert_eq!(
+            acts(&on, relieved(), &flying, 210 + IN_FLIGHT_SECS),
+            [AutoAct::Overdue {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                key,
+                trigger: Trigger::Headroom,
+            }]
+        );
+    }
+
     /// A limit already showing when the seat declared stays UNDER the
     /// declaration, whatever the capture does; one first seen at or after it
     /// outranks it, a failed read included. The same second goes to the human.
