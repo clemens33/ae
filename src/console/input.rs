@@ -88,10 +88,21 @@ impl Keys {
         }
     }
 
-    /// The keys an idle moment completes: a lone `ESC` past [`ESC_IDLE`].
-    pub fn idle(&mut self, _now: Instant) -> Vec<(Key, Instant)> {
-        let _ = self.app;
-        Vec::new()
+    /// The keys an idle moment completes, in the app's decoder alone: a lone
+    /// `ESC` past [`ESC_IDLE`] is [`Key::Escape`], any other sequence stalled
+    /// that long is dropped, and nothing inside a paste ever expires.
+    pub fn idle(&mut self, now: Instant) -> Vec<(Key, Instant)> {
+        let Some(begun) = self.begun.filter(|_| self.app && self.paste.is_none()) else {
+            return Vec::new();
+        };
+        if now.saturating_duration_since(begun) < ESC_IDLE {
+            return Vec::new();
+        }
+        self.begun = None;
+        match std::mem::take(&mut self.pending).as_slice() {
+            [0x1b] => vec![(Key::Escape, begun)],
+            _ => Vec::new(),
+        }
     }
 
     /// The keys `chunk` completes, read at `stamp`.
@@ -100,7 +111,7 @@ impl Keys {
         for &byte in chunk {
             if let Some(origin) = self.paste {
                 if self.pending.is_empty() && byte != 0x1b {
-                    text(&mut keys, &[byte], origin);
+                    self.literal(&mut keys, &[byte], origin);
                     continue;
                 }
                 self.pending.push(byte);
@@ -113,9 +124,15 @@ impl Keys {
                         held.pop();
                         self.pending.push(byte);
                     }
-                    text(&mut keys, &held, origin);
+                    self.literal(&mut keys, &held, origin);
                 }
             } else if !self.pending.is_empty() || byte == 0x1b {
+                if self.app && byte == 0x1b && self.pending == [0x1b] {
+                    // Nothing continues an escape with a second one: the
+                    // first was a lone Esc.
+                    keys.extend(self.begun.map(|began| (Key::Escape, began)));
+                    self.pending.clear();
+                }
                 if self.pending.is_empty() {
                     self.begun = Some(stamp);
                 }
@@ -125,7 +142,8 @@ impl Keys {
                     self.pending.clear();
                 } else if escape_done(&self.pending) || self.pending.len() > PENDING_MAX {
                     let began = self.begun.take();
-                    let key = editing(&std::mem::take(&mut self.pending));
+                    let seq = std::mem::take(&mut self.pending);
+                    let key = editing(&seq).or_else(|| self.app.then(|| moving(&seq)).flatten());
                     keys.extend(key.zip(began));
                 }
             } else {
@@ -135,6 +153,11 @@ impl Keys {
                     0x05 => Key::End,
                     0x15 => Key::ClearLine,
                     b'\r' | b'\n' => Key::Enter,
+                    0x09 if self.app => Key::Tab,
+                    0x03 if self.app => Key::Interrupt,
+                    // The app drops every other control: ^Z or ^\\ never
+                    // suspends or kills it, and none reaches a draft.
+                    ..0x20 if self.app => continue,
                     _ => {
                         text(&mut keys, &[byte], stamp);
                         continue;
@@ -144,6 +167,22 @@ impl Keys {
             }
         }
         keys
+    }
+
+    /// Paste bytes: the chat's are text, the app's stay a [`Key::Pasted`], so
+    /// browsing can swallow a paste whole.
+    fn literal(&self, keys: &mut Vec<(Key, Instant)>, bytes: &[u8], origin: Instant) {
+        if !self.app {
+            text(keys, bytes, origin);
+            return;
+        }
+        if let Some((Key::Pasted(run), at)) = keys.last_mut()
+            && *at == origin
+        {
+            run.extend_from_slice(bytes);
+            return;
+        }
+        keys.push((Key::Pasted(bytes.to_vec()), origin));
     }
 }
 
@@ -166,6 +205,18 @@ fn escape_done(seq: &[u8]) -> bool {
         [0x1b, b'[', .., last] => (0x40..=0x7e).contains(last),
         _ => true,
     }
+}
+
+/// The app-only key a complete escape sequence spells, in either cursor-key
+/// mode: the vertical arrows and the pages.
+fn moving(seq: &[u8]) -> Option<Key> {
+    Some(match seq {
+        b"\x1b[A" | b"\x1bOA" => Key::Up,
+        b"\x1b[B" | b"\x1bOB" => Key::Down,
+        b"\x1b[5~" => Key::PageUp,
+        b"\x1b[6~" => Key::PageDown,
+        _ => return None,
+    })
 }
 
 /// The editing key a complete escape sequence spells, in either cursor-key
@@ -202,11 +253,11 @@ pub struct Composer {
 impl Composer {
     /// Take one key; `Some` for Enter alone.
     pub fn key(&mut self, key: Key) -> Option<Entered> {
-        if !matches!(key, Key::Text(_)) {
+        if !matches!(key, Key::Text(_) | Key::Pasted(_)) {
             self.snap();
         }
         match key {
-            Key::Text(text) if !self.over => {
+            Key::Text(text) | Key::Pasted(text) if !self.over => {
                 if self.bytes.len() + text.len() > CAP {
                     self.over = true;
                 } else {

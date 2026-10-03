@@ -7,5 +7,6 @@
 
 pub mod draw;
 pub mod fleet;
+mod lane;
 pub mod model;
 pub mod overview;

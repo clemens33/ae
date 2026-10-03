@@ -17,7 +17,7 @@ const BAR: usize = 1;
 /// would draw them. A row breaks after the last space that fits, else between
 /// two scalars, and always takes one scalar, so no text is dropped even in a
 /// pane too narrow for it.
-pub(super) fn wrap(text: &str, width: usize, first: usize) -> Vec<(usize, String)> {
+pub(crate) fn wrap(text: &str, width: usize, first: usize) -> Vec<(usize, String)> {
     let cap = width.saturating_sub(BAR + 2);
     let mut rows = Vec::new();
     for (at, line) in text.split('\n').enumerate() {

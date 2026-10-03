@@ -24,7 +24,7 @@ pub mod submit;
 mod term;
 pub(crate) mod toggle;
 pub mod view;
-mod wrap;
+pub(crate) mod wrap;
 
 /// The usage text.
 pub const USAGE: &str = "Usage: ae chat [session] [--follow] [--all]\n\n  session   the session to read (default: the session this pane belongs to)\n  --follow  keep printing what is new every 5 s until interrupted (Ctrl-C to stop)\n  --all     show every assistant reply of the lead pair (default: only the replies to lines you typed in its pane)\n";

@@ -358,6 +358,18 @@ pub struct WorkingFrame {
     pub fg: String,
 }
 
+/// A palette token's red, green and blue, for a surface that draws cells
+/// rather than tmux formats (`ae app`).
+#[must_use]
+pub(crate) fn rgb(token: &str) -> [u8; 3] {
+    [1, 3, 5].map(|offset| {
+        token
+            .get(offset..offset + 2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            .unwrap_or(0)
+    })
+}
+
 fn hex_byte(value: &str, offset: usize) -> u8 {
     u8::from_str_radix(&value[offset..offset + 2], 16).unwrap_or(0)
 }
@@ -932,7 +944,10 @@ pub fn fleet_tail_cmp(
 }
 
 /// Fleet rows in the same stable order used by [`fleet_strip`] and lifecycle.
-fn ordered_fleet_rows<'a>(rows: &'a [FleetRow], order: &FleetOrder) -> Vec<&'a FleetRow> {
+pub(crate) fn ordered_fleet_rows<'a>(
+    rows: &'a [FleetRow],
+    order: &FleetOrder,
+) -> Vec<&'a FleetRow> {
     let mut ordered: Vec<&FleetRow> = rows.iter().collect();
     ordered.sort_by(|left, right| {
         // The orchestrator is the fleet's fixed point of reference: keep it
