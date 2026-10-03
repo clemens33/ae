@@ -399,7 +399,7 @@ fn chat_window0_meta_agent_keeps_seats_while_plain_workspace_defaults_on() {
     rig.chat("cwPlainMetaControl");
 
     let config = std::fs::read_to_string(&rig.config).expect("private config");
-    std::fs::write(&rig.config, format!("{config}meta_agent = true\n"))
+    std::fs::write(&rig.config, format!("{config}meta = true\n"))
         .expect("private meta-agent config");
     rig.launch("cwMetaAgent");
     let meta = std::fs::read_to_string(rig.home.join("sessions/cwMetaAgent/meta"))
@@ -438,10 +438,15 @@ fn chat_window0_unusable_config_defaults_on_with_one_note() {
 fn chat_window0_uuid_mismatch_keeps_seats_and_names_chat_refusal_once() {
     let rig = Rig::new("uuid-mismatch", Shape::Solo, Some("on"));
     let foreign_uuid = "00000000-0000-4000-8000-000000000001";
-    // A real inherited option makes the vacant-only UUID seed hold. No
+    // A real session-scoped option makes the vacant-only UUID seed hold. No
     // production fault seam: this private server owns every session here.
     rig.tmux(&["new-session", "-d", "-s", "keepUuid", "sleep 600"]);
-    rig.tmux(&["set-option", "-g", "@ae_session_uuid", foreign_uuid]);
+    rig.tmux(&[
+        "set-hook",
+        "-g",
+        "session-created",
+        &format!("set-option @ae_session_uuid {foreign_uuid}"),
+    ]);
     let stderr = rig.launch("cwUuidMismatch");
     assert_eq!(
         rig.windows("cwUuidMismatch"),
@@ -463,13 +468,17 @@ fn chat_window0_uuid_mismatch_keeps_seats_and_names_chat_refusal_once() {
         "the launch remains up after its chat is refused"
     );
     let host = rig.tmux(&[
-        "display-message",
-        "-p",
+        "show-option",
+        "-qv",
         "-t",
-        "cwUuidMismatch",
-        "#{@ae_session_uuid}",
+        "=cwUuidMismatch:",
+        "@ae_session_uuid",
     ]);
-    assert_eq!(host.trim(), foreign_uuid, "foreign UUID is not overwritten");
+    assert_eq!(
+        host.trim(),
+        foreign_uuid,
+        "session-scoped foreign UUID is readable without inheritance and not overwritten"
+    );
     let dir = rig.home.join("sessions/cwUuidMismatch");
     let meta = std::fs::read_to_string(dir.join("meta")).expect("launch meta");
     let recorded = meta
