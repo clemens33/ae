@@ -17,6 +17,7 @@ mod capture;
 mod chat_first_spec;
 mod chat_look_spec;
 mod chat_midturn_spec;
+mod chat_needs_you_spec;
 mod chat_polish_spec;
 mod chat_window0_spec;
 mod chat_wrap_pins;
