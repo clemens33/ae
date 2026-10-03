@@ -372,8 +372,42 @@ fn tool_result_calls_and_thinking_are_not_user_turns() {
         "fixture readiness: {all}"
     );
     let seen = rig.run("console", &[]);
+    // Separate renders may cross a second; compare every byte except the footer clock.
+    let normalize_as_of = |output: &str| {
+        output
+            .split_inclusive('\n')
+            .map(|line| {
+                if line.starts_with("-- needs you: ")
+                    && let Some((prefix, rest)) = line.split_once("as of ")
+                {
+                    let (clock, suffix) = rest.split_at(8);
+                    assert!(
+                        clock.bytes().enumerate().all(|(i, byte)| {
+                            if i == 2 || i == 5 {
+                                byte == b':'
+                            } else {
+                                byte.is_ascii_digit()
+                            }
+                        }),
+                        "footer as-of token is HH:MM:SS"
+                    );
+                    format!("{prefix}as of HH:MM:SS{suffix}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<String>()
+    };
     assert_eq!(
-        seen, all,
+        normalize_as_of(
+            "reply as of 01:02:03\n-- needs you: 1 seat · as of 22:48:04 · 04:05:06\n  unverified: watchdog off · 1 seat: lead\n"
+        ),
+        "reply as of 01:02:03\n-- needs you: 1 seat · as of HH:MM:SS · 04:05:06\n  unverified: watchdog off · 1 seat: lead\n",
+        "only the footer as-of HH:MM:SS token changes"
+    );
+    assert_eq!(
+        normalize_as_of(&seen),
+        normalize_as_of(&all),
         "every assistant text part here answers the human"
     );
     assert!(
