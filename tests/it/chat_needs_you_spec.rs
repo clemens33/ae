@@ -864,6 +864,32 @@ fn open_grammar_accepts_exact_seat_name_without_messaging_it_and_rejects_damage(
 }
 
 #[test]
+fn open_input_usage_and_cross_session_refusals_are_named_in_owner_and_read_only_chats() {
+    let t = Instant::now();
+    for reading in [
+        Reading::Owner,
+        Reading::NotOwner("another chat owns input".to_owned()),
+    ] {
+        let mut input = Input::new(vec!["lead".to_owned(), "colead".to_owned()]);
+        let _ = input.tick(reading.clone(), t);
+        for (raw, expected) in [
+            (b"/open\n".as_slice(), "refused: /open takes one agent name"),
+            (b"/open a b\n", "refused: /open takes one agent name"),
+            (
+                b"/open other:scout\n",
+                "refused: /open other:scout names another session; this chat opens its own seats",
+            ),
+        ] {
+            let effects = input.chunk(raw, t + Duration::from_millis(1));
+            assert!(
+                matches!(effects.as_slice(), [Effect::Print(text)] if text == expected),
+                "/open explains usage or names the foreign target for {reading:?}, {raw:?}: {effects:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn open_read_only_input_allows_navigation_but_never_asks_or_closes() {
     let mut input = Input::new(vec!["lead".to_owned(), "colead".to_owned()]);
     input.set_seats(vec![SeatRef {
@@ -1453,6 +1479,51 @@ fn needs_chat_cli_shows_spawned_prompt_and_keeps_conversation_lead_pair_only() {
     );
     assert!(section.contains("/open scout"));
     assert!(!text.contains('\x1b'), "pipe is plain bytes");
+}
+
+#[test]
+fn needs_chat_cli_vertical_layout_marks_only_main_as_lead_pair() {
+    let rig = ChatRig::new("vertical-pair-mark");
+    let meta_path = rig.dir.join("meta");
+    let meta = std::fs::read_to_string(&meta_path).expect("private meta");
+    assert_eq!(meta.matches("layout=lead-pair\n").count(), 1);
+    std::fs::write(
+        &meta_path,
+        meta.replace("layout=lead-pair\n", "layout=vertical\n"),
+    )
+    .expect("vertical fixture layout");
+    let mut journal = rig.journal();
+    journal.extend_from_slice(
+        b"{\"ts\":\"2026-10-03T17:52:00Z\",\"actor\":\"colead\",\"action\":\"state\",\"ref\":\"waiting-user\",\"summary\":\"VERTICAL-WORKER-QUESTION\"}\n",
+    );
+    std::fs::write(rig.dir.join("events.jsonl"), &journal).expect("worker standing reason");
+
+    let text = rig.once();
+    let section = text
+        .split_once("-- needs you")
+        .expect("CLI attention section")
+        .1;
+    let worker = section
+        .lines()
+        .find(|line| line.contains("/open colead"))
+        .expect("vertical worker still appears in all-roster attention");
+    assert!(
+        !worker.contains("(lead pair)"),
+        "worker.0 is outside the lead pair in a vertical layout: {worker}"
+    );
+    let main = section
+        .lines()
+        .find(|line| line.contains("/open lead "))
+        .expect("main standing row");
+    assert!(
+        main.contains("(lead pair)"),
+        "main remains the lead: {main}"
+    );
+    assert_eq!(
+        rig.journal(),
+        journal,
+        "projection writes no journal record"
+    );
 }
 
 #[test]
