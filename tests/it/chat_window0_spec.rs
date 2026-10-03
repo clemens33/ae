@@ -393,6 +393,30 @@ fn chat_window0_defaults_on_and_workspace_off_overrides_global_on() {
 }
 
 #[test]
+fn chat_window0_meta_agent_keeps_seats_while_plain_workspace_defaults_on() {
+    let rig = Rig::new("meta-agent", Shape::Solo, None);
+    rig.launch("cwPlainMetaControl");
+    rig.chat("cwPlainMetaControl");
+
+    let config = std::fs::read_to_string(&rig.config).expect("private config");
+    std::fs::write(&rig.config, format!("{config}meta_agent = true\n"))
+        .expect("private meta-agent config");
+    rig.launch("cwMetaAgent");
+    let meta = std::fs::read_to_string(rig.home.join("sessions/cwMetaAgent/meta"))
+        .expect("meta-agent launch meta");
+    assert!(
+        meta.lines().any(|line| line == "meta_agent=true"),
+        "the actual launch records its meta-agent flag"
+    );
+    assert_eq!(
+        rig.windows("cwMetaAgent"),
+        Shape::Solo.off(),
+        "meta-agent launches retain the full pre-chat seat layout"
+    );
+    assert_eq!(rig.current("cwMetaAgent"), rig.main("cwMetaAgent"));
+}
+
+#[test]
 fn chat_window0_unusable_config_defaults_on_with_one_note() {
     for (tag, value) in [("bad", "broken"), ("empty", "")] {
         let rig = Rig::new(tag, Shape::Solo, Some(value));
