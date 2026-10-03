@@ -5,7 +5,7 @@ coverage incomplete: fixture gap
   	code
     indent
 
-## 04:47:00 you → lead · id-one
+## 04:47:00 you → lead
   ship?
-  sent id-one
+  sent
 

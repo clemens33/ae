@@ -230,9 +230,11 @@ impl Rig {
         self.paste(literal);
         self.key("Enter");
         let id = self.ask_ids(1).pop().expect("one recorded ask");
-        let outcome = format!("sent {id}");
-        self.wait("outcome names the recorded ask", |screen| {
-            screen.replace('\n', "").contains(&outcome)
+        self.wait("outcome follows the recorded ask body", |screen| {
+            let text = screen.replace('\n', "");
+            text.find(literal)
+                .zip(text.rfind("sent"))
+                .is_some_and(|(body, outcome)| body < outcome)
         });
         id
     }
@@ -464,19 +466,19 @@ fn narrow_composer_render_shows_word_wrap_and_cursor() {
 #[test]
 fn an_ask_header_prints_before_its_outcome() {
     let rig = Rig::new("cpol-ord", 80, 30);
-    let id = rig.submit("order probe one");
-    let header = format!("you → lead · {id}");
-    let outcome = format!("sent {id}");
+    let _id = rig.submit("order probe one");
+    let header = "you → lead";
+    let outcome = "sent";
     let screen = rig.wait("header and outcome both visible", |screen| {
-        screen.contains(&header) && screen.contains(&outcome)
+        screen.contains(header) && screen.contains(outcome)
     });
     assert!(
         screen.contains("  order probe one"),
         "the ask body renders under its header:\n{screen}"
     );
     let (at_header, at_outcome) = (
-        screen.find(&header).expect("header"),
-        screen.find(&outcome).expect("outcome"),
+        screen.find(header).expect("header"),
+        screen.find(outcome).expect("outcome"),
     );
     assert!(
         at_header < at_outcome,
@@ -489,29 +491,27 @@ fn two_asks_keep_header_outcome_pairs_in_sequence() {
     let rig = Rig::new("cpol-seq", 80, 30);
     rig.paste("sequence probe one");
     rig.key("Enter");
-    let first = rig.ask_ids(1).pop().expect("first recorded ask");
+    let _first = rig.ask_ids(1).pop().expect("first recorded ask");
     rig.wait("first outcome printed", |screen| {
-        screen.contains(&format!("sent {first}"))
+        screen
+            .find("sequence probe one")
+            .zip(screen.find("sent"))
+            .is_some_and(|(body, outcome)| body < outcome)
     });
     rig.paste("sequence probe two");
     rig.key("Enter");
     let ids = rig.ask_ids(2);
-    let (h1, o1) = (
-        format!("you → lead · {}", ids[0]),
-        format!("sent {}", ids[0]),
-    );
-    let (h2, o2) = (
-        format!("you → lead · {}", ids[1]),
-        format!("sent {}", ids[1]),
-    );
+    assert_ne!(ids[0], ids[1], "pairing ids stay distinct in journal");
     let screen = rig.wait("both pairs visible", |screen| {
-        screen.contains(&h1) && screen.contains(&o1) && screen.contains(&h2) && screen.contains(&o2)
+        screen.matches("you → lead").count() == 2 && screen.matches("sent").count() == 2
     });
     let positions = [
-        screen.find(&h1).expect("first header"),
-        screen.find(&o1).expect("first outcome"),
-        screen.find(&h2).expect("second header"),
-        screen.find(&o2).expect("second outcome"),
+        screen.find("you → lead").expect("first header"),
+        screen.find("sequence probe one").expect("first body"),
+        screen.find("sent").expect("first outcome"),
+        screen.rfind("you → lead").expect("second header"),
+        screen.find("sequence probe two").expect("second body"),
+        screen.rfind("sent").expect("second outcome"),
     ];
     assert!(
         positions.windows(2).all(|pair| pair[0] < pair[1]),
@@ -548,7 +548,7 @@ fn a_held_outcome_attaches_under_its_ask_row_once() {
     let row = lane(vec![asked("ae-1", "order probe")]);
     let text = printed.step(&row, 0, true);
     let positions = [
-        text.find("you → lead · ae-1").expect("header"),
+        text.find("you → lead").expect("header"),
         text.find("  order probe").expect("body"),
         text.find("  sent ae-1").expect("outcome"),
     ];
@@ -633,7 +633,7 @@ fn a_rebase_never_repeats_a_consumed_outcome() {
     let _ = printed.rebase(1, 1);
     let text = printed.step(&row, 0, true);
     assert!(
-        text.contains("you → lead · ae-5"),
+        text.contains("you → lead"),
         "the ask row prints again:\n{text}"
     );
     assert!(
@@ -657,7 +657,7 @@ fn an_outcome_attaches_under_a_not_delivered_row() {
     }]);
     let text = printed.step(&row, 0, true);
     assert!(
-        text.contains("you → lead · ae-6 · not delivered"),
+        text.contains("you → lead · not delivered"),
         "lane status tag stands:\n{text}"
     );
     assert!(
@@ -682,7 +682,7 @@ fn flush_outcomes_drains_every_hold_in_submit_order_once() {
     let row = lane(vec![asked("ae-8a", "order probe")]);
     let text = printed.step(&row, 0, true);
     assert!(
-        text.contains("you → lead · ae-8a"),
+        text.contains("you → lead"),
         "a late row still prints:\n{text}"
     );
     assert!(

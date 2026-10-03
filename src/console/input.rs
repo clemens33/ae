@@ -1440,7 +1440,7 @@ mod tests {
         let no = |why: &str| Command::Refused(why.to_owned());
         let cases: [(&[u8], Command); 6] = [
             (b"@colead  two\nlines", ask("colead", " two\nlines")),
-            (b"/close a b", no("/close takes exactly one request id")),
+            (b"/close a b", no("/close takes at most one request id")),
             (b"@ hi", no("@ is not a lead-pair seat")),
             (b"@colead", no("nothing to ask @colead")),
             (b" \t", no("nothing to ask @lead")),
@@ -1458,7 +1458,8 @@ mod tests {
         let mut input = owner(base);
         let say = |input: &mut Input, line: &[u8]| match input.chunk(line, base).as_slice() {
             [Effect::Ask { seat, body, .. }] => format!("ask {seat} {body}"),
-            [Effect::Close(id)] => format!("close {id}"),
+            [Effect::Close(Some(id))] => format!("close {id}"),
+            [Effect::Close(None)] => "close newest".to_owned(),
             [Effect::Print(said)] => said.clone(),
             other => format!("{other:?}"),
         };
@@ -1830,20 +1831,20 @@ mod tests {
     }
 
     #[test]
-    fn every_outcome_is_one_line_naming_its_request() {
+    fn every_outcome_is_one_line_hiding_its_request_id() {
         let id = || "ae-1".to_owned();
         let kept = Some("the draft is kept (denied)".to_owned());
         let check = "check lead pane (prefix H)";
         for (outcome, line) in [
             (
                 Outcome::Sent(id(), kept),
-                "sent ae-1; the draft is kept (denied)".to_owned(),
+                "sent; the draft is kept (denied)".to_owned(),
             ),
-            (Outcome::Uncertain(id()), format!("uncertain ae-1: {check}")),
-            (Outcome::NotDelivered(id()), "not delivered ae-1".to_owned()),
+            (Outcome::Uncertain(id()), format!("uncertain: {check}")),
+            (Outcome::NotDelivered(id()), "not delivered".to_owned()),
             (
                 Outcome::Unknown(id(), "said".to_owned()),
-                format!("no record of ae-1; it may have been delivered - {check}"),
+                format!("no record of it; it may have been delivered - {check}"),
             ),
         ] {
             assert_eq!(outcome_line(&outcome, "lead"), line);

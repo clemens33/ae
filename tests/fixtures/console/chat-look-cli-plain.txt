@@ -10,6 +10,6 @@ chat: one — lead pair lead, colead · preview of existing data: transcript tur
 ## 23:30:02 said colead
   colead-one
 
-## 23:30:03 you → lead · look-id
+## 23:30:03 you → lead
   human-question
 

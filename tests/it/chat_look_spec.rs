@@ -25,7 +25,7 @@ fn item(kind: Kind, body: &str) -> Item {
 #[test]
 fn chat_look_plain_renderer_keeps_frozen_bytes_and_pending_order() {
     let mut printed = Printed::default();
-    printed.outcome("id-one", "sent id-one".to_owned());
+    printed.outcome("id-one", "sent".to_owned());
     let lane = Lane {
         items: vec![
             item(
@@ -129,6 +129,7 @@ struct Rig {
     scratch: super::cli::OwnedScratch,
     bin: PathBuf,
     stdin_off: bool,
+    probe_pane: bool,
 }
 
 fn quote(text: &str) -> String {
@@ -201,6 +202,7 @@ else { exit 1; }
             scratch,
             bin,
             stdin_off: false,
+            probe_pane: false,
         }
     }
 
@@ -306,7 +308,7 @@ else { exit 1; }
             .stdin(if tty { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if input {
+        if input || self.probe_pane {
             runner.env("TMUX_PANE", "%99");
         }
         let mut child = runner.spawn().expect("chat fixture starts");
@@ -405,7 +407,8 @@ fn chat_look_cli_tty_uses_fixed_speaker_colours_bars_dim_time_and_bold_you() {
 
 #[test]
 fn chat_look_cli_pipe_keeps_frozen_bytes_and_queries_no_tmux() {
-    let rig = Rig::new("pipe", "b", true, true, "+0200");
+    let mut rig = Rig::new("pipe", "b", true, true, "+0200");
+    rig.probe_pane = true;
     let text = rig.run(false);
     assert_eq!(
         text,
@@ -415,20 +418,43 @@ fn chat_look_cli_pipe_keeps_frozen_bytes_and_queries_no_tmux() {
     assert!(
         !calls.lines().any(|line| line.contains("t/f/")
             || line.contains("ae_palette")
-            || line.contains("ae_look")),
-        "pipe performs no look or zone query: {calls}"
+            || line.contains("ae_look")
+            || line.contains("pane_width")),
+        "pipe performs no look, zone or pane-width query: {calls}"
     );
 }
 
 #[test]
 fn chat_look_cli_theme_off_keeps_plain_bytes_even_on_tty() {
-    let rig = Rig::new("off", "darcula", true, false, "+0200");
+    let mut rig = Rig::new("off", "darcula", true, false, "+0200");
+    rig.probe_pane = true;
     let text = rig.run(true);
     assert_eq!(
         text,
         include_str!("../fixtures/console/chat-look-cli-plain.txt")
     );
     assert!(!text.contains('\x1b'));
+    let calls = fs::read_to_string(rig.scratch.path().join("calls")).unwrap_or_default();
+    assert!(
+        !calls
+            .lines()
+            .any(|line| line.contains("t/f/") || line.contains("pane_width")),
+        "theme off performs no zone or width query: {calls}"
+    );
+}
+
+#[test]
+fn chat_wrap_dressed_cli_reads_the_calling_pane_width() {
+    let mut rig = Rig::new("wrap-width", "darcula", true, true, "+0200");
+    rig.probe_pane = true;
+    let _text = rig.run(true);
+    let calls = fs::read_to_string(rig.scratch.path().join("calls")).expect("width query proof");
+    assert!(
+        calls
+            .lines()
+            .any(|line| line.contains("pane_width") && line.contains("%99")),
+        "dressed CLI queries its calling pane: {calls}"
+    );
 }
 
 #[test]
@@ -558,17 +584,17 @@ fn chat_look_status_colours_follow_kind_and_attach_after_the_question() {
     for (outcome, prefix, expected) in [
         (
             Outcome::Sent("status-id".into(), None),
-            "sent status-id",
+            "sent",
             palette.done,
         ),
         (
             Outcome::Uncertain("status-id".into()),
-            "uncertain status-id",
+            "uncertain",
             palette.waiting_agent,
         ),
         (
             Outcome::NotDelivered("status-id".into()),
-            "not delivered status-id",
+            "not delivered",
             palette.dead,
         ),
     ] {
@@ -805,19 +831,21 @@ fn chat_look_cli_typed_ask_keeps_styled_lane_and_red_outcome() {
         "typed ask body reached output"
     );
     assert!(
-        text.contains("not delivered "),
+        text.contains("not delivered"),
         "bounded delivery produced an outcome"
     );
-    // The header tag ends with "not delivered"; the following space selects
-    // the canonical outcome line, where the request id follows those words.
+    // Select the outcome after the question body: the header also contains
+    // "not delivered", and visible ids no longer distinguish those rows.
+    let after_body =
+        &text[text.find("fixture-typed-ask").expect("ask body") + "fixture-typed-ask".len()..];
     let palette = ae::theme::Palette::NEUTRAL;
     assert_eq!(
-        colour_of(&text, "not delivered "),
+        colour_of(after_body, "not delivered"),
         rgb(palette.dead),
         "typed ask's Lane retains ae SGR"
     );
     assert_eq!(
-        bar_colour_before(&text, "not delivered "),
+        bar_colour_before(after_body, "not delivered"),
         rgb(palette.title)
     );
     assert!(
@@ -1049,8 +1077,9 @@ while (time() < $deadline) {
     if (open my $record, '<', $ENV{LOOK_RECORD}) {
         local $/;
         my $bytes = <$record> // '';
-        my $marker = $ENV{LOOK_ASK} eq 'on' ? 'not delivered ' : 'refused: the kept draft';
-        if (index($bytes, 'to lead>') >= 0 && index($bytes, $marker) >= 0) { $ready = 1; last; }
+        my $marker = $ENV{LOOK_ASK} eq 'on' ? 'not delivered' : 'refused: the kept draft';
+        my $start = $ENV{LOOK_ASK} eq 'on' ? index($bytes, 'fixture-typed-ask') : 0;
+        if (index($bytes, 'to lead>') >= 0 && $start >= 0 && index($bytes, $marker, $start) >= 0) { $ready = 1; last; }
     }
     if (waitpid($pid, WNOHANG) == $pid) { $alive = 0; last; }
     sleep 0.02;

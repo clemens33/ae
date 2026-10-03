@@ -311,10 +311,11 @@ impl Rig {
         out.wait("real console records and confirms the ask", |text| {
             self.asks().iter().any(|ask| {
                 ask.summary.as_deref() == Some(body)
-                    && ask
-                        .reference
-                        .as_deref()
-                        .is_some_and(|id| text.contains(&format!("sent {id}")))
+                    && ask.reference.is_some()
+                    && text
+                        .find(body)
+                        .zip(text.rfind("sent"))
+                        .is_some_and(|(body, outcome)| body < outcome)
             })
         });
         self.asks()
@@ -522,7 +523,7 @@ fn speaker_selection_sticks_for_prompt_routing_and_close_until_main_is_addressed
     expect_ask(&mut input, b"follow up\r", now, "colead", "follow up");
     assert_eq!(
         input.chunk(b"/close x\r", now),
-        vec![Effect::Close("x".to_owned())]
+        vec![Effect::Close(Some("x".to_owned()))]
     );
     assert_eq!(input.line().as_deref(), Some("to colead> "));
     expect_ask(&mut input, b"@lead back\r", now, "lead", "back");

@@ -17,6 +17,7 @@ mod capture;
 mod chat_look_spec;
 mod chat_midturn_spec;
 mod chat_polish_spec;
+mod chat_wrap_spec;
 mod cli;
 mod compact;
 mod console;

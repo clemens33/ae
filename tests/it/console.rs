@@ -217,10 +217,9 @@ fn a_console_reply_body_that_is_a_fifo_is_refused_never_opened() {
     std::fs::write(dir.join("events.jsonl"), journal).expect("journal");
     let (code, stdout, stderr) = console(&root, &["one"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
-    let refused = format!(
-        "lead answers {id} · body refused: a fifo · preview (600-char summary)\n  the summary\n"
-    );
-    assert!(stdout.contains(&refused), "{stdout}");
+    let refused =
+        "lead answers · body refused: a fifo · preview (600-char summary)\n  the summary\n";
+    assert!(stdout.contains(refused), "{stdout}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -342,8 +342,7 @@ pub(in crate::console) mod tests {
         let dir = session("sixth", 5);
         append(&dir, &stale(&id(1)));
         let (raw, before) = (b"@colead first line\nsecond line".as_slice(), journal(&dir));
-        let open: Vec<String> = (1..=5).map(id).collect();
-        let full = format!("5 requests open: {}; /close one first", open.join(", "));
+        let full = "5 requests open; /close withdraws the newest".to_owned();
         assert_eq!(
             run(&dir, raw, never),
             Err(full),
@@ -356,7 +355,7 @@ pub(in crate::console) mod tests {
             submit(&dir, "s", b"newer", NEW, owned, never).map(drop),
             owned()
         );
-        assert_eq!(close_owned(&dir, &id(2), owned), owned());
+        assert_eq!(close_owned(&dir, "s", Some(&id(2)), owned), owned());
         assert_eq!(
             (journal(&dir), draft(&dir)),
             kept,
@@ -380,7 +379,7 @@ pub(in crate::console) mod tests {
             assert_eq!(draft(&dir), SourceRead::Ready(bytes.to_vec()), "{why}");
         }
         fs::write(&events, &before).unwrap();
-        assert_eq!(close_owned(&dir, &id(2), || Ok(())), Ok(()));
+        assert_eq!(close_owned(&dir, "s", Some(&id(2)), || Ok(())), Ok(()));
         let sent = run(&dir, raw, lands(&dir, &ask(NEW, "q"), ""));
         assert_eq!(
             sent,
@@ -487,7 +486,7 @@ pub(in crate::console) mod tests {
         let b = b.join().unwrap();
         assert!(
             b.as_ref()
-                .is_err_and(|why| why.starts_with("5 requests open: ")),
+                .is_err_and(|why| why.starts_with("5 requests open;")),
             "{b:?}"
         );
         assert!(b_seen.try_recv().is_err(), "the second never delivered");

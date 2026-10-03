@@ -757,7 +757,7 @@ mod tests {
     }
 
     fn refused(why: &str) -> String {
-        format!("lead reply to {ID} · not admitted: {why} · preview (600-char summary): x")
+        format!("lead reply · not admitted: {why} · preview (600-char summary): x")
     }
 
     #[test]
@@ -773,11 +773,11 @@ mod tests {
         assert_eq!(
             thread(&events, &whole).0,
             [
-                format!("you → lead · {ID}: q"),
+                "you → lead: q".to_owned(),
                 refused("stale pane"),
-                format!("lead answers {ID}: WHOLE a1"),
-                format!("lead answers {ID} · follow-up 1: WHOLE a1"),
-                format!("lead answers {ID} · follow-up 2: WHOLE a2"),
+                "lead answers: WHOLE a1".to_owned(),
+                "lead answers · follow-up 1: WHOLE a1".to_owned(),
+                "lead answers · follow-up 2: WHOLE a2".to_owned(),
             ],
             "an unadmitted reply takes no place in the count"
         );
@@ -840,11 +840,11 @@ mod tests {
         assert_eq!(
             thread(&events, &whole).0,
             [
-                format!("you → lead · {ID} · uncertain: check the lead pane: [unconfirmed] q"),
-                format!("you → lead · {ID} · not delivered: refused: busy"),
-                format!("lead answers {ID}: WHOLE before"),
-                format!("you closed {ID}: by you"),
-                format!("lead answers {ID} · follow-up 1 · late (closed): WHOLE after"),
+                "you → lead · uncertain: check the lead pane: [unconfirmed] q".to_owned(),
+                "you → lead · not delivered: refused: busy".to_owned(),
+                "lead answers: WHOLE before".to_owned(),
+                "you closed an ask: by you".to_owned(),
+                "lead answers · follow-up 1 · late (closed): WHOLE after".to_owned(),
             ]
         );
     }
@@ -872,9 +872,9 @@ mod tests {
             });
         let lane = fold(S, &seats, &events, &Observation::default(), 0, &whole);
         let tags: Vec<String> = lane.items.iter().map(|item| tag(&item.kind)).collect();
-        let answer = format!("lead answers {ID}");
+        let answer = "lead answers".to_owned();
         let expected = [
-            format!("you → lead · {ID}"),
+            "you → lead".to_owned(),
             answer.clone(),
             format!("{answer} · follow-up 1 · speaker lead now m1"),
         ];
@@ -890,9 +890,9 @@ mod tests {
         let mut elsewhere = cancel("console:local");
         elsewhere.reference = Some("ae-other".to_owned());
         let (none, answered_, closed) = (
-            format!("no chat ask {ID} in this journal"),
-            format!("{ID} is already answered"),
-            format!("{ID} is already closed"),
+            "no chat ask with that id in this journal".to_owned(),
+            "that ask is already answered".to_owned(),
+            "that ask is already closed".to_owned(),
         );
         let cases = [
             (vec![asked("q")], Ok(())),
@@ -919,7 +919,7 @@ mod tests {
             assert_eq!(super::may_close(&events, ID), verdict, "{events:?}");
         }
         let other = super::may_close(&[asked("q")], "ae-other");
-        let none = Err("no chat ask ae-other in this journal".to_owned());
+        let none = Err("no chat ask with that id in this journal".to_owned());
         assert_eq!(other, none);
         let refless = r#"{"ts":"2026-09-30T06:00:00Z","actor":"console:local","action":"ask"}"#;
         let refless = Event::parse_line(refless).unwrap();
@@ -993,8 +993,8 @@ mod tests {
         ];
         for (body, gap) in cases {
             let (rows, coverage) = thread(&events, &|_| body.clone());
-            let row = format!("lead answers {ID} · {gap} · preview (600-char summary): short");
-            let named = format!("reply {ID} — {gap}; its 600-character summary is shown");
+            let row = format!("lead answers · {gap} · preview (600-char summary): short");
+            let named = format!("reply from lead — {gap}; its 600-character summary is shown");
             assert_eq!((rows[1].as_str(), coverage), (row.as_str(), vec![named]));
         }
     }
@@ -1011,7 +1011,7 @@ mod tests {
         let mut printed = Printed::default();
         let lane = fold(S, &pair(), &first, &observed, 0, &|_| Body::Missing);
         let shown = printed.step(&lane, 0, true);
-        assert_eq!(shown.matches(" answers ").count(), 2, "{shown}");
+        assert_eq!(shown.matches("lead answers").count(), 2, "{shown}");
         let lane = fold(S, &pair(), &later, &observed, 0, &whole);
         let shown = printed.step(&lane, 0, true);
         assert_eq!(shown, "", "the same records, restamped and read whole");
@@ -1030,9 +1030,9 @@ mod tests {
         };
         let lane = fold(S, &pair(), &events, &observed, 0, &whole);
         let shown: Vec<String> = lane.items.iter().map(|item| tag(&item.kind)).collect();
-        let answer = format!("lead answers {ID}");
+        let answer = "lead answers".to_owned();
         let expected = [
-            format!("you → lead · {ID}"),
+            "you → lead".to_owned(),
             "lead pane (transcript)".to_owned(),
             answer.clone(),
             format!("{answer} · follow-up 1"),

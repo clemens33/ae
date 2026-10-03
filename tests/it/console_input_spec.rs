@@ -378,9 +378,10 @@ fn typed_text_uses_the_real_console_ask_and_marker_path() {
         received.contains(ask.reference.as_deref().expect("request id")),
         "{received}"
     );
-    let id = ask.reference.as_deref().expect("request id");
-    output.wait("the chat reports its submitted request id", |text| {
-        text.contains(&format!("sent {id}"))
+    output.wait("the chat reports the ask outcome after its body", |text| {
+        text.find("independent typed request")
+            .zip(text.rfind("sent"))
+            .is_some_and(|(body, outcome)| body < outcome)
     });
     assert_eq!(rig.asks().len(), 1);
 }
@@ -446,7 +447,7 @@ fn unsupported_routes_and_commands_refuse_before_any_journal_or_draft_write() {
         ("@missing no", "missing"),
         ("@elsewhere:lead no", "elsewhere"),
         ("/help", "unknown command"),
-        ("/close", "close"),
+        ("/close", "no open ask"),
     ] {
         let before = rig.tool.events();
         output.clear();
@@ -527,10 +528,9 @@ fn a_sixth_open_request_refuses_and_names_all_five_without_appending() {
     rig.ready(&pane, &mut output);
     output.clear();
     rig.type_line(&pane, "sixth independent request");
-    output.wait(
-        "cap refusal names the independently planted open list",
-        |text| text.contains("5 requests open") && OPEN_IDS.iter().all(|id| text.contains(id)),
-    );
+    output.wait("cap refusal counts open asks without showing ids", |text| {
+        text.contains("5 requests open") && OPEN_IDS.iter().all(|id| !text.contains(id))
+    });
     assert_eq!(rig.tool.events(), before);
     assert_eq!(
         fs::read(rig.tool.dir.join("console.draft")).expect("refused draft retained"),

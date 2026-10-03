@@ -852,10 +852,7 @@ mod tests {
     fn a_plain_style_writes_exactly_the_bytes_a_console_always_did() {
         let (plain, kind) = (Style::PLAIN, asked("asked"));
         assert_eq!(plain.day("2026-09-30"), "# 2026-09-30 UTC\n");
-        assert_eq!(
-            plain.head(&kind, "06:01:00"),
-            "## 06:01:00 you → lead · id\n"
-        );
+        assert_eq!(plain.head(&kind, "06:01:00"), "## 06:01:00 you → lead\n");
         assert_eq!(plain.line(&kind, "a\x1b[2J"), "  a\u{fffd}[2J\n");
         assert_eq!(plain.under(&kind, "sent id"), "  sent id\n");
         assert_eq!(plain.shift(5), 5);
@@ -1070,7 +1067,7 @@ mod tests {
             uncertain: false,
         };
         let got = printed.step(&lane(vec![item(kind, T, "q\n  r")], &["gap"]), 0, true);
-        let want = "coverage incomplete: gap\n# 2026-09-30 +0200\n▌ 08:01:00 you → lead · id\n▌  q\n▌    r\n▌  sent id\n\n";
+        let want = "coverage incomplete: gap\n# 2026-09-30 +0200\n▌ 08:01:00 you → lead\n▌  q\n▌    r\n▌  sent id\n\n";
         assert_eq!(unstyled(&got), want);
         let p = Palette::DARCULA;
         assert!(
@@ -1110,6 +1107,22 @@ mod tests {
             rebased.starts_with(&sgr(p.dim)) && rebased.ends_with("stands\x1b[0m\n\n"),
             "{rebased:?}"
         );
+    }
+
+    #[test]
+    fn chat_wrap_spec_request_ids_are_fields_and_never_header_text() {
+        let id = "ae-20261003T070000Z-12345678";
+        let ask = Kind::Asked {
+            to: "lead".to_owned(),
+            id: id.to_owned(),
+            uncertain: false,
+        };
+        assert_eq!(
+            Style::PLAIN.head(&ask, "06:01:00"),
+            "## 06:01:00 you → lead\n"
+        );
+        assert!(!dressed("on", "darcula").head(&ask, "06:01:00").contains(id));
+        assert!(matches!(ask, Kind::Asked { id: stored, .. } if stored == id));
     }
 
     fn sgr(hex: &str) -> String {

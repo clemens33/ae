@@ -211,10 +211,8 @@ impl Rig {
                 .any(|event| {
                     event.actor == "console:local"
                         && event.action == "ask"
-                        && event
-                            .reference
-                            .as_deref()
-                            .is_some_and(|id| unwrapped.contains(&format!("sent {id}")))
+                        && event.reference.is_some()
+                        && unwrapped.contains("sent")
                 })
         });
         let asks: Vec<_> = self

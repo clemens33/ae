@@ -569,8 +569,8 @@ pub(super) mod tests {
         );
         rig.journal(&[&ask, &answer]);
         let shown = rig.console().pass().expect("a pass");
-        let whole = format!("lead answers {REQ}\n  line one\n  line two");
-        assert!(shown.contains(&whole), "{shown}");
+        let whole = "lead answers\n  line one\n  line two";
+        assert!(shown.contains(whole), "{shown}");
     }
 
     /// `/close` appends one console `cancel` only to an open console ask of
@@ -590,7 +590,7 @@ pub(super) mod tests {
         fs::create_dir_all(&other).expect("another session");
         fs::write(other.join("events.jsonl"), format!("{ask}\n")).expect("its journal");
         rig.journal(&[&ask]);
-        assert_eq!(super::close(&dir, REQ), Ok(()));
+        assert_eq!(super::close(&dir, "s", Some(REQ)), Ok(()));
         let closed = journal(&dir);
         let cancel = format!(r#""actor":"console:local","action":"cancel","ref":"{REQ}","#);
         assert!(
@@ -603,14 +603,14 @@ pub(super) mod tests {
         assert_eq!(states.len(), 1, "{states:?}");
         assert_eq!(states[0].status, crate::requests::Status::Cancelled);
         for (bytes, why) in [
-            (closed, format!("{REQ} is already closed")),
+            (closed, "that ask is already closed".to_owned()),
             (
                 format!("{WORK}\n\n").into(),
-                format!("no chat ask {REQ} in this journal"),
+                "no chat ask with that id in this journal".to_owned(),
             ),
             (
                 format!("{ask}\n{answer}\n").into(),
-                format!("{REQ} is already answered"),
+                "that ask is already answered".to_owned(),
             ),
             (
                 format!("{ask}\n{{not json\n").into(),
@@ -626,7 +626,7 @@ pub(super) mod tests {
             ),
         ] {
             fs::write(dir.join("events.jsonl"), &bytes).expect("a journal");
-            let result = super::close(&dir, REQ);
+            let result = super::close(&dir, "s", Some(REQ));
             assert!(
                 result.as_ref().is_err_and(|got| got.starts_with(&why)),
                 "{result:?}"
@@ -641,12 +641,15 @@ pub(super) mod tests {
         let refless =
             b"{\"ts\":\"2026-09-30T06:00:00Z\",\"actor\":\"console:local\",\"action\":\"ask\"}\n";
         fs::write(dir.join("events.jsonl"), refless).expect("a journal");
-        assert!(super::close(&dir, "").is_err(), "a close needs an id");
+        assert!(
+            super::close(&dir, "s", Some("")).is_err(),
+            "a close needs an id"
+        );
         assert_eq!(journal(&dir), refless, "and writes nothing");
         fs::rename(dir.join("events.jsonl"), rig.0.join("real")).expect("move");
         std::os::unix::fs::symlink(rig.0.join("real"), dir.join("events.jsonl")).expect("link");
         let linked = Err("the journal is a symlink".to_owned());
-        assert_eq!(super::close(&dir, REQ), linked);
+        assert_eq!(super::close(&dir, "s", Some(REQ)), linked);
     }
 
     const ASK: &str = r#"{"ts":"2026-09-30T06:00:00Z","actor":"lead","action":"state","ref":"waiting-user","summary":"ship it?"}"#;

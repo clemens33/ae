@@ -416,7 +416,7 @@ fn b4_reseat_labels_only_moves_after_the_ask_and_before_the_reply() {
         "only post-move follow-up labelled: {split}"
     );
     assert!(
-        split.contains(&format!("lead answers {REQUEST} · follow-up 1 · {label}")),
+        split.contains(&format!("lead answers · follow-up 1 · {label}")),
         "{split}"
     );
 
@@ -464,10 +464,7 @@ fn b4_reseat_labels_only_moves_after_the_ask_and_before_the_reply() {
         ),
     ] {
         let shown = read_fixture(tag, &events, Some("next"), false, false);
-        assert!(
-            shown.contains(&format!("lead answers {REQUEST}")),
-            "{shown}"
-        );
+        assert!(shown.contains("lead answers"), "{shown}");
         assert!(!shown.contains("speaker lead now"), "{tag}: {shown}");
     }
 }
@@ -495,11 +492,7 @@ fn b4_reseated_reply_keeps_full_body_and_old_prose_is_never_its_answer() {
         all.contains("lead assistant (transcript) · prior 1\n  delayed old tool prose"),
         "{all}"
     );
-    assert_eq!(
-        all.matches(&format!("answers {REQUEST}")).count(),
-        1,
-        "{all}"
-    );
+    assert_eq!(all.matches("lead answers").count(), 1, "{all}");
 }
 
 #[test]
