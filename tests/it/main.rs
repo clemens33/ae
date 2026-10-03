@@ -4,12 +4,12 @@
 //! binary per `tests/*.rs`, and shared helpers would have no home that is not
 //! also a test target.
 
+mod app_cli_spec;
+mod app_spec;
 mod archive;
 mod archive_from;
 mod archive_publish;
 mod archive_purge;
-mod app_cli_spec;
-mod app_spec;
 mod autoreseat;
 mod board;
 mod brief;

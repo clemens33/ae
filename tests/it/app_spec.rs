@@ -94,14 +94,18 @@ fn need(slot: &str, seat: &str, reason: Reason, detail: &str, age_secs: i64) -> 
     }
 }
 
-/// The shared world: orchestrator + docs + api (home) + infra (needy) +
-/// deadseat + old (stopped). `offsite` and `bare` ride worlds of their own.
-fn world() -> (
+/// The four maps `world` hands back, one alias so the signature stays read.
+type WorldParts = (
     World,
     BTreeMap<String, Facts>,
     BTreeMap<String, i64>,
     BTreeMap<String, Section>,
-) {
+);
+
+/// The shared world: orchestrator + docs + api (home) + infra (needy) +
+/// deadseat + old (stopped). `offsite` and `bare` ride worlds of their own.
+#[allow(clippy::too_many_lines, reason = "one shared six-session fixture")]
+fn world() -> WorldParts {
     let mut orchestrator = SessionEntry::new("orchestrator", Status::Running);
     orchestrator.last_active_epoch = Some(NOW - 30);
     let mut docs = SessionEntry::new("docs", Status::Running);
@@ -275,7 +279,7 @@ fn app_fleet_rows_mark_and_needy() {
     assert_eq!(by_name("orchestrator").mark, Mark::Working);
 }
 
-/// Counts tally picker marks in BY_URGENCY order, non-zero only; blocked
+/// Counts tally picker marks in `BY_URGENCY` order, non-zero only; blocked
 /// keeps ⚠ with the letter; unknown facts draw `?`; stopped draws Stopped.
 #[test]
 fn app_fleet_rows_counts() {
@@ -335,7 +339,7 @@ fn app_fleet_rows_counts() {
     }
 }
 
-/// Line 2 precedence: stopped, then Question, SeatDown, Goal, NoGoal (Q4: a
+/// Line 2 precedence: stopped, then Question, `SeatDown`, Goal, `NoGoal` (Q4: a
 /// Dead row never feeds the Question; blank detail falls back to a word).
 #[test]
 fn app_fleet_rows_line_two() {
@@ -732,7 +736,7 @@ fn app_model_page_and_quit() {
 /// The BROWSE decode table, every row of it: digits, `!`, `j`/`k`, `i` and
 /// Enter, `q` and ^C, the editing keys; a paste, editing keys and every other
 /// byte are swallowed.
-fn app_key_name(key: &AppKey) -> String {
+fn app_key_name(key: AppKey) -> String {
     match key {
         AppKey::Digit(n) => format!("Digit({n})"),
         AppKey::Up => "Up".to_owned(),
@@ -760,7 +764,11 @@ fn app_browse_keys_decode_table() {
         (b'i', "Compose"),
         (b'q', "Quit"),
     ] {
-        let got: Vec<String> = browse_keys(&text(byte)).iter().map(app_key_name).collect();
+        let got: Vec<String> = browse_keys(&text(byte))
+            .iter()
+            .copied()
+            .map(app_key_name)
+            .collect();
         assert_eq!(got, [want], "byte {byte} decodes");
     }
     for (key, want) in [
@@ -773,7 +781,11 @@ fn app_browse_keys_decode_table() {
         (Key::Escape, "Esc"),
         (Key::Interrupt, "Quit"),
     ] {
-        let got: Vec<String> = browse_keys(&key).iter().map(app_key_name).collect();
+        let got: Vec<String> = browse_keys(&key)
+            .iter()
+            .copied()
+            .map(app_key_name)
+            .collect();
         assert_eq!(got, [want], "key {key:?} decodes");
     }
     for key in [
@@ -851,11 +863,10 @@ fn app_keys_idle_expires_lone_esc() {
     let mut app = Keys::app();
     assert!(app.feed(b"\x1b", t0).is_empty(), "ESC waits");
     assert!(app.idle(t0).is_empty(), "fresh, kept");
-    assert!(
-        app.idle(t0 + ESC_IDLE - Duration::from_millis(1))
-            .is_empty(),
-        "under the bound, kept"
-    );
+    let under = (t0 + ESC_IDLE)
+        .checked_sub(Duration::from_millis(1))
+        .expect("one millisecond under the bound");
+    assert!(app.idle(under).is_empty(), "under the bound, kept");
     assert_eq!(
         app.idle(t0 + ESC_IDLE),
         [(Key::Escape, t0)],
@@ -1145,6 +1156,10 @@ fn agents6() -> Facts {
 /// The 160x43 home view: sidebar geometry, needy lighting, tabs, Overview,
 /// chat column, composer and keys row, every colour from the darcula owner.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pinned 160x43 frame proves the whole home geometry"
+)]
 fn app_draw_home_160x43() {
     let palette = Palette::DARCULA;
     let fleet = draw_fleet();
@@ -1546,15 +1561,11 @@ fn app_draw_small_falls_back() {
 /// The Agents tab lists seat, state and client · profile · model; a session
 /// with no seat facts names its gap, and a stopped session its rest.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pinned Agents tab plus both gap lines"
+)]
 fn app_draw_agents_tab_and_gaps() {
-    let fleet = draw_fleet();
-    let mut model = Model::new(&fleet);
-    let _ = model.key(AppKey::Tab, &fleet, true, true);
-    let overview = draw_overview();
-    let entry = draw_entry();
-    let pair = ["lead".to_owned(), "colead".to_owned()];
-    let agents = agents6();
-    let lane = draw_lane();
     fn show<'a>(
         fleet: &'a Fleet,
         model: &'a Model,
@@ -1583,6 +1594,14 @@ fn app_draw_agents_tab_and_gaps() {
             now: now(),
         }
     }
+    let fleet = draw_fleet();
+    let mut model = Model::new(&fleet);
+    let _ = model.key(AppKey::Tab, &fleet, true, true);
+    let overview = draw_overview();
+    let entry = draw_entry();
+    let pair = ["lead".to_owned(), "colead".to_owned()];
+    let agents = agents6();
+    let lane = draw_lane();
     let mut buf = Buffer::empty(Rect::new(0, 0, 160, 43));
     draw(
         &show(
