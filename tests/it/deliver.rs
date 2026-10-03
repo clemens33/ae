@@ -988,6 +988,126 @@ fn a_queued_claude_submission_is_confirmed_without_extra_enters() {
     assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
 }
 
+/// FROZEN SPEC (deliver-queued, nav): a composer whose WHOLE content is
+/// claude's queued-messages affordance is NOT a human draft, so a delivery
+/// onto that frame proceeds — claude queues the new message behind the
+/// running turn, and submit verification already reads the queued box as
+/// submitted. RED pre-fix: the pre-paste occupancy read counts the 27
+/// affordance cells as a draft and the second send abandons.
+#[test]
+fn a_send_onto_a_claude_queued_affordance_delivers_instead_of_abandoning() {
+    let rig = Rig::with_mode("queued-deliver", "claude", 0, "queued");
+    let (code, stderr) = rig.run(ae::cli::SEND, &["tui", "first into the queue"], &[]);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
+    // The submit verification above already observed the queued frame, so it
+    // is drawn and stable: the sensor must read it NOT busy.
+    assert!(
+        !deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited),
+        "a bare queued affordance reads IDLE"
+    );
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "second behind it"],
+        &[("AE_SEND_DEFER_SEC", "2")],
+    );
+    assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
+    let submitted = rig.submitted();
+    assert!(
+        submitted.contains("first into the queue") && submitted.contains("second behind it"),
+        "both messages crossed the pane: {submitted:?}"
+    );
+    assert_eq!(
+        rig.enter_count(),
+        2,
+        "one Enter per send — never a retry into the busy pane"
+    );
+}
+
+/// FROZEN SPEC (deliver-queued, nav, D2): the affordance plus ANY other cell
+/// is still a human draft and still defers, then abandons loudly with the
+/// byte-identical evidence line. GREEN on both sides of the fix.
+#[test]
+fn a_queued_affordance_with_a_draft_beside_it_still_defers_and_abandons() {
+    let rig = Rig::new("queued-draft", "claude", 0);
+    assert!(
+        rig.tmux(&[
+            "send-keys",
+            "-t",
+            &rig.pane,
+            "-l",
+            "Press up to edit queued messages plus more"
+        ])
+        .0
+    );
+    // The sensor must SEE it before the send is asked to, as in the draft
+    // test below: the polled reading is the proof.
+    let seen = (0..100).any(|_| {
+        deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        }
+    });
+    assert!(seen, "affordance plus a draft reads OCCUPIED");
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "overwrite me"],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    // 27 affordance cells plus "plusmore": the whole box is the evidence.
+    assert_eq!(
+        stderr,
+        "ae: send to tui ABANDONED — target stayed busy (composer occupied: 35 content cells on 1 row); not clear within 1s (AE_SEND_DEFER_SEC overrides). Re-send.\n"
+    );
+    assert!(
+        rig.submitted().is_empty(),
+        "nothing was submitted over the draft"
+    );
+    let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
+    assert!(screen.contains("plus more"), "{screen}");
+}
+
+/// FROZEN SPEC (deliver-queued, nav, D2): the phrase in a NON-claude box is
+/// still a draft — the affordance match is `BorderDelimited` only. Kills a
+/// mutant that drops the model check. GREEN on both sides of the fix.
+#[test]
+fn the_queued_phrase_in_a_codex_box_is_still_a_draft() {
+    let rig = Rig::new("queued-codex", "codex", 0);
+    assert!(
+        rig.tmux(&[
+            "send-keys",
+            "-t",
+            &rig.pane,
+            "-l",
+            "Press up to edit queued messages"
+        ])
+        .0
+    );
+    // The sensor must SEE it before the send is asked to, as in the draft
+    // test above: the polled reading is the proof.
+    let seen = (0..100).any(|_| {
+        deliver::input_busy(&rig.server(), &rig.pane, InputModel::StyleDelimited) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        }
+    });
+    assert!(seen, "the phrase in a codex box reads OCCUPIED");
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "overwrite me"],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert_eq!(
+        stderr,
+        "ae: send to tui ABANDONED — target stayed busy (composer occupied: 27 content cells on 1 row); not clear within 1s (AE_SEND_DEFER_SEC overrides). Re-send.\n"
+    );
+    assert!(
+        !rig.submitted().contains("overwrite me"),
+        "nothing was submitted over the draft"
+    );
+}
+
 /// A capture that disappears after paste cannot prove the message submitted.
 /// It is an explicit caveat rather than a fabricated confirmed delivery.
 #[test]
@@ -1638,8 +1758,24 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
     };
 
     // Interrupt takes the busy-less lane and leaves the fake in its QUEUED
-    // state, which is a busy box for the two shapes that ARE quiet-gated.
+    // state; typing then replaces that frame with a plain draft, which is
+    // the busy box for the two shapes that ARE quiet-gated (a BARE
+    // affordance reads Idle since deliver-queued, so the queued frame alone
+    // no longer gates here).
     assert!(send(Shape::Interrupt, Composed::NONE, short).is_ok());
+    assert!(
+        rig.tmux(&["send-keys", "-t", &rig.pane, "-l", " plus more"])
+            .0
+    );
+    // The sensor must SEE it before the gated shapes are asked to, as in
+    // the draft test above: the polled reading is the proof.
+    let seen = (0..100).any(|_| {
+        deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        }
+    });
+    assert!(seen, "the typed draft reads OCCUPIED");
     assert!(matches!(
         send(Shape::Send, Composed::NONE, short),
         Err(Failure::Abandoned {
