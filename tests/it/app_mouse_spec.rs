@@ -847,10 +847,12 @@ fn click_composer_on_foreign_row_noops() {
 }
 
 /// Ruling 5: one wheel notch moves the chat exactly 3 rows, read off the
-/// frame — one known marker line sits exactly 3 rows higher after one notch.
+/// frame — wheel up shows older turns, so between two scrolled frames one
+/// more notch up sits the same mid-screen marker exactly 3 rows lower, and one
+/// notch down returns it.
 #[test]
 fn one_wheel_notch_moves_exactly_three_rows() {
-    const MARK: &str = "scrollprobe-newest-11";
+    const MARK: &str = "scrollprobe-filler-05";
     let rig = Rig::new("amnotch", 12, &[]);
     let pane = rig.open_app();
     let home = rig.name.clone();
@@ -858,18 +860,28 @@ fn one_wheel_notch_moves_exactly_three_rows() {
     let screen = rig.wait(&pane, WAIT, "newest turn at the bottom", |screen| {
         screen.contains("scrollprobe-newest") && !screen.contains("scrollprobe-oldest")
     });
-    let row0 = screen
-        .lines()
-        .position(|line| line.contains(MARK))
-        .expect("the newest marker on screen");
-    assert!(row0 >= 3, "the marker has room to rise:\n{screen}");
     let (col, row) = cell_of(&screen, &address).expect("the composer row");
     rig.wheel(&pane, true, col, row - 4);
-    rig.wait(&pane, WAIT, "exactly 3 rows up", |screen| {
+    let screen = rig.wait(&pane, WAIT, "scrolled back one notch", |screen| {
+        screen.contains("newer turns below")
+    });
+    let row1 = screen
+        .lines()
+        .position(|line| line.contains(MARK))
+        .expect("the mid-screen marker on screen");
+    rig.wheel(&pane, true, col, row - 4);
+    rig.wait(&pane, WAIT, "exactly 3 rows lower", |screen| {
         screen
             .lines()
             .position(|line| line.contains(MARK))
-            .is_some_and(|at| at == row0 - 3)
+            .is_some_and(|at| at == row1 + 3)
+    });
+    rig.wheel(&pane, false, col, row - 4);
+    rig.wait(&pane, WAIT, "one notch down returns it", |screen| {
+        screen
+            .lines()
+            .position(|line| line.contains(MARK))
+            .is_some_and(|at| at == row1)
     });
 }
 
