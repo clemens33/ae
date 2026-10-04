@@ -287,13 +287,15 @@ fn quitting_puts_the_terminal_back() {
     let screen = rig.tmux(&["display-message", "-p", "-t", &pane, "#{alternate_on}"]);
     assert_eq!(screen.trim(), "0", "off the alternate screen");
     let modes = fs::read_to_string(&modes).expect("modes");
-    for off in ["-icanon", "-echo "] {
-        assert!(!modes.contains(off), "{off} after quitting: {modes}");
+    let flags: Vec<&str> = modes.split_whitespace().collect();
+    for on in ["icanon", "echo"] {
+        assert!(flags.contains(&on), "{on} is set after quitting: {modes}");
+        let off = format!("-{on}");
+        assert!(
+            !flags.contains(&off.as_str()),
+            "{off} after quitting: {modes}"
+        );
     }
-    assert!(
-        modes.contains("icanon") && modes.contains("echo"),
-        "{modes}"
-    );
 }
 
 /// #45: the app needs a terminal at BOTH ends; a tty in and a file out is
