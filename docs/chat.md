@@ -9,6 +9,7 @@ A new or resumed session opens it as its **first window**, `chat`, after the
 seats, and attaching lands there (`[workspace] chat = off` keeps the old
 layout). Running sessions are not changed by an upgrade; `prefix h` gives them
 the window on demand. See [Keys](#keys).
+`ae app` draws the same lane beside the whole fleet as a terminal UI; see [App](app.md).
 
 ## What it shows
 

@@ -30,6 +30,8 @@ reasoning, the retired rules and every measurement narrative are in
 src/                — Rust sources. main.rs thin (argv in, exit code out); lib.rs and one
                       module per domain hold everything testable. theme.rs is PURE: the
                       palettes, the seven marks and every tmux format ae draws a session with
+src/app/            — `ae app`: PURE fleet, overview, model and draw halves; backend.rs the
+                      one writer of its escapes; tty.rs the terminal door (rustix termios)
 tests/it/           — the one integration-test target. The behaviours of the retired bash
                       suites are pinned here as Rust tests.
                       doors.rs = capability boundary; gate.rs = justfile/install guards;
@@ -460,7 +462,7 @@ palette = darcula          # darcula (default), a = neutral dark, b = warmer
 icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*
 motion = on                # off freezes the spinner
-chat = on                  # off: no chat as window 0 of a new or resumed session
+chat = on                  # off: no chat as window 0 of a new or resumed session; app: ae app there
 quota = on                 # off stops ae acting on vendor quota (advisories and the
                            # Low-entry checkpoint ask alike); ae quota stays
 quota_every_secs = 300     # watchdog quota advisory cadence; 0 disables

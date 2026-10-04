@@ -203,7 +203,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
 | `motion`  | `off` freezes the working `●` at its accent colour   | `on`          |
-| `chat`    | `off` launches without the [chat](../chat.md) as the session's first window; any value other than `on` / `off` opens it and prints one note. The orchestrator's own session never gets one | `on` |
+| `chat`    | `off` launches without the [chat](../chat.md) as the session's first window; `app` runs [`ae app`](../app.md) in that window instead; any value other than `on` / `off` / `app` opens the chat and prints one note. The orchestrator's own session never gets one | `on` |
 
 Set `orchestrator = true` only in the dedicated overview seat. It authorizes
 unenveloped `relay` delivery, whose target treats the text as human input.

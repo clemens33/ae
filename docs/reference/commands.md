@@ -38,6 +38,8 @@ ae chat [session] [--follow] [--all]
                        The human lane of one session: lead-pair pane turns,
                        chat asks and replies, live decision cards, and every
                        seat that needs you; /open <seat> selects its pane
+ae app [session]       The fleet as a terminal UI: sessions in a sidebar, the selected
+                       one's Overview or Agents, and its chat; typing asks at home
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
@@ -115,6 +117,12 @@ fall-through reason.
 See [Chat](../chat.md) for input, replies, coverage, and the follow view.
 
 `ae console` is a deprecated alias of `ae chat`, with the same flags and output.
+
+## `ae app`
+
+`ae app [session]` draws the fleet as a terminal UI beside the selected session's
+chat; it needs a terminal on stdin and stdout. `[workspace] chat = app` runs it in
+the `chat` window. See [App](../app.md) for the layout, keys and ownership.
 
 ## `ae init`
 

@@ -51,6 +51,7 @@ Two agents in own tmux windows, talking to each other through helpers linked to 
 - [Browse the command reference](reference/commands.md)
 - [Message board](board.md)
 - [Chat](chat.md)
+- [App](app.md)
 - [Telegram bridge + orchestrator-centric routing](reference/telegram.md)
 
 ### Doctrine

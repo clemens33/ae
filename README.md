@@ -115,6 +115,7 @@ ae brief [name] [--all]        # why a session needs you: goal, latest note per 
 ae chat [session] [--follow]
                                # the human lane: lead-pair turns, bridge asks, say lines, cards,
                                # every seat that needs you; /open <seat> shows its pane
+ae app [session]               # the fleet as a terminal UI beside the selected chat
 ae orchestrator                # start or reattach the local orchestrator seat
 ae orchestrator --popup --client <name>
                                # status button / prefix a bindings supply the client name
