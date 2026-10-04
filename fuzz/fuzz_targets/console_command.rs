@@ -7,6 +7,38 @@ use std::time::Instant;
 
 type Taken = (Vec<Effect>, Option<String>, Option<View>);
 
+/// App read boundaries preserve keys and origins, coalescing literal runs.
+fn app_keys(stream: &[u8], chunk: usize, at: Instant) -> Vec<(input::Key, Instant)> {
+    let mut decoder = input::Keys::app();
+    let mut keys = Vec::new();
+    let decoded = stream
+        .chunks(chunk)
+        .flat_map(|read| decoder.feed(read, at))
+        .collect::<Vec<_>>();
+    for (key, origin) in decoded
+        .into_iter()
+        .chain(decoder.idle(at + input::ESC_IDLE))
+    {
+        if let Some((previous, stamp)) = keys.last_mut() {
+            let run = match (previous, &key) {
+                (input::Key::Text(old), input::Key::Text(new))
+                | (input::Key::Pasted(old), input::Key::Pasted(new))
+                    if *stamp == origin =>
+                {
+                    Some((old, new))
+                }
+                _ => None,
+            };
+            if let Some((old, new)) = run {
+                old.extend_from_slice(new);
+                continue;
+            }
+        }
+        keys.push((key, origin));
+    }
+    keys
+}
+
 /// Every effect one owning console takes from `stream`, read `chunk` bytes at
 /// a time, all at one stamp, after `kept` was restored as its draft; then its
 /// composer on one line and laid out for `size`.
@@ -204,6 +236,16 @@ fuzz_target!(|data: &[u8]| {
     };
     let (kept, stream) = rest.split_at(usize::from(kept_len).min(rest.len()));
     let at = Instant::now();
+    assert_eq!(
+        app_keys(stream, stream.len().max(1), at),
+        app_keys(stream, chunk, at)
+    );
+    assert!(
+        input::Keys::default()
+            .feed(stream, at)
+            .iter()
+            .all(|(key, _)| !matches!(key, input::Key::Mouse(_)))
+    );
     let (whole, line, view) = effects(kept, stream, stream.len().max(1), at, size);
     assert_eq!(
         effects(kept, stream, chunk, at, size),

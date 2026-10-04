@@ -16,10 +16,10 @@ use std::os::fd::{AsFd as _, OwnedFd};
 
 use rustix::termios::{self, OptionalActions, OutputModes, Termios};
 
-/// Into the app's screen: alternate screen, cursor hidden, bracketed paste on.
-const ENTER: &str = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[2J";
-/// Back out: attributes reset, bracketed paste off, cursor shown, main screen.
-const LEAVE: &str = "\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1049l";
+/// Into the app's screen: cursor hidden, bracketed paste and SGR press/wheel on.
+const ENTER: &str = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[2J";
+/// Back out: input modes off before returning to the main screen.
+const LEAVE: &str = "\x1b[0m\x1b[?2004l\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l";
 
 /// This process's terminal in raw mode, until dropped.
 pub(crate) struct Tty {
@@ -97,4 +97,21 @@ impl Drop for Tty {
 fn restore(fd: &OwnedFd, mut screen: &File, saved: &Termios) {
     let _ = screen.write_all(LEAVE.as_bytes());
     let _ = termios::tcsetattr(fd, OptionalActions::Now, saved);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ENTER, LEAVE};
+
+    #[test]
+    fn mouse_press_and_sgr_modes_are_restored_before_the_main_screen() {
+        for mode in [1000, 1006] {
+            assert!(ENTER.contains(&format!("\x1b[?{mode}h")));
+            let off = LEAVE.find(&format!("\x1b[?{mode}l"));
+            assert!(off.is_some() && off < LEAVE.find("\x1b[?1049l"));
+        }
+        for mode in [1002, 1003] {
+            assert!(!ENTER.contains(&format!("\x1b[?{mode}h")));
+        }
+    }
 }

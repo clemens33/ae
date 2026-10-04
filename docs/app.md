@@ -53,6 +53,10 @@ Browsing:
 | `!` | the next session that needs you |
 | `Tab` | Overview / Agents |
 | `PgUp` / `PgDn` | scroll the chat a page |
+| Click session row | select that session |
+| Click Overview / Agents | show that tab |
+| Wheel over chat | scroll three rows per notch, also while writing |
+| Click composer | write (home only, when this app owns the input) |
 | `Esc` | back to home |
 | `Enter` or `i` | write (home only, when this app owns the input) |
 | `q`, `^C` | quit |
@@ -65,6 +69,9 @@ five asks open at most; see [Input](chat.md#input). `Enter` sends, `Esc` goes
 back to browsing and keeps the draft, `^C` quits. `/open` is refused: the app
 selects no pane, `ae chat` does. Each outcome shows in the home lane as an `ae`
 line.
+
+While writing, clicking a session row or tab returns to browsing and keeps the
+draft, then selects the row or tab. Blank rows and the "more" row do nothing.
 
 ## Ownership
 
@@ -86,4 +93,6 @@ read-only, and typing still goes home: the composer says
 - `^Z` and `^\` are dropped and never suspend or quit.
 - The panic hook that restores the terminal stays installed after the app
   leaves its screen; it would only restore the same mode again.
-- Truecolour only; no 256-colour fallback. No mouse.
+- Truecolour only; no 256-colour fallback.
+- Mouse dragging does not select text in the app. Hold Shift (Option in iTerm)
+  for terminal text selection; inside tmux an ordinary drag goes to the app.

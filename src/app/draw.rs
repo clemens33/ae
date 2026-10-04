@@ -17,6 +17,7 @@ use super::fleet::{Counts, Facts, Fleet, Line2, Row};
 use super::model::{Model, Tab};
 use super::overview::Overview;
 use crate::brief::age;
+use crate::console::input::Mouse;
 use crate::console::input::View;
 use crate::console::lane::Lane;
 use crate::console::view;
@@ -75,6 +76,40 @@ const LEFT: u16 = 2;
 /// Where a session row's name starts.
 const NAME: u16 = 6;
 
+/// A click target recorded where its cells are drawn.
+#[derive(Debug, Clone)]
+pub(crate) enum Hit {
+    Session(String),
+    Tab(Tab),
+    Compose,
+}
+
+/// The last frame's input geometry and chat scroll bounds.
+#[derive(Debug, Default)]
+pub(crate) struct Layout {
+    targets: Vec<(Rect, Hit)>,
+    chat: Rect,
+    pub page_rows: usize,
+    pub max_scroll: usize,
+}
+
+impl Layout {
+    fn record(&mut self, buf: &Buffer, area: Rect, target: Hit) {
+        self.targets.push((area.intersection(buf.area), target));
+    }
+
+    pub fn hit(&self, mouse: Mouse) -> Option<Hit> {
+        self.targets.iter().find_map(|(area, target)| {
+            area.contains((mouse.column, mouse.row).into())
+                .then(|| target.clone())
+        })
+    }
+
+    pub fn in_chat(&self, mouse: Mouse) -> bool {
+        self.chat.contains((mouse.column, mouse.row).into())
+    }
+}
+
 /// The colours one frame draws in: a palette, or none.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Paint(Option<Palette>);
@@ -128,7 +163,14 @@ struct Ctx<'s, 'a> {
 /// it the terminal's whole frame. The answer is how many pages back the chat
 /// can scroll in this frame, which bounds the model's scroll.
 pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
+    let layout = draw_with_layout(screen, buf);
+    layout.max_scroll.div_ceil(layout.page_rows.max(1))
+}
+
+/// Draw and retain only the geometry this frame actually showed.
+pub(crate) fn draw_with_layout(screen: &Screen<'_>, buf: &mut Buffer) -> Layout {
     let area = buf.area;
+    let mut layout = Layout::default();
     let ctx = Ctx {
         screen,
         paint: Paint::of(screen.look.as_ref()),
@@ -153,7 +195,7 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
             row.push_str(word);
         }
         put(buf, area.x, y, &row, area.width, dim);
-        return 0;
+        return layout;
     }
     // The frames' grounds: the chat's ink everywhere, the keys row and the
     // rule's own column included, and the panel under the sidebar alone.
@@ -164,7 +206,7 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
             Rect::new(0, 0, rule, height - 1),
             ctx.paint.ground(|p| p.base),
         );
-        sidebar(&ctx, buf, rule);
+        sidebar(&ctx, buf, rule, &mut layout);
         let border = ctx.paint.fg(|p| p.border);
         for y in 0..height - 1 {
             put(buf, rule, y, "│", 1, border);
@@ -178,9 +220,10 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
         put(buf, 0, 0, &line, width, dim);
         0..width
     };
-    let pages = chat_column(&ctx, buf, chat.start + 2..width - 2);
+    layout.chat = Rect::new(chat.start, 0, width - chat.start, height - 1);
+    chat_column(&ctx, buf, chat.start + 2..width - 2, &mut layout);
     keys_row(&ctx, buf);
-    pages
+    layout
 }
 
 /// The cells a draft has on the composer row of a `width` x `height` pane,
@@ -246,7 +289,7 @@ impl List {
     }
 }
 
-fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16) {
+fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) {
     let Screen { fleet, model, .. } = *ctx.screen;
     let paint = ctx.paint;
     let end = rule - 2;
@@ -287,6 +330,11 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16) {
     for (step, at) in list.visible.clone().enumerate() {
         let y = LIST_TOP + cells(step) * list.step;
         session(ctx, buf, &fleet.rows[at], y, end, Some(at) == selected);
+        layout.record(
+            buf,
+            Rect::new(0, y, rule, 2),
+            Hit::Session(fleet.rows[at].name.clone()),
+        );
     }
     if let Some(y) = list.more {
         let (above, below) = (list.visible.start, count - list.visible.end);
@@ -311,7 +359,7 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16) {
         return;
     };
     let tabs = list.end + 1;
-    tab_row(ctx, buf, tabs, end);
+    tab_row(ctx, buf, tabs, end, layout);
     let border = paint.fg(|p| p.border);
     put(
         buf,
@@ -423,7 +471,7 @@ fn seats_word(seats: usize) -> String {
 }
 
 /// The tab row: Overview and Agents, the showing one bold and underlined.
-fn tab_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, y: u16, end: u16) {
+fn tab_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, y: u16, end: u16, layout: &mut Layout) {
     let paint = ctx.paint;
     let style = |showing: bool| {
         if showing {
@@ -447,13 +495,23 @@ fn tab_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, y: u16, end: u16) {
         end - LEFT,
         style(tab == Tab::Overview),
     );
-    put(
+    layout.record(
+        buf,
+        Rect::new(LEFT, y, x - LEFT, 1),
+        Hit::Tab(Tab::Overview),
+    );
+    let after = put(
         buf,
         x + 3,
         y,
         &agents,
         end.saturating_sub(x + 3),
         style(tab == Tab::Agents),
+    );
+    layout.record(
+        buf,
+        Rect::new(x + 3, y, after.saturating_sub(x + 3), 1),
+        Hit::Tab(Tab::Agents),
     );
     put(buf, end - 3, y, "Tab", 3, paint.fg(|p| p.dim));
 }
@@ -600,7 +658,7 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry) -> Vec<Cells> {
 
 /// The chat column over `columns`: the header, the turns anchored to the
 /// bottom, the composer.
-fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>) -> usize {
+fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout: &mut Layout) {
     let screen = ctx.screen;
     let paint = ctx.paint;
     let height = buf.area.height;
@@ -623,17 +681,17 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>) -> usiz
     let clock = view::Style::resolve(true, screen.look, screen.zone, main);
     let rows = super::lane::rows(screen.lane, usize::from(room), paint, &clock, main);
     let room_rows = usize::from(bottom.saturating_sub(top));
-    let pages = screen.model.pages();
+    let scroll = screen.model.scroll_rows(room_rows);
     let last = rows
         .len()
-        .saturating_sub(pages.saturating_mul(room_rows))
+        .saturating_sub(scroll)
         .max(room_rows.min(rows.len()));
     let first = last.saturating_sub(room_rows);
     let y0 = bottom - cells(last - first);
     for (step, line) in rows[first..last].iter().enumerate() {
         put_line(buf, left, y0 + cells(step), line, room);
     }
-    if pages > 0 && last < rows.len() {
+    if scroll > 0 && last < rows.len() {
         put(buf, left, bottom, "↓ newer turns below · PgDn", room, dim);
     }
     put(
@@ -647,9 +705,9 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>) -> usiz
     let (address, hint) = composer_lines(ctx);
     put_line(buf, left, height - 4, &address, room);
     put(buf, left, height - 3, &hint, room, dim);
-    rows.len()
-        .saturating_sub(room_rows)
-        .div_ceil(room_rows.max(1))
+    layout.record(buf, Rect::new(left, height - 4, room, 2), Hit::Compose);
+    layout.page_rows = room_rows;
+    layout.max_scroll = rows.len().saturating_sub(room_rows);
 }
 
 /// The chat header: the session, its pair or where it is viewed from, and

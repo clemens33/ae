@@ -28,6 +28,8 @@ pub const RESTORE: &str = "\x1b[?7h\x1b[?2004l";
 
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
+/// Mouse reports retain at most this many bytes, then discard through M/m.
+const MOUSE_MAX: usize = 32;
 
 /// An app mouse event at a zero-based terminal cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +95,11 @@ pub struct Keys {
     paste: Option<Instant>,
     /// The app's decoder: [`Keys::app`].
     app: bool,
+    /// SGR report open; oversized reports keep only the discard flag.
+    mouse: bool,
+    discarded: bool,
+    /// Bytes left in a legacy X10 report, consumed even when they are ESC.
+    x10: u8,
 }
 
 impl Keys {
@@ -116,6 +123,7 @@ impl Keys {
             return Vec::new();
         }
         self.begun = None;
+        (self.mouse, self.discarded, self.x10) = (false, false, 0);
         match std::mem::take(&mut self.pending).as_slice() {
             [0x1b] => vec![(Key::Escape, begun)],
             _ => Vec::new(),
@@ -143,6 +151,35 @@ impl Keys {
                     }
                     self.literal(&mut keys, &held, origin);
                 }
+            } else if self.x10 > 0 {
+                self.x10 -= 1;
+                if self.x10 == 0 {
+                    self.begun = None;
+                }
+            } else if self.mouse {
+                if byte == 0x1b {
+                    // A fresh escape resynchronizes a damaged report.
+                    self.pending = vec![byte];
+                    self.begun = Some(stamp);
+                    (self.mouse, self.discarded) = (false, false);
+                    continue;
+                }
+                if !self.discarded {
+                    if self.pending.len() < MOUSE_MAX {
+                        self.pending.push(byte);
+                    } else {
+                        self.pending.clear();
+                        self.discarded = true;
+                    }
+                }
+                if matches!(byte, b'M' | b'm') {
+                    if !self.discarded {
+                        keys.extend(mouse(&self.pending).zip(self.begun));
+                    }
+                    self.pending.clear();
+                    self.begun = None;
+                    (self.mouse, self.discarded) = (false, false);
+                }
             } else if !self.pending.is_empty() || byte == 0x1b {
                 if self.app && byte == 0x1b && self.pending == [0x1b] {
                     // Nothing continues an escape with a second one: the
@@ -157,6 +194,11 @@ impl Keys {
                 if self.pending == PASTE_START {
                     self.paste = self.begun.take();
                     self.pending.clear();
+                } else if self.app && self.pending == b"\x1b[<" {
+                    self.mouse = true;
+                } else if self.app && self.pending == b"\x1b[M" {
+                    self.pending.clear();
+                    self.x10 = 3;
                 } else if escape_done(&self.pending) || self.pending.len() > PENDING_MAX {
                     let began = self.begun.take();
                     let seq = std::mem::take(&mut self.pending);
@@ -201,6 +243,30 @@ impl Keys {
         }
         keys.push((Key::Pasted(bytes.to_vec()), origin));
     }
+}
+
+/// The only SGR reports the app admits: unmodified left press and vertical wheel.
+fn mouse(seq: &[u8]) -> Option<Key> {
+    let body = seq.strip_prefix(b"\x1b[<")?.strip_suffix(b"M")?;
+    let body = std::str::from_utf8(body).ok()?;
+    let mut fields = body.split(';');
+    let number = |field: &str| {
+        (!field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| field.parse::<u32>().ok())
+            .flatten()
+    };
+    let kind = match number(fields.next()?)? {
+        0 => MouseKind::Click,
+        64 => MouseKind::WheelUp,
+        65 => MouseKind::WheelDown,
+        _ => return None,
+    };
+    let column = u16::try_from(number(fields.next()?)?.checked_sub(1)?).ok()?;
+    let row = u16::try_from(number(fields.next()?)?.checked_sub(1)?).ok()?;
+    fields
+        .next()
+        .is_none()
+        .then_some(Key::Mouse(Mouse { kind, column, row }))
 }
 
 /// Append `bytes` to the last key when it is text from the same origin.
@@ -2136,6 +2202,21 @@ mod tests {
         assert_eq!(
             app.feed(b"\x1a\x1c\x02a", at),
             [(Key::Text(b"a".to_vec()), at)]
+        );
+    }
+
+    /// A garbled report cannot swallow typing after the escape idle bound.
+    #[test]
+    fn an_overlong_mouse_report_expires_on_idle() {
+        let at = Instant::now();
+        let mut app = Keys::app();
+        let mut report = b"\x1b[<0;".to_vec();
+        report.extend(std::iter::repeat_n(b'9', 100));
+        assert!(app.feed(&report, at).is_empty());
+        assert!(app.idle(at + super::ESC_IDLE).is_empty());
+        assert_eq!(
+            app.feed(b"q", at + super::ESC_IDLE),
+            [(Key::Text(b"q".to_vec()), at + super::ESC_IDLE)]
         );
     }
 }

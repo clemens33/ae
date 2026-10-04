@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use ratatui_core::buffer::Buffer;
 use ratatui_core::terminal::Terminal;
 
-use crate::console::input::{Effect, Input, Key, Keys, Reading, Size, View};
+use crate::console::input::{Effect, Input, Key, Keys, Mouse, MouseKind, Reading, Size, View};
 use crate::console::lane::{Item, Kind, Lane, Seat};
 use crate::console::needs::Section;
 use crate::console::{self, Console, submit, term};
@@ -87,6 +87,7 @@ struct App {
     notices: Vec<Item>,
     draft_view: View,
     draft: String,
+    layout: draw::Layout,
 }
 
 impl App {
@@ -136,6 +137,7 @@ impl App {
                 anchor: String::new(),
             },
             draft: String::new(),
+            layout: draw::Layout::default(),
         }
     }
 
@@ -374,6 +376,44 @@ impl App {
         Some(())
     }
 
+    /// Mouse actions use the last drawn frame, in either input mode.
+    fn mouse(&mut self, mouse: Mouse) -> bool {
+        if mouse.kind != MouseKind::Click {
+            if !self.layout.in_chat(mouse) {
+                return false;
+            }
+            self.model.wheel(
+                mouse.kind == MouseKind::WheelUp,
+                self.layout.page_rows,
+                self.layout.max_scroll,
+            );
+            return true;
+        }
+        let Some(hit) = self.layout.hit(mouse) else {
+            return false;
+        };
+        let was_writing = self.composing;
+        let act = match hit {
+            draw::Hit::Session(name) => {
+                let Some(act) = self.model.select_name(&self.fleet, &name) else {
+                    return false;
+                };
+                self.composing = false;
+                act
+            }
+            draw::Hit::Tab(tab) => {
+                self.composing = false;
+                self.model.show_tab(tab)
+            }
+            draw::Hit::Compose if !self.composing => {
+                self.model
+                    .key(model::Key::Compose, &self.fleet, self.can_compose(), true)
+            }
+            draw::Hit::Compose => return false,
+        };
+        apply(self, &act).unwrap_or(false) || was_writing != self.composing
+    }
+
     /// Carry out what the input asked for; each outcome becomes a notice.
     fn effects(&mut self, effects: Vec<Effect>) {
         for effect in effects {
@@ -479,8 +519,9 @@ impl App {
             zone: self.zone.as_deref(),
             now: Timestamp::now(),
         };
-        let pages = draw::draw(&screen, buf);
-        self.model.clamp_pages(pages);
+        self.layout = draw::draw_with_layout(&screen, buf);
+        self.model
+            .clamp_scroll(self.layout.max_scroll, self.layout.page_rows);
     }
 }
 
@@ -582,7 +623,9 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             Err(RecvTimeoutError::Disconnected) => break,
         };
         for (key, origin) in keyed {
-            let next = if app.composing {
+            let next = if let Key::Mouse(mouse) = &key {
+                Some(app.mouse(*mouse))
+            } else if app.composing {
                 app.compose(key, origin).map(|()| true)
             } else {
                 browse(&mut app, &key)
@@ -602,22 +645,28 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
 fn browse(app: &mut App, key: &Key) -> Option<bool> {
     let mut redraw = false;
     for key in model::browse_keys(key) {
-        match app.model.key(key, &app.fleet, app.can_compose(), true) {
-            model::Act::Quit => return None,
-            model::Act::Select(_) => {
-                app.dress();
-                app.view();
-                redraw = true;
-            }
-            model::Act::Redraw => redraw = true,
-            model::Act::Compose => {
-                app.composing = true;
-                redraw = true;
-            }
-            model::Act::None => {}
-        }
+        let act = app.model.key(key, &app.fleet, app.can_compose(), true);
+        redraw |= apply(app, &act)?;
     }
     Some(redraw)
+}
+
+/// Carry out a browse action from either keys or a frame's mouse target.
+fn apply(app: &mut App, act: &model::Act) -> Option<bool> {
+    match act {
+        model::Act::Quit => None,
+        model::Act::Select(_) => {
+            app.dress();
+            app.view();
+            Some(true)
+        }
+        model::Act::Redraw => Some(true),
+        model::Act::Compose => {
+            app.composing = true;
+            Some(true)
+        }
+        model::Act::None => Some(false),
+    }
 }
 
 #[cfg(test)]
@@ -706,6 +755,33 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
         app.frame(&mut buf);
         text(&buf)
+    }
+
+    /// A click belongs to the drawn session, never a replacement at its index.
+    #[test]
+    fn a_departed_mouse_target_never_selects_its_replacement() {
+        let root = Root::new("mouse-refresh");
+        let mut app = App::new(root.0.clone(), None);
+        app.fleet = one_row(None);
+        app.model = Model::new(&app.fleet);
+        let shown = framed(&mut app);
+        let (row, column) = shown
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| line.find("api").map(|column| (row, column)))
+            .expect("drawn api session");
+        app.fleet.rows[0].name = "web".to_owned();
+        let redraw = app.mouse(super::Mouse {
+            kind: super::MouseKind::Click,
+            column: u16::try_from(column).expect("frame column"),
+            row: u16::try_from(row).expect("frame row"),
+        });
+        assert!(!redraw, "a departed target is a full no-op");
+        assert_eq!(
+            app.model.selected(),
+            Some("api"),
+            "the click never selected web"
+        );
     }
 
     /// B2-F4: a frame bounds the scroll to the pages the lane holds — the

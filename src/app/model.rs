@@ -74,8 +74,10 @@ pub enum Tab {
 pub struct Model {
     selected: Option<String>,
     tab: Tab,
-    /// Chat pages scrolled back from the newest turn.
+    /// Keyboard pages scrolled back from the newest turn.
     pages: usize,
+    /// Wheel rows between pages, normalized after each frame.
+    rows: usize,
 }
 
 impl Model {
@@ -134,6 +136,9 @@ impl Model {
                 Act::Redraw
             }
             Key::PageDown => {
+                if self.pages == 0 {
+                    self.rows = 0;
+                }
                 self.pages = self.pages.saturating_sub(1);
                 Act::Redraw
             }
@@ -153,6 +158,7 @@ impl Model {
         }
         self.selected = Some(row.name.clone());
         self.pages = 0;
+        self.rows = 0;
         Act::Select(row.name.clone())
     }
 
@@ -170,6 +176,9 @@ impl Model {
 
     /// Bound the chat scroll to what the lane holds: `max` pages back.
     pub fn clamp_pages(&mut self, max: usize) {
+        if self.pages >= max {
+            self.rows = 0;
+        }
         self.pages = self.pages.min(max);
     }
 
@@ -185,10 +194,51 @@ impl Model {
         self.tab
     }
 
-    /// Chat pages scrolled back from the newest turn.
+    /// Ceiling page count, including a partial wheel page. After a frame's
+    /// clamp, the residual is smaller than that frame's page size.
     #[must_use]
     pub fn pages(&self) -> usize {
+        self.pages.saturating_add(usize::from(self.rows > 0))
+    }
+
+    /// Total chat rows back, with keyboard pages sized by this frame.
+    pub(crate) fn scroll_rows(&self, page_rows: usize) -> usize {
         self.pages
+            .saturating_mul(page_rows)
+            .saturating_add(self.rows)
+    }
+
+    /// Bound and normalize the scroll using the rows the frame actually drew.
+    pub(crate) fn clamp_scroll(&mut self, max: usize, page_rows: usize) {
+        let scroll = self.scroll_rows(page_rows).min(max);
+        self.pages = scroll / page_rows.max(1);
+        self.rows = scroll % page_rows.max(1);
+    }
+
+    /// One wheel notch, three rows, independent of the keyboard page size.
+    pub(crate) fn wheel(&mut self, up: bool, page_rows: usize, max: usize) {
+        let scroll = self.scroll_rows(page_rows);
+        let scroll = if up {
+            scroll.saturating_add(3)
+        } else {
+            scroll.saturating_sub(3)
+        };
+        self.pages = scroll.min(max) / page_rows.max(1);
+        self.rows = scroll.min(max) % page_rows.max(1);
+    }
+
+    /// A target that departed since the frame was drawn is a full no-op.
+    pub(crate) fn select_name(&mut self, fleet: &Fleet, name: &str) -> Option<Act> {
+        let row = fleet.rows.iter().position(|row| row.name == name)?;
+        Some(self.select(fleet, Some(row)))
+    }
+
+    pub(crate) fn show_tab(&mut self, tab: Tab) -> Act {
+        if self.tab == tab {
+            return Act::None;
+        }
+        self.tab = tab;
+        Act::Redraw
     }
 
     /// Keep the selection when the fleet changes under it; a session that
@@ -243,5 +293,16 @@ mod tests {
             "the selection is a sidebar row"
         );
         assert_eq!(model.tab(), Tab::Agents, "the tab stays");
+    }
+
+    /// The public page bound includes wheel rows between keyboard pages.
+    #[test]
+    fn a_zero_page_bound_also_clears_wheel_rows() {
+        let mut model = Model::new(&fleet(&["api"]));
+        model.wheel(true, 30, 100);
+        assert_eq!(model.pages(), 1);
+        model.clamp_pages(0);
+        assert_eq!(model.pages(), 0);
+        assert_eq!(model.scroll_rows(30), 0);
     }
 }
