@@ -970,13 +970,19 @@ mod tests {
             app.dirs.insert(name.to_owned(), session(&root, name, ""));
         }
         app.model = Model::new(&app.fleet);
-        for key in [Browse::Digit(1), Browse::Digit(2), Browse::Digit(1)] {
-            let _ = app.model.key(key, &app.fleet, false, true);
+        for (digit, viewed, other) in [(1, "web", "ops"), (2, "ops", "web"), (1, "web", "ops")] {
+            let _ = app.model.key(Browse::Digit(digit), &app.fleet, false, true);
             app.view();
+            let coverage = app.lane.coverage.join("\n");
+            assert!(
+                coverage.contains(&format!("{viewed}:lead")),
+                "{viewed}: {coverage}"
+            );
+            assert!(
+                !coverage.contains(&format!("{other}:")),
+                "{viewed}: {coverage}"
+            );
         }
-        let coverage = app.lane.coverage.join("\n");
-        assert!(coverage.contains("web:lead"), "{coverage}");
-        assert!(!coverage.contains("ops:"), "{coverage}");
     }
 
     /// #23/#25: an entry is found by its own name, and a selected running
