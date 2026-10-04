@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.22] - 2026-10-04
+- Pin declared-first family derivation for auto reseat
+- Keep no-room reseat fixtures within their intended family
+- Derive twin and sibling auto reseat candidates from a seat's own family
+- Pin the empty model value and a rowless seat's own family lookup
+
 ## [v2026.10.21] - 2026-10-03
 - Bump rustls =0.23.35 to =0.23.45, clear RUSTSEC-2026-0285
 - Scaffold the needs-you section and open-target seams
