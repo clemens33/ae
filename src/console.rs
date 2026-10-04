@@ -123,6 +123,11 @@ impl Console {
         &self.name
     }
 
+    /// The session's state directory.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// The session's identity and lead-pair seats, read from its meta NOW:
     /// `Err` says why this console no longer follows the session it opened.
     pub(crate) fn seats(&self) -> Result<Vec<Seat>, String> {

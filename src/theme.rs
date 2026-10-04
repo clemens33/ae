@@ -1549,13 +1549,19 @@ mod tests {
     /// not among them: it is motion, and the test measures it as a class at its
     /// peak frame, because its dim trough is the pulse's own design.
     ///
-    /// `ink` is not here: nothing in the look draws text ON an accent, so it has
-    /// no drawn pair. The field stays for the renderer that eventually wants it.
+    /// `ink` is a GROUND here, not text: nothing in the look draws text ON an
+    /// accent, and `ae app` lays its chat column on `ink` with `text`, `title`,
+    /// `dim`, the lead's `working` and the marks drawn over it. The app's rules
+    /// in `border` are decoration and carry no pair.
     fn contrast_pairs(palette: &Palette) -> Vec<ContrastPair> {
         let mut pairs = Vec::new();
         for mark in Mark::BY_URGENCY {
             let accent = palette.accent(mark);
-            for (ground, colour) in [("base", palette.base), ("selected", palette.selected)] {
+            for (ground, colour) in [
+                ("base", palette.base),
+                ("selected", palette.selected),
+                ("ink", palette.ink),
+            ] {
                 pairs.push(ContrastPair {
                     label: format!("{mark:?} on {ground}"),
                     fg: accent.to_owned(),
@@ -1575,6 +1581,11 @@ mod tests {
             ),
             ("title on panel", palette.title, palette.panel, 4.5),
             ("dim on base", palette.dim, palette.base, 3.0),
+            ("title on base", palette.title, palette.base, 4.5),
+            ("text on ink", palette.text, palette.ink, 4.5),
+            ("title on ink", palette.title, palette.ink, 4.5),
+            ("working on ink", palette.working, palette.ink, 4.5),
+            ("dim on ink", palette.dim, palette.ink, 3.0),
         ] {
             pairs.push(ContrastPair {
                 label: label.to_owned(),
@@ -2531,8 +2542,8 @@ mod tests {
     /// dim and breathes up to bright, so the trough is motion, not a
     /// legibility claim, and no tick but the peak is a pair.
     ///
-    /// `ink` is not measured: nothing in the look draws text ON an accent, so
-    /// it has no drawn pair. The field stays for a renderer that wants it.
+    /// `ink` is measured as a GROUND, `ae app`'s chat column: nothing in the
+    /// look draws text ON an accent.
     ///
     /// Darcula's tokens are FROZEN — every one is the `JetBrains` IDE's own — so
     /// the pairs its own theme cannot clear are NAMED here instead of "fixed",

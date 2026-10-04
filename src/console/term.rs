@@ -83,7 +83,7 @@ pub(crate) fn stdin_reads() -> Option<Receiver<(Instant, Vec<u8>)>> {
 /// `main`, and every name one an agent name may be — refused by name, never
 /// dropped. The meta keeps a name verbatim, and an ask would read `%3` as a
 /// pane or `--cross-session` as a flag.
-fn pair_of(mut seats: Vec<Seat>) -> Result<Vec<Seat>, String> {
+pub(crate) fn pair_of(mut seats: Vec<Seat>) -> Result<Vec<Seat>, String> {
     if seats.iter().filter(|seat| seat.slot == "main").count() != 1 {
         return Err("the meta names no single main seat".to_owned());
     }
@@ -96,11 +96,64 @@ fn pair_of(mut seats: Vec<Seat>) -> Result<Vec<Seat>, String> {
 }
 
 /// Whether `pair`, slots and names, is still the session's lead pair.
-fn still(pair: &[Seat], seats: Result<Vec<Seat>, String>) -> Result<(), String> {
+pub(crate) fn still(pair: &[Seat], seats: Result<Vec<Seat>, String>) -> Result<(), String> {
     if pair_of(seats?)? == pair {
         return Ok(());
     }
     Err("the lead pair changed since this chat opened - restart this chat".to_owned())
+}
+
+/// Whether `console`'s pane `me` owns its session's input on `server`:
+/// `None` when tmux did not answer.
+pub(crate) fn owns(
+    console: &Console,
+    server: Option<&ServerId>,
+    me: Option<&str>,
+) -> Option<Result<(), String>> {
+    let server = server?;
+    let panes = transport::observe_window_panes(server, &console.name)?;
+    let stamp = transport::observe_session_option(server, &console.name, theme::SESSION_ID_OPTION)?;
+    Some(submit::owner(&panes, me, &stamp, &console.uuid))
+}
+
+/// Carry one ask of `seat` through the helpers' own tracked path, as the
+/// console, under the admission `owns` re-proves: the request id and what
+/// became of it, or why it was refused before anything was sent.
+pub(crate) fn submit_ask(
+    console: &Console,
+    owns: impl FnOnce() -> Result<(), String>,
+    raw: &[u8],
+    seat: &str,
+    body: String,
+) -> Result<(String, submit::Outcome), String> {
+    let (now, entropy) = (time::Timestamp::now(), crate::entropy());
+    let id = tracked::request_id(tracked::Kind::Ask.id_prefix(), now, entropy);
+    let sender = tracked::Sender {
+        display: tracked::CONSOLE_SINK.to_owned(),
+        slot: String::new(),
+        session: console.name.clone(),
+    };
+    let deliver = || {
+        let (tail, mut said) = ([seat.to_owned(), body], Vec::new());
+        let run = tracked::run(
+            tracked::Kind::Ask,
+            &console.dir,
+            &tail,
+            Some(&sender),
+            &crate::own_session(&console.dir),
+            now,
+            entropy,
+            crate::send_defer(),
+            &mut std::io::sink(),
+            &mut said,
+        );
+        if let Err(why) = run {
+            said.extend(why.to_string().bytes());
+        }
+        String::from_utf8_lossy(&said).into_owned()
+    };
+    let outcome = submit::submit(&console.dir, &console.name, raw, &id, owns, deliver)?;
+    Ok((id, outcome))
 }
 
 /// A console that takes input from its terminal.
@@ -138,12 +191,7 @@ impl Term {
     /// Whether this console owns its session's input: `None` when tmux did
     /// not answer.
     fn owns(&self, console: &Console) -> Option<Result<(), String>> {
-        let server = self.server.as_ref()?;
-        let panes = transport::observe_window_panes(server, &console.name)?;
-        let stamp =
-            transport::observe_session_option(server, &console.name, theme::SESSION_ID_OPTION)?;
-        let me = self.me.as_deref();
-        Some(submit::owner(&panes, me, &stamp, &console.uuid))
+        owns(console, self.server.as_ref(), self.me.as_deref())
     }
 
     /// Read ownership now and take the answer.
@@ -291,35 +339,9 @@ impl Term {
 
     /// Carry one ask through the helpers' own tracked path, as the console.
     fn ask(&self, console: &mut Console, raw: &[u8], seat: &str, body: String) -> Effect {
-        let (now, entropy) = (time::Timestamp::now(), crate::entropy());
-        let id = tracked::request_id(tracked::Kind::Ask.id_prefix(), now, entropy);
-        let sender = tracked::Sender {
-            display: tracked::CONSOLE_SINK.to_owned(),
-            slot: String::new(),
-            session: console.name.clone(),
-        };
-        let deliver = || {
-            let (tail, mut said) = ([seat.to_owned(), body], Vec::new());
-            let run = tracked::run(
-                tracked::Kind::Ask,
-                &console.dir,
-                &tail,
-                Some(&sender),
-                &crate::own_session(&console.dir),
-                now,
-                entropy,
-                crate::send_defer(),
-                &mut std::io::sink(),
-                &mut said,
-            );
-            if let Err(why) = run {
-                said.extend(why.to_string().bytes());
-            }
-            String::from_utf8_lossy(&said).into_owned()
-        };
         let owns = || still(&self.pair, console.seats()).and_then(|()| self.owned(console));
-        let outcome = match submit::submit(&console.dir, &console.name, raw, &id, owns, deliver) {
-            Ok(outcome) => outcome,
+        let (id, outcome) = match submit_ask(console, owns, raw, seat, body) {
+            Ok(submitted) => submitted,
             Err(why) => return Effect::Print(format!("refused: {why}")),
         };
         let line = input::outcome_line(&outcome, seat);

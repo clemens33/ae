@@ -140,7 +140,19 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
             "ae app needs at least {}x{} (now {}x{})",
             MIN.0, MIN.1, area.width, area.height
         );
-        put(buf, area.x, area.y, &line, area.width, dim);
+        // By word onto the rows there are, so the pane's own size stays legible.
+        let (mut y, mut row) = (area.y, String::new());
+        for word in line.split(' ') {
+            if !row.is_empty() && row.len() + 1 + word.len() > usize::from(area.width) {
+                put(buf, area.x, y, &row, area.width, dim);
+                (y, row) = (y.saturating_add(1), String::new());
+            }
+            if !row.is_empty() {
+                row.push(' ');
+            }
+            row.push_str(word);
+        }
+        put(buf, area.x, y, &row, area.width, dim);
         return 0;
     }
     buf.set_style(area, ctx.paint.ground(|p| p.base));
@@ -165,6 +177,16 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
     let pages = chat_column(&ctx, buf, chat.start + 2..width - 2, chat.start > 0);
     keys_row(&ctx, buf);
     pages
+}
+
+/// The cells a draft has on the composer row of a `width` x `height` pane,
+/// after its `to <home> › <speaker>` address: what the caller wraps it to.
+pub(crate) fn draft_width(width: u16, height: u16, home: &str, speaker: &str) -> usize {
+    let area = Rect::new(0, 0, width, height);
+    let left = sidebar_width(area).map_or(0, |rule| rule + 1) + 2;
+    let room = usize::from(width.saturating_sub(2).saturating_sub(left));
+    let address = Span::raw(format!("to {home} › {speaker}   ")).width();
+    room.saturating_sub(address).max(1)
 }
 
 /// The sidebar's width, which is where its rule stands, or `None` when the
@@ -822,14 +844,16 @@ mod tests {
     use ratatui_core::layout::Rect;
 
     use super::{Composer, Screen, aged, draw};
-    use crate::app::fleet::{Counts, Fleet, Line2, Row};
+    use crate::app::fleet::{Counts, Facts, Fleet, Line2, Row};
     use crate::app::model::Model;
     use crate::app::overview::{Open, Overview};
     use crate::brief::TopicLine;
+    use crate::console::input::View;
     use crate::console::lane::{Item, Kind, Lane};
     use crate::digest::{SessionEntry, Status};
     use crate::theme::{Look, Mark};
     use crate::time::Timestamp;
+    use crate::tmux::PickerAgent;
 
     fn row(name: &str, index: usize, needy: bool) -> Row {
         Row {
@@ -846,11 +870,9 @@ mod tests {
         }
     }
 
-    /// Every write is bounds-checked, so no size panics: a populated screen
-    /// is drawn across both fallbacks and every threshold, with
-    /// fleets of one and of many and the chat scrolled past its top.
-    #[test]
-    fn no_size_panics() {
+    /// The sweep's populated Overview body and lane: every section filled,
+    /// a lane that scrolls, a coverage line.
+    fn sweep_body() -> (Overview, Lane) {
         let topic = TopicLine {
             topic: "parking".to_owned(),
             age_secs: Some(60),
@@ -883,10 +905,64 @@ mod tests {
             items: vec![item; 9],
             coverage: vec!["colead — transcript unreadable".to_owned()],
         };
+        (overview, lane)
+    }
+
+    /// The sweep's Agents body: nine seats with long names.
+    fn sweep_seats() -> Facts {
+        let agent = PickerAgent {
+            name: "a-seat-name-long-enough-to-clip".to_owned(),
+            profile: "sonnet55x".to_owned(),
+            state: "waiting-agent".to_owned(),
+            pane: "%7".to_owned(),
+            client: "claude".to_owned(),
+            model: "Sonnet 5.5".to_owned(),
+            effort: "xhigh".to_owned(),
+            drift: false,
+        };
+        Facts::Seats {
+            id: "$1".to_owned(),
+            agents: vec![agent; 9],
+        }
+    }
+
+    /// Every write is bounds-checked, so no size panics: a populated screen
+    /// is drawn across both fallbacks and every threshold, with
+    /// fleets of one and of many and the chat scrolled past its top.
+    #[test]
+    fn no_size_panics() {
+        let (overview, lane) = sweep_body();
         let entry = SessionEntry::new("s1", Status::Running);
         let pair = ["lead".to_owned(), "colead".to_owned()];
         let look = Look::read("on", "darcula", "on", "on");
-        for count in [1, 12] {
+        let facts = sweep_seats();
+        let draft = View {
+            rows: vec!["a draft long enough to run past the composer row ".repeat(4)],
+            cursor_row: 0,
+            before: String::new(),
+            anchor: String::new(),
+        };
+        let compose = Composer::Home {
+            home: "s1",
+            speaker: "lead",
+            view: Some(&draft),
+            draft: "",
+        };
+        let read_only = Composer::ReadOnly {
+            why: "owned elsewhere",
+        };
+        // Each geometry the frame draws: the Overview and Agents bodies, and
+        // the browse and compose composers. Foreign, no-home and mono draw
+        // the same rows with other words, so they add no geometry.
+        for (at, (count, agents, composer)) in [
+            (12, false, read_only),
+            (1, false, read_only),
+            (12, true, read_only),
+            (12, false, compose),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let fleet = Fleet {
                 rows: (1..=count)
                     .map(|at| row(&format!("s{at}"), at, at % 3 == 0))
@@ -897,33 +973,45 @@ mod tests {
             for _ in 0..40 {
                 let _ = model.key(crate::app::model::Key::PageUp, &fleet, false, true);
             }
+            if agents {
+                let _ = model.key(crate::app::model::Key::Tab, &fleet, false, true);
+            }
             let screen = Screen {
                 fleet: &fleet,
                 model: &model,
                 overview: &overview,
                 selected: Some(&entry),
                 pair: &pair,
-                agents: None,
+                agents: agents.then_some(&facts),
                 lane: &lane,
-                composer: Composer::ReadOnly {
-                    why: "owned elsewhere",
-                },
+                composer,
                 look: Some(look),
                 zone: None,
                 now: Timestamp::from_epoch(1_759_500_600),
             };
-            // Every width at the heights around each threshold, and every
-            // height at the widths around each one.
+            // The first geometry: every width at the heights around each
+            // threshold, and every height at the widths around each one. The
+            // others: the thresholds crossed, plus every width at two heights.
             let heights = [
                 0, 1, 2, 5, 6, 7, 8, 9, 12, 19, 20, 21, 25, 30, 39, 40, 41, 45, 50,
             ];
             let widths = [0, 1, 39, 40, 41, 89, 90, 91, 139, 140, 141, 170];
+            let (every_width, every_height): (&[u16], &[u16]) = if at == 0 {
+                (&heights, &widths)
+            } else {
+                (&[20, 45], &[])
+            };
             let sizes = (0..=170)
-                .flat_map(|width| heights.map(|height| (width, height)))
+                .flat_map(|width| every_width.iter().map(move |height| (width, *height)))
+                .chain(
+                    every_height
+                        .iter()
+                        .flat_map(|width| (0..=50).map(move |height| (*width, height))),
+                )
                 .chain(
                     widths
                         .into_iter()
-                        .flat_map(|width| (0..=50).map(move |height| (width, height))),
+                        .flat_map(|width| heights.map(|height| (width, height))),
                 );
             for (width, height) in sizes {
                 let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
@@ -946,5 +1034,51 @@ mod tests {
         assert_eq!(aged(text, Some(7_200), 8), "re… · 2h");
         assert_eq!(aged(text, Some(120), 6), "resum…");
         assert_eq!(aged(text, None, 10), "resum… · -");
+    }
+
+    /// Below the floor the app says what it needs on the rows it has: the
+    /// line wraps by word, so the pane's own size stays legible.
+    #[test]
+    fn a_pane_below_the_floor_still_reads_its_own_size() {
+        let (overview, lane) = sweep_body();
+        let fleet = Fleet {
+            rows: vec![row("s1", 1, false)],
+            home: Some("s1".to_owned()),
+        };
+        let model = Model::new(&fleet);
+        let screen = Screen {
+            fleet: &fleet,
+            model: &model,
+            overview: &overview,
+            selected: None,
+            pair: &[],
+            agents: None,
+            lane: &lane,
+            composer: Composer::NoHome,
+            look: None,
+            zone: None,
+            now: Timestamp::from_epoch(1_759_500_600),
+        };
+        let rows = |width: u16, height: u16| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+            draw(&screen, &mut buf);
+            (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows(30, 6)[..3],
+            ["ae app needs at least 40x8", "(now 30x6)", ""]
+        );
+        assert_eq!(
+            rows(39, 7)[..2],
+            ["ae app needs at least 40x8 (now 39x7)", ""]
+        );
     }
 }

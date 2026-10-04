@@ -46,18 +46,26 @@ impl Tty {
             .map(File::from)
             .map_err(|err| format!("stdout cannot be held ({err})"))?;
         let saved = termios::tcgetattr(&fd).map_err(|err| format!("no terminal mode ({err})"))?;
+        // The hook's own descriptors are taken BEFORE raw mode, so a clone that
+        // fails refuses the app instead of leaving a hook that restores nothing.
+        let hook_fd = fd
+            .try_clone()
+            .map_err(|err| format!("stdin cannot be held ({err})"))?;
+        let hook_screen = screen
+            .try_clone()
+            .map_err(|err| format!("stdout cannot be held ({err})"))?;
         let mut raw = saved.clone();
         raw.make_raw();
         // Raw input, cooked output: a newline still returns the carriage.
         raw.output_modes.insert(OutputModes::OPOST);
         termios::tcsetattr(&fd, OptionalActions::Now, &raw)
             .map_err(|err| format!("raw mode refused ({err})"))?;
-        let hook = (fd.try_clone(), screen.try_clone(), saved.clone());
+        // The hook stays installed past `Drop`: the app exits right after, and a
+        // late panic only puts back the same mode and screen a second time.
+        let hook_saved = saved.clone();
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if let (Ok(fd), Ok(screen), saved) = &hook {
-                restore(fd, screen, saved);
-            }
+            restore(&hook_fd, &hook_screen, &hook_saved);
             previous(info);
         }));
         let _ = (&screen).write_all(ENTER.as_bytes());

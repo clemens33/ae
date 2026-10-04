@@ -827,6 +827,13 @@ impl Input {
     /// One terminal read, stamped when the read returned.
     pub fn chunk(&mut self, bytes: &[u8], stamp: Instant) -> Vec<Effect> {
         let keys = self.keys.feed(bytes, stamp);
+        self.keyed(keys)
+    }
+
+    /// Keys a caller decoded itself, each with the moment its first byte was
+    /// read: the same gate as [`Input::chunk`], so a key read before this
+    /// input took ownership is never composed.
+    pub fn keyed(&mut self, keys: Vec<(Key, Instant)>) -> Vec<Effect> {
         let Some(since) = self.since.or(self.reading) else {
             return Vec::new();
         };
@@ -893,7 +900,8 @@ impl Input {
     }
 
     /// The seat an unprefixed line asks.
-    fn speaker(&self) -> &str {
+    #[must_use]
+    pub fn speaker(&self) -> &str {
         self.pair.get(self.speaker).map_or("", String::as_str)
     }
 
@@ -931,6 +939,19 @@ impl Input {
     pub fn view(&self, size: Size) -> Option<View> {
         self.composing()
             .then(|| self.composer.view(&self.prompt(), size))
+    }
+
+    /// The draft alone, wrapped to `size` with no prompt: for a caller that
+    /// draws its own address before it.
+    #[must_use]
+    pub fn bare_view(&self, size: Size) -> View {
+        self.composer.view("", size)
+    }
+
+    /// The draft on one line, made inert.
+    #[must_use]
+    pub fn draft(&self) -> String {
+        self.composer.line("")
     }
 }
 

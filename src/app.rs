@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 use ratatui_core::buffer::Buffer;
 use ratatui_core::terminal::Terminal;
 
-use crate::console::input::{Key, Keys};
-use crate::console::lane::Lane;
+use crate::console::input::{Effect, Input, Key, Keys, Reading, Size, View};
+use crate::console::lane::{Item, Kind, Lane, Seat};
 use crate::console::needs::Section;
-use crate::console::{self, Console};
+use crate::console::{self, Console, submit, term};
 use crate::digest::{SessionEntry, Status};
 use crate::inventory::ServerId;
 use crate::listing::World;
@@ -44,10 +44,12 @@ pub const USAGE: &str = "Usage: ae app [session]\n\n  session   the home session
 const REFRESH: Duration = Duration::from_secs(crate::board::follow::POLL_SECS);
 /// How long a wait for a key lasts before the size and the Esc bound are read.
 const TICK: Duration = Duration::from_millis(100);
-/// The most sessions whose lane is kept read.
+/// The most foreign sessions whose lane is kept read; home is always kept.
 const KEPT: usize = 3;
+/// The most of ae's own notices the home lane shows.
+const NOTICES: usize = 5;
 
-/// Everything the app has read, and the browse state.
+/// Everything the app has read, and the browse and compose state.
 struct App {
     root: PathBuf,
     home: Option<String>,
@@ -58,21 +60,50 @@ struct App {
     dirs: BTreeMap<String, PathBuf>,
     facts: BTreeMap<String, fleet::Facts>,
     needs: BTreeMap<String, Section>,
-    /// The sessions whose lanes are followed, the most recently viewed first.
+    /// The home session's console, never evicted: the pair, the ownership
+    /// reading and every ask go through it.
+    home_console: Option<Console>,
+    /// Foreign sessions whose lanes are followed, the most recently viewed first.
     consoles: Vec<Console>,
     lane: Lane,
     overview: overview::Overview,
+    /// The home lead pair as its meta names it now, main first.
     pair: Vec<String>,
     look: Option<theme::Look>,
     zone: Option<String>,
+    /// The home lead pair this app composes for, fixed when it opened: a
+    /// changed pair refuses the ask rather than sending it elsewhere.
+    seats: Vec<Seat>,
+    /// The chat's own input step machine; `None` when there is no usable pair.
+    input: Option<Input>,
+    /// This app's own pane, which must be the one that owns the input.
+    me: Option<String>,
+    /// Why the home composer only reads.
+    read_only: String,
+    composing: bool,
+    /// ae's own lines — refusals and outcomes — shown in the home lane.
+    notices: Vec<Item>,
+    draft_view: View,
+    draft: String,
 }
 
 impl App {
     fn new(root: PathBuf, home: Option<String>) -> Self {
         let declared = doors::declared_server(crate::shape::current());
-        let (look, zone) = home
-            .as_deref()
-            .map_or((None, None), |home| console::look_of(home, true));
+        let home_console = home.as_ref().and_then(|name| {
+            let dir = console::locate(&root, name)?;
+            Some(Console::open(name.clone(), dir))
+        });
+        let pair = home_console
+            .as_ref()
+            .map(|console| console.seats().and_then(term::pair_of));
+        let (seats, read_only) = match pair {
+            Some(Ok(seats)) => (seats, "ownership not read yet".to_owned()),
+            Some(Err(why)) => (Vec::new(), format!("input off: {why}")),
+            None => (Vec::new(), String::new()),
+        };
+        let input = (!seats.is_empty())
+            .then(|| Input::new(seats.iter().map(|seat| seat.name.clone()).collect()));
         Self {
             root,
             home,
@@ -83,18 +114,32 @@ impl App {
             dirs: BTreeMap::new(),
             facts: BTreeMap::new(),
             needs: BTreeMap::new(),
+            home_console,
             consoles: Vec::new(),
             lane: Lane::default(),
             overview: overview::Overview::default(),
             pair: Vec::new(),
-            look,
-            zone,
+            look: None,
+            zone: None,
+            seats,
+            input,
+            me: doors::calling_pane_id(),
+            read_only,
+            composing: false,
+            notices: Vec::new(),
+            draft_view: View {
+                rows: Vec::new(),
+                cursor_row: 0,
+                before: String::new(),
+                anchor: String::new(),
+            },
+            draft: String::new(),
         }
     }
 
     /// Read the fleet again: `ae list`'s world, the picker's seat facts, the
     /// stopped sessions' last sign of life, the needs of every session that
-    /// asks for attention, then the selected session.
+    /// asks for attention, the look, who owns the input, then the selection.
     fn refresh(&mut self) {
         let now = Timestamp::now();
         let (snapshot, world) = crate::current_world(&self.root);
@@ -154,52 +199,117 @@ impl App {
             self.model = model::Model::new(&self.fleet);
         }
         self.model.reconcile(&self.fleet);
+        if let Some(console) = &self.home_console {
+            let seats = console.seats().and_then(term::pair_of);
+            self.pair = seats.map_or_else(|_| self.pair.clone(), |seats| names(&seats));
+        }
+        self.dress();
+        self.own();
         self.view();
     }
 
+    /// The look the chat reads (F3): the home session's drawn look, else the
+    /// selected one's, else the default drawn look — re-read every refresh.
+    fn dress(&mut self) {
+        let selected = self.model.selected().map(str::to_owned);
+        let mut first_zone = None;
+        for name in self.home.iter().cloned().chain(selected) {
+            let (look, zone) = console::look_of(&name, true);
+            if look.is_some() {
+                (self.look, self.zone) = (look, zone);
+                return;
+            }
+            first_zone = first_zone.or(zone);
+        }
+        (self.look, self.zone) = (Some(theme::Look::DEFAULT), first_zone);
+    }
+
+    /// Read who owns the home session's input and hand it to the composer;
+    /// a promotion puts the kept draft back, as the chat does.
+    fn own(&mut self) {
+        let (Some(console), Some(input)) = (&self.home_console, &mut self.input) else {
+            return;
+        };
+        let reading = match term::owns(console, self.server.as_ref(), self.me.as_deref()) {
+            None => Reading::Unknown,
+            Some(Ok(())) => Reading::Owner,
+            Some(Err(why)) => Reading::NotOwner(why),
+        };
+        self.read_only = match &reading {
+            Reading::NotOwner(why) => why.clone(),
+            Reading::Unknown => UNREAD.to_owned(),
+            Reading::Owner => String::new(),
+        };
+        let was = input.taking();
+        let _ = input.tick(reading, Instant::now());
+        if !was && input.taking() {
+            let restored = input.restore(submit::restore(console.dir()));
+            self.effects(restored);
+        }
+        if !self.input.as_ref().is_some_and(Input::taking) {
+            self.composing = false;
+        }
+    }
+
     /// Read the selected session: its lane through its console, its needs,
-    /// its memo for the Overview, and the home lead pair.
+    /// its memo for the Overview. Nothing of an earlier selection survives a
+    /// read that fails.
     fn view(&mut self) {
         let now = Timestamp::now();
         let Some(name) = self.model.selected().map(str::to_owned) else {
+            (self.lane, self.overview) = (Lane::default(), overview::Overview::default());
             return;
         };
+        let empty = SessionEntry::new(&name, Status::Unknown);
         let Some(dir) = self.dirs.get(&name).cloned() else {
+            let gap = format!("{name} has no record directory ae can read");
+            self.lane = Lane {
+                items: Vec::new(),
+                coverage: vec![gap.clone()],
+            };
+            let entry = self.entry(&name).unwrap_or(&empty).clone();
+            self.overview = overview::of(&entry, None, Err(gap), now);
             return;
         };
-        let at = self
-            .consoles
-            .iter()
-            .position(|console| console.name() == name);
-        let mut console = match at {
-            Some(at) => self.consoles.remove(at),
-            None => Console::open(name.clone(), dir.clone()),
+        let home = self.home.as_deref() == Some(name.as_str());
+        let console = if home {
+            self.home_console.as_mut()
+        } else {
+            let at = self
+                .consoles
+                .iter()
+                .position(|console| console.name() == name);
+            let console = match at {
+                Some(at) => self.consoles.remove(at),
+                None => Console::open(name.clone(), dir.clone()),
+            };
+            self.consoles.insert(0, console);
+            self.consoles.truncate(KEPT);
+            self.consoles.first_mut()
         };
-        match console.read() {
-            Ok(read) => {
-                self.lane = read.lane;
-                if let Ok(section) = read.needs {
-                    self.needs.insert(name.clone(), section);
+        let read = console.map(Console::read);
+        self.lane = match read {
+            Some(Ok(read)) => {
+                let mut lane = read.lane;
+                match read.needs {
+                    Ok(section) => drop(self.needs.insert(name.clone(), section)),
+                    Err(why) => lane.coverage.push(format!("needs you unread: {why}")),
                 }
+                lane
             }
-            Err(why) => {
-                self.lane = Lane {
-                    items: Vec::new(),
-                    coverage: vec![why],
-                };
-            }
-        }
-        self.consoles.insert(0, console);
-        self.consoles.truncate(KEPT);
-        if let Some(home) = &self.home {
-            let home = self.consoles.iter().find(|console| console.name() == home);
-            let seats = home.map(Console::seats).and_then(Result::ok);
-            self.pair = lead_pair(seats.unwrap_or_default());
+            Some(Err(why)) => Lane {
+                items: Vec::new(),
+                coverage: vec![why],
+            },
+            None => Lane::default(),
+        };
+        if home {
+            self.lane.items.extend(self.notices.iter().cloned());
+            self.lane.items.sort_by_key(|item| item.micros);
         }
         let memo = store::open(&dir)
             .memo_bytes()
             .map_err(|err| format!("memo unreadable ({err})"));
-        let empty = SessionEntry::new(&name, Status::Unknown);
         let entry = self.entry(&name).unwrap_or(&empty);
         let memo = memo.as_deref().map_err(String::clone);
         self.overview = overview::of(entry, self.needs.get(&name), memo, now);
@@ -209,22 +319,122 @@ impl App {
         self.world.sessions.iter().find(|entry| entry.name == name)
     }
 
+    /// Whether Enter may start a line: this app owns the home input.
+    fn can_compose(&self) -> bool {
+        self.input.as_ref().is_some_and(Input::taking)
+    }
+
+    /// One key while composing: Esc keeps the draft and browses, ^C quits,
+    /// anything else is the chat's own input. `None` quits.
+    fn compose(&mut self, key: Key, origin: Instant) -> Option<()> {
+        match key {
+            Key::Escape => self.composing = false,
+            Key::Interrupt => return None,
+            key => {
+                let effects = self
+                    .input
+                    .as_mut()
+                    .map(|input| input.keyed(vec![(key, origin)]))
+                    .unwrap_or_default();
+                if !effects.is_empty() {
+                    self.effects(effects);
+                    self.view();
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// Carry out what the input asked for; each outcome becomes a notice.
+    fn effects(&mut self, effects: Vec<Effect>) {
+        for effect in effects {
+            let line = match effect {
+                Effect::Print(line) => line,
+                Effect::Ask { raw, seat, body } => self.ask(&raw, &seat, body),
+                Effect::Close(id) => self.close(id.as_deref()),
+                Effect::Open(seat) => format!(
+                    "refused: /open {}: ae app selects no pane - ae chat does",
+                    seat.name
+                ),
+                Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => continue,
+            };
+            self.notices.push(Item {
+                micros: Timestamp::now().epoch().saturating_mul(1_000_000),
+                kind: Kind::Said {
+                    who: "ae".to_owned(),
+                },
+                body: line,
+                record: None,
+            });
+        }
+        let over = self.notices.len().saturating_sub(NOTICES);
+        self.notices.drain(..over);
+    }
+
+    /// The ownership the admission re-proves: the pair this app opened with,
+    /// and this pane still the owner.
+    fn owns(&self, console: &Console) -> Result<(), String> {
+        term::still(&self.seats, console.seats())?;
+        term::owns(console, self.server.as_ref(), self.me.as_deref())
+            .unwrap_or_else(|| Err(UNREAD.to_owned()))
+    }
+
+    /// One ask of `seat`, through the chat's own admission and tracked path.
+    fn ask(&self, raw: &[u8], seat: &str, body: String) -> String {
+        let Some(console) = &self.home_console else {
+            return "refused: no home session".to_owned();
+        };
+        match term::submit_ask(console, || self.owns(console), raw, seat, body) {
+            Ok((_, outcome)) => crate::console::input::outcome_line(&outcome, seat),
+            Err(why) => format!("refused: {why}"),
+        }
+    }
+
+    /// `/close`: this app's own open ask, through the chat's admission.
+    fn close(&self, id: Option<&str>) -> String {
+        let Some(console) = &self.home_console else {
+            return "refused: no home session".to_owned();
+        };
+        match submit::close_owned(console.dir(), console.name(), id, || self.owns(console)) {
+            Ok(()) => "closed an ask".to_owned(),
+            Err(why) => format!("refused: {why}"),
+        }
+    }
+
     /// The composer line for the selection.
     fn composer(&self) -> draw::Composer<'_> {
-        let speaker = self.pair.first().map_or("", String::as_str);
+        let speaker = self.input.as_ref().map_or_else(
+            || self.pair.first().map_or("", String::as_str),
+            Input::speaker,
+        );
         match &self.home {
             None => draw::Composer::NoHome,
             Some(home) if self.model.selected() != Some(home.as_str()) => {
                 draw::Composer::Foreign { home, speaker }
             }
+            Some(home) if self.can_compose() => draw::Composer::Home {
+                home,
+                speaker,
+                view: self.composing.then_some(&self.draft_view),
+                draft: &self.draft,
+            },
             Some(_) => draw::Composer::ReadOnly {
-                why: "this app reads only",
+                why: &self.read_only,
             },
         }
     }
 
-    /// One frame into `buf`; the answer bounds the chat scroll.
-    fn draw(&self, buf: &mut Buffer) -> usize {
+    /// One frame into `buf`, then the chat scroll bounded by what it held.
+    fn frame(&mut self, buf: &mut Buffer) {
+        if let (Some(input), Some(home)) = (&self.input, &self.home) {
+            let area = buf.area;
+            let width = draw::draft_width(area.width, area.height, home, input.speaker());
+            let size = Size {
+                width,
+                height: usize::from(area.height),
+            };
+            (self.draft_view, self.draft) = (input.bare_view(size), input.draft());
+        }
         let selected = self.model.selected().and_then(|name| self.entry(name));
         let agents = self.model.selected().and_then(|name| self.facts.get(name));
         let screen = draw::Screen {
@@ -240,9 +450,13 @@ impl App {
             zone: self.zone.as_deref(),
             now: Timestamp::now(),
         };
-        draw::draw(&screen, buf)
+        let pages = draw::draw(&screen, buf);
+        self.model.clamp_pages(pages);
     }
 }
+
+/// What the app says when tmux did not answer who owns the input.
+const UNREAD: &str = "tmux did not answer who owns the input";
 
 /// What the picker's read says of `entry`'s seats.
 fn facts_of(
@@ -265,10 +479,9 @@ fn facts_of(
     }
 }
 
-/// The lead pair's names, main first.
-fn lead_pair(mut seats: Vec<crate::console::lane::Seat>) -> Vec<String> {
-    seats.sort_by_key(|seat| seat.slot != "main");
-    seats.into_iter().map(|seat| seat.name).collect()
+/// The pair's names, in the order `term::pair_of` put them: main first.
+fn names(seats: &[Seat]) -> Vec<String> {
+    seats.iter().map(|seat| seat.name.clone()).collect()
 }
 
 /// `ae app [session]`.
@@ -330,9 +543,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             dirty = true;
         }
         if dirty {
-            let mut pages = 0;
-            terminal.draw(|frame| pages = app.draw(frame.buffer_mut()))?;
-            app.model.clamp_pages(pages);
+            terminal.draw(|frame| app.frame(frame.buffer_mut()))?;
             dirty = false;
         }
         let wait = due.saturating_duration_since(Instant::now()).min(TICK);
@@ -341,15 +552,17 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             Err(RecvTimeoutError::Timeout) => keys.idle(Instant::now()),
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        for (key, _) in keyed {
-            match browse(&mut app, &key) {
-                Some(true) => dirty = true,
-                Some(false) => {}
-                None => {
-                    drop(tty);
-                    return Ok(0);
-                }
-            }
+        for (key, origin) in keyed {
+            let next = if app.composing {
+                app.compose(key, origin).map(|()| true)
+            } else {
+                browse(&mut app, &key)
+            };
+            let Some(redraw) = next else {
+                drop(tty);
+                return Ok(0);
+            };
+            dirty |= redraw;
         }
     }
     drop(tty);
@@ -360,15 +573,181 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
 fn browse(app: &mut App, key: &Key) -> Option<bool> {
     let mut redraw = false;
     for key in model::browse_keys(key) {
-        match app.model.key(key, &app.fleet, false, true) {
+        match app.model.key(key, &app.fleet, app.can_compose(), true) {
             model::Act::Quit => return None,
             model::Act::Select(_) => {
+                app.dress();
                 app.view();
                 redraw = true;
             }
             model::Act::Redraw => redraw = true,
-            model::Act::Compose | model::Act::None => {}
+            model::Act::Compose => {
+                app.composing = true;
+                redraw = true;
+            }
+            model::Act::None => {}
         }
     }
     Some(redraw)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+
+    use super::App;
+    use crate::app::fleet::{Counts, Fleet, Line2, Row};
+    use crate::app::model::{Key as Browse, Model};
+    use crate::console::input::{Key, Reading};
+    use crate::console::lane::{Item, Kind, Lane};
+    use crate::theme::Mark;
+
+    const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
+
+    /// A state root holding one lead-pair session, `api`, removed on drop.
+    struct Root(PathBuf);
+    impl Root {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("ae-app-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let dir = root.join("sessions").join("api");
+            std::fs::create_dir_all(&dir).expect("session dir");
+            let meta = format!(
+                "schema=2\nsession_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n"
+            );
+            std::fs::write(dir.join("meta"), meta).expect("meta");
+            Self(root)
+        }
+    }
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn text(buf: &Buffer) -> String {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn one_row(home: Option<&str>) -> Fleet {
+        Fleet {
+            rows: vec![Row {
+                name: "api".to_owned(),
+                index: 1,
+                mark: Mark::Working,
+                needy: false,
+                counts: Counts::Unknown,
+                line2: Line2::NoGoal,
+                home: home.is_some(),
+            }],
+            home: home.map(str::to_owned),
+        }
+    }
+
+    fn said(body: &str, at: i64) -> Item {
+        Item {
+            micros: 1_759_500_000_000_000 + at * 1_000_000,
+            kind: Kind::Said {
+                who: "lead".to_owned(),
+            },
+            body: body.to_owned(),
+            record: None,
+        }
+    }
+
+    fn framed(app: &mut App) -> String {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
+        app.frame(&mut buf);
+        text(&buf)
+    }
+
+    /// B2-F4: a frame bounds the scroll to the pages the lane holds — the
+    /// bound is the FIRST page count that shows the oldest turn, so one page
+    /// fewer hides it — and a lane that fits scrolls nowhere.
+    #[test]
+    fn a_frame_bounds_the_scroll_to_the_oldest_turn() {
+        let root = Root::new("scroll");
+        let mut app = App::new(root.0.clone(), None);
+        app.fleet = one_row(None);
+        app.model = Model::new(&app.fleet);
+        let mut items = vec![said("oldest turn", 0)];
+        items.extend((1..60).map(|at| said(&format!("turn {at}"), at)));
+        app.lane = Lane {
+            items,
+            coverage: Vec::new(),
+        };
+        for _ in 0..80 {
+            let _ = app.model.key(Browse::PageUp, &app.fleet, false, true);
+        }
+        let shown = framed(&mut app);
+        let bound = app.model.pages();
+        assert!(bound > 0 && bound < 80, "clamped to the lane: {bound}");
+        assert!(shown.contains("oldest turn"), "the bound shows the oldest");
+        let _ = app.model.key(Browse::PageDown, &app.fleet, false, true);
+        assert!(
+            !framed(&mut app).contains("oldest turn"),
+            "one fewer hides it"
+        );
+        assert_eq!(app.model.pages(), bound - 1, "a scroll inside stays put");
+        app.lane.items.truncate(2);
+        let _ = framed(&mut app);
+        assert_eq!(app.model.pages(), 0, "a lane that fits scrolls nowhere");
+    }
+
+    /// The home composer is the chat's own input: an ask this app cannot
+    /// prove it owns is refused BEFORE anything is written and says so in
+    /// the home lane; Esc keeps the draft and browses.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads its isolated event ledger"
+    )]
+    fn an_unproven_ask_is_refused_and_writes_nothing() {
+        let root = Root::new("ask");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        app.server = None;
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        app.dirs
+            .insert("api".to_owned(), root.0.join("sessions").join("api"));
+        let begun = Instant::now();
+        let input = app.input.as_mut().expect("a lead pair makes an input");
+        let _ = input.tick(Reading::Owner, begun);
+        assert!(app.can_compose(), "the owner composes");
+        let typed = begun + Duration::from_millis(5);
+        app.composing = true;
+        for key in [Key::Text(b"check the scopes".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, typed), Some(()));
+        }
+        let notice = &app.notices.last().expect("the outcome is said").body;
+        assert!(
+            notice.starts_with("refused: ") && notice.contains(super::UNREAD),
+            "{notice}"
+        );
+        let journal = root.0.join("sessions").join("api").join("events.jsonl");
+        let written = std::fs::read_to_string(&journal).unwrap_or_default();
+        assert!(!written.contains("\"ask\""), "nothing was asked: {written}");
+        assert!(
+            framed(&mut app).contains("refused: "),
+            "the home lane shows it"
+        );
+        assert_eq!(app.compose(Key::Text(b"later".to_vec()), typed), Some(()));
+        assert_eq!(app.compose(Key::Escape, typed), Some(()));
+        assert!(!app.composing, "Esc browses");
+        let shown = framed(&mut app);
+        assert!(shown.contains("to api › lead   later"), "{shown}");
+        assert!(shown.contains("draft kept · Enter writes"));
+        assert_eq!(app.compose(Key::Interrupt, typed), None, "^C quits");
+    }
 }
