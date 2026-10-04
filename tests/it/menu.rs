@@ -8749,7 +8749,9 @@ fn cell_clipping_runs_through_the_one_cutter() {
         "a second clipper appeared"
     );
     assert_eq!(defs, 1, "the cutter is defined more than once");
-    // The prose projector over the same cutter: one definition, one caller.
+    // The prose projector over the same cutter: one definition, two callers —
+    // the nudge body, and `ae app`'s drawn rows, which clip through it rather
+    // than beside it.
     let head_needle = ["clip", "_head("].concat();
     let head_def = ["fn clip", "_head"].concat();
     let (mut head_holders, mut head_defs) = (Vec::new(), 0);
@@ -8770,7 +8772,11 @@ fn cell_clipping_runs_through_the_one_cutter() {
     head_holders.sort();
     assert_eq!(
         head_holders,
-        ["event_text.rs".to_owned(), "watchdog_daemon.rs".to_owned()],
+        [
+            "draw.rs".to_owned(),
+            "event_text.rs".to_owned(),
+            "watchdog_daemon.rs".to_owned(),
+        ],
         "the prose projector gained an unnamed caller"
     );
     assert_eq!(
