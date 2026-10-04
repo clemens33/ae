@@ -29,6 +29,22 @@ pub const RESTORE: &str = "\x1b[?7h\x1b[?2004l";
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
+/// An app mouse event at a zero-based terminal cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mouse {
+    pub kind: MouseKind,
+    pub column: u16,
+    pub row: u16,
+}
+
+/// The mouse events the app takes; every other report is dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseKind {
+    Click,
+    WheelUp,
+    WheelDown,
+}
+
 /// One key, as the composer takes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
@@ -44,6 +60,7 @@ pub enum Key {
     Enter,
     /// The keys below come only from [`Keys::app`]; the chat's decoder never
     /// spells one.
+    Mouse(Mouse),
     Up,
     Down,
     PageUp,
@@ -299,6 +316,7 @@ impl Composer {
             | Key::Tab
             | Key::Escape
             | Key::Interrupt
+            | Key::Mouse(_)
             | Key::Pasted(_) => {}
         }
         None
