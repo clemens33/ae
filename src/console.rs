@@ -1149,4 +1149,29 @@ pub(super) mod tests {
             "no ghost of a dropped seat: {alone:?}"
         );
     }
+
+    /// #60: a vertical session's `worker.0` is no lead-pair seat, whatever the
+    /// console's own pair holds (needs.rs
+    /// `worker_zero_is_of_the_lead_pair_only_in_a_lead_pair_layout`).
+    #[test]
+    fn a_vertical_sessions_worker_zero_is_not_of_the_pair() {
+        let rig = Rig::new("vertical-needs");
+        fs::write(
+            rig.0.join("s/meta"),
+            format!(
+                "schema=2\nsession_id={ID}\nlayout=vertical\nseat.main=lead\nseat.worker.0=colead\n"
+            ),
+        )
+        .expect("meta");
+        let console = rig.console();
+        let snapshot = crate::session::RecordSnapshot::read(&rig.0.join("s"));
+        let pair = [super::lane::Seat {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: None,
+        }];
+        let section = console.needs(&snapshot, &pair).expect("a section");
+        let lead_pair: Vec<bool> = section.rows.iter().map(|row| row.lead_pair).collect();
+        assert_eq!(lead_pair, [true, false]);
+    }
 }

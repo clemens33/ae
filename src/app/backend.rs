@@ -191,4 +191,89 @@ mod tests {
         let text = drawn(&[(0, 0, cell("你")), (1, 0, cell("x"))]);
         assert_eq!(text, "\x1b[1;1H\x1b[0m你\x1b[1;2Hx\x1b[0m");
     }
+
+    // ---- mutation pins (pins-plan.md #72/#75-79/#86-89). Oracles: ECMA-48
+    // ---- (CUP, ED, EL, SGR 38;5 / 48;5), DECTCEM and the Backend contract.
+
+    fn written(act: impl FnOnce(&mut Ansi<&mut Vec<u8>>) -> std::io::Result<()>) -> String {
+        let mut out = Vec::new();
+        act(&mut Ansi::new(&mut out, (10, 2))).expect("a Vec takes every byte");
+        String::from_utf8(out).expect("the backend writes UTF-8")
+    }
+
+    #[test]
+    fn a_resize_is_the_size_the_next_frame_is_drawn_at() {
+        use ratatui_core::layout::Size;
+        let mut ansi = Ansi::new(Vec::new(), (160, 45));
+        assert_eq!(ansi.size().ok(), Some(Size::new(160, 45)), "as reported");
+        ansi.resize((100, 30));
+        assert_eq!(ansi.size().ok(), Some(Size::new(100, 30)), "after a resize");
+    }
+
+    #[test]
+    fn an_indexed_colour_is_written_as_sgr_5() {
+        let mut indexed = cell("x");
+        indexed
+            .set_fg(Color::Indexed(208))
+            .set_bg(Color::Indexed(17));
+        let text = drawn(&[(0, 0, indexed)]);
+        assert!(text.contains(";38;5;208"), "{text:?}");
+        assert!(text.contains(";48;5;17"), "{text:?}");
+    }
+
+    #[test]
+    fn the_cursor_controls_are_the_standard_sequences() {
+        assert_eq!(written(|ansi| ansi.hide_cursor()), "\x1b[?25l");
+        assert_eq!(written(|ansi| ansi.show_cursor()), "\x1b[?25h");
+        // CUP is 1-based: column 4, row 2 is `ESC[3;5H`.
+        assert_eq!(
+            written(|ansi| ansi.set_cursor_position((4, 2))),
+            "\x1b[3;5H"
+        );
+    }
+
+    #[test]
+    fn the_erase_controls_are_the_standard_sequences() {
+        use ratatui_core::backend::ClearType;
+        assert!(written(|ansi| ansi.clear()).ends_with("\x1b[2J"));
+        for (kind, sequence) in [
+            (ClearType::All, "\x1b[2J"),
+            (ClearType::AfterCursor, "\x1b[J"),
+            (ClearType::BeforeCursor, "\x1b[1J"),
+            (ClearType::CurrentLine, "\x1b[2K"),
+            (ClearType::UntilNewLine, "\x1b[K"),
+        ] {
+            assert_eq!(
+                written(|ansi| ansi.clear_region(kind)),
+                sequence,
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// Counts the flushes that reach it.
+    #[derive(Default)]
+    struct Recorder {
+        flushed: usize,
+    }
+
+    impl std::io::Write for Recorder {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushed += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_flush_reaches_the_writer() {
+        let mut recorder = Recorder::default();
+        Ansi::new(&mut recorder, (10, 2))
+            .flush()
+            .expect("the recorder flushes");
+        assert_eq!(recorder.flushed, 1);
+    }
 }

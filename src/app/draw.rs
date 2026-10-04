@@ -1085,4 +1085,896 @@ mod tests {
             ["ae app needs at least 40x8 (now 39x7)", ""]
         );
     }
+
+    // ---- mutation pins (pins-plan.md). Oracles: the o3-side-q frames' cells,
+    // ---- docs/app.md and docs/chat.md; never this module's output.
+
+    const PIN_NOW: i64 = 1_759_500_600;
+
+    /// One selected running session `api` drawn at a size, with the pieces a
+    /// pin varies.
+    struct Shot {
+        fleet: Fleet,
+        model: Model,
+        overview: Overview,
+        entry: SessionEntry,
+        pair: Vec<String>,
+        agents: Option<Facts>,
+        lane: Lane,
+    }
+
+    impl Shot {
+        fn new() -> Self {
+            let fleet = Fleet {
+                rows: vec![row("api", 1, false)],
+                home: Some("api".to_owned()),
+            };
+            let model = Model::new(&fleet);
+            Self {
+                fleet,
+                model,
+                overview: Overview::default(),
+                entry: SessionEntry::new("api", Status::Running),
+                pair: vec!["lead".to_owned(), "colead".to_owned()],
+                agents: None,
+                lane: Lane::default(),
+            }
+        }
+
+        fn key(&mut self, key: crate::app::model::Key) {
+            let _ = self.model.key(key, &self.fleet, false, true);
+        }
+
+        fn draw(&self, width: u16, height: u16, composer: Composer<'_>) -> Buffer {
+            let screen = Screen {
+                fleet: &self.fleet,
+                model: &self.model,
+                overview: &self.overview,
+                selected: Some(&self.entry),
+                pair: &self.pair,
+                agents: self.agents.as_ref(),
+                lane: &self.lane,
+                composer,
+                look: Some(Look::read("on", "darcula", "on", "on")),
+                zone: None,
+                now: Timestamp::from_epoch(PIN_NOW),
+            };
+            let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+            let _ = draw(&screen, &mut buf);
+            buf
+        }
+    }
+
+    const READ_ONLY: Composer<'static> = Composer::ReadOnly {
+        why: "owned elsewhere",
+    };
+
+    /// Row `y` as one char per cell.
+    fn line(buf: &Buffer, y: u16) -> Vec<String> {
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_owned())
+            .collect()
+    }
+
+    /// The first row holding `needle`, and the column it starts at.
+    fn spot(buf: &Buffer, needle: &str) -> Option<(u16, usize)> {
+        (0..buf.area.height).find_map(|y| {
+            let cells = line(buf, y);
+            let text: String = cells.concat();
+            let byte = text.find(needle)?;
+            Some((y, text[..byte].chars().count()))
+        })
+    }
+
+    fn last_ink(buf: &Buffer, y: u16, before: u16) -> Option<u16> {
+        (0..before).rev().find(|x| buf[(*x, y)].symbol() != " ")
+    }
+
+    /// The last cell of the chat column's rule (row 2): where the drawn
+    /// column ends. The frames disagree by one at the right edge, so the
+    /// header is judged against the rule drawn with it.
+    fn rule_end(buf: &Buffer) -> Option<u16> {
+        (0..buf.area.width)
+            .rev()
+            .find(|x| buf[(*x, 2)].symbol() == "─")
+    }
+
+    /// Frame many r17-r18: a stopped session's first line says how long it
+    /// has been stopped (`stopped 2d`), its second counts its seats,
+    /// `3 seats, not running` at column 6, and one seat reads singular.
+    #[test]
+    fn a_stopped_row_counts_its_seats_as_the_frame_does() {
+        let mut shot = Shot::new();
+        for (at, seats) in [(1, 3), (2, 1)] {
+            let mut stopped = row(&format!("s{at}"), at, false);
+            stopped.counts = Counts::Stopped;
+            stopped.line2 = Line2::NotRunning {
+                seats,
+                stopped_secs: Some(172_800),
+            };
+            if at == 1 {
+                shot.fleet.rows[0] = stopped;
+            } else {
+                shot.fleet.rows.push(stopped);
+            }
+        }
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(160, 43, READ_ONLY);
+        let first = spot(&buf, "1 s1").expect("the first stopped row").0;
+        assert!(
+            line(&buf, first)[..44]
+                .concat()
+                .trim_end()
+                .ends_with("stopped 2d"),
+            "{:?}",
+            line(&buf, first).concat()
+        );
+        assert_eq!(spot(&buf, "3 seats, not running").map(|at| at.1), Some(6));
+        assert_eq!(spot(&buf, "1 seat, not running").map(|at| at.1), Some(6));
+    }
+
+    /// Frames calm r18 (160x45) and needs-you r17 (100x30): the tab row reads
+    /// `Overview`@2, `Agents N`@13 and `Tab` ending two cells before the
+    /// sidebar's `│`; the showing tab is bold and underlined, the other one
+    /// as dim as `Tab`. 90x20 is the narrowest sidebar (rule 34).
+    #[test]
+    fn the_tab_row_sits_where_the_frames_put_it() {
+        use ratatui_core::style::Modifier;
+        for (width, height, border) in [(160, 43, 44_u16), (100, 28, 34), (90, 20, 34)] {
+            for agents in [false, true] {
+                let mut shot = Shot::new();
+                shot.agents = Some(match sweep_seats() {
+                    Facts::Seats { id, agents } => Facts::Seats {
+                        id,
+                        agents: agents.into_iter().take(6).collect(),
+                    },
+                    other => other,
+                });
+                if agents {
+                    shot.key(crate::app::model::Key::Tab);
+                }
+                let buf = shot.draw(width, height, READ_ONLY);
+                let size = format!("{width}x{height} agents {agents}");
+                let (y, x) = spot(&buf, "Overview").expect("a tab row");
+                assert_eq!(x, 2, "{size}");
+                assert_eq!(spot(&buf, "Agents 6"), Some((y, 13)), "{size}");
+                let tab = border - 5;
+                assert_eq!(spot(&buf, "Tab  │"), Some((y, usize::from(tab))), "{size}");
+                let (overview, agents_cell, tab) = (&buf[(2, y)], &buf[(13, y)], &buf[(tab, y)]);
+                let shown = Modifier::BOLD | Modifier::UNDERLINED;
+                let (on, off) = if agents {
+                    (agents_cell, overview)
+                } else {
+                    (overview, agents_cell)
+                };
+                assert!(on.modifier.contains(shown), "{size}: the showing tab");
+                assert!(
+                    !off.modifier.contains(Modifier::BOLD),
+                    "{size}: the other tab"
+                );
+                assert_eq!(off.fg, tab.fg, "{size}: the other tab is as dim as Tab");
+                assert_ne!(on.fg, tab.fg, "{size}: the showing tab is not dim");
+            }
+        }
+    }
+
+    /// At 100x30 the Overview is narrow: a topic row keeps its age inside the
+    /// sidebar, ending one cell before the two blank cells the `│` stands
+    /// after (frame needs-you r17 geometry: content stops at end-1 = 31).
+    #[test]
+    fn a_narrow_topic_row_keeps_its_age_inside_the_column() {
+        let mut shot = Shot::new();
+        shot.overview.topics = vec![TopicLine {
+            topic: "parking".to_owned(),
+            age_secs: Some(360),
+            author: "lead".to_owned(),
+            text: "resume at scope checks after the fixtures land on main".to_owned(),
+        }];
+        let buf = shot.draw(100, 30, READ_ONLY);
+        let (y, x) = spot(&buf, "parking").expect("the topic row");
+        assert_eq!(x, 2);
+        let text: String = line(&buf, y)[..34].concat();
+        assert!(text.trim_end().ends_with("6m"), "the age is kept: {text:?}");
+        assert_eq!(last_ink(&buf, y, 34), Some(31), "{text:?}");
+    }
+
+    /// The chat wrap contract: a long turn wraps inside the chat column and
+    /// every word of it is drawn.
+    #[test]
+    fn a_long_turn_wraps_inside_the_chat_column() {
+        let mut shot = Shot::new();
+        let body = (1..=36)
+            .map(|at| format!("w{at:02}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            + " "
+            + &"filler ".repeat(16);
+        shot.lane = Lane {
+            items: vec![Item {
+                micros: PIN_NOW * 1_000_000,
+                kind: Kind::Said {
+                    who: "lead".to_owned(),
+                },
+                body: body.clone(),
+                record: None,
+            }],
+            coverage: Vec::new(),
+        };
+        let buf = shot.draw(160, 45, READ_ONLY);
+        let all: String = (0..buf.area.height)
+            .map(|y| line(&buf, y).concat())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for word in body.split_whitespace().filter(|word| word.starts_with('w')) {
+            assert!(all.contains(word), "{word} is drawn");
+        }
+    }
+
+    fn turns(count: usize) -> Lane {
+        Lane {
+            items: (0..count)
+                .map(|at| Item {
+                    micros: (PIN_NOW - 3_600) * 1_000_000 + i64::try_from(at).unwrap_or(0),
+                    kind: Kind::Said {
+                        who: "lead".to_owned(),
+                    },
+                    body: format!("turn {at}"),
+                    record: None,
+                })
+                .collect(),
+            coverage: Vec::new(),
+        }
+    }
+
+    /// The `↓ newer turns below` hint means newer turns are hidden below:
+    /// none for a lane that fits, even asked to scroll; one on a long lane
+    /// scrolled a page up.
+    #[test]
+    fn the_newer_turns_hint_shows_only_when_newer_turns_are_hidden() {
+        const HINT: &str = "newer turns below";
+        let mut shot = Shot::new();
+        shot.lane = turns(2);
+        shot.key(crate::app::model::Key::PageUp);
+        assert_eq!(
+            spot(&shot.draw(160, 45, READ_ONLY), HINT),
+            None,
+            "a lane that fits"
+        );
+        shot.lane = turns(150);
+        let buf = shot.draw(160, 45, READ_ONLY);
+        assert!(spot(&buf, HINT).is_some(), "a long lane a page up");
+    }
+
+    /// The header stays inside the chat column (frames: header text never
+    /// passes the rule under it). A name at the grammar's 128 and a long
+    /// foreign middle both stay inside it.
+    #[test]
+    fn a_long_header_stays_inside_the_chat_column() {
+        let mut shot = Shot::new();
+        shot.entry = SessionEntry::new("n".repeat(128), Status::Running);
+        let buf = shot.draw(160, 45, READ_ONLY);
+        let end = rule_end(&buf).expect("the rule");
+        assert!(
+            last_ink(&buf, 1, 160).is_some_and(|x| x <= end),
+            "a long name"
+        );
+        let shot = Shot::new();
+        let home = "h".repeat(60);
+        let buf = shot.draw(
+            160,
+            45,
+            Composer::Foreign {
+                home: &home,
+                speaker: "lead",
+            },
+        );
+        let (y, _) = spot(&buf, "viewed from the").expect("the foreign middle");
+        assert_eq!(y, 1);
+        let end = rule_end(&buf).expect("the rule");
+        assert!(
+            last_ink(&buf, 1, 160).is_some_and(|x| x <= end),
+            "a long middle"
+        );
+    }
+
+    /// A stopped session's header says so, as its sidebar row does (frame
+    /// many r18 `stopped 2d`), never `active`.
+    #[test]
+    fn a_stopped_session_header_says_stopped() {
+        let mut shot = Shot::new();
+        shot.entry = SessionEntry::new("api", Status::Stopped);
+        shot.entry.last_active_epoch = Some(PIN_NOW - 172_800);
+        let buf = shot.draw(160, 45, READ_ONLY);
+        let header = line(&buf, 1).concat();
+        assert!(header.trim_end().ends_with("stopped 2d"), "{header:?}");
+        assert!(!header.contains("active"), "{header:?}");
+    }
+
+    /// Frame calm r1 draws `feat/auth-v2  ·  active 1m` when it fits after
+    /// the middle; when it would not fit after a two-cell gap the branch is
+    /// dropped, the activity stays right-aligned to the column's end (the
+    /// rule's last cell) and the middle is whole. At 160 the middle starts
+    /// @53: 77 cells leave cols 130-131 blank before the 26-cell branch @132,
+    /// 78 leave one.
+    #[test]
+    fn the_header_drops_the_branch_before_it_overlaps() {
+        let branch = "feat/auth-v2  ·  active 1m";
+        for (middle, fits) in [(77, true), (78, false)] {
+            let mut shot = Shot::new();
+            shot.entry.branch = Some("feat/auth-v2".to_owned());
+            shot.entry.last_active_epoch = Some(PIN_NOW - 60);
+            // `lead + ` is 7 cells, so the second name fills the middle.
+            shot.pair = vec!["lead".to_owned(), "c".repeat(middle - 7)];
+            let buf = shot.draw(160, 43, READ_ONLY);
+            let header = line(&buf, 1).concat();
+            let shown = header.trim_end();
+            assert!(
+                shown.contains(&shot.pair.join(" + ")),
+                "the middle is whole: {header:?}"
+            );
+            assert_eq!(last_ink(&buf, 1, 160), rule_end(&buf), "{header:?}");
+            if fits {
+                assert!(shown.ends_with(branch), "{header:?}");
+            } else {
+                assert!(
+                    shown.ends_with("active 1m") && !shown.contains("feat/auth-v2"),
+                    "{header:?}"
+                );
+            }
+        }
+    }
+
+    // ---- lane pins (#74, #80-85, #90), drawn through `lane::rows` here because
+    // ---- `Paint::of` is this module's own. Oracle: the frames' chat column.
+
+    fn said(who: &str, at: i64) -> Item {
+        Item {
+            micros: (PIN_NOW + at) * 1_000_000,
+            kind: Kind::Said {
+                who: who.to_owned(),
+            },
+            body: format!("from {who}"),
+            record: None,
+        }
+    }
+
+    fn lane_rows(items: Vec<Item>) -> Vec<ratatui_core::text::Line<'static>> {
+        let look = Look::read("on", "darcula", "on", "on");
+        let lane = Lane {
+            items,
+            coverage: Vec::new(),
+        };
+        let clock = crate::console::view::Style::PLAIN;
+        crate::app::lane::rows(&lane, 100, super::Paint::of(Some(&look)), &clock, "lead")
+    }
+
+    fn text(line: &ratatui_core::text::Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// Frame calm chat column r16-r24: a turn's head, its body, ONE blank
+    /// row, the next head; nothing before the first turn.
+    #[test]
+    fn turns_are_separated_by_one_blank_row() {
+        let rows = lane_rows(vec![said("lead", 0), said("colead", 60)]);
+        let shown: Vec<String> = rows.iter().map(text).collect();
+        assert_eq!(shown.len(), 5, "{shown:?}");
+        assert!(shown[0].starts_with("lead"), "{shown:?}");
+        assert_eq!(shown[1].trim(), "from lead", "{shown:?}");
+        assert_eq!(shown[2], "", "{shown:?}");
+        assert!(shown[3].starts_with("colead"), "{shown:?}");
+    }
+
+    /// The frames' speaker hues (palette `lead` #6897BB, `sys` = the dim
+    /// role): the main seat speaks in the lead hue, the colead in another
+    /// voice that is neither the lead hue nor dim (R7: text, bold), ae dim.
+    #[test]
+    fn speakers_wear_the_frames_hues() {
+        use ratatui_core::style::{Color, Modifier};
+        let rows = lane_rows(vec![said("lead", 0), said("colead", 60), said("ae", 120)]);
+        let speaker = |at: usize| rows[at].spans[0].style;
+        let (lead, colead, ae) = (speaker(0), speaker(3), speaker(6));
+        let [r, g, b] = crate::theme::rgb(crate::theme::Palette::DARCULA.dim);
+        let dim = Some(Color::Rgb(r, g, b));
+        assert_eq!(lead.fg, Some(Color::Rgb(0x68, 0x97, 0xBB)), "the lead hue");
+        assert_ne!(colead.fg, lead.fg, "the colead is not the lead");
+        assert_ne!(colead.fg, dim, "the colead is not dim");
+        assert!(
+            colead.add_modifier.contains(Modifier::BOLD),
+            "R7: the colead is bold"
+        );
+        assert_eq!(ae.fg, dim, "ae speaks dim, as the frames' sys");
+    }
+
+    /// The chat's own tag (console/lane.rs goldens `lead answers · follow-up 1`):
+    /// a first answer is plain `answers`, a later one names its follow-up.
+    #[test]
+    fn an_answer_names_its_follow_up_as_the_chat_does() {
+        let answer = |follow_up: usize| Item {
+            micros: PIN_NOW * 1_000_000,
+            kind: Kind::Answer {
+                seat: "lead".to_owned(),
+                id: "ae-20260930T060000Z-000000aa".to_owned(),
+                follow_up,
+                late: false,
+                gap: None,
+                speaker: None,
+            },
+            body: "done".to_owned(),
+            record: None,
+        };
+        let head = |follow_up| text(&lane_rows(vec![answer(follow_up)])[0]);
+        let first = head(0);
+        assert!(first.trim_end().ends_with("answers"), "{first:?}");
+        assert!(head(2).trim_end().ends_with("answers · follow-up 2"));
+    }
+
+    /// The frames' grounds. A frame is the terminal, its last two rows tmux's
+    /// status, so the app pane is 160x43 (100x28). Above the keys row the
+    /// sidebar is panel #313335 and everything from its rule on is base
+    /// #2B2B2B, row 0 included; the keys row is base across the width.
+    #[test]
+    fn the_grounds_are_the_frames() {
+        use ratatui_core::style::Color;
+        let (panel, chat) = (Color::Rgb(0x31, 0x33, 0x35), Color::Rgb(0x2B, 0x2B, 0x2B));
+        let shot = Shot::new();
+        for (width, height, rule, inside) in [(160, 43, 44, 100), (100, 28, 34, 70)] {
+            let buf = shot.draw(width, height, READ_ONLY);
+            let size = format!("{width}x{height}");
+            for x in [1, rule - 1] {
+                assert_eq!(buf[(x, 10)].bg, panel, "{size}: the sidebar at {x}");
+            }
+            for (x, y) in [
+                (rule, 10),
+                (inside, 0),
+                (inside, 10),
+                (0, height - 1),
+                (inside, height - 1),
+            ] {
+                assert_eq!(buf[(x, y)].bg, chat, "{size}: the chat ground at ({x},{y})");
+            }
+        }
+    }
+
+    /// docs/app.md: below 40x8 the app only says how large it needs to be;
+    /// 40x8 itself is the app.
+    #[test]
+    fn the_floor_is_below_forty_by_eight() {
+        const FLOOR: &str = "ae app needs at least";
+        let shot = Shot::new();
+        assert_eq!(
+            spot(&shot.draw(40, 8, READ_ONLY), FLOOR),
+            None,
+            "40x8 draws the app"
+        );
+        for (width, height) in [(39, 8), (40, 7)] {
+            let buf = shot.draw(width, height, READ_ONLY);
+            let all: String = (0..height)
+                .map(|y| line(&buf, y).concat())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(all.contains("ae app needs"), "{width}x{height}: {all:?}");
+        }
+    }
+
+    /// The floor wraps by word onto the rows there are (docs/app.md:40): a
+    /// word that fills its row exactly stays on it.
+    #[test]
+    fn a_floor_word_that_fits_exactly_stays_on_its_row() {
+        let buf = Shot::new().draw(21, 7, READ_ONLY);
+        assert_eq!(line(&buf, 0).concat(), "ae app needs at least");
+    }
+
+    /// Frame calm: the rule stands at 44 on every row above the keys row
+    /// (r0-r41) and not on the keys row (r42). Composing, the write keys end
+    /// before column 44, so the keys row shows it.
+    #[test]
+    fn the_rule_stops_above_the_keys_row() {
+        let draft = View {
+            rows: vec!["a short draft".to_owned()],
+            cursor_row: 0,
+            before: String::new(),
+            anchor: String::new(),
+        };
+        let composing = Composer::Home {
+            home: "api",
+            speaker: "lead",
+            view: Some(&draft),
+            draft: "a short draft",
+        };
+        let buf = Shot::new().draw(160, 43, composing);
+        for y in 0..42 {
+            assert_eq!(buf[(44, y)].symbol(), "│", "row {y}");
+        }
+        assert_ne!(buf[(44, 42)].symbol(), "│", "the keys row");
+        assert!(
+            line(&buf, 42).concat().contains("Esc browse"),
+            "the write keys"
+        );
+    }
+
+    /// The cells a draft has: from the end of its `to api › lead   ` address
+    /// (frames calm r39 @63, needs-you r24 @53) to the column's end.
+    #[test]
+    fn a_draft_has_the_cells_from_its_address_to_the_column_end() {
+        for (width, height, start) in [(160, 43, 63), (100, 28, 53)] {
+            let buf = Shot::new().draw(width, height, READ_ONLY);
+            let end = rule_end(&buf).expect("the rule");
+            let cells = super::draft_width(width, height, "api", "lead");
+            assert_eq!(start + cells - 1, usize::from(end), "{width}x{height}");
+        }
+    }
+
+    /// F8 (re-amended): the branch is drawn at >=140 columns, sidebar or not;
+    /// below 140 it is dropped (100x30 frame: `active 1m` alone). Short panes
+    /// keep no sidebar, so these are the chat alone.
+    #[test]
+    fn the_branch_is_drawn_at_140_columns_with_or_without_a_sidebar() {
+        let mut shot = Shot::new();
+        shot.entry.branch = Some("feat/auth-v2".to_owned());
+        shot.entry.last_active_epoch = Some(PIN_NOW - 60);
+        for (width, shown) in [(160, true), (140, true), (139, false)] {
+            let header = line(&shot.draw(width, 18, READ_ONLY), 1).concat();
+            let header = header.trim_end();
+            assert!(header.ends_with("active 1m"), "{width}x18: {header:?}");
+            assert_eq!(
+                header.contains("feat/auth-v2  ·  "),
+                shown,
+                "{width}x18: {header:?}"
+            );
+        }
+    }
+
+    /// Frame needs-you 100x30: four sessions sit three rows apart (two lines
+    /// and a gap), measured from the first.
+    #[test]
+    fn four_sessions_keep_three_rows_each_at_100x28() {
+        let mut shot = Shot::new();
+        shot.fleet.rows = (1..=4)
+            .map(|at| row(&format!("s{at}"), at, false))
+            .collect();
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(100, 28, READ_ONLY);
+        let ys: Vec<u16> = (1..=4)
+            .map(|at| spot(&buf, &format!("{at} s{at}")).expect("a session row").0)
+            .collect();
+        assert_eq!(ys, [ys[0], ys[0] + 3, ys[0] + 6, ys[0] + 9], "{ys:?}");
+    }
+
+    /// The window a long fleet shows. Frame many 100x30: nine sessions show
+    /// 1-5 and `↓ 4 more`. At 160 the frames' tallest list is 18 rows (frame
+    /// many r5-r22, two a session) with the more row inside it, so ten
+    /// sessions show 8 and the more row.
+    #[test]
+    fn a_long_fleet_shows_the_window_the_frames_do() {
+        for (width, height, count, shown, more) in
+            [(100, 28, 9, 5, "↓ 4 more"), (160, 43, 10, 8, "↓ 2 more")]
+        {
+            let mut shot = Shot::new();
+            shot.fleet.rows = (1..=count)
+                .map(|at| row(&format!("s{at}"), at, false))
+                .collect();
+            shot.model = Model::new(&shot.fleet);
+            let buf = shot.draw(width, height, READ_ONLY);
+            let size = format!("{width}x{height}");
+            for at in 1..=count {
+                let drawn = spot(&buf, &format!("{at} s{at} ")).is_some();
+                assert_eq!(drawn, at <= shown, "{size}: s{at}");
+            }
+            let (y, _) = spot(&buf, more).expect("the more row");
+            let rule = if width >= 140 { 44 } else { 34 };
+            let drawn = line(&buf, y)[..rule].concat();
+            assert_eq!(
+                drawn.trim(),
+                more,
+                "{size}: no needy row hides, so no count"
+            );
+            assert!(width < 160 || y <= 22, "{size}: the more row at {y}");
+            let last = spot(&buf, &format!("{shown} s{shown} "))
+                .expect("the last shown")
+                .0;
+            assert_eq!(
+                y,
+                last + 2,
+                "{size}: the more row follows the last session's two lines"
+            );
+            let tabs = spot(&buf, "Overview").expect("the tab row").0;
+            assert_eq!(tabs, y + 2, "{size}: one blank row, then the tabs");
+        }
+        let mut empty = Shot::new();
+        empty.fleet.rows.clear();
+        empty.model = Model::new(&empty.fleet);
+        let buf = empty.draw(160, 43, READ_ONLY);
+        let none = spot(&buf, "No sessions.").expect("the empty list").0;
+        assert_eq!(
+            spot(&buf, "Overview").map(|at| at.0),
+            Some(none + 2),
+            "one blank row, then the tabs"
+        );
+        // (e)/(f) frame many 100x30 r14: the more row counts the needy rows it hides.
+        for (select, more) in [
+            (None, "↓ 4 more, 2 need you"),
+            (Some(9), "↑ 4 more, 1 need you"),
+            (Some(6), "↑ 1 · ↓ 3 more, 1 need you"),
+        ] {
+            let mut shot = Shot::new();
+            shot.fleet = frame_fleet();
+            shot.model = Model::new(&shot.fleet);
+            if let Some(digit) = select {
+                let _ = shot.model.key(
+                    crate::app::model::Key::Digit(digit),
+                    &shot.fleet,
+                    false,
+                    true,
+                );
+            }
+            let buf = shot.draw(100, 28, READ_ONLY);
+            let (y, _) = spot(&buf, "more").expect("the more row");
+            let drawn = line(&buf, y)[..34].concat();
+            assert_eq!(drawn.trim(), more, "select {select:?}");
+        }
+    }
+
+    /// Frame many's nine sessions: infra, billing and ops need you, ops is down.
+    fn frame_fleet() -> Fleet {
+        let names = [
+            "api", "docs", "infra", "research", "web", "billing", "mobile", "ops", "design",
+        ];
+        let rows = names
+            .iter()
+            .enumerate()
+            .map(|(at, name)| {
+                let mut row = row(name, at + 1, matches!(*name, "infra" | "billing" | "ops"));
+                if *name == "ops" {
+                    row.mark = Mark::Dead;
+                }
+                row
+            })
+            .collect();
+        Fleet { rows, home: None }
+    }
+
+    /// The attention row's two forms. Frame many 160 r3 draws the full form
+    /// when it fits, and every frame keeps blanks before the `!` key at the
+    /// sidebar's end-1 (col 41 at 160), so a full form one cell too long for
+    /// that room falls back to the compact one.
+    #[test]
+    fn the_attention_row_keeps_the_frames_forms() {
+        let names = [
+            "api", "docs", "infra", "research", "web", "billing", "mobile", "ops", "design",
+        ];
+        let mut shot = Shot::new();
+        shot.fleet.rows = names
+            .iter()
+            .enumerate()
+            .map(|(at, name)| {
+                let mut row = row(name, at + 1, matches!(*name, "infra" | "billing" | "ops"));
+                if *name == "ops" {
+                    row.mark = Mark::Dead;
+                }
+                row
+            })
+            .collect();
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(160, 43, READ_ONLY);
+        let attention = line(&buf, 3).concat();
+        assert!(
+            attention.starts_with("  3 need you  ⚠ infra  ⚠ billing  ✖ ops  "),
+            "{attention:?}"
+        );
+        let mut shot = Shot::new();
+        shot.fleet.rows = vec![
+            row("a", 1, false),
+            row("needy-0010", 2, true),
+            row("needy-00011", 3, true),
+        ];
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(160, 43, READ_ONLY);
+        assert_eq!(buf[(41, 3)].symbol(), "!", "the key at end-1");
+        assert_eq!(
+            buf[(40, 3)].symbol(),
+            " ",
+            "a blank before it: {:?}",
+            line(&buf, 3).concat()
+        );
+        // (c) a compact form too long for the room is clipped short of the key.
+        let mut shot = Shot::new();
+        shot.fleet.rows = vec![
+            row("a", 1, false),
+            row("needy-000012", 2, true),
+            row("needy-000013", 3, true),
+            row("needy-000014", 4, true),
+        ];
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(160, 43, READ_ONLY);
+        assert_eq!(
+            buf[(40, 3)].symbol(),
+            " ",
+            "clipped before the key: {:?}",
+            line(&buf, 3).concat()
+        );
+        // (d) the frame's compact spelling, whole when it fits.
+        let mut shot = Shot::new();
+        shot.fleet.rows = (1..=10)
+            .map(|at| {
+                let name = match at {
+                    3 => "infra".to_owned(),
+                    9 => "billing".to_owned(),
+                    10 => "ops".to_owned(),
+                    _ => format!("s{at}"),
+                };
+                let mut row = row(&name, at, matches!(at, 3 | 9 | 10));
+                if at == 10 {
+                    row.mark = Mark::Dead;
+                }
+                row
+            })
+            .collect();
+        shot.model = Model::new(&shot.fleet);
+        let attention = line(&shot.draw(160, 43, READ_ONLY), 3).concat();
+        assert!(
+            attention.starts_with("  3 need ⚠infra ⚠billing↓ ✖ops↓ "),
+            "{attention:?}"
+        );
+    }
+
+    /// A body that fits exactly keeps its gaps; one row short, it gives the
+    /// gaps up first and loses nothing else. One session puts the tabs at
+    /// row 8 and the body at row 10; the empty Overview is eleven rows, so
+    /// it reaches row 20 exactly at 100x23 (the floor at row 21).
+    #[test]
+    fn an_overview_that_fits_exactly_keeps_its_gaps() {
+        let mut shot = Shot::new();
+        shot.fleet.rows = vec![row("api", 1, false)];
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(100, 23, READ_ONLY);
+        let topics = spot(&buf, "Topics").expect("the topics heading").0;
+        assert_eq!(
+            spot(&buf, "No topics.").map(|at| at.0),
+            Some(20),
+            "the last row above the floor"
+        );
+        assert_eq!(topics, 19);
+        assert!(
+            line(&buf, topics - 1)[..34].concat().trim().is_empty(),
+            "the gap above Topics stays"
+        );
+        let buf = shot.draw(100, 22, READ_ONLY);
+        let topics = spot(&buf, "Topics").expect("the topics heading").0;
+        assert!(
+            !line(&buf, topics - 1)[..34].concat().trim().is_empty(),
+            "the gaps go first"
+        );
+        assert_eq!(
+            spot(&buf, "No topics.").map(|at| at.0),
+            Some(topics + 1),
+            "nothing else is lost"
+        );
+    }
+
+    /// Frame agents r20-r35: a seat's state is right-aligned at the
+    /// sidebar's end with blanks before it, never against the name. A state
+    /// that would touch the name is dropped; one blank between is enough.
+    /// At 160 the end is col 42: `● ` plus a 30-cell name ends at col 33,
+    /// `working` takes cols 35-41.
+    #[test]
+    fn an_agent_state_never_touches_its_name() {
+        for (cells, shown) in [(30, true), (31, false)] {
+            let mut shot = Shot::new();
+            let Facts::Seats { id, agents } = sweep_seats() else {
+                panic!("the sweep's seats");
+            };
+            let mut seat = agents.into_iter().next().expect("a seat");
+            seat.name = "n".repeat(cells);
+            seat.state = "working".to_owned();
+            shot.agents = Some(Facts::Seats {
+                id,
+                agents: vec![seat],
+            });
+            shot.key(crate::app::model::Key::Tab);
+            let buf = shot.draw(160, 43, READ_ONLY);
+            let (y, _) = spot(&buf, &"n".repeat(cells)).expect("the seat row");
+            let row = line(&buf, y)[..44].concat();
+            assert_eq!(
+                row.contains("working"),
+                shown,
+                "a {cells}-cell name: {row:?}"
+            );
+        }
+    }
+
+    /// Frame many 160: a needy session's bar fills its own two rows and no
+    /// other (r9-r10 infra, r15-r16 billing, r19-r20 ops).
+    #[test]
+    fn a_needy_bar_covers_its_own_two_rows() {
+        let mut shot = Shot::new();
+        shot.fleet = frame_fleet();
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(160, 43, READ_ONLY);
+        let barred: Vec<u16> = (0..43).filter(|y| buf[(0, *y)].symbol() == "│").collect();
+        assert_eq!(barred, [9, 10, 15, 16, 19, 20]);
+    }
+
+    /// Frame many r5-r21: a session's counts close its first line with a
+    /// blank before them; a name too long for the room is clipped short of
+    /// that blank, never into the counts.
+    #[test]
+    fn a_long_session_name_stops_a_blank_before_its_counts() {
+        let mut shot = Shot::new();
+        shot.fleet.rows = vec![row(&"n".repeat(60), 1, false)];
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(160, 43, READ_ONLY);
+        let cells = line(&buf, 5);
+        let name = cells
+            .iter()
+            .rposition(|cell| cell == "n")
+            .expect("the name");
+        assert_eq!(
+            cells[name + 1],
+            " ",
+            "a blank after the name: {:?}",
+            cells.concat()
+        );
+        assert_eq!(
+            cells[name + 2],
+            "●",
+            "then the counts: {:?}",
+            cells.concat()
+        );
+    }
+
+    /// Frame many r5: `this window` follows the home session's name after
+    /// two blanks, on that row alone; with the counts at col 35 (`●3 ✓B12`
+    /// at 160) a 15-cell name leaves the tag a blank before them and a
+    /// 16-cell one drops it rather than touch them.
+    #[test]
+    fn this_window_marks_the_home_row_alone_and_never_touches_its_counts() {
+        let mut shot = Shot::new();
+        shot.fleet = frame_fleet();
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(160, 43, READ_ONLY);
+        let sidebar = |buf: &Buffer, y: u16| line(buf, y)[..44].concat();
+        let tagged: Vec<u16> = (0..43)
+            .filter(|y| sidebar(&buf, *y).contains("this window"))
+            .collect();
+        assert_eq!(tagged, [5], "the home row alone");
+        assert!(
+            sidebar(&buf, 5).starts_with("  ● 1 api  this window"),
+            "{:?}",
+            sidebar(&buf, 5)
+        );
+        for (cells, shown) in [(15, true), (16, false)] {
+            let mut shot = Shot::new();
+            shot.fleet.rows = vec![row(&"n".repeat(cells), 1, false)];
+            shot.model = Model::new(&shot.fleet);
+            let first = sidebar(&shot.draw(160, 43, READ_ONLY), 5);
+            assert_eq!(
+                first.contains("this window"),
+                shown,
+                "a {cells}-cell name: {first:?}"
+            );
+        }
+    }
+
+    /// Frame many r6-r22: a session's second line ends its age at col 41 at
+    /// 160 (r10 `… 4m` @40-41), two blanks before the rule.
+    #[test]
+    fn a_sessions_second_line_ends_where_the_frames_does() {
+        let mut shot = Shot::new();
+        shot.fleet = frame_fleet();
+        shot.model = Model::new(&shot.fleet);
+        let buf = shot.draw(160, 43, READ_ONLY);
+        for y in [6, 10] {
+            let cells = line(&buf, y);
+            assert_eq!(
+                cells[40..44].concat(),
+                "4m  ",
+                "row {y}: {:?}",
+                cells[..45].concat()
+            );
+        }
+    }
 }

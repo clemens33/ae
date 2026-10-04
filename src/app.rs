@@ -628,12 +628,19 @@ mod tests {
     use ratatui_core::buffer::Buffer;
     use ratatui_core::layout::Rect;
 
-    use super::App;
+    use std::collections::BTreeMap;
+
+    use super::{App, UNREAD, USAGE, browse, facts_of, fleet, run};
     use crate::app::fleet::{Counts, Fleet, Line2, Row};
     use crate::app::model::{Key as Browse, Model};
-    use crate::console::input::{Key, Reading};
+    use crate::attention::Reason;
+    use crate::console::input::{Input, Key, Reading};
     use crate::console::lane::{Item, Kind, Lane};
-    use crate::theme::Mark;
+    use crate::digest::{SessionEntry, Status};
+    use crate::listing::World;
+    use crate::theme::{FleetOrder, Mark};
+    use crate::time::Timestamp;
+    use crate::tmux;
 
     const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
 
@@ -830,5 +837,272 @@ mod tests {
             notice,
             "refused: /open lead: ae app selects no pane - ae chat does"
         );
+    }
+
+    // ---- mutation pins (pins-plan.md). Oracles: the fixture root's own
+    // ---- records, docs/app.md, docs/chat.md and the existing owners.
+
+    /// A second lead-pair session `name` under `root`, as `Root::new` writes `api`.
+    fn session(root: &Root, name: &str, meta_tail: &str) -> PathBuf {
+        let dir = root.0.join("sessions").join(name);
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let meta = format!(
+            "schema=2\nsession_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n{meta_tail}"
+        );
+        std::fs::write(dir.join("meta"), meta).expect("meta");
+        dir
+    }
+
+    fn entry(name: &str, status: Status, attention: Option<Reason>) -> SessionEntry {
+        let mut entry = SessionEntry::new(name, status);
+        entry.attention = attention;
+        entry
+    }
+
+    /// #9-13, #37-39: the fold over one read. Seat facts for every session
+    /// still running, a last sign of life for every stopped one (its own
+    /// launch row), needs only for a running session that asks for
+    /// attention, and the home pair as the header names it.
+    #[test]
+    fn one_read_folds_facts_life_and_needs_by_status() {
+        const LAUNCHED: i64 = 1_759_000_000;
+        let root = Root::new("absorb");
+        let dirs: BTreeMap<String, PathBuf> = [
+            ("run", ""),
+            ("stop", &*format!("launch_time.main={LAUNCHED}\n")),
+            ("unk", ""),
+        ]
+        .into_iter()
+        .map(|(name, tail)| (name.to_owned(), session(&root, name, tail)))
+        .collect();
+        let world = World::new(
+            Timestamp::now(),
+            vec![
+                entry("run", Status::Running, Some(Reason::Blocked)),
+                entry("stop", Status::Stopped, Some(Reason::Blocked)),
+                entry("unk", Status::Unknown, None),
+            ],
+        );
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        app.absorb(dirs, world, None, &FleetOrder::EMPTY, Timestamp::now());
+        let keys = |map: Vec<&String>| map.into_iter().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(app.facts.keys().collect()), ["run", "unk"]);
+        assert_eq!(keys(app.needs.keys().collect()), ["run"]);
+        let stopped = app.fleet.rows.iter().find(|row| row.name == "stop");
+        assert!(
+            matches!(
+                stopped.map(|row| &row.line2),
+                Some(Line2::NotRunning {
+                    stopped_secs: Some(_),
+                    ..
+                })
+            ),
+            "the stopped row ages from its own launch row"
+        );
+        let rows = &app.needs["run"].rows;
+        let seats: Vec<&str> = rows.iter().map(|row| row.seat.name.as_str()).collect();
+        assert_eq!(
+            seats,
+            ["lead", "colead"],
+            "every roster seat of the session"
+        );
+        let pair: Vec<bool> = rows.iter().map(|row| row.lead_pair).collect();
+        assert_eq!(
+            pair,
+            [true, true],
+            "a lead-pair session's worker.0 is of the pair"
+        );
+        assert_eq!(app.pair, ["lead", "colead"]);
+    }
+
+    /// #15: no server to ask means tmux did not answer who owns the input.
+    #[test]
+    fn an_unanswered_ownership_says_tmux_did_not_answer() {
+        let root = Root::new("own");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        app.server = None;
+        app.own();
+        assert_eq!(app.read_only, UNREAD);
+    }
+
+    /// #16-18: only the promotion to owner brings the kept draft back, once;
+    /// losing the input ends composing.
+    #[test]
+    fn only_a_promotion_brings_the_kept_draft_back_once() {
+        let root = Root::new("take");
+        let dir = root.0.join("sessions").join("api");
+        crate::store::open(&dir)
+            .publish_console_draft(b"kept line")
+            .expect("a kept draft");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        let at = Instant::now();
+        let draft = |app: &App| app.input.as_ref().map(Input::draft).unwrap_or_default();
+        app.take(Reading::Unknown, at);
+        assert_eq!(draft(&app), "");
+        app.take(Reading::Owner, at);
+        assert_eq!(draft(&app), "kept line", "the promotion restores");
+        app.composing = true;
+        app.take(Reading::Owner, at);
+        assert_eq!(draft(&app), "kept line", "no second restore");
+        assert!(app.composing, "the owner keeps composing");
+        app.take(Reading::NotOwner("owned by window @2".to_owned()), at);
+        assert!(!app.composing, "losing the input ends composing");
+    }
+
+    /// #19: each viewed foreign session reads through its own console.
+    #[test]
+    fn each_viewed_session_reads_through_its_own_console() {
+        let root = Root::new("cache");
+        let mut app = App::new(root.0.clone(), None);
+        app.fleet = Fleet {
+            rows: ["web", "ops"]
+                .into_iter()
+                .enumerate()
+                .map(|(at, name)| Row {
+                    name: name.to_owned(),
+                    index: at + 1,
+                    ..one_row(None).rows[0].clone()
+                })
+                .collect(),
+            home: None,
+        };
+        for name in ["web", "ops"] {
+            app.dirs.insert(name.to_owned(), session(&root, name, ""));
+        }
+        app.model = Model::new(&app.fleet);
+        for key in [Browse::Digit(1), Browse::Digit(2), Browse::Digit(1)] {
+            let _ = app.model.key(key, &app.fleet, false, true);
+            app.view();
+        }
+        let coverage = app.lane.coverage.join("\n");
+        assert!(coverage.contains("web:lead"), "{coverage}");
+        assert!(!coverage.contains("ops:"), "{coverage}");
+    }
+
+    /// #23/#25: an entry is found by its own name, and a selected running
+    /// session draws its tabs (frame calm r18).
+    #[test]
+    fn an_entry_is_found_by_its_own_name() {
+        let root = Root::new("entry");
+        let mut app = App::new(root.0.clone(), None);
+        app.world = World::new(
+            Timestamp::now(),
+            vec![
+                entry("api", Status::Running, None),
+                entry("web", Status::Stopped, None),
+            ],
+        );
+        assert_eq!(app.entry("web").map(|e| e.name.as_str()), Some("web"));
+        assert_eq!(app.entry("api").map(|e| e.name.as_str()), Some("api"));
+        assert!(app.entry("zzz").is_none());
+        app.fleet = one_row(None);
+        app.model = Model::new(&app.fleet);
+        assert!(framed(&mut app).contains("Overview   Agents"));
+    }
+
+    /// #26/#35: a home app that does not own the input is read-only and says
+    /// why (docs/app.md Ownership).
+    #[test]
+    fn a_home_app_that_does_not_own_the_input_is_read_only() {
+        let root = Root::new("readonly");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        let text = framed(&mut app);
+        assert!(text.contains("ownership not read yet"), "{text}");
+        assert!(!text.contains("to api ›"), "{text}");
+    }
+
+    /// #29: a foreign view says typing goes home (docs/app.md Ownership).
+    #[test]
+    fn a_foreign_view_says_typing_goes_home() {
+        let root = Root::new("foreign");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        let mut fleet = one_row(Some("api"));
+        fleet.rows.push(Row {
+            name: "web".to_owned(),
+            index: 2,
+            home: false,
+            ..fleet.rows[0].clone()
+        });
+        app.fleet = fleet;
+        app.model = Model::new(&app.fleet);
+        let _ = app.model.key(Browse::Digit(2), &app.fleet, false, true);
+        assert!(framed(&mut app).contains("typing writes to api › lead"));
+    }
+
+    /// #27/#28: `/close` answers with the chat admission's own refusal: no
+    /// tmux to prove ownership, so tmux did not answer (submit.rs `close_owned`
+    /// proves ownership before the ask); no home session, so no home.
+    #[test]
+    fn close_reports_the_chats_own_admission_answer() {
+        let root = Root::new("close");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        app.server = None;
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        app.dirs
+            .insert("api".to_owned(), root.0.join("sessions").join("api"));
+        let begun = Instant::now();
+        let input = app.input.as_mut().expect("a lead pair makes an input");
+        let _ = input.tick(Reading::Owner, begun);
+        app.composing = true;
+        let typed = begun + Duration::from_millis(5);
+        for key in [Key::Text(b"/close".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, typed), Some(()));
+        }
+        let notice = &app.notices.last().expect("the outcome is said").body;
+        assert_eq!(notice, &format!("refused: {}", super::UNREAD));
+        app.home_console = None;
+        assert_eq!(app.close(None), "refused: no home session");
+    }
+
+    /// #36: seat facts come from the session's own picker row.
+    #[test]
+    fn seat_facts_come_from_the_sessions_own_picker_row() {
+        let now = Timestamp::from_epoch(1_880);
+        let picker = |name: &str, id: &str| tmux::PickerSession {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            rank: 0,
+            glyph: String::new(),
+            main_pane: String::new(),
+            branch: String::new(),
+            agents: "v1;1880;60;lead:fable5:working:".to_owned(),
+            goal: String::new(),
+        };
+        let rows = [picker("web", "$7"), picker("api", "$3")];
+        let api = entry("api", Status::Running, None);
+        assert!(
+            matches!(facts_of(&api, Some(&rows), now), fleet::Facts::Seats { id, .. } if id == "$3")
+        );
+        assert!(matches!(
+            facts_of(&api, None, now),
+            fleet::Facts::NotPublished
+        ));
+        assert!(matches!(
+            facts_of(&api, Some(&rows[..1]), now),
+            fleet::Facts::OtherServer
+        ));
+    }
+
+    /// #40: a dash is never a session name (grammar), so it is a usage error.
+    #[test]
+    fn a_dash_argument_is_a_usage_error_not_a_session() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run(&["-x".to_owned()], &mut out, &mut err).expect("writes");
+        assert_eq!(code, crate::entry::EXIT_USAGE);
+        assert_eq!(String::from_utf8_lossy(&err), USAGE);
+    }
+
+    /// #50/#56/#57: browsing, only `q` quits (docs/app.md BROWSE keys).
+    #[test]
+    fn only_q_quits_while_browsing() {
+        let root = Root::new("browse");
+        let mut app = App::new(root.0.clone(), None);
+        app.fleet = one_row(None);
+        app.model = Model::new(&app.fleet);
+        assert!(browse(&mut app, &Key::Text(b"x".to_vec())).is_some());
+        assert!(browse(&mut app, &Key::Text(b"q".to_vec())).is_none());
     }
 }

@@ -5,6 +5,7 @@
 //! also a test target.
 
 mod app_cli_spec;
+mod app_live;
 mod app_spec;
 mod archive;
 mod archive_from;

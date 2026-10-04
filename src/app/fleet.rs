@@ -304,3 +304,70 @@ pub fn attention(fleet: &Fleet, visible: std::ops::Range<usize>, width: u16) -> 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Mutation pins (pins-plan.md #63/#71/#73). Oracles: the `app_spec` model
+    //! rule (a home with no row is no home) and the attention-line contract
+    //! (`↑`/`↓` only after a needy row scrolled out of view).
+
+    use std::collections::BTreeMap;
+
+    use super::{Counts, Fleet, Line2, Row, attention, rows};
+    use crate::digest::{SessionEntry, Status};
+    use crate::listing::World;
+    use crate::theme::{FleetOrder, Mark};
+    use crate::time::Timestamp;
+
+    fn fleet_of(names: &[&str], home: &str) -> Fleet {
+        let now = Timestamp::from_epoch(1_759_500_600);
+        let sessions = names
+            .iter()
+            .map(|name| SessionEntry::new(*name, Status::Running))
+            .collect();
+        rows(
+            &World::new(now, sessions),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &FleetOrder::EMPTY,
+            &BTreeMap::new(),
+            Some(home),
+            now,
+        )
+    }
+
+    #[test]
+    fn home_is_kept_only_when_its_session_has_a_row() {
+        assert_eq!(fleet_of(&["api"], "api").home.as_deref(), Some("api"));
+        assert_eq!(fleet_of(&["web"], "api").home, None);
+    }
+
+    fn needy_at(needy: usize) -> Fleet {
+        let row = |at: usize| Row {
+            name: format!("s{at}"),
+            index: at + 1,
+            mark: Mark::NeedsYou,
+            needy: at == needy,
+            counts: Counts::Marks(vec![(Mark::NeedsYou, false, 1)]),
+            line2: Line2::NoGoal,
+            home: false,
+        };
+        Fleet {
+            rows: (0..5).map(row).collect(),
+            home: None,
+        }
+    }
+
+    #[test]
+    fn a_needy_row_above_the_view_carries_an_up_arrow() {
+        let glyph = Mark::NeedsYou.glyph(true);
+        assert_eq!(
+            attention(&needy_at(0), 1..4, 44),
+            format!("{glyph} s0↑ needs you")
+        );
+        assert_eq!(
+            attention(&needy_at(1), 1..4, 44),
+            format!("{glyph} s1 needs you")
+        );
+    }
+}

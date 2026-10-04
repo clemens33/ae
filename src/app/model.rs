@@ -202,3 +202,46 @@ impl Model {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Mutation pins (pins-plan.md #101/#102). Oracles: docs/app.md (the
+    //! selected session sits beside the sidebar; the tab stays as you move
+    //! between sessions) and the start rule (home first, else the first row).
+
+    use super::{Key, Model, Tab};
+    use crate::app::fleet::{Counts, Fleet, Line2, Row};
+    use crate::theme::Mark;
+
+    fn fleet(names: &[&str]) -> Fleet {
+        let row = |(at, name): (usize, &&str)| Row {
+            name: (*name).to_owned(),
+            index: at + 1,
+            mark: Mark::Working,
+            needy: false,
+            counts: Counts::Unknown,
+            line2: Line2::NoGoal,
+            home: *name == "api",
+        };
+        Fleet {
+            rows: names.iter().enumerate().map(row).collect(),
+            home: Some("api".to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_selection_that_leaves_the_fleet_goes_home_on_the_same_tab() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        let _ = model.key(Key::Digit(2), &both, false, true);
+        let _ = model.key(Key::Tab, &both, false, true);
+        assert_eq!((model.selected(), model.tab()), (Some("web"), Tab::Agents));
+        model.reconcile(&fleet(&["api"]));
+        assert_eq!(
+            model.selected(),
+            Some("api"),
+            "the selection is a sidebar row"
+        );
+        assert_eq!(model.tab(), Tab::Agents, "the tab stays");
+    }
+}

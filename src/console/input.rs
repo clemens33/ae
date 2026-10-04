@@ -2108,4 +2108,16 @@ mod tests {
             "a later row stays plain, the cursor mark where it was: {drawn:?}"
         );
     }
+
+    /// docs/app.md: `^Z` and `^\` are dropped and never suspend or quit, and
+    /// no other control byte reaches a draft in the app.
+    #[test]
+    fn the_app_drops_every_other_control_byte() {
+        let at = Instant::now();
+        let mut app = Keys::app();
+        assert_eq!(
+            app.feed(b"\x1a\x1c\x02a", at),
+            [(Key::Text(b"a".to_vec()), at)]
+        );
+    }
 }
