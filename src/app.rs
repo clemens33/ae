@@ -4,8 +4,10 @@
 //! The pure halves live in the submodules: [`fleet`] folds the sidebar rows,
 //! [`overview`] the Overview tab, [`model`] the browse reducer and [`draw`] the
 //! cells. Each reads only what the existing owners already computed; this
-//! file is where the world is read, through those owners, and nothing here
-//! writes into any session.
+//! file is where the world is read, through those owners. The ONE write is
+//! the home composer's ask or close, through the chat's own admission path
+//! (`term::submit_ask`, `submit::close_owned`); nothing else here writes into
+//! any session.
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal as _, Write};
@@ -304,6 +306,11 @@ impl App {
             None => Lane::default(),
         };
         if home {
+            // The seats `/open` names, as the chat's own tick hands them over.
+            let roster = self.home_console.as_ref().and_then(Console::roster);
+            if let (Some(seats), Some(input)) = (roster, self.input.as_mut()) {
+                input.set_seats(seats.to_vec());
+            }
             self.lane.items.extend(self.notices.iter().cloned());
             self.lane.items.sort_by_key(|item| item.micros);
         }
@@ -775,5 +782,31 @@ mod tests {
         app.view();
         app.view();
         assert_eq!(app.lane.coverage, first, "a foreign view keeps it too");
+    }
+
+    /// `/open` in the app names why it opens nothing, as the docs say, once
+    /// the home roster is read: the app selects no pane, `ae chat` does.
+    #[test]
+    fn open_is_refused_with_the_apps_own_reason() {
+        let root = Root::new("open");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        app.dirs
+            .insert("api".to_owned(), root.0.join("sessions").join("api"));
+        app.view();
+        let begun = Instant::now();
+        let input = app.input.as_mut().expect("a lead pair makes an input");
+        let _ = input.tick(Reading::Owner, begun);
+        app.composing = true;
+        let typed = begun + Duration::from_millis(5);
+        for key in [Key::Text(b"/open lead".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, typed), Some(()));
+        }
+        let notice = &app.notices.last().expect("the refusal is said").body;
+        assert_eq!(
+            notice,
+            "refused: /open lead: ae app selects no pane - ae chat does"
+        );
     }
 }

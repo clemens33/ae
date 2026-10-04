@@ -2294,9 +2294,10 @@ mod tests {
         );
     }
 
-    /// PIN: `[workspace] chat` is exact lowercase `on` / `off`, trimmed. Absent
-    /// and `on` open the window silently, `off` keeps today's layout, and every
-    /// other value opens it too and carries the one escaped reason to print.
+    /// PIN: `[workspace] chat` is exact lowercase `on` / `off` / `app`, trimmed.
+    /// Absent and `on` open the window silently, `app` opens it running
+    /// `ae app`, `off` keeps today's layout, and every other value opens it
+    /// too and carries the one escaped reason to print.
     #[test]
     fn the_chat_window_setting_is_on_unless_exactly_off() {
         let file = |text: &str| NamedTemp::new("chat", text);

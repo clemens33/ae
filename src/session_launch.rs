@@ -3542,11 +3542,7 @@ fn build(
             .global
             .clone()
             .unwrap_or_else(|| env.home.join("config"));
-        let home = crate::console::toggle::Home {
-            root: &env.home,
-            config: &config,
-            app: crate::console::toggle::app_window(&dir, &config),
-        };
+        let home = crate::console::toggle::Home::of(&env.home, &config, Some(&dir));
         open_first_chat(&server, &shape.name, &dir, home, err)?
     } else {
         None

@@ -70,16 +70,18 @@ line.
 
 Only the **owner** writes: the first live pane stamped as this session's chat,
 exactly as for `ae chat`. An app in its own `chat` window (`chat = app`) is
-that pane; an app anywhere else is read-only and names why
-(`owned elsewhere - prefix h opens it`). Keys typed before the app became owner
-are dropped. A foreign session is always read-only, and typing still goes
-home: the composer says `typing writes to <home> › <speaker>`.
+that pane; an app anywhere else is read-only and names why, for example
+`read-only · input owned by window @2 - prefix h opens it`. Keys typed
+before the app became owner are dropped. A foreign session is always
+read-only, and typing still goes home: the composer says
+`typing writes to <home> › <speaker>`.
 
 ## Residuals
 
 - A SIGKILL or SIGTERM leaves the terminal in raw mode on the alternate screen
-  (`reset` restores it); inside tmux the pane closes with the process. Every
-  exit ae controls, a panic included, puts it back.
+  (`reset` restores it). In the `chat` window `remain-on-exit` keeps the dead
+  pane on screen and `prefix h` respawns it; any other tmux pane closes with
+  the process. Every exit ae controls, a panic included, puts the terminal back.
 - A lone `Esc` waits 50 ms to tell itself from an escape sequence.
 - `^Z` and `^\` are dropped and never suspend or quit.
 - The panic hook that restores the terminal stays installed after the app

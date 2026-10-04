@@ -121,11 +121,7 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
             let root = crate::state_root().ok_or("ae cannot name its own state")?;
             let config = crate::doors::config_file(crate::shape::current(), &root);
             let dir = super::locate(&root, &session);
-            let home = Home {
-                root: &root,
-                config: &config,
-                app: dir.is_some_and(|dir| app_window(&dir, &config)),
-            };
+            let home = Home::of(&root, &config, dir.as_deref());
             if let Plan::Respawn(pane) = &plan {
                 respawn(&server, pane, &session, home)?;
                 move_chat_first(&server, &session, &panes, pane, &uuid)?;
@@ -224,9 +220,16 @@ pub(crate) struct Home<'a> {
     pub(crate) app: bool,
 }
 
-/// Whether the session recorded at `dir` runs `ae app` in its chat window.
-pub(crate) fn app_window(dir: &Path, config: &Path) -> bool {
-    crate::config::session_chat_window(dir, config) == crate::config::ChatWindow::App
+impl<'a> Home<'a> {
+    /// The launcher of `root` and `config`, running `ae app` when the session
+    /// recorded at `dir` says `chat = app`: the ONE derivation every opener —
+    /// the toggle, a rename, a launch — builds its window from.
+    pub(crate) fn of(root: &'a Path, config: &'a Path, dir: Option<&Path>) -> Self {
+        let app = dir.is_some_and(|dir| {
+            crate::config::session_chat_window(dir, config) == crate::config::ChatWindow::App
+        });
+        Self { root, config, app }
+    }
 }
 
 /// Opens a chat window for `session`, stamped with `uuid`, and reports its
@@ -396,10 +399,13 @@ fn console_command(launcher: Vec<String>, session: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Owner, Plan, TTY_SETUP, console_command, move_to_first, owner, plan, window_command,
+        Home, Owner, Plan, TTY_SETUP, command, console_command, move_to_first, owner, plan,
+        window_command,
     };
     use crate::console::submit::tests::pane;
+    use crate::inventory::ServerId;
     use crate::tmux::WindowPane;
+    use std::path::Path;
 
     #[test]
     fn the_toggle_opens_selects_returns_respawns_and_ignores_a_foreign_stamp() {
@@ -548,6 +554,33 @@ mod tests {
             window_command(launcher.clone(), "s", false),
             console_command(launcher, "s")
         );
+    }
+
+    /// B3-F1, the chain every opener runs: the config a session RECORDED says
+    /// `chat = app` -> `Home::of` -> `command()` puts `ae app <session>` in
+    /// the window; `chat = on`, or no record directory, keeps the chat argv.
+    #[test]
+    fn a_recorded_chat_app_reaches_the_argv_every_opener_builds() {
+        let root = std::env::temp_dir().join(format!("ae-toggle-{}-chain", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let (recorded, global) = (root.join("recorded"), root.join("global"));
+        std::fs::write(&global, "[workspace]\nchat = on\n").expect("global config");
+        let meta = format!("config={}\n", recorded.display());
+        std::fs::write(dir.join("meta"), meta).expect("meta");
+        let argv = |dir: Option<&Path>| {
+            command(&ServerId::Ambient, "s", Home::of(&root, &global, dir)).expect("an argv")
+        };
+        std::fs::write(&recorded, "[workspace]\nchat = app\n").expect("recorded app");
+        let app = argv(Some(&dir));
+        assert_eq!(app[app.len() - 2..], ["app", "s"], "{app:?}");
+        assert!(!app.iter().any(|word| word == TTY_SETUP), "{app:?}");
+        assert_eq!(argv(None)[..3], ["/bin/sh", "-c", TTY_SETUP], "no record");
+        std::fs::write(&recorded, "[workspace]\nchat = on\n").expect("recorded on");
+        let chat = argv(Some(&dir));
+        assert_eq!(chat[chat.len() - 4..], ["chat", "s", "--follow", "--input"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

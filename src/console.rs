@@ -141,6 +141,12 @@ impl Console {
         &self.dir
     }
 
+    /// Every roster seat as the last settled read named them: what `/open`
+    /// takes, `None` before one.
+    pub(crate) fn roster(&self) -> Option<&[needs::SeatRef]> {
+        self.roster.as_deref()
+    }
+
     /// The session's identity and lead-pair seats, read from its meta NOW:
     /// `Err` says why this console no longer follows the session it opened.
     pub(crate) fn seats(&self) -> Result<Vec<Seat>, String> {
@@ -318,7 +324,9 @@ pub(crate) fn needs_in(
 }
 
 /// The coverage a redrawn lane carries: every reason the follow holds as
-/// standing, in roster order, then any this read alone reported (a rescan).
+/// standing for a seat the roster names NOW, in roster order (a dropped
+/// seat's held reason is no gap of this session), then any this read alone
+/// reported (a rescan).
 fn standing_coverage(
     follow: &Follow,
     seats: &[Seat],
@@ -329,10 +337,14 @@ fn standing_coverage(
         seats
             .iter()
             .position(|seat| actor == format!("{session}:{}", seat.name))
-            .unwrap_or(usize::MAX)
     };
-    let mut all = follow.standing();
-    all.sort_by_key(|item| rank(&item.actor));
+    let mut ranked: Vec<_> = follow
+        .standing()
+        .into_iter()
+        .filter_map(|item| Some((rank(&item.actor)?, item)))
+        .collect();
+    ranked.sort_by_key(|(rank, _)| *rank);
+    let mut all: Vec<_> = ranked.into_iter().map(|(_, item)| item).collect();
     for item in fresh {
         if !all.contains(&item) {
             all.push(item);
@@ -1066,5 +1078,75 @@ pub(super) mod tests {
         assert_eq!(super::lead_name(&pair), "lead");
         assert_eq!(super::lead_name(&pair[..1]), "");
         assert_eq!(super::lead_name(&[]), "");
+    }
+
+    /// B3-F2: a redrawn lane carries the standing gaps of the CURRENT roster,
+    /// in roster order, then this read's own (a rescan) once each; a held
+    /// reason of an actor the roster no longer names is gone.
+    #[test]
+    fn a_redrawn_lane_unions_the_standing_gaps_of_the_current_roster_in_its_order() {
+        let gap = |actor: &str, reason: &str| crate::board::Coverage {
+            actor: actor.to_owned(),
+            reason: reason.to_owned(),
+        };
+        let seat = |slot: &str, name: &str| super::Seat {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: None,
+        };
+        let held = [
+            gap("s:colead", "torn last record"),
+            gap("s:gone", "unknown tool: out of scope"),
+            gap("s:lead", "no conversation"),
+        ];
+        let follow = super::Follow::seeded(&[], &held, None);
+        let seats = [seat("main", "lead"), seat("worker.0", "colead")];
+        let fresh = vec![
+            gap("s:lead", "no conversation"),
+            gap("s:lead", "transcript replaced — rescanned"),
+        ];
+        assert_eq!(
+            super::standing_coverage(&follow, &seats, "s", fresh),
+            [
+                gap("s:lead", "no conversation"),
+                gap("s:colead", "torn last record"),
+                gap("s:lead", "transcript replaced — rescanned"),
+            ]
+        );
+    }
+
+    /// B3-F2 through real reads: a standing gap stays while it stands, goes
+    /// when its seat reads whole again, and goes when the roster drops the
+    /// seat it belonged to.
+    #[test]
+    fn a_standing_gap_clears_when_its_seat_reads_or_leaves_the_roster() {
+        let rig = Rig::new("standing");
+        let meta = rig.0.join("s/meta");
+        let lead = format!(
+            "schema=2\nsession_id={ID}\nlayout=lead-pair\nseat.main=lead\nagent_bin.main=claude\nharness_session.main={ID}\nconfig_home.main={}\n",
+            rig.0.join("claude").display()
+        );
+        let pair = format!("{lead}seat.worker.0=colead\n");
+        fs::write(&meta, &pair).expect("lead pair");
+        let mut console = rig.console();
+        console.standing = true;
+        let mut coverage = || console.read().expect("a read").lane.coverage;
+        let has = |rows: &[String], actor: &str| rows.iter().any(|row| row.contains(actor));
+        let first = coverage();
+        assert!(
+            has(&first, "s:lead") && has(&first, "s:colead"),
+            "{first:?}"
+        );
+        assert_eq!(coverage(), first, "both gaps still stand");
+        rig.transcript("hello", 0);
+        let read = coverage();
+        assert!(!has(&read, "s:lead"), "the lead reads whole: {read:?}");
+        assert!(has(&read, "s:colead"), "the colead gap stands: {read:?}");
+        fs::write(&meta, &lead).expect("lead alone");
+        let alone = coverage();
+        assert!(
+            !has(&alone, "s:colead"),
+            "no ghost of a dropped seat: {alone:?}"
+        );
     }
 }
