@@ -145,7 +145,7 @@ impl App {
     fn refresh(&mut self) {
         let now = Timestamp::now();
         let (snapshot, world) = crate::current_world(&self.root);
-        self.dirs = snapshot
+        let dirs = snapshot
             .sessions
             .iter()
             .filter_map(|session| {
@@ -157,11 +157,29 @@ impl App {
             .server
             .as_ref()
             .and_then(transport::observe_picker_sessions);
+        self.absorb(dirs, world, picker.as_deref(), &crate::fleet_order(), now);
+        self.dress();
+        self.own();
+        self.view();
+    }
+
+    /// Fold one read of the fleet: the seat facts of every live session, the
+    /// stopped ones' last sign of life, the needs of every live session that
+    /// asks for attention, the sidebar rows, the selection and the lead pair.
+    fn absorb(
+        &mut self,
+        dirs: BTreeMap<String, PathBuf>,
+        world: World,
+        picker: Option<&[tmux::PickerSession]>,
+        order: &theme::FleetOrder,
+        now: Timestamp,
+    ) {
+        self.dirs = dirs;
         self.facts = world
             .sessions
             .iter()
             .filter(|entry| entry.status != Status::Stopped)
-            .map(|entry| (entry.name.clone(), facts_of(entry, picker.as_deref(), now)))
+            .map(|entry| (entry.name.clone(), facts_of(entry, picker, now)))
             .collect();
         let last_live: BTreeMap<String, i64> = world
             .sessions
@@ -185,13 +203,12 @@ impl App {
                 Some((entry.name.clone(), section))
             })
             .collect();
-        let order = crate::fleet_order();
         let home = self.home.as_deref();
         self.fleet = fleet::rows(
             &world,
             &self.facts,
             &last_live,
-            &order,
+            order,
             &self.needs,
             home,
             now,
@@ -205,9 +222,6 @@ impl App {
             let seats = console.seats().and_then(term::pair_of);
             self.pair = seats.map_or_else(|_| self.pair.clone(), |seats| names(&seats));
         }
-        self.dress();
-        self.own();
-        self.view();
     }
 
     /// The look the chat reads (F3): the home session's drawn look, else the
@@ -226,10 +240,9 @@ impl App {
         (self.look, self.zone) = (Some(theme::Look::DEFAULT), first_zone);
     }
 
-    /// Read who owns the home session's input and hand it to the composer;
-    /// a promotion puts the kept draft back, as the chat does.
+    /// Read who owns the home session's input and hand it to the composer.
     fn own(&mut self) {
-        let (Some(console), Some(input)) = (&self.home_console, &mut self.input) else {
+        let (Some(console), Some(_)) = (&self.home_console, &self.input) else {
             return;
         };
         let reading = match term::owns(console, self.server.as_ref(), self.me.as_deref()) {
@@ -237,13 +250,22 @@ impl App {
             Some(Ok(())) => Reading::Owner,
             Some(Err(why)) => Reading::NotOwner(why),
         };
+        self.take(reading, Instant::now());
+    }
+
+    /// Hand one ownership reading to the composer at `now`; a promotion puts
+    /// the kept draft back, as the chat does.
+    fn take(&mut self, reading: Reading, now: Instant) {
+        let (Some(console), Some(input)) = (&self.home_console, &mut self.input) else {
+            return;
+        };
         self.read_only = match &reading {
             Reading::NotOwner(why) => why.clone(),
             Reading::Unknown => UNREAD.to_owned(),
             Reading::Owner => String::new(),
         };
         let was = input.taking();
-        let _ = input.tick(reading, Instant::now());
+        let _ = input.tick(reading, now);
         if !was && input.taking() {
             let restored = input.restore(submit::restore(console.dir()));
             self.effects(restored);
