@@ -155,9 +155,15 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
         put(buf, area.x, y, &row, area.width, dim);
         return 0;
     }
-    buf.set_style(area, ctx.paint.ground(|p| p.base));
+    // The frames' grounds: the chat's ink everywhere, the keys row and the
+    // rule's own column included, and the panel under the sidebar alone.
+    buf.set_style(area, ctx.paint.ground(|p| p.ink));
     let (height, width) = (area.height, area.width);
     let chat = if let Some(rule) = sidebar_width(area) {
+        buf.set_style(
+            Rect::new(0, 0, rule, height - 1),
+            ctx.paint.ground(|p| p.base),
+        );
         sidebar(&ctx, buf, rule);
         let border = ctx.paint.fg(|p| p.border);
         for y in 0..height - 1 {
@@ -172,9 +178,7 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
         put(buf, 0, 0, &line, width, dim);
         0..width
     };
-    let ground = Rect::new(chat.start, 1, chat.end - chat.start, height - 2);
-    buf.set_style(ground, ctx.paint.ground(|p| p.ink));
-    let pages = chat_column(&ctx, buf, chat.start + 2..width - 2, chat.start > 0);
+    let pages = chat_column(&ctx, buf, chat.start + 2..width - 2);
     keys_row(&ctx, buf);
     pages
 }
@@ -595,15 +599,15 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry) -> Vec<Cells> {
 // ---------------------------------------------------------------------------
 
 /// The chat column over `columns`: the header, the turns anchored to the
-/// bottom, the composer. `beside` says a sidebar stands to its left.
-fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, beside: bool) -> usize {
+/// bottom, the composer.
+fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>) -> usize {
     let screen = ctx.screen;
     let paint = ctx.paint;
     let height = buf.area.height;
     let (left, end) = (columns.start, columns.end);
     let room = end - left;
     let (dim, border) = (paint.fg(|p| p.dim), paint.fg(|p| p.border));
-    header(ctx, buf, left, end, beside);
+    header(ctx, buf, left, end);
     put(buf, left, 2, &"─".repeat(usize::from(room)), room, border);
     let (top, bottom) = (3, height.saturating_sub(6));
     let main = screen
@@ -649,8 +653,8 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, beside:
 }
 
 /// The chat header: the session, its pair or where it is viewed from, and
-/// right-aligned its branch (wide only) and its activity.
-fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16, beside: bool) {
+/// right-aligned its branch (at 140 columns or more) and its activity.
+fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
     let screen = ctx.screen;
     let paint = ctx.paint;
     let Some(entry) = screen.selected else {
@@ -682,7 +686,7 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16, beside: bool
         Status::Stopped => format!("stopped {}", age(since)),
         _ => format!("active {}", age(since)),
     };
-    let wide = beside && buf.area.width >= 140;
+    let wide = buf.area.width >= 140;
     let branch = entry
         .branch
         .as_deref()
