@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.23] - 2026-10-04
+- Add the terminal UI dependencies for ae app
+- Add the ae app interface stub
+- Install the frozen ae app acceptance spec
+- Fill the ae app fleet, overview, browse model and draw
+- Install the lint-clean ae app acceptance spec
+- Run ae app: the terminal door, an ANSI backend, the loop and its routing
+- Let chat = app run ae app in the chat window
+- Compose in ae app through the chat's own ask, and pin its look and floor
+- Document ae app and chat = app
+- Keep standing coverage in every ae app frame
+- Derive the chat window once, drop roster ghosts and hand the app its roster
+- Name ae app as a caller of the record reader and the prose clipper
+- Record the ae app dependencies in the fuzz lock
+- Split the app's fleet fold and ownership hand-off out of their live reads
+- Ground the app as the frames do and draw the branch at any wide pane
+- Pin the app's survivors to the frames and the live terminal
+- Read the quit test's terminal modes as whole flags
+- Check each viewed session's own console at every step
+
 ## [v2026.10.22] - 2026-10-04
 - Pin declared-first family derivation for auto reseat
 - Keep no-room reseat fixtures within their intended family
