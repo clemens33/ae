@@ -784,6 +784,111 @@ mod tests {
         );
     }
 
+    /// Leaving writing on the current tab must repaint immediately, keeping the draft.
+    #[test]
+    fn a_same_tab_mouse_click_ends_writing_and_requests_redraw() {
+        let root = Root::new("mouse-same-tab");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        app.world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
+        let at = Instant::now();
+        app.take(Reading::Owner, at);
+        app.composing = true;
+        assert_eq!(app.compose(Key::Text(b"kept draft".to_vec()), at), Some(()));
+        let shown = framed(&mut app);
+        let (row, column) = shown
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find("Overview")
+                    .map(|byte| (row, line[..byte].chars().count()))
+            })
+            .expect("drawn Overview tab");
+        assert!(
+            app.mouse(super::Mouse {
+                kind: super::MouseKind::Click,
+                column: u16::try_from(column).expect("frame column"),
+                row: u16::try_from(row).expect("frame row"),
+            }),
+            "the mode change needs an immediate redraw"
+        );
+        assert!(!app.composing);
+        assert_eq!(app.model.tab(), crate::app::model::Tab::Overview);
+        assert_eq!(
+            app.input.as_ref().expect("home input").draft(),
+            "kept draft"
+        );
+    }
+
+    /// The bottom keys row is outside chat, while the composer just above still scrolls.
+    #[test]
+    fn mouse_wheel_on_the_keys_row_is_a_full_noop() {
+        let root = Root::new("mouse-keys-row");
+        let mut app = App::new(root.0.clone(), None);
+        app.fleet = one_row(None);
+        app.model = Model::new(&app.fleet);
+        app.lane.items = (0..60).map(|at| said(&format!("turn {at}"), at)).collect();
+        let shown = framed(&mut app);
+        assert!(shown.lines().last().expect("keys row").contains("q quit"));
+        let mut mouse = super::Mouse {
+            kind: super::MouseKind::WheelUp,
+            column: 159,
+            row: 44,
+        };
+        assert!(!app.mouse(mouse), "keys-row wheel is a full no-op");
+        assert_eq!(app.model.scroll_rows(app.layout.page_rows), 0);
+        mouse.row -= 1;
+        assert!(app.mouse(mouse), "the composer is inside chat");
+        assert_eq!(app.model.scroll_rows(app.layout.page_rows), 3);
+        mouse.row += 1;
+        mouse.kind = super::MouseKind::WheelDown;
+        assert!(!app.mouse(mouse), "keys-row wheel down is also a no-op");
+        assert_eq!(app.model.scroll_rows(app.layout.page_rows), 3);
+    }
+
+    /// Every drawn tab label includes its last cell and excludes the next blank cell.
+    #[test]
+    fn mouse_tab_targets_end_at_the_last_drawn_label_cell() {
+        let root = Root::new("mouse-tab-edges");
+        let mut app = App::new(root.0.clone(), None);
+        app.fleet = one_row(None);
+        app.model = Model::new(&app.fleet);
+        app.world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
+        app.facts.insert(
+            "api".to_owned(),
+            fleet::Facts::Seats {
+                id: "$1".to_owned(),
+                agents: Vec::new(),
+            },
+        );
+        let shown = framed(&mut app);
+        for (label, tab) in [
+            ("Overview", crate::app::model::Tab::Overview),
+            ("Agents 0", crate::app::model::Tab::Agents),
+        ] {
+            let (row, column) = shown
+                .lines()
+                .enumerate()
+                .find_map(|(row, line)| {
+                    line.find(label)
+                        .map(|byte| (row, line[..byte].chars().count()))
+                })
+                .expect("drawn tab label");
+            let mut mouse = super::Mouse {
+                kind: super::MouseKind::Click,
+                column: u16::try_from(column + label.chars().count() - 1).expect("last label cell"),
+                row: u16::try_from(row).expect("frame row"),
+            };
+            assert!(
+                matches!(app.layout.hit(mouse), Some(super::draw::Hit::Tab(hit)) if hit == tab),
+                "last cell of {label}"
+            );
+            mouse.column += 1;
+            assert!(app.layout.hit(mouse).is_none(), "one cell past {label}");
+        }
+    }
+
     /// B2-F4: a frame bounds the scroll to the pages the lane holds — the
     /// bound is the FIRST page count that shows the oldest turn, so one page
     /// fewer hides it — and a lane that fits scrolls nowhere.
