@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.24] - 2026-10-04
+- **app**: Declare mouse input events
+- **app**: Frozen mouse acceptance spec
+- **app**: Mouse spec round 2, exact modes and row-pinned scroll
+- **app**: Notch delta between scrolled frames, content moves down
+- **app**: Add mouse selection and chat scrolling
+- **app**: Pin mouse parser boundaries and idle recovery
+- **app**: Pin mouse redraw and hit target edges
+
 ## [v2026.10.23] - 2026-10-04
 - Add the terminal UI dependencies for ae app
 - Add the ae app interface stub
