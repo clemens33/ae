@@ -299,6 +299,20 @@ impl Follow {
     /// the new set as printed: a seat that becomes readable prints nothing, one
     /// that becomes unreadable prints its new reason once. Rescan lines never
     /// pass through here — they are loud by ruling.
+    /// Every steady reason that stands now, per actor: what a view that
+    /// redraws its lane, rather than printing it once, shows on every read.
+    pub(crate) fn standing(&self) -> Vec<Coverage> {
+        self.printed
+            .iter()
+            .flat_map(|(actor, reasons)| {
+                reasons.iter().map(|reason| Coverage {
+                    actor: actor.clone(),
+                    reason: reason.clone(),
+                })
+            })
+            .collect()
+    }
+
     fn steady(&mut self, actor: &str, reasons: Vec<String>, out: &mut Vec<Coverage>) {
         let printed = self.printed.get(actor);
         for reason in &reasons {

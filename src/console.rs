@@ -88,6 +88,10 @@ pub(crate) struct Console {
     journal: Option<Vec<Event>>,
     /// Every roster seat as the last meta read named them: what `/open` takes.
     roster: Option<Vec<needs::SeatRef>>,
+    /// A view that redraws its whole lane each read (`ae app`): its lane
+    /// carries every coverage reason that still stands, not only the new ones
+    /// the chat prints once.
+    standing: bool,
 }
 
 /// One read of a console's session: the lane, the "needs you" section and
@@ -115,6 +119,15 @@ impl Console {
             follow: None,
             journal: None,
             roster: None,
+            standing: false,
+        }
+    }
+
+    /// [`Console::open`] for a view that redraws its lane on every read.
+    pub(crate) fn open_standing(name: String, dir: PathBuf) -> Self {
+        Self {
+            standing: true,
+            ..Self::open(name, dir)
         }
     }
 
@@ -206,9 +219,13 @@ impl Console {
         self.rows.extend(seen.rows.iter().cloned());
         self.rows = board::collect(std::mem::take(&mut self.rows));
         let board_gaps = seen.coverage.len();
+        let coverage = match (&self.follow, self.standing) {
+            (Some(follow), true) => standing_coverage(follow, &seats, &self.name, seen.coverage),
+            _ => seen.coverage,
+        };
         let observation = board::Observation {
             rows: self.rows.clone(),
-            coverage: seen.coverage,
+            coverage,
             ..board::Observation::default()
         };
         let snapshot = session::RecordSnapshot::read(&self.dir);
@@ -298,6 +315,30 @@ pub(crate) fn needs_in(
         lead_pair,
         now,
     })
+}
+
+/// The coverage a redrawn lane carries: every reason the follow holds as
+/// standing, in roster order, then any this read alone reported (a rescan).
+fn standing_coverage(
+    follow: &Follow,
+    seats: &[Seat],
+    session: &str,
+    fresh: Vec<board::Coverage>,
+) -> Vec<board::Coverage> {
+    let rank = |actor: &str| {
+        seats
+            .iter()
+            .position(|seat| actor == format!("{session}:{}", seat.name))
+            .unwrap_or(usize::MAX)
+    };
+    let mut all = follow.standing();
+    all.sort_by_key(|item| rank(&item.actor));
+    for item in fresh {
+        if !all.contains(&item) {
+            all.push(item);
+        }
+    }
+    all
 }
 
 /// The "needs you" section of session `name` at `dir`, read now: the meta
@@ -618,6 +659,7 @@ pub(super) mod tests {
                 follow: None,
                 journal: None,
                 roster: None,
+                standing: false,
             }
         }
 

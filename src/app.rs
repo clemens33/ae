@@ -92,7 +92,7 @@ impl App {
         let declared = doors::declared_server(crate::shape::current());
         let home_console = home.as_ref().and_then(|name| {
             let dir = console::locate(&root, name)?;
-            Some(Console::open(name.clone(), dir))
+            Some(Console::open_standing(name.clone(), dir))
         });
         let pair = home_console
             .as_ref()
@@ -281,7 +281,7 @@ impl App {
                 .position(|console| console.name() == name);
             let console = match at {
                 Some(at) => self.consoles.remove(at),
-                None => Console::open(name.clone(), dir.clone()),
+                None => Console::open_standing(name.clone(), dir.clone()),
             };
             self.consoles.insert(0, console);
             self.consoles.truncate(KEPT);
@@ -749,5 +749,31 @@ mod tests {
         assert!(shown.contains("to api › lead   later"), "{shown}");
         assert!(shown.contains("draft kept · Enter writes"));
         assert_eq!(app.compose(Key::Interrupt, typed), None, "^C quits");
+    }
+
+    /// A redrawn frame keeps the coverage that still stands: the board's
+    /// follow reports a gap once (the chat prints it once), and every later
+    /// read of the same session, home or foreign, still shows it.
+    #[test]
+    fn standing_coverage_survives_every_later_read() {
+        let root = Root::new("coverage");
+        let mut app = App::new(root.0.clone(), Some("api".to_owned()));
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        app.dirs
+            .insert("api".to_owned(), root.0.join("sessions").join("api"));
+        app.view();
+        let first = app.lane.coverage.clone();
+        assert!(
+            first.iter().any(|row| row.contains("api:lead")),
+            "a seat with no conversation is a gap: {first:?}"
+        );
+        app.view();
+        assert_eq!(app.lane.coverage, first, "the home gap still stands");
+        app.home = None;
+        app.home_console = None;
+        app.view();
+        app.view();
+        assert_eq!(app.lane.coverage, first, "a foreign view keeps it too");
     }
 }
