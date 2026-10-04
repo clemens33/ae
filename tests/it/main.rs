@@ -6,6 +6,7 @@
 
 mod app_cli_spec;
 mod app_live;
+mod app_mouse_spec;
 mod app_spec;
 mod archive;
 mod archive_from;
