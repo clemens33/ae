@@ -2219,4 +2219,70 @@ mod tests {
             [(Key::Text(b"q".to_vec()), at + super::ESC_IDLE)]
         );
     }
+
+    #[test]
+    fn plus_signed_mouse_fields_are_dropped_before_the_next_click() {
+        let at = Instant::now();
+        for report in [
+            b"\x1b[<+0;1;1M".as_slice(),
+            b"\x1b[<0;+1;1M",
+            b"\x1b[<0;1;+1M",
+        ] {
+            let mut app = Keys::app();
+            assert!(app.feed(report, at).is_empty());
+            assert_eq!(
+                app.feed(b"\x1b[<0;1;1M", at),
+                [(
+                    Key::Mouse(super::Mouse {
+                        kind: super::MouseKind::Click,
+                        column: 0,
+                        row: 0,
+                    }),
+                    at
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn mouse_reports_accept_32_bytes_and_drop_33() {
+        let at = Instant::now();
+        let click = (
+            Key::Mouse(super::Mouse {
+                kind: super::MouseKind::Click,
+                column: 0,
+                row: 0,
+            }),
+            at,
+        );
+        for length in [32, 33] {
+            let mut report = b"\x1b[<".to_vec();
+            report.extend(std::iter::repeat_n(b'0', length - 8));
+            report.extend_from_slice(b";1;1M");
+            assert_eq!(report.len(), length);
+            let mut app = Keys::app();
+            let expected = if length == 32 {
+                vec![click.clone()]
+            } else {
+                vec![]
+            };
+            assert_eq!(app.feed(&report, at), expected);
+            assert_eq!(app.feed(b"\x1b[<0;1;1M", at), std::slice::from_ref(&click));
+        }
+    }
+
+    #[test]
+    fn a_partial_x10_report_expires_after_any_payload_prefix() {
+        let at = Instant::now();
+        for payload in 0..3 {
+            let mut app = Keys::app();
+            let report = &b"\x1b[M   "[..3 + payload];
+            assert!(app.feed(report, at).is_empty());
+            assert!(app.idle(at + super::ESC_IDLE).is_empty());
+            assert_eq!(
+                app.feed(b"q", at + super::ESC_IDLE),
+                [(Key::Text(b"q".to_vec()), at + super::ESC_IDLE)]
+            );
+        }
+    }
 }
