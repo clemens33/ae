@@ -11,8 +11,10 @@
 //! (the stub emits no `Key::Mouse`); `chat_decoder_never_spells_mouse`,
 //! `paste_keeps_mouse_bytes_literal` and `idle_drops_partial_mouse_then_fresh`
 //! pass on S0 as guards. Live: `guard_literal_arrow_moves_selection` passes on
-//! S0 (arrow injection works); `tiny_clicks_noop` passes vacuously on S0 and
-//! pins ruling 6 on GREEN; every other live test is RED on S0.
+//! S0 (arrow injection works); `tiny_clicks_noop`,
+//! `click_composer_on_foreign_row_noops` and `chat_window_never_enables_mouse`
+//! pass vacuously on S0 and pin their rule on GREEN; every other live test is
+//! RED on S0.
 
 #![allow(
     clippy::disallowed_methods,
@@ -712,4 +714,230 @@ fn live_app_enables_mouse_mode() {
     });
     let flag = rig.tmux(&["display-message", "-p", "-t", &pane, "#{mouse_any_flag}"]);
     assert_eq!(flag.trim(), "1", "mouse mode is on in the app pane");
+}
+
+// ---------------------------------------------------------------------------
+// round 2 (lead review fbd8cddc): exact modes, wheel while writing, foreign
+// composer, one notch in rows, tab while writing, horizontal wheel, chat modes
+// ---------------------------------------------------------------------------
+
+/// A rig window running `command` (sh) with the app's scratch environment and
+/// no harness config overrides; its pane.
+fn window(rig: &Rig, command: &str) -> String {
+    let home = rig.root.display().to_string();
+    let env = [
+        format!("AE_HOME={}", rig.root.display()),
+        format!("CONFIG_FILE={}", rig.root.join("config").display()),
+        format!("HOME={home}"),
+        "AE_TMUX_SERVER_KIND=socket".to_owned(),
+        format!("AE_TMUX_SERVER={}", rig.socket.display()),
+    ];
+    let mut args = vec![
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        rig.name.as_str(),
+    ];
+    for pair in &env {
+        args.extend(["-e", pair.as_str()]);
+    }
+    args.push(command);
+    rig.tmux(&args).trim().to_owned()
+}
+
+fn quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// Ruling 1: the exact mode set — press/release + SGR while running, neither
+/// drag/motion mode; after `q` both are off again. The five formats exist on
+/// the tmux 3.4 floor (probed in the lane container), so no fallback.
+#[test]
+fn live_app_mouse_mode_set_exact() {
+    let rig = Rig::new("ammodes", 0, &[]);
+    let pane = window(
+        &rig,
+        &format!(
+            "env -u CLAUDE_CONFIG_DIR -u CODEX_HOME {} app {}; sleep 60",
+            quote(env!("CARGO_BIN_EXE_ae")),
+            quote(&rig.name),
+        ),
+    );
+    rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
+        screen.contains("Sessions 1")
+    });
+    for (format, want) in [
+        ("#{mouse_any_flag}", "1"),
+        ("#{mouse_standard_flag}", "1"),
+        ("#{mouse_sgr_flag}", "1"),
+        ("#{mouse_button_flag}", "0"),
+        ("#{mouse_all_flag}", "0"),
+    ] {
+        let got = rig.tmux(&["display-message", "-p", "-t", &pane, format]);
+        assert_eq!(got.trim(), want, "{format} while running");
+    }
+    rig.tmux(&["send-keys", "-t", &pane, "q"]);
+    rig.wait(&pane, WAIT, "the app quit", |screen| {
+        !screen.contains("Sessions 1")
+    });
+    for format in ["#{mouse_any_flag}", "#{mouse_sgr_flag}"] {
+        let got = rig.tmux(&["display-message", "-p", "-t", &pane, format]);
+        assert_eq!(got.trim(), "0", "{format} after quitting");
+    }
+}
+
+/// Ruling 5: the wheel scrolls in both modes — while writing the frame moves
+/// and the draft stays on the composer.
+#[test]
+fn wheel_while_writing_scrolls_and_keeps_draft() {
+    let rig = Rig::new("amwwrite", 12, &[]);
+    let pane = rig.open_app();
+    let home = rig.name.clone();
+    let address = format!("to {home}");
+    rig.wait(&pane, WAIT, "newest turn at the bottom", |screen| {
+        screen.contains("scrollprobe-newest") && !screen.contains("scrollprobe-oldest")
+    });
+    rig.tmux(&["send-keys", "-t", &pane, "i"]);
+    rig.wait(&pane, WAIT, "writing starts", |screen| {
+        screen.contains("Enter sends")
+    });
+    rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "wheeldraft"]);
+    let screen = rig.wait(&pane, WAIT, "the draft shows", |screen| {
+        screen.contains("wheeldraft")
+    });
+    let (col, row) = cell_of(&screen, &address).expect("the composer row");
+    for _ in 0..8 {
+        rig.wheel(&pane, true, col, row - 4);
+    }
+    rig.wait(&pane, WAIT, "scrolled and still writing", |screen| {
+        screen.contains("newer turns below")
+            && screen.contains("Enter sends")
+            && screen.contains("wheeldraft")
+    });
+}
+
+/// Ruling 5: the composer click only starts writing where Enter would — on a
+/// foreign row it no-ops. GUARD on S0: green vacuously, pins the rule on GREEN.
+#[test]
+fn click_composer_on_foreign_row_noops() {
+    let rig = Rig::new("amforeign", 0, &["amstop"]);
+    let pane = rig.open_app();
+    rig.wait(&pane, WAIT, "both rows listed", |screen| {
+        screen.contains("Sessions 2")
+    });
+    rig.tmux(&["send-keys", "-t", &pane, "2"]);
+    let screen = rig.wait(&pane, WAIT, "the foreign row shows", |screen| {
+        screen.contains("typing writes to")
+    });
+    let (col, row) = cell_of(&screen, "typing writes to").expect("the foreign composer");
+    rig.click(&pane, col, row);
+    std::thread::sleep(SETTLE);
+    let screen = rig.screen(&pane);
+    assert!(
+        screen.contains("typing writes to"),
+        "still the browse composer:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Enter sends"),
+        "no writing started:\n{screen}"
+    );
+}
+
+/// Ruling 5: one wheel notch moves the chat exactly 3 rows, read off the
+/// frame — one known marker line sits exactly 3 rows higher after one notch.
+#[test]
+fn one_wheel_notch_moves_exactly_three_rows() {
+    const MARK: &str = "scrollprobe-newest-11";
+    let rig = Rig::new("amnotch", 12, &[]);
+    let pane = rig.open_app();
+    let home = rig.name.clone();
+    let address = format!("to {home}");
+    let screen = rig.wait(&pane, WAIT, "newest turn at the bottom", |screen| {
+        screen.contains("scrollprobe-newest") && !screen.contains("scrollprobe-oldest")
+    });
+    let row0 = screen
+        .lines()
+        .position(|line| line.contains(MARK))
+        .expect("the newest marker on screen");
+    assert!(row0 >= 3, "the marker has room to rise:\n{screen}");
+    let (col, row) = cell_of(&screen, &address).expect("the composer row");
+    rig.wheel(&pane, true, col, row - 4);
+    rig.wait(&pane, WAIT, "exactly 3 rows up", |screen| {
+        screen
+            .lines()
+            .position(|line| line.contains(MARK))
+            .is_some_and(|at| at == row0 - 3)
+    });
+}
+
+/// While writing, a tab-label click returns to browsing with the draft kept,
+/// then shows that tab.
+#[test]
+fn click_tab_while_writing_returns_with_draft() {
+    let rig = Rig::new("amtabw", 0, &[]);
+    let pane = rig.open_app();
+    rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
+        screen.contains("Sessions 1")
+    });
+    rig.tmux(&["send-keys", "-t", &pane, "i"]);
+    rig.wait(&pane, WAIT, "writing starts", |screen| {
+        screen.contains("Enter sends")
+    });
+    rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "tabdraft"]);
+    let screen = rig.wait(&pane, WAIT, "the draft shows", |screen| {
+        screen.contains("tabdraft")
+    });
+    let (col, row) = cell_of(&screen, "Agents").expect("the Agents label");
+    rig.click(&pane, col, row);
+    rig.wait(&pane, WAIT, "Agents with the draft kept", |screen| {
+        screen.contains("No seat facts") && screen.contains("draft kept")
+    });
+}
+
+/// Ruling 2: horizontal wheel reports vanish like any other non-kept report.
+#[test]
+fn sgr_horizontal_wheel_dropped_then_click() {
+    for code in [66, 67] {
+        let mut app = Keys::app();
+        let bytes = format!("\x1b[<{code};5;5M\x1b[<0;9;9M");
+        assert_eq!(
+            feed(&mut app, bytes.as_bytes()),
+            [mouse(MouseKind::Click, 8, 8)],
+            "code {code} dropped then click"
+        );
+    }
+}
+
+/// A mouse report ends at M/m alone: a CSI-final byte inside a malformed
+/// report never ends it early with a Text tail (driver-agreed mechanism).
+#[test]
+fn sgr_malformed_stops_only_at_m() {
+    for dropped in ["<0;1q;1M", "<4;2;2Q;3;3M", "<0;9z9;9M"] {
+        let mut app = Keys::app();
+        let bytes = format!("\x1b[{dropped}\x1b[<0;9;9M");
+        assert_eq!(
+            feed(&mut app, bytes.as_bytes()),
+            [mouse(MouseKind::Click, 8, 8)],
+            "malformed {dropped:?} dropped then click"
+        );
+    }
+}
+
+/// `ae chat` never enables mouse mode: its window reports no mouse flags.
+/// GUARD: green on S0 and GREEN, pins the chat unchanged.
+#[test]
+fn chat_window_never_enables_mouse() {
+    let rig = Rig::new("amchat", 0, &[]);
+    std::fs::write(rig.root.join("config"), "[workspace]\nchat = on\n").expect("chat = on");
+    let pane = rig.open_app();
+    rig.wait(&pane, WAIT, "the chat composer", |screen| {
+        screen.contains("to lead")
+    });
+    let dead = rig.tmux(&["display-message", "-p", "-t", &pane, "#{pane_dead}"]);
+    assert_eq!(dead.trim(), "0", "the chat is running");
+    let flag = rig.tmux(&["display-message", "-p", "-t", &pane, "#{mouse_any_flag}"]);
+    assert_eq!(flag.trim(), "0", "the chat enables no mouse mode");
 }
