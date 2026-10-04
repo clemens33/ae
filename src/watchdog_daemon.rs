@@ -12996,6 +12996,109 @@ mod tests {
         );
     }
 
+    /// A seat with no `[auto_reseat]` row is forecast from ITS OWN family, never
+    /// from another roster seat's, and while it could act it has a family BEFORE
+    /// any episode exists, so its first headroom episode can open at all. A
+    /// quiet seat keeps it while EITHER kind of episode holds it on its own.
+    #[test]
+    fn a_rowless_seat_is_forecast_and_derived_from_its_own_roster_row() {
+        let scratch = Scratch::new("auto-family");
+        let config = scratch.0.join("config");
+        let home = scratch.0.join("account");
+        std::fs::create_dir_all(&home).expect("account");
+        let profile = |model: &str, extra: &str| {
+            format!(
+                "CLAUDE_CONFIG_DIR={} claude --model {model}{extra}",
+                home.display()
+            )
+        };
+        std::fs::write(
+            &config,
+            format!(
+                "[profiles]\nlead = {}\nlead2 = {}\nfable = {}\nopus = {}\n",
+                profile("sonnet", " --effort high"),
+                profile("haiku", " --effort high"),
+                profile("fable", ""),
+                profile("opus", ""),
+            ),
+        )
+        .expect("config");
+        std::fs::write(
+            scratch.0.join("meta"),
+            format!("session=demo\nconfig={}\n", config.display()),
+        )
+        .expect("meta");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let entry = |slot: &str, name: &str, profile: &str| RosterEntry {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: Some(profile.to_owned()),
+            client: RecordedClient::Missing,
+            harness_session: None,
+            config_home: RecordedConfigHome::Missing,
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("claude".to_owned()),
+            work_dir: crate::meta::RecordedWorkDir::Missing,
+        };
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            // The OTHER seat first: a lookup that took any row but the seat's own
+            // would read the lead's family, whose one sibling is `lead2`.
+            roster: vec![
+                entry("main", "lead", "lead"),
+                entry("spawned.3", "builder", "fable"),
+            ],
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            auto: crate::autoreseat::settings_in(&config, "[workspace]\nauto_reseat = on\n"),
+            meta_agent: false,
+            launch_ids: Vec::new(),
+        };
+        let seat = ("spawned.3", "builder");
+        // `fable`'s family is `opus` alone: the lead's two carry another effort.
+        assert_eq!(
+            cycle.auto_deadline(&QuotaCarry::default(), &[], seat, 1_000),
+            Some("ae will move builder to opus, derived sibling in 10m".to_owned())
+        );
+        assert!(
+            cycle.derives(&[], seat, true),
+            "an active seat derives before any episode"
+        );
+        assert!(
+            !cycle.derives(&[], seat, false),
+            "a quiet seat derives nothing"
+        );
+        let key = crate::time::Timestamp::from_epoch(1_000);
+        let record = |action: &str, reference: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"{key}","actor":"{ACTOR}","action":"{action}","target":"builder"{reference}}}"#
+            ))
+            .expect("a journal line")
+        };
+        let attempt = format!(r#","ref":"{key}""#);
+        // Each episode alone, never both at once: either one keeps the family.
+        let headroom = [record(crate::autoreseat::HEADROOM_ACTION, "")];
+        assert!(
+            cycle.derives(&headroom, seat, false),
+            "a quiet seat in a headroom episode derives"
+        );
+        let limit = [
+            record("limit", ""),
+            record(crate::autoreseat::ATTEMPT_ACTION, &attempt),
+        ];
+        assert!(
+            cycle.derives(&limit, seat, false),
+            "a quiet seat whose limit move is in flight derives"
+        );
+    }
+
     /// The auto step's journal writer re-reads the journal under the seat's
     /// lock and writes only what that read still owes, whatever the cycle
     /// decided from its earlier read: a re-arm only for the headroom episode

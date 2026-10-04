@@ -1981,6 +1981,7 @@ mod tests {
         for unreadable in [
             "claude --model a --model b",
             "claude --effort high --model",
+            "claude --model=",
             "claude 'x",
         ] {
             assert_eq!(
