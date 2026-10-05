@@ -777,7 +777,7 @@ fn apply(app: &mut App, act: &model::Act) -> Option<bool> {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
