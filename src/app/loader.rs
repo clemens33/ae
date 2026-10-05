@@ -13,6 +13,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::Instant;
 
 use super::{REFRESH, facts_of, fleet, names};
+use crate::brief::{self, Filed};
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::needs::{SeatRef, Section};
@@ -79,7 +80,8 @@ pub(super) struct FleetRead {
     pub(super) fleet: fleet::Fleet,
     /// The home lead pair as its meta names it now; `None` keeps the last.
     pub(super) pair: Option<Vec<String>>,
-    pub(super) memos: BTreeMap<String, Result<Vec<u8>, String>>,
+    /// Each session's memo, read and folded here: the show only ages it.
+    pub(super) memos: BTreeMap<String, Result<Vec<Filed>, String>>,
 }
 
 /// One read of session `name` through its console.
@@ -432,6 +434,7 @@ impl Reader {
             .map(|(name, dir)| {
                 let memo = store::open(dir)
                     .memo_bytes()
+                    .map(|bytes| brief::filed(&bytes))
                     .map_err(|err| format!("memo unreadable ({err})"));
                 (name.clone(), memo)
             })

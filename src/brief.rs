@@ -742,12 +742,32 @@ pub(crate) fn short_path(path: &str, home: Option<&Path>) -> String {
 /// ```
 #[must_use]
 pub fn topic_lines(container: &[u8], now: Timestamp, since_secs: Option<i64>) -> Vec<TopicLine> {
-    let mut latest: Vec<TopicLine> = Vec::new();
+    aged(&filed(container), now, since_secs)
+}
+
+/// One memo topic's latest record as filed: its timestamp kept rather than
+/// aged, so the age can be judged later than the read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filed {
+    /// The topic the record was filed under.
+    pub topic: String,
+    /// When it was filed; `None` when its timestamp is unreadable.
+    pub stamp: Option<Timestamp>,
+    /// Who wrote it.
+    pub author: String,
+    /// The record's text.
+    pub text: String,
+}
+
+/// The latest record per topic in `container`, each topic where it was first
+/// filed: the half of [`topic_lines`] that reads the bytes.
+#[must_use]
+pub fn filed(container: &[u8]) -> Vec<Filed> {
+    let mut latest: Vec<Filed> = Vec::new();
     for record in crate::memo::records(container) {
-        let stamp = Timestamp::parse(&String::from_utf8_lossy(record.ts));
-        let line = TopicLine {
+        let line = Filed {
             topic: String::from_utf8_lossy(record.topic).into_owned(),
-            age_secs: stamp.map(|stamp| stamp.seconds_until(now)),
+            stamp: Timestamp::parse(&String::from_utf8_lossy(record.ts)),
             author: String::from_utf8_lossy(record.author).into_owned(),
             text: String::from_utf8_lossy(record.text).into_owned(),
         };
@@ -757,6 +777,22 @@ pub fn topic_lines(container: &[u8], now: Timestamp, since_secs: Option<i64>) ->
             None => latest.push(line),
         }
     }
+    latest
+}
+
+/// [`filed`] judged at `now`: the half of [`topic_lines`] that ages, keeps
+/// and orders.
+#[must_use]
+pub fn aged(filed: &[Filed], now: Timestamp, since_secs: Option<i64>) -> Vec<TopicLine> {
+    let mut latest: Vec<TopicLine> = filed
+        .iter()
+        .map(|filed| TopicLine {
+            topic: filed.topic.clone(),
+            age_secs: filed.stamp.map(|stamp| stamp.seconds_until(now)),
+            author: filed.author.clone(),
+            text: filed.text.clone(),
+        })
+        .collect();
     // `--since` drops what is older; a record whose timestamp did not parse has
     // no age to judge, so it is kept rather than silently dropped.
     if let Some(window) = since_secs {

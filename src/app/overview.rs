@@ -4,7 +4,7 @@
 //! PURE. Open is the needs Section the chat shows (so the tab agrees with
 //! `ae list`); the memos are `ae brief`'s own fold.
 
-use crate::brief::TopicLine;
+use crate::brief::{Filed, TopicLine};
 use crate::console::needs::{Section, Verdict};
 use crate::digest::SessionEntry;
 use crate::time::Timestamp;
@@ -40,6 +40,21 @@ pub fn of(
     memo: Result<&[u8], String>,
     now: Timestamp,
 ) -> Overview {
+    match memo {
+        Ok(bytes) => of_filed(entry, needs, Ok(&crate::brief::filed(bytes)), now),
+        Err(why) => of_filed(entry, needs, Err(why), now),
+    }
+}
+
+/// [`of`] from a memo [`crate::brief::filed`] already read: every age is
+/// judged at `now`, so a memo read earlier shows its age as of the show.
+#[must_use]
+pub fn of_filed(
+    entry: &SessionEntry,
+    needs: Option<&Section>,
+    memo: Result<&[Filed], String>,
+    now: Timestamp,
+) -> Overview {
     let goal = entry
         .goal
         .as_deref()
@@ -64,7 +79,7 @@ pub fn of(
         })
         .collect();
     let (lines, memo_gap) = match memo {
-        Ok(bytes) => (crate::brief::topic_lines(bytes, now, None), None),
+        Ok(filed) => (crate::brief::aged(filed, now, None), None),
         Err(why) => (Vec::new(), Some(why)),
     };
     let (decided, topics): (Vec<TopicLine>, Vec<TopicLine>) =
@@ -75,5 +90,55 @@ pub fn of(
         decided: decided.into_iter().next(),
         topics,
         memo_gap,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Overview, of, of_filed};
+    use crate::digest::{SessionEntry, Status};
+    use crate::time::Timestamp;
+
+    /// A memo read once is aged at each show: the same read shown an hour
+    /// later is an hour older, newest topic first, an unreadable stamp last,
+    /// exactly as the bytes read at that show would say.
+    #[test]
+    fn a_memo_read_earlier_is_aged_at_the_show() {
+        let file = concat!(
+            "2026-09-06T11:00:00Z\tcl:lead\tdecision\troute review\n",
+            "not a stamp\tcl:lead\tlost\tno age\n",
+            "2026-09-06T11:50:00Z\tcl:brief\tparking\tresume here\n",
+            "2026-09-06T11:30:00Z\tcl:lead\tdecision\tgate once\n",
+        );
+        let filed = crate::brief::filed(file.as_bytes());
+        let entry = SessionEntry::new("api", Status::Running);
+        let at = |stamp| Timestamp::parse(stamp).expect("a timestamp");
+        let ages = |overview: &Overview| -> Vec<(String, Option<i64>)> {
+            overview
+                .topics
+                .iter()
+                .map(|line| (line.topic.clone(), line.age_secs))
+                .collect()
+        };
+        let read = of_filed(&entry, None, Ok(&filed), at("2026-09-06T12:00:00Z"));
+        assert_eq!(
+            ages(&read),
+            [("parking".to_owned(), Some(600)), ("lost".to_owned(), None)]
+        );
+        let shown = at("2026-09-06T13:00:00Z");
+        let later = of_filed(&entry, None, Ok(&filed), shown);
+        assert_eq!(
+            ages(&later),
+            [
+                ("parking".to_owned(), Some(4_200)),
+                ("lost".to_owned(), None)
+            ]
+        );
+        let decided = later.decided.clone().expect("the latest decision");
+        assert_eq!(
+            (decided.text.as_str(), decided.age_secs),
+            ("gate once", Some(5_400))
+        );
+        assert_eq!(later, of(&entry, None, Ok(file.as_bytes()), shown));
     }
 }

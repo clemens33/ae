@@ -28,7 +28,7 @@ use crate::digest::{SessionEntry, Status};
 use crate::inventory::ServerId;
 use crate::listing::World;
 use crate::time::Timestamp;
-use crate::{doors, theme, tmux};
+use crate::{brief, doors, theme, tmux};
 
 use loader::{Answer, Request, Wake};
 
@@ -84,7 +84,7 @@ struct App {
     ids: BTreeMap<String, String>,
     facts: BTreeMap<String, fleet::Facts>,
     needs: BTreeMap<String, Section>,
-    memos: BTreeMap<String, Result<Vec<u8>, String>>,
+    memos: BTreeMap<String, Result<Vec<brief::Filed>, String>>,
     /// The home session's console, opened by the reader: every ask goes
     /// through it, and it is never read here.
     home_console: Option<Console>,
@@ -392,7 +392,7 @@ impl App {
             || Err("memo not read yet".to_owned()),
             |memo| memo.as_deref().map_err(String::clone),
         );
-        self.overview = overview::of(&entry, self.needs.get(&name), memo, now);
+        self.overview = overview::of_filed(&entry, self.needs.get(&name), memo, now);
     }
 
     /// Home's lane `base` with ae's own notices in it by time, built once
