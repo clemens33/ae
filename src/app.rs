@@ -1749,6 +1749,32 @@ mod tests {
         assert_eq!(replayed(&mut scrolled(80), &bytes), top);
     }
 
+    /// A notch landing exactly on the last row the frame drew is taken in
+    /// the same read: only one past it waits for the next frame.
+    #[test]
+    fn a_notch_onto_the_drawn_edge_is_taken_at_once() {
+        let mut app = scrolled(160);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 36));
+        app.frame(&mut buf);
+        assert!(!app.layout.complete);
+        let edge = app.layout.max_scroll;
+        assert_eq!((edge - 27) % 3, 0, "the edge is whole notches above a page");
+        let (_wake, wakes) = std::sync::mpsc::channel();
+        let mut keys = crate::console::input::Keys::app();
+        let mut bytes = b"\x1b[5~".to_vec();
+        bytes.extend(b"\x1b[<64;48;6M".repeat((edge - 27) / 3));
+        let read = Some(loader::Wake::Keys(Instant::now(), bytes));
+        assert!(super::drain(&mut app, &mut keys, &wakes, read).is_some());
+        assert!(app.deferred.is_empty(), "held at the edge");
+        assert_eq!(app.model.scroll_rows(27), edge);
+        let up = Some(loader::Wake::Keys(
+            Instant::now(),
+            b"\x1b[<64;48;6M".to_vec(),
+        ));
+        assert!(super::drain(&mut app, &mut keys, &wakes, up).is_some());
+        assert_eq!(app.deferred.len(), 1, "one past the edge waits");
+    }
+
     /// Ruling 3: a selection shares its read lane rather than copying it.
     #[test]
     fn a_foreign_selection_shares_its_read_lane() {
