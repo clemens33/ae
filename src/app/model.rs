@@ -4,6 +4,9 @@
 use super::fleet::Fleet;
 use crate::console::input;
 
+/// The chat rows one wheel notch scrolls.
+pub(crate) const WHEEL_ROWS: usize = 3;
+
 /// A browse key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -201,6 +204,11 @@ impl Model {
         self.pages.saturating_add(usize::from(self.rows > 0))
     }
 
+    /// Whether one more notch up would pass `max`.
+    pub(crate) fn wheel_passes(&self, page_rows: usize, max: usize) -> bool {
+        self.scroll_rows(page_rows).saturating_add(WHEEL_ROWS) > max
+    }
+
     /// Total chat rows back, with keyboard pages sized by this frame.
     pub(crate) fn scroll_rows(&self, page_rows: usize) -> usize {
         self.pages
@@ -219,9 +227,9 @@ impl Model {
     pub(crate) fn wheel(&mut self, up: bool, page_rows: usize, max: usize) {
         let scroll = self.scroll_rows(page_rows);
         let scroll = if up {
-            scroll.saturating_add(3)
+            scroll.saturating_add(WHEEL_ROWS)
         } else {
-            scroll.saturating_sub(3)
+            scroll.saturating_sub(WHEEL_ROWS)
         };
         self.pages = scroll.min(max) / page_rows.max(1);
         self.rows = scroll.min(max) % page_rows.max(1);

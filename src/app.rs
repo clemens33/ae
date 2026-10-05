@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::io::{IsTerminal as _, Write};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -60,7 +61,16 @@ struct Shown {
     /// The `session_id` the reading console was bound to.
     id: String,
     seq: u64,
-    lane: Lane,
+    lane: Rc<Lane>,
+}
+
+/// Home's lane as drawn — its last read with ae's own notices merged in by
+/// time — and what it was merged from, so a show rebuilds it only when the
+/// read or the notices changed.
+struct Merged {
+    base: Option<Rc<Lane>>,
+    notices: u64,
+    lane: Rc<Lane>,
 }
 
 /// Everything the app was answered, and the browse and compose state.
@@ -82,7 +92,8 @@ struct App {
     shown: BTreeMap<String, Shown>,
     /// Each session's drawn look and the viewer's zone, by name.
     looks: BTreeMap<String, (Option<theme::Look>, Option<String>)>,
-    lane: Lane,
+    lane: Rc<Lane>,
+    merged: Option<Merged>,
     /// The selection's lane has not been read yet.
     loading: bool,
     /// The fleet has been read at least once.
@@ -102,6 +113,8 @@ struct App {
     composing: bool,
     /// ae's own lines — refusals and outcomes — shown in the home lane.
     notices: Vec<Item>,
+    /// Bumped with every notice, so the merged home lane knows it is stale.
+    noticed: u64,
     draft_view: View,
     draft: String,
     layout: draw::Layout,
@@ -109,6 +122,9 @@ struct App {
     ask: Option<Sender<Request>>,
     /// The selection the reader was last told of.
     focused: Option<String>,
+    /// Keys held, in order, behind a wheel notch up the last frame could not
+    /// bound: the next frame produces more of the lane, then they replay.
+    deferred: Vec<(Key, Instant)>,
 }
 
 impl App {
@@ -141,7 +157,8 @@ impl App {
             home_console: None,
             shown: BTreeMap::new(),
             looks: BTreeMap::new(),
-            lane: Lane::default(),
+            lane: Rc::default(),
+            merged: None,
             loading: true,
             fleeted: false,
             overview: overview::Overview::default(),
@@ -152,6 +169,7 @@ impl App {
             read_only,
             composing: false,
             notices: Vec::new(),
+            noticed: 0,
             draft_view: View {
                 rows: Vec::new(),
                 cursor_row: 0,
@@ -162,6 +180,7 @@ impl App {
             layout: draw::Layout::default(),
             ask,
             focused: None,
+            deferred: Vec::new(),
         }
     }
 
@@ -252,7 +271,7 @@ impl App {
         let shown = Shown {
             id: view.id,
             seq: view.seq,
-            lane: view.lane,
+            lane: Rc::new(view.lane),
         };
         self.shown.insert(view.name, shown);
         if selected {
@@ -341,12 +360,12 @@ impl App {
     fn show(&mut self) {
         let now = Timestamp::now();
         let Some(name) = self.model.selected().map(str::to_owned) else {
-            (self.lane, self.overview) = (Lane::default(), overview::Overview::default());
+            (self.lane, self.overview) = (Rc::default(), overview::Overview::default());
             self.loading = false;
             return;
         };
         if !self.fleeted {
-            (self.lane, self.overview) = (Lane::default(), overview::Overview::default());
+            (self.lane, self.overview) = (Rc::default(), overview::Overview::default());
             self.loading = true;
             return;
         }
@@ -354,26 +373,48 @@ impl App {
         let entry = self.entry(&name).unwrap_or(&empty).clone();
         if !self.dirs.contains_key(&name) {
             let gap = format!("{name} has no record directory ae can read");
-            self.lane = Lane {
+            self.lane = Rc::new(Lane {
                 items: Vec::new(),
                 coverage: vec![gap.clone()],
-            };
+            });
             self.loading = false;
             self.overview = overview::of(&entry, None, Err(gap), now);
             return;
         }
-        let shown = self.shown.get(&name);
+        let shown = self.shown.get(&name).map(|shown| Rc::clone(&shown.lane));
         self.loading = shown.is_none();
-        self.lane = shown.map(|shown| shown.lane.clone()).unwrap_or_default();
-        if self.home.as_deref() == Some(name.as_str()) {
-            self.lane.items.extend(self.notices.iter().cloned());
-            self.lane.items.sort_by_key(|item| item.micros);
-        }
+        self.lane = if self.home.as_deref() == Some(name.as_str()) {
+            self.merge(shown)
+        } else {
+            shown.unwrap_or_default()
+        };
         let memo = self.memos.get(&name).map_or_else(
             || Err("memo not read yet".to_owned()),
             |memo| memo.as_deref().map_err(String::clone),
         );
         self.overview = overview::of(&entry, self.needs.get(&name), memo, now);
+    }
+
+    /// Home's lane `base` with ae's own notices in it by time, built once
+    /// per read and per notice rather than on every show.
+    fn merge(&mut self, base: Option<Rc<Lane>>) -> Rc<Lane> {
+        let same = |merged: &&Merged| {
+            merged.notices == self.noticed
+                && merged.base.as_ref().map(Rc::as_ptr) == base.as_ref().map(Rc::as_ptr)
+        };
+        if let Some(merged) = self.merged.as_ref().filter(same) {
+            return Rc::clone(&merged.lane);
+        }
+        let mut lane = base.as_deref().cloned().unwrap_or_default();
+        lane.items.extend(self.notices.iter().cloned());
+        lane.items.sort_by_key(|item| item.micros);
+        let lane = Rc::new(lane);
+        self.merged = Some(Merged {
+            base,
+            notices: self.noticed,
+            lane: Rc::clone(&lane),
+        });
+        lane
     }
 
     fn entry(&self, name: &str) -> Option<&SessionEntry> {
@@ -404,6 +445,17 @@ impl App {
             }
         }
         Some(())
+    }
+
+    /// A wheel notch up past a bound the last frame has not proven the top:
+    /// it waits for the next frame rather than stopping short of it.
+    fn unbounded(&self, key: &Key) -> bool {
+        matches!(key, Key::Mouse(mouse)
+            if mouse.kind == MouseKind::WheelUp && self.layout.in_chat(*mouse))
+            && !self.layout.complete
+            && self
+                .model
+                .wheel_passes(self.layout.page_rows, self.layout.max_scroll)
     }
 
     /// Mouse actions use the last drawn frame, in either input mode.
@@ -466,6 +518,7 @@ impl App {
                 body: line,
                 record: None,
             });
+            self.noticed = self.noticed.wrapping_add(1);
         }
         let over = self.notices.len().saturating_sub(NOTICES);
         self.notices.drain(..over);
@@ -682,7 +735,13 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             terminal.draw(|frame| app.frame(frame.buffer_mut()))?;
             dirty = false;
         }
-        let first = match wakes.recv_timeout(TICK) {
+        // Held keys replay as soon as the frame above has produced more.
+        let wait = if app.deferred.is_empty() {
+            TICK
+        } else {
+            Duration::ZERO
+        };
+        let first = match wakes.recv_timeout(wait) {
             Ok(wake) => Some(wake),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => break,
@@ -703,15 +762,16 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     Ok(0)
 }
 
-/// Take `first` and every wake already waiting behind it, then the idle
-/// keys when none came: `Some(redraw)`, or `None` to quit.
+/// Take the held keys, then `first` and every wake already waiting behind
+/// it, then the idle keys when none came: `Some(redraw)`, or `None` to quit.
 fn drain(
     app: &mut App,
     keys: &mut Keys,
     wakes: &mpsc::Receiver<Wake>,
     first: Option<Wake>,
 ) -> Option<bool> {
-    let (mut redraw, mut fed) = (false, false);
+    let held = std::mem::take(&mut app.deferred);
+    let (mut redraw, mut fed) = (take_keys(app, held)?, false);
     for wake in first
         .into_iter()
         .chain(std::iter::from_fn(|| wakes.try_recv().ok()))
@@ -736,10 +796,19 @@ fn drain(
     Some(redraw)
 }
 
-/// Take decoded keys: `Some(redraw)`, or `None` to quit.
+/// Take decoded keys: `Some(redraw)`, or `None` to quit. From a wheel notch
+/// the frame cannot bound yet on, every key is held in order behind it, and
+/// a held `^C` still quits at once.
 fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
     let mut redraw = false;
-    for (key, origin) in keyed {
+    let mut keyed = keyed.into_iter();
+    while let Some((key, origin)) = keyed.next() {
+        if !app.deferred.is_empty() || app.unbounded(&key) {
+            app.deferred.push((key, origin));
+            app.deferred.extend(keyed);
+            let quit = app.deferred.iter().any(|(key, _)| *key == Key::Interrupt);
+            return (!quit).then_some(true);
+        }
         redraw |= if let Key::Mouse(mouse) = &key {
             app.mouse(*mouse)
         } else if app.composing {
@@ -781,6 +850,7 @@ fn apply(app: &mut App, act: &model::Act) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::rc::Rc;
     use std::time::{Duration, Instant};
 
     use ratatui_core::buffer::Buffer;
@@ -791,7 +861,7 @@ mod tests {
     use crate::app::fleet::{Counts, Fleet, Row};
     use crate::app::model::{Key as Browse, Model};
     use crate::attention::Reason;
-    use crate::console::input::{Input, Key, Reading};
+    use crate::console::input::{Effect, Input, Key, Reading};
     use crate::console::lane::{Item, Kind, Lane};
     use crate::digest::{SessionEntry, Status};
     use crate::listing::World;
@@ -989,7 +1059,10 @@ mod tests {
         let mut app = app(None);
         app.fleet = one_row(None);
         app.model = Model::new(&app.fleet);
-        app.lane.items = (0..60).map(|at| said(&format!("turn {at}"), at)).collect();
+        app.lane = Rc::new(Lane {
+            items: (0..60).map(|at| said(&format!("turn {at}"), at)).collect(),
+            coverage: Vec::new(),
+        });
         let shown = framed(&mut app);
         assert!(shown.lines().last().expect("keys row").contains("q quit"));
         let mut mouse = super::Mouse {
@@ -1059,10 +1132,10 @@ mod tests {
         app.model = Model::new(&app.fleet);
         let mut items = vec![said("oldest turn", 0)];
         items.extend((1..60).map(|at| said(&format!("turn {at}"), at)));
-        app.lane = Lane {
+        app.lane = Rc::new(Lane {
             items,
             coverage: Vec::new(),
-        };
+        });
         for _ in 0..80 {
             let _ = app.model.key(Browse::PageUp, &app.fleet, false, true);
         }
@@ -1076,7 +1149,7 @@ mod tests {
             "one fewer hides it"
         );
         assert_eq!(app.model.pages(), bound - 1, "a scroll inside stays put");
-        app.lane.items.truncate(2);
+        Rc::make_mut(&mut app.lane).items.truncate(2);
         let _ = framed(&mut app);
         assert_eq!(app.model.pages(), 0, "a lane that fits scrolls nowhere");
     }
@@ -1518,7 +1591,7 @@ mod tests {
             super::Shown {
                 id: "home-id".to_owned(),
                 seq: 1,
-                lane: Lane::default(),
+                lane: Rc::default(),
             },
         );
         app.answer(Answer::Fleet(read_of(&app, &[("web", ID), ("ops", ID)])));
@@ -1606,6 +1679,50 @@ mod tests {
             assert_eq!(super::drain(&mut app, &mut keys, &wakes, first), Some(true));
             assert!(!app.composing, "Esc browses");
         }
+    }
+
+    /// Ruling 3: a selection shares its read lane rather than copying it.
+    #[test]
+    fn a_foreign_selection_shares_its_read_lane() {
+        let mut app = app(Some("api"));
+        two(&mut app);
+        app.answer(view("web", ID, 1, "web turn"));
+        assert_eq!(app.model.selected(), Some("web"));
+        assert!(Rc::ptr_eq(&app.lane, &app.shown["web"].lane), "a copy");
+    }
+
+    /// Home's lane is its read with ae's own notices in it, in the order a
+    /// stable sort by time gives — the read's own order kept on a tie — and
+    /// it is built once per read and per notice, not on every show.
+    #[test]
+    fn homes_merge_is_built_once_per_read_and_notice() {
+        let mut app = app(Some("api"));
+        let base = Rc::new(Lane {
+            items: vec![said("late", 30), said("early", 10), said("tie read", 20)],
+            coverage: vec!["gap".to_owned()],
+        });
+        app.notices = vec![said("tie notice", 20), said("first", 0)];
+        let bodies = |lane: &Lane| -> Vec<String> {
+            lane.items.iter().map(|item| item.body.clone()).collect()
+        };
+        let merged = app.merge(Some(Rc::clone(&base)));
+        assert_eq!(
+            bodies(&merged),
+            ["first", "early", "tie read", "tie notice", "late"]
+        );
+        assert_eq!(merged.coverage, ["gap"]);
+        let again = app.merge(Some(Rc::clone(&base)));
+        assert!(Rc::ptr_eq(&merged, &again), "rebuilt with nothing new");
+        let read = Rc::new((*base).clone());
+        let reread = app.merge(Some(Rc::clone(&read)));
+        assert!(!Rc::ptr_eq(&again, &reread), "a new read is merged afresh");
+        app.effects(vec![Effect::Print("said".to_owned())]);
+        let noticed = app.merge(Some(Rc::clone(&read)));
+        assert!(!Rc::ptr_eq(&reread, &noticed), "a new notice is merged");
+        assert_eq!(bodies(&noticed).last().map(String::as_str), Some("said"));
+        let unread = app.merge(None);
+        assert_eq!(bodies(&unread).len(), 3, "notices alone before a read");
+        assert!(Rc::ptr_eq(&unread, &app.merge(None)));
     }
 
     /// The look of a session dresses the app only as that session's: the

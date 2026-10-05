@@ -32,16 +32,13 @@ pub(super) struct Tail {
     /// asked for when the lane has them.
     pub(super) rows: Vec<Line<'static>>,
     /// Whether `rows` reaches the lane's oldest row, its coverage included.
-    #[allow(
-        dead_code,
-        reason = "S0 observer field until production consumes completeness"
-    )]
     pub(super) complete: bool,
 }
 
-/// The newest `need` rows of `lane` or more, as [`rows`] draws them. `visited`
-/// gets the index of each item whose body this call wrapped, in the order it
-/// wrapped them.
+/// The newest `need` rows of `lane` or more, as [`rows`] draws them: turns
+/// from the newest back, whole, then coverage rows from the last back, until
+/// `need` rows stand. `visited` gets the index of each item whose body this
+/// call wrapped, in the order it wrapped them.
 pub(super) fn tail(
     lane: &Lane,
     width: usize,
@@ -51,18 +48,16 @@ pub(super) fn tail(
     need: usize,
     mut visited: Option<&mut Vec<usize>>,
 ) -> Tail {
-    // The whole lane for now, so every frame is today's: it covers any need.
-    let _ = need;
-    let mut rows: Vec<Line<'static>> = lane
-        .coverage
-        .iter()
-        .map(|gap| {
-            let text = terminal_text(&format!("coverage incomplete: {gap}"));
-            Line::from(Span::styled(text, paint.fg(|p| p.dim)))
-        })
-        .collect();
-    for (at, item) in lane.items.iter().enumerate() {
-        if !rows.is_empty() {
+    // Newest first, each turn's rows in order; reversed into place below.
+    let mut turns: Vec<Vec<Line<'static>>> = Vec::new();
+    let mut count = 0;
+    let mut items = lane.items.iter().enumerate().rev();
+    while count < need {
+        let Some((at, item)) = items.next() else {
+            break;
+        };
+        let mut rows = Vec::new();
+        if at > 0 || !lane.coverage.is_empty() {
             rows.push(Line::default());
         }
         let (speaker, qualifier, voice) = head(&item.kind, main);
@@ -82,10 +77,25 @@ pub(super) fn tail(
                 Span::styled(piece, paint.fg(|p| p.text)),
             ]));
         }
+        count += rows.len();
+        turns.push(rows);
     }
+    let mut gaps = lane.coverage.iter().rev();
+    let mut coverage = Vec::new();
+    while count < need && items.len() == 0 {
+        let Some(gap) = gaps.next() else {
+            break;
+        };
+        let text = terminal_text(&format!("coverage incomplete: {gap}"));
+        coverage.push(Line::from(Span::styled(text, paint.fg(|p| p.dim))));
+        count += 1;
+    }
+    let mut rows = Vec::with_capacity(count);
+    rows.extend(coverage.into_iter().rev());
+    rows.extend(turns.into_iter().rev().flatten());
     Tail {
         rows,
-        complete: true,
+        complete: items.len() == 0 && gaps.len() == 0,
     }
 }
 

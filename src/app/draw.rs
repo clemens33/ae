@@ -90,7 +90,11 @@ pub(crate) struct Layout {
     targets: Vec<(Rect, Hit)>,
     chat: Rect,
     pub page_rows: usize,
+    /// How far back the chat can scroll: exact once `complete`, else only
+    /// as far as this frame produced.
     pub max_scroll: usize,
+    /// The frame produced the lane's oldest row.
+    pub complete: bool,
 }
 
 impl Layout {
@@ -171,7 +175,9 @@ pub(crate) struct Wait {
 
 /// Draw `screen` into `buf`, whose area starts at the origin — the app hands
 /// it the terminal's whole frame. The answer is how many pages back the chat
-/// can scroll in this frame, which bounds the model's scroll.
+/// can scroll in this frame, which bounds the model's scroll: the lane's
+/// whole height once the frame reached its oldest row, else at least a page
+/// past the window.
 pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
     let layout = draw_with_layout(screen, Wait::default(), buf);
     layout.max_scroll.div_ceil(layout.page_rows.max(1))
@@ -690,10 +696,12 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let clock = view::Style::resolve(true, screen.look, screen.zone, main);
     let room_rows = usize::from(bottom.saturating_sub(top));
     let scroll = screen.model.scroll_rows(room_rows);
-    // One page past the window, so a wheel notch or a page key stays inside
-    // what this frame produced until the next frame produces more.
-    let need = scroll.saturating_add(room_rows.saturating_mul(2));
-    let super::lane::Tail { mut rows, .. } = super::lane::tail(
+    // One page and a notch past the window, so a wheel notch or a page key
+    // stays inside what this frame produced until the next produces more.
+    let need = scroll
+        .saturating_add(room_rows.saturating_mul(2))
+        .saturating_add(super::model::WHEEL_ROWS);
+    let super::lane::Tail { mut rows, complete } = super::lane::tail(
         screen.lane,
         usize::from(room),
         paint,
@@ -731,6 +739,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.record(buf, Rect::new(left, height - 4, room, 2), Hit::Compose);
     layout.page_rows = room_rows;
     layout.max_scroll = rows.len().saturating_sub(room_rows);
+    layout.complete = complete;
 }
 
 /// The chat header: the session, its pair or where it is viewed from, and
