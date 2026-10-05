@@ -1470,6 +1470,142 @@ mod tests {
         assert_eq!(app.dressed(), (Some(off), None), "home's read look stays");
     }
 
+    /// One fleet read built from what `app` holds, naming `ids`.
+    fn read_of(app: &App, ids: &[(&str, &str)]) -> loader::FleetRead {
+        loader::FleetRead {
+            dirs: app.dirs.clone(),
+            ids: ids
+                .iter()
+                .map(|(name, id)| ((*name).to_owned(), (*id).to_owned()))
+                .collect(),
+            world: app.world.clone(),
+            facts: app.facts.clone(),
+            needs: app.needs.clone(),
+            fleet: app.fleet.clone(),
+            pair: None,
+            memos: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// A fleet read naming the same identity keeps a foreign session's last
+    /// lane and look; home keeps its own whatever the fleet names; a look
+    /// read before any fleet read survives the first one for a listed
+    /// session, and home's even unlisted.
+    #[test]
+    fn a_fleet_read_keeps_what_still_describes_its_session() {
+        let mut app = app(Some("api"));
+        two(&mut app);
+        let drawn = Some(crate::theme::Look::DEFAULT);
+        for name in ["web", "api"] {
+            app.answer(Answer::Look {
+                name: name.to_owned(),
+                look: drawn,
+                zone: None,
+            });
+        }
+        app.ids.clear();
+        app.answer(Answer::Fleet(read_of(&app, &[("web", ID), ("ops", ID)])));
+        assert!(
+            app.looks.contains_key("web"),
+            "a listed session's early look"
+        );
+        assert!(app.looks.contains_key("api"), "home's early look, unlisted");
+        app.answer(view("web", ID, 1, "web turn"));
+        app.shown.insert(
+            "api".to_owned(),
+            super::Shown {
+                id: "home-id".to_owned(),
+                seq: 1,
+                lane: Lane::default(),
+            },
+        );
+        app.answer(Answer::Fleet(read_of(&app, &[("web", ID), ("ops", ID)])));
+        assert!(
+            app.shown.contains_key("web"),
+            "same identity keeps its lane"
+        );
+        assert!(app.looks.contains_key("web"), "and its look");
+        assert!(app.shown.contains_key("api"), "home keeps its lane");
+    }
+
+    /// The lanes kept are the reader's kept order: a session past KEEP takes
+    /// its lane with it.
+    #[test]
+    fn a_lane_past_the_kept_order_is_dropped() {
+        let mut app = app(None);
+        let names: Vec<String> = (0..20).map(|at| format!("s{at:02}")).collect();
+        app.fleet = Fleet {
+            rows: names
+                .iter()
+                .enumerate()
+                .map(|(at, name)| row(name, at + 1, false))
+                .collect(),
+            home: None,
+        };
+        for name in &names {
+            app.dirs.insert(name.clone(), PathBuf::from(name));
+            app.ids.insert(name.clone(), ID.to_owned());
+        }
+        app.model = Model::new(&app.fleet);
+        for name in ["s00", "s15", "s19"] {
+            app.answer(view(name, ID, 1, name));
+        }
+        app.evict();
+        assert!(app.shown.contains_key("s00") && app.shown.contains_key("s15"));
+        assert!(!app.shown.contains_key("s19"), "beyond KEEP");
+    }
+
+    /// Ruling 5: a write through the home composer asks the reader to read
+    /// home again; a key that writes nothing asks nothing.
+    #[test]
+    fn a_composer_write_asks_for_a_home_reread() {
+        let root = Root::new("reread");
+        let (mut app, _reader) = housed(&root);
+        let (ask, asks) = std::sync::mpsc::channel();
+        app.ask = Some(ask);
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        let begun = Instant::now();
+        let input = app.input.as_mut().expect("a lead pair makes an input");
+        let _ = input.tick(Reading::Owner, begun);
+        app.composing = true;
+        let typed = begun + Duration::from_millis(5);
+        assert_eq!(app.compose(Key::Text(b"/close".to_vec()), typed), Some(()));
+        assert!(asks.try_iter().next().is_none(), "typing writes nothing");
+        assert_eq!(app.compose(Key::Enter, typed), Some(()));
+        let rereads: Vec<String> = asks
+            .try_iter()
+            .filter_map(|request| match request {
+                loader::Request::Reread(name) => Some(name),
+                loader::Request::Focus(_) => None,
+            })
+            .collect();
+        assert_eq!(rereads, ["api"]);
+    }
+
+    /// A lone ESC completes once a wait ends with no keys: on the timeout
+    /// alone, and on answers alone.
+    #[test]
+    fn a_wait_with_no_keys_completes_a_lone_escape() {
+        let (_wake, wakes) = std::sync::mpsc::channel();
+        let quiet = Answer::Look {
+            name: "web".to_owned(),
+            look: None,
+            zone: None,
+        };
+        for first in [None, Some(loader::Wake::Answer(Box::new(quiet)))] {
+            let mut app = app(None);
+            app.composing = true;
+            let mut keys = crate::console::input::Keys::app();
+            let typed = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("an instant a second ago");
+            assert!(keys.feed(b"\x1b", typed).is_empty(), "ESC waits");
+            assert_eq!(super::drain(&mut app, &mut keys, &wakes, first), Some(true));
+            assert!(!app.composing, "Esc browses");
+        }
+    }
+
     /// The look of a session dresses the app only as that session's: the
     /// selection's look never dresses home, a drawn home look wins.
     #[test]
@@ -1502,6 +1638,20 @@ mod tests {
             zone: Some("-0500".to_owned()),
         });
         assert_eq!(app.dressed().1, Some("-0500"), "home's drawn look wins");
+        for name in ["api", "web"] {
+            app.answer(Answer::Look {
+                name: name.to_owned(),
+                look: None,
+                zone: None,
+            });
+        }
+        assert_eq!(
+            app.dressed().0,
+            Some(crate::theme::Look::DEFAULT),
+            "read and lookless: the default drawn look"
+        );
+        let unread = App::new(None, None, None, None);
+        assert_eq!(unread.dressed(), (None, None), "nothing read: no colour");
     }
 
     /// A selection made by the fleet itself — its first choice, or a

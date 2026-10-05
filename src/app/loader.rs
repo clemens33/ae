@@ -336,8 +336,11 @@ impl Reader {
         {
             return name.clone().map_or(Job::Fleet, Job::View);
         }
-        let until = candidates.iter().filter_map(|(_, due)| *due).min();
-        Job::Wait(until.unwrap_or(now + REFRESH).min(now + REFRESH))
+        let until = candidates
+            .iter()
+            .filter_map(|(_, due)| *due)
+            .fold(fleet_at + REFRESH, Instant::min);
+        Job::Wait(until.min(now + REFRESH))
     }
 
     /// Read the fleet again: home's look (and the selection's when home's is
@@ -350,11 +353,7 @@ impl Reader {
             .map(|home| self.look(&home))
             .into_iter()
             .collect();
-        let other = self
-            .selected
-            .clone()
-            .filter(|name| !self.home_drawn && self.home.as_ref() != Some(name));
-        if let Some(name) = other {
+        if let Some(name) = self.undressed() {
             answers.push(self.look(&name));
         }
         answers.extend(self.owned());
@@ -473,17 +472,31 @@ impl Reader {
             .retain(|name, _| home == Some(name.as_str()) || consoles.contains_key(name));
     }
 
+    /// The selection whose look a fleet read reads beside home's: one while
+    /// home's is not drawn, and never home's twice.
+    fn undressed(&self) -> Option<String> {
+        self.selected
+            .clone()
+            .filter(|name| !self.home_drawn && self.home.as_ref() != Some(name))
+    }
+
     /// Session `name`'s drawn look, and whether home's is drawn.
     pub(super) fn look(&mut self, name: &str) -> Answer {
-        self.looks.remove(name);
         let (look, zone) = console::look_of(name, true);
-        if self.home.as_deref() == Some(name) {
-            self.home_drawn = look.is_some();
-        }
+        self.noted(name, look.is_some());
         Answer::Look {
             name: name.to_owned(),
             look,
             zone,
+        }
+    }
+
+    /// Session `name`'s look is read, `drawn` or not: home's says whether
+    /// home's is drawn.
+    fn noted(&mut self, name: &str, drawn: bool) {
+        self.looks.remove(name);
+        if self.home.as_deref() == Some(name) {
+            self.home_drawn = drawn;
         }
     }
 
@@ -711,6 +724,86 @@ mod tests {
         );
     }
 
+    /// A selection with no console to read through is never read: the
+    /// reader goes on to the rest instead of asking for it again and again.
+    #[test]
+    fn an_unreadable_selection_is_never_read() {
+        let root = Root::new("ghost");
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        let now = Instant::now();
+        reader.fleet_at = Some(now);
+        reader.rows = rows(&["ghost", "api", "web"]);
+        reader.dirs.insert("web".to_owned(), PathBuf::from("web"));
+        reader.take(Request::Focus(Some("ghost".to_owned())));
+        reader.looks.clear();
+        assert_eq!(
+            viewing(&reader.next(now)),
+            Some("web"),
+            "neither the dir-less selection nor an unopened home"
+        );
+    }
+
+    /// Ruling 3: a neighbour read before the last change of selection is read
+    /// again a REFRESH after that read completed, not sooner.
+    #[test]
+    fn a_stale_neighbour_waits_out_its_refresh() {
+        let root = Root::new("warm");
+        let mut reader = Reader::new(root.0.clone(), None, None, None);
+        let read = Instant::now();
+        reader.rows = rows(&["a", "b"]);
+        reader.take(Request::Focus(Some("a".to_owned())));
+        reader.looks.clear();
+        for name in ["a", "b"] {
+            reader.dirs.insert(name.to_owned(), PathBuf::from(name));
+            reader.read_at.insert(name.to_owned(), read);
+        }
+        let now = read + REFRESH / 2;
+        reader.focus_at = now;
+        reader.fleet_at = Some(now);
+        assert!(matches!(reader.next(now), Job::Wait(until) if until == read + REFRESH));
+        reader.read_at.insert("a".to_owned(), now);
+        assert_eq!(viewing(&reader.next(read + REFRESH)), Some("b"));
+    }
+
+    /// A selection's look is read only while home's is not drawn, and
+    /// home's never twice: a focus queues it, a fleet read reads it.
+    #[test]
+    fn looks_are_read_for_home_and_an_undressed_selection_only() {
+        let root = Root::new("looks");
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        reader.take(Request::Focus(Some("api".to_owned())));
+        assert!(
+            reader.looks.is_empty(),
+            "home's look rides every fleet read"
+        );
+        assert_eq!(reader.undressed(), None, "home's look once");
+        reader.take(Request::Focus(Some("web".to_owned())));
+        assert!(reader.looks.contains("web"));
+        assert_eq!(reader.undressed().as_deref(), Some("web"));
+        reader.home_drawn = true;
+        assert_eq!(reader.undressed(), None, "a drawn home dresses the app");
+        reader.looks.clear();
+        reader.take(Request::Focus(Some("ops".to_owned())));
+        assert!(reader.looks.is_empty(), "and queues no look");
+    }
+
+    /// Only home's own look says whether home's look is drawn.
+    #[test]
+    fn only_homes_look_says_home_is_drawn() {
+        let root = Root::new("drawn");
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        reader.looks.insert("web".to_owned());
+        reader.noted("web", true);
+        assert!(!reader.home_drawn);
+        assert!(reader.looks.is_empty(), "a read look is no longer asked");
+        reader.noted("api", true);
+        assert!(reader.home_drawn);
+        reader.noted("web", false);
+        assert!(reader.home_drawn, "a foreign look leaves it");
+        reader.noted("api", false);
+        assert!(!reader.home_drawn);
+    }
+
     /// I3: a foreign console bound to an identity its session no longer
     /// records is dropped, and so is its read stamp, so it reads afresh.
     #[test]
@@ -722,10 +815,16 @@ mod tests {
         reader.dirs.insert("web".to_owned(), dir);
         reader.ids.insert("web".to_owned(), ID.to_owned());
         assert!(matches!(reader.view("web"), Some(Answer::View(view)) if view.id == ID));
+        reader.read_at.insert("api".to_owned(), Instant::now());
+        reader.home = Some("api".to_owned());
         reader.evict();
         assert!(
             reader.consoles.contains_key("web"),
             "the same identity stays"
+        );
+        assert!(
+            reader.read_at.contains_key("web") && reader.read_at.contains_key("api"),
+            "a kept console and home keep their read stamps"
         );
         let other = "0199c0de-0000-4890-abcd-ef0123456789";
         reader.ids.insert("web".to_owned(), other.to_owned());
