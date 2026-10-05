@@ -606,7 +606,7 @@ fn a_recorded_server_changed_after_the_scan_cannot_reuse_the_old_cohort_cutoff()
     let (held, child, reader) = waiting_restore(&fleet, "held");
     // Both private servers prove this name absent, so either preflight view
     // succeeds. The locked recheck must bind the cutoff to the scanned server.
-    std::fs::write(&path, &edited).expect("change only the recorded server");
+    publish_fixture_meta(&path, edited.as_bytes()).expect("change only the recorded server");
     drop(held);
     let out = finish_restore(child, reader);
     success(&out);
@@ -841,4 +841,41 @@ fn restore_off_preserves_the_empty_server_hint_and_saved_state_byte_for_byte() {
     );
     unchanged(&fleet.dir("saved").join("meta"), &before);
     assert!(!fleet.tmux(&["has-session", "-t", "=saved"]).0);
+}
+// Baseline fixture seam: this preserves the old truncate-and-write behavior.
+// The fix changes this helper; the separately frozen acceptance test stays.
+fn publish_fixture_meta(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+/// A lock-free reader can open metadata before its fixture writer publishes.
+/// Holding that read handle across publication must retain the complete old
+/// record; a later open must see the complete replacement. This interleaving
+/// pins publication atomicity without relying on scheduler timing.
+#[test]
+fn fixture_meta_publication_keeps_an_open_reader_on_the_complete_old_record() {
+    let scratch = OwnedScratch::root("rs", "pub-meta");
+    let path = scratch.join("meta");
+    let before = "tmux_server_kind=socket\ntmux_server=/old/private.sock\nseat.main=lead\n";
+    let replacement =
+        "tmux_server_kind=socket\ntmux_server=/new/destination.sock\nseat.main=lead\n";
+    std::fs::write(&path, before).expect("the original complete metadata");
+
+    // File::open is the deterministic reader barrier: this is the handle
+    // which a lock-free read obtained before the writer's publication.
+    let mut reader = std::fs::File::open(&path).expect("open before publication");
+    publish_fixture_meta(&path, replacement.as_bytes()).expect("publish replacement metadata");
+    let mut observed = String::new();
+    reader
+        .read_to_string(&mut observed)
+        .expect("finish the already-open reader");
+
+    assert_eq!(
+        observed, before,
+        "a reader opened before publication must retain the complete old metadata"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("a new reader after publication"),
+        replacement,
+        "a reader opened after publication must see the complete replacement"
+    );
 }
