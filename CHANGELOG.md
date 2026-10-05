@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.27] - 2026-10-05
+- **app**: Name the drag and release mouse kinds the decoder will admit
+- **app**: Pin border dragging and mouse compatibility
+- **app**: Drag the sidebar and list borders to resize them
+- **app**: Keep dragged sizes when the fleet empties and refills
+
 ## [v2026.10.26] - 2026-10-05
 - **app**: Draw the chat through a tail render with a visit seam
 - **app**: Freeze windowed lane acceptance spec
