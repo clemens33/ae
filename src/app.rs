@@ -238,7 +238,7 @@ impl App {
         }
         self.fleeted = true;
         if self.model.selected().is_none() {
-            self.model = model::Model::new(&self.fleet);
+            self.model.restart(&self.fleet);
         }
         self.model.reconcile(&self.fleet);
         self.evict();
@@ -908,7 +908,7 @@ mod tests {
     use super::loader::{self, Answer, Reader, ViewRead};
     use super::{App, UNREAD, USAGE, browse, facts_of, fleet, run};
     use crate::app::fleet::{Counts, Fleet, Row};
-    use crate::app::model::{Key as Browse, Model};
+    use crate::app::model::{Key as Browse, Model, Tab};
     use crate::attention::Reason;
     use crate::console::input::{Effect, Input, Key, Reading};
     use crate::console::lane::{Item, Kind, Lane};
@@ -1063,6 +1063,118 @@ mod tests {
             Some("api"),
             "the click never selected web"
         );
+    }
+
+    /// Motion on a dragged list rule the frame stopped drawing moves nothing,
+    /// though the sidebar beside it is still drawn; shown again, the rule
+    /// stands where it was last dragged.
+    #[test]
+    fn motion_on_a_list_rule_the_frame_hid_keeps_its_size() {
+        let rule_row = |shown: &str| shown.lines().position(|line| line.starts_with('─'));
+        let mut app = app(None);
+        two(&mut app);
+        let first = framed(&mut app);
+        let row = u16::try_from(rule_row(&first).expect("list rule")).expect("frame row");
+        let at = |kind, row| super::Mouse {
+            kind,
+            column: 2,
+            row,
+        };
+        assert!(
+            app.mouse(at(super::MouseKind::Click, row)),
+            "a press grabs the rule"
+        );
+        assert!(
+            app.mouse(at(super::MouseKind::Drag, row + 3)),
+            "motion drags it"
+        );
+        let chosen = app.model.split();
+        let dragged = rule_row(&framed(&mut app));
+        assert_eq!(dragged, Some(usize::from(row + 3)), "the rule followed");
+        let world = app.world.clone();
+        app.world = World::new(Timestamp::now(), Vec::new());
+        let hidden = framed(&mut app);
+        assert_eq!(
+            rule_row(&hidden),
+            None,
+            "no selected entry draws no list rule"
+        );
+        let sidebar = |shown: &str| shown.lines().next().and_then(|top| top.find('│'));
+        assert!(sidebar(&first).is_some(), "a sidebar rule to keep");
+        assert_eq!(
+            sidebar(&hidden),
+            sidebar(&first),
+            "the sidebar rule still stands"
+        );
+        assert!(
+            !app.mouse(at(super::MouseKind::Drag, row + 8)),
+            "motion on the hidden rule is a no-op"
+        );
+        assert!(app.model.drag().is_some(), "the drag is still held");
+        assert_eq!(app.model.split(), chosen, "the hidden rule kept its size");
+        app.world = world;
+        assert_eq!(
+            rule_row(&framed(&mut app)),
+            dragged,
+            "shown again where it was dragged"
+        );
+    }
+
+    /// A fleet read that empties the fleet, then one that fills it again,
+    /// keeps both chosen sizes and the drag still held: a read is not input.
+    /// The refilled fleet otherwise starts fresh, on its first row's Overview.
+    #[test]
+    fn an_emptied_then_refilled_fleet_keeps_its_sizes_and_drag() {
+        let rule_row = |shown: &str| shown.lines().position(|line| line.starts_with('─'));
+        let sidebar = |shown: &str| {
+            (shown.lines().next()).and_then(|top| top.chars().position(|cell| cell == '│'))
+        };
+        let mouse = |kind, column: usize, row: usize| super::Mouse {
+            kind,
+            column: u16::try_from(column).expect("frame column"),
+            row: u16::try_from(row).expect("frame row"),
+        };
+        let mut app = app(None);
+        two(&mut app);
+        let full = read_of(&app, &[("web", ID), ("ops", ID)]);
+        let mut empty = read_of(&app, &[]);
+        (empty.fleet, empty.world) = (Fleet::default(), World::new(Timestamp::now(), Vec::new()));
+        let first = framed(&mut app);
+        let column = sidebar(&first).expect("sidebar rule");
+        assert!(app.mouse(mouse(super::MouseKind::Click, column, 1)));
+        assert!(app.mouse(mouse(super::MouseKind::Drag, column + 6, 1)));
+        assert!(app.mouse(mouse(super::MouseKind::Release, column + 6, 1)));
+        let widened = framed(&mut app);
+        let row = rule_row(&widened).expect("list rule");
+        assert!(app.mouse(mouse(super::MouseKind::Click, 2, row)));
+        assert!(app.mouse(mouse(super::MouseKind::Drag, 2, row + 3)));
+        app.model.show_tab(Tab::Agents);
+        app.answer(Answer::Fleet(empty));
+        assert_eq!(
+            app.model.selected(),
+            None,
+            "the empty fleet selects nothing"
+        );
+        app.answer(Answer::Fleet(full));
+        let refilled = framed(&mut app);
+        assert_eq!(
+            sidebar(&refilled),
+            Some(column + 6),
+            "the sidebar kept its width"
+        );
+        assert_eq!(rule_row(&refilled), Some(row + 3), "the list kept its rows");
+        assert_eq!(
+            app.model.selected(),
+            Some("web"),
+            "the first row is selected"
+        );
+        assert_eq!(app.model.tab(), Tab::Overview, "on a fresh Overview");
+        assert!(app.model.drag().is_some(), "the drag is still held");
+        assert!(
+            app.mouse(mouse(super::MouseKind::Drag, 2, row + 4)),
+            "and still drags"
+        );
+        assert_eq!(rule_row(&framed(&mut app)), Some(row + 4));
     }
 
     /// Leaving writing on the current tab must repaint immediately, keeping the draft.

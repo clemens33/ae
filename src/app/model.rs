@@ -298,6 +298,16 @@ impl Model {
         }
     }
 
+    /// Start again on `fleet`, as [`Model::new`] does, keeping the sizes the
+    /// borders were dragged to and a drag in progress.
+    pub(crate) fn restart(&mut self, fleet: &Fleet) {
+        *self = Self {
+            split: self.split,
+            drag: self.drag,
+            ..Self::new(fleet)
+        };
+    }
+
     /// The sizes the borders were dragged to.
     pub(crate) fn split(&self) -> Split {
         self.split
