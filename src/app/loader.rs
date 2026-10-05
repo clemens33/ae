@@ -51,7 +51,7 @@ pub(super) enum Answer {
     /// The home session, opened: the console its writes go through and its
     /// lead pair, or `None` when there is no home to open.
     Home(Option<(Console, Result<Vec<Seat>, String>)>),
-    Fleet(Box<FleetRead>),
+    Fleet(FleetRead),
     /// Session `name`'s drawn look and the viewer's zone.
     Look {
         name: String,
@@ -65,7 +65,7 @@ pub(super) enum Answer {
         at: Instant,
         draft: Option<submit::Draft>,
     },
-    View(Box<ViewRead>),
+    View(ViewRead),
 }
 
 /// One read of the fleet.
@@ -270,7 +270,11 @@ impl Reader {
     pub(super) fn take(&mut self, request: Request) {
         match request {
             Request::Focus(selected) => {
-                if let Some(name) = selected.as_ref().filter(|_| !self.home_drawn) {
+                let home = self.home.as_ref();
+                if let Some(name) = selected
+                    .as_ref()
+                    .filter(|name| !self.home_drawn && home != Some(*name))
+                {
                     self.looks.insert(name.clone());
                 }
                 self.selected = selected;
@@ -346,7 +350,11 @@ impl Reader {
             .map(|home| self.look(&home))
             .into_iter()
             .collect();
-        if let Some(name) = self.selected.clone().filter(|_| !self.home_drawn) {
+        let other = self
+            .selected
+            .clone()
+            .filter(|name| !self.home_drawn && self.home.as_ref() != Some(name));
+        if let Some(name) = other {
             answers.push(self.look(&name));
         }
         answers.extend(self.owned());
@@ -370,7 +378,7 @@ impl Reader {
         self.ids.clone_from(&read.ids);
         self.rows = read.fleet.rows.iter().map(|row| row.name.clone()).collect();
         self.evict();
-        answers.push(Answer::Fleet(Box::new(read)));
+        answers.push(Answer::Fleet(read));
         answers
     }
 
@@ -414,15 +422,8 @@ impl Reader {
                 Some((entry.name.clone(), section))
             })
             .collect();
-        let fleet = fleet::rows(
-            &world,
-            &facts,
-            &last_live,
-            order,
-            &needs,
-            self.home.as_deref(),
-            now,
-        );
+        let home = self.home.as_deref();
+        let fleet = fleet::rows(&world, &facts, &last_live, order, &needs, home, now);
         let ids = dirs
             .iter()
             .map(|(name, dir)| (name.clone(), console::recorded_uuid(dir)))
@@ -552,14 +553,14 @@ impl Reader {
         let id = console.uuid().to_owned();
         self.read_at.insert(name.to_owned(), Instant::now());
         self.seq += 1;
-        Some(Answer::View(Box::new(ViewRead {
+        Some(Answer::View(ViewRead {
             name: name.to_owned(),
             id,
             seq: self.seq,
             lane,
             needs,
             roster,
-        })))
+        }))
     }
 }
 

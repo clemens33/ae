@@ -167,10 +167,10 @@ impl App {
     fn answer(&mut self, answer: Answer) {
         match answer {
             Answer::Home(home) => self.housed(home),
-            Answer::Fleet(read) => self.absorb(*read),
+            Answer::Fleet(read) => self.absorb(read),
             Answer::Look { name, look, zone } => drop(self.looks.insert(name, (look, zone))),
             Answer::Owned { reading, at, draft } => self.take(reading, at, draft),
-            Answer::View(view) => self.viewed(*view),
+            Answer::View(view) => self.viewed(view),
         }
     }
 
@@ -184,7 +184,7 @@ impl App {
         match pair {
             Ok(seats) => {
                 self.pair = names(&seats);
-                self.input = (!seats.is_empty()).then(|| Input::new(names(&seats)));
+                self.input = (!seats.is_empty()).then(|| Input::new(self.pair.clone()));
                 self.seats = seats;
             }
             Err(why) => self.read_only = format!("input off: {why}"),
@@ -885,7 +885,7 @@ pub(super) mod tests {
 
     /// A lane of one turn saying `body`, read as `id` at `seq`.
     fn view(name: &str, id: &str, seq: u64, body: &str) -> Answer {
-        Answer::View(Box::new(ViewRead {
+        Answer::View(ViewRead {
             name: name.to_owned(),
             id: id.to_owned(),
             seq,
@@ -895,7 +895,7 @@ pub(super) mod tests {
             },
             needs: None,
             roster: None,
-        }))
+        })
     }
 
     /// Two foreign sessions, `web` and `ops`, read by the fleet as `ID`.
@@ -1419,7 +1419,7 @@ pub(super) mod tests {
             pair: None,
             memos: std::collections::BTreeMap::new(),
         };
-        app.answer(Answer::Fleet(Box::new(read)));
+        app.answer(Answer::Fleet(read));
         let shown = framed(&mut app);
         assert!(
             !shown.contains("fresh") && shown.contains("loading"),
@@ -1466,7 +1466,7 @@ pub(super) mod tests {
             pair: None,
             memos: std::collections::BTreeMap::new(),
         };
-        app.answer(Answer::Fleet(Box::new(read)));
+        app.answer(Answer::Fleet(read));
         assert_eq!(app.dressed(), (Some(off), None), "home's read look stays");
     }
 
