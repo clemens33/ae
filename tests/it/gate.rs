@@ -2775,3 +2775,104 @@ fn git_cliff_is_invoked_only_from_the_boundary_owner() {
         "a top-level alias that spells the command is a site: {alias:?}"
     );
 }
+/// A dead test's registered root is removable even when SIGKILL left a
+/// non-empty directory at 0555. Permission repair stays inside that root:
+/// directory and file links preserve the outside targets' modes and bytes.
+#[test]
+fn registered_readonly_residue_is_reaped_without_following_links() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let base = super::cli::OwnedScratch::root("gate", "ro-reap");
+    let outside = base.join("outside");
+    let outside_file = outside.join("kept");
+    std::fs::create_dir_all(&outside).expect("the outside target directory");
+    std::fs::write(&outside_file, "outside target bytes\n").expect("outside target bytes");
+    std::fs::set_permissions(&outside_file, std::fs::Permissions::from_mode(0o444))
+        .expect("the outside file mode");
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o555))
+        .expect("the outside directory mode");
+    let _outside_guard = Unwritable(vec![outside.clone()]);
+    let outside_mode = std::fs::metadata(&outside)
+        .expect("outside directory metadata")
+        .permissions()
+        .mode();
+    let outside_file_mode = std::fs::metadata(&outside_file)
+        .expect("outside file metadata")
+        .permissions()
+        .mode();
+
+    let cargo = base.join("bin").join("cargo");
+    std::fs::create_dir_all(base.join("bin")).expect("the fake cargo directory");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\n\
+         [ \"$1\" = nextest ] || exit 0\n\
+         unset AE_GATE_SCRATCH_KILL_SERVER\n\
+         \"$AE_GATE_EXE\" --exact gate::scratch_sigkill_child >/dev/null 2>&1\n\
+         owner=$(cat \"$AE_GATE_SCRATCH_KILL_REPORT\") || exit 1\n\
+         held=\"$AE_TEST_TMPDIR/ae-it-$owner/killed\"\n\
+         mkdir -p \"$TMUX_TMPDIR/.ae-parity-fixtures/$owner\" || exit 1\n\
+         ln -s \"$held\" \"$TMUX_TMPDIR/.ae-parity-fixtures/$owner/0\" || exit 1\n\
+         printf 'registered readonly residue\\n' >\"$held/held\" || exit 1\n\
+         ln -s \"$AE_GATE_OUTSIDE_DIR\" \"$held/outside-dir\" || exit 1\n\
+         ln -s \"$AE_GATE_OUTSIDE_FILE\" \"$held/outside-file\" || exit 1\n\
+         chmod 0555 \"$held\" || exit 1\n\
+         exit 0\n",
+    )
+    .expect("the fake cargo leaves registered readonly residue");
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
+        .expect("an executable fake cargo");
+    let path = std::env::var("PATH").unwrap_or_default();
+    let report = base.join("dead-owner");
+    let swept = raw::run(
+        &Invocation::new("just")
+            .arg("_tmux-isolated")
+            .arg("test")
+            .env("PATH", format!("{}:{path}", base.join("bin").display()))
+            .env(
+                "AE_GATE_EXE",
+                std::env::current_exe().expect("the test binary"),
+            )
+            .env("AE_GATE_SCRATCH_KILL_BASE", &*base)
+            .env("AE_GATE_SCRATCH_KILL_REPORT", &report)
+            .env("AE_GATE_OUTSIDE_DIR", &outside)
+            .env("AE_GATE_OUTSIDE_FILE", &outside_file)
+            .env("TMPDIR", &*base)
+            .env("AE_TEST_TMPDIR", &*base),
+        &root(),
+        &base.join("readonly-out"),
+        &base.join("readonly-err"),
+    );
+    let owner = read(&report).trim().to_owned();
+    assert!(
+        owner.parse::<u32>().is_ok(),
+        "the killed child's numeric pid"
+    );
+    let dead_root = base.join(format!("ae-it-{owner}"));
+    let _residue_guard = Unwritable(vec![dead_root.clone()]);
+    let swept = swept.expect("the lane runs to teardown");
+    let stderr = read(&base.join("readonly-err"));
+    assert!(
+        matches!(swept.outcome(), ExitOutcome::Code(0)),
+        "registered 0555 residue must not fail an all-green lane: {stderr}"
+    );
+    assert!(
+        !dead_root.exists(),
+        "registered dead-owner root must be reaped"
+    );
+    assert_eq!(read(&outside_file), "outside target bytes\n");
+    assert_eq!(
+        std::fs::metadata(&outside)
+            .expect("outside directory preserved")
+            .permissions()
+            .mode(),
+        outside_mode
+    );
+    assert_eq!(
+        std::fs::metadata(&outside_file)
+            .expect("outside file preserved")
+            .permissions()
+            .mode(),
+        outside_file_mode
+    );
+}
