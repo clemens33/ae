@@ -2991,10 +2991,51 @@ pub(crate) fn fleet_order() -> theme::FleetOrder {
     fleet_order_at(global.as_deref())
 }
 
+/// The CHECKOUT-only read gate `AE_TEST_APP_READ_GATE=<dir>`: while
+/// `<dir>/<key>` exists, the read named `key` holds — a session's journal read
+/// by its name, the fleet's world read as `@world` — after appending one line
+/// `held <key>` to `<dir>/trace`, polling for at most 60 s. Every read that
+/// finds the file holds again; `trace` itself is never a gate. An installed
+/// core returns before reading the variable; unset, nothing is read. Test
+/// seam, unset in production (AGENTS.md doors table).
+pub(crate) fn read_gate(key: &str) {
+    if !shape::current().honours_environment() || key == "trace" {
+        return;
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the CHECKOUT-only app read gate, after the honours_environment check — see AGENTS.md"
+    )]
+    let Some(dir) = std::env::var_os("AE_TEST_APP_READ_GATE").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let gate = dir.join(key);
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the CHECKOUT-only app read gate's own file, polled while it holds"
+    )]
+    let held = || gate.exists();
+    if !held() {
+        return;
+    }
+    let trace = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("trace"));
+    if let Ok(mut file) = trace {
+        let _ = writeln!(file, "held {key}");
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_mins(1);
+    while held() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 /// The classified snapshot AND the world `ae list` shows right now — the real
 /// route, returned in both halves so it can be observed from outside.
 #[must_use]
 pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::World) {
+    read_gate("@world");
     let scan = inventory::durable_records(&inventory::Roots::under(root));
     // No caller server: fleet discovery spans recorded destinations plus ae's
     // own default server. A recorded socket may be another spelling of `-L

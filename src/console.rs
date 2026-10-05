@@ -234,6 +234,7 @@ impl Console {
             coverage,
             ..board::Observation::default()
         };
+        crate::read_gate(&self.name);
         let snapshot = session::RecordSnapshot::read(&self.dir);
         let needs = self.needs(&snapshot, &seats);
         // Only a settled read replaces the seats `/open` may name.
