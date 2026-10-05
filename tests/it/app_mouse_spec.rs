@@ -75,12 +75,18 @@ fn sgr_wheel_reports_direction() {
     );
 }
 
-/// Ruling 2: releases (either final) and other buttons vanish; a following
-/// click still decodes, proving the parser resynchronized.
+/// appresize ruling 3 supersedes the old release drop: unmodified left
+/// release is admitted; other buttons still vanish, then a click decodes.
 #[test]
-fn sgr_release_and_other_buttons_dropped_then_click() {
+fn sgr_release_admitted_and_other_buttons_dropped_then_click() {
+    assert_eq!(
+        feed(&mut Keys::app(), b"\x1b[<0;5;5m\x1b[<0;9;9M"),
+        [
+            mouse(MouseKind::Release, 4, 4),
+            mouse(MouseKind::Click, 8, 8)
+        ]
+    );
     for dropped in [
-        b"\x1b[<0;5;5m".as_slice(),
         b"\x1b[<3;5;5m".as_slice(),
         b"\x1b[<1;5;5M".as_slice(),
         b"\x1b[<2;5;5M".as_slice(),
@@ -97,11 +103,15 @@ fn sgr_release_and_other_buttons_dropped_then_click() {
     }
 }
 
-/// Ruling 2: any modifier bit, drag (32+) and motion (35) vanish, wheel codes
-/// with modifiers included; a following click still decodes.
+/// appresize ruling 3 admits plain left motion 32; modifier bits, other
+/// motion and modified wheel still vanish, then a click decodes.
 #[test]
 fn sgr_modifier_and_motion_reports_dropped_then_click() {
-    for code in [4, 8, 16, 20, 24, 32, 33, 34, 35, 36, 68, 69] {
+    assert_eq!(
+        feed(&mut Keys::app(), b"\x1b[<32;5;5M\x1b[<0;9;9M"),
+        [mouse(MouseKind::Drag, 4, 4), mouse(MouseKind::Click, 8, 8)]
+    );
+    for code in [4, 8, 16, 20, 24, 33, 34, 35, 36, 68, 69] {
         let mut app = Keys::app();
         let bytes = format!("\x1b[<{code};5;5M\x1b[<0;9;9M");
         assert_eq!(
@@ -752,8 +762,8 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// Ruling 1: the exact mode set — press/release + SGR while running, neither
-/// drag/motion mode; after `q` both are off again. The five formats exist on
+/// appresize ruling 2: button-motion + SGR while running, no any-motion;
+/// after `q` both are off again. The five formats exist on
 /// the tmux 3.4 floor (probed in the lane container), so no fallback.
 #[test]
 fn live_app_mouse_mode_set_exact() {
@@ -771,9 +781,9 @@ fn live_app_mouse_mode_set_exact() {
     });
     for (format, want) in [
         ("#{mouse_any_flag}", "1"),
-        ("#{mouse_standard_flag}", "1"),
+        ("#{mouse_standard_flag}", "0"),
         ("#{mouse_sgr_flag}", "1"),
-        ("#{mouse_button_flag}", "0"),
+        ("#{mouse_button_flag}", "1"),
         ("#{mouse_all_flag}", "0"),
     ] {
         let got = rig.tmux(&["display-message", "-p", "-t", &pane, format]);
