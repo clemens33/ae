@@ -122,7 +122,7 @@ struct App {
     ask: Option<Sender<Request>>,
     /// The selection the reader was last told of.
     focused: Option<String>,
-    /// Keys held, in order, behind a wheel notch up the last frame could not
+    /// Keys held, in order, behind a wheel notch the last frame could not
     /// bound: the next frame produces more of the lane, then they replay.
     deferred: Vec<(Key, Instant)>,
 }
@@ -447,15 +447,21 @@ impl App {
         Some(())
     }
 
-    /// A wheel notch up past a bound the last frame has not proven the top:
-    /// it waits for the next frame rather than stopping short of it.
+    /// A wheel notch landing past a bound the last frame has not proven the
+    /// top — page keys may have asked further back — waits for the next
+    /// frame rather than stopping short at it.
     fn unbounded(&self, key: &Key) -> bool {
-        matches!(key, Key::Mouse(mouse)
-            if mouse.kind == MouseKind::WheelUp && self.layout.in_chat(*mouse))
+        let Key::Mouse(mouse) = key else {
+            return false;
+        };
+        mouse.kind != MouseKind::Click
+            && self.layout.in_chat(*mouse)
             && !self.layout.complete
-            && self
-                .model
-                .wheel_passes(self.layout.page_rows, self.layout.max_scroll)
+            && self.model.wheel_passes(
+                mouse.kind == MouseKind::WheelUp,
+                self.layout.page_rows,
+                self.layout.max_scroll,
+            )
     }
 
     /// Mouse actions use the last drawn frame, in either input mode.
@@ -616,8 +622,11 @@ impl App {
             lane: self.loading,
         };
         self.layout = draw::draw_with_layout(&screen, wait, buf);
-        self.model
-            .clamp_scroll(self.layout.max_scroll, self.layout.page_rows);
+        // Held keys replay from the scroll they were read at, as one read.
+        if self.deferred.is_empty() {
+            self.model
+                .clamp_scroll(self.layout.max_scroll, self.layout.page_rows);
+        }
     }
 }
 
@@ -1679,6 +1688,65 @@ mod tests {
             assert_eq!(super::drain(&mut app, &mut keys, &wakes, first), Some(true));
             assert!(!app.composing, "Esc browses");
         }
+    }
+
+    /// The foreign session `api` showing `turns` one-row turns, as read.
+    fn scrolled(turns: i64) -> App {
+        let mut app = app(None);
+        app.fleet = one_row(None);
+        app.model = Model::new(&app.fleet);
+        app.world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
+        app.dirs.insert("api".to_owned(), PathBuf::from("api"));
+        app.ids.insert("api".to_owned(), ID.to_owned());
+        app.answer(Answer::View(ViewRead {
+            name: "api".to_owned(),
+            id: ID.to_owned(),
+            seq: 1,
+            lane: Lane {
+                items: (0..turns)
+                    .map(|at| said(&format!("turn {at}"), at))
+                    .collect(),
+                coverage: Vec::new(),
+            },
+            needs: None,
+            roster: None,
+        }));
+        app
+    }
+
+    /// `bytes` read at once on a 160x36 pane (27 chat rows), taken through
+    /// the loop's own drain and frame until no key is held.
+    fn replayed(app: &mut App, bytes: &[u8]) -> usize {
+        let (_wake, wakes) = std::sync::mpsc::channel();
+        let mut keys = crate::console::input::Keys::app();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 36));
+        app.frame(&mut buf);
+        let mut first = Some(loader::Wake::Keys(Instant::now(), bytes.to_vec()));
+        for _ in 0..64 {
+            assert!(super::drain(app, &mut keys, &wakes, first.take()).is_some());
+            app.frame(&mut buf);
+            if app.deferred.is_empty() {
+                return app.model.scroll_rows(27);
+            }
+        }
+        panic!("keys still held");
+    }
+
+    /// A wheel notch down after page keys in the same read lands three rows
+    /// below where the pages went, as on a fully drawn lane, and never at the
+    /// edge of what the first frame happened to produce.
+    #[test]
+    fn a_notch_down_after_page_keys_keeps_the_pages() {
+        let down = b"\x1b[<65;48;6M";
+        let mut bytes = b"\x1b[5~".repeat(3);
+        bytes.extend_from_slice(down);
+        assert_eq!(replayed(&mut scrolled(160), &bytes), 81 - 3);
+        // Past the true top the notch is taken from where the pages asked,
+        // then bounded: the top, not three rows under it.
+        let mut bytes = b"\x1b[5~".repeat(100);
+        bytes.extend_from_slice(down);
+        let top = 80 * 3 - 1 - 27;
+        assert_eq!(replayed(&mut scrolled(80), &bytes), top);
     }
 
     /// Ruling 3: a selection shares its read lane rather than copying it.

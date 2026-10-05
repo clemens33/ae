@@ -204,9 +204,15 @@ impl Model {
         self.pages.saturating_add(usize::from(self.rows > 0))
     }
 
-    /// Whether one more notch up would pass `max`.
-    pub(crate) fn wheel_passes(&self, page_rows: usize, max: usize) -> bool {
-        self.scroll_rows(page_rows).saturating_add(WHEEL_ROWS) > max
+    /// Whether one more notch, `up` or down, would land past `max`.
+    pub(crate) fn wheel_passes(&self, up: bool, page_rows: usize, max: usize) -> bool {
+        let scroll = self.scroll_rows(page_rows);
+        let scroll = if up {
+            scroll.saturating_add(WHEEL_ROWS)
+        } else {
+            scroll.saturating_sub(WHEEL_ROWS)
+        };
+        scroll > max
     }
 
     /// Total chat rows back, with keyboard pages sized by this frame.
