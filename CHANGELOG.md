@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.25] - 2026-10-05
+- Checkout-only app read gate for console and world reads
+- Pin app responsiveness while background reads are held
+- **app**: Read the fleet and lanes on a background reader
+- **app**: Drop nested answer boxes and repeated reads
+- **app**: Keep the app test module private
+- **app**: Pin kept lanes, looks, rereads and reader waits
+
 ## [v2026.10.24] - 2026-10-04
 - **app**: Declare mouse input events
 - **app**: Frozen mouse acceptance spec
