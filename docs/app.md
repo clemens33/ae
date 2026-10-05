@@ -110,7 +110,7 @@ read-only, and typing still goes home: the composer says
   leaves its screen; it would only restore the same mode again.
 - Truecolour only; no 256-colour fallback.
 - A session replaced under the same name can show its previous lane until the
-  next fleet read notices, at most 5 seconds and one read later.
+  next fleet read notices.
 - One very long turn is wrapped whole whenever any of its rows is on screen.
 - Mouse dragging does not select text in the app. Hold Shift (Option in iTerm)
   for terminal text selection; inside tmux an ordinary drag goes to the app.
