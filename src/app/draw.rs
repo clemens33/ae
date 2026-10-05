@@ -14,7 +14,7 @@ use ratatui_core::style::{Color, Modifier, Style};
 use ratatui_core::text::{Line, Span};
 
 use super::fleet::{Counts, Facts, Fleet, Line2, Row};
-use super::model::{Model, Tab};
+use super::model::{Drag, Edge, Model, Split, Tab};
 use super::overview::Overview;
 use crate::brief::age;
 use crate::console::input::Mouse;
@@ -75,6 +75,13 @@ const LIST_TOP: u16 = 5;
 const LEFT: u16 = 2;
 /// Where a session row's name starts.
 const NAME: u16 = 6;
+/// The narrowest a drag leaves the sidebar: the tab row still keeps a gap
+/// between `Agents NN` and `Tab`, and a name beside its counts.
+const SIDEBAR_FLOOR: u16 = 30;
+/// The chat columns a drag leaves right of the rule.
+const CHAT_FLOOR: u16 = 40;
+/// The tab body rows a drag leaves above the floor.
+const BODY_FLOOR: u16 = 3;
 
 /// A click target recorded where its cells are drawn.
 #[derive(Debug, Clone)]
@@ -84,10 +91,22 @@ pub(crate) enum Hit {
     Compose,
 }
 
+/// A border as drawn: its edge, where it stands, its own cells and the cells
+/// that grab it.
+#[derive(Debug)]
+struct Border {
+    edge: Edge,
+    at: u16,
+    cells: Rect,
+    grab: Rect,
+}
+
 /// The last frame's input geometry and chat scroll bounds.
 #[derive(Debug, Default)]
 pub(crate) struct Layout {
     targets: Vec<(Rect, Hit)>,
+    borders: Vec<Border>,
+    area: Rect,
     chat: Rect,
     pub page_rows: usize,
     /// How far back the chat can scroll: exact once `complete`, else only
@@ -111,6 +130,45 @@ impl Layout {
 
     pub fn in_chat(&self, mouse: Mouse) -> bool {
         self.chat.contains((mouse.column, mouse.row).into())
+    }
+
+    /// Record a border at `at` over `cells`, grabbed within a cell of it.
+    fn border(&mut self, buf: &Buffer, edge: Edge, at: u16, cells: Rect) {
+        let grab = match edge {
+            Edge::Sidebar => Rect::new(cells.x.saturating_sub(1), cells.y, 3, cells.height),
+            Edge::List => Rect::new(cells.x, cells.y.saturating_sub(1), cells.width, 3),
+        };
+        // Above the keys row: nothing there grabs a border.
+        let room = Rect::new(0, 0, buf.area.width, buf.area.height.saturating_sub(1));
+        self.borders.push(Border {
+            edge,
+            at,
+            cells: cells.intersection(room),
+            grab: grab.intersection(room),
+        });
+    }
+
+    /// The border a press grabs, and where it stands: none where a click
+    /// target is drawn; a border's own cells before the cells beside it.
+    pub(crate) fn grab(&self, mouse: Mouse) -> Option<(Edge, u16)> {
+        if self.hit(mouse).is_some() {
+            return None;
+        }
+        let cell = (mouse.column, mouse.row).into();
+        let on = |border: &&Border| border.cells.contains(cell);
+        let near = |border: &&Border| border.grab.contains(cell);
+        let border = (self.borders.iter().find(on)).or_else(|| self.borders.iter().find(near))?;
+        Some((border.edge, border.at))
+    }
+
+    /// Whether the frame drew `edge`.
+    pub(crate) fn shows(&self, edge: Edge) -> bool {
+        self.borders.iter().any(|border| border.edge == edge)
+    }
+
+    /// The pane the frame was drawn in.
+    pub(crate) fn area(&self) -> Rect {
+        self.area
     }
 }
 
@@ -147,6 +205,16 @@ impl Paint {
         match self.0 {
             Some(_) => self.fg(|p| p.title).add_modifier(Modifier::BOLD),
             None => Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        }
+    }
+
+    /// A border's rule: the border hue, or while it is dragged the title hue
+    /// in bold, or reversed with no colour.
+    fn rule(self, dragged: bool) -> Style {
+        match (dragged, self.0) {
+            (false, _) => self.fg(|p| p.border),
+            (true, Some(_)) => self.fg(|p| p.title).add_modifier(Modifier::BOLD),
+            (true, None) => Style::new().add_modifier(Modifier::REVERSED),
         }
     }
 }
@@ -186,7 +254,10 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
 /// Draw and retain only the geometry this frame actually showed.
 pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer) -> Layout {
     let area = buf.area;
-    let mut layout = Layout::default();
+    let mut layout = Layout {
+        area,
+        ..Layout::default()
+    };
     let ctx = Ctx {
         screen,
         paint: Paint::of(screen.look.as_ref()),
@@ -218,13 +289,16 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer
     // rule's own column included, and the panel under the sidebar alone.
     buf.set_style(area, ctx.paint.ground(|p| p.ink));
     let (height, width) = (area.height, area.width);
-    let chat = if let Some(rule) = sidebar_width(area) {
+    let split = screen.model.split();
+    let chat = if let Some(rule) = sidebar_width(area, split) {
         buf.set_style(
             Rect::new(0, 0, rule, height - 1),
             ctx.paint.ground(|p| p.base),
         );
+        let cells = Rect::new(rule, 0, 1, height - 1);
+        layout.border(buf, Edge::Sidebar, rule, cells);
         sidebar(&ctx, buf, rule, &mut layout);
-        let border = ctx.paint.fg(|p| p.border);
+        let border = ctx.paint.rule(dragged(screen.model, Edge::Sidebar));
         for y in 0..height - 1 {
             put(buf, rule, y, "│", 1, border);
         }
@@ -243,26 +317,94 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer
     layout
 }
 
-/// The cells a draft has on the composer row of a `width` x `height` pane,
+/// The cells a draft has on the composer row of `area` split as `split`,
 /// after its `to <home> › <speaker>` address: what the caller wraps it to.
-pub(crate) fn draft_width(width: u16, height: u16, home: &str, speaker: &str) -> usize {
-    let area = Rect::new(0, 0, width, height);
-    let left = sidebar_width(area).map_or(0, |rule| rule + 1) + 2;
-    let room = usize::from(width.saturating_sub(2).saturating_sub(left));
+pub(crate) fn draft_width(area: Rect, split: Split, home: &str, speaker: &str) -> usize {
+    let left = sidebar_width(area, split).map_or(0, |rule| rule + 1) + 2;
+    let room = usize::from(area.width.saturating_sub(2).saturating_sub(left));
     let address = Span::raw(format!("to {home} › {speaker}   ")).width();
     room.saturating_sub(address).max(1)
 }
 
+// ---------------------------------------------------------------------------
+// the borders: where each stands, dragged or not
+// ---------------------------------------------------------------------------
+
 /// The sidebar's width, which is where its rule stands, or `None` when the
-/// pane is too small to keep it.
-fn sidebar_width(area: Rect) -> Option<u16> {
+/// pane is too small to keep it: 44 from 140 wide, else 34, until a drag
+/// asks for another, clamped so the chat keeps its columns.
+fn sidebar_width(area: Rect, split: Split) -> Option<u16> {
     if area.width < SIDEBAR_MIN.0 || area.height < SIDEBAR_MIN.1 {
-        None
-    } else if area.width >= 140 {
-        Some(44)
-    } else {
-        Some(34)
+        return None;
     }
+    let default = if area.width >= 140 { 44 } else { 34 };
+    Some(
+        split
+            .sidebar
+            .map_or(default, |asked| sidebar_clamp(asked, area)),
+    )
+}
+
+fn sidebar_clamp(asked: u16, area: Rect) -> u16 {
+    let most = area.width.saturating_sub(CHAT_FLOOR + 1);
+    asked.min(most).max(SIDEBAR_FLOOR)
+}
+
+/// The session list's rows for `count` sessions, and whether it keeps them
+/// all when its sessions need fewer: 18 from 40 high, else 11, sized to its
+/// sessions, until a drag asks for a height of its own.
+fn list_rows(area: Rect, split: Split, count: usize) -> (u16, bool) {
+    let default = if area.height >= 40 { 18 } else { 11 };
+    match split.list {
+        None => (default, false),
+        Some(asked) => (list_clamp(asked, area, count), true),
+    }
+}
+
+/// A list height a drag may keep: room for one session and its more row, and
+/// the tab body's rows above the floor — though never short of where the
+/// list stands undragged, so a drag can always put it back.
+fn list_clamp(asked: u16, area: Rect, count: usize) -> u16 {
+    let least = match count {
+        0 => 1,
+        1 => 2,
+        _ => 3,
+    };
+    let (default, _) = list_rows(area, Split::default(), count);
+    let undragged = List::of(count, None, default, false).end - LIST_TOP;
+    // Below the list: a blank row, the tab row and the rule; below the
+    // floor: two rows.
+    let most = area
+        .height
+        .saturating_sub(LIST_TOP + 3 + BODY_FLOOR + 2)
+        .max(undragged);
+    asked.min(most).max(least)
+}
+
+/// The row a list of `rows` puts its border on: a blank row, the tab row,
+/// then the rule.
+fn list_border(rows: u16) -> u16 {
+    LIST_TOP + rows + 2
+}
+
+/// The size a drag asks for: where its edge stood at the press, moved as far
+/// as the pointer has since, clamped to `area` as it is now.
+pub(crate) fn dragged_to(drag: Drag, mouse: Mouse, area: Rect, count: usize) -> u16 {
+    let now = match drag.edge {
+        Edge::Sidebar => mouse.column,
+        Edge::List => mouse.row,
+    };
+    let moved = i32::from(drag.at) + i32::from(now) - i32::from(drag.from);
+    let to = u16::try_from(moved.max(0)).unwrap_or(u16::MAX);
+    match drag.edge {
+        Edge::Sidebar => sidebar_clamp(to, area),
+        Edge::List => list_clamp(to.saturating_sub(list_border(0)), area, count),
+    }
+}
+
+/// Whether `edge` is being dragged.
+fn dragged(model: &Model, edge: Edge) -> bool {
+    model.drag().is_some_and(|drag| drag.edge == edge)
 }
 
 // ---------------------------------------------------------------------------
@@ -281,22 +423,27 @@ struct List {
 }
 
 impl List {
-    /// The list for `count` sessions with `selected` kept in view: three
-    /// rows each while they fit the budget, then two, then a window.
-    fn of(count: usize, selected: Option<usize>, height: u16) -> Self {
-        let budget = if height >= 40 { 18 } else { 11 };
+    /// The list for `count` sessions with `selected` kept in view, in
+    /// `budget` rows: three rows each while they fit, then two, then a
+    /// window. A `pinned` list ends at its budget, else where its rows do.
+    fn of(count: usize, selected: Option<usize>, budget: u16, pinned: bool) -> Self {
+        let budget = usize::from(budget);
         let (step, shown) = if count * 3 <= budget + 1 {
             (3, count)
         } else if count * 2 <= budget {
             (2, count)
         } else {
-            (2, (budget - 1) / 2)
+            (2, budget.saturating_sub(1) / 2)
         };
         let at = selected.unwrap_or(0);
         let start = (at + 1).saturating_sub(shown).min(count - shown);
         let used = cells(shown) * step - u16::from(step == 3 && shown > 0);
         let more = (shown < count).then_some(LIST_TOP + used);
-        let end = LIST_TOP + used.max(u16::from(count == 0)) + u16::from(more.is_some());
+        let end = if pinned {
+            LIST_TOP + cells(budget)
+        } else {
+            LIST_TOP + used.max(u16::from(count == 0)) + u16::from(more.is_some())
+        };
         Self {
             visible: start..start + shown,
             step,
@@ -321,7 +468,8 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         paint.fg(|p| p.text),
     );
     let selected = model.position(fleet);
-    let list = List::of(count, selected, buf.area.height);
+    let (rows, pinned) = list_rows(buf.area, model.split(), count);
+    let list = List::of(count, selected, rows, pinned);
     let needy = fleet.rows.iter().any(|row| row.needy);
     let line = super::fleet::attention(fleet, list.visible.clone(), room - 2);
     let tone = if needy {
@@ -375,7 +523,7 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
     };
     let tabs = list.end + 1;
     tab_row(ctx, buf, tabs, end, layout);
-    let border = paint.fg(|p| p.border);
+    let border = paint.rule(dragged(model, Edge::List));
     put(
         buf,
         0,
@@ -384,8 +532,9 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         rule,
         border,
     );
+    layout.border(buf, Edge::List, tabs + 1, Rect::new(0, tabs + 1, rule, 1));
     let mut body = match model.tab() {
-        Tab::Overview => overview_rows(ctx, room, rule == 44),
+        Tab::Overview => overview_rows(ctx, room, rule >= 44),
         Tab::Agents => agent_rows(ctx, entry),
     };
     let floor = buf.area.height.saturating_sub(2);
@@ -937,12 +1086,13 @@ mod tests {
     use ratatui_core::buffer::Buffer;
     use ratatui_core::layout::Rect;
 
-    use super::{Composer, Screen, aged, draw};
+    use super::{Composer, Screen, aged, dragged_to, draw};
     use crate::app::fleet::{Counts, Facts, Fleet, Line2, Row};
-    use crate::app::model::Model;
+    use crate::app::model::{Drag, Edge, Model};
     use crate::app::overview::{Open, Overview};
     use crate::brief::TopicLine;
     use crate::console::input::View;
+    use crate::console::input::{Mouse, MouseKind};
     use crate::console::lane::{Item, Kind, Lane};
     use crate::digest::{SessionEntry, Status};
     use crate::theme::{Look, Mark};
@@ -1693,7 +1843,8 @@ mod tests {
         for (width, height, start) in [(160, 43, 63), (100, 28, 53)] {
             let buf = Shot::new().draw(width, height, READ_ONLY);
             let end = rule_end(&buf).expect("the rule");
-            let cells = super::draft_width(width, height, "api", "lead");
+            let area = Rect::new(0, 0, width, height);
+            let cells = super::draft_width(area, super::Split::default(), "api", "lead");
             assert_eq!(start + cells - 1, usize::from(end), "{width}x{height}");
         }
     }
@@ -2066,5 +2217,188 @@ mod tests {
                 cells[..45].concat()
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // dragged borders. Oracles: brief-appresize rulings 5/5a/5b (sidebar 30
+    // up to 40 chat columns; one session and its more row; three body rows,
+    // never short of the undragged rule) and the drawn frame.
+    // -----------------------------------------------------------------------
+
+    /// A shot of `count` sessions, home first.
+    fn sessions(count: usize) -> Shot {
+        let mut shot = Shot::new();
+        shot.fleet.rows = (0..count)
+            .map(|at| row(&format!("s{at:02}"), at + 1, false))
+            .collect();
+        shot.fleet.home = shot.fleet.rows.first().map(|row| row.name.clone());
+        shot.model = Model::new(&shot.fleet);
+        shot.entry = SessionEntry::new("s00", Status::Running);
+        shot
+    }
+
+    /// The column of the drawn vertical rule, on the top row.
+    fn vertical(buf: &Buffer) -> Option<u16> {
+        (0..buf.area.width).find(|x| buf[(*x, 0)].symbol() == "│")
+    }
+
+    /// The row of the drawn horizontal rule under the tabs.
+    fn horizontal(buf: &Buffer) -> Option<u16> {
+        (0..buf.area.height).find(|y| buf[(0, *y)].symbol() == "─")
+    }
+
+    /// Press `edge` where it is drawn, then move the pointer to `to` along
+    /// its axis; the next frame.
+    fn drag(shot: &mut Shot, buf: &Buffer, edge: Edge, to: u16) -> Buffer {
+        let at = match edge {
+            Edge::Sidebar => vertical(buf),
+            Edge::List => horizontal(buf),
+        }
+        .expect("the border is drawn");
+        let drag = Drag { edge, from: at, at };
+        shot.model.grab(drag);
+        let mouse = match edge {
+            Edge::Sidebar => Mouse {
+                kind: MouseKind::Drag,
+                column: to,
+                row: 1,
+            },
+            Edge::List => Mouse {
+                kind: MouseKind::Drag,
+                column: 1,
+                row: to,
+            },
+        };
+        let size = dragged_to(drag, mouse, buf.area, shot.fleet.rows.len());
+        let _ = shot.model.drag_to(size);
+        let _ = shot.model.let_go();
+        shot.draw(buf.area.width, buf.area.height, READ_ONLY)
+    }
+
+    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 18
+    /// (two-row steps, five shown, the more row, tabs on 17). A press there
+    /// moved nowhere keeps it; dragged up and back down past it, it stops on
+    /// 18, never 19, though that leaves the tab body no rows.
+    #[test]
+    fn a_short_pane_keeps_its_undragged_list_rule_reachable() {
+        let mut shot = sessions(13);
+        let first = shot.draw(100, 20, READ_ONLY);
+        assert_eq!(horizontal(&first), Some(18), "the undragged rule");
+        let still = drag(&mut shot, &first, Edge::List, 18);
+        assert_eq!(horizontal(&still), Some(18), "a press moved nowhere");
+        let up = drag(&mut shot, &still, Edge::List, 12);
+        assert_eq!(horizontal(&up), Some(12));
+        let down = drag(&mut shot, &up, Edge::List, 19);
+        assert_eq!(horizontal(&down), Some(18), "never past the undragged rule");
+    }
+
+    /// Ruling 5a: the list keeps one session's rows — two alone, two and the
+    /// more row among several — and above the floor three body rows.
+    #[test]
+    fn a_dragged_list_keeps_one_session_and_three_body_rows() {
+        for (count, least) in [(1, 9), (2, 10), (13, 10)] {
+            let mut shot = sessions(count);
+            let first = shot.draw(160, 45, READ_ONLY);
+            let top = drag(&mut shot, &first, Edge::List, 0);
+            assert_eq!(horizontal(&top), Some(least), "{count} sessions");
+            let bottom = drag(&mut shot, &top, Edge::List, 44);
+            // Floor 43: body rows 40, 41 and 42.
+            assert_eq!(horizontal(&bottom), Some(39), "{count} sessions");
+        }
+    }
+
+    /// Ruling 5: the sidebar keeps 30 columns and the chat 40 right of the
+    /// rule; a chosen width comes back when the pane grows again.
+    #[test]
+    fn a_dragged_sidebar_keeps_thirty_columns_and_forty_for_the_chat() {
+        let mut shot = sessions(1);
+        let first = shot.draw(160, 45, READ_ONLY);
+        let narrow = drag(&mut shot, &first, Edge::Sidebar, 0);
+        assert_eq!(vertical(&narrow), Some(30));
+        let wide = drag(&mut shot, &narrow, Edge::Sidebar, 159);
+        assert_eq!(vertical(&wide), Some(119), "160 - 40 - the rule");
+        assert_eq!(vertical(&shot.draw(90, 20, READ_ONLY)), Some(49));
+        assert_eq!(vertical(&shot.draw(89, 20, READ_ONLY)), None);
+        assert_eq!(vertical(&shot.draw(160, 45, READ_ONLY)), Some(119));
+    }
+
+    /// Every chosen size at every pane from the sidebar's minimum up draws
+    /// inside its areas: the rule where the clamps allow, the list rule above
+    /// the keys row, and no panic.
+    #[test]
+    fn every_dragged_size_draws_inside_the_pane() {
+        for count in [0, 1, 2, 13] {
+            for asked in [0, 9, 33, u16::MAX] {
+                let mut shot = sessions(count);
+                shot.model.grab(Drag {
+                    edge: Edge::Sidebar,
+                    from: 0,
+                    at: 0,
+                });
+                let _ = shot.model.drag_to(asked);
+                shot.model.grab(Drag {
+                    edge: Edge::List,
+                    from: 0,
+                    at: 0,
+                });
+                let _ = shot.model.drag_to(asked);
+                let _ = shot.model.let_go();
+                for width in (90..=220).step_by(13) {
+                    for height in (20..=62).step_by(7) {
+                        let buf = shot.draw(width, height, READ_ONLY);
+                        let rule = vertical(&buf).expect("the sidebar's rule");
+                        assert!((30..=width - 41).contains(&rule), "{width}x{height}");
+                        if let Some(row) = horizontal(&buf) {
+                            assert!(row < height - 1, "{width}x{height}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ruling 4: a press grabs a border on its cells or one beside them, never
+    /// where a click target is drawn; on a corner the vertical rule wins.
+    #[test]
+    fn a_press_grabs_a_border_only_where_no_target_is() {
+        let shot = sessions(3);
+        let screen = Screen {
+            fleet: &shot.fleet,
+            model: &shot.model,
+            overview: &shot.overview,
+            selected: Some(&shot.entry),
+            pair: &shot.pair,
+            agents: None,
+            lane: &shot.lane,
+            composer: READ_ONLY,
+            look: None,
+            zone: None,
+            now: Timestamp::from_epoch(PIN_NOW),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
+        let layout = super::draw_with_layout(&screen, super::Wait::default(), &mut buf);
+        let rule = horizontal(&buf).expect("the list rule");
+        let at = |column, row| {
+            layout.grab(Mouse {
+                kind: MouseKind::Click,
+                column,
+                row,
+            })
+        };
+        for column in [43, 44, 45] {
+            assert_eq!(at(column, 1), Some((Edge::Sidebar, 44)), "column {column}");
+        }
+        assert_eq!(at(46, 1), None);
+        assert_eq!(at(42, 1), None);
+        assert_eq!(at(43, 5), None, "a session row is a target");
+        assert_eq!(at(44, 5), Some((Edge::Sidebar, 44)));
+        for row in [rule - 1, rule, rule + 1] {
+            assert_eq!(at(30, row), Some((Edge::List, rule)), "row {row}");
+        }
+        assert_eq!(at(30, rule + 2), None);
+        assert_eq!(at(2, rule - 1), None, "a tab label is a target");
+        assert_eq!(at(44, rule), Some((Edge::Sidebar, 44)), "the corner");
+        assert_eq!(at(43, rule), Some((Edge::List, rule)), "its own cell");
+        assert_eq!(at(44, 44), None, "the keys row");
     }
 }

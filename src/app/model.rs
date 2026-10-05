@@ -72,6 +72,34 @@ pub enum Tab {
     Agents,
 }
 
+/// A border the mouse can drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Edge {
+    /// The vertical rule between the sidebar and the chat.
+    Sidebar,
+    /// The horizontal rule under the tab row.
+    List,
+}
+
+/// The sizes the borders were dragged to, kept for the app's run and clamped
+/// by every frame; `None` keeps the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Split {
+    /// The sidebar's width, which is where its rule stands.
+    pub(crate) sidebar: Option<u16>,
+    /// The session list's rows, its more row included.
+    pub(crate) list: Option<u16>,
+}
+
+/// A drag in progress: the edge, the pointer's cell along the edge's axis at
+/// the press, and where the edge stood then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Drag {
+    pub(crate) edge: Edge,
+    pub(crate) from: u16,
+    pub(crate) at: u16,
+}
+
 /// The browse state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Model {
@@ -81,6 +109,8 @@ pub struct Model {
     pages: usize,
     /// Wheel rows between pages, normalized after each frame.
     rows: usize,
+    split: Split,
+    drag: Option<Drag>,
 }
 
 impl Model {
@@ -261,9 +291,43 @@ impl Model {
         if self.position(fleet).is_none() {
             *self = Self {
                 tab: self.tab,
+                split: self.split,
+                drag: self.drag,
                 ..Self::new(fleet)
             };
         }
+    }
+
+    /// The sizes the borders were dragged to.
+    pub(crate) fn split(&self) -> Split {
+        self.split
+    }
+
+    /// The drag in progress.
+    pub(crate) fn drag(&self) -> Option<Drag> {
+        self.drag
+    }
+
+    /// Start dragging an edge.
+    pub(crate) fn grab(&mut self, drag: Drag) {
+        self.drag = Some(drag);
+    }
+
+    /// Set the dragged edge's size; whether it changed.
+    pub(crate) fn drag_to(&mut self, size: u16) -> bool {
+        let Some(drag) = self.drag else {
+            return false;
+        };
+        let kept = match drag.edge {
+            Edge::Sidebar => &mut self.split.sidebar,
+            Edge::List => &mut self.split.list,
+        };
+        kept.replace(size) != Some(size)
+    }
+
+    /// End a drag; whether one was in progress.
+    pub(crate) fn let_go(&mut self) -> bool {
+        self.drag.take().is_some()
     }
 }
 
@@ -273,7 +337,7 @@ mod tests {
     //! selected session sits beside the sidebar; the tab stays as you move
     //! between sessions) and the start rule (home first, else the first row).
 
-    use super::{Key, Model, Tab};
+    use super::{Drag, Edge, Key, Model, Tab};
     use crate::app::fleet::{Counts, Fleet, Line2, Row};
     use crate::theme::Mark;
 
@@ -318,5 +382,28 @@ mod tests {
         model.clamp_pages(0);
         assert_eq!(model.pages(), 0);
         assert_eq!(model.scroll_rows(30), 0);
+    }
+
+    /// The chosen sizes last for the run: a selection leaving the fleet keeps
+    /// them, and a drag says when it moved and when it ended.
+    #[test]
+    fn a_chosen_size_outlives_a_selection_that_leaves_the_fleet() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        assert!(!model.drag_to(50), "no drag, no size");
+        assert!(!model.let_go(), "no drag to end");
+        model.grab(Drag {
+            edge: Edge::Sidebar,
+            from: 44,
+            at: 44,
+        });
+        assert!(model.drag_to(50));
+        assert!(!model.drag_to(50), "the same size is no change");
+        let _ = model.key(Key::Digit(2), &both, false, true);
+        model.reconcile(&fleet(&["api"]));
+        assert_eq!(model.split().sidebar, Some(50));
+        assert!(model.let_go(), "the drag outlived the fleet change");
+        assert_eq!(model.drag(), None);
+        assert_eq!(model.split().list, None, "the other edge untouched");
     }
 }

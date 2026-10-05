@@ -249,9 +249,10 @@ impl Keys {
     }
 }
 
-/// The only SGR reports the app admits: unmodified left press and vertical wheel.
+/// The only SGR reports the app admits: unmodified left press, motion while
+/// held and release, and vertical wheel.
 fn mouse(seq: &[u8]) -> Option<Key> {
-    let body = seq.strip_prefix(b"\x1b[<")?.strip_suffix(b"M")?;
+    let (last, body) = seq.strip_prefix(b"\x1b[<")?.split_last()?;
     let body = std::str::from_utf8(body).ok()?;
     let mut fields = body.split(';');
     let number = |field: &str| {
@@ -259,10 +260,12 @@ fn mouse(seq: &[u8]) -> Option<Key> {
             .then(|| field.parse::<u32>().ok())
             .flatten()
     };
-    let kind = match number(fields.next()?)? {
-        0 => MouseKind::Click,
-        64 => MouseKind::WheelUp,
-        65 => MouseKind::WheelDown,
+    let kind = match (number(fields.next()?)?, last) {
+        (0, b'M') => MouseKind::Click,
+        (32, b'M') => MouseKind::Drag,
+        (0, b'm') => MouseKind::Release,
+        (64, b'M') => MouseKind::WheelUp,
+        (65, b'M') => MouseKind::WheelDown,
         _ => return None,
     };
     let column = u16::try_from(number(fields.next()?)?.checked_sub(1)?).ok()?;

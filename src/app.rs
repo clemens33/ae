@@ -454,7 +454,7 @@ impl App {
         let Key::Mouse(mouse) = key else {
             return false;
         };
-        mouse.kind != MouseKind::Click
+        matches!(mouse.kind, MouseKind::WheelUp | MouseKind::WheelDown)
             && self.layout.in_chat(*mouse)
             && !self.layout.complete
             && self.model.wheel_passes(
@@ -464,17 +464,39 @@ impl App {
             )
     }
 
-    /// Mouse actions use the last drawn frame, in either input mode.
+    /// Mouse actions use the last drawn frame, in either input mode. Left
+    /// motion moves a dragged border; every other event first ends a drag —
+    /// its release, or a press or wheel after a release that never came.
     fn mouse(&mut self, mouse: Mouse) -> bool {
-        if mouse.kind != MouseKind::Click {
-            if !self.layout.in_chat(mouse) {
-                return false;
+        if mouse.kind == MouseKind::Drag {
+            return self.drag(mouse);
+        }
+        let ended = self.model.let_go();
+        match mouse.kind {
+            MouseKind::Click => self.click(mouse) || ended,
+            MouseKind::WheelUp | MouseKind::WheelDown => {
+                if !self.layout.in_chat(mouse) {
+                    return ended;
+                }
+                self.model.wheel(
+                    mouse.kind == MouseKind::WheelUp,
+                    self.layout.page_rows,
+                    self.layout.max_scroll,
+                );
+                true
             }
-            self.model.wheel(
-                mouse.kind == MouseKind::WheelUp,
-                self.layout.page_rows,
-                self.layout.max_scroll,
-            );
+            MouseKind::Drag | MouseKind::Release => ended,
+        }
+    }
+
+    /// A press: grab the border under it, else act on the target drawn there.
+    fn click(&mut self, mouse: Mouse) -> bool {
+        if let Some((edge, at)) = self.layout.grab(mouse) {
+            let from = match edge {
+                model::Edge::Sidebar => mouse.column,
+                model::Edge::List => mouse.row,
+            };
+            self.model.grab(model::Drag { edge, from, at });
             return true;
         }
         let Some(hit) = self.layout.hit(mouse) else {
@@ -500,6 +522,19 @@ impl App {
             draw::Hit::Compose => return false,
         };
         apply(self, &act).unwrap_or(false) || was_writing != self.composing
+    }
+
+    /// Left motion: the dragged border follows it while the last frame drew
+    /// that border; a border not drawn keeps the size it was given.
+    fn drag(&mut self, mouse: Mouse) -> bool {
+        let Some(drag) = self.model.drag() else {
+            return false;
+        };
+        if !self.layout.shows(drag.edge) {
+            return false;
+        }
+        let size = draw::dragged_to(drag, mouse, self.layout.area(), self.fleet.rows.len());
+        self.model.drag_to(size)
     }
 
     /// Carry out what the input asked for; each outcome becomes a notice,
@@ -590,7 +625,7 @@ impl App {
     fn frame(&mut self, buf: &mut Buffer) {
         if let (Some(input), Some(home)) = (&self.input, &self.home) {
             let area = buf.area;
-            let width = draw::draft_width(area.width, area.height, home, input.speaker());
+            let width = draw::draft_width(area, self.model.split(), home, input.speaker());
             let size = Size {
                 width,
                 height: usize::from(area.height),
@@ -820,10 +855,15 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         }
         redraw |= if let Key::Mouse(mouse) = &key {
             app.mouse(*mouse)
-        } else if app.composing {
-            app.compose(key, origin).map(|()| true)?
         } else {
-            browse(app, &key)?
+            // A key or a paste ends a drag first, then acts as it always has.
+            let ended = app.model.let_go();
+            let acted = if app.composing {
+                app.compose(key, origin).map(|()| true)?
+            } else {
+                browse(app, &key)?
+            };
+            acted || ended
         };
     }
     Some(redraw)

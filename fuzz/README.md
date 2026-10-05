@@ -85,8 +85,10 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 SGR mouse reports and legacy X10 payloads. Whole and split reads must yield the
 same keys and origin stamps after adjacent literal runs are joined and idle
 sequences expire. The chat decoder is checked to emit no mouse keys. Tracked
-seeds cover clicks, both wheel directions, X10 with an ESC payload byte, and an
-oversized report followed by a valid click.
+seeds cover clicks, both wheel directions, a left press dragged and released,
+releases and left motion among modified and other-button reports that stay
+dropped, X10 with an ESC payload byte, and an oversized report followed by a
+valid click.
 
 NOTE — production also emits `chat`, `focus`, `refused`, `delivery-failed` and `telegram_autostart_refused`, which carry no seeds: `from_json` never branches on `action`, so they add zero coverage to THIS target — but a future target driving `ref_meaning` or `alert_meaning` would need them.
 
