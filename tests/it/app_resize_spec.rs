@@ -252,15 +252,18 @@ impl Rig {
         self.tmux(&["capture-pane", "-p", "-t", pane])
     }
 
-    /// The screen once `met` holds, within `within`.
+    /// Two identical captures once `met` holds, within `within`. The backend
+    /// streams cells, so one capture can contain only part of a repaint.
     fn wait(&self, pane: &str, within: Duration, why: &str, met: impl Fn(&str) -> bool) -> String {
         let until = Instant::now() + within;
+        let mut previous = None;
         loop {
             let screen = self.screen(pane);
-            if met(&screen) {
+            if met(&screen) && previous.as_deref() == Some(screen.as_str()) {
                 return screen;
             }
             assert!(Instant::now() < until, "{why}; terminal screen:\n{screen}");
+            previous = Some(screen);
             std::thread::sleep(Duration::from_millis(25));
         }
     }
