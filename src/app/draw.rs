@@ -115,7 +115,7 @@ impl Layout {
 pub(super) struct Paint(Option<Palette>);
 
 impl Paint {
-    fn of(look: Option<&Look>) -> Self {
+    pub(super) fn of(look: Option<&Look>) -> Self {
         Self(look.filter(|look| look.drawn).map(|look| look.palette))
     }
 
@@ -688,12 +688,23 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         })
         .unwrap_or_default();
     let clock = view::Style::resolve(true, screen.look, screen.zone, main);
-    let mut rows = super::lane::rows(screen.lane, usize::from(room), paint, &clock, main);
+    let room_rows = usize::from(bottom.saturating_sub(top));
+    let scroll = screen.model.scroll_rows(room_rows);
+    // One page past the window, so a wheel notch or a page key stays inside
+    // what this frame produced until the next frame produces more.
+    let need = scroll.saturating_add(room_rows.saturating_mul(2));
+    let super::lane::Tail { mut rows, .. } = super::lane::tail(
+        screen.lane,
+        usize::from(room),
+        paint,
+        &clock,
+        main,
+        need,
+        None,
+    );
     if ctx.wait.lane {
         rows.push(Line::from(Span::styled("loading", dim)));
     }
-    let room_rows = usize::from(bottom.saturating_sub(top));
-    let scroll = screen.model.scroll_rows(room_rows);
     let last = rows
         .len()
         .saturating_sub(scroll)

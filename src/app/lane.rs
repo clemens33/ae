@@ -26,9 +26,74 @@ enum Voice {
     System,
 }
 
+/// The newest rows of a lane as [`rows`] draws them.
+pub(super) struct Tail {
+    /// A suffix of the full render, oldest first, holding at least the rows
+    /// asked for when the lane has them.
+    pub(super) rows: Vec<Line<'static>>,
+    /// Whether `rows` reaches the lane's oldest row, its coverage included.
+    #[allow(
+        dead_code,
+        reason = "S0 observer field until production consumes completeness"
+    )]
+    pub(super) complete: bool,
+}
+
+/// The newest `need` rows of `lane` or more, as [`rows`] draws them. `visited`
+/// gets the index of each item whose body this call wrapped, in the order it
+/// wrapped them.
+pub(super) fn tail(
+    lane: &Lane,
+    width: usize,
+    paint: Paint,
+    clock: &view::Style,
+    main: &str,
+    need: usize,
+    mut visited: Option<&mut Vec<usize>>,
+) -> Tail {
+    // The whole lane for now, so every frame is today's: it covers any need.
+    let _ = need;
+    let mut rows: Vec<Line<'static>> = lane
+        .coverage
+        .iter()
+        .map(|gap| {
+            let text = terminal_text(&format!("coverage incomplete: {gap}"));
+            Line::from(Span::styled(text, paint.fg(|p| p.dim)))
+        })
+        .collect();
+    for (at, item) in lane.items.iter().enumerate() {
+        if !rows.is_empty() {
+            rows.push(Line::default());
+        }
+        let (speaker, qualifier, voice) = head(&item.kind, main);
+        let (_, time) = clock_text(clock.shift(item.micros));
+        let minute: String = time.chars().take(5).collect();
+        rows.push(Line::from(vec![
+            Span::styled(terminal_text(&speaker), voiced(paint, voice)),
+            Span::styled(format!("  {minute}  "), paint.fg(|p| p.dim)),
+            Span::styled(terminal_text(&qualifier), paint.fg(|p| p.dim)),
+        ]));
+        if let Some(visited) = visited.as_deref_mut() {
+            visited.push(at);
+        }
+        for (gap, piece) in wrap(&terminal_text(&item.body), width, 2) {
+            rows.push(Line::from(vec![
+                Span::raw(" ".repeat(gap)),
+                Span::styled(piece, paint.fg(|p| p.text)),
+            ]));
+        }
+    }
+    Tail {
+        rows,
+        complete: true,
+    }
+}
+
 /// The rows of `lane`, oldest first, `width` cells wide, a blank row between
 /// turns. `clock` is the chat's own style: its viewer zone shifts the stamps.
-/// `main` is the seat whose turns wear the lead hue.
+/// `main` is the seat whose turns wear the lead hue. The full render: the
+/// reference [`tail`] is a suffix of.
+#[cfg(test)]
 pub(super) fn rows(
     lane: &Lane,
     width: usize,

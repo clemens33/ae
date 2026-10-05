@@ -35,6 +35,8 @@ mod backend;
 pub mod draw;
 pub mod fleet;
 mod lane;
+#[cfg(test)]
+mod lane_spec;
 mod loader;
 pub mod model;
 pub mod overview;
