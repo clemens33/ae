@@ -45,6 +45,10 @@ pub enum MouseKind {
     Click,
     WheelUp,
     WheelDown,
+    /// Motion while the left button is held.
+    Drag,
+    /// The left button let go.
+    Release,
 }
 
 /// One key, as the composer takes it.
