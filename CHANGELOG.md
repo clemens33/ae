@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.26] - 2026-10-05
+- **app**: Draw the chat through a tail render with a visit seam
+- **app**: Freeze windowed lane acceptance spec
+- **app**: Draw only the rows the chat shows and share read lanes
+- **app**: Hold a wheel notch down too until the frame bounds it
+- **app**: Fold each memo on the background reader
+- **app**: Say how the app reads and draws the chat
+- **app**: Drop the time bound on a replaced session's lane
+- **app**: Pin a wheel notch onto the drawn edge
+
 ## [v2026.10.25] - 2026-10-05
 - Checkout-only app read gate for console and world reads
 - Pin app responsiveness while background reads are held
