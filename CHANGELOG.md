@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.29] - 2026-10-05
+- **app**: Settle resize waits on two identical captures
+
 ## [v2026.10.28] - 2026-10-05
 - **gate**: Pin registered 0555 residue reap without following links
 - **restore_spec**: Pin fixture meta publication atomicity with baseline seam
