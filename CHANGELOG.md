@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.28] - 2026-10-05
+- **gate**: Pin registered 0555 residue reap without following links
+- **restore_spec**: Pin fixture meta publication atomicity with baseline seam
+- **restore_spec**: Publish fixture meta atomically via temp and rename
+- **lane**: Repair owner rwx on dirs before registry reap removes them
+
 ## [v2026.10.27] - 2026-10-05
 - **app**: Name the drag and release mouse kinds the decoder will admit
 - **app**: Pin border dragging and mouse compatibility
