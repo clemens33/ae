@@ -842,10 +842,14 @@ fn restore_off_preserves_the_empty_server_hint_and_saved_state_byte_for_byte() {
     unchanged(&fleet.dir("saved").join("meta"), &before);
     assert!(!fleet.tmux(&["has-session", "-t", "=saved"]).0);
 }
-// Baseline fixture seam: this preserves the old truncate-and-write behavior.
-// The fix changes this helper; the separately frozen acceptance test stays.
+// Fixture seam: publish whole or not at all, the product `publish_bytes`
+// shape (temp beside the target, rename over it). A lock-free reader racing
+// this sees the complete old record or the complete replacement, never a
+// torn one. The separately frozen acceptance test pins this property.
 fn publish_fixture_meta(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)
+    let tmp = path.with_extension("meta.tmp-tf");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
 }
 /// A lock-free reader can open metadata before its fixture writer publishes.
 /// Holding that read handle across publication must retain the complete old
