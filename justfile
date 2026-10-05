@@ -1119,7 +1119,12 @@ _tmux-isolated lane *args:
                 fi
                 scratch="$(readlink "$entry")" || { failed=1; continue; }
                 if owned_root "$owner" "$scratch"; then
-                    reap_sockets "$owned" && rm -rf "$owned" 2>/dev/null || failed=1
+                    # A kill between a test's chmod and its restore leaves 0555
+                    # dirs `rm -rf` cannot empty; repair owner rwx on dirs only,
+                    # per-dir before descent (a batched chmod runs after the
+                    # traversal it needed), still inside the proven root: plain
+                    # `find` follows no link and `-type d` never matches one.
+                    reap_sockets "$owned" && find "$owned" -type d -exec chmod u+rwx {} \; 2>/dev/null && rm -rf "$owned" 2>/dev/null || failed=1
                 elif [[ -e "$scratch" ]]; then
                     reap_sockets "$scratch" || failed=1
                 fi
