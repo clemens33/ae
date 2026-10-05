@@ -35,12 +35,27 @@ recorded config first.
   on another tmux server, or one whose watchdog publishes nothing, names that
   gap instead of seats. The tab stays as you move between sessions.
 - **Chat** column: the selected session's lane, newest at the bottom, with its
-  coverage rows, then the composer.
+  coverage rows, then the composer. Only the rows on screen and a page beyond
+  are drawn: older turns are drawn as you scroll back to them, and the oldest
+  stops the scroll.
 
 Below 90x20 the sidebar goes and the chat takes the pane; below 40x8 the app
 only says how large it needs to be. Colours come from the session's own look
 (home first, then the selected session, then the default palette); with
 `theme = off` it draws no colour, and the selected name is bold and reversed.
+
+## Reading
+
+A background reader does every read — the fleet, each session's lane, the
+looks, the memos, who owns the input — so no key waits on one. It reads the
+fleet first, then a lane the composer just wrote into, the selected session,
+the fleet again every 5 seconds, home, the sessions one and then two rows from
+the selection, and the rest in sidebar order, keeping at most 16 lanes; the
+selected session and home are read again every 5 seconds. Until the first
+fleet read the list says `loading`. A session whose lane was not read yet
+shows one dim `loading` row, and one read before shows its last lane at once.
+An answer that lands after you moved on is kept for its own session and never
+drawn under another.
 
 ## Keys
 
@@ -94,5 +109,8 @@ read-only, and typing still goes home: the composer says
 - The panic hook that restores the terminal stays installed after the app
   leaves its screen; it would only restore the same mode again.
 - Truecolour only; no 256-colour fallback.
+- A session replaced under the same name can show its previous lane until the
+  next fleet read notices, at most 5 seconds and one read later.
+- One very long turn is wrapped whole whenever any of its rows is on screen.
 - Mouse dragging does not select text in the app. Hold Shift (Option in iTerm)
   for terminal text selection; inside tmux an ordinary drag goes to the app.
