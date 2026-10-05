@@ -141,6 +141,11 @@ impl Console {
         &self.dir
     }
 
+    /// The canonical `session_id` this console is bound to, or empty.
+    pub(crate) fn uuid(&self) -> &str {
+        &self.uuid
+    }
+
     /// Every roster seat as the last settled read named them: what `/open`
     /// takes, `None` before one.
     pub(crate) fn roster(&self) -> Option<&[needs::SeatRef]> {

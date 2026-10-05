@@ -157,24 +157,35 @@ struct Ctx<'s, 'a> {
     screen: &'s Screen<'a>,
     paint: Paint,
     icons: bool,
+    wait: Wait,
+}
+
+/// What `ae app` has not read yet, drawn as `loading`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Wait {
+    /// The fleet: the sidebar list says `loading` and no tab shows.
+    pub(crate) fleet: bool,
+    /// The selection's lane: one dim chat row says `loading`.
+    pub(crate) lane: bool,
 }
 
 /// Draw `screen` into `buf`, whose area starts at the origin — the app hands
 /// it the terminal's whole frame. The answer is how many pages back the chat
 /// can scroll in this frame, which bounds the model's scroll.
 pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
-    let layout = draw_with_layout(screen, buf);
+    let layout = draw_with_layout(screen, Wait::default(), buf);
     layout.max_scroll.div_ceil(layout.page_rows.max(1))
 }
 
 /// Draw and retain only the geometry this frame actually showed.
-pub(crate) fn draw_with_layout(screen: &Screen<'_>, buf: &mut Buffer) -> Layout {
+pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer) -> Layout {
     let area = buf.area;
     let mut layout = Layout::default();
     let ctx = Ctx {
         screen,
         paint: Paint::of(screen.look.as_ref()),
         icons: screen.look.is_none_or(|look| look.icons),
+        wait,
     };
     let dim = ctx.paint.fg(|p| p.dim);
     if area.width < MIN.0 || area.height < MIN.1 {
@@ -318,14 +329,12 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         put(buf, end - 1, 3, "!", 1, key);
     }
     if count == 0 {
-        put(
-            buf,
-            LEFT,
-            LIST_TOP,
-            "No sessions.",
-            room,
-            paint.fg(|p| p.dim),
-        );
+        let empty = if ctx.wait.fleet {
+            "loading"
+        } else {
+            "No sessions."
+        };
+        put(buf, LEFT, LIST_TOP, empty, room, paint.fg(|p| p.dim));
     }
     for (step, at) in list.visible.clone().enumerate() {
         let y = LIST_TOP + cells(step) * list.step;
@@ -355,7 +364,7 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         }
         put(buf, LEFT, y, &text, room, tone);
     }
-    let Some(entry) = ctx.screen.selected else {
+    let Some(entry) = ctx.screen.selected.filter(|_| !ctx.wait.fleet) else {
         return;
     };
     let tabs = list.end + 1;
@@ -679,7 +688,10 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         })
         .unwrap_or_default();
     let clock = view::Style::resolve(true, screen.look, screen.zone, main);
-    let rows = super::lane::rows(screen.lane, usize::from(room), paint, &clock, main);
+    let mut rows = super::lane::rows(screen.lane, usize::from(room), paint, &clock, main);
+    if ctx.wait.lane {
+        rows.push(Line::from(Span::styled("loading", dim)));
+    }
     let room_rows = usize::from(bottom.saturating_sub(top));
     let scroll = screen.model.scroll_rows(room_rows);
     let last = rows
