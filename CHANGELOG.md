@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.30] - 2026-10-06
+- **console**: Quiet needs-you reprints (P1-P4)
+
 ## [v2026.10.29] - 2026-10-05
 - **app**: Settle resize waits on two identical captures
 
