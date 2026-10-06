@@ -1,0 +1,255 @@
+# ae workspace
+
+Session: shortcore-golden-7f3a
+Origin: /o
+Directory: /w
+Mode: local
+
+You are in the human's LIVE checkout (local mode) — their uncommitted work may be present. One writer per file; no destructive git operations; never assume the tree is yours alone.
+
+## Agents
+
+| Agent | Profile | Tool | Role | Pane |
+|-------|---------|------|------|------|
+
+## Calling a helper
+
+Every helper below has two spellings. The absolute path always works:
+```bash
+{{DIR}}/send colead "review ready"
+```
+So does the short form, which names this session instead of its directory:
+```bash
+ae @shortcore-golden-7f3a send colead "review ready"
+```
+Both run the same helper against `shortcore-golden-7f3a`. The short form takes canonical
+session names only, so a session named before that grammar is reachable by its
+absolute path alone — which is why the path is what an exact command carries.
+What the short form does NOT do is
+say who you are: your identity is still the pane you are typing in, so naming a
+session buys you no authority in it and `--cross-session` still applies. A bare
+helper name (`send colead …`, no path and no `@`) is refused — it has no session
+to derive. When another agent hands you an exact reply command, run it VERBATIM;
+do not rewrite it into either spelling.
+
+## Communication
+
+Send a message to another agent by name:
+```bash
+{{DIR}}/send [--cross-session] "<agent_name>" "your message"
+```
+
+Ask another agent a question and require a reply:
+```bash
+{{DIR}}/ask [--cross-session] <agent_name> "your question"
+```
+
+Request a critical review:
+```bash
+{{DIR}}/review [--cross-session] <agent_name> "review request"
+```
+
+Reply to a logged request by request id:
+```bash
+{{DIR}}/reply <request_id> "your reply"
+```
+
+Inspect request state without peeking panes:
+```bash
+{{DIR}}/requests
+{{DIR}}/requests inbox
+```
+
+Declare your current work state. It shows in `ae list` (per agent). Your `waiting-user`/`blocked` contribute to the session `attn:` marker; `ae list` may also show watchdog-derived reasons (`dead`/`stale`/`limit`/`throttled`). `waiting-agent` declares you are waiting on ANOTHER ae agent: it is quiet like `waiting-user`, claims no human while fresh, and escalates to exactly `blocked` once it outlives its ceiling — attention marker, and nudging too only when the idle-nudge cadence is enabled; at `idle_nudge_secs = 0` the ceiling scales from the documented default instead of zero, because zero keeps the marker and only suppresses the nudge. The watchdog stops nudging on any quiet state, but `done` is provisional: after one idle-nudge period it sends one proof challenge, keeps at most one outstanding, and counts one later `done` per delivered challenge until `done_confirmations` confirmations (default 2) make it final and quiet as before; an unanswered challenge lapses after one further period into ordinary nudging, but its credit survives for a later `done`, while `done_confirmations = 0` or `idle_nudge_secs = 0` makes done immediate. `waiting-agent`/`blocked` are challenged like `done`: one proof challenge per idle-nudge period naming the raw state, answered by re-declaring that same state with current reason and proof; the Nth proof re-arms rather than confirming, so waits are never silently honoured forever, while a lapsed wait keeps its verdict and ordinary nudging resumes beside it. `waiting-user` is never challenged: honoured until your next declaration, the human's chat-bridge message, or input in your pane, then nudging resumes. Your own messages and your peers' leave every wait standing; a reply to one of your own asks or reviews also ends `waiting-agent`, and input in your pane ends any wait:
+```bash
+{{DIR}}/state working "starting on X"
+{{DIR}}/state waiting-user "Which layout should we use? Vertical keeps panes readable; horizontal shows more context. Recommend vertical because readability matters; details: .local/layout.md"
+{{DIR}}/state waiting-agent "Waiting on colead's re-review of .local/slice.md; the gate is the only blocker, chase colead if this ages past 20m; details: .local/waiting.md"
+{{DIR}}/state blocked "Codex review blocks merge; lead unblocks req-Z. I ran local tests and recorded failures in .local/review.md."
+{{DIR}}/state done "shipped X"
+{{DIR}}/state                                                # print current state
+```
+
+`mark-done "<summary>"` is preserved as shorthand for `state done`. Declare `working` on every new task, `waiting-user` only after asking the human, `waiting-agent` when you wait on another agent (name them in the reason), `blocked` only with a concrete EXTERNAL blocker: a dependency, a service, a human decision elsewhere, a broken host.
+
+Record durable findings, decisions, and handoffs in shared session memory:
+```bash
+{{DIR}}/memo add "important shared fact"
+{{DIR}}/memo add --topic arch "we chose SQLite over Postgres"
+{{DIR}}/memo read
+{{DIR}}/memo read --topic arch
+{{DIR}}/memo tail 5
+```
+
+Memo entries are append-only and stored in `{{DIR}}/memo.tsv`. Use memo for durable shared context, not full chat transcripts.
+
+The session can carry a one-line goal — what this session is FOR. It shows in `ae list` and the watchdog quotes it when nudging idle agents:
+```bash
+{{DIR}}/goal                       # show the current session goal
+{{DIR}}/goal "ship the PR for X"   # set it
+{{DIR}}/goal --clear               # remove it
+```
+
+When another agent sends you a question, task, or review request, reply via the exact `reply` or `send` command included in that message:
+```bash
+{{DIR}}/send "<their_agent_name>" "your reply"
+```
+
+Do not infer the recipient. Do not reply only in your own pane output. Do not poll or capture panes to wait for replies — answers arrive as incoming messages.
+
+## Talking to the human on Telegram
+
+If the human messages you from Telegram, answer with `say` — your normal pane
+output does NOT reach their phone:
+```bash
+{{DIR}}/say "done — the menu is live, tested end to end"
+echo "a longer, multi-line reply" | {{DIR}}/say   # stdin for long text
+```
+`say` emits a `chat` event the Telegram bridge forwards (when running with
+`chat` in its include filter). The human can reply to your message on Telegram
+and it routes straight back to you.
+
+## Peek
+
+View recent output from another agent's pane:
+```bash
+{{DIR}}/peek <agent_name> [lines]
+```
+```bash
+{{DIR}}/peak <agent_name> [lines]
+```
+
+Default: 80 lines. Max: 2000. Use peek/peak for inspection only, not as a reply mechanism.
+
+## Agents
+
+List all agents in the session:
+```bash
+{{DIR}}/agents
+```
+
+## Focus
+
+Switch to another agent's pane:
+```bash
+{{DIR}}/focus <agent_name>
+```
+
+## Interrupt
+
+Stop an agent's current generation and optionally redirect:
+```bash
+{{DIR}}/interrupt [--cross-session] <agent_name> [message]
+```
+
+Without a message, just cancels current work. With a message, cancels then sends new instructions.
+
+## Spawn
+
+Add another agent to this workspace (it gets its own tmux window, named
+after its role — the main window's layout is untouched):
+```bash
+{{DIR}}/spawn <name> --using <profile> [prompt]
+```
+
+Always give spawned agents a descriptive role NAME — it is their identity, addressed as `send <name>` (e.g. `spawn reviewer --using grok46`, `spawn pair-programmer --using opus5`).
+
+Available profiles:  (from ~/.ae/config [profiles])
+
+## Relaunch
+
+Bring a seat whose tool EXITED back in its own pane — same slot, same name, same
+conversation when the tool still has it:
+```bash
+{{DIR}}/relaunch <agent_name>
+```
+
+Use it when an agent's pane has fallen back to its shell. It refuses, naming the reason,
+whenever the seat is not provably dead — a running seat, a busy pane, a pane that is gone.
+It never kills anything, so a wedged-but-alive agent is `interrupt`'s job, not this one. A
+spawned seat that comes back on a fresh conversation has NOT been re-handed its brief: its
+spawner re-sends it.
+
+## Delegation
+
+**STRONG DEV:** build slices with `gpt56sol` xhigh or `opus5` xhigh.
+**BRAINPOWER:** lead/colead seats, plans, rulings and hard debugging use `fable5` xhigh or `gpt6astra` xhigh.
+**CHORES:** tests and simple slices use `gpt56luna` xhigh; it also runs the orchestrator seat.
+**REVIEWER:** use `grok46` when usage allows.
+
+**OpenCode Go seats (only if listed under Available profiles):** `spark13gom` (Meta-served Muse Spark 1.3 Contributor) ranks as a peer of `gpt56solx`/`opus5x` for strong build slices and judgment work; `deepseek41flashgom` (DeepSeek-served DeepSeek V4.1 Flash) is the fast alternative for bounded build slices and review lanes. A shared OpenCode scope proves nothing about provider — declare the served provider for rule 11. Chores still go to `gpt56luna`; simple work never takes `fablex`/`astrax`.
+
+Leads FAN OUT by default: keep only the judgment — architecture, rulings,
+ambiguous diagnosis, final gates, or human-facing decisions. A worker brings
+FRESH context, works one brief without loading the lead's session, and can use
+a cheaper profile. Cut work into independent slices and spawn them in PARALLEL, one
+writer per file. A NEW slice gets a fresh worker; a fix round returns to the
+worker and reviewer who hold its context.
+
+**Spawn a worker by default** for work that can be described in ~10 lines with
+a clear stop condition and verifiable result (tests, grep, focused review):
+test/CI runs, scoped mechanical edits, callers/usage scans, log triage,
+doc syncs, independent review lanes. That is a brief floor, not a delegation
+threshold. **Prefer ae
+`spawn` over your harness's own
+subagents** (e.g. Claude Code's Task tool) for anything beyond a quick or
+bursty read-only lookup/fan-out consumed immediately (a ten-window parallel
+scan is noise — harness-native fan-out is right there): ae workers are
+visible to the human (own window),
+orchestrator-monitored, messageable, and survive your context compaction —
+internal subagents are invisible to everyone but you. Internal subagents
+remain fine for fast same-harness reads whose result you consume
+immediately.
+
+Conventions:
+- Profile = the model (`gpt56sol`/`opus5`/`fable5`/`gpt6astra`/`gpt56luna`/`grok46`…
+  — whatever ~/.ae/config defines); name = role. Good: `gpt56luna:tests`,
+  `gpt56sol:builder`, `grok46:reviewer`. Bad: `worker`, `helper-3`.
+- Reviewer seat = OTHER provider than the builder; see rule 11.
+- Brief contract: objective; scope (files, base commit, absolute worktree path,
+  expected HEAD); edit/commit/push authority; non-goals; rulings including
+  decided mechanisms; verification command; proof and reply shape; stop
+  condition; cap. Name the pain and invariant; leave unspecified
+  implementation open.
+- Result contract (worker replies with): Outcome / Changed / Verified (command
+  + result) / Risks / Need-from-spawner. No raw logs unless asked.
+- Lifecycle: worker declares `state working` on start, `state done` when
+  finished, then WAITS. The spawner reviews the output/diff, then
+  `retire <name>` — workers never self-retire (the pane must survive until
+  reviewed). THE LOOP CLOSES ONLY AT RETIRE, and the spawner owns it: retire
+  promptly after review, never park a finished worker "just in case", and
+  never declare yourself done while an agent you spawned still runs.
+  Use `memo` only for durable findings that outlive the pane.
+- One writer per file: in local mode the leads assign scope; for parallel
+  write-heavy work use separate worktrees or sessions.
+
+## Retire
+
+Remove a spawned agent from the workspace:
+```bash
+{{DIR}}/retire <agent_name|pane_id>
+```
+
+Kills the pane, removes meta entry, and updates the manifest. Only works on spawned agents.
+
+## Cross-session
+
+Inspection helpers may target another ae session directly. Delivery helpers
+`send`, `ask`, `review`, and `interrupt` require `--cross-session`, which means
+the human explicitly instructed the delivery. A `reply` to a cross-session
+request needs no flag because the request id proves the conversation is open:
+```bash
+{{DIR}}/peek @other-session:claude:lead 20
+{{DIR}}/send --cross-session @other-session:codex:reviewer "check the API"
+```
+
+List all agents across all running sessions:
+```bash
+{{DIR}}/agents --all
+```
+
+## Rules
+
+- Coordinate file edits -- don't modify the same file simultaneously
+- The human can see all panes and may intervene at any time
+- Always use the send helper above to communicate with other agents (never raw tmux send-keys)
