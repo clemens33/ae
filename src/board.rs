@@ -376,6 +376,16 @@ pub struct Streamed {
     /// Absolute position after the last newline-terminated line — the
     /// splitter's base when none — so a follow's next read starts there.
     pub(crate) committed: u64,
+    /// The absolute offset this read started at: what `committed` and the
+    /// fingerprint chain continue from.
+    pub(crate) from: u64,
+    /// Fingerprint of the raw committed bytes, `[from..committed]`, over the
+    /// seed the read started from — torn tail excluded, overlong and
+    /// malformed bytes included.
+    pub(crate) fp: u64,
+    /// One `(line end, fingerprint)` per committed line, each covering
+    /// `[seed..end]` from this read's seed.
+    pub(crate) checkpoints: Vec<(u64, u64)>,
     /// The seat's harness conversation id, when the caller bound one. A store
     /// that interleaves conversations (agy) filters on it; every other reader
     /// ignores it. The splitter stays pure, so this is bound by the caller.
@@ -441,6 +451,34 @@ impl Streamed {
         self.assistant_read_once = once;
         self
     }
+
+    /// The fingerprint covering `[seed..offset]`: the read's seed at `from`,
+    /// a line-end checkpoint inside. Anything else answers the whole read —
+    /// callers only ask for line ends, so a miss reads as changed, never held.
+    pub(crate) fn fp_at(&self, offset: u64, seed: u64) -> u64 {
+        if offset == self.from {
+            return seed;
+        }
+        if let Some((_, fp)) = self.checkpoints.iter().find(|(end, _)| *end == offset) {
+            return *fp;
+        }
+        self.fp
+    }
+}
+
+/// FNV-1a 64, inline so the committed-bytes fingerprint takes no
+/// dependency. The follow compares transcript identity across polls of one
+/// process, so a stable cross-run hash is not needed.
+pub(crate) const FNV_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+/// Fold `bytes` into the running fingerprint `fp`.
+pub(crate) fn fnv_fold(mut fp: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        fp ^= u64::from(*byte);
+        fp = fp.wrapping_mul(FNV_PRIME);
+    }
+    fp
 }
 
 /// THE line splitter: bytes in, lines out, no I/O. The door feeds it buffer
@@ -454,6 +492,18 @@ pub struct Splitter {
     cursor: u64,
     overlong: bool,
     line_len: usize,
+    /// The read's first byte: `start` walks, this does not.
+    base: u64,
+    /// Fingerprint of the raw committed bytes, `[base..start]`.
+    fp: u64,
+    /// Fingerprint state extended with the uncommitted line bytes,
+    /// `[seed..cursor]`: every fed byte folds here on arrival, so a line
+    /// split across chunks hashes whole; `end_line` commits it into `fp`
+    /// and a torn tail dies with the splitter, never folded in.
+    pending: u64,
+    /// One `(line end, fingerprint)` per committed line, covering
+    /// `[seed..end]`: a held-back tail restores its exact prefix from these.
+    checkpoints: Vec<(u64, u64)>,
 }
 
 impl Splitter {
@@ -467,9 +517,19 @@ impl Splitter {
     /// only a tail and every offset stays ABSOLUTE in the file.
     #[must_use]
     pub fn at(base: u64) -> Self {
+        Self::at_seed(base, FNV_BASIS)
+    }
+
+    /// [`Splitter::at`], continuing the held fingerprint `seed`: an append's
+    /// committed bytes extend the chain its earlier polls hashed.
+    #[must_use]
+    pub fn at_seed(base: u64, seed: u64) -> Self {
         Self {
             start: base,
             cursor: base,
+            base,
+            fp: seed,
+            pending: seed,
             ..Self::default()
         }
     }
@@ -485,6 +545,7 @@ impl Splitter {
                 break;
             };
             self.push_body(&rest[..at]);
+            self.pending = fnv_fold(self.pending, b"\n");
             self.cursor += (at + 1) as u64;
             self.end_line();
             rest = &rest[at + 1..];
@@ -501,6 +562,9 @@ impl Splitter {
             lines: self.lines,
             torn: self.cursor != self.start,
             committed: self.start,
+            from: self.base,
+            fp: self.fp,
+            checkpoints: self.checkpoints,
             seat_id: String::new(),
             assistant: false,
             assistant_rows_found: false,
@@ -510,6 +574,7 @@ impl Splitter {
     }
 
     fn push_body(&mut self, body: &[u8]) {
+        self.pending = fnv_fold(self.pending, body);
         if !self.overlong {
             if self.line.len() + body.len() > LINE_CAP {
                 self.line.clear();
@@ -532,6 +597,8 @@ impl Splitter {
             body,
         });
         self.start = self.cursor;
+        self.fp = self.pending;
+        self.checkpoints.push((self.start, self.fp));
         self.overlong = false;
         self.line_len = 0;
     }
@@ -562,6 +629,18 @@ pub(crate) fn stream_transcript(
     expected: &std::fs::Metadata,
     from: u64,
 ) -> Result<Streamed, DoorError> {
+    stream_transcript_seeded(path, expected, from, FNV_BASIS)
+}
+
+/// [`stream_transcript`], hashing the read's committed bytes onto `seed`: a
+/// follow tail continues the chain its earlier polls hashed, a read from zero
+/// starts it. Same door, same proof, one site.
+pub(crate) fn stream_transcript_seeded(
+    path: &Path,
+    expected: &std::fs::Metadata,
+    from: u64,
+    seed: u64,
+) -> Result<Streamed, DoorError> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: streams only the lstat-checked board transcript"
@@ -577,7 +656,7 @@ pub(crate) fn stream_transcript(
     file.seek(std::io::SeekFrom::Start(from))
         .map_err(|_| DoorError::Unreadable)?;
     let mut reader = BufReader::new(file.take(expected.len() - from));
-    let mut splitter = Splitter::at(from);
+    let mut splitter = Splitter::at_seed(from, seed);
     loop {
         let chunk = reader.fill_buf().map_err(|_| DoorError::Unreadable)?;
         if chunk.is_empty() {
@@ -637,6 +716,8 @@ pub struct SeatSeed {
     pub(crate) mtime: Option<std::time::SystemTime>,
     /// Absolute position after the last complete line of the read.
     pub(crate) committed: u64,
+    /// Fingerprint of the raw committed bytes, `[0..committed]`.
+    pub(crate) fp: u64,
     /// The newest row timestamp this read observed, if it observed any row.
     /// The follow seeds its divider day from these, `--since` applied there.
     pub(crate) last_row_ts: Option<i64>,
@@ -1322,7 +1403,7 @@ fn follow_seat(
     let streamed = match follow.plan(&actor, &observed) {
         follow::Plan::Hold => None,
         follow::Plan::Read(from) => Some(
-            stream_transcript(&path, &metadata, from)
+            stream_transcript_seeded(&path, &metadata, from, follow.seed_for(&actor, from))
                 .map_err(door_reason)
                 .map(|streamed| {
                     streamed
@@ -1644,11 +1725,13 @@ fn seed(
     seat_rows: &[Row],
     window: bool,
 ) -> SeatSeed {
+    let committed = hold_at(streamed, tool).unwrap_or(streamed.committed);
     SeatSeed {
         actor: actor.to_owned(),
         identity: identity_of(metadata),
         mtime: metadata.modified().ok(),
-        committed: hold_at(streamed, tool).unwrap_or(streamed.committed),
+        committed,
+        fp: streamed.fp_at(committed, FNV_BASIS),
         last_row_ts: seat_rows.iter().map(|row| row.ts).max(),
         window,
     }

@@ -153,12 +153,15 @@ complete line, and the mtime it last saw:
 - **append** — same identity, more bytes: stream from the commit point; only
   the new rows print, with absolute offsets.
 - **rescan** — a new identity, a shrunken file, or the same length rewritten
-  (mtime changed): stream from zero and print EVERY row again, behind one
-  coverage line, `transcript replaced — rescanned` or `transcript rewritten —
-  rescanned`. Rescans are loud and complete; nothing is silently deduplicated
-  across generations. A torn last record holds the commit point at the last
-  newline and is retried next poll.
-- **hold** — nothing new: no read, no output.
+  with different bytes (mtime changed): stream from zero and print EVERY row
+  again, behind one coverage line, `transcript replaced — rescanned` or
+  `transcript rewritten — rescanned`. Rescans are loud and complete; nothing
+  is silently deduplicated across generations. A torn last record holds the
+  commit point at the last newline and is retried next poll.
+- **hold** — nothing new: no read, no output. A touch — same length, only
+  the mtime moved — verifies the committed bytes it reads: identical bytes
+  emit no rows and no rewrite gap, while the content warnings those bytes
+  carry stand again as steady coverage.
 
 OpenCode does not follow: an export is one child process per seat per tick and
 carries no append or offset semantics, so the one-shot read stands and every

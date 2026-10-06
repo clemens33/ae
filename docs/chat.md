@@ -77,16 +77,25 @@ silent since <time>` (no beat for three default verdict intervals, 180 s),
 unread`. Residual: a watchdog started with a custom `--interval` is judged by
 the default, because the override is not recorded.
 
-The header counts the seats and says when it was read, `-- needs you: 3 seats ·
-as of 18:02:11`. In a pane the section takes at most a third of the height;
-without a pane size (a pipe, `theme = off`) it shows twelve lines at most. The
-`unverified` lines get that room first, then the seat rows in rank order; a row
-short of room keeps its seat line and drops its detail, and the header says
-`<k> more: ae list` for the seats it left out. Each row is clipped to the pane's
-width when the chat knows it. The section prints again only when it changes: a need
-that clears prints `-- needs you: nothing standing (as of …)` once, an
-unreadable meta or journal, or a damaged meta that may have lost a seat, prints
-one warning that keeps the rows shown earlier standing, and a first read with nothing standing prints nothing.
+The header counts the seats with a real verdict and says when it was read,
+`-- needs you: 2 seats · as of 18:02:11`; the `unverified` lines carry their
+own counts and never join the header's number. In a pane the section takes at
+most a third of the height; without a pane size (a pipe, `theme = off`) it
+shows twelve lines at most. The `unverified` lines get that room first, then
+the seat rows in rank order; a row short of room keeps its seat line and drops
+its detail, and the header says `<k> more: ae list` for the seats it left out.
+Each row is clipped to the pane's width when the chat knows it. The section
+prints again only when what you must act on changes: which seats have a real
+verdict, a seat's verdict, or its source. Ages, since stamps, last-beat
+stamps, proof words and record positions never replay it. A newly doubted
+cause prints one dim notice naming the seats, `stale: watchdog silent · 2
+seats: lead, idle`; recovery prints nothing. A need that clears prints `--
+needs you: nothing standing (as of …)` once, an unreadable meta or journal,
+or a damaged meta that may have lost a seat, prints one warning that keeps
+the rows shown earlier standing, and a first read with nothing standing
+prints nothing. After the host slept — a wall-clock gap past 60 s between
+reads — the watchdog gets 180 s of awake time before its silence is doubt
+again; a missing or unreadable beat is never graced.
 
 ## Look
 

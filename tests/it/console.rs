@@ -296,7 +296,7 @@ fn split_needs_snapshot(text: &str) -> (&str, &str) {
     };
     let (header, body) = section.split_once('\n').expect("section has body rows");
     let clock = header
-        .strip_prefix("3 seats · as of ")
+        .strip_prefix("1 seat · as of ")
         .expect("fixture seat count + snapshot time");
     let bytes = clock.as_bytes();
     assert!(

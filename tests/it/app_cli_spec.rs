@@ -162,7 +162,7 @@ fn app_chat_lane_bytes_unchanged_on_fixture() {
     );
     let (header, body) = section.split_once('\n').expect("section has a body");
     let clock = header
-        .strip_prefix("2 seats · as of ")
+        .strip_prefix("0 seats · as of ")
         .expect("fixture seat count + snapshot time");
     let bytes = clock.as_bytes();
     assert!(

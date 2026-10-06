@@ -624,7 +624,7 @@ fn needs_view_distinct_causes_remain_named_and_elapsed_age_alone_does_not_repain
 }
 
 #[test]
-fn needs_view_repaints_changed_detail_source_and_freshness_with_same_record() {
+fn needs_view_keeps_proof_detail_quiet_and_repaints_changed_source_and_freshness() {
     let mut printed = Printed::default();
     let mut section = Section {
         rows: vec![row("scout", "spawned.0", Reason::Blocked, "OLD-DETAIL")],
@@ -636,9 +636,8 @@ fn needs_view_repaints_changed_detail_source_and_freshness_with_same_record() {
     );
     section.rows[0].detail = "NEW-DETAIL".to_owned();
     assert!(
-        printed
-            .needs(&Ok(section.clone()), None, now())
-            .contains("NEW-DETAIL")
+        printed.needs(&Ok(section.clone()), None, now()).is_empty(),
+        "fresh proof for same reason does not replay the action section"
     );
     section.rows[0].source = Source::Alert {
         action: "human-prompt".to_owned(),
@@ -762,7 +761,7 @@ fn needs_view_small_budget_names_uncertainty_before_known_rows() {
         "N3 uncertainty cause survives a bounded section: {text}"
     );
     assert!(
-        text.contains("4 seats") && text.contains("1 more"),
+        text.contains("-- needs you: 1 seat") && text.contains("1 more"),
         "{text}"
     );
 }

@@ -400,9 +400,9 @@ fn tool_result_calls_and_thinking_are_not_user_turns() {
     };
     assert_eq!(
         normalize_as_of(
-            "reply as of 01:02:03\n-- needs you: 1 seat · as of 22:48:04 · 04:05:06\n  unverified: watchdog off · 1 seat: lead\n"
+            "reply as of 01:02:03\n-- needs you: 0 seats · as of 22:48:04 · 04:05:06\n  unverified: watchdog off · 1 seat: lead\n"
         ),
-        "reply as of 01:02:03\n-- needs you: 1 seat · as of HH:MM:SS · 04:05:06\n  unverified: watchdog off · 1 seat: lead\n",
+        "reply as of 01:02:03\n-- needs you: 0 seats · as of HH:MM:SS · 04:05:06\n  unverified: watchdog off · 1 seat: lead\n",
         "only the footer as-of HH:MM:SS token changes"
     );
     assert_eq!(

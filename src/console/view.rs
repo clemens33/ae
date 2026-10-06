@@ -423,6 +423,13 @@ pub struct Printed {
     needs: Option<String>,
     /// The reason the section's current unsettled episode was named for.
     needs_gap: Option<String>,
+    /// The wall clock of the last section read, epoch seconds: a gap past
+    /// [`RESUME_GAP_SECS`] marks a host resume.
+    needs_last: Option<i64>,
+    /// The watchdog silence stays graced while the wall clock is before this.
+    needs_grace_until: Option<i64>,
+    /// The doubt classes the section last disclosed.
+    needs_doubt: BTreeSet<&'static str>,
 }
 
 #[derive(Debug)]
@@ -550,6 +557,11 @@ impl Printed {
 
     /// The "needs you" section of `read`, for a pane of `size` (`None`: a pipe
     /// or a file), as of `now`: what this console has not printed of it yet.
+    /// A changed ACTIONABLE set reprints the section; a newly doubted cause
+    /// prints one dim notice; recovery, new stamps and proof words print
+    /// nothing. A wall-clock gap past [`RESUME_GAP_SECS`] marks a host resume
+    /// and gives the watchdog [`GRACE_SECS`] of awake time before its
+    /// silence is doubt again — off and unreadable beats are never graced.
     #[must_use]
     pub fn needs(
         &mut self,
@@ -558,6 +570,14 @@ impl Printed {
         now: Timestamp,
     ) -> String {
         let width = size.map(|size| size.width);
+        let epoch = now.epoch();
+        if self
+            .needs_last
+            .is_some_and(|last| epoch.saturating_sub(last) > RESUME_GAP_SECS)
+        {
+            self.needs_grace_until = Some(epoch.saturating_add(GRACE_SECS));
+        }
+        self.needs_last = Some(epoch);
         let section = match read {
             Err(why) => {
                 if self.needs_gap.as_deref() == Some(why.as_str()) {
@@ -570,20 +590,37 @@ impl Printed {
             Ok(section) => section,
         };
         let gap = self.needs_gap.take();
-        let key = format!("{:?}", section.rows);
-        let cold = self.needs.is_none() && gap.is_none() && section.rows.is_empty();
-        if cold || self.needs.as_deref() == Some(key.as_str()) {
+        let grace = self.needs_grace_until.is_some_and(|until| epoch < until);
+        let owned;
+        let rows: &[Row] = if grace {
+            owned = graced(&section.rows);
+            &owned
+        } else {
+            &section.rows
+        };
+        let key = need_key(rows);
+        let doubt = doubt_set(rows);
+        let cold = self.needs.is_none() && gap.is_none() && rows.is_empty();
+        let same = self.needs.as_deref() == Some(key.as_str());
+        let mut gained: Vec<&str> = doubt.difference(&self.needs_doubt).copied().collect();
+        if cold || (same && gained.is_empty()) {
             self.needs = Some(key);
+            self.needs_doubt = doubt;
             return String::new();
         }
         self.needs = Some(key);
+        self.needs_doubt = doubt;
+        if same {
+            gained.sort_unstable();
+            return self.notice(rows, &gained, width);
+        }
         let (_, time) = clock_text(self.style.shift(micros_of(now)));
         let as_of = format!("as of {time}");
-        if section.rows.is_empty() {
+        if rows.is_empty() {
             let line = format!("-- needs you: nothing standing ({as_of})");
             return self.needs_line(&line, width, |palette| palette.dim);
         }
-        let entries = entries(&section.rows, &self.style, now);
+        let entries = entries(rows, &self.style, now);
         let budget = size.map_or(NEEDS_LINES, |size| (size.height / 3).max(1));
         let lines: usize = entries.iter().map(|entry| entry.lines.len()).sum();
         // The rows under the header go to the unverified causes first, then to
@@ -605,7 +642,11 @@ impl Printed {
             .filter(|(_, keep)| **keep == 0)
             .map(|(entry, _)| entry.seats)
             .sum();
-        let mut head = format!("-- needs you: {}", seats(section.rows.len()));
+        let actionable = rows
+            .iter()
+            .filter(|row| matches!(row.verdict, Verdict::Reason(_)))
+            .count();
+        let mut head = format!("-- needs you: {}", seats(actionable));
         if hidden > 0 {
             let _ = write!(head, " · {hidden} more: ae list");
         }
@@ -623,6 +664,27 @@ impl Printed {
             }
         }
         out
+    }
+
+    /// One dim notice for newly doubted `gained` classes: what is doubted
+    /// and which seats carry it — never the action section again.
+    fn notice(&self, rows: &[Row], gained: &[&str], width: Option<usize>) -> String {
+        let names: Vec<&str> = rows
+            .iter()
+            .filter(|row| doubt_classes(row).any(|class| gained.contains(&class)))
+            .map(|row| row.seat.name.as_str())
+            .collect();
+        let kinds = gained
+            .iter()
+            .map(|class| cause_words(class))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let line = format!(
+            "  stale: {kinds} · {}: {}",
+            seats(names.len()),
+            names.join(", ")
+        );
+        self.needs_line(&line, width, |palette| palette.dim)
     }
 
     /// One section line: neutralised, flattened to one row of `width` cells
@@ -669,6 +731,100 @@ impl Printed {
 
 /// The most lines the section takes where no pane height bounds it.
 const NEEDS_LINES: usize = 12;
+
+/// A wall-clock gap past this between section reads marks a host resume:
+/// twelve missed polls, so the chat itself did not run either.
+const RESUME_GAP_SECS: i64 = 60;
+
+/// Awake time a resumed host gives the watchdog before its silence is doubt
+/// again: three default verdict intervals, the staleness bound itself.
+const GRACE_SECS: i64 = super::needs::STALE_SECS;
+
+/// Rows with a resumed host's expected silence lifted: `WatchdogStale` rows
+/// drop and stale flags lift. Off, unreadable and every other cause stands.
+fn graced(rows: &[Row]) -> Vec<Row> {
+    rows.iter()
+        .filter_map(|row| match row.verdict {
+            Verdict::Unknown(Cause::WatchdogStale { .. }) => None,
+            Verdict::Unknown(_) => Some(row.clone()),
+            Verdict::Reason(_) => Some(Row {
+                stale: row
+                    .stale
+                    .filter(|stale| !matches!(stale, Cause::WatchdogStale { .. })),
+                ..row.clone()
+            }),
+        })
+        .collect()
+}
+
+/// The actionable set: one reason row's seat, verdict and source, sorted so
+/// age order never replays. Stamps, words, record positions and doubt excluded.
+fn need_key(rows: &[Row]) -> String {
+    let mut parts: Vec<String> = rows
+        .iter()
+        .filter_map(|row| match row.verdict {
+            Verdict::Reason(reason) => Some(format!(
+                "{}\0{}\0{}\0{}",
+                row.seat.slot,
+                row.seat.name,
+                reason as u8,
+                source_token(&row.source)
+            )),
+            Verdict::Unknown(_) => None,
+        })
+        .collect();
+    parts.sort_unstable();
+    parts.join("\n")
+}
+
+/// A reason row's source, by kind and alert action.
+fn source_token(source: &Source) -> String {
+    match source {
+        Source::Alert { action } => format!("alert:{action}"),
+        Source::Declaration => "declared".to_owned(),
+        Source::NoPane => "no-pane".to_owned(),
+        Source::Unattributed => "unattributed".to_owned(),
+        Source::Unverified => "unverified".to_owned(),
+    }
+}
+
+/// Every doubt class `rows` carries, stale flags and unknown causes alike.
+fn doubt_set(rows: &[Row]) -> BTreeSet<&'static str> {
+    rows.iter().flat_map(doubt_classes).collect()
+}
+
+/// The doubt classes one row carries: none, its stale flag's, its cause's.
+fn doubt_classes(row: &Row) -> impl Iterator<Item = &'static str> {
+    match row.verdict {
+        Verdict::Reason(_) => row.stale.map(cause_class),
+        Verdict::Unknown(cause) => Some(cause_class(cause)),
+    }
+    .into_iter()
+}
+
+/// One cause's class: the variant, never its stamps or payload counts.
+fn cause_class(cause: Cause) -> &'static str {
+    match cause {
+        Cause::WatchdogOff => "watchdog-off",
+        Cause::WatchdogUnreadable => "watchdog-unreadable",
+        Cause::WatchdogStale { .. } => "watchdog-stale",
+        Cause::RuntimeUnread => "runtime-unread",
+        Cause::PaneUnproven => "pane-unproven",
+        Cause::JournalPartial { .. } => "journal-partial",
+    }
+}
+
+/// One doubt class in words, without stamps or counts.
+fn cause_words(class: &str) -> &'static str {
+    match class {
+        "watchdog-off" => "watchdog off",
+        "watchdog-unreadable" => "watchdog beat unreadable",
+        "watchdog-stale" => "watchdog silent",
+        "runtime-unread" => "tmux did not list the panes",
+        "pane-unproven" => "pane unproven",
+        _ => "journal partial",
+    }
+}
 
 /// One entry of the section: a seat's row, its record's words on a line of
 /// their own, or one cause's unverified seats.
@@ -1490,7 +1646,7 @@ mod tests {
         let mut printed = Printed::default();
         assert_eq!(
             printed.needs(&Ok(section.clone()), None, now),
-            "-- needs you: 4 seats · as of 06:11:00\n\
+            "-- needs you: 2 seats · as of 06:11:00\n\
              \x20 lead (lead pair) · waiting-user · /open lead · declared since 06:01:00 (10m)\n\
              \x20   which layout?\n\
              \x20 scout · blocked · /open scout · human prompt since 06:01:00 (10m)\n\
@@ -1530,7 +1686,7 @@ mod tests {
         let text = Printed::default().needs(&Ok(Section { rows }), small, now);
         assert_eq!(text.lines().count(), 2, "{text}");
         assert!(
-            text.contains("4 seats · 1 more: ae list")
+            text.contains("1 seat · 1 more: ae list")
                 && text.contains("unverified: watchdog off · 3 seats: w0, w1, w2"),
             "{text}"
         );

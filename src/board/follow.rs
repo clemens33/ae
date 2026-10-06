@@ -83,13 +83,15 @@ enum Arm {
 }
 
 /// The held per-seat state: the identity offsets bind to, the commit point
-/// after the last complete line, the mtime last seen, and whether the window of
-/// replies to the human was open there.
+/// after the last complete line, the mtime last seen, the fingerprint of the
+/// raw committed bytes, and whether the window of replies to the human was
+/// open there.
 #[derive(Debug, Clone, Copy)]
 struct Seat {
     identity: (u64, u64),
     mtime: Option<SystemTime>,
     committed: u64,
+    fp: Option<u64>,
     window: bool,
 }
 
@@ -158,6 +160,7 @@ impl Follow {
                             identity: seed.identity,
                             mtime: seed.mtime,
                             committed: seed.committed,
+                            fp: Some(seed.fp),
                             window: seed.window,
                         },
                     )
@@ -175,6 +178,86 @@ impl Follow {
             Arm::Append => Plan::Read(self.seats.get(actor).map_or(0, |seat| seat.committed)),
             Arm::First | Arm::Rescan(_) => Plan::Read(0),
         }
+    }
+
+    /// The fingerprint the read from `from` hashes onto: a read from zero
+    /// starts the chain, a tail continues the held one.
+    pub(crate) fn seed_for(&self, actor: &str, from: u64) -> u64 {
+        if from == 0 {
+            super::FNV_BASIS
+        } else {
+            self.fp_for(actor).unwrap_or(super::FNV_BASIS)
+        }
+    }
+
+    /// The held committed-bytes fingerprint, if a successful read set one.
+    pub(crate) fn fp_for(&self, actor: &str) -> Option<u64> {
+        self.seats.get(actor).and_then(|seat| seat.fp)
+    }
+
+    /// A poll whose read failed: a rescan binds the new generation at zero
+    /// so the loud line names it ONCE and the retry streams it from its
+    /// start, and the refusal itself stands as steady coverage.
+    fn failed(
+        &mut self,
+        actor: &str,
+        loaded: &Loaded,
+        arm: &Arm,
+        reason: &'static str,
+        coverage: &mut Vec<Coverage>,
+    ) {
+        if let Arm::Rescan(_) = arm {
+            self.seats.insert(
+                actor.to_owned(),
+                Seat {
+                    identity: loaded.observed.identity,
+                    mtime: loaded.observed.mtime,
+                    committed: 0,
+                    fp: None,
+                    window: false,
+                },
+            );
+        }
+        self.steady(actor, vec![reason.to_owned()], coverage);
+    }
+
+    /// A touch hold: same file, same length, identical committed bytes — only
+    /// the mtime moved, so the seat keeps its commit point and the poll emits
+    /// no rows and no gap. The verified bytes still refresh what stands: the
+    /// reader's own coverage replaces any resolved read-door doubt. Anything
+    /// unverifiable answers false, loud as before.
+    fn touch(
+        &mut self,
+        actor: &str,
+        loaded: &Loaded,
+        streamed: Option<&Streamed>,
+        out: &mut Vec<Coverage>,
+    ) -> bool {
+        let (Some(held), Some(streamed)) = (self.seats.get(actor).copied(), streamed) else {
+            return false;
+        };
+        if held.identity != loaded.observed.identity
+            || loaded.observed.len != held.committed
+            || streamed.committed != held.committed
+            || held.fp.is_none_or(|fp| fp != streamed.fp)
+        {
+            return false;
+        }
+        let (_, seat_coverage) =
+            reader_for(loaded.source)(streamed, actor, &loaded.file, loaded.source);
+        self.steady(
+            actor,
+            seat_coverage.into_iter().map(|item| item.reason).collect(),
+            out,
+        );
+        self.seats.insert(
+            actor.to_owned(),
+            Seat {
+                mtime: loaded.observed.mtime,
+                ..held
+            },
+        );
+        true
     }
 
     /// One poll: the three arms, the LOUD rescans, and coverage that prints
@@ -203,6 +286,10 @@ impl Follow {
                 Ok(loaded) => loaded,
             };
             let arm = classify(self.seats.get(&actor), &loaded.observed);
+            let read = streamed.as_ref().and_then(|read| read.as_ref().ok());
+            if matches!(arm, Arm::Rescan(_)) && self.touch(&actor, &loaded, read, &mut coverage) {
+                continue;
+            }
             if let Arm::Rescan(reason) = arm {
                 coverage.push(Coverage {
                     actor: actor.clone(),
@@ -214,24 +301,7 @@ impl Follow {
             }
             match streamed {
                 None => {}
-                Some(Err(reason)) => {
-                    if let Arm::Rescan(_) = arm {
-                        // The generation change is KNOWN even when its first
-                        // read failed: bind the new identity at zero so the
-                        // loud line names it ONCE and the retry streams the
-                        // whole generation from its start.
-                        self.seats.insert(
-                            actor.clone(),
-                            Seat {
-                                identity: loaded.observed.identity,
-                                mtime: loaded.observed.mtime,
-                                committed: 0,
-                                window: false,
-                            },
-                        );
-                    }
-                    self.steady(&actor, vec![reason.to_owned()], &mut coverage);
-                }
+                Some(Err(reason)) => self.failed(&actor, &loaded, &arm, reason, &mut coverage),
                 Some(Ok(streamed)) => {
                     let (mut seat_rows, seat_coverage) =
                         reader_for(loaded.source)(&streamed, &actor, &loaded.file, loaded.source);
@@ -266,12 +336,14 @@ impl Follow {
                     }
                     hidden.append(&mut seat_hidden);
                     rows.append(&mut seat_rows);
+                    let seed = self.seed_for(&actor, streamed.from);
                     self.seats.insert(
                         actor,
                         Seat {
                             identity: loaded.observed.identity,
                             mtime: loaded.observed.mtime,
                             committed,
+                            fp: Some(streamed.fp_at(committed, seed)),
                             window,
                         },
                     );
@@ -328,6 +400,9 @@ impl Follow {
 }
 
 #[cfg(test)]
+mod spec_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{Follow, Loaded, Located, Plan, Snapshot};
     use crate::board::{
@@ -367,7 +442,7 @@ mod tests {
             Plan::Read(from) => from,
             Plan::Hold => panic!("this poll should read"),
         };
-        let mut splitter = Splitter::at(from);
+        let mut splitter = Splitter::at_seed(from, follow.seed_for(actor, from));
         let at = usize::try_from(from).expect("test offsets fit a usize");
         splitter.feed(&full.as_bytes()[at..]);
         follow.step(vec![Snapshot {
@@ -419,7 +494,7 @@ mod tests {
             Plan::Read(from) => from,
             Plan::Hold => panic!("this poll should read"),
         };
-        let mut splitter = Splitter::at(from);
+        let mut splitter = Splitter::at_seed(from, follow.seed_for(actor, from));
         let at = usize::try_from(from).expect("test offsets fit a usize");
         splitter.feed(&full.as_bytes()[at..]);
         follow.step(vec![Snapshot {
@@ -467,6 +542,7 @@ mod tests {
                 identity: (1, 7),
                 mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                 committed: first.len() as u64,
+                fp: crate::board::fnv_fold(crate::board::FNV_BASIS, first.as_bytes()),
                 last_row_ts: None,
                 window: false,
             }],
@@ -495,7 +571,9 @@ mod tests {
         assert_eq!(batch.rows.len(), 1, "every row prints again");
         assert_eq!(batch.rows[0].offset, 0);
 
-        let batch = poll(&mut follow, "s:lead", located(2, len, 3), &full);
+        let rewritten = full.replace("words", "other");
+        assert_eq!(rewritten.len() as u64, len, "same-length different bytes");
+        let batch = poll(&mut follow, "s:lead", located(2, len, 3), &rewritten);
         assert_eq!(batch.coverage[0].reason, "transcript rewritten — rescanned");
         assert_eq!(batch.rows.len(), 1);
 
@@ -661,6 +739,7 @@ mod tests {
                 identity: (1, 7),
                 mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                 committed: first.len() as u64,
+                fp: crate::board::fnv_fold(crate::board::FNV_BASIS, first.as_bytes()),
                 last_row_ts: Some(1_789_549_200_000_000),
                 window: false,
             }],
@@ -700,6 +779,7 @@ mod tests {
                 identity: (1, 7),
                 mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                 committed: first.len() as u64,
+                fp: crate::board::fnv_fold(crate::board::FNV_BASIS, first.as_bytes()),
                 last_row_ts: Some(1_789_549_200_000_000),
                 window: false,
             }],
@@ -866,7 +946,7 @@ mod tests {
             Plan::Read(from) => from,
             Plan::Hold => panic!("this poll should read"),
         };
-        let mut splitter = Splitter::at(from);
+        let mut splitter = Splitter::at_seed(from, follow.seed_for("s:lead", from));
         let at = usize::try_from(from).expect("test offsets fit a usize");
         splitter.feed(&full.as_bytes()[at..]);
         follow.step(vec![Snapshot {
@@ -927,6 +1007,7 @@ mod tests {
                     identity: (1, 7),
                     mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                     committed: first.len() as u64,
+                    fp: crate::board::fnv_fold(crate::board::FNV_BASIS, first.as_bytes()),
                     last_row_ts: None,
                     window,
                 }],
@@ -945,6 +1026,7 @@ mod tests {
                 identity: (1, 7),
                 mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                 committed: 10,
+                fp: 0,
                 last_row_ts: None,
                 window: true,
             }],
