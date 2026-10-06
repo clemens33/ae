@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.31] - 2026-10-06
+- **app**: Install frozen settings spec
+- **app**: Stabilize settings spec waits on consecutive captures
+- **app**: Versioned settings overlay with quota/config/about bodies
+
 ## [v2026.10.30] - 2026-10-06
 - **console**: Quiet needs-you reprints (P1-P4)
 
