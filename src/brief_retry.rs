@@ -4,7 +4,7 @@
 //! A brief that misses its readiness window used to be dumped raw to
 //! `undelivered.<name>.txt` and forgotten, and the spawner's hand re-send
 //! arrived as a PEER message, losing the brief marker — the task contract's
-//! authority (rule 8b). This record lets the session's own watchdog deliver
+//! authority (CORE). This record lets the session's own watchdog deliver
 //! that brief LATER, byte-identical to what `spawn` would have pasted, or give
 //! it up LOUDLY.
 //!

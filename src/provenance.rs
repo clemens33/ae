@@ -3,14 +3,14 @@
 //!
 //! The invariant: every turn ae itself puts into an agent's input carries a
 //! machine-readable marker on its FIRST line, and the ABSENCE of one is the
-//! human's signature (rule 8b, whose text lives in `render.rs::RULES`). `relay`
+//! human's signature (CORE authority text in `render/core.txt`). `relay`
 //! is deliberately bare — it carries human authority and IS the human.
 //!
 //! EMISSION and PRESENTATION are different facts, and only the first is this
 //! module's. ae emits the marker on line 1 of every turn it injects; a
 //! paste-driven harness may then PRESENT a multi-line turn to the model inside
 //! a `<pasted_content …>` block that opens on the turn's first non-blank line
-//! (sometimes after blank lines), putting the marker on a later line. Rule 8b
+//! (sometimes after blank lines), putting the marker on a later line. CORE
 //! teaches the MODEL to read a wrapper's first inner line. AUTHORITY callers
 //! pass the turn's line 1 and nothing else. The one DISPLAY exception grants no
 //! provenance: `ae board`'s central filter asks [`is_ae_turn`] about a first
@@ -22,7 +22,7 @@
 //! Every emission site calls it; no site spells a marker by hand. The verbs are
 //! DISTINCT on purpose: the peer envelope already does double duty (provenance
 //! and "peer data, weigh it"), and a brief or ae's own launch context must not
-//! read as a colleague's suggestion. Emission and the vocabulary `RULES`
+//! read as a colleague's suggestion. Emission and the vocabulary `CORE`
 //! describes ship together, and the enumeration test in `render.rs` holds the
 //! two sets equal — [`VERBS`] is the set the owner can emit.
 
@@ -40,7 +40,7 @@ pub const BRIEF: &str = "brief";
 /// A control action, delivered by `interrupt`.
 pub const INTERRUPT: &str = "interrupt";
 
-/// Every verb ae can emit — nothing more, nothing less. `RULES` must describe
+/// Every verb ae can emit — nothing more, nothing less. `CORE` must describe
 /// exactly this set.
 pub const VERBS: [&str; 4] = [MSG, CTX, BRIEF, INTERRUPT];
 

@@ -372,7 +372,7 @@ fn run_spawn_inner(
     // the launch command is the seat's registration handshake, which travels
     // with the brief as the inline first message `_run` composes. That combined
     // turn is the BRIEF — the handshake rides under the brief marker, so the
-    // task contract keeps the first line's authority (rule 8b).
+    // task contract keeps the first line's authority (CORE).
     // The actor every brief marker names: the verified caller, or `unverified`
     // when no pane identity could be bound — never bare, because bare is the
     // human's signature.

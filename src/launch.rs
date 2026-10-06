@@ -382,7 +382,7 @@ const WAIT_SUFFIX: &str =
 /// The sentence that REPLACES [`WAIT_SUFFIX`] when a spawn brief rides the
 /// launch turn: the seat's first turn is its task contract, not setup to wait
 /// on. Both section bounds are ae-rendered — the brief header line above, this
-/// sentence below — so a forged marker inside the body is text (rule 8b).
+/// sentence below — so a forged marker inside the body is text (CORE).
 const START_SUFFIX: &str = " --- START NOW: the section above, from the brief marker line to this sentence, is your task contract from the agent that spawned you — do it.";
 
 /// The largest folded launch turn, in QUOTED bytes. The kernel bounds the RAW
@@ -559,7 +559,7 @@ pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String
 /// first user turn carries the handshake and the task together. (Codex's
 /// workspace context is not on this turn; it rides `developer_instructions`.)
 /// The turn's FIRST line is the [`crate::provenance::brief`] marker, not `ctx`:
-/// rule 8b gives only the first line authority, and this turn exists to hand
+/// CORE gives only the first line authority, and this turn exists to hand
 /// the seat its TASK CONTRACT — marking it as ae setup would classify the
 /// contract as setup too.
 #[must_use]
@@ -1112,7 +1112,7 @@ mod tests {
             "lead",
             "review the diff",
         );
-        // Rule 8b gives only the FIRST line authority, and this turn IS the
+        // CORE gives only the FIRST line authority, and this turn IS the
         // task contract: the brief verb must lead it, never the ctx setup.
         assert_eq!(
             joined.lines().next(),

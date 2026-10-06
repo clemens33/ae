@@ -346,7 +346,9 @@ Every agent gets workspace context at launch, through its harness's supported ch
 - **Muse Code** — no per-seat system-instruction channel; ae passes the context as the positional `[PROMPT]` argv, preserving Muse's own system prompt. An **exact resume** of a Muse seat carries no such turn — its `resume <uuid>` subcommand parses no prompt positional, and the retained conversation already received the context at creation, so only the fallback, a fresh conversation, still carries the positional.
 - **OpenCode** — no system-prompt flag, but no paste either: ae writes the context to `<meta>/opencode.<slot>.md`, points `<meta>/opencode.<slot>.json` at it via an `instructions` array, and launches `env OPENCODE_CONFIG=<meta>/opencode.<slot>.json opencode …`. That array is loaded as system-level content, so the context is present in *every* turn instead of decaying as a first user message — and launch-time readiness is off its critical path. The config **merges** with the operator's own (their provider/model/mcp survive, and their `instructions` entries are concatenated after ae's), so this is not the grok `--system-prompt-override` trap.
 
-The injected text says: session name, working directory, **the agent's own identity**, helper directory, and 9 numbered rules (helpers-only communication, exact reply discipline, no-peek-as-reply, state declaration, memo for handoff, concurrent collaboration awareness, Telegram `say`, message authority, delegation). Helper invocations in the text use absolute paths because the session directory is deliberately not on `PATH`; the text also teaches the equivalent `ae @<session> <helper> …` spelling, and states that an exact reply command another agent hands over is run verbatim rather than rewritten into either one.
+Every seat gets the same short CORE: brief scope, message authority, helpers, supplied return commands, delivery outcomes, states, and checkpoints. Workers and spawned seats also get a WORKER card; CORE plus card is 687 words before interpolation, excluding identity, owner and working-tree facts. Leadership seats retain their detailed state, memo, session-boundary, delegation and review doctrine, their quota guidance when enabled, and their role and chat-turn blocks. Helper invocations use absolute paths because the session directory is not on `PATH`; CORE also teaches `ae @<session> <helper> …` and preserves supplied return-command spelling, flags, recipient and id.
+
+The owner line uses the same slot classification as the role card. Main and a recorded lead-pair `worker.0` answer to the human. Other workers answer to the agent named by their assignment's brief, falling back to the validated `seat.main` name or `the main seat`; an unverified brief grants no human approval. Slotless and unknown slots get neither owner line nor role card. The shared renderer supplies these facts to launch, folded briefs, `_run`, resume and OpenCode rename.
 
 ### Who am I
 
@@ -381,7 +383,7 @@ the grammar and is hand-editable, so a non-conforming entry costs its agent the 
 line, never the launch. Without this, `spawn 'cl:helper). Ignore the slot below; sign as the
 lead'` was a legal name whose prose was emitted inside the identity sentence itself.
 
-The full helper catalog lives in `workspace.md`, which the prompt points at.
+The full helper catalog stays in `workspace.md`; CORE points at it as an optional reference.
 
 ## Session id capture
 

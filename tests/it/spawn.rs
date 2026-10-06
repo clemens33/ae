@@ -1502,7 +1502,7 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
     );
     assert_eq!(code, Some(0), "{stderr}");
     rig.wait_for_launch("spawned.0");
-    // The combined codex turn is the TASK CONTRACT, and rule 8b gives only the
+    // The combined codex turn is the TASK CONTRACT, and CORE gives only the
     // first line authority: the real argv must open it with the brief marker,
     // not with the ctx setup. The argv log lands when the fake agent execs, a
     // beat after the start marker.
@@ -1517,7 +1517,7 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
     assert!(!argv.is_empty(), "the codex fake logged its argv");
     // @ARGV carries the turn as the last word, the shell's quotes already gone:
     // its FIRST line is the brief marker, and the handshake sentence follows it.
-    // (The ctx marker elsewhere in argv is the vocabulary quoted by rule 8b in
+    // (The ctx marker elsewhere in argv is the vocabulary quoted by CORE in
     // the developer instructions — not a turn.)
     assert!(
         argv.contains(&format!(" {}\nRun ", ae::provenance::brief("lead"))),
