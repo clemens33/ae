@@ -34,6 +34,8 @@ pub(super) enum Request {
     Focus(Option<String>),
     /// Read this session again: the UI wrote into it.
     Reread(String),
+    /// The settings overlay opened (`true`) or closed, pinned to a generation.
+    Settings { open: bool, generation: u64 },
 }
 
 /// What wakes the UI: keys, the end of its input, or an answer.
@@ -67,6 +69,14 @@ pub(super) enum Answer {
         draft: Option<submit::Draft>,
     },
     View(ViewRead),
+    /// The settings overlay's bodies for `generation`. Quota rides every
+    /// answer; config and about ride the first per open, then stay.
+    Settings {
+        generation: u64,
+        quota: Vec<super::settings::QuotaRow>,
+        config: Option<super::settings::ConfigView>,
+        about: Option<super::settings::AboutFacts>,
+    },
 }
 
 /// One read of the fleet.
@@ -147,7 +157,19 @@ enum Job {
     Fleet,
     Look(String),
     View(String),
+    Settings,
     Wait(Instant),
+}
+
+/// The paths the settings reads resolve through, selected once by the UI.
+#[derive(Debug, Clone, Default)]
+pub(super) struct SettingsPaths {
+    /// The operator's home, where default client config homes live.
+    pub(super) home: Option<PathBuf>,
+    /// The current global ae config.
+    pub(super) global: PathBuf,
+    /// The invocation-local ae config, when there is one.
+    pub(super) local: Option<PathBuf>,
 }
 
 /// Everything the reader holds between reads.
@@ -173,6 +195,11 @@ pub(super) struct Reader {
     /// The last ownership reading sent was an owner one.
     owner: bool,
     seq: u64,
+    settings_paths: SettingsPaths,
+    /// The open overlay's generation and its last quota read, if any.
+    settings: Option<(u64, Option<Instant>)>,
+    /// Config and about already read for the open overlay.
+    settings_full: bool,
 }
 
 /// Start the reader on its own thread; answers arrive on `wake`.
@@ -217,7 +244,16 @@ impl Reader {
             home_drawn: false,
             owner: false,
             seq: 0,
+            settings_paths: SettingsPaths::default(),
+            settings: None,
+            settings_full: false,
         }
+    }
+
+    /// The paths the settings reads resolve through; set once before spawn.
+    pub(super) fn settings_paths(&mut self, paths: SettingsPaths) -> &mut Self {
+        self.settings_paths = paths;
+        self
     }
 
     /// Open home, then read until the UI is gone.
@@ -238,6 +274,7 @@ impl Reader {
                 Job::Fleet => self.fleet(),
                 Job::Look(name) => vec![self.look(&name)],
                 Job::View(name) => self.view(&name).into_iter().collect(),
+                Job::Settings => vec![self.settings()],
                 Job::Wait(until) => {
                     match asks.recv_timeout(until.saturating_duration_since(Instant::now())) {
                         Ok(request) => self.take(request),
@@ -284,6 +321,15 @@ impl Reader {
                 self.evict();
             }
             Request::Reread(name) => drop(self.rereads.insert(name)),
+            Request::Settings { open, generation } => {
+                if open {
+                    self.settings = Some((generation, None));
+                    self.settings_full = false;
+                } else {
+                    self.settings = None;
+                    self.settings_full = false;
+                }
+            }
         }
     }
 
@@ -311,6 +357,8 @@ impl Reader {
     /// The first job due at `now` by priority — the fleet until it is first
     /// read, a reread, a look, the selection, the fleet, home, the
     /// neighbours, the rest — else a wait until the earliest falls due.
+    /// The open overlay's settings read immediately, then every refresh,
+    /// below the looks so it never starves the main view.
     fn next(&self, now: Instant) -> Job {
         let Some(fleet_at) = self.fleet_at else {
             return Job::Fleet;
@@ -320,6 +368,12 @@ impl Reader {
         }
         if let Some(name) = self.looks.first() {
             return Job::Look(name.clone());
+        }
+        if let Some((_, last)) = self.settings {
+            let due = last.map_or(now, |at| at + REFRESH);
+            if due <= now {
+                return Job::Settings;
+            }
         }
         let mut order = order(&self.rows, self.selected.as_deref(), self.home.as_deref())
             .into_iter()
@@ -342,6 +396,11 @@ impl Reader {
             .iter()
             .filter_map(|(_, due)| *due)
             .fold(fleet_at + REFRESH, Instant::min);
+        // A first settings read never waits: it is due at once, above.
+        let until = match self.settings {
+            Some((_, Some(last))) => until.min(last + REFRESH),
+            _ => until,
+        };
         Job::Wait(until.min(now + REFRESH))
     }
 
@@ -577,6 +636,78 @@ impl Reader {
             needs,
             roster,
         }))
+    }
+
+    /// The open overlay's bodies for its generation: quota every time,
+    /// config and about once per open. The read gate holds the whole read
+    /// before anything is touched.
+    fn settings(&mut self) -> Answer {
+        crate::read_gate("settings");
+        let (generation, _) = self.settings.unwrap_or((0, None));
+        let paths = self.settings_paths.clone();
+        let quota = {
+            let roots = crate::inventory::Roots::under(&self.root);
+            let inputs = crate::quota::Inputs {
+                home: paths.home.as_deref(),
+                global: Some(paths.global.as_path()),
+                local: paths.local.as_deref(),
+                sessions: Some(roots.sessions()),
+                now: crate::time::Timestamp::now().epoch(),
+            };
+            crate::quota::quota_dialog_rows(&inputs)
+                .into_iter()
+                .map(|row| super::settings::QuotaRow {
+                    label: row.label,
+                    header: matches!(row.kind, crate::quota::DialogRowKind::Header),
+                })
+                .collect()
+        };
+        let (config, about) = if self.settings_full {
+            (None, None)
+        } else {
+            let home_dir = self
+                .home
+                .as_deref()
+                .and_then(|home| crate::console::locate(&self.root, home));
+            let config = super::settings::resolve_config(home_dir.as_deref(), &paths.global);
+            let about_dir = home_dir.unwrap_or_else(|| self.root.join("sessions"));
+            (Some(config), Some(self.about(&about_dir, &paths.global)))
+        };
+        self.settings = Some((generation, Some(Instant::now())));
+        self.settings_full = true;
+        Answer::Settings {
+            generation,
+            quota,
+            config,
+            about,
+        }
+    }
+
+    /// The about tab's read facts for the home session at `home_dir`.
+    fn about(
+        &self,
+        home_dir: &std::path::Path,
+        current_global: &std::path::Path,
+    ) -> super::settings::AboutFacts {
+        let (tmux_version, tmux_verdict) = match self.server.as_ref() {
+            Some(server) => {
+                let probe = crate::transport::observe_tmux_floor(server);
+                (probe.found().to_owned(), probe.verdict().as_str())
+            }
+            None => (String::new(), "unknown"),
+        };
+        let server = match crate::session_launch::recorded_server_resolved(home_dir) {
+            Some(crate::inventory::ServerId::Ambient) => "ambient".to_owned(),
+            Some(selected) => crate::tmux::server_args(&selected).join(" "),
+            None => "unresolvable".to_owned(),
+        };
+        super::settings::AboutFacts {
+            tmux_version,
+            tmux_verdict,
+            state_root: self.root.display().to_string(),
+            config_file: current_global.display().to_string(),
+            server,
+        }
     }
 }
 
@@ -979,5 +1110,79 @@ mod tests {
             .collect();
         let kept = Some(Draft::Kept(b"kept".to_vec()));
         assert_eq!(carried, [None, kept.clone(), None, None, None, None, kept]);
+    }
+
+    /// I11: a settings read completed at t cannot reread at t or
+    /// t+REFRESH/2; the reader waits until exactly t+REFRESH, then the
+    /// settings read is due again. An open overlay reads immediately; a
+    /// close stops the settings job.
+    #[test]
+    fn a_completed_settings_read_waits_a_full_refresh() {
+        let root = Root::new("settings-due");
+        let mut reader = Reader::new(root.0.clone(), None, None, None);
+        let t = Instant::now();
+        reader.fleet_at = Some(t);
+        reader.take(Request::Settings {
+            open: true,
+            generation: 7,
+        });
+        assert!(
+            matches!(reader.next(t), Job::Settings),
+            "a first settings read never waits"
+        );
+        reader.settings = Some((7, Some(t)));
+        assert!(
+            matches!(reader.next(t), Job::Wait(until) if until == t + REFRESH),
+            "a fresh completion waits the full refresh"
+        );
+        let half = t + REFRESH / 2;
+        assert!(
+            matches!(reader.next(half), Job::Wait(until) if until == t + REFRESH),
+            "half a refresh later the deadline has not moved"
+        );
+        assert!(
+            matches!(reader.next(t + REFRESH), Job::Settings),
+            "at the deadline the settings read is due"
+        );
+        reader.take(Request::Settings {
+            open: false,
+            generation: 7,
+        });
+        assert!(
+            matches!(reader.next(t + REFRESH), Job::Fleet),
+            "a close stops the settings job"
+        );
+    }
+
+    /// I12: the wait shortens to the settings deadline when a completed
+    /// settings read predates the fleet read; at that deadline the
+    /// settings read is due, and after a close the fleet deadline
+    /// remains.
+    #[test]
+    fn the_wait_shortens_to_an_earlier_settings_deadline() {
+        let root = Root::new("settings-wait");
+        let mut reader = Reader::new(root.0.clone(), None, None, None);
+        let t = Instant::now();
+        let last = t
+            .checked_sub(REFRESH / 2)
+            .expect("a representable time before now");
+        reader.fleet_at = Some(t);
+        reader.settings = Some((7, Some(last)));
+        assert!(
+            matches!(reader.next(t), Job::Wait(until) if until == last + REFRESH),
+            "the wait ends at the earlier settings deadline, not the fleet one"
+        );
+        assert!(
+            matches!(reader.next(last + REFRESH), Job::Settings),
+            "at the settings deadline the read is due"
+        );
+        reader.take(Request::Settings {
+            open: false,
+            generation: 7,
+        });
+        assert!(
+            matches!(reader.next(t), Job::Wait(until) if until == t + REFRESH),
+            "after a close the fleet deadline remains"
+        );
     }
 }

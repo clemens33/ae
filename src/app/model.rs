@@ -100,6 +100,27 @@ pub(crate) struct Drag {
     pub(crate) at: u16,
 }
 
+/// One tab of the read-only settings overlay, in draw order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SettingsTab {
+    #[default]
+    Quota,
+    Config,
+    About,
+}
+
+/// The open settings overlay: its tab, how far its body scrolled, the body
+/// rows the last frame drew (what one page key moves), and the generation
+/// that pins its loader answers. Read data lives in the App, not here: this
+/// is browse state only, like the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SettingsOverlay {
+    pub(crate) tab: SettingsTab,
+    pub(crate) scroll: usize,
+    pub(crate) page_rows: usize,
+    pub(crate) generation: u64,
+}
+
 /// The browse state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Model {
@@ -111,6 +132,7 @@ pub struct Model {
     rows: usize,
     split: Split,
     drag: Option<Drag>,
+    settings: Option<SettingsOverlay>,
 }
 
 impl Model {
@@ -128,8 +150,12 @@ impl Model {
     }
 
     /// Take one key. `can_compose` says the app owns the home input;
-    /// `agents_tab` says the Agents tab exists.
+    /// `agents_tab` says the Agents tab exists. An open overlay owns every
+    /// key first; closed behavior is exactly what it always was.
     pub fn key(&mut self, key: Key, fleet: &Fleet, can_compose: bool, agents_tab: bool) -> Act {
+        if self.settings.is_some() {
+            return self.settings_key(key);
+        }
         let at = self.position(fleet);
         match key {
             Key::Digit(index) => {
@@ -293,17 +319,19 @@ impl Model {
                 tab: self.tab,
                 split: self.split,
                 drag: self.drag,
+                settings: self.settings,
                 ..Self::new(fleet)
             };
         }
     }
 
     /// Start again on `fleet`, as [`Model::new`] does, keeping the sizes the
-    /// borders were dragged to and a drag in progress.
+    /// borders were dragged to, a drag in progress and an open overlay.
     pub(crate) fn restart(&mut self, fleet: &Fleet) {
         *self = Self {
             split: self.split,
             drag: self.drag,
+            settings: self.settings,
             ..Self::new(fleet)
         };
     }
@@ -339,6 +367,115 @@ impl Model {
     pub(crate) fn let_go(&mut self) -> bool {
         self.drag.take().is_some()
     }
+
+    /// One key with the overlay open: tabs, scroll and close. `Key::Quit`
+    /// here is the `q` that decoded to it — the App quits on a raw
+    /// Interrupt before decoding, so it never reaches this branch.
+    fn settings_key(&mut self, key: Key) -> Act {
+        match key {
+            Key::Tab => {
+                let tab = self.settings.map_or(SettingsTab::Quota, |open| open.tab);
+                self.show_settings_tab(match tab {
+                    SettingsTab::Quota => SettingsTab::Config,
+                    SettingsTab::Config => SettingsTab::About,
+                    SettingsTab::About => SettingsTab::Quota,
+                })
+            }
+            Key::Digit(1) => self.show_settings_tab(SettingsTab::Quota),
+            Key::Digit(2) => self.show_settings_tab(SettingsTab::Config),
+            Key::Digit(3) => self.show_settings_tab(SettingsTab::About),
+            Key::Up => self.settings_scroll_by(-1),
+            Key::Down => self.settings_scroll_by(1),
+            Key::PageUp => self.settings_page_by(false),
+            Key::PageDown => self.settings_page_by(true),
+            Key::Esc | Key::Quit => {
+                self.settings = None;
+                Act::Redraw
+            }
+            Key::Digit(_) | Key::NextNeed | Key::Compose => Act::None,
+        }
+    }
+
+    /// Open the overlay on the Quota tab, pinned to `generation`.
+    pub(crate) fn open_settings(&mut self, generation: u64) {
+        self.settings = Some(SettingsOverlay {
+            tab: SettingsTab::Quota,
+            scroll: 0,
+            page_rows: 0,
+            generation,
+        });
+    }
+
+    /// Close the overlay.
+    pub(crate) fn close_settings(&mut self) {
+        self.settings = None;
+    }
+
+    /// Whether the overlay is open.
+    pub(crate) fn settings_open(&self) -> bool {
+        self.settings.is_some()
+    }
+
+    /// The open overlay, if any.
+    pub(crate) fn settings(&self) -> Option<SettingsOverlay> {
+        self.settings
+    }
+
+    /// Whether the overlay is open on `generation`.
+    pub(crate) fn settings_generation(&self, generation: u64) -> bool {
+        self.settings
+            .is_some_and(|open| open.generation == generation)
+    }
+
+    /// Show `tab`, scrolled back to its first row; whether anything changed.
+    fn show_settings_tab(&mut self, tab: SettingsTab) -> Act {
+        let Some(open) = self.settings.as_mut() else {
+            return Act::None;
+        };
+        if open.tab == tab && open.scroll == 0 {
+            return Act::None;
+        }
+        open.tab = tab;
+        open.scroll = 0;
+        Act::Redraw
+    }
+
+    /// Scroll the open body by `rows`, down positive; always a redraw so a
+    /// wheel notch past the end still settles the scroll it asked for.
+    fn settings_scroll_by(&mut self, rows: isize) -> Act {
+        let Some(open) = self.settings.as_mut() else {
+            return Act::None;
+        };
+        open.scroll = open.scroll.saturating_add_signed(rows);
+        Act::Redraw
+    }
+
+    /// Scroll the open body one drawn page, down when `down`: the frame's
+    /// own body height, never a fixed count.
+    fn settings_page_by(&mut self, down: bool) -> Act {
+        let page = self.settings.map_or(1, |open| open.page_rows.max(1));
+        let rows = page.cast_signed();
+        self.settings_scroll_by(if down { rows } else { -rows })
+    }
+
+    /// The drawn body height one page key moves; the App sets it per frame.
+    pub(crate) fn set_settings_page_rows(&mut self, page_rows: usize) {
+        if let Some(open) = self.settings.as_mut() {
+            open.page_rows = page_rows;
+        }
+    }
+
+    /// Scroll the open body by `rows`, down positive, for the App's wheel.
+    pub(crate) fn settings_wheel(&mut self, rows: isize) {
+        let _ = self.settings_scroll_by(rows);
+    }
+
+    /// Bound the overlay scroll to the `max` rows the frame drew.
+    pub(crate) fn clamp_settings_scroll(&mut self, max: usize) {
+        if let Some(open) = self.settings.as_mut() {
+            open.scroll = open.scroll.min(max);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -347,7 +484,7 @@ mod tests {
     //! selected session sits beside the sidebar; the tab stays as you move
     //! between sessions) and the start rule (home first, else the first row).
 
-    use super::{Drag, Edge, Key, Model, Tab};
+    use super::{Drag, Edge, Key, Model, SettingsTab, Tab};
     use crate::app::fleet::{Counts, Fleet, Line2, Row};
     use crate::theme::Mark;
 
@@ -415,5 +552,45 @@ mod tests {
         assert!(model.let_go(), "the drag outlived the fleet change");
         assert_eq!(model.drag(), None);
         assert_eq!(model.split().list, None, "the other edge untouched");
+    }
+
+    /// Reconciling away the selected session keeps an open overlay whole:
+    /// the selection goes home, every overlay field stays.
+    #[test]
+    fn reconcile_keeps_the_open_overlay_whole() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        let _ = model.key(Key::Digit(2), &both, false, true);
+        assert_eq!(model.selected(), Some("web"));
+        model.open_settings(42);
+        let open = model.settings.as_mut().expect("open");
+        (open.tab, open.scroll, open.page_rows) = (SettingsTab::Config, 7, 5);
+        model.reconcile(&fleet(&["api"]));
+        assert_eq!(model.selected(), Some("api"));
+        let open = model.settings().expect("overlay kept");
+        assert_eq!(
+            (open.tab, open.scroll, open.page_rows, open.generation),
+            (SettingsTab::Config, 7, 5, 42)
+        );
+    }
+
+    /// Restarting onto a populated fleet keeps an open overlay whole.
+    #[test]
+    fn restart_keeps_the_open_overlay_whole() {
+        let mut model = Model::new(&Fleet {
+            rows: Vec::new(),
+            home: None,
+        });
+        assert_eq!(model.selected(), None);
+        model.open_settings(42);
+        let open = model.settings.as_mut().expect("open");
+        (open.tab, open.scroll, open.page_rows) = (SettingsTab::About, 3, 9);
+        model.restart(&fleet(&["api"]));
+        assert_eq!(model.selected(), Some("api"));
+        let open = model.settings().expect("overlay kept");
+        assert_eq!(
+            (open.tab, open.scroll, open.page_rows, open.generation),
+            (SettingsTab::About, 3, 9, 42)
+        );
     }
 }

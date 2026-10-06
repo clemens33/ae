@@ -14,8 +14,9 @@ use ratatui_core::style::{Color, Modifier, Style};
 use ratatui_core::text::{Line, Span};
 
 use super::fleet::{Counts, Facts, Fleet, Line2, Row};
-use super::model::{Drag, Edge, Model, Split, Tab};
+use super::model::{Drag, Edge, Model, SettingsTab, Split, Tab};
 use super::overview::Overview;
+use super::settings::{AboutFacts, ConfigView, SettingsBodies};
 use crate::brief::age;
 use crate::console::input::Mouse;
 use crate::console::input::View;
@@ -89,6 +90,8 @@ pub(crate) enum Hit {
     Session(String),
     Tab(Tab),
     Compose,
+    /// The keys row's gear: toggles the settings overlay.
+    Settings,
 }
 
 /// A border as drawn: its edge, where it stands, its own cells and the cells
@@ -114,6 +117,10 @@ pub(crate) struct Layout {
     pub max_scroll: usize,
     /// The frame produced the lane's oldest row.
     pub complete: bool,
+    /// Body rows the open settings overlay shows at once.
+    pub settings_page_rows: usize,
+    /// How far back the settings body can scroll.
+    pub settings_max_scroll: usize,
 }
 
 impl Layout {
@@ -169,6 +176,20 @@ impl Layout {
     /// The pane the frame was drawn in.
     pub(crate) fn area(&self) -> Rect {
         self.area
+    }
+
+    /// Strip every target, border and scroll bound the open settings overlay
+    /// covers, keeping only the gear that toggles it: drawing over cells
+    /// alone would leave hidden clicks and drags live.
+    pub(crate) fn strip_for_settings(&mut self) {
+        self.targets.retain(|(_, hit)| matches!(hit, Hit::Settings));
+        self.borders.clear();
+        self.chat = Rect::default();
+        self.page_rows = 0;
+        self.max_scroll = 0;
+        self.complete = true;
+        self.settings_page_rows = 0;
+        self.settings_max_scroll = 0;
     }
 }
 
@@ -313,7 +334,7 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer
     };
     layout.chat = Rect::new(chat.start, 0, width - chat.start, height - 1);
     chat_column(&ctx, buf, chat.start + 2..width - 2, &mut layout);
-    keys_row(&ctx, buf);
+    keys_row(&ctx, buf, &mut layout);
     layout
 }
 
@@ -981,12 +1002,17 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
     }
 }
 
-/// The keys row, the full width of the last row.
-fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer) {
+/// The keys row, the full width of the last row: the mode's hints from
+/// the left, then `ae <version>` and the gear right-aligned. Hints never
+/// yield a cell: narrowing drops the version first, then the gear.
+fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let paint = ctx.paint;
     let y = buf.area.height - 1;
     let composing = matches!(ctx.screen.composer, Composer::Home { view: Some(_), .. });
-    let (word, keys): (&str, &[&str]) = if composing {
+    let open = ctx.screen.model.settings_open();
+    let (word, keys): (&str, &[&str]) = if open {
+        ("settings", &["Esc/q/s close", "^C quit"])
+    } else if composing {
         ("write", &["Enter send", "Esc browse", "^C quit"])
     } else if matches!(ctx.screen.composer, Composer::Home { .. }) {
         (
@@ -1020,7 +1046,7 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer) {
         paint.fg(|p| p.text).add_modifier(Modifier::BOLD),
     );
     let rest = format!("   {}", keys.join("   "));
-    put(
+    let hints_end = put(
         buf,
         x,
         y,
@@ -1028,6 +1054,225 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer) {
         width.saturating_sub(x),
         paint.fg(|p| p.dim),
     );
+    let gear = if ctx.icons { "\u{2699}" } else { "*" };
+    let tail = format!("{} {gear}", crate::version_line());
+    let tail_cells = cells(Span::raw(tail.as_str()).width());
+    let gear_cells = cells(Span::raw(gear).width());
+    let room = |need: u16| hints_end.saturating_add(2).saturating_add(need) <= width;
+    let style = paint.fg(|p| p.dim);
+    if room(tail_cells) {
+        put(buf, width - tail_cells, y, &tail, tail_cells, style);
+        layout.record(
+            buf,
+            Rect::new(width - gear_cells, y, gear_cells, 1),
+            Hit::Settings,
+        );
+    } else if room(gear_cells) {
+        put(buf, width - gear_cells, y, gear, gear_cells, style);
+        layout.record(
+            buf,
+            Rect::new(width - gear_cells, y, gear_cells, 1),
+            Hit::Settings,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// the settings overlay: a reusable full-pane panel
+// ---------------------------------------------------------------------------
+
+/// The overlay's title row.
+const SETTINGS_TITLE: &str = "Settings";
+/// The tabs in draw order.
+const SETTINGS_TABS: [&str; 3] = ["Quota", "Config", "About"];
+/// Plain-text links; no OSC 8 in this slice.
+const SETTINGS_LINKS: [(&str, &str); 3] = [
+    ("repo", "https://github.com/clemens33/ae"),
+    ("releases", "https://github.com/clemens33/ae/releases"),
+    (
+        "docs",
+        "https://github.com/clemens33/ae/blob/main/docs/app.md",
+    ),
+];
+
+/// Paint the open overlay, then record its scroll bounds. The caller
+/// stripped the covered layout first.
+pub(crate) fn paint_settings(
+    tab: SettingsTab,
+    scroll: usize,
+    bodies: &SettingsBodies,
+    look: Option<&Look>,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+) {
+    let paint = Paint::of(look);
+    let selected = match tab {
+        SettingsTab::Quota => 0,
+        SettingsTab::Config => 1,
+        SettingsTab::About => 2,
+    };
+    panel(
+        buf,
+        layout,
+        paint,
+        &Panel {
+            title: SETTINGS_TITLE,
+            tabs: &SETTINGS_TABS,
+            selected,
+            body: &settings_body(tab, bodies, paint),
+            scroll,
+        },
+    );
+}
+
+/// What one full-pane panel draws: its title, tab row and scrolled body.
+struct Panel<'a> {
+    title: &'a str,
+    tabs: &'a [&'a str],
+    selected: usize,
+    body: &'a [(String, Style)],
+    scroll: usize,
+}
+
+/// One full-pane panel over rows `0..height-1`: title, tab row, rule and a
+/// scrolled body, then its scroll bounds. Settings is the only caller; the
+/// later `?` help reuses the seam. Below [`MIN`] the closed frame's fallback
+/// stands and nothing is painted or recorded.
+fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>) {
+    let area = buf.area;
+    if area.width < MIN.0 || area.height < MIN.1 {
+        return;
+    }
+    let (width, height) = (area.width, area.height);
+    // Covered cells are reset whole, not just re-grounded: `set_style` keeps
+    // the closed frame's symbols and modifiers, which a sparse body would
+    // leave visible. The keys row stands.
+    for y in 0..height - 1 {
+        for x in 0..width {
+            buf[(x, y)].reset();
+        }
+    }
+    buf.set_style(Rect::new(0, 0, width, height - 1), paint.ground(|p| p.base));
+    let heading = paint.fg(|p| p.title).add_modifier(Modifier::BOLD);
+    put(buf, LEFT, 0, panel.title, width - LEFT, heading);
+    let mut x = LEFT;
+    for (index, name) in panel.tabs.iter().enumerate() {
+        let style = if index == panel.selected {
+            paint.selected()
+        } else {
+            paint.fg(|p| p.text)
+        };
+        x = put(buf, x, 1, name, width.saturating_sub(x), style);
+        x = put(buf, x, 1, "   ", width.saturating_sub(x), style);
+    }
+    let rule: String = "─".repeat(usize::from(width));
+    put(buf, 0, 2, &rule, width, paint.fg(|p| p.border));
+    let visible = usize::from(height.saturating_sub(4));
+    // The draw offset clamps to what is there before a line is chosen: past
+    // the end paints an emptied body, and the model's clamp after this frame
+    // converges the state to the same bound.
+    let max = panel.body.len().saturating_sub(visible);
+    let start = panel.scroll.min(max);
+    for (at, (text, style)) in panel.body.iter().skip(start).take(visible).enumerate() {
+        put(
+            buf,
+            LEFT,
+            3 + cells(at),
+            text,
+            width.saturating_sub(LEFT),
+            *style,
+        );
+    }
+    layout.settings_page_rows = visible.max(1);
+    layout.settings_max_scroll = max;
+}
+
+/// The overlay body's styled rows: every field through the terminal-text
+/// neutraliser, because paths and config values are hostile text.
+fn settings_body(tab: SettingsTab, bodies: &SettingsBodies, paint: Paint) -> Vec<(String, Style)> {
+    let dim = paint.fg(|p| p.dim);
+    let text = paint.fg(|p| p.text);
+    let head = paint.fg(|p| p.text).add_modifier(Modifier::BOLD);
+    let clean = crate::board::terminal_text;
+    match tab {
+        SettingsTab::Quota => match bodies.quota.as_ref() {
+            None => vec![("loading".to_owned(), dim)],
+            Some(rows) if rows.is_empty() => vec![("no quota scopes read".to_owned(), dim)],
+            Some(rows) => rows
+                .iter()
+                .map(|row| {
+                    let style = if row.header { head } else { text };
+                    (clean(&row.label), style)
+                })
+                .collect(),
+        },
+        SettingsTab::Config => match &bodies.config {
+            ConfigView::Loading => vec![("loading".to_owned(), dim)],
+            ConfigView::Unreadable(why) => vec![(clean(why), text)],
+            ConfigView::Rows { header, rows } => {
+                let mut out = vec![
+                    (
+                        format!(
+                            "session: {}",
+                            header
+                                .session
+                                .as_deref()
+                                .map(clean)
+                                .as_deref()
+                                .unwrap_or("none")
+                        ),
+                        dim,
+                    ),
+                    (format!("global: {}", clean(&header.global)), dim),
+                ];
+                if let Some(current) = header.current_global.as_ref() {
+                    out.push((format!("current global: {}", clean(current)), dim));
+                }
+                out.extend(rows.iter().map(|row| {
+                    let mut line = format!(
+                        "{} = {}  ({})",
+                        row.key,
+                        clean(&row.value),
+                        row.source.word()
+                    );
+                    if row.global_only {
+                        line.push_str("  global only");
+                    }
+                    (line, text)
+                }));
+                out
+            }
+        },
+        SettingsTab::About => match bodies.about.as_ref() {
+            None => vec![("loading".to_owned(), dim)],
+            Some(about) => about_body(about, text),
+        },
+    }
+}
+
+/// The about tab's rows: versions, paths, the recorded server, plain links.
+fn about_body(about: &AboutFacts, text: Style) -> Vec<(String, Style)> {
+    let clean = crate::board::terminal_text;
+    let mut rows = vec![
+        (format!("ae   {}", crate::version_line()), text),
+        (
+            format!(
+                "tmux {} ({})",
+                clean(&about.tmux_version),
+                about.tmux_verdict
+            ),
+            text,
+        ),
+        (format!("state root   {}", clean(&about.state_root)), text),
+        (format!("config   {}", clean(&about.config_file)), text),
+        (format!("server   {}", clean(&about.server)), text),
+    ];
+    rows.extend(
+        SETTINGS_LINKS
+            .iter()
+            .map(|(label, link)| (format!("{label}   {link}"), text)),
+    );
+    rows
 }
 
 // ---------------------------------------------------------------------------

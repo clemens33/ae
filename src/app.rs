@@ -41,6 +41,7 @@ mod lane_spec;
 mod loader;
 pub mod model;
 pub mod overview;
+mod settings;
 mod tty;
 
 /// What `ae app` says, on stderr, when it has no terminal to draw on.
@@ -125,6 +126,10 @@ struct App {
     /// Keys held, in order, behind a wheel notch the last frame could not
     /// bound: the next frame produces more of the lane, then they replay.
     deferred: Vec<(Key, Instant)>,
+    /// The settings overlay's bodies, cold until its answers land.
+    settings_bodies: settings::SettingsBodies,
+    /// The generation the next open mints; answers pin to the open one.
+    settings_generation: u64,
 }
 
 impl App {
@@ -181,6 +186,8 @@ impl App {
             ask,
             focused: None,
             deferred: Vec::new(),
+            settings_bodies: settings::SettingsBodies::default(),
+            settings_generation: 0,
         }
     }
 
@@ -192,6 +199,62 @@ impl App {
             Answer::Look { name, look, zone } => drop(self.looks.insert(name, (look, zone))),
             Answer::Owned { reading, at, draft } => self.take(reading, at, draft),
             Answer::View(view) => self.viewed(view),
+            Answer::Settings {
+                generation,
+                quota,
+                config,
+                about,
+            } => self.settled(generation, quota, config, about),
+        }
+    }
+
+    /// Fold one settings answer. Only the open overlay's own generation
+    /// paints: a late answer for a closed overlay is dropped. Quota rides
+    /// every answer; config and about ride the first per open, then stay.
+    fn settled(
+        &mut self,
+        generation: u64,
+        quota: Vec<settings::QuotaRow>,
+        config: Option<settings::ConfigView>,
+        about: Option<settings::AboutFacts>,
+    ) {
+        if !self.model.settings_generation(generation) {
+            return;
+        }
+        self.settings_bodies.quota = Some(quota);
+        if let Some(config) = config {
+            self.settings_bodies.config = config;
+        }
+        if let Some(about) = about {
+            self.settings_bodies.about = Some(about);
+        }
+    }
+
+    /// Open the overlay on a fresh generation and ask the reader for it.
+    fn open_settings(&mut self) {
+        if self.model.settings_open() {
+            return;
+        }
+        self.settings_generation = self.settings_generation.wrapping_add(1);
+        self.model.open_settings(self.settings_generation);
+        self.settings_bodies = settings::SettingsBodies::default();
+        if let Some(ask) = &self.ask {
+            let _ = ask.send(Request::Settings {
+                open: true,
+                generation: self.settings_generation,
+            });
+        }
+    }
+
+    /// Close the overlay and tell the reader to stop reading for it. It
+    /// always tells: the model may already hold the close the key caused.
+    fn close_settings(&mut self) {
+        self.model.close_settings();
+        if let Some(ask) = &self.ask {
+            let _ = ask.send(Request::Settings {
+                open: false,
+                generation: self.settings_generation,
+            });
         }
     }
 
@@ -468,6 +531,9 @@ impl App {
     /// motion moves a dragged border; every other event first ends a drag —
     /// its release, or a press or wheel after a release that never came.
     fn mouse(&mut self, mouse: Mouse) -> bool {
+        if self.model.settings_open() {
+            return self.settings_mouse(mouse);
+        }
         if mouse.kind == MouseKind::Drag {
             return self.drag(mouse);
         }
@@ -486,6 +552,29 @@ impl App {
                 true
             }
             MouseKind::Drag | MouseKind::Release => ended,
+        }
+    }
+
+    /// A mouse event with the overlay open: the wheel scrolls its body
+    /// wherever it lands, a press toggles on the gear and dies elsewhere.
+    fn settings_mouse(&mut self, mouse: Mouse) -> bool {
+        match mouse.kind {
+            MouseKind::WheelUp => {
+                self.model.settings_wheel(-model::WHEEL_ROWS.cast_signed());
+                true
+            }
+            MouseKind::WheelDown => {
+                self.model.settings_wheel(model::WHEEL_ROWS.cast_signed());
+                true
+            }
+            MouseKind::Click => match self.layout.hit(mouse) {
+                Some(draw::Hit::Settings) => {
+                    self.close_settings();
+                    true
+                }
+                _ => false,
+            },
+            MouseKind::Drag | MouseKind::Release => false,
         }
     }
 
@@ -520,6 +609,10 @@ impl App {
                     .key(model::Key::Compose, &self.fleet, self.can_compose(), true)
             }
             draw::Hit::Compose => return false,
+            draw::Hit::Settings => {
+                self.open_settings();
+                return true;
+            }
         };
         apply(self, &act).unwrap_or(false) || was_writing != self.composing
     }
@@ -662,6 +755,23 @@ impl App {
             self.model
                 .clamp_scroll(self.layout.max_scroll, self.layout.page_rows);
         }
+        if let Some(open) = self.model.settings() {
+            self.layout.strip_for_settings();
+            draw::paint_settings(
+                open.tab,
+                open.scroll,
+                &self.settings_bodies,
+                look.as_ref(),
+                buf,
+                &mut self.layout,
+            );
+            self.model
+                .set_settings_page_rows(self.layout.settings_page_rows);
+            if self.deferred.is_empty() {
+                self.model
+                    .clamp_settings_scroll(self.layout.settings_max_scroll);
+            }
+        }
     }
 }
 
@@ -748,7 +858,12 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     let server = doors::launch_target(declared.as_ref());
     let me = doors::calling_pane_id();
     let (wake, wakes) = mpsc::channel();
-    let reader = loader::Reader::new(root, home.clone(), server.clone(), me.clone());
+    let mut reader = loader::Reader::new(root.clone(), home.clone(), server.clone(), me.clone());
+    reader.settings_paths(loader::SettingsPaths {
+        home: doors::home(),
+        global: doors::config_file(crate::shape::current(), &root),
+        local: doors::local_config(&doors::cwd()),
+    });
     let started = forward(reads, wake.clone()).and_then(|()| loader::spawn(reader, wake));
     let (ask, reader) = match started {
         Ok(started) => started,
@@ -858,10 +973,12 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         } else {
             // A key or a paste ends a drag first, then acts as it always has.
             let ended = app.model.let_go();
-            let acted = if app.composing {
+            let acted = if app.model.settings_open() {
+                settings_key(app, &key, origin)?
+            } else if app.composing {
                 app.compose(key, origin).map(|()| true)?
             } else {
-                browse(app, &key)?
+                browse(app, &key, origin)?
             };
             acted || ended
         };
@@ -869,14 +986,117 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
     Some(redraw)
 }
 
-/// Take one key: `Some(redraw)`, or `None` to quit.
-fn browse(app: &mut App, key: &Key) -> Option<bool> {
+/// Take one key: `Some(redraw)`, or `None` to quit. A batched Text key
+/// spells in byte order through the current mode: an `s` opens mid-chunk
+/// and the rest routes modal, an `i` starts writing and the rest is draft.
+fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
+    if let Key::Text(bytes) = key {
+        let mut redraw = false;
+        let mut rest = bytes.as_slice();
+        while let Some((&byte, tail)) = rest.split_first() {
+            if app.model.settings_open() {
+                redraw |= settings_byte(app, byte);
+                rest = tail;
+                continue;
+            }
+            if app.composing {
+                // Writing started mid-chunk: the rest is draft, whole, with
+                // its original instant — never re-spelled per byte.
+                app.compose(Key::Text(rest.to_vec()), origin)
+                    .map(|()| true)?;
+                return Some(true);
+            }
+            redraw |= browse_byte(app, byte)?;
+            rest = tail;
+        }
+        return Some(redraw);
+    }
     let mut redraw = false;
     for key in model::browse_keys(key) {
         let act = app.model.key(key, &app.fleet, app.can_compose(), true);
         redraw |= apply(app, &act)?;
     }
     Some(redraw)
+}
+
+/// One Text byte while browsing: `s` opens with its request, anything else
+/// decodes as it always has. Browsing on entry; the caller routes the modes.
+fn browse_byte(app: &mut App, byte: u8) -> Option<bool> {
+    if byte == b's' {
+        app.open_settings();
+        return Some(true);
+    }
+    let mut redraw = false;
+    for key in model::browse_keys(&Key::Text(vec![byte])) {
+        let act = app.model.key(key, &app.fleet, app.can_compose(), true);
+        redraw |= apply(app, &act)?;
+    }
+    Some(redraw)
+}
+
+/// Take one key with the overlay open: `Some(redraw)`, or `None` to quit.
+/// The overlay routes before composing; a close it causes tells the reader.
+/// Bytes after a mid-chunk close resume the actual mode: the suspended
+/// composer when writing, browse otherwise.
+fn settings_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
+    if *key == Key::Interrupt {
+        return None;
+    }
+    if let Key::Text(bytes) = key {
+        let mut redraw = false;
+        let mut rest = bytes.as_slice();
+        while let Some((&byte, tail)) = rest.split_first() {
+            if !app.model.settings_open() {
+                if app.composing {
+                    // The rest of the run goes back to the draft whole, with
+                    // its original instant — never re-spelled per byte.
+                    app.compose(Key::Text(rest.to_vec()), origin)
+                        .map(|()| true)?;
+                    return Some(true);
+                }
+                redraw |= browse_byte(app, byte)?;
+                rest = tail;
+                continue;
+            }
+            redraw |= settings_byte(app, byte);
+            rest = tail;
+        }
+        return Some(redraw);
+    }
+    let mut redraw = false;
+    for key in model::browse_keys(key) {
+        // The overlay branch returns no Quit, Select or Compose; a close
+        // shows as the state it leaves behind, told below.
+        if app.model.key(key, &app.fleet, app.can_compose(), true) == model::Act::Redraw {
+            redraw = true;
+        }
+    }
+    if !app.model.settings_open() {
+        app.close_settings();
+        redraw = true;
+    }
+    Some(redraw)
+}
+
+/// One Text byte with the overlay open: `s` closes with its request, the
+/// rest decodes modal. The overlay is open on entry; the caller resumes the
+/// actual mode after a close.
+fn settings_byte(app: &mut App, byte: u8) -> bool {
+    if byte == b's' {
+        app.close_settings();
+        return true;
+    }
+    let mut redraw = false;
+    for key in model::browse_keys(&Key::Text(vec![byte])) {
+        if app.model.key(key, &app.fleet, app.can_compose(), true) == model::Act::Redraw {
+            redraw = true;
+        }
+    }
+    if !app.model.settings_open() {
+        app.close_settings();
+        redraw = true;
+    }
+    redraw
 }
 
 /// Carry out a browse action from either keys or a frame's mouse target.
@@ -906,9 +1126,11 @@ mod tests {
     use ratatui_core::layout::Rect;
 
     use super::loader::{self, Answer, Reader, ViewRead};
-    use super::{App, UNREAD, USAGE, browse, facts_of, fleet, run};
+    use super::{
+        App, UNREAD, USAGE, browse, draw, facts_of, fleet, run, settings, settings_key, take_keys,
+    };
     use crate::app::fleet::{Counts, Fleet, Row};
-    use crate::app::model::{Key as Browse, Model, Tab};
+    use crate::app::model::{Edge, Key as Browse, Model, SettingsTab, Tab};
     use crate::attention::Reason;
     use crate::console::input::{Effect, Input, Key, Reading};
     use crate::console::lane::{Item, Kind, Lane};
@@ -1587,8 +1809,8 @@ mod tests {
         let mut app = app(None);
         app.fleet = one_row(None);
         app.model = Model::new(&app.fleet);
-        assert!(browse(&mut app, &Key::Text(b"x".to_vec())).is_some());
-        assert!(browse(&mut app, &Key::Text(b"q".to_vec())).is_none());
+        assert!(browse(&mut app, &Key::Text(b"x".to_vec()), Instant::now()).is_some());
+        assert!(browse(&mut app, &Key::Text(b"q".to_vec()), Instant::now()).is_none());
     }
 
     // ---- appsnappy: what the reader answered, and what is drawn of it.
@@ -1813,7 +2035,7 @@ mod tests {
             .try_iter()
             .filter_map(|request| match request {
                 loader::Request::Reread(name) => Some(name),
-                loader::Request::Focus(_) => None,
+                loader::Request::Focus(_) | loader::Request::Settings { .. } => None,
             })
             .collect();
         assert_eq!(rereads, ["api"]);
@@ -2029,7 +2251,7 @@ mod tests {
             asks.try_iter()
                 .filter_map(|request| match request {
                     loader::Request::Focus(name) => Some(name),
-                    loader::Request::Reread(_) => None,
+                    loader::Request::Reread(_) | loader::Request::Settings { .. } => None,
                 })
                 .collect()
         };
@@ -2044,5 +2266,859 @@ mod tests {
         app.model.reconcile(&app.fleet);
         app.focus();
         assert_eq!(told(), [Some("ops".to_owned())]);
+    }
+
+    // ---- settings overlay pins. Oracles: docs/app.md ## Settings and the
+    // ---- frozen tests/it/app_settings_spec.rs (live); these pin the seams
+    // ---- the live rig cannot see: request order, generation drops, merges.
+
+    fn settings_requests(asks: &std::sync::mpsc::Receiver<loader::Request>) -> Vec<(bool, u64)> {
+        asks.try_iter()
+            .filter_map(|request| match request {
+                loader::Request::Settings { open, generation } => Some((open, generation)),
+                loader::Request::Focus(_) | loader::Request::Reread(_) => None,
+            })
+            .collect()
+    }
+
+    /// Open asks once per open on a fresh generation; close always tells.
+    #[test]
+    fn settings_open_asks_once_and_close_tells() {
+        let (ask, asks) = std::sync::mpsc::channel();
+        let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.open_settings();
+        app.open_settings();
+        assert_eq!(settings_requests(&asks), [(true, 1)]);
+        app.close_settings();
+        assert_eq!(settings_requests(&asks), [(false, 1)]);
+        app.open_settings();
+        assert_eq!(settings_requests(&asks), [(true, 2)]);
+    }
+
+    /// Only the open generation paints; quota-only answers keep the rest.
+    #[test]
+    fn settled_merges_own_generation_and_drops_stale() {
+        let mut app = app(Some("api"));
+        app.open_settings();
+        let quota = || {
+            vec![settings::QuotaRow {
+                label: "q".to_owned(),
+                header: false,
+            }]
+        };
+        let config = || settings::ConfigView::Rows {
+            header: settings::ConfigHeader::default(),
+            rows: Vec::new(),
+        };
+        let about = || settings::AboutFacts {
+            tmux_version: "3.5".to_owned(),
+            tmux_verdict: "ok",
+            state_root: "/r".to_owned(),
+            config_file: "/c".to_owned(),
+            server: "ambient".to_owned(),
+        };
+        app.settled(99, quota(), Some(config()), Some(about()));
+        assert!(app.settings_bodies.quota.is_none(), "stale dropped");
+        app.settled(1, quota(), Some(config()), Some(about()));
+        assert!(app.settings_bodies.quota.is_some(), "own paints");
+        assert!(matches!(
+            app.settings_bodies.config,
+            settings::ConfigView::Rows { .. }
+        ));
+        app.settled(
+            1,
+            vec![settings::QuotaRow {
+                label: "q2".to_owned(),
+                header: false,
+            }],
+            None,
+            None,
+        );
+        assert_eq!(app.settings_bodies.quota.as_ref().expect("quota").len(), 1);
+        assert_eq!(
+            app.settings_bodies.quota.as_ref().expect("quota")[0].label,
+            "q2"
+        );
+        assert!(
+            matches!(
+                app.settings_bodies.config,
+                settings::ConfigView::Rows { .. }
+            ),
+            "quota-only keeps config"
+        );
+        assert!(
+            app.settings_bodies.about.is_some(),
+            "quota-only keeps about"
+        );
+        app.close_settings();
+        app.settled(1, quota(), Some(config()), Some(about()));
+        assert_eq!(
+            app.settings_bodies.quota.as_ref().expect("quota")[0].label,
+            "q2",
+            "closed drops"
+        );
+    }
+
+    /// Modal keys: Esc/q/s close and tell, Tab/1-3 switch, the rest dies.
+    #[test]
+    fn settings_keys_route_before_compose() {
+        let (ask, asks) = std::sync::mpsc::channel();
+        let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.fleet = one_row(Some("api"));
+        let at = Instant::now();
+        app.open_settings();
+        assert!(settings_key(&mut app, &Key::Text(b"x".to_vec()), at).is_some());
+        assert!(app.model.settings_open(), "text swallowed");
+        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Quota);
+        assert!(settings_key(&mut app, &Key::Tab, at).expect("tab"));
+        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Config);
+        assert!(settings_key(&mut app, &Key::Text(b"4".to_vec()), at).is_some());
+        assert!(app.model.settings_open(), "digit 4 swallowed");
+        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Config);
+        assert!(settings_key(&mut app, &Key::Escape, at).expect("close"));
+        assert!(!app.model.settings_open());
+        assert_eq!(
+            settings_requests(&asks).last(),
+            Some(&(false, 1)),
+            "close told"
+        );
+        app.open_settings();
+        assert!(settings_key(&mut app, &Key::Text(b"q".to_vec()), at).expect("q closes"));
+        assert!(!app.model.settings_open());
+        app.open_settings();
+        assert!(settings_key(&mut app, &Key::Text(b"s!".to_vec()), at).expect("s closes"));
+        assert!(!app.model.settings_open());
+        app.open_settings();
+        assert!(
+            settings_key(&mut app, &Key::Interrupt, at).is_none(),
+            "^C quits"
+        );
+    }
+
+    /// Pins win over changed files; the overlay beats the recorded global;
+    /// global-only keys read the current global alone.
+    #[test]
+    fn resolve_config_pins_win_and_scopes_hold() {
+        let root = Root::new("settings-resolve");
+        let recorded = root.0.join("recorded");
+        let overlay = root.0.join("overlay");
+        let current = root.0.join("config");
+        std::fs::write(
+            &recorded,
+            "[workspace]\nchat = on\nquota = on\nfleet_order = recorded-fleet\n",
+        )
+        .expect("recorded");
+        std::fs::write(&overlay, "[workspace]\nchat = app\n").expect("overlay");
+        std::fs::write(&current, "[workspace]\nfleet_order = current-fleet\n").expect("current");
+        let dir = session(
+            &root,
+            "api",
+            &format!(
+                "config={}\nlocal_config={}\nquota=off\n",
+                recorded.display(),
+                overlay.display()
+            ),
+        );
+        let settings::ConfigView::Rows { header, rows } =
+            settings::resolve_config(Some(&dir), &current)
+        else {
+            panic!("rows expected");
+        };
+        let row = |key: &str| rows.iter().find(|row| row.key == key).expect(key);
+        assert_eq!(header.global, recorded.display().to_string());
+        assert_eq!(
+            header.current_global.as_deref(),
+            Some(current.display().to_string()).as_deref()
+        );
+        assert_eq!(row("quota").value, "off");
+        assert_eq!(row("quota").source, settings::ConfigSource::Launch);
+        assert_eq!(row("chat").value, "app");
+        assert_eq!(row("chat").source, settings::ConfigSource::Session);
+        assert_eq!(row("fleet_order").value, "current-fleet");
+        assert_eq!(row("fleet_order").source, settings::ConfigSource::Global);
+        assert!(row("fleet_order").global_only);
+        assert_eq!(row("main").value, "(unset)");
+        assert_eq!(row("main").source, settings::ConfigSource::Default);
+    }
+
+    /// A torn consulted file is one honest row naming the file and the reason.
+    #[test]
+    fn resolve_config_torn_file_is_one_honest_row() {
+        let root = Root::new("settings-torn");
+        let recorded = root.0.join("broken");
+        std::fs::write(&recorded, "[prompt]\ninstructions = \"\"\"\nunclosed\n").expect("broken");
+        let current = root.0.join("config");
+        std::fs::write(&current, "[workspace]\nchat = on\n").expect("current");
+        let dir = session(&root, "api", &format!("config={}\n", recorded.display()));
+        let settings::ConfigView::Unreadable(why) = settings::resolve_config(Some(&dir), &current)
+        else {
+            panic!("one honest row expected");
+        };
+        assert!(
+            why.contains(&recorded.display().to_string()),
+            "names the file: {why}"
+        );
+        assert!(why.contains("unterminated"), "names the reason: {why}");
+    }
+
+    /// Missing files are no entries: everything falls through to defaults.
+    #[test]
+    fn resolve_config_missing_files_fall_to_defaults() {
+        let root = Root::new("settings-missing");
+        let current = root.0.join("config");
+        let dir = session(&root, "api", "");
+        let settings::ConfigView::Rows { header, rows } =
+            settings::resolve_config(Some(&dir), &current)
+        else {
+            panic!("rows expected");
+        };
+        assert_eq!(header.global, current.display().to_string());
+        assert!(header.current_global.is_none(), "not distinct");
+        assert!(header.session.is_none(), "no overlay selected");
+        assert_eq!(rows.len(), 20);
+        let row = |key: &str| rows.iter().find(|row| row.key == key).expect(key);
+        assert_eq!(row("chat").value, "on");
+        assert_eq!(row("chat").source, settings::ConfigSource::Default);
+    }
+
+    /// No home session: one honest row, never guessed defaults.
+    #[test]
+    fn resolve_config_without_home_is_honest() {
+        let root = Root::new("settings-nohome");
+        let current = root.0.join("config");
+        assert!(matches!(
+            settings::resolve_config(None, &current),
+            settings::ConfigView::Unreadable(_)
+        ));
+    }
+
+    /// A home session whose meta cannot be read names the meta file.
+    #[test]
+    fn resolve_config_unreadable_meta_names_file() {
+        let root = Root::new("settings-nometa");
+        let dir = root.0.join("sessions").join("ghost");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let current = root.0.join("config");
+        let settings::ConfigView::Unreadable(why) = settings::resolve_config(Some(&dir), &current)
+        else {
+            panic!("one honest row expected");
+        };
+        assert!(
+            why.contains(&dir.display().to_string()),
+            "names the meta: {why}"
+        );
+    }
+
+    /// Page keys move the drawn body height the frame set, not a constant.
+    #[test]
+    fn settings_page_keys_use_drawn_height() {
+        let mut app = app(Some("api"));
+        app.fleet = one_row(Some("api"));
+        app.open_settings();
+        app.model.set_settings_page_rows(5);
+        app.model.key(Browse::PageDown, &app.fleet, false, true);
+        assert_eq!(app.model.settings().expect("open").scroll, 5);
+        app.model.key(Browse::PageDown, &app.fleet, false, true);
+        assert_eq!(app.model.settings().expect("open").scroll, 10);
+        app.model.key(Browse::PageUp, &app.fleet, false, true);
+        assert_eq!(app.model.settings().expect("open").scroll, 5);
+    }
+
+    /// A batched chunk spells in byte order: `2s` selects session 2, then
+    /// opens; `qs` quits before ever reaching s; `sq` opens and closes,
+    /// every transition carrying its request.
+    #[test]
+    fn settings_chunk_bytes_keep_order_and_requests() {
+        let two = || Fleet {
+            rows: vec![row("api", 1, true), row("web", 2, false)],
+            home: Some("api".to_owned()),
+        };
+        let (ask, asks) = std::sync::mpsc::channel();
+        let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.fleet = two();
+        assert!(browse(&mut app, &Key::Text(b"2s".to_vec()), Instant::now()).is_some());
+        assert_eq!(app.model.selected(), Some("web"));
+        assert!(app.model.settings_open());
+        assert_eq!(settings_requests(&asks), [(true, 1)]);
+        let (ask, asks) = std::sync::mpsc::channel();
+        let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.fleet = two();
+        assert!(
+            browse(&mut app, &Key::Text(b"qs".to_vec()), Instant::now()).is_none(),
+            "quits"
+        );
+        assert!(!app.model.settings_open());
+        assert!(settings_requests(&asks).is_empty(), "no open asked");
+        let (ask, asks) = std::sync::mpsc::channel();
+        let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.fleet = two();
+        assert!(browse(&mut app, &Key::Text(b"sq".to_vec()), Instant::now()).is_some());
+        assert!(!app.model.settings_open());
+        assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
+    }
+
+    /// Writing that starts mid-chunk takes the rest as draft: `is` starts
+    /// writing on `i` and types `s`, never opening settings.
+    #[test]
+    fn settings_browse_chunk_resumes_composer_mid_chunk() {
+        let root = Root::new("settings-is");
+        let (ask, asks) = std::sync::mpsc::channel();
+        let (mut app, _reader) = housed(&root);
+        app.ask = Some(ask);
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        let at = Instant::now();
+        app.take(Reading::Owner, at, None);
+        assert!(take_keys(&mut app, vec![(Key::Text(b"is".to_vec()), at)]).is_some());
+        assert!(app.composing, "writing started");
+        assert!(!app.model.settings_open(), "never opened");
+        assert_eq!(app.input.as_ref().expect("input").draft(), "s");
+        assert!(
+            settings_requests(&asks).is_empty(),
+            "zero settings requests"
+        );
+    }
+
+    /// A modal close mid-chunk dispatches the rest as browse: `q2` closes
+    /// with its request, then selects session 2 with its lane.
+    #[test]
+    fn settings_modal_close_dispatches_rest_as_browse() {
+        let (ask, asks) = std::sync::mpsc::channel();
+        let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.fleet = Fleet {
+            rows: vec![row("api", 1, true), row("web", 2, false)],
+            home: Some("api".to_owned()),
+        };
+        app.fleeted = true;
+        app.open_settings();
+        assert!(settings_key(&mut app, &Key::Text(b"q2".to_vec()), Instant::now()).is_some());
+        assert!(!app.model.settings_open());
+        assert_eq!(app.model.selected(), Some("web"));
+        assert!(
+            app.lane.coverage.iter().any(|line| line.contains("web")),
+            "lane follows the selection"
+        );
+        assert_eq!(settings_requests(&asks).last(), Some(&(false, 1)));
+    }
+
+    /// A close mid-chunk resumes the suspended composer: the rest of the
+    /// run types into the kept draft whole — `s`, digits and multibyte runs
+    /// alike — with exactly one close request and no selection change.
+    #[test]
+    fn settings_modal_close_resumes_suspended_composer() {
+        let root = Root::new("settings-resume");
+        let (ask, asks) = std::sync::mpsc::channel();
+        let (mut app, _reader) = housed(&root);
+        app.ask = Some(ask);
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        let at = Instant::now();
+        app.take(Reading::Owner, at, None);
+        app.composing = true;
+        assert_eq!(app.compose(Key::Text(b"kept".to_vec()), at), Some(()));
+        app.open_settings();
+        assert!(settings_key(&mut app, &Key::Text("qsé".as_bytes().to_vec()), at).is_some());
+        assert!(!app.model.settings_open());
+        assert!(app.composing, "still writing");
+        assert_eq!(
+            app.input.as_ref().expect("input").draft(),
+            "keptsé",
+            "rest typed whole into the kept draft"
+        );
+        assert_eq!(app.model.selected(), Some("api"), "no browse dispatch");
+        assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
+        app.open_settings();
+        assert!(settings_key(&mut app, &Key::Text(b"q2".to_vec()), at).is_some());
+        assert_eq!(
+            app.input.as_ref().expect("input").draft(),
+            "keptsé2",
+            "digits type too"
+        );
+        assert_eq!(app.model.selected(), Some("api"));
+        assert_eq!(
+            settings_requests(&asks),
+            [(true, 2), (false, 2)],
+            "no extra requests"
+        );
+    }
+
+    /// A gear click while the overlay is open closes it with its close
+    /// request and keeps the suspended composer: still writing, draft kept.
+    #[test]
+    fn settings_gear_click_closes_and_keeps_suspended_composer() {
+        let root = Root::new("settings-gear-close");
+        let (ask, asks) = std::sync::mpsc::channel();
+        let (mut app, _reader) = housed(&root);
+        app.ask = Some(ask);
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        let at = Instant::now();
+        app.take(Reading::Owner, at, None);
+        app.composing = true;
+        assert_eq!(app.compose(Key::Text(b"kept".to_vec()), at), Some(()));
+        app.open_settings();
+        let shown = framed(&mut app);
+        let keys = shown.lines().last().expect("keys row");
+        let tail = keys.trim_end();
+        assert!(
+            tail.ends_with('\u{2699}') || tail.ends_with('*'),
+            "gear drawn last: {tail:?}"
+        );
+        assert!(
+            app.mouse(super::Mouse {
+                kind: super::MouseKind::Click,
+                column: 159,
+                row: 44,
+            }),
+            "gear click closes"
+        );
+        assert!(!app.model.settings_open());
+        assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
+        assert!(app.composing, "still writing");
+        assert_eq!(app.input.as_ref().expect("input").draft(), "kept");
+    }
+
+    /// A swallowed byte keeps the chunk's earlier redraw: `sx` opens on `s`
+    /// and swallows `x` modal, returning `Some(true)` with one open request.
+    #[test]
+    fn settings_chunk_swallowed_byte_keeps_earlier_redraw() {
+        let (ask, asks) = std::sync::mpsc::channel();
+        let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.fleet = Fleet {
+            rows: vec![row("api", 1, true), row("web", 2, false)],
+            home: Some("api".to_owned()),
+        };
+        assert_eq!(
+            take_keys(&mut app, vec![(Key::Text(b"sx".to_vec()), Instant::now())]),
+            Some(true),
+            "open redraw survives the swallowed byte"
+        );
+        assert!(app.model.settings_open());
+        assert_eq!(settings_requests(&asks), [(true, 1)]);
+    }
+
+    /// A housed home plus a foreign row: session, tab, compose, border,
+    /// chat and gear geometry all drawn in one closed frame.
+    fn strip_app(root: &Root) -> (App, Reader) {
+        let (mut app, reader) = housed(root);
+        app.fleet = Fleet {
+            rows: vec![row("api", 1, true), row("web", 2, false)],
+            home: Some("api".to_owned()),
+        };
+        app.model = Model::new(&app.fleet);
+        assert_eq!(app.model.selected(), Some("api"));
+        app.take(Reading::Owner, Instant::now(), None);
+        app.world = World::new(
+            Timestamp::now(),
+            vec![
+                entry("api", Status::Running, None),
+                entry("web", Status::Running, None),
+            ],
+        );
+        for name in ["api", "web"] {
+            app.facts.insert(
+                name.to_owned(),
+                fleet::Facts::Seats {
+                    id: ID.to_owned(),
+                    agents: Vec::new(),
+                },
+            );
+        }
+        (app, reader)
+    }
+
+    /// The first cell of `needle` in `shown` whose drawn target matches.
+    fn strip_cell(
+        shown: &str,
+        app: &App,
+        needle: &str,
+        want: &str,
+        matches: impl Fn(Option<super::draw::Hit>) -> bool,
+    ) -> (usize, usize) {
+        let click = |column: usize, row: usize| super::Mouse {
+            kind: super::MouseKind::Click,
+            column: u16::try_from(column).expect("frame column"),
+            row: u16::try_from(row).expect("frame row"),
+        };
+        shown
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.match_indices(needle).find_map(|(byte, _)| {
+                    let column = line[..byte].chars().count();
+                    matches(app.layout.hit(click(column, row))).then_some((row, column))
+                })
+            })
+            .unwrap_or_else(|| panic!("drawn {want}"))
+    }
+
+    /// Painting the open overlay strips what it covers: session, tab and
+    /// compose targets, borders and chat geometry go, the gear target stays.
+    #[test]
+    fn settings_paint_strips_covered_targets_borders_and_chat() {
+        let root = Root::new("settings-strip");
+        let (mut app, _reader) = strip_app(&root);
+        let shown = framed(&mut app);
+        let click = |column: usize, row: usize| super::Mouse {
+            kind: super::MouseKind::Click,
+            column: u16::try_from(column).expect("frame column"),
+            row: u16::try_from(row).expect("frame row"),
+        };
+        let (session_row, session_column) =
+            strip_cell(&shown, &app, "web", "session target", |hit| {
+                matches!(hit, Some(super::draw::Hit::Session(_)))
+            });
+        let (tab_row, tab_column) = strip_cell(&shown, &app, "Agents 0", "tab target", |hit| {
+            matches!(hit, Some(super::draw::Hit::Tab(_)))
+        });
+        let (compose_row, compose_column) =
+            strip_cell(&shown, &app, "api", "compose target", |hit| {
+                matches!(hit, Some(super::draw::Hit::Compose))
+            });
+        assert!(app.layout.shows(Edge::Sidebar), "closed sidebar border");
+        let chat_column = (0..160)
+            .find(|&column| app.layout.in_chat(click(column, 10)))
+            .expect("closed chat geometry");
+        assert!(
+            matches!(
+                app.layout.hit(click(159, 44)),
+                Some(super::draw::Hit::Settings)
+            ),
+            "closed gear target"
+        );
+        app.open_settings();
+        let _ = framed(&mut app);
+        assert!(
+            app.layout.hit(click(session_column, session_row)).is_none(),
+            "covered session target gone"
+        );
+        assert!(
+            app.layout.hit(click(tab_column, tab_row)).is_none(),
+            "covered tab target gone"
+        );
+        assert!(
+            app.layout.hit(click(compose_column, compose_row)).is_none(),
+            "covered compose target gone"
+        );
+        assert!(!app.layout.shows(Edge::Sidebar), "covered border gone");
+        assert!(
+            !app.layout.in_chat(click(chat_column, 10)),
+            "covered chat geometry gone"
+        );
+        assert!(
+            matches!(
+                app.layout.hit(click(159, 44)),
+                Some(super::draw::Hit::Settings)
+            ),
+            "gear target stays"
+        );
+    }
+
+    /// The gear-only branch keeps the toggle live: at 89x19 the version has
+    /// no room, the gear draws in the last cell, and clicking it opens.
+    #[test]
+    fn settings_gear_only_cell_opens_settings() {
+        let root = Root::new("settings-gear-only");
+        let (ask, asks) = std::sync::mpsc::channel();
+        let (mut app, _reader) = housed(&root);
+        app.ask = Some(ask);
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        app.take(Reading::Owner, Instant::now(), None);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 89, 19));
+        app.frame(&mut buf);
+        let shown = text(&buf);
+        assert!(
+            !shown.contains(crate::version_line().as_str()),
+            "version has no room"
+        );
+        let keys = shown.lines().last().expect("keys row");
+        let tail = keys.trim_end();
+        assert!(
+            tail.ends_with('\u{2699}') || tail.ends_with('*'),
+            "gear drawn last: {tail:?}"
+        );
+        assert!(
+            app.mouse(super::Mouse {
+                kind: super::MouseKind::Click,
+                column: 88,
+                row: 18,
+            }),
+            "gear cell opens"
+        );
+        assert!(app.model.settings_open());
+        assert_eq!(settings_requests(&asks), [(true, 1)]);
+    }
+
+    /// Below the floor in either dimension an open overlay keeps the
+    /// closed fallback: the literal row, blank rest, no panel, no targets.
+    #[test]
+    fn settings_below_floor_either_dimension_keeps_fallback() {
+        for (width, height) in [(39u16, 19u16), (89u16, 7u16)] {
+            let root = Root::new("settings-floor");
+            let (mut app, _reader) = housed(&root);
+            app.fleet = one_row(Some("api"));
+            app.model = Model::new(&app.fleet);
+            app.open_settings();
+            let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+            app.frame(&mut buf);
+            let shown = text(&buf);
+            let expected = format!("ae app needs at least 40x8 (now {width}x{height})");
+            let mut rows = shown.lines();
+            assert_eq!(
+                rows.next().expect("fallback row").trim_end(),
+                expected,
+                "{width}x{height} literal"
+            );
+            assert!(
+                rows.all(|row| row.trim().is_empty()),
+                "{width}x{height} rest blank"
+            );
+            for tab in ["Settings", "Quota", "Config", "About"] {
+                assert!(!shown.contains(tab), "{width}x{height} no {tab}");
+            }
+            assert_eq!(app.layout.settings_page_rows, 0, "{width}x{height} no body");
+            assert_eq!(
+                app.layout.settings_max_scroll, 0,
+                "{width}x{height} no scroll"
+            );
+            for (column, row) in [(0, 0), (width / 2, height / 2), (width - 1, height - 1)] {
+                assert!(
+                    app.layout
+                        .hit(super::Mouse {
+                            kind: super::MouseKind::Click,
+                            column,
+                            row,
+                        })
+                        .is_none(),
+                    "{width}x{height} no target at {column}x{row}"
+                );
+            }
+        }
+    }
+
+    /// The panel grounds only the rows above the keys row: with a drawn
+    /// DARCULA look the closed last row is all ink, and the open overlay
+    /// paints base over the covered rows while the last row stays ink.
+    #[test]
+    fn settings_panel_grounds_covered_rows_and_keeps_keys_ink() {
+        use ratatui_core::style::Color;
+        let (ink, base) = (Color::Rgb(0x2B, 0x2B, 0x2B), Color::Rgb(0x31, 0x33, 0x35));
+        let root = Root::new("settings-grounds");
+        let (mut app, _reader) = housed(&root);
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        let darcula = crate::theme::Look::read("on", "darcula", "on", "on");
+        app.answer(Answer::Look {
+            name: "api".to_owned(),
+            look: Some(darcula),
+            zone: None,
+        });
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
+        app.frame(&mut buf);
+        for x in 0..160 {
+            assert_eq!(buf[(x, 44)].bg, ink, "closed keys row ink at {x}");
+        }
+        app.open_settings();
+        app.frame(&mut buf);
+        let shown = text(&buf);
+        assert!(
+            shown
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("Settings")),
+            "open title drawn"
+        );
+        assert!(
+            shown.lines().last().is_some_and(|line| {
+                let tail = line.trim_end();
+                tail.ends_with('\u{2699}') || tail.ends_with('*')
+            }),
+            "gear present"
+        );
+        for x in 0..160 {
+            assert_eq!(buf[(x, 44)].bg, ink, "open keys row stays ink at {x}");
+        }
+        for (x, y) in [(0, 0), (80, 20), (159, 43)] {
+            assert_eq!(buf[(x, y)].bg, base, "covered row base at ({x},{y})");
+        }
+    }
+
+    /// At the widest panes the title still draws: `width + LEFT` would
+    /// overflow u16 where `width - LEFT` fits.
+    #[test]
+    fn settings_title_draws_at_terminal_max_width() {
+        for width in [65534u16, 65535u16] {
+            let root = Root::new("settings-max-width");
+            let (mut app, _reader) = housed(&root);
+            app.fleet = one_row(Some("api"));
+            app.model = Model::new(&app.fleet);
+            app.open_settings();
+            let mut buf = Buffer::empty(Rect::new(0, 0, width, 8));
+            app.frame(&mut buf);
+            let shown = text(&buf);
+            let mut rows = shown.lines();
+            assert!(
+                rows.next().is_some_and(|line| line.contains("Settings")),
+                "{width} title row"
+            );
+            let tabs = rows.next().expect("tab row");
+            for tab in ["Quota", "Config", "About"] {
+                assert!(tabs.contains(tab), "{width} {tab}");
+            }
+            assert!(
+                shown
+                    .lines()
+                    .last()
+                    .is_some_and(|line| line.contains("close")),
+                "{width} close hint"
+            );
+        }
+    }
+
+    /// An empty ready quota reads honestly: cold shows loading, the empty
+    /// answer shows the no-scopes message instead.
+    #[test]
+    fn settings_empty_ready_quota_reads_honest() {
+        let mut app = app(Some("api"));
+        app.open_settings();
+        let cold = framed(&mut app);
+        assert!(cold.contains("loading"), "cold loads:\n{cold}");
+        app.answer(Answer::Settings {
+            generation: 1,
+            quota: Vec::new(),
+            config: None,
+            about: None,
+        });
+        let shown = framed(&mut app);
+        assert!(
+            shown.contains("no quota scopes read"),
+            "honest empty:\n{shown}"
+        );
+        assert!(!shown.contains("loading"), "ready, not loading:\n{shown}");
+    }
+
+    /// The paint resets covered cells whole and clamps a past-the-end scroll
+    /// to the last page instead of an emptied body.
+    #[test]
+    fn settings_paint_resets_cells_and_clamps_bottom() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+        for y in 0..10 {
+            for x in 0..40 {
+                buf[(x, y)].set_symbol("X");
+            }
+        }
+        let rows = |count: usize| {
+            (0..count)
+                .map(|at| settings::QuotaRow {
+                    label: format!("row-{at}"),
+                    header: false,
+                })
+                .collect::<Vec<_>>()
+        };
+        let bodies = settings::SettingsBodies {
+            quota: Some(rows(10)),
+            config: settings::ConfigView::Loading,
+            about: None,
+        };
+        let mut layout = draw::Layout::default();
+        draw::paint_settings(SettingsTab::Quota, 99, &bodies, None, &mut buf, &mut layout);
+        let frame = text(&buf);
+        let rows: Vec<&str> = frame.lines().collect();
+        assert!(
+            !rows[..9].iter().any(|row| row.contains('X')),
+            "cells reset"
+        );
+        assert_eq!(rows[3].trim(), "row-4", "clamped to the last page");
+        assert_eq!(rows[8].trim(), "row-9");
+        assert_eq!(layout.settings_max_scroll, 4);
+        assert_eq!(layout.settings_page_rows, 6);
+    }
+
+    /// I13: re-selecting the open tab with its digit shows it from the
+    /// first row again, even when already selected.
+    #[test]
+    fn reselecting_the_open_tab_restores_its_first_row() {
+        let mut app = app(Some("api"));
+        app.open_settings();
+        let quota: Vec<settings::QuotaRow> = (0..60)
+            .map(|at| settings::QuotaRow {
+                label: format!("qrow-{at:02}"),
+                header: false,
+            })
+            .collect();
+        app.answer(Answer::Settings {
+            generation: 1,
+            quota,
+            config: None,
+            about: None,
+        });
+        let first_body_row = |shown: &str| {
+            shown
+                .lines()
+                .find(|row| row.contains("qrow-"))
+                .expect("a body row")
+                .to_owned()
+        };
+        let top = first_body_row(&framed(&mut app));
+        assert!(top.contains("qrow-00"), "starts at the top:\n{top}");
+        let at = Instant::now();
+        assert!(take_keys(&mut app, vec![(Key::Text(b"j".to_vec()), at)]).is_some());
+        let scrolled = first_body_row(&framed(&mut app));
+        assert_ne!(scrolled, top, "j scrolls off the top");
+        assert!(scrolled.contains("qrow-01"), "one row down:\n{scrolled}");
+        assert!(take_keys(&mut app, vec![(Key::Text(b"1".to_vec()), at)]).is_some());
+        assert_eq!(
+            first_body_row(&framed(&mut app)),
+            top,
+            "reselect restores the first row"
+        );
+    }
+
+    /// I14: the frame settles an overscrolled overlay offset to the drawn
+    /// maximum, so the next key up visibly moves instead of redrawing the
+    /// same bottom page.
+    #[test]
+    fn an_overscrolled_overlay_settles_before_the_next_key() {
+        let mut app = app(Some("api"));
+        app.open_settings();
+        let quota: Vec<settings::QuotaRow> = (0..10)
+            .map(|at| settings::QuotaRow {
+                label: format!("qrow-{at:02}"),
+                header: false,
+            })
+            .collect();
+        app.answer(Answer::Settings {
+            generation: 1,
+            quota,
+            config: None,
+            about: None,
+        });
+        let body_ends = |app: &mut App| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+            app.frame(&mut buf);
+            let body: Vec<String> = text(&buf)
+                .lines()
+                .filter(|row| row.contains("qrow-"))
+                .map(str::to_owned)
+                .collect();
+            (
+                body.first().expect("a first body row").clone(),
+                body.last().expect("a last body row").clone(),
+            )
+        };
+        let (top, _) = body_ends(&mut app);
+        assert!(top.contains("qrow-00"), "starts at the top:\n{top}");
+        let at = Instant::now();
+        let past_end = vec![(Key::Text(vec![b'j'; 20]), at)];
+        assert!(take_keys(&mut app, past_end).is_some());
+        let (top, last) = body_ends(&mut app);
+        assert!(top.contains("qrow-04"), "settled bottom page:\n{top}");
+        assert!(last.contains("qrow-09"), "last row visible:\n{last}");
+        let up = vec![(Key::Text(b"k".to_vec()), at)];
+        assert!(take_keys(&mut app, up).is_some());
+        let (top, last) = body_ends(&mut app);
+        assert!(top.contains("qrow-03"), "one line up:\n{top}");
+        assert!(last.contains("qrow-08"), "page moved:\n{last}");
     }
 }

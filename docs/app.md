@@ -84,6 +84,8 @@ Browsing:
 | Click composer | write (home only, when this app owns the input) |
 | `Esc` | back to home |
 | `Enter` or `i` | write (home only, when this app owns the input) |
+| `s` | open Settings |
+| Click the gear at the keys row's right end | open Settings, also while writing |
 | `q`, `^C` | quit |
 
 A paste while browsing is swallowed whole, never read as keys.
@@ -101,6 +103,26 @@ A press within a cell of a border grabs it unless a row or tab is drawn there.
 Any key, paste, press or wheel notch ends a drag whose release never arrived,
 then acts as it always does.
 
+## Settings
+
+`s` opens the read-only Settings overlay over the whole pane, as does the
+gear (`*` with `icons = off`) at the keys row's right end — the gear also
+while writing, where `s` stays draft text; `Esc`, `q` or `s` closes it, `^C`
+quits. While open the overlay owns every key and click: `Tab` and `1`-`3`
+switch tabs, `j` / `k` and `↓` / `↑` scroll a line, the wheel three rows
+per notch, `PgUp` / `PgDn` a page, everything else is swallowed, and a draft
+being written is
+kept untouched until it closes. Three
+tabs: Quota shows the same scope rows `ae quota` prints; Config shows every
+`[workspace]` key the home session runs
+with and where each came from — `launch` (pinned in its meta), `session` (its
+origin overlay), `global` (the meta-recorded file, the current global only
+when that row is empty) or `default` — with `global only` on the keys that
+read the current global alone; About names the versions, the state root, the
+config file, the recorded server and the repo links. Quota reads again every
+refresh while open; config and about read once per open. A torn config shows
+one honest row naming the file.
+
 ## Ownership
 
 Only the **owner** writes: the first live pane stamped as this session's chat,
@@ -113,6 +135,9 @@ read-only, and typing still goes home: the composer says
 
 ## Residuals
 
+- Settings shows the launch-pinned values for `layout`, `quota`,
+  `quota_every_secs`, `idle_nudge_secs` and `done_confirmations`: a running
+  session keeps what it launched with even after the config changes.
 - A SIGKILL or SIGTERM leaves the terminal in raw mode on the alternate screen
   (`reset` restores it). In the `chat` window `remain-on-exit` keeps the dead
   pane on screen and `prefix h` respawns it; any other tmux pane closes with
