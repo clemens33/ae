@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.32] - 2026-10-06
+- Shortcore P1: frozen injected-text spec (RED on base)
+- Shorten worker context and retain leadership rules
+
 ## [v2026.10.31] - 2026-10-06
 - **app**: Install frozen settings spec
 - **app**: Stabilize settings spec waits on consecutive captures
