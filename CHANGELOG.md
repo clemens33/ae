@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.35] - 2026-10-07
+- Appuse B1: frozen writer-lease acceptance spec (RED on base)
+- Appuse B1: an ae app writes home only under the session's writer lease
+- Appuse B1: pin that a key read at the lease's own instant is draft
+- Appuse B1: a writer whose home stops being proven is held, its draft kept
+- Appuse B1: q is draft text while writing, not a way out of it
+- Appuse B1: a revocation releases the lease through the one setter
+- Appuse B1: frozen follow-up spec: revocation and refused-entry pins
+- Appuse B1: an entry the admission refuses goes back into the draft, held
+- Appuse B1: docs: a refused entry returns to the draft in memory only
+- Appuse B1: pin that a composer press while writing keeps the same lease
+
 ## [v2026.10.34] - 2026-10-07
 - Appuse A: frozen wheel-scroll acceptance spec (RED on base)
 - Appuse A: wheel scrolls the session list a card and the tab body three rows; a cut body names its hidden rows; a click keeps the list window
