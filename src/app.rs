@@ -1788,17 +1788,18 @@ mod tests {
     }
 
     /// R-B2/R-B3: the lease's own instant gates the keys: one read before it
-    /// is dropped and named once, one read after it is draft.
+    /// is dropped and named once, one read at that instant is draft.
     #[test]
     fn keys_read_before_the_lease_are_dropped_and_named_once() {
         let root = Root::new("late");
         let (mut app, _reader) = housed(&root);
         let before = Instant::now();
-        let after = writing(&mut app);
+        writing(&mut app);
+        let taken = app.lease.as_ref().map(|lease| lease.at).expect("held");
         for key in [Key::Text(b"early".to_vec()), Key::Enter] {
             assert_eq!(app.compose(key, before), Some(()));
         }
-        assert_eq!(app.compose(Key::Text(b"late".to_vec()), after), Some(()));
+        assert_eq!(app.compose(Key::Text(b"late".to_vec()), taken), Some(()));
         let draft = app.input.as_ref().map(Input::draft).unwrap_or_default();
         assert_eq!(draft, "late", "only keys after the lease: {draft}");
         let named = |item: &Item| item.body.contains("keys typed before writing started");
