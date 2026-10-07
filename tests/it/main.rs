@@ -12,6 +12,7 @@ mod app_settings_spec;
 mod app_snappy_spec;
 mod app_spec;
 mod app_tail_spec;
+mod app_wheel_spec;
 mod archive;
 mod archive_from;
 mod archive_publish;
