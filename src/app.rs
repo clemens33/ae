@@ -743,10 +743,15 @@ impl App {
         term::still(&self.seats, console.seats()).inspect_err(|why| lost.set(Some(why.clone())))
     }
 
-    /// A home the admission no longer proved ends the writing at once.
-    fn unproven(&mut self, lost: Cell<Option<String>>) {
-        if let Some(why) = lost.into_inner() {
-            self.take(Reading::NotOwner(why), Instant::now());
+    /// A home the admission no longer proved ends the writing at once, HELD
+    /// with `line`, the entry it refused, back in the draft: memory only.
+    fn unproven(&mut self, lost: Cell<Option<String>>, line: &[u8]) {
+        let Some(why) = lost.into_inner() else {
+            return;
+        };
+        self.take(Reading::NotOwner(why), Instant::now());
+        if let Some(input) = &mut self.input {
+            let _ = input.restore(submit::Draft::Kept(line.to_vec()));
         }
     }
 
@@ -760,7 +765,7 @@ impl App {
             Ok((_, outcome)) => crate::console::input::outcome_line(&outcome, seat),
             Err(why) => format!("refused: {why}"),
         };
-        self.unproven(lost);
+        self.unproven(lost, raw);
         line
     }
 
@@ -775,7 +780,8 @@ impl App {
             Ok(()) => "closed an ask".to_owned(),
             Err(why) => format!("refused: {why}"),
         };
-        self.unproven(lost);
+        let entry = id.map_or_else(|| "/close".to_owned(), |id| format!("/close {id}"));
+        self.unproven(lost, entry.as_bytes());
         line
     }
 
