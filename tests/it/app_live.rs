@@ -359,6 +359,9 @@ fn close_in_the_app_honours_a_retire_of_the_asked_seat() {
         screen.contains(&composer)
     });
     rig.tmux(&["send-keys", "-t", &pane, "i"]);
+    rig.wait(&pane, WAIT, "writing starts", |screen| {
+        screen.contains("Enter sends")
+    });
     rig.tmux(&["send-keys", "-t", &pane, "-l", "/close"]);
     rig.tmux(&["send-keys", "-t", &pane, "Enter"]);
     let screen = rig.wait(&pane, WAIT, "the close is answered", |screen| {

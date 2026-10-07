@@ -160,6 +160,9 @@ speaker, `@<seat> text` either lead-pair seat, `/close` withdraws your newest op
 `/close <id>` a named one (ids are not drawn, a script may still name one), other
 `/word`s are refused, five asks open at most. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
+While an [`ae app`](app.md#ownership) writes to the session, a send or `/close`
+is refused at once with `an ae app is writing to <session>`, nothing kept or sent:
+the owner chat tries the app's writer lease inside its admission and drops it.
 `/open <seat>` selects any roster seat's pane, see [Open](#open).
 Recorded asks show their header and body before the submit result. If the row
 stays missing for two readable passes, the result prints on a line of its own;

@@ -104,6 +104,17 @@ pub(crate) fn still(pair: &[Seat], seats: Result<Vec<Seat>, String>) -> Result<(
     Err("the lead pair changed since this chat opened - restart this chat".to_owned())
 }
 
+/// The writer lease on `console`'s session, taken without waiting; a refusal
+/// names the app that holds it, or the lock node ae will not open.
+pub(crate) fn lease(console: &Console) -> Result<std::fs::File, String> {
+    let taken = crate::store::open(&console.dir).console_writer();
+    taken.map_err(|why| match why.kind() {
+        std::io::ErrorKind::WouldBlock => format!("an ae app is writing to {}", console.name),
+        std::io::ErrorKind::InvalidInput => "the writer lease is not a regular file".to_owned(),
+        kind => format!("the writer lease could not be taken ({kind})"),
+    })
+}
+
 /// Whether `console`'s pane `me` owns its session's input on `server`:
 /// `None` when tmux did not answer.
 pub(crate) fn owns(
@@ -333,9 +344,12 @@ impl Term {
         Some(Seen { cursor_y, capture })
     }
 
+    /// Whether this chat owns the input and no app writes: the lease is
+    /// tried under the admission and dropped at once.
     fn owned(&self, console: &Console) -> Result<(), String> {
         let unread = || Err("tmux did not answer who owns the input".to_owned());
-        self.owns(console).unwrap_or_else(unread)
+        self.owns(console).unwrap_or_else(unread)?;
+        lease(console).map(drop)
     }
 
     /// Carry one ask through the helpers' own tracked path, as the console.

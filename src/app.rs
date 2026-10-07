@@ -7,10 +7,13 @@
 //! world is read on the [`loader`]'s one background thread, through those
 //! owners; this file draws what it last answered, so no key waits on a read.
 //! The ONE write is the home composer's ask or close, through the chat's own
-//! admission path (`term::submit_ask`, `submit::close_owned`); nothing else
-//! here writes into any session.
+//! admission path (`term::submit_ask`, `submit::close_owned`), under the
+//! writer lease this app holds while it writes; nothing else here writes
+//! into any session.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::{IsTerminal as _, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -74,10 +77,19 @@ struct Merged {
     lane: Rc<Lane>,
 }
 
+/// The writer lease this app holds while it writes home.
+struct Lease {
+    /// Held open: dropping it releases the lease.
+    _file: File,
+    /// When it was taken: no key read before it is draft.
+    at: Instant,
+    /// The keys dropped for that have been named.
+    named: bool,
+}
+
 /// Everything the app was answered, and the browse and compose state.
 struct App {
     home: Option<String>,
-    server: Option<ServerId>,
     model: model::Model,
     fleet: fleet::Fleet,
     world: World,
@@ -107,11 +119,13 @@ struct App {
     seats: Vec<Seat>,
     /// The chat's own input step machine; `None` when there is no usable pair.
     input: Option<Input>,
-    /// This app's own pane, which must be the one that owns the input.
-    me: Option<String>,
     /// Why the home composer only reads.
     read_only: String,
-    composing: bool,
+    /// The writer lease, held exactly while this app writes home.
+    lease: Option<Lease>,
+    /// Why the last entry was refused: HELD, every key swallowed until Esc,
+    /// ^C, a click or an Enter that tries again.
+    held: Option<String>,
     /// ae's own lines — refusals and outcomes — shown in the home lane.
     notices: Vec<Item>,
     /// Bumped with every notice, so the merged home lane knows it is stale.
@@ -134,11 +148,12 @@ struct App {
 
 impl App {
     /// An app that has read nothing yet: home is selected, and its pair and
-    /// console arrive from the reader.
+    /// console arrive from the reader. Where it runs decides nothing: the
+    /// writer lease does.
     fn new(
         home: Option<String>,
-        server: Option<ServerId>,
-        me: Option<String>,
+        _server: Option<ServerId>,
+        _pane: Option<String>,
         ask: Option<Sender<Request>>,
     ) -> Self {
         let fleet = fleet::Fleet {
@@ -150,7 +165,6 @@ impl App {
             .map_or_else(String::new, |_| "ownership not read yet".to_owned());
         Self {
             home,
-            server,
             model: model::Model::new(&fleet),
             fleet,
             world: World::new(Timestamp::now(), Vec::new()),
@@ -170,9 +184,9 @@ impl App {
             pair: Vec::new(),
             seats: Vec::new(),
             input: None,
-            me,
             read_only,
-            composing: false,
+            lease: None,
+            held: None,
             notices: Vec::new(),
             noticed: 0,
             draft_view: View {
@@ -197,7 +211,7 @@ impl App {
             Answer::Home(home) => self.housed(home),
             Answer::Fleet(read) => self.absorb(read),
             Answer::Look { name, look, zone } => drop(self.looks.insert(name, (look, zone))),
-            Answer::Owned { reading, at, draft } => self.take(reading, at, draft),
+            Answer::Owned { reading, at } => self.take(reading, at),
             Answer::View(view) => self.viewed(view),
             Answer::Settings {
                 generation,
@@ -395,9 +409,9 @@ impl App {
         (Some(theme::Look::DEFAULT), first_zone)
     }
 
-    /// Hand one ownership reading, completed at `at`, to the composer; a
-    /// promotion puts back the kept `draft` read with it, as the chat does.
-    fn take(&mut self, reading: Reading, at: Instant, draft: Option<submit::Draft>) {
+    /// Hand one reading of whether home may be written, completed at `at`,
+    /// to the composer; one that ends it ends the writing too.
+    fn take(&mut self, reading: Reading, at: Instant) {
         let Some(input) = &mut self.input else {
             return;
         };
@@ -406,15 +420,43 @@ impl App {
             Reading::Unknown => UNREAD.to_owned(),
             Reading::Owner => String::new(),
         };
-        let was = input.taking();
         let _ = input.tick(reading, at);
-        if !was && input.taking() {
-            let restored = input.restore(draft.unwrap_or(submit::Draft::Nothing));
-            self.effects(restored);
+        if !input.taking() {
+            self.write(false);
         }
-        if !self.input.as_ref().is_some_and(Input::taking) {
-            self.composing = false;
-        }
+    }
+
+    /// Start or stop writing home: the one writer of the lease. Starting
+    /// takes it without waiting, and the instant it is held gates every key
+    /// after; an empty composer gets the kept line back. A refusal is HELD.
+    fn write(&mut self, on: bool) {
+        (self.lease, self.held) = (None, None);
+        let Some(console) = self
+            .home_console
+            .as_ref()
+            .filter(|_| on && self.can_compose())
+        else {
+            return;
+        };
+        let file = match term::lease(console) {
+            Ok(file) => file,
+            Err(why) => return self.held = Some(why),
+        };
+        let at = Instant::now();
+        let draft = submit::restore(console.dir());
+        self.lease = Some(Lease {
+            _file: file,
+            at,
+            named: false,
+        });
+        let input = self.input.as_mut().filter(|input| input.draft().is_empty());
+        let restored = input.map(|input| input.restore(draft)).unwrap_or_default();
+        self.effects(restored);
+    }
+
+    /// Whether this app writes home: it holds the lease.
+    fn composing(&self) -> bool {
+        self.lease.is_some()
     }
 
     /// Show the selected session from what was answered: its last read lane,
@@ -490,11 +532,19 @@ impl App {
     }
 
     /// One key while composing: Esc keeps the draft and browses, ^C quits,
-    /// anything else is the chat's own input. `None` quits.
+    /// one read before the lease was taken is dropped, and anything else is
+    /// the chat's own input. `None` quits.
     fn compose(&mut self, key: Key, origin: Instant) -> Option<()> {
         match key {
-            Key::Escape => self.composing = false,
+            Key::Escape => self.write(false),
             Key::Interrupt => return None,
+            _ if self.lease.as_ref().is_some_and(|lease| origin < lease.at) => {
+                if let Some(lease) = self.lease.as_mut().filter(|lease| !lease.named) {
+                    lease.named = true;
+                    let line = "dropped the keys typed before writing started";
+                    self.effects(vec![Effect::Print(line.to_owned())]);
+                }
+            }
             key => {
                 let effects = self
                     .input
@@ -508,6 +558,18 @@ impl App {
             }
         }
         Some(())
+    }
+
+    /// One key while HELD: Esc browses, ^C quits, Enter tries the lease
+    /// again, and anything else is swallowed. `None` quits.
+    fn retry(&mut self, key: &Key) -> Option<bool> {
+        match key {
+            Key::Interrupt => return None,
+            Key::Escape => self.write(false),
+            Key::Enter => self.write(true),
+            _ => return Some(false),
+        }
+        Some(true)
     }
 
     /// A wheel notch landing past a bound the last frame has not proven the
@@ -583,8 +645,10 @@ impl App {
         }
     }
 
-    /// A press: grab the border under it, else act on the target drawn there.
+    /// A press: grab the border under it, else act on the target drawn
+    /// there. Any press ends a HELD entry.
     fn click(&mut self, mouse: Mouse) -> bool {
+        let held = self.held.take().is_some();
         if let Some((edge, at)) = self.layout.grab(mouse) {
             let from = match edge {
                 model::Edge::Sidebar => mouse.column,
@@ -594,23 +658,23 @@ impl App {
             return true;
         }
         let Some(hit) = self.layout.hit(mouse) else {
-            return false;
+            return held;
         };
-        let was_writing = self.composing;
+        let was_writing = self.composing();
         let act = match hit {
             draw::Hit::Session(name) => {
                 let start = self.layout.list_start.unwrap_or(0);
                 let Some(act) = self.model.select_name(&self.fleet, &name, start) else {
-                    return false;
+                    return held;
                 };
-                self.composing = false;
+                self.write(false);
                 act
             }
             draw::Hit::Tab(tab) => {
-                self.composing = false;
+                self.write(false);
                 self.model.show_tab(tab)
             }
-            draw::Hit::Compose if !self.composing => {
+            draw::Hit::Compose if !self.composing() => {
                 self.model
                     .key(model::Key::Compose, &self.fleet, self.can_compose(), true)
             }
@@ -620,7 +684,7 @@ impl App {
                 return true;
             }
         };
-        apply(self, &act).unwrap_or(false) || was_writing != self.composing
+        apply(self, &act).unwrap_or(false) || was_writing != self.composing() || held
     }
 
     /// Left motion: the dragged border follows it while the last frame drew
@@ -665,34 +729,48 @@ impl App {
         self.show();
     }
 
-    /// The ownership the admission re-proves: the pair this app opened with,
-    /// and this pane still the owner.
-    fn owns(&self, console: &Console) -> Result<(), String> {
-        term::still(&self.seats, console.seats())?;
-        term::owns(console, self.server.as_ref(), self.me.as_deref())
-            .unwrap_or_else(|| Err(UNREAD.to_owned()))
+    /// What the admission re-proves: this app holds the lease, and the
+    /// incarnation and lead pair it opened with are the session's now. A
+    /// home no longer proven is kept in `lost`.
+    fn owns(&self, console: &Console, lost: &Cell<Option<String>>) -> Result<(), String> {
+        self.lease.as_ref().ok_or("not writing")?;
+        term::still(&self.seats, console.seats()).inspect_err(|why| lost.set(Some(why.clone())))
+    }
+
+    /// A home the admission no longer proved ends the writing at once.
+    fn unproven(&mut self, lost: Cell<Option<String>>) {
+        if let Some(why) = lost.into_inner() {
+            self.take(Reading::NotOwner(why), Instant::now());
+        }
     }
 
     /// One ask of `seat`, through the chat's own admission and tracked path.
-    fn ask(&self, raw: &[u8], seat: &str, body: String) -> String {
+    fn ask(&mut self, raw: &[u8], seat: &str, body: String) -> String {
         let Some(console) = &self.home_console else {
             return "refused: no home session".to_owned();
         };
-        match term::submit_ask(console, || self.owns(console), raw, seat, body) {
+        let lost = Cell::default();
+        let line = match term::submit_ask(console, || self.owns(console, &lost), raw, seat, body) {
             Ok((_, outcome)) => crate::console::input::outcome_line(&outcome, seat),
             Err(why) => format!("refused: {why}"),
-        }
+        };
+        self.unproven(lost);
+        line
     }
 
     /// `/close`: this app's own open ask, through the chat's admission.
-    fn close(&self, id: Option<&str>) -> String {
+    fn close(&mut self, id: Option<&str>) -> String {
         let Some(console) = &self.home_console else {
             return "refused: no home session".to_owned();
         };
-        match submit::close_owned(console.dir(), console.name(), id, || self.owns(console)) {
+        let lost = Cell::default();
+        let owns = || self.owns(console, &lost);
+        let line = match submit::close_owned(console.dir(), console.name(), id, owns) {
             Ok(()) => "closed an ask".to_owned(),
             Err(why) => format!("refused: {why}"),
-        }
+        };
+        self.unproven(lost);
+        line
     }
 
     /// The composer line for the selection.
@@ -706,10 +784,13 @@ impl App {
             Some(home) if self.model.selected() != Some(home.as_str()) => {
                 draw::Composer::Foreign { home, speaker }
             }
+            Some(_) if self.held.is_some() => draw::Composer::Held {
+                why: self.held.as_deref().unwrap_or_default(),
+            },
             Some(home) if self.can_compose() => draw::Composer::Home {
                 home,
                 speaker,
-                view: self.composing.then_some(&self.draft_view),
+                view: self.composing().then_some(&self.draft_view),
                 draft: &self.draft,
             },
             Some(_) => draw::Composer::ReadOnly {
@@ -864,9 +945,8 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     };
     let declared = doors::declared_server(crate::shape::current());
     let server = doors::launch_target(declared.as_ref());
-    let me = doors::calling_pane_id();
     let (wake, wakes) = mpsc::channel();
-    let mut reader = loader::Reader::new(root.clone(), home.clone(), server.clone(), me.clone());
+    let mut reader = loader::Reader::new(root.clone(), home.clone(), server.clone());
     reader.settings_paths(loader::SettingsPaths {
         home: doors::home(),
         global: doors::config_file(crate::shape::current(), &root),
@@ -889,7 +969,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     };
     let mut size = tty.size().unwrap_or((80, 24));
     let mut terminal = Terminal::new(backend::Ansi::new(out, size))?;
-    let mut app = App::new(home, server, me, Some(ask));
+    let mut app = App::new(home, None, None, Some(ask));
     let mut keys = Keys::app();
     let mut dirty = true;
     loop {
@@ -984,8 +1064,10 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
             let ended = app.model.let_go();
             let acted = if app.model.settings_open() {
                 settings_key(app, &key, origin)?
-            } else if app.composing {
+            } else if app.composing() {
                 app.compose(key, origin).map(|()| true)?
+            } else if app.held.is_some() {
+                app.retry(&key)?
             } else {
                 browse(app, &key, origin)?
             };
@@ -1008,7 +1090,11 @@ fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
                 rest = tail;
                 continue;
             }
-            if app.composing {
+            if app.held.is_some() {
+                // Writing was refused mid-chunk: the rest is HELD, swallowed.
+                return Some(true);
+            }
+            if app.composing() {
                 // Writing started mid-chunk: the rest is draft, whole, with
                 // its original instant — never re-spelled per byte.
                 app.compose(Key::Text(rest.to_vec()), origin)
@@ -1056,7 +1142,7 @@ fn settings_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
         let mut rest = bytes.as_slice();
         while let Some((&byte, tail)) = rest.split_first() {
             if !app.model.settings_open() {
-                if app.composing {
+                if app.composing() {
                     // The rest of the run goes back to the draft whole, with
                     // its original instant — never re-spelled per byte.
                     app.compose(Key::Text(rest.to_vec()), origin)
@@ -1118,7 +1204,7 @@ fn apply(app: &mut App, act: &model::Act) -> Option<bool> {
         }
         model::Act::Redraw => Some(true),
         model::Act::Compose => {
-            app.composing = true;
+            app.write(true);
             Some(true)
         }
         model::Act::None => Some(false),
@@ -1229,10 +1315,27 @@ mod tests {
 
     /// [`app`] on `root`'s home `api`, opened by the reader as `run` opens it.
     fn housed(root: &Root) -> (App, Reader) {
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let mut app = app(Some("api"));
         app.answer(reader.open_home());
         (app, reader)
+    }
+
+    /// `root`'s home `api` recorded as incarnation `id`, lead pair lead + `peer`.
+    pub(in crate::app) fn meta(root: &Root, id: &str, peer: &str) {
+        let meta =
+            format!("session_id={id}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0={peer}\n");
+        let dir = root.0.join("sessions").join("api");
+        std::fs::write(dir.join("meta"), format!("schema=2\n{meta}")).expect("meta");
+    }
+
+    /// [`housed`]'s `app` writing home under its lease: the instant after
+    /// it was taken.
+    fn writing(app: &mut App) -> Instant {
+        app.take(Reading::Owner, Instant::now());
+        app.write(true);
+        assert!(app.composing(), "the lease is taken");
+        Instant::now()
     }
 
     /// A lane of one turn saying `body`, read as `id` at `seq`.
@@ -1416,9 +1519,7 @@ mod tests {
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
         app.world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
-        let at = Instant::now();
-        app.take(Reading::Owner, at, None);
-        app.composing = true;
+        let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b"kept draft".to_vec()), at), Some(()));
         let shown = framed(&mut app);
         let (row, column) = shown
@@ -1437,7 +1538,7 @@ mod tests {
             }),
             "the mode change needs an immediate redraw"
         );
-        assert!(!app.composing);
+        assert!(!app.composing());
         assert_eq!(app.model.tab(), crate::app::model::Tab::Overview);
         assert_eq!(
             app.input.as_ref().expect("home input").draft(),
@@ -1578,49 +1679,33 @@ mod tests {
         assert_eq!(app.model.pages(), 0, "a lane that fits scrolls nowhere");
     }
 
-    /// The home composer is the chat's own input: an ask this app cannot
-    /// prove it owns is refused BEFORE anything is written and says so in
-    /// the home lane; Esc keeps the draft and browses.
+    /// An ask without the lease, or after home was replaced under its name,
+    /// is refused BEFORE any ask, kept draft or body is written and says so
+    /// in the home lane; the unproven home ends the writing (R-B5/R-B7).
     #[test]
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "the test reads its isolated event ledger"
-    )]
     fn an_unproven_ask_is_refused_and_writes_nothing() {
         let root = Root::new("ask");
+        let dir = root.0.join("sessions").join("api");
         let (mut app, _reader) = housed(&root);
-        app.fleet = one_row(Some("api"));
-        app.model = Model::new(&app.fleet);
-        app.dirs
-            .insert("api".to_owned(), root.0.join("sessions").join("api"));
-        let begun = Instant::now();
-        let input = app.input.as_mut().expect("a lead pair makes an input");
-        let _ = input.tick(Reading::Owner, begun);
-        assert!(app.can_compose(), "the owner composes");
-        let typed = begun + Duration::from_millis(5);
-        app.composing = true;
+        app.take(Reading::Owner, Instant::now());
+        let refused = app.ask(b"x", "lead", "x".to_owned());
+        assert_eq!(refused, "refused: not writing");
+        let typed = writing(&mut app);
+        meta(&root, &ID.replace("1234", "bbbb"), "colead");
         for key in [Key::Text(b"check the scopes".to_vec()), Key::Enter] {
             assert_eq!(app.compose(key, typed), Some(()));
         }
         let notice = &app.notices.last().expect("the outcome is said").body;
+        assert_eq!(notice, "refused: the session was replaced or renamed");
+        let written = crate::store::open(&dir).events_source();
         assert!(
-            notice.starts_with("refused: ") && notice.contains(super::UNREAD),
-            "{notice}"
+            matches!(written, crate::store::SourceRead::Absent),
+            "no record"
         );
-        let journal = root.0.join("sessions").join("api").join("events.jsonl");
-        let written = std::fs::read_to_string(&journal).unwrap_or_default();
-        assert!(!written.contains("\"ask\""), "nothing was asked: {written}");
-        assert!(
-            framed(&mut app).contains("refused: "),
-            "the home lane shows it"
-        );
-        assert_eq!(app.compose(Key::Text(b"later".to_vec()), typed), Some(()));
-        assert_eq!(app.compose(Key::Escape, typed), Some(()));
-        assert!(!app.composing, "Esc browses");
-        let shown = framed(&mut app);
-        assert!(shown.contains("to api › lead   later"), "{shown}");
-        assert!(shown.contains("draft kept · Enter writes"));
-        assert_eq!(app.compose(Key::Interrupt, typed), None, "^C quits");
+        assert_eq!(super::submit::restore(&dir), super::submit::Draft::Nothing);
+        let body = std::fs::remove_dir(dir.join("messages")).map_err(|why| why.kind());
+        assert_eq!(body, Err(std::io::ErrorKind::NotFound), "no body written");
+        assert!(!app.composing() && !app.can_compose(), "and no writing");
     }
 
     /// `/open` in the app names why it opens nothing, as the docs say, once
@@ -1634,11 +1719,7 @@ mod tests {
         app.dirs
             .insert("api".to_owned(), root.0.join("sessions").join("api"));
         app.answer(reader.view("api").expect("home reads"));
-        let begun = Instant::now();
-        let input = app.input.as_mut().expect("a lead pair makes an input");
-        let _ = input.tick(Reading::Owner, begun);
-        app.composing = true;
-        let typed = begun + Duration::from_millis(5);
+        let typed = writing(&mut app);
         for key in [Key::Text(b"/open lead".to_vec()), Key::Enter] {
             assert_eq!(app.compose(key, typed), Some(()));
         }
@@ -1673,66 +1754,55 @@ mod tests {
         entry
     }
 
-    /// #15: no server to ask means tmux did not answer who owns the input.
+    /// #15: an unanswered reading says tmux did not answer.
     #[test]
     fn an_unanswered_ownership_says_tmux_did_not_answer() {
         let root = Root::new("own");
         let (mut app, _reader) = housed(&root);
-        let console = app.home_console.as_ref().expect("home opened");
-        let reading = loader::reading(console, None, None);
-        app.take(reading, Instant::now(), None);
+        app.take(Reading::Unknown, Instant::now());
         assert_eq!(app.read_only, UNREAD);
     }
 
-    /// #16-18: only the promotion to owner brings the kept draft back, once
-    /// — a later owner reading carrying the disk draft never overwrites the
-    /// draft being edited — and losing the input ends composing; a demotion
-    /// then a promotion restores again.
+    /// R-B6: only an acquisition restores the kept line, and only into an
+    /// empty composer, with no merge; a demotion ends the writing and frees
+    /// its lease, and a refused entry is HELD, naming the writer.
     #[test]
-    fn only_a_promotion_brings_the_kept_draft_back_once() {
+    fn only_an_acquisition_into_an_empty_composer_restores_the_kept_line() {
         let root = Root::new("take");
-        let dir = root.0.join("sessions").join("api");
-        crate::store::open(&dir)
-            .publish_console_draft(b"kept line")
-            .expect("a kept draft");
+        let store = crate::store::open(&root.0.join("sessions").join("api"));
+        store.publish_console_draft(b"kept").expect("a kept draft");
         let (mut app, _reader) = housed(&root);
-        let at = Instant::now();
-        let kept = || Some(crate::console::submit::restore(&dir));
         let draft = |app: &App| app.input.as_ref().map(Input::draft).unwrap_or_default();
-        app.take(Reading::Unknown, at, None);
-        assert_eq!(draft(&app), "");
-        app.take(Reading::Owner, at, kept());
-        assert_eq!(draft(&app), "kept line", "the promotion restores");
-        app.composing = true;
+        app.take(Reading::Owner, Instant::now());
+        assert_eq!(draft(&app), "", "a promotion restores nothing");
+        let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b" edited".to_vec()), at), Some(()));
-        app.take(Reading::Owner, at, kept());
-        assert_eq!(draft(&app), "kept line edited", "no second restore");
-        assert!(app.composing, "the owner keeps composing");
-        app.take(Reading::NotOwner("owned by window @2".to_owned()), at, None);
-        assert!(!app.composing, "losing the input ends composing");
-        app.take(Reading::Owner, at, kept());
-        assert_eq!(draft(&app), "kept line", "a re-promotion restores again");
-        app.take(Reading::NotOwner("owned by window @2".to_owned()), at, None);
-        app.take(Reading::Owner, at, None);
-        assert_eq!(draft(&app), "", "a promotion with no draft restores none");
+        app.write(false);
+        writing(&mut app);
+        assert_eq!(draft(&app), "kept edited", "restored once, no merge");
+        app.take(Reading::NotOwner("gone".to_owned()), Instant::now());
+        let _other = store.console_writer().expect("a demotion frees the lease");
+        app.take(Reading::Owner, Instant::now());
+        app.write(true);
+        assert_eq!(app.held.as_deref(), Some("an ae app is writing to api"));
     }
 
-    /// I5: an owner reading delivered late still counts from when it was
-    /// READ: keys typed before it are dropped, keys after it are taken.
+    /// R-B2/R-B3: the lease's own instant gates the keys: one read before it
+    /// is dropped and named once, one read after it is draft.
     #[test]
-    fn a_late_owner_reading_counts_from_when_it_was_read() {
+    fn keys_read_before_the_lease_are_dropped_and_named_once() {
         let root = Root::new("late");
         let (mut app, _reader) = housed(&root);
-        let begun = Instant::now();
-        let read = begun + Duration::from_millis(10);
-        app.take(Reading::Owner, read, None);
-        app.composing = true;
-        let before = begun + Duration::from_millis(5);
-        let after = begun + Duration::from_millis(15);
-        assert_eq!(app.compose(Key::Text(b"early".to_vec()), before), Some(()));
+        let before = Instant::now();
+        let after = writing(&mut app);
+        for key in [Key::Text(b"early".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, before), Some(()));
+        }
         assert_eq!(app.compose(Key::Text(b"late".to_vec()), after), Some(()));
         let draft = app.input.as_ref().map(Input::draft).unwrap_or_default();
-        assert_eq!(draft, "late", "only keys after the reading: {draft}");
+        assert_eq!(draft, "late", "only keys after the lease: {draft}");
+        let named = |item: &Item| item.body.contains("keys typed before writing started");
+        assert_eq!(app.notices.iter().filter(|item| named(item)).count(), 1);
     }
 
     /// #23/#25: an entry is found by its own name, and a selected running
@@ -1781,9 +1851,9 @@ mod tests {
         assert!(framed(&mut app).contains("typing writes to api › lead"));
     }
 
-    /// #27/#28: `/close` answers with the chat admission's own refusal: no
-    /// tmux to prove ownership, so tmux did not answer (submit.rs `close_owned`
-    /// proves ownership before the ask); no home session, so no home.
+    /// #27/#28: `/close` answers with the chat admission's own answer: a
+    /// proven home with no tmux reaches the journal; a changed pair is
+    /// refused before it and ends the writing; no home session, no home.
     #[test]
     fn close_reports_the_chats_own_admission_answer() {
         let root = Root::new("close");
@@ -1792,16 +1862,20 @@ mod tests {
         app.model = Model::new(&app.fleet);
         app.dirs
             .insert("api".to_owned(), root.0.join("sessions").join("api"));
-        let begun = Instant::now();
-        let input = app.input.as_mut().expect("a lead pair makes an input");
-        let _ = input.tick(Reading::Owner, begun);
-        app.composing = true;
-        let typed = begun + Duration::from_millis(5);
-        for key in [Key::Text(b"/close".to_vec()), Key::Enter] {
-            assert_eq!(app.compose(key, typed), Some(()));
-        }
-        let notice = &app.notices.last().expect("the outcome is said").body;
-        assert_eq!(notice, &format!("refused: {}", super::UNREAD));
+        let typed = writing(&mut app);
+        let close = |app: &mut App| {
+            for key in [Key::Text(b"/close".to_vec()), Key::Enter] {
+                assert_eq!(app.compose(key, typed), Some(()));
+            }
+            app.notices
+                .last()
+                .map_or_else(String::new, |said| said.body.clone())
+        };
+        assert_eq!(close(&mut app), "refused: no open ask to close");
+        meta(&root, ID, "peer");
+        let changed = "the lead pair changed since this chat opened - restart this chat";
+        assert_eq!(close(&mut app), format!("refused: {changed}"));
+        assert!(!app.composing(), "an unproven home ends the writing");
         app.home_console = None;
         assert_eq!(app.close(None), "refused: no home session");
     }
@@ -2064,11 +2138,7 @@ mod tests {
         app.ask = Some(ask);
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
-        let begun = Instant::now();
-        let input = app.input.as_mut().expect("a lead pair makes an input");
-        let _ = input.tick(Reading::Owner, begun);
-        app.composing = true;
-        let typed = begun + Duration::from_millis(5);
+        let typed = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b"/close".to_vec()), typed), Some(()));
         assert!(asks.try_iter().next().is_none(), "typing writes nothing");
         assert_eq!(app.compose(Key::Enter, typed), Some(()));
@@ -2092,16 +2162,17 @@ mod tests {
             look: None,
             zone: None,
         };
+        let root = Root::new("lone-esc");
         for first in [None, Some(loader::Wake::Answer(Box::new(quiet)))] {
-            let mut app = app(None);
-            app.composing = true;
+            let (mut app, _reader) = housed(&root);
+            writing(&mut app);
             let mut keys = crate::console::input::Keys::app();
             let typed = Instant::now()
                 .checked_sub(Duration::from_secs(1))
                 .expect("an instant a second ago");
             assert!(keys.feed(b"\x1b", typed).is_empty(), "ESC waits");
             assert_eq!(super::drain(&mut app, &mut keys, &wakes, first), Some(true));
-            assert!(!app.composing, "Esc browses");
+            assert!(!app.composing(), "an Esc read before the lease browses");
         }
     }
 
@@ -2598,8 +2669,9 @@ mod tests {
         assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
     }
 
-    /// Writing that starts mid-chunk takes the rest as draft: `is` starts
-    /// writing on `i` and types `s`, never opening settings.
+    /// Writing that starts mid-chunk drops the rest, read before the lease:
+    /// `is` starts writing on `i` and names the dropped `s`, never opening
+    /// settings (R-B3).
     #[test]
     fn settings_browse_chunk_resumes_composer_mid_chunk() {
         let root = Root::new("settings-is");
@@ -2609,11 +2681,13 @@ mod tests {
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
         let at = Instant::now();
-        app.take(Reading::Owner, at, None);
+        app.take(Reading::Owner, at);
         assert!(take_keys(&mut app, vec![(Key::Text(b"is".to_vec()), at)]).is_some());
-        assert!(app.composing, "writing started");
+        assert!(app.composing(), "writing started");
         assert!(!app.model.settings_open(), "never opened");
-        assert_eq!(app.input.as_ref().expect("input").draft(), "s");
+        assert_eq!(app.input.as_ref().expect("input").draft(), "");
+        let said = &app.notices.last().expect("the drop is said").body;
+        assert_eq!(said, "dropped the keys typed before writing started");
         assert!(
             settings_requests(&asks).is_empty(),
             "zero settings requests"
@@ -2653,14 +2727,12 @@ mod tests {
         app.ask = Some(ask);
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
-        let at = Instant::now();
-        app.take(Reading::Owner, at, None);
-        app.composing = true;
+        let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b"kept".to_vec()), at), Some(()));
         app.open_settings();
         assert!(settings_key(&mut app, &Key::Text("qsé".as_bytes().to_vec()), at).is_some());
         assert!(!app.model.settings_open());
-        assert!(app.composing, "still writing");
+        assert!(app.composing(), "still writing");
         assert_eq!(
             app.input.as_ref().expect("input").draft(),
             "keptsé",
@@ -2693,9 +2765,7 @@ mod tests {
         app.ask = Some(ask);
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
-        let at = Instant::now();
-        app.take(Reading::Owner, at, None);
-        app.composing = true;
+        let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b"kept".to_vec()), at), Some(()));
         app.open_settings();
         let shown = framed(&mut app);
@@ -2715,7 +2785,7 @@ mod tests {
         );
         assert!(!app.model.settings_open());
         assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
-        assert!(app.composing, "still writing");
+        assert!(app.composing(), "still writing");
         assert_eq!(app.input.as_ref().expect("input").draft(), "kept");
     }
 
@@ -2748,7 +2818,7 @@ mod tests {
         };
         app.model = Model::new(&app.fleet);
         assert_eq!(app.model.selected(), Some("api"));
-        app.take(Reading::Owner, Instant::now(), None);
+        app.take(Reading::Owner, Instant::now());
         app.world = World::new(
             Timestamp::now(),
             vec![
@@ -2865,7 +2935,7 @@ mod tests {
         app.ask = Some(ask);
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
-        app.take(Reading::Owner, Instant::now(), None);
+        app.take(Reading::Owner, Instant::now());
         let mut buf = Buffer::empty(Rect::new(0, 0, 89, 19));
         app.frame(&mut buf);
         let shown = text(&buf);

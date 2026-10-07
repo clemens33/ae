@@ -46,6 +46,9 @@ pub const CONSOLE_DRAFT_CAP: u64 = 65_536;
 /// The console's admission lock, beside the journal's and never it.
 const CONSOLE_ADMISSION: &str = ".console-admission.lock";
 
+/// The lease an `ae app` holds while it writes to the session.
+const CONSOLE_WRITER: &str = ".console-writer.lock";
+
 /// The LAUNCH-ATTEMPT stamp: when ae last tried to put this session on a tmux
 /// server.
 ///
@@ -721,6 +724,16 @@ impl SessionStore {
     /// [`lock`]'s.
     pub fn console_admission(&self) -> io::Result<File> {
         lock(&self.dir.join(CONSOLE_ADMISSION), LOCK_WAIT)
+    }
+
+    /// The writer lease, taken without waiting: held by one `ae app` for as
+    /// long as it writes, and tried and dropped by the owner chat's admission.
+    ///
+    /// # Errors
+    ///
+    /// [`lock`]'s: `WouldBlock` while another writer holds it.
+    pub fn console_writer(&self) -> io::Result<File> {
+        lock(&self.dir.join(CONSOLE_WRITER), Duration::ZERO)
     }
 
     /// Cap the event container to its newest `keep` lines on resume.

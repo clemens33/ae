@@ -61,7 +61,7 @@ only says how large it needs to be. Colours come from the session's own look
 ## Reading
 
 A background reader does every read — the fleet, each session's lane, the
-looks, the memos, who owns the input — so no key waits on one. It reads the
+looks, the memos, whether home may be written — so no key waits on one. It reads the
 fleet first, then a lane the composer just wrote into, the selected session,
 the fleet again every 5 seconds, home, the sessions one and then two rows from
 the selection, and the rest in sidebar order, keeping at most 16 lanes; the
@@ -87,9 +87,9 @@ Browsing:
 | Wheel over chat or a tab body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
 | Drag a border | resize the sidebar or the session list, also while writing |
-| Click composer | write (home only, when this app owns the input) |
+| Click composer | write (home only, when no other app writes it) |
 | `Esc` | back to home |
-| `Enter` or `i` | write (home only, when this app owns the input) |
+| `Enter` or `i` | write (home only, when no other app writes it) |
 | `s` | open Settings |
 | Click the gear at the keys row's right end | open Settings, also while writing |
 | `q`, `^C` | quit |
@@ -102,6 +102,16 @@ five asks open at most; see [Input](chat.md#input). `Enter` sends, `Esc` goes
 back to browsing and keeps the draft, `^C` quits. `/open` is refused: the app
 selects no pane, `ae chat` does. Each outcome shows in the home lane as an `ae`
 line.
+
+Writing starts the moment this app takes the session's writer lease. Keys read
+before that moment — the rest of the read that started writing included — are
+dropped, and one `ae` line says `dropped the keys typed before writing
+started`; `Esc` and `^C` are never dropped. While another app writes, or when
+the lease's lock file is not a regular file, writing does not start: the
+composer reads `not writing: an ae app is writing to <home> · Esc browses` (or
+`not writing: the writer lease is not a regular file · Esc browses`) and every
+key is swallowed until `Esc` browses, `^C` quits, a click acts or `Enter` tries
+again. The other app letting go does not start writing by itself.
 
 While writing, clicking a session row or tab returns to browsing and keeps the
 draft, then selects the row or tab. Blank rows and the "more" row do nothing.
@@ -131,11 +141,20 @@ one honest row naming the file.
 
 ## Ownership
 
-Only the **owner** writes: the first live pane stamped as this session's chat,
-exactly as for `ae chat`. An app in its own `chat` window (`chat = app`) is
-that pane; an app anywhere else is read-only and names why, for example
-`read-only · input owned by window @2 - prefix h opens it`. Keys typed
-before the app became owner are dropped. A foreign session is always
+An app writes home only while it holds the session's **writer lease**, the lock
+file `.console-writer.lock`: one app at a time, in any pane or outside tmux.
+Every way out of writing releases it — `Esc`, `^C`, `q`, a crash, a click on a
+session row or tab, and a read that finds home no longer proven — and Settings
+keeps it while open. Each ask and `/close` goes through the chat's admission,
+which re-proves the lease and re-reads the meta's `session_id` and lead pair
+against those the app opened with, then asks as `console:local` under the same
+five-open cap. A session replaced under its name, a changed lead pair or a meta
+that is gone refuses the ask, ends the writing and reads `read-only · <why> -
+prefix h opens it`; the next fleet read, every 5 seconds, does the same. The
+kept draft comes back only when writing starts into an empty composer, under
+the `Kept line, maybe already sent` banner; a draft kept in memory wins, never
+merged. The owner `ae chat` tries the lease inside its own admission: while an
+app writes, it refuses its sends and `/close`. A foreign session is always
 read-only, and typing still goes home: the composer says
 `typing writes to <home> › <speaker>`.
 
@@ -156,6 +175,10 @@ read-only, and typing still goes home: the composer says
 - A session replaced under the same name can show its previous lane until the
   next fleet read notices.
 - One very long turn is wrapped whole whenever any of its rows is on screen.
+- A copy of one key stream read by a second app later than the first app's
+  whole write session can submit twice.
+- An app left writing, or with Settings open over a draft, keeps the owner chat
+  and every other app from writing until it leaves writing or quits.
 - Mouse dragging does not select text in the app. Hold Shift (Option in iTerm)
   for terminal text selection; inside tmux an ordinary drag goes to the app.
 - Dragging a border needs button-event mouse reports (`?1002h`) in SGR form;

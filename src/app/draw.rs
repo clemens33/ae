@@ -60,6 +60,9 @@ pub enum Composer<'a> {
     },
     /// The home session, not owned.
     ReadOnly { why: &'a str },
+    /// The home session, its writer lease refused: HELD until Esc, ^C, a
+    /// click or an Enter that tries again.
+    Held { why: &'a str },
     /// A foreign session is selected.
     Foreign { home: &'a str, speaker: &'a str },
     /// No home session.
@@ -919,7 +922,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         .selected
         .and_then(|entry| entry.main_agent.as_deref())
         .or_else(|| match screen.composer {
-            Composer::Home { .. } | Composer::ReadOnly { .. } => {
+            Composer::Home { .. } | Composer::ReadOnly { .. } | Composer::Held { .. } => {
                 screen.pair.first().map(String::as_str)
             }
             Composer::Foreign { .. } | Composer::NoHome => None,
@@ -1053,6 +1056,10 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
             quiet(format!("read-only · {why} - prefix h opens it")),
             String::new(),
         ),
+        Composer::Held { why } => (
+            quiet(format!("not writing: {why} · Esc browses")),
+            String::new(),
+        ),
         Composer::Foreign { home, speaker } => (
             quiet(format!("read-only · typing writes to {home} › {speaker}")),
             String::new(),
@@ -1076,6 +1083,8 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
         ("settings", &["Esc/q/s close", "^C quit"])
     } else if composing {
         ("write", &["Enter send", "Esc browse", "^C quit"])
+    } else if matches!(ctx.screen.composer, Composer::Held { .. }) {
+        ("held", &["Enter retry", "Esc browse", "^C quit"])
     } else if matches!(ctx.screen.composer, Composer::Home { .. }) {
         (
             "browse",

@@ -1,6 +1,6 @@
 //! The one background reader of `ae app`: every read of the world the app
-//! draws — the fleet, the looks, who owns the home input, each session's lane
-//! — happens on this thread, so a key never waits behind one. The UI thread
+//! draws — the fleet, the looks, whether home may be written, each session's
+//! lane — happens on this thread, so a key never waits behind one. The UI thread
 //! owns the model and the frame and folds what arrives here.
 //!
 //! Each answer names what it describes: a look or a lane is tagged with its
@@ -17,7 +17,7 @@ use crate::brief::{self, Filed};
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::needs::{SeatRef, Section};
-use crate::console::{self, Console, submit, term};
+use crate::console::{self, Console, term};
 use crate::digest::Status;
 use crate::inventory::ServerId;
 use crate::listing::World;
@@ -61,12 +61,10 @@ pub(super) enum Answer {
         look: Option<theme::Look>,
         zone: Option<String>,
     },
-    /// Who owns the home input, read at `at`; `draft` is the kept draft read
-    /// with an owner reading that followed a reading that was not one.
+    /// Whether home may be written, read at `at`.
     Owned {
         reading: Reading,
         at: Instant,
-        draft: Option<submit::Draft>,
     },
     View(ViewRead),
     /// The settings overlay's bodies for `generation`. Quota rides every
@@ -177,8 +175,9 @@ pub(super) struct Reader {
     root: PathBuf,
     home: Option<String>,
     server: Option<ServerId>,
-    me: Option<String>,
     home_console: Option<Console>,
+    /// The home lead pair as it opened: home is writable while it stands.
+    seats: Vec<Seat>,
     consoles: BTreeMap<String, Console>,
     /// When each session's last read COMPLETED.
     read_at: BTreeMap<String, Instant>,
@@ -192,8 +191,6 @@ pub(super) struct Reader {
     looks: BTreeSet<String>,
     /// Home's look is drawn, so no other session's look dresses the app.
     home_drawn: bool,
-    /// The last ownership reading sent was an owner one.
-    owner: bool,
     seq: u64,
     settings_paths: SettingsPaths,
     /// The open overlay's generation and its last quota read, if any.
@@ -219,18 +216,13 @@ pub(super) fn spawn(
 }
 
 impl Reader {
-    pub(super) fn new(
-        root: PathBuf,
-        home: Option<String>,
-        server: Option<ServerId>,
-        me: Option<String>,
-    ) -> Self {
+    pub(super) fn new(root: PathBuf, home: Option<String>, server: Option<ServerId>) -> Self {
         Self {
             root,
             home,
             server,
-            me,
             home_console: None,
+            seats: Vec::new(),
             consoles: BTreeMap::new(),
             read_at: BTreeMap::new(),
             dirs: BTreeMap::new(),
@@ -242,7 +234,6 @@ impl Reader {
             rereads: BTreeSet::new(),
             looks: BTreeSet::new(),
             home_drawn: false,
-            owner: false,
             seq: 0,
             settings_paths: SettingsPaths::default(),
             settings: None,
@@ -302,6 +293,7 @@ impl Reader {
         };
         let writes = Console::open_standing(name.clone(), dir.clone());
         let pair = writes.seats().and_then(term::pair_of);
+        self.seats = pair.clone().unwrap_or_default();
         self.home_console = Some(Console::open_standing(name, dir));
         Answer::Home(Some((writes, pair)))
     }
@@ -562,31 +554,13 @@ impl Reader {
         }
     }
 
-    /// Who owns the home input, read now.
-    pub(super) fn owned(&mut self) -> Option<Answer> {
-        let console = self.home_console.as_ref()?;
-        let reading = reading(console, self.server.as_ref(), self.me.as_deref());
-        Some(self.carry(reading, Instant::now()))
-    }
-
-    /// `reading`, completed at `at`, as it goes to the UI: the kept draft
-    /// rides along exactly when the reading can promote — an owner one after
-    /// a not-owner one, as the composer counts them (unknown changes nothing).
-    fn carry(&mut self, reading: Reading, at: Instant) -> Answer {
-        let promotes = match &reading {
-            Reading::Owner => !std::mem::replace(&mut self.owner, true),
-            Reading::NotOwner(_) => {
-                self.owner = false;
-                false
-            }
-            Reading::Unknown => false,
-        };
-        let draft = self
-            .home_console
-            .as_ref()
-            .filter(|_| promotes)
-            .map(|console| submit::restore(console.dir()));
-        Answer::Owned { reading, at, draft }
+    /// Whether home may be written, read now.
+    pub(super) fn owned(&self) -> Option<Answer> {
+        let reading = reading(self.home_console.as_ref()?, &self.seats);
+        Some(Answer::Owned {
+            reading,
+            at: Instant::now(),
+        })
     }
 
     /// Read session `name` through its console: its lane, with any needs gap
@@ -711,20 +685,20 @@ impl Reader {
     }
 }
 
-/// Who owns `console`'s session input, as the composer takes it.
-pub(super) fn reading(console: &Console, server: Option<&ServerId>, me: Option<&str>) -> Reading {
-    match term::owns(console, server, me) {
-        None => Reading::Unknown,
-        Some(Ok(())) => Reading::Owner,
-        Some(Err(why)) => Reading::NotOwner(why),
+/// Whether `console`'s session may be written, as the composer takes it:
+/// its incarnation and lead pair are still the `seats` it opened with.
+pub(super) fn reading(console: &Console, seats: &[Seat]) -> Reading {
+    match term::still(seats, console.seats()) {
+        Ok(()) => Reading::Owner,
+        Err(why) => Reading::NotOwner(why),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! Oracles: the brief's rulings 2, 3 and 7 (priority, cadence, the draft
-    //! a promotion restores), the fixture root's own records and the existing
-    //! owners' coverage words.
+    //! Oracles: the brief's rulings 2 and 3 (priority, cadence), ruling
+    //! appuse-b R-B5/R-B7 (what keeps home writable), the fixture root's own
+    //! records and the existing owners' coverage words.
 
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -733,10 +707,9 @@ mod tests {
     use super::{Answer, Job, KEEP, Reader, Request, Tier, order};
     use crate::app::REFRESH;
     use crate::app::fleet::Line2;
-    use crate::app::tests::{ID, Root, entry, session};
+    use crate::app::tests::{ID, Root, entry, meta, session};
     use crate::attention::Reason;
     use crate::console::input::Reading;
-    use crate::console::submit::Draft;
     use crate::digest::Status;
     use crate::listing::World;
     use crate::theme::FleetOrder;
@@ -803,7 +776,7 @@ mod tests {
     #[test]
     fn each_read_falls_due_by_its_priority_and_completion() {
         let root = Root::new("next");
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let _ = reader.open_home();
         let now = Instant::now();
         assert!(matches!(reader.next(now), Job::Fleet), "nothing read yet");
@@ -863,7 +836,7 @@ mod tests {
     #[test]
     fn an_unreadable_selection_is_never_read() {
         let root = Root::new("ghost");
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let now = Instant::now();
         reader.fleet_at = Some(now);
         reader.rows = rows(&["ghost", "api", "web"]);
@@ -882,7 +855,7 @@ mod tests {
     #[test]
     fn a_stale_neighbour_waits_out_its_refresh() {
         let root = Root::new("warm");
-        let mut reader = Reader::new(root.0.clone(), None, None, None);
+        let mut reader = Reader::new(root.0.clone(), None, None);
         let read = Instant::now();
         reader.rows = rows(&["a", "b"]);
         reader.take(Request::Focus(Some("a".to_owned())));
@@ -904,7 +877,7 @@ mod tests {
     #[test]
     fn looks_are_read_for_home_and_an_undressed_selection_only() {
         let root = Root::new("looks");
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         reader.take(Request::Focus(Some("api".to_owned())));
         assert!(
             reader.looks.is_empty(),
@@ -925,7 +898,7 @@ mod tests {
     #[test]
     fn only_homes_look_says_home_is_drawn() {
         let root = Root::new("drawn");
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         reader.looks.insert("web".to_owned());
         reader.noted("web", true);
         assert!(!reader.home_drawn);
@@ -944,7 +917,7 @@ mod tests {
     fn a_console_bound_to_a_replaced_identity_is_dropped() {
         let root = Root::new("evict");
         let dir = session(&root, "web", "");
-        let mut reader = Reader::new(root.0.clone(), None, None, None);
+        let mut reader = Reader::new(root.0.clone(), None, None);
         reader.rows = rows(&["web"]);
         reader.dirs.insert("web".to_owned(), dir);
         reader.ids.insert("web".to_owned(), ID.to_owned());
@@ -973,7 +946,7 @@ mod tests {
     #[test]
     fn standing_coverage_survives_every_later_read() {
         let root = Root::new("coverage");
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let _ = reader.open_home();
         let first = coverage(reader.view("api"));
         assert!(
@@ -985,7 +958,7 @@ mod tests {
             first,
             "the home gap still stands"
         );
-        let mut foreign = Reader::new(root.0.clone(), None, None, None);
+        let mut foreign = Reader::new(root.0.clone(), None, None);
         foreign
             .dirs
             .insert("api".to_owned(), root.0.join("sessions").join("api"));
@@ -1001,7 +974,7 @@ mod tests {
     #[test]
     fn each_viewed_session_reads_through_its_own_console() {
         let root = Root::new("cache");
-        let mut reader = Reader::new(root.0.clone(), None, None, None);
+        let mut reader = Reader::new(root.0.clone(), None, None);
         for name in ["web", "ops"] {
             reader
                 .dirs
@@ -1044,7 +1017,7 @@ mod tests {
                 entry("unk", Status::Unknown, None),
             ],
         );
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let _ = reader.open_home();
         let read = reader.fold(dirs, world, None, &FleetOrder::EMPTY, Timestamp::now());
         let keys = |map: Vec<&String>| map.into_iter().cloned().collect::<Vec<_>>();
@@ -1081,35 +1054,30 @@ mod tests {
         );
     }
 
-    /// I5: the kept draft rides only on a reading that can promote — owner
-    /// after not-owner, as the composer counts (unknown changes nothing).
+    /// R-B5/R-B7: home is writable while the incarnation and lead pair it
+    /// opened with stand, re-read each time: a replaced session, a changed
+    /// pair or a meta that is gone is not.
     #[test]
-    fn only_a_reading_that_can_promote_carries_the_kept_draft() {
-        let root = Root::new("carry");
-        crate::store::open(&root.0.join("sessions").join("api"))
-            .publish_console_draft(b"kept")
-            .expect("a kept draft");
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None, None);
+    fn home_is_writable_only_while_its_opened_incarnation_and_pair_stand() {
+        let root = Root::new("owned");
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let _ = reader.open_home();
-        let away = || Reading::NotOwner("owned by window @2".to_owned());
-        let readings = [
-            Reading::Unknown,
-            Reading::Owner,
-            Reading::Owner,
-            Reading::Unknown,
-            Reading::Owner,
-            away(),
-            Reading::Owner,
-        ];
-        let carried: Vec<Option<Draft>> = readings
-            .into_iter()
-            .map(|reading| match reader.carry(reading, Instant::now()) {
-                Answer::Owned { draft, .. } => draft,
-                _ => panic!("an ownership answer"),
-            })
-            .collect();
-        let kept = Some(Draft::Kept(b"kept".to_vec()));
-        assert_eq!(carried, [None, kept.clone(), None, None, None, None, kept]);
+        let read = |reader: &Reader| match reader.owned() {
+            Some(Answer::Owned { reading, .. }) => reading,
+            _ => panic!("an ownership answer"),
+        };
+        assert_eq!(read(&reader), Reading::Owner);
+        for (id, peer) in [
+            (ID.replace("1234", "bbbb"), "colead"),
+            (ID.to_owned(), "peer"),
+        ] {
+            meta(&root, &id, peer);
+            assert!(matches!(read(&reader), Reading::NotOwner(_)));
+        }
+        std::fs::remove_file(root.0.join("sessions").join("api").join("meta")).expect("gone");
+        assert!(matches!(read(&reader), Reading::NotOwner(_)));
+        meta(&root, ID, "colead");
+        assert_eq!(read(&reader), Reading::Owner);
     }
 
     /// I11: a settings read completed at t cannot reread at t or
@@ -1119,7 +1087,7 @@ mod tests {
     #[test]
     fn a_completed_settings_read_waits_a_full_refresh() {
         let root = Root::new("settings-due");
-        let mut reader = Reader::new(root.0.clone(), None, None, None);
+        let mut reader = Reader::new(root.0.clone(), None, None);
         let t = Instant::now();
         reader.fleet_at = Some(t);
         reader.take(Request::Settings {
@@ -1161,7 +1129,7 @@ mod tests {
     #[test]
     fn the_wait_shortens_to_an_earlier_settings_deadline() {
         let root = Root::new("settings-wait");
-        let mut reader = Reader::new(root.0.clone(), None, None, None);
+        let mut reader = Reader::new(root.0.clone(), None, None);
         let t = Instant::now();
         let last = t
             .checked_sub(REFRESH / 2)
