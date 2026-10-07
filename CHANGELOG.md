@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.33] - 2026-10-07
+- Wd225 S1: frozen unchanged-wait spacing spec (RED on base)
+- Wd225 S1: space an unchanged wait's next challenge two cadences after a credited proof
+
 ## [v2026.10.32] - 2026-10-06
 - Shortcore P1: frozen injected-text spec (RED on base)
 - Shorten worker context and retain leadership rules
