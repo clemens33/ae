@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.34] - 2026-10-07
+- Appuse A: frozen wheel-scroll acceptance spec (RED on base)
+- Appuse A: wheel scrolls the session list a card and the tab body three rows; a cut body names its hidden rows; a click keeps the list window
+- Appuse A: pin the list wheel over its last drawn card and the no-op past its end
+- Appuse A: the tab body clips in the sidebar's own room instead of deriving a second one
+- Appuse A: pin that a tab body with no rows draws no cut marker over the tabs
+
 ## [v2026.10.33] - 2026-10-07
 - Wd225 S1: frozen unchanged-wait spacing spec (RED on base)
 - Wd225 S1: space an unchanged wait's next challenge two cadences after a credited proof
