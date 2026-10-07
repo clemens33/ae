@@ -16,6 +16,7 @@ use crate::inventory::ServerId;
 use crate::tmux::{Key, Styling};
 use crate::tool::{Composed, InputModel, ToolKind};
 use crate::transport;
+use crate::watchdog::HumanPrompt;
 use region::Occupancy;
 
 /// How long a send waits for a busy target before abandoning —
@@ -206,7 +207,7 @@ pub enum Failure {
         /// What the quiet gate observed at timeout.
         held: DeferHeld,
     },
-    /// The paste itself failed.
+    /// The paste itself, or a message interrupt's Escape before it, failed.
     Paste {
         /// The published recovery body, still readable.
         body_file: String,
@@ -295,7 +296,7 @@ pub fn deliver(
     err: &mut impl Write,
 ) -> io::Result<Result<Delivered, Failure>> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
-    let input = target_input(request, &probe.command);
+    let (input, tool) = target_input(request, &probe.command);
     // Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
     // and dropped to a shell — a stray Enter would EXECUTE the message as a
     // shell command.
@@ -321,14 +322,7 @@ pub fn deliver(
             return Ok(Err(Failure::Storage));
         }
     };
-    let Some(_held) = lock_target(request.dir, request.pane, LOCK_WAIT) else {
-        writeln!(
-            err,
-            "ae: {} to {} ABANDONED — another delivery held the target lock for {}s. Re-send.",
-            request.action,
-            request.logged_target,
-            LOCK_WAIT.as_secs()
-        )?;
+    let Some(_held) = target_lock(request, err)? else {
         return Ok(Err(Failure::Lock));
     };
     let prepared = notice::prepare(
@@ -350,17 +344,25 @@ pub fn deliver(
         )?;
         return Ok(Err(Failure::NoticeRefused { body_file }));
     };
-    if let Err(failure) = quiet_or_abandoned(request, input.model, err)? {
+    if let Err(failure) = quiet_or_abandoned(request, input.model, tool, err)? {
         return Ok(Err(failure));
+    }
+    // Every other shape reads for a human-only prompt BEFORE its first key.
+    if matches!(request.shape, Shape::Interrupt | Shape::Launch) {
+        let (_, read) = prompt_hold(request.server, request.pane, InputModel::Unmodelled, tool);
+        if let Some(held) = prompt_refusal(request, false, &read, err)? {
+            return Ok(Err(Failure::Abandoned { held }));
+        }
     }
     if let Err(failure) = launch_recheck(request, input, &body_file, err)? {
         return Ok(Err(failure));
     }
     // Safe now: cancel, then paste — all by `-t` target, never by selection.
     let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
-    if request.shape == Shape::Interrupt {
-        let _ = transport::send_key(request.server, request.pane, Key::Escape);
-        std::thread::sleep(INTERRUPT_SETTLE);
+    if request.shape == Shape::Interrupt
+        && let Err(failure) = escape_then_reread(request, tool, &body_file, err)?
+    {
+        return Ok(Err(failure));
     }
     let payload = match &mode {
         notice::Mode::Direct => framed.as_str(),
@@ -400,6 +402,33 @@ pub fn deliver(
             Ok(Err(failure))
         }
     }
+}
+
+/// A message interrupt's Escape, then the read it may uncover. A refused
+/// Escape fails like a paste: nothing more is typed.
+fn escape_then_reread(
+    request: &Request<'_>,
+    tool: Option<ToolKind>,
+    body_file: &str,
+    err: &mut impl Write,
+) -> io::Result<Result<(), Failure>> {
+    if !transport::send_key(request.server, request.pane, Key::Escape) {
+        writeln!(
+            err,
+            "ae: {} to {} FAILED — tmux did not confirm the Escape; nothing was pasted. Body preserved at {body_file}. Re-send.",
+            request.action, request.logged_target
+        )?;
+        return Ok(Err(Failure::Paste {
+            body_file: body_file.to_owned(),
+        }));
+    }
+    std::thread::sleep(INTERRUPT_SETTLE);
+    // Read AGAIN: the Escape may have uncovered one. Nothing is pasted then.
+    let (_, read) = prompt_hold(request.server, request.pane, InputModel::Unmodelled, tool);
+    if let Some(held) = prompt_refusal(request, true, &read, err)? {
+        return Ok(Err(Failure::Abandoned { held }));
+    }
+    Ok(Ok(()))
 }
 
 /// Refuse an oversize relay before its body reaches the recovery-notice path.
@@ -481,10 +510,23 @@ struct TargetInput {
     diagnostic: &'static str,
 }
 
-/// The input-box grammar this pane draws — `ae_target_tool`.
-fn target_input(request: &Request<'_>, command: &str) -> TargetInput {
+/// The input-box grammar this pane draws — `ae_target_tool` — and the tool
+/// whose measured prompts [`prompt_hold`] reads: the RECORDED one whenever a
+/// binary is recorded, row or none, so a live command never lends a seat
+/// another tool's prompt policy; the live command only where none is.
+fn target_input(request: &Request<'_>, command: &str) -> (TargetInput, Option<ToolKind>) {
     let recorded = recorded_binary(&target_meta_dir(request), request.pane_slot);
-    choose_input(&recorded, command)
+    let tool = match recorded.as_str() {
+        "" => ToolKind::from_known_binary_name(command),
+        named => ToolKind::from_known_binary_name(named),
+    };
+    (choose_input(&recorded, command), tool)
+}
+
+/// The prompt tool of the pane `request` names, read fresh.
+pub(crate) fn prompt_tool(request: &Request<'_>) -> Option<ToolKind> {
+    let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
+    target_input(request, &probe.command).1
 }
 
 fn choose_input(recorded: &str, command: &str) -> TargetInput {
@@ -656,6 +698,14 @@ pub enum DeferHeld {
     OccupiedAndViewed,
     /// An unreadable composer under an attached client's eye.
     UnreadableAndViewed,
+    /// A measured prompt only the HUMAN may answer is drawn on the pane.
+    HumanPrompt,
+    /// A message interrupt's Escape was SENT, then a measured human-only prompt
+    /// was found: the message was withheld.
+    EscapedPrompt,
+    /// A message interrupt's Escape was SENT, then the pane could not be read:
+    /// the message was withheld.
+    EscapedUnreadable,
 }
 
 impl DeferHeld {
@@ -681,7 +731,9 @@ impl DeferHeld {
             | Self::ComposerUnreadable
             | Self::OccupiedAndViewed
             | Self::UnreadableAndViewed => true,
-            Self::Viewed => false,
+            Self::Viewed | Self::HumanPrompt | Self::EscapedPrompt | Self::EscapedUnreadable => {
+                false
+            }
         }
     }
 
@@ -690,7 +742,11 @@ impl DeferHeld {
     pub const fn viewed(self) -> bool {
         match self {
             Self::Viewed | Self::OccupiedAndViewed | Self::UnreadableAndViewed => true,
-            Self::ComposerOccupied | Self::ComposerUnreadable => false,
+            Self::ComposerOccupied
+            | Self::ComposerUnreadable
+            | Self::HumanPrompt
+            | Self::EscapedPrompt
+            | Self::EscapedUnreadable => false,
         }
     }
 
@@ -699,19 +755,30 @@ impl DeferHeld {
     pub const fn halves(self) -> &'static str {
         match self {
             Self::ComposerOccupied => "composer occupied",
-            Self::ComposerUnreadable => "composer unreadable",
+            Self::ComposerUnreadable | Self::EscapedUnreadable => "composer unreadable",
             Self::Viewed => "human input or attention on the pane",
             Self::OccupiedAndViewed => "composer occupied and human input or attention on the pane",
             Self::UnreadableAndViewed => {
                 "composer unreadable and human input or attention on the pane"
             }
+            Self::HumanPrompt | Self::EscapedPrompt => "human-only prompt on the pane",
         }
     }
 
-    /// The operator/audit clause: what held, under the standing head.
+    /// What the delivery had done when it stopped: nothing (`target stayed
+    /// busy`), or a message interrupt's Escape already sent.
+    #[must_use]
+    pub const fn head(self) -> &'static str {
+        match self {
+            Self::EscapedPrompt | Self::EscapedUnreadable => "Escape sent, message withheld",
+            _ => "target stayed busy",
+        }
+    }
+
+    /// The operator/audit clause: what held, under its head.
     #[must_use]
     pub fn describe(self) -> String {
-        format!("target stayed busy ({})", self.halves())
+        format!("{} ({})", self.head(), self.halves())
     }
 }
 
@@ -719,13 +786,15 @@ impl DeferHeld {
 /// line names. The journal, the relay audit and the compact word keep
 /// [`DeferHeld`]'s own words; only the stderr line carries the evidence, and
 /// it never carries a cell of the box's text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Snapshot {
     held: DeferHeld,
     /// The composer read, or `None` when no capture came back.
     reading: Option<region::Reading>,
     /// Seconds since a viewing client's last input, inside [`VIEW_GRACE`].
     viewed_ago: Option<i64>,
+    /// The human-only prompt drawn, which then holds alone.
+    prompt: Option<HumanPrompt>,
 }
 
 impl Snapshot {
@@ -736,6 +805,7 @@ impl Snapshot {
             held,
             reading,
             viewed_ago,
+            prompt: None,
         })
     }
 
@@ -743,6 +813,9 @@ impl Snapshot {
     fn evidence(self) -> String {
         let plural = |count: usize| if count == 1 { "" } else { "s" };
         let mut halves = Vec::new();
+        if let Some(prompt) = &self.prompt {
+            halves.push(prompt_clause(prompt));
+        }
         if self.held.composer_held() {
             halves.push(match self.reading {
                 None => "composer unreadable: no capture".to_owned(),
@@ -775,12 +848,19 @@ impl Snapshot {
 /// the observed halves so the operator can pick a workaround: a draft wants
 /// waiting, while the attention half holds only while a client keeps the
 /// pane active within its grace window.
-fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> Option<Snapshot> {
+fn wait_for_quiet(
+    request: &Request<'_>,
+    model: InputModel,
+    tool: Option<ToolKind>,
+) -> Option<Snapshot> {
     let started = Instant::now();
     let mut flushed = false;
     loop {
-        let snapshot = quiet_held(request.server, request.pane, model)?;
+        let snapshot = quiet_held(request.server, request.pane, model, tool)?;
         let held = snapshot.held;
+        if held == DeferHeld::HumanPrompt {
+            return Some(snapshot); // only the human clears it: no flush, no wait
+        }
         if held.composer_held() && !flushed && !held.viewed() {
             flushed = true;
             let budget = request.defer.saturating_sub(started.elapsed());
@@ -795,20 +875,149 @@ fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> Option<Snapshot> 
 
 /// One quiet-gate snapshot: the composer's occupancy plus the attention half,
 /// answered together so a both-halves state is one observation rather than
-/// two reads that can disagree. `None` is quiet. An unmodelled tool has no
+/// two reads that can disagree. `None` is quiet. A drawn human-only prompt
+/// ([`prompt_hold`]) holds before either half. An unmodelled tool has no
 /// grammar to read, so its composer half never holds — exactly as
-/// [`input_busy`] answers for it.
-fn quiet_held(server: &ServerId, pane: &str, model: InputModel) -> Option<Snapshot> {
-    let reading = if model.is_modelled() {
-        read_composer(server, pane, model)
-    } else {
-        Some(region::Reading {
+/// [`input_busy`] answers for it — unless the capture its prompt row needs
+/// failed, which is unreadable.
+fn quiet_held(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+    tool: Option<ToolKind>,
+) -> Option<Snapshot> {
+    let (capture, read) = prompt_hold(server, pane, model, tool);
+    if let PromptRead::Drawn(prompt) = read {
+        return Some(Snapshot {
+            held: DeferHeld::HumanPrompt,
+            reading: None,
+            viewed_ago: None,
+            prompt: Some(prompt),
+        });
+    }
+    let reading = match capture {
+        Some(region) if model.is_modelled() => Some(region::read(&region, model)),
+        None if model.is_modelled() || prompt_row(tool) => None,
+        _ => Some(region::Reading {
             occupancy: Occupancy::Idle,
             cells: 0,
             rows: 0,
-        })
+        }),
     };
     Snapshot::of(reading, recently_viewed(server, pane))
+}
+
+/// Whether `tool` has a MEASURED human-only prompt row to read for.
+fn prompt_row(tool: Option<ToolKind>) -> bool {
+    tool.is_some_and(|kind| kind.adapter().prompt.is_some())
+}
+
+/// What the ONE delivery-side read saw. Never "clear": coverage is the tool's
+/// measured rows only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PromptRead {
+    /// One of the tool's measured human-only prompts is drawn.
+    Drawn(HumanPrompt),
+    /// The tool's measured rows were read and none is drawn.
+    NoKnownPrompt,
+    /// No measured row: ae cannot see this tool's prompts, and refuses nothing.
+    Unmodelled,
+    /// A measured row, but no capture came back: fails closed, never "none".
+    Unreadable,
+}
+
+/// The ONE delivery-side read for a human-only prompt: one capture — the
+/// `Escapes` capture a modelled `model`'s composer read also takes, a `Plain`
+/// one only for a measured row otherwise (a shape about to send keys reads no
+/// composer and passes `InputModel::Unmodelled`) — handed back with the
+/// verdict of the watchdog's ONE detector over its printable rows.
+pub(crate) fn prompt_hold(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+    tool: Option<ToolKind>,
+) -> (Option<String>, PromptRead) {
+    let capture = if model.is_modelled() {
+        transport::capture_screen(server, pane, Styling::Escapes)
+    } else if prompt_row(tool) {
+        transport::capture_screen(server, pane, Styling::Plain)
+    } else {
+        None
+    };
+    let read = if !prompt_row(tool) {
+        PromptRead::Unmodelled
+    } else if let (Some(kind), Some(screen)) = (tool, capture.as_deref()) {
+        crate::watchdog::human_prompt_class(&region::plain_text(screen), kind.as_str())
+            .map_or(PromptRead::NoKnownPrompt, PromptRead::Drawn)
+    } else {
+        PromptRead::Unreadable
+    };
+    (capture, read)
+}
+
+/// The held half naming the drawn question, neutralised for the terminal.
+fn prompt_clause(prompt: &HumanPrompt) -> String {
+    let question = crate::board::terminal_text(&prompt.question);
+    format!("{}: {question}", DeferHeld::HumanPrompt.halves())
+}
+
+/// Refuse on what the read saw, before any further key: a drawn prompt ae
+/// never answers, or a pane it could not read, so cannot rule one out.
+/// `escaped`: a message interrupt's Escape was already sent. `None` lets the
+/// keys go; `Some` is the hold a [`Failure::Abandoned`] carries.
+pub(crate) fn prompt_refusal(
+    request: &Request<'_>,
+    escaped: bool,
+    read: &PromptRead,
+    err: &mut impl Write,
+) -> io::Result<Option<DeferHeld>> {
+    let (held, clause, next) = match read {
+        PromptRead::Drawn(prompt) => (
+            DeferHeld::HumanPrompt,
+            prompt_clause(prompt),
+            "answer it in the pane",
+        ),
+        PromptRead::Unreadable => (
+            DeferHeld::ComposerUnreadable,
+            "composer unreadable: no capture".to_owned(),
+            "check the pane",
+        ),
+        PromptRead::NoKnownPrompt | PromptRead::Unmodelled => return Ok(None),
+    };
+    let held = match (escaped, held) {
+        (true, DeferHeld::HumanPrompt) => DeferHeld::EscapedPrompt,
+        (true, _) => DeferHeld::EscapedUnreadable,
+        (false, held) => held,
+    };
+    writeln!(
+        err,
+        "ae: {} to {} ABANDONED — {} ({clause}); {next}, then re-send.",
+        request.action,
+        request.logged_target,
+        held.head()
+    )?;
+    Ok(Some(held))
+}
+
+/// The target's send-lock for `request`, or its refusal line written: the ONE
+/// acquisition `deliver()` and the bare `interrupt` share, so every caller —
+/// any session, same state root — serializes on the same file. Waits up to
+/// [`LOCK_WAIT`], which includes another delivery's whole quiet wait.
+pub(crate) fn target_lock(
+    request: &Request<'_>,
+    err: &mut impl Write,
+) -> io::Result<Option<std::fs::File>> {
+    let held = lock_target(request.dir, request.pane, LOCK_WAIT);
+    if held.is_none() {
+        writeln!(
+            err,
+            "ae: {} to {} ABANDONED — another delivery held the target lock for {}s. Re-send.",
+            request.action,
+            request.logged_target,
+            LOCK_WAIT.as_secs()
+        )?;
+    }
+    Ok(held)
 }
 
 /// Is the composer holding NOTHING but a staged paste chip ae can own?
@@ -1044,18 +1253,25 @@ fn reconfirm_composed(server: &ServerId, pane: &str, composed: Composed) -> bool
 fn quiet_or_abandoned(
     request: &Request<'_>,
     model: InputModel,
+    tool: Option<ToolKind>,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
     if !matches!(request.shape, Shape::Send | Shape::Relay) {
         return Ok(Ok(()));
     }
-    if let Some(snapshot) = wait_for_quiet(request, model) {
+    if let Some(snapshot) = wait_for_quiet(request, model, tool) {
+        if let Some(prompt) = snapshot.prompt.clone() {
+            let read = PromptRead::Drawn(prompt);
+            if let Some(held) = prompt_refusal(request, false, &read, err)? {
+                return Ok(Err(Failure::Abandoned { held }));
+            }
+        }
         writeln!(
             err,
             "ae: {} to {} ABANDONED — {}; not clear within {}s (AE_SEND_DEFER_SEC overrides). Re-send.",
             request.action,
             request.logged_target,
-            snapshot.evidence(),
+            snapshot.clone().evidence(),
             request.defer.as_secs()
         )?;
         return Ok(Err(Failure::Abandoned {
@@ -1426,12 +1642,11 @@ pub fn deliver_guarded(
         composed: Composed::NONE,
     };
     // (1a) The `deliver()`-identical dead-pane refusal — the meta+`ps` owner —
-    // BEFORE any lock, so a dead pane refuses fast and lock-free.
-    let liveness = pane_liveness_at(
-        &target_meta_dir(&view),
-        request.pane_slot,
-        &transport::observe_pane_probe(request.server, request.pane).unwrap_or_default(),
-    );
+    // BEFORE any lock, so a dead pane refuses fast and lock-free. The same
+    // probe names the prompt tool, once, for both quiet reads below.
+    let observed = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
+    let liveness = pane_liveness_at(&target_meta_dir(&view), request.pane_slot, &observed);
+    let (_, tool) = target_input(&view, &observed.command);
     if refuses_as_dead(liveness) {
         return Ok(Outcome::Skipped(Leg::Dead));
     }
@@ -1442,7 +1657,7 @@ pub fn deliver_guarded(
     };
     // (1c) The full busy/human-input deferral — the `wait_for_quiet` owner,
     // OUTSIDE the lifecycle lock.
-    if let Some(snapshot) = wait_for_quiet(&view, request.model) {
+    if let Some(snapshot) = wait_for_quiet(&view, request.model, tool) {
         return Ok(Outcome::Skipped(Leg::Busy {
             held: snapshot.held,
         }));
@@ -1455,7 +1670,7 @@ pub fn deliver_guarded(
     };
     // (3)+(4) under the held lock; (5) the lifecycle lock drops first, (6)
     // then the send-lock.
-    let outcome = under_lock(request);
+    let outcome = under_lock(request, tool);
     drop(lifecycle_lock);
     drop(send_lock);
     outcome
@@ -1532,7 +1747,10 @@ fn staged_after_settle(
 /// Steps (3)+(4) under the caller-held lifecycle lock: the instant re-proof —
 /// tmux reads ONLY, no file, no process, no wait — and the paste with its
 /// bounded submit.
-fn under_lock(request: &GuardedRequest<'_>) -> Result<Outcome, EnterFailed> {
+fn under_lock(
+    request: &GuardedRequest<'_>,
+    tool: Option<ToolKind>,
+) -> Result<Outcome, EnterFailed> {
     // (3) One probe: a shell in the foreground — or no readable probe at all,
     // which fails closed — refuses as Dead. Meta and `ps` are NOT consulted.
     let alive = match transport::observe_pane_probe(request.server, request.pane) {
@@ -1544,7 +1762,7 @@ fn under_lock(request: &GuardedRequest<'_>) -> Result<Outcome, EnterFailed> {
     }
     // (3) One busy snapshot, no loop — the same `quiet_held` owner as the
     // pre-lock wait, so the reported halves are one observation.
-    if let Some(snapshot) = quiet_held(request.server, request.pane, request.model) {
+    if let Some(snapshot) = quiet_held(request.server, request.pane, request.model, tool) {
         return Ok(Outcome::Skipped(Leg::Busy {
             held: snapshot.held,
         }));

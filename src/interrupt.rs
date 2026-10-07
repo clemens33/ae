@@ -15,18 +15,20 @@
 //!   actor still names the oversize notice, because a pointer has to say who
 //!   is asking.
 //!
-//! A MESSAGE-less interrupt is just the two cancel keystrokes, and it is
-//! deliberately allowed against a pane whose agent has died: there is nothing
-//! there for a stray Enter to execute. With a message the dead-pane guard is
-//! the send's, verbatim — a paste plus Enter into a shell EXECUTES it.
+//! A MESSAGE-less interrupt is the two cancel keystrokes — under the target
+//! send-lock a message interrupt takes, after the same human-only-prompt read
+//! — and it is deliberately allowed against a pane whose agent has died: there
+//! is nothing there for a stray Enter to execute. With a message the dead-pane
+//! guard is the send's, verbatim — a paste plus Enter into a shell EXECUTES it.
 
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::deliver::{self, Shape};
+use crate::deliver::{self, DeferHeld, Shape};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::store;
 use crate::time::Timestamp;
+use crate::tool::InputModel;
 use crate::tracked::{self, EventFields};
 use crate::transport;
 
@@ -123,12 +125,6 @@ pub fn run(
     } else {
         resolved.agent.clone()
     };
-    if parsed.message.is_empty() {
-        // Cancel keystrokes only.
-        let _ = transport::send_key(&server, &resolved.pane, crate::tmux::Key::CancelCopyMode);
-        let _ = transport::send_key(&server, &resolved.pane, crate::tmux::Key::Escape);
-        return record(dir, &target_name, "", now, actor, cross, err);
-    }
     let request = deliver::Request {
         dir,
         server: &server,
@@ -145,8 +141,26 @@ pub fn run(
         defer: deliver::DEFAULT_DEFER,
         composed: crate::tool::Composed::NONE,
     };
+    if parsed.message.is_empty() {
+        return bare_cancel(&request, &target_name, now, cross, err);
+    }
     let delivered = match deliver::deliver(&request, err)? {
         Ok(delivered) => delivered,
+        // Refused before its paste on a human-only prompt: the shared
+        // diagnostic, never an `interrupt` record.
+        Err(deliver::Failure::Abandoned { held }) => {
+            return record_with_body(
+                dir,
+                &target_name,
+                &parsed.message,
+                "",
+                Err(held),
+                now,
+                actor,
+                cross,
+                err,
+            );
+        }
         Err(failure) => {
             // A message interrupt must NOT record success on an unconfirmed
             // submit: the delivery has already said what happened and where the
@@ -167,12 +181,36 @@ pub fn run(
         &target_name,
         &parsed.message,
         &delivered.body_file,
-        delivered.verification,
+        Ok(delivered.verification),
         now,
         actor,
         cross,
         err,
     )
+}
+
+/// Cancel keystrokes only — never into a human-only prompt, where an Escape
+/// would answer it, nor between another sender's paste and its Enter: the read
+/// and both keys go under the target send-lock.
+fn bare_cancel(
+    request: &deliver::Request<'_>,
+    target: &str,
+    now: Timestamp,
+    cross: Option<CrossDelivery<'_>>,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let Some(_lock) = deliver::target_lock(request, err)? else {
+        return Ok(EXIT_FAILED);
+    };
+    let (dir, server, pane, actor) = (request.dir, request.server, request.pane, request.actor);
+    let tool = deliver::prompt_tool(request);
+    let (_, read) = deliver::prompt_hold(server, pane, InputModel::Unmodelled, tool);
+    if let Some(held) = deliver::prompt_refusal(request, false, &read, err)? {
+        return record(dir, target, Some(held), now, actor, cross, err);
+    }
+    let _ = transport::send_key(server, pane, crate::tmux::Key::CancelCopyMode);
+    let _ = transport::send_key(server, pane, crate::tmux::Key::Escape);
+    record(dir, target, None, now, actor, cross, err)
 }
 
 /// Routing facts needed only when an interrupt crosses a session boundary.
@@ -221,11 +259,11 @@ fn record_delivery_failure(
 }
 
 /// The `interrupt` event, with no recovery record — a bare cancel stores
-/// nothing.
+/// nothing. A `held` cancel was refused, and records that instead.
 fn record(
     dir: &Path,
     target: &str,
-    summary: &str,
+    held: Option<DeferHeld>,
     now: Timestamp,
     actor: &str,
     cross: Option<CrossDelivery<'_>>,
@@ -234,9 +272,9 @@ fn record(
     record_with_body(
         dir,
         target,
-        summary,
         "",
-        deliver::DeliveryVerification::Verified,
+        "",
+        held.map_or(Ok(deliver::DeliveryVerification::Verified), Err),
         now,
         actor,
         cross,
@@ -244,7 +282,7 @@ fn record(
     )
 }
 
-/// The `interrupt` event.
+/// The `interrupt` event, or the refusal an `Err` names.
 #[allow(
     clippy::too_many_arguments,
     reason = "the interrupt event and optional cross-session route are explicit inputs"
@@ -254,7 +292,7 @@ fn record_with_body(
     target: &str,
     summary: &str,
     body_file: &str,
-    verification: deliver::DeliveryVerification,
+    verification: Result<deliver::DeliveryVerification, DeferHeld>,
     now: Timestamp,
     actor: &str,
     cross: Option<CrossDelivery<'_>>,
@@ -287,6 +325,10 @@ fn record_with_body(
         identity_gap: "",
         summary,
         body_file,
+    };
+    let verification = match verification {
+        Ok(verification) => verification,
+        Err(held) => return tracked::record_abandoned_delivery(dir, &fields, held, err),
     };
     let line = tracked::delivery_event_line(&fields, verification, cross.is_some());
     let cross_session = cross.map(|route| tracked::CrossSession {

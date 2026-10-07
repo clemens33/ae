@@ -54,6 +54,40 @@ my $started = time();
 # `compact`: Claude's frame, borders on both sides of the box and its footer
 # rows below; the row above the box is whatever the control file last said.
 my $above = "fake tui transcript";
+my $wire;
+my $frame_changed = '';
+if ($mode eq 'frame') {
+    open($wire, '>>', "$out.wire") or die;
+    binmode($wire, ':raw');
+}
+sub record_wire {
+    my ($bytes) = @_;
+    return unless $mode eq 'frame';
+    syswrite($wire, $bytes);
+    if ($frame_changed ne '') {
+        open(my $history, '>>', "$control.transitions") or die;
+        print $history "app-key\n";
+        close($history);
+    }
+}
+sub transition_frame {
+    my ($when) = @_;
+    return unless $mode eq 'frame' && open(my $next, '<', "$control.$when");
+    binmode($next, ':raw');
+    local $/;
+    my $screen = <$next>;
+    close($next);
+    open(my $current, '>', $control) or die;
+    binmode($current, ':raw');
+    print $current $screen;
+    close($current);
+    unlink("$control.$when") or die;
+    draw('');
+    $frame_changed = $when;
+    open(my $history, '>>', "$control.transitions") or die;
+    print $history "$when\n";
+    close($history);
+}
 sub draw_claude {
     my ($content) = @_;
     print "\e[H\e[2J$above\r\n$border\r\n$ornament$nbsp$content\r\n$border\r\n";
@@ -68,6 +102,17 @@ sub markers {
 sub draw {
     my ($content) = @_;
     $content =~ s/[\r\n]/ /g;
+    if ($mode eq 'frame') {
+        open(my $frame, '<', $control) or die;
+        binmode($frame, ':raw');
+        local $/;
+        my $screen = <$frame>;
+        close($frame);
+        $screen =~ s/[ \t\r\n]+\z//;
+        $screen =~ s/\r?\n/\r\n/g;
+        print "\e[H\e[2J$screen";
+        return;
+    }
     return draw_claude($content) if $mode eq 'compact';
     print "\e[H\e[2J";
     print "fake tui transcript\r\n";
@@ -85,8 +130,24 @@ sub draw_queued {
 my $buf = ($mode =~ /^staged/) ? "[Pasted Content 42 chars]" : "";
 my $pasting = 0;
 $marker_secs > 0 ? markers() : draw($buf);
+system('tmux', 'wait-for', '-S', "$control.ready") if $mode eq 'frame';
 my $ch;
 while (1) {
+    if ($mode eq 'frame' && -e "$control.drain") {
+        # Drain all bytes already queued by completed tmux sends before the
+        # acknowledgement. Unbuffered syswrite makes the receipt observable.
+        my $pending = '';
+        vec($pending, fileno(STDIN), 1) = 1;
+        while (select($pending, undef, undef, 0) > 0) {
+            my $chunk;
+            last unless sysread(STDIN, $chunk, 4096);
+            record_wire($chunk);
+            vec($pending, fileno(STDIN), 1) = 1;
+        }
+        unlink("$control.drain") or die;
+        draw('');
+        system('tmux', 'wait-for', '-S', "$control.ack");
+    }
     if ($marker_secs > 0 && time() - $started >= $marker_secs) {
         $marker_secs = 0;
         draw($buf);
@@ -101,10 +162,13 @@ while (1) {
     vec($ready, fileno(STDIN), 1) = 1;
     next unless select($ready, undef, undef, 0.05) > 0;
     last unless sysread(STDIN, $ch, 1);
+    record_wire($ch);
+    transition_frame('onescape') if !$pasting && $ch eq "\e";
     $buf .= $ch;
     if ($buf =~ s/\e\[200~\z//) { $pasting = 1; next; }
     if ($buf =~ s/\e\[201~\z//) {
         $pasting = 0;
+        transition_frame('onpaste');
         exit 0 if $mode eq 'vanish';
         draw($buf) if $marker_secs == 0;
         next;
@@ -174,6 +238,16 @@ impl Rig {
     }
 
     fn with_mode(tag: &str, tool: &str, marker_secs: u32, mode: &str) -> Self {
+        Self::with_mode_frame(tag, tool, marker_secs, mode, None)
+    }
+
+    fn with_mode_frame(
+        tag: &str,
+        tool: &str,
+        marker_secs: u32,
+        mode: &str,
+        frame: Option<&str>,
+    ) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let scratch = super::cli::OwnedScratch::root("dlv", tag).keep();
         let script = scratch.join("faketui.pl");
@@ -199,6 +273,16 @@ impl Rig {
             received,
             enters,
         };
+        if let Some(frame) = frame {
+            assert!(
+                std::fs::write(scratch.join("control"), frame).is_ok(),
+                "setup: initial frame"
+            );
+            assert!(
+                std::fs::write(rig.received.with_extension("wire"), "").is_ok(),
+                "setup: wire file"
+            );
+        }
         let command = format!(
             "exec perl {} {} {} 400 {tool} {marker_secs} {mode} {}",
             script.display(),
@@ -248,6 +332,10 @@ impl Rig {
         );
         let mut rig = rig;
         rig.pane = pane;
+        if frame.is_some() {
+            let ready = scratch.join("control.ready");
+            assert!(rig.tmux(&["wait-for", &ready.to_string_lossy()]).0);
+        }
         rig.settle();
         rig
     }
@@ -2236,4 +2324,913 @@ fn the_guarded_operation_is_pinned_against_its_own_source() {
             assert!(!line.contains('?'), "line {n}: {line}");
         }
     }
+}
+
+const HUMAN_AGY: &str = include_str!("../fixtures/agy-composer/agy-trust-modal-frame.txt");
+const HUMAN_CLAUDE: &str = include_str!("../fixtures/claude-trust/claude-trust-modal-200x50.txt");
+const HUMAN_REQUEST: &str = "ae-20261007T000000Z-22422422";
+
+impl Rig {
+    fn with_frame(tag: &str, tool: &str, frame: &str) -> Self {
+        Self::with_mode_frame(tag, tool, 0, "frame", Some(frame))
+    }
+
+    // The terminal acknowledges after draining stdin and redrawing the supplied
+    // frame. This makes zero-byte evidence causal, without a sleep or pane poll.
+    fn frame_barrier(&self) {
+        let control = self.scratch.join("control");
+        assert!(
+            std::fs::write(control.with_extension("drain"), "drain").is_ok(),
+            "setup: drain request"
+        );
+        let channel = control.with_extension("ack");
+        assert!(self.tmux(&["wait-for", &channel.to_string_lossy()]).0);
+    }
+
+    fn wire(&self) -> Vec<u8> {
+        self.frame_barrier();
+        match std::fs::read(self.received.with_extension("wire")) {
+            Ok(wire) => wire,
+            Err(error) => panic!("setup: wire receipt: {error}"),
+        }
+    }
+
+    fn human_refusal(stderr: &str, question: &str) {
+        assert!(
+            stderr.to_lowercase().contains("human") && stderr.contains(question),
+            "named human-only refusal: {stderr}"
+        );
+    }
+
+    fn abandoned_since(&self, before: &str) {
+        let events = self.events();
+        let Some(delta) = events.strip_prefix(before) else {
+            panic!("append-only ledger");
+        };
+        assert!(
+            delta.contains("\"action\":\"delivery-abandoned\"")
+                && delta.to_lowercase().contains("human"),
+            "durable refusal: {delta}"
+        );
+        for action in ["ask", "review", "reply", "send", "interrupt"] {
+            assert!(
+                !delta.contains(&format!("\"action\":\"{action}\"")),
+                "no successful delivery or request transition: {delta}"
+            );
+        }
+    }
+
+    fn arm_frame(&self, when: &str, frame: &str) {
+        assert!(
+            std::fs::write(self.scratch.join("control").with_extension(when), frame).is_ok(),
+            "setup: armed frame"
+        );
+    }
+
+    fn transitions(&self) -> String {
+        self.frame_barrier();
+        match std::fs::read_to_string(self.scratch.join("control.transitions")) {
+            Ok(transitions) => transitions,
+            Err(error) => panic!("setup: transitions: {error}"),
+        }
+    }
+
+    fn seed_human_request(&self) {
+        let event = format!(
+            "{{\"ts\":\"2026-10-07T00:00:00Z\",\"actor\":\"tui\",\"action\":\"ask\",\"target\":\"tui\",\"ref\":\"{HUMAN_REQUEST}\",\"actor_slot\":\"main\",\"actor_session\":\"{}\",\"target_slot\":\"main\",\"target_session\":\"{}\",\"summary\":\"independent pending request\"}}\n",
+            self.session, self.session
+        );
+        assert!(
+            ae::store::open(&self.dir).append_event(&event).is_ok(),
+            "setup: pending request event"
+        );
+        let Some(request) = ae::reply::find(&self.dir, HUMAN_REQUEST) else {
+            panic!("setup: pending request missing");
+        };
+        assert_eq!(
+            request.status,
+            ae::requests::Status::Pending,
+            "setup: a real pending request"
+        );
+    }
+}
+
+#[test]
+fn human_prompts_refuse_helpers_without_keys_or_request_state_changes() {
+    for (tool, frame, question) in [("agy", HUMAN_AGY, "Do you trust")] {
+        for verb in [
+            ae::cli::SEND,
+            ae::cli::ASK,
+            ae::cli::REVIEW,
+            ae::cli::REPLY,
+            ae::cli::INTERRUPT,
+        ] {
+            let rig = Rig::with_frame(&format!("hp-{tool}-{verb}"), tool, frame);
+            rig.seed_human_request();
+            let before = rig.events();
+            let target = if verb == ae::cli::REPLY {
+                HUMAN_REQUEST
+            } else {
+                "tui"
+            };
+            let (code, stderr) = rig.run(
+                verb,
+                &[target, "human-prompt acceptance"],
+                &[("AE_SEND_DEFER_SEC", "0")],
+            );
+            assert_eq!(code, Some(1), "{tool}/{verb}: {stderr}");
+            Rig::human_refusal(&stderr, question);
+            assert!(
+                rig.wire().is_empty(),
+                "NO bytes, including paste/Escape/Enter"
+            );
+            assert_eq!(rig.enter_count(), 0, "no modal choice was submitted");
+            rig.abandoned_since(&before);
+            assert_eq!(
+                ae::reply::find(&rig.dir, HUMAN_REQUEST).unwrap().status,
+                ae::requests::Status::Pending,
+                "refused reply leaves request pending"
+            );
+        }
+    }
+}
+
+#[test]
+fn human_prompts_stop_every_paste_shape_before_the_first_key() {
+    for (tool, frame, question) in [
+        ("claude", HUMAN_CLAUDE, "Quick safety check:"),
+        ("agy", HUMAN_AGY, "Do you trust"),
+    ] {
+        let rig = Rig::with_frame(&format!("hp-shapes-{tool}"), tool, frame);
+        let server = rig.server();
+        for shape in [
+            deliver::Shape::Send,
+            deliver::Shape::Relay,
+            deliver::Shape::Interrupt,
+            deliver::Shape::Launch,
+        ] {
+            let request = deliver::Request {
+                dir: &rig.dir,
+                server: &server,
+                pane: &rig.pane,
+                logged_target: "tui",
+                target_session: &rig.session,
+                pane_slot: "main",
+                own_session: &rig.session,
+                action: "acceptance",
+                reference: "",
+                actor: "tui",
+                body: "must not enter a modal",
+                shape,
+                defer: Duration::ZERO,
+                composed: Composed::NONE,
+            };
+            let mut err = Vec::new();
+            let result = deliver::deliver(&request, &mut err).unwrap();
+            let stderr = String::from_utf8(err).unwrap();
+            assert!(result.is_err(), "{tool}/{shape:?}");
+            Rig::human_refusal(&stderr, question);
+            assert!(rig.wire().is_empty(), "{tool}/{shape:?}: no input at all");
+        }
+    }
+}
+
+#[test]
+fn human_prompt_guard_preserves_clear_composers_and_quoted_modal_text() {
+    for (tool, clear, modal) in [
+        (
+            "claude",
+            include_str!("../fixtures/harness-state/claude-idle-167x40.txt"),
+            include_str!("../fixtures/claude-trust/claude-trust-modal-80x24.txt"),
+        ),
+        (
+            "agy",
+            include_str!("../fixtures/agy-composer/agy-composed-frame-80x24.txt"),
+            HUMAN_AGY,
+        ),
+    ] {
+        let clear = if tool == "claude" {
+            // Matching observed 80-column borders, exactly the three-row
+            // empty composer. Modal title and complete choice stay in-window.
+            clear.lines().skip(3).take(3).collect::<Vec<_>>().join("\n")
+        } else if tool == "agy" {
+            // Only the observed four-row composer tail: the historical
+            // question must remain inside the measured 15-row window.
+            clear
+                .trim_end()
+                .lines()
+                .skip(7)
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            clear.trim_end().to_owned()
+        };
+        let frame = format!("Quoted historical modal:\n{}\n{clear}", modal.trim_end());
+        let (window, question) = if tool == "claude" {
+            (20, "Quick safety check:")
+        } else {
+            (15, "Do you trust")
+        };
+        assert!(
+            frame
+                .lines()
+                .rev()
+                .take(window)
+                .any(|row| row.contains(question)),
+            "historical question is INSIDE detector window, not truncated away"
+        );
+        if tool == "claude" {
+            assert!(
+                frame
+                    .lines()
+                    .rev()
+                    .take(window)
+                    .any(|row| row.contains("Accessing workspace:")),
+                "required title is also INSIDE window: exclusion must be load-bearing"
+            );
+        }
+        assert!(
+            ae::watchdog::human_prompt_class(modal, tool).is_some(),
+            "load-bearing positive classifier control: {tool}"
+        );
+        assert!(
+            ae::watchdog::human_prompt_class(&frame, tool).is_none(),
+            "transcript modal above clear composer is not live: {tool}"
+        );
+        let rig = Rig::with_frame(&format!("hp-clear-{tool}"), tool, &frame);
+        let (code, stderr) = rig.run(
+            ae::cli::SEND,
+            &["tui", "normal delivery"],
+            &[("AE_SEND_DEFER_SEC", "0")],
+        );
+        assert_eq!(code, Some(0), "normal composer: {tool}: {stderr}");
+        assert!(
+            rig.submitted().ends_with("normal delivery"),
+            "real submitted body"
+        );
+        assert!(
+            !rig.wire().is_empty(),
+            "same terminal recorder sees successful input"
+        );
+        assert_eq!(rig.enter_count(), 1, "one normal submit");
+    }
+}
+
+#[test]
+fn human_prompt_appearing_after_guarded_initial_sample_is_not_pasted_into() {
+    let clear = include_str!("../fixtures/harness-state/claude-idle-167x40.txt");
+    let rig = Rig::with_frame("hp-late", "claude", clear);
+    let server = rig.server();
+    let request = rig.guarded(&server, "/compact", Duration::ZERO);
+    let done = deliver::deliver_guarded(&request, || {
+        std::fs::write(rig.scratch.join("control"), HUMAN_CLAUDE).unwrap();
+        rig.frame_barrier();
+        prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
+    });
+    let held = match done.unwrap() {
+        deliver::Outcome::Skipped(deliver::Leg::Busy { held }) => held,
+        other => panic!("late prompt must refuse distinctly: {other:?}"),
+    };
+    assert!(
+        held.describe().to_lowercase().contains("human"),
+        "a known modal is not generic unreadable input"
+    );
+    assert!(
+        rig.wire().is_empty(),
+        "re-proof catches late modal before ANY input"
+    );
+    assert!(
+        lock_is_free(&rig.lifecycle_lock_path()),
+        "lifecycle lock released"
+    );
+    assert!(lock_is_free(&rig.send_lock_path()), "send lock released");
+}
+
+#[test]
+fn human_prompt_after_interrupt_escape_receives_no_paste_or_enter() {
+    let clear = include_str!("../fixtures/harness-state/claude-idle-167x40.txt");
+    let rig = Rig::with_frame("hp-after-escape", "claude", clear);
+    rig.arm_frame("onescape", HUMAN_CLAUDE);
+    let (code, stderr) = rig.run(ae::cli::INTERRUPT, &["tui", "must never be pasted"], &[]);
+    assert_eq!(code, Some(1), "post-settle modal must refuse: {stderr}");
+    Rig::human_refusal(&stderr, "Quick safety check:");
+    assert!(
+        stderr.contains("Escape sent, message withheld"),
+        "initial cancellation must be reported truthfully: {stderr}"
+    );
+    assert_eq!(
+        rig.transitions(),
+        "onescape\n",
+        "Escape changed frame, then NO later key"
+    );
+    assert_eq!(
+        rig.wire(),
+        b"\x1b",
+        "only initial Escape from the clear screen was allowed"
+    );
+    assert_eq!(rig.enter_count(), 0, "no Enter after interrupt settle");
+    rig.abandoned_since("");
+}
+
+#[test]
+fn human_prompt_blocks_bare_interrupt_without_body_or_request_transition() {
+    let rig = Rig::with_frame("hp-bare", "agy", HUMAN_AGY);
+    rig.seed_human_request();
+    let before = rig.events();
+    let (code, stderr) = rig.run(ae::cli::INTERRUPT, &["tui"], &[]);
+    assert_eq!(code, Some(1), "bare interrupt must refuse: {stderr}");
+    Rig::human_refusal(&stderr, "Do you trust");
+    assert!(
+        rig.wire().is_empty(),
+        "bare interrupt sends no Escape into modal"
+    );
+    assert!(
+        !rig.dir.join("messages").exists(),
+        "bare cancel stores no body"
+    );
+    rig.abandoned_since(&before);
+    assert_eq!(
+        ae::reply::find(&rig.dir, HUMAN_REQUEST).unwrap().status,
+        ae::requests::Status::Pending
+    );
+}
+
+// Independent additive acceptance: external capture failure and actual lock ownership.
+const HUMAN_CAPTURE_SHIM: &str = r#"#!/usr/bin/perl
+use strict; use warnings; use Fcntl qw(:flock); use Errno qw(EAGAIN EWOULDBLOCK);
+my $i = 0;
+while ($i < @ARGV && $ARGV[$i] =~ /^-/) {
+    my $opt = $ARGV[$i++];
+    if ($opt eq '-S' || $opt eq '-L' || $opt eq '-f') {
+        die "setup: missing global argument" if $i == @ARGV;
+        ++$i;
+    } elsif ($opt ne '-u') { die "setup: unexpected global option: $opt"; }
+}
+my $cmd = $ARGV[$i] // die "setup: no tmux command";
+sub note { open my $f, '>>', $ENV{D224_TRACE} or die "setup: trace: $!";
+           print $f "$_[0]\n" or die "setup: trace write: $!";
+           close $f or die "setup: trace close: $!"; }
+if ($ENV{D224_MODE} eq 'lock' && ($cmd eq 'capture-pane' || $cmd eq 'send-keys')) {
+    open my $f, '>>', $ENV{D224_LOCK} or die "setup: lock: $!";
+    my $held = 0;
+    if (!flock($f, LOCK_EX | LOCK_NB)) {
+        die "setup: flock: $!" unless $! == EAGAIN || $! == EWOULDBLOCK;
+        $held = 1;
+    }
+    note(($held ? 'held ' : 'unlocked ') . $cmd . ($cmd eq 'send-keys' ? " $ARGV[-1]" : ''));
+    close $f or die "setup: lock close: $!";
+}
+if ($cmd eq 'capture-pane') {
+    if ($ENV{D224_MODE} eq 'before' || ($ENV{D224_MODE} eq 'after' && -e $ENV{D224_ESCAPE})) {
+        note('capture-failed'); exit 1;
+    }
+    if ($ENV{D224_MODE} eq 'key') {
+        system { $ENV{D224_TMUX} } $ENV{D224_TMUX}, @ARGV;
+        die "setup: real pre-key capture failed: $?" if $?;
+        note('capture-confirmed'); exit 0;
+    }
+    note('capture-forwarded');
+}
+if ($cmd eq 'send-keys' && $ARGV[-1] eq 'Escape') {
+    if ($ENV{D224_MODE} eq 'key') { note('escape-refused'); exit 1; }
+    system { $ENV{D224_TMUX} } $ENV{D224_TMUX}, @ARGV;
+    my $status = $?;
+    die "setup: real Escape failed: $status" if $status;
+    open my $f, '>', $ENV{D224_ESCAPE} or die "setup: escape marker: $!";
+    close $f or die "setup: escape marker close: $!";
+    note('escape-forwarded'); exit 0;
+}
+
+exec { $ENV{D224_TMUX} } $ENV{D224_TMUX}, @ARGV;
+die "setup: real tmux exec: $!";
+"#;
+
+impl Rig {
+    fn capture_fault_env(&self, mode: &str) -> Vec<(String, String)> {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(inherited) = std::env::var_os("PATH") else {
+            panic!("setup: PATH missing");
+        };
+        let Some(real) = std::env::split_paths(&inherited)
+            .map(|dir| dir.join("tmux"))
+            .find(|path| path.is_file())
+        else {
+            panic!("setup: real tmux executable");
+        };
+        let bin = self.scratch.join("fault-bin");
+        assert!(
+            std::fs::create_dir_all(&bin).is_ok(),
+            "setup: shim directory"
+        );
+        assert!(
+            std::fs::write(bin.join("tmux"), HUMAN_CAPTURE_SHIM).is_ok(),
+            "setup: shim file"
+        );
+        assert!(
+            std::fs::set_permissions(bin.join("tmux"), std::fs::Permissions::from_mode(0o755))
+                .is_ok(),
+            "setup: executable shim"
+        );
+        let lock = self.send_lock_path();
+        let Some(parent) = lock.parent() else {
+            panic!("setup: target lock parent");
+        };
+        assert!(
+            std::fs::create_dir_all(parent).is_ok(),
+            "setup: target lock directory"
+        );
+        // Drop the successful guard before the unlocked observer control.
+        assert!(
+            ae::store::lock(&lock, Duration::ZERO).is_ok(),
+            "setup: target lock inode"
+        );
+        [
+            (
+                "PATH",
+                format!("{}:{}", bin.display(), inherited.to_string_lossy()),
+            ),
+            ("D224_TMUX", real.display().to_string()),
+            ("D224_MODE", mode.to_owned()),
+            (
+                "D224_TRACE",
+                self.scratch.join("fault.trace").display().to_string(),
+            ),
+            (
+                "D224_ESCAPE",
+                self.scratch.join("fault.escape").display().to_string(),
+            ),
+            ("D224_LOCK", lock.display().to_string()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
+    }
+
+    fn capture_fault_trace(&self) -> String {
+        match std::fs::read_to_string(self.scratch.join("fault.trace")) {
+            Ok(trace) => trace,
+            Err(error) => panic!("setup: tmux shim trace must exist: {error}"),
+        }
+    }
+}
+
+// Same consumer test, split by process boundary to keep every helper bounded.
+fn human_capture_launch_reentry(dir: std::ffi::OsString) {
+    let dir = PathBuf::from(dir);
+    let Some(scratch) = dir.parent().and_then(Path::parent) else {
+        panic!("setup: Launch scratch parent");
+    };
+    let Some(session) = dir.file_name().and_then(|name| name.to_str()) else {
+        panic!("setup: Launch session name");
+    };
+    let server = ServerId::Selected(Selector::Socket(scratch.join("sock")));
+    let pane = match std::env::var("D224_LAUNCH_PANE") {
+        Ok(pane) => pane,
+        Err(error) => panic!("setup: Launch pane: {error}"),
+    };
+    let request = deliver::Request {
+        dir: &dir,
+        server: &server,
+        pane: &pane,
+        logged_target: "tui",
+        target_session: session,
+        pane_slot: "main",
+        own_session: session,
+        action: "acceptance",
+        reference: "capture-launch",
+        actor: "tui",
+        body: "held body",
+        shape: deliver::Shape::Launch,
+        defer: Duration::ZERO,
+        composed: Composed::NONE,
+    };
+    let mut err = Vec::new();
+    let result = match deliver::deliver(&request, &mut err) {
+        Ok(result) => result,
+        Err(error) => panic!("setup: Launch delivery I/O: {error}"),
+    };
+    assert!(
+        std::fs::write(scratch.join("launch.stderr"), &err).is_ok(),
+        "setup: Launch stderr receipt"
+    );
+    assert!(
+        matches!(
+            result,
+            Err(deliver::Failure::Abandoned {
+                held: deliver::DeferHeld::ComposerUnreadable
+            })
+        ),
+        "Launch capture loss must withhold: {result:?}"
+    );
+}
+
+fn human_capture_launch_child(rig: &Rig, envs: &[(String, String)]) -> String {
+    let executable = match std::env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => panic!("setup: test executable: {error}"),
+    };
+    let mut child = super::cli::helper(&executable);
+    child
+        .args([
+            "--exact",
+            "deliver::human_capture_failure_consumers_withhold_application_keys",
+        ])
+        .envs(envs.iter().map(|(key, value)| (key, value)))
+        .env("D224_LAUNCH_DIR", &rig.dir)
+        .env("D224_LAUNCH_PANE", &rig.pane);
+    let output = match child.output() {
+        Ok(output) => output,
+        Err(error) => panic!("setup: Launch child output: {error}"),
+    };
+    assert!(
+        rig.capture_fault_trace().contains("capture-failed\n"),
+        "setup: Launch capture injection did not execute"
+    );
+    assert!(
+        output.status.success(),
+        "Launch child: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "setup: Launch child did not run its one selected test"
+    );
+    match std::fs::read_to_string(rig.scratch.join("launch.stderr")) {
+        Ok(stderr) => stderr,
+        Err(error) => panic!("setup: Launch stderr receipt: {error}"),
+    }
+}
+
+fn human_capture_interrupt(
+    rig: &Rig,
+    tool: &str,
+    phase: &str,
+    envs: &[(String, String)],
+    before: &str,
+) -> String {
+    let refs: Vec<_> = envs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let tail: &[&str] = if phase == "bare" {
+        &["tui"]
+    } else {
+        &["tui", "held body"]
+    };
+    let (code, stderr) = rig.run(ae::cli::INTERRUPT, tail, &refs);
+    assert!(
+        rig.capture_fault_trace().contains("capture-failed\n"),
+        "setup: capture injection did not execute"
+    );
+    assert_eq!(code, Some(1), "{tool}/{phase}: {stderr}");
+    let events = rig.events();
+    let Some(delta) = events.strip_prefix(before) else {
+        panic!("append-only ledger");
+    };
+    assert!(
+        delta.contains("\"action\":\"delivery-abandoned\"")
+            && delta.contains("composer unreadable")
+            && !delta.contains("human-only prompt"),
+        "{delta}"
+    );
+    assert!(!delta.contains("\"action\":\"interrupt\""), "{delta}");
+    if phase == "after" {
+        assert!(
+            delta.contains("refused: Escape sent, message withheld (composer unreadable)"),
+            "{delta}"
+        );
+    } else {
+        assert!(
+            delta.contains("refused: target stayed busy (composer unreadable)")
+                && !delta.contains("Escape sent"),
+            "{delta}"
+        );
+    }
+    stderr
+}
+
+#[test]
+fn human_capture_failure_consumers_withhold_application_keys() {
+    // Re-entry gives the direct Launch consumer its own PATH; parent env is untouched.
+    if let Some(dir) = std::env::var_os("D224_LAUNCH_DIR") {
+        human_capture_launch_reentry(dir);
+        return;
+    }
+    for (tool, clear) in [
+        (
+            "claude",
+            include_str!("../fixtures/harness-state/claude-idle-167x40.txt"),
+        ),
+        (
+            "agy",
+            include_str!("../fixtures/agy-composer/agy-composed-frame-80x24.txt"),
+        ),
+    ] {
+        for phase in ["message", "after", "bare", "launch"] {
+            let rig = Rig::with_frame(&format!("cf-{tool}-{phase}"), tool, clear);
+            rig.seed_human_request();
+            let before = rig.events();
+            let envs = rig.capture_fault_env(if phase == "after" { "after" } else { "before" });
+            let stderr = if phase == "launch" {
+                human_capture_launch_child(&rig, &envs)
+            } else {
+                human_capture_interrupt(&rig, tool, phase, &envs, &before)
+            };
+            assert!(
+                stderr.contains("composer unreadable: no capture"),
+                "{tool}/{phase}: {stderr}"
+            );
+            let trace = rig.capture_fault_trace();
+            assert!(
+                trace.contains("capture-failed\n"),
+                "setup: fault did not execute: {trace}"
+            );
+            let expected: &[u8] = if phase == "after" { b"\x1b" } else { b"" };
+            assert_eq!(
+                rig.wire(),
+                expected,
+                "{tool}/{phase}: no later application input"
+            );
+            assert_eq!(rig.enter_count(), 0);
+            if phase == "after" {
+                assert!(stderr.contains("Escape sent, message withheld"), "{stderr}");
+                assert!(
+                    trace.contains("capture-forwarded\n")
+                        && trace.contains("escape-forwarded\ncapture-failed\n"),
+                    "{trace}"
+                );
+            } else {
+                assert!(
+                    stderr.contains("target stayed busy (composer unreadable: no capture)")
+                        && !stderr.contains("Escape sent"),
+                    "{stderr}"
+                );
+            }
+            assert_eq!(
+                ae::reply::find(&rig.dir, HUMAN_REQUEST).unwrap().status,
+                ae::requests::Status::Pending
+            );
+            assert!(lock_is_free(&rig.send_lock_path()));
+            if phase == "bare" {
+                assert!(!rig.dir.join("messages").exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn human_bare_interrupt_holds_the_actual_target_lock_across_sessions() {
+    let clear = include_str!("../fixtures/agy-composer/agy-composed-frame-80x24.txt");
+    for cross in [false, true] {
+        let rig = Rig::with_frame(if cross { "lk-cross" } else { "lk-own" }, "agy", clear);
+        let envs = rig.capture_fault_env("lock");
+        let observe = || {
+            let mut probe = super::cli::helper(&rig.scratch.join("fault-bin/tmux"));
+            probe
+                .envs(envs.iter().map(|(key, value)| (key, value)))
+                .args([
+                    "-u",
+                    "-S",
+                    rig.sock.to_str().unwrap(),
+                    "capture-pane",
+                    "-p",
+                    "-t",
+                    &rig.pane,
+                ]);
+            assert!(
+                probe.output().unwrap().status.success(),
+                "setup: real capture control"
+            );
+        };
+        observe(); // same independent file-lock observer must first see an unlocked file
+        let held = ae::store::lock(&rig.send_lock_path(), Duration::ZERO).unwrap();
+        observe(); // Rust's actual lock must exclude the Perl observer
+        drop(held);
+        assert_eq!(
+            rig.capture_fault_trace(),
+            "unlocked capture-pane\ncapture-forwarded\nheld capture-pane\ncapture-forwarded\n"
+        );
+        std::fs::write(rig.scratch.join("fault.trace"), "").unwrap();
+        let mut command = ae();
+        if cross {
+            let caller = "capture-caller";
+            assert!(
+                rig.tmux(&["new-session", "-d", "-s", caller, "exec sleep 600"])
+                    .0
+            );
+            let pane = rig
+                .tmux(&["list-panes", "-t", caller, "-F", "#{pane_id}"])
+                .1;
+            let pane = pane.trim();
+            assert!(
+                rig.tmux(&["set-option", "-p", "-t", pane, "@ae_agent", "caller"])
+                    .0
+            );
+            assert!(
+                rig.tmux(&["set-option", "-p", "-t", pane, "@ae_slot", "main"])
+                    .0
+            );
+            let dir = rig.dir.parent().unwrap().join(caller);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("meta"), format!("session={caller}\ntmux_server_kind=socket\ntmux_server={}\nseat.main=caller\nagent_bin.main=grok\n", rig.sock.display())).unwrap();
+            command
+                .env("TMUX_PANE", pane)
+                .arg(ae::cli::INTERRUPT)
+                .arg(&dir)
+                .args(["--cross-session", &format!("@{}:tui", rig.session)]);
+        } else {
+            command
+                .env("TMUX_PANE", &rig.pane)
+                .arg(ae::cli::INTERRUPT)
+                .arg(&rig.dir)
+                .arg("tui");
+        }
+        command
+            .env("TMUX", format!("{},0,0", rig.sock.display()))
+            .envs(envs.iter().map(|(key, value)| (key, value)));
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let trace = rig.capture_fault_trace();
+        assert!(
+            trace.contains("held capture-pane\n")
+                && trace.contains("held send-keys cancel\n")
+                && trace.contains("held send-keys Escape\n")
+                && !trace.contains("unlocked"),
+            "cross={cross}: {trace}"
+        );
+        assert_eq!(
+            rig.wire(),
+            b"\x1b",
+            "normal bare cancel still reaches actual sink"
+        );
+        assert_eq!(rig.enter_count(), 0);
+        assert!(!rig.dir.join("messages").exists());
+        assert!(lock_is_free(&rig.send_lock_path()));
+    }
+}
+
+#[test]
+fn human_interrupt_failed_escape_never_claims_sent_or_pastes() {
+    let clear = include_str!("../fixtures/agy-composer/agy-composed-frame-80x24.txt");
+    let rig = Rig::with_frame("key-fail", "agy", clear);
+    rig.seed_human_request();
+    let before = rig.events();
+    let envs = rig.capture_fault_env("key");
+    let refs: Vec<_> = envs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let (code, stderr) = rig.run(ae::cli::INTERRUPT, &["tui", "held body"], &refs);
+    let trace = rig.capture_fault_trace();
+    assert!(
+        trace.starts_with("capture-confirmed\nescape-refused\n"),
+        "setup: actual pre-read succeeds before injected Escape failure: {trace}"
+    );
+    assert_eq!(
+        trace, "capture-confirmed\nescape-refused\n",
+        "no later read after failed Escape"
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("tmux did not confirm the Escape")
+            && stderr.contains("nothing was pasted")
+            && !stderr.contains("Escape sent"),
+        "{stderr}"
+    );
+    assert!(
+        rig.wire().is_empty(),
+        "refused Escape is never forwarded; no later paste or key"
+    );
+    assert_eq!(rig.enter_count(), 0);
+    assert_eq!(
+        rig.events(),
+        before,
+        "no abandoned-with-Escape or success record"
+    );
+    let body = stderr
+        .split_once("Body preserved at ")
+        .unwrap()
+        .1
+        .split_once(". Re-send.")
+        .unwrap()
+        .0;
+    assert!(std::fs::read_to_string(body).unwrap().contains("held body"));
+    assert_eq!(
+        ae::reply::find(&rig.dir, HUMAN_REQUEST).unwrap().status,
+        ae::requests::Status::Pending
+    );
+    assert!(lock_is_free(&rig.send_lock_path()));
+}
+// Independent additive acceptance: quiet capture failures and unmodelled prompt coverage.
+#[test]
+fn human_quiet_capture_loss_withholds_row_only_and_composer_only_targets() {
+    for (tool, clear) in [
+        (
+            "agy",
+            include_str!("../fixtures/agy-composer/agy-composed-frame-80x24.txt"),
+        ),
+        (
+            "codex",
+            include_str!("../fixtures/codex-composer/codex-idle-0.155.1-200x40.esc"),
+        ),
+    ] {
+        let rig = Rig::with_frame(&format!("qf-{tool}"), tool, clear);
+        rig.seed_human_request();
+        let before = rig.events();
+        let mut envs = rig.capture_fault_env("before");
+        envs.push(("AE_SEND_DEFER_SEC".into(), "0".into()));
+        let refs: Vec<_> = envs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let (code, stderr) = rig.run(ae::cli::SEND, &["tui", "withheld quiet body"], &refs);
+        assert!(
+            rig.capture_fault_trace().contains("capture-failed\n"),
+            "setup: quiet capture fault did not execute"
+        );
+        assert_eq!(code, Some(1), "{tool}: {stderr}");
+        assert!(
+            stderr.contains("target stayed busy (composer unreadable: no capture)"),
+            "{stderr}"
+        );
+        assert!(
+            !stderr.contains("Escape sent") && !stderr.contains("human-only prompt"),
+            "{stderr}"
+        );
+        let events = rig.events();
+        let delta = events.strip_prefix(&before).expect("append-only ledger");
+        assert!(
+            delta.contains("\"action\":\"delivery-abandoned\"")
+                && delta.contains("refused: target stayed busy (composer unreadable)"),
+            "{delta}"
+        );
+        assert!(!delta.contains("\"action\":\"send\""), "{delta}");
+        assert!(
+            rig.wire().is_empty(),
+            "no application input after quiet capture loss"
+        );
+        assert_eq!(rig.enter_count(), 0);
+        assert_eq!(
+            ae::reply::find(&rig.dir, HUMAN_REQUEST).unwrap().status,
+            ae::requests::Status::Pending
+        );
+        assert!(lock_is_free(&rig.send_lock_path()));
+    }
+}
+
+#[test]
+fn human_uncovered_bare_interrupt_keeps_unknown_command_unmodelled() {
+    let clear = include_str!("../fixtures/agy-composer/agy-composed-frame-80x24.txt");
+    let rig = Rig::with_frame("hp-no-row", "not-a-tool", clear);
+    let path = rig.dir.join("meta");
+    let meta = std::fs::read_to_string(&path).expect("setup: meta");
+    assert_eq!(
+        meta.matches("agent_bin.main=not-a-tool\n").count(),
+        1,
+        "setup: one recorded row"
+    );
+    std::fs::write(
+        &path,
+        meta.replace("agent_bin.main=not-a-tool\n", "agent_bin.main=\n"),
+    )
+    .expect("setup: empty recorded binary");
+    let (ok, command) = rig.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &rig.pane,
+        "#{pane_current_command}",
+    ]);
+    assert!(
+        ok && command.trim().contains("perl"),
+        "setup: unknown live command: {command}"
+    );
+    rig.seed_human_request();
+    let before = rig.events();
+    let (code, stderr) = rig.run(ae::cli::INTERRUPT, &["tui"], &[]);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert_eq!(
+        rig.wire(),
+        b"\x1b",
+        "uncovered pane receives one explicit cancel"
+    );
+    assert_eq!(rig.enter_count(), 0);
+    let events = rig.events();
+    let delta = events.strip_prefix(&before).expect("append-only ledger");
+    assert!(delta.contains("\"action\":\"interrupt\""), "{delta}");
+    assert!(
+        !delta.contains("delivery-abandoned") && !delta.contains("composer unreadable"),
+        "{delta}"
+    );
+    assert!(!rig.dir.join("messages").exists());
+    assert_eq!(
+        ae::reply::find(&rig.dir, HUMAN_REQUEST).unwrap().status,
+        ae::requests::Status::Pending
+    );
+    assert!(lock_is_free(&rig.send_lock_path()));
 }

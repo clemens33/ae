@@ -131,6 +131,21 @@ pub fn parse(region: &str) -> Vec<Segment> {
     segments
 }
 
+/// The printable rows of a captured region, escapes dropped and trailing
+/// blanks trimmed — what `capture-pane -p` prints, read off the SAME capture.
+#[must_use]
+pub(crate) fn plain_text(region: &str) -> String {
+    let mut rows: Vec<String> = Vec::new();
+    for segment in parse(region) {
+        if rows.len() <= segment.line {
+            rows.resize(segment.line + 1, String::new());
+        }
+        rows[segment.line].push_str(&segment.text);
+    }
+    let rows: Vec<&str> = rows.iter().map(|row| row.trim_end_matches(' ')).collect();
+    rows.join("\n")
+}
+
 /// Consume an OSC through BEL or ST, returning what follows.
 fn consume_osc<'a>(mut rest: &'a str, line: &mut usize) -> &'a str {
     while let Some(ch) = rest.chars().next() {
