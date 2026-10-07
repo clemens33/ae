@@ -121,6 +121,15 @@ pub(crate) struct Layout {
     pub settings_page_rows: usize,
     /// How far back the settings body can scroll.
     pub settings_max_scroll: usize,
+    /// The session list's cells, the first session it drew, and the
+    /// furthest first session it could draw.
+    list: Rect,
+    pub list_start: Option<usize>,
+    pub list_max: usize,
+    /// The tab body's cells, the first row it drew, and the furthest.
+    body: Rect,
+    pub body_top: Option<usize>,
+    pub body_max: usize,
 }
 
 impl Layout {
@@ -137,6 +146,14 @@ impl Layout {
 
     pub fn in_chat(&self, mouse: Mouse) -> bool {
         self.chat.contains((mouse.column, mouse.row).into())
+    }
+
+    pub(crate) fn in_list(&self, mouse: Mouse) -> bool {
+        self.list.contains((mouse.column, mouse.row).into())
+    }
+
+    pub(crate) fn in_body(&self, mouse: Mouse) -> bool {
+        self.body.contains((mouse.column, mouse.row).into())
     }
 
     /// Record a border at `at` over `cells`, grabbed within a cell of it.
@@ -185,6 +202,9 @@ impl Layout {
         self.targets.retain(|(_, hit)| matches!(hit, Hit::Settings));
         self.borders.clear();
         self.chat = Rect::default();
+        (self.list, self.body) = (Rect::default(), Rect::default());
+        (self.list_start, self.body_top) = (None, None);
+        (self.list_max, self.body_max) = (0, 0);
         self.page_rows = 0;
         self.max_scroll = 0;
         self.complete = true;
@@ -392,7 +412,7 @@ fn list_clamp(asked: u16, area: Rect, count: usize) -> u16 {
         _ => 3,
     };
     let (default, _) = list_rows(area, Split::default(), count);
-    let undragged = List::of(count, None, default, false).end - LIST_TOP;
+    let undragged = List::of(count, None, default, false, None).end - LIST_TOP;
     // Below the list: a blank row, the tab row and the rule; below the
     // floor: two rows.
     let most = area
@@ -444,10 +464,16 @@ struct List {
 }
 
 impl List {
-    /// The list for `count` sessions with `selected` kept in view, in
-    /// `budget` rows: three rows each while they fit, then two, then a
-    /// window. A `pinned` list ends at its budget, else where its rows do.
-    fn of(count: usize, selected: Option<usize>, budget: u16, pinned: bool) -> Self {
+    /// The list for `count` sessions in `budget` rows: three rows each while
+    /// they fit, then two, then a window from `top`, else with `selected` kept
+    /// in view. A `pinned` list ends at its budget, else where its rows do.
+    fn of(
+        count: usize,
+        selected: Option<usize>,
+        budget: u16,
+        pinned: bool,
+        top: Option<usize>,
+    ) -> Self {
         let budget = usize::from(budget);
         let (step, shown) = if count * 3 <= budget + 1 {
             (3, count)
@@ -457,7 +483,9 @@ impl List {
             (2, budget.saturating_sub(1) / 2)
         };
         let at = selected.unwrap_or(0);
-        let start = (at + 1).saturating_sub(shown).min(count - shown);
+        let start = top
+            .unwrap_or_else(|| (at + 1).saturating_sub(shown))
+            .min(count - shown);
         let used = cells(shown) * step - u16::from(step == 3 && shown > 0);
         let more = (shown < count).then_some(LIST_TOP + used);
         let end = if pinned {
@@ -490,7 +518,10 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
     );
     let selected = model.position(fleet);
     let (rows, pinned) = list_rows(buf.area, model.split(), count);
-    let list = List::of(count, selected, rows, pinned);
+    let list = List::of(count, selected, rows, pinned, model.list_top());
+    layout.list = Rect::new(0, LIST_TOP, rule, list.end - LIST_TOP);
+    layout.list_start = Some(list.visible.start);
+    layout.list_max = count - list.visible.len();
     let needy = fleet.rows.iter().any(|row| row.needy);
     let line = super::fleet::attention(fleet, list.visible.clone(), room - 2);
     let tone = if needy {
@@ -554,20 +585,50 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         border,
     );
     layout.border(buf, Edge::List, tabs + 1, Rect::new(0, tabs + 1, rule, 1));
-    let mut body = match model.tab() {
+    let body = match model.tab() {
         Tab::Overview => overview_rows(ctx, room, rule >= 44),
         Tab::Agents => agent_rows(ctx, entry),
     };
+    tab_body(ctx, buf, body, tabs + 2, rule, layout);
+}
+
+/// The tab body from row `top` down to the floor, scrolled to the model's
+/// row; a body that does not fit names the rows it hides on its last row.
+fn tab_body(
+    ctx: &Ctx<'_, '_>,
+    buf: &mut Buffer,
+    mut body: Vec<Cells>,
+    top: u16,
+    rule: u16,
+    layout: &mut Layout,
+) {
+    let (end, paint) = (rule - 2, ctx.paint);
+    let room = end - LEFT;
     let floor = buf.area.height.saturating_sub(2);
+    let room_rows = floor.saturating_sub(top);
     // A body that would lose rows gives up its gaps first.
-    if body.len() > usize::from(floor.saturating_sub(tabs + 2)) {
+    if body.len() > usize::from(room_rows) {
         body.retain(|row| row.left.width() > 0);
     }
-    for (step, row) in body.iter().enumerate() {
-        let y = tabs + 2 + cells(step);
-        if y >= floor {
-            break;
-        }
+    // A body that still does not fit gives its last row to the rows it hides.
+    let cut = body.len() > usize::from(room_rows);
+    let shown = usize::from(room_rows.saturating_sub(u16::from(cut)));
+    layout.body = Rect::new(0, top, rule, room_rows);
+    layout.body_max = body.len().saturating_sub(shown);
+    let first = ctx.screen.model.body_top().min(layout.body_max);
+    layout.body_top = Some(first);
+    if cut && room_rows > 0 {
+        let below = body.len().saturating_sub(first + shown);
+        let parts: Vec<String> = [(first, "↑"), (below, "↓")]
+            .into_iter()
+            .filter(|(count, _)| *count > 0)
+            .map(|(count, arrow)| format!("{arrow} {count}"))
+            .collect();
+        let text = format!("{} more rows", parts.join(" · "));
+        put(buf, LEFT, floor - 1, &text, room, paint.fg(|p| p.dim));
+    }
+    for (step, row) in body.iter().skip(first).take(shown).enumerate() {
+        let y = top + cells(step);
         let used = put_line(buf, LEFT, y, &row.left, room);
         if let Some(right) = &row.right {
             let width = cells(right.width());
@@ -2022,6 +2083,25 @@ mod tests {
                 assert_eq!(buf[(x, y)].bg, chat, "{size}: the chat ground at ({x},{y})");
             }
         }
+    }
+
+    /// A body that does not fit gives its last row to a dim line naming the
+    /// rows it hides; a body that fits names none (ruling C3).
+    #[test]
+    fn a_cut_body_names_its_hidden_rows_in_the_dim_hue() {
+        let mut shot = Shot::new();
+        shot.agents = Some(sweep_seats());
+        shot.key(crate::app::model::Key::Tab);
+        let buf = shot.draw(100, 24, READ_ONLY);
+        assert_eq!(
+            spot(&buf, "↓ 7 more rows"),
+            Some((21, 2)),
+            "the body's last row"
+        );
+        let dim = super::colour(crate::theme::Palette::DARCULA.dim);
+        assert_eq!(buf[(2, 21)].fg, dim);
+        let tall = shot.draw(100, 40, READ_ONLY);
+        assert_eq!(spot(&tall, "more rows"), None, "a body that fits");
     }
 
     /// docs/app.md: below 40x8 the app only says how large it needs to be;

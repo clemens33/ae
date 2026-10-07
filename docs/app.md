@@ -28,12 +28,17 @@ recorded config first.
   (`this window` on home), the seat counts on the right, and under it the goal
   or the question that needs you. Running sessions come in fleet order with the
   orchestrator first, stopped ones after. A needy row carries a `│` edge and `!`
-  reaches it.
+  reaches it. The wheel moves a list that does not fit one session a notch; a
+  selection key brings the selection back into view, a click keeps the list
+  where it is.
 - **Tabs** under the list: **Overview** (goal, what waits on you, the latest
   decision memo, the topics) and **Agents** (every seat with its client,
   profile, model and state, from the watchdog's published roster). A session
   on another tmux server, or one whose watchdog publishes nothing, names that
-  gap instead of seats. The tab stays as you move between sessions.
+  gap instead of seats. The tab stays as you move between sessions. A tab
+  body that does not fit gives its last row to the rows it hides,
+  `↑ a · ↓ b more rows`, and the wheel moves it three rows a notch; another
+  session or tab starts at its first row.
 - **Chat** column: the selected session's lane, newest at the bottom, with its
   coverage rows, then the composer. Only the rows on screen and a page beyond
   are drawn: older turns are drawn as you scroll back to them, and the oldest
@@ -79,7 +84,8 @@ Browsing:
 | `PgUp` / `PgDn` | scroll the chat a page |
 | Click session row | select that session |
 | Click Overview / Agents | show that tab |
-| Wheel over chat | scroll three rows per notch, also while writing |
+| Wheel over chat or a tab body | scroll three rows per notch, also while writing |
+| Wheel over the session list | scroll one session per notch, also while writing |
 | Drag a border | resize the sidebar or the session list, also while writing |
 | Click composer | write (home only, when this app owns the input) |
 | `Esc` | back to home |

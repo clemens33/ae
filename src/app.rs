@@ -541,15 +541,20 @@ impl App {
         match mouse.kind {
             MouseKind::Click => self.click(mouse) || ended,
             MouseKind::WheelUp | MouseKind::WheelDown => {
-                if !self.layout.in_chat(mouse) {
-                    return ended;
+                let (up, layout) = (mouse.kind == MouseKind::WheelUp, &self.layout);
+                if layout.in_chat(mouse) {
+                    self.model.wheel(up, layout.page_rows, layout.max_scroll);
+                    return true;
                 }
-                self.model.wheel(
-                    mouse.kind == MouseKind::WheelUp,
-                    self.layout.page_rows,
-                    self.layout.max_scroll,
-                );
-                true
+                let moved = if layout.in_list(mouse) {
+                    let start = layout.list_start.unwrap_or(0);
+                    self.model.wheel_list(up, start, layout.list_max)
+                } else if layout.in_body(mouse) {
+                    self.model.wheel_body(up, layout.body_max)
+                } else {
+                    false
+                };
+                moved || ended
             }
             MouseKind::Drag | MouseKind::Release => ended,
         }
@@ -594,7 +599,8 @@ impl App {
         let was_writing = self.composing;
         let act = match hit {
             draw::Hit::Session(name) => {
-                let Some(act) = self.model.select_name(&self.fleet, &name) else {
+                let start = self.layout.list_start.unwrap_or(0);
+                let Some(act) = self.model.select_name(&self.fleet, &name, start) else {
                     return false;
                 };
                 self.composing = false;
@@ -750,6 +756,8 @@ impl App {
             lane: self.loading,
         };
         self.layout = draw::draw_with_layout(&screen, wait, buf);
+        self.model
+            .settle(self.layout.list_start, self.layout.body_top);
         // Held keys replay from the scroll they were read at, as one read.
         if self.deferred.is_empty() {
             self.model

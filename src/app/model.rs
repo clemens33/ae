@@ -130,6 +130,11 @@ pub struct Model {
     pages: usize,
     /// Wheel rows between pages, normalized after each frame.
     rows: usize,
+    /// The first session the wheeled list shows; `None` keeps the selection
+    /// in view.
+    list_top: Option<usize>,
+    /// The first tab body row shown.
+    body_top: usize,
     split: Split,
     drag: Option<Drag>,
     settings: Option<SettingsOverlay>,
@@ -180,6 +185,7 @@ impl Model {
                     Tab::Overview => Tab::Agents,
                     Tab::Agents => Tab::Overview,
                 };
+                self.body_top = 0;
                 Act::Redraw
             }
             Key::Compose if can_compose && self.on_home(fleet) => Act::Compose,
@@ -206,9 +212,20 @@ impl Model {
         }
     }
 
-    /// Select row `target`; selecting nothing, or what is already selected,
-    /// answers nothing. A new selection reads its chat from the newest turn.
+    /// A selection key: the list follows the selection again, which redraws
+    /// even when the key names the session already selected.
     fn select(&mut self, fleet: &Fleet, target: Option<usize>) -> Act {
+        let wheeled = self.list_top.take().is_some();
+        match self.choose(fleet, target) {
+            Act::None if wheeled => Act::Redraw,
+            act => act,
+        }
+    }
+
+    /// Select row `target`; selecting nothing, or what is already selected,
+    /// answers nothing. A new selection reads its chat from the newest turn
+    /// and its tab body from the first row.
+    fn choose(&mut self, fleet: &Fleet, target: Option<usize>) -> Act {
         let Some(row) = target.and_then(|target| fleet.rows.get(target)) else {
             return Act::None;
         };
@@ -218,6 +235,7 @@ impl Model {
         self.selected = Some(row.name.clone());
         self.pages = 0;
         self.rows = 0;
+        self.body_top = 0;
         Act::Select(row.name.clone())
     }
 
@@ -297,10 +315,13 @@ impl Model {
         self.rows = scroll.min(max) % page_rows.max(1);
     }
 
-    /// A target that departed since the frame was drawn is a full no-op.
-    pub(crate) fn select_name(&mut self, fleet: &Fleet, name: &str) -> Option<Act> {
+    /// A clicked card: the list keeps the window the frame drew from `start`,
+    /// so the card stays under the pointer. A target that departed since the
+    /// frame was drawn is a full no-op.
+    pub(crate) fn select_name(&mut self, fleet: &Fleet, name: &str, start: usize) -> Option<Act> {
         let row = fleet.rows.iter().position(|row| row.name == name)?;
-        Some(self.select(fleet, Some(row)))
+        self.list_top = Some(start);
+        Some(self.choose(fleet, Some(row)))
     }
 
     pub(crate) fn show_tab(&mut self, tab: Tab) -> Act {
@@ -308,7 +329,58 @@ impl Model {
             return Act::None;
         }
         self.tab = tab;
+        self.body_top = 0;
         Act::Redraw
+    }
+
+    /// The first session the wheeled list shows, if it was wheeled.
+    pub(crate) fn list_top(&self) -> Option<usize> {
+        self.list_top
+    }
+
+    /// The first tab body row shown.
+    pub(crate) fn body_top(&self) -> usize {
+        self.body_top
+    }
+
+    /// One list notch, one session, from the window the frame drew at
+    /// `start`, bounded by its `max`; whether the window moved.
+    pub(crate) fn wheel_list(&mut self, up: bool, start: usize, max: usize) -> bool {
+        let from = self.list_top.unwrap_or(start);
+        let to = if up {
+            from.saturating_sub(1)
+        } else {
+            from.saturating_add(1)
+        };
+        let to = to.min(max);
+        if to == from {
+            return false;
+        }
+        self.list_top = Some(to);
+        true
+    }
+
+    /// One body notch, three rows, bounded by the frame's `max`; whether the
+    /// body moved.
+    pub(crate) fn wheel_body(&mut self, up: bool, max: usize) -> bool {
+        let to = if up {
+            self.body_top.saturating_sub(WHEEL_ROWS)
+        } else {
+            self.body_top.saturating_add(WHEEL_ROWS)
+        };
+        let to = to.min(max);
+        std::mem::replace(&mut self.body_top, to) != to
+    }
+
+    /// Keep what the frame drew: a wheeled list's start and the body's first
+    /// row, each clamped by that frame; `None` when it drew neither.
+    pub(crate) fn settle(&mut self, list: Option<usize>, body: Option<usize>) {
+        if let (Some(_), Some(start)) = (self.list_top, list) {
+            self.list_top = Some(start);
+        }
+        if let Some(top) = body {
+            self.body_top = top;
+        }
     }
 
     /// Keep the selection when the fleet changes under it; a session that
@@ -484,7 +556,7 @@ mod tests {
     //! selected session sits beside the sidebar; the tab stays as you move
     //! between sessions) and the start rule (home first, else the first row).
 
-    use super::{Drag, Edge, Key, Model, SettingsTab, Tab};
+    use super::{Act, Drag, Edge, Key, Model, SettingsTab, Tab};
     use crate::app::fleet::{Counts, Fleet, Line2, Row};
     use crate::theme::Mark;
 
@@ -572,6 +644,72 @@ mod tests {
             (open.tab, open.scroll, open.page_rows, open.generation),
             (SettingsTab::Config, 7, 5, 42)
         );
+    }
+
+    /// A list notch moves one session and stops at both bounds, and a
+    /// notch past a bound is spent, not remembered (ruling A1).
+    #[test]
+    fn a_list_notch_moves_one_session_and_forgets_overshoot() {
+        let mut model = Model::new(&fleet(&["api"]));
+        assert!(!model.wheel_list(true, 0, 5), "the top bound holds");
+        assert_eq!(
+            model.list_top(),
+            None,
+            "a notch that moved nothing pins nothing"
+        );
+        assert!(model.wheel_list(false, 0, 5));
+        assert_eq!(model.list_top(), Some(1));
+        for _ in 0..40 {
+            let _ = model.wheel_list(false, 0, 5);
+        }
+        assert!(model.wheel_list(true, 0, 5));
+        assert_eq!(model.list_top(), Some(4), "one notch back from the bottom");
+    }
+
+    /// A selection key returns a wheeled list to the selection, and redraws
+    /// when it names the session already selected (ruling A2).
+    #[test]
+    fn a_selection_key_hands_the_list_back_to_the_selection() {
+        let three = fleet(&["api", "web", "db"]);
+        let mut model = Model::new(&three);
+        let _ = model.wheel_list(false, 0, 2);
+        assert_eq!(model.key(Key::Digit(1), &three, false, true), Act::Redraw);
+        assert_eq!(model.list_top(), None);
+        assert_eq!(model.key(Key::Digit(1), &three, false, true), Act::None);
+    }
+
+    /// A click keeps the window it was drawn from; a new selection and a tab
+    /// change start the body at its first row (rulings A2, A3).
+    #[test]
+    fn a_click_pins_the_window_and_selection_or_tab_resets_the_body() {
+        let three = fleet(&["api", "web", "db"]);
+        let mut model = Model::new(&three);
+        assert!(model.wheel_body(false, 10));
+        assert!(!model.wheel_body(false, 3), "the bound holds");
+        let act = model.select_name(&three, "web", 1);
+        assert_eq!(act, Some(Act::Select("web".to_owned())));
+        assert_eq!((model.list_top(), model.body_top()), (Some(1), 0));
+        let _ = model.wheel_body(false, 10);
+        assert_eq!(model.show_tab(Tab::Agents), Act::Redraw);
+        assert_eq!(model.body_top(), 0);
+        let _ = model.wheel_body(false, 10);
+        let _ = model.key(Key::Tab, &three, false, true);
+        assert_eq!(model.body_top(), 0);
+    }
+
+    /// A frame settles a wheeled list and the body to what it drew; a list
+    /// that follows the selection stays following, an undrawn one untouched.
+    #[test]
+    fn a_frame_settles_only_what_it_drew() {
+        let mut model = Model::new(&fleet(&["api"]));
+        model.settle(Some(3), None);
+        assert_eq!(model.list_top(), None);
+        let _ = model.wheel_list(false, 0, 9);
+        let _ = model.wheel_body(false, 9);
+        model.settle(Some(0), None);
+        assert_eq!((model.list_top(), model.body_top()), (Some(0), 3));
+        model.settle(None, Some(1));
+        assert_eq!((model.list_top(), model.body_top()), (Some(0), 1));
     }
 
     /// Restarting onto a populated fleet keeps an open overlay whole.
