@@ -1281,6 +1281,13 @@ pub enum WaitProgress {
 /// re-ask it belongs to. A `done-challenge` record resets the episode, and a
 /// `wait-challenge` record resets a done episode — the safe direction for a
 /// pairing no consistent journal produces.
+///
+/// Spacing (#225): an anchor that is a CREDITED proof — a same-state
+/// declaration answering a delivered challenge, or the re-arming Nth proof —
+/// with no news after it waits [`unchanged_wait_spacing`]. News is any relevant
+/// record that is not the watchdog's and leaves the wait standing, own or
+/// addressed, judged in append order; it and an uncredited re-declaration keep
+/// the base cadence.
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
@@ -1307,6 +1314,7 @@ pub fn wait_progress(
         crate::time::Timestamp,
         Option<crate::time::Timestamp>,
         u32,
+        bool,
     )> = None;
     let mut own_requests: Vec<&str> = Vec::new();
     for event in events {
@@ -1334,10 +1342,10 @@ pub fn wait_progress(
                 continue;
             }
             if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
-                if let Some((_, _, _, attempts)) = episode.as_mut() {
+                if let Some((_, _, _, attempts, _)) = episode.as_mut() {
                     *attempts = attempts.saturating_add(1);
                 }
-            } else if let Some((_, _, outstanding, _)) = episode.as_mut()
+            } else if let Some((_, _, outstanding, _, _)) = episode.as_mut()
                 && outstanding.is_none()
             {
                 *outstanding = Some(event.ts);
@@ -1348,7 +1356,7 @@ pub fn wait_progress(
             let matching = launch.map_or(event.reference.is_none(), |id| {
                 event.reference.as_deref() == Some(id)
             }) && wait_challenge_names(event.summary.as_deref(), state);
-            if matching && let Some((_, _, _, attempts)) = episode.as_mut() {
+            if matching && let Some((_, _, _, attempts, _)) = episode.as_mut() {
                 *attempts = attempts.saturating_add(1);
             }
             continue;
@@ -1357,32 +1365,43 @@ pub fn wait_progress(
             continue;
         }
         if own && event.declared_state() == Some(want) {
-            let rearms = matches!(episode, Some((count, _, Some(_), _))
+            let rearms = matches!(episode, Some((count, _, Some(_), _, _))
                 if count.saturating_add(1) >= required);
             if rearms {
                 // The Nth proof re-arms a fresh episode anchored at this
                 // proof: waits are never terminally proven.
-                episode = Some((0, event.ts, None, 0));
+                episode = Some((0, event.ts, None, 0, true));
             } else {
                 match episode.as_mut() {
-                    Some((count, wait_at, outstanding @ Some(_), _)) => {
+                    Some((count, wait_at, outstanding @ Some(_), _, earned)) => {
                         *count = count.saturating_add(1);
                         *wait_at = event.ts;
                         *outstanding = None;
+                        *earned = true;
                     }
-                    None => episode = Some((0, event.ts, None, 0)),
-                    // A proactive re-declaration refreshes the anchor only.
-                    Some((_, wait_at, None, _)) => *wait_at = event.ts,
+                    None => episode = Some((0, event.ts, None, 0, false)),
+                    // A proactive re-declaration refreshes the anchor only,
+                    // and earns no spacing: it answered no challenge.
+                    Some((_, wait_at, None, _, earned)) => {
+                        *wait_at = event.ts;
+                        *earned = false;
+                    }
                 }
             }
             continue;
         }
         if !is_challenge(event) && !ends_quiet(want, event, own, &own_requests) {
+            // News the wait outlives: the next challenge keeps the base cadence.
+            if event.actor != WATCHDOG_ACTOR
+                && let Some((.., earned)) = episode.as_mut()
+            {
+                *earned = false;
+            }
             continue;
         }
         episode = None;
     }
-    let Some((confirmations, wait_at, outstanding, attempts)) = episode else {
+    let Some((confirmations, wait_at, outstanding, attempts, earned)) = episode else {
         return WaitProgress::None;
     };
     if let Some(challenged_at) = outstanding {
@@ -1399,7 +1418,12 @@ pub fn wait_progress(
         };
     }
     let age = wait_at.seconds_until(now).max(0).cast_unsigned();
-    if age >= cadence {
+    let spacing = if earned {
+        unchanged_wait_spacing(cadence)
+    } else {
+        cadence
+    };
+    if age >= spacing {
         WaitProgress::ChallengeDue {
             confirmations,
             required,
@@ -1412,6 +1436,19 @@ pub fn wait_progress(
             required,
         }
     }
+}
+
+/// How many cadences an unchanged wait waits after a credited proof (#225).
+const UNCHANGED_WAIT_CADENCES: u64 = 2;
+
+/// The challenge spacing after a credited proof with no news since: two
+/// cadences while the `waiting-agent` ceiling (`cadence × OWN_WORK_AGE_CAP`)
+/// is exact, else the base cadence — never shorter, never saturated.
+fn unchanged_wait_spacing(cadence: u64) -> u64 {
+    cadence
+        .checked_mul(OWN_WORK_AGE_CAP)
+        .and_then(|_| cadence.checked_mul(UNCHANGED_WAIT_CADENCES))
+        .unwrap_or(cadence)
 }
 
 /// Seconds of continuously observed idle before the state reminder; zero
@@ -2305,7 +2342,7 @@ mod tests {
     const T02_00: &str = "2026-08-29T04:02:00Z";
     const T02_30: &str = "2026-08-29T04:02:30Z";
     const T03_30: &str = "2026-08-29T04:03:30Z";
-    const T04_00: &str = "2026-08-29T04:04:00Z";
+    const T05_00: &str = "2026-08-29T04:05:00Z";
     const NEXT_DAY: &str = "2026-08-30T04:00:00Z";
 
     #[test]
@@ -2317,12 +2354,13 @@ mod tests {
         assert_eq!(wprog(&[BLOCKED_0, BLOCKED_1], T02_30, b), due(0, 60, 0));
         assert_eq!(wprog(&[BLOCKED_0, WCHALLENGE_1], T01_59, b), chall(0));
         let one = &[BLOCKED_0, WCHALLENGE_1, BLOCKED_1];
-        assert_eq!(wprog(one, T02_30, b), due(1, 60, 0));
+        assert_eq!(wprog(one, T03_30, b), due(1, 120, 0));
         // The Nth proof re-arms a fresh episode — waits are never terminally
-        // proven — and the re-ask recurs one cadence after that proof.
+        // proven — and the re-ask recurs two cadences after that unchanged
+        // credited proof (#225).
         let full = &[BLOCKED_0, WCHALLENGE_1, BLOCKED_1, WCHALLENGE_2, BLOCKED_2];
         assert_eq!(wprog(full, T03_30, b), prov(0));
-        assert_eq!(wprog(full, T04_00, b), due(0, 60, 0));
+        assert_eq!(wprog(full, T05_00, b), due(0, 120, 0));
     }
 
     #[test]
@@ -2361,7 +2399,7 @@ mod tests {
         let b = Blocked;
         let nudge = r#"{"ts":"2026-08-29T04:01:15Z","actor":"watchdog","action":"nudge","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
         let legs = &[BLOCKED_0, WCHALLENGE_1, nudge, BLOCKED_1];
-        assert_eq!(wprog(legs, T02_30, b), due(1, 60, 0));
+        assert_eq!(wprog(legs, T03_30, b), due(1, 120, 0));
         let unconfirmed = WCHALLENGE_1.replacen("blocked", "[unconfirmed] blocked", 1);
         assert_eq!(wprog(&[BLOCKED_0, &unconfirmed], T02_00, b), due(0, 120, 1));
         let abandoned = r#"{"ts":"2026-08-29T04:01:15Z","actor":"watchdog","action":"delivery-abandoned","target":"opus5:builder","ref":"launch-1","target_slot":"main","target_session":"aerewrite","summary":"refused: busy pane; blocked confirmation 1/2"}"#;
