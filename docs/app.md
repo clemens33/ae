@@ -151,8 +151,9 @@ which re-proves the lease and re-reads the meta's `session_id` and lead pair
 against those the app opened with, then asks as `console:local` under the same
 five-open cap. A session replaced under its name, a changed lead pair or a meta
 that is gone refuses the ask and ends the writing: the lease is released and
-the composer is held as `not writing: <why> · Esc browses`, the draft kept in
-memory and every key swallowed as above. The next fleet read, every 5 seconds,
+the composer is held as `not writing: <why> · Esc browses`, the refused line
+back in the draft (a `/close` as `/close` or `/close <id>`), kept in memory
+only, and every key swallowed as above. The next fleet read, every 5 seconds,
 does the same without a key, also to an entry already held. After `Esc` the
 composer reads `read-only · <why> - prefix h opens it` until a read proves home
 again. The
