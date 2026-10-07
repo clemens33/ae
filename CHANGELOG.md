@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.36] - 2026-10-07
+- Refuse delivery at measured human-only prompts
+
 ## [v2026.10.35] - 2026-10-07
 - Appuse B1: frozen writer-lease acceptance spec (RED on base)
 - Appuse B1: an ae app writes home only under the session's writer lease
