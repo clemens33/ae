@@ -8,6 +8,16 @@
 [profile.default]
 test-threads = 8
 
+# Writer acceptance starts two or three real app panes per fixture and holds
+# their read/dispatch boundaries. Keep concurrent fixtures small enough that
+# the bounded chat refusal and rendered frames can make progress.
+[test-groups.app-writers]
+max-threads = 2
+
+[[profile.default.overrides]]
+filter = 'test(/^app_writer_spec::/)'
+test-group = 'app-writers'
+
 # The `menu` module drives a REAL tmux server and real attached clients, then
 # polls until a client renders. Every test in it starts one or two servers and
 # several clients, so a fully parallel run can starve a client the test is

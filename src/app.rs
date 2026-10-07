@@ -945,6 +945,7 @@ fn drain(
     {
         let keyed = match wake {
             Wake::Keys(stamp, bytes) => {
+                crate::read_gate("@app-keys");
                 fed = true;
                 keys.feed(&bytes, stamp)
             }

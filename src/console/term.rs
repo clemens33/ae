@@ -52,6 +52,7 @@ fn reader(mut stdin: std::fs::File, reads: &SyncSender<(Instant, Vec<u8>)>) {
     loop {
         let read = stdin.read(&mut buffer);
         let stamp = Instant::now();
+        crate::read_gate("@app-read");
         match read {
             Ok(0) => return,
             Ok(n) => {
