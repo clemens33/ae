@@ -1810,6 +1810,31 @@ mod tests {
         assert_eq!(app.notices.iter().filter(|item| named(item)).count(), 1);
     }
 
+    /// Ruling appuse-b R-B2: only keys read before writing started are
+    /// dropped. A press on the composer while writing starts nothing new: the
+    /// same lease stands, and a key read after it was taken is drafted.
+    #[test]
+    fn a_composer_press_while_writing_keeps_its_lease() {
+        let root = Root::new("composer-press");
+        let (mut app, _reader) = strip_app(&root);
+        let typed = writing(&mut app);
+        let taken = app.lease.as_ref().map(|it| it.at);
+        let _ = framed(&mut app);
+        let press = (0..45)
+            .flat_map(|row| (0..160).map(move |column| (column, row)))
+            .map(|(column, row)| super::Mouse {
+                kind: super::MouseKind::Click,
+                column,
+                row,
+            })
+            .find(|press| matches!(app.layout.hit(*press), Some(super::draw::Hit::Compose)))
+            .expect("drawn composer");
+        let _ = app.click(press);
+        assert_eq!(app.lease.as_ref().map(|it| it.at), taken, "same lease");
+        assert!(take_keys(&mut app, vec![(Key::Text(b"k".to_vec()), typed)]).is_some());
+        assert_eq!(app.input.as_ref().expect("input").draft(), "k");
+    }
+
     /// #23/#25: an entry is found by its own name, and a selected running
     /// session draws its tabs (frame calm r18).
     #[test]
