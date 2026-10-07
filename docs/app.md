@@ -144,7 +144,7 @@ one honest row naming the file.
 
 An app writes home only while it holds the session's **writer lease**, the lock
 file `.console-writer.lock`: one app at a time, in any pane or outside tmux.
-Every way out of writing releases it — `Esc`, `^C`, `q`, a crash, a click on a
+Every way out of writing releases it — `Esc`, `^C`, a crash, a click on a
 session row or tab, and a read that finds home no longer proven — and Settings
 keeps it while open. Each ask and `/close` goes through the chat's admission,
 which re-proves the lease and re-reads the meta's `session_id` and lead pair
