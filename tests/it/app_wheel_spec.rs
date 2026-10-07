@@ -241,14 +241,15 @@ impl Rig {
     }
 }
 
-fn rule(screen: &str) -> usize {
+fn drawn_rule(screen: &str) -> Option<usize> {
     screen
         .lines()
         .next()
-        .expect("screen row")
-        .chars()
-        .position(|c| c == '│')
-        .expect("drawn vertical rule")
+        .and_then(|row| row.chars().position(|c| c == '│'))
+}
+
+fn rule(screen: &str) -> usize {
+    drawn_rule(screen).expect("drawn vertical rule")
 }
 
 fn cell(screen: &str, needle: &str) -> (usize, usize) {
@@ -282,7 +283,15 @@ fn sidebar_cell(screen: &str, needle: &str) -> (usize, usize) {
 }
 
 fn body_rows(screen: &str) -> Vec<String> {
-    let top = cell(screen, "Overview").1 + 2;
+    // A capture can fall between the resize clear and the tab's repaint.
+    // Wait predicates must see no body yet, rather than panic on its label.
+    let Some(top) = screen.lines().position(|row| row.contains("Overview")) else {
+        return Vec::new();
+    };
+    let Some(width) = drawn_rule(screen) else {
+        return Vec::new();
+    };
+    let top = top + 2;
     let end = screen.lines().count().saturating_sub(2);
     screen
         .lines()
@@ -290,7 +299,7 @@ fn body_rows(screen: &str) -> Vec<String> {
         .take(end.saturating_sub(top))
         .map(|line| {
             line.chars()
-                .take(rule(screen))
+                .take(width)
                 .collect::<String>()
                 .trim_end()
                 .to_owned()
@@ -411,7 +420,10 @@ fn guard_complete_drawn_rows_prove_overview_agents_and_resize_oracles() {
     rig.literal(&pane, "\t");
     rig.tmux(&["resize-window", "-t", &pane, "-x", "100", "-y", "80"]);
     let narrow = rig.wait(&pane, FRAME, "GUARD complete narrow topics fit", |s| {
-        s.lines().count() == 80 && rule(s) == 34 && s.contains("body00") && !s.contains("more rows")
+        s.lines().count() == 80
+            && drawn_rule(s) == Some(34)
+            && s.contains("body00")
+            && !s.contains("more rows")
     });
     let mut expected_narrow = expected[..7].to_vec();
     expected_narrow.extend((0..30).rev().map(|at| format!("topic{at:02} body{at:02}")));
@@ -885,7 +897,7 @@ fn wheel_ends_drag_then_list_scrolls_and_later_motion_cannot_move_border() {
     rig.report(&pane, 0, (border, 1), 1);
     rig.report(&pane, 32, (border + 6, 1), 1);
     let dragged = rig.wait(&pane, FRAME, "GUARD border drag moved", |s| {
-        rule(s) == border + 6
+        drawn_rule(s) == Some(border + 6)
     });
     rig.report(&pane, 65, sidebar_cell(&dragged, &rig.home), 1);
     rig.wait(
