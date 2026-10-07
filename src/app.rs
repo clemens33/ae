@@ -1835,6 +1835,63 @@ mod tests {
         assert_eq!(app.input.as_ref().expect("input").draft(), "k");
     }
 
+    /// R-C1.3/R-C1.5: the three drawn draft rows and hint are Compose;
+    /// after Esc the former upper draft row is lane, not a ghost target.
+    #[test]
+    fn every_grown_composer_row_and_hint_are_targets_until_browse_compacts_it() {
+        let root = Root::new("c1-targets");
+        let (mut app, _reader) = strip_app(&root);
+        let at = writing(&mut app);
+        let _ = app.compose(Key::Pasted(b"first\nsecond\nthird".to_vec()), at);
+        let shown = framed(&mut app);
+        assert!(
+            shown
+                .lines()
+                .nth(39)
+                .expect("first draft row")
+                .contains("first")
+        );
+        let press = |row| super::Mouse {
+            kind: super::MouseKind::Click,
+            column: 70,
+            row,
+        };
+        let taken = app.lease.as_ref().map(|lease| lease.at);
+        for row in 39..=42 {
+            assert!(
+                matches!(app.layout.hit(press(row)), Some(super::draw::Hit::Compose)),
+                "grown row or hint {row}"
+            );
+            let _ = app.click(press(row));
+            assert_eq!(app.lease.as_ref().map(|lease| lease.at), taken);
+            assert_eq!(
+                app.input.as_ref().expect("input").draft(),
+                "first\nsecond\nthird"
+            );
+        }
+        let _ = app.compose(Key::Escape, Instant::now());
+        let shown = framed(&mut app);
+        assert!(
+            shown
+                .lines()
+                .nth(41)
+                .expect("compact composer")
+                .contains("to api")
+        );
+        assert!(!matches!(
+            app.layout.hit(press(39)),
+            Some(super::draw::Hit::Compose)
+        ));
+        let _ = app.click(press(39));
+        assert!(!app.composing(), "old upper row cannot restart writing");
+        for row in 41..=42 {
+            assert!(matches!(
+                app.layout.hit(press(row)),
+                Some(super::draw::Hit::Compose)
+            ));
+        }
+    }
+
     /// #23/#25: an entry is found by its own name, and a selected running
     /// session draws its tabs (frame calm r18).
     #[test]

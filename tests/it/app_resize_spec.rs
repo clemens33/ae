@@ -680,29 +680,79 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
         screen.contains("wrap-end")
     });
     let address = format!("to {} › lead   ", rig.name);
-    let cursor_text = |screen: &str| {
-        screen
+    let composer = |screen: &str| {
+        let (top, column) = screen
             .lines()
-            .find_map(|row| {
-                row.split_once(&address)
-                    .map(|(_, tail)| tail.trim_end().to_owned())
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find(&address)
+                    .map(|at| (row, line[..at].chars().count() + address.chars().count()))
             })
-            .expect("drawn composer cursor row")
+            .expect("drawn composer address");
+        let rows = screen
+            .lines()
+            .skip(top)
+            .take(27 - top)
+            .map(|row| {
+                row.chars()
+                    .skip(column)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        (top, column, rows)
     };
     assert_eq!(
-        cursor_text(&before),
-        "wrap-end",
-        "80 cells wrap exactly twice at 40 cells"
+        composer(&before),
+        (
+            24,
+            58,
+            vec!["a".repeat(40), "a".repeat(40), "wrap-end".to_owned()]
+        ),
+        "whole draft: 80 cells wrap exactly twice at 40 cells"
+    );
+    assert_eq!(
+        rig.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{cursor_flag},#{cursor_x},#{cursor_y}"
+        ])
+        .trim(),
+        "1,66,26"
     );
     rig.grab_vertical(&pane, 56);
     let after = rig.vertical(&pane, 56);
     assert!(after.contains("Enter sends"), "drag keeps composing active");
     assert!(after.contains("wrap-end"), "draft kept");
-    // The app shows only the cursor row: 80 = 4*18 + 8, then wrap-end.
+    // Whole draft after the drag: 80 = 4*18 + 8, then wrap-end.
     assert_eq!(
-        cursor_text(&after),
-        "aaaaaaaawrap-end",
-        "cursor row wraps at the resized 18-cell draft width"
+        composer(&after),
+        (
+            22,
+            80,
+            vec![
+                "a".repeat(18),
+                "a".repeat(18),
+                "a".repeat(18),
+                "a".repeat(18),
+                "aaaaaaaawrap-end".to_owned()
+            ]
+        ),
+        "all rows indent under the address at the resized 18-cell draft width"
+    );
+    assert_eq!(
+        rig.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{cursor_flag},#{cursor_x},#{cursor_y}"
+        ])
+        .trim(),
+        "1,96,26"
     );
     rig.release(&pane, 56, 1);
 }
