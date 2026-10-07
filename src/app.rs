@@ -1472,6 +1472,38 @@ mod tests {
         assert_eq!(app.model.scroll_rows(app.layout.page_rows), 3);
     }
 
+    /// The whole drawn list takes the wheel; a notch past its end is a no-op.
+    #[test]
+    fn a_list_notch_over_its_last_card_scrolls_and_none_scrolls_past_the_end() {
+        let mut app = app(None);
+        let rows = (0..30).map(|at| row(&format!("n{at:02}"), at + 1, false));
+        app.fleet = one_row(None);
+        app.fleet.rows = rows.collect();
+        app.model = Model::new(&app.fleet);
+        let cards = |shown: &str| -> Vec<(usize, u8)> {
+            let name = |w: &str| w.strip_prefix('n')?.parse().ok();
+            let card = |(y, l): (usize, &str)| Some((y, l.split_whitespace().find_map(name)?));
+            shown.lines().enumerate().skip(5).filter_map(card).collect()
+        };
+        let first = cards(&framed(&mut app));
+        let row = u16::try_from(first.last().expect("drawn cards").0).expect("row");
+        let notch = super::Mouse {
+            kind: super::MouseKind::WheelDown,
+            column: 2,
+            row,
+        };
+        assert!(app.mouse(notch), "the last drawn card scrolls");
+        assert_eq!(cards(&framed(&mut app))[0].1, 1, "by one session");
+        for _ in first.len()..29 {
+            assert!(app.mouse(notch), "one notch per hidden session");
+            framed(&mut app);
+        }
+        let end = framed(&mut app);
+        assert_eq!(cards(&end).last().map(|card| card.1), Some(29));
+        assert!(!app.mouse(notch), "past the end is a no-op");
+        assert_eq!(framed(&mut app), end, "and draws nothing new");
+    }
+
     /// Every drawn tab label includes its last cell and excludes the next blank cell.
     #[test]
     fn mouse_tab_targets_end_at_the_last_drawn_label_cell() {
