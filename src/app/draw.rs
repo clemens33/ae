@@ -2103,6 +2103,8 @@ mod tests {
         assert_eq!(buf[(2, 21)].fg, dim);
         let tall = shot.draw(100, 40, READ_ONLY);
         assert_eq!(spot(&tall, "more rows"), None, "a body that fits");
+        shot.fleet = frame_fleet();
+        assert_eq!(spot(&shot.draw(100, 20, READ_ONLY), "more rows"), None);
     }
 
     /// docs/app.md: below 40x8 the app only says how large it needs to be;
