@@ -589,21 +589,22 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         Tab::Overview => overview_rows(ctx, room, rule >= 44),
         Tab::Agents => agent_rows(ctx, entry),
     };
-    tab_body(ctx, buf, body, tabs + 2, rule, layout);
+    tab_body(ctx, buf, body, tabs + 2, rule, room, layout);
 }
 
-/// The tab body from row `top` down to the floor, scrolled to the model's
-/// row; a body that does not fit names the rows it hides on its last row.
+/// The tab body from row `top` down to the floor, in the sidebar's `room`,
+/// scrolled to the model's row; a body that does not fit names the rows it
+/// hides on its last row.
 fn tab_body(
     ctx: &Ctx<'_, '_>,
     buf: &mut Buffer,
     mut body: Vec<Cells>,
     top: u16,
     rule: u16,
+    room: u16,
     layout: &mut Layout,
 ) {
     let (end, paint) = (rule - 2, ctx.paint);
-    let room = end - LEFT;
     let floor = buf.area.height.saturating_sub(2);
     let room_rows = floor.saturating_sub(top);
     // A body that would lose rows gives up its gaps first.
