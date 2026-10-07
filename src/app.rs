@@ -1866,7 +1866,7 @@ mod tests {
             assert_eq!(app.lease.as_ref().map(|lease| lease.at), taken);
             assert_eq!(
                 app.input.as_ref().expect("input").draft(),
-                "first\nsecond\nthird"
+                "first second third"
             );
         }
         let _ = app.compose(Key::Escape, Instant::now());

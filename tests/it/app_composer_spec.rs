@@ -647,7 +647,7 @@ fn wheel_over_grown_composer_moves_three_lane_rows_and_bounds_survive_shrink() {
             .text
             .lines()
             .skip(3)
-            .take(3)
+            .take(4) // coverage notice, gap, turn heading, then its body
             .any(|row| row.contains("lane-00")),
         "oldest turn begins the enlarged lane"
     );
@@ -666,7 +666,12 @@ fn settings_hides_the_writing_cursor_then_restores_same_draft_cell() {
         &pane,
         FRAME,
         "GUARD Settings opened by gear while writing",
-        |f| f.text.contains("Theme") && !f.text.contains("Enter sends"),
+        |f| {
+            f.text.contains("Settings")
+                && f.text.contains("Quota")
+                && f.text.contains("About")
+                && !f.text.contains("Enter sends")
+        },
     );
     assert_eq!(settings.cursor.0, 0, "Settings hides cursor");
     rig.send(&pane, "\x1b");
