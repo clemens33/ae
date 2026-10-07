@@ -3231,4 +3231,84 @@ mod tests {
         assert!(top.contains("qrow-03"), "one line up:\n{top}");
         assert!(last.contains("qrow-08"), "page moved:\n{last}");
     }
+
+    /// R-B4: revocation never turns the rest of a refused stream into browse keys.
+    #[test]
+    fn a_held_entry_stays_held_when_home_is_revoked() {
+        let root = Root::new("revoke-held");
+        let dir = root.0.join("sessions").join("api");
+        let (mut app, _reader) = housed(&root);
+        app.take(Reading::Owner, Instant::now());
+        let _busy = crate::store::open(&dir)
+            .console_writer()
+            .expect("other writer");
+        app.write(true);
+        assert!(app.held.is_some(), "GUARD refused entry is HELD");
+        std::fs::remove_file(dir.join("meta")).expect("home becomes unproven");
+        let why = "home revoked";
+        app.take(Reading::NotOwner(why.to_owned()), Instant::now());
+        assert_eq!(app.held.as_deref(), Some(why), "revocation updates HELD");
+        let q = vec![(Key::Text(b"q".to_vec()), Instant::now())];
+        assert_eq!(take_keys(&mut app, q), Some(false), "q stays swallowed");
+        assert_eq!(app.held.as_deref(), Some(why));
+        let retry = vec![(Key::Enter, Instant::now())];
+        assert_eq!(take_keys(&mut app, retry), Some(true));
+        assert!(app.held.is_some(), "unproven retry remains HELD");
+    }
+
+    /// R-B5/R-B7: a revoked writer releases, keeps its draft, and holds later text.
+    #[test]
+    fn a_revoked_writer_releases_the_lease_and_holds_its_kept_draft() {
+        let root = Root::new("revoke-write");
+        let dir = root.0.join("sessions").join("api");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        assert_eq!(app.compose(Key::Text(b"keep me".to_vec()), at), Some(()));
+        std::fs::remove_file(dir.join("meta")).expect("home becomes unproven");
+        let why = "home revoked";
+        app.take(Reading::NotOwner(why.to_owned()), Instant::now());
+        assert!(!app.composing(), "revocation ends writing");
+        drop(
+            crate::store::open(&dir)
+                .console_writer()
+                .expect("lease released"),
+        );
+        assert_eq!(app.held.as_deref(), Some(why), "writer lands HELD");
+        assert_eq!(app.input.as_ref().expect("input").draft(), "keep me");
+        let q = vec![(Key::Text(b"q".to_vec()), Instant::now())];
+        assert_eq!(take_keys(&mut app, q), Some(false), "q stays swallowed");
+        assert_eq!(app.input.as_ref().expect("input").draft(), "keep me");
+        let retry = vec![(Key::Enter, Instant::now())];
+        assert_eq!(take_keys(&mut app, retry), Some(true));
+        assert!(app.held.is_some(), "unproven retry remains HELD");
+        assert_eq!(app.input.as_ref().expect("input").draft(), "keep me");
+    }
+
+    /// R-B5/R-B7: admission revocation keeps even the line Enter consumed.
+    #[test]
+    fn an_admission_revocation_keeps_the_entered_line_only_in_memory() {
+        let root = Root::new("revoke-enter");
+        let dir = root.0.join("sessions").join("api");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        assert_eq!(app.compose(Key::Text(b"keep me".to_vec()), at), Some(()));
+        meta(&root, &ID.replace("1234", "bbbb"), "colead");
+        assert_eq!(app.compose(Key::Enter, at), Some(()));
+        assert!(!app.composing(), "refused admission releases the lease");
+        drop(crate::store::open(&dir).console_writer().expect("released"));
+        assert_eq!(app.input.as_ref().expect("input").draft(), "keep me");
+        assert_eq!(
+            app.held.as_deref(),
+            Some("the session was replaced or renamed")
+        );
+        let q = vec![(Key::Text(b"q".to_vec()), Instant::now())];
+        assert_eq!(take_keys(&mut app, q), Some(false), "q stays swallowed");
+        assert_eq!(super::submit::restore(&dir), super::submit::Draft::Nothing);
+        assert!(matches!(
+            crate::store::open(&dir).events_source(),
+            crate::store::SourceRead::Absent
+        ));
+        let body = std::fs::remove_dir(dir.join("messages")).map_err(|why| why.kind());
+        assert_eq!(body, Err(std::io::ErrorKind::NotFound), "no body written");
+    }
 }

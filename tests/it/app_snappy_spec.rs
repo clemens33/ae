@@ -610,6 +610,9 @@ fn a_close_outcome_paints_without_waiting_for_a_held_journal_read() {
         screen.contains(&format!("to {} › lead", rig.home))
     });
     rig.keys(&pane, "i");
+    rig.wait(&pane, WAIT, "writing starts", |screen| {
+        screen.contains("Enter sends")
+    });
     rig.literal(&pane, "/close");
     rig.wait(
         &pane,
