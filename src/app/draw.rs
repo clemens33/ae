@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::ops::Range;
 
 use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
+use ratatui_core::layout::{Position, Rect};
 use ratatui_core::style::{Color, Modifier, Style};
 use ratatui_core::text::{Line, Span};
 
@@ -18,8 +18,8 @@ use super::model::{Drag, Edge, Model, SettingsTab, Split, Tab};
 use super::overview::Overview;
 use super::settings::{AboutFacts, ConfigView, SettingsBodies};
 use crate::brief::age;
-use crate::console::input::Mouse;
 use crate::console::input::View;
+use crate::console::input::{Mouse, ROWS_MAX};
 use crate::console::lane::Lane;
 use crate::console::view;
 use crate::digest::{SessionEntry, Status};
@@ -86,6 +86,8 @@ const SIDEBAR_FLOOR: u16 = 30;
 const CHAT_FLOOR: u16 = 40;
 /// The tab body rows a drag leaves above the floor.
 const BODY_FLOOR: u16 = 3;
+/// The lane rows a growing composer leaves: one wheel notch.
+const LANE_FLOOR: u16 = 3;
 
 /// A click target recorded where its cells are drawn.
 #[derive(Debug, Clone)]
@@ -120,6 +122,8 @@ pub(crate) struct Layout {
     pub max_scroll: usize,
     /// The frame produced the lane's oldest row.
     pub complete: bool,
+    /// The cell the terminal cursor shows: the draft's, while writing.
+    pub cursor: Option<Position>,
     /// Body rows the open settings overlay shows at once.
     pub settings_page_rows: usize,
     /// How far back the settings body can scroll.
@@ -211,6 +215,7 @@ impl Layout {
         self.page_rows = 0;
         self.max_scroll = 0;
         self.complete = true;
+        self.cursor = None;
         self.settings_page_rows = 0;
         self.settings_max_scroll = 0;
     }
@@ -366,8 +371,21 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer
 pub(crate) fn draft_width(area: Rect, split: Split, home: &str, speaker: &str) -> usize {
     let left = sidebar_width(area, split).map_or(0, |rule| rule + 1) + 2;
     let room = usize::from(area.width.saturating_sub(2).saturating_sub(left));
-    let address = Span::raw(format!("to {home} › {speaker}   ")).width();
-    room.saturating_sub(address).max(1)
+    let prompt = Span::raw(address(home, speaker)).width();
+    room.saturating_sub(prompt).max(1)
+}
+
+/// The height a draft in `area` is laid out in. A view keeps one row of its
+/// height back, so this is one more than the composer's rows: ten at most,
+/// fewer where the lane would keep under [`LANE_FLOOR`], one at least.
+pub(crate) fn composer_pane(area: Rect) -> usize {
+    let room = usize::from(area.height.saturating_sub(8 + LANE_FLOOR));
+    room.clamp(1, ROWS_MAX) + 1
+}
+
+/// The address a home draft is drawn after.
+fn address(home: &str, speaker: &str) -> String {
+    format!("to {home} › {speaker}   ")
 }
 
 // ---------------------------------------------------------------------------
@@ -917,7 +935,15 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let (dim, border) = (paint.fg(|p| p.dim), paint.fg(|p| p.border));
     header(ctx, buf, left, end);
     put(buf, left, 2, &"─".repeat(usize::from(room)), room, border);
-    let (top, bottom) = (3, height.saturating_sub(6));
+    // While writing, the composer has a row for each row of the draft's view.
+    let grown = match screen.composer {
+        Composer::Home {
+            view: Some(view), ..
+        } => cells(view.rows.len().max(1)),
+        _ => 1,
+    };
+    let composer = height.saturating_sub(3 + grown);
+    let (top, bottom) = (3, composer.saturating_sub(2));
     let main = screen
         .selected
         .and_then(|entry| entry.main_agent.as_deref())
@@ -963,15 +989,40 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     put(
         buf,
         left,
-        height - 5,
+        composer.saturating_sub(1),
         &"─".repeat(usize::from(room)),
         room,
         border,
     );
-    let (address, hint) = composer_lines(ctx);
-    put_line(buf, left, height - 4, &address, room);
+    let (address_row, hint) = composer_lines(ctx);
+    put_line(buf, left, composer, &address_row, room);
     put(buf, left, height - 3, &hint, room, dim);
-    layout.record(buf, Rect::new(left, height - 4, room, 2), Hit::Compose);
+    if let Composer::Home {
+        home,
+        speaker,
+        view: Some(view),
+        ..
+    } = screen.composer
+    {
+        // The rest of the draft under its first text cell, and the cursor
+        // after the cells its row draws before it, never past the row.
+        let indent = cells(Span::raw(address(home, speaker)).width());
+        let width = room.saturating_sub(indent);
+        let text = paint.fg(|p| p.text);
+        for (y, row) in (composer..).zip(&view.rows).skip(1) {
+            put(buf, left + indent, y, row, width, text);
+        }
+        let before = cells(Span::raw(view.before.as_str()).width());
+        layout.cursor = (width > 0).then(|| {
+            let row = composer + cells(view.cursor_row);
+            Position::new(left + indent + before.min(width - 1), row)
+        });
+    }
+    layout.record(
+        buf,
+        Rect::new(left, composer, room, grown + 1),
+        Hit::Compose,
+    );
     layout.page_rows = room_rows;
     layout.max_scroll = rows.len().saturating_sub(room_rows);
     layout.complete = complete;
@@ -1038,9 +1089,9 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
             view,
             draft,
         } => {
-            let address = Span::styled(format!("to {home} › {speaker}   "), paint.fg(|p| p.title));
+            let address = Span::styled(address(home, speaker), paint.fg(|p| p.title));
             if let Some(view) = view {
-                let row = view.rows.get(view.cursor_row).cloned().unwrap_or_default();
+                let row = view.rows.first().cloned().unwrap_or_default();
                 let line = Line::from(vec![address, Span::styled(row, text)]);
                 return (line, "Enter sends · Esc keeps the draft".to_owned());
             }

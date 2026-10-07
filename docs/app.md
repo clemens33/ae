@@ -42,7 +42,10 @@ recorded config first.
 - **Chat** column: the selected session's lane, newest at the bottom, with its
   coverage rows, then the composer. Only the rows on screen and a page beyond
   are drawn: older turns are drawn as you scroll back to them, and the oldest
-  stops the scroll.
+  stops the scroll. The composer is one row while browsing; while writing it
+  grows with the draft to ten rows, taking them from the lane, which keeps at
+  least three rows: a short pane shrinks the composer first, to one row at
+  least. A resize sizes it again, and leaving writing gives the rows back.
 
 Both borders can be dragged with the mouse. The rule between the sidebar and
 the chat sets the sidebar's width: at least 30 cells, and the chat keeps at
@@ -98,8 +101,15 @@ A paste while browsing is swallowed whole, never read as keys.
 
 Writing: the draft is the chat's own input — a line asks the speaker,
 `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
-five asks open at most; see [Input](chat.md#input). `Enter` sends, `Esc` goes
-back to browsing and keeps the draft, `^C` quits. `/open` is refused: the app
+five asks open at most; see [Input](chat.md#input). The composer shows the
+whole draft as the chat does — the same wrap, each pasted line break its own
+row, the rest indented under the first text cell, and past its rows the window
+around the cursor with `… +N lines above` and `… +N lines below` among them
+(no markers below three rows) — and the terminal cursor sits where the next
+character goes. The cursor shows only while writing with the composer drawn:
+browsing, a held composer and Settings hide it. Every composer row and its hint
+row are one click target. `Enter` sends, `Esc` goes back to browsing and keeps
+the draft, `^C` quits. `/open` is refused: the app
 selects no pane, `ae chat` does. Each outcome shows in the home lane as an `ae`
 line.
 

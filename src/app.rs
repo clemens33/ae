@@ -820,7 +820,7 @@ impl App {
             let width = draw::draft_width(area, self.model.split(), home, input.speaker());
             let size = Size {
                 width,
-                height: usize::from(area.height),
+                height: draw::composer_pane(area),
             };
             (self.draft_view, self.draft) = (input.bare_view(size), input.draft());
         }
@@ -988,7 +988,12 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             dirty = true;
         }
         if dirty {
-            terminal.draw(|frame| app.frame(frame.buffer_mut()))?;
+            terminal.draw(|frame| {
+                app.frame(frame.buffer_mut());
+                if let Some(at) = app.layout.cursor {
+                    frame.set_cursor_position(at);
+                }
+            })?;
             dirty = false;
         }
         // Held keys replay as soon as the frame above has produced more.
