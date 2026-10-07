@@ -410,34 +410,39 @@ impl App {
     }
 
     /// Hand one reading of whether home may be written, completed at `at`,
-    /// to the composer; one that ends it ends the writing too.
+    /// to the composer. One that ends it ends the writing too, HELD with its
+    /// reason and the draft kept; an unanswered one changes nothing.
     fn take(&mut self, reading: Reading, at: Instant) {
         let Some(input) = &mut self.input else {
             return;
         };
-        self.read_only = match &reading {
-            Reading::NotOwner(why) => why.clone(),
-            Reading::Unknown => UNREAD.to_owned(),
-            Reading::Owner => String::new(),
-        };
-        let _ = input.tick(reading, at);
-        if !input.taking() {
-            self.write(false);
+        match reading {
+            Reading::Owner => {
+                let _ = input.tick(Reading::Owner, at);
+                self.read_only.clear();
+            }
+            Reading::NotOwner(why) => {
+                if self.composing() || self.held.is_some() {
+                    (self.lease, self.held) = (None, Some(why.clone()));
+                }
+                self.read_only = why;
+            }
+            Reading::Unknown => {}
         }
     }
 
     /// Start or stop writing home: the one writer of the lease. Starting
     /// takes it without waiting, and the instant it is held gates every key
-    /// after; an empty composer gets the kept line back. A refusal is HELD.
+    /// after; an empty composer gets the kept line back. A refusal, or a
+    /// home not proven, is HELD.
     fn write(&mut self, on: bool) {
         (self.lease, self.held) = (None, None);
-        let Some(console) = self
-            .home_console
-            .as_ref()
-            .filter(|_| on && self.can_compose())
-        else {
+        let Some(console) = self.home_console.as_ref().filter(|_| on) else {
             return;
         };
+        if !self.can_compose() {
+            return self.held = Some(self.read_only.clone());
+        }
         let file = match term::lease(console) {
             Ok(file) => file,
             Err(why) => return self.held = Some(why),
@@ -526,9 +531,9 @@ impl App {
         self.world.sessions.iter().find(|entry| entry.name == name)
     }
 
-    /// Whether Enter may start a line: this app owns the home input.
+    /// Whether Enter may start a line: home's last reading proved it.
     fn can_compose(&self) -> bool {
-        self.input.as_ref().is_some_and(Input::taking)
+        self.read_only.is_empty() && self.input.as_ref().is_some_and(Input::taking)
     }
 
     /// One key while composing: Esc keeps the draft and browses, ^C quits,
@@ -863,9 +868,6 @@ impl App {
         }
     }
 }
-
-/// What the app says when tmux did not answer who owns the input.
-const UNREAD: &str = "tmux did not answer who owns the input";
 
 /// What the picker's read says of `entry`'s seats.
 fn facts_of(
@@ -1222,7 +1224,7 @@ mod tests {
 
     use super::loader::{self, Answer, Reader, ViewRead};
     use super::{
-        App, UNREAD, USAGE, browse, draw, facts_of, fleet, run, settings, settings_key, take_keys,
+        App, USAGE, browse, draw, facts_of, fleet, run, settings, settings_key, take_keys,
     };
     use crate::app::fleet::{Counts, Fleet, Row};
     use crate::app::model::{Edge, Key as Browse, Model, SettingsTab, Tab};
@@ -1706,6 +1708,10 @@ mod tests {
         let body = std::fs::remove_dir(dir.join("messages")).map_err(|why| why.kind());
         assert_eq!(body, Err(std::io::ErrorKind::NotFound), "no body written");
         assert!(!app.composing() && !app.can_compose(), "and no writing");
+        assert_eq!(
+            app.held.as_deref(),
+            Some("the session was replaced or renamed")
+        );
     }
 
     /// `/open` in the app names why it opens nothing, as the docs say, once
@@ -1752,15 +1758,6 @@ mod tests {
         let mut entry = SessionEntry::new(name, status);
         entry.attention = attention;
         entry
-    }
-
-    /// #15: an unanswered reading says tmux did not answer.
-    #[test]
-    fn an_unanswered_ownership_says_tmux_did_not_answer() {
-        let root = Root::new("own");
-        let (mut app, _reader) = housed(&root);
-        app.take(Reading::Unknown, Instant::now());
-        assert_eq!(app.read_only, UNREAD);
     }
 
     /// R-B6: only an acquisition restores the kept line, and only into an

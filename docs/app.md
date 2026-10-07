@@ -111,7 +111,8 @@ the lease's lock file is not a regular file, writing does not start: the
 composer reads `not writing: an ae app is writing to <home> · Esc browses` (or
 `not writing: the writer lease is not a regular file · Esc browses`) and every
 key is swallowed until `Esc` browses, `^C` quits, a click acts or `Enter` tries
-again. The other app letting go does not start writing by itself.
+again; while home is not proven, `Enter` stays held. The other app letting go
+does not start writing by itself.
 
 While writing, clicking a session row or tab returns to browsing and keeps the
 draft, then selects the row or tab. Blank rows and the "more" row do nothing.
@@ -149,8 +150,12 @@ keeps it while open. Each ask and `/close` goes through the chat's admission,
 which re-proves the lease and re-reads the meta's `session_id` and lead pair
 against those the app opened with, then asks as `console:local` under the same
 five-open cap. A session replaced under its name, a changed lead pair or a meta
-that is gone refuses the ask, ends the writing and reads `read-only · <why> -
-prefix h opens it`; the next fleet read, every 5 seconds, does the same. The
+that is gone refuses the ask and ends the writing: the lease is released and
+the composer is held as `not writing: <why> · Esc browses`, the draft kept in
+memory and every key swallowed as above. The next fleet read, every 5 seconds,
+does the same without a key, also to an entry already held. After `Esc` the
+composer reads `read-only · <why> - prefix h opens it` until a read proves home
+again. The
 kept draft comes back only when writing starts into an empty composer, under
 the `Kept line, maybe already sent` banner; a draft kept in memory wins, never
 merged. The owner `ae chat` tries the lease inside its own admission: while an
