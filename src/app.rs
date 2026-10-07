@@ -423,7 +423,8 @@ impl App {
             }
             Reading::NotOwner(why) => {
                 if self.composing() || self.held.is_some() {
-                    (self.lease, self.held) = (None, Some(why.clone()));
+                    self.write(false);
+                    self.held = Some(why.clone());
                 }
                 self.read_only = why;
             }
