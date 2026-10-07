@@ -80,3 +80,4 @@ mod telegram;
 mod transport;
 mod usage;
 mod watchdog_glue;
+mod watchdog_spacing_spec;
