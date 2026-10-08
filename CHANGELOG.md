@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.39] - 2026-10-08
+- Frozen tests for the plain attention line and Settings mouse
+- Ae app: plain attention line and Settings tab and close clicks
+- Pin the Settings tab click redraw flag
+
 ## [v2026.10.38] - 2026-10-08
 - Frozen spec for the bigger session list and Overview launch facts
 - The undragged session list takes two thirds of the sidebar; Overview opens with the launch facts
