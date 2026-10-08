@@ -43,6 +43,8 @@ mod lane;
 mod lane_spec;
 mod loader;
 pub mod model;
+#[cfg(test)]
+mod order_spec;
 pub mod overview;
 mod settings;
 mod tty;
