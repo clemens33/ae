@@ -924,6 +924,9 @@ pub fn wants_git(entry: &SessionEntry) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) use tests::{count_parsed, parsed_bytes};
+
+#[cfg(test)]
 mod tests {
     use super::{
         AgentLine, Args, Card, Need, Target, TopicLine, age, card_for, clip, duration_secs, needs,
@@ -931,6 +934,20 @@ mod tests {
     };
     use crate::attention::Reason;
     use crate::time::Timestamp;
+
+    thread_local! {
+        static PARSED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Add `bytes` to this thread's count of bytes handed to the memo parser.
+    pub(crate) fn count_parsed(bytes: usize) {
+        PARSED.with(|total| total.set(total.get().saturating_add(bytes as u64)));
+    }
+
+    /// Bytes [`super::filed`] has handed the memo parser on this thread.
+    pub(crate) fn parsed_bytes() -> u64 {
+        PARSED.with(std::cell::Cell::get)
+    }
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
@@ -1515,21 +1532,4 @@ mod tests {
         assert_eq!(short_path("/srv/ae", Some(home)), "/srv/ae");
         assert_eq!(short_path("/Users/x/ae", None), "/Users/x/ae");
     }
-}
-
-#[cfg(test)]
-thread_local! {
-    static PARSED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Add `bytes` to this thread's count of bytes handed to the memo parser.
-#[cfg(test)]
-fn count_parsed(bytes: usize) {
-    PARSED.with(|total| total.set(total.get().saturating_add(bytes as u64)));
-}
-
-/// Bytes [`filed`] has handed the memo parser on this thread.
-#[cfg(test)]
-pub(crate) fn parsed_bytes() -> u64 {
-    PARSED.with(std::cell::Cell::get)
 }

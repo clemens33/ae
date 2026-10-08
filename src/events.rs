@@ -848,6 +848,9 @@ impl EventLog {
 }
 
 #[cfg(test)]
+pub(crate) use tests::{count_parsed, parsed_bytes};
+
+#[cfg(test)]
 mod tests {
     #![allow(
         clippy::disallowed_methods,
@@ -863,6 +866,21 @@ mod tests {
     use crate::time::Timestamp;
     use std::fs;
     use std::path::PathBuf;
+
+    thread_local! {
+        static PARSED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Add `bytes` to this thread's count of bytes handed to the event parser.
+    pub(crate) fn count_parsed(bytes: usize) {
+        PARSED.with(|total| total.set(total.get().saturating_add(bytes as u64)));
+    }
+
+    /// Bytes [`super::EventLog::drain`] has handed its parser on this thread,
+    /// partial trailing records included.
+    pub(crate) fn parsed_bytes() -> u64 {
+        PARSED.with(std::cell::Cell::get)
+    }
 
     const DONE: &str = r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done"}"#;
 
@@ -2192,22 +2210,4 @@ mod tests {
             session: "s"
         }));
     }
-}
-
-#[cfg(test)]
-thread_local! {
-    static PARSED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Add `bytes` to this thread's count of bytes handed to the event parser.
-#[cfg(test)]
-fn count_parsed(bytes: usize) {
-    PARSED.with(|total| total.set(total.get().saturating_add(bytes as u64)));
-}
-
-/// Bytes [`EventLog::drain`] has handed its parser on this thread, partial
-/// trailing records included.
-#[cfg(test)]
-pub(crate) fn parsed_bytes() -> u64 {
-    PARSED.with(std::cell::Cell::get)
 }
