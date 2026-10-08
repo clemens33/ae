@@ -15,7 +15,7 @@ test-threads = 8
 max-threads = 2
 
 [[profile.default.overrides]]
-filter = 'test(/^app_writer_spec::/)'
+filter = 'test(/^app_(writer|selected)_spec::/)'
 test-group = 'app-writers'
 
 # The `menu` module drives a REAL tmux server and real attached clients, then

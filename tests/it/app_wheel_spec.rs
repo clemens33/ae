@@ -629,7 +629,7 @@ fn clicked_revealed_card_keeps_window_and_same_selection_key_reveals_it() {
         "A-CLICK-SECOND-LINE selects drawn card",
         |s| {
             s.lines().nth(1).is_some_and(|line| line.contains(target))
-                && s.contains("typing writes to")
+                && s.contains("ws09 is stopped")
         },
     );
     assert_eq!(

@@ -574,8 +574,8 @@ fn live_lost_release_then_click_selects_row_and_old_drag_stays_dead() {
     rig.wait(
         &pane,
         MOVE,
-        "ordinary click selects foreign row",
-        |screen| screen.contains("typing writes to"),
+        "ordinary click selects stopped row",
+        |screen| screen.contains("zstop is stopped"),
     );
     rig.motion(&pane, 80, row);
     // Tab-label click is both unchanged click behavior and ordered sentinel.
@@ -588,7 +588,7 @@ fn live_lost_release_then_click_selects_row_and_old_drag_stays_dead() {
         |screen| screen.contains("Not running: no seat facts."),
     );
     assert_eq!(vertical_rule(&screen), Some(66));
-    assert!(screen.contains("typing writes to"));
+    assert!(screen.contains("zstop is stopped"));
 }
 
 #[test]

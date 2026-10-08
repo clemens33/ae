@@ -746,11 +746,11 @@ fn leaving_writing_compacts_kept_draft_and_discards_the_old_grown_hit_target() {
 }
 
 #[test]
-fn browse_busy_held_foreign_and_revoked_read_only_keep_the_cursor_hidden() {
+fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
     let rig = Rig::new("cwquiet", 0);
     let stopped = rig.root.join("sessions").join("zzstop");
     fs::create_dir(&stopped).expect("stopped sibling");
-    fs::write(stopped.join("meta"), "session=zzstop\nmode=local\nsession_id=0199c0de-bbbb-4890-abcd-ef0123456789\nlayout=lead-pair\nseat.main=lead\n").expect("stopped meta");
+    fs::write(stopped.join("meta"), format!("session=zzstop\nmode=local\nsession_id=0199c0de-bbbb-4890-abcd-ef0123456789\nlayout=lead-pair\nseat.main=lead\ntmux_server_kind=socket\ntmux_server={}\n", rig.socket.display())).expect("stopped meta");
     let pane = rig.open();
     assert_eq!(rig.frame(&pane).cursor.0, 0, "browse hides cursor");
     let lease = fs::OpenOptions::new()
@@ -772,11 +772,11 @@ fn browse_busy_held_foreign_and_revoked_read_only_keep_the_cursor_hidden() {
     });
     let (x, y) = cell(&browse.text, "zzstop");
     rig.report(&pane, 0, x, y, 1);
-    let foreign = rig.wait(&pane, FRAME, "GUARD selected foreign", |f| {
-        f.text.contains("read-only · typing writes")
+    let foreign = rig.wait(&pane, FRAME, "B2 selected stopped target", |f| {
+        f.text.contains("zzstop is stopped")
     });
     assert_eq!(foreign.cursor.0, 0);
-    assert_eq!(cell(&foreign.text, "read-only · typing writes").1, 41);
+    assert_eq!(cell(&foreign.text, "zzstop is stopped").1, 41);
     drop(lease);
     let (home_x, home_y) = foreign
         .text
@@ -809,7 +809,7 @@ fn browse_busy_held_foreign_and_revoked_read_only_keep_the_cursor_hidden() {
 }
 
 #[test]
-fn no_home_hides_cursor_and_terminal_leave_restores_it() {
+fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
     let rig = Rig::new("cwnone", 0);
     let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
     let command = format!(
@@ -833,11 +833,23 @@ fn no_home_hides_cursor_and_terminal_leave_restores_it() {
         ])
         .trim()
         .to_owned();
-    let no_home = rig.wait(&pane, WAIT, "GUARD outside app has no home", |f| {
-        f.text.contains("read-only · no home session")
-    });
-    assert_eq!(no_home.cursor.0, 0);
-    assert_eq!(cell(&no_home.text, "read-only · no home session").1, 41);
+    let outside = rig.wait(
+        &pane,
+        WAIT,
+        "GUARD outside app drew selected session",
+        |f| f.text.contains("Sessions 1") && f.text.contains("Overview"),
+    );
+    let address = format!("to {} (not home) › lead", rig.home);
+    assert!(
+        outside.text.contains(&address),
+        "B2 selected address outside tmux"
+    );
+    assert!(
+        outside.text.contains("Enter writes"),
+        "B2 no home needed to write"
+    );
+    assert_eq!(outside.cursor.0, 0);
+    assert_eq!(cell(&outside.text, &address).1, 41);
     rig.send(&pane, "q");
     let left = rig.wait(&pane, FRAME, "GUARD terminal left app", |f| {
         f.text.contains("C1-LEFT")

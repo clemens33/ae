@@ -9,6 +9,7 @@ mod app_composer_spec;
 mod app_live;
 mod app_mouse_spec;
 mod app_resize_spec;
+mod app_selected_spec;
 mod app_settings_spec;
 mod app_side_spec;
 mod app_snappy_spec;

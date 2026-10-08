@@ -647,7 +647,7 @@ fn app_model_next_need_walks_and_wraps() {
 }
 
 /// Tab toggles the tab; with the Agents tab cut it answers nothing. Compose
-/// opens only on the home row when the app owns input. Esc returns home.
+/// opens on an eligible selected row, including without home. Esc returns home.
 #[test]
 fn app_model_tab_compose_esc() {
     let fleet = model_fleet();
@@ -665,12 +665,12 @@ fn app_model_tab_compose_esc() {
     assert!(matches!(model.tab(), Tab::Agents), "the tab holds");
     assert!(
         matches!(model.key(AppKey::Compose, &fleet, true, true), Act::Compose),
-        "home and owner composes"
+        "eligible selected home composes"
     );
     let _ = model.key(AppKey::Digit(3), &fleet, true, true);
     assert!(
-        matches!(model.key(AppKey::Compose, &fleet, true, true), Act::None),
-        "a foreign row never composes"
+        matches!(model.key(AppKey::Compose, &fleet, true, true), Act::Compose),
+        "eligible selected non-home composes"
     );
     assert!(
         matches!(
@@ -683,13 +683,20 @@ fn app_model_tab_compose_esc() {
     );
     assert!(
         matches!(model.key(AppKey::Compose, &fleet, false, true), Act::None),
-        "not the owner composes nothing"
+        "ineligible selection composes nothing"
     );
     let homeless = Fleet {
         rows: vec![calm("docs", 1)],
         home: None,
     };
     let mut model = Model::new(&homeless);
+    assert!(
+        matches!(
+            model.key(AppKey::Compose, &homeless, true, true),
+            Act::Compose
+        ),
+        "eligible selected session needs no home"
+    );
     assert!(
         matches!(model.key(AppKey::Esc, &homeless, true, true), Act::None),
         "no home answers nothing"
@@ -1296,10 +1303,9 @@ fn app_draw_home_160x43() {
     }
 }
 
-/// A foreign selection shows its lane read-only with both sessions named;
-/// typing still reaches only the home lead pair, so no draft ever shows.
+/// A running non-home selection names its own target and shows its own lane.
 #[test]
-fn app_draw_foreign_is_read_only() {
+fn app_draw_non_home_address_names_the_selected_target() {
     let fleet = draw_fleet();
     let mut model = Model::new(&fleet);
     let _ = model.key(AppKey::Digit(3), &fleet, true, true);
@@ -1328,9 +1334,11 @@ fn app_draw_foreign_is_read_only() {
         pair: &pair,
         agents: Some(&agents),
         lane: &lane,
-        composer: Composer::Foreign {
-            home: "api",
+        composer: Composer::Home {
+            home: "infra",
             speaker: "lead",
+            view: None,
+            draft: "",
         },
         look: Some(darcula()),
         zone: None,
@@ -1340,21 +1348,21 @@ fn app_draw_foreign_is_read_only() {
     draw(&screen, &mut buf);
     let head = row_text(&buf, 1);
     assert!(head.contains("infra"), "the target is named");
-    assert!(head.contains("viewed from the api window · Esc returns to api"));
     assert_eq!(
         chat_text(&buf, 39, 44).trim_start(),
-        "read-only · typing writes to api › lead",
-        "typing stays home"
+        "to infra (not home) › lead",
+        "the drawn address names the non-home target"
     );
     let text = all_text(&buf);
+    assert!(text.contains("Enter writes"), "selected target is eligible");
     assert!(text.contains("infra-only line"), "the foreign lane shows");
     assert!(!text.contains("hello lane"), "never the home lane");
 }
 
-/// No home session: the header drops `viewed from`, the composer names the
-/// way out, and Esc stays a no-op (pinned in the reducer test).
+/// A selected running session outside home carries the non-home address;
+/// Esc still stays a no-op (pinned in the reducer test).
 #[test]
-fn app_draw_no_home_names_the_way_out() {
+fn app_draw_no_home_names_the_selected_target() {
     let fleet = Fleet {
         rows: vec![calm("docs", 1)],
         home: None,
@@ -1368,7 +1376,7 @@ fn app_draw_no_home_names_the_way_out() {
         ..Default::default()
     };
     let entry = SessionEntry::new("docs", Status::Running);
-    let pair: Vec<String> = vec![];
+    let pair = ["lead".to_owned(), "colead".to_owned()];
     let lane = Lane {
         items: vec![],
         coverage: vec![],
@@ -1381,18 +1389,25 @@ fn app_draw_no_home_names_the_way_out() {
         pair: &pair,
         agents: None,
         lane: &lane,
-        composer: Composer::NoHome,
+        composer: Composer::Home {
+            home: "docs",
+            speaker: "lead",
+            view: None,
+            draft: "",
+        },
         look: Some(darcula()),
         zone: None,
         now: now(),
     };
     let mut buf = Buffer::empty(Rect::new(0, 0, 160, 43));
     draw(&screen, &mut buf);
+    assert!(row_text(&buf, 1).contains("docs"));
     assert!(!row_text(&buf, 1).contains("viewed from"));
     assert_eq!(
         chat_text(&buf, 39, 44).trim_start(),
-        "read-only · no home session: ae app <session> picks one"
+        "to docs (not home) › lead"
     );
+    assert!(all_text(&buf).contains("Enter writes"));
 }
 
 /// `theme = off` draws no colour anywhere: every cell is Reset, the selected

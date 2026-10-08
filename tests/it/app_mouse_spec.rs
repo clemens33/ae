@@ -12,7 +12,7 @@
 //! `paste_keeps_mouse_bytes_literal` and `idle_drops_partial_mouse_then_fresh`
 //! pass on S0 as guards. Live: `guard_literal_arrow_moves_selection` passes on
 //! S0 (arrow injection works); `tiny_clicks_noop`,
-//! `click_composer_on_foreign_row_noops` and `chat_window_never_enables_mouse`
+//! `click_composer_on_stopped_row_noops` and `chat_window_never_enables_mouse`
 //! pass vacuously on S0 and pin their rule on GREEN; every other live test is
 //! RED on S0.
 
@@ -484,7 +484,7 @@ fn guard_literal_arrow_moves_selection() {
     });
     rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "\x1b[B"]);
     rig.wait(&pane, WAIT, "Down selects the stopped row", |screen| {
-        screen.contains("typing writes to")
+        screen.contains("amstop is stopped")
     });
     rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "\x1b[A"]);
     rig.wait(&pane, WAIT, "Up returns home", |screen| {
@@ -493,7 +493,7 @@ fn guard_literal_arrow_moves_selection() {
 }
 
 /// Ruling 5: clicking a session row selects it as its number key would; the
-/// foreign composer names where typing still goes, the home row returns.
+/// stopped target names its own refusal, the home row returns.
 #[test]
 fn click_selects_session_row() {
     let rig = Rig::new("amsel", 0, &["amstop"]);
@@ -505,7 +505,7 @@ fn click_selects_session_row() {
     let (col, row) = sidebar_cell_of(&screen, "amstop").expect("the stopped row");
     rig.click(&pane, col, row);
     let screen = rig.wait(&pane, WAIT, "the click selects the row", |screen| {
-        screen.contains("typing writes to")
+        screen.contains("amstop is stopped")
     });
     let (col, row) = sidebar_cell_of(&screen, &home).expect("the home row");
     rig.click(&pane, col, row);
@@ -587,7 +587,7 @@ fn click_blank_row_noops() {
         "still browsing home:\n{screen}"
     );
     assert!(
-        !screen.contains("typing writes to"),
+        screen.lines().nth(1).is_some_and(|row| row.contains(&home)),
         "no selection moved:\n{screen}"
     );
 }
@@ -613,7 +613,10 @@ fn click_more_row_noops() {
         "still browsing home:\n{screen}"
     );
     assert!(
-        !screen.contains("typing writes to"),
+        screen
+            .lines()
+            .nth(1)
+            .is_some_and(|row| row.contains(&rig.name)),
         "no selection moved:\n{screen}"
     );
 }
@@ -830,24 +833,27 @@ fn wheel_while_writing_scrolls_and_keeps_draft() {
 }
 
 /// Ruling 5: the composer click only starts writing where Enter would — on a
-/// foreign row it no-ops. GUARD on S0: green vacuously, pins the rule on GREEN.
+/// stopped row it no-ops: the named refusal and lack of write mode are pinned.
 #[test]
-fn click_composer_on_foreign_row_noops() {
+fn click_composer_on_stopped_row_noops() {
     let rig = Rig::new("amforeign", 0, &["amstop"]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "both rows listed", |screen| {
         screen.contains("Sessions 2")
     });
     rig.tmux(&["send-keys", "-t", &pane, "2"]);
-    let screen = rig.wait(&pane, WAIT, "the foreign row shows", |screen| {
-        screen.contains("typing writes to")
-    });
-    let (col, row) = cell_of(&screen, "typing writes to").expect("the foreign composer");
+    let screen = rig.wait(
+        &pane,
+        WAIT,
+        "B2 selected stopped row names its refusal",
+        |screen| screen.contains("amstop is stopped"),
+    );
+    let (col, row) = cell_of(&screen, "amstop is stopped").expect("the stopped composer");
     rig.click(&pane, col, row);
     std::thread::sleep(SETTLE);
     let screen = rig.screen(&pane);
     assert!(
-        screen.contains("typing writes to"),
+        screen.contains("amstop is stopped"),
         "still the browse composer:\n{screen}"
     );
     assert!(
