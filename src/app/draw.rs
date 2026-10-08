@@ -1700,6 +1700,11 @@ mod tests {
         assert!(gapped.contains(&"none in /g") && gapped.contains(&"gap: unknown slot"));
         let torn = InstructionsView::Gap("\u{1b}]0;x\u{7}torn".to_owned());
         assert_eq!(lines(torn)[0].0, "\u{fffd}]0;x\u{fffd}torn");
+        let fit = "x".repeat(usize::from(80 - LEFT));
+        let mut tight = custom;
+        tight.text.clone_from(&fit);
+        let filled = lines(ready(Some(tight), Ok(String::new())));
+        assert!(filled.iter().any(|row| row.0 == fit));
     }
 
     /// Every write is bounds-checked, so no size panics: a populated screen
