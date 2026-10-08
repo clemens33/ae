@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.43] - 2026-10-08
+- Ae app tests: read Agents rows without the focused-seat marker
+- Ae app: open a seat's pane from the app
+- Ae app: pin that a seat row's click target ends at the body
+
 ## [v2026.10.42] - 2026-10-08
 - Frozen acceptance tests for the Settings Instructions tab
 - Ae app: Settings Instructions tab shows the custom instructions and every seat protocol
