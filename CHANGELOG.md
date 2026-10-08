@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.38] - 2026-10-08
+- Frozen spec for the bigger session list and Overview launch facts
+- The undragged session list takes two thirds of the sidebar; Overview opens with the launch facts
+- Take two thirds of the shared rows without overflow on a tall pane; docs name the cap at the shared rows
+
 ## [v2026.10.37] - 2026-10-08
 - Keep wheel waits safe during repaint
 - Specify whole app composer and terminal cursor
