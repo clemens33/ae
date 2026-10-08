@@ -41,6 +41,8 @@ use loader::{Answer, Binding, Request, Wake};
 mod backend;
 pub mod draw;
 pub mod fleet;
+#[cfg(test)]
+mod fleet_spec;
 mod lane;
 #[cfg(test)]
 mod lane_spec;
