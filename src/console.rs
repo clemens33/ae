@@ -209,7 +209,7 @@ impl Console {
     /// follow for the new transcript bytes and re-reads the whole journal, so a
     /// replaced or shrunk journal can never hide a record.
     pub(crate) fn read(&mut self) -> Result<Read, String> {
-        self.read_with(&mut session::RecordSnapshot::read)
+        self.read_with(&mut |dir| session::RecordSnapshot::read(dir))
     }
 
     /// [`Console::read`] with the session's records read by `records`.

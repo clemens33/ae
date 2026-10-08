@@ -36,7 +36,7 @@ struct Held {
 impl Journals {
     /// [`RecordSnapshot::read`] of `dir`, its journal reused while unchanged.
     pub(super) fn snapshot(&mut self, dir: &Path) -> RecordSnapshot {
-        RecordSnapshot::read_with(dir, |dir| self.events(dir))
+        RecordSnapshot::read_with(dir, || self.events(dir))
     }
 
     /// The journal of `dir` as [`SessionRead::open`] reads it now.

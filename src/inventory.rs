@@ -270,7 +270,7 @@ enum Journal<'a> {
 /// read.
 #[must_use]
 pub fn durable_records(roots: &Roots) -> DurableScan {
-    durable_scan(roots, Journal::Read(&mut RecordSnapshot::read))
+    durable_scan(roots, Journal::Read(&mut |path| RecordSnapshot::read(path)))
 }
 
 /// [`durable_records`] with each record read by `read`.
