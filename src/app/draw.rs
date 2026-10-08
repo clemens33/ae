@@ -93,6 +93,8 @@ const LANE_FLOOR: u16 = 3;
 pub(crate) enum Hit {
     Session(String),
     Tab(Tab),
+    /// A drawn seat row: moves the highlight to that seat.
+    Seat(String),
     Compose,
     /// The keys row's gear: toggles the settings overlay.
     Settings,
@@ -140,6 +142,9 @@ pub(crate) struct Layout {
     body: Rect,
     pub body_top: Option<usize>,
     pub body_max: usize,
+    /// The seats the tab body drew, in drawn order, and the one it highlighted.
+    pub seats: Vec<String>,
+    pub focused: Option<String>,
 }
 
 impl Layout {
@@ -215,6 +220,7 @@ impl Layout {
         (self.list, self.body) = (Rect::default(), Rect::default());
         (self.list_start, self.body_top) = (None, None);
         (self.list_max, self.body_max) = (0, 0);
+        (self.seats, self.focused) = (Vec::new(), None);
         self.page_rows = 0;
         self.max_scroll = 0;
         self.complete = true;
@@ -664,8 +670,39 @@ fn tab_body(
         let text = format!("{} more rows", parts.join(" · "));
         put(buf, LEFT, floor - 1, &text, room, paint.fg(|p| p.dim));
     }
-    for (step, row) in body.iter().skip(first).take(shown).enumerate() {
+    let drawn = body.iter().skip(first).take(shown);
+    for seat in drawn.clone().filter_map(|row| row.seat.as_deref()) {
+        if !layout.seats.iter().any(|kept| kept == seat) {
+            layout.seats.push(seat.to_owned());
+        }
+    }
+    let asked = ctx.screen.model.focus();
+    layout.focused = (layout
+        .seats
+        .iter()
+        .find(|seat| Some(seat.as_str()) == asked))
+    .or(layout.seats.first())
+    .cloned();
+    for (step, row) in drawn.enumerate() {
         let y = top + cells(step);
+        if let Some(seat) = &row.seat {
+            layout.record(
+                buf,
+                Rect::new(LEFT, y, end - LEFT, 1),
+                Hit::Seat(seat.clone()),
+            );
+            if layout.focused.as_ref() == Some(seat) {
+                let glyph = if ctx.icons { "▸" } else { ">" };
+                put(
+                    buf,
+                    0,
+                    y,
+                    glyph,
+                    1,
+                    paint.fg(|p| p.title).add_modifier(Modifier::BOLD),
+                );
+            }
+        }
         let used = put_line(buf, LEFT, y, &row.left, room);
         if let Some(right) = &row.right {
             let width = cells(right.width());
@@ -803,6 +840,8 @@ fn tab_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, y: u16, end: u16, layout: &mut L
 struct Cells {
     left: Line<'static>,
     right: Option<Line<'static>>,
+    /// The seat this row belongs to, when it is one of a seat's rows.
+    seat: Option<String>,
 }
 
 impl Cells {
@@ -810,7 +849,14 @@ impl Cells {
         Self {
             left: Line::from(spans),
             right: None,
+            seat: None,
         }
+    }
+
+    /// This row as one of `seat`'s.
+    fn of_seat(mut self, seat: &str) -> Self {
+        self.seat = Some(seat.to_owned());
+        self
     }
 
     fn blank() -> Self {
@@ -850,15 +896,18 @@ fn overview_rows(ctx: &Ctx<'_, '_>, room: u16, wide: bool) -> Vec<Cells> {
     for open in &overview.open {
         let room = room.saturating_sub(2);
         if wide {
-            rows.push(Cells::of(vec![
-                mark.clone(),
-                Span::styled(clip_head(&open.text, usize::from(room)), text),
-            ]));
+            rows.push(
+                Cells::of(vec![
+                    mark.clone(),
+                    Span::styled(clip_head(&open.text, usize::from(room)), text),
+                ])
+                .of_seat(&open.seat),
+            );
             let asked = format!("  asked by {} · {}", open.seat, age(open.age_secs));
-            rows.push(Cells::of(vec![Span::styled(asked, dim)]));
+            rows.push(Cells::of(vec![Span::styled(asked, dim)]).of_seat(&open.seat));
         } else {
             let line = aged(&open.text, open.age_secs, room);
-            rows.push(Cells::of(vec![mark.clone(), Span::styled(line, text)]));
+            rows.push(Cells::of(vec![mark.clone(), Span::styled(line, text)]).of_seat(&open.seat));
         }
     }
     rows.push(Cells::blank());
@@ -930,16 +979,17 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry) -> Vec<Cells> {
                 agent.state.clone(),
                 paint.mark(mark),
             ))),
+            seat: Some(agent.name.clone()),
         });
         let facts: Vec<&str> = [&agent.client, &agent.profile, &agent.model]
             .into_iter()
             .map(String::as_str)
             .filter(|fact| !fact.is_empty())
             .collect();
-        rows.push(Cells::of(vec![Span::styled(
-            format!("  {}", facts.join(" · ")),
-            dim,
-        )]));
+        rows.push(
+            Cells::of(vec![Span::styled(format!("  {}", facts.join(" · ")), dim)])
+                .of_seat(&agent.name),
+        );
     }
     rows
 }
@@ -1144,33 +1194,26 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let y = buf.area.height - 1;
     let composing = matches!(ctx.screen.composer, Composer::Home { view: Some(_), .. });
     let open = ctx.screen.model.settings_open();
-    let (word, keys): (&str, &[&str]) = if open {
-        ("settings", &["Esc/q/s close", "^C quit"])
-    } else if composing {
-        ("write", &["Enter send", "Esc browse", "^C quit"])
-    } else if matches!(ctx.screen.composer, Composer::Held { .. }) {
-        ("held", &["Enter retry", "Esc browse", "^C quit"])
-    } else if matches!(ctx.screen.composer, Composer::Home { .. }) {
-        (
-            "browse",
-            &[
-                "1-9 session",
-                "! next need",
-                "Tab overview / agents",
-                "Enter write",
-                "q quit",
-            ],
-        )
+    let seats = if layout.seats.is_empty() {
+        ""
     } else {
-        (
-            "browse",
-            &[
-                "1-9 session",
-                "! next need",
-                "Tab overview / agents",
-                "q quit",
-            ],
-        )
+        "o open seat"
+    };
+    let (word, keys): (&str, Vec<&str>) = if open {
+        ("settings", vec!["Esc/q/s close", "^C quit"])
+    } else if composing {
+        ("write", vec!["Enter send", "Esc browse", "^C quit"])
+    } else if matches!(ctx.screen.composer, Composer::Held { .. }) {
+        ("held", vec!["Enter retry", "Esc browse", "^C quit"])
+    } else {
+        let writable = matches!(ctx.screen.composer, Composer::Home { .. });
+        let keys = ["1-9 session", "! next need", seats, "Tab overview / agents"]
+            .into_iter()
+            .chain(writable.then_some("Enter write"))
+            .chain(["q quit"])
+            .filter(|key| !key.is_empty())
+            .collect();
+        ("browse", keys)
     };
     let width = buf.area.width;
     let x = put(
@@ -3011,5 +3054,107 @@ mod tests {
         assert_eq!(at(44, rule), Some((Edge::Sidebar, 44)), "the corner");
         assert_eq!(at(43, rule), Some((Edge::List, rule)), "its own cell");
         assert_eq!(at(44, 44), None, "the keys row");
+    }
+
+    /// Two seats on the Agents tab, by name.
+    fn seat_facts(names: &[&str]) -> Facts {
+        let Facts::Seats { id, agents } = sweep_seats() else {
+            unreachable!("the sweep draws seats")
+        };
+        let seat_of = |name: &&str| PickerAgent {
+            name: (*name).to_owned(),
+            ..agents[0].clone()
+        };
+        Facts::Seats {
+            id,
+            agents: names.iter().map(seat_of).collect(),
+        }
+    }
+
+    /// One frame of `shot` at `width` x 45 in `look`.
+    fn framed(shot: &Shot, width: u16, look: Option<&Look>) -> (Buffer, super::Layout) {
+        let screen = Screen {
+            fleet: &shot.fleet,
+            model: &shot.model,
+            overview: &shot.overview,
+            selected: Some(&shot.entry),
+            pair: &shot.pair,
+            agents: shot.agents.as_ref(),
+            lane: &shot.lane,
+            composer: READ_ONLY,
+            look: look.copied(),
+            zone: None,
+            now: Timestamp::from_epoch(PIN_NOW),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 45));
+        let layout = super::draw_with_layout(&screen, super::Wait::default(), &mut buf);
+        (buf, layout)
+    }
+
+    /// The rows of `buf` whose first cell is `glyph`.
+    fn marked(buf: &Buffer, glyph: &str) -> Vec<u16> {
+        (0..buf.area.height)
+            .filter(|y| buf[(0, *y)].symbol() == glyph)
+            .collect()
+    }
+
+    /// R4/R5: the focused seat's rows carry the marker in column 0, the first
+    /// seat drawn is focused until the model names a drawn one, a seat row is
+    /// a click target, and the keys row advertises `o` only beside a seat.
+    #[test]
+    fn the_focused_seats_rows_are_marked_and_advertise_open() {
+        let mut shot = Shot::new();
+        shot.agents = Some(seat_facts(&["lead", "colead"]));
+        let _ = shot
+            .model
+            .key(crate::app::model::Key::Tab, &shot.fleet, false, true);
+        let (buf, layout) = framed(&shot, 160, None);
+        assert_eq!(layout.seats, ["lead", "colead"]);
+        assert_eq!(layout.focused.as_deref(), Some("lead"));
+        let first = *marked(&buf, "▸").first().expect("a marked row");
+        assert_eq!(marked(&buf, "▸"), [first, first + 1]);
+        let seat = |buf: &Buffer, y| line(buf, y).concat();
+        assert!(seat(&buf, first).contains("lead"), "its first row");
+        assert!(seat(&buf, first + 2).contains("colead"), "the next seat");
+        let keys: String = line(&buf, 44).concat();
+        assert!(keys.contains("! next need   o open seat   Tab"), "{keys}");
+        let at = Mouse {
+            kind: MouseKind::Click,
+            column: 8,
+            row: first + 2,
+        };
+        assert!(matches!(layout.hit(at), Some(super::Hit::Seat(name)) if name == "colead"));
+        shot.model.set_focus(Some("colead".to_owned()));
+        let (buf, layout) = framed(&shot, 160, None);
+        assert_eq!(marked(&buf, "▸"), [first + 2, first + 3]);
+        assert_eq!(layout.focused.as_deref(), Some("colead"));
+        shot.model.set_focus(Some("ghost".to_owned()));
+        let (_, layout) = framed(&shot, 160, None);
+        assert_eq!(layout.focused.as_deref(), Some("lead"), "an undrawn name");
+        let ascii = Look::read("off", "darcula", "on", "on");
+        let (buf, _) = framed(&shot, 160, Some(&ascii));
+        assert_eq!(marked(&buf, ">"), [first, first + 1]);
+    }
+
+    /// A tab body that draws no seat advertises no `o` and focuses nothing; a
+    /// waiting entry is the seat's two rows wide and its one row narrow.
+    #[test]
+    fn overview_entries_are_seat_rows_wide_and_narrow() {
+        let mut shot = Shot::new();
+        let (buf, layout) = framed(&shot, 160, None);
+        let keys: String = line(&buf, 44).concat();
+        assert!(!keys.contains("o open seat"), "{keys}");
+        assert_eq!((layout.seats.len(), layout.focused), (0, None));
+        shot.overview.open = vec![Open {
+            seat: "colead".to_owned(),
+            text: "a question".to_owned(),
+            age_secs: Some(5),
+        }];
+        let (buf, layout) = framed(&shot, 160, None);
+        assert_eq!(layout.seats, ["colead"]);
+        assert_eq!(marked(&buf, "▸").len(), 2, "both rows of a wide entry");
+        let (buf, layout) = framed(&shot, 100, None);
+        assert_eq!(layout.seats, ["colead"]);
+        assert_eq!(marked(&buf, "▸").len(), 1, "the one row of a narrow entry");
     }
 }

@@ -4,7 +4,8 @@
 sidebar, the selected session's Overview or Agents beside it, and the selected
 session's chat on the right. It is a second view of the data [the chat](chat.md)
 already reads, through the same owners, and it writes nothing into any session
-but the asks you type into the selected one. `ae chat` is unchanged beside it.
+but the asks you type into the selected one; opening a seat only moves a tmux
+client ([Opening a seat](#opening-a-seat)). `ae chat` is unchanged beside it.
 
 It needs a terminal on both stdin and stdout. Without one it prints
 `ae app draws a terminal UI; use ae chat to print the lane` on stderr and exits 1.
@@ -114,8 +115,11 @@ Browsing:
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
 | `Tab` | Overview / Agents |
+| `o` | open the highlighted seat's pane |
+| `n` / `p` | highlight the next / previous seat the tab body shows |
 | `PgUp` / `PgDn` | scroll the chat a page |
 | Click session row | select that session |
+| Click a seat row | highlight that seat |
 | Click Overview / Agents | show that tab |
 | Wheel over chat or a tab body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
@@ -141,8 +145,8 @@ around the cursor with `… +N lines above` and `… +N lines below` among them
 character goes. The cursor shows only while writing with the composer drawn:
 browsing, a held composer and Settings hide it. Every composer row and its hint
 row are one click target. `Enter` sends, `Esc` goes back to browsing and keeps
-the draft, `^C` quits. `/open` is refused: the app
-selects no pane, `ae chat` does. Each outcome shows as an `ae` line in the lane
+the draft, `^C` quits. `/open <seat>` opens that seat of the selected session
+([Opening a seat](#opening-a-seat)). Each outcome shows as an `ae` line in the lane
 of the session it is about; a line about a session no longer recorded shows in
 whichever lane is selected.
 
@@ -162,6 +166,62 @@ draft, then selects the row or tab. Blank rows and the "more" row do nothing.
 A press within a cell of a border grabs it unless a row or tab is drawn there.
 Any key, paste, press or wheel notch ends a drag whose release never arrived,
 then acts as it always does.
+
+## Opening a seat
+
+`o` takes your tmux client to the highlighted seat's pane, in any session you
+selected, home or not; `/open <seat>` in the composer does the same for a named
+seat of the selected session. It is the proof and the guarded select `ae chat`'s
+`/open` makes, plus one tmux client: nothing is typed into the seat and no
+record is written.
+
+The highlight is a `▸` (`>` with `icons = off`) in the first column of a seat's
+rows in the tab body: on Agents every seat, on Overview each **Waiting on you**
+entry (both rows of it). It starts on the first seat drawn, `n` / `p` step it
+through the drawn seats and wrap, a click on a seat row puts it there, and
+changing session or tab resets it. Rows scrolled out of the body are not
+stepped to; wheel first. `Enter` still writes. The keys row shows `o open seat`
+only while the tab body shows a seat.
+
+A key acts on the seats the last frame drew, as it drew them: the seat's slot
+and name, and the session incarnation they were read from. A roster that moved
+the seat to another slot, a session replaced under the same name, a pane
+restamped for another agent, a dead pane or one the server no longer lists in
+the session refuses; so does a selection that changed since that frame
+(`the view changed`). Nothing is selected on any refusal.
+
+Which client moves. Only a tmux client whose ACTIVE pane is the app's own pane
+can have pressed the key.
+
+- The seat is in the app's own session: tmux moves the session, so everyone
+  viewing it follows and no client is chosen. At least one client must show the
+  app.
+- The seat is in another session: that one client is switched to the seat's
+  session, then its window and pane are selected. With several clients on the
+  app, the one with the newest input wins; two last active in the same second
+  refuse (`two clients showing this app were active in the same second`) and
+  move nothing. A control-mode client never records input, so two of them always
+  tie.
+- No client shows the app (`no tmux client is showing this app`), or the app
+  runs outside tmux (`ae app is not running inside tmux`): refused.
+
+A stopped session refuses and names `ae <session>`, which resumes it; the app
+never resumes one. A session recorded on another tmux server than the one this
+app's pane lives on, or whose server ae cannot prove, refuses the same way
+(`run ae <session>`). The server is the app's own (`$TMUX`), never the one a
+launch would use.
+
+Getting back. The `ae` line in the session's lane says how: `opened <seat> in
+<session> - prefix h opens its chat, prefix L goes back` (`prefix h returns` in
+the app's own session), and the moved client is shown a short reminder on its
+status line for a moment. `prefix L` is tmux's own last-session key; `prefix h` is
+ae's. No binding is added.
+
+Named limits. Other clients already attached to the target session follow its
+window selection (tmux session state, as the fleet picker does). The client
+list is read last, right before the move; a client that detaches in that
+instant makes the move fail with `uncertain`. The cursor steps only through the
+rows drawn.
 
 ## Settings
 

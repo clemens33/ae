@@ -9,7 +9,9 @@
 //! The ONE write is the composer's ask or close into the selected session,
 //! through the chat's own admission path (`term::submit_ask`,
 //! `submit::close_owned`), under that session's writer lease, held while
-//! this app writes it; nothing else here writes into any session.
+//! this app writes it; nothing else here writes into any session. Opening a
+//! seat writes nothing either: it hands one tmux client to the seat's pane,
+//! through the chat's own proof (`term::prove_open`).
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -25,13 +27,14 @@ use ratatui_core::terminal::Terminal;
 
 use crate::console::input::{Effect, Input, Key, Keys, Mouse, MouseKind, Reading, Size, View};
 use crate::console::lane::{Item, Kind, Lane, Seat};
-use crate::console::needs::Section;
+use crate::console::needs::{SeatRef, Section};
+use crate::console::open::{self, Move, Refusal};
 use crate::console::{self, Console, submit, term};
 use crate::digest::{SessionEntry, Status};
 use crate::inventory::ServerId;
 use crate::listing::World;
 use crate::time::Timestamp;
-use crate::{brief, doors, theme, tmux};
+use crate::{brief, doors, theme, tmux, transport};
 
 use loader::{Answer, Binding, Request, Wake};
 
@@ -68,6 +71,38 @@ struct Shown {
     id: String,
     seq: u64,
     lane: Rc<Lane>,
+    /// The roster of that read, as `/open` names its seats.
+    roster: Option<Vec<SeatRef>>,
+}
+
+/// What the last frame painted of the selection's seats, frozen when it was
+/// drawn: a seat key acts on this and on nothing a later read changed.
+#[derive(Debug, Clone)]
+struct Drawn {
+    session: String,
+    /// The incarnation the roster came from.
+    uuid: String,
+    /// Each drawn seat, with its identity in that roster when it held one.
+    rows: Vec<(String, Option<SeatRef>)>,
+    focused: Option<String>,
+}
+
+impl Drawn {
+    /// The focused seat as the frame drew it, or why there is none.
+    fn seat(&self) -> Result<&SeatRef, Refusal> {
+        let row = (self.rows.iter()).find(|(name, _)| Some(name) == self.focused.as_ref());
+        match row {
+            None => Err(Refusal::NoSeat(format!(
+                "no seat is shown to open in {}",
+                self.session
+            ))),
+            Some((name, None)) => Err(Refusal::NoSeat(format!(
+                "{name} is not in the roster read for {}",
+                self.session
+            ))),
+            Some((_, Some(seat))) => Ok(seat),
+        }
+    }
 }
 
 /// The selection's lane as drawn — its last read with ae's own notices for
@@ -155,6 +190,12 @@ struct App {
     /// is drawn: until then keys and clicks resolve against the order the
     /// human sees.
     pending: Option<Vec<String>>,
+    /// The tmux server and pane this app runs in, from tmux's own markers;
+    /// `None` outside tmux.
+    server: Option<ServerId>,
+    pane: Option<String>,
+    /// The seats the last frame drew.
+    drawn: Option<Drawn>,
 }
 
 impl App {
@@ -162,8 +203,8 @@ impl App {
     /// decides nothing: the writer lease does.
     fn new(
         home: Option<String>,
-        _server: Option<ServerId>,
-        _pane: Option<String>,
+        server: Option<ServerId>,
+        pane: Option<String>,
         ask: Option<Sender<Request>>,
     ) -> Self {
         let fleet = fleet::Fleet {
@@ -207,6 +248,9 @@ impl App {
             settings_bodies: settings::SettingsBodies::default(),
             settings_generation: 0,
             pending: None,
+            server,
+            pane,
+            drawn: None,
         }
     }
 
@@ -391,6 +435,7 @@ impl App {
         }
         // The seats `/open` names, as the chat's own tick hands them over.
         let key = (view.name.clone(), view.id.clone());
+        let roster = view.roster.clone();
         if let (Some(seats), Some(input)) = (view.roster, self.inputs.get_mut(&key)) {
             input.set_seats(seats);
         }
@@ -399,6 +444,7 @@ impl App {
             id: view.id,
             seq: view.seq,
             lane: Rc::new(view.lane),
+            roster,
         };
         self.shown.insert(view.name, shown);
         if selected {
@@ -829,6 +875,10 @@ impl App {
                     .key(model::Key::Compose, &self.fleet, self.can_compose(), true)
             }
             draw::Hit::Compose => return false,
+            draw::Hit::Seat(name) => {
+                self.focus_seat(Some(name));
+                return true;
+            }
             draw::Hit::Settings => {
                 self.open_settings();
                 return true;
@@ -862,10 +912,7 @@ impl App {
                 Effect::Print(line) => line,
                 Effect::Ask { raw, seat, body } => self.ask(&raw, &seat, body),
                 Effect::Close(id) => self.close(id.as_deref()),
-                Effect::Open(seat) => format!(
-                    "refused: /open {}: ae app selects no pane - ae chat does",
-                    seat.name
-                ),
+                Effect::Open(seat) => self.open_written(&seat),
                 Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => continue,
             };
             self.notice(&about, line);
@@ -955,6 +1002,159 @@ impl App {
         line
     }
 
+    /// `/open <seat>` typed in the composer: a seat of the session this app
+    /// writes, as the incarnation its entry proved names it.
+    fn open_written(&self, seat: &SeatRef) -> String {
+        let Some(writer) = &self.writer else {
+            return "refused: not writing".to_owned();
+        };
+        let console = &writer.console;
+        self.open(console.name(), console.uuid(), Ok(seat), &seat.name)
+    }
+
+    /// `o`: the seat the last frame highlighted, as that frame drew it. A
+    /// selection that moved since is refused, never followed.
+    fn open_focused(&mut self) {
+        let Some(session) = self.model.selected().map(str::to_owned) else {
+            return;
+        };
+        let line = match &self.drawn {
+            Some(drawn) if drawn.session == session => {
+                let label = drawn.focused.as_deref().unwrap_or(&session);
+                self.open(&session, &drawn.uuid, drawn.seat(), label)
+            }
+            _ => Refusal::NoSeat("the view changed".to_owned()).line(&session),
+        };
+        self.notice(&session, line);
+        self.show();
+    }
+
+    /// Open `seat` of `session`, bound to the incarnation `uuid`: the chat's
+    /// proof, then ONE guarded command handing the one client showing this
+    /// app to its pane. The line to tell, refused or opened.
+    fn open(
+        &self,
+        session: &str,
+        uuid: &str,
+        seat: Result<&SeatRef, Refusal>,
+        label: &str,
+    ) -> String {
+        let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
+            return Refusal::NoTmux.line(label);
+        };
+        if (self.entry(session)).is_some_and(|entry| entry.status == Status::Stopped) {
+            return Refusal::Stopped(session.to_owned()).line(label);
+        }
+        let Some(dir) = self.dirs.get(session) else {
+            let why = format!("{session} has no record directory ae can read");
+            return Refusal::NoSeat(why).line(label);
+        };
+        // The recorded server, not the launch target, against the server this
+        // app's own pane lives on.
+        let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+        let recorded = crate::session_launch::recorded_server_resolved(dir);
+        if !recorded.is_some_and(|recorded| sockets.proven_same(server, &recorded)) {
+            return Refusal::Elsewhere(session.to_owned()).line(label);
+        }
+        let seat = match seat {
+            Ok(seat) => seat,
+            Err(why) => return why.line(label),
+        };
+        let console = Console::bound(session.to_owned(), dir.clone(), uuid.to_owned());
+        let target = match term::prove_open(server, &console, seat) {
+            Ok(target) => target,
+            Err(why) => return why.line(label),
+        };
+        // Read last: what the clients show is as near the move as it gets.
+        let Some(clients) = transport::observe_clients(server) else {
+            return Refusal::Unread("the tmux clients".to_owned()).line(label);
+        };
+        let step = match open::mover(&clients, pane, session) {
+            Ok(step) => step,
+            Err(why) => return why.line(label),
+        };
+        let client = match &step {
+            Move::Client(client) => Some(client.as_str()),
+            Move::Here => None,
+        };
+        let Some((ran, stdout)) = transport::open_seat_via(server, &target, client) else {
+            return format!("refused: /open {label}: a fact failed its grammar; nothing selected");
+        };
+        if open::took(ran, &stdout) {
+            let _ = match client {
+                Some(client) => transport::display_client_message(
+                    server,
+                    client,
+                    &format!("ae: {label} - prefix h = chat, prefix L = back"),
+                ),
+                None => transport::display_message(
+                    server,
+                    &target.pane,
+                    &format!("ae: {label} - prefix h returns"),
+                ),
+            };
+        }
+        match client {
+            Some(_) => open::outcome_moved(ran, &stdout, label, session),
+            None => open::outcome(ran, &stdout, label),
+        }
+    }
+
+    /// `n` / `p`: the highlight steps to the next or previous seat the last
+    /// frame drew, wrapping; whether it moved.
+    fn move_focus(&mut self, forward: bool) -> bool {
+        let selected = self.model.selected();
+        let Some(drawn) = self
+            .drawn
+            .as_ref()
+            .filter(|d| selected == Some(d.session.as_str()))
+        else {
+            return false;
+        };
+        let count = drawn.rows.len();
+        let at = (drawn.focused.as_ref())
+            .and_then(|name| drawn.rows.iter().position(|(row, _)| row == name))
+            .unwrap_or(0);
+        let to = if forward {
+            (at + 1) % count.max(1)
+        } else {
+            (at + count.max(1) - 1) % count.max(1)
+        };
+        let Some(name) = drawn.rows.get(to).map(|(name, _)| name.clone()) else {
+            return false;
+        };
+        self.focus_seat(Some(name));
+        true
+    }
+
+    /// Highlight seat `name`: the model keeps the preference, the frozen
+    /// frame the cursor the keys after it step from.
+    fn focus_seat(&mut self, name: Option<String>) {
+        if let (Some(drawn), Some(name)) = (&mut self.drawn, &name)
+            && drawn.rows.iter().any(|(row, _)| row == name)
+        {
+            drawn.focused = Some(name.clone());
+        }
+        self.model.set_focus(name);
+    }
+
+    /// Freeze what the frame just drew of `session`'s seats.
+    fn freeze(&self, session: &str) -> Drawn {
+        let shown = self.shown.get(session);
+        let roster = shown
+            .and_then(|shown| shown.roster.as_deref())
+            .unwrap_or_default();
+        let held = |name: &String| roster.iter().find(|seat| seat.name == *name).cloned();
+        Drawn {
+            session: session.to_owned(),
+            uuid: shown.map(|shown| shown.id.clone()).unwrap_or_default(),
+            rows: (self.layout.seats.iter())
+                .map(|name| (name.clone(), held(name)))
+                .collect(),
+            focused: self.layout.focused.clone(),
+        }
+    }
+
     /// The composer line for the selection.
     fn composer(&self) -> draw::Composer<'_> {
         match (self.model.selected(), &self.held) {
@@ -1040,6 +1240,8 @@ impl App {
                     .clamp_settings_scroll(self.layout.settings_max_scroll);
             }
         }
+        let drawn = self.model.selected().map(|name| self.freeze(name));
+        self.drawn = drawn;
     }
 }
 
@@ -1145,7 +1347,8 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     };
     let mut size = tty.size().unwrap_or((80, 24));
     let mut terminal = Terminal::new(backend::Ansi::new(out, size))?;
-    let mut app = App::new(home, None, None, Some(ask));
+    let (server, pane) = (doors::caller_server(), doors::calling_pane_id());
+    let mut app = App::new(home, server, pane, Some(ask));
     let mut keys = Keys::app();
     let mut dirty = true;
     loop {
@@ -1388,6 +1591,12 @@ fn apply(app: &mut App, act: &model::Act) -> Option<bool> {
             app.write(true);
             Some(true)
         }
+        model::Act::Open => {
+            app.open_focused();
+            Some(true)
+        }
+        model::Act::SeatNext => Some(app.move_focus(true)),
+        model::Act::SeatPrev => Some(app.move_focus(false)),
         model::Act::None => Some(false),
     }
 }
@@ -1906,10 +2115,10 @@ mod tests {
         );
     }
 
-    /// `/open` in the app names why it opens nothing, as the docs say, once
-    /// the home roster is read: the app selects no pane, `ae chat` does.
+    /// `/open` in an app with no tmux identity (no `$TMUX`, no `$TMUX_PANE`)
+    /// names that and moves nothing, once the home roster is read.
     #[test]
-    fn open_is_refused_with_the_apps_own_reason() {
+    fn open_outside_tmux_is_refused_by_name() {
         let root = Root::new("open");
         let (mut app, _reader) = housed(&root);
         app.fleet = one_row(Some("api"));
@@ -1929,7 +2138,140 @@ mod tests {
         let notice = &app.notices.last().expect("the refusal is said").1.body;
         assert_eq!(
             notice,
-            "refused: /open lead: ae app selects no pane - ae chat does"
+            "refused: /open lead: ae app is not running inside tmux; nothing selected"
+        );
+    }
+
+    fn seat_ref(slot: &str, name: &str) -> crate::console::needs::SeatRef {
+        crate::console::needs::SeatRef {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    /// A frame of `api` that drew `names`, none of them in a roster.
+    fn drawn_rows(names: &[&str], focused: &str) -> super::Drawn {
+        super::Drawn {
+            session: "api".to_owned(),
+            uuid: ID.to_owned(),
+            rows: names
+                .iter()
+                .map(|name| ((*name).to_owned(), None))
+                .collect(),
+            focused: Some(focused.to_owned()),
+        }
+    }
+
+    /// `n` / `p` step the rows the LAST frame drew, wrapping both ways and
+    /// from the cursor a key before it moved; a frame of another session
+    /// moves nothing, and a name the frame did not draw is only a preference.
+    #[test]
+    fn the_seat_cursor_steps_the_drawn_rows_and_wraps() {
+        let root = Root::new("cursor");
+        let (mut app, _reader) = housed(&root);
+        let cursor = |app: &App| app.drawn.as_ref().and_then(|d| d.focused.clone());
+        let names = ["lead", "colead", "scout"];
+        app.drawn = Some(drawn_rows(&names, "lead"));
+        assert!(app.move_focus(true) && app.move_focus(true));
+        assert_eq!(cursor(&app).as_deref(), Some("scout"));
+        assert_eq!(app.model.focus(), Some("scout"));
+        assert!(app.move_focus(true), "past the last row wraps");
+        assert_eq!(cursor(&app).as_deref(), Some("lead"));
+        assert!(app.move_focus(false), "before the first row wraps");
+        assert_eq!(cursor(&app).as_deref(), Some("scout"));
+        app.focus_seat(Some("ghost".to_owned()));
+        assert_eq!(cursor(&app).as_deref(), Some("scout"), "not a drawn row");
+        assert_eq!(app.model.focus(), Some("ghost"), "the preference is kept");
+        app.drawn = Some(super::Drawn {
+            session: "web".to_owned(),
+            ..drawn_rows(&names, "lead")
+        });
+        assert!(!app.move_focus(true), "a frame of another session");
+        app.drawn = Some(super::Drawn {
+            rows: Vec::new(),
+            ..drawn_rows(&[], "lead")
+        });
+        assert!(!app.move_focus(false), "no seat drawn");
+    }
+
+    /// A frame freezes each drawn seat with the identity the roster of the
+    /// read it drew from held, and the incarnation of that read; `o` acts on
+    /// that and says why when it holds none.
+    #[test]
+    fn a_frame_freezes_the_drawn_seats_with_the_roster_it_drew_from() {
+        let root = Root::new("freeze");
+        let (mut app, _reader) = housed(&root);
+        app.shown.insert(
+            "api".to_owned(),
+            super::Shown {
+                id: "read-id".to_owned(),
+                seq: 1,
+                lane: Rc::default(),
+                roster: Some(vec![
+                    seat_ref("main", "lead"),
+                    seat_ref("spawned.0", "scout"),
+                ]),
+            },
+        );
+        (app.layout.seats, app.layout.focused) = (
+            vec!["lead".to_owned(), "ghost".to_owned()],
+            Some("lead".to_owned()),
+        );
+        let mut drawn = app.freeze("api");
+        assert_eq!(drawn.uuid, "read-id");
+        assert_eq!(
+            drawn.rows,
+            [
+                ("lead".to_owned(), Some(seat_ref("main", "lead"))),
+                ("ghost".to_owned(), None)
+            ]
+        );
+        assert_eq!(drawn.seat(), Ok(&seat_ref("main", "lead")));
+        drawn.focused = Some("ghost".to_owned());
+        assert_eq!(
+            drawn.seat().map_err(|why| why.line("ghost")),
+            Err(
+                "refused: /open ghost: ghost is not in the roster read for api; nothing selected"
+                    .to_owned()
+            )
+        );
+        drawn.focused = None;
+        assert!(
+            matches!(drawn.seat(), Err(crate::console::open::Refusal::NoSeat(why)) if why.contains("no seat is shown"))
+        );
+        assert_eq!(
+            app.freeze("web").uuid,
+            "",
+            "a session not read has no incarnation"
+        );
+    }
+
+    /// `o` acts only on the frame the human saw: none, or one of another
+    /// session, is refused by name; outside tmux it is refused before any read.
+    #[test]
+    fn open_acts_only_on_the_frame_that_was_drawn() {
+        let root = Root::new("frozen-open");
+        let (mut app, _reader) = housed(&root);
+        let said = |app: &App| app.notices.last().expect("said").1.body.clone();
+        app.open_focused();
+        assert_eq!(
+            said(&app),
+            "refused: /open api: the view changed; nothing selected"
+        );
+        app.drawn = Some(super::Drawn {
+            session: "web".to_owned(),
+            ..drawn_rows(&["lead"], "lead")
+        });
+        app.open_focused();
+        assert_eq!(
+            said(&app),
+            "refused: /open api: the view changed; nothing selected"
+        );
+        app.drawn = Some(drawn_rows(&["lead"], "lead"));
+        app.open_focused();
+        assert_eq!(
+            said(&app),
+            "refused: /open lead: ae app is not running inside tmux; nothing selected"
         );
     }
 
@@ -2469,6 +2811,7 @@ mod tests {
                 id: "home-id".to_owned(),
                 seq: 1,
                 lane: Rc::default(),
+                roster: None,
             },
         );
         app.answer(Answer::Fleet(read_of(&app, &[("web", ID), ("ops", ID)])));

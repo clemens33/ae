@@ -741,6 +741,9 @@ fn app_key_name(key: AppKey) -> String {
         AppKey::PageUp => "PageUp".to_owned(),
         AppKey::PageDown => "PageDown".to_owned(),
         AppKey::Quit => "Quit".to_owned(),
+        AppKey::Open => "Open".to_owned(),
+        AppKey::SeatNext => "SeatNext".to_owned(),
+        AppKey::SeatPrev => "SeatPrev".to_owned(),
     }
 }
 

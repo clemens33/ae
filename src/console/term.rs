@@ -128,6 +128,38 @@ pub(crate) fn owns(
     Some(submit::owner(&panes, me, &stamp, &console.uuid))
 }
 
+/// `seat`'s pane in `console`'s session on `server`, proven against the meta
+/// and tmux NOW: the one proof `/open` makes, in the chat and in the app.
+pub(crate) fn prove_open(
+    server: &ServerId,
+    console: &Console,
+    seat: &SeatRef,
+) -> Result<open::Target, Refusal> {
+    let Ok(bytes) = meta::read_bytes(&console.dir) else {
+        return Err(Refusal::Unread("the meta".to_owned()));
+    };
+    if archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id")) != console.uuid {
+        return Err(Refusal::SessionReplaced);
+    }
+    let meta = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let session = &console.name;
+    let session_id = transport::observe_session_id(server, session);
+    let stamp = transport::observe_session_option(server, session, theme::SESSION_ID_OPTION);
+    let slots = transport::observe_slots(server, session);
+    let panes = transport::observe_window_panes(server, session);
+    let members = transport::observe_picker_panes(server);
+    open::target(&open::Facts {
+        seat,
+        roster: meta.roster(),
+        bound_uuid: &console.uuid,
+        session_id: session_id.as_deref(),
+        uuid_stamp: stamp.as_deref(),
+        slots: slots.as_deref(),
+        panes: panes.as_deref(),
+        members: members.as_deref(),
+    })
+}
+
 /// Carry one ask of `seat` through the helpers' own tracked path, as the
 /// console, under the admission `owns` re-proves: the request id and what
 /// became of it, or why it was refused before anything was sent.
@@ -261,30 +293,8 @@ impl Term {
         let Some(server) = self.server.as_ref() else {
             return Refusal::Unread("tmux".to_owned()).line(name);
         };
-        let Ok(bytes) = meta::read_bytes(&console.dir) else {
-            return Refusal::Unread("the meta".to_owned()).line(name);
-        };
-        if archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id")) != console.uuid {
-            return Refusal::SessionReplaced.line(name);
-        }
-        let meta = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
-        let session = &console.name;
-        let session_id = transport::observe_session_id(server, session);
-        let stamp = transport::observe_session_option(server, session, theme::SESSION_ID_OPTION);
-        let slots = transport::observe_slots(server, session);
-        let panes = transport::observe_window_panes(server, session);
-        let members = transport::observe_picker_panes(server);
-        let facts = open::Facts {
-            seat,
-            roster: meta.roster(),
-            bound_uuid: &console.uuid,
-            session_id: session_id.as_deref(),
-            uuid_stamp: stamp.as_deref(),
-            slots: slots.as_deref(),
-            panes: panes.as_deref(),
-            members: members.as_deref(),
-        };
-        match open::target(&facts).map(|target| transport::open_seat(server, &target)) {
+        match prove_open(server, console, seat).map(|target| transport::open_seat(server, &target))
+        {
             Err(refusal) => refusal.line(name),
             Ok(None) => {
                 format!("refused: /open {name}: a fact failed its grammar; nothing selected")

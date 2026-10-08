@@ -16,6 +16,9 @@ pub enum Key {
     NextNeed,
     Tab,
     Compose,
+    Open,
+    SeatNext,
+    SeatPrev,
     Esc,
     PageUp,
     PageDown,
@@ -49,6 +52,9 @@ fn letter(byte: u8) -> Option<Key> {
         b'j' => Some(Key::Down),
         b'k' => Some(Key::Up),
         b'i' => Some(Key::Compose),
+        b'o' => Some(Key::Open),
+        b'n' => Some(Key::SeatNext),
+        b'p' => Some(Key::SeatPrev),
         b'q' => Some(Key::Quit),
         _ => None,
     }
@@ -61,6 +67,11 @@ pub enum Act {
     Redraw,
     Select(String),
     Compose,
+    /// Open the focused seat's pane.
+    Open,
+    /// Move the seat focus one drawn row.
+    SeatNext,
+    SeatPrev,
     Quit,
 }
 
@@ -136,6 +147,9 @@ pub struct Model {
     list_top: Option<usize>,
     /// The first tab body row shown.
     body_top: usize,
+    /// The seat the human moved the highlight to; a preference by name, never
+    /// an identity: the frame decides whether it is drawn.
+    focus: Option<String>,
     split: Split,
     drag: Option<Drag>,
     settings: Option<SettingsOverlay>,
@@ -187,6 +201,7 @@ impl Model {
                     Tab::Agents => Tab::Overview,
                 };
                 self.body_top = 0;
+                self.focus = None;
                 Act::Redraw
             }
             Key::Compose if can_compose && self.selected.is_some() => Act::Compose,
@@ -208,6 +223,9 @@ impl Model {
                 self.pages = self.pages.saturating_sub(1);
                 Act::Redraw
             }
+            Key::Open => Act::Open,
+            Key::SeatNext => Act::SeatNext,
+            Key::SeatPrev => Act::SeatPrev,
             Key::Quit => Act::Quit,
             Key::Tab | Key::Compose => Act::None,
         }
@@ -237,6 +255,7 @@ impl Model {
         self.pages = 0;
         self.rows = 0;
         self.body_top = 0;
+        self.focus = None;
         Act::Select(row.name.clone())
     }
 
@@ -326,7 +345,19 @@ impl Model {
         }
         self.tab = tab;
         self.body_top = 0;
+        self.focus = None;
         Act::Redraw
+    }
+
+    /// The seat the highlight was moved to, by name.
+    #[must_use]
+    pub fn focus(&self) -> Option<&str> {
+        self.focus.as_deref()
+    }
+
+    /// Move the highlight to seat `name`.
+    pub(crate) fn set_focus(&mut self, name: Option<String>) {
+        self.focus = name;
     }
 
     /// The first session the wheeled list shows, if it was wheeled.
@@ -462,7 +493,12 @@ impl Model {
                 self.settings = None;
                 Act::Redraw
             }
-            Key::Digit(_) | Key::NextNeed | Key::Compose => Act::None,
+            Key::Digit(_)
+            | Key::NextNeed
+            | Key::Compose
+            | Key::Open
+            | Key::SeatNext
+            | Key::SeatPrev => Act::None,
         }
     }
 
@@ -728,5 +764,34 @@ mod tests {
             (open.tab, open.scroll, open.page_rows, open.generation),
             (SettingsTab::About, 3, 9, 42)
         );
+    }
+
+    /// The seat highlight is the model's preference by name: a new selection
+    /// or a tab change forgets it, selecting what is selected keeps it, and
+    /// the open overlay owns the seat keys.
+    #[test]
+    fn the_seat_focus_resets_on_a_new_selection_or_tab() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        let focus = |model: &mut Model| model.set_focus(Some("scout".to_owned()));
+        focus(&mut model);
+        assert_eq!(model.focus(), Some("scout"));
+        assert_eq!(model.key(Key::Digit(1), &both, false, true), Act::None);
+        assert_eq!(model.focus(), Some("scout"), "the same selection keeps it");
+        let _ = model.key(Key::Digit(2), &both, false, true);
+        assert_eq!(model.focus(), None);
+        focus(&mut model);
+        let _ = model.key(Key::Tab, &both, false, true);
+        assert_eq!(model.focus(), None);
+        focus(&mut model);
+        assert_eq!(model.show_tab(Tab::Overview), Act::Redraw);
+        assert_eq!(model.focus(), None);
+        focus(&mut model);
+        assert_eq!(model.show_tab(Tab::Overview), Act::None, "no tab change");
+        assert_eq!(model.focus(), Some("scout"));
+        model.open_settings(1);
+        for key in [Key::Open, Key::SeatNext, Key::SeatPrev] {
+            assert_eq!(model.key(key, &both, true, true), Act::None, "{key:?}");
+        }
     }
 }

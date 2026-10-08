@@ -8,6 +8,8 @@ mod app_cli_spec;
 mod app_composer_spec;
 mod app_live;
 mod app_mouse_spec;
+mod app_open_live_spec;
+mod app_open_pure_spec;
 mod app_resize_spec;
 mod app_selected_spec;
 mod app_settings_spec;

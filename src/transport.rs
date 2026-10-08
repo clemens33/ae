@@ -993,7 +993,18 @@ pub fn open_seat(
     server: &ServerId,
     target: &crate::console::open::Target,
 ) -> Option<(bool, String)> {
-    let args = crate::console::open::select_args(server, target)?;
+    open_seat_via(server, target, None)
+}
+
+/// [`open_seat`], handing `client` to the target's session in the same guarded
+/// command when one is named.
+#[must_use]
+pub fn open_seat_via(
+    server: &ServerId,
+    target: &crate::console::open::Target,
+    client: Option<&str>,
+) -> Option<(bool, String)> {
+    let args = crate::console::open::select_args_via(server, target, client)?;
     if !addressable(server) {
         return Some((false, String::new()));
     }
