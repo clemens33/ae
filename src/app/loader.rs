@@ -1167,15 +1167,25 @@ mod tests {
         );
     }
 
-    /// R-B4 ext: a fleet read of a state root ae reads whole is complete.
+    /// R-B4 ext: a fleet read of a state root ae reads whole is complete;
+    /// one whose sessions ae could not list is not.
     #[test]
     fn a_state_root_read_whole_is_a_complete_fleet_read() {
+        use std::os::unix::fs::PermissionsExt;
         let root = Root::new("scanned");
         let mut reader = Reader::new(root.0.clone(), None, None);
-        let scanned = reader.fleet().into_iter().find_map(|answer| match answer {
-            Answer::Fleet(read) => Some(read.scanned),
-            _ => None,
-        });
-        assert_eq!(scanned, Some(true));
+        let mut scanned = || {
+            reader.fleet().into_iter().find_map(|answer| match answer {
+                Answer::Fleet(read) => Some(read.scanned),
+                _ => None,
+            })
+        };
+        assert_eq!(scanned(), Some(true));
+        let sessions = root.0.join("sessions");
+        let mode = |bits| std::fs::set_permissions(&sessions, PermissionsExt::from_mode(bits));
+        mode(0o000).expect("unreadable");
+        let unread = scanned();
+        mode(0o755).expect("readable again");
+        assert_eq!(unread, Some(false), "an unlisted sessions root");
     }
 }
