@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.42] - 2026-10-08
+- Frozen acceptance tests for the Settings Instructions tab
+- Ae app: Settings Instructions tab shows the custom instructions and every seat protocol
+- Ae app: Instructions tab names a slot outside main, worker.N, spawned.N as a gap
+- Ae app: Settings open tells the reader the current selection first
+- Ae app: pin that an Instructions row fills the pane width
+
 ## [v2026.10.41] - 2026-10-08
 - Appuse B2: frozen spec: type into the selected session
 - Appuse B2: an ae app writes into the selected session under that session's lease
