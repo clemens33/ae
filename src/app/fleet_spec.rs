@@ -2,6 +2,7 @@
 //! driver adapters invoke these same functions through Journals and the REAL
 //! Reader. Byte counters judge consumption, fresh reads judge answers.
 
+#[cfg(test)]
 use std::collections::BTreeSet;
 use std::fs::{self, FileTimes, OpenOptions};
 use std::io::{self, Write};
