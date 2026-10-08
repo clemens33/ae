@@ -3914,6 +3914,8 @@ mod tests {
             main_pane: String::new(),
             branch: String::new(),
             agents: String::new(),
+            activity: None,
+            created_at: None,
             goal: String::new(),
         }
     }

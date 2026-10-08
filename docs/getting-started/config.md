@@ -197,7 +197,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
-| `fleet_order` | The order your sessions are drawn in on the fleet strip, as a comma-separated list of session names; global config only | creation order |
+| `fleet_order` | The order your sessions are drawn in on the fleet strip, and the sessions pinned to the top of the app's sidebar, as a comma-separated list of session names; global config only | creation order |
 | `restore` | Let bare `ae` resume the sessions a crashed tmux server held (`on` / `off`); global config only | `on` |
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
@@ -231,6 +231,10 @@ is not a legal session name, one you listed twice, or one matching no session ae
 has a record of is skipped silently on the bar — `ae doctor` names it once on
 the `workspace.fleet_order` row. With no `fleet_order` set, the strip is exactly
 what it always was.
+
+In [`ae app`](../app.md) the same list pins: the sidebar puts the orchestrator
+first, then the sessions you named, then every other running session by when
+you last used it, newest first.
 
 The same order decides two more things: which session a client is handed to when
 the one it is watching is killed, and how the running rows of the fleet picker

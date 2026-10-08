@@ -464,6 +464,8 @@ fn picker_argv_with(
         main_pane: staged.ids[0].clone(),
         branch: "menu-fix".to_owned(),
         agents,
+        activity: None,
+        created_at: None,
         goal: "100% of #{everything} | don't stop".to_owned(),
     }];
     let panes = staged
@@ -608,6 +610,10 @@ fn agent_rows_draw_and_live_or_missing_rows_take_the_guarded_destination() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real tmux fixture and its picker rows"
+)]
 fn a_seven_line_client_draws_only_its_current_sessions_agents() {
     let scratch = scratch("short-agents");
     if !tmux_present(&scratch) {
@@ -661,6 +667,8 @@ fn a_seven_line_client_draws_only_its_current_sessions_agents() {
         agents: format!(
             "v1;{now};60;{prefix}0:p:working:;{prefix}1:p:working:;{prefix}2:p:working:"
         ),
+        activity: None,
+        created_at: None,
         goal: String::new(),
     };
     let sessions = [
@@ -1036,6 +1044,8 @@ fn stopped_rows_pin_their_columns_keys_and_resume_argv() {
         main_pane: String::new(),
         branch: String::new(),
         agents: "v1;2000;60;lead:fable5:working:%10".to_owned(),
+        activity: None,
+        created_at: None,
         goal: String::new(),
     };
     let stopped = [

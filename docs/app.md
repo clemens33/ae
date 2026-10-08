@@ -27,11 +27,12 @@ recorded config first.
   needs you (`Nothing needs you.`, `<name> needs you` for one, `<N> need you`
   for several, then `· above` / `· below` — with a count when several — for
   needy rows outside the list), then one row per session — its mark, its
-  number, its name
-  (`this window` on home), the seat counts on the right, and under it the goal
-  or the question that needs you. Running sessions come in fleet order with the
-  orchestrator first, stopped ones after. A needy row carries a `│` edge and `!`
-  reaches it. The wheel moves a list that does not fit one session a notch; a
+  number, its name (`this window` on home), the seat counts on the right, and
+  under it the goal or the question that needs you. Running sessions come in
+  this order: the orchestrator, then the sessions your `[workspace]
+  fleet_order` names (the pins), then the rest by your latest activity, newest
+  first, and a session with none known after them in creation order; stopped
+  ones come last. A needy row carries a `│` edge and `!` reaches it. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
 - **Tabs** under the list: **Overview** (how the session was launched — `mode`,
@@ -76,6 +77,17 @@ Below 90x20 the sidebar goes and the chat takes the pane; below 40x8 the app
 only says how large it needs to be. Colours come from the session's own look
 (home first, then the selected session, then the default palette); with
 `theme = off` it draws no colour, and the selected name is bold and reversed.
+
+### Order
+
+Your activity in a session is the later of two things: the last time a tmux
+client attached to it, switched into it or gave it a key or mouse input
+(tmux's `session_activity`, counted only once it is later than the session's
+creation, so a session nobody has touched stays unknown), and the newest
+question you asked it through the chat or the app. Output from agents never
+counts, nor do ae's own commands. A new read of the fleet can move a row, and
+only when a frame is drawn: a key or click always acts on the row it showed.
+The status strip and the picker keep their own order.
 
 ## Reading
 
@@ -195,6 +207,11 @@ read-only, and typing still goes home: the composer says
 
 ## Residuals
 
+- Typing in the app counts as activity in the session that hosts it, so that
+  session rises while you work in the app. A key typed in the same second a
+  session was created leaves it unknown. A stray click counts as activity too.
+- A list scrolled with the wheel keeps its row positions across a reorder, so
+  it can show different sessions after one.
 - Settings shows the launch-pinned values for `layout`, `quota`,
   `quota_every_secs`, `idle_nudge_secs` and `done_confirmations`: a running
   session keeps what it launched with even after the config changes.

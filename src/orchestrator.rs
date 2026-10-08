@@ -1698,6 +1698,8 @@ mod tests {
             main_pane: main_pane.to_owned(),
             branch: String::new(),
             agents: String::new(),
+            activity: None,
+            created_at: None,
             goal: String::new(),
         }
     }

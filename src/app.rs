@@ -146,6 +146,10 @@ struct App {
     settings_bodies: settings::SettingsBodies,
     /// The generation the next open mints; answers pin to the open one.
     settings_generation: u64,
+    /// The row order the last fleet read chose, applied when the next frame
+    /// is drawn: until then keys and clicks resolve against the order the
+    /// human sees.
+    pending: Option<Vec<String>>,
 }
 
 impl App {
@@ -204,6 +208,7 @@ impl App {
             deferred: Vec::new(),
             settings_bodies: settings::SettingsBodies::default(),
             settings_generation: 0,
+            pending: None,
         }
     }
 
@@ -310,7 +315,9 @@ impl App {
         self.world = read.world;
         self.facts = read.facts;
         self.needs = read.needs;
-        self.fleet = read.fleet;
+        let drawn: Vec<String> = self.fleet.rows.iter().map(|row| row.name.clone()).collect();
+        self.pending = Some(read.fleet.rows.iter().map(|row| row.name.clone()).collect());
+        self.fleet = read.fleet.arranged(&drawn);
         self.memos = read.memos;
         if let Some(pair) = read.pair {
             self.pair = pair;
@@ -833,6 +840,9 @@ impl App {
     /// Before the fleet is read, the selection's header stands on what its
     /// name alone says.
     fn frame(&mut self, buf: &mut Buffer) {
+        if let Some(order) = self.pending.take() {
+            self.fleet = std::mem::take(&mut self.fleet).arranged(&order);
+        }
         if let (Some(input), Some(home)) = (&self.input, &self.home) {
             let area = buf.area;
             let width = draw::draft_width(area, self.model.split(), home, input.speaker());
@@ -2002,6 +2012,8 @@ mod tests {
             main_pane: String::new(),
             branch: String::new(),
             agents: "v1;1880;60;lead:fable5:working:".to_owned(),
+            activity: None,
+            created_at: None,
             goal: String::new(),
         };
         let rows = [picker("web", "$7"), picker("api", "$3")];

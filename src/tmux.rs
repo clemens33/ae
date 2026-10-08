@@ -2599,10 +2599,14 @@ pub(crate) fn is_decimal(text: &str) -> bool {
 /// navigation hints and may be absent. Keeping the goal last lets
 /// [`interpret_picker_sessions`] use `splitn`, so a literal pipe in operator
 /// text cannot shift a pane id into another field.
-pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{@ae_goal_status}";
+pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{session_activity} | #{session_created} | #{@ae_goal_status}";
 
 /// How many fields [`PICKER_SESSION_FORMAT`] yields.
-const PICKER_SESSION_FIELDS: usize = 8;
+const PICKER_SESSION_FIELDS: usize = 10;
+
+/// How many fields the format yielded before the two session times were added
+/// ahead of the goal: such a line keeps its goal where it was.
+const PICKER_LEGACY_FIELDS: usize = 8;
 
 /// Maximum bytes accepted from the watchdog-owned `@ae_agents` fact.
 pub const PICKER_AGENTS_MAX_BYTES: usize = 4_096;
@@ -2830,11 +2834,25 @@ pub struct PickerSession {
     pub branch: String,
     /// The raw watchdog-owned roster snapshot; parsed at draw time for age.
     pub agents: String,
+    /// tmux's `session_activity`: the last time a client attached, switched
+    /// in, or gave input here. Pane output and ae's own commands never move it.
+    pub activity: Option<i64>,
+    /// tmux's `session_created`, which `session_activity` starts at.
+    pub created_at: Option<i64>,
     /// The already-bounded status goal; empty when unset or unavailable.
     pub goal: String,
 }
 
 impl PickerSession {
+    /// The last moment a human touched the session, or `None` for one nobody
+    /// has: tmux starts `session_activity` at the creation second, so only an
+    /// activity past it is a client's.
+    #[must_use]
+    pub fn touched(&self) -> Option<i64> {
+        let (activity, created) = (self.activity?, self.created_at?);
+        (activity > created).then_some(activity)
+    }
+
     /// The session's creation order, encoded in tmux's monotonically assigned id.
     #[must_use]
     pub fn created(&self) -> u64 {
@@ -2869,7 +2887,15 @@ pub fn interpret_picker_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Pi
             .map(|line| line.trim_end_matches('\r'))
             .filter(|line| !line.is_empty())
             .filter_map(|line| {
-                let mut fields = line.splitn(PICKER_SESSION_FIELDS, FIELD_SEPARATOR);
+                let times = picker_times(line);
+                let mut fields = line.splitn(
+                    if times.is_some() {
+                        PICKER_SESSION_FIELDS
+                    } else {
+                        PICKER_LEGACY_FIELDS
+                    },
+                    FIELD_SEPARATOR,
+                );
                 let name = fields.next().unwrap_or_default().trim();
                 let id = fields.next().unwrap_or_default().trim();
                 let rank = fields.next().unwrap_or_default().trim();
@@ -2878,19 +2904,54 @@ pub fn interpret_picker_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Pi
                 let rank = rank.parse::<u8>().ok().filter(|rank| *rank <= HIGHEST_RANK);
                 (named && identified).then_some(())?;
                 let rank = rank?;
+                let glyph = fields.next().unwrap_or_default().trim().to_owned();
+                let main_pane = fields.next().unwrap_or_default().trim().to_owned();
+                let branch = fields.next().unwrap_or_default().trim().to_owned();
+                let agents = fields.next().unwrap_or_default().trim().to_owned();
+                if times.is_some() {
+                    fields.nth(1);
+                }
+                let (activity, created_at) = times.unwrap_or_default();
                 Some(PickerSession {
                     name: name.to_owned(),
                     id: id.to_owned(),
                     rank,
-                    glyph: fields.next().unwrap_or_default().trim().to_owned(),
-                    main_pane: fields.next().unwrap_or_default().trim().to_owned(),
-                    branch: fields.next().unwrap_or_default().trim().to_owned(),
-                    agents: fields.next().unwrap_or_default().trim().to_owned(),
+                    glyph,
+                    main_pane,
+                    branch,
+                    agents,
+                    activity,
+                    created_at,
                     goal: fields.next().unwrap_or_default().trim().to_owned(),
                 })
             })
             .collect(),
     )
+}
+
+/// The `(session_activity, session_created)` of a line in the CURRENT shape:
+/// ten pieces whose 8th and 9th are each empty or digits. Anything else is a
+/// line from before the two times joined the format, whose 8th piece is the
+/// goal, pipes and all — a goal that merely looks like two numbers and a
+/// tail is the one line this reads wrong, and only a test can write one.
+fn picker_times(line: &str) -> Option<(Option<i64>, Option<i64>)> {
+    let pieces: Vec<&str> = line
+        .splitn(PICKER_SESSION_FIELDS, FIELD_SEPARATOR)
+        .collect();
+    if pieces.len() != PICKER_SESSION_FIELDS {
+        return None;
+    }
+    let time = |piece: &str| {
+        let piece = piece.trim();
+        if piece.is_empty() {
+            Some(None)
+        } else if is_decimal(piece) {
+            Some(piece.parse::<i64>().ok().filter(|moment| *moment > 0))
+        } else {
+            None
+        }
+    };
+    Some((time(pieces[7])?, time(pieces[8])?))
 }
 
 /// The one build-time membership snapshot: session id then pane id.
@@ -4020,7 +4081,7 @@ mod tests {
             concat!(
                 "list-clients -F ae-picker:c|#{client_name} | #{session_id} | #{client_pid} | #{client_height} | #{client_width}",
                 " ; display-message -p ae-picker!c",
-                " ; list-sessions -F ae-picker:s|#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{@ae_goal_status}",
+                " ; list-sessions -F ae-picker:s|#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{session_activity} | #{session_created} | #{@ae_goal_status}",
                 " ; display-message -p ae-picker!s",
                 " ; list-panes -a -F ae-picker:p|#{session_id} | #{pane_id}",
                 " ; display-message -p ae-picker!p",
@@ -4981,6 +5042,8 @@ mod tests {
                     main_pane: "%7".to_owned(),
                     branch: "featuremenu".to_owned(),
                     agents: "v1;2000;60;lead:fable5:working:%7".to_owned(),
+                    activity: None,
+                    created_at: None,
                     goal: "ship | v1;9;tuple:p:done:%8 | keep #[bg=red]\u{7} now".to_owned(),
                 },
                 PickerSession {
@@ -4991,6 +5054,8 @@ mod tests {
                     main_pane: String::new(),
                     branch: String::new(),
                     agents: String::new(),
+                    activity: None,
+                    created_at: None,
                     goal: String::new(),
                 },
             ])
@@ -5004,6 +5069,49 @@ mod tests {
         assert!(
             super::PICKER_SESSION_FORMAT.contains("#{s/#{l:[|[:cntrl:]]}/!/:@ae_agents}"),
             "hostile fact delimiters become a byte the strict parser always rejects"
+        );
+    }
+
+    /// A client's touch is `session_activity` past `session_created`; equal is
+    /// tmux's own start value. The two times ride before the goal, only in the
+    /// ten-piece shape whose 8th and 9th pieces are numbers or empty: a line
+    /// from before them keeps its goal, a number and pipes in it included.
+    #[test]
+    fn a_session_is_touched_only_by_activity_past_its_creation() {
+        use super::interpret_picker_sessions;
+
+        let head = "api | $1 | 0 | x | %1 | b | v1;2000;60;lead:p:done:%1";
+        let parse = |tail: &str| {
+            let rows = interpret_picker_sessions(true, &format!("{head}{tail}\n"));
+            let row = rows.and_then(|rows| rows.into_iter().next());
+            row.map(|row| (row.touched(), row.activity, row.created_at, row.goal))
+        };
+        let some = |touched, activity, created, goal: &str| {
+            Some((touched, activity, created, goal.to_owned()))
+        };
+        assert_eq!(
+            parse(" | 150 | 100 | a | b"),
+            some(Some(150), Some(150), Some(100), "a | b")
+        );
+        assert_eq!(
+            parse(" | 100 | 100 | g"),
+            some(None, Some(100), Some(100), "g")
+        );
+        assert_eq!(
+            parse(" | 90 | 100 | g"),
+            some(None, Some(90), Some(100), "g")
+        );
+        assert_eq!(parse(" |  | 100 | g"), some(None, None, Some(100), "g"));
+        assert_eq!(parse(" | 150 |  | g"), some(None, Some(150), None, "g"));
+        assert_eq!(parse(" | 0 | 0 | g"), some(None, None, None, "g"));
+        assert_eq!(
+            parse(" | 9x | 100 | g"),
+            some(None, None, None, "9x | 100 | g")
+        );
+        assert_eq!(parse(" | 12345"), some(None, None, None, "12345"));
+        assert_eq!(
+            parse(" | one | two | three"),
+            some(None, None, None, "one | two | three")
         );
     }
 
@@ -5058,6 +5166,8 @@ mod tests {
                 main_pane: "%4".to_owned(),
                 branch: String::new(),
                 agents: String::new(),
+                activity: None,
+                created_at: None,
                 goal: String::new(),
             }]),
             "and it stays selectable in the picker"

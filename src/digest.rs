@@ -251,6 +251,10 @@ pub struct SessionEntry {
     pub branch: Option<String>,
     /// When the session last did anything ae could see.
     pub last_active_epoch: Option<i64>,
+    /// The last sign the human used the session, for the sidebar's ordering
+    /// (not a document field): the newest `ask` the console wrote into its
+    /// journal, raised by the app to the last time a tmux client touched it.
+    pub human_epoch: Option<i64>,
     /// When the session was first created.
     pub created_epoch: Option<i64>,
     /// When the session was most recently launched or resumed.
@@ -287,6 +291,7 @@ impl SessionEntry {
             goal_set_epoch: None,
             branch: None,
             last_active_epoch: None,
+            human_epoch: None,
             created_epoch: None,
             started_epoch: None,
             attention: None,

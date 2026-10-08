@@ -81,10 +81,29 @@ pub enum Line2 {
     },
 }
 
-/// The sidebar's rows: running sessions in the status strip's order (the
-/// orchestrator first, then the human's `fleet_order`, then creation), then
-/// stopped ones as the picker sorts them — dated by `last_live` newest first,
-/// undated after, ties by name.
+impl Fleet {
+    /// These rows in the order `names` lists them, any row it omits after them
+    /// in its own order, `index` renumbered to the new places.
+    #[must_use]
+    pub fn arranged(mut self, names: &[String]) -> Self {
+        self.rows.sort_by_key(|row| {
+            names
+                .iter()
+                .position(|name| *name == row.name)
+                .unwrap_or(usize::MAX)
+        });
+        for (at, row) in self.rows.iter_mut().enumerate() {
+            row.index = at + 1;
+        }
+        self
+    }
+}
+
+/// The sidebar's rows: running sessions with the orchestrator first, then the
+/// human's `fleet_order` pins, then the rest by the human's latest use,
+/// newest first (`human_epoch`), a session never used after them in creation
+/// order; then stopped ones as the picker sorts them — dated by `last_live`
+/// newest first, undated after, ties by name.
 #[must_use]
 pub fn rows(
     world: &World,
@@ -118,10 +137,19 @@ pub fn rows(
             .cmp(&moment(left))
             .then_with(|| left.name.cmp(&right.name))
     });
-    let ordered = crate::theme::ordered_fleet_rows(&strip, order)
+    let (pinned, mut rest): (Vec<&SessionEntry>, Vec<&SessionEntry>) =
+        crate::theme::ordered_fleet_rows(&strip, order)
+            .into_iter()
+            .filter_map(|row| running.iter().find(|entry| entry.name == row.name))
+            .partition(|entry| {
+                entry.name == crate::orchestrator::ORCHESTRATOR_SESSION
+                    || order.place(&entry.name) != usize::MAX
+            });
+    rest.sort_by_key(|entry| std::cmp::Reverse(entry.human_epoch));
+    let ordered = pinned
         .into_iter()
-        .filter_map(|row| running.iter().find(|entry| entry.name == row.name))
-        .chain(stopped.iter());
+        .chain(rest)
+        .chain(stopped.iter().copied());
     let empty = Section::default();
     let rows: Vec<Row> = ordered
         .enumerate()
@@ -324,6 +352,32 @@ mod tests {
             Some(home),
             now,
         )
+    }
+
+    /// Reordering by a name list: listed rows in its order, unlisted after in
+    /// their own, every `index` renumbered.
+    #[test]
+    fn arranging_follows_the_names_and_renumbers() {
+        let row = |name: &str, index| Row {
+            name: name.to_owned(),
+            index,
+            mark: Mark::Idle,
+            needy: false,
+            counts: Counts::Unknown,
+            line2: Line2::NoGoal,
+            home: false,
+        };
+        let fleet = Fleet {
+            rows: vec![row("a", 1), row("b", 2), row("c", 3), row("d", 4)],
+            home: None,
+        };
+        let arranged = fleet.arranged(&["c".to_owned(), "a".to_owned()]);
+        let seen: Vec<(&str, usize)> = arranged
+            .rows
+            .iter()
+            .map(|row| (row.name.as_str(), row.index))
+            .collect();
+        assert_eq!(seen, [("c", 1), ("a", 2), ("b", 3), ("d", 4)]);
     }
 
     #[test]
