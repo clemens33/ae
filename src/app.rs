@@ -2153,6 +2153,8 @@ mod tests {
         assert_eq!(take_keys(&mut app, q), Some(false), "q stays swallowed");
         drop(crate::store::open(&web).console_writer().expect("released"));
         assert_eq!(drafted(&app), "wq", "its draft kept");
+        let _ = take_keys(&mut app, vec![(Key::Escape, at), (Key::Enter, at)]);
+        assert_eq!(app.held, None, "read-only Enter browses (D3)");
     }
 
     /// R-B4 ext (SELECTION-MOVED): a complete read that no longer lists the
