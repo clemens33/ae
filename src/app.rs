@@ -2934,6 +2934,39 @@ mod tests {
         assert!(!app.model.settings_open());
     }
 
+    /// A drawn title press shows its tab now, without a reader answer to
+    /// repaint it later. A scrolled same-tab press resets; one at top is idle.
+    #[test]
+    fn settings_title_click_requests_its_frame_without_a_background_answer() {
+        let mut app = App::new(None, None, None, None);
+        app.open_settings();
+        let (_wake, wakes) = std::sync::mpsc::channel();
+        let mut keys = crate::console::input::Keys::app();
+        for (name, tab, scroll, redraw) in [
+            ("Config", SettingsTab::Config, 3, true),
+            ("Config", SettingsTab::Config, 3, true),
+            ("Config", SettingsTab::Config, 0, false),
+            ("About", SettingsTab::About, 3, true),
+            ("Quota", SettingsTab::Quota, 3, true),
+        ] {
+            let shown = framed(&mut app);
+            let titles = shown.lines().nth(1).expect("drawn tab titles");
+            let byte = titles.find(name).expect("drawn title");
+            let column = titles[..byte].chars().count() + name.chars().count() - 1;
+            app.model.settings_wheel(scroll);
+            let press = format!("\x1b[<0;{};2M", column + 1).into_bytes();
+            let first = Some(loader::Wake::Keys(Instant::now(), press));
+            assert_eq!(
+                super::drain(&mut app, &mut keys, &wakes, first),
+                Some(redraw),
+                "{name} click must request its own changed frame"
+            );
+            let open = app.model.settings().expect("overlay stays open");
+            assert_eq!(open.tab, tab, "drawn title selects its tab");
+            assert_eq!(open.scroll, 0, "title click resets like a key");
+        }
+    }
+
     /// A swallowed byte keeps the chunk's earlier redraw: `sx` opens on `s`
     /// and swallows `x` modal, returning `Some(true)` with one open request.
     #[test]
