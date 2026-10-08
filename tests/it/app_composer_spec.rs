@@ -211,7 +211,22 @@ impl Rig {
                 && if width < 40 || height < 8 {
                     f.text.contains("needs at least 40x8")
                 } else {
-                    f.text.contains("Enter sends") || f.text.contains("Enter writes")
+                    // tmux can resize its old screen before ae repaints: a
+                    // bottom deletion loses the keys row; a top deletion
+                    // keeps it but can leave the old grown window too tall.
+                    let writing = f.text.contains("Enter sends");
+                    let cap = if writing {
+                        height.saturating_sub(11).clamp(1, 10)
+                    } else {
+                        1
+                    };
+                    let address = format!("to {} › lead", self.home);
+                    f.text.lines().last().is_some_and(|row| {
+                        row.chars().count() == width
+                            && (row.contains("Enter send") || row.contains("Enter write"))
+                    }) && f.text.lines().enumerate().any(|(row, text)| {
+                        row >= height - 3 - cap && row <= height - 4 && text.contains(&address)
+                    })
                 }
         })
     }
