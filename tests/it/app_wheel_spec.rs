@@ -176,17 +176,48 @@ impl Rig {
 
     fn wait(&self, pane: &str, limit: Duration, why: &str, met: impl Fn(&str) -> bool) -> String {
         let until = Instant::now() + limit;
+        let mut previous = None;
         loop {
             let screen = self.screen(pane);
-            if met(&screen) {
+            if met(&screen) && previous.as_deref() == Some(screen.as_str()) {
                 return screen;
             }
             assert!(Instant::now() < until, "{why}; screen:\n{screen}");
+            previous = Some(screen);
             std::thread::sleep(Duration::from_millis(25));
         }
     }
 
     fn ready(&self, pane: &str) -> String {
+        let first = self.wait(pane, WAIT, "GUARD undragged app frame", |s| {
+            s.contains("Sessions 13") && s.contains("Enter writes") && s.contains("Overview")
+        });
+        let edge = first
+            .lines()
+            .position(|line| line.starts_with("──"))
+            .expect("drawn list border");
+        assert_eq!(edge, 30, "GUARD new undragged list border");
+        assert_eq!(self.cards(&first).len(), 11, "GUARD new undragged cards");
+        // This suite judges wheel behavior at its original viewport. The
+        // appside spec independently pins the changed undragged default.
+        self.literal(
+            pane,
+            &format!("\x1b[<0;2;{}M\x1b[<32;2;25M\x1b[<0;2;25m", edge + 1),
+        );
+        let pinned = self.wait(
+            pane,
+            WAIT,
+            "GUARD divider drag restored wheel fixture",
+            |s| {
+                s.lines().position(|line| line.starts_with("──")) == Some(24)
+                    && self.cards(s).len() == 8
+            },
+        );
+        assert_eq!(
+            pinned.lines().position(|line| line.starts_with("──")),
+            Some(24)
+        );
+        assert_eq!(self.cards(&pinned).len(), 8);
         self.wait(pane, WAIT, "GUARD home, overflow and memos ready", |s| {
             s.contains("Sessions 13") && s.contains("Enter writes") && s.contains("topic29")
         })
@@ -202,10 +233,11 @@ impl Rig {
     }
 
     fn cards(&self, screen: &str) -> Vec<String> {
+        let width = drawn_rule(screen).unwrap_or_default();
         screen
             .lines()
             .filter_map(|line| {
-                let side = line.chars().take(rule(screen)).collect::<String>();
+                let side = line.chars().take(width).collect::<String>();
                 self.names
                     .iter()
                     .find(|name| side.split_whitespace().any(|word| word == name.as_str()))
@@ -352,6 +384,8 @@ fn guard_complete_drawn_rows_prove_overview_agents_and_resize_oracles() {
         s.lines().count() == 100 && s.contains("body00") && !s.contains("more rows")
     });
     let mut expected = vec![
+        "mode: local",
+        "dir: unrecorded",
         "Goal",
         "wheel-goal",
         "Waiting on you 0",
@@ -377,7 +411,7 @@ fn guard_complete_drawn_rows_prove_overview_agents_and_resize_oracles() {
     assert_eq!(
         nonempty(&complete),
         expected,
-        "GUARD 67 exact compacted rows"
+        "GUARD 69 exact compacted rows"
     );
     let visible = if first.contains("more rows") { 17 } else { 18 };
     assert_eq!(
@@ -425,12 +459,12 @@ fn guard_complete_drawn_rows_prove_overview_agents_and_resize_oracles() {
             && s.contains("body00")
             && !s.contains("more rows")
     });
-    let mut expected_narrow = expected[..7].to_vec();
+    let mut expected_narrow = expected[..9].to_vec();
     expected_narrow.extend((0..30).rev().map(|at| format!("topic{at:02} body{at:02}")));
     assert_eq!(
         nonempty(&narrow),
         expected_narrow,
-        "GUARD narrow layout has 37 rows"
+        "GUARD narrow layout has 39 rows"
     );
 }
 
@@ -474,16 +508,16 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
     let rig = Rig::new("wlmarker");
     let pane = rig.open();
     let first = rig.ready(&pane);
-    // Contract fixture: seven section rows + thirty two-row topics = 67.
+    // Contract fixture: two facts + seven section rows + sixty topic rows = 69.
     // The drawn 18-row body gives one row to the marker, leaving 17 content rows.
     let marked = rig.wait(
         &pane,
         FRAME,
-        "A-BODY-MARKER top hides 50 of 67 compacted rows",
+        "A-BODY-MARKER top hides 52 of 69 compacted rows",
         |s| {
             body_rows(s)
                 .last()
-                .is_some_and(|row| row.trim() == "↓ 50 more rows")
+                .is_some_and(|row| row.trim() == "↓ 52 more rows")
         },
     );
     assert_eq!(body(&marked).len(), 17);
@@ -505,7 +539,7 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
         |s| {
             body_rows(s)
                 .last()
-                .is_some_and(|row| row.trim() == "↑ 3 · ↓ 47 more rows")
+                .is_some_and(|row| row.trim() == "↑ 3 · ↓ 49 more rows")
         },
     );
     assert_eq!(body(&down).first(), body(&first).get(3));
@@ -517,7 +551,7 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
         |s| {
             body_rows(s)
                 .last()
-                .is_some_and(|row| row.trim() == "↑ 50 more rows")
+                .is_some_and(|row| row.trim() == "↑ 52 more rows")
                 && body(s).last().is_some_and(|row| row.contains("body00"))
         },
     );
@@ -529,7 +563,9 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
         |s| {
             s.contains("No topics.")
                 && !s.contains("more rows")
-                && body(s).first().is_some_and(|row| row.contains("Goal"))
+                && body(s)
+                    .first()
+                    .is_some_and(|row| row.contains("mode: local"))
         },
     );
 }
@@ -632,7 +668,7 @@ fn overview_wheel_moves_three_drawn_rows_and_tabs_and_selection_reset_body() {
     let first = rig.ready(&pane);
     let rows = body(&first);
     assert!(
-        rows[0].contains("Goal") && rows.len() > 6,
+        rows[0].contains("mode: local") && rows.len() > 6,
         "GUARD overflow body drawn"
     );
     let point = (2, cell(&first, "Overview").1 + 2);
@@ -664,7 +700,7 @@ fn overview_wheel_moves_three_drawn_rows_and_tabs_and_selection_reset_body() {
         "A-OVERVIEW-REVERSE starts at clamped bottom",
         |s| body(s).get(3) == body(&bottom).first(),
     );
-    assert!(!body(&reversed)[0].contains("Goal"));
+    assert!(!body(&reversed)[0].contains("mode: local"));
     rig.literal(&pane, "\t\t");
     let reset = rig.wait(&pane, FRAME, "A-OVERVIEW-TAB reset", |s| body(s) == rows);
     rig.report(&pane, 65, point, 1);
@@ -681,7 +717,9 @@ fn overview_wheel_moves_three_drawn_rows_and_tabs_and_selection_reset_body() {
         "A-OVERVIEW-KEY-SELECT reset overflowing foreign body",
         |s| {
             s.lines().nth(1).is_some_and(|line| line.contains("ws00"))
-                && body(s).first().is_some_and(|row| row.contains("Goal"))
+                && body(s)
+                    .first()
+                    .is_some_and(|row| row.contains("mode: local"))
                 && s.contains("topic29")
         },
     );
@@ -703,7 +741,9 @@ fn overview_wheel_moves_three_drawn_rows_and_tabs_and_selection_reset_body() {
         "A-OVERVIEW-CLICK-SELECT reset overflowing foreign body",
         |s| {
             s.lines().nth(1).is_some_and(|line| line.contains("ws00"))
-                && body(s).first().is_some_and(|row| row.contains("Goal"))
+                && body(s)
+                    .first()
+                    .is_some_and(|row| row.contains("mode: local"))
                 && s.contains("topic29")
         },
     );
@@ -839,7 +879,9 @@ fn refresh_clamps_shrunk_list_and_body_before_drawing() {
         |s| {
             s.contains("Sessions 3")
                 && rig.cards(s) == rig.names[..3]
-                && body(s).first().is_some_and(|row| row.contains("Goal"))
+                && body(s)
+                    .first()
+                    .is_some_and(|row| row.contains("mode: local"))
                 && s.contains("No topics.")
         },
     );
@@ -857,7 +899,7 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
     });
     rig.tmux(&["resize-window", "-t", &pane, "-x", "100", "-y", "28"]);
     let narrow = rig.wait(&pane, FRAME, "A-RESIZE-NARROW body drawn", |s| {
-        s.lines().count() == 28 && s.contains("topic") && rig.cards(s).len() == 5
+        s.lines().count() == 28 && s.contains("topic") && rig.cards(s).len() == 7
     });
     rig.report(&pane, 65, (2, cell(&narrow, "Overview").1 + 2), 40);
     rig.wait(&pane, FRAME, "A-RESIZE-NARROW-BOTTOM final topic", |s| {
@@ -870,7 +912,9 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
         "A-RESIZE-GROW all body fits and top visible",
         |s| {
             s.lines().count() == 100
-                && body(s).first().is_some_and(|row| row.contains("Goal"))
+                && body(s)
+                    .first()
+                    .is_some_and(|row| row.contains("mode: local"))
                 && s.contains("body00")
         },
     );

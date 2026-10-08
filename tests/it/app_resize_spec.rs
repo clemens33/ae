@@ -461,8 +461,8 @@ fn live_horizontal_minimum_keeps_one_session_and_more_row() {
     let screen = rig.ready(&pane);
     assert_eq!(
         horizontal_rule(&screen),
-        Some(24),
-        "unchanged windowed default"
+        Some(30),
+        "larger undragged windowed default"
     );
     rig.grab_horizontal(&pane, 0);
     let screen = rig.horizontal(&pane, 10);

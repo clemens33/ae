@@ -597,12 +597,12 @@ fn click_blank_row_noops() {
 fn click_more_row_noops() {
     let stopped = [
         "mstop00", "mstop01", "mstop02", "mstop03", "mstop04", "mstop05", "mstop06", "mstop07",
-        "mstop08", "mstop09",
+        "mstop08", "mstop09", "mstop10", "mstop11",
     ];
     let rig = Rig::new("ammore", 0, &stopped);
     let pane = rig.open_app();
     let screen = rig.wait(&pane, WAIT, "the windowed list", |screen| {
-        screen.contains("Sessions 11") && screen.contains("more")
+        screen.contains("Sessions 13") && screen.contains("more")
     });
     let (col, row) = sidebar_cell_of(&screen, "more").expect("the more row");
     rig.click(&pane, col, row);

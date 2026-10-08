@@ -1100,7 +1100,7 @@ fn draw_overview() -> ae::app::overview::Overview {
                 text: "refresh in review".to_owned(),
             },
         ],
-        memo_gap: None,
+        ..Default::default()
     }
 }
 
@@ -1379,7 +1379,7 @@ fn app_draw_no_home_names_the_way_out() {
         open: vec![],
         decided: None,
         topics: vec![],
-        memo_gap: None,
+        ..Default::default()
     };
     let entry = SessionEntry::new("docs", Status::Running);
     let pair: Vec<String> = vec![];
@@ -1695,7 +1695,7 @@ fn app_draw_next_need_scrolls_into_view() {
         }],
         decided: None,
         topics: vec![],
-        memo_gap: None,
+        ..Default::default()
     };
     let entry = SessionEntry::new("s1", Status::Running);
     let pair: Vec<String> = vec![];
