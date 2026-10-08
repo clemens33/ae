@@ -802,10 +802,10 @@ pub(crate) fn seat_context_document(
         ctx.push_str(&expand(IDENTITY, &[("_ident", name), ("slot", slot)]));
     }
     // One role classification owns both the owner line and the role card.
-    // A lead-pair layout alone does not prove that worker.0 is a peer.
     let peer = has_leadership_peer(&meta_bytes, &layout);
-    let leadership = slot == "main" || (peer && slot == "worker.0");
-    let worker = !leadership && (slot.starts_with("worker.") || slot.starts_with("spawned."));
+    let class = seat_role(&meta_bytes, slot);
+    let leadership = class == SeatRole::Lead;
+    let worker = class == SeatRole::Worker;
     let owner = context_owner(&meta_bytes, leadership, worker);
     ctx.push(' ');
     ctx.push_str(&expand(
@@ -885,12 +885,67 @@ pub(crate) fn seat_context_document(
         }
     }
 
-    let instructions = config_value(&config_entries(config_files), "prompt.instructions");
-    if !instructions.is_empty() {
+    if let Some((_, instructions)) = prompt_instructions(config_files) {
         ctx.push_str(" --- Workspace instructions: ");
         ctx.push_str(&instructions);
     }
     ctx
+}
+
+/// What the context treats a seat as: the one classification behind its owner
+/// line and its role card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeatRole {
+    /// `main`, and `worker.0` of a lead-pair that records it: told it answers
+    /// to the human.
+    Lead,
+    /// Any other `worker.*` or `spawned.*`: told its owner is an agent.
+    Worker,
+    /// A slot the context classifies as neither.
+    Other,
+}
+
+impl SeatRole {
+    /// The word the settings tab titles a seat's section with.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Self::Lead => "lead",
+            Self::Worker => "worker",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// `slot`'s role in the session `meta_bytes` records. A lead-pair layout alone
+/// does not prove that `worker.0` is a peer: the roster must carry it.
+pub(crate) fn seat_role(meta_bytes: &[u8], slot: &str) -> SeatRole {
+    let layout = row(meta_bytes, "layout");
+    if slot == "main" || (slot == "worker.0" && has_leadership_peer(meta_bytes, &layout)) {
+        SeatRole::Lead
+    } else if slot.starts_with("worker.") || slot.starts_with("spawned.") {
+        SeatRole::Worker
+    } else {
+        SeatRole::Other
+    }
+}
+
+/// The `[prompt] instructions` a seat's context ends with, and the index in
+/// `config_files` of the file whose row wins: the LAST file that declares one
+/// at all, and the last row in it. The winner decides even when empty, so a
+/// local `instructions = ""` masks a global text and the answer is `None`.
+pub(crate) fn prompt_instructions(config_files: &[PathBuf]) -> Option<(usize, String)> {
+    config_files
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(at, file)| {
+            config_entries(std::slice::from_ref(file))
+                .into_iter()
+                .rev()
+                .find(|(key, _)| key == "prompt.instructions")
+                .map(|(_, text)| (at, text))
+        })
+        .filter(|(_, text)| !text.is_empty())
 }
 
 /// The legacy context shape: identical inputs, inherited provenance.
@@ -1042,8 +1097,9 @@ pub fn run_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        CONTEXT_HEAD, LEAD_ROLE, MANIFEST_TEMPLATE, PEER_ROLE, WORKER_ROLE, config_entries,
-        config_value, context_document, expand, manifest_document, profile_inventory, tool_label,
+        CONTEXT_HEAD, LEAD_ROLE, MANIFEST_TEMPLATE, PEER_ROLE, SeatRole, WORKER_ROLE,
+        config_entries, config_value, context_document, expand, manifest_document,
+        profile_inventory, prompt_instructions, seat_role, tool_label,
     };
     use std::path::{Path, PathBuf};
 
@@ -1343,6 +1399,52 @@ mod tests {
         );
         let entries = config_entries(&[global, local]);
         assert_eq!(config_value(&entries, "prompt.instructions"), "one\ntwo");
+    }
+
+    /// The winning row is the LAST one of the LAST file that declares the key,
+    /// whatever it says: an explicitly empty local row masks a global one, as
+    /// `config_value` does, and a final line without its newline is dropped.
+    #[test]
+    fn the_winning_instructions_row_decides_even_when_empty() {
+        let dir = scratch("winner");
+        std::fs::write(dir.join("meta"), "mode=local\n").unwrap();
+        let file = |name: &str, text: &str| write(&dir, name, text);
+        let global = file("global", "[prompt]\ninstructions = global\n");
+        let local = file(
+            "local",
+            "[prompt]\ninstructions = local\ninstructions = last\n",
+        );
+        let empty = file("empty", "[prompt]\ninstructions = \"\"\n");
+        let partial = file("partial", "[prompt]\ninstructions = lost");
+        let win = |files: &[&PathBuf]| {
+            prompt_instructions(&files.iter().copied().cloned().collect::<Vec<_>>())
+        };
+        assert_eq!(win(&[&global, &local]), Some((1, "last".to_owned())));
+        assert_eq!(win(&[&global, &local, &empty]), None);
+        assert_eq!(win(&[&global, &partial]), Some((0, "global".to_owned())));
+        assert_eq!(
+            win(&[&local, &empty, &global]),
+            Some((2, "global".to_owned()))
+        );
+        assert_eq!(win(&[]), None);
+        let masked = context_document(&dir, "s", "/w", "main", &[global, local, empty]);
+        assert!(!masked.contains("Workspace instructions"), "{masked}");
+    }
+
+    #[test]
+    fn a_seat_role_is_the_classification_the_document_is_built_on() {
+        let pair = "layout=lead-pair\nseat.main=lead\nseat.worker.0=p\nseat.worker.1=b\n";
+        let solo = "layout=vertical\nseat.main=lead\nseat.worker.0=p\n";
+        for (meta, slot, want) in [
+            (pair, "main", SeatRole::Lead),
+            (pair, "worker.0", SeatRole::Lead),
+            (pair, "worker.1", SeatRole::Worker),
+            (pair, "spawned.2", SeatRole::Worker),
+            (solo, "worker.0", SeatRole::Worker),
+            (pair, "workers.1", SeatRole::Other),
+        ] {
+            assert_eq!(seat_role(meta.as_bytes(), slot), want, "{slot} in {meta}");
+        }
     }
 
     #[test]

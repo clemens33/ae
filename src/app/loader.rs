@@ -85,12 +85,14 @@ pub(super) enum Answer {
     },
     View(ViewRead),
     /// The settings overlay's bodies for `generation`. Quota rides every
-    /// answer; config and about ride the first per open, then stay.
+    /// answer; config, about and instructions ride the first per open, then
+    /// stay.
     Settings {
         generation: u64,
         quota: Vec<super::settings::QuotaRow>,
         config: Option<super::settings::ConfigView>,
         about: Option<super::settings::AboutFacts>,
+        instructions: Option<super::settings::InstructionsView>,
     },
 }
 
@@ -214,6 +216,9 @@ pub(super) struct Reader {
     settings: Option<(u64, Option<Instant>)>,
     /// Config and about already read for the open overlay.
     settings_full: bool,
+    /// The session the open overlay's instructions tab is for: the selection
+    /// when it opened, never retargeted while it stays open.
+    settings_session: Option<String>,
 }
 
 /// Start the reader on its own thread; answers arrive on `wake`.
@@ -254,6 +259,7 @@ impl Reader {
             settings_paths: SettingsPaths::default(),
             settings: None,
             settings_full: false,
+            settings_session: None,
         }
     }
 
@@ -314,9 +320,11 @@ impl Reader {
                 if open {
                     self.settings = Some((generation, None));
                     self.settings_full = false;
+                    self.settings_session = self.selected.clone().or_else(|| self.home.clone());
                 } else {
                     self.settings = None;
                     self.settings_full = false;
+                    self.settings_session = None;
                 }
             }
         }
@@ -616,7 +624,7 @@ impl Reader {
     }
 
     /// The open overlay's bodies for its generation: quota every time,
-    /// config and about once per open. The read gate holds the whole read
+    /// config, about and instructions once per open. The read gate holds the whole read
     /// before anything is touched.
     fn settings(&mut self) -> Answer {
         crate::read_gate("settings");
@@ -639,8 +647,8 @@ impl Reader {
                 })
                 .collect()
         };
-        let (config, about) = if self.settings_full {
-            (None, None)
+        let (config, about, instructions) = if self.settings_full {
+            (None, None, None)
         } else {
             let home_dir = self
                 .home
@@ -648,7 +656,8 @@ impl Reader {
                 .and_then(|home| crate::console::locate(&self.root, home));
             let config = super::settings::resolve_config(home_dir.as_deref(), &paths.global);
             let about_dir = home_dir.unwrap_or_else(|| self.root.join("sessions"));
-            (Some(config), Some(self.about(&about_dir, &paths.global)))
+            let about = self.about(&about_dir, &paths.global);
+            (Some(config), Some(about), Some(self.instructions()))
         };
         self.settings = Some((generation, Some(Instant::now())));
         self.settings_full = true;
@@ -657,6 +666,19 @@ impl Reader {
             quota,
             config,
             about,
+            instructions,
+        }
+    }
+
+    /// The instructions tab for the session the overlay opened on: its records
+    /// are located the way home's are, so a stopped session renders the same.
+    fn instructions(&self) -> super::settings::InstructionsView {
+        match self.settings_session.as_deref() {
+            Some(name) => super::settings::resolve_instructions(
+                crate::console::locate(&self.root, name).as_deref(),
+                name,
+            ),
+            None => super::settings::InstructionsView::Gap("no session selected".to_owned()),
         }
     }
 
@@ -1091,6 +1113,40 @@ mod tests {
         assert_eq!(read(&reader), Reading::Owner);
         reader.take(Request::Writing(None));
         assert!(reader.owned().is_none(), "a stopped writer, no proof");
+    }
+
+    /// The instructions tab is for the session selected when the overlay
+    /// opened (home when nothing is), read once and never retargeted by a
+    /// later focus; an empty selection is a named gap.
+    #[test]
+    fn the_instructions_tab_stays_on_the_session_selected_at_open() {
+        use crate::app::settings::InstructionsView as View;
+        let root = Root::new("settings-capture");
+        let _ = session(&root, "web", "work_dir=/w\n");
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
+        let read = |reader: &mut Reader, selected: Option<&str>, refocus: Option<&str>| {
+            reader.take(Request::Focus(selected.map(str::to_owned)));
+            reader.take(Request::Settings {
+                open: true,
+                generation: 1,
+            });
+            reader.take(Request::Focus(refocus.map(str::to_owned)));
+            let Answer::Settings { instructions, .. } = reader.settings() else {
+                panic!("a settings answer");
+            };
+            reader.take(Request::Settings {
+                open: false,
+                generation: 1,
+            });
+            instructions
+        };
+        let first = read(&mut reader, Some("web"), Some("api"));
+        assert!(matches!(first, Some(View::Ready(p)) if p.session == "web"));
+        let home = read(&mut reader, None, None);
+        assert!(matches!(home, Some(View::Ready(p)) if p.session == "api"));
+        reader.home = None;
+        let none = read(&mut reader, None, None);
+        assert!(matches!(none, Some(View::Gap(why)) if why.contains("no session selected")));
     }
 
     /// I11: a settings read completed at t cannot reread at t or

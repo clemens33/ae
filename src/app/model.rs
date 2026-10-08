@@ -107,6 +107,7 @@ pub(crate) enum SettingsTab {
     Quota,
     Config,
     About,
+    Instructions,
 }
 
 /// The open settings overlay: its tab, how far its body scrolled, the body
@@ -445,12 +446,14 @@ impl Model {
                 self.show_settings_tab(match tab {
                     SettingsTab::Quota => SettingsTab::Config,
                     SettingsTab::Config => SettingsTab::About,
-                    SettingsTab::About => SettingsTab::Quota,
+                    SettingsTab::About => SettingsTab::Instructions,
+                    SettingsTab::Instructions => SettingsTab::Quota,
                 })
             }
             Key::Digit(1) => self.show_settings_tab(SettingsTab::Quota),
             Key::Digit(2) => self.show_settings_tab(SettingsTab::Config),
             Key::Digit(3) => self.show_settings_tab(SettingsTab::About),
+            Key::Digit(4) => self.show_settings_tab(SettingsTab::Instructions),
             Key::Up => self.settings_scroll_by(-1),
             Key::Down => self.settings_scroll_by(1),
             Key::PageUp => self.settings_page_by(false),

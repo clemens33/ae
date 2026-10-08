@@ -16,12 +16,13 @@ use ratatui_core::text::{Line, Span};
 use super::fleet::{Counts, Facts, Fleet, Line2, Row};
 use super::model::{Drag, Edge, Model, SettingsTab, Split, Tab};
 use super::overview::Overview;
-use super::settings::{AboutFacts, ConfigView, SettingsBodies};
+use super::settings::{AboutFacts, ConfigView, InstructionsView, SettingsBodies};
 use crate::brief::age;
 use crate::console::input::View;
 use crate::console::input::{Mouse, ROWS_MAX};
 use crate::console::lane::Lane;
 use crate::console::view;
+use crate::console::wrap::wrap;
 use crate::digest::{SessionEntry, Status};
 use crate::event_text::clip_head;
 use crate::theme::{Look, Mark, Palette};
@@ -1219,7 +1220,7 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
 /// The overlay's title row.
 const SETTINGS_TITLE: &str = "Settings";
 /// The tabs in draw order.
-const SETTINGS_TABS: [&str; 3] = ["Quota", "Config", "About"];
+const SETTINGS_TABS: [&str; 4] = ["Quota", "Config", "About", "Instructions"];
 /// The clickable close label, right-aligned on the title row.
 const SETTINGS_CLOSE: &str = "Esc close";
 /// Plain-text links; no OSC 8 in this slice.
@@ -1243,10 +1244,12 @@ pub(crate) fn paint_settings(
     layout: &mut Layout,
 ) {
     let paint = Paint::of(look);
+    let width = buf.area.width;
     let selected = match tab {
         SettingsTab::Quota => 0,
         SettingsTab::Config => 1,
         SettingsTab::About => 2,
+        SettingsTab::Instructions => 3,
     };
     panel(
         buf,
@@ -1259,10 +1262,11 @@ pub(crate) fn paint_settings(
                 Hit::SettingsTab(SettingsTab::Quota),
                 Hit::SettingsTab(SettingsTab::Config),
                 Hit::SettingsTab(SettingsTab::About),
+                Hit::SettingsTab(SettingsTab::Instructions),
             ],
             close: (SETTINGS_CLOSE, Hit::SettingsClose),
             selected,
-            body: &settings_body(tab, bodies, paint),
+            body: &settings_body(tab, bodies, paint, width),
             scroll,
         },
     );
@@ -1345,7 +1349,12 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
 
 /// The overlay body's styled rows: every field through the terminal-text
 /// neutraliser, because paths and config values are hostile text.
-fn settings_body(tab: SettingsTab, bodies: &SettingsBodies, paint: Paint) -> Vec<(String, Style)> {
+fn settings_body(
+    tab: SettingsTab,
+    bodies: &SettingsBodies,
+    paint: Paint,
+    width: u16,
+) -> Vec<(String, Style)> {
     let dim = paint.fg(|p| p.dim);
     let text = paint.fg(|p| p.text);
     let head = paint.fg(|p| p.text).add_modifier(Modifier::BOLD);
@@ -1403,6 +1412,7 @@ fn settings_body(tab: SettingsTab, bodies: &SettingsBodies, paint: Paint) -> Vec
             None => vec![("loading".to_owned(), dim)],
             Some(about) => about_body(about, text),
         },
+        SettingsTab::Instructions => instructions_body(&bodies.instructions, width, paint),
     }
 }
 
@@ -1429,6 +1439,65 @@ fn about_body(about: &AboutFacts, text: Style) -> Vec<(String, Style)> {
             .map(|(label, link)| (format!("{label}   {link}"), text)),
     );
     rows
+}
+
+/// The instructions tab's rows: the render-now line, the custom instructions
+/// and one section per seat. Every field is neutralised first and then wrapped
+/// to the panel, a continuation row hanging two cells; nothing is cut here, the
+/// panel scrolls.
+fn instructions_body(view: &InstructionsView, width: u16, paint: Paint) -> Vec<(String, Style)> {
+    let dim = paint.fg(|p| p.dim);
+    let text = paint.fg(|p| p.text);
+    let head = paint.fg(|p| p.text).add_modifier(Modifier::BOLD);
+    // `wrap` keeps a one-cell bar free ahead of every row.
+    let room = usize::from(width.saturating_sub(LEFT)) + 1;
+    let rows = |body: &str, style: Style| -> Vec<(String, Style)> {
+        wrap(&crate::board::terminal_text(body), room, 0)
+            .into_iter()
+            .map(|(gap, piece)| (format!("{}{piece}", " ".repeat(gap)), style))
+            .collect()
+    };
+    let protocol = match view {
+        InstructionsView::Loading => return vec![("loading".to_owned(), dim)],
+        InstructionsView::Gap(why) => return rows(why, text),
+        InstructionsView::Ready(protocol) => protocol,
+    };
+    let mut out = rows(&format!("session: {}", protocol.session), dim);
+    out.extend(rows(
+        &format!(
+            "Rendered now by {}: the text a launch injects today. A running seat holds the text of its own launch time.",
+            crate::version_line()
+        ),
+        dim,
+    ));
+    out.push((String::new(), text));
+    out.extend(rows("Custom instructions ([prompt] instructions)", head));
+    if let Some(custom) = &protocol.custom {
+        out.extend(rows(
+            &format!("source: {} {}", custom.source.word(), custom.file),
+            dim,
+        ));
+        out.extend(rows(&custom.text, text));
+    } else {
+        let named = if protocol.files.is_empty() {
+            "no config file".to_owned()
+        } else {
+            protocol.files.join(", ")
+        };
+        out.extend(rows(&format!("none in {named}"), dim));
+    }
+    for seat in &protocol.seats {
+        out.push((String::new(), text));
+        out.extend(rows(
+            &format!("{} · {} · {}", seat.name, seat.slot, seat.role),
+            head,
+        ));
+        match &seat.text {
+            Ok(document) => out.extend(rows(document, text)),
+            Err(why) => out.extend(rows(&format!("gap: {why}"), dim)),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,7 +1556,7 @@ mod tests {
     use ratatui_core::buffer::Buffer;
     use ratatui_core::layout::Rect;
 
-    use super::{Composer, Screen, aged, dragged_to, draw};
+    use super::{Composer, LEFT, Paint, Screen, aged, dragged_to, draw, instructions_body};
     use crate::app::fleet::{Counts, Facts, Fleet, Line2, Row};
     use crate::app::model::{Drag, Edge, Model};
     use crate::app::overview::{Open, Overview};
@@ -1574,6 +1643,63 @@ mod tests {
             id: "$1".to_owned(),
             agents: vec![agent; 9],
         }
+    }
+
+    /// The instructions rows neutralise controls before they wrap, keep every
+    /// word, fit the panel at the narrowest widths, name the winning source
+    /// or the files that held none, and spell a seat's gap.
+    #[test]
+    fn instructions_rows_are_neutralised_wrapped_and_name_their_gaps() {
+        use crate::app::settings::{
+            ConfigSource, CustomInstructions, InstructionsView, Protocol, SeatProtocol,
+        };
+        let hostile = format!("\u{1b}[31mred\u{7} {}\tend\nnext line", "word ".repeat(40));
+        let ready = |custom, text| {
+            let seat = SeatProtocol {
+                name: "lead".to_owned(),
+                slot: "main".to_owned(),
+                role: "lead",
+                text,
+            };
+            InstructionsView::Ready(Protocol {
+                session: "api".to_owned(),
+                files: vec!["/g".to_owned()],
+                custom,
+                seats: vec![seat],
+            })
+        };
+        let custom = CustomInstructions {
+            source: ConfigSource::Global,
+            file: "/g".to_owned(),
+            text: hostile.clone(),
+        };
+        let paint = Paint::of(None);
+        let clean = crate::board::terminal_text(&hostile);
+        for width in [40_u16, 80] {
+            let view = ready(Some(custom.clone()), Ok(hostile.clone()));
+            let rows = instructions_body(&view, width, paint);
+            let lines: Vec<&str> = rows.iter().map(|(line, _)| line.as_str()).collect();
+            for line in &lines {
+                assert!(!line.chars().any(char::is_control), "{line:?}");
+                assert!(
+                    line.chars().count() <= usize::from(width - LEFT),
+                    "{line:?}"
+                );
+            }
+            assert!(lines.contains(&"source: global /g"), "{lines:?}");
+            let at = lines.iter().position(|line| *line == "lead · main · lead");
+            let kept: Vec<&str> = lines[at.expect("heading") + 1..]
+                .iter()
+                .flat_map(|line| line.split_whitespace())
+                .collect();
+            assert_eq!(kept, clean.split_whitespace().collect::<Vec<_>>());
+        }
+        let lines = |view| instructions_body(&view, 80, paint);
+        let gapped = lines(ready(None, Err("unknown slot".to_owned())));
+        let gapped: Vec<&str> = gapped.iter().map(|(line, _)| line.as_str()).collect();
+        assert!(gapped.contains(&"none in /g") && gapped.contains(&"gap: unknown slot"));
+        let torn = InstructionsView::Gap("\u{1b}]0;x\u{7}torn".to_owned());
+        assert_eq!(lines(torn)[0].0, "\u{fffd}]0;x\u{fffd}torn");
     }
 
     /// Every write is bounds-checked, so no size panics: a populated screen

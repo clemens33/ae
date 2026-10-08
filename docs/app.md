@@ -125,7 +125,7 @@ Browsing:
 | `Enter` or `i` | write the selected session, when no other app writes it |
 | `s` | open Settings |
 | Click the gear at the keys row's right end | open Settings, also while writing |
-| Click a Settings tab title | show that tab, like `Tab` and `1`-`3` |
+| Click a Settings tab title | show that tab, like `Tab` and `1`-`4` |
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `q`, `^C` | quit |
 
@@ -168,21 +168,33 @@ then acts as it always does.
 `s` opens the read-only Settings overlay over the whole pane, as does the
 gear (`*` with `icons = off`) at the keys row's right end — the gear also
 while writing, where `s` stays draft text; `Esc`, `q` or `s` closes it, `^C`
-quits. While open the overlay owns every key and click: `Tab`, `1`-`3` and a
+quits. While open the overlay owns every key and click: `Tab`, `1`-`4` and a
 click on a tab title switch tabs, a click on the drawn `Esc close` label or on
 the gear closes it like `Esc`, `j` / `k` and `↓` / `↑` scroll a line, the
 wheel three rows per notch, `PgUp` / `PgDn` a page, everything else is
 swallowed (every other click too), and a draft being written is kept untouched
-until it closes. Three
+until it closes. Four
 tabs: Quota shows the same scope rows `ae quota` prints; Config shows every
 `[workspace]` key the home session runs
 with and where each came from — `launch` (pinned in its meta), `session` (its
 origin overlay), `global` (the meta-recorded file, the current global only
 when that row is empty) or `default` — with `global only` on the keys that
 read the current global alone; About names the versions, the state root, the
-config file, the recorded server and the repo links. Quota reads again every
-refresh while open; config and about read once per open. A torn config shows
-one honest row naming the file.
+config file, the recorded server and the repo links; Instructions shows what ae
+tells the agents of the SELECTED session (the one selected when Settings opened),
+from its records alone, so a stopped session shows too: the custom `[prompt]
+instructions` in force with the file they come from — `global` (the meta-recorded
+file) or `session` (its local overlay), the last file declaring the key wins even
+when empty — or a line saying there are none; then one section per roster seat,
+titled `name · slot · lead` or `worker`, holding the text a launch injects
+for that seat, as the one renderer produces it now, wrapped to the pane. A
+session, config file or seat ae cannot render from shows a named `gap` row
+instead of a guess: no records, an unreadable meta or config (the whole tab), an
+unknown slot, a seat name that is no agent name, a refused or missing work dir.
+Quota reads again every refresh while open; config, about and instructions read
+once per open. A torn config shows one honest row naming the file. The
+Instructions head states the residual below: this is today's render, not what
+a running seat was handed.
 
 ## Ownership
 
@@ -240,6 +252,10 @@ refuses its sends and `/close`.
   session was created leaves it unknown. A stray click counts as activity too.
 - A list scrolled with the wheel keeps its row positions across a reorder, so
   it can show different sessions after one.
+- The Instructions tab renders from the records NOW: a running seat received the
+  text of its own launch time, so a config or ae upgrade since then shows here
+  and not in that seat. A seat's work dir is shown as recorded; a launch also
+  proves it exists.
 - Settings shows the launch-pinned values for `layout`, `quota`,
   `quota_every_secs`, `idle_nudge_secs` and `done_confirmations`: a running
   session keeps what it launched with even after the config changes.

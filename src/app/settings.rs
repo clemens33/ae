@@ -85,12 +85,52 @@ pub(crate) struct AboutFacts {
     pub(crate) server: String,
 }
 
+/// The `[prompt] instructions` in force for a session and where they come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CustomInstructions {
+    /// `Global` (the meta-recorded file) or `Session` (its local overlay).
+    pub(crate) source: ConfigSource,
+    pub(crate) file: String,
+    pub(crate) text: String,
+}
+
+/// One roster seat's section: the text ae renders for it, or why it renders
+/// none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeatProtocol {
+    pub(crate) name: String,
+    pub(crate) slot: String,
+    pub(crate) role: &'static str,
+    pub(crate) text: Result<String, String>,
+}
+
+/// What the instructions tab draws for one session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Protocol {
+    pub(crate) session: String,
+    /// The config files the launch layering reads, global first.
+    pub(crate) files: Vec<String>,
+    pub(crate) custom: Option<CustomInstructions>,
+    pub(crate) seats: Vec<SeatProtocol>,
+}
+
+/// The instructions tab's body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InstructionsView {
+    /// No answer yet.
+    Loading,
+    /// One honest row: the session or a config file cannot be rendered from.
+    Gap(String),
+    Ready(Protocol),
+}
+
 /// Everything the overlay draws. Cold until the first answer lands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettingsBodies {
     pub(crate) quota: Option<Vec<QuotaRow>>,
     pub(crate) config: ConfigView,
     pub(crate) about: Option<AboutFacts>,
+    pub(crate) instructions: InstructionsView,
 }
 
 impl Default for SettingsBodies {
@@ -99,6 +139,7 @@ impl Default for SettingsBodies {
             quota: None,
             config: ConfigView::Loading,
             about: None,
+            instructions: InstructionsView::Loading,
         }
     }
 }
@@ -230,6 +271,130 @@ pub(crate) fn resolve_config(meta_dir: Option<&Path>, current_global: &Path) -> 
         },
         rows,
     }
+}
+
+/// Resolve the instructions tab for session `name` whose records sit at
+/// `meta_dir`: the custom instructions in force and, for every roster seat,
+/// the text `render::seat_context_document` renders from the records now,
+/// with the inputs `_run` hands it. A session, config file or seat it cannot
+/// render from is a named gap, never a guess.
+pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> InstructionsView {
+    let gap = InstructionsView::Gap;
+    let Some(dir) = meta_dir else {
+        return gap(format!("{name}: no records on this machine"));
+    };
+    let bytes = match crate::meta::read_bytes(dir) {
+        Ok(bytes) => bytes,
+        Err(why) => {
+            return gap(format!(
+                "{}: {}",
+                crate::store::open(dir).meta_path().display(),
+                why.to_string().escape_debug()
+            ));
+        }
+    };
+    let value = |key| crate::lifecycle::meta_value(&bytes, key);
+    let recorded = value("config");
+    let global = (!recorded.is_empty()).then(|| PathBuf::from(recorded));
+    let local = crate::config::local_overlay(dir, &value("origin"));
+    let files = crate::config::ctx_config_files(global.as_deref(), local.as_deref());
+    let sources: Vec<ConfigSource> = global
+        .iter()
+        .map(|_| ConfigSource::Global)
+        .chain(local.iter().map(|_| ConfigSource::Session))
+        .collect();
+    for file in &files {
+        if let Err(why) = readable_config(file) {
+            return gap(why);
+        }
+    }
+    let custom = crate::render::prompt_instructions(&files).and_then(|(at, text)| {
+        Some(CustomInstructions {
+            source: *sources.get(at)?,
+            file: files.get(at)?.display().to_string(),
+            text,
+        })
+    });
+    let session = value("session");
+    let session = if session.is_empty() {
+        name.to_owned()
+    } else {
+        session
+    };
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    if meta.roster().is_empty() {
+        return gap(format!("{session}: the records name no seats"));
+    }
+    let seats = meta
+        .roster()
+        .iter()
+        .map(|entry| {
+            let role = crate::render::seat_role(&bytes, &entry.slot);
+            SeatProtocol {
+                name: entry.name.clone(),
+                slot: entry.slot.clone(),
+                role: role.word(),
+                text: seat_text(dir, &bytes, &session, &files, entry, role),
+            }
+        })
+        .collect();
+    InstructionsView::Ready(Protocol {
+        session,
+        files: files
+            .iter()
+            .map(|file| file.display().to_string())
+            .collect(),
+        custom,
+        seats,
+    })
+}
+
+/// One seat's rendered context, or the fact that stops it. The work directory
+/// is the one `_run` would hand over, as recorded: a launch also proves it
+/// exists, which a settings read does not.
+fn seat_text(
+    dir: &Path,
+    bytes: &[u8],
+    session: &str,
+    files: &[PathBuf],
+    entry: &crate::meta::RosterEntry,
+    role: crate::render::SeatRole,
+) -> Result<String, String> {
+    if role == crate::render::SeatRole::Other {
+        return Err("unknown slot: ae renders no protocol for it".to_owned());
+    }
+    if !crate::config::is_agent_name(&entry.name) {
+        return Err("the recorded seat name is not a valid agent name".to_owned());
+    }
+    let inherited = crate::lifecycle::meta_value(bytes, "work_dir");
+    let (work_dir, provenance) = match crate::meta::raw_seat_work_dir(bytes, &entry.slot)? {
+        Some(row) => (row, crate::meta::SeatProvenance::Explicit),
+        None if inherited.is_empty() => {
+            return Err("the session records no work_dir".to_owned());
+        }
+        None => (inherited, crate::meta::SeatProvenance::Inherited),
+    };
+    Ok(crate::render::seat_context_document(
+        dir,
+        session,
+        &work_dir,
+        &entry.slot,
+        files,
+        provenance,
+    ))
+}
+
+/// Why `file` cannot be rendered from, when it exists but cannot be read or
+/// is torn. Only the verdict is taken from the generic reader: the text a
+/// launch injects is `render`'s own grammar.
+fn readable_config(file: &Path) -> Result<(), String> {
+    let text = crate::config::read_global_text(file)
+        .map_err(|why| format!("{}: {why}", file.display()))?;
+    if let Some(text) = text {
+        crate::config::section_entries(file, &text, "prompt")
+            .map_err(|why| format!("{}: {}", file.display(), why.escape_debug()))?;
+    }
+    Ok(())
 }
 
 /// One layered row: the overlay wins over the meta-recorded global, which

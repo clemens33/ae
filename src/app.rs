@@ -228,19 +228,22 @@ impl App {
                 quota,
                 config,
                 about,
-            } => self.settled(generation, quota, config, about),
+                instructions,
+            } => self.settled(generation, quota, config, about, instructions),
         }
     }
 
     /// Fold one settings answer. Only the open overlay's own generation
     /// paints: a late answer for a closed overlay is dropped. Quota rides
-    /// every answer; config and about ride the first per open, then stay.
+    /// every answer; config, about and instructions ride the first per open,
+    /// then stay.
     fn settled(
         &mut self,
         generation: u64,
         quota: Vec<settings::QuotaRow>,
         config: Option<settings::ConfigView>,
         about: Option<settings::AboutFacts>,
+        instructions: Option<settings::InstructionsView>,
     ) {
         if !self.model.settings_generation(generation) {
             return;
@@ -251,6 +254,9 @@ impl App {
         }
         if let Some(about) = about {
             self.settings_bodies.about = Some(about);
+        }
+        if let Some(instructions) = instructions {
+            self.settings_bodies.instructions = instructions;
         }
     }
 
@@ -2819,9 +2825,9 @@ mod tests {
             config_file: "/c".to_owned(),
             server: "ambient".to_owned(),
         };
-        app.settled(99, quota(), Some(config()), Some(about()));
+        app.settled(99, quota(), Some(config()), Some(about()), None);
         assert!(app.settings_bodies.quota.is_none(), "stale dropped");
-        app.settled(1, quota(), Some(config()), Some(about()));
+        app.settled(1, quota(), Some(config()), Some(about()), None);
         assert!(app.settings_bodies.quota.is_some(), "own paints");
         assert!(matches!(
             app.settings_bodies.config,
@@ -2833,6 +2839,7 @@ mod tests {
                 label: "q2".to_owned(),
                 header: false,
             }],
+            None,
             None,
             None,
         );
@@ -2853,7 +2860,7 @@ mod tests {
             "quota-only keeps about"
         );
         app.close_settings();
-        app.settled(1, quota(), Some(config()), Some(about()));
+        app.settled(1, quota(), Some(config()), Some(about()), None);
         assert_eq!(
             app.settings_bodies.quota.as_ref().expect("quota")[0].label,
             "q2",
@@ -2875,8 +2882,18 @@ mod tests {
         assert!(settings_key(&mut app, &Key::Tab, at).expect("tab"));
         assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Config);
         assert!(settings_key(&mut app, &Key::Text(b"4".to_vec()), at).is_some());
-        assert!(app.model.settings_open(), "digit 4 swallowed");
-        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Config);
+        let shown = app.model.settings().expect("open").tab;
+        assert_eq!(
+            shown,
+            SettingsTab::Instructions,
+            "digit 4 shows the fourth tab"
+        );
+        assert!(settings_key(&mut app, &Key::Text(b"5".to_vec()), at).is_some());
+        assert!(app.model.settings_open(), "digit 5 swallowed");
+        assert_eq!(
+            app.model.settings().expect("open").tab,
+            SettingsTab::Instructions
+        );
         assert!(settings_key(&mut app, &Key::Escape, at).expect("close"));
         assert!(!app.model.settings_open());
         assert_eq!(
@@ -2895,6 +2912,89 @@ mod tests {
             settings_key(&mut app, &Key::Interrupt, at).is_none(),
             "^C quits"
         );
+    }
+
+    fn ready(dir: &std::path::Path, name: &str) -> settings::Protocol {
+        match settings::resolve_instructions(Some(dir), name) {
+            settings::InstructionsView::Ready(protocol) => protocol,
+            other => panic!("ready expected: {other:?}"),
+        }
+    }
+
+    /// Every roster seat is the render owner's own text for it, an explicit
+    /// work dir rides its row, the winning file is named (an empty winner
+    /// masks, no row falls to the global) and a slot the context classifies as
+    /// neither lead nor worker is a named gap.
+    #[test]
+    fn resolve_instructions_is_the_render_owners_text_for_every_seat() {
+        let root = Root::new("instr-seats");
+        let (global, overlay) = (root.0.join("global"), root.0.join("overlay"));
+        std::fs::write(&global, "[prompt]\ninstructions = from global\n").expect("global");
+        std::fs::write(&overlay, "[prompt]\ninstructions = from session\n").expect("overlay");
+        let tail = format!(
+            "work_dir=/w\nconfig={}\nlocal_config={}\nseat.spawned.1=helper\nwork_dir.spawned.1=/apart\nseat.extra=odd\n",
+            global.display(),
+            overlay.display()
+        );
+        let dir = session(&root, "api", &tail);
+        let files = [global, overlay.clone()];
+        let protocol = ready(&dir, "api");
+        let custom = protocol.custom.as_ref().expect("instructions in force");
+        assert_eq!(
+            (custom.source, custom.file.as_str(), custom.text.as_str()),
+            (
+                settings::ConfigSource::Session,
+                overlay.to_str().expect("utf-8"),
+                "from session"
+            )
+        );
+        let roles: Vec<_> = protocol.seats.iter().map(|seat| seat.role).collect();
+        assert_eq!(roles, ["lead", "lead", "worker", "other"]);
+        let text = |at: usize| protocol.seats[at].text.clone();
+        let main = crate::render::context_document(&dir, "api", "/w", "main", &files);
+        assert_eq!(text(0), Ok(main));
+        let apart = crate::meta::SeatProvenance::Explicit;
+        let helper =
+            crate::render::seat_context_document(&dir, "api", "/apart", "spawned.1", &files, apart);
+        assert_eq!(text(2), Ok(helper));
+        assert!(text(3).expect_err("unknown slot").contains("unknown slot"));
+        std::fs::write(&overlay, "[prompt]\ninstructions = \"\"\n").expect("overlay");
+        let masked = ready(&dir, "api");
+        assert_eq!(masked.custom, None, "the empty winner masks the global");
+        let main = masked.seats[0].text.as_ref().expect("main renders");
+        assert!(!main.contains("Workspace instructions"), "{main}");
+    }
+
+    /// What cannot be rendered from is named: no records, a meta that cannot
+    /// be read, a torn config (the whole tab), a refused or missing work dir,
+    /// a name that is no agent name (the one seat).
+    #[test]
+    fn resolve_instructions_names_every_gap() {
+        let root = Root::new("instr-gaps");
+        let gap =
+            |dir: Option<&std::path::Path>, name| match settings::resolve_instructions(dir, name) {
+                settings::InstructionsView::Gap(why) => why,
+                other => panic!("gap expected: {other:?}"),
+            };
+        assert!(gap(None, "web").contains("web: no records"));
+        let torn = root.0.join("torn");
+        std::fs::write(&torn, "[prompt]\ninstructions = \"\"\"\nunclosed\n").expect("torn");
+        let tail = format!("work_dir=/w\nconfig={}\n", torn.display());
+        let why = gap(Some(&session(&root, "api", &tail)), "api");
+        assert!(why.contains(torn.to_str().expect("utf-8")) && why.contains("unterminated"));
+        let dir = session(
+            &root,
+            "web",
+            "seat.spawned.2=-bad\nwork_dir.worker.0=relative\n",
+        );
+        let reasons: Vec<_> = ready(&dir, "web")
+            .seats
+            .into_iter()
+            .map(|seat| seat.text.expect_err("every seat is a gap"))
+            .collect();
+        assert!(reasons[0].contains("no work_dir"), "{reasons:?}");
+        assert!(reasons[1].contains("work_dir.worker.0"), "{reasons:?}");
+        assert!(reasons[2].contains("agent name"), "{reasons:?}");
     }
 
     /// Pins win over changed files; the overlay beats the recorded global;
@@ -3213,6 +3313,7 @@ mod tests {
             ("Config", SettingsTab::Config, 0, false),
             ("About", SettingsTab::About, 3, true),
             ("Quota", SettingsTab::Quota, 3, true),
+            ("Instructions", SettingsTab::Instructions, 3, true),
         ] {
             let shown = framed(&mut app);
             let titles = shown.lines().nth(1).expect("drawn tab titles");
@@ -3543,6 +3644,7 @@ mod tests {
             quota: Vec::new(),
             config: None,
             about: None,
+            instructions: None,
         });
         let shown = framed(&mut app);
         assert!(
@@ -3574,6 +3676,7 @@ mod tests {
             quota: Some(rows(10)),
             config: settings::ConfigView::Loading,
             about: None,
+            instructions: settings::InstructionsView::Loading,
         };
         let mut layout = draw::Layout::default();
         draw::paint_settings(SettingsTab::Quota, 99, &bodies, None, &mut buf, &mut layout);
@@ -3606,6 +3709,7 @@ mod tests {
             quota,
             config: None,
             about: None,
+            instructions: None,
         });
         let first_body_row = |shown: &str| {
             shown
@@ -3647,6 +3751,7 @@ mod tests {
             quota,
             config: None,
             about: None,
+            instructions: None,
         });
         let body_ends = |app: &mut App| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
