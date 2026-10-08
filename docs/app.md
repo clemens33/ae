@@ -211,7 +211,10 @@ swallowed as above. Without a key, the read every 5 seconds re-proves the
 writer's `session_id` and lead pair against the meta and ends the writing the
 same way when the session was replaced, its pair changed or its meta is gone; a
 fleet read that proves the session stopped ends it too, held as
-`<session> is stopped`, and a state ae could not read ends nothing. An entry
+`<session> is stopped`, and so does a complete read that no longer lists it,
+held as `<session> is no longer listed`. A state ae could not read, or an
+incomplete read that leaves the session out, ends nothing and keeps the
+selection; no read ever ends the writing into browsing. An entry
 already held, a refused start included, takes its reason from each fleet read
 of the selection — replaced or gone, stopped, no `session_id`, a lead pair
 unreadable or changed, a meta that is gone — and stays held. After `Esc` the
