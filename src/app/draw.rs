@@ -2224,6 +2224,46 @@ mod tests {
         );
     }
 
+    /// The cursor sits after the draft's drawn cells, and an address that
+    /// fills the chat column leaves the draft no cell and the frame no cursor.
+    #[test]
+    fn an_address_that_fills_the_column_shows_no_cursor() {
+        let shot = Shot::new();
+        let draft = View {
+            rows: vec!["x".to_owned()],
+            cursor_row: 0,
+            before: "x".to_owned(),
+            anchor: String::new(),
+        };
+        let long = "h".repeat(60);
+        for (home, shown) in [("api", true), (long.as_str(), false)] {
+            let screen = Screen {
+                fleet: &shot.fleet,
+                model: &shot.model,
+                overview: &shot.overview,
+                selected: Some(&shot.entry),
+                pair: &shot.pair,
+                agents: None,
+                lane: &shot.lane,
+                composer: Composer::Home {
+                    home,
+                    speaker: "lead",
+                    view: Some(&draft),
+                    draft: "x",
+                },
+                look: None,
+                zone: None,
+                now: Timestamp::from_epoch(PIN_NOW),
+            };
+            let mut buf = Buffer::empty(Rect::new(0, 0, 60, 20));
+            let cursor = super::draw_with_layout(&screen, super::Wait::default(), &mut buf).cursor;
+            assert_eq!(cursor.is_some(), shown, "{home}");
+            if let Some(at) = cursor {
+                assert_eq!(buf[(at.x - 1, at.y)].symbol(), "x", "after the draft");
+            }
+        }
+    }
+
     /// The cells a draft has: from the end of its `to api › lead   ` address
     /// (frames calm r39 @63, needs-you r24 @53) to the column's end.
     #[test]
