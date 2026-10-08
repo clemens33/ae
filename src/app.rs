@@ -265,6 +265,9 @@ impl App {
         if self.model.settings_open() {
             return;
         }
+        // The reader captures the session it was last told is selected, and a
+        // drain tells it only after the keys: tell it before the open.
+        self.focus();
         self.settings_generation = self.settings_generation.wrapping_add(1);
         self.model.open_settings(self.settings_generation);
         self.settings_bodies = settings::SettingsBodies::default();
@@ -2801,6 +2804,29 @@ mod tests {
         assert_eq!(settings_requests(&asks), [(false, 1)]);
         app.open_settings();
         assert_eq!(settings_requests(&asks), [(true, 2)]);
+    }
+
+    /// R2: the reader captures the session it was last told is selected, so
+    /// an open tells the selection the UI shows first, and only a change.
+    #[test]
+    fn settings_open_tells_the_current_selection_first() {
+        let (ask, asks) = std::sync::mpsc::channel();
+        let mut app = App::new(None, None, None, Some(ask));
+        let order = |asks: &std::sync::mpsc::Receiver<loader::Request>| -> Vec<String> {
+            asks.try_iter()
+                .map(|request| match request {
+                    loader::Request::Focus(name) => format!("focus {name:?}"),
+                    loader::Request::Settings { open, .. } => format!("settings {open}"),
+                    loader::Request::Reread(_) | loader::Request::Writing(_) => String::new(),
+                })
+                .collect()
+        };
+        two(&mut app);
+        app.open_settings();
+        assert_eq!(order(&asks), [r#"focus Some("web")"#, "settings true"]);
+        app.close_settings();
+        app.open_settings();
+        assert_eq!(order(&asks), ["settings false", "settings true"]);
     }
 
     /// Only the open generation paints; quota-only answers keep the rest.
