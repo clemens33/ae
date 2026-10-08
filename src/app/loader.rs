@@ -1166,4 +1166,16 @@ mod tests {
             "after a close the fleet deadline remains"
         );
     }
+
+    /// R-B4 ext: a fleet read of a state root ae reads whole is complete.
+    #[test]
+    fn a_state_root_read_whole_is_a_complete_fleet_read() {
+        let root = Root::new("scanned");
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        let scanned = reader.fleet().into_iter().find_map(|answer| match answer {
+            Answer::Fleet(read) => Some(read.scanned),
+            _ => None,
+        });
+        assert_eq!(scanned, Some(true));
+    }
 }

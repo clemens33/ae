@@ -136,13 +136,10 @@ impl Console {
         }
     }
 
-    /// [`Console::open_standing`] bound to incarnation `uuid` rather than the
-    /// one the meta records now: what a writer proved at its entry.
+    /// [`Console::open`] bound to incarnation `uuid` rather than the one the
+    /// meta records now: what a writer proved at its entry.
     pub(crate) fn bound(name: String, dir: PathBuf, uuid: String) -> Self {
-        Self {
-            standing: true,
-            ..Self::of(name, uuid, dir)
-        }
+        Self::of(name, uuid, dir)
     }
 
     /// The session this console follows.

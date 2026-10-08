@@ -2686,6 +2686,9 @@ mod tests {
         app.dirs.insert("gone".to_owned(), PathBuf::new());
         app.noticed += 1;
         assert!(Rc::ptr_eq(&app.merge("web", Some(Rc::clone(&read))), &read));
+        (0..=super::NOTICES).for_each(|n| app.notice("web", n.to_string()));
+        let web = app.notices.iter().filter(|(of, _)| of == "web").count();
+        assert_eq!(web, super::NOTICES, "capped per session");
     }
 
     /// The look of a session dresses the app only as that session's: the
