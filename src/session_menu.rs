@@ -792,18 +792,26 @@ pub fn fact_rows(option: &crate::tmux::OptionReading, meta: &MetaSource) -> Vec<
     else {
         return Vec::new();
     };
-    let mut facts = vec![
-        format!("mode: {}", mode_cell(mode)),
-        format!("dir: {}", fact_cell(work_dir)),
-    ];
-    if matches!(mode.as_str(), "git" | "full" | "copy" | "worktree") {
-        facts.push(format!("source: {}", fact_cell(origin)));
-    }
+    let mut facts = launch_lines(mode, origin, work_dir);
     if !branch.is_empty() {
         facts.push(format!(
             "branch: {}",
             crate::event_text::display_cell(branch, FACT_VALUE_CELLS)
         ));
+    }
+    facts
+}
+
+/// The launch facts every surface spells: mode, dir and, for a copy or a
+/// worktree, source — `unrecorded` for a value the document does not carry.
+#[must_use]
+pub fn launch_lines(mode: &str, origin: &str, work_dir: &str) -> Vec<String> {
+    let mut facts = vec![
+        format!("mode: {}", mode_cell(mode)),
+        format!("dir: {}", fact_cell(work_dir)),
+    ];
+    if matches!(mode, "git" | "full" | "copy" | "worktree") {
+        facts.push(format!("source: {}", fact_cell(origin)));
     }
     facts
 }

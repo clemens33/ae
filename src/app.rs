@@ -481,6 +481,7 @@ impl App {
             return;
         }
         let empty = SessionEntry::new(&name, Status::Unknown);
+        let listed = self.entry(&name).is_some();
         let entry = self.entry(&name).unwrap_or(&empty).clone();
         if !self.dirs.contains_key(&name) {
             let gap = format!("{name} has no record directory ae can read");
@@ -490,6 +491,7 @@ impl App {
             });
             self.loading = false;
             self.overview = overview::of(&entry, None, Err(gap), now);
+            self.unlist(listed);
             return;
         }
         let shown = self.shown.get(&name).map(|shown| Rc::clone(&shown.lane));
@@ -504,6 +506,15 @@ impl App {
             |memo| memo.as_deref().map_err(String::clone),
         );
         self.overview = overview::of_filed(&entry, self.needs.get(&name), memo, now);
+        self.unlist(listed);
+    }
+
+    /// A selection the world read holds no entry for names that in place of
+    /// launch facts it would only have guessed.
+    fn unlist(&mut self, listed: bool) {
+        if !listed {
+            self.overview.launch = vec![overview::LAUNCH_GAP.to_owned()];
+        }
     }
 
     /// Home's lane `base` with ae's own notices in it by time, built once
@@ -2057,6 +2068,19 @@ mod tests {
         app.answer(view("ops", ID, 2, "ops turn"));
         let shown = framed(&mut app);
         assert!(shown.contains("ops turn") && !shown.contains("loading"));
+    }
+
+    /// A selection the world holds an entry for draws that entry's launch
+    /// facts; one the world does not hold names the gap and guesses none.
+    #[test]
+    fn a_selection_outside_the_world_names_its_launch_gap() {
+        let mut app = app(None);
+        two(&mut app);
+        app.show();
+        assert_eq!(app.overview.launch[0], "mode: unrecorded");
+        app.world = World::new(Timestamp::now(), Vec::new());
+        app.show();
+        assert_eq!(app.overview.launch, [crate::app::overview::LAUNCH_GAP]);
     }
 
     /// A lane older than the one shown, or read as an identity the session

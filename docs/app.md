@@ -31,8 +31,11 @@ recorded config first.
   reaches it. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
-- **Tabs** under the list: **Overview** (goal, what waits on you, the latest
-  decision memo, the topics) and **Agents** (every seat with its client,
+- **Tabs** under the list: **Overview** (how the session was launched — `mode`,
+  `dir` and, for a copy or worktree, `source`, spelled as the session menu
+  spells them and `unrecorded` where the record says nothing — then the goal,
+  what waits on you, the latest decision memo, the topics) and **Agents**
+  (every seat with its client,
   profile, model and state, from the watchdog's published roster). A session
   on another tmux server, or one whose watchdog publishes nothing, names that
   gap instead of seats. The tab stays as you move between sessions. A tab
@@ -46,6 +49,15 @@ recorded config first.
   grows with the draft to ten rows, taking them from the lane, which keeps at
   least three rows: a short pane shrinks the composer first, to one row at
   least. A resize sizes it again, and leaving writing gives the rows back.
+
+The session list takes two thirds of the rows it shares with the tab body,
+and never fewer than the 11 rows (18 from 40 high) it once had; it is sized to
+its sessions when they need fewer, so 24 sessions show 11 at 160x45 where they
+showed 8. The launch facts come from the same listing the sidebar row comes
+from, not from a second read of the session's record. A session replaced
+between two reads of its record can therefore show the previous incarnation's
+facts for at most one refresh (5 seconds); a selection the listing does not
+hold says `launch facts unavailable: session not in this read`.
 
 Both borders can be dragged with the mouse. The rule between the sidebar and
 the chat sets the sidebar's width: at least 30 cells, and the chat keeps at

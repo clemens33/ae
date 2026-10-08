@@ -413,10 +413,15 @@ fn sidebar_clamp(asked: u16, area: Rect) -> u16 {
 }
 
 /// The session list's rows for `count` sessions, and whether it keeps them
-/// all when its sessions need fewer: 18 from 40 high, else 11, sized to its
-/// sessions, until a drag asks for a height of its own.
+/// all when its sessions need fewer: two thirds of the rows the list and the
+/// tab body share, never fewer than the 18 (from 40 high) or 11 the list once
+/// had, sized to its sessions, until a drag asks for a height of its own.
 fn list_rows(area: Rect, split: Split, count: usize) -> (u16, bool) {
-    let default = if area.height >= 40 { 18 } else { 11 };
+    // Below the list: a blank row, the tab row and the rule; below the body:
+    // two rows.
+    let shared = area.height.saturating_sub(LIST_TOP + 5);
+    let once = if area.height >= 40 { 18 } else { 11 };
+    let default = (shared.saturating_mul(2) / 3).max(once.min(shared));
     match split.list {
         None => (default, false),
         Some(asked) => (list_clamp(asked, area, count), true),
@@ -803,8 +808,9 @@ impl Cells {
     }
 }
 
-/// The Overview tab: the goal, what waits on you, the latest decision and the
-/// latest memo per topic. Narrow, every item takes one clipped line.
+/// The Overview tab: the launch facts, the goal, what waits on you, the latest
+/// decision and the latest memo per topic. Narrow, every item takes one
+/// clipped line.
 fn overview_rows(ctx: &Ctx<'_, '_>, room: u16, wide: bool) -> Vec<Cells> {
     let paint = ctx.paint;
     let overview = ctx.screen.overview;
@@ -812,7 +818,15 @@ fn overview_rows(ctx: &Ctx<'_, '_>, room: u16, wide: bool) -> Vec<Cells> {
     let heading =
         |words: String| Cells::of(vec![Span::styled(words, text.add_modifier(Modifier::BOLD))]);
     let quiet = |words: &str| Cells::of(vec![Span::styled(words.to_owned(), dim)]);
-    let mut rows = vec![heading("Goal".to_owned())];
+    let mut rows: Vec<Cells> = overview
+        .launch
+        .iter()
+        .map(|fact| quiet(&clip_head(fact, usize::from(room))))
+        .collect();
+    if !rows.is_empty() {
+        rows.push(Cells::blank());
+    }
+    rows.push(heading("Goal".to_owned()));
     rows.push(match &overview.goal {
         Some((goal, since)) => Cells::of(vec![Span::styled(aged(goal, *since, room), text)]),
         None => quiet("No goal set."),
@@ -1503,6 +1517,11 @@ mod tests {
             decided: Some(topic.clone()),
             topics: vec![topic; 4],
             memo_gap: None,
+            launch: vec![
+                "mode: worktree".to_owned(),
+                "dir: a launch directory long enough to clip".to_owned(),
+                "source: /src".to_owned(),
+            ],
         };
         let item = Item {
             micros: 1_759_500_000_000_000,
@@ -2164,7 +2183,9 @@ mod tests {
         let tall = shot.draw(100, 40, READ_ONLY);
         assert_eq!(spot(&tall, "more rows"), None, "a body that fits");
         shot.fleet = frame_fleet();
-        assert_eq!(spot(&shot.draw(100, 20, READ_ONLY), "more rows"), None);
+        // A one-row body is only the line naming what it hides.
+        let one_row = shot.draw(100, 20, READ_ONLY);
+        assert_eq!(spot(&one_row, "more rows").map(|at| at.0), Some(17));
     }
 
     /// docs/app.md: below 40x8 the app only says how large it needs to be;
@@ -2314,13 +2335,13 @@ mod tests {
     }
 
     /// The window a long fleet shows. Frame many 100x30: nine sessions show
-    /// 1-5 and `↓ 4 more`. At 160 the frames' tallest list is 18 rows (frame
-    /// many r5-r22, two a session) with the more row inside it, so ten
-    /// sessions show 8 and the more row.
+    /// 1-5 and `↓ 4 more`. At 160x43 the list is 22 rows (two thirds of the
+    /// rows it shares with the tab body, two a session) with the more row
+    /// inside it, so fourteen sessions show 10 and the more row.
     #[test]
     fn a_long_fleet_shows_the_window_the_frames_do() {
         for (width, height, count, shown, more) in
-            [(100, 28, 9, 5, "↓ 4 more"), (160, 43, 10, 8, "↓ 2 more")]
+            [(100, 28, 9, 5, "↓ 4 more"), (160, 43, 14, 10, "↓ 4 more")]
         {
             let mut shot = Shot::new();
             shot.fleet.rows = (1..=count)
@@ -2330,7 +2351,7 @@ mod tests {
             let buf = shot.draw(width, height, READ_ONLY);
             let size = format!("{width}x{height}");
             for at in 1..=count {
-                let drawn = spot(&buf, &format!("{at} s{at} ")).is_some();
+                let drawn = spot(&buf, &format!(" s{at} ")).is_some();
                 assert_eq!(drawn, at <= shown, "{size}: s{at}");
             }
             let (y, _) = spot(&buf, more).expect("the more row");
@@ -2341,8 +2362,8 @@ mod tests {
                 more,
                 "{size}: no needy row hides, so no count"
             );
-            assert!(width < 160 || y <= 22, "{size}: the more row at {y}");
-            let last = spot(&buf, &format!("{shown} s{shown} "))
+            assert!(width < 160 || y <= 25, "{size}: the more row at {y}");
+            let last = spot(&buf, &format!(" s{shown} "))
                 .expect("the last shown")
                 .0;
             assert_eq!(
@@ -2467,16 +2488,16 @@ mod tests {
         );
         // (d) the frame's compact spelling, whole when it fits.
         let mut shot = Shot::new();
-        shot.fleet.rows = (1..=10)
+        shot.fleet.rows = (1..=14)
             .map(|at| {
                 let name = match at {
                     3 => "infra".to_owned(),
-                    9 => "billing".to_owned(),
-                    10 => "ops".to_owned(),
+                    13 => "billing".to_owned(),
+                    14 => "ops".to_owned(),
                     _ => format!("s{at}"),
                 };
-                let mut row = row(&name, at, matches!(at, 3 | 9 | 10));
-                if at == 10 {
+                let mut row = row(&name, at, matches!(at, 3 | 13 | 14));
+                if at == 14 {
                     row.mark = Mark::Dead;
                 }
                 row
@@ -2703,21 +2724,42 @@ mod tests {
         shot.draw(buf.area.width, buf.area.height, READ_ONLY)
     }
 
-    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 18
-    /// (two-row steps, five shown, the more row, tabs on 17). A press there
+    /// The undragged list is two thirds of the rows it shares with the tab
+    /// body, and never fewer than the 18 (from 40 high) or 11 rows it once had.
+    #[test]
+    fn the_undragged_list_takes_two_thirds_and_never_fewer_than_it_had() {
+        for (height, rows) in [
+            (20, 10),
+            (24, 11),
+            (28, 12),
+            (30, 13),
+            (40, 20),
+            (45, 23),
+            (62, 34),
+        ] {
+            let area = Rect::new(0, 0, 160, height);
+            assert_eq!(
+                super::list_rows(area, crate::app::model::Split::default(), 99),
+                (rows, false)
+            );
+        }
+    }
+
+    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 16
+    /// (two-row steps, four shown, the more row, tabs on 15). A press there
     /// moved nowhere keeps it; dragged up and back down past it, it stops on
-    /// 18, never 19, though that leaves the tab body no rows.
+    /// 16, never 17, though that leaves the tab body one row.
     #[test]
     fn a_short_pane_keeps_its_undragged_list_rule_reachable() {
         let mut shot = sessions(13);
         let first = shot.draw(100, 20, READ_ONLY);
-        assert_eq!(horizontal(&first), Some(18), "the undragged rule");
-        let still = drag(&mut shot, &first, Edge::List, 18);
-        assert_eq!(horizontal(&still), Some(18), "a press moved nowhere");
+        assert_eq!(horizontal(&first), Some(16), "the undragged rule");
+        let still = drag(&mut shot, &first, Edge::List, 16);
+        assert_eq!(horizontal(&still), Some(16), "a press moved nowhere");
         let up = drag(&mut shot, &still, Edge::List, 12);
         assert_eq!(horizontal(&up), Some(12));
         let down = drag(&mut shot, &up, Edge::List, 19);
-        assert_eq!(horizontal(&down), Some(18), "never past the undragged rule");
+        assert_eq!(horizontal(&down), Some(16), "never past the undragged rule");
     }
 
     /// Ruling 5a: the list keeps one session's rows — two alone, two and the

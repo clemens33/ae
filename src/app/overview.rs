@@ -1,5 +1,5 @@
-//! The Overview tab: the goal, what waits on the human, the latest decision
-//! and the latest memo per topic.
+//! The Overview tab: how the session was launched, the goal, what waits on the
+//! human, the latest decision and the latest memo per topic.
 //!
 //! PURE. Open is the needs Section the chat shows (so the tab agrees with
 //! `ae list`); the memos are `ae brief`'s own fold.
@@ -21,7 +21,13 @@ pub struct Overview {
     pub topics: Vec<TopicLine>,
     /// Why the memos could not be read.
     pub memo_gap: Option<String>,
+    /// How the session was launched, spelled by the session menu: `mode`, `dir`
+    /// and, for a copy or worktree, `source`. Empty draws nothing.
+    pub launch: Vec<String>,
 }
+
+/// The launch row of a selection the world read holds no entry for.
+pub const LAUNCH_GAP: &str = "launch facts unavailable: session not in this read";
 
 /// One thing waiting on the human.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +96,11 @@ pub fn of_filed(
         decided: decided.into_iter().next(),
         topics,
         memo_gap,
+        launch: crate::session_menu::launch_lines(
+            entry.mode.as_deref().unwrap_or_default(),
+            entry.origin.as_deref().unwrap_or_default(),
+            entry.work_dir.as_deref().unwrap_or_default(),
+        ),
     }
 }
 
