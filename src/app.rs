@@ -640,7 +640,8 @@ impl App {
     }
 
     /// A mouse event with the overlay open: the wheel scrolls its body
-    /// wherever it lands, a press toggles on the gear and dies elsewhere.
+    /// wherever it lands, a press on the gear or the close label closes, one
+    /// on a tab title shows that tab, and any other press dies.
     fn settings_mouse(&mut self, mouse: Mouse) -> bool {
         match mouse.kind {
             MouseKind::WheelUp => {
@@ -652,9 +653,12 @@ impl App {
                 true
             }
             MouseKind::Click => match self.layout.hit(mouse) {
-                Some(draw::Hit::Settings) => {
+                Some(draw::Hit::Settings | draw::Hit::SettingsClose) => {
                     self.close_settings();
                     true
+                }
+                Some(draw::Hit::SettingsTab(tab)) => {
+                    self.model.show_settings_tab(tab) == model::Act::Redraw
                 }
                 _ => false,
             },
@@ -700,6 +704,7 @@ impl App {
                 self.open_settings();
                 return true;
             }
+            draw::Hit::SettingsTab(_) | draw::Hit::SettingsClose => return held,
         };
         apply(self, &act).unwrap_or(false) || was_writing != self.composing() || held
     }
@@ -2903,6 +2908,30 @@ mod tests {
         assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
         assert!(app.composing(), "still writing");
         assert_eq!(app.input.as_ref().expect("input").draft(), "kept");
+    }
+
+    /// The overlay's tab title and close label, still in the last frame's
+    /// layout after a key closed it, do nothing when pressed.
+    #[test]
+    fn settings_targets_left_in_the_last_frame_do_nothing_once_closed() {
+        let root = Root::new("settings-stale-targets");
+        let (mut app, _reader) = housed(&root);
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        app.open_settings();
+        let shown = framed(&mut app);
+        let column = |row: usize, word: &str| {
+            let line = shown.lines().nth(row).expect("drawn row");
+            u16::try_from(line[..line.find(word).expect("drawn word")].chars().count())
+                .expect("column")
+        };
+        let (config, close) = (column(1, "Config"), column(0, "close"));
+        app.close_settings();
+        for (column, row) in [(config, 1), (close, 0)] {
+            let kind = super::MouseKind::Click;
+            assert!(!app.mouse(super::Mouse { kind, column, row }));
+        }
+        assert!(!app.model.settings_open());
     }
 
     /// A swallowed byte keeps the chunk's earlier redraw: `sx` opens on `s`

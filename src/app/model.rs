@@ -500,7 +500,7 @@ impl Model {
     }
 
     /// Show `tab`, scrolled back to its first row; whether anything changed.
-    fn show_settings_tab(&mut self, tab: SettingsTab) -> Act {
+    pub(crate) fn show_settings_tab(&mut self, tab: SettingsTab) -> Act {
         let Some(open) = self.settings.as_mut() else {
             return Act::None;
         };

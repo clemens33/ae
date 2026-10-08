@@ -264,45 +264,35 @@ pub(crate) fn micros_age(micros: Option<i64>, now: Timestamp) -> Option<i64> {
 }
 
 /// The attention line, for the rows `visible` (positions in `fleet.rows`)
-/// shows, at `width` cells: every needy session named in fleet order, a `↑`
-/// or `↓` after one scrolled out of view, compact when the words do not fit.
+/// shows: the one needy session by name, or how many need you, then where the
+/// needy rows outside the view sit. The caller's put clips it to the room.
 #[must_use]
-pub fn attention(fleet: &Fleet, visible: std::ops::Range<usize>, width: u16) -> String {
+pub fn attention(fleet: &Fleet, visible: std::ops::Range<usize>, _width: u16) -> String {
     let needy: Vec<(usize, &Row)> = fleet
         .rows
         .iter()
         .enumerate()
         .filter(|(_, row)| row.needy)
         .collect();
-    let arrow = |at: usize| {
-        if at < visible.start {
-            "↑"
-        } else if at >= visible.end {
-            "↓"
-        } else {
-            ""
-        }
+    let single = needy.len() == 1;
+    let head = match needy.as_slice() {
+        [] => return "Nothing needs you.".to_owned(),
+        [(_, row)] => format!("{} needs you", row.name),
+        many => format!("{} need you", many.len()),
     };
-    let glyph = |row: &Row| row.mark.glyph(true);
-    match needy.as_slice() {
-        [] => "Nothing needs you.".to_owned(),
-        [(at, row)] => format!("{} {}{} needs you", glyph(row), row.name, arrow(*at)),
-        many => {
-            let full: Vec<String> = many
-                .iter()
-                .map(|(at, row)| format!("{} {}{}", glyph(row), row.name, arrow(*at)))
-                .collect();
-            let full = format!("{} need you  {}", many.len(), full.join("  "));
-            if full.chars().count() <= usize::from(width) {
-                return full;
+    let above = needy.iter().filter(|(at, _)| *at < visible.start).count();
+    let below = needy.iter().filter(|(at, _)| *at >= visible.end).count();
+    let places = [(above, "above"), (below, "below")]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, place)| {
+            if single {
+                format!(" · {place}")
+            } else {
+                format!(" · {count} {place}")
             }
-            let compact: Vec<String> = many
-                .iter()
-                .map(|(at, row)| format!("{}{}{}", glyph(row), row.name, arrow(*at)))
-                .collect();
-            format!("{} need {}", many.len(), compact.join(" "))
-        }
-    }
+        });
+    head + &places.collect::<String>()
 }
 
 #[cfg(test)]

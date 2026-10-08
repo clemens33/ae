@@ -97,6 +97,10 @@ pub(crate) enum Hit {
     Compose,
     /// The keys row's gear: toggles the settings overlay.
     Settings,
+    /// A drawn Settings tab title.
+    SettingsTab(SettingsTab),
+    /// The overlay's drawn close label.
+    SettingsClose,
 }
 
 /// A border as drawn: its edge, where it stands, its own cells and the cells
@@ -1222,6 +1226,8 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
 const SETTINGS_TITLE: &str = "Settings";
 /// The tabs in draw order.
 const SETTINGS_TABS: [&str; 3] = ["Quota", "Config", "About"];
+/// The clickable close label, right-aligned on the title row.
+const SETTINGS_CLOSE: &str = "Esc close";
 /// Plain-text links; no OSC 8 in this slice.
 const SETTINGS_LINKS: [(&str, &str); 3] = [
     ("repo", "https://github.com/clemens33/ae"),
@@ -1255,6 +1261,12 @@ pub(crate) fn paint_settings(
         &Panel {
             title: SETTINGS_TITLE,
             tabs: &SETTINGS_TABS,
+            hits: &[
+                Hit::SettingsTab(SettingsTab::Quota),
+                Hit::SettingsTab(SettingsTab::Config),
+                Hit::SettingsTab(SettingsTab::About),
+            ],
+            close: (SETTINGS_CLOSE, Hit::SettingsClose),
             selected,
             body: &settings_body(tab, bodies, paint),
             scroll,
@@ -1266,6 +1278,10 @@ pub(crate) fn paint_settings(
 struct Panel<'a> {
     title: &'a str,
     tabs: &'a [&'a str],
+    /// The click target of each tab title, in tab order.
+    hits: &'a [Hit],
+    /// The label drawn right-aligned on the title row, and its target.
+    close: (&'a str, Hit),
     selected: usize,
     body: &'a [(String, Style)],
     scroll: usize,
@@ -1291,7 +1307,13 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
     }
     buf.set_style(Rect::new(0, 0, width, height - 1), paint.ground(|p| p.base));
     let heading = paint.fg(|p| p.title).add_modifier(Modifier::BOLD);
-    put(buf, LEFT, 0, panel.title, width - LEFT, heading);
+    let title_end = put(buf, LEFT, 0, panel.title, width - LEFT, heading);
+    let (label, close) = &panel.close;
+    let label_x = width.saturating_sub(LEFT + cells(Span::raw(*label).width()));
+    if label_x > title_end {
+        let end = put(buf, label_x, 0, label, width - label_x, paint.fg(|p| p.dim));
+        layout.record(buf, Rect::new(label_x, 0, end - label_x, 1), close.clone());
+    }
     let mut x = LEFT;
     for (index, name) in panel.tabs.iter().enumerate() {
         let style = if index == panel.selected {
@@ -1299,8 +1321,11 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
         } else {
             paint.fg(|p| p.text)
         };
-        x = put(buf, x, 1, name, width.saturating_sub(x), style);
-        x = put(buf, x, 1, "   ", width.saturating_sub(x), style);
+        let end = put(buf, x, 1, name, width.saturating_sub(x), style);
+        if let Some(hit) = panel.hits.get(index) {
+            layout.record(buf, Rect::new(x, 1, end - x, 1), hit.clone());
+        }
+        x = put(buf, end, 1, "   ", width.saturating_sub(end), style);
     }
     let rule: String = "─".repeat(usize::from(width));
     put(buf, 0, 2, &rule, width, paint.fg(|p| p.border));

@@ -24,7 +24,10 @@ recorded config first.
 ## Layout
 
 - **Sidebar** (44 cells from 140 wide, 34 from 90x20): the session count, what
-  needs you, then one row per session — its mark, its number, its name
+  needs you (`Nothing needs you.`, `<name> needs you` for one, `<N> need you`
+  for several, then `· above` / `· below` — with a count when several — for
+  needy rows outside the list), then one row per session — its mark, its
+  number, its name
   (`this window` on home), the seat counts on the right, and under it the goal
   or the question that needs you. Running sessions come in fleet order with the
   orchestrator first, stopped ones after. A needy row carries a `│` edge and `!`
@@ -108,6 +111,8 @@ Browsing:
 | `Enter` or `i` | write (home only, when no other app writes it) |
 | `s` | open Settings |
 | Click the gear at the keys row's right end | open Settings, also while writing |
+| Click a Settings tab title | show that tab, like `Tab` and `1`-`3` |
+| Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `q`, `^C` | quit |
 
 A paste while browsing is swallowed whole, never read as keys.
@@ -148,11 +153,12 @@ then acts as it always does.
 `s` opens the read-only Settings overlay over the whole pane, as does the
 gear (`*` with `icons = off`) at the keys row's right end — the gear also
 while writing, where `s` stays draft text; `Esc`, `q` or `s` closes it, `^C`
-quits. While open the overlay owns every key and click: `Tab` and `1`-`3`
-switch tabs, `j` / `k` and `↓` / `↑` scroll a line, the wheel three rows
-per notch, `PgUp` / `PgDn` a page, everything else is swallowed, and a draft
-being written is
-kept untouched until it closes. Three
+quits. While open the overlay owns every key and click: `Tab`, `1`-`3` and a
+click on a tab title switch tabs, a click on the drawn `Esc close` label or on
+the gear closes it like `Esc`, `j` / `k` and `↓` / `↑` scroll a line, the
+wheel three rows per notch, `PgUp` / `PgDn` a page, everything else is
+swallowed (every other click too), and a draft being written is kept untouched
+until it closes. Three
 tabs: Quota shows the same scope rows `ae quota` prints; Config shows every
 `[workspace]` key the home session runs
 with and where each came from — `launch` (pinned in its meta), `session` (its
