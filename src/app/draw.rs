@@ -421,7 +421,8 @@ fn list_rows(area: Rect, split: Split, count: usize) -> (u16, bool) {
     // two rows.
     let shared = area.height.saturating_sub(LIST_TOP + 5);
     let once = if area.height >= 40 { 18 } else { 11 };
-    let default = (shared.saturating_mul(2) / 3).max(once.min(shared));
+    // Two thirds without the overflow of doubling a tall pane first.
+    let default = (shared / 3 * 2 + shared % 3 * 2 / 3).max(once.min(shared));
     match split.list {
         None => (default, false),
         Some(asked) => (list_clamp(asked, area, count), true),
@@ -2736,6 +2737,7 @@ mod tests {
             (40, 20),
             (45, 23),
             (62, 34),
+            (65535, 43683),
         ] {
             let area = Rect::new(0, 0, 160, height);
             assert_eq!(

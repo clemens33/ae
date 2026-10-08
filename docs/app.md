@@ -51,9 +51,10 @@ recorded config first.
   least. A resize sizes it again, and leaving writing gives the rows back.
 
 The session list takes two thirds of the rows it shares with the tab body,
-and never fewer than the 11 rows (18 from 40 high) it once had; it is sized to
-its sessions when they need fewer, so 24 sessions show 11 at 160x45 where they
-showed 8. The launch facts come from the same listing the sidebar row comes
+and never fewer than the 11 rows (18 from 40 high) it once had, though never
+more than the rows it shares (10 at 90x20, which leaves the tab body one row);
+it is sized to its sessions when they need fewer, so 24 sessions show 11 at
+160x45 where they showed 8. The launch facts come from the same listing the sidebar row comes
 from, not from a second read of the session's record. A session replaced
 between two reads of its record can therefore show the previous incarnation's
 facts for at most one refresh (5 seconds); a selection the listing does not
