@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.37] - 2026-10-08
+- Keep wheel waits safe during repaint
+- Specify whole app composer and terminal cursor
+- Correct composer fixture guards and inert draft assertion
+- Appuse C1: the app composer shows the whole draft and the terminal cursor while writing
+- Appuse C1: pin that an address filling the chat column leaves no cursor
+- Wait for resized composer geometry before reading its rows
+
 ## [v2026.10.36] - 2026-10-07
 - Refuse delivery at measured human-only prompts
 
