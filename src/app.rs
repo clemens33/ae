@@ -334,15 +334,25 @@ impl App {
         if self.model.selected().is_none() {
             self.model.restart(&self.fleet);
         }
-        self.model.reconcile(&self.fleet);
-        // The target is always the selection: a read that moved it ends the
-        // writing, and one proving its own incarnation stopped ends it HELD (D3).
-        if let Some((name, id)) = self.writer.as_ref().map(Binding::key) {
+        // The target is always the selection, and an incomplete read that omits
+        // it moves nothing (R-B4 ext); a read that moved it or proved its own
+        // incarnation stopped ends the writing HELD, never into browse (D3).
+        let writing = self.writer.as_ref().map(Binding::key);
+        let listed = |name: &str| self.fleet.rows.iter().any(|row| row.name == name);
+        if read.scanned || writing.as_ref().is_none_or(|(name, _)| listed(name)) {
+            self.model.reconcile(&self.fleet);
+        }
+        if let Some((name, id)) = writing {
             let stopped = self.id(&name) == id
                 && (self.entry(&name)).is_some_and(|entry| entry.status == Status::Stopped);
             if stopped || Some(name.as_str()) != self.model.selected() {
                 self.write(false);
-                self.held = stopped.then(|| format!("{name} is stopped"));
+                let why = if stopped {
+                    "is stopped"
+                } else {
+                    "is no longer listed"
+                };
+                self.held = Some(format!("{name} {why}"));
             }
         }
         if let Some(why) = lapsed.filter(|_| self.held.is_some()) {
@@ -2129,6 +2139,12 @@ mod tests {
         drop(crate::store::open(&api).console_writer().expect("api free"));
         let keys: Vec<_> = app.inputs.keys().collect();
         assert_eq!(keys, [&("web".to_owned(), ID.to_owned())]);
+        let mut read = read_of(&app, &[("api", ID)]);
+        (read.scanned, read.fleet.rows) = (false, Vec::new());
+        app.answer(Answer::Fleet(read));
+        let typed = vec![(Key::Text(b"q".to_vec()), at)];
+        assert_eq!(take_keys(&mut app, typed), Some(true), "never Quit");
+        assert!(app.composing(), "an incomplete read keeps the lease");
         refold(&mut app, &reader, &root, &fleet(Status::Unknown));
         assert!(app.composing(), "an Unknown read revokes nothing");
         refold(&mut app, &reader, &root, &fleet(Status::Stopped));
@@ -2136,7 +2152,29 @@ mod tests {
         let q = vec![(Key::Text(b"q".to_vec()), at)];
         assert_eq!(take_keys(&mut app, q), Some(false), "q stays swallowed");
         drop(crate::store::open(&web).console_writer().expect("released"));
-        assert_eq!(drafted(&app), "w", "its draft kept");
+        assert_eq!(drafted(&app), "wq", "its draft kept");
+    }
+
+    /// R-B4 ext (SELECTION-MOVED): a complete read that no longer lists the
+    /// writing target, or proves it gone, ends the writing HELD, never browse.
+    #[test]
+    fn a_complete_read_without_the_writing_target_ends_it_held() {
+        let root = Root::new("unlisted");
+        let (mut app, reader) = housed(&root);
+        session(&root, "web", "");
+        let both = [("api", Status::Running), ("web", Status::Running)];
+        refold(&mut app, &reader, &root, &both);
+        let _ = app.model.select_name(&app.fleet, "web", 0);
+        writing(&mut app);
+        let mut read = read_of(&app, &[("api", ID), ("web", ID)]);
+        read.fleet.rows.retain(|row| row.name == "api");
+        app.answer(Answer::Fleet(read));
+        assert_eq!(app.held.as_deref(), Some("web is no longer listed"));
+        refold(&mut app, &reader, &root, &both);
+        let _ = app.model.select_name(&app.fleet, "web", 0);
+        writing(&mut app);
+        refold(&mut app, &reader, &root, &both[..1]);
+        assert_eq!(app.held.as_deref(), Some("the session is gone"));
     }
 
     /// R-B4 ext (G2): a refused entry stays HELD with each fleet read's reason.
@@ -2381,7 +2419,7 @@ mod tests {
             facts: app.facts.clone(),
             needs: app.needs.clone(),
             fleet: app.fleet.clone(),
-            pairs: std::collections::BTreeMap::new(),
+            pairs: app.pairs.clone(),
             scanned: true,
             memos: std::collections::BTreeMap::new(),
         }
