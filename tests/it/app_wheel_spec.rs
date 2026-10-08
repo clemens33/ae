@@ -330,11 +330,12 @@ fn body_rows(screen: &str) -> Vec<String> {
         .skip(top)
         .take(end.saturating_sub(top))
         .map(|line| {
-            line.chars()
-                .take(width)
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
+            let row = line.chars().take(width).collect::<String>();
+            // The focused-seat marker takes a blank cell; the pins read the row without it.
+            if row.trim_start().starts_with('▸') {
+                return row.replacen('▸', " ", 1).trim_end().to_owned();
+            }
+            row.trim_end().to_owned()
         })
         .collect()
 }
