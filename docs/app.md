@@ -207,9 +207,16 @@ meta that is gone or a server that cannot be named refuses the ask and ends the
 writing: the lease is released and the composer is held as
 `not writing: <why> · Esc browses`, the refused line back in the draft (a
 `/close` as `/close` or `/close <id>`), kept in memory only, and every key
-swallowed as above. The next fleet read, every 5 seconds, does the same without
-a key, also to an entry already held. After `Esc` the composer reads
-`read-only · <why> - prefix h opens it` until a read proves the session again.
+swallowed as above. Without a key, the read every 5 seconds re-proves the
+writer's `session_id` and lead pair against the meta and ends the writing the
+same way when the session was replaced, its pair changed or its meta is gone; a
+fleet read that proves the session stopped ends it too, held as
+`<session> is stopped`, and a state ae could not read ends nothing. An entry
+already held, a refused start included, takes its reason from each fleet read
+of the selection — replaced or gone, stopped, no `session_id`, a lead pair
+unreadable or changed, a meta that is gone — and stays held. After `Esc` the
+composer reads `read-only · <why> - prefix h opens it` until a read proves the
+session again.
 
 Each session keeps its own draft and speaker in memory, per incarnation, so
 moving between sessions keeps both. Its lead pair is fixed the first time this
@@ -246,6 +253,8 @@ refuses its sends and `/close`.
   next fleet read notices.
 - After `Esc` from an entry its admission refused, the composer can offer
   writing until the next fleet read reads the change; entering is refused again.
+- `Enter` in the up to 5 seconds between a session's stop and the next fleet
+  read still asks: the admission reads no liveness, only that read does.
 - One very long turn is wrapped whole whenever any of its rows is on screen.
 - A copy of one key stream read by a second app later than the first app's
   whole write session can submit twice.
