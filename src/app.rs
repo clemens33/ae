@@ -310,16 +310,18 @@ impl App {
         self.fleeted = true;
         self.merged = None;
         let gone = |(name, id): &(String, String)| match self.ids.get(name) {
-            Some(now) => !now.is_empty() && now != id,
-            None => read.scanned,
+            Some(now) if !now.is_empty() && now != id => Some("the session was replaced"),
+            None if read.scanned => Some("the session is gone"),
+            _ => None,
         };
-        let dropped: Vec<_> = self.inputs.extract_if(.., |key, _| gone(key)).collect();
-        for (key, input) in dropped {
-            let why = if self.ids.contains_key(&key.0) {
-                "the session was replaced"
-            } else {
-                "the session is gone"
-            };
+        // R-B4 ext: a HELD entry's reason follows its selection's read.
+        let was = |name: &str| Some((name.to_owned(), old.get(name)?.clone()));
+        let was = (self.model.selected().and_then(was)).filter(|(_, id)| !id.is_empty());
+        let lapsed = was.and_then(|key| gone(&key));
+        let dropped: Vec<_> = (self.inputs.extract_if(.., |key, _| gone(key).is_some()))
+            .filter_map(|(key, input)| Some((gone(&key)?, key, input)))
+            .collect();
+        for (why, key, input) in dropped {
             if self.writer.as_ref().is_some_and(|w| w.key() == key) {
                 self.write(false);
                 self.held = Some(why.to_owned());
@@ -333,11 +335,18 @@ impl App {
             self.model.restart(&self.fleet);
         }
         self.model.reconcile(&self.fleet);
-        // The target is always the selection: a read that moved it ends the writing.
-        if let Some(writer) = &self.writer
-            && Some(writer.console.name()) != self.model.selected()
-        {
-            self.write(false);
+        // The target is always the selection: a read that moved it ends the
+        // writing, and one proving its own incarnation stopped ends it HELD (D3).
+        if let Some((name, id)) = self.writer.as_ref().map(Binding::key) {
+            let stopped = self.id(&name) == id
+                && (self.entry(&name)).is_some_and(|entry| entry.status == Status::Stopped);
+            if stopped || Some(name.as_str()) != self.model.selected() {
+                self.write(false);
+                self.held = stopped.then(|| format!("{name} is stopped"));
+            }
+        }
+        if let Some(why) = lapsed.filter(|_| self.held.is_some()) {
+            self.held = Some(why.to_owned());
         }
         self.evict();
         self.show();
@@ -496,17 +505,13 @@ impl App {
             let _ = input.tick(Reading::Owner, at);
             input
         });
-        let restored = if input.draft().is_empty() {
-            input.restore(draft)
-        } else {
-            Vec::new()
-        };
+        let restored = input.draft().is_empty().then(|| input.restore(draft));
         self.writer = Some(Binding {
             entry: self.entries,
             console,
             seats,
         });
-        self.effects(restored);
+        self.effects(restored.unwrap_or_default());
         Ok(())
     }
 
@@ -518,8 +523,7 @@ impl App {
         }
         let unrecorded = || format!("{name} has no record directory ae can read");
         let dir = self.dirs.get(name).ok_or_else(unrecorded)?;
-        let stopped = self.entry(name).map(|entry| entry.status) == Some(Status::Stopped);
-        if stopped {
+        if self.entry(name).map(|entry| entry.status) == Some(Status::Stopped) {
             return Err(format!("{name} is stopped"));
         }
         let unread = "the lead pair is not read yet";
@@ -538,12 +542,9 @@ impl App {
 
     /// The input the composer shows: the writer's, else the selection's.
     fn shown_input(&self) -> Option<&Input> {
-        let selected = || {
-            self.model
-                .selected()
-                .map(|name| (name.to_owned(), self.id(name)))
-        };
-        let key = self.writer.as_ref().map(Binding::key).or_else(selected)?;
+        let name = self.model.selected()?;
+        let writer = self.writer.as_ref().map(Binding::key);
+        let key = writer.unwrap_or_else(|| (name.to_owned(), self.id(name)));
         self.inputs.get(&key)
     }
 
@@ -571,6 +572,9 @@ impl App {
             return;
         };
         self.read_only = self.writable(&name).err().unwrap_or_default();
+        if self.held.is_some() && !self.read_only.is_empty() {
+            self.held = Some(self.read_only.clone());
+        }
         let pair = self.pairs.get(&name).and_then(|pair| pair.as_deref().ok());
         self.pair = pair.map(names).unwrap_or_default();
         if !self.fleeted {
@@ -1475,12 +1479,19 @@ mod tests {
     fn housed(root: &Root) -> (App, Reader) {
         let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let mut app = app(Some("api"));
-        let dirs = [("api".to_owned(), root.0.join("sessions").join("api"))].into();
-        let world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
+        refold(&mut app, &reader, root, &[("api", Status::Running)]);
+        (app, reader)
+    }
+
+    /// `root`'s sessions `live` with their statuses, as `reader` folds them.
+    fn refold(app: &mut App, reader: &Reader, root: &Root, live: &[(&str, Status)]) {
+        let dir = |name: &str| (name.to_owned(), root.0.join("sessions").join(name));
+        let dirs = live.iter().map(|(name, _)| dir(name)).collect();
+        let world = live.iter().map(|(name, status)| entry(name, *status, None));
+        let world = World::new(Timestamp::now(), world.collect());
         let order = crate::theme::FleetOrder::EMPTY;
         let read = reader.fold(dirs, world, None, &order, Timestamp::now());
         app.answer(Answer::Fleet(read));
-        (app, reader)
     }
 
     /// The draft the composer shows.
@@ -1889,14 +1900,10 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
         };
-        app.answer(Answer::View(ViewRead {
-            name: "api".to_owned(),
-            id: ID.to_owned(),
-            seq: 1,
-            lane: Lane::default(),
-            needs: None,
-            roster: Some(vec![lead]),
-        }));
+        if let Answer::View(mut read) = view("api", ID, 1, "") {
+            read.roster = Some(vec![lead]);
+            app.answer(Answer::View(read));
+        }
         for key in [Key::Text(b"/open lead".to_vec()), Key::Enter] {
             assert_eq!(app.compose(key, typed), Some(()));
         }
@@ -1970,10 +1977,7 @@ mod tests {
         let draft = drafted(&app);
         assert_eq!(draft, "late", "only keys after the lease: {draft}");
         let named = |item: &Item| item.body.contains("keys typed before writing started");
-        assert_eq!(
-            app.notices.iter().filter(|(_, item)| named(item)).count(),
-            1
-        );
+        assert_eq!(app.notices.iter().filter(|(_, i)| named(i)).count(), 1);
     }
 
     /// Ruling appuse-b R-B2: only keys read before writing started are
@@ -2098,8 +2102,7 @@ mod tests {
         assert_eq!(why(&app), "the meta names no single main seat");
         app.pairs.clear();
         assert_eq!(why(&app), "the lead pair is not read yet");
-        app.pairs
-            .insert("api".to_owned(), read.expect("GUARD pair read"));
+        app.pairs.insert("api".to_owned(), read.expect("pair"));
         app.bound
             .insert(("api".to_owned(), ID.to_owned()), Vec::new());
         assert!(why(&app).contains("restart"), "{}", why(&app));
@@ -2107,40 +2110,55 @@ mod tests {
         assert_eq!(why(&app), "the fleet is not read yet");
     }
 
-    /// B2: a session that is not home is written under its own lease, with
-    /// its own input, after an address that says it is not home.
+    /// B2: a session that is not home is written under its own lease and
+    /// input, after an address saying so; only a read proving its stop ends it.
     #[test]
     fn a_selection_that_is_not_home_is_written_under_its_own_lease() {
         let root = Root::new("selected");
         let (mut app, reader) = housed(&root);
         let web = session(&root, "web", "");
         let api = root.0.join("sessions").join("api");
-        let dirs = [
-            ("api".to_owned(), api.clone()),
-            ("web".to_owned(), web.clone()),
-        ];
-        let running = |name| entry(name, Status::Running, None);
-        let world = World::new(Timestamp::now(), vec![running("api"), running("web")]);
-        let order = crate::theme::FleetOrder::EMPTY;
-        let read = reader.fold(dirs.into(), world, None, &order, Timestamp::now());
-        app.answer(Answer::Fleet(read));
+        let fleet = |web| [("api", Status::Running), ("web", web)];
+        refold(&mut app, &reader, &root, &fleet(Status::Running));
         let _ = app.model.select_name(&app.fleet, "web", 0);
         app.show();
         assert!(framed(&mut app).contains("to web (not home) › lead   "));
         let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b"w".to_vec()), at), Some(()));
-        assert!(
-            crate::store::open(&web).console_writer().is_err(),
-            "web leased"
-        );
+        assert!(crate::store::open(&web).console_writer().is_err());
         drop(crate::store::open(&api).console_writer().expect("api free"));
-        assert_eq!(
-            app.inputs.keys().collect::<Vec<_>>(),
-            [&("web".to_owned(), ID.to_owned())]
-        );
-        app.write(false);
+        let keys: Vec<_> = app.inputs.keys().collect();
+        assert_eq!(keys, [&("web".to_owned(), ID.to_owned())]);
+        refold(&mut app, &reader, &root, &fleet(Status::Unknown));
+        assert!(app.composing(), "an Unknown read revokes nothing");
+        refold(&mut app, &reader, &root, &fleet(Status::Stopped));
+        assert_eq!(app.held.as_deref(), Some("web is stopped"));
+        let q = vec![(Key::Text(b"q".to_vec()), at)];
+        assert_eq!(take_keys(&mut app, q), Some(false), "q stays swallowed");
         drop(crate::store::open(&web).console_writer().expect("released"));
         assert_eq!(drafted(&app), "w", "its draft kept");
+    }
+
+    /// R-B4 ext (G2): a refused entry stays HELD with each fleet read's reason.
+    #[test]
+    fn a_refused_entry_is_held_with_the_reason_each_read_gives() {
+        let root = Root::new("held-read");
+        let (mut app, reader) = housed(&root);
+        let dir = root.0.join("sessions").join("api");
+        let _busy = crate::store::open(&dir)
+            .console_writer()
+            .expect("other app");
+        app.write(true);
+        assert_eq!(app.held.as_deref(), Some("an ae app is writing to api"));
+        refold(&mut app, &reader, &root, &[("api", Status::Stopped)]);
+        assert_eq!(app.held.as_deref(), Some("api is stopped"));
+        meta(&root, &ID.replace("1234", "bbbb"), "colead");
+        refold(&mut app, &reader, &root, &[("api", Status::Running)]);
+        assert_eq!(app.held.as_deref(), Some("the session was replaced"));
+        assert!(
+            app.lease.is_none() && app.writer.is_none(),
+            "never acquires"
+        );
     }
 
     /// #27/#28: `/close` answers with the chat admission's own answer: a
