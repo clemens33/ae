@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.40] - 2026-10-08
+- Frozen acceptance spec for the sidebar ordered by the human's activity
+- Order the sidebar's running sessions by the human's latest activity
+
 ## [v2026.10.39] - 2026-10-08
 - Frozen tests for the plain attention line and Settings mouse
 - Ae app: plain attention line and Settings tab and close clicks
