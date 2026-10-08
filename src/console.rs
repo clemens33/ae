@@ -1195,6 +1195,21 @@ pub(super) mod tests {
     /// console's own pair holds (needs.rs
     /// `worker_zero_is_of_the_lead_pair_only_in_a_lead_pair_layout`).
     #[test]
+    fn only_a_lead_pair_layout_reads_as_a_lead_pair() {
+        let rig = Rig::new("lead-pair-at");
+        let dir = rig.0.join("s");
+        assert_eq!(super::lead_pair_at(&dir), Ok(true));
+        let layout = format!("schema=2\nsession_id={ID}\nlayout=vertical\n");
+        fs::write(dir.join("meta"), layout).expect("meta");
+        assert_eq!(super::lead_pair_at(&dir), Ok(false));
+        fs::remove_file(dir.join("meta")).expect("no meta");
+        assert!(
+            super::lead_pair_at(&dir).is_err(),
+            "an absent meta is no answer"
+        );
+    }
+
+    #[test]
     fn a_vertical_sessions_worker_zero_is_not_of_the_pair() {
         let rig = Rig::new("vertical-needs");
         fs::write(

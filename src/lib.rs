@@ -3638,6 +3638,40 @@ pub fn run_with(
 #[cfg(test)]
 mod tests {
 
+    /// Every candidate keeps its runtime, in snapshot order, and every Running
+    /// record is in the pane map even when nothing could be listed for it.
+    #[test]
+    fn each_running_record_has_a_pane_entry_and_every_candidate_a_runtime() {
+        use crate::digest::Status;
+        let classified = |name: &str, status| crate::liveness::Classified {
+            candidate: crate::inventory::Candidate {
+                name: name.to_owned(),
+                durable: Some(crate::inventory::DurableRecord {
+                    path: std::path::PathBuf::from(format!("/ae-no-such-root/{name}")),
+                    name: name.to_owned(),
+                    layout: crate::inventory::Layout::Canonical,
+                    server: crate::meta::ServerSelector::Missing,
+                    meta_read: crate::session::MetaRead::Absent,
+                    snapshot: crate::session::RecordSnapshot::default(),
+                }),
+                live: None,
+            },
+            status,
+        };
+        let snapshot = crate::liveness::Snapshot {
+            sessions: vec![
+                classified("up", Status::Running),
+                classified("down", Status::Stopped),
+            ],
+            incomplete: Vec::new(),
+        };
+        let (runtimes, panes) = super::observed_runtimes(&snapshot);
+        let statuses: Vec<Status> = runtimes.iter().map(|runtime| runtime.status).collect();
+        assert_eq!(statuses, [Status::Running, Status::Stopped]);
+        let listed = std::path::PathBuf::from("/ae-no-such-root/up");
+        assert_eq!(panes, super::ListedPanes::from([(listed, None)]));
+    }
+
     /// `say`'s record is the builder's, byte for byte, and the watchdog's
     /// chat line addresses no seat.
     #[test]
