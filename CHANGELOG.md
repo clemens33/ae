@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.44] - 2026-10-08
+- Frozen acceptance spec for the fleet read cache
+- A fleet read reuses each journal and memo while its file is unchanged, and its needs reuse the read's own records and pane listings
+- The frozen fleet read cache spec is cut as test code by the source tripwires
+- Pin the fleet read's pane map and the lead-pair layout read against their own records
+- The fleet read seams call each reader by name, as the phase-2 call-site tripwire counts them
+- The fleet read cost pins count the bytes the journal and memo parsers are handed, wherever the read parsed them
+- The parser byte counters live inside each test module, which stays the last item of its file
+
 ## [v2026.10.43] - 2026-10-08
 - Ae app tests: read Agents rows without the focused-seat marker
 - Ae app: open a seat's pane from the app
