@@ -256,11 +256,10 @@ impl From<Vec<DurableRecord>> for DurableScan {
 }
 
 /// Which half of each record a scan reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Journal {
-    /// Both halves — the fleet listing's read, where events carry the facts
-    /// the digest renders.
-    Read,
+enum Journal<'a> {
+    /// Both halves, through this reader — the fleet listing's read, where
+    /// events carry the facts the digest renders.
+    Read(&'a mut dyn FnMut(&Path) -> RecordSnapshot),
     /// Meta only, NEVER opening `events.jsonl` — the picker's stopped rows
     /// read name, goal and branch, all meta facts, and a long-lived session's
     /// journal outweighs every other byte of its state.
@@ -271,7 +270,15 @@ enum Journal {
 /// read.
 #[must_use]
 pub fn durable_records(roots: &Roots) -> DurableScan {
-    durable_scan(roots, Journal::Read)
+    durable_scan(roots, Journal::Read(&mut RecordSnapshot::read))
+}
+
+/// [`durable_records`] with each record read by `read`.
+pub(crate) fn durable_records_with(
+    roots: &Roots,
+    read: &mut dyn FnMut(&Path) -> RecordSnapshot,
+) -> DurableScan {
+    durable_scan(roots, Journal::Read(read))
 }
 
 /// Every durable candidate under `roots`, both layouts, path order, with each
@@ -289,13 +296,13 @@ pub fn durable_meta_records(roots: &Roots) -> DurableScan {
 
 /// Every durable candidate under `roots`, reading the journal only when the
 /// scan asks for it.
-fn durable_scan(roots: &Roots, journal: Journal) -> DurableScan {
+fn durable_scan(roots: &Roots, mut journal: Journal<'_>) -> DurableScan {
     let mut scan = DurableScan::default();
 
     match child_dirs(roots.sessions()) {
         Ok(paths) => {
             for path in paths {
-                take_record(&mut scan, path, Layout::Canonical, journal);
+                take_record(&mut scan, path, Layout::Canonical, &mut journal);
             }
         }
         // An ABSENT root never reaches here: `child_dirs` answers it with an
@@ -314,7 +321,7 @@ fn durable_scan(roots: &Roots, journal: Journal) -> DurableScan {
                 match child_dirs(&state_root) {
                     Ok(states) => {
                         for path in states {
-                            take_record(&mut scan, path, Layout::WorktreeNested, journal);
+                            take_record(&mut scan, path, Layout::WorktreeNested, &mut journal);
                         }
                     }
                     Err(_) => scan
@@ -370,7 +377,7 @@ fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Add one record's scan result, keeping its liveness evidence beside the
 /// record that produced it.
-fn take_record(scan: &mut DurableScan, path: PathBuf, layout: Layout, journal: Journal) {
+fn take_record(scan: &mut DurableScan, path: PathBuf, layout: Layout, journal: &mut Journal<'_>) {
     let (record, evidence) = record_at(path, layout, journal);
     if let Some(evidence) = evidence {
         scan.launch_evidence.push((record.path.clone(), evidence));
@@ -383,7 +390,7 @@ fn take_record(scan: &mut DurableScan, path: PathBuf, layout: Layout, journal: J
 fn record_at(
     path: PathBuf,
     layout: Layout,
-    journal: Journal,
+    journal: &mut Journal<'_>,
 ) -> (DurableRecord, Option<crate::tmux::Evidence>) {
     let name = path
         .file_name()
@@ -401,8 +408,8 @@ fn record_at(
     // ONE read of this record, here, feeding the selector, every field the
     // digest will need, and the liveness evidence from the very same bytes.
     let evidence = match journal {
-        Journal::Read => {
-            record.snapshot = RecordSnapshot::read(&record.path);
+        Journal::Read(read) => {
+            record.snapshot = read(&record.path);
             None
         }
         Journal::Skipped => {

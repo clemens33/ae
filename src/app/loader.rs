@@ -8,21 +8,23 @@
 //! sequence), so nothing read for one session can be drawn under another.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::Instant;
 
+use super::journals::Journals;
 use super::{REFRESH, facts_of, fleet};
-use crate::brief::{self, Filed};
+use crate::brief::Filed;
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::needs::{SeatRef, Section};
-use crate::console::{self, Console, term};
+use crate::console::{self, Console, Panes, term};
 use crate::digest::Status;
 use crate::inventory::{FailedSource, ServerId};
 use crate::listing::World;
 use crate::time::Timestamp;
-use crate::{store, theme, tmux, transport};
+use crate::{theme, tmux, transport};
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -219,6 +221,14 @@ pub(super) struct Reader {
     /// The session the open overlay's instructions tab is for: the selection
     /// when it opened, never retargeted while it stays open.
     settings_session: Option<String>,
+    /// The fleet's journals and memos as last read.
+    journals: Journals,
+}
+
+/// Where [`Reader::fold`] reads a session's needs and memo.
+struct Sources<'a> {
+    needs: &'a mut dyn FnMut(&str, &Path) -> Result<Section, String>,
+    memo: &'a mut dyn FnMut(&Path) -> io::Result<Vec<Filed>>,
 }
 
 /// Start the reader on its own thread; answers arrive on `wake`.
@@ -260,6 +270,7 @@ impl Reader {
             settings: None,
             settings_full: false,
             settings_session: None,
+            journals: Journals::default(),
         }
     }
 
@@ -412,7 +423,18 @@ impl Reader {
         }
         answers.extend(self.owned());
         let now = Timestamp::now();
-        let (snapshot, world) = crate::current_world(&self.root);
+        let journals = &mut self.journals;
+        let crate::WorldRead {
+            snapshot,
+            world,
+            panes,
+        } = crate::world_read(&self.root, &mut |dir| journals.snapshot(dir));
+        let records: BTreeMap<&Path, _> = snapshot
+            .sessions
+            .iter()
+            .filter_map(|session| session.candidate.durable.as_ref())
+            .map(|durable| (durable.path.as_path(), &durable.snapshot))
+            .collect();
         let dirs: BTreeMap<String, PathBuf> = snapshot
             .sessions
             .iter()
@@ -425,7 +447,34 @@ impl Reader {
             .server
             .as_ref()
             .and_then(transport::observe_picker_sessions);
-        let mut read = self.fold(dirs, world, picker.as_deref(), &crate::fleet_order(), now);
+        // Needs from this read's own records and pane listings; tmux is asked
+        // again only for a session this read did not find Running.
+        let mut needs = |name: &str, dir: &Path| {
+            let Some(snapshot) = records.get(dir) else {
+                return console::needs_of(name, dir);
+            };
+            let panes = panes
+                .get(dir)
+                .cloned()
+                .map_or(Panes::Observe, Panes::Listed);
+            console::lead_pair_at(dir)
+                .and_then(|lead_pair| console::needs_in(name, dir, snapshot, lead_pair, panes))
+        };
+        let mut sources = Sources {
+            needs: &mut needs,
+            memo: &mut |dir| journals.memo(dir),
+        };
+        let order = crate::fleet_order();
+        let home = self.home.as_deref();
+        let mut read = Self::fold_from(
+            home,
+            dirs,
+            world,
+            picker.as_deref(),
+            &order,
+            now,
+            &mut sources,
+        );
         let lost = |source: &FailedSource| !matches!(source, FailedSource::Server(_));
         read.scanned = !snapshot.incomplete.iter().any(lost);
         self.fleet_at = Some(Instant::now());
@@ -437,17 +486,40 @@ impl Reader {
         answers
     }
 
+    /// [`Reader::fold_from`] with every needs and memo read now and nothing
+    /// kept: the full read a kept one must equal.
+    #[cfg(test)]
+    pub(super) fn fold(
+        &self,
+        dirs: BTreeMap<String, PathBuf>,
+        world: World,
+        picker: Option<&[tmux::PickerSession]>,
+        order: &theme::FleetOrder,
+        now: Timestamp,
+    ) -> FleetRead {
+        let mut sources = Sources {
+            needs: &mut console::needs_of,
+            memo: &mut |dir| {
+                let bytes = crate::store::open(dir).memo_bytes()?;
+                Ok(crate::brief::filed(&bytes))
+            },
+        };
+        let home = self.home.as_deref();
+        Self::fold_from(home, dirs, world, picker, order, now, &mut sources)
+    }
+
     /// Fold one read of the fleet: the seat facts of every live session, the
     /// stopped ones' last sign of life, the needs of every live session that
     /// asks for attention, each session's identity and memo, the sidebar rows
-    /// and each lead pair.
-    pub(super) fn fold(
-        &self,
+    /// and each lead pair — the needs and memos read from `sources`.
+    fn fold_from(
+        home: Option<&str>,
         dirs: BTreeMap<String, PathBuf>,
         mut world: World,
         picker: Option<&[tmux::PickerSession]>,
         order: &theme::FleetOrder,
         now: Timestamp,
+        sources: &mut Sources<'_>,
     ) -> FleetRead {
         // A tmux client's touch is a human's too: the later of it and the ask.
         let touches: BTreeMap<&str, i64> = picker
@@ -484,11 +556,10 @@ impl Reader {
             .filter(|entry| entry.attention.is_some() && entry.status != Status::Stopped)
             .filter_map(|entry| {
                 let dir = dirs.get(&entry.name)?;
-                let section = console::needs_of(&entry.name, dir).ok()?;
+                let section = (sources.needs)(&entry.name, dir).ok()?;
                 Some((entry.name.clone(), section))
             })
             .collect();
-        let home = self.home.as_deref();
         let fleet = fleet::rows(&world, &facts, &last_live, order, &needs, home, now);
         // Each identity and its lead pair from one console, so they agree.
         let (ids, pairs) = dirs
@@ -503,10 +574,7 @@ impl Reader {
         let memos = dirs
             .iter()
             .map(|(name, dir)| {
-                let memo = store::open(dir)
-                    .memo_bytes()
-                    .map(|bytes| brief::filed(&bytes))
-                    .map_err(|err| format!("memo unreadable ({err})"));
+                let memo = (sources.memo)(dir).map_err(|err| format!("memo unreadable ({err})"));
                 (name.clone(), memo)
             })
             .collect();
@@ -539,6 +607,8 @@ impl Reader {
         });
         let consoles = &self.consoles;
         self.read_at.retain(|name, _| consoles.contains_key(name));
+        let fleet: Vec<PathBuf> = dirs.values().cloned().collect();
+        self.journals.retain(&fleet);
     }
 
     /// The selection whose look a fleet read reads beside home's: one while
@@ -589,7 +659,8 @@ impl Reader {
             .consoles
             .entry(name.to_owned())
             .or_insert_with(|| Console::open_standing(name.to_owned(), dir));
-        let (lane, needs) = match console.read() {
+        let journals = &mut self.journals;
+        let (lane, needs) = match console.read_with(&mut |dir| journals.snapshot(dir)) {
             Ok(read) => {
                 let mut lane = read.lane;
                 let needs = match read.needs {
@@ -725,14 +796,14 @@ mod tests {
     //! appuse-b R-B5/R-B7 (what keeps home writable), the fixture root's own
     //! records and the existing owners' coverage words.
 
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     use super::{Answer, Binding, Job, KEEP, Reader, Request, Tier, order};
-    use crate::app::REFRESH;
     use crate::app::fleet::Line2;
     use crate::app::tests::{ID, Root, entry, meta, session};
+    use crate::app::{REFRESH, fleet_spec};
     use crate::attention::Reason;
     use crate::console::input::Reading;
     use crate::console::{Console, term};
@@ -1243,5 +1314,49 @@ mod tests {
         let unread = scanned();
         mode(0o755).expect("readable again");
         assert_eq!(unread, Some(false), "an unlisted sessions root");
+    }
+
+    impl fleet_spec::ReaderFiles for Reader {
+        fn fleet(&mut self) -> super::FleetRead {
+            let fleet = |answer| match answer {
+                Answer::Fleet(read) => Some(read),
+                _ => None,
+            };
+            Reader::fleet(self)
+                .into_iter()
+                .find_map(fleet)
+                .expect("a fleet read")
+        }
+        fn view(&mut self, name: &str) -> Option<super::ViewRead> {
+            match Reader::view(self, name)? {
+                Answer::View(read) => Some(read),
+                _ => panic!("a view read"),
+            }
+        }
+        fn costs(&self) -> (u64, u64) {
+            self.journals.costs()
+        }
+        fn cached_dirs(&self) -> BTreeSet<PathBuf> {
+            self.journals.cached_dirs()
+        }
+    }
+
+    fn reader(root: &Path) -> Reader {
+        Reader::new(root.to_path_buf(), None, None)
+    }
+
+    #[test]
+    fn a_kept_fleet_read_and_view_equal_full_reads_across_every_change() {
+        fleet_spec::reader_changes(reader);
+    }
+
+    #[test]
+    fn an_idle_fleet_and_view_parse_nothing_and_a_changed_journal_once() {
+        fleet_spec::reader_costs(reader);
+    }
+
+    #[test]
+    fn a_kept_fleet_read_observes_each_recorded_server_now() {
+        fleet_spec::reader_servers(reader);
     }
 }

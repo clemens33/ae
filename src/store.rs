@@ -374,6 +374,47 @@ pub fn source_presence(path: &Path) -> SourcePresence {
     }
 }
 
+/// What a regular file's own metadata says it is, read through a link as the
+/// readers open it: device, inode, length, modification and change times to
+/// the nanosecond, and its type and mode. A write, truncation, replacement,
+/// `chmod` or `touch` changes at least one field, EXCEPT an in-place rewrite
+/// of the same length inside one filesystem timestamp tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Identity {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+    mode: u32,
+}
+
+impl Identity {
+    /// The identity of the regular file at `path`; `None` for anything else,
+    /// a dangling link or a metadata read that failed.
+    fn of(path: &Path) -> Option<Self> {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: whether a session file is unchanged since a reader parsed it, by the metadata its open follows — see clippy.toml"
+        )]
+        let meta = std::fs::metadata(path).ok()?;
+        meta.is_file().then(|| Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+            mode: meta.mode(),
+        })
+    }
+
+    /// The file's length in bytes.
+    #[cfg(test)]
+    pub(crate) fn bytes(self) -> u64 {
+        self.len
+    }
+}
+
 /// One session's files, addressed by its meta directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStore {
@@ -405,6 +446,16 @@ impl SessionStore {
     #[must_use]
     pub fn memo_path(&self) -> PathBuf {
         self.dir.join(MEMO)
+    }
+
+    /// The event container's [`Identity`], `None` unless it is a regular file.
+    pub(crate) fn events_identity(&self) -> Option<Identity> {
+        Identity::of(&self.events_path())
+    }
+
+    /// The memo container's [`Identity`], `None` unless it is a regular file.
+    pub(crate) fn memo_identity(&self) -> Option<Identity> {
+        Identity::of(&self.memo_path())
     }
 
     /// The meta file's path.
@@ -1322,6 +1373,31 @@ mod tests {
         }
         std::fs::set_permissions(store.memo_path(), std::fs::Permissions::from_mode(0o644))
             .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Only a regular file has an identity, read through a link; it holds while
+    // nothing changes and moves with a `chmod`.
+    #[test]
+    fn an_identity_belongs_to_a_regular_file_and_moves_with_its_mode() {
+        let dir = scratch("identity");
+        let store = open(&dir);
+        assert_eq!(store.events_identity(), None, "absent");
+        std::fs::create_dir(store.events_path()).unwrap();
+        assert_eq!(store.events_identity(), None, "a directory");
+        std::fs::remove_dir(store.events_path()).unwrap();
+        std::os::unix::fs::symlink(dir.join("target"), store.memo_path()).unwrap();
+        assert_eq!(store.memo_identity(), None, "a dangling link");
+        std::fs::write(dir.join("target"), b"memo\n").unwrap();
+        std::fs::write(store.events_path(), b"{}\n").unwrap();
+        let linked = store.memo_identity().expect("a link to a regular file");
+        assert_eq!(linked.bytes(), 5, "the target's length");
+        let before = store.events_identity().expect("a regular file");
+        assert_eq!(store.events_identity(), Some(before), "nothing changed");
+        assert_ne!(before, linked, "another file");
+        let mode = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(store.events_path(), mode).unwrap();
+        assert_ne!(store.events_identity(), Some(before), "a chmod");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

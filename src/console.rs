@@ -209,6 +209,14 @@ impl Console {
     /// follow for the new transcript bytes and re-reads the whole journal, so a
     /// replaced or shrunk journal can never hide a record.
     pub(crate) fn read(&mut self) -> Result<Read, String> {
+        self.read_with(&mut session::RecordSnapshot::read)
+    }
+
+    /// [`Console::read`] with the session's records read by `records`.
+    pub(crate) fn read_with(
+        &mut self,
+        records: &mut dyn FnMut(&Path) -> session::RecordSnapshot,
+    ) -> Result<Read, String> {
         let seats = self.seats()?;
         let slots: Vec<&str> = seats.iter().map(|seat| seat.slot.as_str()).collect();
         let keep = |entry: &meta::RosterEntry| slots.contains(&entry.slot.as_str());
@@ -251,7 +259,7 @@ impl Console {
             ..board::Observation::default()
         };
         crate::read_gate(&self.name);
-        let snapshot = session::RecordSnapshot::read(&self.dir);
+        let snapshot = records(&self.dir);
         let needs = self.needs(&snapshot, &seats);
         // Only a settled read replaces the seats `/open` may name.
         if let (Ok(_), Some(meta)) = (&needs, &snapshot.meta) {
@@ -298,8 +306,16 @@ impl Console {
         // The seats are the lead pair, so `worker.0` is among them exactly
         // when the layout is `lead-pair`.
         let lead_pair = seats.iter().any(|seat| seat.slot == "worker.0");
-        needs_in(&self.name, &self.dir, snapshot, lead_pair)
+        needs_in(&self.name, &self.dir, snapshot, lead_pair, Panes::Observe)
     }
+}
+
+/// What [`needs_in`] takes of a session's panes.
+pub(crate) enum Panes {
+    /// Ask tmux now.
+    Observe,
+    /// What the same read already listed: `None` when it listed none.
+    Listed(Option<Vec<session::AgentRuntime>>),
 }
 
 /// The "needs you" section of session `name` at `dir`, from the records
@@ -309,15 +325,17 @@ pub(crate) fn needs_in(
     dir: &Path,
     snapshot: &session::RecordSnapshot,
     lead_pair: bool,
+    panes: Panes,
 ) -> Result<needs::Section, String> {
     let meta = snapshot.meta.as_ref();
-    let server = meta
-        .and_then(|meta| meta.server_selector().entitles().cloned())
-        .map(inventory::ServerId::Selected);
-    let agents = server
-        .as_ref()
-        .zip(meta)
-        .and_then(|(server, meta)| crate::observed_agents(server, name, meta));
+    let agents = match panes {
+        Panes::Listed(agents) => agents,
+        Panes::Observe => meta
+            .and_then(|meta| meta.server_selector().entitles().cloned())
+            .map(inventory::ServerId::Selected)
+            .zip(meta)
+            .and_then(|(server, meta)| crate::observed_agents(&server, name, meta)),
+    };
     let runtime_read = agents.is_some();
     let mut runtime = session::SessionRuntime::new(if runtime_read {
         crate::digest::Status::Running
@@ -373,9 +391,15 @@ fn standing_coverage(
 /// The "needs you" section of session `name` at `dir`, read now: the meta
 /// says whether it runs a lead pair, the records say the rest.
 pub(crate) fn needs_of(name: &str, dir: &Path) -> Result<needs::Section, String> {
+    let lead_pair = lead_pair_at(dir)?;
+    let snapshot = session::RecordSnapshot::read(dir);
+    needs_in(name, dir, &snapshot, lead_pair, Panes::Observe)
+}
+
+/// Whether the meta at `dir` names a lead-pair layout, read now.
+pub(crate) fn lead_pair_at(dir: &Path) -> Result<bool, String> {
     let bytes = meta::read_bytes(dir).map_err(|err| format!("meta unreadable ({err})"))?;
-    let lead_pair = lifecycle::meta_value(&bytes, "layout") == "lead-pair";
-    needs_in(name, dir, &session::RecordSnapshot::read(dir), lead_pair)
+    Ok(lifecycle::meta_value(&bytes, "layout") == "lead-pair")
 }
 
 /// A console reply's stored body, read only from THIS session's `messages/`:

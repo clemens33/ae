@@ -105,6 +105,15 @@ shows one dim `loading` row, and one read before shows its last lane at once.
 An answer that lands after you moved on is kept for its own session and never
 drawn under another.
 
+The reader keeps each listed session's parsed journal and memo between reads
+and reuses one only while the file's identity is the one it was read at:
+device, inode, length, modification and change times to the nanosecond, type
+and mode, read through a link. Any change reads the whole file again, and a
+file that is not a regular file, or could not be read, is never kept; a session
+that leaves the fleet takes its files with it. A fleet read's "needs you"
+sections use that read's own records and its own tmux listing of each running
+session's panes. Nothing tmux says is kept from one read to the next.
+
 ## Keys
 
 Browsing:
@@ -330,6 +339,10 @@ refuses its sends and `/close`.
 - Truecolour only; no 256-colour fallback.
 - A session replaced under the same name can show its previous lane until the
   next fleet read notices.
+- A journal or memo rewritten in place to the same length inside one
+  filesystem timestamp tick (1 ms on Linux before multigrain timestamps, so
+  before 6.13) keeps every identity field, and its old contents show until the
+  file next changes.
 - After `Esc` from an entry its admission refused, the composer can offer
   writing until the next fleet read reads the change; entering is refused again.
 - `Enter` in the up to 5 seconds between a session's stop and the next fleet

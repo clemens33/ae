@@ -3035,8 +3035,30 @@ pub(crate) fn read_gate(key: &str) {
 /// route, returned in both halves so it can be observed from outside.
 #[must_use]
 pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::World) {
+    let read = world_read(root, &mut session::RecordSnapshot::read);
+    (read.snapshot, read.world)
+}
+
+/// One [`current_world`] read, and what tmux listed of each Running record's
+/// panes during it.
+pub(crate) struct WorldRead {
+    pub(crate) snapshot: liveness::Snapshot,
+    pub(crate) world: listing::World,
+    pub(crate) panes: ListedPanes,
+}
+
+/// Each Running record's panes by its state directory: `None` when the read
+/// listed none (no recorded server, no meta, or tmux did not answer).
+pub(crate) type ListedPanes =
+    std::collections::BTreeMap<std::path::PathBuf, Option<Vec<session::AgentRuntime>>>;
+
+/// [`current_world`] with each durable record read by `read`.
+pub(crate) fn world_read(
+    root: &std::path::Path,
+    read: &mut dyn FnMut(&std::path::Path) -> session::RecordSnapshot,
+) -> WorldRead {
     read_gate("@world");
-    let scan = inventory::durable_records(&inventory::Roots::under(root));
+    let scan = inventory::durable_records_with(&inventory::Roots::under(root), read);
     // No caller server: fleet discovery spans recorded destinations plus ae's
     // own default server. A recorded socket may be another spelling of `-L
     // ae`; tmux's own socket answer is the only proof that lets us query it
@@ -3072,18 +3094,24 @@ pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::Wo
             hook(root);
         }
     });
-    let runtimes = observed_runtimes(&snapshot);
+    let (runtimes, panes) = observed_runtimes(&snapshot);
     let world = listing::Presentation::enter(&snapshot).world_with(
         time::Timestamp::now(),
         session::DEFAULT_UNANSWERED_SECS,
         &runtimes,
     );
-    (snapshot, world)
+    WorldRead {
+        snapshot,
+        world,
+        panes,
+    }
 }
 
-/// What tmux says RIGHT NOW about every classified candidate, in snapshot order.
-fn observed_runtimes(snapshot: &liveness::Snapshot) -> Vec<session::SessionRuntime> {
-    snapshot
+/// What tmux says RIGHT NOW about every classified candidate, in snapshot
+/// order, and each Running record's panes it listed.
+fn observed_runtimes(snapshot: &liveness::Snapshot) -> (Vec<session::SessionRuntime>, ListedPanes) {
+    let mut panes = ListedPanes::new();
+    let runtimes = snapshot
         .sessions
         .iter()
         .map(|classified| {
@@ -3094,22 +3122,24 @@ fn observed_runtimes(snapshot: &liveness::Snapshot) -> Vec<session::SessionRunti
             let Some(record) = classified.candidate.durable.as_ref() else {
                 return runtime;
             };
+            let listed = panes.entry(record.path.clone()).or_insert(None);
             let Some(selector) = record.server.entitles() else {
                 return runtime;
             };
             let server = inventory::ServerId::Selected(selector.clone());
             runtime.branch = transport::observe_branch(&server, &record.name);
-            if let Some(agents) = record
+            *listed = record
                 .snapshot
                 .meta
                 .as_ref()
-                .and_then(|meta| observed_agents(&server, &record.name, meta))
-            {
-                runtime.agents = agents;
+                .and_then(|meta| observed_agents(&server, &record.name, meta));
+            if let Some(agents) = listed {
+                runtime.agents.clone_from(agents);
             }
             runtime
         })
-        .collect()
+        .collect();
+    (runtimes, panes)
 }
 
 /// What tmux says RIGHT NOW of each roster seat of session `name` on `server`;

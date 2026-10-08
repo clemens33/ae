@@ -608,6 +608,14 @@ impl RecordSnapshot {
     /// Read both halves of the record at `dir`.
     #[must_use]
     pub fn read(dir: &Path) -> Self {
+        Self::read_with(dir, SessionRead::open)
+    }
+
+    /// [`Self::read`] with the event stream from `events`, in the same order.
+    pub(crate) fn read_with(
+        dir: &Path,
+        events: impl FnOnce(&Path) -> io::Result<SessionRead>,
+    ) -> Self {
         let (meta, meta_read) = match read_meta(dir) {
             Ok(meta) => (Some(meta), MetaRead::Parsed),
             // The ONE place absent and unreadable are told apart, from the error the
@@ -618,7 +626,7 @@ impl RecordSnapshot {
         Self {
             meta,
             meta_read,
-            events: SessionRead::open(dir).ok(),
+            events: events(dir).ok(),
             legacy_created_epoch: legacy_created_epoch(dir),
         }
     }

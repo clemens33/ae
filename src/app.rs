@@ -43,6 +43,7 @@ pub mod draw;
 pub mod fleet;
 #[cfg(test)]
 mod fleet_spec;
+mod journals;
 mod lane;
 #[cfg(test)]
 mod lane_spec;
