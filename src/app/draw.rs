@@ -2428,10 +2428,8 @@ mod tests {
         Fleet { rows, home: None }
     }
 
-    /// The attention row's two forms. Frame many 160 r3 draws the full form
-    /// when it fits, and every frame keeps blanks before the `!` key at the
-    /// sidebar's end-1 (col 41 at 160), so a full form one cell too long for
-    /// that room falls back to the compact one.
+    /// R1: several needy rows use a count and plain location suffixes;
+    /// the `!` key remains at sidebar end-1 (col 41 at 160).
     #[test]
     fn the_attention_row_keeps_the_frames_forms() {
         let names = [
@@ -2452,10 +2450,7 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
         let attention = line(&buf, 3).concat();
-        assert!(
-            attention.starts_with("  3 need you  ⚠ infra  ⚠ billing  ✖ ops  "),
-            "{attention:?}"
-        );
+        assert!(attention.starts_with("  3 need you  "), "{attention:?}");
         let mut shot = Shot::new();
         shot.fleet.rows = vec![
             row("a", 1, false),
@@ -2471,7 +2466,7 @@ mod tests {
             "a blank before it: {:?}",
             line(&buf, 3).concat()
         );
-        // (c) a compact form too long for the room is clipped short of the key.
+        // (c) several long names still leave a blank before the key.
         let mut shot = Shot::new();
         shot.fleet.rows = vec![
             row("a", 1, false),
@@ -2487,7 +2482,7 @@ mod tests {
             "clipped before the key: {:?}",
             line(&buf, 3).concat()
         );
-        // (d) the frame's compact spelling, whole when it fits.
+        // (d) only needy rows outside the view contribute to the suffix.
         let mut shot = Shot::new();
         shot.fleet.rows = (1..=14)
             .map(|at| {
@@ -2507,7 +2502,7 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let attention = line(&shot.draw(160, 43, READ_ONLY), 3).concat();
         assert!(
-            attention.starts_with("  3 need ⚠infra ⚠billing↓ ✖ops↓ "),
+            attention.starts_with("  3 need you · 2 below  "),
             "{attention:?}"
         );
     }

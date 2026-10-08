@@ -309,7 +309,7 @@ pub fn attention(fleet: &Fleet, visible: std::ops::Range<usize>, width: u16) -> 
 mod tests {
     //! Mutation pins (pins-plan.md #63/#71/#73). Oracles: the `app_spec` model
     //! rule (a home with no row is no home) and the attention-line contract
-    //! (`↑`/`↓` only after a needy row scrolled out of view).
+    //! (plain-word location only after a needy row scrolled out of view).
 
     use std::collections::BTreeMap;
 
@@ -359,15 +359,8 @@ mod tests {
     }
 
     #[test]
-    fn a_needy_row_above_the_view_carries_an_up_arrow() {
-        let glyph = Mark::NeedsYou.glyph(true);
-        assert_eq!(
-            attention(&needy_at(0), 1..4, 44),
-            format!("{glyph} s0↑ needs you")
-        );
-        assert_eq!(
-            attention(&needy_at(1), 1..4, 44),
-            format!("{glyph} s1 needs you")
-        );
+    fn a_needy_row_above_the_view_carries_a_plain_location() {
+        assert_eq!(attention(&needy_at(0), 1..4, 44), "s0 needs you · above");
+        assert_eq!(attention(&needy_at(1), 1..4, 44), "s1 needs you");
     }
 }

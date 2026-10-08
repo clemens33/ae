@@ -492,15 +492,14 @@ fn needy(name: &str, index: usize, mark: Mark) -> Row {
     }
 }
 
-/// The attention line always names the needy sessions; one needy session and
-/// the quiet line are exact; several collapse to the compact form when narrow.
+/// R1: one needy session keeps its name; several use only the count at any width.
 #[test]
 fn app_attention_line_names_the_needy() {
     let fleet = Fleet {
         rows: vec![calm("api", 1), needy("infra", 2, Mark::NeedsYou)],
         home: Some("api".to_owned()),
     };
-    assert_eq!(attention(&fleet, 0..2, 44), "⚠ infra needs you");
+    assert_eq!(attention(&fleet, 0..2, 44), "infra needs you");
     let quiet = Fleet {
         rows: vec![calm("api", 1), calm("docs", 2)],
         home: Some("api".to_owned()),
@@ -516,23 +515,12 @@ fn app_attention_line_names_the_needy() {
         home: Some("api".to_owned()),
     };
     let full = attention(&fleet, 0..4, 44);
-    assert!(full.starts_with("3 need you"), "full form: {full:?}");
-    for name in ["infra", "billing", "ops"] {
-        assert!(full.contains(name), "full names {name}: {full:?}");
-    }
-    assert!(full.contains('✖'), "a dead seat keeps its mark: {full:?}");
+    assert_eq!(full, "3 need you");
     let compact = attention(&fleet, 0..4, 20);
-    assert!(
-        !compact.contains("need you"),
-        "compact drops words: {compact:?}"
-    );
-    assert!(
-        compact.contains("need"),
-        "compact keeps the count: {compact:?}"
-    );
+    assert_eq!(compact, "3 need you");
 }
 
-/// A ↓ (or ↑) after a name means that row is scrolled out of view.
+/// R1: an offscreen lone session has a plain-word location suffix.
 #[test]
 fn app_attention_line_marks_scrolled_out_needy() {
     let fleet = Fleet {
@@ -544,11 +532,9 @@ fn app_attention_line_marks_scrolled_out_needy() {
         home: Some("api".to_owned()),
     };
     let below = attention(&fleet, 0..2, 44);
-    assert!(below.contains("infra"), "named past the fold: {below:?}");
-    assert!(below.contains('↓'), "below the fold: {below:?}");
+    assert_eq!(below, "infra needs you · below");
     let above = attention(&fleet, 2..3, 44);
-    assert!(above.contains("infra"), "named past the fold: {above:?}");
-    assert!(!above.contains('↓'), "nothing below: {above:?}");
+    assert_eq!(above, "infra needs you");
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,7 +1186,7 @@ fn app_draw_home_160x43() {
     assert!(row_text(&buf, 1).contains("Sessions 3"), "counts sessions");
     assert_eq!(cell_at(&buf, 2, 1).fg, hex(palette.text));
     assert!(
-        row_text(&buf, 3).starts_with("  ⚠ infra needs you"),
+        row_text(&buf, 3).starts_with("  infra needs you"),
         "names it"
     );
     assert_eq!(cell_at(&buf, 2, 3).fg, hex(palette.needs_you));
