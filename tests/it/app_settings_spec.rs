@@ -27,6 +27,9 @@ use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
 use ratatui_core::style::Color;
 
+#[path = "app_instructions_spec.rs"]
+mod instructions;
+
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
 const TID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);
@@ -608,6 +611,7 @@ fn settings_keys_tabs_and_all_three_close_keys_act_on_the_drawn_screen() {
         );
         rig.tab(&pane, "Tab", "Config");
         rig.tab(&pane, "Tab", "About");
+        rig.tab(&pane, "Tab", "Instructions");
         rig.tab(&pane, "Tab", "Quota");
         for (key, tab) in [("3", "About"), ("1", "Quota"), ("2", "Config")] {
             rig.tab(&pane, key, tab);
@@ -666,7 +670,12 @@ fn held_settings_read_shows_loading_on_every_tab_and_keys_keep_working() {
     let hold = rig.hold();
     rig.settings(&pane);
     rig.held();
-    for (key, tab) in [("1", "Quota"), ("2", "Config"), ("3", "About")] {
+    for (key, tab) in [
+        ("1", "Quota"),
+        ("2", "Config"),
+        ("3", "About"),
+        ("4", "Instructions"),
+    ] {
         rig.tab(&pane, key, tab);
         rig.wait(
             &pane,
@@ -790,7 +799,7 @@ fn smallest_supported_settings_panel_keeps_title_tabs_and_a_close_hint() {
             .is_some_and(|line| line.contains("Settings"))
     );
     assert!(screen.lines().nth(1).is_some_and(|line| {
-        ["Quota", "Config", "About"]
+        ["Quota", "Config", "About", "Instructions"]
             .iter()
             .all(|tab| line.contains(tab))
     }));
