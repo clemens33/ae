@@ -2177,15 +2177,13 @@ mod tests {
         assert_eq!(app.held.as_deref(), Some("the session is gone"));
     }
 
-    /// R-B4 ext (G2): a refused entry stays HELD with each fleet read's reason.
+    /// R-B4 ext (G2): a refused entry, like a replaced writer, is HELD with each read's reason.
     #[test]
     fn a_refused_entry_is_held_with_the_reason_each_read_gives() {
         let root = Root::new("held-read");
         let (mut app, reader) = housed(&root);
         let dir = root.0.join("sessions").join("api");
-        let _busy = crate::store::open(&dir)
-            .console_writer()
-            .expect("other app");
+        let busy = crate::store::open(&dir).console_writer();
         app.write(true);
         assert_eq!(app.held.as_deref(), Some("an ae app is writing to api"));
         refold(&mut app, &reader, &root, &[("api", Status::Stopped)]);
@@ -2197,6 +2195,11 @@ mod tests {
             app.lease.is_none() && app.writer.is_none(),
             "never acquires"
         );
+        drop(busy);
+        writing(&mut app);
+        meta(&root, &ID.replace("1234", "cccc"), "colead");
+        refold(&mut app, &reader, &root, &[("api", Status::Running)]);
+        assert_eq!(app.held.as_deref(), Some("the session was replaced"));
     }
 
     /// #27/#28: `/close` answers with the chat admission's own answer: a
