@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.41] - 2026-10-08
+- Appuse B2: frozen spec: type into the selected session
+- Appuse B2: an ae app writes into the selected session under that session's lease
+- Appuse B2: docs: the app writes into the selected session
+- Appuse B2: a fleet read proving the writer stopped ends it held, and a held entry takes each read's reason
+- Appuse B2: docs: what a background read revokes, the stopped case and its residual
+- Appuse B2: an incomplete read never moves the writing target, and a read that unlists it ends the writing held
+- Appuse B2: docs: no read ends writing into browsing; the unlisted and incomplete cases
+- Pin that a fleet read replacing the writing session ends it held
+- Pin that an incomplete read listing only another session keeps the writing target
+- Pin that Enter on a read-only selection stays browsing
+- Pin the per-session notice cap and the complete fleet read; a writer's bound console sets no standing it never reads
+- Pin that a fleet read whose sessions root cannot be listed is incomplete
+
 ## [v2026.10.40] - 2026-10-08
 - Frozen acceptance spec for the sidebar ordered by the human's activity
 - Order the sidebar's running sessions by the human's latest activity
