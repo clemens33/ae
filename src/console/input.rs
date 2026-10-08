@@ -709,7 +709,7 @@ impl Size {
 }
 
 /// The composer as the screen shows it, wrapped for one [`Size`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct View {
     /// Every row, the prompt or its indent included.
     pub rows: Vec<String>,

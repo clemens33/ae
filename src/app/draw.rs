@@ -50,7 +50,7 @@ pub struct Screen<'a> {
 /// The composer's lines.
 #[derive(Debug, Clone, Copy)]
 pub enum Composer<'a> {
-    /// The home session, owned: typing reaches its lead pair.
+    /// The selected session, writable: typing reaches its lead pair.
     Home {
         home: &'a str,
         speaker: &'a str,
@@ -58,14 +58,12 @@ pub enum Composer<'a> {
         view: Option<&'a View>,
         draft: &'a str,
     },
-    /// The home session, not owned.
+    /// The selected session, not writable.
     ReadOnly { why: &'a str },
-    /// The home session, its writer lease refused: HELD until Esc, ^C, a
-    /// click or an Enter that tries again.
+    /// The selected session, its entry refused: HELD until Esc, ^C, a click
+    /// or an Enter that tries again.
     Held { why: &'a str },
-    /// A foreign session is selected.
-    Foreign { home: &'a str, speaker: &'a str },
-    /// No home session.
+    /// No session selected.
     NoHome,
 }
 
@@ -371,11 +369,11 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer
 }
 
 /// The cells a draft has on the composer row of `area` split as `split`,
-/// after its `to <home> › <speaker>` address: what the caller wraps it to.
-pub(crate) fn draft_width(area: Rect, split: Split, home: &str, speaker: &str) -> usize {
+/// after its [`address`]: what the caller wraps it to.
+pub(crate) fn draft_width(area: Rect, split: Split, address: &str) -> usize {
     let left = sidebar_width(area, split).map_or(0, |rule| rule + 1) + 2;
     let room = usize::from(area.width.saturating_sub(2).saturating_sub(left));
-    let prompt = Span::raw(address(home, speaker)).width();
+    let prompt = Span::raw(address).width();
     room.saturating_sub(prompt).max(1)
 }
 
@@ -387,9 +385,15 @@ pub(crate) fn composer_pane(area: Rect) -> usize {
     room.clamp(1, ROWS_MAX) + 1
 }
 
-/// The address a home draft is drawn after.
-fn address(home: &str, speaker: &str) -> String {
-    format!("to {home} › {speaker}   ")
+/// The address a draft to `target` is drawn after; one that is not the
+/// app's `home` says so.
+pub(crate) fn address(target: &str, home: Option<&str>, speaker: &str) -> String {
+    let away = if home == Some(target) {
+        ""
+    } else {
+        " (not home)"
+    };
+    format!("to {target}{away} › {speaker}   ")
 }
 
 // ---------------------------------------------------------------------------
@@ -970,7 +974,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
             Composer::Home { .. } | Composer::ReadOnly { .. } | Composer::Held { .. } => {
                 screen.pair.first().map(String::as_str)
             }
-            Composer::Foreign { .. } | Composer::NoHome => None,
+            Composer::NoHome => None,
         })
         .unwrap_or_default();
     let clock = view::Style::resolve(true, screen.look, screen.zone, main);
@@ -1017,15 +1021,13 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     put_line(buf, left, composer, &address_row, room);
     put(buf, left, height - 3, &hint, room, dim);
     if let Composer::Home {
-        home,
-        speaker,
-        view: Some(view),
-        ..
+        view: Some(view), ..
     } = screen.composer
     {
-        // The rest of the draft under its first text cell, and the cursor
-        // after the cells its row draws before it, never past the row.
-        let indent = cells(Span::raw(address(home, speaker)).width());
+        // The rest of the draft under its first text cell — after the address
+        // the row above drew first — and the cursor after the cells its row
+        // draws before it, never past the row.
+        let indent = cells(address_row.spans.first().map_or(0, Span::width));
         let width = room.saturating_sub(indent);
         let text = paint.fg(|p| p.text);
         for (y, row) in (composer..).zip(&view.rows).skip(1) {
@@ -1047,8 +1049,8 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.complete = complete;
 }
 
-/// The chat header: the session, its pair or where it is viewed from, and
-/// right-aligned its branch (at 140 columns or more) and its activity.
+/// The chat header: the session, its pair, and right-aligned its branch (at
+/// 140 columns or more) and its activity.
 fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
     let screen = ctx.screen;
     let paint = ctx.paint;
@@ -1060,12 +1062,7 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
         None => Style::new().add_modifier(Modifier::BOLD),
     };
     let after = put(buf, left, 1, &entry.name, end - left, name);
-    let middle = match screen.composer {
-        Composer::Foreign { home, .. } => {
-            format!("viewed from the {home} window · Esc returns to {home}")
-        }
-        _ => screen.pair.join(" + "),
-    };
+    let middle = screen.pair.join(" + ");
     let after = put(
         buf,
         after + 3,
@@ -1108,7 +1105,8 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
             view,
             draft,
         } => {
-            let address = Span::styled(address(home, speaker), paint.fg(|p| p.title));
+            let address = address(home, ctx.screen.fleet.home.as_deref(), speaker);
+            let address = Span::styled(address, paint.fg(|p| p.title));
             if let Some(view) = view {
                 let row = view.rows.first().cloned().unwrap_or_default();
                 let line = Line::from(vec![address, Span::styled(row, text)]);
@@ -1128,10 +1126,6 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
         ),
         Composer::Held { why } => (
             quiet(format!("not writing: {why} · Esc browses")),
-            String::new(),
-        ),
-        Composer::Foreign { home, speaker } => (
-            quiet(format!("read-only · typing writes to {home} › {speaker}")),
             String::new(),
         ),
         Composer::NoHome => (
@@ -1999,7 +1993,7 @@ mod tests {
 
     /// The header stays inside the chat column (frames: header text never
     /// passes the rule under it). A name at the grammar's 128 and a long
-    /// foreign middle both stay inside it.
+    /// pair middle both stay inside it.
     #[test]
     fn a_long_header_stays_inside_the_chat_column() {
         let mut shot = Shot::new();
@@ -2010,17 +2004,10 @@ mod tests {
             last_ink(&buf, 1, 160).is_some_and(|x| x <= end),
             "a long name"
         );
-        let shot = Shot::new();
-        let home = "h".repeat(60);
-        let buf = shot.draw(
-            160,
-            45,
-            Composer::Foreign {
-                home: &home,
-                speaker: "lead",
-            },
-        );
-        let (y, _) = spot(&buf, "viewed from the").expect("the foreign middle");
+        let mut shot = Shot::new();
+        shot.pair = vec!["h".repeat(60), "g".repeat(60)];
+        let buf = shot.draw(160, 45, READ_ONLY);
+        let (y, _) = spot(&buf, "hhh").expect("the long pair middle");
         assert_eq!(y, 1);
         let end = rule_end(&buf).expect("the rule");
         assert!(
@@ -2319,7 +2306,8 @@ mod tests {
             let buf = Shot::new().draw(width, height, READ_ONLY);
             let end = rule_end(&buf).expect("the rule");
             let area = Rect::new(0, 0, width, height);
-            let cells = super::draft_width(area, super::Split::default(), "api", "lead");
+            let address = super::address("api", Some("api"), "lead");
+            let cells = super::draft_width(area, super::Split::default(), &address);
             assert_eq!(start + cells - 1, usize::from(end), "{width}x{height}");
         }
     }

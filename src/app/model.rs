@@ -154,7 +154,7 @@ impl Model {
         }
     }
 
-    /// Take one key. `can_compose` says the app owns the home input;
+    /// Take one key. `can_compose` says the selected session may be written;
     /// `agents_tab` says the Agents tab exists. An open overlay owns every
     /// key first; closed behavior is exactly what it always was.
     pub fn key(&mut self, key: Key, fleet: &Fleet, can_compose: bool, agents_tab: bool) -> Act {
@@ -188,7 +188,7 @@ impl Model {
                 self.body_top = 0;
                 Act::Redraw
             }
-            Key::Compose if can_compose && self.on_home(fleet) => Act::Compose,
+            Key::Compose if can_compose && self.selected.is_some() => Act::Compose,
             Key::Esc => {
                 let home = fleet
                     .home
@@ -244,11 +244,6 @@ impl Model {
     pub fn position(&self, fleet: &Fleet) -> Option<usize> {
         let selected = self.selected.as_deref()?;
         fleet.rows.iter().position(|row| row.name == selected)
-    }
-
-    /// Whether the home session is selected.
-    fn on_home(&self, fleet: &Fleet) -> bool {
-        fleet.home.is_some() && self.selected == fleet.home
     }
 
     /// Bound the chat scroll to what the lane holds: `max` pages back.

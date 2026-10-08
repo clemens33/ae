@@ -6,10 +6,10 @@
 //! cells. Each reads only what the existing owners already computed. The
 //! world is read on the [`loader`]'s one background thread, through those
 //! owners; this file draws what it last answered, so no key waits on a read.
-//! The ONE write is the home composer's ask or close, through the chat's own
-//! admission path (`term::submit_ask`, `submit::close_owned`), under the
-//! writer lease this app holds while it writes; nothing else here writes
-//! into any session.
+//! The ONE write is the composer's ask or close into the selected session,
+//! through the chat's own admission path (`term::submit_ask`,
+//! `submit::close_owned`), under that session's writer lease, held while
+//! this app writes it; nothing else here writes into any session.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -33,7 +33,7 @@ use crate::listing::World;
 use crate::time::Timestamp;
 use crate::{brief, doors, theme, tmux};
 
-use loader::{Answer, Request, Wake};
+use loader::{Answer, Binding, Request, Wake};
 
 mod backend;
 pub mod draw;
@@ -53,13 +53,13 @@ mod tty;
 pub const NO_TERMINAL: &str = "ae app draws a terminal UI; use ae chat to print the lane\n";
 
 /// The usage text.
-pub const USAGE: &str = "Usage: ae app [session]\n\n  session   the home session, whose chat you write to (default: the session this pane belongs to)\n";
+pub const USAGE: &str = "Usage: ae app [session]\n\n  session   the home session, selected first (default: the session this pane belongs to)\n";
 
 /// How often the fleet, home and the selection are read again.
 const REFRESH: Duration = Duration::from_secs(crate::board::follow::POLL_SECS);
 /// How long a wait for a key lasts before the size and the Esc bound are read.
 const TICK: Duration = Duration::from_millis(100);
-/// The most of ae's own notices the home lane shows.
+/// The most of ae's own notices a session's lane shows.
 const NOTICES: usize = 5;
 
 /// One session's last read lane, and what it was read as.
@@ -70,16 +70,17 @@ struct Shown {
     lane: Rc<Lane>,
 }
 
-/// Home's lane as drawn — its last read with ae's own notices merged in by
-/// time — and what it was merged from, so a show rebuilds it only when the
-/// read or the notices changed.
+/// The selection's lane as drawn — its last read with ae's own notices for
+/// it merged in by time — and what it was merged from, so a show rebuilds it
+/// only when the selection, the read or the notices changed.
 struct Merged {
+    name: String,
     base: Option<Rc<Lane>>,
     notices: u64,
     lane: Rc<Lane>,
 }
 
-/// The writer lease this app holds while it writes home.
+/// The writer lease this app holds while it writes.
 struct Lease {
     /// Held open: dropping it releases the lease.
     _file: File,
@@ -100,9 +101,8 @@ struct App {
     facts: BTreeMap<String, fleet::Facts>,
     needs: BTreeMap<String, Section>,
     memos: BTreeMap<String, Result<Vec<brief::Filed>, String>>,
-    /// The home session's console, opened by the reader: every ask goes
-    /// through it, and it is never read here.
-    home_console: Option<Console>,
+    /// Each session's lead pair as the last fleet read found it.
+    pairs: BTreeMap<String, Result<Vec<Seat>, String>>,
     /// Each session's last read lane, by name: what a selection shows at once.
     shown: BTreeMap<String, Shown>,
     /// Each session's drawn look and the viewer's zone, by name.
@@ -114,23 +114,28 @@ struct App {
     /// The fleet has been read at least once.
     fleeted: bool,
     overview: overview::Overview,
-    /// The home lead pair as its meta names it now, main first.
+    /// The selection's lead pair as its meta names it now, main first.
     pair: Vec<String>,
-    /// The home lead pair this app composes for, fixed when it opened: a
-    /// changed pair refuses the ask rather than sending it elsewhere.
-    seats: Vec<Seat>,
-    /// The chat's own input step machine; `None` when there is no usable pair.
-    input: Option<Input>,
-    /// Why the home composer only reads.
+    /// Each incarnation's input, by `(name, session_id)`: its draft and
+    /// speaker outlive a writer, until a fleet read proves it gone.
+    inputs: BTreeMap<(String, String), Input>,
+    /// The lead pair each incarnation was first written with: a changed pair
+    /// refuses rather than sending elsewhere.
+    bound: BTreeMap<(String, String), Vec<Seat>>,
+    /// Why the selection's composer only reads.
     read_only: String,
-    /// The writer lease, held exactly while this app writes home.
+    /// The writer lease, held exactly while this app writes.
     lease: Option<Lease>,
+    /// The entry writing now, bound to what it proved; with the lease.
+    writer: Option<Binding>,
+    /// Entries counted, so a late proof of an older one changes nothing.
+    entries: u64,
     /// Why the last entry was refused: HELD, every key swallowed until Esc,
     /// ^C, a click or an Enter that tries again.
     held: Option<String>,
-    /// ae's own lines — refusals and outcomes — shown in the home lane.
-    notices: Vec<Item>,
-    /// Bumped with every notice, so the merged home lane knows it is stale.
+    /// ae's own lines — refusals and outcomes — by the session they are about.
+    notices: Vec<(String, Item)>,
+    /// Bumped with every notice, so the merged lane knows it is stale.
     noticed: u64,
     draft_view: View,
     draft: String,
@@ -153,9 +158,8 @@ struct App {
 }
 
 impl App {
-    /// An app that has read nothing yet: home is selected, and its pair and
-    /// console arrive from the reader. Where it runs decides nothing: the
-    /// writer lease does.
+    /// An app that has read nothing yet: home is selected. Where it runs
+    /// decides nothing: the writer lease does.
     fn new(
         home: Option<String>,
         _server: Option<ServerId>,
@@ -166,9 +170,6 @@ impl App {
             rows: Vec::new(),
             home: home.clone(),
         };
-        let read_only = home
-            .as_ref()
-            .map_or_else(String::new, |_| "ownership not read yet".to_owned());
         Self {
             home,
             model: model::Model::new(&fleet),
@@ -179,7 +180,7 @@ impl App {
             facts: BTreeMap::new(),
             needs: BTreeMap::new(),
             memos: BTreeMap::new(),
-            home_console: None,
+            pairs: BTreeMap::new(),
             shown: BTreeMap::new(),
             looks: BTreeMap::new(),
             lane: Rc::default(),
@@ -188,19 +189,16 @@ impl App {
             fleeted: false,
             overview: overview::Overview::default(),
             pair: Vec::new(),
-            seats: Vec::new(),
-            input: None,
-            read_only,
+            inputs: BTreeMap::new(),
+            bound: BTreeMap::new(),
+            read_only: "the fleet is not read yet".to_owned(),
             lease: None,
+            writer: None,
+            entries: 0,
             held: None,
             notices: Vec::new(),
             noticed: 0,
-            draft_view: View {
-                rows: Vec::new(),
-                cursor_row: 0,
-                before: String::new(),
-                anchor: String::new(),
-            },
+            draft_view: View::default(),
             draft: String::new(),
             layout: draw::Layout::default(),
             ask,
@@ -215,10 +213,15 @@ impl App {
     /// Fold one answer from the reader.
     fn answer(&mut self, answer: Answer) {
         match answer {
-            Answer::Home(home) => self.housed(home),
             Answer::Fleet(read) => self.absorb(read),
             Answer::Look { name, look, zone } => drop(self.looks.insert(name, (look, zone))),
-            Answer::Owned { reading, at } => self.take(reading, at),
+            // Only the entry writing now: a late proof of an older one is stale.
+            Answer::Owned { entry, reading, at }
+                if self.writer.as_ref().is_some_and(|w| w.entry == entry) =>
+            {
+                self.take(reading, at);
+            }
+            Answer::Owned { .. } => {}
             Answer::View(view) => self.viewed(view),
             Answer::Settings {
                 generation,
@@ -279,26 +282,10 @@ impl App {
         }
     }
 
-    /// The home session as the reader opened it: the console every ask goes
-    /// through and the lead pair the composer writes to.
-    fn housed(&mut self, home: Option<(Console, Result<Vec<Seat>, String>)>) {
-        let Some((console, pair)) = home else {
-            self.read_only = String::new();
-            return;
-        };
-        match pair {
-            Ok(seats) => {
-                self.pair = names(&seats);
-                self.input = (!seats.is_empty()).then(|| Input::new(self.pair.clone()));
-                self.seats = seats;
-            }
-            Err(why) => self.read_only = format!("input off: {why}"),
-        }
-        self.home_console = Some(console);
-    }
-
     /// Fold one read of the fleet: a session that left it, or whose recorded
-    /// identity changed, takes its last lane and look with it.
+    /// identity changed, takes its last lane and look with it, and its input
+    /// — once, named — when the read proves it (a changed `session_id`, or a
+    /// complete read without it), never on an id it could not read.
     fn absorb(&mut self, read: loader::FleetRead) {
         let home = self.home.clone();
         let kept = |name: &String, id: &str| {
@@ -319,21 +306,46 @@ impl App {
         self.pending = Some(read.fleet.rows.iter().map(|row| row.name.clone()).collect());
         self.fleet = read.fleet.arranged(&drawn);
         self.memos = read.memos;
-        if let Some(pair) = read.pair {
-            self.pair = pair;
-        }
+        self.pairs = read.pairs;
         self.fleeted = true;
+        self.merged = None;
+        let gone = |(name, id): &(String, String)| match self.ids.get(name) {
+            Some(now) => !now.is_empty() && now != id,
+            None => read.scanned,
+        };
+        let dropped: Vec<_> = self.inputs.extract_if(.., |key, _| gone(key)).collect();
+        for (key, input) in dropped {
+            let why = if self.ids.contains_key(&key.0) {
+                "the session was replaced"
+            } else {
+                "the session is gone"
+            };
+            if self.writer.as_ref().is_some_and(|w| w.key() == key) {
+                self.write(false);
+                self.held = Some(why.to_owned());
+            }
+            self.bound.remove(&key);
+            if !input.draft().is_empty() {
+                self.notice(&key.0, format!("draft for {} dropped: {why}", key.0));
+            }
+        }
         if self.model.selected().is_none() {
             self.model.restart(&self.fleet);
         }
         self.model.reconcile(&self.fleet);
+        // The target is always the selection: a read that moved it ends the writing.
+        if let Some(writer) = &self.writer
+            && Some(writer.console.name()) != self.model.selected()
+        {
+            self.write(false);
+        }
         self.evict();
         self.show();
     }
 
     /// One read of a session's lane. A lane read as an identity its session
-    /// no longer records, or older than the one shown, is dropped; home is
-    /// bound to the incarnation it opened.
+    /// no longer records, or older than the one shown, is dropped; home's
+    /// lane stays until its next read.
     fn viewed(&mut self, view: loader::ViewRead) {
         let home = self.home.as_deref() == Some(view.name.as_str());
         if !home && self.ids.get(&view.name) != Some(&view.id) {
@@ -350,7 +362,8 @@ impl App {
             self.needs.insert(view.name.clone(), section);
         }
         // The seats `/open` names, as the chat's own tick hands them over.
-        if let (Some(seats), Some(input)) = (view.roster, self.input.as_mut()) {
+        let key = (view.name.clone(), view.id.clone());
+        if let (Some(seats), Some(input)) = (view.roster, self.inputs.get_mut(&key)) {
             input.set_seats(seats);
         }
         let selected = self.model.selected() == Some(view.name.as_str());
@@ -386,10 +399,10 @@ impl App {
         self.evict();
     }
 
-    /// Ask the reader to read home again: this app wrote into it.
+    /// Ask the reader to read the written session again: this app wrote into it.
     fn reread(&self) {
-        if let (Some(ask), Some(home)) = (&self.ask, &self.home) {
-            let _ = ask.send(Request::Reread(home.clone()));
+        if let (Some(ask), Some(writer)) = (&self.ask, &self.writer) {
+            let _ = ask.send(Request::Reread(writer.console.name().to_owned()));
         }
     }
 
@@ -418,45 +431,58 @@ impl App {
         (Some(theme::Look::DEFAULT), first_zone)
     }
 
-    /// Hand one reading of whether home may be written, completed at `at`,
-    /// to the composer. One that ends it ends the writing too, HELD with its
-    /// reason and the draft kept; an unanswered one changes nothing.
-    fn take(&mut self, reading: Reading, at: Instant) {
-        let Some(input) = &mut self.input else {
-            return;
-        };
-        match reading {
-            Reading::Owner => {
-                let _ = input.tick(Reading::Owner, at);
-                self.read_only.clear();
-            }
-            Reading::NotOwner(why) => {
-                if self.composing() || self.held.is_some() {
-                    self.write(false);
-                    self.held = Some(why.clone());
-                }
-                self.read_only = why;
-            }
-            Reading::Unknown => {}
+    /// Hand one reading of whether the writer may still write to the
+    /// composer. One that ends it ends the writing too, HELD with its reason
+    /// and the draft kept; any other changes nothing.
+    fn take(&mut self, reading: Reading, _at: Instant) {
+        if let Reading::NotOwner(why) = reading
+            && (self.composing() || self.held.is_some())
+        {
+            self.write(false);
+            self.held = Some(why);
         }
     }
 
-    /// Start or stop writing home: the one writer of the lease. Starting
-    /// takes it without waiting, and the instant it is held gates every key
-    /// after; an empty composer gets the kept line back. A refusal, or a
-    /// home not proven, is HELD.
+    /// Start or stop writing the selection: the one writer of the lease. A
+    /// refused start is HELD. Each is a new entry, and the reader is told
+    /// which writer it re-proves.
     fn write(&mut self, on: bool) {
-        (self.lease, self.held) = (None, None);
-        let Some(console) = self.home_console.as_ref().filter(|_| on) else {
-            return;
-        };
-        if !self.can_compose() {
-            return self.held = Some(self.read_only.clone());
+        (self.lease, self.held, self.writer) = (None, None, None);
+        self.entries = self.entries.wrapping_add(1);
+        if let Some(name) = self.model.selected().filter(|_| on).map(str::to_owned)
+            && let Err(why) = self.enter(&name)
+        {
+            self.held = Some(why);
         }
-        let file = match term::lease(console) {
-            Ok(file) => file,
-            Err(why) => return self.held = Some(why),
+        if let Some(ask) = &self.ask {
+            let binding = self.writer.as_ref().map(|writer| Binding {
+                entry: writer.entry,
+                console: Console::bound(
+                    writer.console.name().to_owned(),
+                    writer.console.dir().to_path_buf(),
+                    writer.console.uuid().to_owned(),
+                ),
+                seats: writer.seats.clone(),
+            });
+            let _ = ask.send(Request::Writing(binding.map(Box::new)));
+        }
+    }
+
+    /// Enter writing session `name`, bound to the incarnation and lead pair
+    /// it proves now — the pair its input was first written with wins — under
+    /// its lease, taken without waiting: the instant it is held gates every
+    /// key after, and an empty composer gets the kept line back. Nothing is
+    /// written before the lease.
+    fn enter(&mut self, name: &str) -> Result<(), String> {
+        let dir = self.writable(name)?;
+        let console = Console::bound(name.to_owned(), dir, self.id(name));
+        let pair = console.seats().and_then(term::pair_of)?;
+        let key = (name.to_owned(), console.uuid().to_owned());
+        let seats = match self.bound.get(&key) {
+            Some(bound) => term::still(bound, Ok(pair)).map(|()| bound.clone())?,
+            None => pair,
         };
+        let file = term::lease(&console)?;
         let at = Instant::now();
         let draft = submit::restore(console.dir());
         self.lease = Some(Lease {
@@ -464,9 +490,69 @@ impl App {
             at,
             named: false,
         });
-        let input = self.input.as_mut().filter(|input| input.draft().is_empty());
-        let restored = input.map(|input| input.restore(draft)).unwrap_or_default();
+        let input = self.inputs.entry(key.clone()).or_insert_with(|| {
+            self.bound.insert(key, seats.clone());
+            let mut input = Input::new(names(&seats));
+            let _ = input.tick(Reading::Owner, at);
+            input
+        });
+        let restored = if input.draft().is_empty() {
+            input.restore(draft)
+        } else {
+            Vec::new()
+        };
+        self.writer = Some(Binding {
+            entry: self.entries,
+            console,
+            seats,
+        });
         self.effects(restored);
+        Ok(())
+    }
+
+    /// Session `name`'s record directory when it may be written now, else
+    /// why not.
+    fn writable(&self, name: &str) -> Result<PathBuf, String> {
+        if !self.fleeted {
+            return Err("the fleet is not read yet".to_owned());
+        }
+        let unrecorded = || format!("{name} has no record directory ae can read");
+        let dir = self.dirs.get(name).ok_or_else(unrecorded)?;
+        let stopped = self.entry(name).map(|entry| entry.status) == Some(Status::Stopped);
+        if stopped {
+            return Err(format!("{name} is stopped"));
+        }
+        let unread = "the lead pair is not read yet";
+        let pair = self.pairs.get(name).ok_or(unread)?;
+        let pair = pair.as_ref().map_err(String::clone)?;
+        if let Some(bound) = self.bound.get(&(name.to_owned(), self.id(name))) {
+            term::still(bound, Ok(pair.clone()))?;
+        }
+        Ok(dir.clone())
+    }
+
+    /// Session `name`'s recorded `session_id`, empty when not read.
+    fn id(&self, name: &str) -> String {
+        self.ids.get(name).cloned().unwrap_or_default()
+    }
+
+    /// The input the composer shows: the writer's, else the selection's.
+    fn shown_input(&self) -> Option<&Input> {
+        let selected = || {
+            self.model
+                .selected()
+                .map(|name| (name.to_owned(), self.id(name)))
+        };
+        let key = self.writer.as_ref().map(Binding::key).or_else(selected)?;
+        self.inputs.get(&key)
+    }
+
+    /// Who the composer speaks to: its input's speaker, else the pair's main.
+    fn speaker(&self) -> &str {
+        self.shown_input().map_or_else(
+            || self.pair.first().map_or("", String::as_str),
+            Input::speaker,
+        )
     }
 
     /// Whether this app writes home: it holds the lease.
@@ -484,6 +570,9 @@ impl App {
             self.loading = false;
             return;
         };
+        self.read_only = self.writable(&name).err().unwrap_or_default();
+        let pair = self.pairs.get(&name).and_then(|pair| pair.as_deref().ok());
+        self.pair = pair.map(names).unwrap_or_default();
         if !self.fleeted {
             (self.lane, self.overview) = (Rc::default(), overview::Overview::default());
             self.loading = true;
@@ -494,10 +583,11 @@ impl App {
         let entry = self.entry(&name).unwrap_or(&empty).clone();
         if !self.dirs.contains_key(&name) {
             let gap = format!("{name} has no record directory ae can read");
-            self.lane = Rc::new(Lane {
+            let lane = Rc::new(Lane {
                 items: Vec::new(),
                 coverage: vec![gap.clone()],
             });
+            self.lane = self.merge(&name, Some(lane));
             self.loading = false;
             self.overview = overview::of(&entry, None, Err(gap), now);
             self.unlist(listed);
@@ -505,11 +595,7 @@ impl App {
         }
         let shown = self.shown.get(&name).map(|shown| Rc::clone(&shown.lane));
         self.loading = shown.is_none();
-        self.lane = if self.home.as_deref() == Some(name.as_str()) {
-            self.merge(shown)
-        } else {
-            shown.unwrap_or_default()
-        };
+        self.lane = self.merge(&name, shown);
         let memo = self.memos.get(&name).map_or_else(
             || Err("memo not read yet".to_owned()),
             |memo| memo.as_deref().map_err(String::clone),
@@ -526,21 +612,32 @@ impl App {
         }
     }
 
-    /// Home's lane `base` with ae's own notices in it by time, built once
-    /// per read and per notice rather than on every show.
-    fn merge(&mut self, base: Option<Rc<Lane>>) -> Rc<Lane> {
+    /// Session `name`'s lane `base` with ae's own notices in it by time —
+    /// its own, and those of a session no longer recorded — built once per
+    /// read and per notice rather than on every show.
+    fn merge(&mut self, name: &str, base: Option<Rc<Lane>>) -> Rc<Lane> {
         let same = |merged: &&Merged| {
             merged.notices == self.noticed
+                && merged.name == name
                 && merged.base.as_ref().map(Rc::as_ptr) == base.as_ref().map(Rc::as_ptr)
         };
         if let Some(merged) = self.merged.as_ref().filter(same) {
             return Rc::clone(&merged.lane);
         }
+        let dirs = &self.dirs;
+        let mut notices = (self.notices.iter())
+            .filter(|(of, _)| of == name || !dirs.contains_key(of))
+            .map(|(_, item)| item.clone())
+            .peekable();
+        if notices.peek().is_none() {
+            return base.unwrap_or_default();
+        }
         let mut lane = base.as_deref().cloned().unwrap_or_default();
-        lane.items.extend(self.notices.iter().cloned());
+        lane.items.extend(notices);
         lane.items.sort_by_key(|item| item.micros);
         let lane = Rc::new(lane);
         self.merged = Some(Merged {
+            name: name.to_owned(),
             base,
             notices: self.noticed,
             lane: Rc::clone(&lane),
@@ -552,9 +649,9 @@ impl App {
         self.world.sessions.iter().find(|entry| entry.name == name)
     }
 
-    /// Whether Enter may start a line: home's last reading proved it.
+    /// Whether Enter may start a line: the selection's last reading proved it.
     fn can_compose(&self) -> bool {
-        self.read_only.is_empty() && self.input.as_ref().is_some_and(Input::taking)
+        self.read_only.is_empty() && self.model.selected().is_some()
     }
 
     /// One key while composing: Esc keeps the draft and browses, ^C quits,
@@ -572,9 +669,9 @@ impl App {
                 }
             }
             key => {
-                let effects = self
-                    .input
-                    .as_mut()
+                let input = self.writer.as_ref().map(Binding::key);
+                let effects = input
+                    .and_then(|input| self.inputs.get_mut(&input))
                     .map(|input| input.keyed(vec![(key, origin)]))
                     .unwrap_or_default();
                 if !effects.is_empty() {
@@ -735,6 +832,9 @@ impl App {
     /// shown at once.
     fn effects(&mut self, effects: Vec<Effect>) {
         for effect in effects {
+            // A writer's session is always the selection.
+            let about = self.model.selected().or(self.home.as_deref());
+            let about = about.unwrap_or_default().to_owned();
             let line = match effect {
                 Effect::Print(line) => line,
                 Effect::Ask { raw, seat, body } => self.ask(&raw, &seat, body),
@@ -745,48 +845,70 @@ impl App {
                 ),
                 Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => continue,
             };
-            self.notices.push(Item {
-                micros: Timestamp::now().epoch().saturating_mul(1_000_000),
-                kind: Kind::Said {
-                    who: "ae".to_owned(),
-                },
-                body: line,
-                record: None,
-            });
-            self.noticed = self.noticed.wrapping_add(1);
+            self.notice(&about, line);
         }
-        let over = self.notices.len().saturating_sub(NOTICES);
-        self.notices.drain(..over);
         self.show();
     }
 
-    /// What the admission re-proves: this app holds the lease, and the
-    /// incarnation and lead pair it opened with are the session's now. A
-    /// home no longer proven is kept in `lost`.
-    fn owns(&self, console: &Console, lost: &Cell<Option<String>>) -> Result<(), String> {
-        self.lease.as_ref().ok_or("not writing")?;
-        term::still(&self.seats, console.seats()).inspect_err(|why| lost.set(Some(why.clone())))
+    /// One of ae's own lines about session `name`; each keeps its newest few.
+    fn notice(&mut self, name: &str, line: String) {
+        let item = Item {
+            micros: Timestamp::now().epoch().saturating_mul(1_000_000),
+            kind: Kind::Said {
+                who: "ae".to_owned(),
+            },
+            body: line,
+            record: None,
+        };
+        self.notices.push((name.to_owned(), item));
+        self.noticed = self.noticed.wrapping_add(1);
+        let mut of = self.notices.iter().filter(|(of, _)| of == name);
+        if of.nth(NOTICES).is_some()
+            && let Some(first) = self.notices.iter().position(|(of, _)| of == name)
+        {
+            self.notices.remove(first);
+        }
     }
 
-    /// A home the admission no longer proved ends the writing at once, HELD
-    /// with `line`, the entry it refused, back in the draft: memory only.
+    /// What the admission re-proves: this app holds the lease, and the
+    /// incarnation and lead pair its entry proved are the session's now. A
+    /// session no longer proven is kept in `lost`.
+    fn owns(&self, lost: &Cell<Option<String>>) -> Result<(), String> {
+        self.lease.as_ref().ok_or("not writing")?;
+        let writer = self.writer.as_ref().ok_or("not writing")?;
+        let seats = writer.console.seats();
+        term::still(&writer.seats, seats).inspect_err(|why| lost.set(Some(why.clone())))
+    }
+
+    /// A session the admission no longer proved ends the writing at once,
+    /// HELD with `line`, the entry it refused, back in its draft: memory only.
     fn unproven(&mut self, lost: Cell<Option<String>>, line: &[u8]) {
         let Some(why) = lost.into_inner() else {
             return;
         };
+        let key = self.writer.as_ref().map(Binding::key);
         self.take(Reading::NotOwner(why), Instant::now());
-        if let Some(input) = &mut self.input {
+        if let Some(input) = key.and_then(|key| self.inputs.get_mut(&key)) {
             let _ = input.restore(submit::Draft::Kept(line.to_vec()));
         }
     }
 
     /// One ask of `seat`, through the chat's own admission and tracked path.
+    /// A session whose recorded server that path cannot name is no longer
+    /// proven: refused in its words before anything is written.
     fn ask(&mut self, raw: &[u8], seat: &str, body: String) -> String {
-        let Some(console) = &self.home_console else {
-            return "refused: no home session".to_owned();
+        let Some(writer) = &self.writer else {
+            return "refused: not writing".to_owned();
         };
-        let lost = Cell::default();
-        let line = match term::submit_ask(console, || self.owns(console, &lost), raw, seat, body) {
+        let (console, lost) = (&writer.console, Cell::default());
+        let owns = || {
+            self.owns(&lost)?;
+            let name = console.name();
+            let routed = crate::tracked::named_server(console.dir(), name, name);
+            let routed = routed.map(drop).map_err(|why| why.message());
+            routed.inspect_err(|why| lost.set(Some(why.clone())))
+        };
+        let line = match term::submit_ask(console, owns, raw, seat, body) {
             Ok((_, outcome)) => crate::console::input::outcome_line(&outcome, seat),
             Err(why) => format!("refused: {why}"),
         };
@@ -796,11 +918,11 @@ impl App {
 
     /// `/close`: this app's own open ask, through the chat's admission.
     fn close(&mut self, id: Option<&str>) -> String {
-        let Some(console) = &self.home_console else {
-            return "refused: no home session".to_owned();
+        let Some(writer) = &self.writer else {
+            return "refused: not writing".to_owned();
         };
-        let lost = Cell::default();
-        let owns = || self.owns(console, &lost);
+        let (console, lost) = (&writer.console, Cell::default());
+        let owns = || self.owns(&lost);
         let line = match submit::close_owned(console.dir(), console.name(), id, owns) {
             Ok(()) => "closed an ask".to_owned(),
             Err(why) => format!("refused: {why}"),
@@ -812,26 +934,19 @@ impl App {
 
     /// The composer line for the selection.
     fn composer(&self) -> draw::Composer<'_> {
-        let speaker = self.input.as_ref().map_or_else(
-            || self.pair.first().map_or("", String::as_str),
-            Input::speaker,
-        );
-        match &self.home {
-            None => draw::Composer::NoHome,
-            Some(home) if self.model.selected() != Some(home.as_str()) => {
-                draw::Composer::Foreign { home, speaker }
+        match (self.model.selected(), &self.held) {
+            (None, _) => draw::Composer::NoHome,
+            (Some(_), Some(why)) => draw::Composer::Held { why },
+            (Some(_), None) if !self.read_only.is_empty() && !self.composing() => {
+                draw::Composer::ReadOnly {
+                    why: &self.read_only,
+                }
             }
-            Some(_) if self.held.is_some() => draw::Composer::Held {
-                why: self.held.as_deref().unwrap_or_default(),
-            },
-            Some(home) if self.can_compose() => draw::Composer::Home {
-                home,
-                speaker,
+            (Some(name), None) => draw::Composer::Home {
+                home: name,
+                speaker: self.speaker(),
                 view: self.composing().then_some(&self.draft_view),
                 draft: &self.draft,
-            },
-            Some(_) => draw::Composer::ReadOnly {
-                why: &self.read_only,
             },
         }
     }
@@ -843,14 +958,15 @@ impl App {
         if let Some(order) = self.pending.take() {
             self.fleet = std::mem::take(&mut self.fleet).arranged(&order);
         }
-        if let (Some(input), Some(home)) = (&self.input, &self.home) {
+        if let Some(name) = self.model.selected() {
             let area = buf.area;
-            let width = draw::draft_width(area, self.model.split(), home, input.speaker());
+            let address = draw::address(name, self.home.as_deref(), self.speaker());
             let size = Size {
-                width,
+                width: draw::draft_width(area, self.model.split(), &address),
                 height: draw::composer_pane(area),
             };
-            (self.draft_view, self.draft) = (input.bare_view(size), input.draft());
+            let shown = self.shown_input().map(|i| (i.bare_view(size), i.draft()));
+            (self.draft_view, self.draft) = shown.unwrap_or_default();
         }
         let name = self.model.selected();
         let unread = name
@@ -1355,12 +1471,21 @@ mod tests {
         app
     }
 
-    /// [`app`] on `root`'s home `api`, opened by the reader as `run` opens it.
+    /// [`app`] on `root`'s home `api`, as its first fleet read finds it.
     fn housed(root: &Root) -> (App, Reader) {
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
+        let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let mut app = app(Some("api"));
-        app.answer(reader.open_home());
+        let dirs = [("api".to_owned(), root.0.join("sessions").join("api"))].into();
+        let world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
+        let order = crate::theme::FleetOrder::EMPTY;
+        let read = reader.fold(dirs, world, None, &order, Timestamp::now());
+        app.answer(Answer::Fleet(read));
         (app, reader)
+    }
+
+    /// The draft the composer shows.
+    fn drafted(app: &App) -> String {
+        app.shown_input().map(Input::draft).unwrap_or_default()
     }
 
     /// `root`'s home `api` recorded as incarnation `id`, lead pair lead + `peer`.
@@ -1582,10 +1707,7 @@ mod tests {
         );
         assert!(!app.composing());
         assert_eq!(app.model.tab(), crate::app::model::Tab::Overview);
-        assert_eq!(
-            app.input.as_ref().expect("home input").draft(),
-            "kept draft"
-        );
+        assert_eq!(drafted(&app), "kept draft");
     }
 
     /// The bottom keys row is outside chat, while the composer just above still scrolls.
@@ -1737,7 +1859,7 @@ mod tests {
         for key in [Key::Text(b"check the scopes".to_vec()), Key::Enter] {
             assert_eq!(app.compose(key, typed), Some(()));
         }
-        let notice = &app.notices.last().expect("the outcome is said").body;
+        let notice = &app.notices.last().expect("the outcome is said").1.body;
         assert_eq!(notice, "refused: the session was replaced or renamed");
         let written = crate::store::open(&dir).events_source();
         assert!(
@@ -1747,7 +1869,7 @@ mod tests {
         assert_eq!(super::submit::restore(&dir), super::submit::Draft::Nothing);
         let body = std::fs::remove_dir(dir.join("messages")).map_err(|why| why.kind());
         assert_eq!(body, Err(std::io::ErrorKind::NotFound), "no body written");
-        assert!(!app.composing() && !app.can_compose(), "and no writing");
+        assert!(!app.composing(), "and no writing");
         assert_eq!(
             app.held.as_deref(),
             Some("the session was replaced or renamed")
@@ -1759,17 +1881,26 @@ mod tests {
     #[test]
     fn open_is_refused_with_the_apps_own_reason() {
         let root = Root::new("open");
-        let (mut app, mut reader) = housed(&root);
+        let (mut app, _reader) = housed(&root);
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
-        app.dirs
-            .insert("api".to_owned(), root.0.join("sessions").join("api"));
-        app.answer(reader.view("api").expect("home reads"));
         let typed = writing(&mut app);
+        let lead = crate::console::needs::SeatRef {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+        };
+        app.answer(Answer::View(ViewRead {
+            name: "api".to_owned(),
+            id: ID.to_owned(),
+            seq: 1,
+            lane: Lane::default(),
+            needs: None,
+            roster: Some(vec![lead]),
+        }));
         for key in [Key::Text(b"/open lead".to_vec()), Key::Enter] {
             assert_eq!(app.compose(key, typed), Some(()));
         }
-        let notice = &app.notices.last().expect("the refusal is said").body;
+        let notice = &app.notices.last().expect("the refusal is said").1.body;
         assert_eq!(
             notice,
             "refused: /open lead: ae app selects no pane - ae chat does"
@@ -1809,14 +1940,13 @@ mod tests {
         let store = crate::store::open(&root.0.join("sessions").join("api"));
         store.publish_console_draft(b"kept").expect("a kept draft");
         let (mut app, _reader) = housed(&root);
-        let draft = |app: &App| app.input.as_ref().map(Input::draft).unwrap_or_default();
         app.take(Reading::Owner, Instant::now());
-        assert_eq!(draft(&app), "", "a promotion restores nothing");
+        assert_eq!(drafted(&app), "", "a promotion restores nothing");
         let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b" edited".to_vec()), at), Some(()));
         app.write(false);
         writing(&mut app);
-        assert_eq!(draft(&app), "kept edited", "restored once, no merge");
+        assert_eq!(drafted(&app), "kept edited", "restored once, no merge");
         app.take(Reading::NotOwner("gone".to_owned()), Instant::now());
         let _other = store.console_writer().expect("a demotion frees the lease");
         app.take(Reading::Owner, Instant::now());
@@ -1837,10 +1967,13 @@ mod tests {
             assert_eq!(app.compose(key, before), Some(()));
         }
         assert_eq!(app.compose(Key::Text(b"late".to_vec()), taken), Some(()));
-        let draft = app.input.as_ref().map(Input::draft).unwrap_or_default();
+        let draft = drafted(&app);
         assert_eq!(draft, "late", "only keys after the lease: {draft}");
         let named = |item: &Item| item.body.contains("keys typed before writing started");
-        assert_eq!(app.notices.iter().filter(|item| named(item)).count(), 1);
+        assert_eq!(
+            app.notices.iter().filter(|(_, item)| named(item)).count(),
+            1
+        );
     }
 
     /// Ruling appuse-b R-B2: only keys read before writing started are
@@ -1865,7 +1998,7 @@ mod tests {
         let _ = app.click(press);
         assert_eq!(app.lease.as_ref().map(|it| it.at), taken, "same lease");
         assert!(take_keys(&mut app, vec![(Key::Text(b"k".to_vec()), typed)]).is_some());
-        assert_eq!(app.input.as_ref().expect("input").draft(), "k");
+        assert_eq!(drafted(&app), "k");
     }
 
     /// R-C1.3/R-C1.5: the three drawn draft rows and hint are Compose;
@@ -1898,7 +2031,7 @@ mod tests {
             let _ = app.click(press(row));
             assert_eq!(app.lease.as_ref().map(|lease| lease.at), taken);
             assert_eq!(
-                app.input.as_ref().expect("input").draft(),
+                app.inputs.values().next().expect("input").draft(),
                 "first second third"
             );
         }
@@ -1945,30 +2078,69 @@ mod tests {
         assert!(framed(&mut app).contains("Overview   Agents"));
     }
 
-    /// #26/#35: a home app that does not own the input is read-only and says
-    /// why (docs/app.md Ownership).
+    /// D3 (docs/app.md Ownership): a selection is read-only and says why
+    /// before the fleet is read, while stopped, while its pair is unread or
+    /// unreadable, and while its pair differs from the one it was written with.
     #[test]
-    fn a_home_app_that_does_not_own_the_input_is_read_only() {
+    fn an_unwritable_selection_is_read_only_and_says_why() {
         let root = Root::new("readonly");
         let (mut app, _reader) = housed(&root);
-        app.fleet = one_row(Some("api"));
-        app.model = Model::new(&app.fleet);
+        let why = |app: &App| app.writable("api").err().unwrap_or_default();
+        assert_eq!(why(&app), "", "GUARD a running read session is writable");
+        app.world = World::new(Timestamp::now(), vec![entry("api", Status::Stopped, None)]);
+        app.show();
         let text = framed(&mut app);
-        assert!(text.contains("ownership not read yet"), "{text}");
+        assert!(text.contains("read-only · api is stopped"), "{text}");
         assert!(!text.contains("to api ›"), "{text}");
+        app.world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
+        let unreadable = Err("the meta names no single main seat".to_owned());
+        let read = app.pairs.insert("api".to_owned(), unreadable);
+        assert_eq!(why(&app), "the meta names no single main seat");
+        app.pairs.clear();
+        assert_eq!(why(&app), "the lead pair is not read yet");
+        app.pairs
+            .insert("api".to_owned(), read.expect("GUARD pair read"));
+        app.bound
+            .insert(("api".to_owned(), ID.to_owned()), Vec::new());
+        assert!(why(&app).contains("restart"), "{}", why(&app));
+        app.fleeted = false;
+        assert_eq!(why(&app), "the fleet is not read yet");
     }
 
-    /// #29: a foreign view says typing goes home (docs/app.md Ownership).
+    /// B2: a session that is not home is written under its own lease, with
+    /// its own input, after an address that says it is not home.
     #[test]
-    fn a_foreign_view_says_typing_goes_home() {
-        let root = Root::new("foreign");
-        let (mut app, _reader) = housed(&root);
-        let mut fleet = one_row(Some("api"));
-        fleet.rows.push(row("web", 2, false));
-        app.fleet = fleet;
-        app.model = Model::new(&app.fleet);
-        let _ = app.model.key(Browse::Digit(2), &app.fleet, false, true);
-        assert!(framed(&mut app).contains("typing writes to api › lead"));
+    fn a_selection_that_is_not_home_is_written_under_its_own_lease() {
+        let root = Root::new("selected");
+        let (mut app, reader) = housed(&root);
+        let web = session(&root, "web", "");
+        let api = root.0.join("sessions").join("api");
+        let dirs = [
+            ("api".to_owned(), api.clone()),
+            ("web".to_owned(), web.clone()),
+        ];
+        let running = |name| entry(name, Status::Running, None);
+        let world = World::new(Timestamp::now(), vec![running("api"), running("web")]);
+        let order = crate::theme::FleetOrder::EMPTY;
+        let read = reader.fold(dirs.into(), world, None, &order, Timestamp::now());
+        app.answer(Answer::Fleet(read));
+        let _ = app.model.select_name(&app.fleet, "web", 0);
+        app.show();
+        assert!(framed(&mut app).contains("to web (not home) › lead   "));
+        let at = writing(&mut app);
+        assert_eq!(app.compose(Key::Text(b"w".to_vec()), at), Some(()));
+        assert!(
+            crate::store::open(&web).console_writer().is_err(),
+            "web leased"
+        );
+        drop(crate::store::open(&api).console_writer().expect("api free"));
+        assert_eq!(
+            app.inputs.keys().collect::<Vec<_>>(),
+            [&("web".to_owned(), ID.to_owned())]
+        );
+        app.write(false);
+        drop(crate::store::open(&web).console_writer().expect("released"));
+        assert_eq!(drafted(&app), "w", "its draft kept");
     }
 
     /// #27/#28: `/close` answers with the chat admission's own answer: a
@@ -1989,15 +2161,14 @@ mod tests {
             }
             app.notices
                 .last()
-                .map_or_else(String::new, |said| said.body.clone())
+                .map_or_else(String::new, |said| said.1.body.clone())
         };
         assert_eq!(close(&mut app), "refused: no open ask to close");
         meta(&root, ID, "peer");
         let changed = "the lead pair changed since this chat opened - restart this chat";
         assert_eq!(close(&mut app), format!("refused: {changed}"));
         assert!(!app.composing(), "an unproven home ends the writing");
-        app.home_console = None;
-        assert_eq!(app.close(None), "refused: no home session");
+        assert_eq!(app.close(None), "refused: not writing");
     }
 
     /// #36: seat facts come from the session's own picker row.
@@ -2124,7 +2295,8 @@ mod tests {
             facts: app.facts.clone(),
             needs: app.needs.clone(),
             fleet: app.fleet.clone(),
-            pair: None,
+            pairs: std::collections::BTreeMap::new(),
+            scanned: true,
             memos: std::collections::BTreeMap::new(),
         };
         app.answer(Answer::Fleet(read));
@@ -2171,7 +2343,8 @@ mod tests {
             facts: app.facts.clone(),
             needs: app.needs.clone(),
             fleet: one_row(Some("api")),
-            pair: None,
+            pairs: std::collections::BTreeMap::new(),
+            scanned: true,
             memos: std::collections::BTreeMap::new(),
         };
         app.answer(Answer::Fleet(read));
@@ -2190,7 +2363,8 @@ mod tests {
             facts: app.facts.clone(),
             needs: app.needs.clone(),
             fleet: app.fleet.clone(),
-            pair: None,
+            pairs: std::collections::BTreeMap::new(),
+            scanned: true,
             memos: std::collections::BTreeMap::new(),
         }
     }
@@ -2274,6 +2448,7 @@ mod tests {
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
         let typed = writing(&mut app);
+        asks.try_iter().for_each(drop);
         assert_eq!(app.compose(Key::Text(b"/close".to_vec()), typed), Some(()));
         assert!(asks.try_iter().next().is_none(), "typing writes nothing");
         assert_eq!(app.compose(Key::Enter, typed), Some(()));
@@ -2281,7 +2456,9 @@ mod tests {
             .try_iter()
             .filter_map(|request| match request {
                 loader::Request::Reread(name) => Some(name),
-                loader::Request::Focus(_) | loader::Request::Settings { .. } => None,
+                loader::Request::Focus(_)
+                | loader::Request::Writing(_)
+                | loader::Request::Settings { .. } => None,
             })
             .collect();
         assert_eq!(rereads, ["api"]);
@@ -2416,28 +2593,38 @@ mod tests {
             items: vec![said("late", 30), said("early", 10), said("tie read", 20)],
             coverage: vec!["gap".to_owned()],
         });
-        app.notices = vec![said("tie notice", 20), said("first", 0)];
+        let api = |body, at| ("api".to_owned(), said(body, at));
+        app.notices = vec![api("tie notice", 20), api("first", 0)];
         let bodies = |lane: &Lane| -> Vec<String> {
             lane.items.iter().map(|item| item.body.clone()).collect()
         };
-        let merged = app.merge(Some(Rc::clone(&base)));
+        let merged = app.merge("api", Some(Rc::clone(&base)));
         assert_eq!(
             bodies(&merged),
             ["first", "early", "tie read", "tie notice", "late"]
         );
         assert_eq!(merged.coverage, ["gap"]);
-        let again = app.merge(Some(Rc::clone(&base)));
+        let again = app.merge("api", Some(Rc::clone(&base)));
         assert!(Rc::ptr_eq(&merged, &again), "rebuilt with nothing new");
         let read = Rc::new((*base).clone());
-        let reread = app.merge(Some(Rc::clone(&read)));
+        let reread = app.merge("api", Some(Rc::clone(&read)));
         assert!(!Rc::ptr_eq(&again, &reread), "a new read is merged afresh");
         app.effects(vec![Effect::Print("said".to_owned())]);
-        let noticed = app.merge(Some(Rc::clone(&read)));
+        let noticed = app.merge("api", Some(Rc::clone(&read)));
         assert!(!Rc::ptr_eq(&reread, &noticed), "a new notice is merged");
         assert_eq!(bodies(&noticed).last().map(String::as_str), Some("said"));
-        let unread = app.merge(None);
+        let unread = app.merge("api", None);
         assert_eq!(bodies(&unread).len(), 3, "notices alone before a read");
-        assert!(Rc::ptr_eq(&unread, &app.merge(None)));
+        assert!(Rc::ptr_eq(&unread, &app.merge("api", None)));
+        // B2 NOTICES: a recorded session's notices draw only in its own lane,
+        // an unrecorded one's in whichever lane is shown.
+        app.dirs.insert("api".to_owned(), PathBuf::new());
+        app.notice("gone", "gone's".to_owned());
+        let web = app.merge("web", Some(Rc::clone(&read)));
+        assert_eq!(bodies(&web), ["early", "tie read", "late", "gone's"]);
+        app.dirs.insert("gone".to_owned(), PathBuf::new());
+        app.noticed += 1;
+        assert!(Rc::ptr_eq(&app.merge("web", Some(Rc::clone(&read))), &read));
     }
 
     /// The look of a session dresses the app only as that session's: the
@@ -2498,7 +2685,9 @@ mod tests {
             asks.try_iter()
                 .filter_map(|request| match request {
                     loader::Request::Focus(name) => Some(name),
-                    loader::Request::Reread(_) | loader::Request::Settings { .. } => None,
+                    loader::Request::Reread(_)
+                    | loader::Request::Writing(_)
+                    | loader::Request::Settings { .. } => None,
                 })
                 .collect()
         };
@@ -2523,7 +2712,9 @@ mod tests {
         asks.try_iter()
             .filter_map(|request| match request {
                 loader::Request::Settings { open, generation } => Some((open, generation)),
-                loader::Request::Focus(_) | loader::Request::Reread(_) => None,
+                loader::Request::Focus(_)
+                | loader::Request::Reread(_)
+                | loader::Request::Writing(_) => None,
             })
             .collect()
     }
@@ -2820,8 +3011,8 @@ mod tests {
         assert!(take_keys(&mut app, vec![(Key::Text(b"is".to_vec()), at)]).is_some());
         assert!(app.composing(), "writing started");
         assert!(!app.model.settings_open(), "never opened");
-        assert_eq!(app.input.as_ref().expect("input").draft(), "");
-        let said = &app.notices.last().expect("the drop is said").body;
+        assert_eq!(drafted(&app), "");
+        let said = &app.notices.last().expect("the drop is said").1.body;
         assert_eq!(said, "dropped the keys typed before writing started");
         assert!(
             settings_requests(&asks).is_empty(),
@@ -2869,7 +3060,7 @@ mod tests {
         assert!(!app.model.settings_open());
         assert!(app.composing(), "still writing");
         assert_eq!(
-            app.input.as_ref().expect("input").draft(),
+            drafted(&app),
             "keptsé",
             "rest typed whole into the kept draft"
         );
@@ -2877,11 +3068,7 @@ mod tests {
         assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
         app.open_settings();
         assert!(settings_key(&mut app, &Key::Text(b"q2".to_vec()), at).is_some());
-        assert_eq!(
-            app.input.as_ref().expect("input").draft(),
-            "keptsé2",
-            "digits type too"
-        );
+        assert_eq!(drafted(&app), "keptsé2", "digits type too");
         assert_eq!(app.model.selected(), Some("api"));
         assert_eq!(
             settings_requests(&asks),
@@ -2921,7 +3108,7 @@ mod tests {
         assert!(!app.model.settings_open());
         assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
         assert!(app.composing(), "still writing");
-        assert_eq!(app.input.as_ref().expect("input").draft(), "kept");
+        assert_eq!(drafted(&app), "kept");
     }
 
     /// The overlay's tab title and close label, still in the last frame's
@@ -3467,14 +3654,23 @@ mod tests {
                 .expect("lease released"),
         );
         assert_eq!(app.held.as_deref(), Some(why), "writer lands HELD");
-        assert_eq!(app.input.as_ref().expect("input").draft(), "keep me");
+        assert_eq!(
+            app.inputs.values().next().expect("input").draft(),
+            "keep me"
+        );
         let q = vec![(Key::Text(b"q".to_vec()), Instant::now())];
         assert_eq!(take_keys(&mut app, q), Some(false), "q stays swallowed");
-        assert_eq!(app.input.as_ref().expect("input").draft(), "keep me");
+        assert_eq!(
+            app.inputs.values().next().expect("input").draft(),
+            "keep me"
+        );
         let retry = vec![(Key::Enter, Instant::now())];
         assert_eq!(take_keys(&mut app, retry), Some(true));
         assert!(app.held.is_some(), "unproven retry remains HELD");
-        assert_eq!(app.input.as_ref().expect("input").draft(), "keep me");
+        assert_eq!(
+            app.inputs.values().next().expect("input").draft(),
+            "keep me"
+        );
     }
 
     /// R-B5/R-B7: admission revocation keeps even the line Enter consumed.
@@ -3489,7 +3685,10 @@ mod tests {
         assert_eq!(app.compose(Key::Enter, at), Some(()));
         assert!(!app.composing(), "refused admission releases the lease");
         drop(crate::store::open(&dir).console_writer().expect("released"));
-        assert_eq!(app.input.as_ref().expect("input").draft(), "keep me");
+        assert_eq!(
+            app.inputs.values().next().expect("input").draft(),
+            "keep me"
+        );
         assert_eq!(
             app.held.as_deref(),
             Some("the session was replaced or renamed")

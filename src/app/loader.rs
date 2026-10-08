@@ -1,5 +1,5 @@
 //! The one background reader of `ae app`: every read of the world the app
-//! draws — the fleet, the looks, whether home may be written, each session's
+//! draws — the fleet, the looks, whether the writer may still write, each session's
 //! lane — happens on this thread, so a key never waits behind one. The UI thread
 //! owns the model and the frame and folds what arrives here.
 //!
@@ -12,14 +12,14 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::Instant;
 
-use super::{REFRESH, facts_of, fleet, names};
+use super::{REFRESH, facts_of, fleet};
 use crate::brief::{self, Filed};
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::needs::{SeatRef, Section};
 use crate::console::{self, Console, term};
 use crate::digest::Status;
-use crate::inventory::ServerId;
+use crate::inventory::{FailedSource, ServerId};
 use crate::listing::World;
 use crate::time::Timestamp;
 use crate::{store, theme, tmux, transport};
@@ -34,8 +34,27 @@ pub(super) enum Request {
     Focus(Option<String>),
     /// Read this session again: the UI wrote into it.
     Reread(String),
+    /// The writer to re-prove each fleet read, `None` once it stopped.
+    Writing(Option<Box<Binding>>),
     /// The settings overlay opened (`true`) or closed, pinned to a generation.
     Settings { open: bool, generation: u64 },
+}
+
+/// What a writer proved at its entry, proved again by each fleet read.
+pub(super) struct Binding {
+    /// The entry it answers: a proof for another entry is dropped unread.
+    pub(super) entry: u64,
+    /// Bound to the incarnation the entry proved.
+    pub(super) console: Console,
+    pub(super) seats: Vec<Seat>,
+}
+
+impl Binding {
+    /// The `(name, session_id)` its input is kept under.
+    pub(super) fn key(&self) -> (String, String) {
+        let console = &self.console;
+        (console.name().to_owned(), console.uuid().to_owned())
+    }
 }
 
 /// What wakes the UI: keys, the end of its input, or an answer.
@@ -51,9 +70,6 @@ pub(super) enum Wake {
     reason = "every answer travels boxed in `Wake::Answer`; boxing a variant too buys nothing"
 )]
 pub(super) enum Answer {
-    /// The home session, opened: the console its writes go through and its
-    /// lead pair, or `None` when there is no home to open.
-    Home(Option<(Console, Result<Vec<Seat>, String>)>),
     Fleet(FleetRead),
     /// Session `name`'s drawn look and the viewer's zone.
     Look {
@@ -61,8 +77,9 @@ pub(super) enum Answer {
         look: Option<theme::Look>,
         zone: Option<String>,
     },
-    /// Whether home may be written, read at `at`.
+    /// Whether writer `entry` may still write, read at `at`.
     Owned {
+        entry: u64,
         reading: Reading,
         at: Instant,
     },
@@ -86,8 +103,10 @@ pub(super) struct FleetRead {
     pub(super) facts: BTreeMap<String, fleet::Facts>,
     pub(super) needs: BTreeMap<String, Section>,
     pub(super) fleet: fleet::Fleet,
-    /// The home lead pair as its meta names it now; `None` keeps the last.
-    pub(super) pair: Option<Vec<String>>,
+    /// Each session's lead pair as its meta names it now.
+    pub(super) pairs: BTreeMap<String, Result<Vec<Seat>, String>>,
+    /// No durable source failed: a session missing from `dirs` is gone.
+    pub(super) scanned: bool,
     /// Each session's memo, read and folded here: the show only ages it.
     pub(super) memos: BTreeMap<String, Result<Vec<Filed>, String>>,
 }
@@ -100,7 +119,7 @@ pub(super) struct ViewRead {
     pub(super) seq: u64,
     pub(super) lane: Lane,
     pub(super) needs: Option<Section>,
-    /// The home roster `/open` names, after a settled home read.
+    /// The roster `/open` names, after a settled read.
     pub(super) roster: Option<Vec<SeatRef>>,
 }
 
@@ -175,9 +194,7 @@ pub(super) struct Reader {
     root: PathBuf,
     home: Option<String>,
     server: Option<ServerId>,
-    home_console: Option<Console>,
-    /// The home lead pair as it opened: home is writable while it stands.
-    seats: Vec<Seat>,
+    writing: Option<Box<Binding>>,
     consoles: BTreeMap<String, Console>,
     /// When each session's last read COMPLETED.
     read_at: BTreeMap<String, Instant>,
@@ -221,8 +238,7 @@ impl Reader {
             root,
             home,
             server,
-            home_console: None,
-            seats: Vec::new(),
+            writing: None,
             consoles: BTreeMap::new(),
             read_at: BTreeMap::new(),
             dirs: BTreeMap::new(),
@@ -247,12 +263,9 @@ impl Reader {
         self
     }
 
-    /// Open home, then read until the UI is gone.
+    /// Read until the UI is gone.
     fn run(mut self, asks: &Receiver<Request>, wake: &Sender<Wake>) {
         let send = |answer| wake.send(Wake::Answer(Box::new(answer))).is_ok();
-        if !send(self.open_home()) {
-            return;
-        }
         loop {
             loop {
                 match asks.try_recv() {
@@ -281,23 +294,6 @@ impl Reader {
         }
     }
 
-    /// Home's console and its lead pair, read once; a second console on the
-    /// same session goes to the UI for its writes.
-    pub(super) fn open_home(&mut self) -> Answer {
-        let opened = self.home.clone().and_then(|name| {
-            let dir = console::locate(&self.root, &name)?;
-            Some((name, dir))
-        });
-        let Some((name, dir)) = opened else {
-            return Answer::Home(None);
-        };
-        let writes = Console::open_standing(name.clone(), dir.clone());
-        let pair = writes.seats().and_then(term::pair_of);
-        self.seats = pair.clone().unwrap_or_default();
-        self.home_console = Some(Console::open_standing(name, dir));
-        Answer::Home(Some((writes, pair)))
-    }
-
     pub(super) fn take(&mut self, request: Request) {
         match request {
             Request::Focus(selected) => {
@@ -313,6 +309,7 @@ impl Reader {
                 self.evict();
             }
             Request::Reread(name) => drop(self.rereads.insert(name)),
+            Request::Writing(binding) => self.writing = binding,
             Request::Settings { open, generation } => {
                 if open {
                     self.settings = Some((generation, None));
@@ -327,11 +324,7 @@ impl Reader {
 
     /// Whether session `name` has a console to read through.
     fn readable(&self, name: &str) -> bool {
-        if self.home.as_deref() == Some(name) {
-            self.home_console.is_some()
-        } else {
-            self.dirs.contains_key(name)
-        }
+        self.dirs.contains_key(name)
     }
 
     /// When session `name` of `tier` is next due, `None` for never.
@@ -397,7 +390,7 @@ impl Reader {
     }
 
     /// Read the fleet again: home's look (and the selection's when home's is
-    /// not drawn), who owns the home input, then `ae list`'s world folded into
+    /// not drawn), whether the writer may still write, then `ae list`'s world folded into
     /// the sidebar.
     pub(super) fn fleet(&mut self) -> Vec<Answer> {
         let mut answers: Vec<Answer> = self
@@ -424,7 +417,9 @@ impl Reader {
             .server
             .as_ref()
             .and_then(transport::observe_picker_sessions);
-        let read = self.fold(dirs, world, picker.as_deref(), &crate::fleet_order(), now);
+        let mut read = self.fold(dirs, world, picker.as_deref(), &crate::fleet_order(), now);
+        let lost = |source: &FailedSource| !matches!(source, FailedSource::Server(_));
+        read.scanned = !snapshot.incomplete.iter().any(lost);
         self.fleet_at = Some(Instant::now());
         self.dirs.clone_from(&read.dirs);
         self.ids.clone_from(&read.ids);
@@ -437,7 +432,7 @@ impl Reader {
     /// Fold one read of the fleet: the seat facts of every live session, the
     /// stopped ones' last sign of life, the needs of every live session that
     /// asks for attention, each session's identity and memo, the sidebar rows
-    /// and the home pair.
+    /// and each lead pair.
     pub(super) fn fold(
         &self,
         dirs: BTreeMap<String, PathBuf>,
@@ -487,10 +482,16 @@ impl Reader {
             .collect();
         let home = self.home.as_deref();
         let fleet = fleet::rows(&world, &facts, &last_live, order, &needs, home, now);
-        let ids = dirs
+        // Each identity and its lead pair from one console, so they agree.
+        let (ids, pairs) = dirs
             .iter()
-            .map(|(name, dir)| (name.clone(), console::recorded_uuid(dir)))
-            .collect();
+            .map(|(name, dir)| {
+                let console = Console::open(name.clone(), dir.clone());
+                let pair = console.seats().and_then(term::pair_of);
+                let id = console.uuid().to_owned();
+                ((name.clone(), id), (name.clone(), pair))
+            })
+            .unzip();
         let memos = dirs
             .iter()
             .map(|(name, dir)| {
@@ -501,11 +502,6 @@ impl Reader {
                 (name.clone(), memo)
             })
             .collect();
-        let pair = self
-            .home_console
-            .as_ref()
-            .and_then(|console| console.seats().and_then(term::pair_of).ok())
-            .map(|seats| names(&seats));
         FleetRead {
             dirs,
             ids,
@@ -513,7 +509,8 @@ impl Reader {
             facts,
             needs,
             fleet,
-            pair,
+            pairs,
+            scanned: true,
             memos,
         }
     }
@@ -532,9 +529,8 @@ impl Reader {
                 && dirs.get(name).is_some_and(|dir| dir == console.dir())
                 && ids.get(name).is_some_and(|id| id == console.uuid())
         });
-        let (home, consoles) = (self.home.as_deref(), &self.consoles);
-        self.read_at
-            .retain(|name, _| home == Some(name.as_str()) || consoles.contains_key(name));
+        let consoles = &self.consoles;
+        self.read_at.retain(|name, _| consoles.contains_key(name));
     }
 
     /// The selection whose look a fleet read reads beside home's: one while
@@ -565,28 +561,26 @@ impl Reader {
         }
     }
 
-    /// Whether home may be written, read now.
+    /// Whether the writer may still write, read now.
     pub(super) fn owned(&self) -> Option<Answer> {
-        let reading = reading(self.home_console.as_ref()?, &self.seats);
+        let bound = self.writing.as_ref()?;
+        let reading = reading(&bound.console, &bound.seats);
         Some(Answer::Owned {
+            entry: bound.entry,
             reading,
             at: Instant::now(),
         })
     }
 
     /// Read session `name` through its console: its lane, with any needs gap
-    /// named in its coverage, its needs, and — for home — its roster.
+    /// named in its coverage, its needs and its roster.
     pub(super) fn view(&mut self, name: &str) -> Option<Answer> {
         self.rereads.remove(name);
-        let home = self.home.as_deref() == Some(name);
-        let console = if home {
-            self.home_console.as_mut()?
-        } else {
-            let dir = self.dirs.get(name)?.clone();
-            self.consoles
-                .entry(name.to_owned())
-                .or_insert_with(|| Console::open_standing(name.to_owned(), dir))
-        };
+        let dir = self.dirs.get(name)?.clone();
+        let console = self
+            .consoles
+            .entry(name.to_owned())
+            .or_insert_with(|| Console::open_standing(name.to_owned(), dir));
         let (lane, needs) = match console.read() {
             Ok(read) => {
                 let mut lane = read.lane;
@@ -607,9 +601,7 @@ impl Reader {
                 None,
             ),
         };
-        let roster = home
-            .then(|| console.roster().map(<[SeatRef]>::to_vec))
-            .flatten();
+        let roster = console.roster().map(<[SeatRef]>::to_vec);
         let id = console.uuid().to_owned();
         self.read_at.insert(name.to_owned(), Instant::now());
         self.seq += 1;
@@ -715,12 +707,13 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use super::{Answer, Job, KEEP, Reader, Request, Tier, order};
+    use super::{Answer, Binding, Job, KEEP, Reader, Request, Tier, order};
     use crate::app::REFRESH;
     use crate::app::fleet::Line2;
     use crate::app::tests::{ID, Root, entry, meta, session};
     use crate::attention::Reason;
     use crate::console::input::Reading;
+    use crate::console::{Console, term};
     use crate::digest::Status;
     use crate::listing::World;
     use crate::theme::FleetOrder;
@@ -788,12 +781,11 @@ mod tests {
     fn each_read_falls_due_by_its_priority_and_completion() {
         let root = Root::new("next");
         let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
-        let _ = reader.open_home();
         let now = Instant::now();
         assert!(matches!(reader.next(now), Job::Fleet), "nothing read yet");
         reader.fleet_at = Some(now);
         reader.rows = rows(&["api", "web", "ops", "far", "end", "cold"]);
-        for name in ["web", "ops", "far", "end", "cold"] {
+        for name in ["api", "web", "ops", "far", "end", "cold"] {
             reader.dirs.insert(name.to_owned(), PathBuf::from(name));
         }
         reader.take(Request::Focus(Some("ops".to_owned())));
@@ -934,15 +926,14 @@ mod tests {
         reader.ids.insert("web".to_owned(), ID.to_owned());
         assert!(matches!(reader.view("web"), Some(Answer::View(view)) if view.id == ID));
         reader.read_at.insert("api".to_owned(), Instant::now());
-        reader.home = Some("api".to_owned());
         reader.evict();
         assert!(
             reader.consoles.contains_key("web"),
             "the same identity stays"
         );
         assert!(
-            reader.read_at.contains_key("web") && reader.read_at.contains_key("api"),
-            "a kept console and home keep their read stamps"
+            reader.read_at.contains_key("web") && !reader.read_at.contains_key("api"),
+            "only a kept console keeps its read stamp"
         );
         let other = "0199c0de-0000-4890-abcd-ef0123456789";
         reader.ids.insert("web".to_owned(), other.to_owned());
@@ -958,7 +949,8 @@ mod tests {
     fn standing_coverage_survives_every_later_read() {
         let root = Root::new("coverage");
         let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
-        let _ = reader.open_home();
+        let api = root.0.join("sessions").join("api");
+        reader.dirs.insert("api".to_owned(), api);
         let first = coverage(reader.view("api"));
         assert!(
             first.iter().any(|row| row.contains("api:lead")),
@@ -1028,8 +1020,7 @@ mod tests {
                 entry("unk", Status::Unknown, None),
             ],
         );
-        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
-        let _ = reader.open_home();
+        let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         let read = reader.fold(dirs, world, None, &FleetOrder::EMPTY, Timestamp::now());
         let keys = |map: Vec<&String>| map.into_iter().cloned().collect::<Vec<_>>();
         assert_eq!(keys(read.facts.keys().collect()), ["run", "unk"]);
@@ -1059,23 +1050,32 @@ mod tests {
             "a lead-pair session's worker.0 is of the pair"
         );
         assert!(read.ids.values().all(|id| id == ID), "{:?}", read.ids);
-        assert_eq!(
-            read.pair,
-            Some(vec!["lead".to_owned(), "colead".to_owned()])
-        );
+        let pair = read.pairs["run"].as_deref().map(crate::app::names);
+        assert_eq!(pair, Ok(vec!["lead".to_owned(), "colead".to_owned()]));
     }
 
-    /// R-B5/R-B7: home is writable while the incarnation and lead pair it
-    /// opened with stand, re-read each time: a replaced session, a changed
-    /// pair or a meta that is gone is not.
+    /// R-B5/R-B7: a writer may write while the incarnation and lead pair its
+    /// entry proved stand, re-read each time: a replaced session, a changed
+    /// pair or a meta that is gone is not; the answer names its entry.
     #[test]
-    fn home_is_writable_only_while_its_opened_incarnation_and_pair_stand() {
+    fn a_writer_may_write_only_while_its_entrys_incarnation_and_pair_stand() {
         let root = Root::new("owned");
         let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
-        let _ = reader.open_home();
+        assert!(reader.owned().is_none(), "no writer, no proof");
+        let dir = root.0.join("sessions").join("api");
+        let console = Console::bound("api".to_owned(), dir, ID.to_owned());
+        let seats = console.seats().and_then(term::pair_of).expect("the pair");
+        let binding = Binding {
+            entry: 7,
+            console,
+            seats,
+        };
+        reader.take(Request::Writing(Some(Box::new(binding))));
         let read = |reader: &Reader| match reader.owned() {
-            Some(Answer::Owned { reading, .. }) => reading,
-            _ => panic!("an ownership answer"),
+            Some(Answer::Owned {
+                entry: 7, reading, ..
+            }) => reading,
+            _ => panic!("an ownership answer for entry 7"),
         };
         assert_eq!(read(&reader), Reading::Owner);
         for (id, peer) in [
@@ -1089,6 +1089,8 @@ mod tests {
         assert!(matches!(read(&reader), Reading::NotOwner(_)));
         meta(&root, ID, "colead");
         assert_eq!(read(&reader), Reading::Owner);
+        reader.take(Request::Writing(None));
+        assert!(reader.owned().is_none(), "a stopped writer, no proof");
     }
 
     /// I11: a settings read completed at t cannot reread at t or

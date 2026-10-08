@@ -108,8 +108,13 @@ pub(crate) struct Read {
 impl Console {
     /// A console on session `name` recorded at `dir`, nothing read yet.
     pub(crate) fn open(name: String, dir: PathBuf) -> Self {
+        Self::of(name, recorded_uuid(&dir), dir)
+    }
+
+    /// [`Console::open`] bound to incarnation `uuid`.
+    fn of(name: String, uuid: String, dir: PathBuf) -> Self {
         Self {
-            uuid: recorded_uuid(&dir),
+            uuid,
             name,
             dir,
             replies: Replies::ToHuman,
@@ -128,6 +133,15 @@ impl Console {
         Self {
             standing: true,
             ..Self::open(name, dir)
+        }
+    }
+
+    /// [`Console::open_standing`] bound to incarnation `uuid` rather than the
+    /// one the meta records now: what a writer proved at its entry.
+    pub(crate) fn bound(name: String, dir: PathBuf, uuid: String) -> Self {
+        Self {
+            standing: true,
+            ..Self::of(name, uuid, dir)
         }
     }
 
