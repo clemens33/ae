@@ -802,6 +802,7 @@ mod tests {
 
     use super::{Answer, Binding, Job, KEEP, Reader, Request, Tier, order};
     use crate::app::fleet::Line2;
+    use crate::app::journals::tests::metered;
     use crate::app::tests::{ID, Root, entry, meta, session};
     use crate::app::{REFRESH, fleet_spec};
     use crate::attention::Reason;
@@ -1316,33 +1317,44 @@ mod tests {
         assert_eq!(unread, Some(false), "an unlisted sessions root");
     }
 
-    impl fleet_spec::ReaderFiles for Reader {
+    /// The reader under test, with every parse its fleet and view reads caused.
+    struct Metered {
+        reader: Reader,
+        costs: (u64, u64),
+    }
+
+    impl fleet_spec::ReaderFiles for Metered {
         fn fleet(&mut self) -> super::FleetRead {
             let fleet = |answer| match answer {
                 Answer::Fleet(read) => Some(read),
                 _ => None,
             };
-            Reader::fleet(self)
+            let reader = &mut self.reader;
+            metered(&mut self.costs, || reader.fleet())
                 .into_iter()
                 .find_map(fleet)
                 .expect("a fleet read")
         }
         fn view(&mut self, name: &str) -> Option<super::ViewRead> {
-            match Reader::view(self, name)? {
+            let reader = &mut self.reader;
+            match metered(&mut self.costs, || reader.view(name))? {
                 Answer::View(read) => Some(read),
                 _ => panic!("a view read"),
             }
         }
         fn costs(&self) -> (u64, u64) {
-            self.journals.costs()
+            self.costs
         }
         fn cached_dirs(&self) -> BTreeSet<PathBuf> {
-            self.journals.cached_dirs()
+            self.reader.journals.cached_dirs()
         }
     }
 
-    fn reader(root: &Path) -> Reader {
-        Reader::new(root.to_path_buf(), None, None)
+    fn reader(root: &Path) -> Metered {
+        Metered {
+            reader: Reader::new(root.to_path_buf(), None, None),
+            costs: (0, 0),
+        }
     }
 
     #[test]

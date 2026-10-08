@@ -18,12 +18,6 @@ use crate::store::{self, Identity};
 #[derive(Default)]
 pub(super) struct Journals {
     held: BTreeMap<PathBuf, Held>,
-    /// Bytes handed to the journal parser.
-    #[cfg(test)]
-    parsed: u64,
-    /// Bytes handed to the memo parser.
-    #[cfg(test)]
-    memo_parsed: u64,
 }
 
 /// One session directory's kept files, each with the identity it was read at.
@@ -51,10 +45,6 @@ impl Journals {
         }
         let read = SessionRead::open(dir);
         held.events = identity.zip(read.as_ref().ok().cloned());
-        #[cfg(test)]
-        if read.is_ok() {
-            self.parsed += identity.map_or(0, Identity::bytes);
-        }
         read
     }
 
@@ -68,13 +58,7 @@ impl Journals {
         {
             return Ok(filed.clone());
         }
-        let filed = store.memo_bytes().map(|bytes| {
-            #[cfg(test)]
-            {
-                self.memo_parsed += bytes.len() as u64;
-            }
-            brief::filed(&bytes)
-        });
+        let filed = store.memo_bytes().map(|bytes| brief::filed(&bytes));
         held.memo = identity.zip(filed.as_ref().ok().cloned());
         filed
     }
@@ -82,12 +66,6 @@ impl Journals {
     /// Keep only the sessions under `dirs`.
     pub(super) fn retain(&mut self, dirs: &[PathBuf]) {
         self.held.retain(|dir, _| dirs.contains(dir));
-    }
-
-    /// Bytes handed to the journal and memo parsers since [`Journals::default`].
-    #[cfg(test)]
-    pub(super) fn costs(&self) -> (u64, u64) {
-        (self.parsed, self.memo_parsed)
     }
 
     /// The session directories an entry is held for.
@@ -98,7 +76,7 @@ impl Journals {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeSet;
     use std::io;
     use std::path::{Path, PathBuf};
@@ -108,46 +86,67 @@ mod tests {
     use crate::brief::Filed;
     use crate::session::RecordSnapshot;
 
-    impl Files for Journals {
+    /// Runs `read`, adding the bytes the journal and memo parsers were handed
+    /// meanwhile — on this thread, wherever the parse happened — to `costs`.
+    pub(in crate::app) fn metered<T>(costs: &mut (u64, u64), read: impl FnOnce() -> T) -> T {
+        let parsed = || (crate::events::parsed_bytes(), crate::brief::parsed_bytes());
+        let before = parsed();
+        let answer = read();
+        let after = parsed();
+        costs.0 = costs.0.saturating_add(after.0.saturating_sub(before.0));
+        costs.1 = costs.1.saturating_add(after.1.saturating_sub(before.1));
+        answer
+    }
+
+    /// The journals under test, with every parse their calls caused.
+    #[derive(Default)]
+    struct Metered {
+        journals: Journals,
+        costs: (u64, u64),
+    }
+
+    impl Files for Metered {
         fn snapshot(&mut self, dir: &Path) -> RecordSnapshot {
-            Journals::snapshot(self, dir)
+            let journals = &mut self.journals;
+            metered(&mut self.costs, || journals.snapshot(dir))
         }
         fn memo(&mut self, dir: &Path) -> io::Result<Vec<Filed>> {
-            Journals::memo(self, dir)
+            let journals = &mut self.journals;
+            metered(&mut self.costs, || journals.memo(dir))
         }
         fn costs(&self) -> (u64, u64) {
-            Journals::costs(self)
+            self.costs
         }
         fn retain(&mut self, dirs: &[PathBuf]) {
-            Journals::retain(self, dirs);
+            self.journals.retain(dirs);
         }
         fn cached_dirs(&self) -> BTreeSet<PathBuf> {
-            Journals::cached_dirs(self)
+            self.journals.cached_dirs()
         }
     }
 
     #[test]
     fn a_kept_journal_and_memo_answer_every_change_as_a_full_read() {
-        fleet_spec::file_changes(Journals::default);
+        fleet_spec::file_changes(Metered::default);
     }
 
     #[test]
     fn a_nanosecond_mtime_tells_same_length_rewrites_apart() {
-        fleet_spec::file_identity(Journals::default);
+        fleet_spec::file_identity(Metered::default);
     }
 
     #[test]
     fn absent_nonregular_and_unreadable_files_keep_their_meanings() {
-        fleet_spec::file_shapes(Journals::default);
+        fleet_spec::file_shapes(Metered::default);
     }
 
     #[test]
     fn an_unchanged_file_is_parsed_once_and_a_changed_one_whole() {
-        fleet_spec::file_costs(Journals::default);
+        fleet_spec::file_costs(Metered::default);
     }
 
     #[test]
     fn only_the_sessions_retained_are_kept() {
-        fleet_spec::file_eviction(Journals::default);
+        fleet_spec::file_eviction(Metered::default);
     }
 }

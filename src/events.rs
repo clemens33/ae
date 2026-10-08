@@ -626,6 +626,10 @@ pub struct GenerationSource {
     pub path: PathBuf,
 }
 
+/// The bytes [`EventLog::drain`] hands its parser are counted by tests alone.
+#[cfg(not(test))]
+fn count_parsed(_: usize) {}
+
 /// A session's event stream, as an ordered set of generations.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EventLog {
@@ -713,6 +717,7 @@ impl EventLog {
         file.seek(SeekFrom::Start(cursor.offset))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
+        count_parsed(bytes.len());
 
         let mut events = Vec::new();
         let mut skipped = Vec::new();
@@ -2187,4 +2192,22 @@ mod tests {
             session: "s"
         }));
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PARSED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Add `bytes` to this thread's count of bytes handed to the event parser.
+#[cfg(test)]
+fn count_parsed(bytes: usize) {
+    PARSED.with(|total| total.set(total.get().saturating_add(bytes as u64)));
+}
+
+/// Bytes [`EventLog::drain`] has handed its parser on this thread, partial
+/// trailing records included.
+#[cfg(test)]
+pub(crate) fn parsed_bytes() -> u64 {
+    PARSED.with(std::cell::Cell::get)
 }

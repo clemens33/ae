@@ -759,10 +759,15 @@ pub struct Filed {
     pub text: String,
 }
 
+/// The bytes [`filed`] hands the memo parser are counted by tests alone.
+#[cfg(not(test))]
+fn count_parsed(_: usize) {}
+
 /// The latest record per topic in `container`, each topic where it was first
 /// filed: the half of [`topic_lines`] that reads the bytes.
 #[must_use]
 pub fn filed(container: &[u8]) -> Vec<Filed> {
+    count_parsed(container.len());
     let mut latest: Vec<Filed> = Vec::new();
     for record in crate::memo::records(container) {
         let line = Filed {
@@ -1510,4 +1515,21 @@ mod tests {
         assert_eq!(short_path("/srv/ae", Some(home)), "/srv/ae");
         assert_eq!(short_path("/Users/x/ae", None), "/Users/x/ae");
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PARSED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Add `bytes` to this thread's count of bytes handed to the memo parser.
+#[cfg(test)]
+fn count_parsed(bytes: usize) {
+    PARSED.with(|total| total.set(total.get().saturating_add(bytes as u64)));
+}
+
+/// Bytes [`filed`] has handed the memo parser on this thread.
+#[cfg(test)]
+pub(crate) fn parsed_bytes() -> u64 {
+    PARSED.with(std::cell::Cell::get)
 }
