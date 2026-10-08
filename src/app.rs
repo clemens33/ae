@@ -2985,7 +2985,7 @@ mod tests {
         let dir = session(
             &root,
             "web",
-            "seat.spawned.2=-bad\nwork_dir.worker.0=relative\n",
+            "seat.spawned.2=-bad\nwork_dir.worker.0=relative\nseat.worker.0x=ok-one\nseat.spawned.=ok-two\n",
         );
         let reasons: Vec<_> = ready(&dir, "web")
             .seats
@@ -2995,6 +2995,10 @@ mod tests {
         assert!(reasons[0].contains("no work_dir"), "{reasons:?}");
         assert!(reasons[1].contains("work_dir.worker.0"), "{reasons:?}");
         assert!(reasons[2].contains("agent name"), "{reasons:?}");
+        assert!(
+            reasons[3..].iter().all(|why| why.contains("unknown slot")),
+            "{reasons:?}"
+        );
     }
 
     /// Pins win over changed files; the overlay beats the recorded global;

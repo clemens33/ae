@@ -360,7 +360,7 @@ fn seat_text(
     entry: &crate::meta::RosterEntry,
     role: crate::render::SeatRole,
 ) -> Result<String, String> {
-    if role == crate::render::SeatRole::Other {
+    if role == crate::render::SeatRole::Other || !crate::requests::is_slot(&entry.slot) {
         return Err("unknown slot: ae renders no protocol for it".to_owned());
     }
     if !crate::config::is_agent_name(&entry.name) {
