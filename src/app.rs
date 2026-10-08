@@ -2140,7 +2140,7 @@ mod tests {
         let keys: Vec<_> = app.inputs.keys().collect();
         assert_eq!(keys, [&("web".to_owned(), ID.to_owned())]);
         let mut read = read_of(&app, &[("api", ID)]);
-        (read.scanned, read.fleet.rows) = (false, Vec::new());
+        (read.scanned, read.fleet) = (false, one_row(Some("api")));
         app.answer(Answer::Fleet(read));
         let typed = vec![(Key::Text(b"q".to_vec()), at)];
         assert_eq!(take_keys(&mut app, typed), Some(true), "never Quit");
