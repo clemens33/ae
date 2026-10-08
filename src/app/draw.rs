@@ -3100,7 +3100,8 @@ mod tests {
 
     /// R4/R5: the focused seat's rows carry the marker in column 0, the first
     /// seat drawn is focused until the model names a drawn one, a seat row is
-    /// a click target, and the keys row advertises `o` only beside a seat.
+    /// a click target that ends at the body, and the keys row advertises `o`
+    /// only beside a seat.
     #[test]
     fn the_focused_seats_rows_are_marked_and_advertise_open() {
         let mut shot = Shot::new();
@@ -3124,6 +3125,16 @@ mod tests {
             row: first + 2,
         };
         assert!(matches!(layout.hit(at), Some(super::Hit::Seat(name)) if name == "colead"));
+        let rule = (0..160)
+            .find(|x| buf[(*x, at.row)].symbol() == "│")
+            .expect("the rule");
+        let seat = |column| {
+            matches!(
+                layout.hit(Mouse { column, ..at }),
+                Some(super::Hit::Seat(_))
+            )
+        };
+        assert!(seat(rule - 3) && !seat(rule - 2), "a seat ends at the body");
         shot.model.set_focus(Some("colead".to_owned()));
         let (buf, layout) = framed(&shot, 160, None);
         assert_eq!(marked(&buf, "▸"), [first + 2, first + 3]);
