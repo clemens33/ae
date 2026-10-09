@@ -1621,7 +1621,7 @@ fn keys_body(paint: Paint) -> Vec<(String, Style)> {
         ("Write (Enter or a paste starts it)", &WRITE_KEYS[..]),
         ("Held (writing was refused)", &HELD_KEYS[..]),
         ("Settings (the gear, or s)", &SETTINGS_KEYS[..]),
-        ("Mouse (any time)", &MOUSE_KEYS[..]),
+        ("Mouse (outside Settings)", &MOUSE_KEYS[..]),
     ];
     for (title, keys) in sections {
         rows.push((title.to_owned(), head));
