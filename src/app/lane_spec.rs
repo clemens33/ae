@@ -356,7 +356,7 @@ fn burst(app: &mut App, bytes: Vec<u8>) -> Buffer {
     let mut buf = frame(app);
     for _ in 0..32 {
         assert!(
-            drain(app, &mut keys, &wakes, first.take()).is_some(),
+            drain(app, &mut keys, &wakes, &mut first).is_some(),
             "unexpected quit"
         );
         app.focus();
@@ -429,7 +429,7 @@ fn interrupt_survives_a_deferred_wheel_burst() {
     let mut keys = Keys::app();
     let mut first = Some(Wake::Keys(Instant::now(), bytes));
     for _ in 0..32 {
-        if drain(&mut app, &mut keys, &wakes, first.take()).is_none() {
+        if drain(&mut app, &mut keys, &wakes, &mut first).is_none() {
             return;
         }
         let _ = frame(&mut app);

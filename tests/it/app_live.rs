@@ -274,7 +274,7 @@ fn quitting_puts_the_terminal_back() {
     rig.wait(&pane, WAIT, "first paint", |screen| {
         screen.contains("Sessions 1")
     });
-    rig.tmux(&["send-keys", "-t", &pane, "q"]);
+    rig.tmux(&["send-keys", "-t", &pane, "q", "q"]);
     let until = Instant::now() + WAIT;
     while fs::read_to_string(&modes).map_or(true, |text| text.is_empty()) {
         assert!(

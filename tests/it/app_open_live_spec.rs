@@ -13,6 +13,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "app_typing_open_spec.rs"]
+mod typing;
+
 const HOME: &str = "openhome";
 const FOREIGN: &str = "openforeign";
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
@@ -470,7 +473,7 @@ impl Hold {
             .count();
         fs::write(&path, "hold").expect("fixture gate");
         let hold = Self(path);
-        rig.raw(app, "o");
+        rig.raw(app, "oo");
         Rig::wait("GUARD the real app key read is held", || {
             fs::read_to_string(&trace)
                 .unwrap_or_default()
@@ -550,7 +553,7 @@ fn agents_next_previous_and_mouse_focus_open_the_drawn_seat() {
     rig.focused(&app, "colead");
     rig.click(&app, "scout", true);
     rig.focused(&app, "scout");
-    rig.raw(&app, "o");
+    rig.raw(&app, "oo");
     rig.opened(&viewer, HOME, &rig.scout);
 }
 
@@ -573,7 +576,7 @@ fn overview_need_for_spawned_seat_has_the_same_open_action() {
     });
     rig.click(&app, "scout", true);
     rig.focused(&app, "scout");
-    rig.raw(&app, "o");
+    rig.raw(&app, "oo");
     rig.opened(&viewer, HOME, &rig.scout);
 }
 
@@ -793,7 +796,7 @@ fn stopped_selection_names_resume_command_and_does_not_resume() {
     rig.wait_screen(&app, "GUARD stopped row is read-only", |s| {
         s.contains("openstopped is stopped")
     });
-    rig.raw(&app, "o");
+    rig.raw(&app, "oo");
     rig.notice(&app, "refused:");
     rig.notice(&app, "ae openstopped resumes it");
     rig.unchanged(&[(&viewer, before)]);

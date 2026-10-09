@@ -14,7 +14,8 @@ It needs a terminal on both stdin and stdout. Without one it prints
 
 The **home** session is the one the app opens on and `Esc` returns to: the
 `session` argument, else the session whose pane runs the app. You can type into
-whichever session is selected (see [Ownership](#ownership)). Outside any session
+whichever session is selected (see [Ownership](#ownership)); typing reaches that
+session's lead pair, never the session the app runs in unless it is selected. Outside any session
 and with no argument there is no home and the first session is selected; with
 no session at all the composer says `ae app <session> picks one`. A named
 session ae cannot find refuses, exit 1.
@@ -124,7 +125,7 @@ Browsing:
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
 | `Tab` | Overview / Agents |
-| `o` | open the highlighted seat's pane |
+| `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `n` / `p` | highlight the next / previous seat the tab body shows |
 | `PgUp` / `PgDn` | scroll the chat a page |
 | Click session row | select that session |
@@ -137,12 +138,28 @@ Browsing:
 | `Esc` | back to home |
 | `Enter` or `i` | write the selected session, when no other app writes it |
 | `s` | open Settings |
+| `?` | open Settings on its Keys tab, the list of every key |
 | Click the gear at the keys row's right end | open Settings, also while writing |
-| Click a Settings tab title | show that tab, like `Tab` and `1`-`4` |
+| Click a Settings tab title | show that tab, like `Tab` and `1`-`5` |
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
-| `q`, `^C` | quit |
+| `qq` | quit: the first `q` only arms (`q again to quit`), the second within 2 seconds quits |
+| `^C` | quit, at once |
 
-A paste while browsing is swallowed whole, never read as keys.
+No single printable key quits or moves your client: an armed `q` or `o` is
+disarmed by any other key or when its 2 seconds pass, so typing a word
+while browsing leaves the app up and no key reaches another pane. The keys
+row lists the keys that fit its width, in a fixed priority (`? help`,
+`1-9 session`, `Enter write`, `qq quit`, `! next need`, `Tab overview / agents`,
+`oo open seat`, `j/k move`, `PgUp/PgDn scroll`, `Esc home`, `n/p seat`,
+`s settings`); `?` lists them all. With seats on screen the row keeps its right
+end free for the gear, so the lowest-priority hints give way first.
+
+A paste while browsing is never read as keys. On a writable session it starts
+writing with the paste as the draft, every fragment of it kept and nothing in
+it acting: a pasted line break is draft text, and the draft is sent only by
+your own `Enter`. On a read-only session or with the composer held it takes
+nothing, and the hint row says why for a few seconds (`paste not taken: …`);
+the Settings overlay swallows a paste silently.
 
 Writing: the draft is the chat's own input — a line asks the speaker,
 `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
@@ -154,9 +171,11 @@ around the cursor with `… +N lines above` and `… +N lines below` among them
 character goes. The cursor shows only while writing with the composer drawn:
 browsing, a held composer and Settings hide it. Every composer row and its hint
 row are one click target. `Enter` sends, `Esc` goes back to browsing and keeps
-the draft, `^C` quits. `/open <seat>` opens that seat of the selected session
-([Opening a seat](#opening-a-seat)). Each outcome shows as an `ae` line in the lane
-of the session it is about; a line about a session no longer recorded shows in
+the draft. `^C` over a non-empty draft only arms (`^C again to quit - the draft is lost`): a second within 2 seconds quits and any other key disarms; over an empty composer it quits at once. `/open <seat>` opens that seat of the selected session
+([Opening a seat](#opening-a-seat)). While an ask is being delivered the hint row reads `sending to <seat>…`
+and nothing behind it acts until it ends. Each outcome shows once, as an `ae`
+line in the lane of the session it is about (an unconfirmed or undelivered ask
+as its own lane line, with the hint row saying the same until the lane has it); a line about a session no longer recorded shows in
 whichever lane is selected.
 
 Writing starts the moment this app takes the session's writer lease. Keys read
@@ -237,13 +256,15 @@ rows drawn.
 `s` opens the read-only Settings overlay over the whole pane, as does the
 gear (`*` with `icons = off`) at the keys row's right end — the gear also
 while writing, where `s` stays draft text; `Esc`, `q` or `s` closes it, `^C`
-quits. While open the overlay owns every key and click: `Tab`, `1`-`4` and a
+quits. While open the overlay owns every key and click: `Tab`, `1`-`5` and a
 click on a tab title switch tabs, a click on the drawn `Esc close` label or on
 the gear closes it like `Esc`, `j` / `k` and `↓` / `↑` scroll a line, the
 wheel three rows per notch, `PgUp` / `PgDn` a page, everything else is
 swallowed (every other click too), and a draft being written is kept untouched
-until it closes. Four
-tabs: Quota shows the same scope rows `ae quota` prints; Config shows every
+until it closes. Five
+tabs: Keys lists every key of browsing, writing, a held composer, Settings and
+the mouse
+(`?` opens it while browsing); Quota shows the same scope rows `ae quota` prints; Config shows every
 `[workspace]` key the home session runs
 with and where each came from — `launch` (pinned in its meta), `session` (its
 origin overlay), `global` (the meta-recorded file, the current global only
@@ -299,8 +320,9 @@ selection; no read ever ends the writing into browsing. An entry
 already held, a refused start included, takes its reason from each fleet read
 of the selection — replaced or gone, stopped, no `session_id`, a lead pair
 unreadable or changed, a meta that is gone — and stays held. After `Esc` the
-composer reads `read-only · <why> - prefix h opens it` until a read proves the
-session again.
+composer reads `read-only · <why>` until a read proves the
+session again; `<why>` names only what works for that reason, so a stopped
+session reads `<name> is stopped; ae <name> resumes it`.
 
 Each session keeps its own draft and speaker in memory, per incarnation, so
 moving between sessions keeps both. Its lead pair is fixed the first time this
@@ -310,9 +332,18 @@ session replaced under its name (a new `session_id`) or gone drops its draft
 from memory, once, with one `ae` line `draft for <session> dropped: <why>`; an
 id ae could not read drops nothing. The kept draft on disk comes back only when
 writing starts into an empty composer, under the `Kept line, maybe already
-sent` banner; a draft kept in memory wins, never merged. The owner `ae chat`
+sent` banner, which names a way to check the target pair from the app (the
+Agents tab: `n` / `p`, `oo` opens a seat), never `prefix H`, which jumps the
+host's own pair; a draft kept in memory wins, never merged. The owner `ae chat`
 tries the lease inside its own admission: while an app writes its session, it
 refuses its sends and `/close`.
+
+## Leaving
+
+Every way the app ends, a stopped background reader included, restores the terminal and leaves one plain line
+on the normal screen: `ae app closed - run: ae app (in a chat window, prefix h
+reopens it)` inside tmux, `ae app closed - run: ae app` outside it. A reader
+that stopped says so on the line above.
 
 ## Residuals
 

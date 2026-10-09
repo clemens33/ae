@@ -751,9 +751,14 @@ fn esc_interrupt_quit_and_crash_release_the_kernel_lease() {
             "q" => {
                 rig.escape(&pane);
                 rig.key(&pane, "q");
+                rig.key(&pane, "q");
             }
             "crash" => {
                 rig.tmux(&["kill-window", "-t", &pane]);
+            }
+            "C-c" => {
+                rig.key(&pane, "C-c");
+                rig.key(&pane, "C-c");
             }
             key => rig.key(&pane, key),
         }
@@ -1033,7 +1038,7 @@ fn failed_send(rig: &Rig, pane: &str, uncertain: bool) {
     rig.key(pane, "Enter");
     rig.wait(pane, "GUARD real failed outcome", |s| {
         s.contains(if uncertain {
-            "uncertain: check lead pane"
+            "uncertain: check the lead pane"
         } else {
             "no record of it"
         })

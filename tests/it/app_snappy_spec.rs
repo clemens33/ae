@@ -684,7 +684,7 @@ fn quit_during_read(tag: &str, key: &str) {
 
 #[test]
 fn q_restores_the_terminal_within_one_second_of_a_held_read() {
-    quit_during_read("snquit", "q");
+    quit_during_read("snquit", "qq");
 }
 
 #[test]

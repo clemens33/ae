@@ -898,6 +898,12 @@ impl Input {
     /// it may already be sent: no byte of it is read as a command until a fresh
     /// Enter, and a console that takes no input restores nothing.
     pub fn restore(&mut self, draft: Draft) -> Vec<Effect> {
+        self.restore_for(draft, "(prefix H)")
+    }
+
+    /// [`Input::restore`] naming `how` the seats' panes are checked, for a
+    /// console where the chat's own key does not reach them.
+    pub fn restore_for(&mut self, draft: Draft, how: &str) -> Vec<Effect> {
         if self.since.is_none() {
             return Vec::new();
         }
@@ -906,9 +912,7 @@ impl Input {
             Draft::Kept(bytes) => {
                 let _ = self.composer.key(Key::Text(bytes));
                 let seats = self.pair.join(", ");
-                format!(
-                    "Kept line, maybe already sent: check {seats} panes (prefix H) before Enter"
-                )
+                format!("Kept line, maybe already sent: check {seats} panes {how} before Enter")
             }
             Draft::Refused(why) => format!("refused: {why}"),
         };

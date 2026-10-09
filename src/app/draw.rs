@@ -1070,7 +1070,12 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     );
     let (address_row, hint) = composer_lines(ctx);
     put_line(buf, left, composer, &address_row, room);
-    put(buf, left, height - 3, &hint, room, dim);
+    // A pending line — an armed key, a refused paste, an ask on its way —
+    // takes the hint row, in full ink so it is not missed.
+    match screen.model.note() {
+        Some(note) => put(buf, left, height - 3, note, room, paint.fg(|p| p.text)),
+        None => put(buf, left, height - 3, &hint, room, dim),
+    };
     if let Composer::Home {
         view: Some(view), ..
     } = screen.composer
@@ -1171,10 +1176,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
             };
             (line, hint.to_owned())
         }
-        Composer::ReadOnly { why } => (
-            quiet(format!("read-only · {why} - prefix h opens it")),
-            String::new(),
-        ),
+        Composer::ReadOnly { why } => (quiet(format!("read-only · {why}")), String::new()),
         Composer::Held { why } => (
             quiet(format!("not writing: {why} · Esc browses")),
             String::new(),
@@ -1186,19 +1188,113 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
     }
 }
 
+/// When a browse key applies.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    Always,
+    /// The selection can be written.
+    Writable,
+    /// The frame draws a seat.
+    Seats,
+}
+
+/// The browse keys, most important first: the keys-row hint, the place it
+/// draws at, when it applies, and the keys and meaning the help lists. The
+/// keys row and the Keys help both read this one table.
+const BROWSE_KEYS: [(&str, u8, Need, &str, &str); 12] = [
+    ("? help", 10, Need::Always, "?", "this help"),
+    ("1-9 session", 0, Need::Always, "1-9", "select that session"),
+    (
+        "Enter write",
+        7,
+        Need::Writable,
+        "Enter i",
+        "write; a paste writes too",
+    ),
+    ("qq quit", 11, Need::Always, "qq", "quit: twice within 2 s"),
+    (
+        "! next need",
+        2,
+        Need::Always,
+        "!",
+        "next session needing you",
+    ),
+    (
+        "Tab overview / agents",
+        3,
+        Need::Always,
+        "Tab",
+        "Overview / Agents tab",
+    ),
+    (
+        "oo open seat",
+        4,
+        Need::Seats,
+        "oo",
+        "open seat; twice in 2 s",
+    ),
+    (
+        "j/k move",
+        1,
+        Need::Always,
+        "j/k Up/Down",
+        "previous / next session",
+    ),
+    (
+        "PgUp/PgDn scroll",
+        6,
+        Need::Always,
+        "PgUp/PgDn",
+        "scroll the chat",
+    ),
+    (
+        "Esc home",
+        8,
+        Need::Always,
+        "Esc",
+        "select the home session",
+    ),
+    ("n/p seat", 5, Need::Seats, "n/p", "next / previous seat"),
+    ("s settings", 9, Need::Always, "s", "settings"),
+];
+
+/// The browse hints that fit `room` cells after the mode word, three cells
+/// apart: the longest prefix of the priority order, drawn in display order.
+#[must_use]
+pub fn browse_hints(writable: bool, seats: bool, room: u16) -> Vec<&'static str> {
+    // With seats the row keeps the gear's cells: the seat hints never take them.
+    let room = room.saturating_sub(if seats { 3 } else { 0 });
+    let (mut used, mut fit) = (0, Vec::new());
+    for (hint, at, need, ..) in &BROWSE_KEYS {
+        let applies = match need {
+            Need::Always => true,
+            Need::Writable => writable,
+            Need::Seats => seats,
+        };
+        if !applies {
+            continue;
+        }
+        used += 3 + hint.len();
+        if used > usize::from(room) {
+            break;
+        }
+        fit.push((*at, *hint));
+    }
+    fit.sort_by_key(|(at, _)| *at);
+    fit.into_iter().map(|(_, hint)| hint).collect()
+}
+
 /// The keys row, the full width of the last row: the mode's hints from
 /// the left, then `ae <version>` and the gear right-aligned. Hints never
-/// yield a cell: narrowing drops the version first, then the gear.
+/// yield a cell: narrowing drops the version first, then the gear. The one
+/// exception is deliberate: with seats drawn, [`browse_hints`] keeps three
+/// cells back for the gear, so the seat hints never take its place.
 fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let paint = ctx.paint;
     let y = buf.area.height - 1;
     let composing = matches!(ctx.screen.composer, Composer::Home { view: Some(_), .. });
     let open = ctx.screen.model.settings_open();
-    let seats = if layout.seats.is_empty() {
-        ""
-    } else {
-        "o open seat"
-    };
+    let width = buf.area.width;
     let (word, keys): (&str, Vec<&str>) = if open {
         ("settings", vec!["Esc/q/s close", "^C quit"])
     } else if composing {
@@ -1207,15 +1303,12 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
         ("held", vec!["Enter retry", "Esc browse", "^C quit"])
     } else {
         let writable = matches!(ctx.screen.composer, Composer::Home { .. });
-        let keys = ["1-9 session", "! next need", seats, "Tab overview / agents"]
-            .into_iter()
-            .chain(writable.then_some("Enter write"))
-            .chain(["q quit"])
-            .filter(|key| !key.is_empty())
-            .collect();
-        ("browse", keys)
+        let room = width.saturating_sub(LEFT + cells("browse".len()));
+        (
+            "browse",
+            browse_hints(writable, !layout.seats.is_empty(), room),
+        )
     };
-    let width = buf.area.width;
     let x = put(
         buf,
         LEFT,
@@ -1263,7 +1356,7 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
 /// The overlay's title row.
 const SETTINGS_TITLE: &str = "Settings";
 /// The tabs in draw order.
-const SETTINGS_TABS: [&str; 4] = ["Quota", "Config", "About", "Instructions"];
+const SETTINGS_TABS: [&str; 5] = ["Quota", "Config", "About", "Instructions", "Keys"];
 /// The clickable close label, right-aligned on the title row.
 const SETTINGS_CLOSE: &str = "Esc close";
 /// Plain-text links; no OSC 8 in this slice.
@@ -1293,6 +1386,7 @@ pub(crate) fn paint_settings(
         SettingsTab::Config => 1,
         SettingsTab::About => 2,
         SettingsTab::Instructions => 3,
+        SettingsTab::Keys => 4,
     };
     panel(
         buf,
@@ -1306,6 +1400,7 @@ pub(crate) fn paint_settings(
                 Hit::SettingsTab(SettingsTab::Config),
                 Hit::SettingsTab(SettingsTab::About),
                 Hit::SettingsTab(SettingsTab::Instructions),
+                Hit::SettingsTab(SettingsTab::Keys),
             ],
             close: (SETTINGS_CLOSE, Hit::SettingsClose),
             selected,
@@ -1355,6 +1450,14 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
         let end = put(buf, label_x, 0, label, width - label_x, paint.fg(|p| p.dim));
         layout.record(buf, Rect::new(label_x, 0, end - label_x, 1), close.clone());
     }
+    // Three cells between titles when all of them fit that way, else one.
+    let titles: usize = panel.tabs.iter().map(|name| Span::raw(*name).width()).sum();
+    let wide = usize::from(LEFT) + titles + 3 * panel.tabs.len().saturating_sub(1);
+    let gap = if wide <= usize::from(width) {
+        "   "
+    } else {
+        " "
+    };
     let mut x = LEFT;
     for (index, name) in panel.tabs.iter().enumerate() {
         let style = if index == panel.selected {
@@ -1366,7 +1469,7 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
         if let Some(hit) = panel.hits.get(index) {
             layout.record(buf, Rect::new(x, 1, end - x, 1), hit.clone());
         }
-        x = put(buf, end, 1, "   ", width.saturating_sub(end), style);
+        x = put(buf, end, 1, gap, width.saturating_sub(end), style);
     }
     let rule: String = "─".repeat(usize::from(width));
     put(buf, 0, 2, &rule, width, paint.fg(|p| p.border));
@@ -1456,7 +1559,78 @@ fn settings_body(
             Some(about) => about_body(about, text),
         },
         SettingsTab::Instructions => instructions_body(&bodies.instructions, width, paint),
+        SettingsTab::Keys => keys_body(paint),
     }
+}
+
+/// The write, held and settings keys the help lists beside the browse table.
+const WRITE_KEYS: [(&str, &str); 15] = [
+    ("Enter", "send the line"),
+    ("Esc", "keep the draft, browse"),
+    ("^C", "empty draft quits at once"),
+    ("^C", "with a draft: arms; again in 2 s quits"),
+    ("other key", "disarms an armed ^C"),
+    ("Left Right", "move the cursor"),
+    ("Home End", "start / end of line"),
+    ("^A ^E", "start / end of line"),
+    ("Backspace", "erase before the cursor"),
+    ("Delete", "erase at the cursor"),
+    ("^U", "clear the line"),
+    ("paste", "literal text, never Enter"),
+    ("@seat text", "ask that seat"),
+    ("/close [id]", "withdraw your open ask"),
+    ("/open seat", "open that seat's pane"),
+];
+const HELD_KEYS: [(&str, &str); 4] = [
+    ("Enter", "try to write again"),
+    ("Esc", "browse"),
+    ("^C", "quit"),
+    ("any other", "swallowed; a paste too"),
+];
+const MOUSE_KEYS: [(&str, &str); 3] = [
+    ("click", "select a session, tab or seat"),
+    ("wheel", "scroll 3 rows (the list: 1 session)"),
+    ("drag", "a border resizes the sidebar / list"),
+];
+const SETTINGS_KEYS: [(&str, &str); 10] = [
+    ("Tab 1-5", "show that tab"),
+    ("j/k Up/Down", "scroll a line"),
+    ("PgUp/PgDn", "scroll a page"),
+    ("?", "show these keys"),
+    ("Esc q s", "close"),
+    ("^C", "quit"),
+    ("click tab", "show that tab"),
+    ("click gear", "or Esc close label: closes it"),
+    ("wheel", "scroll 3 rows per notch"),
+    ("any other", "swallowed; a paste too"),
+];
+
+/// The Keys tab's rows: every key of browse, write, held and the overlay.
+/// Browse reads the same table as the keys row.
+fn keys_body(paint: Paint) -> Vec<(String, Style)> {
+    let (text, head) = (paint.fg(|p| p.text), paint.fg(|p| p.title));
+    let head = head.add_modifier(Modifier::BOLD);
+    let mut all: Vec<_> = BROWSE_KEYS.iter().collect();
+    all.sort_by_key(|(_, at, ..)| *at);
+    let browse = all.into_iter().map(|(.., keys, does)| (*keys, *does));
+    let mut rows = vec![("Browse".to_owned(), head)];
+    rows.extend(browse.map(|(keys, does)| (format!("{keys:<12}{does}"), text)));
+    rows.push((format!("{:<12}quit at once", "^C"), text));
+    rows.push(("Any other key cancels qq / oo.".to_owned(), text));
+    let sections = [
+        ("Write (Enter or a paste starts it)", &WRITE_KEYS[..]),
+        ("Held (writing was refused)", &HELD_KEYS[..]),
+        ("Settings (the gear, or s)", &SETTINGS_KEYS[..]),
+        ("Mouse (any time)", &MOUSE_KEYS[..]),
+    ];
+    for (title, keys) in sections {
+        rows.push((title.to_owned(), head));
+        rows.extend(
+            keys.iter()
+                .map(|(keys, does)| (format!("{keys:<12}{does}"), text)),
+        );
+    }
+    rows
 }
 
 /// The about tab's rows: versions, paths, the recorded server, plain links.
@@ -1599,7 +1773,9 @@ mod tests {
     use ratatui_core::buffer::Buffer;
     use ratatui_core::layout::Rect;
 
-    use super::{Composer, LEFT, Paint, Screen, aged, dragged_to, draw, instructions_body};
+    use super::{
+        Composer, LEFT, Paint, Screen, aged, dragged_to, draw, instructions_body, keys_body,
+    };
     use crate::app::fleet::{Counts, Facts, Fleet, Line2, Row};
     use crate::app::model::{Drag, Edge, Model};
     use crate::app::overview::{Open, Overview};
@@ -3118,7 +3294,10 @@ mod tests {
         assert!(seat(&buf, first).contains("lead"), "its first row");
         assert!(seat(&buf, first + 2).contains("colead"), "the next seat");
         let keys: String = line(&buf, 44).concat();
-        assert!(keys.contains("! next need   o open seat   Tab"), "{keys}");
+        assert!(
+            keys.contains("Tab overview / agents   oo open seat   n/p seat"),
+            "{keys}"
+        );
         let at = Mouse {
             kind: MouseKind::Click,
             column: 8,
@@ -3167,5 +3346,38 @@ mod tests {
         let (buf, layout) = framed(&shot, 100, None);
         assert_eq!(layout.seats, ["colead"]);
         assert_eq!(marked(&buf, "▸").len(), 1, "the one row of a narrow entry");
+    }
+
+    /// R4(d)/I2: each section of the Keys tab says what its own `^C` and its
+    /// mouse do, so the list is complete section by section.
+    #[test]
+    fn the_keys_tab_states_each_sections_ctrl_c_and_mouse() {
+        let rows: Vec<String> = keys_body(Paint::of(None))
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        let titles = ["Browse", "Write", "Held", "Settings", "Mouse"];
+        let has = |title: &str, words: &[&str]| {
+            let from = rows
+                .iter()
+                .position(|row| row.starts_with(title))
+                .expect(title);
+            let rest = &rows[from + 1..];
+            let to = rest
+                .iter()
+                .position(|r| titles.iter().any(|t| r.starts_with(t)));
+            let body = &rest[..to.unwrap_or(rest.len())];
+            let found = body.iter().any(|row| words.iter().all(|w| row.contains(w)));
+            assert!(found, "{title} has no row with {words:?}: {body:?}");
+        };
+        has("Browse", &["^C", "quit at once"]);
+        has("Write", &["^C", "empty", "quits at once"]);
+        has("Write", &["^C", "draft", "2 s"]);
+        has("Write", &["other key", "disarms"]);
+        has("Settings", &["gear", "Esc close", "closes"]);
+        has("Settings", &["wheel", "3 rows"]);
+        has("Mouse", &["click", "session", "tab"]);
+        has("Mouse", &["wheel", "3 rows"]);
+        has("Mouse", &["drag", "border"]);
     }
 }

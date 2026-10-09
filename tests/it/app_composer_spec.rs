@@ -850,7 +850,7 @@ fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
     );
     assert_eq!(outside.cursor.0, 0);
     assert_eq!(cell(&outside.text, &address).1, 41);
-    rig.send(&pane, "q");
+    rig.send(&pane, "qq");
     let left = rig.wait(&pane, FRAME, "GUARD terminal left app", |f| {
         f.text.contains("C1-LEFT")
     });

@@ -119,6 +119,8 @@ pub(crate) enum SettingsTab {
     Config,
     About,
     Instructions,
+    /// The keys help: `?` opens the overlay here.
+    Keys,
 }
 
 /// The open settings overlay: its tab, how far its body scrolled, the body
@@ -153,6 +155,8 @@ pub struct Model {
     split: Split,
     drag: Option<Drag>,
     settings: Option<SettingsOverlay>,
+    /// The transient line the hint row shows: the App writes it each frame.
+    note: Option<String>,
 }
 
 impl Model {
@@ -478,13 +482,15 @@ impl Model {
                     SettingsTab::Quota => SettingsTab::Config,
                     SettingsTab::Config => SettingsTab::About,
                     SettingsTab::About => SettingsTab::Instructions,
-                    SettingsTab::Instructions => SettingsTab::Quota,
+                    SettingsTab::Instructions => SettingsTab::Keys,
+                    SettingsTab::Keys => SettingsTab::Quota,
                 })
             }
             Key::Digit(1) => self.show_settings_tab(SettingsTab::Quota),
             Key::Digit(2) => self.show_settings_tab(SettingsTab::Config),
             Key::Digit(3) => self.show_settings_tab(SettingsTab::About),
             Key::Digit(4) => self.show_settings_tab(SettingsTab::Instructions),
+            Key::Digit(5) => self.show_settings_tab(SettingsTab::Keys),
             Key::Up => self.settings_scroll_by(-1),
             Key::Down => self.settings_scroll_by(1),
             Key::PageUp => self.settings_page_by(false),
@@ -515,6 +521,17 @@ impl Model {
     /// Close the overlay.
     pub(crate) fn close_settings(&mut self) {
         self.settings = None;
+    }
+
+    /// The transient hint-row line, if any.
+    #[must_use]
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
+    }
+
+    /// Replace the transient hint-row line.
+    pub(crate) fn set_note(&mut self, note: Option<String>) {
+        self.note = note;
     }
 
     /// Whether the overlay is open.

@@ -67,6 +67,10 @@ const REFRESH: Duration = Duration::from_secs(crate::board::follow::POLL_SECS);
 const TICK: Duration = Duration::from_millis(100);
 /// The most of ae's own notices a session's lane shows.
 const NOTICES: usize = 5;
+/// How long an armed key waits for its second press.
+const QUIT_WINDOW: Duration = Duration::from_secs(2);
+/// How long a refused paste or an outcome word stays on the hint row.
+const FLASH_WINDOW: Duration = Duration::from_secs(5);
 
 /// One session's last read lane, and what it was read as.
 struct Shown {
@@ -106,6 +110,54 @@ impl Drawn {
             Some((_, Some(seat))) => Ok(seat),
         }
     }
+}
+
+/// The one armed key: the press that completes it acts, any other disarms.
+#[derive(Debug, Clone)]
+struct Armed {
+    at: Instant,
+    what: Arm,
+}
+
+/// What a press armed.
+#[derive(Debug, Clone)]
+enum Arm {
+    Quit,
+    /// ^C over a draft that would be lost.
+    Interrupt,
+    /// `o` on the frame it saw: the second press opens that frame's seat.
+    Open(Drawn),
+}
+
+impl Arm {
+    /// The hint-row line that says what the next press does.
+    fn line(&self) -> String {
+        match self {
+            Self::Quit => "q again to quit".to_owned(),
+            Self::Interrupt => "^C again to quit - the draft is lost".to_owned(),
+            Self::Open(d) => format!("o again to open {}", d.focused.as_deref().unwrap_or("")),
+        }
+    }
+}
+
+/// An ask the input produced, held until the frame that names its target is
+/// drawn: the entry that wrote it and the line, for a writer that ended.
+struct Queued {
+    key: (String, String),
+    entry: u64,
+    raw: Vec<u8>,
+    seat: String,
+    body: String,
+    about: String,
+}
+
+/// An ask's outcome word, shown until the lane holds the ask itself.
+struct Settling {
+    at: Instant,
+    id: String,
+    word: String,
+    /// The session the ask went to: its hint row alone shows the word.
+    about: String,
 }
 
 /// The selection's lane as drawn — its last read with ae's own notices for
@@ -199,6 +251,19 @@ struct App {
     pane: Option<String>,
     /// The seats the last frame drew.
     drawn: Option<Drawn>,
+    /// The key the last press armed, until its window or the next key ends it.
+    armed: Option<Armed>,
+    /// Why a paste was not taken, until its window ends.
+    flash: Option<(String, Instant)>,
+    /// The read of the browse paste that started this entry: its later
+    /// fragments keep their text, nothing else read before the lease does.
+    admitted: Option<Instant>,
+    /// Asks waiting for the loop to deliver them.
+    queued: Vec<Queued>,
+    /// The outcome word of the last ask, until the lane shows it.
+    settling: Option<Settling>,
+    /// What the read-only composer says: `read_only`, with how to resume.
+    read_line: String,
 }
 
 impl App {
@@ -254,6 +319,12 @@ impl App {
             server,
             pane,
             drawn: None,
+            armed: None,
+            flash: None,
+            admitted: None,
+            queued: Vec::new(),
+            settling: None,
+            read_line: String::new(),
         }
     }
 
@@ -525,6 +596,7 @@ impl App {
     /// which writer it re-proves.
     fn write(&mut self, on: bool) {
         (self.lease, self.held, self.writer) = (None, None, None);
+        self.admitted = None;
         self.entries = self.entries.wrapping_add(1);
         if let Some(name) = self.model.selected().filter(|_| on).map(str::to_owned)
             && let Err(why) = self.enter(&name)
@@ -573,7 +645,11 @@ impl App {
             let _ = input.tick(Reading::Owner, at);
             input
         });
-        let restored = input.draft().is_empty().then(|| input.restore(draft));
+        let how = "(Agents tab: n/p, oo opens a seat)";
+        let restored = input
+            .draft()
+            .is_empty()
+            .then(|| input.restore_for(draft, how));
         self.writer = Some(Binding {
             entry: self.entries,
             console,
@@ -640,6 +716,12 @@ impl App {
             return;
         };
         self.read_only = self.writable(&name).err().unwrap_or_default();
+        let stopped = format!("{name} is stopped");
+        self.read_line = if self.read_only == stopped {
+            format!("{stopped}; ae {name} resumes it")
+        } else {
+            self.read_only.clone()
+        };
         if self.held.is_some() && !self.read_only.is_empty() {
             self.held = Some(self.read_only.clone());
         }
@@ -730,8 +812,16 @@ impl App {
     /// one read before the lease was taken is dropped, and anything else is
     /// the chat's own input. `None` quits.
     fn compose(&mut self, key: Key, origin: Instant) -> Option<()> {
+        // The browse paste that started this entry keeps every fragment.
+        let origin = match (&key, &self.lease) {
+            (Key::Pasted(_), Some(lease)) if self.admitted == Some(origin) => lease.at,
+            _ => origin,
+        };
         match key {
             Key::Escape => self.write(false),
+            Key::Interrupt if self.protects() => {
+                return self.press(Arm::Interrupt, origin).is_none().then_some(());
+            }
             Key::Interrupt => return None,
             _ if self.lease.as_ref().is_some_and(|lease| origin < lease.at) => {
                 if let Some(lease) = self.lease.as_mut().filter(|lease| !lease.named) {
@@ -762,9 +852,63 @@ impl App {
             Key::Interrupt => return None,
             Key::Escape => self.write(false),
             Key::Enter => self.write(true),
+            Key::Pasted(_) => self.refuse_paste("not writing - Esc browses first"),
             _ => return Some(false),
         }
         Some(true)
+    }
+
+    /// Whether a ^C here would lose a draft only this process holds.
+    fn protects(&self) -> bool {
+        let input = self.writer.as_ref().map(Binding::key);
+        let input = input.and_then(|key| self.inputs.get(&key));
+        input.is_some_and(|input| !input.draft().is_empty())
+    }
+
+    /// Press `what`: the arm it completes (the same kind, left within the
+    /// window by the key before), else it arms and nothing completes.
+    fn press(&mut self, what: Arm, origin: Instant) -> Option<Arm> {
+        let kind = std::mem::discriminant(&what);
+        let held = |armed: &Armed| {
+            std::mem::discriminant(&armed.what) == kind
+                && origin.saturating_duration_since(armed.at) <= QUIT_WINDOW
+        };
+        let completed = self.armed.take().filter(held);
+        if completed.is_none() {
+            self.armed = Some(Armed { at: origin, what });
+        }
+        completed.map(|armed| armed.what)
+    }
+
+    /// A paste the app did not take: the hint row says why.
+    fn refuse_paste(&mut self, why: &str) {
+        self.flash = Some((format!("paste not taken: {why}"), Instant::now()));
+    }
+
+    /// The hint-row line now, loudest first: an ask on its way, an armed
+    /// key, a refused paste, an outcome the lane has not caught up with.
+    fn note(&self) -> Option<String> {
+        let sending = self
+            .queued
+            .first()
+            .map(|ask| format!("sending to {}…", ask.seat));
+        sending
+            .or_else(|| self.armed.as_ref().map(|armed| armed.what.line()))
+            .or_else(|| self.flash.as_ref().map(|(line, _)| line.clone()))
+            .or_else(|| {
+                let settling = self.settling.as_ref();
+                let here = |s: &&Settling| self.model.selected() == Some(s.about.as_str());
+                settling.filter(here).map(|settling| settling.word.clone())
+            })
+    }
+
+    /// End what `now` outlived: whether any line went away.
+    fn lapse(&mut self, now: Instant) -> bool {
+        let over = |at: Instant, window| now.saturating_duration_since(at) > window;
+        let armed = self.armed.take_if(|a| over(a.at, QUIT_WINDOW)).is_some();
+        let flash = (self.flash.take_if(|(_, at)| over(*at, FLASH_WINDOW))).is_some();
+        let word = (self.settling.take_if(|s| over(s.at, FLASH_WINDOW))).is_some();
+        armed | flash | word
     }
 
     /// A wheel notch landing past a bound the last frame has not proven the
@@ -888,7 +1032,9 @@ impl App {
             }
             draw::Hit::SettingsTab(_) | draw::Hit::SettingsClose => return held,
         };
-        apply(self, &act).unwrap_or(false) || was_writing != self.composing() || held
+        apply(self, &act, Instant::now()).unwrap_or(false)
+            || was_writing != self.composing()
+            || held
     }
 
     /// Left motion: the dragged border follows it while the last frame drew
@@ -913,7 +1059,22 @@ impl App {
             let about = about.unwrap_or_default().to_owned();
             let line = match effect {
                 Effect::Print(line) => line,
-                Effect::Ask { raw, seat, body } => self.ask(&raw, &seat, body),
+                Effect::Ask { raw, seat, body } => {
+                    let Some((key, entry)) = (self.writer.as_ref()).map(|w| (w.key(), w.entry))
+                    else {
+                        self.notice(&about, "refused: not writing".to_owned());
+                        continue;
+                    };
+                    self.queued.push(Queued {
+                        key,
+                        entry,
+                        raw,
+                        seat,
+                        body,
+                        about,
+                    });
+                    continue;
+                }
                 Effect::Close(id) => self.close(id.as_deref()),
                 Effect::Open(seat) => self.open_written(&seat),
                 Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => continue,
@@ -969,9 +1130,14 @@ impl App {
     /// One ask of `seat`, through the chat's own admission and tracked path.
     /// A session whose recorded server that path cannot name is no longer
     /// proven: refused in its words before anything is written.
-    fn ask(&mut self, raw: &[u8], seat: &str, body: String) -> String {
+    fn ask(
+        &mut self,
+        raw: &[u8],
+        seat: &str,
+        body: String,
+    ) -> Result<(String, submit::Outcome), String> {
         let Some(writer) = &self.writer else {
-            return "refused: not writing".to_owned();
+            return Err("refused: not writing".to_owned());
         };
         let (console, lost) = (&writer.console, Cell::default());
         let owns = || {
@@ -981,12 +1147,71 @@ impl App {
             let routed = routed.map(drop).map_err(|why| why.message());
             routed.inspect_err(|why| lost.set(Some(why.clone())))
         };
-        let line = match term::submit_ask(console, owns, raw, seat, body) {
-            Ok((_, outcome)) => crate::console::input::outcome_line(&outcome, seat),
-            Err(why) => format!("refused: {why}"),
-        };
+        let told = term::submit_ask(console, owns, raw, seat, body);
         self.unproven(lost, raw);
-        line
+        told.map_err(|why| format!("refused: {why}"))
+    }
+
+    /// Deliver the queued asks, after the frame that named their target. Each
+    /// is re-proven first: a writer that ended since asks nothing and its
+    /// line goes back to the draft in memory. Whether any ran.
+    fn deliver(&mut self) -> bool {
+        let queued = std::mem::take(&mut self.queued);
+        let ran = !queued.is_empty();
+        for q in queued {
+            let live = (self.writer.as_ref()).is_some_and(|writer| writer.entry == q.entry);
+            let told = if live {
+                match self.ask(&q.raw, &q.seat, q.body) {
+                    Ok((id, outcome)) => self.settle(id, &q.seat, &q.about, outcome),
+                    Err(refused) => vec![refused],
+                }
+            } else {
+                if let Some(input) = self.inputs.get_mut(&q.key) {
+                    let _ = input.restore(submit::Draft::Kept(q.raw));
+                }
+                let why = "writing ended; the line is back in the draft";
+                vec![format!("not sent to {}: {why}", q.seat)]
+            };
+            for line in told {
+                self.notice(&q.about, line);
+            }
+            self.reread();
+        }
+        self.show();
+        ran
+    }
+
+    /// What an ask's outcome shows. The lane already draws an uncertain or
+    /// undelivered ask in the same words, so those wait on the hint row until
+    /// it holds the ask; the rest has no lane line and is a notice.
+    fn settle(
+        &mut self,
+        id: String,
+        seat: &str,
+        about: &str,
+        outcome: submit::Outcome,
+    ) -> Vec<String> {
+        let check = format!("check {seat} pane (Agents tab: n/p, oo opens a seat)");
+        let word = match outcome {
+            submit::Outcome::Sent(_, kept) => {
+                return ["sent".to_owned()].into_iter().chain(kept).collect();
+            }
+            submit::Outcome::Unknown(..) => {
+                return vec![format!(
+                    "no record of it; it may have been delivered - {check}"
+                )];
+            }
+            submit::Outcome::Uncertain(_) => format!("uncertain: {check}"),
+            submit::Outcome::NotDelivered(_) => "not delivered".to_owned(),
+        };
+        let (at, about) = (Instant::now(), about.to_owned());
+        self.settling = Some(Settling {
+            at,
+            id,
+            word,
+            about,
+        });
+        Vec::new()
     }
 
     /// `/close`: this app's own open ask, through the chat's admission.
@@ -1015,13 +1240,42 @@ impl App {
         self.open(console.name(), console.uuid(), Ok(seat), &seat.name)
     }
 
-    /// `o`: the seat the last frame highlighted, as that frame drew it. A
-    /// selection that moved since is refused, never followed.
+    /// `o`: the first press arms on the seat the frame highlights and moves
+    /// nothing; the second within the window opens THAT seat, whatever the
+    /// frame drew since. A frame with no seat to open answers at once.
+    fn open_key(&mut self, origin: Instant) {
+        // A still-current arm completes from the frame it saw, before the
+        // fresh frame is asked anything.
+        let stored = self.armed.as_ref().and_then(|armed| match &armed.what {
+            Arm::Open(drawn) if origin.saturating_duration_since(armed.at) <= QUIT_WINDOW => {
+                Some(drawn.clone())
+            }
+            _ => None,
+        });
+        let selected = self.model.selected();
+        let fresh = (self.drawn.clone())
+            .filter(|drawn| selected == Some(drawn.session.as_str()) && drawn.seat().is_ok());
+        let Some(drawn) = stored.or(fresh) else {
+            self.armed = None;
+            return self.open_focused();
+        };
+        if let Some(Arm::Open(armed)) = self.press(Arm::Open(drawn), origin) {
+            self.open_drawn(Some(armed));
+        }
+    }
+
+    /// The seat the last frame highlighted, as that frame drew it.
     fn open_focused(&mut self) {
+        self.open_drawn(self.drawn.clone());
+    }
+
+    /// The seat `drawn` highlighted, as that frame drew it. A selection that
+    /// moved since is refused, never followed.
+    fn open_drawn(&mut self, drawn: Option<Drawn>) {
         let Some(session) = self.model.selected().map(str::to_owned) else {
             return;
         };
-        let line = match &self.drawn {
+        let line = match drawn {
             Some(drawn) if drawn.session == session => {
                 let label = drawn.focused.as_deref().unwrap_or(&session);
                 self.open(&session, &drawn.uuid, drawn.seat(), label)
@@ -1165,7 +1419,7 @@ impl App {
             (Some(_), Some(why)) => draw::Composer::Held { why },
             (Some(_), None) if !self.read_only.is_empty() && !self.composing() => {
                 draw::Composer::ReadOnly {
-                    why: &self.read_only,
+                    why: &self.read_line,
                 }
             }
             (Some(name), None) => draw::Composer::Home {
@@ -1194,6 +1448,12 @@ impl App {
             let shown = self.shown_input().map(|i| (i.bare_view(size), i.draft()));
             (self.draft_view, self.draft) = shown.unwrap_or_default();
         }
+        // An ask the lane shows needs no word of its own.
+        let shown = |item: &Item, id: &str| matches!(&item.kind, Kind::Asked { id: ask, .. } | Kind::NotDelivered { id: ask, .. } if ask == id);
+        let lane = Rc::clone(&self.lane);
+        self.settling
+            .take_if(|settling| lane.items.iter().any(|item| shown(item, &settling.id)));
+        self.model.set_note(self.note());
         let name = self.model.selected();
         let unread = name
             .filter(|_| !self.fleeted)
@@ -1353,62 +1613,79 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     let (server, pane) = (doors::caller_server(), doors::calling_pane_id());
     let mut app = App::new(home, server, pane, Some(ask));
     let mut keys = Keys::app();
-    let mut dirty = true;
-    loop {
+    let (mut dirty, mut first) = (true, None);
+    let code = loop {
         if let Some(now) = tty.size().filter(|now| *now != size) {
             size = now;
             terminal.backend_mut().resize(size);
             dirty = true;
         }
-        if dirty {
+        if dirty || !app.queued.is_empty() {
             terminal.draw(|frame| {
                 app.frame(frame.buffer_mut());
                 if let Some(at) = app.layout.cursor {
                     frame.set_cursor_position(at);
                 }
             })?;
-            dirty = false;
         }
+        // An ask waits for the frame that names its target; its outcome
+        // needs another.
+        dirty = app.deliver();
         // Held keys replay as soon as the frame above has produced more.
         let wait = if app.deferred.is_empty() {
             TICK
         } else {
             Duration::ZERO
         };
-        let first = match wakes.recv_timeout(wait) {
-            Ok(wake) => Some(wake),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => break,
+        if first.is_none() {
+            first = match wakes.recv_timeout(wait) {
+                Ok(wake) => Some(wake),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break 0,
+            };
+        }
+        let Some(redraw) = drain(&mut app, &mut keys, &wakes, &mut first) else {
+            break 0;
         };
-        let Some(redraw) = drain(&mut app, &mut keys, &wakes, first) else {
-            drop(tty);
-            return Ok(0);
-        };
-        dirty |= redraw;
+        dirty |= redraw | app.lapse(Instant::now());
         app.focus();
         if reader.is_finished() {
-            drop(tty);
-            writeln!(err, "ae app: its background reader stopped")?;
-            return Ok(1);
+            break 1;
         }
-    }
+    };
     drop(tty);
-    Ok(0)
+    if code != 0 {
+        writeln!(err, "ae app: its background reader stopped")?;
+    }
+    writeln!(err, "{}", exit_hint(app.server.is_some()))?;
+    Ok(code)
+}
+
+/// The one plain line `ae app` leaves on the normal screen when it ends: how
+/// to start it again. Outside tmux it names no tmux key.
+#[must_use]
+pub fn exit_hint(in_tmux: bool) -> &'static str {
+    if in_tmux {
+        "ae app closed - run: ae app (in a chat window, prefix h reopens it)"
+    } else {
+        "ae app closed - run: ae app"
+    }
 }
 
 /// Take the held keys, then `first` and every wake already waiting behind
 /// it, then the idle keys when none came: `Some(redraw)`, or `None` to quit.
+/// Once an ask is queued nothing more is taken, `first` included: it stays in
+/// place with the rest of the channel until the loop has delivered the ask.
 fn drain(
     app: &mut App,
     keys: &mut Keys,
     wakes: &mpsc::Receiver<Wake>,
-    first: Option<Wake>,
+    first: &mut Option<Wake>,
 ) -> Option<bool> {
     let held = std::mem::take(&mut app.deferred);
     let (mut redraw, mut fed) = (take_keys(app, held)?, false);
-    for wake in first
-        .into_iter()
-        .chain(std::iter::from_fn(|| wakes.try_recv().ok()))
+    while app.queued.is_empty()
+        && let Some(wake) = first.take().or_else(|| wakes.try_recv().ok())
     {
         let keyed = match wake {
             Wake::Keys(stamp, bytes) => {
@@ -1432,17 +1709,24 @@ fn drain(
 }
 
 /// Take decoded keys: `Some(redraw)`, or `None` to quit. From a wheel notch
-/// the frame cannot bound yet on, every key is held in order behind it, and
-/// a held `^C` still quits at once.
+/// the frame cannot bound yet on, and behind an ask the loop has not
+/// delivered, every key is held in order; a held `^C` still quits at once,
+/// unless it would lose an ask or a draft. Any key but a browsing letter or
+/// `^C` ends the armed press.
 fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
     let mut redraw = false;
     let mut keyed = keyed.into_iter();
     while let Some((key, origin)) = keyed.next() {
-        if !app.deferred.is_empty() || app.unbounded(&key) {
+        if !app.deferred.is_empty() || !app.queued.is_empty() || app.unbounded(&key) {
             app.deferred.push((key, origin));
             app.deferred.extend(keyed);
-            let quit = app.deferred.iter().any(|(key, _)| *key == Key::Interrupt);
+            let held = app.deferred.iter().any(|(key, _)| *key == Key::Interrupt);
+            let quit = held && app.queued.is_empty() && !app.protects();
             return (!quit).then_some(true);
+        }
+        let browsing = !app.model.settings_open() && !app.composing() && app.held.is_none();
+        if key != Key::Interrupt && !(browsing && matches!(key, Key::Text(_))) {
+            redraw |= app.armed.take().is_some();
         }
         redraw |= if let Key::Mouse(mouse) = &key {
             app.mouse(*mouse)
@@ -1488,30 +1772,63 @@ fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
                     .map(|()| true)?;
                 return Some(true);
             }
-            redraw |= browse_byte(app, byte)?;
+            redraw |= browse_byte(app, byte, origin)?;
             rest = tail;
         }
         return Some(redraw);
     }
+    if let Key::Pasted(bytes) = key {
+        paste(app, bytes, origin);
+        return Some(true);
+    }
     let mut redraw = false;
     for key in model::browse_keys(key) {
         let act = app.model.key(key, &app.fleet, app.can_compose(), true);
-        redraw |= apply(app, &act)?;
+        redraw |= apply(app, &act, origin)?;
     }
     Some(redraw)
 }
 
-/// One Text byte while browsing: `s` opens with its request, anything else
-/// decodes as it always has. Browsing on entry; the caller routes the modes.
-fn browse_byte(app: &mut App, byte: u8) -> Option<bool> {
-    if byte == b's' {
-        app.open_settings();
-        return Some(true);
+/// A paste while browsing is never a command: a writable selection starts
+/// writing with it as the draft, anything else says why it was not taken.
+fn paste(app: &mut App, bytes: &[u8], origin: Instant) {
+    if !app.can_compose() {
+        let why = Some(app.read_line.as_str()).filter(|why| !why.is_empty());
+        let why = format!("read-only · {}", why.unwrap_or("no session is selected"));
+        return app.refuse_paste(&why);
     }
-    let mut redraw = false;
+    app.write(true);
+    if !app.composing() {
+        let why = app.held.clone().unwrap_or_default();
+        return app.refuse_paste(&why);
+    }
+    app.admitted = Some(origin);
+    let _ = app.compose(Key::Pasted(bytes.to_vec()), origin);
+}
+
+/// One Text byte while browsing: `q` and `o` press their armed key, `s`
+/// opens the settings and `?` its keys, anything else decodes as it always
+/// has and ends the armed press. Browsing on entry; the caller routes the
+/// modes.
+fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
+    let disarmed = !matches!(byte, b'q' | b'o') && app.armed.take().is_some();
+    match byte {
+        b'q' => return app.press(Arm::Quit, origin).is_none().then_some(true),
+        b's' => {
+            app.open_settings();
+            return Some(true);
+        }
+        b'?' => {
+            app.open_settings();
+            app.model.show_settings_tab(model::SettingsTab::Keys);
+            return Some(true);
+        }
+        _ => {}
+    }
+    let mut redraw = disarmed;
     for key in model::browse_keys(&Key::Text(vec![byte])) {
         let act = app.model.key(key, &app.fleet, app.can_compose(), true);
-        redraw |= apply(app, &act)?;
+        redraw |= apply(app, &act, origin)?;
     }
     Some(redraw)
 }
@@ -1536,7 +1853,7 @@ fn settings_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
                         .map(|()| true)?;
                     return Some(true);
                 }
-                redraw |= browse_byte(app, byte)?;
+                redraw |= browse_byte(app, byte, origin)?;
                 rest = tail;
                 continue;
             }
@@ -1568,6 +1885,10 @@ fn settings_byte(app: &mut App, byte: u8) -> bool {
         app.close_settings();
         return true;
     }
+    if byte == b'?' {
+        app.model.show_settings_tab(model::SettingsTab::Keys);
+        return true;
+    }
     let mut redraw = false;
     for key in model::browse_keys(&Key::Text(vec![byte])) {
         if app.model.key(key, &app.fleet, app.can_compose(), true) == model::Act::Redraw {
@@ -1582,7 +1903,7 @@ fn settings_byte(app: &mut App, byte: u8) -> bool {
 }
 
 /// Carry out a browse action from either keys or a frame's mouse target.
-fn apply(app: &mut App, act: &model::Act) -> Option<bool> {
+fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
     match act {
         model::Act::Quit => None,
         model::Act::Select(_) => {
@@ -1595,7 +1916,7 @@ fn apply(app: &mut App, act: &model::Act) -> Option<bool> {
             Some(true)
         }
         model::Act::Open => {
-            app.open_focused();
+            app.open_key(origin);
             Some(true)
         }
         model::Act::SeatNext => Some(app.move_focus(true)),
@@ -1963,7 +2284,7 @@ mod tests {
             coverage: Vec::new(),
         });
         let shown = framed(&mut app);
-        assert!(shown.lines().last().expect("keys row").contains("q quit"));
+        assert!(shown.lines().last().expect("keys row").contains("qq quit"));
         let mut mouse = super::Mouse {
             kind: super::MouseKind::WheelUp,
             column: 159,
@@ -2095,12 +2416,13 @@ mod tests {
         let (mut app, _reader) = housed(&root);
         app.take(Reading::Owner, Instant::now());
         let refused = app.ask(b"x", "lead", "x".to_owned());
-        assert_eq!(refused, "refused: not writing");
+        assert_eq!(refused, Err("refused: not writing".to_owned()));
         let typed = writing(&mut app);
         meta(&root, &ID.replace("1234", "bbbb"), "colead");
         for key in [Key::Text(b"check the scopes".to_vec()), Key::Enter] {
             assert_eq!(app.compose(key, typed), Some(()));
         }
+        assert!(app.deliver(), "the entered line was queued, then asked");
         let notice = &app.notices.last().expect("the outcome is said").1.body;
         assert_eq!(notice, "refused: the session was replaced or renamed");
         let written = crate::store::open(&dir).events_source();
@@ -2626,14 +2948,232 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&err), USAGE);
     }
 
-    /// #50/#56/#57: browsing, only `q` quits (docs/app.md BROWSE keys).
+    /// #50/#56/#57, R2: browsing, only a second `q` within the window quits;
+    /// one arms, another key or a late `q` does not complete it.
     #[test]
-    fn only_q_quits_while_browsing() {
+    fn only_a_second_q_in_the_window_quits_while_browsing() {
         let mut app = app(None);
         app.fleet = one_row(None);
         app.model = Model::new(&app.fleet);
-        assert!(browse(&mut app, &Key::Text(b"x".to_vec()), Instant::now()).is_some());
-        assert!(browse(&mut app, &Key::Text(b"q".to_vec()), Instant::now()).is_none());
+        let (t0, q) = (Instant::now(), Key::Text(b"q".to_vec()));
+        assert!(browse(&mut app, &Key::Text(b"x".to_vec()), t0).is_some());
+        assert!(browse(&mut app, &q, t0).is_some(), "one q only arms");
+        assert_eq!(app.note().as_deref(), Some("q again to quit"));
+        assert!(browse(&mut app, &Key::Text(b"x".to_vec()), t0).is_some());
+        assert!(app.armed.is_none(), "another key disarms");
+        assert!(browse(&mut app, &q, t0).is_some());
+        let late = t0 + super::QUIT_WINDOW + Duration::from_millis(1);
+        assert!(browse(&mut app, &q, late).is_some(), "a late q re-arms");
+        assert!(app.lapse(late + super::QUIT_WINDOW * 2), "the arm expires");
+        assert!(app.armed.is_none() && app.note().is_none());
+        assert!(browse(&mut app, &q, late).is_some());
+        assert!(browse(&mut app, &q, late).is_none(), "the second q quits");
+    }
+
+    /// R1/B1: a paste while browsing starts writing with it as the draft and
+    /// every later fragment of that read keeps its text, while text typed in
+    /// that read stays dropped; a selection that cannot be written says why.
+    #[test]
+    fn a_browse_paste_writes_whole_and_a_read_only_one_says_why() {
+        let root = Root::new("paste");
+        let (mut app, _reader) = housed(&root);
+        let t0 = Instant::now();
+        let paste = |bytes: &[u8]| (Key::Pasted(bytes.to_vec()), t0);
+        assert_eq!(take_keys(&mut app, vec![paste(b"one ")]), Some(true));
+        assert!(app.composing() && app.admitted == Some(t0));
+        let typed = (Key::Text(b"X".to_vec()), t0);
+        assert_eq!(take_keys(&mut app, vec![paste(b"two"), typed]), Some(true));
+        assert_eq!(
+            drafted(&app),
+            "one two",
+            "typed text is dropped, the tail kept"
+        );
+        app.write(false);
+        assert!(
+            app.admitted.is_none(),
+            "a way out of writing forgets the paste"
+        );
+        let mut cold = self::app(Some("api"));
+        assert_eq!(take_keys(&mut cold, vec![paste(b"x")]), Some(true));
+        let said = cold.note().expect("a refused paste says so");
+        assert!(said.starts_with("paste not taken: read-only"), "{said}");
+    }
+
+    /// P1/C2: `^C` over a draft arms and asks twice, an edit disarms it, and
+    /// an empty composer quits at once.
+    #[test]
+    fn interrupt_over_a_draft_arms_and_an_empty_composer_quits() {
+        let root = Root::new("c2");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        assert_eq!(app.compose(Key::Interrupt, at), None, "empty quits at once");
+        assert_eq!(app.compose(Key::Text(b"keep".to_vec()), at), Some(()));
+        assert_eq!(take_keys(&mut app, vec![(Key::Interrupt, at)]), Some(true));
+        let line = "^C again to quit - the draft is lost";
+        assert_eq!(app.note().as_deref(), Some(line));
+        assert_eq!(
+            take_keys(&mut app, vec![(Key::Text(b"!".to_vec()), at)]),
+            Some(true)
+        );
+        assert!(app.armed.is_none(), "an edit disarms");
+        let twice = vec![(Key::Interrupt, at), (Key::Interrupt, at)];
+        assert_eq!(take_keys(&mut app, twice), None, "the second quits");
+    }
+
+    /// P2/O1: the first `o` arms on the frame it saw and moves nothing; the
+    /// second within the window opens THAT seat, though a later frame moved
+    /// the highlight or drew no seat at all; a late second only arms again.
+    #[test]
+    fn an_armed_open_keeps_the_seat_it_saw() {
+        let root = Root::new("armed-open");
+        let (mut app, _reader) = housed(&root);
+        let frame = |focused: &str| super::Drawn {
+            rows: vec![
+                ("lead".to_owned(), Some(seat_ref("main", "lead"))),
+                ("colead".to_owned(), Some(seat_ref("worker.0", "colead"))),
+            ],
+            ..drawn_rows(&[], focused)
+        };
+        let (t0, said) = (Instant::now(), |app: &App| {
+            app.notices.last().map(|n| n.1.body.clone())
+        });
+        app.drawn = Some(frame("lead"));
+        app.open_key(t0);
+        assert_eq!(app.note().as_deref(), Some("o again to open lead"));
+        assert_eq!(said(&app), None, "the first press opens nothing");
+        app.drawn = Some(frame("colead"));
+        app.open_key(t0 + Duration::from_millis(500));
+        let opened = "refused: /open lead: ae app is not running inside tmux; nothing selected";
+        assert_eq!(said(&app).as_deref(), Some(opened), "the captured seat");
+        app.open_key(t0 + Duration::from_secs(9));
+        assert_eq!(app.note().as_deref(), Some("o again to open colead"));
+        // I1: a refresh that drew no seat still completes the stored arm.
+        app.notices.clear();
+        app.drawn = None;
+        app.open_key(t0 + Duration::from_millis(9500));
+        let colead = "refused: /open colead: ae app is not running inside tmux; nothing selected";
+        assert_eq!(said(&app).as_deref(), Some(colead), "the stored seat");
+        app.drawn = Some(frame("colead"));
+        app.open_key(t0 + Duration::from_secs(9));
+        let moved = Fleet {
+            rows: vec![row("web", 1, true)],
+            home: Some("web".to_owned()),
+        };
+        app.model = Model::new(&moved);
+        app.open_key(t0 + Duration::from_secs(10));
+        assert!(said(&app).is_some_and(|line| line.contains("the view changed")));
+    }
+
+    /// R4(f)/I5: Enter queues its ask behind the frame that names it; a key
+    /// behind it waits in order, an answer behind it waits in the channel,
+    /// and a `^C` behind it quits only after the ask ran.
+    #[test]
+    fn an_entered_ask_is_delivered_before_anything_behind_it_acts() {
+        let root = Root::new("queued");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        // The admission refuses the ask, so nothing is really delivered.
+        meta(&root, &ID.replace("1234", "bbbb"), "colead");
+        let (wake, wakes) = std::sync::mpsc::channel();
+        let mut keys = crate::console::input::Keys::app();
+        let late = super::Wake::Answer(Box::new(view("api", ID, 9, "late")));
+        wake.send(super::Wake::Keys(at, b"hi\r\x03".to_vec()))
+            .expect("sent");
+        wake.send(late).expect("sent");
+        assert_eq!(
+            super::drain(&mut app, &mut keys, &wakes, &mut None),
+            Some(true)
+        );
+        assert_eq!((app.queued.len(), app.deferred.len()), (1, 1), "^C waits");
+        assert_eq!(app.note().as_deref(), Some("sending to lead…"));
+        assert!(wakes.try_recv().is_ok(), "the answer was not pulled");
+        assert!(app.deliver() && app.queued.is_empty());
+        let notice = &app.notices.last().expect("said").1.body;
+        assert_eq!(notice, "refused: the session was replaced or renamed");
+        assert_eq!(super::drain(&mut app, &mut keys, &wakes, &mut None), None);
+    }
+
+    /// I5: an ask whose writer ended while it waited asks nothing: the line
+    /// goes back to its draft in memory and the human is told.
+    #[test]
+    fn a_queued_ask_whose_writer_ended_is_not_sent() {
+        let root = Root::new("revoked-queue");
+        let dir = root.0.join("sessions").join("api");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        for key in [Key::Text(b"keep me".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, at), Some(()));
+        }
+        app.write(false);
+        assert!(app.deliver());
+        assert_eq!(drafted(&app), "keep me");
+        let notice = &app.notices.last().expect("said").1.body;
+        assert!(
+            notice.starts_with("not sent to lead: writing ended"),
+            "{notice}"
+        );
+        let written = crate::store::open(&dir).events_source();
+        assert!(matches!(written, crate::store::SourceRead::Absent));
+    }
+
+    /// I5/B1: a held `Enter` replays and queues its ask; the wake read before
+    /// it (a revocation, the input closing) waits for the delivery, then acts.
+    #[test]
+    fn a_prefetched_wake_waits_for_the_ask_a_held_enter_queued() {
+        for closed in [false, true] {
+            let root = Root::new("prefetch");
+            let (mut app, _reader) = housed(&root);
+            let at = writing(&mut app);
+            meta(&root, &ID.replace("1234", "bbbb"), "colead");
+            assert_eq!(app.compose(Key::Text(b"hi".to_vec()), at), Some(()));
+            app.deferred = vec![(Key::Enter, at)];
+            let entry = app.writer.as_ref().map(|w| w.entry).expect("writing");
+            let reading = Reading::NotOwner("gone".to_owned());
+            let owned = Answer::Owned { entry, reading, at };
+            let mut first = Some(super::Wake::Answer(Box::new(owned)));
+            if closed {
+                first = Some(super::Wake::Closed);
+            }
+            let (_wake, wakes) = std::sync::mpsc::channel();
+            let mut keys = crate::console::input::Keys::app();
+            let drain = super::drain(&mut app, &mut keys, &wakes, &mut first);
+            assert!(drain.is_some() && first.is_some(), "kept, and no quit");
+            assert_eq!(app.queued.len(), 1, "the held Enter queued its ask");
+            assert!(app.composing(), "the revocation waits for the delivery");
+            assert!(app.deliver() && app.queued.is_empty());
+            let drain = super::drain(&mut app, &mut keys, &wakes, &mut first);
+            assert_eq!(drain.is_none(), closed, "then the wake acts");
+        }
+    }
+
+    /// I5: behind a queued ask the rest of the read waits in order - an
+    /// `Esc`, a second `Enter`, a wheel notch - and none acts before it.
+    #[test]
+    fn keys_behind_an_entered_ask_wait_in_order_for_its_delivery() {
+        let wheel = super::Mouse {
+            kind: super::MouseKind::WheelDown,
+            column: 60,
+            row: 10,
+        };
+        for behind in [Key::Escape, Key::Enter, Key::Mouse(wheel)] {
+            let root = Root::new("queued-order");
+            let (mut app, _reader) = housed(&root);
+            let at = writing(&mut app);
+            meta(&root, &ID.replace("1234", "bbbb"), "colead");
+            let hi = (Key::Text(b"hi".to_vec()), at);
+            let read = vec![hi, (Key::Enter, at), (behind.clone(), at)];
+            assert_eq!(take_keys(&mut app, read), Some(true));
+            let (queued, held) = (app.queued.len(), app.deferred.len());
+            assert_eq!((queued, held), (1, 1), "{behind:?} waits behind one ask");
+            assert!(app.composing() && app.deliver());
+        }
+    }
+
+    /// R3: the exit line names the way back, and outside tmux no tmux key.
+    #[test]
+    fn the_exit_line_names_tmux_keys_only_inside_tmux() {
+        assert!(super::exit_hint(true).ends_with("(in a chat window, prefix h reopens it)"));
+        assert_eq!(super::exit_hint(false), "ae app closed - run: ae app");
     }
 
     // ---- appsnappy: what the reader answered, and what is drawn of it.
@@ -2891,7 +3431,7 @@ mod tests {
             zone: None,
         };
         let root = Root::new("lone-esc");
-        for first in [None, Some(loader::Wake::Answer(Box::new(quiet)))] {
+        for mut first in [None, Some(loader::Wake::Answer(Box::new(quiet)))] {
             let (mut app, _reader) = housed(&root);
             writing(&mut app);
             let mut keys = crate::console::input::Keys::app();
@@ -2899,7 +3439,10 @@ mod tests {
                 .checked_sub(Duration::from_secs(1))
                 .expect("an instant a second ago");
             assert!(keys.feed(b"\x1b", typed).is_empty(), "ESC waits");
-            assert_eq!(super::drain(&mut app, &mut keys, &wakes, first), Some(true));
+            assert_eq!(
+                super::drain(&mut app, &mut keys, &wakes, &mut first),
+                Some(true)
+            );
             assert!(!app.composing(), "an Esc read before the lease browses");
         }
     }
@@ -2937,7 +3480,7 @@ mod tests {
         app.frame(&mut buf);
         let mut first = Some(loader::Wake::Keys(Instant::now(), bytes.to_vec()));
         for _ in 0..64 {
-            assert!(super::drain(app, &mut keys, &wakes, first.take()).is_some());
+            assert!(super::drain(app, &mut keys, &wakes, &mut first).is_some());
             app.frame(&mut buf);
             if app.deferred.is_empty() {
                 return app.model.scroll_rows(27);
@@ -2977,15 +3520,15 @@ mod tests {
         let mut keys = crate::console::input::Keys::app();
         let mut bytes = b"\x1b[5~".to_vec();
         bytes.extend(b"\x1b[<64;48;6M".repeat((edge - 27) / 3));
-        let read = Some(loader::Wake::Keys(Instant::now(), bytes));
-        assert!(super::drain(&mut app, &mut keys, &wakes, read).is_some());
+        let mut read = Some(loader::Wake::Keys(Instant::now(), bytes));
+        assert!(super::drain(&mut app, &mut keys, &wakes, &mut read).is_some());
         assert!(app.deferred.is_empty(), "held at the edge");
         assert_eq!(app.model.scroll_rows(27), edge);
-        let up = Some(loader::Wake::Keys(
+        let mut up = Some(loader::Wake::Keys(
             Instant::now(),
             b"\x1b[<64;48;6M".to_vec(),
         ));
-        assert!(super::drain(&mut app, &mut keys, &wakes, up).is_some());
+        assert!(super::drain(&mut app, &mut keys, &wakes, &mut up).is_some());
         assert_eq!(app.deferred.len(), 1, "one past the edge waits");
     }
 
@@ -3261,11 +3804,13 @@ mod tests {
             "digit 4 shows the fourth tab"
         );
         assert!(settings_key(&mut app, &Key::Text(b"5".to_vec()), at).is_some());
-        assert!(app.model.settings_open(), "digit 5 swallowed");
-        assert_eq!(
-            app.model.settings().expect("open").tab,
-            SettingsTab::Instructions
-        );
+        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Keys);
+        assert!(settings_key(&mut app, &Key::Text(b"6".to_vec()), at).is_some());
+        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Keys);
+        assert!(settings_key(&mut app, &Key::Tab, at).expect("wraps"));
+        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Quota);
+        assert!(settings_key(&mut app, &Key::Text(b"?".to_vec()), at).is_some());
+        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Keys);
         assert!(settings_key(&mut app, &Key::Escape, at).expect("close"));
         assert!(!app.model.settings_open());
         assert_eq!(
@@ -3503,7 +4048,7 @@ mod tests {
     }
 
     /// A batched chunk spells in byte order: `2s` selects session 2, then
-    /// opens; `qs` quits before ever reaching s; `sq` opens and closes,
+    /// opens; `qqs` quits before ever reaching s; `sq` opens and closes,
     /// every transition carrying its request.
     #[test]
     fn settings_chunk_bytes_keep_order_and_requests() {
@@ -3522,7 +4067,7 @@ mod tests {
         let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
         app.fleet = two();
         assert!(
-            browse(&mut app, &Key::Text(b"qs".to_vec()), Instant::now()).is_none(),
+            browse(&mut app, &Key::Text(b"qqs".to_vec()), Instant::now()).is_none(),
             "quits"
         );
         assert!(!app.model.settings_open());
@@ -3697,9 +4242,9 @@ mod tests {
             let column = titles[..byte].chars().count() + name.chars().count() - 1;
             app.model.settings_wheel(scroll);
             let press = format!("\x1b[<0;{};2M", column + 1).into_bytes();
-            let first = Some(loader::Wake::Keys(Instant::now(), press));
+            let mut first = Some(loader::Wake::Keys(Instant::now(), press));
             assert_eq!(
-                super::drain(&mut app, &mut keys, &wakes, first),
+                super::drain(&mut app, &mut keys, &wakes, &mut first),
                 Some(redraw),
                 "{name} click must request its own changed frame"
             );
@@ -3845,7 +4390,7 @@ mod tests {
         );
     }
 
-    /// The gear-only branch keeps the toggle live: at 89x19 the version has
+    /// The gear-only branch keeps the toggle live: at 80x19 the version has
     /// no room, the gear draws in the last cell, and clicking it opens.
     #[test]
     fn settings_gear_only_cell_opens_settings() {
@@ -3856,7 +4401,7 @@ mod tests {
         app.fleet = one_row(Some("api"));
         app.model = Model::new(&app.fleet);
         app.take(Reading::Owner, Instant::now());
-        let mut buf = Buffer::empty(Rect::new(0, 0, 89, 19));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 19));
         app.frame(&mut buf);
         let shown = text(&buf);
         assert!(
@@ -3872,7 +4417,7 @@ mod tests {
         assert!(
             app.mouse(super::Mouse {
                 kind: super::MouseKind::Click,
-                column: 88,
+                column: 79,
                 row: 18,
             }),
             "gear cell opens"
@@ -4228,6 +4773,7 @@ mod tests {
         assert_eq!(app.compose(Key::Text(b"keep me".to_vec()), at), Some(()));
         meta(&root, &ID.replace("1234", "bbbb"), "colead");
         assert_eq!(app.compose(Key::Enter, at), Some(()));
+        assert!(app.deliver(), "the queued ask meets the admission");
         assert!(!app.composing(), "refused admission releases the lease");
         drop(crate::store::open(&dir).console_writer().expect("released"));
         assert_eq!(

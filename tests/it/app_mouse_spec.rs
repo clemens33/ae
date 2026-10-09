@@ -792,7 +792,7 @@ fn live_app_mouse_mode_set_exact() {
         let got = rig.tmux(&["display-message", "-p", "-t", &pane, format]);
         assert_eq!(got.trim(), want, "{format} while running");
     }
-    rig.tmux(&["send-keys", "-t", &pane, "q"]);
+    rig.tmux(&["send-keys", "-t", &pane, "q", "q"]);
     rig.wait(&pane, WAIT, "the app quit", |screen| {
         !screen.contains("Sessions 1")
     });

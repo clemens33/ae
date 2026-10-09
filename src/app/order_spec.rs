@@ -361,7 +361,7 @@ fn same_drain_digits_and_arrows_act_on_the_last_frame_before_reordering() {
                 &mut app,
                 &mut Keys::app(),
                 &rx,
-                Some(Wake::Answer(Box::new(Answer::Fleet(reordered(&root)))))
+                &mut Some(Wake::Answer(Box::new(Answer::Fleet(reordered(&root)))))
             ),
             Some(true)
         );

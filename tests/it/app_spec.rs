@@ -1300,7 +1300,7 @@ fn app_draw_home_160x43() {
         "! next need",
         "Tab overview / agents",
         "Enter write",
-        "q quit",
+        "qq quit",
     ] {
         assert!(keys.contains(segment), "keys carry {segment}: {keys:?}");
     }
@@ -1825,6 +1825,6 @@ fn app_draw_home_not_owner_is_read_only() {
     assert!(!row_text(&buf, 1).contains("viewed from"));
     assert_eq!(
         chat_text(&buf, 39, 44).trim_start(),
-        "read-only · owned elsewhere - prefix h opens it"
+        "read-only · owned elsewhere"
     );
 }

@@ -259,7 +259,7 @@ Usage:
                          asks and replies, say lines, and live decision cards. Read only;
                          --follow keeps printing what is new every 5 s, --all adds replies
   ae app [session]       The fleet in a sidebar beside one session's overview, agents and
-                         chat, drawn in this terminal; typing reaches only the home
+                         chat, drawn in this terminal; typing reaches the selected
                          session's lead pair
   ae quota               Show local cached quota windows for configured agent profiles
   ae usage [name…] [--json]

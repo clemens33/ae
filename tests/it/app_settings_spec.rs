@@ -29,15 +29,15 @@ use ratatui_core::style::Color;
 
 #[path = "app_instructions_spec.rs"]
 mod instructions;
+#[path = "app_typing_spec.rs"]
+mod typing;
 
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
 const TID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);
 const FRAME: Duration = Duration::from_secs(3);
 const REFRESH_SLACK: Duration = Duration::from_secs(12);
-const HINTS: &str = "  browse   1-9 session   ! next need   Tab overview / agents   q quit";
-const HOME_HINTS: &str =
-    "  browse   1-9 session   ! next need   Tab overview / agents   Enter write   q quit";
+const HINTS: &str = "  browse   1-9 session   j/k move   ! next need   Tab overview / agents   PgUp/PgDn scroll   Esc home   s settings   ? help   qq quit";
 const WORKSPACE_KEYS: [&str; 20] = [
     "main",
     "workers",
@@ -102,8 +102,8 @@ fn row(buf: &Buffer, y: u16) -> String {
 }
 
 #[test]
-fn version_and_gear_end_the_keys_row_without_moving_existing_hints() {
-    for width in [100, 160, 220] {
+fn version_and_gear_end_the_keys_row_without_moving_complete_hints() {
+    for width in [160, 220, 300] {
         for icons in [true, false] {
             let look = Look::read(if icons { "on" } else { "off" }, "", "off", "off");
             let buf = closed_frame(width, 28, &look, false);
@@ -118,25 +118,32 @@ fn version_and_gear_end_the_keys_row_without_moving_existing_hints() {
 }
 
 #[test]
-fn narrow_keys_keep_every_old_hint_cell_and_drop_version_first() {
-    // The old home row occupies 83 cells. At 89 there is room for a gear,
-    // never for the version. At smaller widths even the hints are clipped.
+fn narrow_keys_keep_priority_hints_and_drop_version_first() {
+    // R4(c): complete hint groups yield in a fixed priority; help remains.
     for (width, height) in [(89, 19), (60, 12), (40, 8)] {
         let buf = closed_frame(width, height, &Look::read("off", "", "off", "off"), true);
         let line = row(&buf, height - 1);
-        let old: String = HOME_HINTS.chars().take(usize::from(width)).collect();
+        let old = typing::expected_browse(width, true);
         assert!(
             line.starts_with(&old),
             "{width}: hint cells changed: {line:?}"
         );
-        assert!(
-            !line.contains(&ae::version_line()),
-            "version must yield: {line:?}"
-        );
-        if width == 89 {
+        let version = format!("{} *", ae::version_line());
+        if old.len() + 2 + version.len() <= usize::from(width) {
+            assert!(
+                line.trim_end().ends_with(&version),
+                "version fits after priority hints: {line:?}"
+            );
+        } else {
+            assert!(
+                !line.contains(&ae::version_line()),
+                "version must yield: {line:?}"
+            );
+        }
+        if old.len() + 3 <= usize::from(width) {
             assert!(
                 line.trim_end().ends_with('*'),
-                "gear remains after version yields: {line:?}"
+                "gear remains when priority hints leave room: {line:?}"
             );
         } else {
             assert_eq!(line, old, "no old clipped cell displaced");
@@ -612,6 +619,7 @@ fn settings_keys_tabs_and_all_three_close_keys_act_on_the_drawn_screen() {
         rig.tab(&pane, "Tab", "Config");
         rig.tab(&pane, "Tab", "About");
         rig.tab(&pane, "Tab", "Instructions");
+        rig.tab(&pane, "Tab", "Keys");
         rig.tab(&pane, "Tab", "Quota");
         for (key, tab) in [("3", "About"), ("1", "Quota"), ("2", "Config")] {
             rig.tab(&pane, key, tab);
@@ -799,7 +807,7 @@ fn smallest_supported_settings_panel_keeps_title_tabs_and_a_close_hint() {
             .is_some_and(|line| line.contains("Settings"))
     );
     assert!(screen.lines().nth(1).is_some_and(|line| {
-        ["Quota", "Config", "About", "Instructions"]
+        ["Quota", "Config", "About", "Instructions", "Keys"]
             .iter()
             .all(|tab| line.contains(tab))
     }));
