@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.48] - 2026-10-10
+- Mark a chat turn and copy its body to the tmux buffer
+- Copying a chat turn out of ae app
+- Alacritty needs the clipboard feature only with TERM=alacritty
+- App tests: pin the turn keys' view rule and the turn press targets
+
 ## [v2026.10.47] - 2026-10-10
 - The selected session's lane paints from its journal first, then its current and earlier conversations
 
