@@ -2,6 +2,7 @@
 //! Oracles are literal fixture bytes, captured terminal cells and the public
 //! help. Reuses the private Settings rig; no new process or environment door.
 
+use crate::app_mode::writing;
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -85,7 +86,7 @@ fn browse_paste_enters_write_with_literal_controls_and_no_action() {
     let payload = "/close\nq s 9 !\nPASTE-END";
     rig.literal(&pane, &format!("\x1b[200~{payload}\x03\x1b[201~"));
     let shown = rig.wait(&pane, FRAME, "R1 paste becomes a draft", |s| {
-        s.contains("Enter sends") && s.contains("PASTE-END")
+        writing(s) && s.contains("PASTE-END")
     });
     assert!(shown.contains("/close") && shown.contains("q s 9 !"));
     alive(&rig, &pane);
@@ -106,7 +107,7 @@ fn a_split_paste_preserves_every_fragment_and_the_submitted_literal_bytes() {
     let (rig, pane) = open("typesplit");
     rig.literal(&pane, "\x1b[200~PASTE-FIRST");
     rig.wait(&pane, FRAME, "R1 first fragment enters writing", |s| {
-        s.contains("PASTE-FIRST") && s.contains("Enter sends")
+        s.contains("PASTE-FIRST") && writing(s)
     });
     rig.literal(&pane, "\nPASTE-MIDDLE");
     rig.wait(&pane, FRAME, "B1 second read keeps the paste origin", |s| {
@@ -145,7 +146,7 @@ fn read_only_paste_names_the_refusal_and_never_writes() {
         s.contains("paste not taken") && s.contains("stopped")
     });
     assert_eq!(shown.matches("paste not taken").count(), 1);
-    assert!(!shown.contains("PASTE-REFUSED") && !shown.contains("Enter sends"));
+    assert!(!shown.contains("PASTE-REFUSED") && !writing(&shown));
     assert_eq!(journal(&rig), home);
     assert!(!stopped.join("console.draft").exists());
     alive(&rig, &pane);
@@ -168,7 +169,7 @@ fn paste_refused_by_a_live_writer_lease_has_one_visible_reason() {
         s.contains("paste not taken") && s.contains("writing to")
     });
     assert_eq!(shown.matches("paste not taken").count(), 1);
-    assert!(!shown.contains("Enter sends"));
+    assert!(!writing(&shown));
     assert!(journal(&rig).is_empty());
     alive(&rig, &pane);
 }
@@ -244,7 +245,7 @@ fn quick_in_one_read_keeps_the_app_up_and_the_old_key_origin_guard() {
     let seat = rig.screen(&rig.tool.pane);
     rig.literal(&pane, "quick");
     let shown = rig.wait(&pane, FRAME, "R2 quick keeps the app and B4 guard", |s| {
-        s.contains("Enter sends") && s.contains("dropped the keys typed before writing started")
+        writing(s) && s.contains("dropped the keys typed before writing started")
     });
     assert!(!shown.contains("q again to quit"));
     assert_eq!(journal(&rig), before);
@@ -270,7 +271,7 @@ fn quick_key_by_key_keeps_ck_as_the_draft() {
         &pane,
         FRAME,
         "GUARD i lease acquired before remaining keys",
-        |s| s.contains("Enter sends"),
+        writing,
     );
     rig.literal(&pane, "c");
     rig.literal(&pane, "k");
@@ -325,9 +326,7 @@ fn hello_on_a_stopped_selection_keeps_app_and_seats_untouched() {
 fn nonempty_draft_interrupt_arms_and_an_edit_disarms_it() {
     let (rig, pane) = open("typectrlc");
     rig.keys(&pane, "Enter");
-    rig.wait(&pane, FRAME, "GUARD writing before draft", |s| {
-        s.contains("Enter sends")
-    });
+    rig.wait(&pane, FRAME, "GUARD writing before draft", writing);
     rig.literal(&pane, "DRAFT-KEPT");
     rig.wait(&pane, FRAME, "GUARD draft drawn before interrupt", |s| {
         s.contains("DRAFT-KEPT")
@@ -520,7 +519,7 @@ fn ask_in_flight_names_target_then_outcome_is_visible_exactly_once() {
     let (rig, pane) = open("typeflight");
     rig.keys(&pane, "Enter");
     rig.wait(&pane, FRAME, "GUARD acquired writer before ask", |s| {
-        s.contains("Enter sends")
+        writing(s)
     });
     rig.literal(&pane, "FLIGHT-BODY");
     rig.wait(&pane, FRAME, "GUARD whole body drawn", |s| {
@@ -556,7 +555,7 @@ fn refused_delivery_outcome_is_not_duplicated_by_a_notice_or_refresh() {
     let (rig, pane) = open("typeoutcome");
     rig.keys(&pane, "Enter");
     rig.wait(&pane, FRAME, "GUARD writer before refused delivery", |s| {
-        s.contains("Enter sends")
+        writing(s)
     });
     rig.literal(&pane, "OUTCOME-BODY");
     rig.wait(&pane, FRAME, "GUARD complete outcome body drawn", |s| {

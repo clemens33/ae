@@ -8,6 +8,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
+use crate::app_mode::writing;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -185,7 +186,7 @@ impl Rig {
     fn writing(&self, pane: &str) -> Frame {
         self.send(pane, "i");
         self.wait(pane, FRAME, "GUARD lease acquired before draft keys", |f| {
-            f.text.contains("Enter sends")
+            writing(&f.text)
         })
     }
 
@@ -214,8 +215,8 @@ impl Rig {
                     // tmux can resize its old screen before ae repaints: a
                     // bottom deletion loses the keys row; a top deletion
                     // keeps it but can leave the old grown window too tall.
-                    let writing = f.text.contains("Enter sends");
-                    let cap = if writing {
+                    let composing = writing(&f.text);
+                    let cap = if composing {
                         height.saturating_sub(11).clamp(1, 10)
                     } else {
                         1
@@ -274,14 +275,7 @@ impl Rig {
             height - 3 - rows.len(),
             "grown composer consumes lane rows, not hint/keys"
         );
-        assert!(
-            frame
-                .text
-                .lines()
-                .nth(height - 3)
-                .expect("hint")
-                .contains("Enter sends")
-        );
+        assert!(writing(&frame.text));
         assert!(
             frame
                 .text
@@ -459,9 +453,7 @@ fn an_exactly_full_final_row_has_a_new_empty_cursor_row() {
         f.text.contains(&"x".repeat(width)) && f.text.contains("draft kept")
     });
     rig.send(&pane, "i");
-    let frame = rig.wait(&pane, FRAME, "GUARD resumed writing", |f| {
-        f.text.contains("Enter sends")
-    });
+    let frame = rig.wait(&pane, FRAME, "GUARD resumed writing", |f| writing(&f.text));
     rig.holds(&frame, &["x".repeat(width), String::new()], 1, 0);
 }
 
@@ -642,7 +634,7 @@ fn wheel_over_grown_composer_moves_three_lane_rows_and_bounds_survive_shrink() {
     );
     rig.send(&pane, "\x15");
     let compact = rig.wait(&pane, FRAME, "GUARD clear shrinks draft", |f| {
-        !f.text.contains("L19") && f.text.contains("Enter sends")
+        !f.text.contains("L19") && writing(&f.text)
     });
     rig.holds(&compact, &strings(&[""]), 0, 0);
     let first = compact
@@ -685,13 +677,13 @@ fn settings_hides_the_writing_cursor_then_restores_same_draft_cell() {
             f.text.contains("Settings")
                 && f.text.contains("Quota")
                 && f.text.contains("About")
-                && !f.text.contains("Enter sends")
+                && !writing(&f.text)
         },
     );
     assert_eq!(settings.cursor.0, 0, "Settings hides cursor");
     rig.send(&pane, "\x1b");
     let resumed = rig.wait(&pane, FRAME, "GUARD Settings closed", |f| {
-        f.text.contains("Enter sends") && f.text.contains("gear-tail")
+        writing(&f.text) && f.text.contains("gear-tail")
     });
     rig.holds(&resumed, &strings(&["gear-head", "gear-tail"]), 1, 9);
     assert_eq!(resumed.cursor, before.cursor);
@@ -735,7 +727,7 @@ fn leaving_writing_compacts_kept_draft_and_discards_the_old_grown_hit_target() {
         &pane,
         FRAME,
         "GUARD current compact target enters writing",
-        |f| f.text.contains("Enter sends"),
+        |f| crate::app_mode::writing(&f.text),
     );
     rig.holds(
         &resumed,
@@ -797,7 +789,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
     rig.paste(&pane, "memory", "lead   memory");
     fs::remove_file(rig.tool.dir.join("meta")).expect("revoke home proof");
     let revoked = rig.wait(&pane, WAIT, "GUARD refresh revoked writing", |f| {
-        f.text.contains("not writing:") && !f.text.contains("Enter sends")
+        f.text.contains("not writing:") && !writing(&f.text)
     });
     assert_eq!(revoked.cursor.0, 0);
     rig.send(&pane, "\x1b");

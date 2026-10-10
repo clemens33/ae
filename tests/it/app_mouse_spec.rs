@@ -22,6 +22,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
+use crate::app_mode::writing;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -547,9 +548,7 @@ fn click_composer_writes_then_row_returns_with_draft() {
     });
     let (col, row) = cell_of(&screen, &address).expect("the composer row");
     rig.click(&pane, col, row);
-    rig.wait(&pane, WAIT, "writing starts", |screen| {
-        screen.contains("Enter sends")
-    });
+    rig.wait(&pane, WAIT, "writing starts", writing);
     rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "mousedraft"]);
     let screen = rig.wait(&pane, WAIT, "the draft shows", |screen| {
         screen.contains("mousedraft")
@@ -690,9 +689,7 @@ fn narrow_clicks_hit_drawn_only() {
     });
     let (col, row) = cell_of(&screen, &address).expect("the composer row");
     rig.click(&pane, col, row);
-    rig.wait(&pane, WAIT, "writing starts", |screen| {
-        screen.contains("Enter sends")
-    });
+    rig.wait(&pane, WAIT, "writing starts", writing);
 }
 
 /// Ruling 6: below the minimum size clicks no-op; back at full size the
@@ -814,9 +811,7 @@ fn wheel_while_writing_scrolls_and_keeps_draft() {
         screen.contains("scrollprobe-newest") && !screen.contains("scrollprobe-oldest")
     });
     rig.tmux(&["send-keys", "-t", &pane, "i"]);
-    rig.wait(&pane, WAIT, "writing starts", |screen| {
-        screen.contains("Enter sends")
-    });
+    rig.wait(&pane, WAIT, "writing starts", writing);
     rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "wheeldraft"]);
     let screen = rig.wait(&pane, WAIT, "the draft shows", |screen| {
         screen.contains("wheeldraft")
@@ -826,9 +821,7 @@ fn wheel_while_writing_scrolls_and_keeps_draft() {
         rig.wheel(&pane, true, col, row - 4);
     }
     rig.wait(&pane, WAIT, "scrolled and still writing", |screen| {
-        screen.contains("newer turns below")
-            && screen.contains("Enter sends")
-            && screen.contains("wheeldraft")
+        screen.contains("newer turns below") && writing(screen) && screen.contains("wheeldraft")
     });
 }
 
@@ -856,10 +849,7 @@ fn click_composer_on_stopped_row_noops() {
         screen.contains("amstop is stopped"),
         "still the browse composer:\n{screen}"
     );
-    assert!(
-        !screen.contains("Enter sends"),
-        "no writing started:\n{screen}"
-    );
+    assert!(!writing(&screen), "no writing started:\n{screen}");
 }
 
 /// Ruling 5: one wheel notch moves the chat exactly 3 rows, read off the
@@ -911,9 +901,7 @@ fn click_tab_while_writing_returns_with_draft() {
         screen.contains("Sessions 1")
     });
     rig.tmux(&["send-keys", "-t", &pane, "i"]);
-    rig.wait(&pane, WAIT, "writing starts", |screen| {
-        screen.contains("Enter sends")
-    });
+    rig.wait(&pane, WAIT, "writing starts", writing);
     rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "tabdraft"]);
     let screen = rig.wait(&pane, WAIT, "the draft shows", |screen| {
         screen.contains("tabdraft")

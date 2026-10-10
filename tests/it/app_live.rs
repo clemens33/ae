@@ -9,6 +9,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
+use crate::app_mode::writing;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -359,9 +360,7 @@ fn close_in_the_app_honours_a_retire_of_the_asked_seat() {
         screen.contains(&composer)
     });
     rig.tmux(&["send-keys", "-t", &pane, "i"]);
-    rig.wait(&pane, WAIT, "writing starts", |screen| {
-        screen.contains("Enter sends")
-    });
+    rig.wait(&pane, WAIT, "writing starts", writing);
     rig.tmux(&["send-keys", "-t", &pane, "-l", "/close"]);
     rig.tmux(&["send-keys", "-t", &pane, "Enter"]);
     let screen = rig.wait(&pane, WAIT, "the close is answered", |screen| {

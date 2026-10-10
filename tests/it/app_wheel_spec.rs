@@ -9,6 +9,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
+use crate::app_mode::writing;
 use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
@@ -259,11 +260,11 @@ impl Rig {
             "selection stayed home: {header}"
         );
         assert!(
-            screen.contains(if writing {
-                "Enter sends"
+            if writing {
+                crate::app_mode::writing(screen)
             } else {
-                "Enter writes"
-            }),
+                screen.contains("Enter writes")
+            },
             "input mode preserved:\n{screen}"
         );
         assert!(
@@ -822,11 +823,11 @@ fn list_and_body_wheel_while_writing_keep_exact_draft_mode_selection_and_journal
     let before = fs::read(rig.tool.dir.join("events.jsonl")).expect("before journal");
     rig.literal(&pane, "i");
     rig.wait(&pane, FRAME, "GUARD write mode before draft bytes", |s| {
-        s.contains("Enter sends")
+        writing(s)
     });
     rig.literal(&pane, "WHEEL-draft-123");
     rig.wait(&pane, FRAME, "GUARD composing draft", |s| {
-        s.contains("WHEEL-draft-123") && s.contains("Enter sends")
+        s.contains("WHEEL-draft-123") && writing(s)
     });
     rig.report(&pane, 65, sidebar_cell(&first, &rig.home), 1);
     let list = rig.wait(

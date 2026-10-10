@@ -8,6 +8,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
+use crate::app_mode::writing;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -357,7 +358,7 @@ impl Rig {
         );
         self.raw(&self.s, pane, "i");
         let screen = self.wait(&self.s, pane, "B2 selected write lease acquired", |s| {
-            s.contains("Enter sends") && s.contains(&address)
+            writing(s) && s.contains(&address)
         });
         held(&target.dir);
         assert_eq!(cursor(self, &self.s, pane).0, 1, "C1 writing cursor shown");
@@ -370,14 +371,14 @@ impl Rig {
             &self.s,
             pane,
             &format!("GUARD fresh draft drawn: {text}"),
-            |s| composer_has(s, text) && s.contains("Enter sends"),
+            |s| composer_has(s, text) && writing(s),
         )
     }
 
     fn escape(&self, pane: &str, target: &Target) {
         self.raw(&self.s, pane, "\x1b");
         self.wait(&self.s, pane, "GUARD Esc compacts browse", |s| {
-            s.contains("Enter writes") && !s.contains("Enter sends")
+            s.contains("Enter writes") && !writing(s)
         });
         free(&target.dir);
     }
@@ -443,7 +444,7 @@ impl Rig {
     fn command(&self, pane: &str, command: &str, witness: &str, finished: impl Fn(&str) -> bool) {
         self.raw(&self.s, pane, "\x15");
         self.wait(&self.s, pane, "GUARD previous draft cleared", |s| {
-            s.contains("Enter sends")
+            writing(s)
                 && self
                     .tmux(
                         &self.s,
@@ -627,9 +628,7 @@ fn home_control_preserves_the_original_address_journal_and_terminal_cursor() {
     });
     assert!(!frame.contains("(not home)"));
     rig.raw(&rig.s, &pane, "i");
-    rig.wait(&rig.s, &pane, "home control lease", |s| {
-        s.contains("Enter sends")
-    });
+    rig.wait(&rig.s, &pane, "home control lease", writing);
     held(&rig.s.dir);
     rig.send(&pane, &rig.s, "unchanged-home-control", 1);
     rig.no_writes(&rig.t);
@@ -761,7 +760,7 @@ fn card_switch_releases_old_target_before_new_entry_and_keeps_both_drafts_and_sp
     drop(s_witness);
     rig.raw(&rig.s, &pane, "i");
     rig.wait(&rig.s, &pane, "B2 parked S re-entry", |s| {
-        s.contains("Enter sends") && s.contains("› colead") && s.contains("s-private-prose")
+        writing(s) && s.contains("› colead") && s.contains("s-private-prose")
     });
     held(&rig.s.dir);
     let t = rig.select(&pane, &rig.t);
@@ -796,7 +795,7 @@ fn writing_keys_and_list_wheel_cannot_readdress_a_target() {
             .nth(1)
             .is_some_and(|row| row.contains(&rig.t.name))
     );
-    assert!(frame.contains("j!1-q-after-wheel") && frame.contains("Enter sends"));
+    assert!(frame.contains("j!1-q-after-wheel") && writing(&frame));
     held(&rig.t.dir);
     free(&rig.s.dir);
     rig.no_writes(&rig.s);
@@ -828,7 +827,7 @@ fn acquisition_restores_each_targets_own_disk_only_into_its_empty_memory() {
     );
     rig.raw(&rig.s, &pane, "\x15");
     rig.wait(&rig.s, &pane, "GUARD target memory cleared", |s| {
-        !s.contains("t-on-disk-in-memory") && s.contains("Enter sends")
+        !s.contains("t-on-disk-in-memory") && writing(s)
     });
     rig.escape(&pane, &rig.t);
     let frame = rig.enter(&pane, &rig.t, false);
@@ -888,7 +887,7 @@ fn per_target_five_open_cap_and_both_close_forms_touch_only_that_journal() {
     assert_eq!(closed.len(), 2);
     assert_eq!(closed[1].reference.as_deref(), Some(t_ids[0].as_str()));
     let before = rig.wait(&rig.s, &pane, "GUARD T close completed", |s| {
-        s.contains("closed an ask") && s.contains("Enter sends")
+        s.contains("closed an ask") && writing(s)
     });
     let refused_before = before.matches("refused:").count();
     rig.command(&pane, &format!("/close {s_id}"), "refused", |s| {
@@ -975,7 +974,7 @@ fn changed_pair_refuses_retry_and_reentry_and_original_pair_recovers_its_kept_pr
     let refused = rig.wait(&rig.s, &pane, "P1 changed pair refuses fresh entry", |s| {
         s.contains("not writing:") && s.contains("pair") && s.contains("restart")
     });
-    assert!(!refused.contains("Enter sends"));
+    assert!(!writing(&refused));
     free(&rig.t.dir);
     rig.raw(&rig.s, &pane, "q\r");
     rig.wait(
@@ -1016,7 +1015,7 @@ fn changed_pair_refuses_retry_and_reentry_and_original_pair_recovers_its_kept_pr
     });
     rig.raw(&rig.s, &pane, "\r");
     let restored = rig.wait(&rig.s, &pane, "P1 original pair remains bound", |s| {
-        s.contains("Enter sends") && s.contains("parked-original-pair")
+        writing(s) && s.contains("parked-original-pair")
     });
     assert!(restored.contains(&rig.address(&rig.t, false, "lead")));
     assert!(
@@ -1192,7 +1191,7 @@ fn stopped_missing_id_and_unreadable_pair_refuse_selected_writes_without_any_dis
         assert_eq!(cursor(&rig, &rig.s, &pane).0, 0);
         rig.raw(&rig.s, &pane, "\x1b");
         rig.wait(&rig.s, &pane, "D3 named refusal remains read-only", |s| {
-            s.contains("read-only ·") && s.contains(reason) && !s.contains("Enter sends")
+            s.contains("read-only ·") && s.contains(reason) && !writing(s)
         });
         rig.no_writes(&rig.s);
         rig.no_writes(&rig.t);
@@ -1230,7 +1229,7 @@ fn outside_tmux_without_home_names_a_stopped_selected_target_and_never_writes() 
         &rig.s,
         &pane,
         "P3/D3 stopped selection remains read-only",
-        |s| s.contains("read-only ·") && s.contains(&reason) && !s.contains("Enter sends"),
+        |s| s.contains("read-only ·") && s.contains(&reason) && !writing(s),
     );
     rig.no_writes(&rig.s);
     rig.no_writes(&rig.t);
@@ -1295,7 +1294,7 @@ fn old_entry_text_and_enter_never_duplicate_a_stream_in_the_selected_target() {
         drop(read);
         drop(keys);
         let acquired = rig.wait(&rig.s, &q, "B2 Q acquires a fresh selected lease", |s| {
-            s.contains("Enter sends") && s.contains(&rig.address(&rig.t, false, "lead"))
+            writing(s) && s.contains(&rig.address(&rig.t, false, "lead"))
         });
         held(&rig.t.dir);
         assert!(
@@ -1382,7 +1381,7 @@ fn late_proof(another: bool) {
     // an i in the exit chunk is correctly refused by B1's release cut.
     rig.raw(&rig.s, &pane, "i");
     rig.wait(&rig.s, &pane, "GUARD new writer before late S proof", |s| {
-        s.contains("Enter sends") && s.lines().nth(1).is_some_and(|r| r.contains(&target.name))
+        writing(s) && s.lines().nth(1).is_some_and(|r| r.contains(&target.name))
     });
     held(&target.dir);
     rig.typed(&pane, "-new-entry");
@@ -1392,7 +1391,7 @@ fn late_proof(another: bool) {
     // The journal gate attests that the reader has dispatched the late
     // Owned answer before this new key read supplies a UI witness.
     let survived = rig.typed(&pane, "-after-old-proof");
-    assert!(survived.contains("Enter sends"));
+    assert!(writing(&survived));
     assert!(
         survived
             .lines()
@@ -1488,7 +1487,7 @@ fn cached_target_outside_this_state_root_refuses_without_recreating_its_director
         "D3 cached out-of-root target refuses entry",
         |s| s.contains("not writing:") || s.contains("read-only ·"),
     );
-    assert!(!refused.contains("Enter sends"));
+    assert!(!writing(&refused));
     assert!(
         refused
             .lines()

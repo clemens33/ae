@@ -8,6 +8,7 @@
     reason = "acceptance owns private stores, tmux clients and terminal fixtures"
 )]
 
+use crate::app_mode::writing;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -358,9 +359,7 @@ impl Rig {
 
     fn composer(&self, app: &str) {
         self.key(app, "Enter");
-        self.wait_screen(app, "D2 Enter still enters composer", |s| {
-            s.contains("Enter sends")
-        });
+        self.wait_screen(app, "D2 Enter still enters composer", writing);
         // A visible journal row from a NEW settled read proves that the
         // composer entered before the roster answer arrived. The marker
         // is fixture input, never an ask or a delivery to a seat.

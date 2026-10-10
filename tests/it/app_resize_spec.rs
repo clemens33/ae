@@ -10,6 +10,7 @@
     reason = "acceptance owns isolated terminal fixtures and reads their effects"
 )]
 
+use crate::app_mode::writing;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -554,7 +555,7 @@ fn live_chosen_sizes_survive_shrink_hidden_sidebar_and_growth() {
         &pane,
         MOVE,
         "ordered writing sentinel after invisible-edge motion",
-        |screen| screen.contains("Enter sends"),
+        writing,
     );
     rig.resize(&pane, 160, 45);
     let screen = rig.vertical(&pane, 70);
@@ -599,9 +600,7 @@ fn live_key_and_paste_cancel_drag_keep_size_and_act_as_before() {
     rig.grab_vertical(&pane, 66);
     rig.vertical(&pane, 66);
     rig.send(&pane, "i");
-    rig.wait(&pane, MOVE, "key enters writing", |screen| {
-        screen.contains("Enter sends")
-    });
+    rig.wait(&pane, MOVE, "key enters writing", writing);
     rig.motion(&pane, 80, 1);
     rig.send(&pane, "key-sentinel");
     let screen = rig.wait(
@@ -626,7 +625,7 @@ fn live_key_and_paste_cancel_drag_keep_size_and_act_as_before() {
         |screen| screen.contains("paste-kept!"),
     );
     assert_eq!(vertical_rule(&screen), Some(60), "paste ended lost drag");
-    assert!(screen.contains("Enter sends") && screen.contains("paste-kept"));
+    assert!(writing(&screen) && screen.contains("paste-kept"));
 }
 
 #[test]
@@ -672,9 +671,7 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
     rig.resize(&pane, 100, 30);
     rig.vertical(&pane, 34);
     rig.send(&pane, "i");
-    rig.wait(&pane, MOVE, "writing started", |screen| {
-        screen.contains("Enter sends")
-    });
+    rig.wait(&pane, MOVE, "writing started", writing);
     rig.send(&pane, &format!("{}wrap-end", "a".repeat(80)));
     let before = rig.wait(&pane, MOVE, "long draft drawn", |screen| {
         screen.contains("wrap-end")
@@ -725,7 +722,7 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
     );
     rig.grab_vertical(&pane, 56);
     let after = rig.vertical(&pane, 56);
-    assert!(after.contains("Enter sends"), "drag keeps composing active");
+    assert!(writing(&after), "drag keeps composing active");
     assert!(after.contains("wrap-end"), "draft kept");
     // Whole draft after the drag: 80 = 4*18 + 8, then wrap-end.
     assert_eq!(

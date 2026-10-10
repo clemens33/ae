@@ -9,6 +9,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
+use crate::app_mode::writing;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -305,9 +306,7 @@ impl Rig {
 
     fn enter(&self, pane: &str) {
         self.raw(pane, "i");
-        self.wait(pane, "R-B1 home app can acquire write mode", |s| {
-            s.contains("Enter sends")
-        });
+        self.wait(pane, "R-B1 home app can acquire write mode", writing);
         self.held();
     }
 
@@ -514,7 +513,7 @@ fn old_entry_enter_cannot_submit_a_line_restored_by_that_acquisition() {
     let screen = rig.wait(
         &pane,
         "R-B2/R-B6 restored line waits for a fresh Enter",
-        |s| s.contains("keys typed before writing started") && s.contains("Enter sends"),
+        |s| s.contains("keys typed before writing started") && writing(s),
     );
     assert!(rig.draft_row(&screen).contains("kept-before-entry"));
     assert!(
@@ -600,7 +599,7 @@ fn processing_lag_cannot_submit_a_copied_stream_at_any_byte_boundary() {
         let screen = rig.wait(
             &q,
             "R-B2 delayed old entry acquires with a new real instant",
-            |s| s.contains("Enter sends"),
+            writing,
         );
         rig.held();
         assert!(
@@ -648,7 +647,7 @@ fn busy_entry_is_held_across_reads_and_retry_drops_its_own_old_tail() {
     let screen = rig.wait(
         &pane,
         "fresh Enter retry acquires and drops old retry tail",
-        |s| s.contains("Enter sends") && s.contains("keys typed before writing started"),
+        |s| writing(s) && s.contains("keys typed before writing started"),
     );
     assert!(screen.contains("Topics"), "held Tab never changed Overview");
     assert!(!rig.draft_row(&screen).contains("RETRY"));
@@ -810,7 +809,7 @@ fn settings_suspends_writing_with_the_lease_and_draft_then_resumes() {
     rig.wait(
         &pane,
         "R-B5 closing Settings resumes the same writing draft",
-        |s| s.contains("Enter sends") && s.contains("settings-draft"),
+        |s| writing(s) && s.contains("settings-draft"),
     );
     rig.held();
     rig.escape(&pane);
@@ -1075,9 +1074,7 @@ fn controls_real_submit_unknown_and_uncertain_paths_are_satisfiable() {
         // The base can compose in its OWN console. This control deliberately
         // requires no B1 lease, so delivery/setup errors cannot count as RED.
         rig.raw(&pane, "i");
-        rig.wait(&pane, "GUARD base owner may compose", |s| {
-            s.contains("Enter sends")
-        });
+        rig.wait(&pane, "GUARD base owner may compose", writing);
         failed_send(&rig, &pane, uncertain);
     }
 }
@@ -1090,9 +1087,7 @@ fn controls_literal_delivery_and_each_old_read_boundary_are_attested() {
         let p = rig.console(false);
         let (q, gates) = rig.outside("reader");
         rig.raw(&p, "i");
-        rig.wait(&p, "GUARD base owner composing", |s| {
-            s.contains("Enter sends")
-        });
+        rig.wait(&p, "GUARD base owner composing", writing);
         rig.typed(&p, "X");
         let keys = Hold::new(&gates, "@app-keys");
         rig.raw(&q, &STREAM[..split]);
@@ -1130,8 +1125,6 @@ fn refresh_releases_an_identity_pair_or_home_that_is_no_longer_proven() {
         // permission and release, rather than leaving a stale writer alive.
         rig.free();
         assert!(rig.asks().is_empty());
-        rig.wait(&pane, "R-B5 refresh left write mode", |s| {
-            !s.contains("Enter sends")
-        });
+        rig.wait(&pane, "R-B5 refresh left write mode", |s| !writing(s));
     }
 }
