@@ -2336,7 +2336,7 @@ mod tests {
             coverage: Vec::new(),
         });
         let shown = framed(&mut app);
-        assert!(shown.lines().last().expect("keys row").contains("qq quit"));
+        assert!(shown.lines().last().expect("keys row").contains("? keys"));
         let mut mouse = super::Mouse {
             kind: super::MouseKind::WheelUp,
             column: 159,
@@ -3297,75 +3297,6 @@ mod tests {
         let rows: Vec<&str> = shown.lines().collect();
         assert!(rows[42].contains("paste not taken: read-only"), "{shown}");
         assert!(rows[41].trim().is_empty() || !rows[41].contains("paste not taken"));
-    }
-
-    /// The browse hints for a row `width` cells wide, from the requirement's
-    /// own table (docs/app.md, the frozen keys-row acceptance): the longest
-    /// prefix of the priority order whose hints, three cells apart after the
-    /// eight cells of margin and the word `browse`, all fit; `Enter write`
-    /// only for a writable selection. Shown in navigation order.
-    fn browse_words(width: u16, writable: bool) -> Vec<&'static str> {
-        let priority = [
-            "? help",
-            "1-9 session",
-            "Enter write",
-            "qq quit",
-            "! next need",
-            "Tab overview / agents",
-            "j/k move",
-            "PgUp/PgDn scroll",
-            "Esc home",
-            "s settings",
-        ];
-        let order = [1, 6, 4, 5, 7, 2, 8, 9, 0, 3];
-        let (mut chosen, mut used) = (Vec::new(), 8);
-        for (at, hint) in priority.iter().enumerate() {
-            if at == 2 && !writable {
-                continue;
-            }
-            used += 3 + hint.len();
-            if used > usize::from(width) {
-                break;
-            }
-            chosen.push(at);
-        }
-        let shown = order.iter().filter(|at| chosen.contains(at));
-        shown.map(|at| priority[*at]).collect()
-    }
-
-    /// The browse hints are the longest prefix of the priority order that fits:
-    /// asked for exactly the cells they take they all stay, and a cell less
-    /// drops one.
-    #[test]
-    fn the_browse_hints_that_fill_the_room_exactly_all_stay() {
-        for writable in [false, true] {
-            for room in 0..=200_u16 {
-                assert_eq!(
-                    draw::browse_hints(writable, false, room),
-                    browse_words(room + 8, writable),
-                    "{writable} {room}"
-                );
-            }
-        }
-    }
-
-    /// The keys row draws exactly the browse hints that fit the cells left
-    /// after its two cells of margin and the word `browse`, and no other.
-    #[test]
-    fn the_keys_row_draws_the_hints_that_fit_after_the_mode_word() {
-        let root = Root::new("keys-row");
-        let (mut app, _reader) = housed(&root);
-        let every = browse_words(u16::MAX, true);
-        for width in 40..=120_u16 {
-            let shown = framed_at(&mut app, width);
-            let last = shown.lines().last().expect("a keys row").to_owned();
-            let words = browse_words(width, true);
-            let row = format!("  browse   {}", words.join("   "));
-            assert!(last.starts_with(&row), "{width}: {row:?} in {last:?}");
-            for hint in every.iter().filter(|hint| !words.contains(hint)) {
-                assert!(!last.contains(hint), "{width}: {hint} in {last:?}");
-            }
-        }
     }
 
     /// The settings overlay puts three cells between its tab titles when all of
@@ -4864,10 +4795,10 @@ mod tests {
         );
     }
 
-    /// The gear-only branch keeps the toggle live: at 80x19 the version has
-    /// no room, the gear draws in the last cell, and clicking it opens.
+    /// The gear is the toggle: at 80x19 the version and the gear end the
+    /// keys row, and clicking the gear cell opens Settings.
     #[test]
-    fn settings_gear_only_cell_opens_settings() {
+    fn settings_gear_cell_beside_the_version_opens_settings() {
         let root = Root::new("settings-gear-only");
         let (ask, asks) = std::sync::mpsc::channel();
         let (mut app, _reader) = housed(&root);
@@ -4878,15 +4809,13 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 19));
         app.frame(&mut buf);
         let shown = text(&buf);
-        assert!(
-            !shown.contains(crate::version_line().as_str()),
-            "version has no room"
-        );
         let keys = shown.lines().last().expect("keys row");
         let tail = keys.trim_end();
+        let version = crate::version_line();
         assert!(
-            tail.ends_with('\u{2699}') || tail.ends_with('*'),
-            "gear drawn last: {tail:?}"
+            tail.ends_with(&format!("{version} \u{2699}"))
+                || tail.ends_with(&format!("{version} *")),
+            "version, then the gear last: {tail:?}"
         );
         assert!(
             app.mouse(super::Mouse {

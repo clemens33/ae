@@ -224,7 +224,8 @@ impl Rig {
                     let address = format!("to {} › lead", self.home);
                     f.text.lines().last().is_some_and(|row| {
                         row.chars().count() == width
-                            && (row.contains("Enter send") || row.contains("Enter write"))
+                            && (row.trim_start().starts_with("write")
+                                || row.trim_start().starts_with("browse"))
                     }) && f.text.lines().enumerate().any(|(row, text)| {
                         row >= height - 4 - cap && row <= height - 5 && text.contains(&address)
                     })
@@ -276,14 +277,6 @@ impl Rig {
             "grown composer consumes lane rows, not note/keys"
         );
         assert!(writing(&frame.text));
-        assert!(
-            frame
-                .text
-                .lines()
-                .nth(height - 1)
-                .expect("keys")
-                .contains("Enter send")
-        );
         assert_eq!(
             frame.cursor,
             (1, text_column + before_cells, top + 1 + cursor_row),

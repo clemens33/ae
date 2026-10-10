@@ -151,11 +151,11 @@ Browsing:
 No single printable key quits or moves your client: an armed `q` or `o` is
 disarmed by any other key or when its 2 seconds pass, so typing a word
 while browsing leaves the app up and no key reaches another pane. The keys
-row lists the keys that fit its width, in a fixed priority (`? help`,
-`1-9 session`, `Enter write`, `qq quit`, `! next need`, `Tab overview / agents`,
-`oo open seat`, `j/k move`, `PgUp/PgDn scroll`, `Esc home`, `n/p seat`,
-`s settings`); `?` lists them all. With seats on screen the row keeps its right
-end free for the gear, so the lowest-priority hints give way first.
+row is the mode word (`browse`, `write`, `held` or `settings`), at most one
+hint where its key works (`? keys` while browsing, which lists every key;
+`Esc close` in Settings; none while writing or held, which take every key),
+and at its right end `ae <version>` and the gear. Narrowing drops the version
+first, then the gear.
 
 A paste while browsing is never read as keys. On a writable session it starts
 writing with the paste as the draft, every fragment of it kept and nothing in
@@ -211,8 +211,7 @@ rows in the tab body: on Agents every seat, on Overview each **Waiting on you**
 entry (both rows of it). It starts on the first seat drawn, `n` / `p` step it
 through the drawn seats and wrap, a click on a seat row puts it there, and
 changing session or tab resets it. Rows scrolled out of the body are not
-stepped to; wheel first. `Enter` still writes. The keys row shows `o open seat`
-only while the tab body shows a seat.
+stepped to; wheel first. `Enter` still writes.
 
 A key acts on the seats the last frame drew, as it drew them: the seat's slot
 and name, and the session incarnation they were read from. A roster that moved

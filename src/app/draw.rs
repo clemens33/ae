@@ -1190,126 +1190,42 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
     }
 }
 
-/// When a browse key applies.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Need {
-    Always,
-    /// The selection can be written.
-    Writable,
-    /// The frame draws a seat.
-    Seats,
-}
-
-/// The browse keys, most important first: the keys-row hint, the place it
-/// draws at, when it applies, and the keys and meaning the help lists. The
-/// keys row and the Keys help both read this one table.
-const BROWSE_KEYS: [(&str, u8, Need, &str, &str); 12] = [
-    ("? help", 10, Need::Always, "?", "this help"),
-    ("1-9 session", 0, Need::Always, "1-9", "select that session"),
-    (
-        "Enter write",
-        7,
-        Need::Writable,
-        "Enter i",
-        "write; a paste writes too",
-    ),
-    ("qq quit", 11, Need::Always, "qq", "quit: twice within 2 s"),
-    (
-        "! next need",
-        2,
-        Need::Always,
-        "!",
-        "next session needing you",
-    ),
-    (
-        "Tab overview / agents",
-        3,
-        Need::Always,
-        "Tab",
-        "Overview / Agents tab",
-    ),
-    (
-        "oo open seat",
-        4,
-        Need::Seats,
-        "oo",
-        "open seat; twice in 2 s",
-    ),
-    (
-        "j/k move",
-        1,
-        Need::Always,
-        "j/k Up/Down",
-        "previous / next session",
-    ),
-    (
-        "PgUp/PgDn scroll",
-        6,
-        Need::Always,
-        "PgUp/PgDn",
-        "scroll the chat",
-    ),
-    (
-        "Esc home",
-        8,
-        Need::Always,
-        "Esc",
-        "select the home session",
-    ),
-    ("n/p seat", 5, Need::Seats, "n/p", "next / previous seat"),
-    ("s settings", 9, Need::Always, "s", "settings"),
+/// The browse keys the Keys tab lists, in the order it shows them: the keys
+/// and what they do.
+const BROWSE_KEYS: [(&str, &str); 12] = [
+    ("1-9", "select that session"),
+    ("j/k Up/Down", "previous / next session"),
+    ("!", "next session needing you"),
+    ("Tab", "Overview / Agents tab"),
+    ("oo", "open seat; twice in 2 s"),
+    ("n/p", "next / previous seat"),
+    ("PgUp/PgDn", "scroll the chat"),
+    ("Enter i", "write; a paste writes too"),
+    ("Esc", "select the home session"),
+    ("s", "settings"),
+    ("?", "this help"),
+    ("qq", "quit: twice within 2 s"),
 ];
 
-/// The browse hints that fit `room` cells after the mode word, three cells
-/// apart: the longest prefix of the priority order, drawn in display order.
-#[must_use]
-pub fn browse_hints(writable: bool, seats: bool, room: u16) -> Vec<&'static str> {
-    // With seats the row keeps the gear's cells: the seat hints never take them.
-    let room = room.saturating_sub(if seats { 3 } else { 0 });
-    let (mut used, mut fit) = (0, Vec::new());
-    for (hint, at, need, ..) in &BROWSE_KEYS {
-        let applies = match need {
-            Need::Always => true,
-            Need::Writable => writable,
-            Need::Seats => seats,
-        };
-        if !applies {
-            continue;
-        }
-        used += 3 + hint.len();
-        if used > usize::from(room) {
-            break;
-        }
-        fit.push((*at, *hint));
-    }
-    fit.sort_by_key(|(at, _)| *at);
-    fit.into_iter().map(|(_, hint)| hint).collect()
-}
-
-/// The keys row, the full width of the last row: the mode's hints from
-/// the left, then `ae <version>` and the gear right-aligned. Hints never
-/// yield a cell: narrowing drops the version first, then the gear. The one
-/// exception is deliberate: with seats drawn, [`browse_hints`] keeps three
-/// cells back for the gear, so the seat hints never take its place.
+/// The keys row, the full width of the last row: the mode word and at most
+/// one hint from the left, then `ae <version>` and the gear right-aligned.
+/// Narrowing drops the version first, then the gear.
 fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let paint = ctx.paint;
     let y = buf.area.height - 1;
     let composing = matches!(ctx.screen.composer, Composer::Home { view: Some(_), .. });
     let open = ctx.screen.model.settings_open();
     let width = buf.area.width;
-    let (word, keys): (&str, Vec<&str>) = if open {
-        ("settings", vec!["Esc/q/s close", "^C quit"])
+    // The one hint is the key that works in that mode: writing and held take
+    // every key, so they say the word alone.
+    let (word, hint) = if open {
+        ("settings", "Esc close")
     } else if composing {
-        ("write", vec!["Enter send", "Esc browse", "^C quit"])
+        ("write", "")
     } else if matches!(ctx.screen.composer, Composer::Held { .. }) {
-        ("held", vec!["Enter retry", "Esc browse", "^C quit"])
+        ("held", "")
     } else {
-        let writable = matches!(ctx.screen.composer, Composer::Home { .. });
-        let room = width.saturating_sub(LEFT + cells("browse".len()));
-        (
-            "browse",
-            browse_hints(writable, !layout.seats.is_empty(), room),
-        )
+        ("browse", "? keys")
     };
     let x = put(
         buf,
@@ -1319,7 +1235,11 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
         width - LEFT,
         paint.fg(|p| p.text).add_modifier(Modifier::BOLD),
     );
-    let rest = format!("   {}", keys.join("   "));
+    let rest = if hint.is_empty() {
+        String::new()
+    } else {
+        format!("   {hint}")
+    };
     let hints_end = put(
         buf,
         x,
@@ -1608,15 +1528,15 @@ const SETTINGS_KEYS: [(&str, &str); 10] = [
 ];
 
 /// The Keys tab's rows: every key of browse, write, held and the overlay.
-/// Browse reads the same table as the keys row.
 fn keys_body(paint: Paint) -> Vec<(String, Style)> {
     let (text, head) = (paint.fg(|p| p.text), paint.fg(|p| p.title));
     let head = head.add_modifier(Modifier::BOLD);
-    let mut all: Vec<_> = BROWSE_KEYS.iter().collect();
-    all.sort_by_key(|(_, at, ..)| *at);
-    let browse = all.into_iter().map(|(.., keys, does)| (*keys, *does));
     let mut rows = vec![("Browse".to_owned(), head)];
-    rows.extend(browse.map(|(keys, does)| (format!("{keys:<12}{does}"), text)));
+    rows.extend(
+        BROWSE_KEYS
+            .iter()
+            .map(|(keys, does)| (format!("{keys:<12}{does}"), text)),
+    );
     rows.push((format!("{:<12}quit at once", "^C"), text));
     rows.push(("Any other key cancels qq / oo.".to_owned(), text));
     let sections = [
@@ -2127,9 +2047,8 @@ mod tests {
             self.laid(width, height, composer).0
         }
 
-        /// The frame and the layout it recorded.
-        fn laid(&self, width: u16, height: u16, composer: Composer<'_>) -> (Buffer, super::Layout) {
-            let screen = Screen {
+        fn screen<'a>(&'a self, composer: Composer<'a>) -> Screen<'a> {
+            Screen {
                 fleet: &self.fleet,
                 model: &self.model,
                 overview: &self.overview,
@@ -2141,7 +2060,28 @@ mod tests {
                 look: Some(Look::read("on", "darcula", "on", "on")),
                 zone: None,
                 now: Timestamp::from_epoch(PIN_NOW),
+            }
+        }
+
+        /// Only the keys row, on a buffer `width` wide and one row high: what
+        /// it drew, and the layout it recorded.
+        fn keys_at(&self, width: u16, composer: Composer<'_>) -> (String, super::Layout) {
+            let screen = self.screen(composer);
+            let ctx = super::Ctx {
+                screen: &screen,
+                paint: Paint::of(screen.look.as_ref()),
+                icons: true,
+                wait: super::Wait::default(),
             };
+            let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
+            let mut layout = super::Layout::default();
+            super::keys_row(&ctx, &mut buf, &mut layout);
+            (line(&buf, 0).concat().trim_end().to_owned(), layout)
+        }
+
+        /// The frame and the layout it recorded.
+        fn laid(&self, width: u16, height: u16, composer: Composer<'_>) -> (Buffer, super::Layout) {
+            let screen = self.screen(composer);
             let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
             let layout = super::draw_with_layout(&screen, super::Wait::default(), &mut buf);
             (buf, layout)
@@ -2588,7 +2528,7 @@ mod tests {
     }
 
     /// Frame calm: the rule stands at 44 on every row above the keys row
-    /// (r0-r41) and not on the keys row (r42). Composing, the write keys end
+    /// (r0-r41) and not on the keys row (r42). Composing, the mode word ends
     /// before column 44, so the keys row shows it.
     #[test]
     fn the_rule_stops_above_the_keys_row() {
@@ -2609,10 +2549,95 @@ mod tests {
             assert_eq!(buf[(44, y)].symbol(), "│", "row {y}");
         }
         assert_ne!(buf[(44, 42)].symbol(), "│", "the keys row");
-        assert!(
-            line(&buf, 42).concat().contains("Esc browse"),
-            "the write keys"
-        );
+        let keys = line(&buf, 42).concat();
+        assert!(keys.trim_start().starts_with("write"), "the mode word");
+        assert!(!keys.contains("Esc browse"), "no key names on the row");
+    }
+
+    /// The keys row is the mode word and at most one hint, where its key
+    /// works: browse points at the Keys tab, Settings at its close, writing
+    /// and held say the word alone; no other key is named on it.
+    #[test]
+    fn the_keys_row_is_the_mode_word_and_at_most_one_hint() {
+        let mut shot = Shot::new();
+        let draft = drafted(&["a draft"]);
+        let tail = format!("{} \u{2699}", crate::version_line());
+        let named = [
+            "Enter",
+            "Esc browse",
+            "^C",
+            "qq",
+            "oo",
+            "1-9",
+            "Tab",
+            "j/k",
+            "n/p",
+            "PgUp",
+            "settings",
+            "! next",
+            "Esc home",
+            "help",
+        ];
+        let refused = Composer::Held {
+            why: "owned elsewhere",
+        };
+        let cases = [
+            (browsing("kept"), "browse   ? keys"),
+            (READ_ONLY, "browse   ? keys"),
+            (writing(&draft, "a draft"), "write"),
+            (refused, "held"),
+        ];
+        for (composer, words) in cases {
+            let (row, _) = shot.keys_at(100, composer);
+            let head = row
+                .strip_suffix(tail.as_str())
+                .expect("version and gear end it");
+            assert_eq!(head.trim_end(), format!("  {words}"), "{words}");
+            assert!(named.iter().all(|key| !row.contains(key)), "{row}");
+        }
+        shot.model.open_settings(1);
+        let (row, _) = shot.keys_at(100, browsing(""));
+        let head = row
+            .strip_suffix(tail.as_str())
+            .expect("version and gear end it");
+        assert_eq!(head.trim_end(), "  settings   Esc close");
+    }
+
+    /// Narrower than the floor (the app never draws it, the row still has
+    /// its order): the version goes first, then the gear, and the gear is
+    /// the settings click target for as long as it is drawn.
+    #[test]
+    fn narrowing_the_keys_row_drops_the_version_then_the_gear() {
+        let shot = Shot::new();
+        let gear = "\u{2699}";
+        let tail = format!("{} {gear}", crate::version_line());
+        let head = "  browse   ? keys";
+        let full = head.chars().count() + 2 + tail.chars().count();
+        let drop = |width: usize, drawn: &str| {
+            let at = u16::try_from(width).unwrap_or(0);
+            let (row, layout) = shot.keys_at(at, browsing(""));
+            assert!(row.starts_with(head), "{width}: {row:?}");
+            assert_eq!(
+                row.trim_start_matches(head).trim(),
+                drawn,
+                "{width}: {row:?}"
+            );
+            let click = Mouse {
+                kind: MouseKind::Click,
+                column: at - 1,
+                row: 0,
+            };
+            assert_eq!(
+                matches!(layout.hit(click), Some(super::Hit::Settings)),
+                !drawn.is_empty(),
+                "{width}: the gear is the click target while drawn"
+            );
+        };
+        drop(full + 5, &tail);
+        drop(full, &tail);
+        drop(full - 1, gear);
+        drop(head.chars().count() + 3, gear);
+        drop(head.chars().count() + 2, "");
     }
 
     /// A draft of `rows`, its cursor after the last row's cells.
@@ -3491,10 +3516,10 @@ mod tests {
 
     /// R4/R5: the focused seat's rows carry the marker in column 0, the first
     /// seat drawn is focused until the model names a drawn one, a seat row is
-    /// a click target that ends at the body, and the keys row advertises `o`
-    /// only beside a seat.
+    /// a click target that ends at the body, and the keys row names no seat
+    /// key.
     #[test]
-    fn the_focused_seats_rows_are_marked_and_advertise_open() {
+    fn the_focused_seats_rows_are_marked() {
         let mut shot = Shot::new();
         shot.agents = Some(seat_facts(&["lead", "colead"]));
         let _ = shot
@@ -3510,7 +3535,7 @@ mod tests {
         assert!(seat(&buf, first + 2).contains("colead"), "the next seat");
         let keys: String = line(&buf, 44).concat();
         assert!(
-            keys.contains("Tab overview / agents   oo open seat   n/p seat"),
+            keys.contains("? keys") && !keys.contains("oo open seat") && !keys.contains("n/p"),
             "{keys}"
         );
         let at = Mouse {
@@ -3541,14 +3566,12 @@ mod tests {
         assert_eq!(marked(&buf, ">"), [first, first + 1]);
     }
 
-    /// A tab body that draws no seat advertises no `o` and focuses nothing; a
-    /// waiting entry is the seat's two rows wide and its one row narrow.
+    /// A tab body that draws no seat focuses nothing; a waiting entry is the
+    /// seat's two rows wide and its one row narrow.
     #[test]
     fn overview_entries_are_seat_rows_wide_and_narrow() {
         let mut shot = Shot::new();
-        let (buf, layout) = framed(&shot, 160, None);
-        let keys: String = line(&buf, 44).concat();
-        assert!(!keys.contains("o open seat"), "{keys}");
+        let (_, layout) = framed(&shot, 160, None);
         assert_eq!((layout.seats.len(), layout.focused), (0, None));
         shot.overview.open = vec![Open {
             seat: "colead".to_owned(),

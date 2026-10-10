@@ -1296,14 +1296,15 @@ fn app_draw_home_160x43() {
         keys.trim_start().starts_with("browse"),
         "BROWSE word: {keys:?}"
     );
-    for segment in [
+    assert!(keys.contains("? keys"), "the one hint: {keys:?}");
+    for gone in [
         "1-9 session",
         "! next need",
         "Tab overview / agents",
         "Enter write",
         "qq quit",
     ] {
-        assert!(keys.contains(segment), "keys carry {segment}: {keys:?}");
+        assert!(!keys.contains(gone), "the row names no {gone}: {keys:?}");
     }
 }
 

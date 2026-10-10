@@ -41,43 +41,6 @@ fn selected_stopped(rig: &Rig, pane: &str) {
     });
 }
 
-/// Plan §5(c), accepted I1. Independent table: priority prefix, displayed in
-/// navigation order. No implementation hint helper is called.
-pub(super) fn expected_browse(width: u16, writable: bool) -> String {
-    let priority = [
-        "? help",
-        "1-9 session",
-        "Enter write",
-        "qq quit",
-        "! next need",
-        "Tab overview / agents",
-        "j/k move",
-        "PgUp/PgDn scroll",
-        "Esc home",
-        "s settings",
-    ];
-    let order = [1, 6, 4, 5, 7, 2, 8, 9, 0, 3];
-    let mut chosen = Vec::new();
-    let mut used = 8;
-    for (index, item) in priority.iter().enumerate() {
-        if index == 2 && !writable {
-            continue;
-        }
-        let next = used + 3 + item.len();
-        if next > usize::from(width) {
-            break;
-        }
-        chosen.push(index);
-        used = next;
-    }
-    let words = order
-        .iter()
-        .filter(|index| chosen.contains(index))
-        .map(|index| priority[*index])
-        .collect::<Vec<_>>();
-    format!("  browse   {}", words.join("   "))
-}
-
 #[test]
 fn browse_paste_enters_write_with_literal_controls_and_no_action() {
     let (rig, pane) = open("typepaste");
@@ -412,17 +375,22 @@ fn outside_tmux_exit_hint_contains_no_tmux_shortcut() {
 }
 
 #[test]
-fn keys_row_keeps_help_at_floor_and_all_browse_keys_at_full_width() {
+fn keys_row_is_the_mode_word_one_hint_the_version_and_the_gear_at_every_width() {
+    let tail = format!("{} *", ae::version_line());
     for width in [40, 60, 89, 160, 300] {
         let look = ae::theme::Look::read("off", "", "off", "off");
         let buf = super::closed_frame(width, 28, &look, true);
         let row = super::row(&buf, 27);
-        assert!(
-            row.starts_with(&expected_browse(width, true)),
-            "R4(c) priority {width}: {row}"
+        assert!(row.starts_with("  browse   ? keys"), "{width}: {row}");
+        let rest = row
+            .trim_end()
+            .strip_suffix(tail.as_str())
+            .expect("version and gear end the row");
+        assert_eq!(
+            rest.trim_end(),
+            "  browse   ? keys",
+            "{width}: no other key is named"
         );
-        assert!(row.contains("? help"), "R4(c) help fits at the floor");
-        assert!(!row.contains("   q quit"));
     }
 }
 

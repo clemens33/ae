@@ -420,9 +420,6 @@ impl Rig {
             s.lines()
                 .any(|row| row.split('│').next().unwrap_or("").contains("scout"))
         });
-        self.wait_screen(app, "R5 drawn seats advertise their open action", |s| {
-            s.contains("o open seat")
-        });
     }
 
     fn focused(&self, app: &str, seat: &str) {

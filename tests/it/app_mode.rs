@@ -20,8 +20,8 @@ fn frame(keys: &str) -> String {
 #[test]
 fn the_write_word_on_the_final_row_is_writing_with_or_without_a_note() {
     for keys in [
-        "  write   Enter send   Esc browse   ^C quit      ae 2026.10.45 ⚙",
         "  write      ae 2026.10.45 ⚙",
+        "  write      ae 2026.10.45 *",
     ] {
         assert!(writing(&frame(keys)), "{keys}");
         let noted = format!("to api › lead\nx\nq again to quit\n\n{keys}");
@@ -32,9 +32,9 @@ fn the_write_word_on_the_final_row_is_writing_with_or_without_a_note() {
 #[test]
 fn the_other_modes_and_a_blank_final_row_are_not_writing() {
     for keys in [
-        "  browse   ? help   qq quit      ae 2026.10.45 ⚙",
-        "  held   Enter retry   Esc browse   ^C quit",
-        "  settings   Esc/q/s close   ^C quit",
+        "  browse   ? keys      ae 2026.10.45 ⚙",
+        "  held      ae 2026.10.45 ⚙",
+        "  settings   Esc close      ae 2026.10.45 ⚙",
         "",
     ] {
         assert!(!writing(&frame(keys)), "{keys:?}");
@@ -43,7 +43,7 @@ fn the_other_modes_and_a_blank_final_row_are_not_writing() {
 
 #[test]
 fn a_write_word_above_the_final_row_is_chat_text_not_the_mode() {
-    let screen = "  write notes\nfine\n  browse   ? help\n";
+    let screen = "  write notes\nfine\n  browse   ? keys\n";
     assert!(!writing(screen));
     assert!(!writing(""));
 }

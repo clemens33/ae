@@ -37,7 +37,7 @@ const TID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);
 const FRAME: Duration = Duration::from_secs(3);
 const REFRESH_SLACK: Duration = Duration::from_secs(12);
-const HINTS: &str = "  browse   1-9 session   j/k move   ! next need   Tab overview / agents   PgUp/PgDn scroll   Esc home   s settings   ? help   qq quit";
+const HINT: &str = "  browse   ? keys";
 const WORKSPACE_KEYS: [&str; 20] = [
     "main",
     "workers",
@@ -102,51 +102,17 @@ fn row(buf: &Buffer, y: u16) -> String {
 }
 
 #[test]
-fn version_and_gear_end_the_keys_row_without_moving_complete_hints() {
+fn version_and_gear_end_the_keys_row_after_its_one_hint() {
     for width in [160, 220, 300] {
         for icons in [true, false] {
             let look = Look::read(if icons { "on" } else { "off" }, "", "off", "off");
             let buf = closed_frame(width, 28, &look, false);
             let line = row(&buf, 27);
-            assert!(line.starts_with(HINTS), "old cells changed: {line:?}");
+            assert!(line.starts_with(HINT), "mode word and hint: {line:?}");
             let tail = format!("{} {}", ae::version_line(), if icons { "⚙" } else { "*" });
             assert!(line.trim_end().ends_with(&tail), "right end: {line:?}");
             let start = line.find(&ae::version_line()).expect("drawn version");
-            assert!(start >= HINTS.len() + 2, "version overlaps hints");
-        }
-    }
-}
-
-#[test]
-fn narrow_keys_keep_priority_hints_and_drop_version_first() {
-    // R4(c): complete hint groups yield in a fixed priority; help remains.
-    for (width, height) in [(89, 19), (60, 12), (40, 8)] {
-        let buf = closed_frame(width, height, &Look::read("off", "", "off", "off"), true);
-        let line = row(&buf, height - 1);
-        let old = typing::expected_browse(width, true);
-        assert!(
-            line.starts_with(&old),
-            "{width}: hint cells changed: {line:?}"
-        );
-        let version = format!("{} *", ae::version_line());
-        if old.len() + 2 + version.len() <= usize::from(width) {
-            assert!(
-                line.trim_end().ends_with(&version),
-                "version fits after priority hints: {line:?}"
-            );
-        } else {
-            assert!(
-                !line.contains(&ae::version_line()),
-                "version must yield: {line:?}"
-            );
-        }
-        if old.len() + 3 <= usize::from(width) {
-            assert!(
-                line.trim_end().ends_with('*'),
-                "gear remains when priority hints leave room: {line:?}"
-            );
-        } else {
-            assert_eq!(line, old, "no old clipped cell displaced");
+            assert!(start >= HINT.len() + 2, "version overlaps the hint");
         }
     }
 }
@@ -609,8 +575,7 @@ fn settings_keys_tabs_and_all_three_close_keys_act_on_the_drawn_screen() {
         let opened = rig.settings(&pane);
         let hints = opened.lines().last().expect("settings keys row");
         assert!(
-            (hints.contains("q close") || hints.contains("Esc/q/s close"))
-                && hints.contains("^C quit"),
+            hints.contains("Esc close") && !hints.contains("^C"),
             "{opened}"
         );
         assert!(
