@@ -20,7 +20,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::requests::{Key, Request, Status, is_slot, states};
+use crate::requests::{Key, Pin, Request, Status, is_slot, states};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::store;
 use crate::time::Timestamp;
@@ -85,6 +85,8 @@ pub struct Replier {
     pub slot: String,
     /// The pane's tmux session, or empty.
     pub session: String,
+    /// That session's meta `session_id`, or empty.
+    pub session_id: String,
 }
 
 impl Replier {
@@ -113,6 +115,7 @@ impl Replier {
             display,
             slot,
             session,
+            session_id: String::new(),
         }
     }
 }
@@ -161,7 +164,18 @@ pub fn verify(
         } else {
             stored_session.as_str()
         };
-        if me.slot != target_slot || me.session != target_session {
+        // A target pinned by session id is that session whatever it is called
+        // now; an unusable pin names nobody, so it never falls back to a name.
+        let wrong_session = match request.to_session_id.pin() {
+            Pin::None => me.session != target_session,
+            Pin::Id(want) => me.session_id != want,
+            Pin::Unusable => {
+                return Err(format!(
+                    "Error: request '{id}' records an unusable target session id; it cannot be verified"
+                ));
+            }
+        };
+        if me.slot != target_slot || wrong_session {
             let self_slot = if me.slot.is_empty() {
                 "none"
             } else {
@@ -256,6 +270,114 @@ pub fn route(
     slot_resolve(&want_session, &want_slot, own_session, &panes).unwrap_or(stored)
 }
 
+/// The session the asker lives in NOW, when its record pins one by id:
+/// `Ok(None)` for a legacy record, which keeps the stored name; the one
+/// session recording the id otherwise — the replier's own included, since a
+/// copied meta makes even that ambiguous. Missing, ambiguous or unusable
+/// refuses naming the id — never a reused old name.
+///
+/// # Errors
+///
+/// The refusal line, without its newline.
+pub fn asker_home(
+    request: &Request,
+    id: &str,
+    lookup: impl FnOnce(&str) -> io::Result<Vec<String>>,
+) -> Result<Option<(String, String)>, String> {
+    let want = match request.from_session_id.pin() {
+        Pin::None => return Ok(None),
+        Pin::Unusable => {
+            return Err(format!(
+                "Error: request '{id}' records an unusable asker session id; not routed"
+            ));
+        }
+        Pin::Id(want) => want,
+    };
+    let homes = lookup(want).map_err(|why| {
+        format!("Error: request '{id}': cannot enumerate sessions to find id '{want}' ({why})")
+    })?;
+    match homes.as_slice() {
+        [home] => Ok(Some((home.clone(), want.to_owned()))),
+        [] => Err(format!(
+            "Error: request '{id}' was asked from session id '{want}', which no session records now; not routed by its old name"
+        )),
+        many => Err(format!(
+            "Error: request '{id}' was asked from session id '{want}', which {} sessions record ({}); refusing to guess",
+            many.len(),
+            many.join(", ")
+        )),
+    }
+}
+
+/// Where the reply goes, with the asker's session name and the id the record
+/// pins: a legacy asker by [`route`]; a pinned one in the session holding its
+/// id now — its slot's pane there, else its display name in that session.
+///
+/// # Errors
+///
+/// [`asker_home`]'s refusal line.
+fn destination(
+    dir: &Path,
+    request: &Request,
+    id: &str,
+    own_session: &str,
+) -> Result<(String, String, String), String> {
+    let home = asker_home(request, id, |want| {
+        dir.parent().and_then(Path::parent).map_or_else(
+            || Ok(Vec::new()),
+            |root| crate::lifecycle::sessions_with_id(root, want),
+        )
+    })?;
+    // The asker's panes are enumerated on THAT session's recorded tmux server —
+    // the same door `tracked::resolve` uses — never the ambient one.
+    let roster = |search: &str| {
+        tracked::named_server(dir, search, own_session)
+            .ok()
+            .and_then(|server| transport::observe_slots(&server, search))
+    };
+    Ok(match home {
+        None => (
+            route(request, own_session, roster),
+            key_text(&request.from_session),
+            String::new(),
+        ),
+        Some((home, want)) => {
+            let panes = roster(&home).unwrap_or_default();
+            let slot = key_text(&request.from_slot);
+            let found = slot_resolve(&home, &slot, own_session, &panes).unwrap_or_else(|| {
+                let stored = lossy(&request.from);
+                if home == own_session {
+                    stored
+                } else {
+                    format!("@{home}:{stored}")
+                }
+            });
+            (found, home, want)
+        }
+    })
+}
+
+/// The destination re-proved just before delivery: a pinned asker is its slot
+/// in the session recording its id NOW — anything else since the lookup is
+/// not the asker, and says what it is. A legacy reply has no pin to re-prove.
+fn not_the_asker(
+    dir: &Path,
+    resolved: &tracked::Resolved,
+    slot: &str,
+    id: &str,
+    own_session: &str,
+) -> Option<String> {
+    (!id.is_empty()
+        && (resolved.slot != slot
+            || tracked::routing_id(dir, &resolved.slot, &resolved.session, own_session) != id))
+        .then(|| {
+            format!(
+                "slot '{}' of session '{}' is not the asker (slot '{slot}', id '{id}')",
+                resolved.slot, resolved.session
+            )
+        })
+}
+
 /// The order of refusals: usage, the blank body, the unknown id, the
 /// identity check — each loud, each before anything is pasted.
 fn admit(
@@ -344,7 +466,8 @@ pub fn run(
     defer: std::time::Duration,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let me = Replier::from_observed(observed, own_session);
+    let mut me = Replier::from_observed(observed, own_session);
+    me.session_id = tracked::routing_id(dir, &me.slot, &me.session, own_session);
     let (parsed, request, verified) = match admit(dir, tail, &me, own_session, err)? {
         Ok(admitted) => admitted,
         Err(code) => return Ok(code),
@@ -365,28 +488,32 @@ pub fn run(
     } else {
         verified.sender.clone()
     };
-    // The asker's panes are enumerated on THAT session's recorded tmux server —
-    // the same door `tracked::resolve` uses — never the ambient one.
-    let reply_target = route(&request, own_session, |search| {
-        tracked::named_server(dir, search, own_session)
-            .ok()
-            .and_then(|server| transport::observe_slots(&server, search))
-    });
+    let (reply_target, target_session, target_id) =
+        match destination(dir, &request, &parsed.id, own_session) {
+            Ok(found) => found,
+            Err(line) => {
+                writeln!(err, "{line}")?;
+                return Ok(EXIT_FAILED);
+            }
+        };
     let target_slot = key_text(&request.from_slot);
-    let target_session = key_text(&request.from_session);
-    let mut fields = EventFields::new(
-        now,
-        &actor,
-        ACTION,
-        &reply_target,
-        &parsed.id,
-        &me.slot,
-        &me.session,
-        &target_slot,
-        &target_session,
-        &parsed.body,
-        "",
-    );
+    let mut fields = EventFields {
+        actor_session_id: &me.session_id,
+        target_session_id: &target_id,
+        ..EventFields::new(
+            now,
+            &actor,
+            ACTION,
+            &reply_target,
+            &parsed.id,
+            &me.slot,
+            &me.session,
+            &target_slot,
+            &target_session,
+            &parsed.body,
+            "",
+        )
+    };
     if tracked::is_external(&reply_target) {
         return record_for_sink(dir, &fields, &reply_target, &parsed, err);
     }
@@ -397,6 +524,10 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     };
+    if let Some(line) = not_the_asker(dir, &resolved, &target_slot, &target_id, own_session) {
+        writeln!(err, "Error: request '{}': {line}; not delivered", parsed.id)?;
+        return Ok(EXIT_FAILED);
+    }
     let cross_session = !me.session.is_empty() && resolved.session != me.session;
     let target_name = if resolved.agent.is_empty() {
         reply_target.clone()
@@ -502,7 +633,7 @@ fn key_text(key: &Key) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Parsed, Replier, Usage, parse, route, slot_resolve, verify};
+    use super::{Parsed, Replier, Usage, asker_home, parse, route, slot_resolve, verify};
     use crate::requests::{Key, Request, Status};
     use crate::time::Timestamp;
     use crate::tmux::{ObservedSlot, ObservedViewer};
@@ -526,6 +657,8 @@ mod tests {
             to_slot,
             from_session,
             to_session,
+            from_session_id: Key::Absent,
+            to_session_id: Key::Absent,
             recorded: None,
             summary: Vec::new(),
         }
@@ -540,7 +673,64 @@ mod tests {
             display: display.to_owned(),
             slot: slot.to_owned(),
             session: session.to_owned(),
+            session_id: String::new(),
         }
+    }
+
+    const ID_A: &str = "0199c0de-1111-4890-abcd-ef0123456789";
+    const ID_B: &str = "0199c0de-2222-4890-abcd-ef0123456789";
+
+    fn pinned(from_id: Key, to_id: Key) -> Request {
+        let keys = [value("main"), value("old"), value("worker.0"), value("old")];
+        Request {
+            from_session_id: from_id,
+            to_session_id: to_id,
+            ..request("cl:lead", "cl:w", keys)
+        }
+    }
+
+    #[test]
+    fn a_target_pinned_by_id_is_verified_by_id_whatever_the_names_say() {
+        let row = pinned(Key::Absent, value(ID_A));
+        let renamed = Replier {
+            session_id: ID_A.to_owned(),
+            ..me("cl:w", "worker.0", "new")
+        };
+        assert!(verify(&row, "ae-1", None, &renamed, "new").is_ok());
+        // The reused name is another session: its id refuses it.
+        let reused = Replier {
+            session_id: ID_B.to_owned(),
+            ..me("cl:w", "worker.0", "old")
+        };
+        assert!(verify(&row, "ae-1", None, &reused, "old").is_err());
+        for bad in [Key::Empty, value("OLD")] {
+            let verdict = verify(&pinned(Key::Absent, bad), "ae-1", None, &renamed, "new");
+            assert!(verdict.is_err_and(|line| line.contains("unusable")));
+        }
+    }
+
+    #[test]
+    fn the_asker_is_found_by_its_pinned_id_or_refused_naming_it() {
+        let none = |_: &str| -> std::io::Result<Vec<String>> { Ok(Vec::new()) };
+        let legacy = pinned(Key::Absent, Key::Absent);
+        assert_eq!(asker_home(&legacy, "ae-1", none), Ok(None));
+        let row = pinned(value(ID_A), value(ID_B));
+        let one = |_: &str| Ok(vec!["new".to_owned()]);
+        assert_eq!(
+            asker_home(&row, "ae-1", one),
+            Ok(Some(("new".to_owned(), ID_A.to_owned())))
+        );
+        let two = |_: &str| Ok(vec!["new".to_owned(), "dup".to_owned()]);
+        let gone = std::io::Error::other("unreadable");
+        for refused in [
+            asker_home(&row, "ae-1", none),
+            asker_home(&row, "ae-1", two),
+            asker_home(&row, "ae-1", |_| Err(gone)),
+        ] {
+            assert!(refused.is_err_and(|line| line.contains(ID_A)));
+        }
+        let bad = pinned(Key::Empty, Key::Absent);
+        assert!(asker_home(&bad, "ae-1", none).is_err());
     }
 
     #[test]
@@ -623,6 +813,8 @@ mod tests {
             actor_session: "session",
             target_slot: "main",
             target_session: "session",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -842,8 +1034,9 @@ mod tests {
         use crate::tmux::ObservedViewer;
         use crate::tracked::{self, IdentityTriple, Kind, Resolved, Sender};
         tracked::clear_test_hooks();
-        let dir = std::env::temp_dir().join(format!("ae-reply-run.{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let root = std::env::temp_dir().join(format!("ae-reply-run.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("meta"),
@@ -896,7 +1089,13 @@ mod tests {
         let id = tracked::request_id("ae", ts, 1);
         tracked::queue_observe(Ok(held.clone()));
         tracked::queue_observe(Ok(held));
-        tracked::set_test_resolve(resolved, ServerId::Ambient);
+        let asker = Resolved {
+            pane: "%3".to_owned(),
+            agent: "lead".to_owned(),
+            slot: "main".to_owned(),
+            ..resolved
+        };
+        tracked::set_test_resolve(asker, ServerId::Ambient);
         tracked::set_test_delivery(Ok(crate::deliver::Delivered {
             body_file: String::new(),
             framed: "ans".to_owned(),
@@ -927,7 +1126,7 @@ mod tests {
             "deleting stamp_caller from reply::run must drop this: {events}"
         );
         tracked::clear_test_hooks();
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A session directory holding ONE ask from `asker` to `lead` (`main` in
@@ -1079,7 +1278,7 @@ mod tests {
         assert_eq!(
             events[1],
             format!(
-                "{{\"ts\":\"2026-09-30T12:01:00Z\",\"actor\":\"lead\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"s\",\"caller_server\":\"/tmp/ae\",\"caller_pane\":\"%3\",\"caller_session_uuid\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"summary\":\"the answer\"}}"
+                "{{\"ts\":\"2026-09-30T12:01:00Z\",\"actor\":\"lead\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"s\",\"actor_session_id\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"caller_server\":\"/tmp/ae\",\"caller_pane\":\"%3\",\"caller_session_uuid\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"summary\":\"the answer\"}}"
             )
         );
         assert_eq!(stored(&dir), 0);

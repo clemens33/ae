@@ -2035,6 +2035,8 @@ pub(crate) fn chat_line(ts: time::Timestamp, actor: &str, actor_slot: &str, text
         actor_session: "",
         target_slot: "",
         target_session: "",
+        actor_session_id: "",
+        target_session_id: "",
         target_server: "",
         target_pane: "",
         target_session_uuid: "",
@@ -2337,6 +2339,7 @@ pub(crate) fn seat_pack(
     let work = entry.work_dir.as_deref().unwrap_or_default();
     let inputs = seatpack::Inputs {
         session: entry.name.clone(),
+        session_id: meta::session_id_in(dir),
         installed_head: run::has_installed_pane_head(),
         status: entry.status.as_str().to_owned(),
         goal: entry.goal.clone(),
@@ -3688,6 +3691,8 @@ mod tests {
             actor_session: "",
             target_slot: "",
             target_session: "",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",

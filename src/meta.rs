@@ -421,6 +421,7 @@ pub struct Meta {
     origin: Option<String>,
     work_dir: Option<String>,
     goal: Option<String>,
+    session_id: Option<String>,
     /// The executable version recorded when ae created the session.
     ae_version: Option<String>,
     /// The version of the core binary this session's helpers are pinned to.
@@ -587,6 +588,7 @@ impl Meta {
             "origin" => self.origin = None,
             "work_dir" => self.work_dir = None,
             "goal" => self.goal = None,
+            "session_id" => self.session_id = None,
             "ae_version" => self.ae_version = None,
             "idle_nudge_secs" => self.idle_nudge_secs = None,
             "done_confirmations" => self.done_confirmations = None,
@@ -663,6 +665,7 @@ impl Meta {
             "origin" => self.origin = Some(value.to_owned()),
             "work_dir" => self.work_dir = Some(value.to_owned()),
             "goal" => self.goal = Some(value.to_owned()),
+            "session_id" => self.session_id = Some(crate::archive::canonical_uuid(value)),
             "ae_version" => self.ae_version = Some(value.to_owned()),
             "idle_nudge_secs" => self.idle_nudge_secs = Some(value.to_owned()),
             "done_confirmations" => self.done_confirmations = Some(value.to_owned()),
@@ -1103,6 +1106,13 @@ impl Meta {
     #[must_use]
     pub fn goal(&self) -> Option<&str> {
         self.goal.as_deref()
+    }
+
+    /// The stable `session_id`, when its one row is a UUID — lowercased, as
+    /// [`session_id_in`] reads it.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref().filter(|id| !id.is_empty())
     }
 
     /// The ae version captured in this session's meta for the human list
@@ -1794,6 +1804,21 @@ pub fn first_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
         line.strip_prefix(key.as_bytes())
             .and_then(|rest| rest.strip_prefix(b"="))
     })
+}
+
+/// The `session_id` row of the meta in `dir`: exactly one canonical claim,
+/// or empty. Two rows are unknown identity, never the first row. THE reader of
+/// a session's stable id, for a rename's own proofs and for every routing key
+/// a request pins.
+#[must_use]
+pub(crate) fn session_id_in(dir: &Path) -> String {
+    let Ok(bytes) = read_bytes(dir) else {
+        return String::new();
+    };
+    sole_value(&bytes, "session_id")
+        .and_then(|row| std::str::from_utf8(row).ok())
+        .map(crate::archive::canonical_uuid)
+        .unwrap_or_default()
 }
 
 /// The value of `key` when the meta names it EXACTLY ONCE, or `None`.
@@ -2723,6 +2748,27 @@ mod tests {
         reason = "fixtures build and inspect real directories; the boundary is about \
                   what PRODUCT code may reach"
     )]
+
+    #[test]
+    fn both_session_id_readers_take_the_row_the_same_way() {
+        let dir = std::env::temp_dir().join(format!("ae-meta-sid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let upper = "0199C0DE-1111-4890-ABCD-EF0123456789";
+        for (rows, want) in [
+            (format!("session_id={upper}\n"), upper.to_ascii_lowercase()),
+            (
+                format!("session_id={upper}\nsession_id={upper}\n"),
+                String::new(),
+            ),
+            ("session_id=bogus\n".to_owned(), String::new()),
+        ] {
+            std::fs::write(crate::store::open(&dir).meta_path(), &rows).unwrap();
+            assert_eq!(super::session_id_in(&dir), want, "{rows}");
+            let parsed = super::Meta::parse(&rows);
+            assert_eq!(parsed.session_id().unwrap_or_default(), want, "{rows}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_prior_row_is_the_parsers_own_and_a_duplicate_reads_as_none() {

@@ -518,6 +518,8 @@ fn record_refusal(paths: &Paths, refusal: Refusal, session: &str, session_dir: &
             actor_session: "",
             target_slot: "",
             target_session: "",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",

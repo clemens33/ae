@@ -582,6 +582,7 @@ short\tline\tonly\n\
             slot: "main".to_owned(),
             session: "s".to_owned(),
             display: "cl:lead".to_owned(),
+            session_id: String::new(),
         };
         let held = IdentityTriple {
             server: "/tmp/ae".to_owned(),

@@ -1055,6 +1055,14 @@ thread_local! {
     static TEST_DELIVER: std::cell::RefCell<
         Option<Result<crate::deliver::Delivered, crate::deliver::Failure>>,
     > = const { std::cell::RefCell::new(None) };
+    static DURING_DELIVERY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What happens to the world while the injected delivery is in flight.
+#[cfg(test)]
+pub(crate) fn set_during_delivery(act: impl FnOnce() + 'static) {
+    DURING_DELIVERY.with(|slot| *slot.borrow_mut() = Some(Box::new(act)));
 }
 
 #[cfg(test)]
@@ -1084,6 +1092,7 @@ pub(crate) fn clear_test_hooks() {
     clear_observe();
     TEST_RESOLVE.with(|slot| *slot.borrow_mut() = None);
     TEST_DELIVER.with(|slot| *slot.borrow_mut() = None);
+    DURING_DELIVERY.with(|slot| *slot.borrow_mut() = None);
 }
 
 /// Delivery used by ask/review/reply so tests can inject a completed paste.
@@ -1093,6 +1102,9 @@ pub(crate) fn deliver_request(
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
     #[cfg(test)]
     if let Some(hit) = take_test_delivery() {
+        if let Some(act) = DURING_DELIVERY.with(|slot| slot.borrow_mut().take()) {
+            act();
+        }
         return Ok(hit);
     }
     crate::deliver::deliver(request, err)
@@ -1159,6 +1171,10 @@ pub struct EventFields<'a> {
     pub target_slot: &'a str,
     /// `target_session`.
     pub target_session: &'a str,
+    /// `actor_session_id` — the sender's meta `session_id`, or empty.
+    pub actor_session_id: &'a str,
+    /// `target_session_id` — the target's meta `session_id`, or empty.
+    pub target_session_id: &'a str,
     /// Canonical socket path of the admitted target server, or empty.
     pub target_server: &'a str,
     /// Pane id of the admitted target, or empty.
@@ -1212,6 +1228,8 @@ impl<'a> EventFields<'a> {
             actor_session,
             target_slot,
             target_session,
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -1299,6 +1317,7 @@ pub(crate) fn stamp_caller<'a>(
 ///     ts: Timestamp::parse("2026-08-27T07:11:12Z").unwrap(),
 ///     actor: "cl:lead", action: "ask", target: "cl:w", reference: "ae-1",
 ///     actor_slot: "main", actor_session: "s", target_slot: "", target_session: "s",
+///     actor_session_id: "", target_session_id: "",
 ///     target_server: "", target_pane: "", target_session_uuid: "",
 ///     caller_server: "", caller_pane: "", caller_session_uuid: "", identity_gap: "",
 ///     summary: "a\tq", body_file: "/s/messages/ae-1.ask.x.txt",
@@ -1346,6 +1365,8 @@ fn render_event_line(
         ("actor_session", fields.actor_session),
         ("target_slot", fields.target_slot),
         ("target_session", fields.target_session),
+        ("actor_session_id", fields.actor_session_id),
+        ("target_session_id", fields.target_session_id),
         ("target_server", fields.target_server),
         ("target_pane", fields.target_pane),
         ("target_session_uuid", fields.target_session_uuid),
@@ -1455,6 +1476,8 @@ pub fn refuse_cross_session(
         actor_session: caller_session,
         target_slot: &resolved.slot,
         target_session: &resolved.session,
+        actor_session_id: "",
+        target_session_id: "",
         target_server: "",
         target_pane: "",
         target_session_uuid: "",
@@ -1544,6 +1567,21 @@ pub struct Sender {
 /// event.
 const SEND_HELPER: &str = "send";
 
+/// The session id a routed end pins beside its slot and session name: the
+/// meta `session_id` of `session`, read beside `dir`. Empty for an end with
+/// no slot, which a session id cannot route, and when the meta records none.
+pub(crate) fn routing_id(dir: &Path, slot: &str, session: &str, own_session: &str) -> String {
+    if slot.is_empty() {
+        return String::new();
+    }
+    if session.is_empty() || session == own_session {
+        return crate::meta::session_id_in(dir);
+    }
+    participant_dir(dir, session)
+        .map(|other| crate::meta::session_id_in(&other))
+        .unwrap_or_default()
+}
+
 /// The physical caller's session, or the helper session for a pane-less actor.
 fn sender_session<'a>(sender: &'a Sender, own_session: &'a str) -> &'a str {
     if sender.session.is_empty() {
@@ -1589,6 +1627,28 @@ fn admitted_route(
     Ok(Ok((resolved, server, cross_session)))
 }
 
+/// The fallback for a caller with no identity: a plain send, which writes its
+/// own event.
+fn unidentified(
+    dir: &Path,
+    action: &str,
+    parsed: &Parsed,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let helper = dir.join(SEND_HELPER);
+    write!(err, "{NO_IDENTITY_WARNING}")?;
+    let delivery = transport::deliver(
+        &helper,
+        &parsed.target,
+        &parsed.body,
+        parsed.cross_session,
+        &[],
+    );
+    out.write_all(delivery.stdout.as_bytes())?;
+    delivery_code(&delivery, &helper, action, err)
+}
+
 /// Run a tracked request end to end; a request it opens prints its id, as
 /// `opened` says.
 ///
@@ -1620,37 +1680,30 @@ pub fn run(
         return Ok(code);
     }
     let Some(sender) = sender else {
-        // The fallback: a plain send, which writes its own event.
-        let helper = dir.join(SEND_HELPER);
-        write!(err, "{NO_IDENTITY_WARNING}")?;
-        let delivery = transport::deliver(
-            &helper,
-            &parsed.target,
-            &parsed.body,
-            parsed.cross_session,
-            &[],
-        );
-        out.write_all(delivery.stdout.as_bytes())?;
-        return delivery_code(&delivery, &helper, action, err);
+        return unidentified(dir, action, &parsed, out, err);
     };
     let caller_session = sender_session(sender, own_session);
+    let caller_id = routing_id(dir, &sender.slot, caller_session, own_session);
     let req_id = request_id(kind.id_prefix(), now, entropy);
     if is_external(&parsed.target) {
         // An event-only sink: emit and exit, pasting nothing and storing
         // nothing.
-        let line = event_line(&EventFields::new(
-            now,
-            &sender.display,
-            action,
-            &parsed.target,
-            &req_id,
-            &sender.slot,
-            caller_session,
-            "",
-            "",
-            &parsed.body,
-            "",
-        ));
+        let line = event_line(&EventFields {
+            actor_session_id: &caller_id,
+            ..EventFields::new(
+                now,
+                &sender.display,
+                action,
+                &parsed.target,
+                &req_id,
+                &sender.slot,
+                caller_session,
+                "",
+                "",
+                &parsed.body,
+                "",
+            )
+        });
         if let Err(why) = store::open(dir).append_event(&line) {
             writeln!(err, "ae: {action} {req_id} not recorded: {why}")?;
             return Ok(EXIT_FAILED);
@@ -1693,25 +1746,33 @@ pub fn run(
         defer,
         composed: crate::tool::Composed::NONE,
     };
+    // The target's session id is pinned as admitted, BEFORE the paste: a
+    // rename during delivery must not move the request to whatever the name
+    // means afterwards.
+    let target_id = routing_id(dir, &resolved.slot, &resolved.session, own_session);
     let meta_dir = target_meta_dir(dir, &resolved.session, own_session);
     let (delivery, outcome) = across_cut(&server, &resolved.pane, &meta_dir, || {
         deliver_request(&request, err)
     });
     let delivery = delivery?;
     let fields = stamp_target(
-        &EventFields::new(
-            now,
-            &sender.display,
-            action,
-            &target_name,
-            &req_id,
-            &sender.slot,
-            caller_session,
-            &resolved.slot,
-            &resolved.session,
-            &parsed.body,
-            "",
-        ),
+        &EventFields {
+            actor_session_id: &caller_id,
+            target_session_id: &target_id,
+            ..EventFields::new(
+                now,
+                &sender.display,
+                action,
+                &target_name,
+                &req_id,
+                &sender.slot,
+                caller_session,
+                &resolved.slot,
+                &resolved.session,
+                &parsed.body,
+                "",
+            )
+        },
         &outcome,
     );
     let cross = cross_session.then_some(CrossSession {
@@ -2163,6 +2224,8 @@ mod tests {
             actor_session: "session",
             target_slot: "worker.0",
             target_session: "session",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -2229,6 +2292,8 @@ mod tests {
             actor_session: "caller",
             target_slot: "worker.0",
             target_session: "target",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -2292,6 +2357,8 @@ mod tests {
             actor_session: "session",
             target_slot: "worker.0",
             target_session: "session",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -2344,6 +2411,8 @@ mod tests {
             actor_session: "session",
             target_slot: "worker.0",
             target_session: "session",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -2415,6 +2484,8 @@ mod tests {
             actor_session: "session",
             target_slot: "main",
             target_session: "session",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -2448,7 +2519,10 @@ mod tests {
             journal.contains("human input or attention on the pane"),
             "the attention half reaches the journal: {journal}"
         );
-        let rows = crate::requests::states_in(journal.as_bytes(), "session");
+        let rows = crate::requests::states_in(
+            journal.as_bytes(),
+            crate::events::SessionKey::named("session"),
+        );
         assert_eq!(rows.len(), 1, "the opening and nothing else: {journal}");
         assert_eq!(rows[0].id, b"r9");
         assert_eq!(
@@ -3177,6 +3251,12 @@ mod tests {
     fn ask_run_stamps_target_on_the_production_writer() {
         super::clear_test_hooks();
         let dir = meta_dir("askrun", &format!("session_id={UUID}\n"));
+        // The name the target was resolved by is another session's by the
+        // time the paste returns: the pin is the one admitted before it.
+        let renamed = dir.join("meta");
+        super::set_during_delivery(move || {
+            std::fs::write(renamed, format!("session_id={UUID_B}\n")).unwrap();
+        });
         let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
         let held = triple("/tmp/ae", "%9", UUID);
         super::queue_observe(Ok(held.clone()));
@@ -3223,6 +3303,10 @@ mod tests {
             "deleting stamp_target from run() must drop this: {events}"
         );
         assert!(events.contains(r#""target_pane":"%9""#), "{events}");
+        assert!(
+            events.contains(&format!(r#""target_session_id":"{UUID}""#)),
+            "{events}"
+        );
         assert!(
             !events.contains("identity_gap"),
             "a correlated opening must not name a gap: {events}"

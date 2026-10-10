@@ -8,7 +8,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::events::{Event, Identity, RoutingMember};
+use crate::events::{Event, Identity, SessionKey};
 use crate::procs::Descendancy;
 
 /// The shells the dead-check treats as "no agent in the foreground".
@@ -663,16 +663,29 @@ pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";
 /// declaration and the event that proves its currency must be judged by the
 /// same key, or a rename-back history lets one incarnation's event stand in
 /// for another's.
+///
+/// This spelling knows the session by NAME alone, which is exact for every
+/// record that carries no session id (`state`, `alert`, `spawn`, `limit`, …).
+/// A request reader, whose `ask`/`review`/`reply` records are pinned by id,
+/// asks [`event_is_actor_in`] with the session's id instead.
 #[must_use]
 pub fn event_is_actor(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
-    match (&event.actor_slot, &event.actor_session) {
-        (RoutingMember::Value(event_slot), RoutingMember::Value(event_session)) => {
-            event_slot == slot && event_session == session
-        }
+    event_is_actor_in(event, SessionKey::named(session), slot, agent)
+}
+
+/// [`event_is_actor`] for a reader that knows its session's id: a record
+/// pinned by id matches across a rename and never through a reused name.
+#[must_use]
+pub fn event_is_actor_in(event: &Event, session: SessionKey<'_>, slot: &str, agent: &str) -> bool {
+    match event.actor_identity() {
         // No routing key at all: the display name is all there is.
-        (RoutingMember::Absent, RoutingMember::Absent) => event.actor == agent,
-        // Partial, or present-and-empty: routed, to nobody nameable.
-        _ => false,
+        Identity::Display(name) => name == agent,
+        identity @ (Identity::Routed { .. } | Identity::Stable { .. }) => {
+            identity.matches(session.seat(slot))
+        }
+        // Partial, present-and-empty or an unusable id: routed, to nobody
+        // nameable.
+        Identity::Unassociated => false,
     }
 }
 
@@ -680,13 +693,23 @@ pub fn event_is_actor(event: &Event, session: &str, slot: &str, agent: &str) -> 
 /// [`event_is_actor`] on the target side, same routing-key rule.
 #[must_use]
 pub fn event_is_addressed_to(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
+    event_is_addressed_to_in(event, SessionKey::named(session), slot, agent)
+}
+
+/// [`event_is_addressed_to`] for a reader that knows its session's id.
+#[must_use]
+pub fn event_is_addressed_to_in(
+    event: &Event,
+    session: SessionKey<'_>,
+    slot: &str,
+    agent: &str,
+) -> bool {
     match event.target_identity() {
-        Some(Identity::Routed {
-            slot: event_slot,
-            session: event_session,
-        }) => event_slot == slot && event_session == session,
+        Some(identity @ (Identity::Routed { .. } | Identity::Stable { .. })) => {
+            identity.matches(session.seat(slot))
+        }
         Some(Identity::Display(name)) => {
-            name == agent || is_cross_session_form(name, session, agent)
+            name == agent || is_cross_session_form(name, session.name, agent)
         }
         // Half a routing key addresses nobody, and neither does no target.
         Some(Identity::Unassociated) | None => false,
@@ -3944,6 +3967,8 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
                         actor_session: "aerewrite",
                         target_slot: "main",
                         target_session: "aerewrite",
+                        actor_session_id: "",
+                        target_session_id: "",
                         target_server: "",
                         target_pane: "",
                         target_session_uuid: "",

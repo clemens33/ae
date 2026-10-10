@@ -16,7 +16,7 @@ use std::path::Path;
 use crate::attention::Reason;
 use crate::digest::{AgentEntry, FactState, RenderKnowledge, SessionEntry, Status};
 use crate::events::{
-    AlertMeaning, Cursor, Drain, Event, EventLog, Identity, RefMeaning, SkippedLine,
+    AlertMeaning, Cursor, Drain, Event, EventLog, RefMeaning, SessionKey, SkippedLine,
 };
 use crate::meta::{Anomaly, Meta};
 use crate::time::Timestamp;
@@ -158,6 +158,8 @@ pub struct Outstanding<'a> {
     sent: Vec<&'a Event>,
     /// Every spawn still holding a seat.
     spawned: Vec<&'a Event>,
+    /// The session's id, for a request pinned by it.
+    id: Option<String>,
 }
 
 impl<'a> Outstanding<'a> {
@@ -176,9 +178,17 @@ impl<'a> Outstanding<'a> {
     /// closes no request.
     #[must_use]
     pub fn read(events: &'a [Event], session: &str, live: &[String]) -> Self {
+        Self::read_in(events, SessionKey::named(session), live)
+    }
+
+    /// [`Self::read`] for a reader that knows its session's id, so a request
+    /// pinned by it is judged across a rename.
+    #[must_use]
+    pub fn read_in(events: &'a [Event], session: SessionKey<'_>, live: &[String]) -> Self {
         Self {
             sent: open_requests(events, session),
             spawned: live_spawns(events, live),
+            id: session.id.map(ToOwned::to_owned),
         }
     }
 
@@ -203,7 +213,11 @@ impl<'a> Outstanding<'a> {
         let mine = |rows: &[&'a Event]| -> Vec<i64> {
             rows.iter()
                 .filter(|event| {
-                    crate::watchdog::event_is_actor(event, seat.session, seat.slot, seat.reference)
+                    let session = SessionKey {
+                        name: seat.session,
+                        id: self.id.as_deref(),
+                    };
+                    crate::watchdog::event_is_actor_in(event, session, seat.slot, seat.reference)
                 })
                 .map(|event| event.ts.epoch())
                 .collect()
@@ -280,7 +294,11 @@ impl SessionRead {
         // A session directory is named for its session, so a reader that opened
         // one knows which session's requests it is about to judge.
         let session = dir.file_name().and_then(|name| name.to_str());
-        Ok(Self::from_drain_in(&drain, session.unwrap_or_default()))
+        let id = crate::meta::session_id_in(dir);
+        Ok(Self::from_drain_in(
+            &drain,
+            SessionKey::new(session.unwrap_or_default(), &id),
+        ))
     }
 
     /// Read an already-drained stream.
@@ -313,7 +331,7 @@ impl SessionRead {
     /// ```
     #[must_use]
     pub fn from_drain(drain: &Drain) -> Self {
-        Self::from_drain_in(drain, "")
+        Self::from_drain_in(drain, SessionKey::default())
     }
 
     /// Read an already-drained stream, knowing which session it belongs to.
@@ -324,7 +342,7 @@ impl SessionRead {
     /// it closes nothing: a routing key's session half is only ever written
     /// with a value, so an empty name matches no target at all.
     #[must_use]
-    pub fn from_drain_in(drain: &Drain, session: &str) -> Self {
+    pub fn from_drain_in(drain: &Drain, session: SessionKey<'_>) -> Self {
         Self {
             last_active: drain.events.iter().map(|event| event.ts).max(),
             pending: pending_requests(&drain.events, session),
@@ -1001,7 +1019,8 @@ fn agent_entries(
         .filter(|slot| agent_liveness(runtime, runtime.agent(&slot.slot)) != Some(false))
         .map(crate::meta::RosterEntry::reference)
         .collect();
-    let outstanding = read.map(|read| Outstanding::read(&read.events, session, &seats));
+    let key = SessionKey::new(session, meta.session_id().unwrap_or_default());
+    let outstanding = read.map(|read| Outstanding::read_in(&read.events, key, &seats));
     meta.roster()
         .iter()
         .map(|slot| {
@@ -1197,7 +1216,7 @@ fn declared_reason(
 }
 
 /// The `ask`/`review` requests nothing has closed, oldest first.
-fn pending_requests(events: &[Event], session: &str) -> Vec<PendingRequest> {
+fn pending_requests(events: &[Event], session: SessionKey<'_>) -> Vec<PendingRequest> {
     open_requests(events, session)
         .into_iter()
         .filter_map(|event| {
@@ -1226,7 +1245,7 @@ fn pending_requests(events: &[Event], session: &str) -> Vec<PendingRequest> {
 /// retiring the seat that SENT it clears what nobody is left to read a reply
 /// to — a retired worker's questions leave its target's inbox. Anything else
 /// leaves the request open, however unanswerable it has become.
-pub(crate) fn open_requests<'a>(events: &'a [Event], session: &str) -> Vec<&'a Event> {
+pub(crate) fn open_requests<'a>(events: &'a [Event], session: SessionKey<'_>) -> Vec<&'a Event> {
     // One forward pass over an append-only log, so a reply or a withdrawal that
     // appears BEFORE its request finds nothing open and closes nothing. A
     // retire rides the same pass for the same reason, and for one more: the
@@ -1296,11 +1315,11 @@ pub(crate) fn open_requests<'a>(events: &'a [Event], session: &str) -> Vec<&'a E
 /// A missing key on either side matches nothing: a retire that names no slot,
 /// and a request missing either half of its own key, which is
 /// [`Identity::Unassociated`].
-pub(crate) fn retired(request: &Event, retire: &Event, session: &str) -> bool {
+pub(crate) fn retired(request: &Event, retire: &Event, session: SessionKey<'_>) -> bool {
     let Some(slot) = retire.target_slot.value() else {
         return false;
     };
-    let retired = Identity::Routed { slot, session };
+    let retired = session.seat(slot);
     // The seat it was sent to is gone: nobody will answer.
     if request
         .target_identity()
@@ -1311,9 +1330,9 @@ pub(crate) fn retired(request: &Event, retire: &Event, session: &str) -> bool {
     // The seat that sent it is gone: nobody is left to read a reply. Only
     // for a request this session judges — one whose target lives here — so a
     // cross-session request read in the caller's log stays open.
-    let judged_here = request.target_identity().is_some_and(
-        |target| matches!(target, Identity::Routed { session: home, .. } if home == session),
-    );
+    let judged_here = request
+        .target_identity()
+        .is_some_and(|target| session.holds(target));
     judged_here && request.actor_identity().matches(retired)
 }
 
@@ -2070,6 +2089,27 @@ mod tests {
         }
     }
 
+    /// A request pinned by session id is judged by the reader's id: a rename
+    /// keeps it closable, a reused name never reaches it.
+    #[test]
+    fn a_retire_closes_a_pinned_request_across_a_rename_and_not_under_a_reused_name() {
+        const ID: &str = "0199c0de-1111-4890-abcd-ef0123456789";
+        let pinned = format!(r#"{HOME},"target_session_id":"{ID}""#).replace("live", "old");
+        let events: Vec<Event> = [ask("r1", "hand", &pinned), retire(GAVE_UP)]
+            .iter()
+            .map(|line| Event::parse_line(line).expect("a fixture event"))
+            .collect();
+        let open = |key| super::open_requests(&events, key).len();
+        assert_eq!(open(crate::events::SessionKey::new("new", ID)), 0);
+        let reused = crate::events::SessionKey::new("old", "0199c0de-2222-4890-abcd-ef0123456789");
+        assert_eq!(open(reused), 1, "a reused name is another session");
+        assert_eq!(
+            open(crate::events::SessionKey::named("old")),
+            0,
+            "no id: the name rule"
+        );
+    }
+
     /// Closure by SEAT: a `retire` naming the slot a request was sent to closes
     /// that request, where a reply closes one by its request id.
     ///
@@ -2258,7 +2298,7 @@ mod tests {
             .iter()
             .map(|line| Event::parse_line(line).expect("a fixture line must be an event"))
             .collect();
-        super::open_requests(&events, session).len()
+        super::open_requests(&events, crate::events::SessionKey::named(session)).len()
     }
 
     /// Closure by the ASKER's seat: a `retire` naming the slot a request was

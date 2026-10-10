@@ -366,7 +366,8 @@ pub fn open_asks<'a>(events: &'a [Event], session: &str) -> Vec<&'a str> {
         let answer =
             event.action == reply::ACTION && event.target.as_deref() == Some(tracked::CONSOLE_SINK);
         if event.action == "retire" {
-            open.retain(|ask| !crate::session::retired(ask, event, session));
+            let key = crate::events::SessionKey::named(session);
+            open.retain(|ask| !crate::session::retired(ask, event, key));
         } else if console && event.action == tracked::Kind::Ask.action() && key.is_some() {
             open.retain(|ask| ask.reference.as_deref() != key);
             open.push(event);

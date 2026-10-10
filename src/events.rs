@@ -55,6 +55,10 @@ pub struct Event {
     pub target_slot: RoutingMember,
     /// The recipient's session.
     pub target_session: RoutingMember,
+    /// The sender's session `session_id`: the half of its key a rename keeps.
+    pub actor_session_id: RoutingMember,
+    /// The recipient's session `session_id`.
+    pub target_session_id: RoutingMember,
     /// Whether this event was mirrored across two ae sessions.
     pub cross_session: bool,
     /// Canonical socket path of the admitted target server.
@@ -166,13 +170,24 @@ pub enum Identity<'a> {
         /// The session the slot belongs to.
         session: &'a str,
     },
+    /// The routing key whose session half is also the stable `session_id`
+    /// meta keeps across a rename: compared by that id against another
+    /// `Stable`, by the session NAME against a [`Identity::Routed`].
+    Stable {
+        /// `main` / `worker.<n>` / `spawned.<n>`.
+        slot: &'a str,
+        /// The session name the record or reader spelled.
+        session: &'a str,
+        /// The canonical session id.
+        id: &'a str,
+    },
     /// The display name — all a pre-routing-key event carries.
     Display(&'a str),
     /// Half a routing key: routed, but to nowhere nameable.
     Unassociated,
 }
 
-impl Identity<'_> {
+impl<'a> Identity<'a> {
     /// Whether two identities name the same participant.
     ///
     /// **This lives on the type because the type's own doc already asserts the
@@ -207,19 +222,87 @@ impl Identity<'_> {
     /// ```
     #[must_use]
     pub fn matches(self, other: Self) -> bool {
-        match (self, other) {
-            (
-                Self::Routed {
-                    slot: left_slot,
-                    session: left_session,
-                },
-                Self::Routed {
-                    slot: right_slot,
-                    session: right_session,
-                },
-            ) => left_slot == right_slot && left_session == right_session,
-            (Self::Display(left), Self::Display(right)) => left == right,
-            _ => false,
+        match (self.routing(), other.routing()) {
+            // Both pinned, the id decides: a renamed session still matches and
+            // a reused name never does. One side unpinned: the name is all the
+            // two share.
+            (Some((left, left_session, left_id)), Some((right, right_session, right_id))) => {
+                left == right
+                    && match (left_id, right_id) {
+                        (Some(left_id), Some(right_id)) => left_id == right_id,
+                        _ => left_session == right_session,
+                    }
+            }
+            _ => {
+                matches!((self, other), (Self::Display(left), Self::Display(right)) if left == right)
+            }
+        }
+    }
+
+    /// A routing key's slot, session name and id, when this is one.
+    const fn routing(self) -> Option<(&'a str, &'a str, Option<&'a str>)> {
+        match self {
+            Self::Routed { slot, session } => Some((slot, session, None)),
+            Self::Stable { slot, session, id } => Some((slot, session, Some(id))),
+            Self::Display(_) | Self::Unassociated => None,
+        }
+    }
+}
+
+/// A reader's own session, as the session half of a routing key: the NAME it
+/// is called now, and the stable `session_id` its meta records when that row
+/// is usable. A record pinned by id is judged by the id, a legacy record by
+/// the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SessionKey<'a> {
+    /// The session name.
+    pub name: &'a str,
+    /// The canonical `session_id`, when known.
+    pub id: Option<&'a str>,
+}
+
+impl<'a> SessionKey<'a> {
+    /// A key that knows only the name: every id-pinned record is judged by
+    /// the name it spelled.
+    #[must_use]
+    pub const fn named(name: &'a str) -> Self {
+        Self { name, id: None }
+    }
+
+    /// The key a reader takes from its session's name and meta `session_id`
+    /// row; an unusable row is no id.
+    #[must_use]
+    pub fn new(name: &'a str, id: &'a str) -> Self {
+        Self {
+            name,
+            id: is_session_id(id).then_some(id),
+        }
+    }
+
+    /// The seat at `slot` in this session.
+    #[must_use]
+    pub fn seat(self, slot: &'a str) -> Identity<'a> {
+        match self.id {
+            Some(id) => Identity::Stable {
+                slot,
+                session: self.name,
+                id,
+            },
+            None => Identity::Routed {
+                slot,
+                session: self.name,
+            },
+        }
+    }
+
+    /// Whether `identity` is some seat of this session.
+    #[must_use]
+    pub fn holds(self, identity: Identity<'_>) -> bool {
+        match identity {
+            Identity::Routed { slot, .. } | Identity::Stable { slot, .. } => {
+                identity.matches(self.seat(slot))
+            }
+            Identity::Display(_) | Identity::Unassociated => false,
         }
     }
 }
@@ -380,6 +463,8 @@ impl Event {
             actor_session: RoutingMember::read(value, "actor_session")?,
             target_slot: RoutingMember::read(value, "target_slot")?,
             target_session: RoutingMember::read(value, "target_session")?,
+            actor_session_id: RoutingMember::read(value, "actor_session_id")?,
+            target_session_id: RoutingMember::read(value, "target_session_id")?,
             cross_session: optional_bool(value, "cross_session")?,
             target_server: optional(value, "target_server")?,
             target_pane: optional(value, "target_pane")?,
@@ -429,14 +514,24 @@ impl Event {
     /// How to name this event's actor, preferring the routing key.
     #[must_use]
     pub fn actor_identity(&self) -> Identity<'_> {
-        identity(&self.actor_slot, &self.actor_session, &self.actor)
+        identity(
+            &self.actor_slot,
+            &self.actor_session,
+            &self.actor_session_id,
+            &self.actor,
+        )
     }
 
     /// How to name this event's target, or `None` when it has none.
     #[must_use]
     pub fn target_identity(&self) -> Option<Identity<'_>> {
         let display = self.target.as_deref()?;
-        Some(identity(&self.target_slot, &self.target_session, display))
+        Some(identity(
+            &self.target_slot,
+            &self.target_session,
+            &self.target_session_id,
+            display,
+        ))
     }
 
     /// The watchdog verdict this event carries — alert-derived half.
@@ -490,25 +585,42 @@ fn alert_class(summary: Option<&str>) -> Reason {
     Reason::Stale
 }
 
-/// The identity rule in one sentence: BOTH halves present and valid route,
-/// NEITHER half present falls back to the display name, and everything between
-/// those two identifies nobody.
+/// The identity rule in one sentence: BOTH halves present and valid route —
+/// by the session id when the record carries a canonical one, by the session
+/// name when it carries none — NOTHING present falls back to the display name,
+/// and everything between, a present but unusable id included, identifies
+/// nobody.
 fn identity<'a>(
     slot: &'a RoutingMember,
     session: &'a RoutingMember,
+    id: &'a RoutingMember,
     display: &'a str,
 ) -> Identity<'a> {
-    match (slot, session) {
-        (RoutingMember::Value(slot), RoutingMember::Value(session)) => {
+    match (slot, session, id) {
+        (RoutingMember::Value(slot), RoutingMember::Value(session), RoutingMember::Absent) => {
             Identity::Routed { slot, session }
         }
-        (RoutingMember::Absent, RoutingMember::Absent) => Identity::Display(display),
+        (RoutingMember::Value(slot), RoutingMember::Value(session), RoutingMember::Value(id))
+            if is_session_id(id) =>
+        {
+            Identity::Stable { slot, session, id }
+        }
+        (RoutingMember::Absent, RoutingMember::Absent, RoutingMember::Absent) => {
+            Identity::Display(display)
+        }
         _ => Identity::Unassociated,
     }
 }
 
+/// Whether `text` is a usable routing session id: the canonical lowercase
+/// UUID spelling meta's `session_id` row carries, and nothing else.
+#[must_use]
+pub(crate) fn is_session_id(text: &str) -> bool {
+    !text.is_empty() && crate::archive::canonical_uuid(text) == text
+}
+
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 19] = [
+const KNOWN_KEYS: [&str; 21] = [
     "ts",
     "actor",
     "action",
@@ -519,6 +631,8 @@ const KNOWN_KEYS: [&str; 19] = [
     "actor_session",
     "target_slot",
     "target_session",
+    "actor_session_id",
+    "target_session_id",
     "cross_session",
     "target_server",
     "target_pane",
@@ -860,7 +974,7 @@ mod tests {
 
     use super::{
         AlertMeaning, Cursor, Event, EventError, EventLog, GenerationSource, Identity, KNOWN_KEYS,
-        RefMeaning, RoutingMember, alert_class,
+        RefMeaning, RoutingMember, SessionKey, alert_class,
     };
     use crate::attention::Reason;
     use crate::time::Timestamp;
@@ -1324,7 +1438,7 @@ mod tests {
 
     /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 19] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 21] = [
         "ts",
         "actor",
         "action",
@@ -1335,6 +1449,8 @@ mod tests {
         "actor_session",
         "target_slot",
         "target_session",
+        "actor_session_id",
+        "target_session_id",
         "cross_session",
         "target_server",
         "target_pane",
@@ -2209,5 +2325,94 @@ mod tests {
             slot: "worker.0",
             session: "s"
         }));
+    }
+
+    const ID_A: &str = "0199c0de-1111-4890-abcd-ef0123456789";
+    const ID_B: &str = "0199c0de-2222-4890-abcd-ef0123456789";
+
+    #[test]
+    fn a_pinned_key_matches_by_id_across_names_and_never_by_a_reused_name() {
+        let pinned = |session, id| Identity::Stable {
+            slot: "main",
+            session,
+            id,
+        };
+        // Renamed: the id survives the name.
+        assert!(pinned("old", ID_A).matches(pinned("new", ID_A)));
+        // Reused: the name survives the id, and that is not the same session.
+        assert!(!pinned("old", ID_A).matches(pinned("old", ID_B)));
+        assert!(!pinned("old", ID_A).matches(Identity::Stable {
+            slot: "worker.0",
+            session: "old",
+            id: ID_A
+        }));
+        // Against a legacy record the name is all the two share.
+        let legacy = Identity::Routed {
+            slot: "main",
+            session: "old",
+        };
+        assert!(pinned("old", ID_A).matches(legacy));
+        assert!(legacy.matches(pinned("old", ID_A)));
+        assert!(!pinned("new", ID_A).matches(legacy));
+        assert!(!pinned("old", ID_A).matches(Identity::Display("old")));
+    }
+
+    #[test]
+    fn a_session_id_routes_only_in_its_canonical_spelling_and_beside_both_halves() {
+        let side = |extra: &str| {
+            let line =
+                format!(r#"{{"ts":"2026-10-10T10:00:00Z","actor":"lead","action":"ask"{extra}}}"#);
+            Event::parse_line(&line).expect("an event")
+        };
+        let routed = r#","actor_slot":"main","actor_session":"s""#;
+        let valid = side(&format!(r#"{routed},"actor_session_id":"{ID_A}""#));
+        assert!(matches!(
+            valid.actor_identity(),
+            Identity::Stable { id, session: "s", slot: "main" } if id == ID_A
+        ));
+        for bad in [
+            ID_A.to_ascii_uppercase(),
+            format!("{ID_A}-x"),
+            "x".to_owned(),
+        ] {
+            let event = side(&format!(r#"{routed},"actor_session_id":"{bad}""#));
+            assert_eq!(event.actor_identity(), Identity::Unassociated, "{bad}");
+        }
+        // An id alone is half a key; with no id the legacy rule stands.
+        let alone = side(&format!(r#","actor_session_id":"{ID_A}""#));
+        assert_eq!(alone.actor_identity(), Identity::Unassociated);
+        assert!(matches!(
+            side(routed).actor_identity(),
+            Identity::Routed { .. }
+        ));
+        assert_eq!(side("").actor_identity(), Identity::Display("lead"));
+    }
+
+    #[test]
+    fn a_session_key_carries_only_a_usable_id_and_holds_its_own_seats() {
+        assert_eq!(SessionKey::new("s", "not-an-id").id, None);
+        assert_eq!(SessionKey::new("s", "").id, None);
+        let key = SessionKey::new("new", ID_A);
+        assert_eq!(key.id, Some(ID_A));
+        assert!(key.holds(Identity::Stable {
+            slot: "worker.0",
+            session: "old",
+            id: ID_A
+        }));
+        assert!(!key.holds(Identity::Stable {
+            slot: "worker.0",
+            session: "new",
+            id: ID_B
+        }));
+        assert!(!key.holds(Identity::Routed {
+            slot: "worker.0",
+            session: "old"
+        }));
+        assert!(key.holds(Identity::Routed {
+            slot: "worker.0",
+            session: "new"
+        }));
+        assert!(!key.holds(Identity::Display("new")));
+        assert!(!SessionKey::named("new").holds(Identity::Unassociated));
     }
 }

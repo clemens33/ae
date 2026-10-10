@@ -74,6 +74,7 @@ mod quota_agy_spec;
 mod quota_grok_spec;
 mod reader;
 mod refusal_rig;
+mod renametell_routing_spec;
 mod reseat;
 mod reseat_carry;
 mod reseat_headroom_spec;

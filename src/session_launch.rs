@@ -4720,6 +4720,8 @@ pub(crate) fn deliver_launch_turn(
             actor_session: "",
             target_slot: slot,
             target_session: "",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",

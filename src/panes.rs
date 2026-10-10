@@ -201,6 +201,8 @@ pub fn focus(
             actor_session: "",
             target_slot: &resolved.slot,
             target_session: &resolved.session,
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",

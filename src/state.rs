@@ -465,6 +465,7 @@ mod tests {
             slot: "main".to_owned(),
             session: "s".to_owned(),
             display: "cl:lead".to_owned(),
+            session_id: String::new(),
         }
     }
 
@@ -473,6 +474,7 @@ mod tests {
             slot: "worker.0".to_owned(),
             session: "s".to_owned(),
             display: "cl:colead".to_owned(),
+            session_id: String::new(),
         }
     }
 
@@ -481,6 +483,7 @@ mod tests {
             slot: "spawned.0".to_owned(),
             session: "s".to_owned(),
             display: "cl:helper".to_owned(),
+            session_id: String::new(),
         }
     }
 

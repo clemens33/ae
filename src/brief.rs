@@ -44,6 +44,7 @@ use std::path::Path;
 
 use crate::attention::Reason;
 use crate::digest::{SessionEntry, Status};
+use crate::events::SessionKey;
 use crate::requests::{self, Status as RequestStatus};
 use crate::state;
 use crate::time::Timestamp;
@@ -689,7 +690,12 @@ pub fn card_for(
         goal: entry.goal.clone(),
         topics: topic_lines(memo.as_deref().unwrap_or_default(), now, since_secs),
         memo_unreadable: memo.is_err(),
-        needs: needs(&agents, &container, &entry.name, now),
+        needs: needs(
+            &agents,
+            &container,
+            SessionKey::new(&entry.name, &crate::meta::session_id_in(dir)),
+            now,
+        ),
         agents,
         degraded: entry.degraded,
     }
@@ -858,7 +864,12 @@ pub(crate) fn agent_lines(
 /// `AgentEntry.reason`) rather than recomputing the ceiling: a declaration a
 /// later relevant event superseded carries no `Blocked` contribution, so the
 /// card cannot claim the human for a wait the daemon has already yielded.
-fn needs(agents: &[AgentLine], container: &[u8], session: &str, now: Timestamp) -> Vec<Need> {
+fn needs(
+    agents: &[AgentLine],
+    container: &[u8],
+    session: SessionKey<'_>,
+    now: Timestamp,
+) -> Vec<Need> {
     let mut needs: Vec<Need> = agents
         .iter()
         .filter(|agent| match agent.state.as_str() {
@@ -1151,11 +1162,21 @@ mod tests {
             attention,
         };
         let now = Timestamp::from_epoch(0);
-        let fresh = needs(&[line(None)], b"", "s", now);
+        let fresh = needs(
+            &[line(None)],
+            b"",
+            crate::events::SessionKey::named("s"),
+            now,
+        );
         assert!(fresh.is_empty(), "fresh waiting-agent claims nobody");
         assert!(!fresh.iter().any(|need| need.claims_human(Some("lead"))));
 
-        let escalated = needs(&[line(Some(Reason::Blocked))], b"", "s", now);
+        let escalated = needs(
+            &[line(Some(Reason::Blocked))],
+            b"",
+            crate::events::SessionKey::named("s"),
+            now,
+        );
         assert_eq!(escalated.len(), 1);
         let Need::Declared { state, reason, .. } = &escalated[0] else {
             panic!("a declared need: {escalated:?}");

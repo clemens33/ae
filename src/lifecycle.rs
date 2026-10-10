@@ -205,6 +205,21 @@ pub(crate) fn census(root: &Path) -> io::Result<Option<Vec<String>>> {
     Ok(Some(names))
 }
 
+/// Every session under `root` whose meta records `id` as its `session_id`:
+/// where a request pinned by that id lives now, whatever it is called.
+///
+/// # Errors
+///
+/// As [`census`]: the sessions could not all be enumerated.
+pub(crate) fn sessions_with_id(root: &Path, id: &str) -> io::Result<Vec<String>> {
+    let sessions = sessions_dir(root);
+    Ok(census(root)?
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| crate::meta::session_id_in(&sessions.join(name)) == id)
+        .collect())
+}
+
 /// Whether `path` is a directory, following symlinks.
 pub(crate) fn dir_exists(path: &Path) -> bool {
     #[allow(
@@ -1028,6 +1043,8 @@ pub(super) fn emit_lifecycle_event(dir: &Path, name: &str, action: &str, summary
             actor_session: "",
             target_slot: "",
             target_session: "",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",

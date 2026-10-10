@@ -734,6 +734,8 @@ fn record(dir: &Path, actor: Actor<'_>, target: &Target, summary: &str) {
         actor_session: "",
         target_slot: &target.slot,
         target_session: "",
+        actor_session_id: "",
+        target_session_id: "",
         target_server: "",
         target_pane: &target.pane,
         target_session_uuid: "",

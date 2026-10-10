@@ -85,6 +85,8 @@ Messaging events (`send` / `relay` / `ask` / `review` / `reply`) also carry the 
 
 Each is optional and omitted when empty. Readers that don't understand them ignore them; readers that do (`reply`, `requests`) prefer slot + session over the display name for pairing and delivery.
 
+`ask`, `review` and `reply` also pin each routed end by its session's meta `session_id`: `actor_session_id` and `target_session_id`, written only beside a slot. A reader that knows its own session's id judges a pinned end BY THAT ID, so a request survives `ae rename` and a session that later takes the old name never answers it; against a legacy record the name is all the two share. A present but non-canonical id names nobody (`Identity::Unassociated`) and never falls back to the name. Every request reader takes the two ids through the strict event parser, never a scrape: a wrong type, a duplicate, or any line the schema refuses whose decoded JSON object names either key (escaped or not), is unusable; the older routing members keep their scrape. `reply` finds a pinned asker in the one session recording its id and refuses, naming the id, when none or several do. `ae rename` refuses while a pending request has an end matched by name alone in the renamed session. Named residual: the watchdog's done and wait folds and the chat's open asks stay name-only, because the records they judge carry no id — so a reply to an ask the seat opened BEFORE a rename does not end that seat's `waiting-agent` quiet.
+
 ### Incarnation fields
 
 Additive facts that prove a pane's session across servers and tmux incarnations. Older events omit them; older readers ignore them. Empty values are unwritten.

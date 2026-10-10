@@ -4882,10 +4882,30 @@ fn pending_ids(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// A1: a pending same-session request refuses the stopped rename before any
-/// write, naming its id; the authorized close (reply) unblocks the retry.
-/// Base-writer records only: the ask travels the production helper while
-/// live. Smallest defeating mutation: skip the pending legacy guard.
+/// A session's event log as a writer before session-id pins left it: every
+/// `actor_session_id` / `target_session_id` member removed, so each request
+/// is a LEGACY row a rename would strand.
+fn legacy_ledger(dir: &Path) {
+    let path = dir.join("events.jsonl");
+    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    for key in ["actor_session_id", "target_session_id"] {
+        let needle = format!(",\"{key}\":\"");
+        while let Some(at) = text.find(&needle) {
+            let value = at + needle.len();
+            let end = text[value..]
+                .find('"')
+                .map_or(text.len(), |n| value + n + 1);
+            text.replace_range(at..end, "");
+        }
+    }
+    assert!(std::fs::write(&path, text).is_ok(), "legacy ledger");
+}
+
+/// A1: a pending same-session LEGACY request refuses the stopped rename before
+/// any write, naming its id; the authorized close (reply) unblocks the retry.
+/// The ask travels the production helper while live, then loses its
+/// session-id pins: a pinned request survives a rename instead. Smallest
+/// defeating mutation: skip the pending legacy guard.
 #[test]
 fn a_pending_same_session_request_refuses_the_stopped_rename() {
     if skip() {
@@ -4922,6 +4942,7 @@ fn a_pending_same_session_request_refuses_the_stopped_rename() {
 
     let (code, stdout, stderr) = public(&rig, &["stop", "psess"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    legacy_ledger(&rig.dir("psess"));
 
     let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "psess", "pmoved"]);
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
@@ -4966,7 +4987,7 @@ fn a_pending_same_session_request_refuses_the_stopped_rename() {
     );
 }
 
-/// A1: a pending cross-session request refuses the rename of EITHER
+/// A1: a pending cross-session LEGACY request refuses the rename of EITHER
 /// participant — the peer ledger, not just the source, is read. Smallest
 /// defeating mutation: check only the source ledger.
 #[test]
@@ -5009,6 +5030,7 @@ fn a_pending_cross_session_request_refuses_either_rename() {
             Some(0),
             "{session}: stdout: {stdout}\nstderr: {stderr}"
         );
+        legacy_ledger(&rig.dir(session));
     }
     // The target side: its own log mirrors the pending request.
     let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "pxb", "pxb2"]);

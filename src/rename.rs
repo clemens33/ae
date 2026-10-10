@@ -1115,6 +1115,10 @@ fn locked(
         )?;
         return Ok(EXIT_FAILED);
     }
+    if let Err(why) = stranding(root, old, &old_dir) {
+        writeln!(err, "Error: {why}. Nothing was renamed.")?;
+        return Ok(EXIT_FAILED);
+    }
 
     // 1. The tmux session.
     let (renamed, _) = transport::run_tmux_op(&argv(
@@ -1321,22 +1325,6 @@ fn count_rows(bytes: &[u8], key: &str) -> usize {
     count
 }
 
-/// The `session_id` row of the meta in `dir`: exactly one canonical claim,
-/// or empty. Two UUID rows are unknown identity, never the first row.
-fn dir_uuid(dir: &Path) -> String {
-    let Ok(bytes) = crate::meta::read_bytes(dir) else {
-        return String::new();
-    };
-    if count_rows(&bytes, "session_id") != 1 {
-        return String::new();
-    }
-    let row = crate::lifecycle::meta_value(&bytes, "session_id");
-    if crate::archive::canonical_uuid(&row).is_empty() {
-        return String::new();
-    }
-    crate::archive::canonical_uuid(&row)
-}
-
 /// One `git worktree list --porcelain` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WorktreeEntry {
@@ -1431,11 +1419,14 @@ fn transcript_path(home: &Path, cwd: &str, id: &str) -> PathBuf {
 
 /// Pending-request and unreadable-evidence blockers naming `names`.
 ///
-/// The source log contributes every pending request (any record there
-/// involves the source by construction); peer logs contribute pending
-/// requests whose recorded actor or target session is one of `names`.
-/// Unknown or corrupt pending evidence blocks rather than inventing a
-/// binding. Readers are the existing `SessionRead` ledger readers.
+/// A request a rename would STRAND is a pending one with an end that names
+/// the renamed session by NAME alone: an end pinned by a canonical session id
+/// keeps matching after the rename, and an external SLOTLESS end (an `ae:` or
+/// chat-bridge asker, an event-only sink) is bound to no session name. The source log is judged at
+/// every end (any record there involves the source by construction); peer logs
+/// at the ends whose recorded session is one of `names`. Unknown or corrupt
+/// pending evidence blocks rather than inventing a binding. Readers are the
+/// existing `SessionRead` ledger readers.
 fn pending_blockers(
     root: &Path,
     names: &[&str],
@@ -1447,10 +1438,12 @@ fn pending_blockers(
         format!("session '{state_name}' has an unreadable event log ({why}) — refusing to strand requests")
     })?;
     for pending in &source.pending {
-        blockers.push(format!(
-            "{} {} in '{state_name}'",
-            pending.id, pending.action
-        ));
+        if opening_of(&source.events, &pending.id).is_none_or(|event| strands(event, None)) {
+            blockers.push(format!(
+                "{} {} in '{state_name}'",
+                pending.id, pending.action
+            ));
+        }
     }
     let census = crate::lifecycle::census(root).map_err(|why| {
         format!("cannot enumerate sessions ({why}) — refusing to strand requests")
@@ -1468,25 +1461,9 @@ fn pending_blockers(
             continue;
         };
         for pending in &read.pending {
-            let involves = read.events.iter().any(|event| {
-                event.reference.as_deref() == Some(pending.id.as_str())
-                    && (matches!(event.action.as_str(), "ask" | "review"))
-                    && (event
-                        .actor_session
-                        .value()
-                        .is_some_and(|s| names.contains(&s))
-                        || event
-                            .target_session
-                            .value()
-                            .is_some_and(|s| names.contains(&s)))
-            });
             // A pending id with no matching open record is still evidence, not
             // proof of absence: block on the id rather than guessing.
-            if involves
-                || !read
-                    .events
-                    .iter()
-                    .any(|event| event.reference.as_deref() == Some(pending.id.as_str()))
+            if opening_of(&read.events, &pending.id).is_none_or(|event| strands(event, Some(names)))
             {
                 blockers.push(format!(
                     "{} {} in '{peer}' (cross-session)",
@@ -1496,6 +1473,61 @@ fn pending_blockers(
         }
     }
     Ok(blockers)
+}
+
+/// Refuse a rename of `old` (its state at `dir`) that would strand a pending
+/// request — the live and the stopped rename ask the same question.
+fn stranding(root: &Path, old: &str, dir: &Path) -> Result<(), String> {
+    let blockers = pending_blockers(root, &[old], dir, old)?;
+    if blockers.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "session '{old}' has {} pending request(s) a rename would strand ({}) — close them first (reply from the target seat, or retire the holding seat), then retry",
+        blockers.len(),
+        blockers.join(", ")
+    ))
+}
+
+/// The newest `ask`/`review` that opened `id`.
+fn opening_of<'a>(
+    events: &'a [crate::events::Event],
+    id: &str,
+) -> Option<&'a crate::events::Event> {
+    events.iter().rev().find(|event| {
+        event.reference.as_deref() == Some(id) && matches!(event.action.as_str(), "ask" | "review")
+    })
+}
+
+/// Whether renaming would strand `request`: an end that matches by session
+/// NAME and names the renamed session — every end when `names` is `None`
+/// (the source's own log), else an end recording one of `names`.
+fn strands(request: &crate::events::Event, names: Option<&[&str]>) -> bool {
+    use crate::events::Identity;
+    let external_asker = !request.actor_slot.is_present()
+        && request.actor_session.is_present()
+        && crate::tracked::is_external(&request.actor);
+    let ends = [
+        (
+            request.actor_identity(),
+            &request.actor_session,
+            external_asker,
+        ),
+        (
+            request.target_identity().unwrap_or(Identity::Display("")),
+            &request.target_session,
+            !request.target_slot.is_present()
+                && request
+                    .target
+                    .as_deref()
+                    .is_none_or(crate::tracked::is_external),
+        ),
+    ];
+    ends.into_iter().any(|(identity, session, exempt)| {
+        !exempt
+            && !matches!(identity, Identity::Stable { .. })
+            && names.is_none_or(|names| session.value().is_some_and(|name| names.contains(&name)))
+    })
 }
 
 /// No other session may record the old or candidate work path, in either
@@ -1734,16 +1766,9 @@ fn preflight(
             "session '{old}' records no origin — refusing a git/full move without one"
         ));
     }
-    // Conservative pending-request refusal (pre-B: every pending record is
-    // legacy identity). Names affected request IDs and the remedy.
-    let blockers = pending_blockers(root, &[old], &old_dir, old)?;
-    if !blockers.is_empty() {
-        return Err(format!(
-            "session '{old}' has {} pending request(s) a rename would strand ({}) — close them first (reply from the target seat, or retire the holding seat), then retry",
-            blockers.len(),
-            blockers.join(", ")
-        ));
-    }
+    // A pending request a rename would strand refuses, naming the affected
+    // request ids and the remedy.
+    stranding(root, old, &old_dir)?;
     // A stopped rename performs no resume, but it must not newly break ae's
     // own exact-resume probe; the tool-specific check is shared so recovery
     // re-proves the same rule.
@@ -2290,7 +2315,7 @@ fn do_work_move(root: &Path, intent: &Intent) -> Result<(), String> {
 fn state_moved(root: &Path, intent: &Intent) -> bool {
     let sessions = crate::lifecycle::sessions_dir(root);
     matches!(classify_node(&sessions.join(&intent.old)), NodeKind::Absent)
-        && dir_uuid(&sessions.join(&intent.new)) == intent.uuid
+        && crate::meta::session_id_in(&sessions.join(&intent.new)) == intent.uuid
 }
 
 /// Move the state directory, then verify it.
@@ -2929,7 +2954,7 @@ fn converge_completed(
 ) -> crate::Result<u8> {
     let sessions = crate::lifecycle::sessions_dir(root);
     if !crate::lifecycle::path_exists(&sessions.join(old))
-        && dir_uuid(&sessions.join(new)) == intent.uuid
+        && crate::meta::session_id_in(&sessions.join(new)) == intent.uuid
     {
         if let Err(why) = verify_completion(root, intent) {
             writeln!(
@@ -3380,8 +3405,10 @@ fn recover(
     }
     // Locate the UUID: exactly one side may hold it. A replacement occupant
     // (different UUID) is never overwritten; a missing both is manual repair.
-    let old_holds = crate::lifecycle::dir_exists(&old_dir) && dir_uuid(&old_dir) == intent.uuid;
-    let new_holds = crate::lifecycle::dir_exists(&new_dir) && dir_uuid(&new_dir) == intent.uuid;
+    let old_holds = crate::lifecycle::dir_exists(&old_dir)
+        && crate::meta::session_id_in(&old_dir) == intent.uuid;
+    let new_holds = crate::lifecycle::dir_exists(&new_dir)
+        && crate::meta::session_id_in(&new_dir) == intent.uuid;
     let old_occupied = crate::lifecycle::path_exists(&old_dir) && !old_holds;
     let new_occupied = crate::lifecycle::path_exists(&new_dir) && !new_holds;
     if new_occupied {
@@ -3823,6 +3850,42 @@ fn is_symlink(path: &Path) -> bool {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_name_matched_end_naming_the_session_strands_a_request() {
+        let id = "0199c0de-1111-4890-abcd-ef0123456789";
+        let request = |extra: &str| {
+            crate::events::Event::parse_line(&format!(
+                r#"{{"ts":"2026-10-10T10:00:00Z","actor":"lead","action":"ask","target":"colead","ref":"r1","actor_slot":"main","actor_session":"old","target_slot":"worker.0","target_session":"peer"{extra}}}"#
+            ))
+            .expect("a fixture event")
+        };
+        let legacy = request("");
+        assert!(strands(&legacy, None));
+        assert!(strands(&legacy, Some(&["old"])));
+        assert!(!strands(&legacy, Some(&["other"])));
+        let both = format!(r#","actor_session_id":"{id}","target_session_id":"{id}""#);
+        assert!(!strands(&request(&both), None));
+        let half = format!(r#","target_session_id":"{id}""#);
+        assert!(strands(&request(&half), Some(&["old"])));
+        assert!(!strands(&request(&half), Some(&["peer"])));
+        let external = crate::events::Event::parse_line(&format!(
+            r#"{{"ts":"2026-10-10T10:00:00Z","actor":"ae:seats:x","action":"ask","target":"colead","ref":"r2","actor_session":"old","target_slot":"worker.0","target_session":"old","target_session_id":"{id}"}}"#
+        ))
+        .expect("a fixture event");
+        assert!(!strands(&external, None));
+        // An external-looking display waives no recorded target slot.
+        let slotted = crate::events::Event::parse_line(
+            r#"{"ts":"2026-10-10T10:00:00Z","actor":"lead","action":"ask","target":"ae:seats:x","ref":"r3","actor_slot":"main","actor_session":"old","target_slot":"worker.0","target_session":"peer"}"#,
+        )
+        .expect("a fixture event");
+        assert!(strands(&slotted, Some(&["peer"])));
+        let sink = crate::events::Event::parse_line(&format!(
+            r#"{{"ts":"2026-10-10T10:00:00Z","actor":"lead","action":"ask","target":"telegram:42","ref":"r3","actor_slot":"main","actor_session":"old","actor_session_id":"{id}"}}"#
+        ))
+        .expect("a fixture event");
+        assert!(!strands(&sink, None));
+    }
 
     fn words(list: &[&str]) -> Vec<String> {
         list.iter().map(|word| (*word).to_owned()).collect()

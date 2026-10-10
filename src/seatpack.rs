@@ -240,6 +240,8 @@ pub struct Git {
 pub struct Inputs {
     /// The session's name.
     pub session: String,
+    /// The session's meta `session_id`, empty when unknown.
+    pub session_id: String,
     /// Whether the process rendering this pack runs an installed ae whose
     /// command link exists. The reply lines' spelling is not decided here: the
     /// caller reads the shape fact and [`crate::tracked::reply_command_for`] —
@@ -574,7 +576,13 @@ fn viewer(inputs: &Inputs) -> Viewer {
         slot: inputs.seat_slot.clone(),
         session: inputs.session.clone(),
         display: inputs.seat_reference.clone(),
+        session_id: inputs.session_id.clone(),
     }
+}
+
+/// The session as a routing key's session half: its name and its id.
+fn session_key(inputs: &Inputs) -> crate::events::SessionKey<'_> {
+    crate::events::SessionKey::new(&inputs.session, &inputs.session_id)
 }
 
 /// One line per request closed within the last 24 h, newest first.
@@ -594,7 +602,7 @@ fn viewer(inputs: &Inputs) -> Viewer {
 /// hygiene: the reply command below quotes an id without escaping it, and this
 /// document is PASTED, so a paste terminator in one turns the rest into keys.
 fn minted_requests(inputs: &Inputs) -> (Vec<crate::requests::Request>, usize) {
-    let read = crate::requests::states_in(&inputs.container, &inputs.session);
+    let read = crate::requests::states_in(&inputs.container, session_key(inputs));
     let before = read.len();
     let kept: Vec<crate::requests::Request> = read
         .into_iter()
@@ -713,7 +721,7 @@ fn push_identity(out: &mut String, inputs: &Inputs) {
 /// it is that the owner of the rule stays the owner when the records change.
 fn spawner_of(inputs: &Inputs) -> String {
     let outstanding =
-        crate::session::Outstanding::read(&inputs.events, &inputs.session, &inputs.live);
+        crate::session::Outstanding::read_in(&inputs.events, session_key(inputs), &inputs.live);
     outstanding
         .spawns()
         .iter()
@@ -940,7 +948,7 @@ fn push_spawns(out: &mut String, inputs: &Inputs) {
         return;
     }
     let outstanding =
-        crate::session::Outstanding::read(&inputs.events, &inputs.session, &inputs.live);
+        crate::session::Outstanding::read_in(&inputs.events, session_key(inputs), &inputs.live);
     let mut owned = 0_usize;
     for event in outstanding.spawns() {
         if !crate::watchdog::event_is_actor(
@@ -1235,6 +1243,7 @@ mod tests {
     fn base() -> Inputs {
         Inputs {
             session: "s1".to_owned(),
+            session_id: String::new(),
             installed_head: false,
             status: "running".to_owned(),
             goal: Some("ship the seed pack".to_owned()),

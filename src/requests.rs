@@ -29,7 +29,8 @@ use std::path::Path;
 use crate::event_text::{
     Member, event_line, extract, member, pad_left_aligned, read_lines, reversed,
 };
-use crate::events::{Event, Identity};
+use crate::events::{Event, Identity, RoutingMember, SessionKey};
+use crate::json::{self, Value};
 use crate::tmux::ObservedViewer;
 
 /// `requests [mine|inbox|all]` — signature, defaulting to `mine`.
@@ -85,6 +86,8 @@ pub struct Viewer {
     pub session: String,
     /// The display `alias:name`.
     pub display: String,
+    /// The meta `session_id` of `session`, empty when unknown.
+    pub session_id: String,
 }
 
 impl Viewer {
@@ -111,11 +114,13 @@ impl Viewer {
                 slot: slot.to_owned(),
                 session: session.to_owned(),
                 display,
+                session_id: String::new(),
             },
             _ => Self {
                 slot: String::new(),
                 session: String::new(),
                 display,
+                session_id: String::new(),
             },
         }
     }
@@ -123,10 +128,7 @@ impl Viewer {
     /// This viewer, classified by the same rule the rows are.
     fn identity(&self) -> Identity<'_> {
         match (self.slot.is_empty(), self.session.is_empty()) {
-            (false, false) => Identity::Routed {
-                slot: &self.slot,
-                session: &self.session,
-            },
+            (false, false) => SessionKey::new(&self.session, &self.session_id).seat(&self.slot),
             (true, true) => Identity::Display(&self.display),
             _ => Identity::Unassociated,
         }
@@ -193,6 +195,10 @@ pub struct Request {
     pub from_session: Key,
     /// Session of the target's routing key.
     pub to_session: Key,
+    /// Session id of the sender's routing key.
+    pub from_session_id: Key,
+    /// Session id of the target's routing key.
+    pub to_session_id: Key,
     /// The target incarnation recorded at open, authoritative only because the
     /// opening line parsed as a ledger event; `None` otherwise. The populated
     /// form is constructible only inside this module, from a parsed [`Event`].
@@ -242,13 +248,35 @@ impl Request {
     /// This row's sender, as an identity.
     #[must_use]
     fn asker_identity(&self) -> Identity<'_> {
-        identity_of(&self.from_slot, &self.from_session, &self.from)
+        identity_of(
+            &self.from_slot,
+            &self.from_session,
+            &self.from_session_id,
+            &self.from,
+        )
     }
 
     /// This row's target, as an identity.
     #[must_use]
     fn askee_identity(&self) -> Identity<'_> {
-        identity_of(&self.to_slot, &self.to_session, &self.to)
+        identity_of(
+            &self.to_slot,
+            &self.to_session,
+            &self.to_session_id,
+            &self.to,
+        )
+    }
+
+    /// Whether this row was sent TO the seat at `slot` of `session`.
+    #[must_use]
+    pub(crate) fn sent_to(&self, session: SessionKey<'_>, slot: &str) -> bool {
+        self.askee_identity().matches(session.seat(slot))
+    }
+
+    /// Whether this row was sent BY the seat at `slot` of `session`.
+    #[must_use]
+    pub(crate) fn sent_by(&self, session: SessionKey<'_>, slot: &str) -> bool {
+        self.asker_identity().matches(session.seat(slot))
     }
 
     /// The target incarnation recorded at open, or `None` when the opening
@@ -359,8 +387,13 @@ pub fn render(dir: &Path, mode: Mode, viewer: &Viewer) -> Output {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
+    let own_id = crate::meta::session_id_in(dir);
+    let viewer = Viewer {
+        session_id: crate::tracked::routing_id(dir, &viewer.slot, &viewer.session, session),
+        ..viewer.clone()
+    };
     Output {
-        stdout: table_in(&container, session, mode, viewer),
+        stdout: table_in(&container, SessionKey::new(session, &own_id), mode, &viewer),
         stderr: Vec::new(),
         code: 0,
     }
@@ -372,11 +405,11 @@ pub fn render(dir: &Path, mode: Mode, viewer: &Viewer) -> Output {
 /// routing-key session; session-bound surfaces must use [`render`].
 #[must_use]
 pub fn table(container: &[u8], mode: Mode, viewer: &Viewer) -> Vec<u8> {
-    table_in(container, "", mode, viewer)
+    table_in(container, SessionKey::default(), mode, viewer)
 }
 
 /// The table for one container whose session is known.
-fn table_in(container: &[u8], session: &str, mode: Mode, viewer: &Viewer) -> Vec<u8> {
+fn table_in(container: &[u8], session: SessionKey<'_>, mode: Mode, viewer: &Viewer) -> Vec<u8> {
     let mut out = header();
     for request in states_in(container, session) {
         if request.shown_to(mode, viewer) {
@@ -393,12 +426,12 @@ fn table_in(container: &[u8], session: &str, mode: Mode, viewer: &Viewer) -> Vec
 /// routing-key session; session-bound consumers must use [`states_in`].
 #[must_use]
 pub fn states(container: &[u8]) -> Vec<Request> {
-    states_in(container, "")
+    states_in(container, SessionKey::default())
 }
 
 /// THE request sensor for a known session.
 #[must_use]
-pub(crate) fn states_in(container: &[u8], session: &str) -> Vec<Request> {
+pub(crate) fn states_in(container: &[u8], session: SessionKey<'_>) -> Vec<Request> {
     let ledger = ledger_events(container);
     let open = crate::session::open_requests(&ledger, session)
         .into_iter()
@@ -492,6 +525,8 @@ pub(crate) fn states_in(container: &[u8], session: &str) -> Vec<Request> {
                 to_slot: opening.to_slot,
                 from_session: opening.from_session,
                 to_session: opening.to_session,
+                from_session_id: opening.from_session_id,
+                to_session_id: opening.to_session_id,
                 recorded: opening.recorded,
                 summary,
             })
@@ -530,18 +565,100 @@ impl Key {
             Member::Value(bytes) => Self::Value(bytes.into_owned()),
         }
     }
+
+    /// This member read as a session id.
+    pub(crate) fn pin(&self) -> Pin<'_> {
+        match self {
+            Self::Absent => Pin::None,
+            Self::Empty => Pin::Unusable,
+            Self::Value(bytes) => std::str::from_utf8(bytes)
+                .ok()
+                .filter(|id| crate::events::is_session_id(id))
+                .map_or(Pin::Unusable, Pin::Id),
+        }
+    }
+}
+
+/// One line as the JSON parser reads it, and the event the strict schema takes
+/// from that same value — [`Event::parse_line`] in two steps; `None` where
+/// either refuses.
+fn strict(line: &[u8]) -> (Option<Value>, Option<Event>) {
+    let value = std::str::from_utf8(line)
+        .ok()
+        .and_then(|text| json::parse(text).ok());
+    let event = value
+        .as_ref()
+        .and_then(|value| Event::from_json(value).ok());
+    (value, event)
+}
+
+/// A record's `actor_session_id` and `target_session_id`, read by the STRICT
+/// event parser and never scraped: a scrape reads a wrong type or a spaced
+/// member as absent and a duplicate as its first value, and would close by the
+/// legacy name. When the schema refuses the line, an id key the decoded JSON
+/// object names — however escaped — makes both ids unusable; a line naming
+/// neither, or no JSON object at all, keeps the legacy "absent".
+pub(crate) fn session_ids(line: &[u8]) -> [Key; 2] {
+    let (value, event) = strict(line);
+    ids_of(value.as_ref(), event.as_ref())
+}
+
+/// [`session_ids`] for a line already read by [`strict`].
+fn ids_of(value: Option<&Value>, event: Option<&Event>) -> [Key; 2] {
+    let key = |member: &RoutingMember| match member {
+        RoutingMember::Absent => Key::Absent,
+        RoutingMember::Invalid => Key::Empty,
+        RoutingMember::Value(text) => Key::Value(text.as_bytes().to_vec()),
+    };
+    if let Some(event) = event {
+        return [key(&event.actor_session_id), key(&event.target_session_id)];
+    }
+    let named = matches!(value, Some(Value::Obj(fields))
+        if fields.iter().any(|(name, _)| name == "actor_session_id" || name == "target_session_id"));
+    if named {
+        [Key::Empty, Key::Empty]
+    } else {
+        [Key::Absent, Key::Absent]
+    }
+}
+
+/// A session id member, as every request reader judges it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pin<'a> {
+    /// No id recorded: the session name decides.
+    None,
+    /// A canonical id.
+    Id(&'a str),
+    /// Present and unusable: names nobody.
+    Unusable,
+}
+
+/// Whether two ends' session halves — a name and its id member — are one
+/// session: [`Identity::matches`]'s rule on scraped members.
+pub(crate) fn same_session(left: (&str, &Key), right: (&str, &Key)) -> bool {
+    match (left.1.pin(), right.1.pin()) {
+        (Pin::Unusable, _) | (_, Pin::Unusable) => false,
+        (Pin::Id(left), Pin::Id(right)) => left == right,
+        _ => left.0 == right.0,
+    }
 }
 
 /// This side's participant, as [`Identity`] names one — or `Unassociated` when
-/// the bytes cannot be one.
-fn identity_of<'a>(slot: &'a Key, session: &'a Key, display: &'a [u8]) -> Identity<'a> {
+/// the bytes cannot be one: the event reader's rule, on scraped members.
+fn identity_of<'a>(
+    slot: &'a Key,
+    session: &'a Key,
+    id: &'a Key,
+    display: &'a [u8],
+) -> Identity<'a> {
     let text = |bytes: &'a [u8]| std::str::from_utf8(bytes).ok();
     match (slot, session) {
-        (Key::Value(slot), Key::Value(session)) => match (text(slot), text(session)) {
-            (Some(slot), Some(session)) => Identity::Routed { slot, session },
+        (Key::Value(slot), Key::Value(session)) => match (text(slot), text(session), id.pin()) {
+            (Some(slot), Some(session), Pin::None) => Identity::Routed { slot, session },
+            (Some(slot), Some(session), Pin::Id(id)) => Identity::Stable { slot, session, id },
             _ => Identity::Unassociated,
         },
-        (Key::Absent, Key::Absent) => match text(display) {
+        (Key::Absent, Key::Absent) if *id == Key::Absent => match text(display) {
             Some(display) => Identity::Display(display),
             None => Identity::Unassociated,
         },
@@ -562,6 +679,8 @@ struct Opening {
     to_slot: Key,
     from_session: Key,
     to_session: Key,
+    from_session_id: Key,
+    to_session_id: Key,
     /// The recorded target, built ONLY from a parsed Event — see
     /// [`RecordedTarget`]. The scraped bytes never reach a caller.
     recorded: Option<RecordedTarget>,
@@ -580,6 +699,8 @@ struct Closing {
     target_slot: Key,
     actor_session: Key,
     target_session: Key,
+    actor_session_id: Key,
+    target_session_id: Key,
     summary: Vec<u8>,
 }
 
@@ -588,9 +709,8 @@ impl Opening {
         // ONE parse decides both facts: whether the record is a valid ledger
         // event at all, and whether it may carry an authoritative target.
         // There is no second, weaker reading of the same line.
-        let event = std::str::from_utf8(line)
-            .ok()
-            .and_then(|text| Event::parse_line(text).ok());
+        let (value, event) = strict(line);
+        let [from_session_id, to_session_id] = ids_of(value.as_ref(), event.as_ref());
         Self {
             kind: action.to_vec(),
             from: extract(line, "actor"),
@@ -601,6 +721,8 @@ impl Opening {
             to_slot: Key::read(line, "target_slot"),
             from_session: Key::read(line, "actor_session"),
             to_session: Key::read(line, "target_session"),
+            from_session_id,
+            to_session_id,
             recorded: event.as_ref().and_then(RecordedTarget::from_event),
             summary: fold_newlines(extract(line, "summary")),
             ledger_valid: event.is_some(),
@@ -609,12 +731,22 @@ impl Opening {
 
     /// This request's SENDER.
     fn asker(&self) -> Identity<'_> {
-        identity_of(&self.from_slot, &self.from_session, &self.from)
+        identity_of(
+            &self.from_slot,
+            &self.from_session,
+            &self.from_session_id,
+            &self.from,
+        )
     }
 
     /// This request's TARGET.
     fn askee(&self) -> Identity<'_> {
-        identity_of(&self.to_slot, &self.to_session, &self.to)
+        identity_of(
+            &self.to_slot,
+            &self.to_session,
+            &self.to_session_id,
+            &self.to,
+        )
     }
 
     /// **Strict** — the full mirror: the reply's actor is this request's TARGET
@@ -662,14 +794,25 @@ fn ledger_events(container: &[u8]) -> Vec<Event> {
 
 impl Closing {
     fn actor_identity(&self) -> Identity<'_> {
-        identity_of(&self.actor_slot, &self.actor_session, &self.actor)
+        identity_of(
+            &self.actor_slot,
+            &self.actor_session,
+            &self.actor_session_id,
+            &self.actor,
+        )
     }
 
     fn target_identity(&self) -> Identity<'_> {
-        identity_of(&self.target_slot, &self.target_session, &self.target)
+        identity_of(
+            &self.target_slot,
+            &self.target_session,
+            &self.target_session_id,
+            &self.target,
+        )
     }
 
     fn read(line: &[u8]) -> Self {
+        let [actor_session_id, target_session_id] = session_ids(line);
         Self {
             actor: extract(line, "actor"),
             target: extract(line, "target"),
@@ -677,6 +820,8 @@ impl Closing {
             target_slot: Key::read(line, "target_slot"),
             actor_session: Key::read(line, "actor_session"),
             target_session: Key::read(line, "target_session"),
+            actor_session_id,
+            target_session_id,
             summary: fold_newlines(extract(line, "summary")),
         }
     }
@@ -698,6 +843,7 @@ mod tests {
         EXIT_NO_IDENTITY, Key, Mode, NO_IDENTITY, Status, Viewer, header, is_slot, render, states,
         states_in, table,
     };
+    use crate::events::SessionKey;
     use std::fs;
     use std::path::PathBuf;
 
@@ -914,7 +1060,7 @@ mod tests {
             r#"{"ts":"2026-09-13T10:01:00Z","actor":"lead","action":"ask","target":"worker","ref":"r1","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"question"}"#,
         ]);
         assert_eq!(
-            states_in(&reply_before_opening, "live")[0].status,
+            states_in(&reply_before_opening, SessionKey::named("live"))[0].status,
             Status::Pending,
             "a reply before its opening closes nothing"
         );
@@ -924,7 +1070,7 @@ mod tests {
             r#"{"ts":"2026-09-13T10:01:00Z","actor":"worker","action":"reply","target":"lead","ref":"r1","actor_slot":"worker.0","actor_session":"live","target_slot":"main","target_session":"live","summary":"answer"}"#,
             r#"{"ts":"2026-09-13T10:02:00Z","actor":"lead","action":"ask","target":"worker","ref":"r1","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"reopened"}"#,
         ]);
-        let rows = states_in(&re_opened, "live");
+        let rows = states_in(&re_opened, SessionKey::named("live"));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, Status::Pending);
         assert_eq!(rows[0].summary, b"reopened");
@@ -1475,11 +1621,13 @@ mod tests {
             slot: "main".to_owned(),
             session: "s".to_owned(),
             display: "someone-else".to_owned(),
+            session_id: String::new(),
         };
         let worker = Viewer {
             slot: "worker.0".to_owned(),
             session: "s".to_owned(),
             display: "someone-else".to_owned(),
+            session_id: String::new(),
         };
         assert!(text(&table(&body, Mode::Mine, &lead)).contains("r1"));
         assert_eq!(table(&body, Mode::Inbox, &lead), header());
@@ -1499,6 +1647,7 @@ mod tests {
             slot: "main".to_owned(),
             session: "s".to_owned(),
             display: "a:lead".to_owned(),
+            session_id: String::new(),
         };
         assert_eq!(
             table(&keyless, Mode::Mine, &routed_viewer),
@@ -1510,6 +1659,7 @@ mod tests {
             slot: String::new(),
             session: String::new(),
             display: "a:lead".to_owned(),
+            session_id: String::new(),
         };
         assert!(text(&table(&keyless, Mode::Mine, &display_viewer)).contains("r1"));
         // And the same viewer does not collect somebody else's row.
@@ -1517,6 +1667,7 @@ mod tests {
             slot: String::new(),
             session: String::new(),
             display: "a:third".to_owned(),
+            session_id: String::new(),
         };
         assert_eq!(table(&keyless, Mode::Mine, &stranger), header());
     }
@@ -1535,7 +1686,8 @@ mod tests {
             Viewer {
                 slot: "worker.2".to_owned(),
                 session: "s".to_owned(),
-                display: "cl:w".to_owned()
+                display: "cl:w".to_owned(),
+                session_id: String::new(),
             }
         );
         // Cross-session: the display ref carries the helper's @session: prefix,

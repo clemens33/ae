@@ -233,11 +233,13 @@ fn run_seat(
         return Ok(seat);
     }
     let storage = store::open(dir);
-    cancel_own_pending(&storage, actor, &entry.slot, name)?;
+    let session_id = crate::meta::session_id_in(dir);
+    let key = crate::events::SessionKey::new(name, &session_id);
+    cancel_own_pending(&storage, actor, &entry.slot, key)?;
     let goal = storage.goal()?.unwrap_or_default();
     let memo = storage.memo_bytes_or_empty();
     let states = crate::requests::states(&storage.container());
-    let refs = open_refs(&states, &entry.slot, name);
+    let refs = open_refs(&states, &entry.slot, key);
     let prepared =
         match crate::sanitize::prepare_body(&goal, latest_decision(&memo), &entry.name, &refs) {
             Ok(prepared) => prepared,
@@ -684,13 +686,12 @@ fn cancel_own_pending(
     storage: &store::SessionStore,
     actor: &str,
     slot: &str,
-    session: &str,
+    session: crate::events::SessionKey<'_>,
 ) -> Result<()> {
     for req in crate::requests::states(&storage.container()) {
         if req.status != crate::requests::Status::Pending
             || req.from.as_slice() != actor.as_bytes()
-            || !key_is(&req.to_slot, slot)
-            || !key_is(&req.to_session, session)
+            || !req.sent_to(session, slot)
         {
             continue;
         }
@@ -710,24 +711,18 @@ fn cancel_own_pending(
     Ok(())
 }
 
-/// Whether a routing key carries exactly `want`.
-fn key_is(key: &crate::requests::Key, want: &str) -> bool {
-    key.value().is_some_and(|value| value == want.as_bytes())
-}
-
 /// The seat's open request ids (pending, targets-or-sent by it), ledger-ordered.
 fn open_refs<'a>(
     states: &'a [crate::requests::Request],
     slot: &str,
-    session: &str,
+    session: crate::events::SessionKey<'_>,
 ) -> Vec<crate::sanitize::LedgerRef<'a>> {
     states
         .iter()
         .enumerate()
         .filter(|(_, req)| {
             req.status == crate::requests::Status::Pending
-                && ((key_is(&req.to_slot, slot) && key_is(&req.to_session, session))
-                    || (key_is(&req.from_slot, slot) && key_is(&req.from_session, session)))
+                && (req.sent_to(session, slot) || req.sent_by(session, slot))
         })
         .map(|(position, req)| crate::sanitize::LedgerRef {
             position,
@@ -1161,7 +1156,13 @@ mod tests {
         ];
         std::fs::write(dir.join("events.jsonl"), format!("{}\n", lines.join("\n"))).expect("plant");
         let storage = store::open(dir);
-        cancel_own_pending(&storage, "ae:seats:u1", "main", "sess").expect("the cancel append");
+        cancel_own_pending(
+            &storage,
+            "ae:seats:u1",
+            "main",
+            crate::events::SessionKey::named("sess"),
+        )
+        .expect("the cancel append");
         let rows = crate::requests::states(&storage.container());
         let row = |id: &[u8]| rows.iter().find(|row| row.id == id);
         assert_eq!(

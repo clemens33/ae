@@ -1064,6 +1064,8 @@ fn record(argv: &Argv, agent: &str, now: Timestamp, action: &str, reference: &st
         actor_session: "",
         target_slot: &argv.slot,
         target_session: &argv.session,
+        actor_session_id: "",
+        target_session_id: "",
         target_server: "",
         target_pane: "",
         target_session_uuid: "",

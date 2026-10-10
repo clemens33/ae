@@ -2518,14 +2518,7 @@ fn last_done_event_at(events: &[Event], session: &str, agent: &str) -> Option<Sy
 /// Whether an event belongs to this session's main seat. New routed records
 /// use slot + session; display identity keeps old event logs readable.
 fn main_actor(event: &Event, session: &str, agent: &str) -> bool {
-    match event.actor_identity() {
-        crate::events::Identity::Routed {
-            slot,
-            session: owner,
-        } => slot == crate::watchdog::MAIN_SLOT && owner == session,
-        crate::events::Identity::Display(display) => display == agent,
-        crate::events::Identity::Unassociated => false,
-    }
+    crate::watchdog::event_is_actor(event, session, crate::watchdog::MAIN_SLOT, agent)
 }
 
 /// The current `working` declaration's wall clock, if the orchestrator main's
@@ -4164,6 +4157,8 @@ impl Journal<'_> {
             actor_session: self.session,
             target_slot: "",
             target_session: "",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -5390,7 +5385,9 @@ impl Cycle<'_> {
         self.run_quota_cadence(&mut carry.quota, &inputs, now, err)?;
 
         let seats = held_seats(&observed, table.as_deref(), &|slot| self.agent_bin(slot));
-        let outstanding = crate::session::Outstanding::read(&events, self.session, &seats);
+        let session_id = crate::meta::session_id_in(self.meta_dir);
+        let key = crate::events::SessionKey::new(self.session, &session_id);
+        let outstanding = crate::session::Outstanding::read_in(&events, key, &seats);
 
         // ONE client read per cycle; a failed read changes no pane's memory.
         let clients = transport::observe_clients(self.server);
@@ -8707,6 +8704,8 @@ mod tests {
             actor_session: "",
             target_slot: "",
             target_session: "",
+            actor_session_id: "",
+            target_session_id: "",
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -8770,7 +8769,10 @@ mod tests {
             events[0].ref_meaning(),
             crate::events::RefMeaning::Undefined
         );
-        assert!(crate::session::open_requests(&events, "demo").is_empty());
+        assert!(
+            crate::session::open_requests(&events, crate::events::SessionKey::named("demo"))
+                .is_empty()
+        );
     }
 
     /// The waiting-user half (C3): an abandoned checkpoint ask, with its
@@ -8912,7 +8914,10 @@ mod tests {
             assert_eq!(relevant.event.declared_state(), Some(state));
             assert!(crate::watchdog::declaration_current(&relevant));
             for events in [&before, &after] {
-                assert!(crate::session::open_requests(events, "demo").is_empty());
+                assert!(
+                    crate::session::open_requests(events, crate::events::SessionKey::named("demo"))
+                        .is_empty()
+                );
             }
             let done = |events: &[Event]| {
                 crate::watchdog::done_progress(events, "demo", "main", "lead", None, now, 300, 2)

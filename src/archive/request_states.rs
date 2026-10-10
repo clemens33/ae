@@ -19,6 +19,7 @@
 //! the digest.
 
 use crate::event_text::{extract, reversed};
+use crate::requests::{Key, same_session, session_ids};
 
 /// One request row as the digest consumes it.
 pub(super) struct RequestRow {
@@ -40,6 +41,8 @@ struct Opening {
     target_slot: String,
     actor_session: String,
     target_session: String,
+    actor_session_id: Key,
+    target_session_id: Key,
     summary: String,
     ts: String,
     body_file: String,
@@ -53,6 +56,8 @@ struct Reply {
     target_slot: String,
     actor_session: String,
     target_session: String,
+    actor_session_id: Key,
+    target_session_id: Key,
     summary: String,
 }
 
@@ -61,6 +66,7 @@ struct Cancel {
     actor: String,
     actor_slot: String,
     actor_session: String,
+    actor_session_id: Key,
     summary: String,
 }
 
@@ -73,9 +79,15 @@ fn field(line: &[u8], key: &str) -> String {
 fn reply_closes(opening: &Opening, reply: &Reply) -> bool {
     if !opening.target_slot.is_empty() && !reply.actor_slot.is_empty() {
         reply.actor_slot == opening.target_slot
-            && reply.actor_session == opening.target_session
+            && same_session(
+                (&reply.actor_session, &reply.actor_session_id),
+                (&opening.target_session, &opening.target_session_id),
+            )
             && reply.target_slot == opening.actor_slot
-            && reply.target_session == opening.actor_session
+            && same_session(
+                (&reply.target_session, &reply.target_session_id),
+                (&opening.actor_session, &opening.actor_session_id),
+            )
     } else {
         reply.actor == opening.target && reply.target == opening.sender
     }
@@ -85,7 +97,11 @@ fn reply_closes(opening: &Opening, reply: &Reply) -> bool {
 /// when both carry a slot, else by exact non-empty actor bytes.
 fn cancel_closes(opening: &Opening, cancel: &Cancel) -> bool {
     if !opening.actor_slot.is_empty() && !cancel.actor_slot.is_empty() {
-        cancel.actor_slot == opening.actor_slot && cancel.actor_session == opening.actor_session
+        cancel.actor_slot == opening.actor_slot
+            && same_session(
+                (&cancel.actor_session, &cancel.actor_session_id),
+                (&opening.actor_session, &opening.actor_session_id),
+            )
     } else {
         !cancel.actor.is_empty() && cancel.actor == opening.sender
     }
@@ -121,6 +137,7 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
                     continue;
                 }
                 let summary = field(line, "summary").replace('\n', " ");
+                let [actor_session_id, target_session_id] = session_ids(line);
                 openings.insert(
                     reference.clone(),
                     (
@@ -133,6 +150,8 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
                             target_slot: field(line, "target_slot"),
                             actor_session: field(line, "actor_session"),
                             target_session: field(line, "target_session"),
+                            actor_session_id,
+                            target_session_id,
                             summary,
                             ts: field(line, "ts"),
                             body_file: field(line, "body_file"),
@@ -142,6 +161,7 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
                 order.push(reference);
             }
             "reply" => {
+                let [actor_session_id, target_session_id] = session_ids(line);
                 replies.entry(reference).or_default().push((
                     scan,
                     Reply {
@@ -151,17 +171,21 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
                         target_slot: field(line, "target_slot"),
                         actor_session: field(line, "actor_session"),
                         target_session: field(line, "target_session"),
+                        actor_session_id,
+                        target_session_id,
                         summary: field(line, "summary"),
                     },
                 ));
             }
             "cancel" => {
+                let [actor_session_id, _] = session_ids(line);
                 cancels.entry(reference).or_default().push((
                     scan,
                     Cancel {
                         actor: field(line, "actor"),
                         actor_slot: field(line, "actor_slot"),
                         actor_session: field(line, "actor_session"),
+                        actor_session_id,
                         summary: field(line, "summary"),
                     },
                 ));
@@ -395,5 +419,83 @@ mod tests {
         assert!(view_pending(WITHDRAWN_THEN_ANSWERED).is_empty());
         assert!(digest_pending(WITHDRAWN_THEN_ANSWERED).is_empty());
         assert!(session_pending(WITHDRAWN_THEN_ANSWERED).is_empty());
+    }
+
+    #[test]
+    fn a_session_id_judges_a_reply_the_same_for_every_reader() {
+        let id = "0199c0de-1111-4890-abcd-ef0123456789";
+        let other = "0199c0de-2222-4890-abcd-ef0123456789";
+        let pin = |key: &str, value: &str| format!(r#","{key}":"{value}""#);
+        for (asked, replied, open) in [
+            (
+                pin("target_session_id", id),
+                pin("actor_session_id", id),
+                false,
+            ),
+            (pin("target_session_id", id), String::new(), false),
+            (
+                pin("target_session_id", id),
+                pin("actor_session_id", other),
+                true,
+            ),
+            (pin("target_session_id", "bogus"), String::new(), true),
+            (pin("target_session_id", ""), String::new(), true),
+            (String::new(), pin("actor_session_id", "bogus"), true),
+            (
+                pin("target_session_id", id),
+                pin("actor_session_id", ""),
+                true,
+            ),
+            // What only a JSON reader sees: a wrong type, a duplicate, a space.
+            (
+                pin("target_session_id", id),
+                r#","actor_session_id":7"#.to_owned(),
+                true,
+            ),
+            (
+                pin("target_session_id", id),
+                pin("actor_session_id", id) + &pin("actor_session_id", other),
+                true,
+            ),
+            (
+                pin("target_session_id", id),
+                format!(r#","actor_session_id": "{other}""#),
+                true,
+            ),
+            // The same two, with the key spelled through a JSON escape.
+            (
+                pin("target_session_id", id),
+                r#","actor_session_\u0069d":7"#.to_owned(),
+                true,
+            ),
+            (
+                pin("target_session_id", id),
+                format!(r#","actor_session_\u0069d":"{id}","actor_session_\u0069d":"{other}""#),
+                true,
+            ),
+        ] {
+            let corpus = format!(
+                "{}{asked}{}\n{}{replied}{}\n",
+                r#"{"ts":"2026-05-29T09:00:00Z","actor":"lead","action":"ask","target":"w","ref":"ae-9","actor_slot":"main","actor_session":"s","target_slot":"worker.0","target_session":"s""#,
+                r#","summary":"q"}"#,
+                r#"{"ts":"2026-05-29T09:05:00Z","actor":"w","action":"reply","target":"lead","ref":"ae-9","actor_slot":"worker.0","actor_session":"s","target_slot":"main","target_session":"s""#,
+                r#","summary":"a"}"#,
+            );
+            let want: &[&str] = if open { &["ae-9"] } else { &[] };
+            // The strict ledger drops a line its parser refuses, as a drain does.
+            let events = corpus
+                .lines()
+                .filter_map(|line| Event::parse_line(line).ok());
+            let ledger = SessionRead::from_drain(&Drain {
+                events: events.collect(),
+                cursor: Cursor::default(),
+                skipped: Vec::new(),
+                drained: true,
+            });
+            let strict: Vec<&str> = ledger.pending.iter().map(|r| r.id.as_str()).collect();
+            assert_eq!(strict, want, "{corpus}");
+            assert_eq!(view_pending(&corpus), want, "{corpus}");
+            assert_eq!(digest_pending(&corpus), want, "{corpus}");
+        }
     }
 }
