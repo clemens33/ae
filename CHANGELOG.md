@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.45] - 2026-10-10
+- Typing in browse mode is safe and its hints are true
+- The Mouse section of the Keys tab is scoped to outside Settings
+- A click acts on the frame it was made on, even held behind an ask or split over reads, and a click whose frame is gone is not taken
+- Pin the run loop, hint row and keys row decisions the mutation pass left unpinned
+
 ## [v2026.10.44] - 2026-10-08
 - Frozen acceptance spec for the fleet read cache
 - A fleet read reuses each journal and memo while its file is unchanged, and its needs reuse the read's own records and pane listings
