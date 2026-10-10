@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.47] - 2026-10-10
+- The selected session's lane paints from its journal first, then its current and earlier conversations
+
 ## [v2026.10.46] - 2026-10-10
 - App tests: detect the writing mode by the keys row's mode word, not the hint it is losing
 - The composer address has its own row, the draft starts at the column edge and wraps at its full width
