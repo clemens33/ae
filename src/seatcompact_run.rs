@@ -1379,4 +1379,27 @@ mod tests {
             "a wait at the ceiling samples nothing"
         );
     }
+
+    /// Fn doc + R1: the seat's open refs are the pending requests sent TO it
+    /// or BY it, judged by its session's stable id (so across a rename), in
+    /// ledger order.
+    #[test]
+    fn open_refs_take_requests_to_or_by_the_seat_across_a_rename() {
+        let ask = |reference: &str, from: [&str; 2], to: [&str; 2]| {
+            let ids = format!(r#""actor_session_id":"{UUID}","target_session_id":"{UUID}""#);
+            format!(
+                r#"{{"ts":"2026-10-10T12:00:00Z","actor":"x","action":"ask","target":"y","ref":"{reference}","actor_slot":"{}","actor_session":"{}","target_slot":"{}","target_session":"{}",{ids},"summary":"q"}}"#,
+                from[0], from[1], to[0], to[1]
+            )
+        };
+        let lines = [
+            ask("ae-to", ["worker.0", "s"], ["main", "s"]),
+            ask("ae-other", ["worker.0", "s"], ["worker.1", "s"]),
+            ask("ae-by", ["main", "old"], ["worker.0", "old"]),
+        ];
+        let states = crate::requests::states(format!("{}\n", lines.join("\n")).as_bytes());
+        let refs = open_refs(&states, "main", crate::events::SessionKey::new("s", UUID));
+        let ids: Vec<&[u8]> = refs.iter().map(|found| found.bytes).collect();
+        assert_eq!(ids, [b"ae-to".as_slice(), b"ae-by".as_slice()]);
+    }
 }

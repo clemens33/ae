@@ -4882,4 +4882,120 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A pending request is judged by its OWN opening: the newest `ask` or
+    /// `review` that opened its id — never a later record that merely shares
+    /// the id (a reply), nor a later ask of another id.
+    #[test]
+    fn a_pending_request_is_judged_by_its_own_opening_record() {
+        let event = |action: &str, reference: &str, target: &str| {
+            crate::events::Event::parse_line(&format!(
+                r#"{{"ts":"2026-10-10T10:00:00Z","actor":"lead","action":"{action}","target":"{target}","ref":"{reference}"}}"#
+            ))
+            .expect("a fixture event")
+        };
+        let events = [
+            event("ask", "r1", "colead"),
+            event("reply", "r1", "lead"),
+            event("review", "r2", "scribe"),
+        ];
+        let opened = opening_of(&events, "r1").map(|e| (e.action.as_str(), e.target.as_deref()));
+        assert_eq!(opened, Some(("ask", Some("colead"))));
+        assert!(opening_of(&events, "r3").is_none(), "no opening, no guess");
+    }
+
+    /// Only an asker that is BOTH slotless and external (an `ae:` or
+    /// chat-bridge asker) is bound to no session name: a slotless ordinary
+    /// asker, or an external-looking display with a recorded slot, still
+    /// strands when its session is renamed.
+    #[test]
+    fn only_a_slotless_external_asker_is_exempt_from_stranding() {
+        let id = "0199c0de-1111-4890-abcd-ef0123456789";
+        let ask = |actor: &str, slot: &str| {
+            crate::events::Event::parse_line(&format!(
+                r#"{{"ts":"2026-10-10T10:00:00Z","actor":"{actor}","action":"ask","target":"colead","ref":"r1"{slot},"actor_session":"old","target_slot":"worker.0","target_session":"peer","target_session_id":"{id}"}}"#
+            ))
+            .expect("a fixture event")
+        };
+        assert!(strands(&ask("human", ""), None), "slotless, not external");
+        let slotted = ask("ae:seats:x", r#","actor_slot":"main""#);
+        assert!(strands(&slotted, None), "external display, recorded slot");
+        assert!(
+            !strands(&ask("ae:seats:x", ""), None),
+            "slotless and external"
+        );
+    }
+
+    /// Plumbing: the state move is complete only when the old address is
+    /// entirely gone AND the new one carries the intent's UUID (fn doc).
+    #[test]
+    fn the_state_move_is_complete_only_when_old_is_gone_and_new_has_the_uuid() {
+        let root = scratch("state-moved");
+        let sessions = root.join("sessions");
+        let intent = trap_intent("sold", "snew", "/o/sold", "/o/snew");
+        let meta = |name: &str, uuid: &str| {
+            std::fs::create_dir_all(sessions.join(name)).unwrap();
+            let text = format!("session={name}\nsession_id={uuid}\n");
+            std::fs::write(sessions.join(name).join("meta"), text).unwrap();
+        };
+        meta("sold", &intent.uuid);
+        meta("snew", &intent.uuid);
+        assert!(!state_moved(&root, &intent), "the old address lingers");
+        std::fs::remove_dir_all(sessions.join("sold")).unwrap();
+        assert!(state_moved(&root, &intent), "moved");
+        meta("snew", "0199c0de-1111-4890-abcd-ef0123456789");
+        assert!(!state_moved(&root, &intent), "another session's UUID");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Plumbing (fn doc): a completed carrier whose new name a fresh session
+    /// reused is no completion — it re-proves the whole fresh preflight.
+    #[test]
+    fn a_reused_new_name_is_a_fresh_preflight_never_a_completion() {
+        let root = scratch("converge-reused");
+        let intent = trap_intent("sold", "snew", "/o/sold", "/o/snew");
+        let fresh = root.join("sessions").join("snew");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let meta = "session=snew\nsession_id=0199c0de-1111-4890-abcd-ef0123456789\n";
+        std::fs::write(fresh.join("meta"), meta).unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let server = ServerId::Ambient;
+        let code = converge_completed(
+            &root, "sold", "snew", &intent, &server, None, &mut out, &mut err,
+        );
+        let said = String::from_utf8_lossy(&err);
+        assert_eq!(code.unwrap(), EXIT_FAILED, "{said}");
+        assert!(
+            said.contains("'sold' has no state directory") && !said.contains("completed"),
+            "{said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Plumbing (fn doc): recovery locates the UUID on exactly one side and
+    /// never touches a side another session's UUID now occupies.
+    #[test]
+    fn recovery_refuses_a_side_another_session_occupies() {
+        let intent = trap_intent("sold", "snew", "/o/sold", "/o/snew");
+        let (ours, foreign) = (intent.uuid.as_str(), "0199c0de-1111-4890-abcd-ef0123456789");
+        for (old_id, new_id, occupied) in [(ours, foreign, "snew"), (foreign, ours, "sold")] {
+            let root = scratch(&format!("recover-{occupied}"));
+            for (name, id) in [("sold", old_id), ("snew", new_id)] {
+                let dir = root.join("sessions").join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                let sock = root.join("no-sock");
+                let meta = format!(
+                    "session={name}\nsession_id={id}\ntmux_server_kind=socket\ntmux_server={}\n",
+                    sock.display()
+                );
+                std::fs::write(dir.join("meta"), meta).unwrap();
+            }
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = recover(&root, "sold", "snew", &intent, None, &mut out, &mut err).unwrap();
+            let said = String::from_utf8_lossy(&err);
+            let named = format!("{occupied}' is now occupied by another session");
+            assert!(code == EXIT_FAILED && said.contains(&named), "{said}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
 }

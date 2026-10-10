@@ -2858,4 +2858,39 @@ mod tests {
         assert!(!instant_alive(None, false));
         assert!(!instant_alive(None, true));
     }
+
+    /// The notice's unconfirmed line names its target and where its body is.
+    #[test]
+    fn the_notice_unconfirmed_line_names_its_target_and_body() {
+        let line = super::unconfirmed_line(&request("a", "b", Shape::Context), "/m/b.txt");
+        assert!(
+            line.starts_with("ae: notice to worker UNCONFIRMED") && line.ends_with("/m/b.txt."),
+            "{line}"
+        );
+    }
+
+    /// Plumbing: the four shapes that predate the notice print their
+    /// unconfirmed line byte-identically to c46d012c's entry points.
+    #[test]
+    fn the_four_older_shapes_keep_their_unconfirmed_lines() {
+        let said = "UNCONFIRMED — submit not verified; body preserved at /m/b.txt.";
+        let cases = [
+            (Shape::Send, format!("ae: send to worker {said}")),
+            (Shape::Relay, format!("ae: relay to worker {said}")),
+            (
+                Shape::Interrupt,
+                format!("ae: interrupt message to worker {said} Re-send."),
+            ),
+            (
+                Shape::Launch,
+                format!("ae: spawn brief to worker {said} Re-send."),
+            ),
+        ];
+        for (shape, line) in cases {
+            assert_eq!(
+                super::unconfirmed_line(&request("a", "b", shape), "/m/b.txt"),
+                line
+            );
+        }
+    }
 }

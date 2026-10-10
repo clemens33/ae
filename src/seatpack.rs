@@ -2520,4 +2520,87 @@ mod tests {
             assert_eq!(brief_path_in(none), None, "{none}");
         }
     }
+
+    /// R1: a retire closes a request at EITHER end across a rename. The pack
+    /// judges by the session's stable id, never by the name the record kept:
+    /// a same-name record of another stable identity is not this seat's
+    /// request (never listed, never retired), and a legacy pair with no ids
+    /// still closes by name.
+    #[test]
+    fn a_retire_closes_a_pre_rename_request_by_session_id_at_either_end() {
+        const A: &str = "11111111-2222-3333-4444-555555555555";
+        const B: &str = "66666666-7777-8888-9999-000000000000";
+        let id = "ae-20260918T120000Z-0123abcd";
+        let opened = |session: &str, sid: &str| {
+            let ids = if sid.is_empty() {
+                String::new()
+            } else {
+                format!(r#","actor_session_id":"{sid}","target_session_id":"{sid}""#)
+            };
+            format!(
+                r#"{{"ts":"{}","actor":"lead","action":"ask","target":"scribe","ref":"{id}","actor_slot":"main","actor_session":"{session}","target_slot":"spawned.0","target_session":"{session}"{ids},"summary":"ask body"}}"#,
+                ago(7_200)
+            )
+        };
+        let retire = |slot: &str| {
+            format!(
+                r#"{{"ts":"{}","actor":"lead","action":"retire","target":"x","target_slot":"{slot}","summary":"retired"}}"#,
+                ago(3_600)
+            )
+        };
+        // why, pack session + id, opening session + id, retired slot, reader, retired?
+        let cases = [
+            (
+                "asker reads, target retired, renamed",
+                ("new", A),
+                ("old", A),
+                "spawned.0",
+                base(),
+                true,
+            ),
+            (
+                "target reads, asker retired, renamed",
+                ("new", A),
+                ("old", A),
+                "main",
+                spawned(),
+                true,
+            ),
+            (
+                "same name, other stable id",
+                ("old", B),
+                ("old", A),
+                "spawned.0",
+                base(),
+                false,
+            ),
+            (
+                "legacy, no ids, same name",
+                ("s1", ""),
+                ("s1", ""),
+                "spawned.0",
+                base(),
+                true,
+            ),
+        ];
+        for (why, (session, sid), (opening_session, opening_id), slot, reader, retired) in cases {
+            let (container, events) = ledger(&[opened(opening_session, opening_id), retire(slot)]);
+            let rendered = pack(&Inputs {
+                session: session.to_owned(),
+                session_id: sid.to_owned(),
+                closed_ages: closed_ages(&container, now()),
+                container,
+                events,
+                ..reader
+            });
+            let closed_row = rendered.contains(&format!("{id}  ask  lead -> scribe  retired"));
+            assert_eq!(closed_row, retired, "{why}: {rendered}");
+            let listed = usize::from(retired);
+            assert_eq!(
+                rendered.matches(id).count(),
+                listed,
+                "{why}: listed {listed}: {rendered}"
+            );
+        }
+    }
 }

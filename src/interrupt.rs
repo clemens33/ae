@@ -383,4 +383,28 @@ mod tests {
             })
         );
     }
+
+    /// An unconfirmed message interrupt journals `delivery-failed` naming the
+    /// published body (this fn's doc comment; deliver.rs `Failure::Unconfirmed`).
+    #[test]
+    fn an_unconfirmed_interrupt_journals_delivery_failed_naming_its_body() {
+        let dir = std::env::temp_dir().join(format!("ae-interrupt-failed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = crate::time::Timestamp::from_epoch(1_791_000_000);
+        super::record_delivery_failure(&dir, "worker", "/m/b.txt", now, "").unwrap();
+        let events = crate::watchdog_daemon::read_events(&dir);
+        let failed = events.last().expect("a delivery-failed record");
+        assert_eq!(
+            (failed.action.as_str(), failed.target.as_deref()),
+            ("delivery-failed", Some("worker"))
+        );
+        assert!(
+            failed
+                .summary
+                .as_deref()
+                .is_some_and(|text| text.contains("/m/b.txt"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

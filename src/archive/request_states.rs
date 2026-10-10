@@ -498,4 +498,43 @@ mod tests {
             assert_eq!(digest_pending(&corpus), want, "{corpus}");
         }
     }
+
+    /// `cancel_closes`' doc: only the request's own sender withdraws it — by
+    /// slot+session when both carry a slot (the session judged by its stable
+    /// id, so across a rename), else by exact non-empty actor bytes.
+    #[test]
+    fn only_the_senders_own_seat_withdraws_a_slotted_request() {
+        const U: &str = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+        const V: &str = "6fa459ea-ee8a-3ca4-894e-db77e160355e";
+        let ask = |reference: &str| {
+            format!(
+                r#"{{"ts":"2026-05-29T09:00:00Z","actor":"cl:lead","action":"ask","target":"cl:hand","ref":"{reference}","actor_slot":"main","actor_session":"s","actor_session_id":"{U}","target_slot":"worker.0","target_session":"s","target_session_id":"{U}","summary":"q"}}"#
+            )
+        };
+        let cancel = |reference: &str, slot: &str, session: &str, id: &str| {
+            let routed = if slot.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    r#""actor_slot":"{slot}","actor_session":"{session}","actor_session_id":"{id}","#
+                )
+            };
+            format!(
+                r#"{{"ts":"2026-05-29T09:05:00Z","actor":"cl:lead","action":"cancel","ref":"{reference}",{routed}"summary":"withdrawn"}}"#
+            )
+        };
+        let corpus = [
+            ask("ae-renamed"),
+            cancel("ae-renamed", "main", "new", U),
+            ask("ae-other-slot"),
+            cancel("ae-other-slot", "worker.0", "s", U),
+            ask("ae-other-id"),
+            cancel("ae-other-id", "main", "s", V),
+            ask("ae-keyless"),
+            cancel("ae-keyless", "", "", ""),
+        ];
+        let mut pending = digest_pending(&format!("{}\n", corpus.join("\n")));
+        pending.sort();
+        assert_eq!(pending, ["ae-other-id", "ae-other-slot"]);
+    }
 }

@@ -17156,4 +17156,34 @@ mod tests {
             "a plain ref is not its dated sibling"
         );
     }
+
+    /// `tell_seats`' doc: the leg is triggered for every LIVE seat the fold
+    /// finds a notice due for, and for no other — a dead seat and one on a
+    /// human prompt are not live, and one with no verdict is not seen.
+    #[test]
+    fn the_notice_step_triggers_only_the_live_seats_a_notice_is_due_for() {
+        let scratch = Scratch::new("tell-seats");
+        let helper = journaling_helper(&scratch.0);
+        let server = ServerId::Ambient;
+        let mut cycle = demo_cycle(&scratch.0, &helper, &server);
+        cycle.roster = vec![
+            entry("main", "p", "lead"),
+            entry("worker.0", "p", "dead"),
+            entry("worker.1", "p", "prompted"),
+            entry("worker.2", "p", "unseen"),
+        ];
+        let renamed = Event::parse_line(
+            r#"{"ts":"2026-10-10T12:00:00Z","actor":"ae:rename","action":"rename","summary":"old -> demo"}"#,
+        )
+        .expect("a rename record");
+        let verdicts = [
+            ("main".to_owned(), Verdict::Active),
+            ("worker.0".to_owned(), Verdict::Dead),
+            ("worker.1".to_owned(), Verdict::HumanPrompt),
+        ];
+        cycle.tell_seats(&verdicts, &[renamed], 1_791_000_000);
+        let interval = cycle.knobs.interval_secs.to_string();
+        let trigger = crate::session_notice::TRIGGER_ACTION.to_owned();
+        assert_eq!(booked(&scratch.0), [(trigger, Some(interval))]);
+    }
 }

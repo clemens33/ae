@@ -3634,4 +3634,22 @@ mod tests {
         assert_eq!(out, format!("{}\n", the_id(Kind::Ask)));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// `routing_id`'s doc: a routed end pins its meta `session_id` beside its
+    /// slot and session name, so an ask to an event-only sink records the
+    /// asker's session id.
+    #[test]
+    fn an_ask_to_an_external_sink_pins_the_askers_session_id() {
+        let (code, _, _, dir) =
+            run_delivering(Kind::Ask, "idextsid", "telegram:42", Ok(delivered()));
+        assert_eq!(code, 0);
+        let events = crate::watchdog_daemon::read_events(&dir);
+        let ask = events
+            .iter()
+            .find(|e| e.action == "ask")
+            .expect("the ask record");
+        let pinned = crate::events::RoutingMember::Value(UUID.to_owned());
+        assert_eq!(ask.actor_session_id, pinned);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

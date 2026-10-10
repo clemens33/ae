@@ -858,4 +858,231 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
+
+    /// Contract: "in flight: newest counted attempt with no terminal and
+    /// ts + 2*interval > now -> not due" — strict, so an attempt exactly the
+    /// bound old is owed again.
+    #[test]
+    fn an_attempt_exactly_the_bound_old_is_no_longer_in_flight() {
+        let a1 = attempt_json("goal", "tok", "r1");
+        let at_bound = journal(&[("goal", 200, ""), ("session-notice-attempt", 120, &a1)]);
+        assert_eq!(kind(&at_bound, &seat()), Some((Kind::Goal, 0)));
+        let inside = journal(&[("goal", 200, ""), ("session-notice-attempt", 119, &a1)]);
+        assert_eq!(kind(&inside, &seat()), None);
+    }
+
+    /// Contract: the gave-up record carries the attempt's `target_slot` and
+    /// `<kind> <launch_id>` summary, and a newer source is due after it — the
+    /// booking is never read back as an attempt in flight.
+    #[test]
+    fn a_booked_ceiling_is_no_attempt_and_a_newer_source_is_owed_at_once() {
+        let mut lines = failed_thrice();
+        let booked = attempt_json("goal", "tok", "f2");
+        lines.push(line("session-notice-gave-up", 30, &booked));
+        lines.push(line("goal", 1, ""));
+        assert_eq!(kind(&parse(&lines), &seat()), Some((Kind::Goal, 0)));
+    }
+
+    /// The journal is hostile input: one that opens with an attempt is folded
+    /// like any other, never a panic.
+    #[test]
+    fn a_journal_that_opens_with_an_attempt_is_folded() {
+        let a1 = attempt_json("goal", "tok", "r1");
+        let opened = journal(&[("session-notice-attempt", 900, &a1), ("goal", 5, "")]);
+        assert_eq!(kind(&opened, &seat()), Some((Kind::Goal, 0)));
+    }
+
+    /// Contract: every leg record names the seat by target, `target_slot`,
+    /// `target_session` and `target_session_id`.
+    #[test]
+    fn every_leg_record_names_the_seat_by_all_four_target_fields() {
+        use crate::events::RoutingMember;
+        let dir = session("fields", &[line("goal", 0, r#","summary":"g""#)]);
+        let goal = || Ok(Some(b"g".to_vec()));
+        let (seat, owed, _) = attempt(&dir, "main", "s", "sn-1", 120, goal)
+            .unwrap()
+            .unwrap();
+        let mut err = Vec::new();
+        finish(&dir, &seat, owed.kind, "sn-1", Err("refused"), &mut err).unwrap();
+        let events = crate::watchdog_daemon::read_events(&dir);
+        let leg: Vec<&Event> = events
+            .iter()
+            .filter(|event| event.reference.as_deref() == Some("sn-1"))
+            .collect();
+        assert_eq!(leg.len(), 2);
+        let value = |text: &str| RoutingMember::Value(text.to_owned());
+        for event in leg {
+            assert_eq!(event.target.as_deref(), Some("lead"), "{}", event.action);
+            assert_eq!(event.target_slot, value("main"), "{}", event.action);
+            assert_eq!(event.target_session, value("s"), "{}", event.action);
+            assert_eq!(
+                event.target_session_id,
+                value("11111111-2222-3333-4444-555555555555"),
+                "{}",
+                event.action
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    /// docs/internals/events.md: told is `<kind>` (verified) or `[unconfirmed] <kind>`;
+    /// failed is `<kind> storage|busy|paste|refused`; exit 0 only when told.
+    #[test]
+    fn each_ending_is_journaled_by_its_documented_word() {
+        use crate::deliver::{DeferHeld, Delivered, DeliveryVerification, Failure, Unverifiable};
+        let dir = session("endings", &[]);
+        let landed = |verification| {
+            Ok(Ok(Delivered {
+                body_file: String::new(),
+                framed: String::new(),
+                verification,
+            }))
+        };
+        let refused = |failure| Ok(Err(failure));
+        let paste = Failure::Paste {
+            body_file: String::new(),
+        };
+        let busy = Failure::Abandoned {
+            held: DeferHeld::ComposerOccupied,
+        };
+        let cases = [
+            (
+                landed(DeliveryVerification::Verified),
+                "session-notice",
+                "goal",
+                0,
+            ),
+            (
+                landed(DeliveryVerification::Unverifiable(Unverifiable::Unmodelled)),
+                "session-notice",
+                "[unconfirmed] goal",
+                0,
+            ),
+            (
+                refused(Failure::Storage),
+                "session-notice-failed",
+                "goal storage",
+                1,
+            ),
+            (refused(busy), "session-notice-failed", "goal busy", 1),
+            (refused(paste), "session-notice-failed", "goal paste", 1),
+            (
+                refused(Failure::Lock),
+                "session-notice-failed",
+                "goal refused",
+                1,
+            ),
+        ];
+        for (at, (outcome, action, summary, code)) in cases.into_iter().enumerate() {
+            let reference = format!("sn-{at}");
+            let mut err = Vec::new();
+            let exit = finish(&dir, &seat(), Kind::Goal, &reference, outcome, &mut err).unwrap();
+            let events = crate::watchdog_daemon::read_events(&dir);
+            let ended = events.last().unwrap();
+            assert_eq!(
+                (ended.action.as_str(), ended.summary.as_deref(), exit),
+                (action, Some(summary), code),
+                "{reference}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    /// Contract: the attempt ref's nonce is unique — terminals match their
+    /// attempt by ref ONLY, so two refs minted in one second differ.
+    #[test]
+    fn two_refs_minted_in_one_second_differ() {
+        let now = crate::time::Timestamp::now();
+        let first = crate::tracked::request_id("sn", now, super::entropy());
+        let second = crate::tracked::request_id("sn", now, super::entropy());
+        assert_ne!(first, second);
+    }
+
+    /// R4 + fn doc: a changed goal prints the told line while a standing seat
+    /// other than its PROVEN setter runs, says NOT told for the count of them
+    /// with the watchdog off, and prints nothing when only the setter stands;
+    /// a worker never stands, and an unproven or foreign setter excludes nobody.
+    #[test]
+    fn a_changed_goal_prints_a_line_only_for_another_standing_seat() {
+        let id = "11111111-2222-3333-4444-555555555555";
+        let line = |tag: &str, setter_id: &str, rows: &str| {
+            let setter = crate::requests::Viewer {
+                slot: "main".to_owned(),
+                session: "s".to_owned(),
+                display: "lead".to_owned(),
+                session_id: setter_id.to_owned(),
+            };
+            let dir = session(tag, &[]);
+            let meta = format!("session=s\nsession_id={id}\nseat.main=lead\n{rows}");
+            std::fs::write(dir.join("meta"), meta).unwrap();
+            let said = super::after_goal(&dir, &setter);
+            let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+            said
+        };
+        let told = Some(super::TOLD_LINE.to_owned());
+        let pair = "layout=lead-pair\nseat.worker.0=colead\nseat.worker.1=scribe\n";
+        assert_eq!(line("goal-pair", id, &format!("{pair}watchdog=on\n")), told);
+        let off = line("goal-off", id, &format!("{pair}watchdog=off\n"));
+        assert_eq!(off, Some(super::untold_line("watchdog off", 1)));
+        assert_eq!(
+            line("goal-solo", id, "seat.worker.0=scribe\nwatchdog=on\n"),
+            None
+        );
+        assert_eq!(line("goal-unproven", "", "watchdog=on\n"), told);
+        let foreign = "66666666-7777-8888-9999-000000000000";
+        assert_eq!(line("goal-foreign", foreign, "watchdog=on\n"), told);
+    }
+
+    /// Docs (events.md, session notices) + run doc: the leg tells a seat of
+    /// THIS session what is due, if anything; an attempt with no ending stays
+    /// in flight for two daemon intervals, and an interval that is not a
+    /// positive count of seconds is the daemon's default, never a zero bound.
+    #[test]
+    fn the_leg_takes_only_its_own_seat_and_never_a_non_positive_interval() {
+        let now = crate::time::Timestamp::now().epoch();
+        let at = |action: &str, age: i64, extra: &str| {
+            let ts = crate::time::Timestamp::from_epoch(now - age);
+            format!(r#"{{"ts":"{ts}","actor":"x","action":"{action}"{extra}}}"#)
+        };
+        // Three failed goal attempts owe the ceiling; a bare attempt 30 s old
+        // holds it in flight under the default bound.
+        let mut lines = vec![at("goal", 300, "")];
+        for index in 0..3 {
+            let reference = format!("f{index}");
+            lines.push(at(
+                "session-notice-attempt",
+                200,
+                &attempt_json("goal", "tok", &reference),
+            ));
+            lines.push(at("session-notice-failed", 200, &ended(&reference)));
+        }
+        lines.push(at(
+            "session-notice-attempt",
+            30,
+            &attempt_json("goal", "tok", "f3"),
+        ));
+        for (pane_session, interval, code) in [("s", "0", 0), ("", "-5", 0), ("other", "60", 1)] {
+            let dir = session("leg-own", &lines);
+            let resolved = crate::tracked::Resolved {
+                pane: "%1".to_owned(),
+                agent: "lead".to_owned(),
+                slot: "main".to_owned(),
+                session: pane_session.to_owned(),
+            };
+            crate::tracked::set_test_resolve(resolved, crate::inventory::ServerId::Ambient);
+            let mut err = Vec::new();
+            let exit = super::run(&dir, "lead", "s", Some(interval), &mut err).unwrap();
+            let events = crate::watchdog_daemon::read_events(&dir);
+            let gave_up = events
+                .iter()
+                .any(|event| event.action == "session-notice-gave-up");
+            let said = String::from_utf8_lossy(&err);
+            assert_eq!(
+                (exit, gave_up),
+                (code, false),
+                "{pane_session} {interval}: {said}"
+            );
+            let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        }
+    }
 }

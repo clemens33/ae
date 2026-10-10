@@ -1960,4 +1960,37 @@ mod tests {
         ]));
         assert_eq!(rows[0].status, Status::Pending, "{:?}", rows[0]);
     }
+
+    /// `identity_of` doc + the `sc_518` rule: an id with no slot and no session is
+    /// half a routing key — it names nobody, and never becomes its display.
+    #[test]
+    fn an_id_without_slot_or_session_names_nobody_not_its_display() {
+        let id = "11111111-2222-3333-4444-555555555555";
+        let ask = |ids: &str| {
+            format!(
+                r#"{{"ts":"2026-10-10T12:00:00Z","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1"{ids},"summary":"q"}}"#
+            )
+        };
+        let viewer = Viewer {
+            display: "a:lead".to_owned(),
+            ..Viewer::default()
+        };
+        let keyless = states(&container(&[&ask("")]));
+        assert!(
+            keyless[0].shown_to(Mode::Mine, &viewer),
+            "control: a keyless display row"
+        );
+        let half = states(&container(&[&ask(&format!(
+            r#","actor_session_id":"{id}""#
+        ))]));
+        assert_eq!(
+            half[0].from_session_id,
+            Key::Value(id.as_bytes().to_vec()),
+            "read"
+        );
+        assert!(
+            !half[0].shown_to(Mode::Mine, &viewer),
+            "half a key is not a:lead"
+        );
+    }
 }

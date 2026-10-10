@@ -1284,4 +1284,55 @@ mod tests {
         assert_eq!(stored(&dir), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Fn doc: a pinned asker is its slot in the session recording its id
+    /// NOW — anything else is not the asker; a legacy reply has no pin.
+    #[test]
+    fn only_the_pinned_slot_of_the_session_holding_the_id_is_the_asker() {
+        const A: &str = "11111111-2222-3333-4444-555555555555";
+        const B: &str = "66666666-7777-8888-9999-000000000000";
+        let dir = std::env::temp_dir().join(format!("ae-reply-asker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("meta"), format!("session=s\nsession_id={A}\n")).unwrap();
+        let resolved = crate::tracked::Resolved {
+            pane: "%1".to_owned(),
+            agent: "lead".to_owned(),
+            slot: "main".to_owned(),
+            session: "s".to_owned(),
+        };
+        let asker = |slot: &str, id: &str| super::not_the_asker(&dir, &resolved, slot, id, "s");
+        assert_eq!(asker("main", A), None, "the pinned slot, id held now");
+        assert_eq!(asker("worker.0", ""), None, "legacy: no pin to re-prove");
+        assert!(asker("worker.0", A).is_some(), "another slot");
+        assert!(
+            asker("main", B).is_some(),
+            "the id moved to another session"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Fn doc: a pinned asker is addressed in the session holding its id NOW,
+    /// by its stored display — `@<home>:`-prefixed only from another session.
+    #[test]
+    fn a_pinned_asker_is_addressed_in_the_session_holding_its_id() {
+        let root = std::env::temp_dir().join(format!("ae-reply-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (name, id) in [("s", ID_B), ("home", ID_A)] {
+            let dir = root.join("sessions").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let sock = root.join("no-sock").display().to_string();
+            let meta = format!(
+                "session={name}\nsession_id={id}\ntmux_server_kind=socket\ntmux_server={sock}\n"
+            );
+            std::fs::write(dir.join("meta"), meta).unwrap();
+        }
+        let row = pinned(value(ID_A), Key::Absent);
+        let from =
+            |own: &str| super::destination(&root.join("sessions").join(own), &row, "ae-1", own);
+        let home = |to: &str| Ok((to.to_owned(), "home".to_owned(), ID_A.to_owned()));
+        assert_eq!(from("home"), home("cl:lead"));
+        assert_eq!(from("s"), home("@home:cl:lead"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

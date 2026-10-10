@@ -912,4 +912,24 @@ mod tests {
             assert!(!timestamp_shaped(text), "{text:?} is not a timestamp");
         }
     }
+
+    /// Fn doc: one refusal category is persisted, and mirrored into the
+    /// launching session's event ledger.
+    #[test]
+    fn a_refusal_is_persisted_and_mirrored_into_the_session_ledger() {
+        let root = std::env::temp_dir().join(format!("ae-tg-refusal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = crate::telegram::bridge::Paths::under(&root);
+        super::record_refusal(&paths, Refusal::SpawnFailed, "s", &root);
+        let state = root.join(super::STATE_DIR);
+        let persisted = super::last_refusal(&state).map(|r| r.0);
+        assert_eq!(persisted, Some("spawn-failed"));
+        let events = crate::watchdog_daemon::read_events(&root);
+        let event = events.last().expect("a mirrored refusal");
+        let mirrored = (event.action.as_str(), event.summary.as_deref());
+        let want = ("telegram_autostart_refused", Some("category=spawn-failed"));
+        assert_eq!(mirrored, want);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
