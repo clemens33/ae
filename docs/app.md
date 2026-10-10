@@ -295,8 +295,10 @@ that the clipboard was reached, because tmux gives no acknowledgement:
 
 The terminal must take OSC 52 and let tmux use it. iTerm2: Settings > General >
 Selection > "Applications in terminal may access clipboard". Terminal.app has
-no OSC 52. Alacritty needs `set -as terminal-features ',alacritty*:clipboard'`
-in tmux. The paste buffer works regardless.
+no OSC 52. Alacritty with `TERM=alacritty` needs
+`set -as terminal-features ',alacritty*:clipboard'` in tmux (with `TERM=xterm*`
+tmux's default `terminal-features` already carry the clipboard). The paste
+buffer works regardless.
 
 ## Settings
 
