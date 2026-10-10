@@ -3120,6 +3120,276 @@ mod tests {
         assert!(said(&app).is_some_and(|line| line.contains("the view changed")));
     }
 
+    /// I5: a `^C` held behind other keys quits at once, unless it would lose a
+    /// draft only this process holds - then it waits, in order, with them.
+    #[test]
+    fn a_held_interrupt_quits_at_once_unless_it_would_lose_a_draft() {
+        let root = Root::new("held-quit");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        let behind = |app: &mut App| {
+            app.deferred = vec![(Key::Text(b"x".to_vec()), at)];
+            take_keys(app, vec![(Key::Interrupt, at)])
+        };
+        assert_eq!(behind(&mut app), None, "nothing to lose: it quits");
+        assert_eq!(app.compose(Key::Text(b"keep".to_vec()), at), Some(()));
+        assert_eq!(behind(&mut app), Some(true), "a draft is not lost");
+        assert_eq!(app.deferred.len(), 2, "the ^C waits behind the key");
+    }
+
+    /// O1: a press after the window passed arms the seat the CURRENT frame
+    /// highlights, not the stale one; a frame of the selection with no seat to
+    /// open answers at once and arms nothing.
+    #[test]
+    fn an_expired_open_rearms_the_current_seat_and_a_seatless_frame_refuses() {
+        let root = Root::new("open-expired");
+        let (mut app, _reader) = housed(&root);
+        let frame = |focused: &str| super::Drawn {
+            rows: vec![
+                ("lead".to_owned(), Some(seat_ref("main", "lead"))),
+                ("colead".to_owned(), Some(seat_ref("worker.0", "colead"))),
+            ],
+            ..drawn_rows(&[], focused)
+        };
+        let t0 = Instant::now();
+        app.drawn = Some(frame("lead"));
+        app.open_key(t0);
+        app.drawn = Some(frame("colead"));
+        app.open_key(t0 + super::QUIT_WINDOW + Duration::from_millis(1));
+        assert_eq!(app.note().as_deref(), Some("o again to open colead"));
+        assert!(app.notices.is_empty(), "the stale arm opened nothing");
+        app.armed = None;
+        app.drawn = Some(super::Drawn {
+            focused: None,
+            ..frame("lead")
+        });
+        app.open_key(t0 + Duration::from_secs(9));
+        assert!(app.armed.is_none(), "no seat, nothing armed");
+        let said = (app.notices.last()).map_or_else(String::new, |n| n.1.body.clone());
+        assert!(
+            said.starts_with("refused: /open api"),
+            "answered at once: {said}"
+        );
+    }
+
+    /// P1: the settled word of an ask shows on the hint row of the session it
+    /// answers and of no other.
+    #[test]
+    fn a_settled_word_shows_on_its_own_sessions_hint_row_only() {
+        let root = Root::new("settled-word");
+        let (mut app, _reader) = housed(&root);
+        let settling = |about: &str| super::Settling {
+            at: Instant::now(),
+            id: "r".to_owned(),
+            word: "delivered".to_owned(),
+            about: about.to_owned(),
+        };
+        app.settling = Some(settling("api"));
+        assert_eq!(app.note().as_deref(), Some("delivered"));
+        app.settling = Some(settling("web"));
+        assert_eq!(app.note(), None, "another session's word is not shown");
+    }
+
+    /// P1: a line lapses once its window has passed, not at the window itself,
+    /// and `lapse` says so whenever any of the three went away.
+    #[test]
+    fn a_line_lapses_after_its_window_and_any_lapse_is_said() {
+        let root = Root::new("lapse");
+        let (mut app, _reader) = housed(&root);
+        let t0 = Instant::now();
+        let past = |window: Duration| t0 + window + Duration::from_millis(1);
+        let arm = |on: bool| {
+            on.then_some(super::Armed {
+                at: t0,
+                what: super::Arm::Quit,
+            })
+        };
+        let flash = |on: bool| on.then(|| ("paste not taken: x".to_owned(), t0));
+        let word = |on: bool| {
+            on.then(|| super::Settling {
+                at: t0,
+                id: "r".to_owned(),
+                word: "delivered".to_owned(),
+                about: "api".to_owned(),
+            })
+        };
+        app.armed = arm(true);
+        assert!(
+            !app.lapse(t0 + super::QUIT_WINDOW),
+            "at the window it still waits"
+        );
+        assert!(app.armed.is_some());
+        for (on, at) in [
+            ((true, false, false), past(super::QUIT_WINDOW)),
+            ((true, true, false), past(super::FLASH_WINDOW)),
+            ((true, false, true), past(super::FLASH_WINDOW)),
+            ((false, true, true), past(super::FLASH_WINDOW)),
+            ((true, true, true), past(super::FLASH_WINDOW)),
+            ((false, true, false), past(super::FLASH_WINDOW)),
+            ((false, false, true), past(super::FLASH_WINDOW)),
+        ] {
+            (app.armed, app.flash, app.settling) = (arm(on.0), flash(on.1), word(on.2));
+            assert!(app.lapse(at), "{on:?} lapsed");
+            let left = (app.flash.is_some(), app.settling.is_some());
+            assert_eq!(
+                left,
+                (false, false),
+                "{on:?}: flash and word are over by {at:?}"
+            );
+        }
+        app.flash = flash(true);
+        assert!(
+            !app.lapse(t0 + super::FLASH_WINDOW),
+            "at the window it still waits"
+        );
+    }
+
+    /// B1: a paste while the app is HELD is refused with a hint, every
+    /// fragment of it again, and starts no draft.
+    #[test]
+    fn a_paste_while_held_is_refused_on_the_hint_row_fragment_by_fragment() {
+        let root = Root::new("held-paste");
+        let (mut app, _reader) = housed(&root);
+        app.held = Some("an ae app is writing to api".to_owned());
+        let at = Instant::now();
+        for fragment in [b"one".as_slice(), b"two"] {
+            app.flash = None;
+            let pasted = vec![(Key::Pasted(fragment.to_vec()), at)];
+            assert_eq!(take_keys(&mut app, pasted), Some(true));
+            let said = app.note().expect("a held paste says why");
+            assert!(
+                said.starts_with("paste not taken: ") && said.contains("Esc"),
+                "{said}"
+            );
+        }
+        assert!(
+            !app.composing() && drafted(&app).is_empty(),
+            "no draft started"
+        );
+    }
+
+    /// A read-only selection's refused paste carries the real reason the
+    /// session cannot be written, in full.
+    #[test]
+    fn a_refused_browse_paste_names_the_sessions_real_reason() {
+        let mut app = self::app(Some("api"));
+        app.read_line = "api is stopped; ae api resumes it".to_owned();
+        let pasted = vec![(Key::Pasted(b"x".to_vec()), Instant::now())];
+        assert_eq!(take_keys(&mut app, pasted), Some(true));
+        let line = "paste not taken: read-only · api is stopped; ae api resumes it";
+        assert_eq!(app.note().as_deref(), Some(line));
+    }
+
+    /// `app` drawn into a `width` x 45 buffer, as text.
+    fn framed_at(app: &mut App, width: u16) -> String {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 45));
+        app.frame(&mut buf);
+        text(&buf)
+    }
+
+    /// P1: a pending line takes the hint row, the third from the bottom.
+    #[test]
+    fn a_pending_line_is_drawn_on_the_hint_row_above_the_keys_row() {
+        let root = Root::new("hint-row");
+        let (mut app, _reader) = housed(&root);
+        app.refuse_paste("read-only");
+        let shown = framed_at(&mut app, 160);
+        let rows: Vec<&str> = shown.lines().collect();
+        assert!(rows[42].contains("paste not taken: read-only"), "{shown}");
+        assert!(rows[41].trim().is_empty() || !rows[41].contains("paste not taken"));
+    }
+
+    /// The browse hints for a row `width` cells wide, from the requirement's
+    /// own table (docs/app.md, the frozen keys-row acceptance): the longest
+    /// prefix of the priority order whose hints, three cells apart after the
+    /// eight cells of margin and the word `browse`, all fit; `Enter write`
+    /// only for a writable selection. Shown in navigation order.
+    fn browse_words(width: u16, writable: bool) -> Vec<&'static str> {
+        let priority = [
+            "? help",
+            "1-9 session",
+            "Enter write",
+            "qq quit",
+            "! next need",
+            "Tab overview / agents",
+            "j/k move",
+            "PgUp/PgDn scroll",
+            "Esc home",
+            "s settings",
+        ];
+        let order = [1, 6, 4, 5, 7, 2, 8, 9, 0, 3];
+        let (mut chosen, mut used) = (Vec::new(), 8);
+        for (at, hint) in priority.iter().enumerate() {
+            if at == 2 && !writable {
+                continue;
+            }
+            used += 3 + hint.len();
+            if used > usize::from(width) {
+                break;
+            }
+            chosen.push(at);
+        }
+        let shown = order.iter().filter(|at| chosen.contains(at));
+        shown.map(|at| priority[*at]).collect()
+    }
+
+    /// The browse hints are the longest prefix of the priority order that fits:
+    /// asked for exactly the cells they take they all stay, and a cell less
+    /// drops one.
+    #[test]
+    fn the_browse_hints_that_fill_the_room_exactly_all_stay() {
+        for writable in [false, true] {
+            for room in 0..=200_u16 {
+                assert_eq!(
+                    draw::browse_hints(writable, false, room),
+                    browse_words(room + 8, writable),
+                    "{writable} {room}"
+                );
+            }
+        }
+    }
+
+    /// The keys row draws exactly the browse hints that fit the cells left
+    /// after its two cells of margin and the word `browse`, and no other.
+    #[test]
+    fn the_keys_row_draws_the_hints_that_fit_after_the_mode_word() {
+        let root = Root::new("keys-row");
+        let (mut app, _reader) = housed(&root);
+        let every = browse_words(u16::MAX, true);
+        for width in 40..=120_u16 {
+            let shown = framed_at(&mut app, width);
+            let last = shown.lines().last().expect("a keys row").to_owned();
+            let words = browse_words(width, true);
+            let row = format!("  browse   {}", words.join("   "));
+            assert!(last.starts_with(&row), "{width}: {row:?} in {last:?}");
+            for hint in every.iter().filter(|hint| !words.contains(hint)) {
+                assert!(!last.contains(hint), "{width}: {hint} in {last:?}");
+            }
+        }
+    }
+
+    /// The settings overlay puts three cells between its tab titles when all of
+    /// them fit that way, else one.
+    #[test]
+    fn the_settings_tab_titles_keep_three_cells_only_while_all_fit_so() {
+        let root = Root::new("tab-gaps");
+        let (mut app, _reader) = housed(&root);
+        app.open_settings();
+        let row = |app: &mut App, width: u16| {
+            let shown = framed_at(app, width);
+            shown
+                .lines()
+                .nth(1)
+                .expect("the tab row")
+                .trim_end()
+                .to_owned()
+        };
+        // Two cells of margin, five titles of 32 cells, four gaps of three.
+        let wide = "  Quota   Config   About   Instructions   Keys";
+        assert_eq!(row(&mut app, 46), wide);
+        assert_eq!(row(&mut app, 45), "  Quota Config About Instructions Keys");
+    }
+
     /// R4(f)/I5: Enter queues its ask behind the frame that names it; a key
     /// behind it waits in order, an answer behind it waits in the channel,
     /// and a `^C` behind it quits only after the ask ran.
