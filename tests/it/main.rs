@@ -60,6 +60,7 @@ mod gate;
 mod git;
 mod init;
 mod install;
+mod launch_context_spec;
 mod lifecycle;
 mod menu;
 mod migrate;
