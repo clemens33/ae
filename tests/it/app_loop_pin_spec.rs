@@ -349,13 +349,20 @@ fn an_idle_app_paints_no_frame_until_something_changes() {
         std::thread::sleep(Duration::from_millis(25));
     }
     rig.keys(&pane, "Tab");
-    rig.wait(
-        &pane,
-        FRAME,
-        "the app still listens and repaints",
-        |screen| screen.contains(&format!("goal-{}", rig.home)),
-    );
-    assert!(size() > seen, "the second repaint reached the capture");
+    // The goal is already on the screen in the sidebar's fleet row, so it proves
+    // nothing: only the Overview body, with the Agents body gone, is the repaint.
+    rig.wait(&pane, FRAME, "the Overview repaints", |screen| {
+        screen.contains("Waiting on you") && !screen.contains("No seat facts")
+    });
+    // The capture file is fed by an asynchronous `cat`, so it can trail the screen.
+    let until = Instant::now() + FRAME;
+    while size() <= seen {
+        assert!(
+            Instant::now() < until,
+            "the second repaint reached the capture"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
     assert!(world.path.exists(), "the loader stayed parked");
 }
 
