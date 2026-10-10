@@ -290,6 +290,27 @@ fn chat_and_its_deprecated_console_alias_print_identical_lane_bytes() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Frozen R5 oracle: this existing golden predates staging. A one-shot still
+/// prints the full lane byte for byte and exits, including transcript replies.
+#[test]
+fn appload_one_shot_chat_keeps_the_frozen_complete_lane_bytes() {
+    let (root, dir) = lead_pair_rig("appload-chat");
+    let before = std::fs::read(dir.join("events.jsonl")).expect("original journal");
+    let (code, stdout, stderr) = console(&root, &["one"]);
+    assert_eq!(code, Some(0), "one-shot exits: {stderr}");
+    assert_eq!(stderr, "");
+    assert_lane_golden_with_attention(&stdout);
+    assert!(
+        !stdout.contains("pane turns — loading:"),
+        "one-shot is complete"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("events.jsonl")).expect("journal after print"),
+        before
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn split_needs_snapshot(text: &str) -> (&str, &str) {
     let Some((lane, section)) = text.split_once("-- needs you: ") else {
         return (text, "");

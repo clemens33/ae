@@ -372,3 +372,237 @@ fn close_in_the_app_honours_a_retire_of_the_asked_seat() {
         "nothing was withdrawn"
     );
 }
+
+/// Frozen appload acceptance (R1/R2/R6): hold the actual transcript stages
+/// at the checkout-only read door; judge frames while each read is blocked.
+/// Lead replaced the bulk/timing oracle with these deterministic gates.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Frozen acceptance judges all three frames while one fixture holds both reads."
+)]
+fn appload_journal_current_and_earlier_turns_paint_in_order() {
+    // Drop releases every hold on assertion unwind; the existing read door
+    // also bounds a held read to 60 s. No extra reader or process door.
+    struct Holds(Vec<PathBuf>);
+    impl Drop for Holds {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+    let rig = Rig::new("appload", false);
+    let store = rig.root.join("claude");
+    let current = "0199c0de-aaaa-4890-abcd-ef0123456789";
+    let prior = "0199c0de-bbbb-4890-abcd-ef0123456789";
+    let project = store.join("projects/work");
+    fs::create_dir_all(&project).expect("synthetic transcript directory");
+    for (id, stamp, words) in [
+        (current, "2026-10-04T10:01:00Z", "appload-current-turn"),
+        (prior, "2026-10-04T09:59:00Z", "appload-earlier-turn"),
+    ] {
+        fs::write(
+            project.join(format!("{id}.jsonl")),
+            super::board::user(stamp, words) + "\n",
+        )
+        .expect("regular committed synthetic transcript");
+    }
+    fs::write(rig.tool.dir.join("meta"), format!(
+        "schema=2\nsession={}\nmode=local\nsession_id={UUID}\nlayout=lead-pair\ntmux_server_kind=socket\ntmux_server={}\nseat.main=lead\nagent_bin.main=claude\nharness_session.main={current}\nharness_session_prior.main=claude:{prior}\nconfig_home.main={}\n",
+        rig.name, rig.socket.display(), store.display(),
+    )).expect("one kept seat with a recorded predecessor");
+    fs::write(
+        rig.tool.dir.join("events.jsonl"),
+        "{\"ts\":\"2026-10-04T10:02:00Z\",\"actor\":\"lead\",\"action\":\"chat\",\"summary\":\"appload-journal-row\"}\n",
+    ).expect("journal row");
+
+    let sessions = [ae::usage::SessionInput {
+        name: rig.name.clone(),
+        path: rig.tool.dir.clone(),
+    }];
+    let inputs = ae::board::Inputs {
+        home: Some(&rig.root),
+        sessions: &sessions,
+        replies: ae::board::Replies::Off,
+    };
+    let whole = ae::board::observe_selected(&inputs, None, None, &|_| true);
+    assert!(
+        whole.coverage.is_empty(),
+        "valid fixture: {:?}",
+        whole.coverage
+    );
+    assert_eq!(whole.rows.len(), 2, "both fixture generations really read");
+    drop(whole);
+
+    let gates = rig.root.join("read-gates");
+    fs::create_dir(&gates).expect("private read-gate directory");
+    let holds = Holds(vec![
+        gates.join("@board-current"),
+        gates.join("@board-earlier"),
+    ]);
+    for path in &holds.0 {
+        fs::write(path, "hold").expect("arm transcript read");
+    }
+    let held = |key: &str| {
+        fs::read_to_string(gates.join("trace"))
+            .unwrap_or_default()
+            .lines()
+            .any(|line| line == format!("held {key}"))
+    };
+
+    // Direct invocation pins scratch HOME and removes inherited client homes.
+    let command = format!(
+        "env -u CLAUDE_CONFIG_DIR -u CODEX_HOME AE_TEST_APP_READ_GATE={} {} app {}",
+        quote(&gates.display().to_string()),
+        quote(env!("CARGO_BIN_EXE_ae")),
+        quote(&rig.name),
+    );
+    let pane = window(&rig, &command);
+    rig.tmux(&["resize-window", "-t", &pane, "-x", "160", "-y", "45"]);
+    let first = rig.wait(&pane, WAIT, "R1/R2: journal visible with current turns still loading", |screen| {
+        screen.contains("appload-journal-row")
+            && screen.contains("coverage incomplete: pane turns — loading: the current conversations, then the earlier ones")
+            && held("@board-current")
+    });
+    assert!(
+        !first.contains("appload-current-turn") && !first.contains("appload-earlier-turn"),
+        "journal stage has no transcript rows: {first}"
+    );
+    assert!(
+        held("@board-current") && holds.0[0].exists(),
+        "S0 screen judged during the actual blocked current read"
+    );
+    assert!(
+        !held("@board-earlier"),
+        "predecessors never precede the current stage"
+    );
+    fs::remove_file(&holds.0[0]).expect("release current stage");
+    let middle = rig.wait(
+        &pane,
+        WAIT,
+        "R1/R6: current turns precede predecessors",
+        |screen| {
+            screen.contains("appload-current-turn")
+                && screen.contains(
+                    "coverage incomplete: pane turns — loading: the earlier conversations",
+                )
+                && held("@board-earlier")
+        },
+    );
+    assert!(
+        middle.contains("appload-journal-row") && !middle.contains("appload-earlier-turn"),
+        "current stage keeps journal and names missing predecessors: {middle}"
+    );
+    assert!(
+        held("@board-earlier") && holds.0[1].exists(),
+        "S1 screen judged during the actual blocked predecessor read"
+    );
+    fs::remove_file(&holds.0[1]).expect("release predecessor stage");
+    let complete = rig.wait(
+        &pane,
+        WAIT,
+        "R2: coverage loading row disappears at completion",
+        |screen| {
+            screen.contains("appload-earlier-turn") && !screen.contains("pane turns — loading:")
+        },
+    );
+    for words in [
+        "appload-journal-row",
+        "appload-current-turn",
+        "appload-earlier-turn",
+    ] {
+        assert_eq!(
+            complete.matches(words).count(),
+            1,
+            "one row per source after replacement: {complete}"
+        );
+    }
+}
+
+/// R2: a predecessor stage whose session meta vanished mid-read never loses
+/// the predecessors silently. Held at `@board-earlier`, the meta is moved
+/// aside and the fleet read is held at `@world`, so no fleet read sees the
+/// gap and the console survives; once the meta is back and a later read has
+/// painted, the lane still carries the predecessor's turn or names it.
+#[test]
+fn appload_a_meta_lost_during_the_predecessor_stage_loses_no_predecessor() {
+    struct Holds(Vec<PathBuf>);
+    impl Drop for Holds {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+    let rig = Rig::new("apploadr2", false);
+    let store = rig.root.join("claude");
+    let (current, prior) = (
+        "0199c0de-aaaa-4890-abcd-ef0123456789",
+        "0199c0de-bbbb-4890-abcd-ef0123456789",
+    );
+    let project = store.join("projects/work");
+    fs::create_dir_all(&project).expect("synthetic transcript directory");
+    for (id, stamp, words) in [
+        (current, "2026-10-04T10:01:00Z", "appload-current-turn"),
+        (prior, "2026-10-04T09:59:00Z", "appload-earlier-turn"),
+    ] {
+        let line = super::board::user(stamp, words) + "\n";
+        fs::write(project.join(format!("{id}.jsonl")), line).expect("synthetic transcript");
+    }
+    let meta = rig.tool.dir.join("meta");
+    fs::write(&meta, format!(
+        "schema=2\nsession={}\nmode=local\nsession_id={UUID}\nlayout=lead-pair\ntmux_server_kind=socket\ntmux_server={}\nseat.main=lead\nagent_bin.main=claude\nharness_session.main={current}\nharness_session_prior.main=claude:{prior}\nconfig_home.main={}\n",
+        rig.name, rig.socket.display(), store.display(),
+    )).expect("one kept seat with a recorded predecessor");
+    let journal = rig.tool.dir.join("events.jsonl");
+    let row = |words: &str| {
+        format!(
+            "{{\"ts\":\"2026-10-04T10:02:00Z\",\"actor\":\"lead\",\"action\":\"chat\",\"summary\":\"{words}\"}}\n"
+        )
+    };
+    fs::write(&journal, row("appload-journal-row")).expect("journal row");
+    let gates = rig.root.join("read-gates");
+    fs::create_dir(&gates).expect("private read-gate directory");
+    let holds = Holds(vec![gates.join("@board-earlier"), gates.join("@world")]);
+    fs::write(&holds.0[0], "hold").expect("arm predecessor read");
+    let held = |key: &str| {
+        fs::read_to_string(gates.join("trace"))
+            .unwrap_or_default()
+            .lines()
+            .any(|line| line == format!("held {key}"))
+    };
+    let command = format!(
+        "env -u CLAUDE_CONFIG_DIR -u CODEX_HOME AE_TEST_APP_READ_GATE={} {} app {}",
+        quote(&gates.display().to_string()),
+        quote(env!("CARGO_BIN_EXE_ae")),
+        quote(&rig.name),
+    );
+    let pane = window(&rig, &command);
+    rig.tmux(&["resize-window", "-t", &pane, "-x", "160", "-y", "45"]);
+    rig.wait(&pane, WAIT, "the predecessor stage is held", |screen| {
+        screen.contains("appload-current-turn") && held("@board-earlier")
+    });
+    fs::write(&holds.0[1], "hold").expect("arm the next fleet read");
+    let aside = rig.tool.dir.join("meta.aside");
+    fs::rename(&meta, &aside).expect("meta moved aside");
+    fs::remove_file(&holds.0[0]).expect("release predecessor stage");
+    rig.wait(
+        &pane,
+        WAIT,
+        "the stage answered, the fleet read held",
+        |screen| !screen.contains("pane turns — loading:") && held("@world"),
+    );
+    fs::rename(&aside, &meta).expect("meta restored");
+    let mut rows = fs::read_to_string(&journal).expect("journal");
+    rows.push_str(&row("appload-after-restore"));
+    fs::write(&journal, rows).expect("a row only a later read paints");
+    fs::remove_file(&holds.0[1]).expect("release fleet read");
+    let after = rig.wait(&pane, WAIT, "a later read painted", |screen| {
+        screen.contains("appload-after-restore")
+    });
+    assert!(
+        after.contains("appload-earlier-turn") || after.contains("predecessor 1"),
+        "the predecessors are read or named, never silently dropped: {after}"
+    );
+}

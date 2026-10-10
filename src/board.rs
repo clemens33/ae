@@ -787,6 +787,30 @@ pub fn observe_selected(
     supplied: Option<&SuppliedMeta<'_>>,
     keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
 ) -> Observation {
+    observe_generations(inputs, since_micros, supplied, keep, Generations::All)
+}
+
+/// Which of a seat's conversations a read takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Generations {
+    /// The current conversation, then every recorded predecessor.
+    All,
+    /// The current conversation alone: the follow seeds from it.
+    Current,
+    /// The recorded predecessors alone: no seed, since none is ever polled.
+    Earlier,
+}
+
+/// [`observe_selected`] over `generations` of each kept seat: `Current`
+/// and `Earlier` together read exactly what `All` reads.
+#[must_use]
+pub(crate) fn observe_generations(
+    inputs: &Inputs<'_>,
+    since_micros: Option<i64>,
+    supplied: Option<&SuppliedMeta<'_>>,
+    keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
+    generations: Generations,
+) -> Observation {
     let mut rows = Vec::new();
     let mut coverage = Vec::new();
     let mut seeds = Vec::new();
@@ -809,16 +833,19 @@ pub fn observe_selected(
         };
         for entry in meta.roster().iter().filter(|entry| keep(entry)) {
             let priors = meta.harness_session_prior(&entry.slot);
-            hidden_rows.extend(observe_seat(
-                session,
-                entry,
-                inputs.home,
-                inputs.replies,
-                &priors,
-                &mut rows,
-                &mut coverage,
-                &mut seeds,
-            ));
+            let (home, replies) = (inputs.home, inputs.replies);
+            let (rows, coverage, seeds) = (&mut rows, &mut coverage, &mut seeds);
+            hidden_rows.extend(match generations {
+                Generations::All => observe_seat(
+                    session, entry, home, replies, &priors, rows, coverage, seeds,
+                ),
+                Generations::Current => {
+                    observe_generation(session, entry, home, replies, 0, rows, coverage, seeds)
+                }
+                Generations::Earlier => observe_priors(
+                    session, entry, home, replies, &priors, rows, coverage, seeds,
+                ),
+            });
         }
     }
     let mut rows = collect(rows);
@@ -894,6 +921,29 @@ fn observe_seat(
     seeds: &mut Vec<SeatSeed>,
 ) -> Vec<Row> {
     let mut hidden = observe_generation(session, entry, home, replies, 0, rows, coverage, seeds);
+    hidden.extend(observe_priors(
+        session, entry, home, replies, priors, rows, coverage, seeds,
+    ));
+    hidden
+}
+
+/// [`observe_seat`]'s predecessors alone, nearest first, each numbered as
+/// the whole chain numbers it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seat read's eight facts — session, entry, home, flag, priors, rows, coverage, seeds — are each a distinct borrow"
+)]
+fn observe_priors(
+    session: &crate::usage::SessionInput,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    replies: Replies,
+    priors: &[&str],
+    rows: &mut Vec<Row>,
+    coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
+) -> Vec<Row> {
+    let mut hidden = Vec::new();
     let mut generation: u8 = 0;
     for element in priors.iter().rev().take(crate::meta::PRIOR_MAX) {
         generation += 1;
@@ -2343,6 +2393,59 @@ mod tests {
         let reasons: Vec<&str> = coverage.iter().map(|item| item.reason.as_str()).collect();
         assert_eq!(reasons, ["invalid or missing conversation id"]);
         assert!(seeds.is_empty(), "a covered read seeds nothing");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The staged halves read exactly the whole: the current conversation and
+    /// the predecessors together give `All`'s rows and the seat's coverage in
+    /// its order, and only the current read seeds.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own scratch session"
+    )]
+    fn the_current_and_earlier_generations_read_exactly_the_whole() {
+        use super::Generations::{All, Current, Earlier};
+        let (root, _) = prior_rig("split", CURRENT_ID, &[CURRENT_ID, PRIOR_NEW]);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let meta = format!(
+            "schema=2\nseat.main=lead\nharness_session.main={CURRENT_ID}\nagent_bin.main=claude\nconfig_home.main={}\nharness_session_prior.main={PRIOR_OLD},{PRIOR_NEW}\n",
+            root.join("claude").display()
+        );
+        std::fs::write(dir.join("meta"), meta).expect("meta");
+        let sessions = [crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        let inputs = super::Inputs {
+            home: Some(&root),
+            sessions: &sessions,
+            replies: super::Replies::Off,
+        };
+        let read =
+            |generations| super::observe_generations(&inputs, None, None, &|_| true, generations);
+        let (all, current, earlier) = (read(All), read(Current), read(Earlier));
+        let generations = |rows: &[Row]| rows.iter().map(|row| row.generation).collect::<Vec<_>>();
+        assert_eq!(generations(&current.rows), [0]);
+        assert_eq!(generations(&earlier.rows), [1]);
+        let rows = [current.rows.clone(), earlier.rows.clone()].concat();
+        assert_eq!(collect(rows), all.rows);
+        let reasons = |coverage: &[Coverage]| {
+            coverage
+                .iter()
+                .map(|item| item.reason.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(reasons(&current.coverage), Vec::<String>::new());
+        assert_eq!(
+            reasons(&earlier.coverage),
+            ["predecessor 2: transcript not found"]
+        );
+        assert_eq!([current.coverage, earlier.coverage].concat(), all.coverage);
+        assert_eq!(current.seeds, all.seeds);
+        assert_eq!(current.seeds.len(), 1, "the current read seeds");
+        assert!(earlier.seeds.is_empty(), "a predecessor never seeds");
         let _ = std::fs::remove_dir_all(&root);
     }
 

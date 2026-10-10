@@ -106,6 +106,13 @@ the selection, and the rest in sidebar order, keeping at most 16 lanes; the
 selected session and home are read again every 5 seconds. Until the first
 fleet read the list says `loading`. A session whose lane was not read yet
 shows one dim `loading` row, and one read before shows its last lane at once.
+A lane fills in stages, each its own read: the session's journal first, then
+the lead pair's current conversations, then — for the selected session only —
+their earlier conversations. Until the last stage lands the lane carries one
+coverage row, `pane turns — loading: …`, naming the turns still to come; a
+seat a stage could not read keeps its own coverage row after that. A session
+that is not selected stops after its current conversations, and selecting it
+reads the earlier ones next.
 An answer that lands after you moved on is kept for its own session and never
 drawn under another.
 

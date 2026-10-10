@@ -19,7 +19,7 @@ use crate::brief::Filed;
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::needs::{SeatRef, Section};
-use crate::console::{self, Console, Panes, term};
+use crate::console::{self, Console, Panes, Reach, term};
 use crate::digest::Status;
 use crate::inventory::{FailedSource, ServerId};
 use crate::listing::World;
@@ -223,6 +223,9 @@ pub(super) struct Reader {
     settings_session: Option<String>,
     /// The fleet's journals and memos as last read.
     journals: Journals,
+    /// Sessions whose last stage read was answered: one still staging is due
+    /// again at once, one whose read failed waits its tier.
+    answered: BTreeSet<String>,
 }
 
 /// Where [`Reader::fold`] reads a session's needs and memo.
@@ -271,6 +274,7 @@ impl Reader {
             settings_full: false,
             settings_session: None,
             journals: Journals::default(),
+            answered: BTreeSet::new(),
         }
     }
 
@@ -294,7 +298,7 @@ impl Reader {
             let answers = match self.next(Instant::now()) {
                 Job::Fleet => self.fleet(),
                 Job::Look(name) => vec![self.look(&name)],
-                Job::View(name) => self.view(&name).into_iter().collect(),
+                Job::View(name) => self.stage(&name).into_iter().collect(),
                 Job::Settings => vec![self.settings()],
                 Job::Wait(until) => {
                     match asks.recv_timeout(until.saturating_duration_since(Instant::now())) {
@@ -351,6 +355,9 @@ impl Reader {
         let Some(at) = self.read_at.get(name) else {
             return Some(now);
         };
+        if self.staging(name, self.reach(name)) {
+            return Some(now);
+        }
         match tier {
             Tier::Hot => Some(*at + REFRESH),
             Tier::Warm => (*at < self.focus_at).then_some(*at + REFRESH),
@@ -607,6 +614,7 @@ impl Reader {
         });
         let consoles = &self.consoles;
         self.read_at.retain(|name, _| consoles.contains_key(name));
+        self.answered.retain(|name| consoles.contains_key(name));
         let fleet: Vec<PathBuf> = dirs.values().cloned().collect();
         self.journals.retain(&fleet);
     }
@@ -650,9 +658,46 @@ impl Reader {
         })
     }
 
-    /// Read session `name` through its console: its lane, with any needs gap
-    /// named in its coverage, its needs and its roster.
+    /// Session `name` read through every stage, predecessors too whatever
+    /// the selection: the answer of the last, each read by [`Reader::stage_at`].
+    #[cfg(test)]
     pub(super) fn view(&mut self, name: &str) -> Option<Answer> {
+        let mut answer = self.stage_at(name, Reach::Every);
+        while self.staging(name, Reach::Every) {
+            answer = self.stage_at(name, Reach::Every);
+        }
+        answer
+    }
+
+    /// How far session `name`'s staged reads go: predecessors only for the
+    /// selection.
+    fn reach(&self, name: &str) -> Reach {
+        if self.selected.as_deref() == Some(name) {
+            Reach::Every
+        } else {
+            Reach::Current
+        }
+    }
+
+    /// Whether session `name`'s last read was answered and its console has a
+    /// stage left at `reach`.
+    fn staging(&self, name: &str, reach: Reach) -> bool {
+        self.answered.contains(name)
+            && self
+                .consoles
+                .get(name)
+                .is_some_and(|console| console.staging(reach))
+    }
+
+    /// Read one stage of session `name` through its console, as far as its
+    /// [`Reader::reach`] goes.
+    pub(super) fn stage(&mut self, name: &str) -> Option<Answer> {
+        self.stage_at(name, self.reach(name))
+    }
+
+    /// Read one stage of session `name` toward `reach`: its lane, with any
+    /// needs gap named in its coverage, its needs and its roster.
+    fn stage_at(&mut self, name: &str, reach: Reach) -> Option<Answer> {
         self.rereads.remove(name);
         let dir = self.dirs.get(name)?.clone();
         let console = self
@@ -660,7 +705,13 @@ impl Reader {
             .entry(name.to_owned())
             .or_insert_with(|| Console::open_standing(name.to_owned(), dir));
         let journals = &mut self.journals;
-        let (lane, needs) = match console.read_with(&mut |dir| journals.snapshot(dir)) {
+        let read = console.read_staged(reach, &mut |dir| journals.snapshot(dir));
+        if read.is_ok() {
+            self.answered.insert(name.to_owned());
+        } else {
+            self.answered.remove(name);
+        }
+        let (lane, needs) = match read {
             Ok(read) => {
                 let mut lane = read.lane;
                 let needs = match read.needs {
@@ -1088,6 +1139,102 @@ mod tests {
                 "{viewed}: {coverage}"
             );
         }
+    }
+
+    /// R6: the selection's stages run back to back before a neighbour is
+    /// read; a neighbour stops after its current conversations and is not due
+    /// again for its predecessors, and selecting it makes them due at once.
+    #[test]
+    fn the_selection_stages_first_and_only_a_selection_reads_predecessors() {
+        const BOTH: &str = "pane turns — loading: the current conversations, then the earlier ones";
+        const EARLIER: &str = "pane turns — loading: the earlier conversations";
+        let root = Root::new("stages");
+        let tail = "harness_session_prior.main=claude:0199c0de-bbbb-4890-abcd-ef0123456789\n";
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        reader.fleet_at = Some(Instant::now());
+        reader.rows = rows(&["web", "ops"]);
+        for name in ["web", "ops"] {
+            reader
+                .dirs
+                .insert(name.to_owned(), session(&root, name, tail));
+            reader.ids.insert(name.to_owned(), ID.to_owned());
+        }
+        let select = |reader: &mut Reader, name: &str| {
+            reader.take(Request::Focus(Some(name.to_owned())));
+            reader.looks.clear();
+        };
+        select(&mut reader, "web");
+        let mut read = Vec::new();
+        for _ in 0..8 {
+            let Some(name) = viewing(&reader.next(Instant::now())).map(str::to_owned) else {
+                break;
+            };
+            let coverage = coverage(reader.stage(&name));
+            let loading = coverage.into_iter().find(|gap| gap.contains("loading:"));
+            read.push((name, loading));
+        }
+        let stage = |name: &str, gap: Option<&str>| (name.to_owned(), gap.map(str::to_owned));
+        assert_eq!(
+            read,
+            [
+                stage("web", Some(BOTH)),
+                stage("web", Some(EARLIER)),
+                stage("web", None),
+                stage("ops", Some(BOTH)),
+                stage("ops", Some(EARLIER)),
+            ],
+            "the neighbour waits for its predecessors"
+        );
+        select(&mut reader, "ops");
+        let job = reader.next(Instant::now());
+        assert_eq!(viewing(&job), Some("ops"), "a new selection reads them now");
+        let gaps = coverage(reader.stage("ops"));
+        assert!(!gaps.iter().any(|gap| gap.contains("loading:")), "{gaps:?}");
+    }
+
+    /// A stage read that fails is no progress: it waits its tier, never spins.
+    #[test]
+    fn a_failed_stage_read_waits_its_tier() {
+        let root = Root::new("stuck");
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        let now = Instant::now();
+        reader.fleet_at = Some(now);
+        reader.rows = rows(&["web"]);
+        let dir = session(&root, "web", "");
+        reader.dirs.insert("web".to_owned(), dir.clone());
+        reader.take(Request::Focus(Some("web".to_owned())));
+        reader.looks.clear();
+        assert!(!coverage(reader.stage("web")).is_empty());
+        assert_eq!(viewing(&reader.next(now)), Some("web"), "staging: due now");
+        std::fs::remove_file(dir.join("meta")).expect("meta gone");
+        let failed = coverage(reader.stage("web"));
+        assert!(failed[0].contains("meta unreadable"), "{failed:?}");
+        assert!(
+            matches!(reader.next(Instant::now()), Job::Wait(_)),
+            "a failed read waits"
+        );
+    }
+
+    /// A view is the settled read whatever the selection: a neighbour's
+    /// predecessors are read too, never left loading.
+    #[test]
+    fn a_view_of_a_neighbour_reads_its_predecessors_too() {
+        let root = Root::new("whole");
+        let tail = "harness_session_prior.main=claude:0199c0de-bbbb-4890-abcd-ef0123456789\n";
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        reader.rows = rows(&["web", "ops"]);
+        for name in ["web", "ops"] {
+            let dir = session(&root, name, tail);
+            reader.dirs.insert(name.to_owned(), dir);
+            reader.ids.insert(name.to_owned(), ID.to_owned());
+        }
+        reader.take(Request::Focus(Some("web".to_owned())));
+        let gaps = coverage(reader.view("ops"));
+        assert!(!gaps.iter().any(|gap| gap.contains("loading:")), "{gaps:?}");
+        assert!(
+            gaps.iter().any(|gap| gap.contains("predecessor 1")),
+            "{gaps:?}"
+        );
     }
 
     /// #9-13, #37-39: the fold over one read. Seat facts for every session

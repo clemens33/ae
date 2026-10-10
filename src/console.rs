@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::board::{self, Inputs, Replies, Row, follow::Follow, terminal_text};
+use crate::board::{self, Generations, Inputs, Replies, Row, follow::Follow, terminal_text};
 use crate::events::Event;
 use crate::store::{self, Oversized, SourceRead};
 use crate::{
@@ -92,6 +92,52 @@ pub(crate) struct Console {
     /// carries every coverage reason that still stands, not only the new ones
     /// the chat prints once.
     standing: bool,
+    /// How far a standing view's reads have come into the transcripts.
+    staged: Staged,
+}
+
+/// How far a staged read may go into the lead pair's transcripts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// The current conversations: a session the app is not showing.
+    Current,
+    /// Then every recorded predecessor: the session it shows.
+    Every,
+}
+
+/// How far a console's reads have come into its lead pair's transcripts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Stage {
+    /// Nothing read yet.
+    #[default]
+    Unread,
+    /// The journal alone was answered.
+    Journal,
+    /// The current conversations are read and followed; predecessors are not.
+    Current,
+    /// Every recorded predecessor is read too, or none was recorded.
+    Every,
+}
+
+/// A console's stage, and the gaps its predecessors left: no poll revisits
+/// one, so each stands for the console's life.
+#[derive(Debug, Default)]
+struct Staged {
+    stage: Stage,
+    earlier: Vec<board::Coverage>,
+}
+
+/// The one coverage row naming what a staged lane still lacks at `stage`;
+/// `priors` says whether a kept seat records a predecessor.
+fn loading(stage: Stage, priors: bool) -> Option<&'static str> {
+    match stage {
+        Stage::Unread | Stage::Every => None,
+        Stage::Journal if priors => {
+            Some("pane turns — loading: the current conversations, then the earlier ones")
+        }
+        Stage::Journal => Some("pane turns — loading: the current conversations"),
+        Stage::Current => Some("pane turns — loading: the earlier conversations"),
+    }
 }
 
 /// One read of a console's session: the lane, the "needs you" section and
@@ -125,6 +171,7 @@ impl Console {
             journal: None,
             roster: None,
             standing: false,
+            staged: Staged::default(),
         }
     }
 
@@ -157,8 +204,8 @@ impl Console {
         &self.uuid
     }
 
-    /// Every roster seat as the last settled read named them: what `/open`
-    /// takes, `None` before one.
+    /// Every roster seat as the last read that read its needs and meta named
+    /// them, staged or not: what `/open` takes, `None` before one.
     pub(crate) fn roster(&self) -> Option<&[needs::SeatRef]> {
         self.roster.as_deref()
     }
@@ -166,6 +213,12 @@ impl Console {
     /// The session's identity and lead-pair seats, read from its meta NOW:
     /// `Err` says why this console no longer follows the session it opened.
     pub(crate) fn seats(&self) -> Result<Vec<Seat>, String> {
+        self.lead_pair().map(|(seats, ..)| seats)
+    }
+
+    /// [`Console::seats`], whether any of them records a predecessor, and the
+    /// meta they were read from.
+    fn lead_pair(&self) -> Result<(Vec<Seat>, bool, meta::Meta), String> {
         let bytes =
             meta::read_bytes(&self.dir).map_err(|err| format!("meta unreadable ({err})"))?;
         let uuid = archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id"));
@@ -177,16 +230,19 @@ impl Console {
         }
         let lead_pair = lifecycle::meta_value(&bytes, "layout") == "lead-pair";
         let meta = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
-        Ok(meta
-            .roster()
+        let roster = meta.roster();
+        let kept = roster
             .iter()
-            .filter(|entry| watchdog_daemon::in_lead_pair(&entry.slot, lead_pair))
-            .map(|entry| Seat {
-                slot: entry.slot.clone(),
-                name: entry.name.clone(),
-                profile: entry.profile.clone(),
-            })
-            .collect())
+            .filter(|entry| watchdog_daemon::in_lead_pair(&entry.slot, lead_pair));
+        let priors = kept
+            .clone()
+            .any(|entry| !meta.harness_session_prior(&entry.slot).is_empty());
+        let seat = |entry: &meta::RosterEntry| Seat {
+            slot: entry.slot.clone(),
+            name: entry.name.clone(),
+            profile: entry.profile.clone(),
+        };
+        Ok((kept.map(seat).collect(), priors, meta))
     }
 
     /// One pass: [`Console::read`], then the text this console has not
@@ -217,26 +273,54 @@ impl Console {
         &mut self,
         records: &mut dyn FnMut(&Path) -> session::RecordSnapshot,
     ) -> Result<Read, String> {
-        let seats = self.seats()?;
+        self.read_through(None, records)
+    }
+
+    /// One stage of a standing view's read toward `reach`: the journal alone,
+    /// then the current conversations, then for `Every` their predecessors —
+    /// each answer the whole lane so far — and once none is left, the follow.
+    pub(crate) fn read_staged(
+        &mut self,
+        reach: Reach,
+        records: &mut dyn FnMut(&Path) -> session::RecordSnapshot,
+    ) -> Result<Read, String> {
+        self.read_through(Some(reach), records)
+    }
+
+    /// Whether a [`Console::read_staged`] toward `reach` would still read a stage.
+    pub(crate) fn staging(&self, reach: Reach) -> bool {
+        match self.staged.stage {
+            Stage::Unread | Stage::Journal => true,
+            Stage::Current => reach == Reach::Every,
+            Stage::Every => false,
+        }
+    }
+
+    /// One read, staged toward `reach`, or whole when there is none.
+    fn read_through(
+        &mut self,
+        reach: Option<Reach>,
+        records: &mut dyn FnMut(&Path) -> session::RecordSnapshot,
+    ) -> Result<Read, String> {
+        let (seats, priors, meta) = self.lead_pair()?;
         let slots: Vec<&str> = seats.iter().map(|seat| seat.slot.as_str()).collect();
         let keep = |entry: &meta::RosterEntry| slots.contains(&entry.slot.as_str());
         let sessions = [usage::SessionInput {
             name: self.name.clone(),
             path: self.dir.clone(),
         }];
+        let home = self.home.clone();
         let inputs = Inputs {
-            home: self.home.as_deref(),
+            home: home.as_deref(),
             sessions: &sessions,
             replies: self.replies,
         };
-        let seen = match self.follow.as_mut() {
-            None => {
-                let first = board::observe_selected(&inputs, None, None, &keep);
-                self.follow = Some(Follow::seeded(&first.seeds, &first.coverage, None));
-                first
-            }
-            Some(follow) => board::follow_poll_selected(&inputs, follow, &keep),
+        // A stage reads the roster this read proved, never a re-read meta.
+        let meta = board::SuppliedMeta {
+            path: &sessions[0].path,
+            meta: &meta,
         };
+        let seen = self.observe(&inputs, &meta, &keep, reach, priors);
         // A rescan re-reads a rewritten transcript, so a record at the same file
         // and offset is the NEW words: the shared collect keeps the first.
         let fresh: BTreeSet<(&str, u64)> = seen
@@ -250,7 +334,10 @@ impl Console {
         self.rows = board::collect(std::mem::take(&mut self.rows));
         let board_gaps = seen.coverage.len();
         let coverage = match (&self.follow, self.standing) {
-            (Some(follow), true) => standing_coverage(follow, &seats, &self.name, seen.coverage),
+            (Some(follow), true) => {
+                let earlier = &self.staged.earlier;
+                standing_coverage(follow, earlier, &seats, &self.name, seen.coverage)
+            }
             _ => seen.coverage,
         };
         let observation = board::Observation {
@@ -261,7 +348,7 @@ impl Console {
         crate::read_gate(&self.name);
         let snapshot = records(&self.dir);
         let needs = self.needs(&snapshot, &seats);
-        // Only a settled read replaces the seats `/open` may name.
+        // Only a read whose needs and meta were read replaces the seats `/open` may name.
         if let (Ok(_), Some(meta)) = (&needs, &snapshot.meta) {
             let seat = |entry: &meta::RosterEntry| needs::SeatRef {
                 slot: entry.slot.clone(),
@@ -281,9 +368,12 @@ impl Console {
         };
         let body = |event: &Event| body_for(&self.dir, event);
         let mut lane = lane::fold(&self.name, &seats, &events, &observation, skipped, &body);
-        let settled = read_gap.is_none();
+        let journal_read = read_gap.is_none();
+        let settled = journal_read && self.staged.stage == Stage::Every;
         lane.coverage.extend(read_gap);
-        if settled {
+        lane.coverage
+            .extend(loading(self.staged.stage, priors).map(str::to_owned));
+        if journal_read {
             self.journal = Some(events);
         }
         Ok(Read {
@@ -293,6 +383,77 @@ impl Console {
             settled,
             rebased,
         })
+    }
+
+    /// The transcript half of one read, as far as `reach` and the stage reached
+    /// allow: nothing for a staged first read, the chat's one whole read, a
+    /// standing view's stages — all of them when there is no `reach` — or the
+    /// follow once none is left. `priors`: a kept seat records a predecessor.
+    fn observe(
+        &mut self,
+        inputs: &Inputs<'_>,
+        meta: &board::SuppliedMeta<'_>,
+        keep: &dyn Fn(&meta::RosterEntry) -> bool,
+        reach: Option<Reach>,
+        priors: bool,
+    ) -> board::Observation {
+        match (self.staged.stage, reach) {
+            (Stage::Unread, Some(_)) => {
+                self.staged.stage = Stage::Journal;
+                board::Observation::default()
+            }
+            (Stage::Unread | Stage::Journal, None) if !self.standing => {
+                let first = board::observe_selected(inputs, None, None, keep);
+                self.follow = Some(Follow::seeded(&first.seeds, &first.coverage, None));
+                self.staged.stage = Stage::Every;
+                first
+            }
+            (Stage::Unread | Stage::Journal, _) => {
+                let mut seen = self.current(inputs, meta, keep, priors);
+                if reach.is_none() && self.staged.stage == Stage::Current {
+                    let earlier = self.earlier(inputs, meta, keep);
+                    seen.rows.extend(earlier.rows);
+                    seen.coverage.extend(earlier.coverage);
+                }
+                seen
+            }
+            (Stage::Current, None | Some(Reach::Every)) => self.earlier(inputs, meta, keep),
+            (Stage::Current | Stage::Every, _) => match self.follow.as_mut() {
+                Some(follow) => board::follow_poll_selected(inputs, follow, keep),
+                None => board::Observation::default(),
+            },
+        }
+    }
+
+    /// The current conversations, read whole: the follow is seeded here.
+    fn current(
+        &mut self,
+        inputs: &Inputs<'_>,
+        meta: &board::SuppliedMeta<'_>,
+        keep: &dyn Fn(&meta::RosterEntry) -> bool,
+        priors: bool,
+    ) -> board::Observation {
+        crate::read_gate("@board-current");
+        let first =
+            board::observe_generations(inputs, None, Some(meta), keep, Generations::Current);
+        self.follow = Some(Follow::seeded(&first.seeds, &first.coverage, None));
+        self.staged.stage = if priors { Stage::Current } else { Stage::Every };
+        first
+    }
+
+    /// Every recorded predecessor, read once.
+    fn earlier(
+        &mut self,
+        inputs: &Inputs<'_>,
+        meta: &board::SuppliedMeta<'_>,
+        keep: &dyn Fn(&meta::RosterEntry) -> bool,
+    ) -> board::Observation {
+        crate::read_gate("@board-earlier");
+        let earlier =
+            board::observe_generations(inputs, None, Some(meta), keep, Generations::Earlier);
+        self.staged.earlier.clone_from(&earlier.coverage);
+        self.staged.stage = Stage::Every;
+        earlier
     }
 
     /// The "needs you" section: EVERY roster seat's verdict, as `ae list` reads
@@ -359,11 +520,12 @@ pub(crate) fn needs_in(
 }
 
 /// The coverage a redrawn lane carries: every reason the follow holds as
-/// standing for a seat the roster names NOW, in roster order (a dropped
-/// seat's held reason is no gap of this session), then any this read alone
-/// reported (a rescan).
+/// standing, then every gap the predecessors left, for a seat the roster names
+/// NOW, in roster order (a dropped seat's held reason is no gap of this
+/// session), then any this read alone reported (a rescan).
 fn standing_coverage(
     follow: &Follow,
+    earlier: &[board::Coverage],
     seats: &[Seat],
     session: &str,
     fresh: Vec<board::Coverage>,
@@ -376,6 +538,7 @@ fn standing_coverage(
     let mut ranked: Vec<_> = follow
         .standing()
         .into_iter()
+        .chain(earlier.iter().cloned())
         .filter_map(|item| Some((rank(&item.actor)?, item)))
         .collect();
     ranked.sort_by_key(|(rank, _)| *rank);
@@ -713,6 +876,7 @@ pub(super) mod tests {
                 journal: None,
                 roster: None,
                 standing: false,
+                staged: super::Staged::default(),
             }
         }
 
@@ -898,6 +1062,93 @@ pub(super) mod tests {
         std::os::unix::fs::symlink(rig.0.join("real"), dir.join("events.jsonl")).expect("link");
         let linked = Err("the journal is a symlink".to_owned());
         assert_eq!(super::close(&dir, "s", Some(REQ)), linked);
+    }
+
+    /// Record a predecessor of the lead's that has no transcript, and a
+    /// `colead` with none either, when `colead` holds.
+    fn missing(rig: &Rig, colead: bool) {
+        let bytes = crate::meta::read_bytes(&rig.0.join("s")).expect("meta");
+        let text = String::from_utf8(bytes).expect("utf-8 meta");
+        let prior = "harness_session_prior.main=claude:0199c0de-bbbb-4890-abcd-ef0123456789\n";
+        let colead = if colead {
+            let store = rig.0.join("claude");
+            format!(
+                "seat.worker.0=colead\nagent_bin.worker.0=claude\nharness_session.worker.0=0199c0de-cccc-4890-abcd-ef0123456789\nconfig_home.worker.0={}\n",
+                store.display()
+            )
+        } else {
+            String::new()
+        };
+        fs::write(rig.0.join("s/meta"), format!("{text}{prior}{colead}")).expect("meta");
+    }
+
+    /// R1: the journal stage reads no transcript byte — an unreadable current
+    /// transcript is first named by the current stage — and with no
+    /// predecessor recorded that stage completes the read.
+    #[test]
+    fn the_journal_stage_reads_no_transcript_and_no_predecessor_settles_at_current() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let rig = Rig::new("staged-current");
+        rig.journal(&[SAY_A]);
+        rig.transcript("current", 0);
+        let path = rig.0.join(format!("claude/projects/w/{ID}.jsonl"));
+        let mode = |bits| fs::set_permissions(&path, fs::Permissions::from_mode(bits));
+        mode(0o000).expect("unreadable");
+        let mut console = Console {
+            standing: true,
+            ..rig.console()
+        };
+        let mut records = |dir: &std::path::Path| crate::session::RecordSnapshot::read(dir);
+        let every = super::Reach::Every;
+        let journal = console.read_staged(every, &mut records).expect("journal");
+        let current = console.read_staged(every, &mut records).expect("current");
+        mode(0o600).expect("readable");
+        let journal_gaps = ["pane turns — loading: the current conversations"];
+        assert_eq!(journal.lane.coverage, journal_gaps);
+        assert_eq!(current.lane.coverage, ["s:lead — transcript unreadable"]);
+        assert!(current.settled && !console.staging(every));
+    }
+
+    /// A standing view's whole read after its journal stage reads both
+    /// transcript stages in one pass.
+    #[test]
+    fn a_whole_read_after_the_journal_stage_reads_every_stage_at_once() {
+        let rig = Rig::new("staged-whole");
+        rig.journal(&[SAY_A]);
+        rig.transcript("current", 0);
+        missing(&rig, false);
+        let mut console = Console {
+            standing: true,
+            ..rig.console()
+        };
+        let mut records = |dir: &std::path::Path| crate::session::RecordSnapshot::read(dir);
+        let every = super::Reach::Every;
+        console.read_staged(every, &mut records).expect("journal");
+        let whole = console.read().expect("whole");
+        assert!(whole.settled && !console.staging(every));
+        assert_eq!(
+            whole.lane.coverage,
+            ["s:lead — predecessor 1: transcript not found"]
+        );
+        assert!(whole.lane.items.iter().any(|item| item.body == "current"));
+    }
+
+    /// The chat's whole read keeps the board's one-pass order: a seat's
+    /// predecessors' gaps before the next seat's.
+    #[test]
+    fn the_chat_names_each_seats_gaps_in_the_boards_one_pass_order() {
+        let rig = Rig::new("chat-order");
+        rig.journal(&[]);
+        rig.transcript("current", 0);
+        missing(&rig, true);
+        let read = rig.console().read().expect("chat read");
+        assert_eq!(
+            read.lane.coverage,
+            [
+                "s:lead — predecessor 1: transcript not found",
+                "s:colead — transcript not found"
+            ]
+        );
     }
 
     const ASK: &str = r#"{"ts":"2026-09-30T06:00:00Z","actor":"lead","action":"state","ref":"waiting-user","summary":"ship it?"}"#;
@@ -1147,7 +1398,7 @@ pub(super) mod tests {
             gap("s:lead", "transcript replaced — rescanned"),
         ];
         assert_eq!(
-            super::standing_coverage(&follow, &seats, "s", fresh),
+            super::standing_coverage(&follow, &[], &seats, "s", fresh),
             [
                 gap("s:lead", "no conversation"),
                 gap("s:colead", "torn last record"),
@@ -1229,5 +1480,305 @@ pub(super) mod tests {
         let section = console.needs(&snapshot, &pair).expect("a section");
         let lead_pair: Vec<bool> = section.rows.iter().map(|row| row.lead_pair).collect();
         assert_eq!(lead_pair, [true, false]);
+    }
+
+    /// Frozen R2 regression: predecessors are never polled, so a failed
+    /// predecessor remains a named gap after a successful current append.
+    #[test]
+    fn appload_failed_predecessor_coverage_survives_current_follow() {
+        use std::io::Write as _;
+
+        let rig = Rig::new("appload-prior-gap");
+        rig.journal(&[]);
+        rig.transcript("current", 0);
+        let meta = rig.0.join("s/meta");
+        let bytes = String::from_utf8(crate::meta::read_bytes(&rig.0.join("s")).expect("meta"))
+            .expect("fixture UTF-8");
+        fs::write(
+            &meta,
+            format!(
+                "{bytes}harness_session_prior.main=claude:0199c0de-bbbb-4890-abcd-ef0123456789\n"
+            ),
+        )
+        .expect("missing predecessor recorded");
+        let mut console = Console::open_standing("s".to_owned(), rig.0.join("s"));
+        let first = console.read().expect("complete read");
+        let gap = first
+            .lane
+            .coverage
+            .iter()
+            .find(|line| line.contains("predecessor 1:"))
+            .expect("missing predecessor named")
+            .clone();
+        let file = rig.0.join(format!("claude/projects/w/{ID}.jsonl"));
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(file)
+            .expect("current append");
+        writeln!(file, "{{\"type\":\"user\",\"timestamp\":\"2026-09-30T06:03:00Z\",\"message\":{{\"role\":\"user\",\"content\":\"appended human words\"}}}}").expect("committed append");
+        let later = console.read().expect("follow append");
+        assert!(
+            later
+                .lane
+                .items
+                .iter()
+                .any(|item| item.body == "appended human words"),
+            "actual follow read, not a retained snapshot"
+        );
+        assert!(
+            later.lane.coverage.contains(&gap),
+            "R2: a failed predecessor stays named after current-generation follow: {:?}",
+            later.lane.coverage
+        );
+        assert!(
+            console
+                .read()
+                .expect("idle follow")
+                .lane
+                .coverage
+                .contains(&gap),
+            "standing gap also survives an idle poll"
+        );
+    }
+
+    /// Frozen two-generation fixture: fixed oracle words and stamps, no
+    /// dependence on the implementation's stage machinery.
+    fn appload_staged_fixture(tag: &str) -> (Rig, Console) {
+        let rig = Rig::new(tag);
+        rig.journal(&[SAY_A]);
+        rig.transcript("current human", 0);
+        let meta = rig.0.join("s/meta");
+        let bytes = String::from_utf8(crate::meta::read_bytes(&rig.0.join("s")).expect("meta"))
+            .expect("fixture UTF-8");
+        fs::write(
+            &meta,
+            format!(
+                "{bytes}harness_session_prior.main=claude:0199c0de-bbbb-4890-abcd-ef0123456789\n"
+            ),
+        )
+        .expect("predecessor recorded");
+        fs::write(rig.0.join("claude/projects/w/0199c0de-bbbb-4890-abcd-ef0123456789.jsonl"), "{\"type\":\"user\",\"timestamp\":\"2026-09-29T06:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"earlier human\"}}\n").expect("committed predecessor");
+        let console = Console::open_standing("s".to_owned(), rig.0.join("s"));
+        (rig, console)
+    }
+
+    #[test]
+    fn appload_each_stage_names_its_missing_turns_and_replaces_the_lane() {
+        let (rig, mut console) = appload_staged_fixture("appload-stages");
+        let mut records = |dir: &std::path::Path| crate::session::RecordSnapshot::read(dir);
+        let reach = super::Reach::Every;
+        let mut expected = Console::open_standing("s".to_owned(), rig.0.join("s"));
+        let full = expected.read().expect("complete reference read");
+        let body =
+            |read: &super::Read, words: &str| read.lane.items.iter().any(|item| item.body == words);
+
+        let journal = console
+            .read_staged(reach, &mut records)
+            .expect("journal stage");
+        assert!(body(&journal, "aaaa"), "R1: journal already visible");
+        assert!(
+            !body(&journal, "current human") && !body(&journal, "earlier human"),
+            "R1: no transcript turn in journal-only answer"
+        );
+        assert_eq!(
+            journal.lane.coverage,
+            ["pane turns — loading: the current conversations, then the earlier ones"]
+        );
+        assert!(
+            !journal.settled && console.staging(reach),
+            "R3: journal-only answer is unsettled"
+        );
+        assert!(
+            console.follow.is_none(),
+            "R4: no transcript seed before the current read"
+        );
+
+        let current = console
+            .read_staged(reach, &mut records)
+            .expect("current stage");
+        assert!(body(&current, "aaaa") && body(&current, "current human"));
+        assert!(
+            !body(&current, "earlier human"),
+            "R6: priors never join the current stage"
+        );
+        assert_eq!(
+            current.lane.coverage,
+            ["pane turns — loading: the earlier conversations"]
+        );
+        assert!(
+            !current.settled && console.staging(reach),
+            "R3: predecessors still missing"
+        );
+
+        let earlier = console
+            .read_staged(reach, &mut records)
+            .expect("predecessor stage");
+        assert!(
+            earlier.settled && !console.staging(reach),
+            "all stages complete"
+        );
+        assert_eq!(
+            earlier.lane, full.lane,
+            "complete staged lane equals the complete owner fold"
+        );
+        for words in ["aaaa", "current human", "earlier human"] {
+            assert_eq!(
+                earlier
+                    .lane
+                    .items
+                    .iter()
+                    .filter(|item| item.body == words)
+                    .count(),
+                1,
+                "R1: no duplicated {words} after replacement"
+            );
+        }
+    }
+
+    #[test]
+    fn appload_an_unsettled_stage_never_closes_an_already_open_card() {
+        let (rig, mut console) = appload_staged_fixture("appload-card");
+        rig.journal(&[ASK]);
+        let mut before = Console::open_standing("s".to_owned(), rig.0.join("s"));
+        let read = before.read().expect("standing card before replacement");
+        let mut printed = Printed::default();
+        assert!(
+            printed
+                .step(&read.lane, read.board_gaps, read.settled)
+                .contains("DECISION lead"),
+            "oracle starts with an open card"
+        );
+        rig.journal(&[WORK]);
+        let mut records = |dir: &std::path::Path| crate::session::RecordSnapshot::read(dir);
+        for stage in ["journal", "current"] {
+            let read = console
+                .read_staged(super::Reach::Every, &mut records)
+                .expect(stage);
+            assert!(!read.settled, "R3: {stage} cannot prove a card cleared");
+            let text = printed.step(&read.lane, read.board_gaps, read.settled);
+            assert!(
+                !text.contains("-- closed:"),
+                "R3: {stage} stage closed a card: {text}"
+            );
+        }
+        let read = console
+            .read_staged(super::Reach::Every, &mut records)
+            .expect("complete");
+        assert!(read.settled);
+        assert!(
+            printed
+                .step(&read.lane, read.board_gaps, read.settled)
+                .contains("-- closed: DECISION lead"),
+            "closure permitted only after all stages land"
+        );
+    }
+
+    #[test]
+    fn appload_current_reach_defers_predecessors_until_selection() {
+        let (_rig, mut console) = appload_staged_fixture("appload-reach");
+        let mut records = |dir: &std::path::Path| crate::session::RecordSnapshot::read(dir);
+        let current = super::Reach::Current;
+        console.read_staged(current, &mut records).expect("journal");
+        let read = console.read_staged(current, &mut records).expect("current");
+        assert!(
+            !console.staging(current) && console.staging(super::Reach::Every),
+            "R6: background current generation is done, priors wait for selection"
+        );
+        assert!(
+            !read.settled
+                && read
+                    .lane
+                    .coverage
+                    .iter()
+                    .any(|gap| gap == "pane turns — loading: the earlier conversations")
+        );
+        let follow = console
+            .read_staged(current, &mut records)
+            .expect("background follow");
+        assert!(
+            !follow
+                .lane
+                .items
+                .iter()
+                .any(|item| item.body == "earlier human"),
+            "background never reads predecessors"
+        );
+        assert!(
+            !follow.settled,
+            "R3: deferred stages remain missing even during follow"
+        );
+        let selected = console
+            .read_staged(super::Reach::Every, &mut records)
+            .expect("new selection predecessors");
+        assert!(
+            selected.settled
+                && selected
+                    .lane
+                    .items
+                    .iter()
+                    .any(|item| item.body == "earlier human")
+        );
+        assert!(
+            !selected
+                .lane
+                .coverage
+                .iter()
+                .any(|gap| gap.contains("loading:"))
+        );
+    }
+
+    #[test]
+    fn appload_follow_keeps_bytes_appended_between_current_and_prior_stages() {
+        use std::io::Write as _;
+
+        let (rig, mut console) = appload_staged_fixture("appload-follow");
+        let path = rig.0.join(format!("claude/projects/w/{ID}.jsonl"));
+        let partial = "{\"type\":\"user\",\"timestamp\":\"2026-09-30T06:03:00Z\",\"message\":{\"role\":\"user\",\"content\":\"joined after current\"}}\n";
+        let split = partial.len() / 2;
+        let mut append = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("current file");
+        append
+            .write_all(&partial.as_bytes()[..split])
+            .expect("torn tail before stage");
+        let mut records = |dir: &std::path::Path| crate::session::RecordSnapshot::read(dir);
+        console
+            .read_staged(super::Reach::Every, &mut records)
+            .expect("journal");
+        console
+            .read_staged(super::Reach::Every, &mut records)
+            .expect("current with torn tail");
+        append
+            .write_all(&partial.as_bytes()[split..])
+            .expect("commit between stages");
+        console
+            .read_staged(super::Reach::Every, &mut records)
+            .expect("prior");
+        for poll in 0..2 {
+            let read = console
+                .read_staged(super::Reach::Every, &mut records)
+                .expect("follow");
+            assert_eq!(
+                read.lane
+                    .items
+                    .iter()
+                    .filter(|item| item.body == "joined after current")
+                    .count(),
+                1,
+                "R4: committed tail is neither skipped nor duplicated at poll {poll}"
+            );
+            for words in ["current human", "earlier human"] {
+                assert_eq!(
+                    read.lane
+                        .items
+                        .iter()
+                        .filter(|item| item.body == words)
+                        .count(),
+                    1,
+                    "R4: existing source survives each poll exactly once"
+                );
+            }
+        }
     }
 }
