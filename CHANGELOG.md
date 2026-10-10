@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.46] - 2026-10-10
+- App tests: detect the writing mode by the keys row's mode word, not the hint it is losing
+- The composer address has its own row, the draft starts at the column edge and wraps at its full width
+- The keys row keeps the mode word, one hint where its key works, the version and the gear
+- Freeze the launch context bytes a solo lead, a lead-pair peer and a spawned worker read
+- The Instructions tab shows each generic rule once under its audience, then one line per seat
+- App tests: the idle-app pin waits for the Overview body and polls the capture file, not the goal the sidebar already shows
+
 ## [v2026.10.45] - 2026-10-10
 - Typing in browse mode is safe and its hints are true
 - The Mouse section of the Keys tab is scoped to outside Settings
