@@ -56,7 +56,8 @@ ae doctor --refresh [name|all]
 ae init [--yes] [--lead <profile>] [--colead <profile>|--solo]
         [--orchestrator <profile>|--no-orchestrator] [--palette <p>] [--force]
                        Discover harnesses and propose or write the global config
-ae rename [old] <new>  Rename a running session
+ae rename [old] <new>  Rename a running session; its watchdog tells each running seat the
+                       new name, helper paths and goal (`⟦ae:ctx⟧`), or the output says NOT told
 ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
 ae telegram <setup|start|stop|status>

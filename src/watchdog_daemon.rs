@@ -5613,6 +5613,7 @@ impl Cycle<'_> {
         };
         self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &inputs, now, err)?;
         self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
+        self.tell_seats(&by_slot, &events, now);
         self.auto_note(&mut carry.auto_noted, err)?;
         self.auto_reseat(&mut carry.auto_named, &auto_seats, &events, now, err)?;
         self.close(
@@ -6588,6 +6589,26 @@ impl Cycle<'_> {
             )?;
         }
         Ok(())
+    }
+
+    /// The session-notice step: trigger the leg for every live, unlatched seat
+    /// the fold finds a notice due for. The leg folds again under the target
+    /// lock and journals every outcome, so a skip costs nothing here.
+    fn tell_seats(&self, verdicts: &[(String, Verdict)], events: &[Event], now: i64) {
+        let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
+        let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+        let interval = self.knobs.interval_secs;
+        let bound = i64::try_from(interval).map_or(i64::MAX, |secs| secs.saturating_mul(2));
+        for entry in &self.roster {
+            let live = verdicts.iter().any(|(slot, verdict)| {
+                *slot == entry.slot && !matches!(verdict, Verdict::Dead | Verdict::HumanPrompt)
+            });
+            let seat = crate::session_notice::Seat::read(&meta, &bytes, &entry.slot, self.session);
+            if live && crate::session_notice::due(events, &seat, now, bound).is_some() {
+                let action = crate::session_notice::TRIGGER_ACTION;
+                let _ = self.deliver(&entry.name, action, action, &interval.to_string(), None);
+            }
+        }
     }
 
     /// Move a record ae will never read aside, once, and say so in the ledger.

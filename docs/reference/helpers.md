@@ -154,7 +154,7 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 | `memo add [--topic t] <text>` | Append to durable shared session memory. |
 | `memo read [--topic t]` | Read shared memory. |
 | `memo tail [n]` | Show latest entries. |
-| `goal [text\|--clear]` | The session's one-line objective — what this session is *for*. No args prints it. Shows in `ae list` (table sub-line and JSON `goal` field), survives resume, and the watchdog quotes it when nudging idle agents. Emits a `goal` event on set/clear. |
+| `goal [text\|--clear]` | The session's one-line objective — what this session is *for*. No args prints it. Shows in `ae list` (table sub-line and JSON `goal` field), survives resume, and the watchdog quotes it when nudging idle agents. Emits a `goal` event on set/clear; an unchanged goal writes nothing. The session watchdog tells the change to main and a lead-pair colead, never the setter, within one cycle (`session-notice` events). |
 
 `memo` is the right place for findings, decisions, and handoffs that should survive agent restarts. Don't dump chat transcripts.
 

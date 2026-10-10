@@ -15,15 +15,18 @@
 //! would couple every `ae list` reader of meta to the event log. A failure
 //! between them is therefore possible and is reported EXACTLY: "written to
 //! meta but its event was not emitted" — loud, non-zero, and never the
-//! success line.
+//! success line. A separate outer lock, `.goal-setter.lock`, serializes WRITERS
+//! across both, from the unchanged check through the event, so the newest
+//! `goal` record names the published goal and its setter; readers take neither.
 use std::io;
 use std::path::Path;
 
 use crate::meta;
 use crate::requests::Viewer;
-use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
+use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::store;
 use crate::time::Timestamp;
+use crate::tracked::EventFields;
 
 /// The usage text.
 pub const USAGE: &str = "Usage: goal            # show the session goal\n       goal <text>     # set it (one line)\n       goal --clear    # remove it\n";
@@ -162,18 +165,39 @@ impl Failure {
 }
 
 /// Apply `write` to the session at `dir` for `viewer`, and return the
-/// success line for stdout — only once both writes are down.
+/// success line for stdout — only once both writes are down — and whether the
+/// goal changed. An unchanged goal writes nothing and journals nothing.
+///
+/// The record names the setter's slot, session and session id when its pane
+/// was proven, so the session notice spares the seat that set it.
 ///
 /// # Errors
 ///
 /// [`Failure`] — see its variants.
-pub fn run(dir: &Path, viewer: &Viewer, write: &Write, now: Timestamp) -> Result<String, Failure> {
+pub fn run(
+    dir: &Path,
+    viewer: &Viewer,
+    write: &Write,
+    now: Timestamp,
+) -> Result<(String, bool), Failure> {
     let actor = if viewer.is_known() {
         viewer.display.as_str()
     } else {
         "human"
     };
+    // One setter at a time from the check through the record: the newest
+    // record always names the published goal and its setter.
+    let session = store::open(dir);
+    let _setter = session.goal_setter().map_err(Failure::Meta)?;
+    let current = session.goal().map_err(Failure::Read)?;
+    let current = current.as_deref().unwrap_or_default();
     let (value, summary, line) = match write {
+        Write::Set(text) if current == text.as_bytes() => {
+            return Ok((format!("Goal unchanged: {text}\n"), false));
+        }
+        Write::Clear if current.is_empty() => {
+            return Ok(("Goal unchanged: (no goal set)\n".to_owned(), false));
+        }
         Write::Set(text) => (
             Some(text.as_str()),
             text.as_str(),
@@ -185,11 +209,26 @@ pub fn run(dir: &Path, viewer: &Viewer, write: &Write, now: Timestamp) -> Result
         meta::RewriteError::NotWritten(cause) => Failure::Meta(cause),
         meta::RewriteError::Unknown(cause) => Failure::MetaUnknown(cause),
     })?;
-    let event = state::event_line(now, actor, "goal", "", &state::summary_of(summary));
-    store::open(dir)
-        .append_event(&event)
+    let fields = EventFields {
+        actor_session_id: &viewer.session_id,
+        ..EventFields::new(
+            now,
+            actor,
+            "goal",
+            "",
+            "",
+            &viewer.slot,
+            &viewer.session,
+            "",
+            "",
+            summary,
+            "",
+        )
+    };
+    session
+        .append_event(&crate::tracked::event_line(&fields))
         .map_err(|why| Failure::Event(why.into()))?;
-    Ok(line)
+    Ok((line, true))
 }
 
 /// The exit status a [`Usage`] takes.
@@ -306,5 +345,107 @@ mod tests {
             "ümlaut — kept",
             "only ASCII controls go"
         );
+    }
+
+    /// Two setters race while the journal is held: the second waits for the
+    /// first's WHOLE operation, so the newest record names the published goal
+    /// and its setter, and an equal update after a pending one stays a no-op.
+    #[test]
+    fn competing_setters_publish_and_record_in_one_order() {
+        use std::time::{Duration, Instant};
+        let root = std::env::temp_dir().join(format!("ae-goal-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let id = "11111111-2222-3333-4444-555555555555";
+        let meta = format!(
+            "session=s\nsession_id={id}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\ngoal=initial\n"
+        );
+        std::fs::write(root.join("meta"), meta).unwrap();
+        let change = |slot: &'static str, name: &'static str, text: &'static str| {
+            let dir = root.clone();
+            std::thread::spawn(move || {
+                let viewer = super::Viewer {
+                    slot: slot.to_owned(),
+                    session: "s".to_owned(),
+                    display: name.to_owned(),
+                    session_id: id.to_owned(),
+                };
+                let changed = super::run(
+                    &dir,
+                    &viewer,
+                    &Write::Set(text.to_owned()),
+                    super::Timestamp::now(),
+                );
+                changed.unwrap().1
+            })
+        };
+        let goal = || {
+            super::store::open(&root)
+                .goal()
+                .unwrap()
+                .unwrap_or_default()
+        };
+        let published = |text: &[u8], budget: Duration| {
+            let until = Instant::now() + budget;
+            while goal() != text {
+                if Instant::now() > until {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            true
+        };
+        let journal = super::store::lock_path(&super::store::open(&root).events_path());
+        let held = super::store::lock(&journal, Duration::ZERO).unwrap();
+        let left = change("main", "lead", "left");
+        assert!(
+            published(b"left", Duration::from_secs(3)),
+            "the first setter published"
+        );
+        let right = change("worker.0", "colead", "right");
+        let raced = published(b"right", Duration::from_millis(300));
+        drop(held);
+        assert!(
+            left.join().unwrap() && right.join().unwrap(),
+            "both changed the goal"
+        );
+        assert!(
+            !raced,
+            "a second setter published while the first's record was pending"
+        );
+        let events = crate::watchdog_daemon::read_events(&root);
+        let bytes = crate::meta::read_bytes(&root).unwrap();
+        let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+        let due = |slot: &str| {
+            let seat = crate::session_notice::Seat::read(&meta, &bytes, slot, "s");
+            crate::session_notice::due(&events, &seat, super::Timestamp::now().epoch(), 120)
+                .is_some()
+        };
+        assert_eq!(goal(), b"right");
+        assert_eq!(
+            events.last().and_then(|event| event.summary.as_deref()),
+            Some("right")
+        );
+        assert!(
+            due("main") && !due("worker.0"),
+            "the peer is owed, the setter spared"
+        );
+        let held = super::store::lock(&journal, Duration::ZERO).unwrap();
+        let first = change("main", "lead", "same");
+        assert!(published(b"same", Duration::from_secs(3)));
+        let second = change("worker.0", "colead", "same");
+        std::thread::sleep(Duration::from_millis(50));
+        drop(held);
+        assert_eq!(
+            (first.join().unwrap(), second.join().unwrap()),
+            (true, false)
+        );
+        let records = crate::watchdog_daemon::read_events(&root);
+        assert_eq!(
+            records.len(),
+            events.len() + 1,
+            "an equal update journals nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

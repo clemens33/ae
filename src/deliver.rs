@@ -71,6 +71,9 @@ pub enum Shape {
     Interrupt,
     /// A spawn's BRIEF, pasted into a freshly launched TUI.
     Launch,
+    /// ae's own context notice ([`crate::session_notice`]), composed late
+    /// through [`deliver_composed`] and marked `⟦ae:ctx⟧`.
+    Context,
 }
 
 /// One delivery, fully specified.
@@ -364,11 +367,7 @@ pub fn deliver(
     {
         return Ok(Err(failure));
     }
-    let payload = match &mode {
-        notice::Mode::Direct => framed.as_str(),
-        notice::Mode::Notice(pointer) => pointer.as_str(),
-    };
-    match submit(request, input, payload, &mode, &body_file, &framed, err)? {
+    match submit(request, input, &mode, &body_file, &framed, err)? {
         Ok(verification) => Ok(Ok(Delivered {
             body_file,
             framed,
@@ -377,31 +376,97 @@ pub fn deliver(
         Err(failure) => {
             // The submit's own line said WHICH step failed; this one names the
             // delivery and where its body is.
-            match request.shape {
-                Shape::Send => writeln!(
-                    err,
-                    "ae: send to {} UNCONFIRMED — submit not verified; body preserved at {body_file}.",
-                    request.logged_target
-                )?,
-                Shape::Relay => writeln!(
-                    err,
-                    "ae: relay to {} UNCONFIRMED — submit not verified; body preserved at {body_file}.",
-                    request.logged_target
-                )?,
-                Shape::Interrupt => writeln!(
-                    err,
-                    "ae: interrupt message to {} UNCONFIRMED — submit not verified; body preserved at {body_file}. Re-send.",
-                    request.logged_target
-                )?,
-                Shape::Launch => writeln!(
-                    err,
-                    "ae: spawn brief to {} UNCONFIRMED — submit not verified; body preserved at {body_file}. Re-send.",
-                    request.logged_target
-                )?,
-            }
+            writeln!(err, "{}", unconfirmed_line(request, &body_file))?;
             Ok(Err(failure))
         }
     }
+}
+
+/// The line naming an unconfirmed delivery and where its body is.
+fn unconfirmed_line(request: &Request<'_>, body_file: &str) -> String {
+    let (what, next) = match request.shape {
+        Shape::Send => ("send", ""),
+        Shape::Relay => ("relay", ""),
+        Shape::Interrupt => ("interrupt message", " Re-send."),
+        Shape::Launch => ("spawn brief", " Re-send."),
+        Shape::Context => ("notice", ""),
+    };
+    format!(
+        "ae: {what} to {} UNCONFIRMED — submit not verified; body preserved at {body_file}.{next}",
+        request.logged_target
+    )
+}
+
+/// Deliver a [`Shape::Context`] body composed LATE, under the target lock and
+/// past the quiet gate's prompt read, so the text is the newest `compose` can
+/// see. The lock is tried WITHOUT waiting. `None`: nothing composed or typed —
+/// a refusal before `compose` ran (its line on `err`), or `compose` declined.
+/// [`deliver`] keeps its own order (body stored before the lock).
+///
+/// # Errors
+///
+/// Only a failure to write `err`.
+pub fn deliver_composed(
+    request: &Request<'_>,
+    compose: impl FnOnce() -> Option<String>,
+    err: &mut impl Write,
+) -> io::Result<Option<Result<Delivered, Failure>>> {
+    let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
+    let (input, tool) = target_input(request, &probe.command);
+    if refuses_as_dead(pane_liveness_at(
+        &target_meta_dir(request),
+        request.pane_slot,
+        &probe,
+    )) {
+        writeln!(err, "{}", dead_pane_line(request))?;
+        return Ok(None);
+    }
+    let Some(_held) = lock_target(request.dir, request.pane, Duration::ZERO) else {
+        let target = request.logged_target;
+        writeln!(
+            err,
+            "ae: notice to {target} skipped — the target lock is held."
+        )?;
+        return Ok(None);
+    };
+    if quiet_or_abandoned(request, input.model, tool, err)?.is_err() {
+        return Ok(None);
+    }
+    let Some(body) = compose() else {
+        return Ok(None);
+    };
+    let request = Request {
+        body: &body,
+        ..request.clone()
+    };
+    let framed = frame(&request);
+    let body_file = match store_body(request.dir, request.reference, request.action, &framed) {
+        Ok(path) => path.display().to_string(),
+        Err(why) => {
+            writeln!(err, "ae: message body storage failed: {why}")?;
+            return Ok(Some(Err(Failure::Storage)));
+        }
+    };
+    let Ok(mode) = notice::prepare(
+        input.model,
+        request.action,
+        request.reference,
+        envelope_actor(&request),
+        request.target_session,
+        request.own_session,
+        Path::new(&body_file),
+        framed.len() as u64,
+        request.dir,
+    ) else {
+        return Ok(Some(Err(Failure::NoticeRefused { body_file })));
+    };
+    let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
+    let submitted = submit(&request, input, &mode, &body_file, &framed, err)?;
+    Ok(Some(submitted.map(|verification| Delivered {
+        body_file,
+        framed,
+        verification,
+    })))
 }
 
 /// A message interrupt's Escape, then the read it may uncover. A refused
@@ -469,6 +534,7 @@ fn frame(request: &Request<'_>) -> String {
         Shape::Launch => {
             crate::provenance::first_line(&crate::provenance::brief(actor), request.body)
         }
+        Shape::Context => crate::provenance::first_line(&crate::provenance::ctx(), request.body),
     }
 }
 
@@ -499,6 +565,10 @@ fn dead_pane_line(request: &Request<'_>) -> String {
         ),
         Shape::Launch => format!(
             "ae: brief for {} REFUSED — the pane is a shell, not a running agent (the launch did not take). Nothing pasted; a stray Enter would EXECUTE the brief as a shell command.",
+            request.logged_target
+        ),
+        Shape::Context => format!(
+            "ae: notice to {} skipped — target pane is a shell, not a running agent. Nothing pasted.",
             request.logged_target
         ),
     }
@@ -1256,7 +1326,7 @@ fn quiet_or_abandoned(
     tool: Option<ToolKind>,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
-    if !matches!(request.shape, Shape::Send | Shape::Relay) {
+    if !matches!(request.shape, Shape::Send | Shape::Relay | Shape::Context) {
         return Ok(Ok(()));
     }
     if let Some(snapshot) = wait_for_quiet(request, model, tool) {
@@ -1397,12 +1467,15 @@ pub fn stage_and_paste(
 fn submit(
     request: &Request<'_>,
     input: TargetInput,
-    payload: &str,
     mode: &notice::Mode,
     body_file: &str,
     framed: &str,
     err: &mut impl Write,
 ) -> io::Result<Result<DeliveryVerification, Failure>> {
+    let payload = match mode {
+        notice::Mode::Direct => framed,
+        notice::Mode::Notice(pointer) => pointer.as_str(),
+    };
     let model = input.model;
     let diagnostic = input.diagnostic;
     let buffer = buffer_name(request.pane);
@@ -1463,7 +1536,7 @@ fn submit(
             Some(SubmitState::StillStaged) | None => {}
         }
     }
-    if matches!(request.shape, Shape::Send | Shape::Relay) {
+    if matches!(request.shape, Shape::Send | Shape::Relay | Shape::Context) {
         writeln!(
             err,
             "ae: submit UNCONFIRMED to pane {pane} ({diagnostic}) — message may not have sent."
@@ -2108,6 +2181,11 @@ mod tests {
             frame(&request("orchestrator", "human words", Shape::Relay)),
             "human words",
             "relay is the one privileged unenveloped sender"
+        );
+        assert_eq!(
+            frame(&request("watchdog", "session goal now: g", Shape::Context)),
+            "⟦ae:ctx⟧\nsession goal now: g",
+            "a session notice is ae's own context, never a peer's message"
         );
     }
 

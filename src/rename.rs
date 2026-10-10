@@ -1156,6 +1156,11 @@ fn locked(
             )?;
             return Ok(EXIT_FAILED);
         }
+        // Manifest publication is CHECKED: an incompatible workspace.md
+        // destination must fail the rename, not print success over it. It
+        // precedes the `rename` record, so a seat told reads the new manifest.
+        let manifest = publish_manifest(&new_dir, new);
+        let journaled = manifest.is_ok() && journal_rename(&new_dir, old, new, err)?;
         let watchdog_expected = crate::session_launch::watchdog_enabled_for_session(&new_dir);
         let mut monitors =
             crate::session_launch::rebind_monitor_panes(root, &server, new, &new_dir).map(|_| ());
@@ -1166,12 +1171,10 @@ fn locked(
                 "Error: the session was renamed to '{new}', but its chat could not be restarted under the new name ({why}); prefix h opens the chat."
             )?;
         }
-        // Manifest publication is CHECKED: an incompatible workspace.md
-        // destination must fail the rename, not print success over it.
-        if let Err(why) = publish_manifest(&new_dir, new) {
+        if let Err(why) = manifest {
             writeln!(
                 err,
-                "Error: '{new}' was renamed but its workspace manifest could not be published ({why}). Retry 'ae rename {old} {new}' after fixing it."
+                "Error: '{new}' was renamed but its workspace manifest could not be published ({why}); its running seats were NOT told. Retry 'ae rename {old} {new}' after fixing it."
             )?;
             return Ok(EXIT_FAILED);
         }
@@ -1227,10 +1230,48 @@ fn locked(
         if chat.is_err() {
             return Ok(EXIT_FAILED);
         }
+        writeln!(out, "Renamed '{old}' → '{new}'")?;
+        if journaled && watchdog_expected {
+            writeln!(out, "{}", crate::session_notice::TOLD_LINE)?;
+        } else {
+            let seats = crate::meta::read_bytes(&new_dir)
+                .map(|bytes| {
+                    crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes))
+                        .roster()
+                        .len()
+                })
+                .unwrap_or_default();
+            let why = if journaled {
+                "watchdog off"
+            } else {
+                "rename not journaled"
+            };
+            writeln!(out, "{}", crate::session_notice::untold_line(why, seats))?;
+        }
+        return Ok(0);
     }
 
     writeln!(out, "Renamed '{old}' → '{new}'")?;
     Ok(0)
+}
+
+/// Append the `rename` source record a session notice is armed by. A failure
+/// is said, and the rename stands.
+fn journal_rename(dir: &Path, old: &str, new: &str, err: &mut impl Write) -> std::io::Result<bool> {
+    let line = crate::state::event_line(
+        crate::time::Timestamp::now(),
+        crate::session_notice::RENAME_ACTOR,
+        crate::session_notice::RENAME_ACTION,
+        "",
+        &format!("{old} -> {new}"),
+    );
+    match crate::store::open(dir).append_event(&line) {
+        Ok(()) => Ok(true),
+        Err(why) => {
+            writeln!(err, "Warning: the rename record was not journaled ({why}).")?;
+            Ok(false)
+        }
+    }
 }
 
 /// Restarts every chat stamped with the renamed session's uuid under its new

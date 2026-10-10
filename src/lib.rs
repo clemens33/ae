@@ -79,6 +79,7 @@ pub mod send;
 pub mod session;
 pub mod session_launch;
 pub mod session_menu;
+pub mod session_notice;
 mod session_tmux;
 mod settings_menu;
 pub mod shape;
@@ -2680,9 +2681,17 @@ fn run_goal(
         }
         Ok(goal::Command::Write(write)) => write,
     };
-    match goal::run(dir, &calling_viewer(dir), &write, time::Timestamp::now()) {
-        Ok(line) => {
+    let mut viewer = calling_viewer(dir);
+    viewer.session_id = tracked::routing_id(dir, &viewer.slot, &viewer.session, &own_session(dir));
+    match goal::run(dir, &viewer, &write, time::Timestamp::now()) {
+        Ok((line, changed)) => {
             out.write_all(line.as_bytes())?;
+            if let Some(line) = changed
+                .then(|| session_notice::after_goal(dir, &viewer))
+                .flatten()
+            {
+                writeln!(out, "{line}")?;
+            }
             Ok(0)
         }
         Err(failure) => {

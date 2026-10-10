@@ -49,6 +49,9 @@ const CONSOLE_ADMISSION: &str = ".console-admission.lock";
 /// The lease an `ae app` holds while it writes to the session.
 const CONSOLE_WRITER: &str = ".console-writer.lock";
 
+/// The goal setters' lock, beside the meta's and the journal's.
+const GOAL_SETTER: &str = ".goal-setter.lock";
+
 /// The LAUNCH-ATTEMPT stamp: when ae last tried to put this session on a tmux
 /// server.
 ///
@@ -775,6 +778,16 @@ impl SessionStore {
     /// [`lock`]'s.
     pub fn console_admission(&self) -> io::Result<File> {
         lock(&self.dir.join(CONSOLE_ADMISSION), LOCK_WAIT)
+    }
+
+    /// The lock a goal setter holds from its unchanged check through its
+    /// record, taken BEFORE the meta's and the journal's, never inside them.
+    ///
+    /// # Errors
+    ///
+    /// [`lock`]'s.
+    pub fn goal_setter(&self) -> io::Result<File> {
+        lock(&self.dir.join(GOAL_SETTER), LOCK_WAIT)
     }
 
     /// The writer lease, taken without waiting: held by one `ae app` for as

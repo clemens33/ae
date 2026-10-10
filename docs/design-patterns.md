@@ -109,6 +109,8 @@ Encoding spec into identity means every respec is a rename; keying storage on th
 *address* means every rename orphans in-flight state (the identity-churn incident:
 requests orphaned by a config-driven rename). Surface truth next to the address in
 status displays; alert on spec-vs-truth drift; route by the key, always.
+A seat's context still holds the address it launched with, so a rename TELLS every running
+seat the new one (the session watchdog's `⟦ae:ctx⟧` notice) rather than hoping it re-reads.
 
 ## 10. Knowledge belongs in guards, not memories
 

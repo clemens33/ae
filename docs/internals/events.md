@@ -141,6 +141,26 @@ Additive facts that prove a pane's session across servers and tmux incarnations.
 | `legacy-reap` | watchdog | At daemon start, the pre-rename reap's outcome: every legacy pane it found (reaped, or refused with why), or that the panes could not be listed. No `target`; neutral to `alert_meaning`. |
 | `watchdog-start` | `ae watchdog start` | Audit: who started the watchdog, and the outcome (`started`, `already running`, `refused: …`). Actor is the caller stamp — bare in its own session (reads as that agent's own activity, like `relaunch`), `session:agent` abroad — `human` when unprovable, `ae:upgrade`/`ae:rename` for ae-driven restarts. Carries no `target`; neutral to `alert_meaning`. Shown in the Activity dialog unless ae-driven. |
 | `watchdog-stop` | `ae watchdog stop` | Audit: who stopped the watchdog, and the outcome (`stopped`, `not running`, `refused: …`). Same actor spellings, neutrality and Activity listing as `watchdog-start`. |
+| `goal` | `goal` helper | The goal was set or cleared (`goal cleared`); an unchanged goal writes none. Carries `actor_slot`/`actor_session`/`actor_session_id` when the setter's pane was proven. Setters are serialized from the unchanged check through this record, so the newest names the published goal. Arms a goal notice. |
+| `rename` | `ae rename` (actor `ae:rename`) | A live rename, `<old> -> <new>`, written in the renamed journal after `workspace.md` is published. A stopped rename writes none. Arms a rename notice. |
+| `session-notice-attempt` | watchdog (notice leg) | One notice attempt to `target`/`target_slot`, summary `<rename\|goal> <launch_id>`, `ref` `sn-<stamp>-<hex>`. Journaled BEFORE the text is read from meta. |
+| `session-notice` | watchdog (notice leg) | That attempt landed (`[unconfirmed]` prefix when the submit was not proven). Same `ref`. |
+| `session-notice-failed` | watchdog (notice leg) | That attempt failed, `<kind> <reason>`: `storage`, `busy`, `paste`, `refused`, or `meta-unread` (the goal could not be read, nothing pasted). Same `ref`. |
+| `session-notice-gave-up` | watchdog (notice leg) | The third failure of one kind since its source, on the third failed attempt's `ref`, `<kind> <launch_id>`; booked by a later leg if lost, never with a paste. Nothing more until a newer source. |
+
+## Session notices
+
+`src/session_notice.rs` owns them. The pure fold judges each seat in journal ORDER: its
+boundary is its newest `spawn` (by `target`), `reseat` or `relaunch` (by `target_slot`); with
+none, a source counts only when STRICTLY newer than `launch_time.<slot>`. An attempt counts
+only for the seat's current `launch_id`. A rename is owed after the newest told rename
+attempt; a goal (main and the lead-pair colead only, never to the seat that set it) after the
+newest told attempt of either kind, because the rename text carries the goal. An attempt with
+no ending is in flight for two daemon intervals, then retried (at-least-once). The daemon
+triggers the send helper with `_AE_EVENT_ACTION=session-notice-due`; the leg folds again under
+the target lock (tried without waiting), skips a busy, drafted, prompted or non-idle seat
+writing nothing, and pastes a `⟦ae:ctx⟧` turn. Residual: a source landing between the
+attempt and the paste is pasted next cycle, not this one.
 
 ## How `requests` reads events
 

@@ -294,6 +294,12 @@ pub fn run(
     if env.action.as_deref() == Some(crate::autoreseat::ATTEMPT_ACTION) {
         return crate::autoreseat::leg::trigger(dir, &parsed.target, own_session, now, err);
     }
+    // The session-notice leg: the action selects it, and it re-derives what
+    // is due and the text from the journal and the meta.
+    if env.action.as_deref() == Some(crate::session_notice::TRIGGER_ACTION) {
+        let interval = env.summary.as_deref();
+        return crate::session_notice::run(dir, &parsed.target, own_session, interval, err);
+    }
     if tracked::is_blank(&parsed.message) {
         write!(err, "{}", tracked::refusal(ACTION))?;
         return Ok(EXIT_FAILED);
