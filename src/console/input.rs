@@ -134,6 +134,14 @@ impl Keys {
         }
     }
 
+    /// The stamp of the read that began the sequence still waiting for its
+    /// rest, which its key will carry: none for a report already discarded,
+    /// which can never become one.
+    #[must_use]
+    pub fn begun(&self) -> Option<Instant> {
+        self.begun.filter(|_| !self.discarded)
+    }
+
     /// The keys `chunk` completes, read at `stamp`.
     pub fn feed(&mut self, chunk: &[u8], stamp: Instant) -> Vec<(Key, Instant)> {
         let mut keys = Vec::new();

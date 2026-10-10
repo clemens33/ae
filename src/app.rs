@@ -71,6 +71,8 @@ const NOTICES: usize = 5;
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 /// How long a refused paste or an outcome word stays on the hint row.
 const FLASH_WINDOW: Duration = Duration::from_secs(5);
+/// The most replaced layouts kept for a click made on one of them.
+const HISTORY: usize = 8;
 
 /// One session's last read lane, and what it was read as.
 struct Shown {
@@ -230,6 +232,12 @@ struct App {
     draft_view: View,
     draft: String,
     layout: draw::Layout,
+    /// Each layout a frame replaced, with the instant it did: kept until no held
+    /// key or queued ask can refer to the frame it was on screen in, and never
+    /// more than [`HISTORY`] of them.
+    history: Vec<(Instant, draw::Layout)>,
+    /// The instant of the newest layout the bound dropped.
+    lost: Option<Instant>,
     /// The reader's requests; `None` for an app driven by hand.
     ask: Option<Sender<Request>>,
     /// The selection the reader was last told of.
@@ -310,6 +318,8 @@ impl App {
             draft_view: View::default(),
             draft: String::new(),
             layout: draw::Layout::default(),
+            history: Vec::new(),
+            lost: None,
             ask,
             focused: None,
             deferred: Vec::new(),
@@ -928,6 +938,43 @@ impl App {
             )
     }
 
+    /// A press acts on the frame on screen when it was made: one made before a
+    /// frame replaced the layout is hit against the layout that frame replaced,
+    /// so an ask in flight or a read since cannot move its target. A held wheel
+    /// notch keeps replaying against the newest frame, which bounds it. One
+    /// made on a frame the bound dropped is not taken, and the hint row says so.
+    fn mouse_made(&mut self, mouse: Mouse, origin: Instant) -> bool {
+        if mouse.kind == MouseKind::Click && self.lost.is_some_and(|lost| origin <= lost) {
+            self.flash = Some((
+                "click not taken: its frame is gone".to_owned(),
+                Instant::now(),
+            ));
+            self.model.let_go();
+            return true;
+        }
+        let seen = (self.history.iter()).position(|(replaced, _)| origin <= *replaced);
+        let Some(at) = seen.filter(|_| mouse.kind == MouseKind::Click) else {
+            return self.mouse(mouse);
+        };
+        let older = std::mem::take(&mut self.history[at].1);
+        let current = std::mem::replace(&mut self.layout, older);
+        let acted = self.mouse(mouse);
+        self.history[at].1 = std::mem::replace(&mut self.layout, current);
+        acted
+    }
+
+    /// Every wake up to now was read: the layouts older than the oldest held key
+    /// or the read that began the decoder's unfinished sequence (`begun`) are
+    /// done with, and all of them are while no ask waits, since the wakes still
+    /// unread follow its key.
+    fn forget(&mut self, begun: Option<Instant>) {
+        if self.queued.is_empty() {
+            let floor = (self.deferred.iter().map(|(_, at)| *at).chain(begun)).min();
+            self.history
+                .retain(|(replaced, _)| floor.is_some_and(|floor| *replaced >= floor));
+        }
+    }
+
     /// Mouse actions use the last drawn frame, in either input mode. Left
     /// motion moves a dragged border; every other event first ends a drag —
     /// its release, or a press or wheel after a release that never came.
@@ -1478,7 +1525,12 @@ impl App {
             fleet: !self.fleeted,
             lane: self.loading,
         };
-        self.layout = draw::draw_with_layout(&screen, wait, buf);
+        let drawn = draw::draw_with_layout(&screen, wait, buf);
+        let replaced = std::mem::replace(&mut self.layout, drawn);
+        self.history.push((Instant::now(), replaced));
+        if self.history.len() > HISTORY {
+            self.lost = Some(self.history.remove(0).0);
+        }
         self.model
             .settle(self.layout.list_start, self.layout.body_top);
         // Held keys replay from the scroll they were read at, as one read.
@@ -1705,6 +1757,7 @@ fn drain(
     if !fed {
         redraw |= take_keys(app, keys.idle(Instant::now()))?;
     }
+    app.forget(keys.begun());
     Some(redraw)
 }
 
@@ -1729,7 +1782,7 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
             redraw |= app.armed.take().is_some();
         }
         redraw |= if let Key::Mouse(mouse) = &key {
-            app.mouse(*mouse)
+            app.mouse_made(*mouse, origin)
         } else {
             // A key or a paste ends a drag first, then acts as it always has.
             let ended = app.model.let_go();
@@ -1939,7 +1992,7 @@ mod tests {
         App, USAGE, browse, draw, facts_of, fleet, run, settings, settings_key, take_keys,
     };
     use crate::app::fleet::{Counts, Fleet, Row};
-    use crate::app::model::{Edge, Key as Browse, Model, SettingsTab, Tab};
+    use crate::app::model::{Drag, Edge, Key as Browse, Model, SettingsTab, Tab};
     use crate::attention::Reason;
     use crate::console::input::{Effect, Input, Key, Reading};
     use crate::console::lane::{Item, Kind, Lane};
@@ -2982,11 +3035,14 @@ mod tests {
         assert_eq!(take_keys(&mut app, vec![paste(b"one ")]), Some(true));
         assert!(app.composing() && app.admitted == Some(t0));
         let typed = (Key::Text(b"X".to_vec()), t0);
-        assert_eq!(take_keys(&mut app, vec![paste(b"two"), typed]), Some(true));
+        let early = t0.checked_sub(Duration::from_millis(1)).expect("booted");
+        let other = (Key::Pasted(b"Y".to_vec()), early);
+        let batch = vec![paste(b"two"), typed, other];
+        assert_eq!(take_keys(&mut app, batch), Some(true));
         assert_eq!(
             drafted(&app),
             "one two",
-            "typed text is dropped, the tail kept"
+            "typed text and another read's paste are dropped, the tail kept"
         );
         app.write(false);
         assert!(
@@ -3166,6 +3222,154 @@ mod tests {
             let (queued, held) = (app.queued.len(), app.deferred.len());
             assert_eq!((queued, held), (1, 1), "{behind:?} waits behind one ask");
             assert!(app.composing() && app.deliver());
+        }
+    }
+
+    /// `api` writing with `web` drawn under it, then a fleet read that `read`
+    /// reorders, truncates or swaps (`ops` in `web`'s place): the app and the
+    /// press on `web`'s card, made before that read's first frame.
+    fn pressed_web(root: &Root, read: &str) -> (App, Instant, String) {
+        let (mut app, reader) = housed(root);
+        session(root, "web", "");
+        let both = [("api", Status::Running), ("web", Status::Running)];
+        refold(&mut app, &reader, root, &both);
+        let at = writing(&mut app);
+        meta(root, &ID.replace("1234", "bbbb"), "colead");
+        let shown = framed(&mut app);
+        let at_row = shown.lines().position(|line| line.contains("web"));
+        let mut data = read_of(&app, &[("api", ID), ("web", ID)]);
+        match read {
+            "order" => data.fleet.rows.reverse(),
+            "gone" => data.fleet.rows.truncate(1),
+            _ => data.fleet.rows[1] = row("ops", 2, false),
+        }
+        app.answer(Answer::Fleet(data));
+        (
+            app,
+            at,
+            format!("\x1b[<0;3;{}M", at_row.expect("web row") + 1),
+        )
+    }
+
+    /// B2: a click held behind a queued ask acts on the row it was made on, whatever the
+    /// sending frame drew of a fleet read; one made after that frame acts on what it drew.
+    #[test]
+    fn a_click_held_behind_a_queued_ask_acts_on_the_row_it_was_made_on() {
+        for (read, held, fresh) in [
+            ("swap", "api", "ops"),
+            ("order", "web", "api"),
+            ("gone", "api", "api"),
+        ] {
+            let root = Root::new(&format!("click-held-{read}"));
+            let (mut app, at, click) = pressed_web(&root, read);
+            let mut keys = crate::console::input::Keys::app();
+            let mut keyed = vec![(Key::Text(b"hi".to_vec()), at), (Key::Enter, at)];
+            keyed.extend(keys.feed(click.as_bytes(), Instant::now()));
+            assert_eq!(take_keys(&mut app, keyed), Some(true));
+            assert_eq!((app.queued.len(), app.deferred.len()), (1, 1));
+            let _sending = framed(&mut app);
+            assert!(app.deliver() && app.queued.is_empty());
+            let (_wake, wakes) = std::sync::mpsc::channel();
+            assert!(super::drain(&mut app, &mut keys, &wakes, &mut None).is_some());
+            assert_eq!(app.model.selected(), Some(held), "{read}: held click");
+            let _ = take_keys(&mut app, keys.feed(click.as_bytes(), Instant::now()));
+            assert_eq!(app.model.selected(), Some(fresh), "{read}: later click");
+        }
+    }
+
+    /// B2: a second ask queued behind the first repaints once more; the click
+    /// held behind both still acts on the row it was made on. A refusal ends the
+    /// writing, so the lease is taken again for the held Enter to queue its ask.
+    #[test]
+    fn a_click_held_behind_two_queued_asks_acts_on_the_row_it_was_made_on() {
+        let root = Root::new("click-held-two");
+        let (mut app, at, click) = pressed_web(&root, "swap");
+        let mut keys = crate::console::input::Keys::app();
+        let soon = Instant::now() + Duration::from_mins(1);
+        let text = |bytes: &[u8], at| (Key::Text(bytes.to_vec()), at);
+        let mut keyed = vec![
+            text(b"a", at),
+            (Key::Enter, at),
+            text(b"b", soon),
+            (Key::Enter, soon),
+        ];
+        keyed.extend(keys.feed(click.as_bytes(), Instant::now()));
+        assert_eq!(take_keys(&mut app, keyed), Some(true));
+        let (_wake, wakes) = std::sync::mpsc::channel();
+        for queued in [1, 0] {
+            let _sending = framed(&mut app);
+            assert!(app.deliver() && app.queued.is_empty());
+            if queued == 1 {
+                (app.held, ()) = (None, meta(&root, ID, "colead"));
+                writing(&mut app);
+                meta(&root, &ID.replace("1234", "bbbb"), "colead");
+            }
+            assert!(super::drain(&mut app, &mut keys, &wakes, &mut None).is_some());
+            assert_eq!(app.queued.len(), queued, "the second ask queues behind");
+        }
+        assert_eq!(app.model.selected(), Some("api"), "no retarget");
+    }
+
+    /// B2: a click the terminal splits over three reads is begun at the first,
+    /// and the frames that drew since stay kept for it until its last byte lands.
+    #[test]
+    fn a_click_split_across_reads_acts_on_the_row_it_was_begun_on() {
+        let root = Root::new("click-split");
+        let (mut app, _at, click) = pressed_web(&root, "swap");
+        let (mut keys, (_wake, wakes)) = (
+            crate::console::input::Keys::app(),
+            std::sync::mpsc::channel(),
+        );
+        let click = click.as_bytes();
+        let mut read = |app: &mut App, bytes: &[u8]| {
+            let mut first = Some(loader::Wake::Keys(Instant::now(), bytes.to_vec()));
+            assert!(super::drain(app, &mut keys, &wakes, &mut first).is_some());
+        };
+        read(&mut app, &[b"a\r", &click[..3]].concat());
+        assert_eq!((app.queued.len(), app.deferred.len()), (1, 0));
+        let _sending = framed(&mut app);
+        assert!(app.deliver() && app.queued.is_empty());
+        read(&mut app, &click[3..click.len() - 1]);
+        let _outcome = framed(&mut app);
+        read(&mut app, &click[click.len() - 1..]);
+        assert_eq!(app.model.selected(), Some("api"), "no retarget");
+        assert!(app.history.is_empty(), "nothing kept once it landed");
+    }
+
+    /// B2: a report that never ends keeps the eight newest frames and its click
+    /// is not taken, said on the hint row, yet it still ends a drag left open;
+    /// one the decoder discarded keeps none and ends nothing.
+    #[test]
+    fn the_frames_kept_for_an_unfinished_click_are_bounded() {
+        let gone = Some("click not taken: its frame is gone");
+        for (filler, kept, said) in [(20, 8, gone), (40, 0, None)] {
+            let grab = Drag {
+                edge: Edge::Sidebar,
+                from: 44,
+                at: 44,
+            };
+            let root = Root::new(&format!("click-bound-{filler}"));
+            let (mut app, _at, click) = pressed_web(&root, "swap");
+            let (mut keys, (_wake, wakes)) = (
+                crate::console::input::Keys::app(),
+                std::sync::mpsc::channel(),
+            );
+            let mut read = |app: &mut App, bytes: &[u8]| {
+                let mut first = Some(loader::Wake::Keys(Instant::now(), bytes.to_vec()));
+                assert!(super::drain(app, &mut keys, &wakes, &mut first).is_some());
+            };
+            let (head, tail) = click.as_bytes().split_at(7);
+            read(&mut app, head);
+            app.model.grab(grab);
+            for _ in 0..filler {
+                let _frame = framed(&mut app);
+                read(&mut app, b"0");
+            }
+            assert_eq!(app.history.len(), kept, "{filler} bytes of one report");
+            read(&mut app, tail);
+            assert_eq!(app.model.selected(), Some("api"), "no retarget");
+            assert_eq!(app.note().as_deref(), said);
+            assert_eq!(app.model.drag().is_some(), kept == 0, "the drag");
         }
     }
 

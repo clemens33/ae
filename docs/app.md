@@ -90,7 +90,9 @@ client attached to it, switched into it or gave it a key or mouse input
 creation, so a session nobody has touched stays unknown), and the newest
 question you asked it through the chat or the app. Output from agents never
 counts, nor do ae's own commands. A new read of the fleet can move a row, and
-only when a frame is drawn: a key or click always acts on the row it showed.
+only when a frame is drawn: a key or click always acts on the row it showed,
+even one the terminal splits over several reads; a click whose frame is gone
+when it completes is not taken, and the hint row says so.
 The status strip and the picker keep their own order.
 
 ## Reading
