@@ -55,10 +55,10 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// The line the chat prints for `name`.
+    /// The words for why: the chat's line and the app's copy flash both say them.
     #[must_use]
-    pub fn line(&self, name: &str) -> String {
-        let why = match self {
+    pub fn why(&self) -> String {
+        match self {
             Self::Unread(what) => format!("{what} did not answer"),
             Self::Replaced => "the roster no longer seats it in that slot".to_owned(),
             Self::SessionReplaced => "this session was replaced".to_owned(),
@@ -76,8 +76,13 @@ impl Refusal {
                  run ae {session}"
             ),
             Self::NoSeat(why) => why.clone(),
-        };
-        format!("refused: /open {name}: {why}; nothing selected")
+        }
+    }
+
+    /// The line the chat prints for `name`.
+    #[must_use]
+    pub fn line(&self, name: &str) -> String {
+        format!("refused: /open {name}: {}; nothing selected", self.why())
     }
 }
 
@@ -229,7 +234,7 @@ pub fn select_args_via(
 
 /// Whether `name` is a tty path or a control client's name: the characters
 /// tmux gives one, none of which a tmux command word treats as syntax.
-fn client_name(name: &str) -> bool {
+pub(crate) fn client_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .bytes()
@@ -257,23 +262,60 @@ pub enum Move {
 ///
 /// [`Refusal::NoViewer`] or [`Refusal::Tied`].
 pub fn mover(clients: &[ObservedClient], app_pane: &str, session: &str) -> Result<Move, Refusal> {
-    let viewers: Vec<&ObservedClient> = clients
-        .iter()
-        .filter(|client| client.pane == app_pane)
-        .collect();
+    let viewers = viewers(clients, app_pane);
     if viewers.is_empty() {
         return Err(Refusal::NoViewer);
     }
     if viewers.iter().all(|client| client.session == session) {
         return Ok(Move::Here);
     }
+    let only = newest(&viewers)?;
+    if only.session == session {
+        return Ok(Move::Here);
+    }
+    Ok(Move::Client(only.name.clone()))
+}
+
+/// The clients whose ACTIVE pane is the app: only they can have pressed a key.
+fn viewers<'a>(clients: &'a [ObservedClient], app_pane: &str) -> Vec<&'a ObservedClient> {
+    (clients.iter())
+        .filter(|client| client.pane == app_pane)
+        .collect()
+}
+
+/// The one viewer with the newest input (`None` the oldest): the one that
+/// pressed the key.
+fn newest<'a>(viewers: &[&'a ObservedClient]) -> Result<&'a ObservedClient, Refusal> {
     let newest = viewers.iter().map(|client| client.activity).max().flatten();
     let mut top = viewers.iter().filter(|client| client.activity == newest);
     match (top.next(), top.next()) {
-        (Some(only), None) if only.session == session => Ok(Move::Here),
-        (Some(only), None) => Ok(Move::Client(only.name.clone())),
+        (Some(only), None) => Ok(only),
+        (None, _) => Err(Refusal::NoViewer),
         _ => Err(Refusal::Tied),
     }
+}
+
+/// The client whose terminal a copy reaches: the viewer that pressed `y`.
+///
+/// # Errors
+///
+/// [`Refusal::NoViewer`] or [`Refusal::Tied`].
+pub fn copy_client(clients: &[ObservedClient], app_pane: &str) -> Result<String, Refusal> {
+    newest(&viewers(clients, app_pane)).map(|client| client.name.clone())
+}
+
+/// The tmux argv loading stdin into the DEFAULT paste buffer (no `-b`, so
+/// `prefix ]` pastes it), and into `client`'s terminal clipboard when it names
+/// a client. A name failing [`client_name`] is dropped, never the load.
+#[must_use]
+pub fn copy_args(server: &ServerId, client: Option<&str>) -> Vec<String> {
+    let mut args = crate::tmux::server_args(server);
+    args.push("load-buffer".to_owned());
+    if let Some(client) = client.filter(|name| client_name(name)) {
+        args.extend(["-w", "-t", client].map(ToOwned::to_owned));
+    }
+    args.push("-".to_owned());
+    args
 }
 
 /// What the select prints when the guard held, and when it did not.
@@ -311,7 +353,54 @@ pub fn outcome_moved(succeeded: bool, stdout: &str, name: &str, session: &str) -
 
 #[cfg(test)]
 mod tests {
-    use super::took;
+    use super::{Refusal, ServerId, copy_args, copy_client, took};
+    use crate::tmux::ObservedClient;
+
+    fn viewer(name: &str, pane: &str, activity: Option<u64>) -> ObservedClient {
+        ObservedClient {
+            name: name.to_owned(),
+            session: "s".to_owned(),
+            pane: pane.to_owned(),
+            activity,
+        }
+    }
+
+    /// A copy goes through the viewer that pressed `y`: the newest input
+    /// among the clients showing the app; none, or a tie, names nobody.
+    #[test]
+    fn a_copy_names_the_newest_viewer_of_the_app_pane() {
+        let rows = [
+            viewer("/dev/a", "%3", Some(5)),
+            viewer("/dev/b", "%3", Some(9)),
+            viewer("/dev/c", "%4", Some(99)),
+        ];
+        assert_eq!(copy_client(&rows, "%3"), Ok("/dev/b".to_owned()));
+        assert_eq!(copy_client(&rows[2..], "%3"), Err(Refusal::NoViewer));
+        assert_eq!(copy_client(&[], "%3"), Err(Refusal::NoViewer));
+        let tie = [
+            viewer("/dev/a", "%3", Some(9)),
+            viewer("/dev/b", "%3", Some(9)),
+        ];
+        assert_eq!(copy_client(&tie, "%3"), Err(Refusal::Tied));
+        assert_eq!(copy_client(&tie[..1], "%3"), Ok("/dev/a".to_owned()));
+    }
+
+    /// The load targets the default buffer from stdin; a client rides `-w -t`
+    /// only when its name is one tmux gives a client.
+    #[test]
+    fn a_copy_loads_the_default_buffer_and_names_only_a_valid_client() {
+        let argv = |client| copy_args(&ServerId::Ambient, client).join(" ");
+        assert!(argv(None).ends_with("load-buffer -"));
+        let named = argv(Some("/dev/ttys001"));
+        assert!(named.ends_with("load-buffer -w -t /dev/ttys001 -"));
+        assert!(!named.contains(" -b "), "never a named buffer");
+        for bad in ["", "a b", "x;y", "$(id)"] {
+            assert!(
+                argv(Some(bad)).ends_with("load-buffer -"),
+                "dropped: {bad:?}"
+            );
+        }
+    }
 
     /// Only a select tmux ran whose guard held took; a refused guard, a failed
     /// run and unknown words did not.

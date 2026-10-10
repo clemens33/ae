@@ -1433,6 +1433,32 @@ pub fn load_buffer(server: &ServerId, buffer: &str, bytes: &[u8]) -> bool {
         .is_some_and(|output| output.status.success())
 }
 
+/// Load `bytes` into `server`'s default paste buffer on STDIN, and into
+/// `client`'s terminal clipboard when one is named. The error is tmux's first
+/// stderr line, or that it did not run.
+///
+/// # Errors
+///
+/// Why tmux refused the load.
+pub fn copy_buffer(server: &ServerId, client: Option<&str>, bytes: &[u8]) -> Result<(), String> {
+    const DID_NOT_RUN: &str = "tmux did not run";
+    if !addressable(server) {
+        return Err(DID_NOT_RUN.to_owned());
+    }
+    let args = crate::console::open::copy_args(server, client);
+    let output = spawn(PROGRAM, &args, &[], Streams::Captured, Some(bytes))
+        .ok_or_else(|| DID_NOT_RUN.to_owned())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(stderr
+        .lines()
+        .next()
+        .unwrap_or("tmux refused it")
+        .to_owned())
+}
+
 /// Paste `buffer` into `pane`, bracketed, deleting the buffer.
 #[must_use]
 pub fn paste_buffer(server: &ServerId, buffer: &str, pane: &str) -> bool {

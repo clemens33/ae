@@ -744,6 +744,9 @@ fn app_key_name(key: AppKey) -> String {
         AppKey::Open => "Open".to_owned(),
         AppKey::SeatNext => "SeatNext".to_owned(),
         AppKey::SeatPrev => "SeatPrev".to_owned(),
+        AppKey::TurnOlder => "TurnOlder".to_owned(),
+        AppKey::TurnNewer => "TurnNewer".to_owned(),
+        AppKey::Copy => "Copy".to_owned(),
     }
 }
 
@@ -759,6 +762,9 @@ fn app_browse_keys_decode_table() {
         (b'k', "Up"),
         (b'i', "Compose"),
         (b'q', "Quit"),
+        (b'[', "TurnOlder"),
+        (b']', "TurnNewer"),
+        (b'y', "Copy"),
     ] {
         let got: Vec<String> = browse_keys(&text(byte))
             .iter()

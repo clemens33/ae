@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 use ratatui_core::buffer::Buffer;
 use ratatui_core::terminal::Terminal;
 
+use crate::board::terminal_text;
 use crate::console::input::{Effect, Input, Key, Keys, Mouse, MouseKind, Reading, Size, View};
 use crate::console::lane::{Item, Kind, Lane, Seat};
 use crate::console::needs::{SeatRef, Section};
@@ -263,6 +264,8 @@ struct App {
     armed: Option<Armed>,
     /// Why a paste was not taken, until its window ends.
     flash: Option<(String, Instant)>,
+    /// The lane the turn fingerprints were built from, with them.
+    keyed: Option<(Rc<Lane>, Rc<[u64]>)>,
     /// The read of the browse paste that started this entry: its later
     /// fragments keep their text, nothing else read before the lease does.
     admitted: Option<Instant>,
@@ -331,6 +334,7 @@ impl App {
             drawn: None,
             armed: None,
             flash: None,
+            keyed: None,
             admitted: None,
             queued: Vec::new(),
             settling: None,
@@ -895,6 +899,97 @@ impl App {
         self.flash = Some((format!("paste not taken: {why}"), Instant::now()));
     }
 
+    /// The fingerprints of the lane's turns, in item order: built once for
+    /// each lane, so a frame, a key and a click share one build.
+    fn keys(&mut self) -> Rc<[u64]> {
+        let same = |(lane, _): &&(Rc<Lane>, Rc<[u64]>)| Rc::ptr_eq(lane, &self.lane);
+        if let Some((_, keys)) = self.keyed.as_ref().filter(same) {
+            return Rc::clone(keys);
+        }
+        let keys: Rc<[u64]> = self.lane.items.iter().map(lane::key).collect();
+        self.keyed = Some((Rc::clone(&self.lane), Rc::clone(&keys)));
+        keys
+    }
+
+    /// `[` / `]`: mark the next older / newer turn the last frame produced and
+    /// bring it into view; with none marked, the newest turn the frame shows.
+    /// An edge is a no-op that keeps the mark. Whether anything moved.
+    fn step_turn(&mut self, older: bool) -> bool {
+        let page = self.layout.page_rows;
+        let scroll = self.model.scroll_rows(page);
+        let turns = &self.layout.turns;
+        let marked = (self.model.turn()).and_then(|mark| turns.iter().position(|t| t.0 == mark));
+        let next = match marked {
+            Some(at) if older => Some(at + 1),
+            Some(at) => at.checked_sub(1),
+            None => turns
+                .iter()
+                .position(|&(_, below, rows)| below < scroll + page && below + rows > scroll),
+        };
+        let Some(&(key, below, rows)) = next.and_then(|at| turns.get(at)) else {
+            return false;
+        };
+        self.model.set_turn(Some(key));
+        self.model.reveal(below, below + rows, page);
+        true
+    }
+
+    /// `y`: the marked turn's body goes to the tmux buffer, and the hint row
+    /// says what reached where.
+    fn copy(&mut self) {
+        let line = self.copied();
+        self.flash = Some((line, Instant::now()));
+    }
+
+    /// The words for a copy. A refusal before any tmux call is a plain hint;
+    /// only a copy that was tried, or cannot exist, says `copy failed`.
+    fn copied(&mut self) -> String {
+        let Some(mark) = self.model.turn() else {
+            return "no turn marked - click one or press [ ]".to_owned();
+        };
+        let keys = self.keys();
+        let found = keys.iter().position(|key| *key == mark);
+        let Some(item) = found.and_then(|at| self.lane.items.get(at)) else {
+            self.model.set_turn(None);
+            return "that turn changed or left the lane - mark it again".to_owned();
+        };
+        let text = terminal_text(&item.body);
+        if text.is_empty() {
+            return "nothing to copy: that turn has no text".to_owned();
+        }
+        let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
+            return "copy failed: ae app is not running inside tmux - hold Shift/Option and drag to select".to_owned();
+        };
+        let viewer = match transport::observe_clients(server) {
+            None => Err("the tmux clients did not answer".to_owned()),
+            Some(clients) => open::copy_client(&clients, pane).map_err(|why| why.why()),
+        }
+        .and_then(|name| {
+            let named = open::client_name(&name);
+            named
+                .then_some(name)
+                .ok_or("the client name failed its grammar".to_owned())
+        });
+        let lines = text.lines().count();
+        let count = if lines == 1 {
+            "1 line".to_owned()
+        } else {
+            format!("{lines} lines")
+        };
+        let preview = lane::preview_why(item).map(|why| format!(" (preview only: {why})"));
+        let count = format!("{count}{}", preview.unwrap_or_default());
+        match (
+            transport::copy_buffer(server, viewer.as_deref().ok(), text.as_bytes()),
+            viewer,
+        ) {
+            (Err(why), _) => format!("copy failed: {}", terminal_text(&why)),
+            (Ok(()), Ok(_)) => format!(
+                "copied {count} to the tmux buffer; terminal clipboard if your terminal allows it"
+            ),
+            (Ok(()), Err(why)) => format!("copied {count} to the tmux buffer only - {why}"),
+        }
+    }
+
     /// The hint-row line now, loudest first: an ask on its way, an armed
     /// key, a refused paste, an outcome the lane has not caught up with.
     fn note(&self) -> Option<String> {
@@ -1078,6 +1173,12 @@ impl App {
                 return true;
             }
             draw::Hit::SettingsTab(_) | draw::Hit::SettingsClose => return held,
+            draw::Hit::Turn(key) => {
+                self.write(false);
+                self.model
+                    .set_turn((self.model.turn() != Some(key)).then_some(key));
+                return true;
+            }
         };
         apply(self, &act, Instant::now()).unwrap_or(false)
             || was_writing != self.composing()
@@ -1500,6 +1601,7 @@ impl App {
         self.settling
             .take_if(|settling| lane.items.iter().any(|item| shown(item, &settling.id)));
         self.model.set_note(self.note());
+        let keys = self.keys();
         let name = self.model.selected();
         let unread = name
             .filter(|_| !self.fleeted)
@@ -1523,6 +1625,7 @@ impl App {
         let wait = draw::Wait {
             fleet: !self.fleeted,
             lane: self.loading,
+            keys: &keys,
         };
         let drawn = draw::draw_with_layout(&screen, wait, buf);
         let replaced = std::mem::replace(&mut self.layout, drawn);
@@ -1973,6 +2076,12 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
         }
         model::Act::SeatNext => Some(app.move_focus(true)),
         model::Act::SeatPrev => Some(app.move_focus(false)),
+        model::Act::TurnOlder => Some(app.step_turn(true)),
+        model::Act::TurnNewer => Some(app.step_turn(false)),
+        model::Act::Copy => {
+            app.copy();
+            Some(true)
+        }
         model::Act::None => Some(false),
     }
 }
@@ -5195,5 +5304,127 @@ mod tests {
         ));
         let body = std::fs::remove_dir(dir.join("messages")).map_err(|why| why.kind());
         assert_eq!(body, Err(std::io::ErrorKind::NotFound), "no body written");
+    }
+
+    /// An app on `api` whose lane holds one `said` turn for each of `bodies`,
+    /// framed once so the keys and clicks have a layout to act on.
+    fn turned(bodies: &[&str]) -> App {
+        let mut app = app(Some("api"));
+        app.fleet = one_row(Some("api"));
+        app.model = Model::new(&app.fleet);
+        let items = (bodies.iter().zip(0..)).map(|(body, at)| said(body, at));
+        app.lane = Rc::new(Lane {
+            items: items.collect(),
+            coverage: Vec::new(),
+        });
+        let _ = framed(&mut app);
+        app
+    }
+
+    fn key_of(app: &App, at: usize) -> u64 {
+        super::lane::key(&app.lane.items[at])
+    }
+
+    /// `[` and `]` walk the produced turns: none marked takes the newest,
+    /// each press steps one, and an edge is silent and keeps the mark.
+    #[test]
+    fn the_turn_keys_walk_the_produced_turns_and_keep_the_mark_at_an_edge() {
+        let mut app = turned(&["one", "two", "three"]);
+        assert!(app.step_turn(false), "none marked: the newest shown");
+        assert_eq!(app.model.turn(), Some(key_of(&app, 2)));
+        assert!(!app.step_turn(false), "no newer turn: silent");
+        assert_eq!(app.model.turn(), Some(key_of(&app, 2)));
+        assert!(app.step_turn(true) && app.step_turn(true));
+        assert_eq!(app.model.turn(), Some(key_of(&app, 0)));
+        assert!(!app.step_turn(true), "no older turn: silent");
+        assert_eq!(app.model.turn(), Some(key_of(&app, 0)));
+        assert!(app.step_turn(false));
+        assert_eq!(app.model.turn(), Some(key_of(&app, 1)));
+        let mut empty = turned(&[]);
+        assert!(
+            !empty.step_turn(true) && !empty.step_turn(false),
+            "no turns"
+        );
+        assert_eq!(empty.model.turn(), None);
+    }
+
+    /// Every refusal before a tmux call is a plain hint; only the missing
+    /// tmux says `copy failed`. The stale mark is cleared, the others kept.
+    #[test]
+    fn a_copy_that_cannot_reach_tmux_says_why_on_the_hint_row() {
+        let mut app = turned(&["one", ""]);
+        let hint = |app: &mut App| {
+            app.copy();
+            app.flash.take().expect("a hint").0
+        };
+        assert_eq!(hint(&mut app), "no turn marked - click one or press [ ]");
+        app.model.set_turn(Some(0));
+        assert_eq!(
+            hint(&mut app),
+            "that turn changed or left the lane - mark it again"
+        );
+        assert_eq!(app.model.turn(), None, "the stale mark is cleared");
+        app.model.set_turn(Some(key_of(&app, 1)));
+        assert_eq!(hint(&mut app), "nothing to copy: that turn has no text");
+        assert_eq!(app.model.turn(), Some(key_of(&app, 1)), "the mark is kept");
+        app.model.set_turn(Some(key_of(&app, 0)));
+        assert_eq!(
+            hint(&mut app),
+            "copy failed: ae app is not running inside tmux - hold Shift/Option and drag to select"
+        );
+    }
+
+    /// The fingerprints are built once for each lane: a frame, a key and a
+    /// click share one build, and another lane gets its own.
+    #[test]
+    fn the_turn_keys_are_built_once_for_each_lane() {
+        let mut app = turned(&["one", "two"]);
+        let first = app.keys();
+        assert!(Rc::ptr_eq(&first, &app.keys()), "same lane, same build");
+        app.lane = Rc::new(Lane {
+            items: vec![said("one", 0)],
+            coverage: Vec::new(),
+        });
+        assert_eq!(app.keys().len(), 1, "another lane, rebuilt");
+        assert_eq!(first.len(), 2);
+    }
+
+    /// A press on a drawn turn marks it, a second press unmarks it, and a
+    /// press while writing returns to browsing, draft kept; the sidebar rule
+    /// still grabs beside it.
+    #[test]
+    fn a_press_on_a_turn_marks_it_and_a_second_unmarks_it() {
+        let root = Root::new("turn-press");
+        let (mut app, _reader) = housed(&root);
+        let typed = writing(&mut app);
+        if let Answer::View(mut read) = view("api", ID, 1, "") {
+            read.lane.items = vec![said("one", 0), said("two", 1)];
+            app.answer(Answer::View(read));
+        }
+        assert_eq!(app.compose(Key::Text(b"draft".to_vec()), typed), Some(()));
+        let _ = framed(&mut app);
+        let press = |column, row| super::Mouse {
+            kind: super::MouseKind::Click,
+            column,
+            row,
+        };
+        let on_turn = |app: &App, column, row| {
+            matches!(
+                app.layout.hit(press(column, row)),
+                Some(super::draw::Hit::Turn(_))
+            )
+        };
+        let row = (0..45)
+            .find(|row| on_turn(&app, 47, *row))
+            .expect("a drawn turn");
+        assert!(!on_turn(&app, 46, row), "the margin is no target");
+        assert!(app.layout.grab(press(44, row)).is_some(), "the rule grabs");
+        assert!(app.click(press(47, row)));
+        assert!(!app.composing(), "a press browses");
+        assert!(app.inputs.values().any(|input| input.draft() == "draft"));
+        let marked = app.model.turn();
+        assert!(marked.is_some_and(|key| app.keys().contains(&key)));
+        assert!(app.click(press(47, row)));
+        assert_eq!(app.model.turn(), None, "a second press unmarks it");
     }
 }

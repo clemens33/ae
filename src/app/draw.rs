@@ -102,6 +102,8 @@ pub(crate) enum Hit {
     SettingsTab(SettingsTab),
     /// The overlay's drawn close label.
     SettingsClose,
+    /// A drawn chat turn, by its fingerprint: marks it, or unmarks it.
+    Turn(u64),
 }
 
 /// A border as drawn: its edge, where it stands, its own cells and the cells
@@ -127,6 +129,9 @@ pub(crate) struct Layout {
     pub max_scroll: usize,
     /// The frame produced the lane's oldest row.
     pub complete: bool,
+    /// The turns the frame produced, newest first: fingerprint, the rows
+    /// between its last row and the newest row, and its row count.
+    pub turns: Vec<(u64, usize, usize)>,
     /// The cell the terminal cursor shows: the draft's, while writing.
     pub cursor: Option<Position>,
     /// Body rows the open settings overlay shows at once.
@@ -224,6 +229,7 @@ impl Layout {
         self.page_rows = 0;
         self.max_scroll = 0;
         self.complete = true;
+        self.turns.clear();
         self.cursor = None;
         self.settings_page_rows = 0;
         self.settings_max_scroll = 0;
@@ -259,7 +265,7 @@ impl Paint {
     }
 
     /// The selected name: the title hue, or bold and reverse with no colour.
-    fn selected(self) -> Style {
+    pub(super) fn selected(self) -> Style {
         match self.0 {
             Some(_) => self.fg(|p| p.title).add_modifier(Modifier::BOLD),
             None => Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
@@ -287,16 +293,19 @@ struct Ctx<'s, 'a> {
     screen: &'s Screen<'a>,
     paint: Paint,
     icons: bool,
-    wait: Wait,
+    wait: Wait<'s>,
 }
 
 /// What `ae app` has not read yet, drawn as `loading`.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Wait {
+pub(crate) struct Wait<'a> {
     /// The fleet: the sidebar list says `loading` and no tab shows.
     pub(crate) fleet: bool,
     /// The selection's lane: one dim chat row says `loading`.
     pub(crate) lane: bool,
+    /// The lane's turns' fingerprints, in item order: with none, no turn is
+    /// marked or clickable.
+    pub(crate) keys: &'a [u64],
 }
 
 /// Draw `screen` into `buf`, whose area starts at the origin — the app hands
@@ -310,7 +319,7 @@ pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
 }
 
 /// Draw and retain only the geometry this frame actually showed.
-pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer) -> Layout {
+pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) -> Layout {
     let area = buf.area;
     let mut layout = Layout {
         area,
@@ -1035,7 +1044,11 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let need = scroll
         .saturating_add(room_rows.saturating_mul(2))
         .saturating_add(super::model::WHEEL_ROWS);
-    let super::lane::Tail { mut rows, complete } = super::lane::tail(
+    let super::lane::Tail {
+        mut rows,
+        complete,
+        turns,
+    } = super::lane::tail(
         screen.lane,
         usize::from(room),
         paint,
@@ -1047,6 +1060,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     if ctx.wait.lane {
         rows.push(Line::from(Span::styled("loading", dim)));
     }
+    let turns = place_turns(ctx, &turns, &mut rows, layout);
     let last = rows
         .len()
         .saturating_sub(scroll)
@@ -1056,6 +1070,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     for (step, line) in rows[first..last].iter().enumerate() {
         put_line(buf, left, y0 + cells(step), line, room);
     }
+    turn_targets(buf, layout, &turns, (first..last, left, y0, room));
     if room_rows > 0 && scroll > 0 && last < rows.len() {
         put(buf, left, bottom, "↓ newer turns below · PgDn", room, dim);
     }
@@ -1101,6 +1116,53 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.page_rows = room_rows;
     layout.max_scroll = rows.len().saturating_sub(room_rows);
     layout.complete = complete;
+}
+
+/// The produced turns with their fingerprints and row spans, oldest first. The
+/// marked turn is recoloured in place, and the frame keeps each turn's place
+/// for the keys.
+fn place_turns(
+    ctx: &Ctx<'_, '_>,
+    turns: &[super::lane::Turn],
+    rows: &mut [Line<'static>],
+    layout: &mut Layout,
+) -> Vec<(u64, Range<usize>)> {
+    let turns: Vec<(u64, Range<usize>)> = (turns.iter())
+        .filter_map(|turn| {
+            let key = *ctx.wait.keys.get(turn.at)?;
+            Some((key, turn.first..turn.first + turn.rows))
+        })
+        .collect();
+    for (key, span) in &turns {
+        if ctx.screen.model.turn() == Some(*key) {
+            super::lane::mark_rows(&mut rows[span.clone()], ctx.paint, ctx.icons);
+        }
+    }
+    let end = rows.len();
+    layout.turns = (turns.iter().rev())
+        .map(|(key, span)| (*key, end - span.end, span.len()))
+        .collect();
+    turns
+}
+
+/// A turn's rows are its target, across the column: the column keeps two
+/// cells between it and the sidebar rule, so the rule's grab zone is never
+/// covered. `window` is the rows drawn, from the column's `left`, the first
+/// row's `y0` and the column's `room`.
+fn turn_targets(
+    buf: &Buffer,
+    layout: &mut Layout,
+    turns: &[(u64, Range<usize>)],
+    (window, left, y0, room): (Range<usize>, u16, u16, u16),
+) {
+    for (key, span) in turns {
+        let (from, to) = (span.start.max(window.start), span.end.min(window.end));
+        if from < to {
+            let y = y0 + cells(from - window.start);
+            let rect = Rect::new(left, y, room, cells(to - from));
+            layout.record(buf, rect, Hit::Turn(*key));
+        }
+    }
 }
 
 /// The chat header: the session, its pair, and right-aligned its branch (at
@@ -1192,7 +1254,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 12] = [
+const BROWSE_KEYS: [(&str, &str); 14] = [
     ("1-9", "select that session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -1200,6 +1262,8 @@ const BROWSE_KEYS: [(&str, &str); 12] = [
     ("oo", "open seat; twice in 2 s"),
     ("n/p", "next / previous seat"),
     ("PgUp/PgDn", "scroll the chat"),
+    ("[ ]", "mark older / newer turn"),
+    ("y", "copy the marked turn"),
     ("Enter i", "write; a paste writes too"),
     ("Esc", "select the home session"),
     ("s", "settings"),
@@ -1510,7 +1574,7 @@ const HELD_KEYS: [(&str, &str); 4] = [
     ("any other", "swallowed; a paste too"),
 ];
 const MOUSE_KEYS: [(&str, &str); 3] = [
-    ("click", "select a session, tab or seat"),
+    ("click", "select a session, tab, seat or turn"),
     ("wheel", "scroll 3 rows (the list: 1 session)"),
     ("drag", "a border resizes the sidebar / list"),
 ];

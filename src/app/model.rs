@@ -23,6 +23,9 @@ pub enum Key {
     PageUp,
     PageDown,
     Quit,
+    TurnOlder,
+    TurnNewer,
+    Copy,
 }
 
 /// The browse keys one decoded key spells. A paste is swallowed whole: text
@@ -56,6 +59,9 @@ fn letter(byte: u8) -> Option<Key> {
         b'n' => Some(Key::SeatNext),
         b'p' => Some(Key::SeatPrev),
         b'q' => Some(Key::Quit),
+        b'[' => Some(Key::TurnOlder),
+        b']' => Some(Key::TurnNewer),
+        b'y' => Some(Key::Copy),
         _ => None,
     }
 }
@@ -72,6 +78,11 @@ pub enum Act {
     /// Move the seat focus one drawn row.
     SeatNext,
     SeatPrev,
+    /// Mark the next older / newer turn the last frame produced.
+    TurnOlder,
+    TurnNewer,
+    /// Copy the marked turn.
+    Copy,
     Quit,
 }
 
@@ -157,6 +168,8 @@ pub struct Model {
     settings: Option<SettingsOverlay>,
     /// The transient line the hint row shows: the App writes it each frame.
     note: Option<String>,
+    /// The marked turn, by the fingerprint that names it across re-reads.
+    turn: Option<u64>,
 }
 
 impl Model {
@@ -230,6 +243,9 @@ impl Model {
             Key::Open => Act::Open,
             Key::SeatNext => Act::SeatNext,
             Key::SeatPrev => Act::SeatPrev,
+            Key::TurnOlder => Act::TurnOlder,
+            Key::TurnNewer => Act::TurnNewer,
+            Key::Copy => Act::Copy,
             Key::Quit => Act::Quit,
             Key::Tab | Key::Compose => Act::None,
         }
@@ -260,7 +276,29 @@ impl Model {
         self.rows = 0;
         self.body_top = 0;
         self.focus = None;
+        self.turn = None;
         Act::Select(row.name.clone())
+    }
+
+    /// The marked turn's fingerprint.
+    #[must_use]
+    pub(crate) fn turn(&self) -> Option<u64> {
+        self.turn
+    }
+
+    /// Mark a turn, or clear the mark.
+    pub(crate) fn set_turn(&mut self, turn: Option<u64>) {
+        self.turn = turn;
+    }
+
+    /// Scroll so the rows `lo..hi`, counted up from the newest row, stand
+    /// inside a window of `page_rows`: the least movement, and the top of a
+    /// turn too tall for the window.
+    pub(crate) fn reveal(&mut self, lo: usize, hi: usize, page_rows: usize) {
+        let scroll = self.scroll_rows(page_rows).min(lo);
+        let scroll = scroll.max(hi.saturating_sub(page_rows));
+        self.pages = scroll / page_rows.max(1);
+        self.rows = scroll % page_rows.max(1);
     }
 
     /// Where the selection sits in `fleet`.
@@ -504,7 +542,10 @@ impl Model {
             | Key::Compose
             | Key::Open
             | Key::SeatNext
-            | Key::SeatPrev => Act::None,
+            | Key::SeatPrev
+            | Key::TurnOlder
+            | Key::TurnNewer
+            | Key::Copy => Act::None,
         }
     }
 
@@ -641,6 +682,60 @@ mod tests {
             "the selection is a sidebar row"
         );
         assert_eq!(model.tab(), Tab::Agents, "the tab stays");
+    }
+
+    /// The mark names a turn until the selection changes; the same selection
+    /// and the keys that mean nothing here leave it.
+    #[test]
+    fn a_mark_lasts_until_the_selection_changes() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        model.set_turn(Some(7));
+        let _ = model.key(Key::Digit(1), &both, false, true);
+        assert_eq!(model.turn(), Some(7), "the same selection keeps it");
+        assert_eq!(model.key(Key::Copy, &both, false, true), Act::Copy);
+        assert_eq!(
+            model.key(Key::TurnOlder, &both, false, true),
+            Act::TurnOlder
+        );
+        assert_eq!(
+            model.key(Key::TurnNewer, &both, false, true),
+            Act::TurnNewer
+        );
+        let _ = model.key(Key::Digit(2), &both, false, true);
+        assert_eq!(model.turn(), None, "another session clears it");
+        model.set_turn(Some(7));
+        model.open_settings(1);
+        assert_eq!(model.key(Key::Copy, &both, false, true), Act::None);
+        model.close_settings();
+        assert_eq!(
+            model.turn(),
+            Some(7),
+            "an overlay opened and closed keeps it"
+        );
+    }
+
+    /// `reveal` moves the least that puts the rows `lo..hi` (counted up from
+    /// the newest row) inside a window of 10: down, up, nowhere, or to the top
+    /// of a turn taller than the window.
+    #[test]
+    fn reveal_moves_the_least_that_shows_the_turn() {
+        let one = fleet(&["api"]);
+        let scroll = |pages: usize, notches: usize, lo: usize, hi: usize| {
+            let mut model = Model::new(&one);
+            for _ in 0..pages {
+                let _ = model.key(Key::PageUp, &one, false, true);
+            }
+            for _ in 0..notches {
+                model.wheel(true, 10, 1000);
+            }
+            model.reveal(lo, hi, 10);
+            model.scroll_rows(10)
+        };
+        assert_eq!(scroll(0, 0, 25, 30), 20, "an older turn comes into view");
+        assert_eq!(scroll(4, 0, 5, 8), 5, "a newer turn comes into view");
+        assert_eq!(scroll(0, 2, 8, 12), 6, "a turn in view stays put");
+        assert_eq!(scroll(0, 0, 3, 40), 30, "a tall turn shows its top");
     }
 
     /// The public page bound includes wheel rows between keyboard pages.

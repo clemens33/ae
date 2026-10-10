@@ -30,7 +30,7 @@ pub struct Seat {
 }
 
 /// What one lane item is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// A human turn from a seat's transcript; `generation` > 0 is a predecessor.
     Pane { seat: String, generation: u8 },
@@ -111,7 +111,7 @@ fn body_gap(body: &Body) -> Option<String> {
 
 /// One lane row: epoch micros (a journal record's second widened), what it
 /// is, and its raw body.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Item {
     pub micros: i64,
     pub kind: Kind,

@@ -6,6 +6,7 @@
 
 mod app_cli_spec;
 mod app_composer_spec;
+mod app_copy_spec;
 mod app_live;
 mod app_loop_pin_spec;
 mod app_mode;
