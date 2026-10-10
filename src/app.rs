@@ -1485,11 +1485,10 @@ impl App {
         if let Some(order) = self.pending.take() {
             self.fleet = std::mem::take(&mut self.fleet).arranged(&order);
         }
-        if let Some(name) = self.model.selected() {
+        if self.model.selected().is_some() {
             let area = buf.area;
-            let address = draw::address(name, self.home.as_deref(), self.speaker());
             let size = Size {
-                width: draw::draft_width(area, self.model.split(), &address),
+                width: draw::draft_width(area, self.model.split()),
                 height: draw::composer_pane(area),
             };
             let shown = self.shown_input().map(|i| (i.bare_view(size), i.draft()));
@@ -2744,8 +2743,9 @@ mod tests {
         assert_eq!(drafted(&app), "k");
     }
 
-    /// R-C1.3/R-C1.5: the three drawn draft rows and hint are Compose;
-    /// after Esc the former upper draft row is lane, not a ghost target.
+    /// R-C1.3/R-C1.5: the address, the three drawn draft rows and the note
+    /// row are Compose; after Esc the rows above the compact composer are
+    /// lane, not ghost targets.
     #[test]
     fn every_grown_composer_row_and_hint_are_targets_until_browse_compacts_it() {
         let root = Root::new("c1-targets");
@@ -2766,10 +2766,10 @@ mod tests {
             row,
         };
         let taken = app.lease.as_ref().map(|lease| lease.at);
-        for row in 39..=42 {
+        for row in 38..=42 {
             assert!(
                 matches!(app.layout.hit(press(row)), Some(super::draw::Hit::Compose)),
-                "grown row or hint {row}"
+                "address, grown row or note {row}"
             );
             let _ = app.click(press(row));
             assert_eq!(app.lease.as_ref().map(|lease| lease.at), taken);
@@ -2783,7 +2783,7 @@ mod tests {
         assert!(
             shown
                 .lines()
-                .nth(41)
+                .nth(40)
                 .expect("compact composer")
                 .contains("to api")
         );
@@ -2793,7 +2793,7 @@ mod tests {
         ));
         let _ = app.click(press(39));
         assert!(!app.composing(), "old upper row cannot restart writing");
-        for row in 41..=42 {
+        for row in 40..=42 {
             assert!(matches!(
                 app.layout.hit(press(row)),
                 Some(super::draw::Hit::Compose)
@@ -3945,12 +3945,12 @@ mod tests {
         app
     }
 
-    /// `bytes` read at once on a 160x36 pane (27 chat rows), taken through
+    /// `bytes` read at once on a 160x37 pane (27 chat rows), taken through
     /// the loop's own drain and frame until no key is held.
     fn replayed(app: &mut App, bytes: &[u8]) -> usize {
         let (_wake, wakes) = std::sync::mpsc::channel();
         let mut keys = crate::console::input::Keys::app();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 36));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 37));
         app.frame(&mut buf);
         let mut first = Some(loader::Wake::Keys(Instant::now(), bytes.to_vec()));
         for _ in 0..64 {
@@ -3985,7 +3985,7 @@ mod tests {
     #[test]
     fn a_notch_onto_the_drawn_edge_is_taken_at_once() {
         let mut app = scrolled(160);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 36));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 37));
         app.frame(&mut buf);
         assert!(!app.layout.complete);
         let edge = app.layout.max_scroll;

@@ -1421,11 +1421,10 @@ fn non_home_address_uses_its_drawn_width_for_whole_draft_and_terminal_cursor() {
     let (pane, _) = rig.app("wrap", true);
     rig.select(&pane, &rig.t);
     rig.enter(&pane, &rig.t, false);
-    // Accepted 160x45 geometry: left=47, room=111. Every address character
-    // here is one drawn cell, including ›; three spaces precede the draft.
-    let address = format!("{}   ", rig.address(&rig.t, false, "lead"));
-    let indent = address.chars().count();
-    let width = 111 - indent;
+    // Accepted 160x45 geometry: left=47, room=111. The address has its own
+    // row, so the draft keeps every cell of the rows under it.
+    let address = rig.address(&rig.t, false, "lead");
+    let width = 111;
     let raw = format!("{}end", "a".repeat(width * 2));
     rig.raw(&rig.s, &pane, &format!("\x1b[200~{raw}\x1b[201~"));
     let frame = rig.wait(
@@ -1433,9 +1432,10 @@ fn non_home_address_uses_its_drawn_width_for_whole_draft_and_terminal_cursor() {
         &pane,
         "B2 three complete rows with selected address",
         |s| {
-            s.lines()
-                .nth(39)
-                .is_some_and(|r| r.contains(&format!("{address}{}", "a".repeat(width))))
+            s.lines().nth(38).is_some_and(|r| r.contains(&address))
+                && s.lines()
+                    .nth(39)
+                    .is_some_and(|r| r.trim_end().ends_with(&"a".repeat(width)))
                 && s.lines()
                     .nth(40)
                     .is_some_and(|r| r.trim_end().ends_with(&"a".repeat(width)))
@@ -1444,21 +1444,17 @@ fn non_home_address_uses_its_drawn_width_for_whole_draft_and_terminal_cursor() {
                     .is_some_and(|r| r.trim_end().ends_with("end"))
         },
     );
-    for (row, suffix) in [
+    for (row, text) in [
+        (38, address.clone()),
         (39, "a".repeat(width)),
         (40, "a".repeat(width)),
         (41, "end".to_owned()),
     ] {
         let line = frame.lines().nth(row).expect("composer row");
         let chat = line.chars().skip(47).collect::<String>();
-        let prefix = if row == 39 {
-            address.clone()
-        } else {
-            " ".repeat(indent)
-        };
-        assert_eq!(chat.trim_end(), format!("{prefix}{suffix}"));
+        assert_eq!(chat.trim_end(), text, "row {row}");
     }
-    assert_eq!(cursor(&rig, &rig.s, &pane), (1, 47 + indent + 3, 41));
+    assert_eq!(cursor(&rig, &rig.s, &pane), (1, 47 + 3, 41));
     rig.raw(&rig.s, &pane, "\r");
     rig.wait(&rig.s, &pane, "B2 wrap changes display only", |s| {
         s.contains("sent") && Rig::event_count(&rig.t, "ask") == 1

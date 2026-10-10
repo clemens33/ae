@@ -305,7 +305,7 @@ fn app(lane: Lane) -> App {
     app
 }
 
-const AREA: Rect = Rect::new(0, 0, 160, 36);
+const AREA: Rect = Rect::new(0, 0, 160, 37);
 const PAGE: usize = 27;
 
 fn frame(app: &mut App) -> Buffer {

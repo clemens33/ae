@@ -280,8 +280,11 @@ fn quick_key_by_key_keeps_ck_as_the_draft() {
         FRAME,
         "R2 quick typed across reads has ck draft",
         |s| {
-            s.lines()
-                .any(|line| line.contains("› lead") && line.trim_end().ends_with("ck"))
+            let rows: Vec<&str> = s.lines().collect();
+            rows.iter()
+                .rposition(|line| line.contains("› lead"))
+                .and_then(|address| rows.get(address + 1))
+                .is_some_and(|line| line.trim_end().ends_with("ck"))
         },
     );
     assert!(journal(&rig).is_empty());

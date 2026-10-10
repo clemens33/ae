@@ -617,7 +617,13 @@ fn a_close_outcome_paints_without_waiting_for_a_held_journal_read() {
         &pane,
         WAIT,
         "close command draft prepared before holding the read",
-        |screen| screen.contains(&format!("to {} › lead   /close", rig.home)),
+        |screen| {
+            let rows: Vec<&str> = screen.lines().collect();
+            rows.iter()
+                .rposition(|row| row.contains(&format!("to {} › lead", rig.home)))
+                .and_then(|address| rows.get(address + 1))
+                .is_some_and(|row| row.contains("/close"))
+        },
     );
     let hold = rig.hold(&rig.home);
     rig.held(

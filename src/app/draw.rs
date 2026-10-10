@@ -375,24 +375,22 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait, buf: &mut Buffer
     layout
 }
 
-/// The cells a draft has on the composer row of `area` split as `split`,
-/// after its [`address`]: what the caller wraps it to.
-pub(crate) fn draft_width(area: Rect, split: Split, address: &str) -> usize {
+/// The cells a draft has in the chat column of `area` split as `split`: what
+/// the caller wraps it to.
+pub(crate) fn draft_width(area: Rect, split: Split) -> usize {
     let left = sidebar_width(area, split).map_or(0, |rule| rule + 1) + 2;
-    let room = usize::from(area.width.saturating_sub(2).saturating_sub(left));
-    let prompt = Span::raw(address).width();
-    room.saturating_sub(prompt).max(1)
+    usize::from(area.width.saturating_sub(2).saturating_sub(left)).max(1)
 }
 
 /// The height a draft in `area` is laid out in. A view keeps one row of its
-/// height back, so this is one more than the composer's rows: ten at most,
-/// fewer where the lane would keep under [`LANE_FLOOR`], one at least.
+/// height back, so this is one more than the composer's draft rows: ten at
+/// most, fewer where the lane would keep under [`LANE_FLOOR`], one at least.
 pub(crate) fn composer_pane(area: Rect) -> usize {
-    let room = usize::from(area.height.saturating_sub(8 + LANE_FLOOR));
+    let room = usize::from(area.height.saturating_sub(9 + LANE_FLOOR));
     room.clamp(1, ROWS_MAX) + 1
 }
 
-/// The address a draft to `target` is drawn after; one that is not the
+/// The address a draft to `target` is drawn under; one that is not the
 /// app's `home` says so.
 pub(crate) fn address(target: &str, home: Option<&str>, speaker: &str) -> String {
     let away = if home == Some(target) {
@@ -400,7 +398,7 @@ pub(crate) fn address(target: &str, home: Option<&str>, speaker: &str) -> String
     } else {
         " (not home)"
     };
-    format!("to {target}{away} › {speaker}   ")
+    format!("to {target}{away} › {speaker}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,14 +1007,15 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let (dim, border) = (paint.fg(|p| p.dim), paint.fg(|p| p.border));
     header(ctx, buf, left, end);
     put(buf, left, 2, &"─".repeat(usize::from(room)), room, border);
-    // While writing, the composer has a row for each row of the draft's view.
+    // While writing, the composer has a row for each row of the draft's view,
+    // under the address row; the note row, a blank and the keys row follow.
     let grown = match screen.composer {
         Composer::Home {
             view: Some(view), ..
         } => cells(view.rows.len().max(1)),
         _ => 1,
     };
-    let composer = height.saturating_sub(3 + grown);
+    let composer = height.saturating_sub(4 + grown);
     let (top, bottom) = (3, composer.saturating_sub(2));
     let main = screen
         .selected
@@ -1057,7 +1056,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     for (step, line) in rows[first..last].iter().enumerate() {
         put_line(buf, left, y0 + cells(step), line, room);
     }
-    if scroll > 0 && last < rows.len() {
+    if room_rows > 0 && scroll > 0 && last < rows.len() {
         put(buf, left, bottom, "↓ newer turns below · PgDn", room, dim);
     }
     put(
@@ -1068,7 +1067,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         room,
         border,
     );
-    let (address_row, hint) = composer_lines(ctx);
+    let (address_row, input_row, hint) = composer_lines(ctx);
     put_line(buf, left, composer, &address_row, room);
     // A pending line — an armed key, a refused paste, an ask on its way —
     // takes the hint row, in full ink so it is not missed.
@@ -1080,24 +1079,23 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         view: Some(view), ..
     } = screen.composer
     {
-        // The rest of the draft under its first text cell — after the address
-        // the row above drew first — and the cursor after the cells its row
-        // draws before it, never past the row.
-        let indent = cells(address_row.spans.first().map_or(0, Span::width));
-        let width = room.saturating_sub(indent);
+        // The draft under the address, from the column's left edge, and the
+        // cursor after the cells its row draws before it, never past the row.
         let text = paint.fg(|p| p.text);
-        for (y, row) in (composer..).zip(&view.rows).skip(1) {
-            put(buf, left + indent, y, row, width, text);
+        for (y, row) in (composer + 1..).zip(&view.rows) {
+            put(buf, left, y, row, room, text);
         }
         let before = cells(Span::raw(view.before.as_str()).width());
-        layout.cursor = (width > 0).then(|| {
-            let row = composer + cells(view.cursor_row);
-            Position::new(left + indent + before.min(width - 1), row)
+        layout.cursor = (room > 0).then(|| {
+            let row = composer + 1 + cells(view.cursor_row);
+            Position::new(left + before.min(room - 1), row)
         });
+    } else {
+        put_line(buf, left, composer + 1, &input_row, room);
     }
     layout.record(
         buf,
-        Rect::new(left, composer, room, grown + 1),
+        Rect::new(left, composer, room, grown + 2),
         Hit::Compose,
     );
     layout.page_rows = room_rows;
@@ -1149,8 +1147,8 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
     }
 }
 
-/// The composer's address row and the hint under it.
-fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
+/// The composer's address row, the input row under it and the hint under that.
+fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
     let paint = ctx.paint;
     let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
     let quiet = |words: String| Line::from(Span::styled(words, dim));
@@ -1162,27 +1160,31 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, String) {
             draft,
         } => {
             let address = address(home, ctx.screen.fleet.home.as_deref(), speaker);
-            let address = Span::styled(address, paint.fg(|p| p.title));
-            if let Some(view) = view {
-                let row = view.rows.first().cloned().unwrap_or_default();
-                let line = Line::from(vec![address, Span::styled(row, text)]);
-                return (line, "Enter sends · Esc keeps the draft".to_owned());
+            let address = Line::from(Span::styled(address, paint.fg(|p| p.title)));
+            if view.is_some() {
+                return (address, Line::default(), String::new());
             }
-            let line = Line::from(vec![address, Span::styled(draft.to_owned(), text)]);
+            let kept = Line::from(Span::styled(draft.to_owned(), text));
             let hint = if draft.is_empty() {
                 "Enter writes"
             } else {
                 "draft kept · Enter writes"
             };
-            (line, hint.to_owned())
+            (address, kept, hint.to_owned())
         }
-        Composer::ReadOnly { why } => (quiet(format!("read-only · {why}")), String::new()),
+        Composer::ReadOnly { why } => (
+            quiet(format!("read-only · {why}")),
+            Line::default(),
+            String::new(),
+        ),
         Composer::Held { why } => (
             quiet(format!("not writing: {why} · Esc browses")),
+            Line::default(),
             String::new(),
         ),
         Composer::NoHome => (
             quiet("read-only · no home session: ae app <session> picks one".to_owned()),
+            Line::default(),
             String::new(),
         ),
     }
@@ -1771,7 +1773,7 @@ fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line<'_>, max: u16) -> u16 
 #[cfg(test)]
 mod tests {
     use ratatui_core::buffer::Buffer;
-    use ratatui_core::layout::Rect;
+    use ratatui_core::layout::{Position, Rect};
 
     use super::{
         Composer, LEFT, Paint, Screen, aged, dragged_to, draw, instructions_body, keys_body,
@@ -2122,6 +2124,11 @@ mod tests {
         }
 
         fn draw(&self, width: u16, height: u16, composer: Composer<'_>) -> Buffer {
+            self.laid(width, height, composer).0
+        }
+
+        /// The frame and the layout it recorded.
+        fn laid(&self, width: u16, height: u16, composer: Composer<'_>) -> (Buffer, super::Layout) {
             let screen = Screen {
                 fleet: &self.fleet,
                 model: &self.model,
@@ -2136,8 +2143,8 @@ mod tests {
                 now: Timestamp::from_epoch(PIN_NOW),
             };
             let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
-            let _ = draw(&screen, &mut buf);
-            buf
+            let layout = super::draw_with_layout(&screen, super::Wait::default(), &mut buf);
+            (buf, layout)
         }
     }
 
@@ -2608,57 +2615,265 @@ mod tests {
         );
     }
 
-    /// The cursor sits after the draft's drawn cells, and an address that
-    /// fills the chat column leaves the draft no cell and the frame no cursor.
-    #[test]
-    fn an_address_that_fills_the_column_shows_no_cursor() {
-        let shot = Shot::new();
-        let draft = View {
-            rows: vec!["x".to_owned()],
-            cursor_row: 0,
-            before: "x".to_owned(),
+    /// A draft of `rows`, its cursor after the last row's cells.
+    fn drafted(rows: &[&str]) -> View {
+        View {
+            rows: rows.iter().map(|row| (*row).to_owned()).collect(),
+            cursor_row: rows.len().saturating_sub(1),
+            before: rows.last().map(|row| (*row).to_owned()).unwrap_or_default(),
             anchor: String::new(),
-        };
-        let long = "h".repeat(60);
-        for (home, shown) in [("api", true), (long.as_str(), false)] {
-            let screen = Screen {
-                fleet: &shot.fleet,
-                model: &shot.model,
-                overview: &shot.overview,
-                selected: Some(&shot.entry),
-                pair: &shot.pair,
-                agents: None,
-                lane: &shot.lane,
-                composer: Composer::Home {
-                    home,
-                    speaker: "lead",
-                    view: Some(&draft),
-                    draft: "x",
-                },
-                look: None,
-                zone: None,
-                now: Timestamp::from_epoch(PIN_NOW),
-            };
-            let mut buf = Buffer::empty(Rect::new(0, 0, 60, 20));
-            let cursor = super::draw_with_layout(&screen, super::Wait::default(), &mut buf).cursor;
-            assert_eq!(cursor.is_some(), shown, "{home}");
-            if let Some(at) = cursor {
-                assert_eq!(buf[(at.x - 1, at.y)].symbol(), "x", "after the draft");
-            }
         }
     }
 
-    /// The cells a draft has: from the end of its `to api › lead   ` address
-    /// (frames calm r39 @63, needs-you r24 @53) to the column's end.
+    /// A composer writing `view`.
+    fn writing<'a>(view: &'a View, draft: &'a str) -> Composer<'a> {
+        Composer::Home {
+            home: "api",
+            speaker: "lead",
+            view: Some(view),
+            draft,
+        }
+    }
+
+    /// A composer browsing with `draft` kept.
+    fn browsing(draft: &str) -> Composer<'_> {
+        Composer::Home {
+            home: "api",
+            speaker: "lead",
+            view: None,
+            draft,
+        }
+    }
+
+    /// Row `y` from column `x` to the end, trailing blanks trimmed.
+    fn row_from(buf: &Buffer, y: u16, x: usize) -> String {
+        line(buf, y)[x..].concat().trim_end().to_owned()
+    }
+
+    fn column(x: usize) -> u16 {
+        u16::try_from(x).unwrap_or(0)
+    }
+
+    /// The composer is the address on its own row and the draft the rows
+    /// under it, from the column's left edge: the cursor follows the last
+    /// row, and writing draws no send hint.
     #[test]
-    fn a_draft_has_the_cells_from_its_address_to_the_column_end() {
-        for (width, height, start) in [(160, 43, 63), (100, 28, 53)] {
+    fn a_draft_sits_under_its_address_from_the_columns_left_edge() {
+        let shot = Shot::new();
+        let draft = drafted(&["first words", "second"]);
+        for (width, height) in [(100, 30), (60, 20)] {
+            let size = format!("{width}x{height}");
+            let (buf, layout) = shot.laid(width, height, writing(&draft, "first words second"));
+            let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+            assert_eq!(
+                ay,
+                height - 6,
+                "{size}: over two draft rows, the note, a blank"
+            );
+            assert_eq!(
+                row_from(&buf, ay, ax),
+                "to api › lead",
+                "{size}: alone on its row"
+            );
+            assert_eq!(spot(&buf, "first words"), Some((ay + 1, ax)), "{size}");
+            assert_eq!(spot(&buf, "second"), Some((ay + 2, ax)), "{size}");
+            assert_eq!(
+                layout.cursor,
+                Some(Position::new(column(ax + 6), ay + 2)),
+                "{size}: after the last row"
+            );
+            assert_eq!(buf[(column(ax), ay - 1)].symbol(), "─", "{size}: the rule");
+            let all: String = (0..height).map(|y| line(&buf, y).concat()).collect();
+            assert!(!all.contains("Enter sends"), "{size}: no send hint");
+        }
+    }
+
+    /// Browsing keeps the address on its row and shows a kept draft on the
+    /// input row under it, with its hint; with none the input row is blank.
+    #[test]
+    fn browse_shows_a_kept_draft_on_the_input_row() {
+        let shot = Shot::new();
+        for (draft, hint) in [
+            ("a kept thought", "draft kept · Enter writes"),
+            ("", "Enter writes"),
+        ] {
+            let (buf, layout) = shot.laid(100, 30, browsing(draft));
+            let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+            assert_eq!(ay, 25, "{draft:?}");
+            assert_eq!(row_from(&buf, ay, ax), "to api › lead", "{draft:?}");
+            assert_eq!(
+                row_from(&buf, ay + 1, ax),
+                draft,
+                "{draft:?}: the input row"
+            );
+            assert_eq!(row_from(&buf, ay + 2, ax), hint, "{draft:?}: the hint");
+            assert_eq!(layout.cursor, None, "{draft:?}");
+        }
+    }
+
+    /// A read-only, held or home-less composer keeps the block the others
+    /// do: its line on the address row, the input row blank under it.
+    #[test]
+    fn a_quiet_composer_keeps_the_block_and_leaves_the_input_row_blank() {
+        let shot = Shot::new();
+        for (composer, words) in [
+            (READ_ONLY, "read-only · owned elsewhere"),
+            (
+                Composer::Held {
+                    why: "owned elsewhere",
+                },
+                "not writing: owned elsewhere · Esc browses",
+            ),
+            (
+                Composer::NoHome,
+                "read-only · no home session: ae app <session> picks one",
+            ),
+        ] {
+            let (buf, _) = shot.laid(100, 30, composer);
+            let (ay, ax) = spot(&buf, words).expect("the quiet line");
+            assert_eq!(ay, 25, "{words}");
+            assert_eq!(row_from(&buf, ay, ax), words, "{words}");
+            assert_eq!(row_from(&buf, ay + 1, ax), "", "{words}: the input row");
+            assert_eq!(row_from(&buf, ay + 2, ax), "", "{words}: the note row");
+        }
+    }
+
+    /// A pending line takes the row under the composer, in full ink; writing
+    /// puts no hint on it otherwise.
+    #[test]
+    fn a_note_takes_the_row_under_the_composer_and_writing_has_no_hint() {
+        let mut shot = Shot::new();
+        let draft = drafted(&["hello"]);
+        let (buf, _) = shot.laid(100, 30, writing(&draft, "hello"));
+        let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+        assert_eq!(ay, 25);
+        assert_eq!(row_from(&buf, 27, ax), "", "no hint while writing");
+        shot.model.set_note(Some("q again to quit".to_owned()));
+        let (buf, _) = shot.laid(100, 30, writing(&draft, "hello"));
+        assert_eq!(spot(&buf, "q again to quit"), Some((27, ax)));
+    }
+
+    /// A click anywhere from the address row to the note row opens the
+    /// composer; the rule above and the blank row below are not it.
+    #[test]
+    fn the_compose_target_spans_the_address_the_draft_rows_and_the_note_row() {
+        let shot = Shot::new();
+        let draft = drafted(&["one", "two"]);
+        let (buf, layout) = shot.laid(100, 30, writing(&draft, "one two"));
+        let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+        let compose = |row| {
+            let click = Mouse {
+                kind: MouseKind::Click,
+                column: column(ax),
+                row,
+            };
+            matches!(layout.hit(click), Some(super::Hit::Compose))
+        };
+        assert!(!compose(ay - 1), "the rule");
+        for row in ay..ay + 4 {
+            assert!(compose(row), "row {row}: address, two draft rows, note");
+        }
+        assert!(!compose(ay + 4), "the blank row");
+    }
+
+    /// At the 40x8 floor the lane has no row: the header's rule is the
+    /// composer's top rule, every chat row is whole, and a scrolled lane
+    /// draws no newer-turns hint over the header.
+    #[test]
+    fn the_floor_size_keeps_every_chat_row_whole() {
+        let mut shot = Shot::new();
+        shot.lane = turns(150);
+        shot.model.wheel(true, 10, 100);
+        let (buf, _) = shot.laid(40, 8, browsing(""));
+        assert_eq!(spot(&buf, "to api › lead"), Some((3, 2)));
+        assert_eq!(spot(&buf, "Enter writes"), Some((5, 2)));
+        assert_eq!(buf[(2, 2)].symbol(), "─", "the rule");
+        assert!(line(&buf, 1).concat().contains("api"), "the header");
+        assert_eq!(spot(&buf, "newer turns"), None, "no hint over the header");
+        assert!(
+            row_from(&buf, 7, 0).trim_start().starts_with("browse"),
+            "the keys row"
+        );
+    }
+
+    /// A tall draft leaves the lane its floor: at 60x20 the composer grows
+    /// to eight draft rows and the lane keeps r3-r5, and no height from 13
+    /// up lets the biggest draft take the lane under it.
+    #[test]
+    fn a_tall_draft_leaves_the_lane_its_floor() {
+        let mut shot = Shot::new();
+        shot.lane = turns(40);
+        let area = Rect::new(0, 0, 60, 20);
+        assert_eq!(
+            super::composer_pane(area),
+            9,
+            "eight draft rows and one kept back"
+        );
+        let draft = drafted(&["row"; 8]);
+        let (buf, layout) = shot.laid(60, 20, writing(&draft, "row"));
+        let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+        assert_eq!(ay, 8);
+        assert_eq!(buf[(column(ax), 7)].symbol(), "─", "the rule");
+        assert_eq!(layout.page_rows, 3);
+        assert_eq!(
+            spot(&buf, "turn 39"),
+            Some((5, ax + 2)),
+            "the lane's last row"
+        );
+        assert_eq!(row_from(&buf, 6, ax), "", "the blank row over the rule");
+        for height in 13..=60 {
+            let rows = super::composer_pane(Rect::new(0, 0, 60, height)) - 1;
+            let draft = drafted(&["x"].repeat(rows));
+            let (_, layout) = shot.laid(60, height, writing(&draft, "x"));
+            assert!(
+                layout.page_rows >= usize::from(super::LANE_FLOOR),
+                "{height}: {} lane rows",
+                layout.page_rows
+            );
+        }
+    }
+
+    /// The address costs the draft no cell: a name that fills the column is
+    /// clipped on its own row, the draft keeps every cell of the one under
+    /// it, and the cursor stops on the last of them.
+    #[test]
+    fn a_long_address_is_clipped_on_its_row_and_the_draft_keeps_the_column() {
+        let shot = Shot::new();
+        let long = "h".repeat(60);
+        let area = Rect::new(0, 0, 60, 20);
+        let full = "x".repeat(super::draft_width(area, super::Split::default()));
+        let draft = drafted(&[full.as_str()]);
+        for home in ["api", long.as_str()] {
+            let composer = Composer::Home {
+                home,
+                speaker: "lead",
+                view: Some(&draft),
+                draft: &full,
+            };
+            let (buf, layout) = shot.laid(60, 20, composer);
+            let (ay, ax) =
+                spot(&buf, &format!("to {}", &home[..home.len().min(8)])).expect("the address");
+            assert_eq!(ay, 15, "{home}");
+            assert_eq!(row_from(&buf, ay + 1, ax), full, "{home}: every cell");
+            assert_eq!(
+                layout.cursor,
+                Some(Position::new(column(ax + full.len() - 1), ay + 1)),
+                "{home}: the last cell"
+            );
+        }
+    }
+
+    /// The cells a draft has are the column's: from its left edge to the
+    /// rule's end, with nothing taken for the address (frames calm, needs-you).
+    #[test]
+    fn a_draft_has_the_columns_cells_from_its_left_edge_to_its_rule_end() {
+        for (width, height) in [(160, 43), (100, 28)] {
             let buf = Shot::new().draw(width, height, READ_ONLY);
             let end = rule_end(&buf).expect("the rule");
+            let (_, left) = spot(&buf, "read-only").expect("the quiet line");
             let area = Rect::new(0, 0, width, height);
-            let address = super::address("api", Some("api"), "lead");
-            let cells = super::draft_width(area, super::Split::default(), &address);
-            assert_eq!(start + cells - 1, usize::from(end), "{width}x{height}");
+            let cells = super::draft_width(area, super::Split::default());
+            assert_eq!(left + cells - 1, usize::from(end), "{width}x{height}");
         }
     }
 

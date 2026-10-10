@@ -318,12 +318,14 @@ impl Rig {
         self.free();
     }
 
+    /// The row under the home composer's address row: where its draft shows.
     fn draft_row<'a>(&self, screen: &'a str) -> &'a str {
-        screen
-            .lines()
-            .rev()
-            .find(|row| row.contains("› lead") && row.contains(&self.home))
-            .expect("home composer row")
+        let rows: Vec<&str> = screen.lines().collect();
+        let address = rows
+            .iter()
+            .rposition(|row| row.contains("› lead") && row.contains(&self.home))
+            .expect("home composer address row");
+        rows.get(address + 1).expect("the draft row under it")
     }
 
     fn typed(&self, pane: &str, text: &str) {

@@ -76,9 +76,9 @@ fn chat_left(width: u16, height: u16) -> u16 {
 
 /// Project the independently reconstructed FULL sequence onto one window.
 fn reference(rows: &[String], area: Rect, scroll: usize) -> Buffer {
-    let (left, bottom) = (chat_left(area.width, area.height), area.height - 6);
+    let (left, bottom) = (chat_left(area.width, area.height), area.height - 7);
     let room = area.width - 2 - left;
-    let page = usize::from(area.height - 9);
+    let page = usize::from(area.height - 10);
     let last = rows.len().saturating_sub(scroll).max(page.min(rows.len()));
     let first = last.saturating_sub(page);
     let count = u16::try_from(last - first).expect("a page fits the pane");
@@ -124,7 +124,7 @@ fn drawn_chat_equals_the_full_reference_at_bottom_middle_and_top() {
         (160, 43),
     ] {
         let area = Rect::new(0, 0, width, height);
-        let page = usize::from(height - 9);
+        let page = usize::from(height - 10);
         let mut model = Model::new(&fleet);
         for pages in 0..=rows.len().div_ceil(page) + 2 {
             let screen = Screen {
@@ -148,7 +148,7 @@ fn drawn_chat_equals_the_full_reference_at_bottom_middle_and_top() {
             let mut actual = Buffer::empty(area);
             draw(&screen, &mut actual);
             let expected = reference(&rows, area, pages * page);
-            for y in 3..=height - 6 {
+            for y in 3..=height - 7 {
                 for x in chat_left(width, height)..width - 2 {
                     assert_eq!(
                         actual[(x, y)],

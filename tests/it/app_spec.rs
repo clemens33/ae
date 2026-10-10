@@ -1270,19 +1270,20 @@ fn app_draw_home_160x43() {
     assert!(text.contains("08:48"), "viewer clock on the turn");
     assert!(text.contains("to lead"), "the ask names its seat");
     assert!(
-        chat_text(&buf, 36, 44).contains("hello lane"),
+        chat_text(&buf, 35, 44).contains("hello lane"),
         "the newest sits just above the blank"
     );
     assert!(
-        chat_text(&buf, 37, 44).trim_start().is_empty(),
+        chat_text(&buf, 36, 44).trim_start().is_empty(),
         "a blank parts the turn from the composer"
     );
     for x in 47..157 {
-        assert_eq!(cell_at(&buf, x, 38).symbol(), "─", "composer rule {x}");
+        assert_eq!(cell_at(&buf, x, 37).symbol(), "─", "composer rule {x}");
     }
-    assert_eq!(cell_at(&buf, 47, 39).symbol(), "t");
-    assert!(row_text(&buf, 39).contains("to api › lead"));
-    assert!(row_text(&buf, 39).contains("check the scopes"));
+    assert_eq!(cell_at(&buf, 47, 38).symbol(), "t");
+    assert_eq!(chat_text(&buf, 38, 44).trim_start(), "to api › lead");
+    assert_eq!(cell_at(&buf, 47, 39).symbol(), "c");
+    assert_eq!(chat_text(&buf, 39, 44).trim_start(), "check the scopes");
     assert_eq!(
         chat_text(&buf, 40, 44).trim_start(),
         "draft kept · Enter writes"
@@ -1352,7 +1353,7 @@ fn app_draw_non_home_address_names_the_selected_target() {
     let head = row_text(&buf, 1);
     assert!(head.contains("infra"), "the target is named");
     assert_eq!(
-        chat_text(&buf, 39, 44).trim_start(),
+        chat_text(&buf, 38, 44).trim_start(),
         "to infra (not home) › lead",
         "the drawn address names the non-home target"
     );
@@ -1407,7 +1408,7 @@ fn app_draw_no_home_names_the_selected_target() {
     assert!(row_text(&buf, 1).contains("docs"));
     assert!(!row_text(&buf, 1).contains("viewed from"));
     assert_eq!(
-        chat_text(&buf, 39, 44).trim_start(),
+        chat_text(&buf, 38, 44).trim_start(),
         "to docs (not home) › lead"
     );
     assert!(all_text(&buf).contains("Enter writes"));
@@ -1824,7 +1825,7 @@ fn app_draw_home_not_owner_is_read_only() {
     draw(&screen, &mut buf);
     assert!(!row_text(&buf, 1).contains("viewed from"));
     assert_eq!(
-        chat_text(&buf, 39, 44).trim_start(),
+        chat_text(&buf, 38, 44).trim_start(),
         "read-only · owned elsewhere"
     );
 }

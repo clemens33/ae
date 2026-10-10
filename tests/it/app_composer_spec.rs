@@ -217,7 +217,7 @@ impl Rig {
                     // keeps it but can leave the old grown window too tall.
                     let composing = writing(&f.text);
                     let cap = if composing {
-                        height.saturating_sub(11).clamp(1, 10)
+                        height.saturating_sub(12).clamp(1, 10)
                     } else {
                         1
                     };
@@ -226,7 +226,7 @@ impl Rig {
                         row.chars().count() == width
                             && (row.contains("Enter send") || row.contains("Enter write"))
                     }) && f.text.lines().enumerate().any(|(row, text)| {
-                        row >= height - 3 - cap && row <= height - 4 && text.contains(&address)
+                        row >= height - 4 - cap && row <= height - 5 && text.contains(&address)
                     })
                 }
         })
@@ -245,13 +245,13 @@ impl Rig {
 
     fn composer(&self, frame: &Frame) -> (usize, usize, Vec<String>) {
         let (column, top) = cell(&frame.text, &self.address());
-        let text_column = column + self.address().chars().count() + 3;
+        let text_column = column;
         let height = frame.text.lines().count();
         let rows = frame
             .text
             .lines()
-            .skip(top)
-            .take((height - 3).saturating_sub(top))
+            .skip(top + 1)
+            .take((height - 3).saturating_sub(top + 1))
             .map(|row| {
                 row.chars()
                     .skip(text_column)
@@ -267,13 +267,13 @@ impl Rig {
         let (text_column, top, drawn) = self.composer(frame);
         assert_eq!(
             drawn, rows,
-            "whole draft window, first-row address and subsequent indentation"
+            "whole draft window under the address, from the column's left edge"
         );
         let height = frame.text.lines().count();
         assert_eq!(
             top,
-            height - 3 - rows.len(),
-            "grown composer consumes lane rows, not hint/keys"
+            height - 4 - rows.len(),
+            "grown composer consumes lane rows, not note/keys"
         );
         assert!(writing(&frame.text));
         assert!(
@@ -286,13 +286,13 @@ impl Rig {
         );
         assert_eq!(
             frame.cursor,
-            (1, text_column + before_cells, top + cursor_row),
+            (1, text_column + before_cells, top + 1 + cursor_row),
             "physical writing cursor"
         );
         assert_eq!(
             frame.text.matches(&self.address()).count(),
             1,
-            "address only on the first row"
+            "the address once, on its own row"
         );
     }
 }
@@ -329,7 +329,7 @@ fn last_space_wrap_keeps_both_rows_and_display_wrap_does_not_change_submission()
     rig.resize(&pane, 100, 30);
     let blank = rig.writing(&pane);
     let (column, _, _) = rig.composer(&blank);
-    let width = 98 - column; // two-cell gutter, drawn address, ASCII draft
+    let width = 98 - column; // two-cell gutter, ASCII draft
     let prefix = "A".repeat(width - 4);
     let raw = format!("{prefix} xyzQ");
     let frame = rig.paste(&pane, &raw, "xyzQ");
@@ -400,7 +400,13 @@ fn inserting_at_the_start_pushes_a_word_across_the_wrap_without_losing_it() {
         &pane,
         FRAME,
         "GUARD inserted prefix reached cursor row",
-        |f| f.text.contains("lead   z"),
+        |f| {
+            let rows: Vec<&str> = f.text.lines().collect();
+            rows.iter()
+                .position(|row| row.contains(&rig.address()))
+                .and_then(|address| rows.get(address + 1))
+                .is_some_and(|row| row.trim_end().ends_with(" z"))
+        },
     );
     rig.holds(
         &frame,
@@ -524,8 +530,8 @@ fn short_window_shrinks_composer_first_and_preserves_three_lane_rows() {
     rig.resize(&pane, 100, 16);
     rig.writing(&pane);
     let frame = rig.paste(&pane, &lines(20), "L19");
-    let rows = strings(&["… +16 lines above", "L16", "L17", "L18", "L19"]);
-    rig.holds(&frame, &rows, 4, 3);
+    let rows = strings(&["… +17 lines above", "L17", "L18", "L19"]);
+    rig.holds(&frame, &rows, 3, 3);
     assert_eq!(
         rig.composer(&frame).1,
         8,
@@ -546,12 +552,12 @@ fn short_window_shrinks_composer_first_and_preserves_three_lane_rows() {
 fn one_and_two_row_windows_omit_markers_but_show_the_cursor_window() {
     let rig = Rig::new("cwtiny", 0);
     let pane = rig.open();
-    rig.resize(&pane, 100, 13);
+    rig.resize(&pane, 100, 14);
     rig.writing(&pane);
     let frame = rig.paste(&pane, &lines(20), "L19");
     rig.holds(&frame, &strings(&["L18", "L19"]), 1, 3);
     assert!(!frame.text.contains("lines above") && !frame.text.contains("lines below"));
-    let small = rig.resize(&pane, 100, 12);
+    let small = rig.resize(&pane, 100, 13);
     rig.holds(&small, &strings(&["L19"]), 0, 3);
     assert!(!small.text.contains("lines above") && !small.text.contains("lines below"));
 }
@@ -566,8 +572,8 @@ fn resize_recomputes_the_window_and_hides_cursor_below_minimum() {
     let small = rig.resize(&pane, 100, 16);
     rig.holds(
         &small,
-        &strings(&["… +16 lines above", "L16", "L17", "L18", "L19"]),
-        4,
+        &strings(&["… +17 lines above", "L17", "L18", "L19"]),
+        3,
         3,
     );
     assert!(!small.text.contains("L11"), "no stale grown rows");
@@ -709,7 +715,7 @@ fn leaving_writing_compacts_kept_draft_and_discards_the_old_grown_hit_target() {
     assert_eq!(kept.cursor.0, 0);
     assert_eq!(
         cell(&kept.text, &rig.address()).1,
-        41,
+        40,
         "browse composer is one row"
     );
     rig.report(&pane, 0, column, old_top, 1);
@@ -757,7 +763,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
         f.text.contains("not writing:")
     });
     assert_eq!(held.cursor.0, 0);
-    assert_eq!(cell(&held.text, "not writing:").1, 41, "Held stays compact");
+    assert_eq!(cell(&held.text, "not writing:").1, 40, "Held stays compact");
     rig.send(&pane, "\x1b");
     let browse = rig.wait(&pane, FRAME, "GUARD held exits to browse", |f| {
         f.text.contains("Enter writes")
@@ -768,7 +774,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
         f.text.contains("zzstop is stopped")
     });
     assert_eq!(foreign.cursor.0, 0);
-    assert_eq!(cell(&foreign.text, "zzstop is stopped").1, 41);
+    assert_eq!(cell(&foreign.text, "zzstop is stopped").1, 40);
     drop(lease);
     let (home_x, home_y) = foreign
         .text
@@ -786,7 +792,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
         f.text.contains("Enter writes")
     });
     rig.writing(&pane);
-    rig.paste(&pane, "memory", "lead   memory");
+    rig.paste(&pane, "memory", "memory");
     fs::remove_file(rig.tool.dir.join("meta")).expect("revoke home proof");
     let revoked = rig.wait(&pane, WAIT, "GUARD refresh revoked writing", |f| {
         f.text.contains("not writing:") && !writing(&f.text)
@@ -797,7 +803,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
         f.text.contains("read-only ·")
     });
     assert_eq!(read_only.cursor.0, 0);
-    assert_eq!(cell(&read_only.text, "read-only ·").1, 41);
+    assert_eq!(cell(&read_only.text, "read-only ·").1, 40);
 }
 
 #[test]
@@ -841,7 +847,7 @@ fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
         "B2 no home needed to write"
     );
     assert_eq!(outside.cursor.0, 0);
-    assert_eq!(cell(&outside.text, &address).1, 41);
+    assert_eq!(cell(&outside.text, &address).1, 40);
     rig.send(&pane, "qq");
     let left = rig.wait(&pane, FRAME, "GUARD terminal left app", |f| {
         f.text.contains("C1-LEFT")

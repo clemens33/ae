@@ -676,20 +676,20 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
     let before = rig.wait(&pane, MOVE, "long draft drawn", |screen| {
         screen.contains("wrap-end")
     });
-    let address = format!("to {} › lead   ", rig.name);
+    let address = format!("to {} › lead", rig.name);
     let composer = |screen: &str| {
         let (top, column) = screen
             .lines()
             .enumerate()
             .find_map(|(row, line)| {
                 line.find(&address)
-                    .map(|at| (row, line[..at].chars().count() + address.chars().count()))
+                    .map(|at| (row, line[..at].chars().count()))
             })
             .expect("drawn composer address");
         let rows = screen
             .lines()
-            .skip(top)
-            .take(27 - top)
+            .skip(top + 1)
+            .take(26 - top)
             .map(|row| {
                 row.chars()
                     .skip(column)
@@ -704,10 +704,10 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
         composer(&before),
         (
             24,
-            58,
-            vec!["a".repeat(40), "a".repeat(40), "wrap-end".to_owned()]
+            37,
+            vec!["a".repeat(61), format!("{}wrap-end", "a".repeat(19))]
         ),
-        "whole draft: 80 cells wrap exactly twice at 40 cells"
+        "whole draft: 88 cells wrap once at the 61-cell column"
     );
     assert_eq!(
         rig.tmux(&[
@@ -718,27 +718,21 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
             "#{cursor_flag},#{cursor_x},#{cursor_y}"
         ])
         .trim(),
-        "1,66,26"
+        "1,64,26"
     );
     rig.grab_vertical(&pane, 56);
     let after = rig.vertical(&pane, 56);
     assert!(writing(&after), "drag keeps composing active");
     assert!(after.contains("wrap-end"), "draft kept");
-    // Whole draft after the drag: 80 = 4*18 + 8, then wrap-end.
+    // Whole draft after the drag: 80 = 2*39 + 2, then wrap-end.
     assert_eq!(
         composer(&after),
         (
-            22,
-            80,
-            vec![
-                "a".repeat(18),
-                "a".repeat(18),
-                "a".repeat(18),
-                "a".repeat(18),
-                "aaaaaaaawrap-end".to_owned()
-            ]
+            23,
+            59,
+            vec!["a".repeat(39), "a".repeat(39), "aawrap-end".to_owned()]
         ),
-        "all rows indent under the address at the resized 18-cell draft width"
+        "the whole draft wraps at the resized 39-cell column"
     );
     assert_eq!(
         rig.tmux(&[
@@ -749,7 +743,7 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
             "#{cursor_flag},#{cursor_x},#{cursor_y}"
         ])
         .trim(),
-        "1,96,26"
+        "1,69,26"
     );
     rig.release(&pane, 56, 1);
 }

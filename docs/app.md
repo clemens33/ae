@@ -53,10 +53,11 @@ recorded config first.
 - **Chat** column: the selected session's lane, newest at the bottom, with its
   coverage rows, then the composer. Only the rows on screen and a page beyond
   are drawn: older turns are drawn as you scroll back to them, and the oldest
-  stops the scroll. The composer is one row while browsing; while writing it
-  grows with the draft to ten rows, taking them from the lane, which keeps at
-  least three rows: a short pane shrinks the composer first, to one row at
-  least. A resize sizes it again, and leaving writing gives the rows back.
+  stops the scroll. The composer is its address row and one input row while
+  browsing; while writing the input grows with the draft to ten rows, taking
+  them from the lane, which keeps at least three rows: a short pane shrinks
+  the composer first, to one input row at least. A resize sizes it again, and
+  leaving writing gives the rows back.
 
 The session list takes two thirds of the rows it shares with the tab body,
 and never fewer than the 11 rows (18 from 40 high) it once had, though never
@@ -167,12 +168,12 @@ Writing: the draft is the chat's own input — a line asks the speaker,
 `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
 five asks open at most; see [Input](chat.md#input). The composer shows the
 whole draft as the chat does — the same wrap, each pasted line break its own
-row, the rest indented under the first text cell, and past its rows the window
+row, all of it under the address row from the column's left edge, and past its rows the window
 around the cursor with `… +N lines above` and `… +N lines below` among them
 (no markers below three rows) — and the terminal cursor sits where the next
 character goes. The cursor shows only while writing with the composer drawn:
-browsing, a held composer and Settings hide it. Every composer row and its hint
-row are one click target. `Enter` sends, `Esc` goes back to browsing and keeps
+browsing, a held composer and Settings hide it. The address row, every draft row
+and the note row under them are one click target. `Enter` sends, `Esc` goes back to browsing and keeps
 the draft. `^C` over a non-empty draft only arms (`^C again to quit - the draft is lost`): a second within 2 seconds quits and any other key disarms; over an empty composer it quits at once. `/open <seat>` opens that seat of the selected session
 ([Opening a seat](#opening-a-seat)). While an ask is being delivered the hint row reads `sending to <seat>…`
 and nothing behind it acts until it ends. Each outcome shows once, as an `ae`
@@ -294,7 +295,7 @@ An app writes the selected session only while it holds that session's
 **writer lease**, the lock file `.console-writer.lock`: one app at a time per
 session, in any pane or outside tmux, and at most one lease per app. No key or
 wheel notch moves the selection while writing; a click on a session row leaves
-writing first. The composer names its target: `to <session> › <speaker>` at
+writing first. The composer names its target on its own row: `to <session> › <speaker>` at
 home, `to <session> (not home) › <speaker>` anywhere else. A stopped session,
 one with no recorded `session_id`, one whose lead pair cannot be read and one
 not recorded in this state root are read-only and say why.
