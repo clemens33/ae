@@ -138,6 +138,9 @@ Browsing:
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `n` / `p` | highlight the next / previous seat the tab body shows |
 | `PgUp` / `PgDn` | scroll the chat a page |
+| `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
+| `y` | copy the marked turn ([Copying a turn](#copying-a-turn)) |
+| Click a turn | mark it; clicking the marked turn again unmarks it |
 | Click session row | select that session |
 | Click a seat row | highlight that seat |
 | Click Overview / Agents | show that tab |
@@ -200,7 +203,7 @@ again; while the session is not proven, `Enter` stays held. The other app lettin
 does not start writing by itself.
 
 While writing, clicking a session row or tab returns to browsing and keeps the
-draft, then selects the row or tab. Blank rows and the "more" row do nothing.
+draft, then selects the row or tab (a turn: marks it). Blank rows and the "more" row do nothing.
 A press within a cell of a border grabs it unless a row or tab is drawn there.
 Any key, paste, press or wheel notch ends a drag whose release never arrived,
 then acts as it always does.
@@ -259,6 +262,41 @@ window selection (tmux session state, as the fleet picker does). The client
 list is read last, right before the move; a client that detaches in that
 instant makes the move fail with `uncertain`. The cursor steps only through the
 rows drawn.
+
+## Copying a turn
+
+The app captures the mouse, so a drag selects nothing. To copy one turn out of
+the chat, mark it and press `y`.
+
+A turn is marked by a click on it, or by `[` / `]` in browse mode (they are
+draft text while writing and swallowed in Settings). The mark shows as a bar in
+the first cell of each body row (`|` with icons off) and the speaker restyled,
+and the chat scrolls to keep the turn in view. It stays after a copy, so `y`
+repeats, and clears when you select another session; opening and closing
+Settings keeps it, and `Esc` keeps its usual job. A click while writing returns to
+browsing, keeps the draft, then marks.
+
+`y` copies the turn's body only, not its `speaker time` line: the recorded text
+with every control byte except line breaks and tabs shown as U+FFFD, and
+nothing added. It goes to tmux's default paste buffer (`prefix ]` pastes it)
+with `tmux load-buffer`, and also to the terminal clipboard (OSC 52) of the one
+client provably showing the app: the clients whose active pane is the app's,
+the one with the newest input. None or a tie names nobody, and the buffer is
+still loaded. The hint row says what happened for a few seconds, and never
+that the clipboard was reached, because tmux gives no acknowledgement:
+
+| Hint row | Meaning |
+|---|---|
+| `copied N lines to the tmux buffer; terminal clipboard if your terminal allows it` | loaded, with a client named |
+| `copied N lines to the tmux buffer only - <why>` | loaded, no client named: `no tmux client is showing this app`, `two clients showing this app were active in the same second`, `the tmux clients did not answer` or `the client name failed its grammar` |
+| `copied N lines (preview only: <why>) to the tmux buffer…` | the text is not the whole body ([Residuals](#residuals)) |
+| `copy failed: …` | tmux refused the load, or the app is not inside tmux (then it says to hold Shift/Option and drag to select) |
+| `no turn marked - click one or press [ ]`, `nothing to copy: that turn has no text`, `that turn changed or left the lane - mark it again` | nothing was copied; the last one also clears the mark |
+
+The terminal must take OSC 52 and let tmux use it. iTerm2: Settings > General >
+Selection > "Applications in terminal may access clipboard". Terminal.app has
+no OSC 52. Alacritty needs `set -as terminal-features ',alacritty*:clipboard'`
+in tmux. The paste buffer works regardless.
 
 ## Settings
 
@@ -396,7 +434,10 @@ that stopped says so on the line above.
   and every other app from writing until it leaves writing or quits.
 - Mouse dragging does not select text in the app. Hold Shift (Option in iTerm)
   for terminal text selection; inside tmux an ordinary drag goes to the app.
+  One turn copies with [Copying a turn](#copying-a-turn).
 - Dragging a border needs button-event mouse reports (`?1002h`) in SGR form;
   a terminal that sends only legacy X10 reports gets no drag. Inside tmux a
   binding that replaces the default `MouseDrag1Pane` keeps drags from the app.
 - Dragged sizes are not remembered when the app quits.
+- A copy is the whole recorded body for transcript turns, an admitted answer and a short `say` line. An ask, a bridge message, a not-delivered line and a card or needs-you line copy the journal's summary (line breaks flattened, 600 characters), a `say` of 3500 characters or more its capped summary, a bridge reply nothing (the record keeps no body) and an unadmitted reply stays a preview; the hint row says `preview only` for each. An answer whose body could not be read copies its summary with the reason.
+- A turn is named by a 64-bit fingerprint of its record, so two identical records mark together. `[` / `]` stop at the oldest row the last frame produced; a second press after the next frame goes on. tmux keeps 50 buffers by default, so the 51st copy drops the oldest.
