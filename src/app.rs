@@ -5427,4 +5427,74 @@ mod tests {
         assert!(app.click(press(47, row)));
         assert_eq!(app.model.turn(), None, "a second press unmarks it");
     }
+
+    /// On a lane taller than the window a press finds the turn drawn on its
+    /// row, the gap row under a turn finds none, and the frame keeps each
+    /// turn above the newer ones plus that one gap row.
+    #[test]
+    fn a_press_finds_the_turn_drawn_on_the_row() {
+        let bodies: Vec<String> = (0..30).map(|at| format!("word{at:02}")).collect();
+        let mut app = turned(&bodies.iter().map(String::as_str).collect::<Vec<_>>());
+        let drawn = framed(&mut app);
+        let hit = |row: usize| {
+            let (column, row) = (47, u16::try_from(row).expect("row"));
+            match app.layout.hit(super::Mouse {
+                kind: super::MouseKind::Click,
+                column,
+                row,
+            }) {
+                Some(super::draw::Hit::Turn(key)) => Some(key),
+                _ => None,
+            }
+        };
+        let body = |at: usize| {
+            drawn
+                .lines()
+                .position(|l| l.contains(&format!("word{at:02}")))
+        };
+        let (first, last) = (0..30).fold((30, 0), |(lo, hi), at| match body(at) {
+            Some(_) => (lo.min(at), hi.max(at)),
+            None => (lo, hi),
+        });
+        assert!(first > 0 && last == 29, "the window is not the whole lane");
+        for at in first..=last {
+            let row = body(at).expect("a drawn body");
+            assert_eq!(hit(row), Some(key_of(&app, at)), "the body row of {at}");
+            assert_eq!(hit(row + 1), None, "the gap under {at}");
+        }
+        let spans: Vec<_> = app.layout.turns.iter().map(|t| (t.1, t.2)).collect();
+        assert_eq!(spans[0].0, 0, "nothing beneath the newest turn");
+        assert!(spans.windows(2).all(|w| w[1].0 == w[0].0 + w[0].1 + 1));
+    }
+
+    /// With none marked `[` / `]` take the newest turn the window shows (a
+    /// turn is shown when one of its rows is), and `[` brings an older turn
+    /// in by the least scroll.
+    #[test]
+    fn the_turn_keys_follow_the_rows_in_view() {
+        let mut app = turned(&["a", "b", "c"]);
+        let (old, mid, new) = (key_of(&app, 0), key_of(&app, 1), key_of(&app, 2));
+        app.layout.page_rows = 5;
+        app.layout.turns = vec![(new, 0, 3), (mid, 4, 3), (old, 8, 3)];
+        let mark = |app: &mut App, scroll: usize| {
+            app.model.set_turn(None);
+            app.model.reveal(scroll, scroll + 5, 5);
+            (app.step_turn(false), app.model.turn())
+        };
+        assert_eq!(
+            mark(&mut app, 6),
+            (true, Some(mid)),
+            "newest is out of view"
+        );
+        assert_eq!(
+            mark(&mut app, 3),
+            (true, Some(mid)),
+            "its top edge is the window's"
+        );
+        assert_eq!(mark(&mut app, 0), (true, Some(new)), "newest in view");
+        assert!(app.step_turn(true));
+        assert_eq!(app.model.scroll_rows(5), 2, "the least scroll shows `mid`");
+        app.layout.turns = vec![(new, 5, 3)];
+        assert_eq!(mark(&mut app, 0), (false, None), "wholly out of the window");
+    }
 }
