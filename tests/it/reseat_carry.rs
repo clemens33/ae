@@ -758,3 +758,288 @@ fn a_clear_that_fails_after_the_marker_leaves_the_seat_able_to_resume() {
         "and nothing about the seat moved"
     );
 }
+// Frozen NAV acceptance. Append byte-identically to tests/it/reseat_carry.rs.
+// Existing helpers run a real private tmux server with external harness fakes.
+const AUTO_KEY: &str = "2026-09-25T10:00:00Z";
+
+fn automatic_carry(rig: &Rig, to: &str) -> String {
+    use std::io::Write as _;
+    let pane = running_seat(rig);
+    rig.mark_limited(&pane);
+    let config = rig.scratch.join("config");
+    let text = std::fs::read_to_string(&config).unwrap_or_else(|why| panic!("config: {why}"));
+    std::fs::write(
+        config,
+        format!("{text}auto_reseat = on\n[auto_reseat]\nfake-claude-a = {to}\n"),
+    )
+    .unwrap_or_else(|why| panic!("candidate: {why}"));
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_ae"), rig.dir.join("send"))
+        .unwrap_or_else(|why| panic!("helper: {why}"));
+    for (action, reference) in [("limit", ""), (ae::autoreseat::ATTEMPT_ACTION, AUTO_KEY)] {
+        let line = format!(
+            "{{\"ts\":\"{AUTO_KEY}\",\"actor\":\"watchdog\",\"action\":\"{action}\",\"target\":\"scout\",\"target_slot\":\"spawned.0\",\"target_session\":\"{}\",\"ref\":\"{reference}\"}}\n",
+            rig.session
+        );
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(rig.dir.join("events.jsonl"))
+            .unwrap_or_else(|why| panic!("journal: {why}"))
+            .write_all(line.as_bytes())
+            .unwrap_or_else(|why| panic!("episode: {why}"));
+    }
+    pane
+}
+
+fn automatic_leg(rig: &Rig) -> (Option<i32>, String) {
+    let out = super::cli::ae()
+        .env("TMUX", format!("{},0,0", rig.sock.display()))
+        .env("TMUX_PANE", &rig.main_pane)
+        .env("AE_HOME", &rig.scratch)
+        .env("HOME", rig.scratch.join("home"))
+        .env("AE_SEND_DEFER_SEC", "0")
+        .env_remove("AE_SENDER_OVERRIDE")
+        .arg("_auto-reseat")
+        .arg(&rig.dir)
+        .args(["spawned.0", AUTO_KEY])
+        .output()
+        .unwrap_or_else(|why| panic!("leg: {why}"));
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn automatic_carried_reseat_gets_one_authorized_continuation_and_keeps_its_conversation() {
+    use std::io::Write as _;
+    let rig = Rig::new("autokick");
+    let pane = automatic_carry(&rig, "fake-claude-b");
+    let pending = "PENDING-BODY-MUST-NOT-BE-RESENT";
+    write(
+        &rig.dir.join("memo.tsv"),
+        b"2026-09-25T10:00:00Z\tscout\tparking\tparked scope stays parked\n",
+    );
+    let memo_before = std::fs::read(rig.dir.join("memo.tsv")).expect("memo");
+    let mut log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(rig.dir.join("events.jsonl"))
+        .expect("journal");
+    writeln!(log, "{{\"ts\":\"{AUTO_KEY}\",\"actor\":\"scout\",\"actor_slot\":\"spawned.0\",\"actor_session\":\"{}\",\"action\":\"ask\",\"target\":\"lead\",\"target_slot\":\"main\",\"target_session\":\"{}\",\"ref\":\"ae-20260925T100000Z-00000001\",\"summary\":\"{pending}\"}}", rig.session, rig.session).expect("pending request");
+    let (code, err) = automatic_leg(&rig);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        rig.tool_pid(&pane, "claude").is_some(),
+        "replacement observed"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude-b");
+    assert_eq!(rig.meta_row("harness_session.spawned.0"), ID);
+    let transcript = account(&rig, "b")
+        .join("projects")
+        .join(ae::carry::project_key(&work_dir(&rig)))
+        .join(format!("{ID}.jsonl"));
+    assert_eq!(
+        std::fs::read(transcript).expect("carried bytes"),
+        TRANSCRIPT
+    );
+    assert!(
+        rig.launched().contains(&format!("--resume {ID}")),
+        "{}",
+        rig.launched()
+    );
+    let received = rig.received();
+    assert_eq!(
+        received.matches("⟦ae:").count(),
+        1,
+        "one continuation: {received}"
+    );
+    let words = received.to_lowercase();
+    for part in [
+        "reseat",
+        "auto",
+        "state",
+        "pending",
+        "request",
+        "memo",
+        "brief",
+        "authorized",
+        "wait",
+        "park",
+    ] {
+        assert!(
+            words.contains(part),
+            "continuation missing {part}: {received}"
+        );
+    }
+    assert!(
+        !received.contains(pending),
+        "never replay pending request bodies"
+    );
+    assert!(
+        !received.contains("seed pack"),
+        "carried history needs no second seed"
+    );
+    assert_eq!(
+        std::fs::read(rig.dir.join("memo.tsv")).expect("memo"),
+        memo_before
+    );
+    let events = rig.events();
+    assert_eq!(
+        events.matches(pending).count(),
+        1,
+        "pending ledger preserved"
+    );
+    assert!(!events.contains("\"action\":\"reply\""), "no forged answer");
+    let launches = rig.launched();
+    let _ = automatic_leg(&rig);
+    assert_eq!(rig.received(), received, "closed episode cannot kick twice");
+    assert_eq!(rig.launched(), launches, "no second move");
+}
+
+#[test]
+fn fresh_automatic_and_manual_carried_reseats_do_not_get_a_second_continuation() {
+    let manual = Rig::new("manualnokick");
+    dead_seat(&manual);
+    let (code, out, err) = reseat(&manual, "fake-claude-b");
+    assert_eq!(code, Some(0), "out={out} err={err}");
+    assert!(
+        manual.received().is_empty(),
+        "manual carried reseat unchanged"
+    );
+    let fresh = Rig::new("freshnokick");
+    automatic_carry(&fresh, "fake-opencode");
+    let (code, err) = automatic_leg(&fresh);
+    assert_eq!(code, Some(0), "{err}");
+    let received = fresh.received();
+    assert_eq!(
+        received.matches("⟦ae:").count(),
+        1,
+        "one seed only: {received}"
+    );
+    assert_eq!(received.matches("## 10. successor instructions").count(), 1);
+}
+
+#[test]
+fn a_blocked_auto_continuation_leaves_the_move_intact_and_reports_an_explicit_next_step() {
+    for (tag, draft) in [("kickdraft", true), ("kickunreadable", false)] {
+        let rig = Rig::new(tag);
+        let pane = automatic_carry(&rig, "fake-claude-b");
+        // Only the resumed external fake opens a draft/unreadable composer. The old
+        // seat remains eligible for reseat; delivery must respect the new one.
+        let script = rig.scratch.join("claude.pl");
+        let fake = std::fs::read_to_string(&script).expect("fake");
+        let changed = if draft {
+            let on_resume = format!(
+                "use strict;\nif (grep {{ $_ eq '--resume' }} @ARGV) {{ open(my $f, '>', '{}') or die; close($f); }}",
+                rig.scratch.join("__DRAFT__").display()
+            );
+            fake.replacen("use strict;", &on_resume, 1)
+        } else {
+            assert!(fake.contains("my $frame = 1;"));
+            fake.replacen(
+                "my $frame = 1;",
+                "my $frame = (grep { $_ eq '--resume' } @ARGV) ? 0 : 1;",
+                1,
+            )
+        };
+        std::fs::write(script, changed).expect("resumed fake");
+        let (_, err) = automatic_leg(&rig);
+        assert_eq!(
+            rig.meta_row("profile.spawned.0"),
+            "fake-claude-b",
+            "move intact: {err}"
+        );
+        assert_eq!(rig.meta_row("harness_session.spawned.0"), ID);
+        assert!(
+            rig.tool_pid(&pane, "claude").is_some(),
+            "replacement stays up"
+        );
+        assert!(
+            rig.received().is_empty(),
+            "draft/unreadable gets no paste: {}",
+            rig.received()
+        );
+        let events = rig.events();
+        let chat: Vec<_> = events
+            .lines()
+            .filter_map(|line| ae::events::Event::parse_line(line).ok())
+            .filter(|event| event.action == "chat")
+            .collect();
+        assert_eq!(chat.len(), 1, "one truthful notice: {events}");
+        let notice = chat[0]
+            .summary
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase();
+        assert!(
+            notice.contains("moved") && notice.contains("nudge"),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("unconfirmed")
+                || notice.contains("refused")
+                || notice.contains("undelivered"),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("next:") && !notice.contains("next: nothing"),
+            "explicit recovery: {notice}"
+        );
+        assert!(
+            !notice.contains("move failed")
+                && !notice.contains("relaunch")
+                && !notice.contains("reseat it"),
+            "never suggest another move: {notice}"
+        );
+        let launches = rig.launched();
+        let _ = automatic_leg(&rig);
+        assert_eq!(rig.launched(), launches, "no automatic retry move");
+        assert_eq!(
+            rig.events(),
+            events,
+            "failure already observable; no duplicate retry"
+        );
+    }
+}
+#[test]
+fn a_failed_continuation_keeps_status_and_safe_recovery_with_maximum_agent_names() {
+    use ae::autoreseat::{Ending, Move, NOTICE_CHARS, Nudge, notice};
+    let agent = "n".repeat(64);
+    assert!(ae::config::is_agent_name(&agent));
+    let profile = "p".repeat(64);
+    let model = "m".repeat(100);
+    for (nudge, status, guard) in [
+        (
+            Nudge::Unconfirmed,
+            "unconfirmed",
+            "only if the nudge still sits in its input box",
+        ),
+        (
+            Nudge::Refused,
+            "refused or unrecorded",
+            "only if no nudge reached its pane",
+        ),
+    ] {
+        let moved = Move {
+            from: &profile,
+            to: &profile,
+            tool: ("claude", "claude"),
+            model: (&model, &model),
+            carried: Some(nudge),
+            critical: true,
+            dirty: true,
+            cause: "",
+        };
+        let shown = notice("aedev", &agent, &Ending::Moved(moved));
+        assert!(shown.chars().count() <= NOTICE_CHARS);
+        assert!(
+            shown.contains("continuation nudge") && shown.contains(status),
+            "{shown}"
+        );
+        assert!(shown.contains("Next:") && shown.contains("peek"), "{shown}");
+        assert!(
+            shown.contains(guard),
+            "safe resend condition clipped: {shown}"
+        );
+    }
+}

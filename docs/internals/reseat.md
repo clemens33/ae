@@ -425,6 +425,16 @@ which ends no declaration. Refusals and failures the trigger closes itself are
 chat-only; the two endings a forged argv can reach journal their record and say
 nothing further.
 
+A CARRIED move hands the moved seat one turn before it is told about: its
+conversation came along, so no seed pack did. After the `-done` record, the leg
+sends one continuation (re-declare, check requests, memo and brief, resume only
+authorized work, keep real waits and parked scope) through the same `send`
+helper and its guards, journaled as `auto-reseat-notice` to the seat. The
+notice's `Next:` then says the nudge was submitted only on the helper's exit 0
+and its own unmarked record; `unconfirmed` or `refused or unrecorded` name a
+peek before any resend. A notice over its bound loses details, never that step.
+Nothing retries the nudge, and a seeded move gets none.
+
 The records are `auto-reseat` (the attempt, quoting from and to),
 `auto-reseat-held` (a hold before an attempt, or a transient refusal of one),
 `auto-reseat-done` (the seat moved, `ref` the profile left),

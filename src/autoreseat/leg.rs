@@ -588,6 +588,9 @@ pub(crate) fn run(
                 .unwrap_or_else(unknown);
             let dirty = crate::meta::resolve_seat_dir(&after, &argv.slot)
                 .is_ok_and(|wdir| crate::git::work_tree_dirty(wdir.as_bytes()));
+            // AFTER the move's own record: the episode is closed before the
+            // seat is handed anything, so nothing retries or repeats the turn.
+            let carried = carried.then(|| nudge(&argv, &agent));
             notice(super::Ending::Moved(super::Move {
                 from: &profile,
                 to: &named(&pick),
@@ -780,6 +783,45 @@ fn said(argv: &Argv, now: Timestamp, text: &str) {
         "",
         text,
     ));
+}
+
+/// The ONE turn a carried move hands its seat: its conversation came along, so
+/// no seed pack does, and without a turn the seat sits idle in it.
+const CONTINUE: &str = "auto reseat moved you to another account of the same tool, and your \
+     conversation came with you. Restore your state first: re-declare it, then check your pending \
+     requests (requests inbox, requests mine) and the session memo and brief (memo read, ae brief). \
+     Resume only authorized outstanding work. Keep any genuine wait on a human or an agent, and any \
+     parked scope, exactly as it was, and send no request again.";
+
+/// The summary that turn's record carries, which names it among the notices.
+const CONTINUE_SUMMARY: &str = "continuation turn after an automatic carried reseat";
+
+/// Hand `agent` the [`CONTINUE`] turn through the session's own `send` helper,
+/// and read back how it went: submitted only on the helper's exit 0 AND its own
+/// unmarked record past the journal as it read before the send.
+fn nudge(argv: &Argv, agent: &str) -> super::Nudge {
+    let before = crate::watchdog_daemon::read_events(&argv.dir).len();
+    let send = argv.dir.join("send");
+    let env = notice_env(CONTINUE_SUMMARY);
+    if crate::transport::deliver(&send, agent, CONTINUE, false, &env).code != Some(0) {
+        return super::Nudge::Refused;
+    }
+    let events = crate::watchdog_daemon::read_events(&argv.dir);
+    let submitted = events
+        .get(before..)
+        .unwrap_or_default()
+        .iter()
+        .any(|event| {
+            event.actor == WATCHDOG_ACTOR
+                && event.action == super::NOTICE_ACTION
+                && event.target.as_deref() == Some(agent)
+                && event.summary.as_deref() == Some(CONTINUE_SUMMARY)
+        });
+    if submitted {
+        super::Nudge::Submitted
+    } else {
+        super::Nudge::Unconfirmed
+    }
 }
 
 /// Who is told: the roster, whether it is a lead pair, and the seat's spawner.

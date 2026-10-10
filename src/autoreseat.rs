@@ -1331,14 +1331,28 @@ pub struct Move<'a> {
     pub tool: (&'a str, &'a str),
     /// The model before and after.
     pub model: (&'a str, &'a str),
-    /// The conversation went with the seat.
-    pub carried: bool,
+    /// The conversation went with the seat, and how the one continuation turn
+    /// it was handed went; `None` for a seeded move.
+    pub carried: Option<Nudge>,
     /// The target was already critical when it was chosen.
     pub critical: bool,
     /// The seat's work tree has tracked changes.
     pub dirty: bool,
     /// The headroom trigger, as its episode names it; empty for a limit.
     pub cause: &'a str,
+}
+
+/// How the continuation turn a carried move hands its seat went, as the
+/// session's `send` helper left it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nudge {
+    /// Exited 0 and recorded the submit as proven.
+    Submitted,
+    /// Exited 0, but its record says the submit was not proven, or ae could not
+    /// find that record.
+    Unconfirmed,
+    /// Exited non-zero: refused before the paste, or pasted and not recorded.
+    Refused,
 }
 
 /// The widest a notice may be, in characters.
@@ -1362,17 +1376,31 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
             moved.tool.1,
             moved.model.0,
             moved.model.1,
-            if moved.carried { "carried" } else { "seeded" },
+            if moved.carried.is_some() {
+                "carried"
+            } else {
+                "seeded"
+            },
             if moved.critical {
                 ", target already critical"
             } else {
                 ""
             },
             if moved.dirty { "dirty" } else { "clean" },
-            if moved.carried {
-                "nothing, it continues its conversation"
-            } else {
-                "check it picked up its seat pack"
+            // Never a resend the pane does not call for: a nudge ae could not
+            // prove absent may already be there.
+            match moved.carried {
+                None => "check it picked up its seat pack".to_owned(),
+                Some(Nudge::Submitted) =>
+                    "nothing, its continuation nudge was submitted".to_owned(),
+                Some(Nudge::Unconfirmed) => format!(
+                    "its continuation nudge is unconfirmed: peek {agent}; re-send a resume turn \
+                     only if the nudge still sits in its input box"
+                ),
+                Some(Nudge::Refused) => format!(
+                    "its continuation nudge was refused or unrecorded: peek {agent}; send it one \
+                     turn to resume only if no nudge reached its pane"
+                ),
             },
         ),
         Ending::Held(why) => {
@@ -1387,12 +1415,15 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
              else reseat it by hand."
         ),
     };
-    crate::state::summary_of(&crate::seatpack::neutralise(&format!(
-        "auto reseat: {line}"
-    )))
-    .chars()
-    .take(NOTICE_CHARS)
-    .collect()
+    let line = crate::seatpack::neutralise(&format!("auto reseat: {line}"));
+    // A cut takes the details, never the step after them: the step is what the
+    // human acts on, and half a resend condition could ask for a duplicate. Cut
+    // BEFORE `summary_of`, whose own cap would otherwise take the step first.
+    let next = line.rfind(" Next: ").map_or("", |at| &line[at..]);
+    let room = NOTICE_CHARS.saturating_sub(next.chars().count());
+    let body = line[..line.len() - next.len()].chars().take(room);
+    let cut: String = body.chain(next.chars()).take(NOTICE_CHARS).collect();
+    crate::state::summary_of(&cut)
 }
 
 #[cfg(test)]
@@ -2432,7 +2463,7 @@ mod tests {
             to: "opus55x",
             tool: ("codex", "claude"),
             model: ("gpt-6-sol", "opus"),
-            carried: true,
+            carried: Some(Nudge::Submitted),
             critical: false,
             dirty: false,
             cause: "",
@@ -2441,10 +2472,34 @@ mod tests {
             notice(SESSION, AGENT, &Ending::Moved(moved)),
             "auto reseat: builder moved sol6x -> opus55x (tool codex -> claude, model gpt-6-sol -> \
              opus), carried; work tree clean. If builder is half of a review pair, re-check its gate \
-             provider. Next: nothing, it continues its conversation."
+             provider. Next: nothing, its continuation nudge was submitted."
         );
+        // A nudge ae cannot prove submitted never says nothing is left to do,
+        // and never asks for a resend the pane does not call for.
+        for (nudge, want) in [
+            (
+                Nudge::Unconfirmed,
+                "Next: its continuation nudge is unconfirmed: peek builder; re-send a resume turn \
+                 only if the nudge still sits in its input box.",
+            ),
+            (
+                Nudge::Refused,
+                "Next: its continuation nudge was refused or unrecorded: peek builder; send it one \
+                 turn to resume only if no nudge reached its pane.",
+            ),
+        ] {
+            let said = notice(
+                SESSION,
+                AGENT,
+                &Ending::Moved(Move {
+                    carried: Some(nudge),
+                    ..moved
+                }),
+            );
+            assert!(said.ends_with(want), "{nudge:?}: {said}");
+        }
         let seeded = Move {
-            carried: false,
+            carried: None,
             critical: true,
             dirty: true,
             ..moved
