@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.49] - 2026-10-10
+- Auto reseat: hand a carried seat one continuation turn
+
 ## [v2026.10.48] - 2026-10-10
 - Mark a chat turn and copy its body to the tmux buffer
 - Copying a chat turn out of ae app
