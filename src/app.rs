@@ -1997,6 +1997,7 @@ mod tests {
     use crate::console::lane::{Item, Kind, Lane};
     use crate::digest::{SessionEntry, Status};
     use crate::listing::World;
+    use crate::render::Audience;
     use crate::theme::Mark;
     use crate::time::Timestamp;
     use crate::tmux;
@@ -4243,12 +4244,12 @@ mod tests {
         }
     }
 
-    /// Every roster seat is the render owner's own text for it, an explicit
-    /// work dir rides its row, the winning file is named (an empty winner
-    /// masks, no row falls to the global) and a slot the context classifies as
-    /// neither lead nor worker is a named gap.
+    /// The rules are the render owner's generic rules, each roster seat names
+    /// the audiences its role receives, the winning file is named (an empty
+    /// winner masks, no row falls to the global) and a slot the context
+    /// classifies as neither lead nor worker is a named gap.
     #[test]
-    fn resolve_instructions_is_the_render_owners_text_for_every_seat() {
+    fn resolve_instructions_is_the_render_owners_rules_and_each_seats_audiences() {
         let root = Root::new("instr-seats");
         let (global, overlay) = (root.0.join("global"), root.0.join("overlay"));
         std::fs::write(&global, "[prompt]\ninstructions = from global\n").expect("global");
@@ -4272,24 +4273,22 @@ mod tests {
         );
         let roles: Vec<_> = protocol.seats.iter().map(|seat| seat.role).collect();
         assert_eq!(roles, ["lead", "lead", "worker", "other"]);
-        let text = |at: usize| protocol.seats[at].text.clone();
-        let main = crate::render::context_document(&dir, "api", "/w", "main", &files);
-        assert_eq!(text(0), Ok(main));
-        let apart = crate::meta::SeatProvenance::Explicit;
-        let helper =
-            crate::render::seat_context_document(&dir, "api", "/apart", "spawned.1", &files, apart);
-        assert_eq!(text(2), Ok(helper));
-        assert!(text(3).expect_err("unknown slot").contains("unknown slot"));
+        assert_eq!(protocol.rules, crate::render::generic_rules(&dir, &files));
+        let received = |at: usize| protocol.seats[at].receives.as_ref().ok().copied();
+        let (every, pair, workers) = (Audience::Every, Audience::LeadPair, Audience::Workers);
+        assert_eq!(received(0), Some(&[every, pair][..]));
+        assert_eq!(received(1), Some(&[every, pair][..]));
+        assert_eq!(received(2), Some(&[every, workers][..]));
+        let odd = protocol.seats[3].receives.as_ref();
+        assert!(odd.expect_err("unknown slot").contains("unknown slot"));
         std::fs::write(&overlay, "[prompt]\ninstructions = \"\"\n").expect("overlay");
         let masked = ready(&dir, "api");
         assert_eq!(masked.custom, None, "the empty winner masks the global");
-        let main = masked.seats[0].text.as_ref().expect("main renders");
-        assert!(!main.contains("Workspace instructions"), "{main}");
     }
 
     /// What cannot be rendered from is named: no records, a meta that cannot
-    /// be read, a torn config (the whole tab), a refused or missing work dir,
-    /// a name that is no agent name (the one seat).
+    /// be read, a torn config (the whole tab) and a slot that is no slot (the
+    /// one seat); a seat's work dir and name are no gap, the tab shows neither.
     #[test]
     fn resolve_instructions_names_every_gap() {
         let root = Root::new("instr-gaps");
@@ -4309,17 +4308,17 @@ mod tests {
             "web",
             "seat.spawned.2=-bad\nwork_dir.worker.0=relative\nseat.worker.0x=ok-one\nseat.spawned.=ok-two\n",
         );
-        let reasons: Vec<_> = ready(&dir, "web")
-            .seats
-            .into_iter()
-            .map(|seat| seat.text.expect_err("every seat is a gap"))
+        let seats = ready(&dir, "web").seats;
+        let gaps: Vec<_> = seats
+            .iter()
+            .map(|seat| seat.receives.as_ref().err())
             .collect();
-        assert!(reasons[0].contains("no work_dir"), "{reasons:?}");
-        assert!(reasons[1].contains("work_dir.worker.0"), "{reasons:?}");
-        assert!(reasons[2].contains("agent name"), "{reasons:?}");
+        assert!(gaps[..3].iter().all(Option::is_none), "{gaps:?}");
         assert!(
-            reasons[3..].iter().all(|why| why.contains("unknown slot")),
-            "{reasons:?}"
+            gaps[3..]
+                .iter()
+                .all(|why| why.is_some_and(|why| why.contains("unknown slot"))),
+            "{gaps:?}"
         );
     }
 

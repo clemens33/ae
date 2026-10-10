@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::render::{Audience, GenericRule};
+
 /// Where one config row's value came from, most specific first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigSource {
@@ -94,14 +96,14 @@ pub(crate) struct CustomInstructions {
     pub(crate) text: String,
 }
 
-/// One roster seat's section: the text ae renders for it, or why it renders
-/// none.
+/// One roster seat's line: which generic rules a launch hands it, or why ae
+/// renders none.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SeatProtocol {
+pub(crate) struct SeatLine {
     pub(crate) name: String,
     pub(crate) slot: String,
     pub(crate) role: &'static str,
-    pub(crate) text: Result<String, String>,
+    pub(crate) receives: Result<&'static [Audience], String>,
 }
 
 /// What the instructions tab draws for one session.
@@ -111,7 +113,9 @@ pub(crate) struct Protocol {
     /// The config files the launch layering reads, global first.
     pub(crate) files: Vec<String>,
     pub(crate) custom: Option<CustomInstructions>,
-    pub(crate) seats: Vec<SeatProtocol>,
+    /// The rule text each audience gets, once, with its seat facts as markers.
+    pub(crate) rules: Vec<GenericRule>,
+    pub(crate) seats: Vec<SeatLine>,
 }
 
 /// The instructions tab's body.
@@ -274,10 +278,10 @@ pub(crate) fn resolve_config(meta_dir: Option<&Path>, current_global: &Path) -> 
 }
 
 /// Resolve the instructions tab for session `name` whose records sit at
-/// `meta_dir`: the custom instructions in force and, for every roster seat,
-/// the text `render::seat_context_document` renders from the records now,
-/// with the inputs `_run` hands it. A session, config file or seat it cannot
-/// render from is a named gap, never a guess.
+/// `meta_dir`: the custom instructions in force, the generic rules
+/// `render::generic_rules` hands each audience from the records now, and for
+/// every roster seat which of them it receives. A session, config file or
+/// seat it cannot render from is a named gap, never a guess.
 pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> InstructionsView {
     let gap = InstructionsView::Gap;
     let Some(dir) = meta_dir else {
@@ -330,11 +334,11 @@ pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> Instr
         .iter()
         .map(|entry| {
             let role = crate::render::seat_role(&bytes, &entry.slot);
-            SeatProtocol {
+            SeatLine {
                 name: entry.name.clone(),
                 slot: entry.slot.clone(),
                 role: role.word(),
-                text: seat_text(dir, &bytes, &session, &files, entry, role),
+                receives: receives(&entry.slot, role),
             }
         })
         .collect();
@@ -345,43 +349,17 @@ pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> Instr
             .map(|file| file.display().to_string())
             .collect(),
         custom,
+        rules: crate::render::generic_rules(dir, &files),
         seats,
     })
 }
 
-/// One seat's rendered context, or the fact that stops it. The work directory
-/// is the one `_run` would hand over, as recorded: a launch also proves it
-/// exists, which a settings read does not.
-fn seat_text(
-    dir: &Path,
-    bytes: &[u8],
-    session: &str,
-    files: &[PathBuf],
-    entry: &crate::meta::RosterEntry,
-    role: crate::render::SeatRole,
-) -> Result<String, String> {
-    if role == crate::render::SeatRole::Other || !crate::requests::is_slot(&entry.slot) {
+/// The generic rules a seat of `role` receives, or the fact that stops it.
+fn receives(slot: &str, role: crate::render::SeatRole) -> Result<&'static [Audience], String> {
+    if role == crate::render::SeatRole::Other || !crate::requests::is_slot(slot) {
         return Err("unknown slot: ae renders no protocol for it".to_owned());
     }
-    if !crate::config::is_agent_name(&entry.name) {
-        return Err("the recorded seat name is not a valid agent name".to_owned());
-    }
-    let inherited = crate::lifecycle::meta_value(bytes, "work_dir");
-    let (work_dir, provenance) = match crate::meta::raw_seat_work_dir(bytes, &entry.slot)? {
-        Some(row) => (row, crate::meta::SeatProvenance::Explicit),
-        None if inherited.is_empty() => {
-            return Err("the session records no work_dir".to_owned());
-        }
-        None => (inherited, crate::meta::SeatProvenance::Inherited),
-    };
-    Ok(crate::render::seat_context_document(
-        dir,
-        session,
-        &work_dir,
-        &entry.slot,
-        files,
-        provenance,
-    ))
+    Ok(role.receives())
 }
 
 /// Why `file` cannot be rendered from, when it exists but cannot be read or

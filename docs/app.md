@@ -277,12 +277,14 @@ tells the agents of the SELECTED session (the one selected when Settings opened)
 from its records alone, so a stopped session shows too: the custom `[prompt]
 instructions` in force with the file they come from — `global` (the meta-recorded
 file) or `session` (its local overlay), the last file declaring the key wins even
-when empty — or a line saying there are none; then one section per roster seat,
-titled `name · slot · lead` or `worker`, holding the text a launch injects
-for that seat, as the one renderer produces it now, wrapped to the pane. A
-session, config file or seat ae cannot render from shows a named `gap` row
-instead of a guess: no records, an unreadable meta or config (the whole tab), an
-unknown slot, a seat name that is no agent name, a refused or missing work dir.
+when empty — or a line saying there are none; then each generic rule text a
+launch hands out, ONCE, under its audience — every seat, workers, the lead
+pair — as the one renderer produces it now, with `<session>`, `<helpers>` and
+`<owner line>` standing for what a launch fills in per seat; then one line per
+roster seat, `name · slot · lead` or `worker`, naming the rules it receives.
+Everything wraps to the pane. A session, config file or seat ae cannot render
+from shows a named `gap` instead of a guess: no records, an unreadable meta or
+config (the whole tab), an unknown slot.
 Quota reads again every refresh while open; config, about and instructions read
 once per open. A torn config shows one honest row naming the file. The
 Instructions head states the residual below: this is today's render, not what
@@ -356,8 +358,8 @@ that stopped says so on the line above.
   it can show different sessions after one.
 - The Instructions tab renders from the records NOW: a running seat received the
   text of its own launch time, so a config or ae upgrade since then shows here
-  and not in that seat. A seat's work dir is shown as recorded; a launch also
-  proves it exists.
+  and not in that seat. The generic rules carry no seat's work dir or
+  identity; the roster below them names each seat.
 - Settings shows the launch-pinned values for `layout`, `quota`,
   `quota_every_secs`, `idle_nudge_secs` and `done_confirmations`: a running
   session keeps what it launched with even after the config changes.

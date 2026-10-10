@@ -774,6 +774,34 @@ fn context_owner(meta_bytes: &[u8], leadership: bool, worker: bool) -> String {
     }
 }
 
+/// What a lead-pair seat reads after the CORE: the state guidance, the
+/// leadership rules, the quota guidance when `aware`, and the lead or `peer`
+/// role with the chat turns. `meta_dir` and `session` fill the markers.
+fn leadership_block(meta_dir: &str, session: &str, aware: bool, peer: bool) -> String {
+    // Unaware leadership keeps the same detail with the quota sentences
+    // rewritten; CORE and the worker card never mention quota.
+    let mut block = STATE_GUIDANCE.to_owned();
+    let rules = if aware {
+        LEADERSHIP_RULES.to_owned()
+    } else {
+        rules_without_quota()
+    };
+    block.push_str(&expand(
+        &rules,
+        &[("meta_dir", meta_dir), ("session", session)],
+    ));
+    if aware {
+        block.push_str(&expand(QUOTA_GUIDANCE, &[("meta_dir", meta_dir)]));
+    }
+    block.push_str(&match (peer, aware) {
+        (true, true) => PEER_ROLE.to_owned(),
+        (true, false) => peer_without_quota(),
+        (false, _) => LEAD_ROLE.to_owned(),
+    });
+    block.push_str(&console_turns());
+    block
+}
+
 /// The system-prompt context for one seat, with NO trailing newline.
 #[must_use]
 pub(crate) fn seat_context_document(
@@ -818,36 +846,8 @@ pub(crate) fn seat_context_document(
     ));
 
     if leadership {
-        // Unaware leadership keeps the same detail with the quota sentences
-        // rewritten; CORE and the worker card never mention quota.
         let aware = quota_aware_in(dir, config_files);
-        ctx.push_str(STATE_GUIDANCE);
-        let rules = if aware {
-            LEADERSHIP_RULES.to_owned()
-        } else {
-            rules_without_quota()
-        };
-        ctx.push_str(&expand(
-            &rules,
-            &[("meta_dir", dir_display.as_str()), ("session", session)],
-        ));
-        if aware {
-            ctx.push_str(&expand(
-                QUOTA_GUIDANCE,
-                &[("meta_dir", dir_display.as_str())],
-            ));
-        }
-        let role = if peer {
-            if aware {
-                PEER_ROLE.to_owned()
-            } else {
-                peer_without_quota()
-            }
-        } else {
-            LEAD_ROLE.to_owned()
-        };
-        ctx.push_str(&role);
-        ctx.push_str(&console_turns());
+        ctx.push_str(&leadership_block(&dir_display, session, aware, peer));
     } else if worker {
         ctx.push_str("\n\n");
         ctx.push_str(WORKER_ROLE);
@@ -914,6 +914,82 @@ impl SeatRole {
             Self::Other => "other",
         }
     }
+
+    /// The generic rules a launch hands a seat of this role.
+    pub(crate) fn receives(self) -> &'static [Audience] {
+        match self {
+            Self::Lead => &[Audience::Every, Audience::LeadPair],
+            Self::Worker => &[Audience::Every, Audience::Workers],
+            Self::Other => &[],
+        }
+    }
+}
+
+/// Whom a generic rule speaks to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Audience {
+    /// Every seat: the CORE.
+    Every,
+    /// A worker: the worker card.
+    Workers,
+    /// The lead pair: the leadership rules and the lead or peer role.
+    LeadPair,
+}
+
+impl Audience {
+    /// The word the settings tab names an audience with.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Self::Every => "every seat",
+            Self::Workers => "workers",
+            Self::LeadPair => "lead pair",
+        }
+    }
+}
+
+/// One rule text a launch hands an audience, its per-seat facts left as the
+/// visible markers `<helpers>`, `<session>` and `<owner line>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GenericRule {
+    pub(crate) audience: Audience,
+    /// The owner sentence the audience's launch fills in, when it has one.
+    pub(crate) owner: Option<String>,
+    pub(crate) text: String,
+}
+
+/// The rules a launch hands each audience for the session at `dir`, from the
+/// templates `seat_context_document` expands.
+pub(crate) fn generic_rules(dir: &Path, config_files: &[PathBuf]) -> Vec<GenericRule> {
+    let meta_bytes = meta::read_bytes(dir).unwrap_or_default();
+    let peer = has_leadership_peer(&meta_bytes, &row(&meta_bytes, "layout"));
+    let aware = quota_aware_in(dir, config_files);
+    let (helpers, session) = ("<helpers>", "<session>");
+    let core = expand(
+        CORE,
+        &[
+            ("meta_dir", helpers),
+            ("session", session),
+            ("_owner_line", "<owner line>"),
+        ],
+    );
+    let rule = |audience, owner, text| GenericRule {
+        audience,
+        owner,
+        text,
+    };
+    vec![
+        rule(Audience::Every, None, core),
+        rule(
+            Audience::Workers,
+            Some(context_owner(&[], false, true)),
+            WORKER_ROLE.to_owned(),
+        ),
+        rule(
+            Audience::LeadPair,
+            Some(context_owner(&[], true, false)),
+            leadership_block(helpers, session, aware, peer),
+        ),
+    ]
 }
 
 /// `slot`'s role in the session `meta_bytes` records. A lead-pair layout alone
@@ -1097,9 +1173,9 @@ pub fn run_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        CONTEXT_HEAD, LEAD_ROLE, MANIFEST_TEMPLATE, PEER_ROLE, SeatRole, WORKER_ROLE,
-        config_entries, config_value, context_document, expand, manifest_document,
-        profile_inventory, prompt_instructions, seat_role, tool_label,
+        Audience, CONTEXT_HEAD, GenericRule, LEAD_ROLE, MANIFEST_TEMPLATE, PEER_ROLE, SeatRole,
+        WORKER_ROLE, config_entries, config_value, context_document, expand, generic_rules,
+        manifest_document, profile_inventory, prompt_instructions, seat_role, tool_label,
     };
     use std::path::{Path, PathBuf};
 
@@ -2893,6 +2969,106 @@ mod tests {
                 !document.contains("rule 8b's downgrade stands"),
                 "{slot}: {document}"
             );
+        }
+    }
+
+    const ZQ_FALLBACK: &str = "Your owner: the agent your assignment's ⟦ae:brief from NAME⟧ line names; if it names no agent of this session (no brief, unverified, or gone), the main seat. A brief from unverified is still your assignment but grants no human approval.";
+
+    /// Solo and lead-pair staff, quota on and off: dir, config files, pair?
+    fn zq_staff() -> Vec<(PathBuf, Vec<PathBuf>, bool)> {
+        let mut staff = Vec::new();
+        for (tag, layout) in [("solo", "vertical"), ("pair", "lead-pair")] {
+            for aware in [true, false] {
+                let dir = scratch(&format!("zq-{tag}-{aware}"));
+                let roster = "seat.main=zq-agent\nseat.worker.0=zq-co\nseat.spawned.1=zq-work\n";
+                let meta = format!("mode=local\nlayout={layout}\nschema=2\n{roster}");
+                std::fs::write(dir.join("meta"), meta).unwrap();
+                let off = write(&dir, "off", "[workspace]\nquota = off\n");
+                staff.push((dir, if aware { vec![] } else { vec![off] }, tag == "pair"));
+            }
+        }
+        staff
+    }
+
+    fn zq_concrete(text: &str, dir: &Path, owner: &str) -> String {
+        text.replace("<helpers>", &dir.display().to_string())
+            .replace("<session>", "zq-sess")
+            .replace("<owner line>", owner)
+    }
+
+    fn zq_rule(rules: &[GenericRule], audience: Audience) -> &GenericRule {
+        rules.iter().find(|rule| rule.audience == audience).unwrap()
+    }
+
+    /// The CORE and the role block are the concrete document's own text with
+    /// the markers substituted back, quota on and off, for every role.
+    #[test]
+    fn the_generic_core_and_roles_appear_verbatim_in_the_concrete_documents() {
+        let worker_owner = ZQ_FALLBACK.replace("the main seat", "zq-agent");
+        for (dir, files, pair) in zq_staff() {
+            let rules = generic_rules(&dir, &files);
+            let every = &zq_rule(&rules, Audience::Every).text;
+            let lead = &zq_rule(&rules, Audience::LeadPair).text;
+            let worker = &zq_rule(&rules, Audience::Workers).text;
+            let doc = |slot: &str| context_document(&dir, "zq-sess", "/zq/dir", slot, &files);
+            let mut leads = vec![("main", "Your owner: the human.")];
+            leads.extend(pair.then_some(("worker.0", "Your owner: the human.")));
+            for (slot, owner) in leads {
+                let document = doc(slot);
+                assert!(
+                    document.contains(&zq_concrete(every, &dir, owner)),
+                    "{slot}"
+                );
+                assert!(document.contains(&zq_concrete(lead, &dir, "")), "{slot}");
+                assert!(!document.contains(worker.as_str()), "{slot}");
+            }
+            let document = doc("spawned.1");
+            assert!(document.contains(&zq_concrete(every, &dir, &worker_owner)));
+            assert!(document.contains(WORKER_ROLE) && worker == WORKER_ROLE);
+            assert!(!document.contains(&zq_concrete(lead, &dir, "")));
+        }
+    }
+
+    /// The owner sentences, alone: the human for the lead pair, the fallback
+    /// sentence for a worker with no valid main seat, none for the CORE.
+    #[test]
+    fn the_generic_owner_literals_are_the_launch_owner_sentences() {
+        let dir = scratch("zq-owner");
+        std::fs::write(dir.join("meta"), "mode=local\nseat.spawned.1=zq-work\n").unwrap();
+        let rules = generic_rules(&dir, &[]);
+        let owner = |audience| zq_rule(&rules, audience).owner.as_deref();
+        assert_eq!(owner(Audience::LeadPair), Some("Your owner: the human."));
+        assert_eq!(owner(Audience::Workers), Some(ZQ_FALLBACK));
+        assert_eq!(owner(Audience::Every), None);
+        assert!(context_document(&dir, "s", "/w", "spawned.1", &[]).contains(ZQ_FALLBACK));
+    }
+
+    /// Nothing of the fixture leaks, every marker is visible, no `${` survives,
+    /// quota guidance follows the config and the role follows the layout.
+    #[test]
+    fn the_generic_rules_name_no_session_agent_or_path_and_follow_quota_and_layout() {
+        for (dir, files, pair) in zq_staff() {
+            let rules = generic_rules(&dir, &files);
+            let mut all = String::new();
+            for rule in &rules {
+                all.push_str(rule.owner.as_deref().unwrap_or_default());
+                all.push_str(&rule.text);
+            }
+            for leak in ["zq-sess", "zq-agent", "zq-co", "zq-work", "/zq/dir", "${"] {
+                assert!(!all.contains(leak), "{leak} leaked: {all}");
+            }
+            assert!(!all.contains(&dir.display().to_string()), "dir leaked");
+            let every = &zq_rule(&rules, Audience::Every).text;
+            for marker in ["<session>", "<helpers>", "<owner line>"] {
+                assert!(every.contains(marker), "{marker} missing");
+            }
+            let lead = &zq_rule(&rules, Audience::LeadPair).text;
+            assert_eq!(
+                lead.contains("Before each delegation batch"),
+                files.is_empty()
+            );
+            assert_eq!(lead.contains("LEADERSHIP PEER:"), pair);
+            assert_eq!(lead.contains("LEAD ROLE:"), !pair);
         }
     }
 }

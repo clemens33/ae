@@ -1580,10 +1580,11 @@ fn about_body(about: &AboutFacts, text: Style) -> Vec<(String, Style)> {
     rows
 }
 
-/// The instructions tab's rows: the render-now line, the custom instructions
-/// and one section per seat. Every field is neutralised first and then wrapped
-/// to the panel, a continuation row hanging two cells; nothing is cut here, the
-/// panel scrolls.
+/// The instructions tab's rows: the render-now line, the custom instructions,
+/// each generic rule once under its audience and one line per seat naming the
+/// rules it receives. Every field is neutralised first and then wrapped to the
+/// panel, a continuation row hanging two cells; nothing is cut here, the panel
+/// scrolls.
 fn instructions_body(view: &InstructionsView, width: u16, paint: Paint) -> Vec<(String, Style)> {
     let dim = paint.fg(|p| p.dim);
     let text = paint.fg(|p| p.text);
@@ -1604,7 +1605,7 @@ fn instructions_body(view: &InstructionsView, width: u16, paint: Paint) -> Vec<(
     let mut out = rows(&format!("session: {}", protocol.session), dim);
     out.extend(rows(
         &format!(
-            "Rendered now by {}: the text a launch injects today. A running seat holds the text of its own launch time.",
+            "<session>, <helpers> and <owner line> stand for what a launch fills in per seat. Rendered now by {}: the text a launch injects today. A running seat holds the text of its own launch time.",
             crate::version_line()
         ),
         dim,
@@ -1625,16 +1626,27 @@ fn instructions_body(view: &InstructionsView, width: u16, paint: Paint) -> Vec<(
         };
         out.extend(rows(&format!("none in {named}"), dim));
     }
-    for seat in &protocol.seats {
+    for rule in &protocol.rules {
         out.push((String::new(), text));
-        out.extend(rows(
-            &format!("{} · {} · {}", seat.name, seat.slot, seat.role),
-            head,
-        ));
-        match &seat.text {
-            Ok(document) => out.extend(rows(document, text)),
-            Err(why) => out.extend(rows(&format!("gap: {why}"), dim)),
+        out.extend(rows(&format!("Rules for {}", rule.audience.word()), head));
+        if let Some(owner) = &rule.owner {
+            out.extend(rows(owner, dim));
         }
+        out.extend(rows(&rule.text, text));
+    }
+    out.push((String::new(), text));
+    out.extend(rows("Seats", head));
+    for seat in &protocol.seats {
+        let receives = match &seat.receives {
+            Ok(audiences) => audiences
+                .iter()
+                .map(|audience| audience.word())
+                .collect::<Vec<_>>()
+                .join(" + "),
+            Err(why) => format!("gap: {why}"),
+        };
+        let line = format!("{} · {} · {} · {receives}", seat.name, seat.slot, seat.role);
+        out.extend(rows(&line, text));
     }
     out
 }
@@ -1787,25 +1799,32 @@ mod tests {
     }
 
     /// The instructions rows neutralise controls before they wrap, keep every
-    /// word, fit the panel at the narrowest widths, name the winning source
-    /// or the files that held none, and spell a seat's gap.
+    /// word of a rule and its owner, fit the panel at the narrowest widths,
+    /// name the winning source or the files that held none, and give each
+    /// seat one line naming what it receives or its gap.
     #[test]
     fn instructions_rows_are_neutralised_wrapped_and_name_their_gaps() {
         use crate::app::settings::{
-            ConfigSource, CustomInstructions, InstructionsView, Protocol, SeatProtocol,
+            ConfigSource, CustomInstructions, InstructionsView, Protocol, SeatLine,
         };
+        use crate::render::{Audience, GenericRule};
         let hostile = format!("\u{1b}[31mred\u{7} {}\tend\nnext line", "word ".repeat(40));
-        let ready = |custom, text| {
-            let seat = SeatProtocol {
+        let ready = |custom, receives| {
+            let seat = SeatLine {
                 name: "lead".to_owned(),
                 slot: "main".to_owned(),
                 role: "lead",
-                text,
+                receives,
             };
             InstructionsView::Ready(Protocol {
                 session: "api".to_owned(),
                 files: vec!["/g".to_owned()],
                 custom,
+                rules: vec![GenericRule {
+                    audience: Audience::Workers,
+                    owner: Some(hostile.clone()),
+                    text: hostile.clone(),
+                }],
                 seats: vec![seat],
             })
         };
@@ -1817,7 +1836,10 @@ mod tests {
         let paint = Paint::of(None);
         let clean = crate::board::terminal_text(&hostile);
         for width in [40_u16, 80] {
-            let view = ready(Some(custom.clone()), Ok(hostile.clone()));
+            let view = ready(
+                Some(custom.clone()),
+                Ok(&[Audience::Every, Audience::LeadPair]),
+            );
             let rows = instructions_body(&view, width, paint);
             let lines: Vec<&str> = rows.iter().map(|(line, _)| line.as_str()).collect();
             for line in &lines {
@@ -1828,23 +1850,40 @@ mod tests {
                 );
             }
             assert!(lines.contains(&"source: global /g"), "{lines:?}");
-            let at = lines.iter().position(|line| *line == "lead · main · lead");
-            let kept: Vec<&str> = lines[at.expect("heading") + 1..]
+            let from = lines.iter().position(|line| *line == "Rules for workers");
+            let to = lines.iter().position(|line| *line == "Seats");
+            let kept: Vec<&str> = lines[from.expect("rules heading") + 1..to.expect("seats")]
                 .iter()
                 .flat_map(|line| line.split_whitespace())
                 .collect();
-            assert_eq!(kept, clean.split_whitespace().collect::<Vec<_>>());
+            let twice = [&clean, &clean].map(|text| text.split_whitespace());
+            assert_eq!(kept, twice.into_iter().flatten().collect::<Vec<_>>());
+            let words: Vec<&str> = lines
+                .iter()
+                .flat_map(|line| line.split_whitespace())
+                .collect();
+            let seat = [
+                "lead", "·", "main", "·", "lead", "·", "every", "seat", "+", "lead", "pair",
+            ];
+            assert!(
+                words.windows(seat.len()).any(|run| run == seat),
+                "{lines:?}"
+            );
         }
         let lines = |view| instructions_body(&view, 80, paint);
         let gapped = lines(ready(None, Err("unknown slot".to_owned())));
         let gapped: Vec<&str> = gapped.iter().map(|(line, _)| line.as_str()).collect();
-        assert!(gapped.contains(&"none in /g") && gapped.contains(&"gap: unknown slot"));
+        assert!(gapped.contains(&"none in /g"), "{gapped:?}");
+        assert!(
+            gapped.contains(&"lead · main · lead · gap: unknown slot"),
+            "{gapped:?}"
+        );
         let torn = InstructionsView::Gap("\u{1b}]0;x\u{7}torn".to_owned());
         assert_eq!(lines(torn)[0].0, "\u{fffd}]0;x\u{fffd}torn");
         let fit = "x".repeat(usize::from(80 - LEFT));
         let mut tight = custom;
         tight.text.clone_from(&fit);
-        let filled = lines(ready(Some(tight), Ok(String::new())));
+        let filled = lines(ready(Some(tight), Ok(&[])));
         assert!(filled.iter().any(|row| row.0 == fit));
     }
 

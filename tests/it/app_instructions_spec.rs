@@ -1,5 +1,7 @@
-//! Frozen appinstr acceptance: brief-appinstr R1-R6 and lead plan rulings.
-//! Oracle: fixture bytes and the existing `render::context_document` owner.
+//! Frozen appinstr acceptance: brief-appinstr R1-R6 and lead plan rulings,
+//! amended by apppolish R7-R10 (generic rules once, then one line per seat).
+//! Oracle: fixture bytes, the template files, and sentences of the leadership
+//! texts; the custom-grammar test keeps `render::context_document`.
 //! Real private terminal + background reads; no new tab API or process door.
 
 use super::{Rig, WAIT, fs, has_colour_sgr, is_settings, reversed_text};
@@ -83,6 +85,49 @@ fn collect_matching(rig: &Rig, pane: &str, met: impl Fn(&str) -> bool) -> String
 
 fn owner(dir: &Path, name: &str, work_dir: &str, slot: &str, files: &[PathBuf]) -> String {
     ae::render::context_document(dir, name, work_dir, slot, files)
+}
+
+/// The CORE as the tab shows it: the template file with the seat facts spelled
+/// as visible markers.
+fn core() -> String {
+    include_str!("../../src/render/core.txt")
+        .replace("${meta_dir}", "<helpers>")
+        .replace("${session}", "<session>")
+        .replace("${_owner_line}", "<owner line>")
+}
+
+const WORKER: &str = include_str!("../../src/render/worker.txt");
+/// Sentences of the leadership texts, which live in render.rs, not a template.
+const LEADERSHIP: [&str; 4] = [
+    "STATE REASONS: The human decides from this text ALONE",
+    "LEADERSHIP PEER: you are one of two EQUAL leads",
+    "CHAT TURNS: A turn whose FIRST line",
+    "Your owner: the human.",
+];
+const WORKER_OWNER: &str =
+    "if it names no agent of this session (no brief, unverified, or gone), the main seat.";
+const LAST_SEAT: &str = "colead · worker.0 · lead · every seat + lead pair";
+
+/// R7: every generic text is on the tab, under its audience, exactly once.
+fn generic_rules_once(text: &str) {
+    let shown = compact(text);
+    for rule in [core().as_str(), WORKER, WORKER_OWNER]
+        .into_iter()
+        .chain(LEADERSHIP)
+    {
+        assert!(
+            shown.contains(&compact(rule)),
+            "R7 generic text missing: {rule}"
+        );
+    }
+    for heading in [
+        "Rules for every seat",
+        "Rules for workers",
+        "Rules for lead pair",
+    ] {
+        assert_eq!(text.matches(heading).count(), 1, "R7 once: {heading}");
+    }
+    assert_eq!(text.matches("Helpers live in").count(), 1, "R7 CORE once");
 }
 
 fn source_bytes(files: &[PathBuf]) -> Vec<Vec<u8>> {
@@ -173,10 +218,6 @@ fn instructions_selected_stopped_session_uses_its_local_source_and_every_roster_
     .expect("selected three-seat records");
     let files = [global, local.clone()];
     let originals = source_bytes(&files);
-    let expected: Vec<_> = ["main", "worker.0", "spawned.0"]
-        .map(|slot| owner(&dir, name, "/recorded/selected", slot, &files))
-        .into_iter()
-        .collect();
     let (pane, _) = rig.direct(160, 40, &rig.root.join("config"));
     let fleet = rig.wait(&pane, WAIT, "stopped session visible", |s| s.contains(name));
     let (row, line) = fleet
@@ -203,22 +244,25 @@ fn instructions_selected_stopped_session_uses_its_local_source_and_every_roster_
     assert!(
         !first.contains("HOME-ONLY-INSTRUCTIONS") && !first.contains("GLOBAL-ONLY-INSTRUCTIONS")
     );
-    let text = collect_until(&rig, &pane, expected.last().expect("builder owner"));
-    for document in &expected {
-        assert!(
-            compact(&text).contains(&compact(document)),
-            "R2 full render owner missing"
-        );
-    }
-    for (name, slot, role) in [
-        ("lead", "main", "lead"),
-        ("colead", "worker.0", "lead"),
-        ("builder", "spawned.0", "worker"),
+    let text = collect_until(
+        &rig,
+        &pane,
+        "builder · spawned.0 · worker · every seat + workers",
+    );
+    generic_rules_once(&text);
+    assert!(
+        !text.contains("/recorded/selected"),
+        "R8 no concrete work dir"
+    );
+    for (name, slot, role, receives) in [
+        ("lead", "main", "lead", "every seat + lead pair"),
+        ("colead", "worker.0", "lead", "every seat + lead pair"),
+        ("builder", "spawned.0", "worker", "every seat + workers"),
     ] {
+        let line = format!("{name} · {slot} · {role} · {receives}");
         assert!(
-            text.lines()
-                .any(|line| line.contains(name) && line.contains(slot) && line.contains(role)),
-            "R2 missing seat title {name}/{slot}/{role}"
+            text.lines().any(|row| row.trim() == line),
+            "R8 missing seat line {line}"
         );
     }
     let head = first.to_ascii_lowercase();
@@ -239,14 +283,7 @@ fn instructions_selected_stopped_session_uses_its_local_source_and_every_roster_
 fn instructions_global_source_wraps_long_text_and_wheel_and_pages_scroll_its_body() {
     let rig = Rig::new("instrwrap");
     let token = format!("LONG-START-{}-LONG-END", "q".repeat(180));
-    let file = configured(&rig, &format!("CUSTOM-BEGIN\n{token}\nCUSTOM-END"));
-    let wanted = owner(
-        &rig.tool.dir,
-        &rig.name,
-        "/recorded/home",
-        "worker.0",
-        &[file],
-    );
+    configured(&rig, &format!("CUSTOM-BEGIN\n{token}\nCUSTOM-END"));
     let pane = open(&rig, 80, 18);
     let first = rig.screen(&pane);
     assert!(
@@ -272,7 +309,7 @@ fn instructions_global_source_wraps_long_text_and_wheel_and_pages_scroll_its_bod
     rig.wait(&pane, WAIT, "wheel returns Instructions", |s| {
         s.lines().nth(3) == Some(top.as_str())
     });
-    let text = collect_until(&rig, &pane, &wanted);
+    let text = collect_until(&rig, &pane, LAST_SEAT);
     assert!(
         compact(&text).contains(&token),
         "long unbroken instruction token was clipped"
@@ -290,17 +327,6 @@ fn instructions_empty_local_masks_global_and_reports_none() {
         global.display(),
         local.display()
     ));
-    let expected = owner(
-        &rig.tool.dir,
-        &rig.name,
-        "/recorded/home",
-        "worker.0",
-        &[global, local],
-    );
-    assert!(
-        !expected.contains("SUPPRESSED-GLOBAL-INSTRUCTION"),
-        "existing render owner empty masking oracle"
-    );
     let pane = open(&rig, 160, 40);
     let first = rig.screen(&pane);
     assert!(
@@ -309,7 +335,7 @@ fn instructions_empty_local_masks_global_and_reports_none() {
             .any(|line| line.to_ascii_lowercase().contains("none")),
         "R2 no custom instructions line: {first}"
     );
-    let text = collect_until(&rig, &pane, &expected);
+    let text = collect_until(&rig, &pane, LAST_SEAT);
     assert!(!text.contains("SUPPRESSED-GLOBAL-INSTRUCTION"));
 }
 
@@ -362,7 +388,7 @@ fn instructions_keeps_render_owner_duplicate_and_final_newline_grammar() {
         "custom instruction diverges from render owner: {first}"
     );
     assert!(!first.contains("OLD-VALUE") && !first.contains("UNTERMINATED-LAST-LINE"));
-    collect_until(&rig, &pane, &expected);
+    collect_until(&rig, &pane, LAST_SEAT);
 }
 
 #[test]
