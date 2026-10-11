@@ -64,6 +64,7 @@ while (1) {
         put("$root/pre-key", get("$dir/events.jsonl")) unless -e "$root/pre-key";
         logline("$root/wire", $bytes);
         $buffer .= $bytes;
+        my $submitted = '';
         while (length $buffer) {
             if ($buffer =~ s/^\e\[200~//) { $pasting = 1; next; }
             if ($buffer =~ s/^\e\[201~//) { $pasting = 0; next; }
@@ -93,8 +94,9 @@ while (1) {
                 next;
             }
             my $byte = substr($buffer, 0, 1, '');
-            logline("$root/submitted", $byte) if $trusted && $pasting;
+            $submitted .= $byte if $trusted && $pasting;
         }
+        logline("$root/submitted", $submitted) if length $submitted;
     }
     if (-e "$root/drain") { unlink "$root/drain"; put("$root/drained", 'yes'); }
 }
@@ -168,6 +170,17 @@ fn wait_for(what: &str, ready: impl Fn() -> bool) {
         std::thread::sleep(Duration::from_millis(20));
     }
     panic!("timed out waiting for {what}");
+}
+
+fn wait_for_submitted(path: &Path, sentinel: &str) -> String {
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        let submitted = text(path);
+        if submitted.contains(sentinel) || Instant::now() >= end {
+            return submitted;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 struct Rig {
@@ -1035,9 +1048,10 @@ fn spawn_brief_wait_answers_without_a_watchdog_and_delivers_the_original_brief()
         "in-wait answer needs no daemon"
     );
     assert_eq!(rig.count("auto-trust"), 1, "spawn episode completed once");
+    let submitted = wait_for_submitted(&child.join("submitted"), "original trust brief");
     assert!(
-        text(child.join("submitted")).contains("original trust brief"),
-        "original brief reaches composer after trust"
+        submitted.contains("original trust brief"),
+        "original brief reaches composer after trust: {submitted:?}"
     );
     assert_eq!(
         text(child.join("actions"))
@@ -1465,9 +1479,10 @@ fn v14_reseat_seed_wait_answers_without_a_watchdog_and_keeps_the_original_seed()
         seed.starts_with("⟦ae:ctx⟧\n") && seed.contains("original trust brief"),
         "original brief is in the kept seed: {seed}"
     );
+    let submitted = wait_for_submitted(&child.join("submitted"), "original trust brief");
     assert!(
-        text(child.join("submitted")).contains("original trust brief"),
-        "same sentinel reaches successor composer"
+        submitted.contains("original trust brief"),
+        "same sentinel reaches successor composer: {submitted:?}"
     );
     assert_eq!(
         text(child.join("actions"))
