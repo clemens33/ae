@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.52] - 2026-10-11
+- Ae app: restart into the core the command link names once idle
+
 ## [v2026.10.51] - 2026-10-11
 - A complete transcript read hands each line to its reader and keeps none
 
