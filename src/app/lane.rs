@@ -276,12 +276,13 @@ pub(super) fn preview_why(item: &Item) -> Option<String> {
 
 /// Mark the rows of one turn, header first: the speaker takes the selected
 /// style and each body row's leading blank cell becomes a bar, so the turn
-/// reads as marked in plain text too.
-pub(super) fn mark_rows(turn: &mut [Line<'static>], paint: Paint, icons: bool) {
+/// reads as marked in plain text too. The answer is the rows that took a bar.
+pub(super) fn mark_rows(turn: &mut [Line<'static>], paint: Paint, icons: bool) -> Vec<usize> {
     let bar = Span::styled(
         if icons { "│" } else { "|" },
         paint.fg(|palette| palette.title),
     );
+    let mut barred = Vec::new();
     for (row, line) in turn.iter_mut().enumerate() {
         let Some(lead) = line.spans.first_mut() else {
             continue;
@@ -291,8 +292,10 @@ pub(super) fn mark_rows(turn: &mut [Line<'static>], paint: Paint, icons: bool) {
         } else if let Some(rest) = lead.content.strip_prefix(' ') {
             lead.content = rest.to_owned().into();
             line.spans.insert(0, bar.clone());
+            barred.push(row);
         }
     }
+    barred
 }
 
 /// A speaker's style: the lead in its hue, you and the colead bold text, ae dim.

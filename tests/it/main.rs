@@ -15,6 +15,7 @@ mod app_open_live_spec;
 mod app_open_pure_spec;
 mod app_peek_spec;
 mod app_resize_spec;
+mod app_select_spec;
 mod app_selected_spec;
 mod app_settings_spec;
 mod app_side_spec;

@@ -187,6 +187,8 @@ pub struct Model {
     note: Option<String>,
     /// The marked turn, by the fingerprint that names it across re-reads.
     turn: Option<u64>,
+    /// How many times what the panels show has changed: a session, a tab, an overlay.
+    epoch: u64,
 }
 
 impl Model {
@@ -238,6 +240,7 @@ impl Model {
                     Tab::Agents => Tab::Overview,
                 };
                 self.body_top = 0;
+                self.moved();
                 self.focus = None;
                 Act::Redraw
             }
@@ -293,6 +296,7 @@ impl Model {
             return Act::None;
         }
         self.selected = Some(row.name.clone());
+        self.moved();
         self.pages = 0;
         self.rows = 0;
         self.body_top = 0;
@@ -409,6 +413,7 @@ impl Model {
         self.tab = tab;
         self.body_top = 0;
         self.focus = None;
+        self.moved();
         Act::Redraw
     }
 
@@ -483,6 +488,7 @@ impl Model {
                 drag: self.drag,
                 settings: self.settings,
                 peek: self.peek,
+                epoch: self.epoch.wrapping_add(1),
                 ..Self::new(fleet)
             };
         }
@@ -496,8 +502,21 @@ impl Model {
             drag: self.drag,
             settings: self.settings,
             peek: self.peek,
+            epoch: self.epoch.wrapping_add(1),
             ..Self::new(fleet)
         };
+    }
+
+    /// How many times what the panels show has changed: the selection, the
+    /// tab, an overlay, or the whole model rebuilt. Never on a no-op, so a
+    /// selection made against one count is stale at any other.
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn moved(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
     }
 
     /// The sizes the borders were dragged to.
@@ -558,6 +577,7 @@ impl Model {
             Key::PageDown => self.settings_page_by(true),
             Key::Esc | Key::Quit => {
                 self.settings = None;
+                self.moved();
                 Act::Redraw
             }
             Key::Digit(_)
@@ -581,11 +601,14 @@ impl Model {
             page_rows: 0,
             generation,
         });
+        self.moved();
     }
 
     /// Close the overlay.
     pub(crate) fn close_settings(&mut self) {
-        self.settings = None;
+        if self.settings.take().is_some() {
+            self.moved();
+        }
     }
 
     /// The transient hint-row line, if any.
@@ -677,7 +700,10 @@ impl Model {
             Key::Down => open.back = open.back.saturating_sub(1),
             Key::PageUp => open.back = open.back.saturating_add(page),
             Key::PageDown => open.back = open.back.saturating_sub(page),
-            Key::Esc | Key::Quit | Key::Peek => self.peek = None,
+            Key::Esc | Key::Quit | Key::Peek => {
+                self.peek = None;
+                self.moved();
+            }
             _ => return Act::None,
         }
         Act::Redraw
@@ -690,11 +716,14 @@ impl Model {
             page_rows: 0,
             generation,
         });
+        self.moved();
     }
 
     /// Close the peek panel.
     pub fn close_peek(&mut self) {
-        self.peek = None;
+        if self.peek.take().is_some() {
+            self.moved();
+        }
     }
 
     /// Whether the peek panel is open.
@@ -1126,5 +1155,62 @@ mod tests {
             (model.peek_back(), model.peek_generation()),
             (Some(4), Some(5))
         );
+    }
+
+    /// The epoch counts every change of what the panels show, once each, and
+    /// nothing that changes none: a selection made at one count is stale at any
+    /// other, even after a change and its undoing.
+    #[test]
+    fn the_epoch_counts_each_change_of_what_the_panels_show() {
+        fn moved(model: &Model, last: &mut u64, why: &str) {
+            assert_eq!(model.epoch(), *last + 1, "{why}");
+            *last = model.epoch();
+        }
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        let mut last = model.epoch();
+        let _ = model.key(Key::Digit(2), &both, false, true);
+        moved(&model, &mut last, "another session");
+        let _ = model.key(Key::Digit(2), &both, false, true);
+        let _ = model.show_tab(Tab::Overview);
+        assert_eq!(model.epoch(), last, "the same session and tab move nothing");
+        let _ = model.show_tab(Tab::Agents);
+        moved(&model, &mut last, "another tab");
+        let _ = model.key(Key::Tab, &both, false, true);
+        moved(&model, &mut last, "the tab key");
+        model.open_settings(1);
+        moved(&model, &mut last, "settings open");
+        let _ = model.key(Key::Esc, &both, false, true);
+        moved(&model, &mut last, "settings closed by Esc");
+        model.close_settings();
+        assert_eq!(
+            model.epoch(),
+            last,
+            "closing a closed overlay moves nothing"
+        );
+        model.open_settings(2);
+        moved(&model, &mut last, "settings open again");
+        model.close_settings();
+        moved(&model, &mut last, "settings closed");
+        model.open_peek(3);
+        moved(&model, &mut last, "peek open");
+        let _ = model.key(Key::Peek, &both, true, true);
+        moved(&model, &mut last, "peek closed by its key");
+        model.close_peek();
+        assert_eq!(model.epoch(), last, "closing a closed panel moves nothing");
+        model.open_peek(4);
+        moved(&model, &mut last, "peek open again");
+        model.close_peek();
+        moved(&model, &mut last, "peek closed");
+        model.restart(&both);
+        moved(&model, &mut last, "a restart");
+        model.reconcile(&both);
+        assert_eq!(
+            model.epoch(),
+            last,
+            "a reconcile that keeps the row moves nothing"
+        );
+        model.reconcile(&fleet(&["web"]));
+        moved(&model, &mut last, "a selection that left the fleet");
     }
 }

@@ -17,6 +17,7 @@ use super::fleet::{Counts, Facts, Fleet, Line2, Row};
 use super::model::{Drag, Edge, Model, SettingsTab, Split, Tab};
 use super::overview::Overview;
 use super::peek;
+use super::select::{self, Map, Region};
 use super::settings::{AboutFacts, ConfigView, InstructionsView, SettingsBodies};
 use crate::brief::age;
 use crate::console::input::View;
@@ -150,6 +151,8 @@ pub(crate) struct Layout {
     body: Rect,
     pub body_top: Option<usize>,
     pub body_max: usize,
+    /// What a drag may select in this frame.
+    pub(crate) map: Map,
     /// The seats the tab body drew, in drawn order, and the one it highlighted.
     pub seats: Vec<String>,
     pub focused: Option<String>,
@@ -177,6 +180,35 @@ impl Layout {
 
     pub(crate) fn in_body(&self, mouse: Mouse) -> bool {
         self.body.contains((mouse.column, mouse.row).into())
+    }
+
+    /// Let a drag select in `area` (clipped to the frame): `panel`'s cells.
+    fn selectable(&mut self, buf: &Buffer, panel: select::Panel, area: Rect) {
+        let area = area.intersection(buf.area);
+        if !area.is_empty() {
+            self.map.regions.push(Region { panel, area });
+        }
+    }
+
+    /// Let a drag select in the lane: `rows` rows below `top`, from `left`.
+    /// The `bars` among the `shown` rows (from row `y0`) drew a mark bar in
+    /// their first cell, which reads as a blank.
+    fn lane(
+        &mut self,
+        buf: &Buffer,
+        (left, top, room, rows): (u16, u16, u16, usize),
+        bars: &[usize],
+        (shown, y0): (Range<usize>, u16),
+    ) {
+        self.selectable(
+            buf,
+            select::Panel::Lane,
+            Rect::new(left, top, room, cells(rows)),
+        );
+        for row in bars.iter().filter(|row| shown.contains(*row)) {
+            let bar = Rect::new(left, y0 + cells(row - shown.start), 1, 1);
+            self.map.blanks.push(bar.intersection(buf.area));
+        }
     }
 
     /// Record a border at `at` over `cells`, grabbed within a cell of it.
@@ -246,6 +278,7 @@ impl Layout {
         self.cursor = None;
         self.settings_page_rows = 0;
         self.settings_max_scroll = 0;
+        self.map = Map::default();
     }
 }
 
@@ -329,6 +362,13 @@ pub(crate) struct Wait<'a> {
 pub fn draw(screen: &Screen<'_>, buf: &mut Buffer) -> usize {
     let layout = draw_with_layout(screen, Wait::default(), buf);
     layout.max_scroll.div_ceil(layout.page_rows.max(1))
+}
+
+/// [`draw`], answering what a drag may select in the frame instead of its
+/// scroll bound.
+#[must_use]
+pub fn draw_map(screen: &Screen<'_>, buf: &mut Buffer) -> Map {
+    draw_with_layout(screen, Wait::default(), buf).map
 }
 
 /// Draw and retain only the geometry this frame actually showed.
@@ -582,6 +622,11 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
     let (rows, pinned) = list_rows(buf.area, model.split(), count);
     let list = List::of(count, selected, rows, pinned, model.list_top());
     layout.list = Rect::new(0, LIST_TOP, rule, list.end - LIST_TOP);
+    layout.selectable(
+        buf,
+        select::Panel::List,
+        Rect::new(LEFT, LIST_TOP, room, list.end - LIST_TOP),
+    );
     layout.list_start = Some(list.visible.start);
     layout.list_max = count - list.visible.len();
     let needy = fleet.rows.iter().any(|row| row.needy);
@@ -677,6 +722,11 @@ fn tab_body(
     let cut = body.len() > usize::from(room_rows);
     let shown = usize::from(room_rows.saturating_sub(u16::from(cut)));
     layout.body = Rect::new(0, top, rule, room_rows);
+    layout.selectable(
+        buf,
+        select::Panel::Body,
+        Rect::new(LEFT, top, room, room_rows),
+    );
     layout.body_max = body.len().saturating_sub(shown);
     let first = ctx.screen.model.body_top().min(layout.body_max);
     layout.body_top = Some(first);
@@ -1021,8 +1071,7 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry) -> Vec<Cells> {
 /// The chat column over `columns`: the header, the turns anchored to the
 /// bottom, the composer.
 fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout: &mut Layout) {
-    let screen = ctx.screen;
-    let paint = ctx.paint;
+    let (screen, paint) = (ctx.screen, ctx.paint);
     let height = buf.area.height;
     let (left, end) = (columns.start, columns.end);
     let room = end - left;
@@ -1073,7 +1122,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     if ctx.wait.lane {
         rows.push(Line::from(Span::styled("loading", dim)));
     }
-    let turns = place_turns(ctx, &turns, &mut rows, layout);
+    let (turns, bars) = place_turns(ctx, &turns, &mut rows, layout);
     let last = rows
         .len()
         .saturating_sub(scroll)
@@ -1084,6 +1133,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         put_line(buf, left, y0 + cells(step), line, room);
     }
     turn_targets(buf, layout, &turns, (first..last, left, y0, room));
+    layout.lane(buf, (left, top, room, room_rows), &bars, (first..last, y0));
     if room_rows > 0 && scroll > 0 && last < rows.len() {
         put(buf, left, bottom, "↓ newer turns below · PgDn", room, dim);
     }
@@ -1139,23 +1189,25 @@ fn place_turns(
     turns: &[super::lane::Turn],
     rows: &mut [Line<'static>],
     layout: &mut Layout,
-) -> Vec<(u64, Range<usize>)> {
+) -> (Vec<(u64, Range<usize>)>, Vec<usize>) {
     let turns: Vec<(u64, Range<usize>)> = (turns.iter())
         .filter_map(|turn| {
             let key = *ctx.wait.keys.get(turn.at)?;
             Some((key, turn.first..turn.first + turn.rows))
         })
         .collect();
+    let mut bars = Vec::new();
     for (key, span) in &turns {
         if ctx.screen.model.turn() == Some(*key) {
-            super::lane::mark_rows(&mut rows[span.clone()], ctx.paint, ctx.icons);
+            let barred = super::lane::mark_rows(&mut rows[span.clone()], ctx.paint, ctx.icons);
+            bars.extend(barred.into_iter().map(|row| span.start + row));
         }
     }
     let end = rows.len();
     layout.turns = (turns.iter().rev())
         .map(|(key, span)| (*key, end - span.end, span.len()))
         .collect();
-    turns
+    (turns, bars)
 }
 
 /// A turn's rows are its target, across the column: the column keeps two
@@ -1300,7 +1352,8 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let (word, hint) = if open {
         ("settings", "Esc close")
     } else if peeking {
-        ("peek", "Esc close")
+        // The panel covers the hint row, so a copy's outcome rides here.
+        ("peek", ctx.screen.model.note().unwrap_or("Esc close"))
     } else if composing {
         ("write", "")
     } else if matches!(ctx.screen.composer, Composer::Held { .. }) {
@@ -1539,6 +1592,14 @@ pub fn draw_peek(view: &peek::View<'_>, look: Option<Look>, buf: &mut Buffer) ->
     paint_peek(view, look.as_ref(), buf, &mut Layout::default())
 }
 
+/// [`draw_peek`] and what a drag may select in what it painted.
+#[must_use]
+pub fn draw_peek_map(view: &peek::View<'_>, look: Option<Look>, buf: &mut Buffer) -> (Bounds, Map) {
+    let mut layout = Layout::default();
+    let bounds = paint_peek(view, look.as_ref(), buf, &mut layout);
+    (bounds, layout.map)
+}
+
 /// Paint the peek panel over the stripped frame and record its close label
 /// and scroll bounds. Pane text is hostile: every line goes through the
 /// terminal-text neutraliser before it is wrapped and painted.
@@ -1567,6 +1628,14 @@ pub(crate) fn paint_peek(
             scroll: Scroll::Back(view.back),
         },
     );
+    let width = buf.area.width;
+    let body = Rect::new(
+        LEFT,
+        3,
+        width.saturating_sub(LEFT),
+        cells(layout.settings_page_rows),
+    );
+    layout.selectable(buf, select::Panel::Peek, body);
     Bounds {
         visible: layout.settings_page_rows,
         max_back: layout.settings_max_scroll,
@@ -1687,10 +1756,14 @@ const HELD_KEYS: [(&str, &str); 4] = [
     ("^C", "quit"),
     ("any other", "swallowed; a paste too"),
 ];
-const MOUSE_KEYS: [(&str, &str); 3] = [
+const MOUSE_KEYS: [(&str, &str); 4] = [
     ("click", "select a session, tab, seat or turn"),
     ("wheel", "scroll 3 rows (the list: 1 session)"),
     ("drag", "a border resizes the sidebar / list"),
+    (
+        "drag text",
+        "select drawn text, copy on release; Esc clears",
+    ),
 ];
 const PEEK_KEYS: [(&str, &str); 6] = [
     ("j/k Up/Down", "scroll a line"),

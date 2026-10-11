@@ -306,8 +306,8 @@ shown.
 
 ## Copying a turn
 
-The app captures the mouse, so a drag selects nothing. To copy one turn out of
-the chat, mark it and press `y`.
+To copy text you drag over it ([Selecting text](#selecting-text)). To copy one
+whole turn out of the chat, mark it and press `y`.
 
 A turn is marked by a click on it, or by `[` / `]` in browse mode (they are
 draft text while writing and swallowed in Settings). The mark shows as a bar in
@@ -340,6 +340,31 @@ no OSC 52. Alacritty with `TERM=alacritty` needs
 `set -as terminal-features ',alacritty*:clipboard'` in tmux (with `TERM=xterm*`
 tmux's default `terminal-features` already carry the clipboard). The paste
 buffer works regardless.
+
+## Selecting text
+
+Drag over drawn text with the left button, in the chat, the peek panel, the
+session list or the tab body: the cells light up while you drag (reverse video,
+so text that is already reversed shows its inverse), and letting go copies
+exactly the lit text the way `y` does. The hint row answers with the same
+`copied N lines to the tmux buffer; …` words; in the peek panel, which covers
+that row, the answer replaces `Esc close` on its last row for a few seconds.
+
+The text is the drawn cells, row by row, each row cut at its last character
+and the rows joined by a newline (an empty row stays, nothing follows the last
+one). A wide character is taken whole from either of its cells, a control byte
+reads as the blank the terminal gets, and a marked turn's bar is never part of
+it: the copy is the same marked or not. A drag stays inside the panel it began
+in, and the sidebar rule, the header and the composer are not selectable.
+
+A press with no motion is the click it always was, a border still grabs first,
+and the wheel is unchanged. `Esc` with a selection held only clears it (a second
+`Esc` does what it always did); so does the next press. The selection also
+goes, copying nothing, when what you selected changes before the copy leaves:
+another session, tab, Settings or the peek panel, a resize, or the cells under
+it. A new peek capture waits while a selection in the panel is held down, and
+is drawn on the first frame after the copy. A copy leaves only after the frame
+that shows it.
 
 ## Settings
 
@@ -483,9 +508,10 @@ app with `ae app: could not restart into ae <V> - <why>` above the usual line.
   whole write session can submit twice.
 - An app left writing, or with Settings open over a draft, keeps the owner chat
   and every other app from writing until it leaves writing or quits.
-- Mouse dragging does not select text in the app. Hold Shift (Option in iTerm)
-  for terminal text selection; inside tmux an ordinary drag goes to the app.
-  One turn copies with [Copying a turn](#copying-a-turn).
+- A drag selects what the app drew, not the pane's text beyond it, and cannot
+  cross panels or scroll for you: wheel first, then drag. Hold Shift (Option in
+  iTerm) for the terminal's own selection. An upgrade restart does not wait for
+  a selection.
 - Dragging a border needs button-event mouse reports (`?1002h`) in SGR form;
   a terminal that sends only legacy X10 reports gets no drag. Inside tmux a
   binding that replaces the default `MouseDrag1Pane` keeps drags from the app.

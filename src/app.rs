@@ -23,6 +23,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use ratatui_core::buffer::Buffer;
+use ratatui_core::layout::Position;
 use ratatui_core::terminal::Terminal;
 
 use crate::board::terminal_text;
@@ -55,6 +56,9 @@ pub mod model;
 mod order_spec;
 pub mod overview;
 pub mod peek;
+pub mod select;
+#[cfg(test)]
+mod select_spec;
 mod settings;
 mod tty;
 pub mod upgrade;
@@ -193,6 +197,35 @@ struct PeekPane {
     painted: Option<u64>,
 }
 
+/// A drag that began in a selectable region, from its press until its copy is
+/// shipped or it is cleared.
+#[derive(Debug)]
+struct Held {
+    sel: select::Selection,
+    /// The model's [`model::Model::epoch`] when it began: any other is a panel
+    /// change and ends it.
+    epoch: u64,
+    /// The press toggled a turn's mark: `before` is put back at the first
+    /// motion, when the press turns out to be a drag.
+    toggled: bool,
+    before: Option<u64>,
+    /// The button is still down.
+    down: bool,
+    stage: Stage,
+}
+
+/// Where a release's copy stands. It lives in [`Held`], so whatever ends the
+/// selection ends the copy with it.
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Stage {
+    #[default]
+    None,
+    /// Released: the next frame paints the final range.
+    Requested,
+    /// What that frame highlighted, to ship once it is written.
+    Ready(String),
+}
+
 impl PeekPane {
     /// The viewport is scrolled back over captured lines: a newer capture waits.
     fn paused(&self, back: usize) -> bool {
@@ -315,6 +348,12 @@ struct App {
     upgrade: Option<upgrade::Upgrade>,
     /// When the last key, click or paste was read.
     last_input: Option<Instant>,
+    /// The drag in progress, or the highlight it left.
+    select: Option<Held>,
+    /// The cells of the frame on screen, before any highlight.
+    shot: Buffer,
+    /// The last frame left a hint it did not draw: draw again.
+    again: bool,
 }
 
 impl App {
@@ -383,6 +422,9 @@ impl App {
             read_line: String::new(),
             upgrade: None,
             last_input: None,
+            select: None,
+            shot: Buffer::default(),
+            again: false,
         }
     }
 
@@ -454,6 +496,7 @@ impl App {
     fn peek_adopt(&mut self) {
         let back = self.model.peek_back().unwrap_or(0);
         if !self.peek.paused(back)
+            && !self.holds_peek()
             && let Some(held) = self.peek.held.take()
         {
             self.peek.shown = Some(held);
@@ -531,9 +574,9 @@ impl App {
     }
 
     /// A mouse event with the peek panel open: the wheel scrolls wherever it
-    /// lands, a press on the drawn close label closes, and any other press
-    /// dies.
-    fn peek_mouse(&mut self, mouse: Mouse) -> bool {
+    /// lands, a press on the drawn close label closes, a press on its body
+    /// begins a selection, and any other press dies.
+    fn peek_mouse(&mut self, mouse: Mouse, fresh: bool) -> bool {
         match mouse.kind {
             MouseKind::WheelUp | MouseKind::WheelDown => {
                 self.model.peek_wheel(mouse.kind == MouseKind::WheelUp);
@@ -543,7 +586,12 @@ impl App {
                 self.close_peek();
                 true
             }
-            MouseKind::Click | MouseKind::Drag | MouseKind::Release => false,
+            MouseKind::Click => {
+                self.arm(mouse, None, fresh);
+                false
+            }
+            MouseKind::Drag => self.stretch(mouse),
+            MouseKind::Release => self.finish(mouse),
         }
     }
 
@@ -1139,6 +1187,15 @@ impl App {
         if text.is_empty() {
             return "nothing to copy: that turn has no text".to_owned();
         }
+        let preview = lane::preview_why(item).map(|why| format!(" (preview only: {why})"));
+        let count = format!("{}{}", lines_word(&text), preview.unwrap_or_default());
+        self.ship(&text, &count)
+    }
+
+    /// Send `text` to the tmux buffer and to the terminal clipboard of the
+    /// client showing this app; the words say what reached where. `count` is
+    /// how the text is named.
+    fn ship(&self, text: &str, count: &str) -> String {
         let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
             return "copy failed: ae app is not running inside tmux - hold Shift/Option and drag to select".to_owned();
         };
@@ -1152,14 +1209,6 @@ impl App {
                 .then_some(name)
                 .ok_or("the client name failed its grammar".to_owned())
         });
-        let lines = text.lines().count();
-        let count = if lines == 1 {
-            "1 line".to_owned()
-        } else {
-            format!("{lines} lines")
-        };
-        let preview = lane::preview_why(item).map(|why| format!(" (preview only: {why})"));
-        let count = format!("{count}{}", preview.unwrap_or_default());
         match (
             transport::copy_buffer(server, viewer.as_deref().ok(), text.as_bytes()),
             viewer,
@@ -1254,6 +1303,9 @@ impl App {
     /// notch keeps replaying against the newest frame, which bounds it. One
     /// made on a frame the bound dropped is not taken, and the hint row says so.
     fn mouse_made(&mut self, mouse: Mouse, origin: Instant) -> bool {
+        // Every press ends a selection first, a stale or refused one too: no
+        // frame is kept to aim a drag at.
+        let cleared = mouse.kind == MouseKind::Click && self.unselect();
         if mouse.kind == MouseKind::Click && self.lost.is_some_and(|lost| origin <= lost) {
             self.flash = Some((
                 "click not taken: its frame is gone".to_owned(),
@@ -1264,13 +1316,13 @@ impl App {
         }
         let seen = (self.history.iter()).position(|(replaced, _)| origin <= *replaced);
         let Some(at) = seen.filter(|_| mouse.kind == MouseKind::Click) else {
-            return self.mouse(mouse);
+            return self.mouse(mouse) || cleared;
         };
         let older = std::mem::take(&mut self.history[at].1);
         let current = std::mem::replace(&mut self.layout, older);
-        let acted = self.mouse(mouse);
+        let acted = self.mouse_in(mouse, false);
         self.history[at].1 = std::mem::replace(&mut self.layout, current);
-        acted
+        acted || cleared
     }
 
     /// Every wake up to now was read: the layouts older than the oldest held key
@@ -1289,18 +1341,34 @@ impl App {
     /// motion moves a dragged border; every other event first ends a drag —
     /// its release, or a press or wheel after a release that never came.
     fn mouse(&mut self, mouse: Mouse) -> bool {
+        self.mouse_in(mouse, true)
+    }
+
+    /// [`App::mouse`] for a press made on the frame that is on screen (`fresh`)
+    /// or on one a later frame replaced, which can arm no selection. A
+    /// selection a panel change left behind goes first, and so does one a
+    /// press ends.
+    fn mouse_in(&mut self, mouse: Mouse, fresh: bool) -> bool {
+        let mut redraw = self.stale_selection();
+        if mouse.kind == MouseKind::Click {
+            redraw |= self.unselect();
+        }
+        redraw | self.route(mouse, fresh)
+    }
+
+    fn route(&mut self, mouse: Mouse, fresh: bool) -> bool {
         if self.model.settings_open() {
             return self.settings_mouse(mouse);
         }
         if self.model.peek_open() {
-            return self.peek_mouse(mouse);
+            return self.peek_mouse(mouse, fresh);
         }
         if mouse.kind == MouseKind::Drag {
-            return self.drag(mouse);
+            return self.drag(mouse) | self.stretch(mouse);
         }
         let ended = self.model.let_go();
         match mouse.kind {
-            MouseKind::Click => self.click(mouse) || ended,
+            MouseKind::Click => self.clicked(mouse, fresh) || ended,
             MouseKind::WheelUp | MouseKind::WheelDown => {
                 let (up, layout) = (mouse.kind == MouseKind::WheelUp, &self.layout);
                 if layout.in_chat(mouse) {
@@ -1317,7 +1385,8 @@ impl App {
                 };
                 moved || ended
             }
-            MouseKind::Drag | MouseKind::Release => ended,
+            MouseKind::Release => self.finish(mouse) || ended,
+            MouseKind::Drag => ended,
         }
     }
 
@@ -1346,6 +1415,14 @@ impl App {
             },
             MouseKind::Drag | MouseKind::Release => false,
         }
+    }
+
+    /// A press: what it always did, then a selection armed where it landed.
+    fn clicked(&mut self, mouse: Mouse, fresh: bool) -> bool {
+        let before = self.model.turn();
+        let acted = self.click(mouse);
+        self.arm(mouse, before, fresh);
+        acted
     }
 
     /// A press: grab the border under it, else act on the target drawn
@@ -1416,6 +1493,147 @@ impl App {
         }
         let size = draw::dragged_to(drag, mouse, self.layout.area(), self.fleet.rows.len());
         self.model.drag_to(size)
+    }
+
+    /// Begin a selection at the press `mouse` made on the frame on screen:
+    /// not on a border's grab, not on a frame a later one replaced, and only
+    /// where that frame recorded a selectable region. `before` is the marked
+    /// turn from before the press.
+    fn arm(&mut self, mouse: Mouse, before: Option<u64>, fresh: bool) {
+        let at = Position::new(mouse.column, mouse.row);
+        let region = (fresh && self.layout.grab(mouse).is_none())
+            .then(|| self.layout.map.region_at(at).cloned())
+            .flatten();
+        let Some(region) = region else {
+            return;
+        };
+        let fp = select::fingerprint(&self.shot, region.area, &self.layout.map.blanks);
+        let turn = matches!(self.layout.hit(mouse), Some(draw::Hit::Turn(_)));
+        self.select = Some(Held {
+            sel: select::Selection::start(&region, at, fp),
+            epoch: self.model.epoch(),
+            toggled: turn,
+            before,
+            down: true,
+            stage: Stage::None,
+        });
+    }
+
+    /// The button is down on a selection and the pointer is at `mouse`: its
+    /// head follows, and the first cell past the anchor makes it a drag, which
+    /// puts back the mark the press toggled. Whether the head moved and
+    /// whether that was the drag's first cell; `None` with no such selection.
+    fn follow(&mut self, mouse: Mouse) -> Option<(bool, bool)> {
+        let held = self.select.as_mut().filter(|held| held.down)?;
+        let first = !held.sel.moved();
+        let changed = held.sel.extend(Position::new(mouse.column, mouse.row));
+        if first && held.sel.moved() && std::mem::take(&mut held.toggled) {
+            self.model.set_turn(held.before);
+        }
+        Some((changed, first))
+    }
+
+    /// Left motion: whether a frame is due.
+    fn stretch(&mut self, mouse: Mouse) -> bool {
+        (self.follow(mouse)).is_some_and(|(changed, first)| changed || first)
+    }
+
+    /// The button let go: a selection that never moved was a click; one that
+    /// did asks for its copy, which the next frame paints and then ships.
+    fn finish(&mut self, mouse: Mouse) -> bool {
+        self.follow(mouse).is_some_and(|_| {
+            let moved = self.select.as_mut().is_some_and(|held| {
+                held.down = false;
+                held.stage = Stage::Requested;
+                held.sel.moved()
+            });
+            if !moved {
+                self.select = None;
+            }
+            moved
+        })
+    }
+
+    /// A press or Esc ends a selection: whether a highlight went away.
+    fn unselect(&mut self) -> bool {
+        self.select.take().is_some_and(|held| held.sel.moved())
+    }
+
+    /// Drop a selection that the model has since moved out from under: a
+    /// session, a tab or an overlay changed, even if it changed back. Whether
+    /// a highlight went away.
+    fn stale_selection(&mut self) -> bool {
+        let epoch = self.model.epoch();
+        let stale = self.select.take_if(|held| held.epoch != epoch);
+        stale.is_some_and(|held| held.sel.moved())
+    }
+
+    /// A newer peek capture waits while a selection in the panel is held down
+    /// or has a copy to ship; once shipped or cleared the next frame adopts it.
+    fn holds_peek(&self) -> bool {
+        (self.select.as_ref()).is_some_and(|held| {
+            held.sel.panel() == select::Panel::Peek && (held.down || held.stage != Stage::None)
+        })
+    }
+
+    /// The selection against the frame just drawn into `buf`. The held
+    /// fingerprint is compared with these NEW cells, before they replace
+    /// `shot` or wear the highlight: a retained shot could never differ from
+    /// itself. Passing, a requested copy becomes the very text the highlight
+    /// covers; failing, the selection and its copy are gone.
+    fn settle_selection(&mut self, buf: &mut Buffer) {
+        let epoch = self.model.epoch();
+        let map = &self.layout.map;
+        let proven = (self.select.as_ref()).map(|held| {
+            let region = map.region(held.sel.panel());
+            held.epoch == epoch
+                && region.is_some_and(|region| region.area == held.sel.area())
+                && select::fingerprint(buf, held.sel.area(), &map.blanks) == held.sel.fp()
+        });
+        self.shot.clone_from(buf);
+        match (proven, self.select.as_mut()) {
+            (Some(true), Some(held)) => {
+                if held.stage == Stage::Requested {
+                    held.stage = Stage::Ready(select::text(buf, &held.sel, &map.blanks));
+                }
+                if held.sel.moved() {
+                    select::highlight(buf, &held.sel, &map.blanks);
+                }
+            }
+            (Some(false), Some(_)) => {
+                let lost = self.select.take();
+                if lost
+                    .is_some_and(|held| held.down && held.sel.moved() || held.stage != Stage::None)
+                {
+                    let line = "selection cleared: the screen changed".to_owned();
+                    self.flash = Some((line, Instant::now()));
+                    self.again = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// What the loop owes after a frame: the staged copy shipped and a hint
+    /// the frame had no room to draw. Whether another frame is due.
+    fn shipped(&mut self) -> bool {
+        self.ship_staged() | std::mem::take(&mut self.again)
+    }
+
+    /// Ship the copy the last frame highlighted, now that it is written: the
+    /// text goes the way `y` sends a turn. Whether it said anything.
+    fn ship_staged(&mut self) -> bool {
+        let ready = (self.select.as_mut()).filter(|held| matches!(held.stage, Stage::Ready(_)));
+        let Some(Stage::Ready(text)) = ready.map(|held| std::mem::take(&mut held.stage)) else {
+            return false;
+        };
+        let line = if text.trim().is_empty() {
+            "nothing to copy: the selection is blank".to_owned()
+        } else {
+            self.ship(&text, &lines_word(&text))
+        };
+        self.flash = Some((line, Instant::now()));
+        true
     }
 
     /// Carry out what the input asked for; each outcome becomes a notice,
@@ -1870,6 +2088,7 @@ impl App {
         }
         let drawn = self.model.selected().map(|name| self.freeze(name));
         self.drawn = drawn;
+        self.settle_selection(buf);
     }
 
     /// Paint the open peek panel over the frame: its newest body with its age
@@ -1897,6 +2116,14 @@ impl App {
         if self.deferred.is_empty() {
             self.model.clamp_peek(bounds.max_back);
         }
+    }
+}
+
+/// How a copy names its text: `1 line`, `3 lines`.
+fn lines_word(text: &str) -> String {
+    match text.lines().count() {
+        1 => "1 line".to_owned(),
+        lines => format!("{lines} lines"),
     }
 }
 
@@ -2040,9 +2267,10 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
                 }
             })?;
         }
-        // An ask waits for the frame that names its target; its outcome
-        // needs another.
-        dirty = app.deliver();
+        // A release's copy ships only once the frame showing it is out. An
+        // ask waits for the frame that names its target; its outcome needs
+        // another.
+        dirty = app.shipped() | app.deliver();
         // Held keys replay as soon as the frame above has produced more.
         let wait = if app.deferred.is_empty() {
             TICK
@@ -2171,6 +2399,13 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         let browsing = !app.model.settings_open() && !app.composing() && app.held.is_none();
         if key != Key::Interrupt && !(browsing && matches!(key, Key::Text(_))) {
             redraw |= app.armed.take().is_some();
+        }
+        // A selection a panel change left behind is gone before this key; Esc
+        // with one still held only clears it.
+        redraw |= app.stale_selection();
+        if key == Key::Escape && app.select.take().is_some_and(|held| held.sel.moved()) {
+            redraw = true;
+            continue;
         }
         redraw |= if let Key::Mouse(mouse) = &key {
             app.mouse_made(*mouse, origin)
@@ -2426,7 +2661,7 @@ mod tests {
     use super::loader::{self, Answer, Reader, ViewRead};
     use super::upgrade::Blocker;
     use super::{
-        App, USAGE, browse, draw, facts_of, fleet, run, settings, settings_key, take_keys,
+        App, USAGE, browse, draw, facts_of, fleet, run, select, settings, settings_key, take_keys,
     };
     use crate::app::fleet::{Counts, Fleet, Row};
     use crate::app::model::{Drag, Edge, Key as Browse, Model, SettingsTab, Tab};
@@ -6224,5 +6459,210 @@ mod tests {
         assert_eq!(app.model.peek_back(), Some(1));
         assert_eq!(pressed(&mut app, b"z"), Some(false), "z is swallowed");
         assert_eq!(app.model.peek_back(), Some(1));
+    }
+
+    /// The frame `app` draws, and the cell where `word` starts in it.
+    fn shown(app: &mut App, word: &str) -> (Buffer, u16, u16) {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
+        app.frame(&mut buf);
+        let spelled: Vec<String> = word.chars().map(String::from).collect();
+        let (width, height) = (buf.area.width, buf.area.height);
+        let found = (0..height).find_map(|y| {
+            (0..width).find_map(|x| {
+                let fits = (0..)
+                    .zip(&spelled)
+                    .all(|(at, ch)| x + at < width && buf[(x + at, y)].symbol() == ch.as_str());
+                fits.then_some((x, y))
+            })
+        });
+        let (x, y) = found.expect("a drawn word");
+        (buf, x, y)
+    }
+
+    fn lit(buf: &Buffer, y: u16) -> Vec<u16> {
+        let inverse = |x: &u16| {
+            let cell = &buf[(*x, y)];
+            cell.modifier
+                .contains(ratatui_core::style::Modifier::REVERSED)
+        };
+        (0..buf.area.width).filter(inverse).collect()
+    }
+
+    fn at(kind: MouseKind, column: u16, row: u16) -> Mouse {
+        Mouse { kind, column, row }
+    }
+
+    fn staged(app: &App) -> Option<&str> {
+        match app.select.as_ref().map(|held| &held.stage) {
+            Some(super::Stage::Ready(text)) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The drag paints the cells it covers, the release asks for a copy of
+    /// the cells a frame painted - the release cell included, though no drag
+    /// event reached it - and the copy leaves only after that frame.
+    #[test]
+    fn a_drag_paints_its_cells_and_the_release_ships_what_the_frame_painted() {
+        let mut app = turned(&["alpha beta gamma", "second"]);
+        let (_, x, y) = shown(&mut app, "alpha beta gamma");
+        assert!(app.mouse(at(MouseKind::Click, x + 6, y)));
+        let held = app.select.as_ref().expect("a press arms");
+        assert!(held.down && !held.sel.moved());
+        assert!(app.model.turn().is_some(), "the press marked the turn");
+        assert!(app.mouse(at(MouseKind::Drag, x + 8, y)));
+        assert_eq!(app.model.turn(), None, "motion puts the mark back");
+        assert!(app.mouse(at(MouseKind::Release, x + 9, y)));
+        assert_eq!(staged(&app), None, "nothing leaves before a frame");
+        let (buf, ..) = shown(&mut app, "alpha beta gamma");
+        assert_eq!(lit(&buf, y), (x + 6..=x + 9).collect::<Vec<_>>());
+        assert_eq!(staged(&app), Some("beta"), "the very cells painted");
+        assert!(app.ship_staged());
+        let said = app.flash.as_ref().map(|(line, _)| line.as_str());
+        assert!(said.is_some_and(|line| line.starts_with("copy failed")));
+        assert!(!app.ship_staged(), "a copy ships once");
+        let (buf, ..) = shown(&mut app, "alpha");
+        assert_eq!(lit(&buf, y).len(), 4, "the highlight stays");
+    }
+
+    /// A press and release with no motion is the click it always was: the
+    /// turn stays marked, nothing is staged, nothing is highlighted.
+    #[test]
+    fn a_plain_click_selects_nothing_and_keeps_its_old_behaviour() {
+        let mut app = turned(&["alpha beta gamma"]);
+        let (_, x, y) = shown(&mut app, "alpha");
+        assert!(app.mouse(at(MouseKind::Click, x + 2, y)));
+        let marked = app.model.turn();
+        assert!(marked.is_some());
+        let _ = app.mouse(at(MouseKind::Release, x + 2, y));
+        assert!(app.select.is_none() && !app.ship_staged());
+        assert_eq!(app.model.turn(), marked, "the mark stays");
+        let (buf, ..) = shown(&mut app, "alpha");
+        assert!(lit(&buf, y).is_empty());
+    }
+
+    /// A press anywhere ends the selection, and a copy staged but not yet
+    /// shipped goes with it; so does Esc, which is consumed.
+    #[test]
+    fn a_press_or_esc_ends_a_selection_and_its_unshipped_copy() {
+        for esc in [false, true] {
+            let mut app = turned(&["alpha beta gamma"]);
+            let (_, x, y) = shown(&mut app, "alpha");
+            app.mouse(at(MouseKind::Click, x, y));
+            app.mouse(at(MouseKind::Drag, x + 3, y));
+            app.mouse(at(MouseKind::Release, x + 3, y));
+            if esc {
+                let keys = vec![(Key::Escape, Instant::now())];
+                assert_eq!(take_keys(&mut app, keys), Some(true));
+                assert!(app.model.selected().is_some(), "Esc only cleared it");
+            } else {
+                app.mouse(at(MouseKind::Click, 100, 44));
+            }
+            assert!(app.select.is_none());
+            let (buf, ..) = shown(&mut app, "alpha");
+            assert!(lit(&buf, y).is_empty() && !app.ship_staged(), "esc={esc}");
+        }
+    }
+
+    /// A panel change drops the selection even when the panel changes back
+    /// to the very cells it held; a changed cell drops it too, saying so.
+    #[test]
+    fn a_selection_dies_with_its_panel_and_with_its_cells() {
+        let mut app = turned(&["alpha beta gamma"]);
+        let (_, x, y) = shown(&mut app, "alpha");
+        let drag = |app: &mut App| {
+            app.mouse(at(MouseKind::Click, x, y));
+            app.mouse(at(MouseKind::Drag, x + 3, y));
+        };
+        drag(&mut app);
+        app.model.open_settings(1);
+        app.model.close_settings();
+        assert!(app.stale_selection(), "away and back is still a change");
+        assert!(app.select.is_none());
+        drag(&mut app);
+        app.mouse(at(MouseKind::Release, x + 3, y));
+        app.lane = Rc::new(Lane {
+            items: vec![said("omega beta gamma", 0)],
+            coverage: Vec::new(),
+        });
+        let (buf, ..) = shown(&mut app, "omega");
+        assert!(app.select.is_none() && lit(&buf, y).is_empty());
+        let said = app.flash.as_ref().map(|(line, _)| line.as_str());
+        assert_eq!(said, Some("selection cleared: the screen changed"));
+        assert!(!app.ship_staged() && std::mem::take(&mut app.again));
+    }
+
+    /// A press on a frame a later one replaced arms nothing and still ends
+    /// a selection held; a border grab arms nothing either.
+    #[test]
+    fn a_stale_press_and_a_border_grab_arm_no_selection() {
+        let mut app = turned(&["alpha beta gamma"]);
+        let (_, x, y) = shown(&mut app, "alpha");
+        app.mouse(at(MouseKind::Click, x, y));
+        app.mouse(at(MouseKind::Drag, x + 3, y));
+        assert!(app.mouse_in(at(MouseKind::Click, x, y), false));
+        assert!(app.select.is_none(), "it ended the old, armed no new one");
+        let rule = (0..160).find(|c| app.layout.grab(at(MouseKind::Click, *c, y)).is_some());
+        let rule = rule.expect("a sidebar rule on the row");
+        app.mouse(at(MouseKind::Click, rule, y));
+        assert!(app.select.is_none(), "the grab wins");
+    }
+
+    /// The bar a marked turn wears is chrome: the cell is a recorded blank,
+    /// and dragging across it copies the very bytes the unmarked turn gives.
+    #[test]
+    fn a_marked_turns_bar_is_never_copied() {
+        let copied = |marked: bool| {
+            let mut app = turned(&["alpha beta", "other"]);
+            if marked {
+                let key = key_of(&app, 0);
+                app.model.set_turn(Some(key));
+            }
+            let (buf, x, y) = shown(&mut app, "alpha");
+            let left = app.layout.map.region(select::Panel::Lane).map(|r| r.area.x);
+            let left = left.expect("a lane region");
+            let bar = app.layout.map.blanks.iter().find(|blank| blank.y == y);
+            assert_eq!(bar.is_some(), marked, "only a marked turn has a bar");
+            if marked {
+                assert!(matches!(buf[(left, y)].symbol(), "│" | "|"), "the bar");
+            }
+            app.mouse(at(MouseKind::Click, left, y));
+            app.mouse(at(MouseKind::Drag, x + 4, y));
+            app.mouse(at(MouseKind::Release, x + 4, y));
+            let _ = shown(&mut app, "alpha");
+            staged(&app).map(str::to_owned)
+        };
+        let (marked, plain) = (copied(true), copied(false));
+        assert_eq!(marked, plain, "marked and unmarked bytes agree");
+        assert!(marked.is_some_and(|text| text.ends_with("alpha")));
+    }
+
+    /// A press whose release never came is not a selection: it holds nothing
+    /// for Esc, which closes the panel as it always did.
+    #[test]
+    fn esc_after_a_press_with_no_motion_keeps_its_usual_job() {
+        let (mut app, _asks) = peeker();
+        let _ = pressed(&mut app, b"v");
+        app.peek.shown = Some(super::peek::Body::Lines(vec!["alphaZ".to_owned()]));
+        let (_, x, y) = shown(&mut app, "alphaZ");
+        app.mouse(at(MouseKind::Click, x, y));
+        assert!(app.select.is_some(), "the press is armed");
+        let _ = take_keys(&mut app, vec![(Key::Escape, Instant::now())]);
+        assert!(!app.model.peek_open(), "Esc closed the panel");
+        assert!(app.select.is_none(), "and dropped the arm");
+    }
+
+    /// A drag whose motion reports were coalesced away - the release lands on
+    /// another cell - is still a drag: the mark its press toggled goes back.
+    #[test]
+    fn a_release_on_another_cell_puts_back_the_mark_the_press_toggled() {
+        let mut app = turned(&["alpha beta gamma"]);
+        let (_, x, y) = shown(&mut app, "alpha");
+        app.mouse(at(MouseKind::Click, x, y));
+        assert!(app.model.turn().is_some(), "the press marked the turn");
+        app.mouse(at(MouseKind::Release, x + 4, y));
+        assert_eq!(app.model.turn(), None, "a drag leaves the mark as it was");
+        let _ = shown(&mut app, "alpha");
+        assert_eq!(staged(&app), Some("alpha"));
     }
 }

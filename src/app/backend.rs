@@ -29,6 +29,15 @@ impl<W: Write> Ansi<W> {
     }
 }
 
+/// A symbol as the terminal gets it: a blank where it carries a control.
+pub(crate) fn clean(symbol: &str) -> &str {
+    if symbol.chars().any(char::is_control) {
+        " "
+    } else {
+        symbol
+    }
+}
+
 /// The SGR parameters that set `cell`'s whole look from a reset.
 fn sgr(cell: &Cell) -> String {
     let mut params = vec!["0".to_owned()];
@@ -72,11 +81,7 @@ impl<W: Write> Backend for Ansi<W> {
                 look = wanted;
             }
             let symbol = cell.symbol();
-            let clean = if symbol.chars().any(char::is_control) {
-                " "
-            } else {
-                symbol
-            };
+            let clean = clean(symbol);
             self.out.write_all(clean.as_bytes())?;
             // A wide symbol moves the terminal's cursor past more than one
             // cell, so the next cell is always placed explicitly.
