@@ -45,7 +45,7 @@ knowledge: what to trust, what to distrust, where to look first.
   fields lie in two directions: identity flip (a lead's briefs logged
   `actor=<target>` — the builder read self-addressed events, rationalized them as
   echoes, adopted the lead persona, and idled a full work period, watchdog-invisible;
-  caught only by Clemens' eyeball) and silent misattribution (the lead's gates and
+  caught only by the human's eyeball) and silent misattribution (the lead's gates and
   merges logged `actor=human` for 24h, which also conflates the lead with the human —
   the ledger can no longer answer "who decided this"). Second-order:
   `_last_event_age()` greps `actor`, so a misattributed agent's idle clock
@@ -126,7 +126,7 @@ knowledge: what to trust, what to distrust, where to look first.
 
 ## Non-negotiables (never re-litigate, never "improve" away)
 
-- No AI attribution anywhere in commits. Commit/push only when Clemens asks.
+- No AI attribution anywhere in commits. Commit/push only when the human asks.
 - Cross-model review before committing significant changes — model *diversity* is
   the point; same-model depth does not satisfy it.
 - One writer per file at a time; coordinate via helpers before touching another
