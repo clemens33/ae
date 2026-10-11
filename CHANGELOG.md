@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.51] - 2026-10-11
+- A complete transcript read hands each line to its reader and keeps none
+
 ## [v2026.10.50] - 2026-10-11
 - Pin each routed end by its session id, so a pending request survives ae rename
 - Rename and goal: the session watchdog tells running seats the new name, helper paths and goal
