@@ -462,6 +462,18 @@ mod tests {
     }
 
     #[test]
+    fn a_fingerprint_ignores_the_cells_just_outside_its_area() {
+        let mut buf = drawn(&["abcd", "efgh"]);
+        let area = Rect::new(0, 0, 2, 2);
+        let base = fingerprint(&buf, area, &[]);
+        buf[(2, 0)].set_symbol("Z");
+        buf[(2, 1)].set_symbol("Y");
+        assert_eq!(fingerprint(&buf, area, &[]), base, "beside the area");
+        buf[(1, 1)].set_symbol("X");
+        assert_ne!(fingerprint(&buf, area, &[]), base, "inside the area");
+    }
+
+    #[test]
     fn a_map_names_the_region_under_a_cell() {
         let map = Map {
             regions: vec![

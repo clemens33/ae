@@ -6650,6 +6650,163 @@ mod tests {
         }
     }
 
+    /// Every motion that moves the lit end asks for a frame, not only the
+    /// first one: the highlight follows the pointer.
+    #[test]
+    fn each_drag_that_moves_the_lit_end_asks_for_a_frame() {
+        let mut app = turned(&["alpha beta gamma"]);
+        let (_, x, y) = shown(&mut app, "alpha");
+        app.mouse(at(MouseKind::Click, x, y));
+        assert!(app.mouse(at(MouseKind::Drag, x + 1, y)), "the first motion");
+        let _ = shown(&mut app, "alpha");
+        assert!(app.mouse(at(MouseKind::Drag, x + 3, y)), "a later motion");
+        let (buf, ..) = shown(&mut app, "alpha");
+        assert_eq!(lit(&buf, y), (x..=x + 3).collect::<Vec<_>>());
+    }
+
+    /// A frame is owed after a shipped copy and after a hint with no room,
+    /// and only then; a waiting hint is taken.
+    #[test]
+    fn a_frame_is_owed_for_a_shipped_copy_or_a_waiting_hint() {
+        for (copy, hint) in [(false, false), (true, false), (false, true)] {
+            let mut app = turned(&["alpha beta gamma"]);
+            let (_, x, y) = shown(&mut app, "alpha");
+            if copy || hint {
+                app.mouse(at(MouseKind::Click, x, y));
+                app.mouse(at(MouseKind::Drag, x + 3, y));
+                app.mouse(at(MouseKind::Release, x + 3, y));
+            }
+            if hint {
+                // The screen changes before the copy leaves: dropped, with a hint.
+                app.lane = Rc::new(Lane {
+                    items: vec![said("omega beta gamma", 0)],
+                    coverage: Vec::new(),
+                });
+                let _ = shown(&mut app, "omega");
+            } else if copy {
+                let _ = shown(&mut app, "alpha");
+            }
+            assert_eq!(app.again, hint, "copy {copy}, hint {hint}: a hint waits");
+            assert_eq!(app.shipped(), copy || hint, "copy {copy}, hint {hint}");
+            assert!(!app.again, "copy {copy}, hint {hint}: the hint is taken");
+        }
+    }
+
+    /// The loop settles the copy and the queued asks together: a frame is due
+    /// when either ran, and each runs whatever the other did.
+    #[test]
+    fn a_frame_settles_the_copy_and_the_queued_asks_together() {
+        for (copy, ask) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut app = turned(&["alpha beta gamma"]);
+            let (_, x, y) = shown(&mut app, "alpha");
+            if copy {
+                app.mouse(at(MouseKind::Click, x, y));
+                app.mouse(at(MouseKind::Drag, x + 3, y));
+                app.mouse(at(MouseKind::Release, x + 3, y));
+                let _ = shown(&mut app, "alpha");
+            }
+            if ask {
+                app.queued.push(super::Queued {
+                    key: ("api".to_owned(), "id".to_owned()),
+                    entry: 0,
+                    raw: b"hi".to_vec(),
+                    seat: "lead".to_owned(),
+                    body: "hi".to_owned(),
+                    about: "api".to_owned(),
+                });
+            }
+            assert_eq!(app.owed(), copy || ask, "copy {copy}, ask {ask}");
+            assert!(app.queued.is_empty(), "copy {copy}, ask {ask}: asks ran");
+            assert_eq!(app.flash.is_some(), copy, "copy {copy}, ask {ask}: shipped");
+        }
+    }
+
+    /// A selection that lost nothing a person saw or asked for - a press that
+    /// never moved, or a highlight whose copy already left - goes without a
+    /// word when the screen changes under it.
+    #[test]
+    fn a_selection_that_lost_nothing_goes_quietly_when_the_screen_changes() {
+        for copied in [false, true] {
+            let mut app = turned(&["alpha beta gamma"]);
+            let (_, x, y) = shown(&mut app, "alpha");
+            app.mouse(at(MouseKind::Click, x, y));
+            if copied {
+                app.mouse(at(MouseKind::Drag, x + 3, y));
+                app.mouse(at(MouseKind::Release, x + 3, y));
+                let _ = shown(&mut app, "alpha");
+                assert!(app.ship_staged(), "the copy left");
+            }
+            let before = app.flash.as_ref().map(|(line, _)| line.clone());
+            app.lane = Rc::new(Lane {
+                items: vec![said("omega beta gamma", 0)],
+                coverage: Vec::new(),
+            });
+            let (buf, ..) = shown(&mut app, "omega");
+            assert!(app.select.is_none() && lit(&buf, y).is_empty(), "{copied}");
+            let after = app.flash.as_ref().map(|(line, _)| line.clone());
+            assert_eq!(after, before, "{copied}: nothing new is said");
+            assert!(!std::mem::take(&mut app.again), "{copied}: no hint owed");
+        }
+    }
+
+    /// A key that finds a lit selection left behind by a panel change asks for
+    /// the redraw that removes the highlight, though the key itself does
+    /// nothing.
+    #[test]
+    fn a_key_after_a_panel_change_redraws_the_stale_highlight_away() {
+        for stale in [false, true] {
+            let mut app = turned(&["alpha beta gamma"]);
+            let (_, x, y) = shown(&mut app, "alpha");
+            if stale {
+                app.mouse(at(MouseKind::Click, x, y));
+                app.mouse(at(MouseKind::Drag, x + 3, y));
+                let _ = shown(&mut app, "alpha");
+                app.model.open_settings(1);
+                app.model.close_settings();
+            }
+            let keys = vec![(Key::Text(b"~".to_vec()), Instant::now())];
+            assert_eq!(take_keys(&mut app, keys), Some(stale), "stale {stale}");
+            assert!(app.select.is_none(), "stale {stale}");
+        }
+    }
+
+    /// In a lane taller than the screen the marked turn's bar is blanked on
+    /// the very cells it is drawn on, whichever turns scrolled out above.
+    #[test]
+    fn a_marked_turns_bar_is_blanked_where_it_is_drawn_in_a_long_lane() {
+        let bodies: Vec<String> = (0..80).map(|n| format!("turn{n:02} text")).collect();
+        let mut app = turned(&bodies.iter().map(String::as_str).collect::<Vec<_>>());
+        let key = key_of(&app, 79);
+        app.model.set_turn(Some(key));
+        let (buf, _, y) = shown(&mut app, "turn79");
+        let left = app.layout.map.region(select::Panel::Lane).map(|r| r.area.x);
+        let left = left.expect("a lane region");
+        assert!(matches!(buf[(left, y)].symbol(), "│" | "|"), "the bar");
+        let bars =
+            (0..buf.area.height).filter(|row| matches!(buf[(left, *row)].symbol(), "│" | "|"));
+        for row in bars {
+            let cell = ratatui_core::layout::Position::new(left, row);
+            let blank = app.layout.map.blanks.iter().any(|b| b.contains(cell));
+            assert!(blank, "the bar on row {row} is a recorded blank");
+        }
+    }
+
+    /// Every session row the list draws is inside the list's region, the last
+    /// one included.
+    #[test]
+    fn the_list_region_holds_every_drawn_session_row() {
+        let mut app = turned(&["alpha"]);
+        app.fleet = Fleet {
+            rows: vec![row("api", 1, true), row("zzzlast", 2, false)],
+            home: Some("api".to_owned()),
+        };
+        app.model = Model::new(&app.fleet);
+        let (_, x, y) = shown(&mut app, "zzzlast");
+        let at = ratatui_core::layout::Position::new(x, y);
+        let panel = app.layout.map.region_at(at).map(|region| region.panel);
+        assert_eq!(panel, Some(select::Panel::List), "the last drawn row");
+    }
+
     /// The bar a marked turn wears is chrome: the cell is a recorded blank,
     /// and dragging across it copies the very bytes the unmarked turn gives.
     #[test]
