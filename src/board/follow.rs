@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use super::{Coverage, Observation, Role, SeatSeed, Streamed, reader_for};
+use super::{Coverage, Observation, Role, SeatSeed, Streamed, read_buffered};
 use crate::tool::ToolKind;
 
 /// The follow's poll cadence: the driver sleeps this between polls.
@@ -243,8 +243,7 @@ impl Follow {
         {
             return false;
         }
-        let (_, seat_coverage) =
-            reader_for(loaded.source)(streamed, actor, &loaded.file, loaded.source);
+        let (_, seat_coverage) = read_buffered(loaded.source, streamed, actor, &loaded.file);
         self.steady(
             actor,
             seat_coverage.into_iter().map(|item| item.reason).collect(),
@@ -304,11 +303,11 @@ impl Follow {
                 Some(Err(reason)) => self.failed(&actor, &loaded, &arm, reason, &mut coverage),
                 Some(Ok(streamed)) => {
                     let (mut seat_rows, seat_coverage) =
-                        reader_for(loaded.source)(&streamed, &actor, &loaded.file, loaded.source);
+                        read_buffered(loaded.source, &streamed, &actor, &loaded.file);
                     // The window of replies to the human continues from where the
                     // last poll ended it; a first sight or a rescan starts shut.
                     let mut window = false;
-                    if streamed.windowed {
+                    if streamed.binding.windowed {
                         let held = matches!(arm, Arm::Append)
                             && self.seats.get(&actor).is_some_and(|seat| seat.window);
                         (seat_rows, window) = super::answered(seat_rows, passive.as_deref(), held);

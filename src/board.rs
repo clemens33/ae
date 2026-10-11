@@ -18,6 +18,9 @@ pub mod grok;
 pub mod muse;
 pub mod opencode;
 
+#[cfg(test)]
+mod stream_spec;
+
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read as _, Seek as _};
@@ -344,7 +347,7 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
 
 /// One streamed transcript line: path in, lines out — the door carries no
 /// harness knowledge, so every later reader reuses it.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Line {
     /// Byte offset of the line's first byte in the file.
     pub(crate) offset: u64,
@@ -353,7 +356,7 @@ pub struct Line {
 }
 
 /// A line's body: bytes the reader may parse, or a length it must cover.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum LineBody {
     /// A newline-terminated line, newline excluded, within the cap.
     Full(Vec<u8>),
@@ -364,10 +367,6 @@ pub enum LineBody {
 
 /// One transcript, streamed: its lines plus whether the tail was torn.
 #[derive(Debug)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "torn is splitter state; assistant and the two agy context bits are independent caller-bound defaults, and a state machine would couple every reader's construction to agy's two arms"
-)]
 pub struct Streamed {
     /// Every newline-terminated line, in file order with its byte offset.
     pub(crate) lines: Vec<Line>,
@@ -386,9 +385,21 @@ pub struct Streamed {
     /// One `(line end, fingerprint)` per committed line, each covering
     /// `[seed..end]` from this read's seed.
     pub(crate) checkpoints: Vec<(u64, u64)>,
+    /// What the caller bound to this read.
+    pub(crate) binding: Binding,
+}
+
+/// What a caller binds to one read before its first line: the splitter stays
+/// pure, so every fact here comes from the caller.
+#[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "assistant and the agy context bits are independent caller-bound defaults, and a state machine would couple every reader's construction to agy's two arms"
+)]
+pub struct Binding {
     /// The seat's harness conversation id, when the caller bound one. A store
     /// that interleaves conversations (agy) filters on it; every other reader
-    /// ignores it. The splitter stays pure, so this is bound by the caller.
+    /// ignores it.
     pub(crate) seat_id: String,
     /// `--assistant`: read the model's replies too, text parts only. False
     /// until the caller binds it, so a reader with the flag off takes exactly
@@ -409,7 +420,7 @@ pub struct Streamed {
     pub(crate) windowed: bool,
 }
 
-impl Streamed {
+impl Binding {
     /// Bind the seat's harness conversation id to this read. ONE store — agy's
     /// history — carries several seats' turns, so its reader matches each
     /// record against this id and nothing else.
@@ -451,20 +462,161 @@ impl Streamed {
         self.assistant_read_once = once;
         self
     }
+}
 
-    /// The fingerprint covering `[seed..offset]`: the read's seed at `from`,
-    /// a line-end checkpoint inside. Anything else answers the whole read —
-    /// callers only ask for line ends, so a miss reads as changed, never held.
+impl Streamed {
+    /// The buffered lines and the facts the read committed to.
+    fn of(lines: Vec<Line>, commit: Commit) -> Self {
+        Self {
+            lines,
+            torn: commit.ending.torn,
+            committed: commit.committed,
+            from: commit.from,
+            fp: commit.fp,
+            checkpoints: commit.checkpoints,
+            binding: Binding::default(),
+        }
+    }
+
+    /// [`Binding::for_seat`] on this read.
+    #[must_use]
+    pub fn for_seat(mut self, seat_id: &str) -> Self {
+        self.binding = self.binding.for_seat(seat_id);
+        self
+    }
+
+    /// [`Binding::with_assistant`] on this read.
+    #[must_use]
+    pub fn with_assistant(mut self, assistant: bool) -> Self {
+        self.binding = self.binding.with_assistant(assistant);
+        self
+    }
+
+    /// [`Binding::with_replies`] on this read.
+    #[must_use]
+    pub fn with_replies(mut self, replies: Replies) -> Self {
+        self.binding = self.binding.with_replies(replies);
+        self
+    }
+
+    /// [`Binding::with_assistant_rows_found`] on this read.
+    #[must_use]
+    pub fn with_assistant_rows_found(mut self, found: bool) -> Self {
+        self.binding = self.binding.with_assistant_rows_found(found);
+        self
+    }
+
+    /// [`Binding::with_assistant_read_once`] on this read.
+    #[must_use]
+    pub fn with_assistant_read_once(mut self, once: bool) -> Self {
+        self.binding = self.binding.with_assistant_read_once(once);
+        self
+    }
+
+    /// The torn tail plus the over-cap lines, counted from the held lines.
+    #[must_use]
+    pub fn ending(&self) -> Ending {
+        let mut ending = Ending {
+            torn: self.torn,
+            ..Ending::default()
+        };
+        for line in &self.lines {
+            if let LineBody::Overlong(len) = &line.body {
+                ending.overlong += 1;
+                ending.largest = ending.largest.max(*len);
+            }
+        }
+        ending
+    }
+
+    /// Hand every held line to `each` in file order, then the ending: the
+    /// buffered read as a [`Feed`].
+    pub(crate) fn replay(&self, each: &mut dyn FnMut(&Line)) -> Ending {
+        for line in &self.lines {
+            each(line);
+        }
+        self.ending()
+    }
+
+    /// The fingerprint covering `[seed..offset]`: [`fp_at`].
     pub(crate) fn fp_at(&self, offset: u64, seed: u64) -> u64 {
-        if offset == self.from {
-            return seed;
-        }
-        if let Some((_, fp)) = self.checkpoints.iter().find(|(end, _)| *end == offset) {
-            return *fp;
-        }
-        self.fp
+        fp_at(self.from, &self.checkpoints, self.fp, offset, seed)
     }
 }
+
+/// What only a stream's end can say: a torn tail, and the over-cap lines it
+/// covered by count and largest true length.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Ending {
+    /// Trailing bytes without a newline were seen and NOT trusted.
+    pub(crate) torn: bool,
+    /// How many lines tripped [`LINE_CAP`].
+    pub(crate) overlong: usize,
+    /// The largest true length among them.
+    pub(crate) largest: usize,
+}
+
+impl Ending {
+    /// ONE coverage row for a seat's every over-cap line: the count plus the
+    /// largest true length. Readers skip `Overlong` lines in their loop and
+    /// push this row after it — N huge lines name one row, never N.
+    pub(crate) fn overlong_coverage(&self, actor: &str) -> Option<Coverage> {
+        if self.overlong == 0 {
+            return None;
+        }
+        let noun = if self.overlong == 1 {
+            "line exceeds"
+        } else {
+            "lines exceed"
+        };
+        Some(Coverage {
+            actor: actor.to_owned(),
+            reason: format!(
+                "{} {noun} the 1 MiB cap (largest {} bytes)",
+                self.overlong, self.largest
+            ),
+        })
+    }
+}
+
+/// A read's commit facts without its lines: what the streaming door returns.
+#[derive(Debug)]
+pub(crate) struct Commit {
+    /// The torn tail and the over-cap lines.
+    pub(crate) ending: Ending,
+    /// As [`Streamed::committed`].
+    pub(crate) committed: u64,
+    /// As [`Streamed::from`].
+    pub(crate) from: u64,
+    /// As [`Streamed::fp`].
+    pub(crate) fp: u64,
+    /// As [`Streamed::checkpoints`].
+    pub(crate) checkpoints: Vec<(u64, u64)>,
+}
+
+impl Commit {
+    /// The fingerprint covering `[seed..offset]`: [`fp_at`].
+    pub(crate) fn fp_at(&self, offset: u64, seed: u64) -> u64 {
+        fp_at(self.from, &self.checkpoints, self.fp, offset, seed)
+    }
+}
+
+/// The fingerprint covering `[seed..offset]`: the read's seed at `from`,
+/// a line-end checkpoint inside. Anything else answers the whole read —
+/// callers only ask for line ends, so a miss reads as changed, never held.
+fn fp_at(from: u64, checkpoints: &[(u64, u64)], fp: u64, offset: u64, seed: u64) -> u64 {
+    if offset == from {
+        return seed;
+    }
+    if let Some((_, fp)) = checkpoints.iter().find(|(end, _)| *end == offset) {
+        return *fp;
+    }
+    fp
+}
+
+/// One read as a reader takes it: called once with a sink, it hands every
+/// line to that sink in file order and then answers the stream's ending.
+pub type Feed<'f> = &'f mut dyn FnMut(&mut dyn FnMut(&Line)) -> Ending;
 
 /// FNV-1a 64, inline so the committed-bytes fingerprint takes no
 /// dependency. The follow compares transcript identity across polls of one
@@ -504,6 +656,9 @@ pub struct Splitter {
     /// One `(line end, fingerprint)` per committed line, covering
     /// `[seed..end]`: a held-back tail restores its exact prefix from these.
     checkpoints: Vec<(u64, u64)>,
+    /// Lines that tripped [`LINE_CAP`] so far, and the largest true length.
+    overlong_lines: usize,
+    largest: usize,
 }
 
 impl Splitter {
@@ -534,9 +689,18 @@ impl Splitter {
         }
     }
 
-    /// Feed one chunk: newlines end lines, the cap trips mid-chunk, and a
-    /// partial line carries over to the next feed.
+    /// Feed one chunk and keep its lines for [`Splitter::finish`]: the
+    /// whole-bytes and follow-tail path.
     pub fn feed(&mut self, chunk: &[u8]) {
+        let mut lines = std::mem::take(&mut self.lines);
+        self.feed_each(chunk, &mut |line| lines.push(line));
+        self.lines = lines;
+    }
+
+    /// Feed one chunk and hand each line it ends to `each`, keeping none:
+    /// newlines end lines, the cap trips mid-chunk, and a partial line
+    /// carries over to the next feed.
+    pub fn feed_each(&mut self, chunk: &[u8], each: &mut dyn FnMut(Line)) {
         let mut rest = chunk;
         while !rest.is_empty() {
             let Some(at) = rest.iter().position(|byte| *byte == b'\n') else {
@@ -547,8 +711,29 @@ impl Splitter {
             self.push_body(&rest[..at]);
             self.pending = fnv_fold(self.pending, b"\n");
             self.cursor += (at + 1) as u64;
-            self.end_line();
+            each(self.end_line());
             rest = &rest[at + 1..];
+        }
+    }
+
+    /// What the stream's end says so far: a torn tail and the over-cap lines.
+    #[must_use]
+    pub fn ending(&self) -> Ending {
+        Ending {
+            torn: self.cursor != self.start,
+            overlong: self.overlong_lines,
+            largest: self.largest,
+        }
+    }
+
+    /// The read's commit facts: what [`Splitter::feed_each`] leaves behind.
+    pub(crate) fn end(mut self) -> Commit {
+        Commit {
+            ending: self.ending(),
+            committed: self.start,
+            from: self.base,
+            fp: self.fp,
+            checkpoints: std::mem::take(&mut self.checkpoints),
         }
     }
 
@@ -557,20 +742,29 @@ impl Splitter {
     /// complete line. A fresh stream carries no seat id; [`Streamed::for_seat`]
     /// binds one, [`Streamed::with_assistant`] the reply flag.
     #[must_use]
-    pub fn finish(self) -> Streamed {
-        Streamed {
-            lines: self.lines,
-            torn: self.cursor != self.start,
-            committed: self.start,
-            from: self.base,
-            fp: self.fp,
-            checkpoints: self.checkpoints,
-            seat_id: String::new(),
-            assistant: false,
-            assistant_rows_found: false,
-            assistant_read_once: false,
-            windowed: false,
-        }
+    pub fn finish(mut self) -> Streamed {
+        let lines = std::mem::take(&mut self.lines);
+        Streamed::of(lines, self.end())
+    }
+
+    /// Test seam: lines held for [`Splitter::finish`].
+    #[cfg(test)]
+    pub(crate) fn held_lines(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Test seam: bytes held — the kept lines' bodies plus the partial line.
+    #[cfg(test)]
+    pub(crate) fn held_bytes(&self) -> usize {
+        let kept: usize = self
+            .lines
+            .iter()
+            .map(|line| match &line.body {
+                LineBody::Full(bytes) => bytes.len(),
+                LineBody::Overlong(_) => 0,
+            })
+            .sum();
+        kept + self.line.capacity()
     }
 
     fn push_body(&mut self, body: &[u8]) {
@@ -586,21 +780,24 @@ impl Splitter {
         self.line_len += body.len();
     }
 
-    fn end_line(&mut self) {
+    fn end_line(&mut self) -> Line {
         let body = if self.overlong {
+            self.overlong_lines += 1;
+            self.largest = self.largest.max(self.line_len);
             LineBody::Overlong(self.line_len)
         } else {
             LineBody::Full(std::mem::take(&mut self.line))
         };
-        self.lines.push(Line {
+        let line = Line {
             offset: self.start,
             body,
-        });
+        };
         self.start = self.cursor;
         self.fp = self.pending;
         self.checkpoints.push((self.start, self.fp));
         self.overlong = false;
         self.line_len = 0;
+        line
     }
 }
 
@@ -620,27 +817,18 @@ pub(crate) enum DoorError {
 /// The caller located the file and hands over its lstat metadata; this
 /// function proves the opened file IS that file — regular, same dev+inode,
 /// length not shrunk — reads at most the located length, and feeds buffer
-/// chunks to the ONE [`Splitter`]. `from` is the absolute byte offset the
-/// caller already committed to (`0` in the one-shot): the read starts there
-/// and every line offset stays absolute. No splitting logic and no harness
-/// knowledge inside: open, prove, feed.
+/// chunks to the ONE [`Splitter`], handing each line to `each` as it ends.
+/// `from` is the absolute byte offset the caller already committed to (`0`
+/// in the one-shot): the read starts there and every line offset stays
+/// absolute; `seed` is the fingerprint chain it continues. No splitting
+/// logic and no harness knowledge inside: open, prove, feed.
 pub(crate) fn stream_transcript(
     path: &Path,
     expected: &std::fs::Metadata,
     from: u64,
-) -> Result<Streamed, DoorError> {
-    stream_transcript_seeded(path, expected, from, FNV_BASIS)
-}
-
-/// [`stream_transcript`], hashing the read's committed bytes onto `seed`: a
-/// follow tail continues the chain its earlier polls hashed, a read from zero
-/// starts it. Same door, same proof, one site.
-pub(crate) fn stream_transcript_seeded(
-    path: &Path,
-    expected: &std::fs::Metadata,
-    from: u64,
     seed: u64,
-) -> Result<Streamed, DoorError> {
+    each: &mut dyn FnMut(Line),
+) -> Result<Commit, DoorError> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: streams only the lstat-checked board transcript"
@@ -663,13 +851,27 @@ pub(crate) fn stream_transcript_seeded(
             break;
         }
         let consumed = chunk.len();
-        splitter.feed(chunk);
+        splitter.feed_each(chunk, each);
         reader.consume(consumed);
     }
     if reader.into_inner().limit() != 0 {
         return Err(DoorError::Changed);
     }
-    Ok(splitter.finish())
+    Ok(splitter.end())
+}
+
+/// [`stream_transcript`], keeping every line: a follow tail continues the
+/// chain its earlier polls hashed and reads its lines after the read. Same
+/// door, same proof, one site.
+pub(crate) fn stream_transcript_seeded(
+    path: &Path,
+    expected: &std::fs::Metadata,
+    from: u64,
+    seed: u64,
+) -> Result<Streamed, DoorError> {
+    let mut lines = Vec::new();
+    let commit = stream_transcript(path, expected, from, seed, &mut |line| lines.push(line))?;
+    Ok(Streamed::of(lines, commit))
 }
 
 #[cfg(unix)]
@@ -1047,11 +1249,16 @@ fn observe_generation(
     } else {
         (Vec::new(), Vec::new())
     };
-    let streamed = match stream_transcript(&path, &metadata, 0) {
-        Ok(streamed) => streamed
-            .for_seat(entry.harness_session.as_deref().unwrap_or_default())
-            .with_replies(replies)
-            .with_assistant_rows_found(!leg_rows.is_empty()),
+    let file = file_identity(&path, &metadata);
+    let binding = Binding::default()
+        .for_seat(entry.harness_session.as_deref().unwrap_or_default())
+        .with_replies(replies)
+        .with_assistant_rows_found(!leg_rows.is_empty());
+    let read = read_located(&path, &metadata, &binding, tool, |feed| {
+        reader_for(tool)(feed, &binding, &actor, &file, tool)
+    });
+    let (mut seat_rows, mut seat_coverage, commit, hold) = match read {
+        Ok(read) => read,
         Err(failure) => {
             // A failed history door refuses the generation — but the leg
             // already read from a different file, so its rows stay: a
@@ -1067,11 +1274,9 @@ fn observe_generation(
             return Vec::new();
         }
     };
-    let file = file_identity(&path, &metadata);
     let passive = passive_turn(tool, &session.path, &entry.slot);
-    let (mut seat_rows, mut seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
     let mut window = false;
-    if streamed.windowed {
+    if binding.windowed {
         (seat_rows, window) = answered(seat_rows, passive.as_deref(), false);
     }
     seat_rows.extend(leg_rows);
@@ -1083,7 +1288,7 @@ fn observe_generation(
         row.generation = generation;
     }
     if generation == 0 {
-        seeds.push(seed(&actor, &metadata, &streamed, tool, &seat_rows, window));
+        seeds.push(seed(&actor, &metadata, &commit, hold, &seat_rows, window));
     }
     rows.append(&mut seat_rows);
     for item in seat_coverage {
@@ -1118,20 +1323,70 @@ fn read_agy_transcript(
         }
     };
     let (path, metadata, truncated) = found;
-    let streamed = match stream_transcript(&path, &metadata, 0) {
-        Ok(streamed) => streamed.for_seat(id).with_assistant(true),
-        Err(failure) => {
-            return (
-                Vec::new(),
-                vec![Coverage {
-                    actor: actor.to_owned(),
-                    reason: door_reason(failure).to_owned(),
-                }],
-            );
-        }
-    };
+    let binding = Binding::default().for_seat(id).with_assistant(true);
     let file = format!("agy:{id}");
-    agy_transcript::read_stream(&streamed, actor, &file, tool, truncated)
+    let read = read_located(&path, &metadata, &binding, tool, |feed| {
+        agy_transcript::read_fed(feed, &binding, actor, &file, tool, truncated)
+    });
+    match read {
+        Ok((rows, coverage, _, _)) => (rows, coverage),
+        Err(failure) => (
+            Vec::new(),
+            vec![Coverage {
+                actor: actor.to_owned(),
+                reason: door_reason(failure).to_owned(),
+            }],
+        ),
+    }
+}
+
+/// A located read: the reader's rows and coverage, the commit facts, the hold.
+type Located = (Vec<Row>, Vec<Coverage>, Commit, Option<u64>);
+
+/// One located transcript read through THE door, each line handed to `read`
+/// as the splitter ends it and none kept: the reader's rows and coverage, the
+/// read's commit facts, and the open run's start for a read that can hold
+/// mid-turn. The door runs once — a second call of the feed answers the
+/// first call's ending, and a reader that never calls it still gets the
+/// door's verdict. A refused door returns no rows.
+fn read_located(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    binding: &Binding,
+    tool: ToolKind,
+    read: impl FnOnce(Feed<'_>) -> (Vec<Row>, Vec<Coverage>),
+) -> Result<Located, DoorError> {
+    let hold = holds(binding, tool);
+    let mut run = grok::OpenRun::new();
+    let mut door: Option<Result<Commit, DoorError>> = None;
+    let (rows, coverage) = read(&mut |each| {
+        if door.is_none() {
+            door = Some(stream_transcript(
+                path,
+                metadata,
+                0,
+                FNV_BASIS,
+                &mut |line| {
+                    if hold {
+                        run.see(&line);
+                    }
+                    each(&line);
+                },
+            ));
+        }
+        door.as_ref()
+            .and_then(|done| done.as_ref().ok())
+            .map_or_else(Ending::default, |commit| commit.ending)
+    });
+    let commit = match door {
+        Some(done) => done?,
+        None => stream_transcript(path, metadata, 0, FNV_BASIS, &mut |line| {
+            if hold {
+                run.see(&line);
+            }
+        })?,
+    };
+    Ok((rows, coverage, commit, run.start()))
 }
 
 /// One `OpenCode` generation: prove the recorded id through the ONE grammar,
@@ -1171,22 +1426,39 @@ fn read_opencode(
     opencode::read(exported.as_bytes(), id, actor, tool, assistant)
 }
 
-/// One harness reader: the door's stream in, rows and coverage out.
-pub(crate) type Reader = fn(&Streamed, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
+/// One harness reader: the door's lines in, rows and coverage out.
+pub(crate) type Reader = fn(Feed<'_>, &Binding, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
 
 /// The reader for one transcript stream, chosen by its tool: ONE dispatch for
 /// the one-shot read and the follow's reassembled batches alike.
 pub(crate) fn reader_for(source: ToolKind) -> Reader {
     if matches!(source.adapter().usage.source, UsageSource::CodexRollout) {
-        return codex::read_stream;
+        return codex::read_fed;
     }
     // String dispatch, as `unsupported_reason` does: literals live in tool.rs.
     match source.adapter().name {
-        "agy" => agy::read_stream,
-        "grok" => grok::read_stream,
-        "muse" => muse::read_stream,
-        _ => claude::read_stream,
+        "agy" => agy::read_fed,
+        "grok" => grok::read_fed,
+        "muse" => muse::read_fed,
+        _ => claude::read_fed,
     }
+}
+
+/// [`reader_for`] over a buffered read: its held lines replayed, its own
+/// binding.
+pub(crate) fn read_buffered(
+    source: ToolKind,
+    streamed: &Streamed,
+    actor: &str,
+    file: &str,
+) -> (Vec<Row>, Vec<Coverage>) {
+    reader_for(source)(
+        &mut |each| streamed.replay(each),
+        &streamed.binding,
+        actor,
+        file,
+        source,
+    )
 }
 
 /// ONE lstat for every board locator: the candidate proved a regular file
@@ -1549,30 +1821,10 @@ fn door_reason(failure: DoorError) -> &'static str {
     }
 }
 
-/// ONE coverage row for a seat's every over-cap line: the count plus the
-/// largest true length. Both readers skip `Overlong` lines in their loop and
-/// push this row after it — N huge lines name one row, never N.
+/// [`Ending::overlong_coverage`] for a buffered read.
+#[cfg(test)]
 pub(crate) fn overlong_coverage(streamed: &Streamed, actor: &str) -> Option<Coverage> {
-    let mut count = 0;
-    let mut largest = 0;
-    for line in &streamed.lines {
-        if let LineBody::Overlong(len) = &line.body {
-            count += 1;
-            largest = largest.max(*len);
-        }
-    }
-    if count == 0 {
-        return None;
-    }
-    let noun = if count == 1 {
-        "line exceeds"
-    } else {
-        "lines exceed"
-    };
-    Some(Coverage {
-        actor: actor.to_owned(),
-        reason: format!("{count} {noun} the 1 MiB cap (largest {largest} bytes)"),
-    })
+    streamed.ending().overlong_coverage(actor)
 }
 
 /// The scope statement: line 1 of EVERY board, even an empty one.
@@ -1770,18 +2022,18 @@ pub(crate) fn identity_of(_: &std::fs::Metadata) -> (u64, u64) {
 fn seed(
     actor: &str,
     metadata: &std::fs::Metadata,
-    streamed: &Streamed,
-    tool: ToolKind,
+    commit: &Commit,
+    hold: Option<u64>,
     seat_rows: &[Row],
     window: bool,
 ) -> SeatSeed {
-    let committed = hold_at(streamed, tool).unwrap_or(streamed.committed);
+    let committed = hold.unwrap_or(commit.committed);
     SeatSeed {
         actor: actor.to_owned(),
         identity: identity_of(metadata),
         mtime: metadata.modified().ok(),
         committed,
-        fp: streamed.fp_at(committed, FNV_BASIS),
+        fp: commit.fp_at(committed, FNV_BASIS),
         last_row_ts: seat_rows.iter().map(|row| row.ts).max(),
         window,
     }
@@ -1793,10 +2045,15 @@ fn seed(
 /// off, or no open run — and the stream's own commit stands. String dispatch,
 /// as `reader_for` does: no `ToolKind::` arms.
 pub(crate) fn hold_at(streamed: &Streamed, source: ToolKind) -> Option<u64> {
-    if !streamed.assistant || source.adapter().name != "grok" {
+    if !holds(&streamed.binding, source) {
         return None;
     }
     grok::open_run_start(streamed)
+}
+
+/// Whether a read can hold mid-turn: grok with `--assistant`.
+fn holds(binding: &Binding, source: ToolKind) -> bool {
+    binding.assistant && source.adapter().name == "grok"
 }
 
 /// The source file's identity: path plus dev+inode, so a replaced file is a
@@ -1815,8 +2072,8 @@ fn json_u64(value: u64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        Coverage, DoorError, LINE_CAP, LineBody, Role, Row, Splitter, collect, format_micros,
-        stream_transcript,
+        Binding, Coverage, DoorError, FNV_BASIS, LINE_CAP, LineBody, Role, Row, Splitter, collect,
+        format_micros, read_located, stream_transcript_seeded,
     };
     use crate::tool::ToolKind;
     use std::path::{Path, PathBuf};
@@ -2141,7 +2398,7 @@ mod tests {
         std::fs::write(&path, b"first\nsecond\n").unwrap();
         let metadata = std::fs::metadata(&path).unwrap();
 
-        let streamed = stream_transcript(&path, &metadata, 6).unwrap();
+        let streamed = stream_transcript_seeded(&path, &metadata, 6, FNV_BASIS).unwrap();
         assert!(!streamed.torn);
         assert_eq!(streamed.lines.len(), 1);
         assert_eq!(
@@ -2150,16 +2407,117 @@ mod tests {
         );
         assert_eq!(streamed.committed, 13);
 
-        let whole = stream_transcript(&path, &metadata, 0).unwrap();
+        let whole = stream_transcript_seeded(&path, &metadata, 0, FNV_BASIS).unwrap();
         assert_eq!(whole.committed, 13);
         assert_eq!(whole.lines.len(), 2);
 
         assert_eq!(
-            stream_transcript(&path, &metadata, 14).unwrap_err(),
+            stream_transcript_seeded(&path, &metadata, 14, FNV_BASIS).unwrap_err(),
             DoorError::Changed,
             "an offset past the located length is a refusal, not a clipped read"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scratch transcript and its lstat, for the located-read tests.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: writes and stats its own scratch file to drive the door"
+    )]
+    fn scratch(tag: &str, bytes: &[u8]) -> (std::path::PathBuf, std::fs::Metadata) {
+        let dir = std::env::temp_dir().join(format!("ae-board-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("transcript.jsonl");
+        std::fs::write(&path, bytes).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        (path, metadata)
+    }
+
+    #[test]
+    fn a_located_read_runs_the_door_once_and_a_second_feed_answers_the_first_ending() {
+        let (path, metadata) = scratch("located-once", b"a\nb\ntorn");
+        let mut seen = Vec::new();
+        let mut endings = Vec::new();
+        let (_, _, commit, hold) = read_located(
+            &path,
+            &metadata,
+            &Binding::default(),
+            ToolKind::Claude,
+            |feed| {
+                endings.push(feed(&mut |line| seen.push(line.offset)));
+                endings.push(feed(&mut |line| seen.push(line.offset)));
+                (Vec::new(), Vec::new())
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, [0, 2], "the second feed reads nothing");
+        assert!(endings[0].torn);
+        assert_eq!(endings[0], endings[1]);
+        assert_eq!((commit.committed, commit.ending), (4, endings[0]));
+        assert_eq!(hold, None);
+        let _ = std::fs::remove_dir_all(path.with_file_name(""));
+    }
+
+    #[test]
+    fn a_reader_that_never_feeds_still_gets_the_doors_verdict_and_a_refusal_drops_its_rows() {
+        let (path, metadata) = scratch("located-unfed", b"one\n");
+        let unfed = read_located(
+            &path,
+            &metadata,
+            &Binding::default(),
+            ToolKind::Claude,
+            |_| (Vec::new(), Vec::new()),
+        );
+        assert_eq!(unfed.map(|(.., commit, _)| commit.committed).ok(), Some(4));
+        let gone = path.with_file_name("gone.jsonl");
+        let covered = || {
+            let item = Coverage {
+                actor: "s:seat".to_owned(),
+                reason: "read".to_owned(),
+            };
+            (Vec::new(), vec![item])
+        };
+        for fed in [false, true] {
+            let refused = read_located(
+                &gone,
+                &metadata,
+                &Binding::default(),
+                ToolKind::Claude,
+                |feed| {
+                    if fed {
+                        feed(&mut |_| {});
+                    }
+                    covered()
+                },
+            );
+            assert_eq!(refused.err(), Some(DoorError::Unreadable), "fed {fed}");
+        }
+        let _ = std::fs::remove_dir_all(path.with_file_name(""));
+    }
+
+    #[test]
+    fn a_located_grok_read_holds_at_the_open_run_only_with_assistant() {
+        let chunk = |kind: &str, text: &str| {
+            format!(
+                r#"{{"timestamp":1789549800,"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}}}}}}"#
+            )
+        };
+        let user = chunk("user_message_chunk", "ask");
+        let body = format!("{user}\n{}\n", chunk("agent_message_chunk", "open"));
+        let (path, metadata) = scratch("located-grok", body.as_bytes());
+        for (assistant, tool, hold) in [
+            (true, ToolKind::Grok, Some(user.len() as u64 + 1)),
+            (false, ToolKind::Grok, None),
+            (true, ToolKind::Claude, None),
+        ] {
+            let binding = Binding::default().with_assistant(assistant);
+            let read = read_located(&path, &metadata, &binding, tool, |feed| {
+                feed(&mut |_| {});
+                (Vec::new(), Vec::new())
+            });
+            assert_eq!(read.map(|(.., held)| held).ok(), Some(hold));
+        }
+        let _ = std::fs::remove_dir_all(path.with_file_name(""));
     }
 
     fn rendered(rows: Vec<Row>, json: bool, lines: Option<usize>) -> String {

@@ -39,7 +39,7 @@
 
 use std::collections::HashSet;
 
-use super::{Coverage, LineBody, Role, Row, Streamed};
+use super::{Binding, Coverage, Feed, LineBody, Role, Row, Streamed};
 use crate::tool::ToolKind;
 
 /// Read one streamed agy transcript: the door's lines in, assistant rows out.
@@ -58,7 +58,28 @@ pub fn read_stream(
     source: ToolKind,
     truncated: bool,
 ) -> (Vec<Row>, Vec<Coverage>) {
-    if !streamed.assistant {
+    read_fed(
+        &mut |each| streamed.replay(each),
+        &streamed.binding,
+        actor,
+        file,
+        source,
+        truncated,
+    )
+}
+
+/// [`read_stream`] as the door hands the lines over: each line lent once,
+/// in file order, then the stream's ending.
+#[must_use]
+pub fn read_fed(
+    feed: Feed<'_>,
+    binding: &Binding,
+    actor: &str,
+    file: &str,
+    source: ToolKind,
+    truncated: bool,
+) -> (Vec<Row>, Vec<Coverage>) {
+    if !binding.assistant {
         return (Vec::new(), Vec::new());
     }
     let mut sink = Sink {
@@ -76,11 +97,11 @@ pub fn read_stream(
         skipped_status: 0,
         clipped: 0,
     };
-    for line in &streamed.lines {
+    let ending = feed(&mut |line| {
         if let LineBody::Full(bytes) = &line.body {
             sink.push_line(bytes);
         }
-    }
+    });
     // The reader's own verdicts first — doc garbage, then record damage
     // in check order — then the door's.
     if sink.not_records > 0 {
@@ -125,10 +146,10 @@ pub fn read_stream(
             "replies clipped by the agy store",
         ));
     }
-    if let Some(overlong) = super::overlong_coverage(streamed, actor) {
+    if let Some(overlong) = ending.overlong_coverage(actor) {
         sink.coverage.push(overlong);
     }
-    if streamed.torn {
+    if ending.torn {
         sink.cover("torn last record");
     }
     (sink.rows, sink.coverage)

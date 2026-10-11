@@ -1,0 +1,65 @@
+{
+  "replies_off": {
+    "seeds": [
+      {"actor": "s-stream:lead", "committed": 439, "fp": 8506513953705476646},
+      {"actor": "s-stream:colead", "committed": 337, "fp": 11264864287070894792},
+      {"actor": "s-stream:grok-worker", "committed": 360, "fp": 1181849994571364491},
+      {"actor": "s-stream:muse-worker", "committed": 412, "fp": 10864642402352109993},
+      {"actor": "s-stream:agy-worker", "committed": 127, "fp": 3185763068468033380}
+    ],
+    "rows": [
+      {"actor": "s-stream:colead", "generation": 0, "role": "Human", "body": "codex colead prompt", "offset": 0, "ts": 1788858600000000},
+      {"actor": "s-stream:agy-worker", "generation": 0, "role": "Human", "body": "agy prompt", "offset": 0, "ts": 1789549300000000},
+      {"actor": "s-stream:grok-worker", "generation": 0, "role": "Human", "body": "grok user turn", "offset": 0, "ts": 1789549800000000},
+      {"actor": "s-stream:muse-worker", "generation": 0, "role": "Human", "body": "muse prompt", "offset": 0, "ts": 1789565338436454},
+      {"actor": "s-stream:lead", "generation": 0, "role": "Human", "body": "claude lead gen0 user prompt", "offset": 0, "ts": 1791626400000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "replies_all": {
+    "seeds": [
+      {"actor": "s-stream:lead", "committed": 439, "fp": 8506513953705476646},
+      {"actor": "s-stream:colead", "committed": 337, "fp": 11264864287070894792},
+      {"actor": "s-stream:grok-worker", "committed": 176, "fp": 5139713613652692010},
+      {"actor": "s-stream:muse-worker", "committed": 412, "fp": 10864642402352109993},
+      {"actor": "s-stream:agy-worker", "committed": 127, "fp": 3185763068468033380}
+    ],
+    "rows": [
+      {"actor": "s-stream:colead", "generation": 0, "role": "Human", "body": "codex colead prompt", "offset": 0, "ts": 1788858600000000},
+      {"actor": "s-stream:colead", "generation": 0, "role": "Assistant", "body": "codex colead reply", "offset": 166, "ts": 1788858660000000},
+      {"actor": "s-stream:agy-worker", "generation": 0, "role": "Assistant", "body": "agy planner reply", "offset": 1, "ts": 1789549200000000},
+      {"actor": "s-stream:agy-worker", "generation": 0, "role": "Human", "body": "agy prompt", "offset": 0, "ts": 1789549300000000},
+      {"actor": "s-stream:grok-worker", "generation": 0, "role": "Human", "body": "grok user turn", "offset": 0, "ts": 1789549800000000},
+      {"actor": "s-stream:grok-worker", "generation": 0, "role": "Assistant", "body": "grok open reply chunk", "offset": 176, "ts": 1789549810000000},
+      {"actor": "s-stream:muse-worker", "generation": 0, "role": "Human", "body": "muse prompt", "offset": 0, "ts": 1789565338436454},
+      {"actor": "s-stream:muse-worker", "generation": 0, "role": "Assistant", "body": "muse reply", "offset": 209, "ts": 1789565340436454},
+      {"actor": "s-stream:lead", "generation": 0, "role": "Human", "body": "claude lead gen0 user prompt", "offset": 0, "ts": 1791626400000000},
+      {"actor": "s-stream:lead", "generation": 0, "role": "Assistant", "body": "claude lead gen0 reply", "offset": 118, "ts": 1791626460000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "replies_to_human": {
+    "seeds": [
+      {"actor": "s-stream:lead", "committed": 439, "fp": 8506513953705476646},
+      {"actor": "s-stream:colead", "committed": 337, "fp": 11264864287070894792},
+      {"actor": "s-stream:grok-worker", "committed": 176, "fp": 5139713613652692010},
+      {"actor": "s-stream:muse-worker", "committed": 412, "fp": 10864642402352109993},
+      {"actor": "s-stream:agy-worker", "committed": 127, "fp": 3185763068468033380}
+    ],
+    "rows": [
+      {"actor": "s-stream:colead", "generation": 0, "role": "Human", "body": "codex colead prompt", "offset": 0, "ts": 1788858600000000},
+      {"actor": "s-stream:colead", "generation": 0, "role": "Assistant", "body": "codex colead reply", "offset": 166, "ts": 1788858660000000},
+      {"actor": "s-stream:agy-worker", "generation": 0, "role": "Human", "body": "agy prompt", "offset": 0, "ts": 1789549300000000},
+      {"actor": "s-stream:grok-worker", "generation": 0, "role": "Human", "body": "grok user turn", "offset": 0, "ts": 1789549800000000},
+      {"actor": "s-stream:grok-worker", "generation": 0, "role": "Assistant", "body": "grok open reply chunk", "offset": 176, "ts": 1789549810000000},
+      {"actor": "s-stream:muse-worker", "generation": 0, "role": "Human", "body": "muse prompt", "offset": 0, "ts": 1789565338436454},
+      {"actor": "s-stream:muse-worker", "generation": 0, "role": "Assistant", "body": "muse reply", "offset": 209, "ts": 1789565340436454},
+      {"actor": "s-stream:lead", "generation": 0, "role": "Human", "body": "claude lead gen0 user prompt", "offset": 0, "ts": 1791626400000000},
+      {"actor": "s-stream:lead", "generation": 0, "role": "Assistant", "body": "claude lead gen0 reply", "offset": 118, "ts": 1791626460000000}
+    ],
+    "coverage": [
+      {"actor": "s-stream:agy-worker", "reason": "agy: no assistant records (history carries prompts only)"}
+    ]
+  }

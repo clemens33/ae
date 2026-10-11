@@ -18,7 +18,7 @@
 //! `_meta.agentTimestampMs` millis, else top-level `timestamp` secs; ae turns
 //! filter via `is_ae_turn` on line 1. No plumbing prefixes: none known.
 
-use super::{LineBody, Splitter, Streamed};
+use super::{Binding, Feed, Line, LineBody, Splitter, Streamed};
 use crate::board::{Coverage, Role, Row};
 use crate::tool::ToolKind;
 
@@ -40,31 +40,50 @@ pub fn read_stream(
     file: &str,
     source: ToolKind,
 ) -> (Vec<Row>, Vec<Coverage>) {
+    read_fed(
+        &mut |each| streamed.replay(each),
+        &streamed.binding,
+        actor,
+        file,
+        source,
+    )
+}
+
+/// [`read_stream`] as the door hands the lines over: each line lent once,
+/// in file order, then the stream's ending.
+#[must_use]
+pub fn read_fed(
+    feed: Feed<'_>,
+    binding: &Binding,
+    actor: &str,
+    file: &str,
+    source: ToolKind,
+) -> (Vec<Row>, Vec<Coverage>) {
     let mut sink = Sink {
         actor,
         file,
         source,
-        assistant: streamed.assistant,
-        windowed: streamed.windowed,
+        assistant: binding.assistant,
+        windowed: binding.windowed,
         run: None,
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
     };
-    for line in &streamed.lines {
+    let ending = feed(&mut |line| {
         match &line.body {
             LineBody::Full(bytes) => sink.push_line(bytes, line.offset),
             // Too long to be a record: it may have been a user turn.
             LineBody::Overlong(_) => sink.unkept(line.offset),
         }
-    }
+    });
     // EOF ends the last turn: the one-shot prints the open run as-is. The
     // follow's HOLD is the consumer's (`super::hold_at`), never the reader's.
     sink.flush_run();
-    if let Some(overlong) = super::overlong_coverage(streamed, actor) {
+    if let Some(overlong) = ending.overlong_coverage(actor) {
         sink.coverage.push(overlong);
     }
-    if streamed.torn {
+    if ending.torn {
         sink.cover("torn last record");
     }
     if sink.missing_ts > 0 {
@@ -316,20 +335,42 @@ struct Run {
 /// rather than fragments.
 #[must_use]
 pub fn open_run_start(streamed: &Streamed) -> Option<u64> {
-    let mut open: Option<u64> = None;
-    for line in &streamed.lines {
+    let mut run = OpenRun::new();
+    streamed.replay(&mut |line| run.see(line));
+    run.start()
+}
+
+/// [`open_run_start`] one line at a time, so a streamed read tracks the
+/// open run without keeping its lines.
+#[derive(Debug, Default)]
+pub(crate) struct OpenRun {
+    open: Option<u64>,
+}
+
+impl OpenRun {
+    /// No line seen: no run open.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take the next line in file order.
+    pub(crate) fn see(&mut self, line: &Line) {
         let LineBody::Full(bytes) = &line.body else {
-            continue;
+            return;
         };
         match split_line(bytes).map(|(kind, _)| kind) {
             Ok(Turn::Agent) => {
-                open.get_or_insert(line.offset);
+                self.open.get_or_insert(line.offset);
             }
-            Ok(Turn::Human | Turn::Close) => open = None,
+            Ok(Turn::Human | Turn::Close) => self.open = None,
             _ => {}
         }
     }
-    open
+
+    /// The open run's first-chunk offset after the lines seen so far.
+    pub(crate) fn start(&self) -> Option<u64> {
+        self.open
+    }
 }
 
 #[cfg(test)]

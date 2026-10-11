@@ -1,0 +1,719 @@
+{
+  "board_agy/assistant-flag-on": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "seed human", "offset": 0, "ts": 1789549200500000}
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "agy: no assistant records (history carries prompts only)"}
+    ]
+  },
+  "board_agy/matching-record": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic human words", "offset": 0, "ts": 1789549200500000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_agy/no-conversation-id": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_agy/other-conversation": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_agy/over-cap-line": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic after the cap", "offset": 1048576, "ts": 1789549200500000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_agy/slash-command": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "/quota", "offset": 0, "ts": 1789549200500000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_agy/torn-last-line": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic kept turn", "offset": 0, "ts": 1789549200500000}
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "torn last record"}
+    ]
+  },
+  "board_agy/transcript-bad-steps": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "3 records lack a step index"}
+    ]
+  },
+  "board_agy/transcript-hostile-trunc": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed whole one", "offset": 11, "ts": 1789549200000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed whole two", "offset": 12, "ts": 1789549200000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed whole three", "offset": 13, "ts": 1789549200000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_agy/transcript-missing-stamp": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 record without a timestamp"}
+    ]
+  },
+  "board_agy/transcript-non-done": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed finished reply", "offset": 5, "ts": 1789549200000000}
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 reply skipped (not final)"}
+    ]
+  },
+  "board_agy/transcript-pr-basic": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed narration beside a call", "offset": 9, "ts": 1789549200000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_agy/transcript-truncated": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed clipped reply", "offset": 7, "ts": 1789549200000000}
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 reply clipped by the agy store"}
+    ]
+  },
+  "board_agy/unstamped-record": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "3 records without a timestamp"}
+    ]
+  },
+  "board_claude/ae-brief": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/ae-ctx": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/ae-interrupt": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/ae-msg": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/assistant": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/assistant-api-error": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/assistant-empty-text": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/assistant-multipart": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "first second", "offset": 0, "ts": 1789549200500000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/assistant-text": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 0, "ts": 1789549200500000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/assistant-thinking-only": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/mid-body-marker": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/missing-timestamp": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/nested-reminder": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/over-cap-line": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 line exceeds the 1 MiB cap (largest 1100091 bytes)"}
+    ]
+  },
+  "board_claude/plumbing-caveat": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/plumbing-command-name": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/plumbing-continued": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/plumbing-interrupted": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/plumbing-local-stdout": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/plumbing-task": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/plumbing-usage-reset": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/queue-absorbed-marker": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "dummy earlier question", "offset": 0, "ts": 1790942401000000},
+      {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 116, "ts": 0},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "dummy answer", "offset": 287, "ts": 1790942404000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/queue-absorbed-nonstring": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "dummy earlier question", "offset": 0, "ts": 1790942401000000},
+      {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 116, "ts": 0},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "dummy answer", "offset": 376, "ts": 1790942404000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/queue-absorbed-remove": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "dummy earlier question", "offset": 0, "ts": 1790942401000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "dummy answer", "offset": 116, "ts": 1790942404000000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "dummy typed line", "offset": 394, "ts": 1790942403000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "dummy answer", "offset": 852, "ts": 1790942404000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/queue-idle-sequence": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "dummy typed line", "offset": 254, "ts": 1790942403000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "dummy answer", "offset": 364, "ts": 1790942404000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/queue-task-notification": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "dummy earlier question", "offset": 0, "ts": 1790942401000000},
+      {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 116, "ts": 0},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "dummy answer", "offset": 299, "ts": 1790942404000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/queue-torn": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "dummy earlier question", "offset": 0, "ts": 1790942401000000}
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "torn last record"}
+    ]
+  },
+  "board_claude/torn-last-line": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "torn last record"}
+    ]
+  },
+  "board_claude/user-array": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/user-string": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/window-interleave": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic human turn", "offset": 0, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 114, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 408, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 552, "ts": 0},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 689, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 833, "ts": 0},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 984, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic human turn", "offset": 1128, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 1242, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/wrapped-ae-hidden": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "<pasted_content id=\"w1\">\n⟦ae:msg from lead⟧\nsynthetic wrapped body\n</pasted_content id=\"w1\">", "offset": 0, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/wrapped-human-kept": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "<pasted_content id=\"w2\">\nsynthetic human prose\n</pasted_content id=\"w2\">", "offset": 0, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/ae-brief": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/ae-ctx": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/ae-interrupt": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/ae-msg": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/agents-doc": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "torn last record"}
+    ]
+  },
+  "board_codex/assistant-empty": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/assistant-message": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/assistant-multipart": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "first second", "offset": 0, "ts": 1789549200500000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/assistant-output-text": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 0, "ts": 1789549200500000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/assistant-unstamped": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 record without a timestamp"}
+    ]
+  },
+  "board_codex/event-msg-twin": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic twin", "offset": 142, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/function-call": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/image-led": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/mid-body-marker": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/missing-timestamp": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/multipart-text": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/over-cap-line": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 line exceeds the 1 MiB cap (largest 1048737 bytes)"}
+    ]
+  },
+  "board_codex/plumbing-codex-internal-context": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/plumbing-environment-context": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/plumbing-recommended-plugins": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/plumbing-turn-aborted": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/plumbing-user-shell-command": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/reasoning": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/torn-last-line": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "torn last record"}
+    ]
+  },
+  "board_codex/user-response-item": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_codex/window-interleave": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic human turn", "offset": 0, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 171, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 343, "ts": 0},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 537, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic human turn", "offset": 842, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 1013, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/ae-brief": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/ae-ctx": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/ae-interrupt": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/ae-msg": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/agent-chunk": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/agent-chunk-unstamped": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 record without a timestamp"}
+    ]
+  },
+  "board_grok/agent-chunks-run": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "seed human", "offset": 0, "ts": 1789549200000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed reply", "offset": 172, "ts": 1789549200000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/agent-open-run": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "seed human", "offset": 0, "ts": 1789549200000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed reply", "offset": 172, "ts": 1789549200000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/agent-run-split-by-tool": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed reply", "offset": 0, "ts": 1789549200000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/mid-body-marker": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/missing-timestamp": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/non-text-content": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/over-cap-line": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 line exceeds the 1 MiB cap (largest 1048581 bytes)"}
+    ]
+  },
+  "board_grok/thought-chunk": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/tool-call": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/tool-call-update": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/torn-last-line": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "torn last record"}
+    ]
+  },
+  "board_grok/turn-completed": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/user-chunk-millis": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/user-chunk-secs": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_grok/window-interleave": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "seed human", "offset": 0, "ts": 1789549200000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed reply", "offset": 172, "ts": 1789549200000000},
+      {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 630, "ts": 0},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed peer answer", "offset": 825, "ts": 1789549200000000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "seed human again", "offset": 1126, "ts": 1789549200000000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "open run", "offset": 1304, "ts": 1789549200000000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_muse/accepted-twin": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_muse/ae-markers": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_muse/assistant-committed": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed reply", "offset": 0, "ts": 1789565338436454}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_muse/assistant-empty": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_muse/assistant-unstamped": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 record without a timestamp"}
+    ]
+  },
+  "board_muse/mid-body-marker": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_muse/missing-timestamp": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 record without a timestamp"}
+    ]
+  },
+  "board_muse/over-cap-line": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_muse/session-and-frames": {
+    "rows": [
+    ],
+    "coverage": [
+    ]
+  },
+  "board_muse/torn-last-line": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "torn last record"}
+    ]
+  },
+  "board_muse/window-interleave": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic human turn", "offset": 0, "ts": 1789565338436454},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed reply", "offset": 385, "ts": 1789565338436454},
+      {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 588, "ts": 0},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed reply", "offset": 994, "ts": 1789565338436454},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic human turn", "offset": 1197, "ts": 1789565338436454},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "seed reply", "offset": 1582, "ts": 1789565338436454}
+    ],
+    "coverage": [
+    ]
+  }
+}

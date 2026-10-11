@@ -21,6 +21,11 @@ fuzz_target!(|data: &[u8]| {
     for piece in bytes.chunks(chunk) {
         splitter.feed(piece);
     }
+    let binding = ae::board::Binding::default()
+        .for_seat("0199c0de-ffff-4890-abcd-ef0123456789")
+        .with_assistant(flag & 1 == 1)
+        .with_assistant_rows_found(flag & 8 == 8)
+        .with_assistant_read_once(flag & 16 == 16);
     let streamed = splitter
         .finish()
         .for_seat("0199c0de-ffff-4890-abcd-ef0123456789")
@@ -38,6 +43,22 @@ fuzz_target!(|data: &[u8]| {
             flag & 4 == 4,
         )
     };
+    // The door's path: `feed_each` lends each line to `read_fed`, none kept.
+    let mut streaming = ae::board::Splitter::new();
+    let mut feed = |each: &mut dyn FnMut(&ae::board::Line)| {
+        for piece in bytes.chunks(chunk) {
+            streaming.feed_each(piece, &mut |line| each(&line));
+        }
+        streaming.ending()
+    };
+    let (seat, source) = ("s:seat", ae::tool::ToolKind::Agy);
+    let fed = if flag & 2 == 0 {
+        ae::board::agy::read_fed(&mut feed, &binding, seat, "fuzz.jsonl", source)
+    } else {
+        let file = "agy:0199c0de-ffff-4890-abcd-ef0123456789";
+        ae::board::agy_transcript::read_fed(&mut feed, &binding, seat, file, source, flag & 4 == 4)
+    };
+    assert_eq!((&fed.0, &fed.1), (&rows, &coverage));
     let _ = std::hint::black_box(ae::board::collect(rows));
     let _ = std::hint::black_box(coverage);
 });

@@ -21,12 +21,25 @@ fuzz_target!(|data: &[u8]| {
     for piece in bytes.chunks(chunk) {
         splitter.feed(piece);
     }
-    let (rows, coverage) = ae::board::grok::read_stream(
-        &splitter.finish().with_replies(replies),
+    let streamed = splitter.finish().with_replies(replies);
+    let (rows, coverage) =
+        ae::board::grok::read_stream(&streamed, "s:seat", "fuzz.jsonl", ae::tool::ToolKind::Grok);
+    // The door's path: `feed_each` lends each line to `read_fed`, none kept.
+    let mut streaming = ae::board::Splitter::new();
+    let fed = ae::board::grok::read_fed(
+        &mut |each| {
+            for piece in bytes.chunks(chunk) {
+                streaming.feed_each(piece, &mut |line| each(&line));
+            }
+            streaming.ending()
+        },
+        &ae::board::Binding::default().with_replies(replies),
         "s:seat",
         "fuzz.jsonl",
         ae::tool::ToolKind::Grok,
     );
+    assert_eq!((&fed.0, &fed.1), (&rows, &coverage));
+    assert_eq!(streaming.ending(), streamed.ending());
     let _ = std::hint::black_box(ae::board::collect(rows));
     let _ = std::hint::black_box(coverage);
 });

@@ -29,6 +29,7 @@ mod archive_publish;
 mod archive_purge;
 mod autoreseat;
 mod board;
+mod board_stream_spec;
 mod brief;
 mod brief_retry;
 mod callerident;

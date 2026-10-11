@@ -23,7 +23,7 @@
 //! an integral non-negative millis value. The per-conversation `.db` files are
 //! deferred and never opened here.
 
-use super::{LineBody, Splitter, Streamed};
+use super::{Binding, Feed, LineBody, Splitter, Streamed};
 use crate::board::{Coverage, Role, Row};
 use crate::tool::ToolKind;
 
@@ -55,37 +55,56 @@ pub fn read_stream(
     file: &str,
     source: ToolKind,
 ) -> (Vec<Row>, Vec<Coverage>) {
+    read_fed(
+        &mut |each| streamed.replay(each),
+        &streamed.binding,
+        actor,
+        file,
+        source,
+    )
+}
+
+/// [`read_stream`] as the door hands the lines over: each line lent once,
+/// in file order, then the stream's ending.
+#[must_use]
+pub fn read_fed(
+    feed: Feed<'_>,
+    binding: &Binding,
+    actor: &str,
+    file: &str,
+    source: ToolKind,
+) -> (Vec<Row>, Vec<Coverage>) {
     let mut sink = Sink {
         actor,
         file,
         source,
-        seat_id: streamed.seat_id.as_str(),
+        seat_id: binding.seat_id.as_str(),
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
     };
-    for line in &streamed.lines {
+    let ending = feed(&mut |line| {
         if let LineBody::Full(bytes) = &line.body {
             sink.push_line(bytes, line.offset);
         }
-    }
+    });
     // The store carries prompts only: with `--assistant` the seat says so,
     // once per read — unless the caller already produced assistant rows
     // from the transcript leg, or this poll's replies were read once. The
     // once-read wins: the two lines together would contradict each other.
     // Silent (documented) with the flag off.
-    if streamed.assistant && !streamed.assistant_rows_found && !streamed.assistant_read_once {
+    if binding.assistant && !binding.assistant_rows_found && !binding.assistant_read_once {
         sink.cover("agy: no assistant records (history carries prompts only)");
     }
     // A follow poll's tail: the first pass read the replies once and the
     // polls do not re-read them. Only the agy follow arm binds the bit.
-    if streamed.assistant && streamed.assistant_read_once {
+    if binding.assistant && binding.assistant_read_once {
         sink.cover("agy: assistant replies read once, not followed");
     }
-    if let Some(overlong) = super::overlong_coverage(streamed, actor) {
+    if let Some(overlong) = ending.overlong_coverage(actor) {
         sink.coverage.push(overlong);
     }
-    if streamed.torn {
+    if ending.torn {
         sink.cover("torn last record");
     }
     if sink.missing_ts > 0 {
