@@ -104,6 +104,7 @@ while (1) {
 // capture. All other tmux operations use the real server unchanged.
 const TMUX: &str = r#"#!/usr/bin/perl
 use strict; use warnings;
+use Fcntl qw(:flock);
 my $root = '__ROOT__'; my $real = '__TMUX__';
 sub get { open(my $f, '<', $_[0]) or return ''; local $/; return <$f> // ''; }
 sub put { open(my $f, '>', $_[0]) or die; print $f $_[1]; close $f; }
@@ -129,6 +130,25 @@ if ($owned && $mode eq 'second-no' && grep { $_ eq 'capture-pane' } @ARGV) {
             die 'redraw failed' unless -e "$root/repainted";
         }
     }
+}
+sub locked {
+    open(my $f, '<', get("$root/guard-lock")) or return 0;
+    return !flock($f, LOCK_SH | LOCK_NB);
+}
+sub paint {
+    unlink "$root/repainted"; put("$root/repaint", get($_[0]));
+    for (1..200) { last if -e "$root/repainted"; select undef,undef,undef,0.01; }
+    die 'redraw failed' unless -e "$root/repainted";
+}
+if ($owned && $mode eq 'decline' && locked()) {
+    paint("$root/declined-frame") if grep { $_ eq 'capture-pane' } @ARGV;
+    if ($ARGV[-1] eq '#{@ae_slot} | #{session_name} | #{@ae_agent} | #{@ae_session_uuid} | #{socket_path}') {
+        paint("$root/frame");
+        open(my $log, '>>', "$root/decline-proofs") or die; print $log "proof\n"; close $log;
+    }
+}
+if ($owned && (grep { $_ eq 'display-message' } @ARGV) && $ARGV[-1] =~ /^\[ae watchdog\] /) {
+    open(my $log, '>>', "$root/notifications") or die; print $log "$ARGV[-1]\n"; close $log;
 }
 exec {$real} $real, @ARGV; die 'tmux exec';
 "#;
@@ -308,6 +328,25 @@ impl Rig {
         let (code, out, err) = self.invoke(call, "tmux");
         assert_eq!(code, 0, "setup: private tmux {args:?}: {err}");
         out
+    }
+    fn environment(&self) -> Invocation {
+        let inherited_path =
+            std::env::var("PATH").unwrap_or_else(|why| panic!("setup: PATH: {why}"));
+        Invocation::new(env!("CARGO_BIN_EXE_ae"))
+            .env_cleared()
+            .env(
+                "PATH",
+                format!("{}/bin:{inherited_path}", self.root.display()),
+            )
+            .env("HOME", &self.root)
+            .env("AE_HOME", &self.root)
+            .env("CONFIG_FILE", self.root.join("config"))
+            .env("TMUX_TMPDIR", self.root.join("tmp"))
+            .env("AE_NO_AUTOSTART", "1")
+            .env("TERM", "xterm-256color")
+            .env("LC_ALL", "en_US.UTF-8")
+            .env("TMUX", format!("{},0,0", self.root.join("sock").display()))
+            .env("TMUX_PANE", &self.pane)
     }
     fn command(&self, verb: &str) -> Invocation {
         let inherited_path =
@@ -942,6 +981,20 @@ fn spawn_wait(value: &str) -> (Rig, PathBuf, i32, String, String) {
             fs::read(rig.root.join(name)).unwrap_or_else(|why| panic!("child fixture: {why}")),
         );
     }
+    if value == "decline" {
+        let folder = fs::canonicalize(&rig.root)
+            .unwrap_or_else(|why| panic!("fixture folder: {why}"))
+            .display()
+            .to_string();
+        let other = fs::canonicalize(rig.root.join("other"))
+            .unwrap_or_else(|why| panic!("other folder: {why}"))
+            .display()
+            .to_string();
+        write(
+            child.join("frame"),
+            text(child.join("frame")).replace(&folder, &other),
+        );
+    }
     write(child.join("mode"), "normal");
     write(child.join("wire"), "");
     let config = format!(
@@ -951,6 +1004,12 @@ fn spawn_wait(value: &str) -> (Rig, PathBuf, i32, String, String) {
         child.display()
     );
     write(rig.root.join("config"), config);
+    if value == "decline" {
+        write(
+            rig.root.join("config"),
+            text(rig.root.join("config")).replace("auto_trust = decline", "auto_trust = on"),
+        );
+    }
     let (code, out, err) = rig.invoke(
         rig.command(ae::cli::SPAWN)
             .arg("helper")
@@ -1000,6 +1059,107 @@ fn spawn_brief_wait_answers_without_a_watchdog_and_delivers_the_original_brief()
     assert_eq!(event.target_slot.value(), Some("spawned.0"));
 }
 
+#[test]
+fn v14_off_reseat_names_a_trust_prompt_fast_without_keys() {
+    let rig = Rig::new("v14-off-reseat", "claude", "normal");
+    let command = format!(
+        "{}/bin/claude {}/vendor.pl {}",
+        rig.root.display(),
+        rig.root.display(),
+        rig.root.display()
+    );
+    write(
+        rig.root.join("config"),
+        format!(
+            "[profiles]\nfake = \"{command}\"\nnext = \"{command}\"\n[workspace]\nauto_trust = off\nquota = off\nauto_upgrade = off\ntheme = off\n"
+        ),
+    );
+    rig.replace_meta("harness_session.main", "pending");
+    write(
+        rig.dir.join("launch.main.prompt"),
+        "original off reseat seed",
+    );
+    let caller = rig.tmux(&[
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        "s:1",
+        "exec /bin/sh",
+    ]);
+    for (name, value) in [
+        ("HOME", rig.root.display().to_string()),
+        ("AE_HOME", rig.root.display().to_string()),
+        ("CONFIG_FILE", rig.root.join("config").display().to_string()),
+        ("AE_NO_AUTOSTART", "1".to_owned()),
+    ] {
+        rig.tmux(&["set-environment", "-t", "s", name, &value]);
+    }
+    rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, "exec /bin/sh"]);
+    wait_for("predecessor at idle shell", || {
+        matches!(
+            rig.tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                &rig.pane,
+                "#{pane_current_command}"
+            ])
+            .trim(),
+            "sh" | "bash" | "dash"
+        )
+    });
+    fs::remove_file(rig.root.join("ready")).expect("old tool receipt");
+    let started = Instant::now();
+    let (code, out, err) = rig.invoke(
+        rig.environment()
+            .env("TMUX_PANE", caller.trim())
+            .arg("reseat")
+            .arg("s")
+            .arg("lead")
+            .arg("--using")
+            .arg("next"),
+        "off-reseat",
+    );
+    assert!(
+        rig.root.join("ready").is_file(),
+        "successor drew modal: code={code} out={out} err={err}"
+    );
+    assert_eq!(code, 1, "off seed stays undelivered: {out}\n{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "off gives the pane back before the full wait: {err}"
+    );
+    for words in [
+        "Quick safety check: Is this a project you created or one you trust?",
+        "only the human",
+        "seed.lead.md",
+    ] {
+        assert!(
+            err.contains(words),
+            "trust question and next step named: {words}: {err}"
+        );
+    }
+    assert!(rig.wire().is_empty(), "off sends ZERO keys");
+    assert!(
+        text(rig.root.join("submitted")).is_empty(),
+        "off delivers no seed"
+    );
+    assert!(
+        rig.events()
+            .iter()
+            .all(|e| !e.action.starts_with("auto-trust")),
+        "off records no auto-trust action"
+    );
+    assert_eq!(rig.count("watchdog-start"), 0, "no daemon answers");
+    assert!(
+        text(rig.dir.join("seed.lead.md")).starts_with("⟦ae:ctx⟧\n"),
+        "undelivered checkpoint seed retained"
+    );
+}
+
 fn spawn_wait_refuses(value: &str) {
     let (rig, child, code, out, err) = spawn_wait(value);
     assert_eq!(code, 1, "{value}: brief stays undelivered: {out}\n{err}");
@@ -1032,4 +1192,296 @@ fn spawn_brief_wait_with_off_never_answers_or_delivers() {
 #[test]
 fn spawn_brief_wait_with_invalid_value_never_answers_or_delivers() {
     spawn_wait_refuses("INVALID");
+}
+
+#[test]
+fn v14_spawn_declines_a_foreign_folder_once_and_keeps_the_brief() {
+    let (rig, child, code, out, err) = spawn_wait("decline");
+    assert!(child.join("ready").is_file(), "child drew the modal");
+    assert_eq!(code, 1, "brief stays undelivered: {out}\n{err}");
+    assert_eq!(rig.count("watchdog-start"), 0, "no watchdog answers");
+    assert!(text(child.join("wire")).is_empty(), "zero keys");
+    assert!(
+        text(child.join("submitted")).is_empty(),
+        "no brief delivered"
+    );
+    assert!(
+        rig.events()
+            .iter()
+            .all(|e| !e.action.starts_with("auto-trust"))
+    );
+    let kept = ae::brief_retry::read(&rig.dir, "spawned.0")
+        .expect("undelivered brief retained")
+        .expect("valid kept brief");
+    assert!(kept.body.contains("original trust brief"));
+    assert!(
+        err.contains("the modal names ") && err.contains("not the seat's folder"),
+        "canonical folder refusal: {err}"
+    );
+    assert_eq!(
+        err.matches("ae: auto_trust did not answer the trust prompt:")
+            .count(),
+        1,
+        "a declined wait never retries: {err}"
+    );
+}
+
+#[test]
+fn v14_a_landed_watchdog_answer_notifies_once_and_is_never_named() {
+    let mut rig = Rig::new("v14-notify", "claude", "normal");
+    rig.start();
+    rig.result();
+    wait_for("real watchdog verdict Notify", || {
+        !text(rig.root.join("notifications")).is_empty()
+    });
+    assert_eq!(rig.count("auto-trust"), 1, "answer landed before verdict");
+    assert_eq!(
+        rig.count("human-prompt"),
+        0,
+        "a landed answer is never named"
+    );
+    let events = rig.events();
+    let done = events
+        .iter()
+        .find(|e| e.action == "auto-trust")
+        .expect("completed answer");
+    let words = done.summary.as_deref().expect("completed audit summary");
+    assert_eq!(
+        text(rig.root.join("notifications")),
+        format!("[ae watchdog] lead auto-trust: {words}\n"),
+        "one Notify follows completed audit"
+    );
+    rig.trusted(b"\x1b[B\r");
+}
+
+#[test]
+fn v14_repeated_declines_name_once_without_keys_or_reservation() {
+    let mut rig = Rig::new("v14-decline", "claude", "normal");
+    let folder = fs::canonicalize(&rig.root)
+        .expect("fixture folder")
+        .display()
+        .to_string();
+    let other = fs::canonicalize(rig.root.join("other"))
+        .expect("other folder")
+        .display()
+        .to_string();
+    write(
+        rig.root.join("declined-frame"),
+        text(rig.root.join("frame")).replace(&folder, &other),
+    );
+    write(
+        rig.root.join("guard-lock"),
+        rig.root
+            .join("sessions/.locks")
+            .join(format!("send-lock-{}", rig.pane.replace('%', "_")))
+            .display()
+            .to_string(),
+    );
+    write(rig.root.join("wrapper"), "decline");
+    rig.start();
+    wait_for("two real locked refusal proofs", || {
+        text(rig.root.join("decline-proofs")).lines().count() >= 2
+    });
+    rig.stop();
+    let err = text(rig.root.join("watch.err"));
+    assert_eq!(
+        err.matches("auto_trust did not answer the trust prompt:")
+            .count(),
+        1,
+        "first Declined names; later Declined stays silent: {err}"
+    );
+    assert!(
+        err.contains("the modal names ") && err.contains("not the seat's folder"),
+        "real folder proof refused: {err}"
+    );
+    assert_eq!(rig.count("human-prompt"), 1, "ordinary naming exactly once");
+    assert!(rig.wire().is_empty(), "no key on a declined proof");
+    assert!(
+        rig.events()
+            .iter()
+            .all(|e| !e.action.starts_with("auto-trust")),
+        "nothing reserved or answered"
+    );
+}
+
+#[test]
+fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
+    let mut rig = Rig::new("v14-viewer", "agy", "normal");
+    rig.tmux(&[
+        "set-window-option",
+        "-t",
+        &rig.pane,
+        "window-size",
+        "manual",
+    ]);
+    rig.tmux(&["resize-window", "-t", &rig.pane, "-x", "200", "-y", "50"]);
+    let attach = |rig: &Rig| {
+        let client = super::cli::tmux_attached_client(&rig.root.join("sock"), "s")
+            .expect("real control client");
+        wait_for("client viewing this pane", || {
+            rig.tmux(&["list-clients", "-F", "#{client_pid}|#{pane_id}"])
+                .lines()
+                .any(|row| row == format!("{}|{}", client.id(), rig.pane))
+        });
+        client
+    };
+    let mut client = attach(&rig);
+    rig.start();
+    let until = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < until {
+        let clients = rig.tmux(&[
+            "list-clients",
+            "-F",
+            "#{client_pid}|#{pane_id}|#{client_activity}",
+        ]);
+        let prefix = format!("{}|{}|", client.id(), rig.pane);
+        let epoch: i64 = clients
+            .lines()
+            .find_map(|row| row.strip_prefix(&prefix))
+            .expect("actual client remains on target")
+            .parse()
+            .expect("actual activity epoch");
+        assert!(
+            (ae::time::Timestamp::now().epoch() - epoch).max(0) < 4,
+            "real client input is inside VIEW_GRACE"
+        );
+        assert!(rig.wire().is_empty(), "fresh client input sends ZERO keys");
+        assert!(
+            rig.events()
+                .iter()
+                .all(|e| !e.action.starts_with("auto-trust")),
+            "fresh input spends nothing"
+        );
+        let next = attach(&rig);
+        drop(client);
+        client = next;
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert_eq!(
+        rig.count("human-prompt"),
+        1,
+        "held attempts reached the bound"
+    );
+    drop(client);
+    wait_for("answer after client detaches", || {
+        rig.count("auto-trust") == 1
+    });
+    assert_eq!(rig.wire(), b"\r", "one Enter after input stops");
+    rig.trusted(b"\r");
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real reseat proves predecessor, successor and the original seed together"
+)]
+fn v14_reseat_seed_wait_answers_without_a_watchdog_and_keeps_the_original_seed() {
+    let (rig, child, code, out, err) = spawn_wait("off");
+    assert_eq!(code, 1, "off predecessor refused: {out}\n{err}");
+    assert!(child.join("ready").is_file(), "predecessor drew modal");
+    assert!(
+        text(child.join("wire")).is_empty(),
+        "predecessor keys empty"
+    );
+    let kept = ae::brief_retry::read(&rig.dir, "spawned.0")
+        .expect("original brief retained")
+        .expect("valid original brief");
+    assert!(kept.body.contains("original trust brief"));
+    let row = rig.tmux(&[
+        "list-panes",
+        "-s",
+        "-t",
+        "=s",
+        "-F",
+        "#{pane_id}|#{@ae_slot}",
+    ]);
+    let pane = row
+        .lines()
+        .find_map(|line| line.strip_suffix("|spawned.0"))
+        .expect("child seat");
+    let profile = format!(
+        "next = \"{}/bin/claude {}/vendor.pl {}\"\n[workspace]",
+        rig.root.display(),
+        rig.root.display(),
+        child.display()
+    );
+    write(
+        rig.root.join("config"),
+        text(rig.root.join("config"))
+            .replace("[workspace]", &profile)
+            .replace("auto_trust = off", "auto_trust = on"),
+    );
+    rig.replace_meta("harness_session.spawned.0", "pending");
+    write(
+        rig.dir.join("launch.spawned.0.prompt"),
+        "original trust brief",
+    );
+    for (name, value) in [
+        ("HOME", rig.root.display().to_string()),
+        ("AE_HOME", rig.root.display().to_string()),
+        ("CONFIG_FILE", rig.root.join("config").display().to_string()),
+        ("AE_NO_AUTOSTART", "1".to_owned()),
+    ] {
+        rig.tmux(&["set-environment", "-t", "s", name, &value]);
+    }
+    rig.tmux(&["respawn-pane", "-k", "-t", pane, "exec /bin/sh"]);
+    wait_for("child at idle shell", || {
+        matches!(
+            rig.tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane,
+                "#{pane_current_command}"
+            ])
+            .trim(),
+            "sh" | "bash" | "dash"
+        )
+    });
+    fs::remove_file(child.join("ready")).expect("old child receipt");
+    let started = Instant::now();
+    let (code, out, err) = rig.invoke(
+        rig.environment()
+            .arg("reseat")
+            .arg("s")
+            .arg("helper")
+            .arg("--using")
+            .arg("next"),
+        "reseat",
+    );
+    assert_eq!(
+        code, 0,
+        "seed wait answers with daemon absent: {out}\n{err}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "launch wait stays bounded"
+    );
+    assert_eq!(rig.count("watchdog-start"), 0, "seed wait needs no daemon");
+    assert!(child.join("ready").is_file(), "successor drew the modal");
+    assert_eq!(rig.count("auto-trust"), 1, "one successor trust episode");
+    let seed = text(rig.dir.join("seed.helper.md"));
+    assert!(
+        seed.starts_with("⟦ae:ctx⟧\n") && seed.contains("original trust brief"),
+        "original brief is in the kept seed: {seed}"
+    );
+    assert!(
+        text(child.join("submitted")).contains("original trust brief"),
+        "same sentinel reaches successor composer"
+    );
+    assert_eq!(
+        text(child.join("actions"))
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>(),
+        ["Down", "Enter"]
+    );
+    let event = rig
+        .events()
+        .into_iter()
+        .find(|e| e.action == "auto-trust")
+        .expect("successor trust record");
+    assert_eq!(event.actor, "watchdog");
+    assert_eq!(event.target.as_deref(), Some("helper"));
+    assert_eq!(event.target_slot.value(), Some("spawned.0"));
 }
