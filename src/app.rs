@@ -6608,6 +6608,42 @@ mod tests {
         assert!(app.select.is_none(), "the grab wins");
     }
 
+    /// A press that takes a lit selection away asks for the redraw that
+    /// removes the highlight, on the frame on screen and on one a later frame
+    /// replaced, though the press itself acts on nothing.
+    #[test]
+    fn a_press_that_ends_a_highlight_asks_for_the_redraw_on_either_frame() {
+        for historical in [false, true] {
+            let mut app = turned(&["alpha beta gamma"]);
+            let origin = Instant::now();
+            let (_, x, y) = shown(&mut app, "alpha");
+            let press = |app: &mut App| {
+                let inert = at(MouseKind::Click, 100, 44);
+                if historical {
+                    app.mouse_made(inert, origin)
+                } else {
+                    app.mouse(inert)
+                }
+            };
+            assert!(
+                !press(&mut app),
+                "{historical}: on its own it acts on nothing"
+            );
+            app.mouse(at(MouseKind::Click, x, y));
+            app.mouse(at(MouseKind::Drag, x + 3, y));
+            let (buf, ..) = shown(&mut app, "alpha");
+            let held = app.select.as_ref().expect("a drag holds a selection");
+            assert!(held.sel.moved() && !lit(&buf, y).is_empty(), "{historical}");
+            assert!(
+                press(&mut app),
+                "{historical}: the highlight must be redrawn away"
+            );
+            assert!(app.select.is_none(), "{historical}: the press ended it");
+            let (buf, ..) = shown(&mut app, "alpha");
+            assert!(lit(&buf, y).is_empty(), "{historical}: nothing stays lit");
+        }
+    }
+
     /// The bar a marked turn wears is chrome: the cell is a recorded blank,
     /// and dragging across it copies the very bytes the unmarked turn gives.
     #[test]
