@@ -22,7 +22,7 @@ pub mod needs;
 pub mod open;
 pub mod submit;
 pub(crate) mod term;
-pub(crate) mod toggle;
+pub mod toggle;
 pub mod view;
 pub(crate) mod wrap;
 

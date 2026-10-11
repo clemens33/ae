@@ -396,6 +396,10 @@ on the normal screen: `ae app closed - run: ae app (in a chat window, prefix h
 reopens it)` inside tmux, `ae app closed - run: ae app` outside it. A reader
 that stopped says so on the line above.
 
+A restart into another installed core ([upgrade.md](upgrade.md#automatic-checks))
+leaves no line: tmux replaces the app in the same pane. A restart tmux refuses ends the
+app with `ae app: could not restart into ae <V> - <why>` above the usual line.
+
 ## Residuals
 
 - Typing in the app counts as activity in the session that hosts it, so that
@@ -415,6 +419,10 @@ that stopped says so on the line above.
   pane on screen and `prefix h` respawns it; any other tmux pane closes with
   the process. Every exit ae controls, a panic included, puts the terminal back.
 - A lone `Esc` waits 50 ms to tell itself from an escape sequence.
+- A restart into another core keeps no view state: the selection, tab, scroll
+  and dragged sizes start fresh. A key typed between the last idle check and
+  the respawn is lost. The hint follows the fleet read, so it can be up to
+  5 s behind the link.
 - `^Z` and `^\` are dropped and never suspend or quit.
 - The panic hook that restores the terminal stays installed after the app
   leaves its screen; it would only restore the same mode again.

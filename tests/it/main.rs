@@ -20,6 +20,7 @@ mod app_side_spec;
 mod app_snappy_spec;
 mod app_spec;
 mod app_tail_spec;
+mod app_upgrade_spec;
 mod app_ux_spec;
 mod app_wheel_spec;
 mod app_writer_spec;

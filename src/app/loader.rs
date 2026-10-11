@@ -96,6 +96,8 @@ pub(super) enum Answer {
         about: Option<super::settings::AboutFacts>,
         instructions: Option<super::settings::InstructionsView>,
     },
+    /// What the command link says to this app, after every fleet read.
+    Core(Option<super::upgrade::Upgrade>),
 }
 
 /// One read of the fleet.
@@ -198,6 +200,8 @@ pub(super) struct Reader {
     root: PathBuf,
     home: Option<String>,
     server: Option<ServerId>,
+    /// The server and pane this app runs in, from tmux's own markers.
+    own: Option<(ServerId, String)>,
     writing: Option<Box<Binding>>,
     consoles: BTreeMap<String, Console>,
     /// When each session's last read COMPLETED.
@@ -256,6 +260,7 @@ impl Reader {
             root,
             home,
             server,
+            own: None,
             writing: None,
             consoles: BTreeMap::new(),
             read_at: BTreeMap::new(),
@@ -284,6 +289,13 @@ impl Reader {
         self
     }
 
+    /// The server and pane this app runs in, when tmux names both; set once
+    /// before spawn.
+    pub(super) fn own_pane(&mut self, server: Option<ServerId>, pane: Option<String>) -> &mut Self {
+        self.own = server.zip(pane);
+        self
+    }
+
     /// Read until the UI is gone.
     fn run(mut self, asks: &Receiver<Request>, wake: &Sender<Wake>) {
         let send = |answer| wake.send(Wake::Answer(Box::new(answer))).is_ok();
@@ -295,7 +307,9 @@ impl Reader {
                     Err(TryRecvError::Disconnected) => return,
                 }
             }
-            let answers = match self.next(Instant::now()) {
+            let job = self.next(Instant::now());
+            let fleet = matches!(job, Job::Fleet);
+            let answers = match job {
                 Job::Fleet => self.fleet(),
                 Job::Look(name) => vec![self.look(&name)],
                 Job::View(name) => self.stage(&name).into_iter().collect(),
@@ -310,6 +324,10 @@ impl Reader {
                 }
             };
             if !answers.into_iter().all(send) {
+                return;
+            }
+            // The fleet is drawn before the command link is read.
+            if fleet && !send(Answer::Core(self.core())) {
                 return;
             }
         }
@@ -491,6 +509,28 @@ impl Reader {
         self.evict();
         answers.push(Answer::Fleet(read));
         answers
+    }
+
+    /// What the command link says to this app, read with the fleet: once per
+    /// refresh, from the installed shape only.
+    fn core(&self) -> Option<super::upgrade::Upgrade> {
+        let shape = crate::shape::current();
+        super::upgrade::seen(
+            shape,
+            |_| super::upgrade::link_version(crate::doors::home().as_deref()),
+            || crate::autoupgrade::automatic(shape, crate::doors::no_autostart()),
+            || self.restart(),
+        )
+    }
+
+    /// The restart of this app in its own pane, proven as the chat window of
+    /// home, the session it was started for.
+    fn restart(&self) -> Result<crate::console::toggle::Restart, String> {
+        let (Some((server, pane)), Some(home)) = (&self.own, &self.home) else {
+            return Err("this app runs in no tmux pane of a home session".to_owned());
+        };
+        let dir = self.dirs.get(home).map(PathBuf::as_path);
+        crate::console::toggle::restart_plan(server, pane, home, &self.root, dir)
     }
 
     /// [`Reader::fold_from`] with every needs and memo read now and nothing

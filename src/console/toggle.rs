@@ -4,7 +4,8 @@
 //! The console window is found only by its `@ae_console` stamp (the session's
 //! `@ae_session_uuid`) and never carries `@ae_agent`, so the watchdog reads no
 //! agent in it. `remain-on-exit` keeps a console that stopped following on
-//! screen with its reopen hint; the same key respawns it.
+//! screen with its reopen hint; the same key respawns it. A running `ae app`
+//! restarts itself in its own chat pane through the same proof and argv.
 
 use std::io::Write;
 use std::path::Path;
@@ -352,15 +353,115 @@ pub(crate) fn respawn(
     home: Home<'_>,
 ) -> Result<(), String> {
     let command = command(server, session, home)?;
+    respawn_with(server, pane, &command)
+}
+
+/// Replace the process in `pane` with `command`: the one respawn both a dead
+/// chat and a restarting app take.
+fn respawn_with(server: &ServerId, pane: &str, command: &[String]) -> Result<(), String> {
     let op = Op::RespawnPane {
         pane,
         work_dir: "",
-        command: &command,
+        command,
     };
     match transport::run_tmux_op(&argv(server, &op)) {
         (true, _) => Ok(()),
         _ => Err("tmux refused to restart the chat".to_owned()),
     }
+}
+
+/// How a running app restarts itself: the pane it runs in, on its server,
+/// and the argv a chat window of its session starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restart {
+    /// The server the app's pane is on.
+    pub server: ServerId,
+    /// The app's own pane.
+    pub pane: String,
+    /// What the pane runs next.
+    pub command: Vec<String>,
+}
+
+/// Whether `pane` is the session's chat window: listed, no agent's, stamped
+/// `uuid`, and the meta records `bound` as that same id — the proof the
+/// toggle makes before it starts a chat.
+///
+/// # Errors
+///
+/// The part of the proof that failed.
+pub fn own_chat(
+    panes: &[WindowPane],
+    pane: &str,
+    uuid: &str,
+    bound: &str,
+) -> Result<(), &'static str> {
+    let row = (panes.iter().find(|row| row.pane_id == pane))
+        .ok_or("this pane is not listed in its session")?;
+    if row.agent.is_some() {
+        return Err("this pane belongs to an agent");
+    }
+    if row.console.as_deref() != Some(uuid) {
+        return Err("this pane is not the session's chat window");
+    }
+    if bound.is_empty() || bound != uuid {
+        return Err("the session id in its meta is not the one tmux carries");
+    }
+    Ok(())
+}
+
+/// The restart of the app running in `pane` of `session`, once that pane is
+/// proven the session's chat window and the session still puts `ae app`
+/// there: what `prefix h` would start in it.
+///
+/// # Errors
+///
+/// Why this app may not restart itself.
+pub(crate) fn restart_plan(
+    server: &ServerId,
+    pane: &str,
+    session: &str,
+    root: &Path,
+    dir: Option<&Path>,
+) -> Result<Restart, String> {
+    let panes = transport::observe_window_panes(server, session)
+        .ok_or("tmux did not answer the pane listing")?;
+    let uuid = transport::observe_session_option(server, session, theme::SESSION_ID_OPTION)
+        .ok_or("this session has no @ae_session_uuid")?;
+    let bound = dir.map(super::recorded_uuid).unwrap_or_default();
+    let config = crate::doors::config_file(crate::shape::current(), root);
+    let home = Home::of(root, &config, dir);
+    may_restart(&panes, pane, &uuid, &bound, &home)?;
+    Ok(Restart {
+        server: server.clone(),
+        pane: pane.to_owned(),
+        command: command(server, session, home)?,
+    })
+}
+
+/// Whether the app in `pane` may restart itself: [`own_chat`] proves it the
+/// session's chat window, and `home` still puts `ae app` there.
+fn may_restart(
+    panes: &[WindowPane],
+    pane: &str,
+    uuid: &str,
+    bound: &str,
+    home: &Home<'_>,
+) -> Result<(), String> {
+    own_chat(panes, pane, uuid, bound)?;
+    if !home.app {
+        return Err("the session's chat window no longer runs ae app".to_owned());
+    }
+    Ok(())
+}
+
+/// Replace the process in the app's own pane — this one — with its restart.
+///
+/// # Errors
+///
+/// tmux refused.
+pub(crate) fn respawn_own(restart: &Restart) -> Result<(), String> {
+    respawn_with(&restart.server, &restart.pane, &restart.command)
+        .map_err(|_| "tmux refused to respawn this pane".to_owned())
 }
 
 /// The chat window's argv, the same for every opener: the terminal set up,
@@ -399,8 +500,8 @@ fn console_command(launcher: Vec<String>, session: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Home, Owner, Plan, TTY_SETUP, command, console_command, move_to_first, owner, plan,
-        window_command,
+        Home, Owner, Plan, TTY_SETUP, command, console_command, may_restart, move_to_first, owner,
+        plan, window_command,
     };
     use crate::console::submit::tests::pane;
     use crate::inventory::ServerId;
@@ -431,6 +532,34 @@ mod tests {
             let panes: Vec<WindowPane> = std::iter::once(lead.clone()).chain(console).collect();
             assert_eq!(plan(&panes, from, "u", "u"), want, "{from}");
         }
+    }
+
+    /// Q-C: a proven chat restarts only while its session still puts `ae app`
+    /// there; an unproven one says which part of the proof failed.
+    #[test]
+    fn an_app_restarts_only_in_its_proven_chat_while_the_session_runs_the_app() {
+        let panes = [
+            pane("%1", "@0", None, false),
+            pane("%3", "@2", Some("u"), false),
+        ];
+        let (root, config) = (Path::new("/r"), Path::new("/r/config"));
+        let app = Home {
+            root,
+            config,
+            app: true,
+        };
+        assert_eq!(may_restart(&panes, "%3", "u", "u", &app), Ok(()));
+        let chat = Home { app: false, ..app };
+        let left = "the session's chat window no longer runs ae app";
+        assert_eq!(
+            may_restart(&panes, "%3", "u", "u", &chat),
+            Err(left.to_owned())
+        );
+        let lead = "this pane is not the session's chat window";
+        assert_eq!(
+            may_restart(&panes, "%1", "u", "u", &app),
+            Err(lead.to_owned())
+        );
     }
 
     #[test]

@@ -342,6 +342,17 @@ fn detached_argv(ae_home: &Path) -> Option<DetachedArgv> {
     ]))
 }
 
+/// Whether this core acts on its own on what an upgrade installs: it is an
+/// installed core, `AE_NO_AUTOSTART=1` is not set, and the global policy is
+/// on. A scheduled check and a running app's restart both ask this.
+#[must_use]
+pub fn automatic(shape: &crate::shape::Shape, no_autostart: bool) -> bool {
+    let crate::shape::Shape::Installed { home, .. } = shape else {
+        return false;
+    };
+    !no_autostart && policy(&home.join("config")) == Policy::Enabled
+}
+
 /// Nonblocking hook. It reads enough local state to avoid needless children,
 /// then delegates every authoritative check to the detached child.
 pub fn schedule() {
@@ -368,8 +379,7 @@ fn schedule_with(
     else {
         return false;
     };
-    if no_autostart
-        || policy(&home.join("config")) != Policy::Enabled
+    if !automatic(shape, no_autostart)
         || !due(&check_state(home), now)
         || crate::shape::validate(&crate::shape::OnDisk(version_dir), version, crate::VERSION)
             .is_err()

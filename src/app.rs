@@ -30,7 +30,7 @@ use crate::console::input::{Effect, Input, Key, Keys, Mouse, MouseKind, Reading,
 use crate::console::lane::{Item, Kind, Lane, Seat};
 use crate::console::needs::{SeatRef, Section};
 use crate::console::open::{self, Move, Refusal};
-use crate::console::{self, Console, submit, term};
+use crate::console::{self, Console, submit, term, toggle};
 use crate::digest::{SessionEntry, Status};
 use crate::inventory::ServerId;
 use crate::listing::World;
@@ -55,6 +55,7 @@ mod order_spec;
 pub mod overview;
 mod settings;
 mod tty;
+pub mod upgrade;
 
 /// What `ae app` says, on stderr, when it has no terminal to draw on.
 pub const NO_TERMINAL: &str = "ae app draws a terminal UI; use ae chat to print the lane\n";
@@ -275,6 +276,10 @@ struct App {
     settling: Option<Settling>,
     /// What the read-only composer says: `read_only`, with how to resume.
     read_line: String,
+    /// Another installed core, as the last fleet read found the command link.
+    upgrade: Option<upgrade::Upgrade>,
+    /// When the last key, click or paste was read.
+    last_input: Option<Instant>,
 }
 
 impl App {
@@ -339,6 +344,8 @@ impl App {
             queued: Vec::new(),
             settling: None,
             read_line: String::new(),
+            upgrade: None,
+            last_input: None,
         }
     }
 
@@ -362,6 +369,7 @@ impl App {
                 about,
                 instructions,
             } => self.settled(generation, quota, config, about, instructions),
+            Answer::Core(seen) => self.upgrade = seen,
         }
     }
 
@@ -991,7 +999,8 @@ impl App {
     }
 
     /// The hint-row line now, loudest first: an ask on its way, an armed
-    /// key, a refused paste, an outcome the lane has not caught up with.
+    /// key, a refused paste, an outcome the lane has not caught up with,
+    /// another installed core.
     fn note(&self) -> Option<String> {
         let sending = self
             .queued
@@ -1005,6 +1014,34 @@ impl App {
                 let here = |s: &&Settling| self.model.selected() == Some(s.about.as_str());
                 settling.filter(here).map(|settling| settling.word.clone())
             })
+            .or_else(|| self.upgrade.as_ref().map(upgrade::hint))
+    }
+
+    /// What holds a restart back now: any draft, not only the writer's —
+    /// one kept in memory after Esc is lost too.
+    fn blocker(&self, now: Instant) -> Option<upgrade::Blocker> {
+        upgrade::restart_blocker(
+            self.inputs.values().any(|input| !input.draft().is_empty()),
+            !self.queued.is_empty(),
+            !self.deferred.is_empty(),
+            self.composing(),
+            self.held.is_some(),
+            self.model.settings_open(),
+            self.model.turn().is_some(),
+            self.armed.is_some(),
+            self.last_input,
+            now,
+        )
+    }
+
+    /// The restart due now: another core is installed, this app may restart
+    /// into it, and nothing holds it back.
+    fn restart_due(&self, now: Instant) -> Option<(String, toggle::Restart)> {
+        let upgrade = self.upgrade.as_ref()?;
+        let restart = upgrade.restart.as_ref().ok()?;
+        self.blocker(now)
+            .is_none()
+            .then(|| (upgrade.version.clone(), restart.clone()))
     }
 
     /// End what `now` outlived: whether any line went away.
@@ -1741,12 +1778,14 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     let declared = doors::declared_server(crate::shape::current());
     let server = doors::launch_target(declared.as_ref());
     let (wake, wakes) = mpsc::channel();
+    let (caller, pane) = (doors::caller_server(), doors::calling_pane_id());
     let mut reader = loader::Reader::new(root.clone(), home.clone(), server.clone());
     reader.settings_paths(loader::SettingsPaths {
         home: doors::home(),
         global: doors::config_file(crate::shape::current(), &root),
         local: doors::local_config(&doors::cwd()),
     });
+    reader.own_pane(caller.clone(), pane.clone());
     let started = forward(reads, wake.clone()).and_then(|()| loader::spawn(reader, wake));
     let (ask, reader) = match started {
         Ok(started) => started,
@@ -1764,10 +1803,9 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     };
     let mut size = tty.size().unwrap_or((80, 24));
     let mut terminal = Terminal::new(backend::Ansi::new(out, size))?;
-    let (server, pane) = (doors::caller_server(), doors::calling_pane_id());
-    let mut app = App::new(home, server, pane, Some(ask));
+    let mut app = App::new(home, caller, pane, Some(ask));
     let mut keys = Keys::app();
-    let (mut dirty, mut first) = (true, None);
+    let (mut dirty, mut first, mut restart) = (true, None, None);
     let code = loop {
         if let Some(now) = tty.size().filter(|now| *now != size) {
             size = now;
@@ -1806,12 +1844,42 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         if reader.is_finished() {
             break 1;
         }
+        restart = app.restart_due(Instant::now());
+        if restart.is_some() {
+            break 0;
+        }
     };
+    end(tty, app, code, restart, err)
+}
+
+/// How `ae app` ends, its terminal put back first: restarted into the core
+/// the command link names when that was due, else with the line that says
+/// how to start it again.
+fn end(
+    tty: tty::Tty,
+    app: App,
+    code: u8,
+    restart: Option<(String, toggle::Restart)>,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
     drop(tty);
+    let in_tmux = app.server.is_some();
+    if let Some((version, restart)) = restart {
+        // The lease goes before the pane, so the app that replaces it can
+        // write at once.
+        drop(app);
+        let Err(why) = toggle::respawn_own(&restart) else {
+            return Ok(0);
+        };
+        let line = format!("ae app: could not restart into ae {version} - {why}");
+        writeln!(err, "{}", terminal_text(&line))?;
+        writeln!(err, "{}", exit_hint(in_tmux))?;
+        return Ok(crate::entry::EXIT_FAILED);
+    }
     if code != 0 {
         writeln!(err, "ae app: its background reader stopped")?;
     }
-    writeln!(err, "{}", exit_hint(app.server.is_some()))?;
+    writeln!(err, "{}", exit_hint(in_tmux))?;
     Ok(code)
 }
 
@@ -1845,6 +1913,7 @@ fn drain(
             Wake::Keys(stamp, bytes) => {
                 crate::read_gate("@app-keys");
                 fed = true;
+                app.last_input = Some(stamp);
                 keys.feed(&bytes, stamp)
             }
             Wake::Answer(answer) => {
@@ -2096,6 +2165,7 @@ mod tests {
     use ratatui_core::layout::Rect;
 
     use super::loader::{self, Answer, Reader, ViewRead};
+    use super::upgrade::Blocker;
     use super::{
         App, USAGE, browse, draw, facts_of, fleet, run, settings, settings_key, take_keys,
     };
@@ -5496,5 +5566,82 @@ mod tests {
         assert_eq!(app.model.scroll_rows(5), 2, "the least scroll shows `mid`");
         app.layout.turns = vec![(new, 5, 3)];
         assert_eq!(mark(&mut app, 0), (false, None), "wholly out of the window");
+    }
+
+    /// Another core at `2026.10.99`, which the app restarts into, or `why` not.
+    fn upgrade_to(restart: Result<(), &str>) -> Answer {
+        let restart = restart.map(|()| crate::console::toggle::Restart {
+            server: crate::inventory::ServerId::Ambient,
+            pane: "%1".to_owned(),
+            command: vec!["ae".to_owned(), "app".to_owned(), "api".to_owned()],
+        });
+        Answer::Core(Some(super::upgrade::Upgrade {
+            version: "2026.10.99".to_owned(),
+            restart: restart.map_err(str::to_owned),
+        }))
+    }
+
+    /// U3: an app with nothing to lose restarts into the linked core; writing
+    /// holds it back, and so does a draft kept after Esc, while the hint row
+    /// says it waits.
+    #[test]
+    fn a_restart_is_due_only_while_nothing_would_be_lost() {
+        let root = Root::new("upgrade");
+        let (mut app, _reader) = housed(&root);
+        let t0 = Instant::now();
+        assert_eq!(app.restart_due(t0), None, "no other core, no restart");
+        app.answer(upgrade_to(Ok(())));
+        let (version, restart) = app.restart_due(t0).expect("an idle app restarts");
+        assert_eq!(
+            (version.as_str(), restart.pane.as_str()),
+            ("2026.10.99", "%1")
+        );
+        let waits = "ae 2026.10.99 installed - restarts when idle";
+        assert_eq!(app.note().as_deref(), Some(waits));
+        let at = writing(&mut app);
+        assert_eq!(app.blocker(at), Some(Blocker::Composing));
+        assert_eq!(app.compose(Key::Text(b"keep".to_vec()), at), Some(()));
+        app.write(false);
+        assert!(!app.composing());
+        assert_eq!(
+            app.blocker(at),
+            Some(Blocker::Draft),
+            "a kept draft is lost too"
+        );
+        assert_eq!(app.restart_due(at), None);
+        assert_eq!(app.note().as_deref(), Some(waits));
+    }
+
+    /// U3: every key read stamps the quiet window a restart waits out; an
+    /// armed key outranks the hint and holds it back; a hint-only upgrade,
+    /// or none, never restarts.
+    #[test]
+    fn a_key_holds_a_restart_and_a_hint_only_upgrade_never_restarts() {
+        let mut app = app(None);
+        app.fleet = one_row(None);
+        app.model = Model::new(&app.fleet);
+        app.answer(upgrade_to(Ok(())));
+        let (mut keys, t0) = (crate::console::input::Keys::app(), Instant::now());
+        let (_wake, wakes) = std::sync::mpsc::channel();
+        let mut first = Some(loader::Wake::Keys(t0, b"x".to_vec()));
+        assert!(super::drain(&mut app, &mut keys, &wakes, &mut first).is_some());
+        assert_eq!(app.last_input, Some(t0));
+        let quiet = t0 + super::REFRESH;
+        let inside = quiet.checked_sub(Duration::from_millis(1)).expect("booted");
+        assert_eq!(app.blocker(inside), Some(Blocker::RecentInput));
+        assert!(
+            app.restart_due(quiet).is_some(),
+            "the quiet window has passed"
+        );
+        assert!(browse(&mut app, &Key::Text(b"q".to_vec()), quiet).is_some());
+        assert_eq!(app.note().as_deref(), Some("q again to quit"));
+        assert_eq!(app.blocker(quiet), Some(Blocker::Armed));
+        app.armed = None;
+        app.answer(upgrade_to(Err("auto_upgrade is off")));
+        assert_eq!(app.restart_due(quiet), None);
+        let only = "ae 2026.10.99 installed - restart ae app to use it";
+        assert_eq!(app.note().as_deref(), Some(only));
+        app.answer(Answer::Core(None));
+        assert_eq!((app.note(), app.restart_due(quiet)), (None, None));
     }
 }
