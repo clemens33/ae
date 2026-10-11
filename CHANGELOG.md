@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.53] - 2026-10-11
+- Lead handover speaks of the human, not a named person
+- Ae answers a measured folder-trust modal for the seat's own folder
+- A spent start's verdict is its own pure step, and the docs say which stops are recorded
+- A spawn brief wait under auto_trust off or an unusable value answers nothing and keeps the brief
+- Pin the recorded-server proof and the seat's own binary in an in-wait answer
+- The pane's identity check is its own pure step, and a spent start and an unusable value are pinned
+- Pin every remaining auto_trust survivor: seeded reseat answers and off names fast, a declined wait stops, a landed answer notifies once, and fresh client input holds every key
+
 ## [v2026.10.52] - 2026-10-11
 - Ae app: restart into the core the command link names once idle
 
