@@ -390,7 +390,9 @@ fn line(seat: &Seat<'_>, proof: &Proof, action: &str, summary: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Due, RESERVED, ledger, owed, place, spent, tool_pid};
+    use super::{Due, RESERVED, Seat, ledger, owed, place, prove, spent, tool_pid};
+    use crate::inventory::ServerId;
+    use crate::meta::Selector;
     use crate::procs::Proc;
     use crate::store::SourceRead;
 
@@ -447,6 +449,39 @@ mod tests {
         let key = RESERVATION.replace("auto-trust-reserved", "auto-trust-key");
         let other = ledger(SourceRead::Ready(key.into_bytes())).expect("ledger");
         assert!(!spent(&other, "main:start:7"));
+    }
+
+    /// The first proof: keys go only to the server the record names. Another
+    /// name, no selector or a doubled one is refused by that rule, while the
+    /// recorded server passes it and is judged by the next one.
+    #[test]
+    fn only_the_recorded_server_passes_the_first_proof() {
+        let dir =
+            std::path::PathBuf::from(format!("/tmp/ae-autotrust-server-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let refusal = |meta: &str, server: &str| {
+            std::fs::write(crate::store::open(&dir).meta_path(), meta).expect("meta");
+            let server = ServerId::Selected(Selector::Name(server.to_owned()));
+            let seat = Seat {
+                dir: &dir,
+                server: &server,
+                session: "s",
+                slot: "main",
+                pane: "%0",
+                tool: "claude",
+            };
+            prove(&seat, "/tmp").expect_err("no live pane to prove")
+        };
+        let roster = "seat.main=lead\nagent_bin.main=claude\n";
+        let named = format!("tmux_server=ae-a\n{roster}");
+        let refused = "the pane is not on the recorded server";
+        assert_eq!(refusal(&named, "ae-b"), refused);
+        assert_eq!(refusal(roster, "ae-a"), refused, "no selector");
+        let doubled = format!("tmux_server=ae-a\ntmux_server=ae-a\n{roster}");
+        assert_eq!(refusal(&doubled, "ae-a"), refused, "doubled");
+        assert_eq!(refusal(&named, "ae-a"), "the seat has no launch id");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The episode's pid is the ONE outermost tool row under the pane; none,

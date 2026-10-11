@@ -929,6 +929,9 @@ fn a_refused_reservation_sends_zero_keys() {
 
 fn spawn_wait(value: &str) -> (Rig, PathBuf, i32, String, String) {
     let rig = Rig::new("spawn-wait", "claude", "normal");
+    if value == "on" {
+        rig.replace_meta("agent_bin.main", "agy");
+    }
     let child = rig.root.join("child");
     fs::create_dir(&child).unwrap_or_else(|why| panic!("child vendor storage: {why}"));
     fs::create_dir(child.join("other"))

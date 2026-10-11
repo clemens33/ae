@@ -201,7 +201,8 @@ mod tests {
         };
         let at = |body: &str, token: &str| body.find(token).expect(token);
         let answer = body("pub(crate) fn answer_trust(", "\nfn press(");
-        assert!(at(answer, "lock_target(") < at(answer, "viewer(seat)"));
+        assert!(at(answer, "lock_target(") < at(answer, "autotrust::prove("));
+        assert!(at(answer, "autotrust::prove(") < at(answer, "viewer(seat)"));
         assert!(at(answer, "viewer(seat)") < at(answer, "autotrust::reserve("));
         let press = body("\nfn press(", "\n/// Why a human may be at the pane");
         assert!(at(press, "viewer(seat)") < at(press, "send_key("));
