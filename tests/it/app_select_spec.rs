@@ -512,7 +512,7 @@ fn live_drag_copies_exact_cells_cancel_leaves_buffer_and_peek_resumes() {
     }
     rig.mouse(0, end, true);
     rig.wait("peek copy hint visible", |s| {
-        s.contains("copied 1 line to the tmux buffer; terminal clipboard")
+        s.contains("copied 1 line to the tmux buffer; terminal clipboard") && rig.buffer() == PEEK
     });
     assert_eq!(
         rig.buffer(),
