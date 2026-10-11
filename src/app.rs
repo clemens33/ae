@@ -1364,7 +1364,7 @@ impl App {
             return self.peek_mouse(mouse, fresh);
         }
         if mouse.kind == MouseKind::Drag {
-            return self.drag(mouse) | self.stretch(mouse);
+            return self.drag(mouse) || self.stretch(mouse);
         }
         let ended = self.model.let_go();
         match mouse.kind {
@@ -1617,7 +1617,13 @@ impl App {
     /// What the loop owes after a frame: the staged copy shipped and a hint
     /// the frame had no room to draw. Whether another frame is due.
     fn shipped(&mut self) -> bool {
-        self.ship_staged() | std::mem::take(&mut self.again)
+        self.ship_staged() || std::mem::take(&mut self.again)
+    }
+
+    /// A frame's debts, settled together: the copy it shipped and the asks
+    /// that waited for it. Neither skips the other; whether a frame is due.
+    fn owed(&mut self) -> bool {
+        self.shipped() | self.deliver()
     }
 
     /// Ship the copy the last frame highlighted, now that it is written: the
@@ -2270,7 +2276,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         // A release's copy ships only once the frame showing it is out. An
         // ask waits for the frame that names its target; its outcome needs
         // another.
-        dirty = app.shipped() | app.deliver();
+        dirty = app.owed();
         // Held keys replay as soon as the frame above has produced more.
         let wait = if app.deferred.is_empty() {
             TICK
