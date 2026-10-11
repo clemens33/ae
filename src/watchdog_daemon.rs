@@ -7387,6 +7387,28 @@ mod tests {
         );
     }
 
+    /// An unusable `auto_trust` value is named on the daemon's stderr once per
+    /// daemon start; `off` says nothing.
+    #[test]
+    fn an_unusable_auto_trust_is_named_once_per_daemon_start() {
+        let scratch = Scratch::new("trust-note");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let mut cycle = demo_cycle(&scratch.0, &helper, &server);
+        let (mut noted, mut err) = (Vec::new(), Vec::new());
+        cycle.trust_note(&mut noted, &mut err).expect("off");
+        assert!(err.is_empty(), "off says nothing");
+        let note = r#""INVALID" is not on or off"#;
+        cycle.auto_trust = crate::config::AutoTrust::Unusable(note.to_owned());
+        for _ in 0..2 {
+            cycle.trust_note(&mut noted, &mut err).expect("noted");
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&err),
+            format!("ae: watchdog: auto_trust {note}; it answers nothing\n")
+        );
+    }
+
     /// The Notify line and the event both say WHICH question and WHAT to press.
     /// A verdict the human cannot act on is not news.
     #[test]

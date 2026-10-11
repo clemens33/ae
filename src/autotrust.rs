@@ -15,7 +15,7 @@ use crate::inventory::ServerId;
 use crate::procs::{Lineage, Proc};
 use crate::store::SourceRead;
 use crate::time::Timestamp;
-use crate::tmux::OptionReading;
+use crate::tmux::{ObservedViewer, OptionReading};
 use crate::watchdog::{TrustSighting, WATCHDOG_ACTOR};
 
 /// Reserves one tool start before its first key. The reservation ALONE spends
@@ -178,10 +178,7 @@ pub(crate) fn prove(seat: &Seat<'_>, drawn: &str) -> Result<Proof, String> {
         .ok_or("the session has no id")?;
     let viewer =
         crate::transport::observe_viewer(seat.server, seat.pane).ok_or("pane unreadable")?;
-    if viewer.slot.as_deref() != Some(seat.slot)
-        || viewer.session.as_deref() != Some(seat.session)
-        || viewer.session_uuid != OptionReading::Set(session_id.to_owned())
-    {
+    if !is_seat(&viewer, seat.slot, seat.session, session_id) {
         return Err("the pane is not this seat's".to_owned());
     }
     let slots =
@@ -215,6 +212,14 @@ pub(crate) fn prove(seat: &Seat<'_>, drawn: &str) -> Result<Proof, String> {
         episode: format!("{}:{launch}:{pid}", seat.slot),
         folder,
     })
+}
+
+/// The pane's own readings name `slot` of `session`, in the incarnation
+/// `session_id`: every one must hold, each on its own.
+fn is_seat(viewer: &ObservedViewer, slot: &str, session: &str, session_id: &str) -> bool {
+    viewer.slot.as_deref() == Some(slot)
+        && viewer.session.as_deref() == Some(session)
+        && viewer.session_uuid == OptionReading::Set(session_id.to_owned())
 }
 
 /// The session's meta, read whole and strictly UTF-8.
@@ -390,11 +395,14 @@ fn line(seat: &Seat<'_>, proof: &Proof, action: &str, summary: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Due, RESERVED, Seat, ledger, owed, place, prove, spent, tool_pid};
+    use super::{
+        Due, Proof, RESERVED, Seat, is_seat, ledger, owed, place, prove, reserve, spent, tool_pid,
+    };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
     use crate::procs::Proc;
     use crate::store::SourceRead;
+    use crate::tmux::{ObservedViewer, OptionReading};
 
     const RESERVATION: &str = r#"{"ts":"2026-10-11T00:00:00Z","actor":"watchdog","action":"auto-trust-reserved","target":"lead","target_slot":"main","ref":"main:start:7"}"#;
 
@@ -481,6 +489,74 @@ mod tests {
         let doubled = format!("tmux_server=ae-a\ntmux_server=ae-a\n{roster}");
         assert_eq!(refusal(&doubled, "ae-a"), refused, "doubled");
         assert_eq!(refusal(&named, "ae-a"), "the seat has no launch id");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pane's readings prove the seat only when slot, session and uuid
+    /// all hold: each one wrong, alone, refuses, an unset or unread uuid too.
+    #[test]
+    fn the_pane_is_the_seat_only_when_slot_session_and_uuid_all_hold() {
+        type Edit = fn(&mut ObservedViewer);
+        let right = ObservedViewer {
+            slot: Some("main".to_owned()),
+            session: Some("s".to_owned()),
+            session_uuid: OptionReading::Set("u-1".to_owned()),
+            ..ObservedViewer::default()
+        };
+        assert!(is_seat(&right, "main", "s", "u-1"));
+        let wrong: [(&str, Edit); 7] = [
+            ("slot", |viewer| viewer.slot = Some("w1".to_owned())),
+            ("no slot", |viewer| viewer.slot = None),
+            ("session", |viewer| viewer.session = Some("t".to_owned())),
+            ("no session", |viewer| viewer.session = None),
+            ("uuid", |viewer| {
+                viewer.session_uuid = OptionReading::Set("u-2".to_owned());
+            }),
+            ("uuid unset", |viewer| {
+                viewer.session_uuid = OptionReading::Vacant;
+            }),
+            ("uuid unread", |viewer| {
+                viewer.session_uuid = OptionReading::Unknown;
+            }),
+        ];
+        for (what, edit) in wrong {
+            let mut viewer = right.clone();
+            edit(&mut viewer);
+            assert!(!is_seat(&viewer, "main", "s", "u-1"), "{what}");
+        }
+    }
+
+    /// A start already reserved is refused BEFORE anything is appended: an
+    /// in-wait answer asks no `due`, so this is its only spent check.
+    #[test]
+    fn a_reserved_start_is_refused_without_a_second_reservation() {
+        let dir =
+            std::path::PathBuf::from(format!("/tmp/ae-autotrust-spent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let journal = crate::store::open(&dir).events_path();
+        std::fs::write(&journal, format!("{RESERVATION}\n")).expect("journal");
+        let server = ServerId::Selected(Selector::Name("ae-a".to_owned()));
+        let seat = Seat {
+            dir: &dir,
+            server: &server,
+            session: "s",
+            slot: "main",
+            pane: "%0",
+            tool: "claude",
+        };
+        let proof = Proof {
+            name: "lead".to_owned(),
+            episode: "main:start:7".to_owned(),
+            folder: std::path::PathBuf::from("/tmp"),
+        };
+        let refused = reserve(&seat, &proof, true).expect_err("already spent");
+        assert_eq!(refused, "main:start:7 is already spent");
+        assert!(
+            matches!(crate::store::open(&dir).events_source(),
+                SourceRead::Ready(bytes) if bytes == format!("{RESERVATION}\n").into_bytes()),
+            "nothing appended"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
