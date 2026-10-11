@@ -26,6 +26,8 @@ pub enum Key {
     TurnOlder,
     TurnNewer,
     Copy,
+    /// `v`: peek at the highlighted seat's screen.
+    Peek,
 }
 
 /// The browse keys one decoded key spells. A paste is swallowed whole: text
@@ -62,6 +64,7 @@ fn letter(byte: u8) -> Option<Key> {
         b'[' => Some(Key::TurnOlder),
         b']' => Some(Key::TurnNewer),
         b'y' => Some(Key::Copy),
+        b'v' => Some(Key::Peek),
         _ => None,
     }
 }
@@ -83,6 +86,8 @@ pub enum Act {
     TurnNewer,
     /// Copy the marked turn.
     Copy,
+    /// Open the peek panel on the highlighted seat.
+    Peek,
     Quit,
 }
 
@@ -146,6 +151,17 @@ pub(crate) struct SettingsOverlay {
     pub(crate) generation: u64,
 }
 
+/// The open peek panel: how many rows it is scrolled back from the newest,
+/// the body rows the last frame drew (what one page key moves) and the
+/// generation that pins its loader answers. The captured text lives in the
+/// App, not here: this is browse state only, like the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PeekOverlay {
+    pub(crate) back: usize,
+    pub(crate) page_rows: usize,
+    pub(crate) generation: u64,
+}
+
 /// The browse state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Model {
@@ -166,6 +182,7 @@ pub struct Model {
     split: Split,
     drag: Option<Drag>,
     settings: Option<SettingsOverlay>,
+    peek: Option<PeekOverlay>,
     /// The transient line the hint row shows: the App writes it each frame.
     note: Option<String>,
     /// The marked turn, by the fingerprint that names it across re-reads.
@@ -192,6 +209,9 @@ impl Model {
     pub fn key(&mut self, key: Key, fleet: &Fleet, can_compose: bool, agents_tab: bool) -> Act {
         if self.settings.is_some() {
             return self.settings_key(key);
+        }
+        if self.peek.is_some() {
+            return self.peek_key(key);
         }
         let at = self.position(fleet);
         match key {
@@ -246,6 +266,7 @@ impl Model {
             Key::TurnOlder => Act::TurnOlder,
             Key::TurnNewer => Act::TurnNewer,
             Key::Copy => Act::Copy,
+            Key::Peek => Act::Peek,
             Key::Quit => Act::Quit,
             Key::Tab | Key::Compose => Act::None,
         }
@@ -461,6 +482,7 @@ impl Model {
                 split: self.split,
                 drag: self.drag,
                 settings: self.settings,
+                peek: self.peek,
                 ..Self::new(fleet)
             };
         }
@@ -473,6 +495,7 @@ impl Model {
             split: self.split,
             drag: self.drag,
             settings: self.settings,
+            peek: self.peek,
             ..Self::new(fleet)
         };
     }
@@ -545,7 +568,8 @@ impl Model {
             | Key::SeatPrev
             | Key::TurnOlder
             | Key::TurnNewer
-            | Key::Copy => Act::None,
+            | Key::Copy
+            | Key::Peek => Act::None,
         }
     }
 
@@ -638,6 +662,87 @@ impl Model {
     pub(crate) fn clamp_settings_scroll(&mut self, max: usize) {
         if let Some(open) = self.settings.as_mut() {
             open.scroll = open.scroll.min(max);
+        }
+    }
+
+    /// One key with the peek panel open: older and newer rows by line or page,
+    /// or close. Every other key is swallowed.
+    fn peek_key(&mut self, key: Key) -> Act {
+        let Some(open) = self.peek.as_mut() else {
+            return Act::None;
+        };
+        let page = open.page_rows.max(1);
+        match key {
+            Key::Up => open.back = open.back.saturating_add(1),
+            Key::Down => open.back = open.back.saturating_sub(1),
+            Key::PageUp => open.back = open.back.saturating_add(page),
+            Key::PageDown => open.back = open.back.saturating_sub(page),
+            Key::Esc | Key::Quit | Key::Peek => self.peek = None,
+            _ => return Act::None,
+        }
+        Act::Redraw
+    }
+
+    /// Open the peek panel at the newest row, pinned to `generation`.
+    pub fn open_peek(&mut self, generation: u64) {
+        self.peek = Some(PeekOverlay {
+            back: 0,
+            page_rows: 0,
+            generation,
+        });
+    }
+
+    /// Close the peek panel.
+    pub fn close_peek(&mut self) {
+        self.peek = None;
+    }
+
+    /// Whether the peek panel is open.
+    #[must_use]
+    pub fn peek_open(&self) -> bool {
+        self.peek.is_some()
+    }
+
+    /// How many rows the open panel is scrolled back, `None` when closed.
+    #[must_use]
+    pub fn peek_back(&self) -> Option<usize> {
+        self.peek.map(|open| open.back)
+    }
+
+    /// The open panel's generation: only its own answers paint.
+    pub(crate) fn peek_generation(&self) -> Option<u64> {
+        self.peek.map(|open| open.generation)
+    }
+
+    /// The drawn body height one page key moves; the App sets it per frame.
+    pub fn set_peek_page_rows(&mut self, page_rows: usize) {
+        if let Some(open) = self.peek.as_mut() {
+            open.page_rows = page_rows;
+        }
+    }
+
+    /// Bound the scroll to the `max` rows the frame could go back.
+    pub fn clamp_peek(&mut self, max: usize) {
+        if let Some(open) = self.peek.as_mut() {
+            open.back = open.back.min(max);
+        }
+    }
+
+    /// One wheel notch, three rows: older when `up`.
+    pub fn peek_wheel(&mut self, up: bool) {
+        if let Some(open) = self.peek.as_mut() {
+            open.back = if up {
+                open.back.saturating_add(WHEEL_ROWS)
+            } else {
+                open.back.saturating_sub(WHEEL_ROWS)
+            };
+        }
+    }
+
+    /// Scroll back to the newest row.
+    pub(crate) fn peek_newest(&mut self) {
+        if let Some(open) = self.peek.as_mut() {
+            open.back = 0;
         }
     }
 }
@@ -905,5 +1010,117 @@ mod tests {
         for key in [Key::Open, Key::SeatNext, Key::SeatPrev] {
             assert_eq!(model.key(key, &both, true, true), Act::None, "{key:?}");
         }
+    }
+
+    /// `v` asks to peek in browse mode; the settings overlay swallows it.
+    #[test]
+    fn v_asks_to_peek_unless_settings_is_open() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        assert_eq!(model.key(Key::Peek, &both, true, true), Act::Peek);
+        assert!(!model.peek_open(), "the key asks; the app opens");
+        model.open_settings(1);
+        assert_eq!(model.key(Key::Peek, &both, true, true), Act::None);
+    }
+
+    /// With the panel open the scroll keys move it a line or a page, the close
+    /// keys close it, and every other key means nothing.
+    #[test]
+    fn the_open_peek_scrolls_by_line_and_page_and_swallows_the_rest() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        model.open_peek(7);
+        model.set_peek_page_rows(5);
+        let go = |model: &mut Model, key| model.key(key, &both, true, true);
+        assert_eq!(go(&mut model, Key::Up), Act::Redraw);
+        assert_eq!(model.peek_back(), Some(1));
+        assert_eq!(go(&mut model, Key::PageUp), Act::Redraw);
+        assert_eq!(model.peek_back(), Some(6));
+        assert_eq!(go(&mut model, Key::Down), Act::Redraw);
+        assert_eq!(go(&mut model, Key::PageDown), Act::Redraw);
+        assert_eq!(model.peek_back(), Some(0));
+        assert_eq!(go(&mut model, Key::Down), Act::Redraw, "never below zero");
+        assert_eq!(go(&mut model, Key::PageDown), Act::Redraw);
+        assert_eq!(model.peek_back(), Some(0));
+        for key in [
+            Key::Tab,
+            Key::Open,
+            Key::Digit(2),
+            Key::Copy,
+            Key::SeatNext,
+            Key::Compose,
+        ] {
+            assert_eq!(go(&mut model, key), Act::None, "{key:?}");
+            assert!(model.peek_open(), "{key:?} leaves the panel");
+            assert_eq!(model.selected(), Some("api"), "{key:?} moves nothing");
+        }
+    }
+
+    /// A page key moves at least one row before the first frame measures the
+    /// body, and the three close keys close.
+    #[test]
+    fn a_page_is_one_row_until_measured_and_esc_q_v_close() {
+        let both = fleet(&["api"]);
+        let mut model = Model::new(&both);
+        model.open_peek(1);
+        assert_eq!(model.key(Key::PageUp, &both, true, true), Act::Redraw);
+        assert_eq!(model.peek_back(), Some(1));
+        for key in [Key::Esc, Key::Quit, Key::Peek] {
+            model.open_peek(1);
+            assert_eq!(model.key(key, &both, true, true), Act::Redraw, "{key:?}");
+            assert!(!model.peek_open(), "{key:?} closes");
+            assert_eq!(model.peek_back(), None);
+        }
+    }
+
+    /// The wheel moves three rows and saturates; the clamp bounds the scroll;
+    /// the setters touch nothing while the panel is closed.
+    #[test]
+    fn the_peek_wheel_and_clamp_saturate_and_a_closed_panel_ignores_them() {
+        let one = fleet(&["api"]);
+        let mut model = Model::new(&one);
+        model.peek_wheel(true);
+        model.clamp_peek(0);
+        model.set_peek_page_rows(9);
+        model.peek_newest();
+        assert_eq!(model.peek_back(), None);
+        assert_eq!(model.peek_generation(), None);
+        model.open_peek(3);
+        assert_eq!(model.peek_generation(), Some(3));
+        model.peek_wheel(true);
+        model.peek_wheel(true);
+        assert_eq!(model.peek_back(), Some(6));
+        model.peek_wheel(false);
+        assert_eq!(model.peek_back(), Some(3));
+        model.peek_wheel(false);
+        model.peek_wheel(false);
+        assert_eq!(model.peek_back(), Some(0), "the wheel stops at the newest");
+        model.peek_wheel(true);
+        model.clamp_peek(2);
+        assert_eq!(model.peek_back(), Some(2));
+        model.clamp_peek(9);
+        assert_eq!(model.peek_back(), Some(2), "a larger bound moves nothing");
+        model.peek_newest();
+        assert_eq!(model.peek_back(), Some(0));
+    }
+
+    /// A fleet change or a restart keeps the open panel where it was.
+    #[test]
+    fn a_reconcile_or_restart_keeps_the_open_peek() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        model.open_peek(5);
+        model.set_peek_page_rows(4);
+        let _ = model.key(Key::PageUp, &both, true, true);
+        model.reconcile(&fleet(&["api"]));
+        assert_eq!(
+            (model.peek_back(), model.peek_generation()),
+            (Some(4), Some(5))
+        );
+        model.restart(&fleet(&["api"]));
+        assert_eq!(
+            (model.peek_back(), model.peek_generation()),
+            (Some(4), Some(5))
+        );
     }
 }

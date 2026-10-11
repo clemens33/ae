@@ -232,6 +232,19 @@ pub fn select_args_via(
     Some(args)
 }
 
+/// The one tmux argv that reads `target`'s screen as plain text with `lines` of
+/// history above it, for the app's peek panel; `None` when the pane fails its
+/// grammar. It selects, switches and moves nothing: a pane that changed since
+/// the proof shows its new screen, which a display accepts.
+#[must_use]
+pub fn capture_argv(server: &ServerId, target: &Target, lines: u32) -> Option<Vec<String>> {
+    let op = crate::session_tmux::Op::CapturePane {
+        pane: &target.pane,
+        lines,
+    };
+    numbered(&target.pane, '%').then(|| crate::session_tmux::argv(server, &op).as_args().to_vec())
+}
+
 /// Whether `name` is a tty path or a control client's name: the characters
 /// tmux gives one, none of which a tmux command word treats as syntax.
 pub(crate) fn client_name(name: &str) -> bool {

@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{IsTerminal as _, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -37,7 +37,8 @@ use crate::listing::World;
 use crate::time::Timestamp;
 use crate::{brief, doors, theme, tmux, transport};
 
-use loader::{Answer, Binding, Request, Wake};
+use loader::{Answer, Binding, PeekAsk, Request, Wake};
+use peek::Body;
 
 mod backend;
 pub mod draw;
@@ -53,6 +54,7 @@ pub mod model;
 #[cfg(test)]
 mod order_spec;
 pub mod overview;
+pub mod peek;
 mod settings;
 mod tty;
 pub mod upgrade;
@@ -174,6 +176,36 @@ struct Merged {
     lane: Rc<Lane>,
 }
 
+/// What the open peek panel holds of its pane, pinned to the model's
+/// generation: a capture that landed for another is dropped.
+#[derive(Debug, Default)]
+struct PeekPane {
+    generation: u64,
+    /// The session and seat the panel was opened on.
+    target: Option<(String, String)>,
+    /// The body on screen; `None` until the first answer lands.
+    shown: Option<Body>,
+    /// A newer capture held back while the viewport is scrolled back.
+    held: Option<Body>,
+    /// When the newest capture, held or shown, was taken.
+    at: Option<Instant>,
+    /// The age in whole seconds the last frame painted.
+    painted: Option<u64>,
+}
+
+impl PeekPane {
+    /// The viewport is scrolled back over captured lines: a newer capture waits.
+    fn paused(&self, back: usize) -> bool {
+        back > 0 && matches!(self.shown, Some(Body::Lines(_)))
+    }
+
+    /// Whole seconds since the newest capture, at `now`.
+    fn age(&self, now: Instant) -> u64 {
+        self.at
+            .map_or(0, |at| now.saturating_duration_since(at).as_secs())
+    }
+}
+
 /// The writer lease this app holds while it writes.
 struct Lease {
     /// Held open: dropping it releases the lease.
@@ -251,6 +283,9 @@ struct App {
     settings_bodies: settings::SettingsBodies,
     /// The generation the next open mints; answers pin to the open one.
     settings_generation: u64,
+    /// The open peek panel's captures, and the generation the next open mints.
+    peek: PeekPane,
+    peek_generation: u64,
     /// The row order the last fleet read chose, applied when the next frame
     /// is drawn: until then keys and clicks resolve against the order the
     /// human sees.
@@ -333,6 +368,8 @@ impl App {
             deferred: Vec::new(),
             settings_bodies: settings::SettingsBodies::default(),
             settings_generation: 0,
+            peek: PeekPane::default(),
+            peek_generation: 0,
             pending: None,
             server,
             pane,
@@ -370,6 +407,143 @@ impl App {
                 instructions,
             } => self.settled(generation, quota, config, about, instructions),
             Answer::Core(seen) => self.upgrade = seen,
+            Answer::Peek {
+                generation,
+                at,
+                body,
+            } => self.peeked(generation, at, body),
+        }
+    }
+
+    /// Fold one peek capture. Only the open panel's own generation paints. A
+    /// refusal or a failed capture replaces the body at once, scrolled back
+    /// or not, and returns to the newest row; lines wait while the viewport
+    /// is scrolled back over lines.
+    fn peeked(&mut self, generation: u64, at: Instant, body: Body) {
+        if self.model.peek_generation() != Some(generation) {
+            return;
+        }
+        self.peek_sync();
+        self.peek.at = Some(at);
+        if matches!(body, Body::Gap(_)) {
+            self.model.peek_newest();
+            self.peek.held = None;
+            self.peek.shown = Some(body);
+        } else {
+            self.peek.held = Some(body);
+        }
+        self.peek_adopt();
+    }
+
+    /// Start the panel's state afresh when the model's generation is not the
+    /// one it holds, and drop it once the panel is closed.
+    fn peek_sync(&mut self) {
+        match self.model.peek_generation() {
+            None => self.peek = PeekPane::default(),
+            Some(generation) if generation != self.peek.generation => {
+                self.peek = PeekPane {
+                    generation,
+                    ..PeekPane::default()
+                };
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Show the held capture unless the viewport is scrolled back over lines.
+    fn peek_adopt(&mut self) {
+        let back = self.model.peek_back().unwrap_or(0);
+        if !self.peek.paused(back)
+            && let Some(held) = self.peek.held.take()
+        {
+            self.peek.shown = Some(held);
+        }
+    }
+
+    /// `v`: open the peek panel on the seat the last frame highlighted, as
+    /// that frame drew it. A refusal is said on the hint row, opens nothing and
+    /// asks the reader nothing; the proof against tmux is the reader's, every
+    /// capture.
+    fn open_peek(&mut self) {
+        let Some(session) = self.model.selected().map(str::to_owned) else {
+            let line = "refused: peek: no session is selected".to_owned();
+            self.flash = Some((line, Instant::now()));
+            return;
+        };
+        let drawn = self.drawn.clone().filter(|drawn| drawn.session == session);
+        let label = (drawn.as_ref())
+            .and_then(|drawn| drawn.focused.clone())
+            .unwrap_or_else(|| session.clone());
+        match self.peek_ask(&session, drawn.as_ref()) {
+            Ok(ask) => {
+                self.peek_generation = ask.generation;
+                self.model.open_peek(ask.generation);
+                self.peek = PeekPane {
+                    generation: ask.generation,
+                    target: Some((session, ask.seat.name.clone())),
+                    ..PeekPane::default()
+                };
+                if let Some(tx) = &self.ask {
+                    let _ = tx.send(Request::Peek(Some(ask)));
+                }
+            }
+            Err(why) => {
+                let line = format!("refused: peek {label}: {}", why.why());
+                self.flash = Some((line, Instant::now()));
+            }
+        }
+    }
+
+    /// What `session`'s drawn seat asks the reader to capture, or why the
+    /// panel cannot open: the checks that need no tmux read.
+    fn peek_ask(&self, session: &str, drawn: Option<&Drawn>) -> Result<Box<PeekAsk>, Refusal> {
+        let Some(server) = self.server.clone() else {
+            return Err(Refusal::NoTmux);
+        };
+        if (self.entry(session)).is_some_and(|entry| entry.status == Status::Stopped) {
+            return Err(Refusal::Stopped(session.to_owned()));
+        }
+        let Some(dir) = self.dirs.get(session) else {
+            let why = format!("{session} has no record directory ae can read");
+            return Err(Refusal::NoSeat(why));
+        };
+        let Some(drawn) = drawn else {
+            return Err(Refusal::NoSeat("the view changed".to_owned()));
+        };
+        Ok(Box::new(PeekAsk {
+            generation: self.peek_generation.wrapping_add(1),
+            session: session.to_owned(),
+            uuid: drawn.uuid.clone(),
+            dir: dir.clone(),
+            seat: drawn.seat()?.clone(),
+            server,
+        }))
+    }
+
+    /// Close the panel and tell the reader to stop capturing. It always tells:
+    /// the model may already hold the close the key caused.
+    fn close_peek(&mut self) {
+        self.model.close_peek();
+        self.peek = PeekPane::default();
+        if let Some(ask) = &self.ask {
+            let _ = ask.send(Request::Peek(None));
+        }
+    }
+
+    /// A mouse event with the peek panel open: the wheel scrolls wherever it
+    /// lands, a press on the drawn close label closes, and any other press
+    /// dies.
+    fn peek_mouse(&mut self, mouse: Mouse) -> bool {
+        match mouse.kind {
+            MouseKind::WheelUp | MouseKind::WheelDown => {
+                self.model.peek_wheel(mouse.kind == MouseKind::WheelUp);
+                true
+            }
+            MouseKind::Click if matches!(self.layout.hit(mouse), Some(draw::Hit::PeekClose)) => {
+                self.close_peek();
+                true
+            }
+            MouseKind::Click | MouseKind::Drag | MouseKind::Release => false,
         }
     }
 
@@ -1026,7 +1200,7 @@ impl App {
             !self.deferred.is_empty(),
             self.composing(),
             self.held.is_some(),
-            self.model.settings_open(),
+            self.model.settings_open() || self.model.peek_open(),
             self.model.turn().is_some(),
             self.armed.is_some(),
             self.last_input,
@@ -1050,7 +1224,11 @@ impl App {
         let armed = self.armed.take_if(|a| over(a.at, QUIT_WINDOW)).is_some();
         let flash = (self.flash.take_if(|(_, at)| over(*at, FLASH_WINDOW))).is_some();
         let word = (self.settling.take_if(|s| over(s.at, FLASH_WINDOW))).is_some();
-        armed | flash | word
+        // The open panel's capture ages: one redraw for each new second.
+        let aged = self.model.peek_open()
+            && self.peek.at.is_some()
+            && self.peek.painted != Some(self.peek.age(now));
+        armed | flash | word | aged
     }
 
     /// A wheel notch landing past a bound the last frame has not proven the
@@ -1113,6 +1291,9 @@ impl App {
     fn mouse(&mut self, mouse: Mouse) -> bool {
         if self.model.settings_open() {
             return self.settings_mouse(mouse);
+        }
+        if self.model.peek_open() {
+            return self.peek_mouse(mouse);
         }
         if mouse.kind == MouseKind::Drag {
             return self.drag(mouse);
@@ -1209,7 +1390,9 @@ impl App {
                 self.open_settings();
                 return true;
             }
-            draw::Hit::SettingsTab(_) | draw::Hit::SettingsClose => return held,
+            draw::Hit::SettingsTab(_) | draw::Hit::SettingsClose | draw::Hit::PeekClose => {
+                return held;
+            }
             draw::Hit::Turn(key) => {
                 self.write(false);
                 self.model
@@ -1491,19 +1674,7 @@ impl App {
             let why = format!("{session} has no record directory ae can read");
             return Refusal::NoSeat(why).line(label);
         };
-        // The recorded server, not the launch target, against the server this
-        // app's own pane lives on.
-        let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
-        let recorded = crate::session_launch::recorded_server_resolved(dir);
-        if !recorded.is_some_and(|recorded| sockets.proven_same(server, &recorded)) {
-            return Refusal::Elsewhere(session.to_owned()).line(label);
-        }
-        let seat = match seat {
-            Ok(seat) => seat,
-            Err(why) => return why.line(label),
-        };
-        let console = Console::bound(session.to_owned(), dir.clone(), uuid.to_owned());
-        let target = match term::prove_open(server, &console, seat) {
+        let target = match proven_pane(server, session, uuid, dir, seat) {
             Ok(target) => target,
             Err(why) => return why.line(label),
         };
@@ -1694,9 +1865,58 @@ impl App {
                     .clamp_settings_scroll(self.layout.settings_max_scroll);
             }
         }
+        if self.model.peek_open() {
+            self.paint_peek(look.as_ref(), buf);
+        }
         let drawn = self.model.selected().map(|name| self.freeze(name));
         self.drawn = drawn;
     }
+
+    /// Paint the open peek panel over the frame: its newest body with its age
+    /// as of now, then keep the viewport inside what was drawn.
+    fn paint_peek(&mut self, look: Option<&theme::Look>, buf: &mut Buffer) {
+        self.peek_sync();
+        self.peek_adopt();
+        self.layout.strip_for_peek();
+        let age = self.peek.age(Instant::now());
+        let (session, seat) = match &self.peek.target {
+            Some((session, seat)) => (session.as_str(), seat.as_str()),
+            None => (self.model.selected().unwrap_or_default(), ""),
+        };
+        let view = peek::View {
+            session,
+            seat,
+            body: self.peek.shown.as_ref(),
+            age_secs: age,
+            back: self.model.peek_back().unwrap_or(0),
+            newer_waiting: self.peek.held.is_some(),
+        };
+        let bounds = draw::paint_peek(&view, look, buf, &mut self.layout);
+        self.peek.painted = Some(age);
+        self.model.set_peek_page_rows(bounds.visible);
+        if self.deferred.is_empty() {
+            self.model.clamp_peek(bounds.max_back);
+        }
+    }
+}
+
+/// `seat`'s pane in `session` on `server`, proven NOW: the recorded server,
+/// not the launch target, must be the one this app's own pane lives on, then
+/// the chat's own proof. One door for `/open` and the peek panel's captures.
+fn proven_pane(
+    server: &ServerId,
+    session: &str,
+    uuid: &str,
+    dir: &Path,
+    seat: Result<&SeatRef, Refusal>,
+) -> Result<open::Target, Refusal> {
+    let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+    let recorded = crate::session_launch::recorded_server_resolved(dir);
+    if !recorded.is_some_and(|recorded| sockets.proven_same(server, &recorded)) {
+        return Err(Refusal::Elsewhere(session.to_owned()));
+    }
+    let console = Console::bound(session.to_owned(), dir.to_owned(), uuid.to_owned());
+    term::prove_open(server, &console, seat?)
 }
 
 /// What the picker's read says of `entry`'s seats.
@@ -1959,6 +2179,8 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
             let ended = app.model.let_go();
             let acted = if app.model.settings_open() {
                 settings_key(app, &key, origin)?
+            } else if app.model.peek_open() {
+                peek_key(app, &key, origin)?
             } else if app.composing() {
                 app.compose(key, origin).map(|()| true)?
             } else if app.held.is_some() {
@@ -1982,6 +2204,11 @@ fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
         while let Some((&byte, tail)) = rest.split_first() {
             if app.model.settings_open() {
                 redraw |= settings_byte(app, byte);
+                rest = tail;
+                continue;
+            }
+            if app.model.peek_open() {
+                redraw |= peek_keys(app, model::browse_keys(&Key::Text(vec![byte])));
                 rest = tail;
                 continue;
             }
@@ -2101,6 +2328,39 @@ fn settings_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
     Some(redraw)
 }
 
+/// Take one key with the peek panel open: `Some(redraw)`, or `None` to quit.
+/// The panel owns every key: it scrolls, it closes, and a paste or any other
+/// key dies. Bytes after a mid-chunk close resume the actual mode.
+fn peek_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
+    if *key == Key::Interrupt {
+        return None;
+    }
+    let Key::Text(bytes) = key else {
+        return Some(peek_keys(app, model::browse_keys(key)));
+    };
+    let mut redraw = false;
+    for (at, &byte) in bytes.iter().enumerate() {
+        if !app.model.peek_open() {
+            return browse(app, &Key::Text(bytes[at..].to_vec()), origin).map(|rest| redraw | rest);
+        }
+        redraw |= peek_keys(app, model::browse_keys(&Key::Text(vec![byte])));
+    }
+    Some(redraw)
+}
+
+/// Feed `keys` to the open peek panel; a close they cause tells the reader.
+fn peek_keys(app: &mut App, keys: Vec<model::Key>) -> bool {
+    let mut redraw = false;
+    for key in keys {
+        redraw |= app.model.key(key, &app.fleet, false, false) == model::Act::Redraw;
+    }
+    if !app.model.peek_open() {
+        app.close_peek();
+        redraw = true;
+    }
+    redraw
+}
+
 /// One Text byte with the overlay open: `s` closes with its request, the
 /// rest decodes modal. The overlay is open on entry; the caller resumes the
 /// actual mode after a close.
@@ -2151,6 +2411,10 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             app.copy();
             Some(true)
         }
+        model::Act::Peek => {
+            app.open_peek();
+            Some(true)
+        }
         model::Act::None => Some(false),
     }
 }
@@ -2172,7 +2436,7 @@ mod tests {
     use crate::app::fleet::{Counts, Fleet, Row};
     use crate::app::model::{Drag, Edge, Key as Browse, Model, SettingsTab, Tab};
     use crate::attention::Reason;
-    use crate::console::input::{Effect, Input, Key, Reading};
+    use crate::console::input::{Effect, Input, Key, Mouse, MouseKind, Reading};
     use crate::console::lane::{Item, Kind, Lane};
     use crate::digest::{SessionEntry, Status};
     use crate::listing::World;
@@ -3999,6 +4263,7 @@ mod tests {
                 loader::Request::Reread(name) => Some(name),
                 loader::Request::Focus(_)
                 | loader::Request::Writing(_)
+                | loader::Request::Peek(_)
                 | loader::Request::Settings { .. } => None,
             })
             .collect();
@@ -4234,6 +4499,7 @@ mod tests {
                     loader::Request::Focus(name) => Some(name),
                     loader::Request::Reread(_)
                     | loader::Request::Writing(_)
+                    | loader::Request::Peek(_)
                     | loader::Request::Settings { .. } => None,
                 })
                 .collect()
@@ -4261,6 +4527,7 @@ mod tests {
                 loader::Request::Settings { open, generation } => Some((open, generation)),
                 loader::Request::Focus(_)
                 | loader::Request::Reread(_)
+                | loader::Request::Peek(_)
                 | loader::Request::Writing(_) => None,
             })
             .collect()
@@ -4291,7 +4558,9 @@ mod tests {
                 .map(|request| match request {
                     loader::Request::Focus(name) => format!("focus {name:?}"),
                     loader::Request::Settings { open, .. } => format!("settings {open}"),
-                    loader::Request::Reread(_) | loader::Request::Writing(_) => String::new(),
+                    loader::Request::Reread(_)
+                    | loader::Request::Peek(_)
+                    | loader::Request::Writing(_) => String::new(),
                 })
                 .collect()
         };
@@ -5645,5 +5914,201 @@ mod tests {
         assert_eq!(app.note().as_deref(), Some(only));
         app.answer(Answer::Core(None));
         assert_eq!((app.note(), app.restart_due(quiet)), (None, None));
+    }
+
+    /// An `aedev` app that has drawn two seats, `colead` highlighted, with a
+    /// channel for what it asks the reader.
+    fn peeker() -> (App, std::sync::mpsc::Receiver<loader::Request>) {
+        use crate::console::needs::SeatRef;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let server = Some(crate::inventory::ServerId::Ambient);
+        let mut app = App::new(Some("aedev".to_owned()), server, None, Some(tx));
+        app.world
+            .sessions
+            .push(SessionEntry::new("aedev", Status::Running));
+        let mut fleet = one_row(Some("aedev"));
+        fleet.rows[0].name = "aedev".to_owned();
+        app.model = Model::new(&fleet);
+        app.fleet = fleet;
+        app.dirs
+            .insert("aedev".to_owned(), PathBuf::from("/tmp/aedev"));
+        let seat = |slot: &str, name: &str| {
+            (
+                name.to_owned(),
+                Some(SeatRef {
+                    slot: slot.to_owned(),
+                    name: name.to_owned(),
+                }),
+            )
+        };
+        app.drawn = Some(super::Drawn {
+            session: "aedev".to_owned(),
+            uuid: ID.to_owned(),
+            rows: vec![seat("main", "lead"), seat("worker.0", "colead")],
+            focused: Some("colead".to_owned()),
+        });
+        (app, rx)
+    }
+
+    fn pressed(app: &mut App, bytes: &[u8]) -> Option<bool> {
+        take_keys(app, vec![(Key::Text(bytes.to_vec()), Instant::now())])
+    }
+
+    /// `v` on a drawn, highlighted seat opens the panel and asks the reader
+    /// once for exactly that seat, pinned to a new generation each open; every
+    /// close tells the reader once.
+    #[test]
+    fn v_opens_the_panel_on_the_highlighted_seat_and_each_open_has_its_own_generation() {
+        let (mut app, asks) = peeker();
+        assert_eq!(pressed(&mut app, b"v"), Some(true));
+        assert!(app.model.peek_open());
+        let loader::Request::Peek(Some(ask)) = asks.try_recv().expect("an ask") else {
+            panic!("the open asks for a peek");
+        };
+        assert_eq!(ask.generation, 1);
+        assert_eq!((ask.session.as_str(), ask.uuid.as_str()), ("aedev", ID));
+        assert_eq!(
+            (ask.seat.slot.as_str(), ask.seat.name.as_str()),
+            ("worker.0", "colead")
+        );
+        assert_eq!(ask.dir, PathBuf::from("/tmp/aedev"));
+        assert!(asks.try_recv().is_err(), "one ask per open");
+        assert_eq!(app.model.peek_generation(), Some(1));
+        assert_eq!(
+            app.peek.target,
+            Some(("aedev".to_owned(), "colead".to_owned()))
+        );
+        assert_eq!(pressed(&mut app, b"q"), Some(true));
+        assert!(!app.model.peek_open());
+        assert!(matches!(asks.try_recv(), Ok(loader::Request::Peek(None))));
+        assert!(asks.try_recv().is_err(), "one close per close");
+        let _ = pressed(&mut app, b"v");
+        let loader::Request::Peek(Some(again)) = asks.try_recv().expect("an ask") else {
+            panic!("the open asks for a peek");
+        };
+        assert_eq!(again.generation, 2, "a reopen is a new generation");
+    }
+
+    /// A refusal before the panel opens says so on the hint row by seat and
+    /// reason, opens nothing and asks nothing.
+    #[test]
+    fn a_seat_the_frame_did_not_draw_refuses_by_name_and_asks_nothing() {
+        let (mut app, asks) = peeker();
+        app.drawn.as_mut().expect("drawn").focused = Some("ghost".to_owned());
+        let _ = pressed(&mut app, b"v");
+        assert!(!app.model.peek_open() && asks.try_recv().is_err());
+        let (line, _) = app.flash.clone().expect("a flash");
+        assert_eq!(
+            line,
+            "refused: peek ghost: no seat is shown to open in aedev"
+        );
+        app.drawn.as_mut().expect("drawn").focused = Some("colead".to_owned());
+        app.drawn.as_mut().expect("drawn").session = "other".to_owned();
+        let _ = pressed(&mut app, b"v");
+        assert!(!app.model.peek_open() && asks.try_recv().is_err());
+        let (line, _) = app.flash.clone().expect("a flash");
+        assert_eq!(line, "refused: peek aedev: the view changed");
+    }
+
+    /// With no session selected `v` says so on the hint row and asks nothing.
+    #[test]
+    fn v_with_no_session_selected_says_so_and_asks_nothing() {
+        let (mut app, asks) = peeker();
+        app.model = Model::new(&Fleet::default());
+        let _ = pressed(&mut app, b"v");
+        assert!(!app.model.peek_open() && asks.try_recv().is_err());
+        let said = "refused: peek: no session is selected";
+        assert_eq!(
+            app.flash.as_ref().map(|(text, _)| text.as_str()),
+            Some(said)
+        );
+        assert!(framed(&mut app).contains(said), "the hint row says it");
+    }
+
+    /// A capture that lands after the panel closed, or for another open,
+    /// paints nothing and leaves no state behind.
+    #[test]
+    fn a_late_capture_for_a_closed_or_replaced_panel_is_dropped() {
+        let (mut app, _asks) = peeker();
+        let answer = |app: &mut App, generation, row: &str| {
+            app.answer(Answer::Peek {
+                generation,
+                at: Instant::now(),
+                body: super::Body::Lines(vec![row.to_owned()]),
+            });
+        };
+        answer(&mut app, 1, "BEFORE OPEN");
+        assert!(app.peek.shown.is_none() && app.peek.at.is_none());
+        let _ = pressed(&mut app, b"v");
+        answer(&mut app, 9, "WRONG GENERATION");
+        assert!(app.peek.shown.is_none() && app.peek.at.is_none());
+        answer(&mut app, 1, "RIGHT ONE");
+        assert!(framed(&mut app).contains("RIGHT ONE"));
+        let _ = pressed(&mut app, b"v");
+        answer(&mut app, 1, "AFTER CLOSE");
+        assert!(app.peek.shown.is_none() && app.peek.at.is_none());
+        assert!(!framed(&mut app).contains("AFTER CLOSE"));
+    }
+
+    /// The open panel's capture ages on screen: one redraw for each new
+    /// second, none before the first answer or once closed.
+    #[test]
+    fn the_open_panel_redraws_once_for_each_new_second_of_age() {
+        let (mut app, _asks) = peeker();
+        let t0 = Instant::now();
+        let after = |millis| t0 + Duration::from_millis(millis);
+        let _ = pressed(&mut app, b"v");
+        assert!(!app.lapse(after(5000)), "nothing captured yet");
+        app.peek.at = Some(t0);
+        app.peek.painted = Some(0);
+        assert!(!app.lapse(after(999)), "still the second painted");
+        assert!(app.lapse(after(1000)), "a new second");
+        app.peek.painted = Some(1);
+        assert!(!app.lapse(after(1999)));
+        assert!(app.lapse(after(2000)));
+        app.peek.at = Some(after(3000));
+        assert_eq!(app.peek.age(t0), 0, "a capture from the future is 0 s old");
+        app.peek.at = Some(t0);
+        app.close_peek();
+        app.peek.at = Some(t0);
+        app.peek.painted = Some(0);
+        assert!(!app.lapse(after(9000)), "a closed panel ages nothing");
+    }
+
+    /// With the panel open ^C quits, a paste and the mouse's presses die, and
+    /// a restart waits for the panel as it does for settings.
+    #[test]
+    fn the_open_panel_quits_on_ctrl_c_swallows_pastes_and_presses_and_holds_a_restart() {
+        let (mut app, _asks) = peeker();
+        let _ = pressed(&mut app, b"v");
+        let now = Instant::now();
+        assert_eq!(app.blocker(now), Some(Blocker::Settings));
+        let pasted = vec![(Key::Pasted(b"hello".to_vec()), now)];
+        assert_eq!(take_keys(&mut app, pasted), Some(false));
+        assert!(app.model.peek_open());
+        assert!(!app.composing(), "a paste starts no draft");
+        for kind in [MouseKind::Click, MouseKind::Drag, MouseKind::Release] {
+            let press = Mouse {
+                kind,
+                column: 20,
+                row: 20,
+            };
+            assert!(!app.mouse(press), "{kind:?} dies");
+            assert!(app.model.peek_open(), "{kind:?} leaves the panel");
+        }
+        assert_eq!(take_keys(&mut app, vec![(Key::Interrupt, now)]), None);
+    }
+
+    /// A close in the middle of a typed chunk hands the rest to the mode the
+    /// app is really in: `vq` closes, then `q` arms the quit; `vqq` quits.
+    #[test]
+    fn a_chunk_that_closes_the_panel_hands_its_rest_to_browse() {
+        let (mut app, _asks) = peeker();
+        let _ = pressed(&mut app, b"v");
+        assert_eq!(pressed(&mut app, b"vq"), Some(true));
+        assert!(!app.model.peek_open());
+        assert_eq!(app.note().as_deref(), Some("q again to quit"));
+        let _ = pressed(&mut app, b"v");
+        assert_eq!(pressed(&mut app, b"vqq"), None, "the second q quits");
     }
 }

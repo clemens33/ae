@@ -747,6 +747,7 @@ fn app_key_name(key: AppKey) -> String {
         AppKey::TurnOlder => "TurnOlder".to_owned(),
         AppKey::TurnNewer => "TurnNewer".to_owned(),
         AppKey::Copy => "Copy".to_owned(),
+        AppKey::Peek => "Peek".to_owned(),
     }
 }
 

@@ -14,7 +14,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::Instant;
 
 use super::journals::Journals;
-use super::{REFRESH, facts_of, fleet};
+use super::peek::{self, Body};
+use super::{REFRESH, facts_of, fleet, proven_pane};
 use crate::brief::Filed;
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
@@ -25,6 +26,9 @@ use crate::inventory::{FailedSource, ServerId};
 use crate::listing::World;
 use crate::time::Timestamp;
 use crate::{theme, tmux, transport};
+
+#[cfg(test)]
+mod peek_spec;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -40,6 +44,25 @@ pub(super) enum Request {
     Writing(Option<Box<Binding>>),
     /// The settings overlay opened (`true`) or closed, pinned to a generation.
     Settings { open: bool, generation: u64 },
+    /// The peek panel opened on this seat, or closed (`None`).
+    Peek(Option<Box<PeekAsk>>),
+}
+
+/// What an open peek panel asks the reader to capture, every refresh: the
+/// seat as the frame drew it, bound to the incarnation and the tmux server the
+/// app proved at the key press. The capture proves it again each time.
+#[derive(Clone)]
+pub(super) struct PeekAsk {
+    /// The panel's generation: its answers carry it back.
+    pub(super) generation: u64,
+    pub(super) session: String,
+    /// The `session_id` the roster came from.
+    pub(super) uuid: String,
+    /// The session's record directory.
+    pub(super) dir: PathBuf,
+    pub(super) seat: SeatRef,
+    /// The tmux server the app runs on.
+    pub(super) server: ServerId,
 }
 
 /// What a writer proved at its entry, proved again by each fleet read.
@@ -98,6 +121,13 @@ pub(super) enum Answer {
     },
     /// What the command link says to this app, after every fleet read.
     Core(Option<super::upgrade::Upgrade>),
+    /// One capture of the open peek panel's pane, or the refusal that stood
+    /// in its place, read at `at` for `generation`.
+    Peek {
+        generation: u64,
+        at: Instant,
+        body: Body,
+    },
 }
 
 /// One read of the fleet.
@@ -181,6 +211,7 @@ enum Job {
     Look(String),
     View(String),
     Settings,
+    Peek(Box<PeekAsk>),
     Wait(Instant),
 }
 
@@ -222,6 +253,8 @@ pub(super) struct Reader {
     settings: Option<(u64, Option<Instant>)>,
     /// Config and about already read for the open overlay.
     settings_full: bool,
+    /// The open peek panel's ask and when its last capture COMPLETED.
+    peek: Option<(Box<PeekAsk>, Option<Instant>)>,
     /// The session the open overlay's instructions tab is for: the selection
     /// when it opened, never retargeted while it stays open.
     settings_session: Option<String>,
@@ -277,6 +310,7 @@ impl Reader {
             settings_paths: SettingsPaths::default(),
             settings: None,
             settings_full: false,
+            peek: None,
             settings_session: None,
             journals: Journals::default(),
             answered: BTreeSet::new(),
@@ -314,6 +348,7 @@ impl Reader {
                 Job::Look(name) => vec![self.look(&name)],
                 Job::View(name) => self.stage(&name).into_iter().collect(),
                 Job::Settings => vec![self.settings()],
+                Job::Peek(ask) => vec![self.peek(&ask)],
                 Job::Wait(until) => {
                     match asks.recv_timeout(until.saturating_duration_since(Instant::now())) {
                         Ok(request) => self.take(request),
@@ -360,6 +395,7 @@ impl Reader {
                     self.settings_session = None;
                 }
             }
+            Request::Peek(ask) => self.peek = ask.map(|ask| (ask, None)),
         }
     }
 
@@ -404,6 +440,11 @@ impl Reader {
                 return Job::Settings;
             }
         }
+        if let Some((ask, last)) = &self.peek
+            && last.is_none_or(|at| at + peek::PEEK_EVERY <= now)
+        {
+            return Job::Peek(ask.clone());
+        }
         let mut order = order(&self.rows, self.selected.as_deref(), self.home.as_deref())
             .into_iter()
             .filter(|(name, _)| self.readable(name))
@@ -428,6 +469,10 @@ impl Reader {
         // A first settings read never waits: it is due at once, above.
         let until = match self.settings {
             Some((_, Some(last))) => until.min(last + REFRESH),
+            _ => until,
+        };
+        let until = match self.peek {
+            Some((_, Some(last))) => until.min(last + peek::PEEK_EVERY),
             _ => until,
         };
         Job::Wait(until.min(now + REFRESH))
@@ -783,6 +828,37 @@ impl Reader {
             needs,
             roster,
         }))
+    }
+
+    /// One capture of the open peek panel's pane: the seat's pane proven NOW,
+    /// as `/open` proves it, then its screen as plain text; a refusal or a
+    /// failed capture is the body instead, by name. The read gate holds the
+    /// whole read before anything is touched.
+    fn peek(&mut self, ask: &PeekAsk) -> Answer {
+        crate::read_gate("peek");
+        let proof = proven_pane(
+            &ask.server,
+            &ask.session,
+            &ask.uuid,
+            &ask.dir,
+            Ok(&ask.seat),
+        );
+        let body = match proof {
+            Err(why) => peek::refused(&ask.seat.name, &why),
+            Ok(target) => {
+                let screen = transport::capture_seat(&ask.server, &target, peek::HISTORY);
+                peek::captured(screen.as_ref().map(|(ran, text)| (*ran, text.as_str())))
+            }
+        };
+        let at = Instant::now();
+        if let Some((_, last)) = self.peek.as_mut() {
+            *last = Some(at);
+        }
+        Answer::Peek {
+            generation: ask.generation,
+            at,
+            body,
+        }
     }
 
     /// The open overlay's bodies for its generation: quota every time,
@@ -1557,5 +1633,61 @@ mod tests {
     #[test]
     fn a_kept_fleet_read_observes_each_recorded_server_now() {
         fleet_spec::reader_servers(reader);
+    }
+
+    fn ask(generation: u64, dir: &Path) -> Box<super::PeekAsk> {
+        Box::new(super::PeekAsk {
+            generation,
+            session: "api".to_owned(),
+            uuid: ID.to_owned(),
+            dir: dir.to_path_buf(),
+            seat: crate::console::needs::SeatRef {
+                slot: "worker.0".to_owned(),
+                name: "colead".to_owned(),
+            },
+            server: crate::inventory::ServerId::Ambient,
+        })
+    }
+
+    /// A new open replaces the old ask and is due at once, a close forgets it.
+    #[test]
+    fn a_peek_ask_replaces_the_last_and_starts_due() {
+        let mut reader = Reader::new(PathBuf::from("/nonexistent"), None, None);
+        let dir = Path::new("/nonexistent/api");
+        reader.take(Request::Peek(Some(ask(1, dir))));
+        reader.peek.as_mut().expect("ask").1 = Some(Instant::now());
+        reader.take(Request::Peek(Some(ask(2, dir))));
+        let (held, last) = reader.peek.as_ref().expect("ask");
+        assert_eq!((held.generation, *last), (2, None));
+        reader.take(Request::Peek(None));
+        assert!(reader.peek.is_none());
+    }
+
+    /// A pane the proof cannot read comes back as the refusal, by seat and
+    /// reason, under the asker's generation, and its completion — not its
+    /// start — is what the cadence counts from.
+    #[test]
+    fn a_peek_the_proof_cannot_read_answers_a_named_refusal_and_stamps_its_completion() {
+        let mut reader = Reader::new(PathBuf::from("/nonexistent"), None, None);
+        let dir = Path::new("/nonexistent/api");
+        let asked = ask(7, dir);
+        reader.take(Request::Peek(Some(asked.clone())));
+        let Answer::Peek {
+            generation,
+            at,
+            body,
+        } = reader.peek(&asked)
+        else {
+            panic!("a peek answers a peek");
+        };
+        assert_eq!(generation, 7);
+        let crate::app::peek::Body::Gap(why) = body else {
+            panic!("a refusal is a gap");
+        };
+        // Which proof step refuses depends on the ambient tmux server.
+        assert!(why.starts_with("refused: peek colead: "), "{why}");
+        assert_eq!(reader.peek.as_ref().expect("ask").1, Some(at));
+        let early = reader.next(at + Duration::from_secs(1));
+        assert!(!matches!(early, Job::Peek(_)), "not due a second later");
     }
 }

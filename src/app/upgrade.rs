@@ -39,7 +39,7 @@ pub enum Blocker {
     Composing,
     /// An entry was refused and its keys are swallowed.
     Held,
-    /// The settings overlay is open.
+    /// The settings overlay or the peek panel is open.
     Settings,
     /// A turn is marked for copying.
     Turn,

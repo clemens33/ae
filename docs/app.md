@@ -136,6 +136,7 @@ Browsing:
 | `!` | the next session that needs you |
 | `Tab` | Overview / Agents |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
+| `v` | peek at the highlighted seat's screen, read-only ([Peeking at an agent](#peeking-at-an-agent)) |
 | `n` / `p` | highlight the next / previous seat the tab body shows |
 | `PgUp` / `PgDn` | scroll the chat a page |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
@@ -161,10 +162,10 @@ Browsing:
 No single printable key quits or moves your client: an armed `q` or `o` is
 disarmed by any other key or when its 2 seconds pass, so typing a word
 while browsing leaves the app up and no key reaches another pane. The keys
-row is the mode word (`browse`, `write`, `held` or `settings`), at most one
+row is the mode word (`browse`, `write`, `held`, `settings` or `peek`), at most one
 hint where its key works (`? keys` while browsing, which lists every key;
-`Esc close` in Settings; none while writing or held, which take every key),
-and at its right end `ae <version>` and the gear. Narrowing drops the version
+`Esc close` in Settings or the peek panel; none while writing or held, which take every key),
+and at its right end `ae <version>` and the gear (the peek panel draws no gear). Narrowing drops the version
 first, then the gear.
 
 A paste while browsing is never read as keys. On a writable session it starts
@@ -262,6 +263,46 @@ window selection (tmux session state, as the fleet picker does). The client
 list is read last, right before the move; a client that detaches in that
 instant makes the move fail with `uncertain`. The cursor steps only through the
 rows drawn.
+
+## Peeking at an agent
+
+`v` opens a read-only panel over the whole pane on the highlighted seat: the
+seat's screen and recent history as plain text. Nothing is typed into the seat,
+no record is written and no client moves. The seat is the one `oo` would open,
+as the last frame drew it; with no session selected or none highlighted, in a
+stopped session, with no readable record directory, or outside tmux, the key
+opens nothing and the hint row says why (`refused: peek <seat>: <why>`, or
+`refused: peek: no session is selected`).
+
+Every capture, the first included, proves the pane as `oo` does: the session is
+on the server the app runs on, the roster still seats that name in that slot,
+the pane carries it, is alive and is listed in the session. A pane that fails
+the proof is not read; the panel shows the refusal by name (`refused: peek
+<seat>: <why>`) in place of any earlier text. A capture tmux did not return
+shows `capture failed: tmux did not return the pane's screen`, an empty screen
+`(the pane shows nothing)`; the status line then reads `not captured`.
+
+The reader captures again every 2 seconds: 200 lines of history above the
+screen, the newest 400 kept, at most 2000 characters a line (`…` ends a cut
+one). Pane text is hostile, so each line is neutralised when painted (a
+control character or escape shows as `�`) and then wrapped to the pane, each
+continuation row two cells in. No colour is requested.
+
+The title row reads `Peek · <session> · <seat>` and, at its right end, `Esc
+close`; under it a status: `loading` until the first answer, then `captured Ns
+ago · R rows`, led by `STALE · ` from 5 seconds on. `j` / `k`, `↓` / `↑` scroll a
+line, `PgUp` / `PgDn` a page, the wheel three rows a notch, anywhere. Scrolled
+back, the panel is paused: a newer capture waits (`paused · B back · newer
+waiting`) and is shown once you are back at the newest row; a refusal or a
+failed capture shows at once and returns to the newest row. `Esc`, `q`, `v` or a
+click on `Esc close` close it (`q` here is no `qq`), `^C` quits at once. Every
+other key, a paste and every other press is swallowed, so none reaches the pane.
+An upgrade restart waits while the panel is open.
+
+Named limits. The pane can change between the proof and the capture of one
+cycle; the panel only displays, so nothing is moved or typed on that account.
+A capture is plain text: styling and images the seat's tool draws are not
+shown.
 
 ## Copying a turn
 

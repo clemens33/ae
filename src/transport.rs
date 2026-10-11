@@ -1011,6 +1011,21 @@ pub fn open_seat_via(
     Some(run(PROGRAM, &args))
 }
 
+/// The screen of a proven target as plain text: whether tmux ran the capture and
+/// what it printed, or `None` when the pane fails its grammar and nothing ran.
+#[must_use]
+pub fn capture_seat(
+    server: &ServerId,
+    target: &crate::console::open::Target,
+    lines: u32,
+) -> Option<(bool, String)> {
+    let args = crate::console::open::capture_argv(server, target, lines)?;
+    if !addressable(server) {
+        return Some((false, String::new()));
+    }
+    Some(run(PROGRAM, &args))
+}
+
 /// Show a transient message on one attached client.
 #[must_use]
 pub fn display_client_message(server: &ServerId, client: &str, text: &str) -> bool {

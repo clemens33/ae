@@ -16,6 +16,7 @@ use ratatui_core::text::{Line, Span};
 use super::fleet::{Counts, Facts, Fleet, Line2, Row};
 use super::model::{Drag, Edge, Model, SettingsTab, Split, Tab};
 use super::overview::Overview;
+use super::peek;
 use super::settings::{AboutFacts, ConfigView, InstructionsView, SettingsBodies};
 use crate::brief::age;
 use crate::console::input::View;
@@ -102,6 +103,8 @@ pub(crate) enum Hit {
     SettingsTab(SettingsTab),
     /// The overlay's drawn close label.
     SettingsClose,
+    /// The peek panel's drawn close label.
+    PeekClose,
     /// A drawn chat turn, by its fingerprint: marks it, or unmarks it.
     Turn(u64),
 }
@@ -134,9 +137,9 @@ pub(crate) struct Layout {
     pub turns: Vec<(u64, usize, usize)>,
     /// The cell the terminal cursor shows: the draft's, while writing.
     pub cursor: Option<Position>,
-    /// Body rows the open settings overlay shows at once.
+    /// Body rows the open full-pane panel (settings or peek) shows at once.
     pub settings_page_rows: usize,
-    /// How far back the settings body can scroll.
+    /// How far the open panel's body can scroll.
     pub settings_max_scroll: usize,
     /// The session list's cells, the first session it drew, and the
     /// furthest first session it could draw.
@@ -219,7 +222,17 @@ impl Layout {
     /// covers, keeping only the gear that toggles it: drawing over cells
     /// alone would leave hidden clicks and drags live.
     pub(crate) fn strip_for_settings(&mut self) {
-        self.targets.retain(|(_, hit)| matches!(hit, Hit::Settings));
+        self.strip(|hit| matches!(hit, Hit::Settings));
+    }
+
+    /// [`Layout::strip_for_settings`] for the peek panel, which keeps no
+    /// target: its own close label is recorded after.
+    pub(crate) fn strip_for_peek(&mut self) {
+        self.strip(|_| false);
+    }
+
+    fn strip(&mut self, keep: impl Fn(&Hit) -> bool) {
+        self.targets.retain(|(_, hit)| keep(hit));
         self.borders.clear();
         self.chat = Rect::default();
         (self.list, self.body) = (Rect::default(), Rect::default());
@@ -1254,12 +1267,13 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 14] = [
+const BROWSE_KEYS: [(&str, &str); 15] = [
     ("1-9", "select that session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
     ("Tab", "Overview / Agents tab"),
     ("oo", "open seat; twice in 2 s"),
+    ("v", "peek at the seat's screen"),
     ("n/p", "next / previous seat"),
     ("PgUp/PgDn", "scroll the chat"),
     ("[ ]", "mark older / newer turn"),
@@ -1279,11 +1293,14 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let y = buf.area.height - 1;
     let composing = matches!(ctx.screen.composer, Composer::Home { view: Some(_), .. });
     let open = ctx.screen.model.settings_open();
+    let peeking = ctx.screen.model.peek_open();
     let width = buf.area.width;
     // The one hint is the key that works in that mode: writing and held take
     // every key, so they say the word alone.
     let (word, hint) = if open {
         ("settings", "Esc close")
+    } else if peeking {
+        ("peek", "Esc close")
     } else if composing {
         ("write", "")
     } else if matches!(ctx.screen.composer, Composer::Held { .. }) {
@@ -1313,19 +1330,26 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
         paint.fg(|p| p.dim),
     );
     let gear = if ctx.icons { "\u{2699}" } else { "*" };
-    let tail = format!("{} {gear}", crate::version_line());
+    // The peek panel hides the gear: a click on it would be dead.
+    let tail = if peeking {
+        crate::version_line()
+    } else {
+        format!("{} {gear}", crate::version_line())
+    };
     let tail_cells = cells(Span::raw(tail.as_str()).width());
     let gear_cells = cells(Span::raw(gear).width());
     let room = |need: u16| hints_end.saturating_add(2).saturating_add(need) <= width;
     let style = paint.fg(|p| p.dim);
     if room(tail_cells) {
         put(buf, width - tail_cells, y, &tail, tail_cells, style);
-        layout.record(
-            buf,
-            Rect::new(width - gear_cells, y, gear_cells, 1),
-            Hit::Settings,
-        );
-    } else if room(gear_cells) {
+        if !peeking {
+            layout.record(
+                buf,
+                Rect::new(width - gear_cells, y, gear_cells, 1),
+                Hit::Settings,
+            );
+        }
+    } else if !peeking && room(gear_cells) {
         put(buf, width - gear_cells, y, gear, gear_cells, style);
         layout.record(
             buf,
@@ -1380,6 +1404,7 @@ pub(crate) fn paint_settings(
         paint,
         &Panel {
             title: SETTINGS_TITLE,
+            note: "",
             tabs: &SETTINGS_TABS,
             hits: &[
                 Hit::SettingsTab(SettingsTab::Quota),
@@ -1391,7 +1416,7 @@ pub(crate) fn paint_settings(
             close: (SETTINGS_CLOSE, Hit::SettingsClose),
             selected,
             body: &settings_body(tab, bodies, paint, width),
-            scroll,
+            scroll: Scroll::Top(scroll),
         },
     );
 }
@@ -1399,6 +1424,8 @@ pub(crate) fn paint_settings(
 /// What one full-pane panel draws: its title, tab row and scrolled body.
 struct Panel<'a> {
     title: &'a str,
+    /// A dim line on the tab row, after any tabs: the peek panel's status.
+    note: &'a str,
     tabs: &'a [&'a str],
     /// The click target of each tab title, in tab order.
     hits: &'a [Hit],
@@ -1406,12 +1433,20 @@ struct Panel<'a> {
     close: (&'a str, Hit),
     selected: usize,
     body: &'a [(String, Style)],
-    scroll: usize,
+    scroll: Scroll,
+}
+
+/// How far a panel's body is scrolled.
+enum Scroll {
+    /// Rows down from the first.
+    Top(usize),
+    /// Rows back from the newest, which the body ends on.
+    Back(usize),
 }
 
 /// One full-pane panel over rows `0..height-1`: title, tab row, rule and a
-/// scrolled body, then its scroll bounds. Settings is the only caller; the
-/// later `?` help reuses the seam. Below [`MIN`] the closed frame's fallback
+/// scrolled body, then its scroll bounds. Settings and the peek panel are the
+/// callers; the later `?` help reuses the seam. Below [`MIN`] the closed frame's fallback
 /// stands and nothing is painted or recorded.
 fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>) {
     let area = buf.area;
@@ -1429,9 +1464,11 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
     }
     buf.set_style(Rect::new(0, 0, width, height - 1), paint.ground(|p| p.base));
     let heading = paint.fg(|p| p.title).add_modifier(Modifier::BOLD);
-    let title_end = put(buf, LEFT, 0, panel.title, width - LEFT, heading);
     let (label, close) = &panel.close;
     let label_x = width.saturating_sub(LEFT + cells(Span::raw(*label).width()));
+    // The title is cut a cell short of the close label, which keeps its cells.
+    let title_room = label_x.saturating_sub(LEFT + 1);
+    let title_end = put(buf, LEFT, 0, panel.title, title_room, heading);
     if label_x > title_end {
         let end = put(buf, label_x, 0, label, width - label_x, paint.fg(|p| p.dim));
         layout.record(buf, Rect::new(label_x, 0, end - label_x, 1), close.clone());
@@ -1457,14 +1494,20 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
         }
         x = put(buf, end, 1, gap, width.saturating_sub(end), style);
     }
+    put(buf, LEFT, 1, panel.note, width - LEFT, paint.fg(|p| p.dim));
     let rule: String = "─".repeat(usize::from(width));
     put(buf, 0, 2, &rule, width, paint.fg(|p| p.border));
     let visible = usize::from(height.saturating_sub(4));
     // The draw offset clamps to what is there before a line is chosen: past
     // the end paints an emptied body, and the model's clamp after this frame
     // converges the state to the same bound.
-    let max = panel.body.len().saturating_sub(visible);
-    let start = panel.scroll.min(max);
+    let (start, max) = match panel.scroll {
+        Scroll::Top(offset) => {
+            let max = panel.body.len().saturating_sub(visible);
+            (offset.min(max), max)
+        }
+        Scroll::Back(back) => peek::window(panel.body.len(), visible, back),
+    };
     for (at, (text, style)) in panel.body.iter().skip(start).take(visible).enumerate() {
         put(
             buf,
@@ -1477,6 +1520,77 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
     }
     layout.settings_page_rows = visible.max(1);
     layout.settings_max_scroll = max;
+}
+
+/// The peek panel's clickable close label, right-aligned on its title row.
+const PEEK_CLOSE: &str = "Esc close";
+
+/// The rows the peek panel's viewport shows and the furthest it can go back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Bounds {
+    pub visible: usize,
+    pub max_back: usize,
+}
+
+/// Paint the peek panel into a bare `buf`: the pure draw the acceptance
+/// specs reach. Below the floor nothing is painted and both bounds are 0.
+#[must_use]
+pub fn draw_peek(view: &peek::View<'_>, look: Option<Look>, buf: &mut Buffer) -> Bounds {
+    paint_peek(view, look.as_ref(), buf, &mut Layout::default())
+}
+
+/// Paint the peek panel over the stripped frame and record its close label
+/// and scroll bounds. Pane text is hostile: every line goes through the
+/// terminal-text neutraliser before it is wrapped and painted.
+pub(crate) fn paint_peek(
+    view: &peek::View<'_>,
+    look: Option<&Look>,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+) -> Bounds {
+    let paint = Paint::of(look);
+    let clean = crate::board::terminal_text;
+    let title = format!("Peek · {} · {}", clean(view.session), clean(view.seat));
+    let note = peek::status(view);
+    panel(
+        buf,
+        layout,
+        paint,
+        &Panel {
+            title: &title,
+            note: &note,
+            tabs: &[],
+            hits: &[],
+            close: (PEEK_CLOSE, Hit::PeekClose),
+            selected: 0,
+            body: &peek_rows(view, paint, buf.area.width),
+            scroll: Scroll::Back(view.back),
+        },
+    );
+    Bounds {
+        visible: layout.settings_page_rows,
+        max_back: layout.settings_max_scroll,
+    }
+}
+
+/// The peek body's rows: each captured line neutralised, then wrapped to the
+/// pane with its continuation rows hanging two cells; before the first answer
+/// one dim `loading`.
+fn peek_rows(view: &peek::View<'_>, paint: Paint, width: u16) -> Vec<(String, Style)> {
+    let text = paint.fg(|p| p.text);
+    // `wrap` measures from a one-cell bar the panel does not draw.
+    let room = usize::from(width.saturating_sub(LEFT)) + 1;
+    let rows = |line: &str| {
+        wrap(&crate::board::terminal_text(line), room, 0)
+            .into_iter()
+            .map(|(gap, piece)| (format!("{}{piece}", " ".repeat(gap)), text))
+            .collect::<Vec<_>>()
+    };
+    match view.body {
+        None => vec![("loading".to_owned(), paint.fg(|p| p.dim))],
+        Some(peek::Body::Gap(why)) => rows(why),
+        Some(peek::Body::Lines(lines)) => lines.iter().flat_map(|line| rows(line)).collect(),
+    }
 }
 
 /// The overlay body's styled rows: every field through the terminal-text
@@ -1578,6 +1692,14 @@ const MOUSE_KEYS: [(&str, &str); 3] = [
     ("wheel", "scroll 3 rows (the list: 1 session)"),
     ("drag", "a border resizes the sidebar / list"),
 ];
+const PEEK_KEYS: [(&str, &str); 6] = [
+    ("j/k Up/Down", "scroll a line"),
+    ("PgUp/PgDn", "scroll a page"),
+    ("Esc q v", "close; click Esc close too"),
+    ("^C", "quit"),
+    ("wheel", "scroll 3 rows per notch"),
+    ("any other", "swallowed; nothing reaches the pane"),
+];
 const SETTINGS_KEYS: [(&str, &str); 10] = [
     ("Tab 1-5", "show that tab"),
     ("j/k Up/Down", "scroll a line"),
@@ -1606,6 +1728,7 @@ fn keys_body(paint: Paint) -> Vec<(String, Style)> {
     let sections = [
         ("Write (Enter or a paste starts it)", &WRITE_KEYS[..]),
         ("Held (writing was refused)", &HELD_KEYS[..]),
+        ("Peek (v on a highlighted seat)", &PEEK_KEYS[..]),
         ("Settings (the gear, or s)", &SETTINGS_KEYS[..]),
         ("Mouse (outside Settings)", &MOUSE_KEYS[..]),
     ];
@@ -3720,5 +3843,148 @@ mod tests {
         has("Mouse", &["click", "session", "tab"]);
         has("Mouse", &["wheel", "3 rows"]);
         has("Mouse", &["drag", "border"]);
+    }
+
+    /// The help lists `v` among the browse keys and gives the peek panel its
+    /// own section, between Held and Settings, saying nothing reaches the pane.
+    #[test]
+    fn the_keys_tab_lists_v_and_the_peek_panel() {
+        let rows: Vec<String> = keys_body(Paint::of(None))
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        let at = |start: &str| {
+            rows.iter()
+                .position(|row| row.starts_with(start))
+                .expect(start)
+        };
+        let (held, peek, settings) = (at("Held"), at("Peek"), at("Settings"));
+        assert!(held < peek && peek < settings, "{rows:?}");
+        let browse = &rows[at("Browse")..at("Write")];
+        assert!(
+            browse
+                .iter()
+                .any(|r| r.starts_with("v ") && r.contains("peek"))
+        );
+        let section = &rows[peek..settings];
+        for words in [
+            &["j/k", "scroll a line"][..],
+            &["PgUp", "scroll a page"],
+            &["Esc q v", "close"],
+            &["wheel", "3 rows"],
+            &["any other", "nothing reaches the pane"],
+        ] {
+            assert!(
+                section.iter().any(|r| words.iter().all(|w| r.contains(w))),
+                "{words:?}: {section:?}"
+            );
+        }
+    }
+
+    /// With the peek panel open the keys row says `peek` and `Esc close`,
+    /// keeps the version and records no gear, which would be a dead click.
+    #[test]
+    fn the_peek_keys_row_hides_the_gear_and_keeps_the_version() {
+        let mut shot = Shot::new();
+        shot.model.open_peek(1);
+        let (row, layout) = shot.keys_at(100, browsing(""));
+        let tail = crate::version_line();
+        assert_eq!(
+            row.strip_suffix(tail.as_str())
+                .map(|head| head.trim_end().to_owned()),
+            Some("  peek   Esc close".to_owned()),
+            "{row:?}"
+        );
+        let last = Mouse {
+            kind: MouseKind::Click,
+            column: 99,
+            row: 0,
+        };
+        assert!(layout.hit(last).is_none(), "no gear target");
+        let (narrow, _) = shot.keys_at(22, browsing(""));
+        assert_eq!(narrow, "  peek   Esc close", "the version drops, no gear");
+    }
+
+    fn peek_view(body: Option<&crate::app::peek::Body>) -> crate::app::peek::View<'_> {
+        crate::app::peek::View {
+            session: "api",
+            seat: "lead",
+            body,
+            age_secs: 1,
+            back: 0,
+            newer_waiting: false,
+        }
+    }
+
+    /// The close label sits on the title row, right-aligned, and is the
+    /// recorded click target of exactly its own cells, also when a long
+    /// session and seat name must be cut short of it.
+    #[test]
+    fn the_peek_close_label_is_a_target_over_its_own_cells() {
+        let body = crate::app::peek::Body::Lines(vec!["x".to_owned()]);
+        let long = "development-long-session";
+        for (width, session, seat) in [
+            (60, "api", "lead"),
+            (40, "aedev", "apppeek-nav3"),
+            (60, long, "apppeek-navigator-3"),
+        ] {
+            let view = crate::app::peek::View {
+                session,
+                seat,
+                ..peek_view(Some(&body))
+            };
+            let mut buf = Buffer::empty(Rect::new(0, 0, width, 10));
+            let mut layout = super::Layout::default();
+            let bounds = super::paint_peek(&view, None, &mut buf, &mut layout);
+            assert_eq!((bounds.visible, bounds.max_back), (6, 0));
+            let title = line(&buf, 0).concat();
+            assert!(title.starts_with("  Peek · "), "{title:?}");
+            assert_eq!(title.contains(seat), seat == "lead", "the title is cut");
+            let start = title.find("Esc close").expect("label");
+            let column = u16::try_from(title[..start].chars().count()).expect("fits");
+            let hit = |column| {
+                let click = Mouse {
+                    kind: MouseKind::Click,
+                    column,
+                    row: 0,
+                };
+                matches!(layout.hit(click), Some(super::Hit::PeekClose))
+            };
+            assert!(hit(column) && hit(column + 8), "the label's cells");
+            assert!(!hit(column - 1) && !hit(column + 9) && !hit(3), "only them");
+            assert_eq!(column + 9 + LEFT, width, "right-aligned with the gutter");
+            assert_eq!(layout.targets.len(), 1, "no other target survives");
+        }
+    }
+
+    /// A long line wraps at the pane width with its continuation rows
+    /// hanging two cells, and a line that fits exactly does not wrap.
+    #[test]
+    fn a_peek_line_wraps_at_the_pane_width_with_a_two_cell_hang() {
+        let room = 40 - usize::from(LEFT);
+        let fits = "a".repeat(room);
+        let words = "word ".repeat(30);
+        let body = crate::app::peek::Body::Lines(vec![fits.clone(), words]);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 14));
+        let _ = super::draw_peek(&peek_view(Some(&body)), None, &mut buf);
+        let rows: Vec<String> = (3..13).map(|y| line(&buf, y).concat()).collect();
+        assert_eq!(rows[0].trim_end(), format!("  {fits}"), "exactly the room");
+        assert!(rows[1].trim_start().starts_with("word"), "{rows:?}");
+        assert!(rows[2].starts_with("    word"), "hung two more: {rows:?}");
+        assert!(rows.iter().all(|row| row.chars().count() == 40));
+    }
+
+    /// Stripping for the peek panel keeps no target, border or scroll bound
+    /// the closed frame had recorded.
+    #[test]
+    fn stripping_for_the_peek_panel_keeps_no_closed_frame_target() {
+        let mut shot = Shot::new();
+        shot.agents = Some(seat_facts(&["lead", "colead"]));
+        let (_, mut layout) = framed(&shot, 160, None);
+        assert!(!layout.targets.is_empty(), "the closed frame has targets");
+        layout.strip_for_peek();
+        assert!(layout.targets.is_empty());
+        assert!(layout.seats.is_empty() && layout.focused.is_none());
+        assert!(layout.complete);
     }
 }
