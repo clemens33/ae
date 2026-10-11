@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.54] - 2026-10-11
+- Ae app: v peeks at the highlighted seat's screen, read-only
+- Ae app peek: a text chunk with the panel open goes through browse alone, and the peek mutation survivors are pinned
+- Record autotrust pastes per chunk and wait for brief receipts
+
 ## [v2026.10.53] - 2026-10-11
 - Lead handover speaks of the human, not a named person
 - Ae answers a measured folder-trust modal for the seat's own folder
