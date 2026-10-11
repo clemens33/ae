@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.55] - 2026-10-11
+- Ae app: drag over drawn text to select it, and letting go copies exactly the lit cells
+- The live selection spec waits for the peek copy itself, not for a hint an earlier copy left on the row
+- Pin that a press which ends a lit selection asks for the redraw, on the frame on screen and on one a later frame replaced
+- Ae app: a drag and a copy that ship settle by short-circuit where one effect is enough, and the frame loop settles its copy and its asks through one method that runs both
+- Pin every survivor of the selection mutation run: stretch follows the pointer, a quiet cancel, a shipped copy or a hint, the frame settling both, a stale key redrawing, a long lane's bar, the list region, and the fingerprint area edge
+
 ## [v2026.10.54] - 2026-10-11
 - Ae app: v peeks at the highlighted seat's screen, read-only
 - Ae app peek: a text chunk with the panel open goes through browse alone, and the peek mutation survivors are pinned
