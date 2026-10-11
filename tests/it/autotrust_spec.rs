@@ -927,22 +927,22 @@ fn a_refused_reservation_sends_zero_keys() {
     assert_eq!(rig.count("auto-trust-reserved"), 0);
 }
 
-#[test]
-fn spawn_brief_wait_answers_without_a_watchdog_and_delivers_the_original_brief() {
+fn spawn_wait(value: &str) -> (Rig, PathBuf, i32, String, String) {
     let rig = Rig::new("spawn-wait", "claude", "normal");
     let child = rig.root.join("child");
-    fs::create_dir(&child).expect("child vendor storage");
-    fs::create_dir(child.join("other")).expect("child alternative folder");
+    fs::create_dir(&child).unwrap_or_else(|why| panic!("child vendor storage: {why}"));
+    fs::create_dir(child.join("other"))
+        .unwrap_or_else(|why| panic!("child alternative folder: {why}"));
     for name in ["frame", "idle", "tool", "session-dir"] {
         write(
             child.join(name),
-            fs::read(rig.root.join(name)).expect("child fixture"),
+            fs::read(rig.root.join(name)).unwrap_or_else(|why| panic!("child fixture: {why}")),
         );
     }
     write(child.join("mode"), "normal");
     write(child.join("wire"), "");
     let config = format!(
-        "[profiles]\nfake = \"{}/bin/claude {}/vendor.pl {}\"\n[workspace]\nmain = lead\nlayout = vertical\nauto_trust = on\nquota = off\nauto_upgrade = off\ntheme = off\n",
+        "[profiles]\nfake = \"{}/bin/claude {}/vendor.pl {}\"\n[workspace]\nmain = lead\nlayout = vertical\nauto_trust = {value}\nquota = off\nauto_upgrade = off\ntheme = off\n",
         rig.root.display(),
         rig.root.display(),
         child.display()
@@ -957,6 +957,12 @@ fn spawn_brief_wait_answers_without_a_watchdog_and_delivers_the_original_brief()
             .arg("original trust brief"),
         "spawn",
     );
+    (rig, child, code, out, err)
+}
+
+#[test]
+fn spawn_brief_wait_answers_without_a_watchdog_and_delivers_the_original_brief() {
+    let (rig, child, code, out, err) = spawn_wait("on");
     assert_eq!(
         code, 0,
         "in-wait owner answers with watchdog absent: {out}\n{err}"
@@ -989,4 +995,38 @@ fn spawn_brief_wait_answers_without_a_watchdog_and_delivers_the_original_brief()
     );
     assert_eq!(event.target.as_deref(), Some("helper"));
     assert_eq!(event.target_slot.value(), Some("spawned.0"));
+}
+
+fn spawn_wait_refuses(value: &str) {
+    let (rig, child, code, out, err) = spawn_wait(value);
+    assert_eq!(code, 1, "{value}: brief stays undelivered: {out}\n{err}");
+    assert_eq!(rig.count("watchdog-start"), 0, "no watchdog answers");
+    assert!(
+        fs::read(child.join("wire"))
+            .unwrap_or_else(|why| panic!("child wire: {why}"))
+            .is_empty()
+    );
+    assert!(
+        text(child.join("submitted")).is_empty(),
+        "no brief delivered"
+    );
+    assert!(
+        rig.events()
+            .iter()
+            .all(|e| !e.action.starts_with("auto-trust"))
+    );
+    let kept = ae::brief_retry::read(&rig.dir, "spawned.0")
+        .unwrap_or_else(|| panic!("undelivered brief retained"))
+        .unwrap_or_else(|why| panic!("valid undelivered brief: {why:?}"));
+    assert!(kept.body.contains("original trust brief"));
+}
+
+#[test]
+fn spawn_brief_wait_with_off_never_answers_or_delivers() {
+    spawn_wait_refuses("off");
+}
+
+#[test]
+fn spawn_brief_wait_with_invalid_value_never_answers_or_delivers() {
+    spawn_wait_refuses("INVALID");
 }
