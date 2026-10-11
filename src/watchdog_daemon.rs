@@ -444,6 +444,12 @@ pub enum Effect {
     /// Reconcile the durable event log against a wedge alert this daemon does
     /// not remember raising — the post-restart clear.
     ReconcileWedge,
+    /// Answer the trust block on screen through [`crate::deliver::answer_trust`];
+    /// `name` is whether the prompt is still to be named, which an answer that
+    /// does not land then does exactly as today.
+    AnswerTrust { name: bool },
+    /// One line on the watchdog's own stderr.
+    Note(String),
 }
 
 /// Labels are not identity: the canonical source and vendor dimensions are.
@@ -1645,12 +1651,14 @@ fn slot_latched(verdicts: &[(String, Verdict)], slot: &str) -> bool {
 /// selection lands carries no `>` row and classifies as nothing, which costs a
 /// cycle and never a false name.
 /// The event and the Notify line name WHICH seat and WHAT to press, because a
-/// verdict nobody can act on is not news. ae NEVER sends the key.
+/// verdict nobody can act on is not news. ae NEVER sends the key here: the
+/// one prompt it may answer, a trust block [`crate::autotrust::due`] proved the
+/// seat's, is booked as [`Effect::AnswerTrust`] and answered in `apply`.
 fn book_human_prompt(
     prior: &PaneState,
     next: &mut PaneState,
     effects: &mut Vec<Effect>,
-    seen: &Observation,
+    (seen, trust): (&Observation, Option<&crate::autotrust::Due>),
     knobs: &Knobs,
 ) -> Option<Verdict> {
     let prompt = seen.human_prompt.as_ref()?;
@@ -1660,17 +1668,36 @@ fn book_human_prompt(
     }
     // EXACTLY at the bound, so the episode is named once however long it
     // lasts — `book_throttle`'s rule, and the reason no latch flag is needed.
-    if next.human_prompt_streak == knobs.human_prompt_cycles {
-        effects.push(Effect::Emit {
-            action: "human-prompt",
-            summary: format!("{} — press: {}", prompt.question, prompt.keys),
-        });
-        effects.push(Effect::Notify(format!(
-            "waiting for you: {} — press: {}",
-            prompt.question, prompt.keys
-        )));
+    let name = next.human_prompt_streak == knobs.human_prompt_cycles;
+    match trust {
+        // A trust block that is this seat's to answer is answered on every
+        // cycle from the bound on until its start is spent, and named only
+        // when the answer does not land.
+        Some(crate::autotrust::Due::Yes) => effects.push(Effect::AnswerTrust { name }),
+        Some(crate::autotrust::Due::Doubt(why)) if name => {
+            effects.push(Effect::Note(format!(
+                "auto_trust did not answer the trust prompt: {why}"
+            )));
+            effects.extend(naming(prompt));
+        }
+        _ if name => effects.extend(naming(prompt)),
+        _ => {}
     }
     Some(Verdict::HumanPrompt)
+}
+
+/// The ONE naming of a human-only prompt: its event and its Notify line.
+fn naming(prompt: &crate::watchdog::HumanPrompt) -> [Effect; 2] {
+    [
+        Effect::Emit {
+            action: "human-prompt",
+            summary: format!("{} — press: {}", prompt.question, prompt.keys),
+        },
+        Effect::Notify(format!(
+            "waiting for you: {} — press: {}",
+            prompt.question, prompt.keys
+        )),
+    ]
 }
 
 /// Whether this cycle is inside a usage-limit episode: the notice is on
@@ -1846,6 +1873,19 @@ fn clear_death_latch(
 /// any of it is decided.
 #[must_use]
 pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounting {
+    account_with_trust(prior, seen, knobs, None)
+}
+
+/// [`account`], with [`crate::autotrust::due`]'s answer for the trust block
+/// this cycle's prompt is — `None` for any other prompt, no prompt, and
+/// `auto_trust` off, which is exactly [`account`].
+#[must_use]
+pub fn account_with_trust(
+    prior: &PaneState,
+    seen: &Observation,
+    knobs: &Knobs,
+    trust: Option<&crate::autotrust::Due>,
+) -> Accounting {
     let reset = PaneState::default();
     let mut prior = if prior
         .identity
@@ -1900,7 +1940,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    account_ordinary(prior, next, effects, seen, knobs)
+    account_ordinary(prior, next, effects, (seen, trust), knobs)
 }
 
 /// Steps 3 through 10 — the ordinary judgement of a pane that is not dead (any
@@ -1914,7 +1954,7 @@ fn account_ordinary(
     prior: &PaneState,
     mut next: PaneState,
     mut effects: Vec<Effect>,
-    seen: &Observation,
+    (seen, trust): (&Observation, Option<&crate::autotrust::Due>),
     knobs: &Knobs,
 ) -> Accounting {
     // 3.
@@ -2034,7 +2074,7 @@ fn account_ordinary(
     // human-only prompt, but the prompt is still BOOKED under it: named once
     // per episode, so a seat stuck on a modal still summons the human.
     if let Some(kind) = seen.quiet {
-        book_human_prompt(prior, &mut next, &mut effects, seen, knobs);
+        book_human_prompt(prior, &mut next, &mut effects, (seen, trust), knobs);
         // A usage limit FIRST SEEN no earlier than the declaration outranks it
         // and ends nothing: its release hands the bar straight back. One that
         // was already showing when the seat declared stays under it. A tie
@@ -2122,7 +2162,7 @@ fn account_ordinary(
     //      news — and ABOVE the harness frames, because those are where `Stale`
     //      is decided and a seat waiting on a modal is silent BY NATURE. If
     //      stale won here the feature would never draw.
-    if let Some(prompt) = book_human_prompt(prior, &mut next, &mut effects, seen, knobs) {
+    if let Some(prompt) = book_human_prompt(prior, &mut next, &mut effects, (seen, trust), knobs) {
         return Accounting {
             next,
             effects,
@@ -3682,14 +3722,7 @@ fn watch(
     // The global config PATH is stable for this daemon's life; its CONTENT is
     // re-read every cycle below, so a config flip — quota awareness, or the
     // human's fleet order — reaches an unpinned session within one cycle.
-    let global_config = crate::state_root()
-        .or_else(|| {
-            meta_dir
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf)
-        })
-        .map(|root| crate::doors::config_file(crate::shape::current(), &root));
+    let global_config = crate::global_config_of(meta_dir);
     let mut beat_failed = false;
     loop {
         let read = crate::meta::read_bytes(meta_dir);
@@ -3773,6 +3806,7 @@ fn watch(
                         lead_pair: crate::lifecycle::meta_value(bytes, "layout") == "lead-pair",
                         fleet_order: crate::fleet_order_at(global_config.as_deref()),
                         auto: crate::autoreseat::settings(global_config.as_deref()),
+                        auto_trust: crate::config::global_auto_trust(global_config.as_deref()),
                         // Re-read EVERY cycle, like the goal and the roster: a
                         // session can be promoted to orchestrator, or its main
                         // replaced, while this daemon runs.
@@ -4202,6 +4236,8 @@ struct Carry {
     auto_named: Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
     /// The `auto_reseat_at` notes this daemon journaled: each once per start.
     auto_noted: Vec<String>,
+    /// The unusable `auto_trust` values this daemon named: each once per start.
+    trust_noted: Vec<String>,
     /// The last look this daemon actually READ, and `None` until one answers.
     ///
     /// Carried so that a cycle whose read failed draws in the look it saw last
@@ -4224,6 +4260,7 @@ impl Carry {
             brief_cursor: None,
             auto_named: Vec::new(),
             auto_noted: Vec::new(),
+            trust_noted: Vec::new(),
             look: None,
         }
     }
@@ -4692,6 +4729,8 @@ struct Cycle<'a> {
     /// The global auto reseat settings, read per cycle beside the fleet order,
     /// so turning the switch off stops the next move.
     auto: crate::autoreseat::Settings,
+    /// The global `auto_trust` switch, read per cycle beside them.
+    auto_trust: crate::config::AutoTrust,
 }
 
 /// The fleet text and durable gate observed once for the orchestrator cycle.
@@ -4730,6 +4769,8 @@ struct Acting<'a> {
     agent: &'a str,
     /// The pane's `@ae_slot`, for the routed identity an event may carry.
     slot: &'a str,
+    /// The pane id, which a trust answer presses keys into.
+    pane: &'a str,
     seen: &'a Observation,
     /// This cycle's events, in APPEND order — what the durable reconcile reads.
     events: &'a [Event],
@@ -5543,11 +5584,13 @@ impl Cycle<'_> {
             let acting = Acting {
                 agent,
                 slot: &slot,
+                pane: &pane.pane_id,
                 seen: &seen,
                 events: &events,
                 overview: seen.sweep.as_ref().and(overview.as_ref()),
             };
-            let booked = account(carried, &seen, &self.knobs);
+            let trust = self.trust_due(&seen, &slot, &pane.pane_id, agent_bin.as_deref());
+            let booked = account_with_trust(carried, &seen, &self.knobs, trust.as_ref());
             *carried = booked.next;
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
             {
@@ -5615,6 +5658,7 @@ impl Cycle<'_> {
         self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
         self.tell_seats(&by_slot, &events, now);
         self.auto_note(&mut carry.auto_noted, err)?;
+        self.trust_note(&mut carry.trust_noted, err)?;
         self.auto_reseat(&mut carry.auto_named, &auto_seats, &events, now, err)?;
         self.close(
             carry,
@@ -6176,6 +6220,11 @@ impl Cycle<'_> {
                 self.notify(agent, text);
                 Ok(())
             }
+            Effect::Note(text) => {
+                writeln!(err, "ae: watchdog: {agent}: {text}")?;
+                Ok(())
+            }
+            Effect::AnswerTrust { name } => self.answer_trust(*name, on, state, err),
             Effect::SweepNudge => self.sweep_nudge(on, state, err),
             // Cycle-level by design: `run` collects it and performs the ONE
             // pass after the sweep, outside every per-pane path.
@@ -6478,6 +6527,91 @@ impl Cycle<'_> {
             session: self.session,
         };
         journal.record(crate::autoreseat::NOTICE_ACTION, "", note, err)
+    }
+
+    /// Name an unusable `auto_trust` value once per daemon start: it answers
+    /// nothing, exactly like `off`.
+    fn trust_note(&self, noted: &mut Vec<String>, err: &mut impl Write) -> crate::Result<()> {
+        let crate::config::AutoTrust::Unusable(note) = &self.auto_trust else {
+            return Ok(());
+        };
+        if noted.contains(note) {
+            return Ok(());
+        }
+        noted.push(note.clone());
+        writeln!(err, "ae: watchdog: auto_trust {note}; it answers nothing")?;
+        Ok(())
+    }
+
+    /// Whether this cycle's prompt is a trust block that is this seat's to
+    /// answer — asked only with `auto_trust` on and a measured block drawn.
+    fn trust_due(
+        &self,
+        seen: &Observation,
+        slot: &str,
+        pane: &str,
+        tool: Option<&str>,
+    ) -> Option<crate::autotrust::Due> {
+        let prompt = seen
+            .human_prompt
+            .as_ref()
+            .filter(|_| self.auto_trust.answers());
+        let sighting = prompt?.trust.as_ref()?;
+        Some(crate::autotrust::due(
+            &self.trust_seat(slot, pane, tool?),
+            sighting,
+        ))
+    }
+
+    fn trust_seat<'s>(
+        &'s self,
+        slot: &'s str,
+        pane: &'s str,
+        tool: &'s str,
+    ) -> crate::autotrust::Seat<'s> {
+        crate::autotrust::Seat {
+            dir: self.meta_dir,
+            server: self.server,
+            session: self.session,
+            slot,
+            pane,
+            tool,
+        }
+    }
+
+    /// Answer the trust block on `on`'s pane; an answer that does not land
+    /// names the prompt exactly as today when it is still to be named.
+    fn answer_trust(
+        &self,
+        name: bool,
+        on: &Acting<'_>,
+        state: &mut PaneState,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        let tool = self.agent_bin(on.slot).unwrap_or_default();
+        match crate::deliver::answer_trust(&self.trust_seat(on.slot, on.pane, &tool), err) {
+            crate::deliver::TrustAnswer::Trusted(summary) => {
+                self.notify(on.agent, &format!("auto-trust: {summary}"));
+                // Never named, so nothing is to clear: a modal still drawn is
+                // counted again and, its start now spent, named at the bound.
+                if name {
+                    state.human_prompt_streak = 0;
+                }
+                return Ok(());
+            }
+            crate::deliver::TrustAnswer::Declined(why) if name => writeln!(
+                err,
+                "ae: watchdog: {}: auto_trust did not answer the trust prompt: {why}",
+                on.agent
+            )?,
+            _ => {}
+        }
+        if let Some(prompt) = on.seen.human_prompt.as_ref().filter(|_| name) {
+            for effect in naming(prompt) {
+                self.apply(&effect, on, state, err)?;
+            }
+        }
+        Ok(())
     }
 
     /// The seat at `slot`'s own account against the headroom threshold, from
@@ -7170,6 +7304,7 @@ mod tests {
         crate::watchdog::HumanPrompt {
             question: "Do you trust the contents of this project?".to_owned(),
             keys: "↑/↓ Navigate · enter Confirm".to_owned(),
+            trust: None,
         }
     }
 
@@ -7206,6 +7341,50 @@ mod tests {
         let third = account(&second.next, &on_a_modal(), &knobs);
         assert_eq!(third.verdict, Verdict::HumanPrompt, "still waiting");
         assert!(actions(&third.effects).is_empty(), "not named again");
+    }
+
+    /// A trust block that is the seat's to answer is answered from the bound
+    /// on, naming deferred to the answer; any other verdict names it as today,
+    /// a doubtful journal with one stderr note first.
+    #[test]
+    fn a_due_trust_block_is_answered_from_the_bound_and_every_other_verdict_names_it() {
+        use crate::autotrust::Due;
+        let knobs = Knobs::default();
+        let run = |trust: Option<&Due>| {
+            let first =
+                super::account_with_trust(&PaneState::default(), &on_a_modal(), &knobs, trust);
+            let second = super::account_with_trust(&first.next, &on_a_modal(), &knobs, trust);
+            let third = super::account_with_trust(&second.next, &on_a_modal(), &knobs, trust);
+            (first, second, third)
+        };
+        let (first, second, third) = run(Some(&Due::Yes));
+        assert!(first.effects.is_empty(), "one cycle is a redraw");
+        assert_eq!(second.effects, [Effect::AnswerTrust { name: true }]);
+        assert_eq!(third.effects, [Effect::AnswerTrust { name: false }]);
+        assert_eq!(
+            (second.verdict, third.verdict),
+            (Verdict::HumanPrompt, Verdict::HumanPrompt)
+        );
+
+        let today = run(None);
+        for trust in [Due::No, Due::Doubt("damaged".to_owned())] {
+            let (first, second, third) = run(Some(&trust));
+            assert_eq!(first.effects, today.0.effects);
+            assert_eq!(third.effects, today.2.effects, "named once");
+            let note =
+                Effect::Note("auto_trust did not answer the trust prompt: damaged".to_owned());
+            let expected: Vec<Effect> = (trust != Due::No)
+                .then(|| note.clone())
+                .into_iter()
+                .chain(today.1.effects.iter().cloned())
+                .collect();
+            assert_eq!(second.effects, expected, "{trust:?}");
+        }
+        assert_eq!(
+            account(&PaneState::default(), &on_a_modal(), &knobs).effects,
+            today.0.effects,
+            "off is account itself"
+        );
     }
 
     /// The Notify line and the event both say WHICH question and WHAT to press.
@@ -10036,6 +10215,7 @@ mod tests {
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
             auto: crate::autoreseat::settings(None),
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -10103,6 +10283,7 @@ mod tests {
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
             auto: crate::autoreseat::settings(None),
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -13002,6 +13183,7 @@ mod tests {
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
             auto,
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -13084,6 +13266,7 @@ mod tests {
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
             auto: crate::autoreseat::settings_in(&config, "[workspace]\nauto_reseat = on\n"),
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -13162,6 +13345,7 @@ mod tests {
                 headroom_note: None,
                 notes: Vec::new(),
             },
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -14217,6 +14401,7 @@ mod tests {
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
             auto: crate::autoreseat::settings(None),
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -14291,6 +14476,7 @@ mod tests {
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
             auto: crate::autoreseat::settings(None),
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -14960,6 +15146,7 @@ mod tests {
         let on = super::Acting {
             agent: "lead",
             slot: "main",
+            pane: "%0",
             seen: &observed,
             events: &[],
             overview: None,
@@ -15789,6 +15976,7 @@ mod tests {
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
             auto: crate::autoreseat::settings(None),
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: vec![("main".to_owned(), launch.to_owned())],
         }
@@ -16400,6 +16588,7 @@ mod tests {
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
             auto: crate::autoreseat::settings(None),
+            auto_trust: crate::config::AutoTrust::Off,
             meta_agent: true,
             launch_ids: Vec::new(),
         }
@@ -16427,6 +16616,7 @@ mod tests {
         let on = super::Acting {
             agent: "lead",
             slot: "main",
+            pane: "%0",
             seen: &observed,
             events: &[],
             overview: Some(&reading),
@@ -16450,6 +16640,7 @@ mod tests {
         let on = super::Acting {
             agent: "lead",
             slot: "main",
+            pane: "%0",
             seen: &observed,
             events: &[],
             overview: None,

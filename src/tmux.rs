@@ -3752,6 +3752,10 @@ pub enum Key {
     ClearLine,
     /// `-X cancel` — leave copy mode.
     CancelCopyMode,
+    /// `Up` and `Down` — the arrows that move a measured trust modal's
+    /// selection one row, and nothing else.
+    Up,
+    Down,
 }
 
 /// The full argument list for sending one [`Key`] to `pane`.
@@ -3764,6 +3768,8 @@ pub fn send_keys_args(server: &ServerId, pane: &str, key: Key) -> Vec<String> {
         Key::Escape => args.push("Escape".to_owned()),
         Key::LineEnd => args.push("C-e".to_owned()),
         Key::ClearLine => args.push("C-u".to_owned()),
+        Key::Up => args.push("Up".to_owned()),
+        Key::Down => args.push("Down".to_owned()),
         Key::CancelCopyMode => {
             args.push("-X".to_owned());
             args.push("cancel".to_owned());
@@ -3936,6 +3942,13 @@ mod tests {
             vec!["send-keys", "-t", "%3", "-X", "cancel"],
             "a COMMAND, not a key — which is why the set is an enum"
         );
+        for (key, name) in [(Key::Up, "Up"), (Key::Down, "Down")] {
+            assert_eq!(
+                send_keys_args(&ServerId::Ambient, "%3", key),
+                vec!["send-keys", "-t", "%3", name],
+                "tmux's own arrow names, never a digit or text"
+            );
+        }
         assert_eq!(
             list_clients_args(&ServerId::Ambient),
             vec!["list-clients", "-F", CLIENT_FORMAT]

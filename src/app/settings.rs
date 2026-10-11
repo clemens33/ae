@@ -162,11 +162,12 @@ enum Scope {
 /// Every documented `[workspace]` key in draw order: the key, its default as
 /// drawn when no source declares it, and how it resolves. Defaults are the
 /// owning readers' (plan §7); this table only spells them.
-const KEYS: [(&str, &str, Scope); 20] = [
+const KEYS: [(&str, &str, Scope); 21] = [
     ("main", "(unset)", Scope::Layered),
     ("workers", "(unset)", Scope::Layered),
     ("layout", "vertical", Scope::Pinned),
     ("auto_upgrade", "on", Scope::GlobalOnly),
+    ("auto_trust", "on", Scope::GlobalOnly),
     ("fleet_order", "(none)", Scope::GlobalOnly),
     ("restore", "on", Scope::GlobalOnly),
     ("palette", "darcula", Scope::Layered),

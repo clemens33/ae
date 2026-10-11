@@ -89,12 +89,11 @@ const STOP_POLLS: u32 = 50;
 /// The pause between those polls — 50 x 200ms is the 10s bound the docs state.
 const STOP_POLL: Duration = Duration::from_millis(200);
 
-/// The gap between the two frame readings the stop takes.
-///
-/// ONE reading is not enough: between a tool receiving Enter and drawing its
-/// spinner the box is empty and no turn is drawn yet, and a single frame in
-/// that gap reads IDLE for a seat that has just been given work.
-const FRAME_GAP: Duration = Duration::from_secs(1);
+// The gap between the two frame readings the stop takes, shared with the
+// trust answer. ONE reading is not enough: between a tool receiving Enter and
+// drawing its spinner the box is empty and no turn is drawn yet, and a single
+// frame in that gap reads IDLE for a seat that has just been given work.
+use crate::deliver::FRAME_GAP;
 
 /// How long the stop waits for the pane's send-lock.
 ///

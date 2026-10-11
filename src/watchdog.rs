@@ -149,6 +149,18 @@ pub struct HumanPrompt {
     /// The key-hint row, trimmed — WHAT the human must press. This is the whole
     /// point of naming the prompt: a seat nobody can act on is not news.
     pub keys: String,
+    /// The tool's MEASURED folder-trust block, when this prompt is one, whole.
+    pub trust: Option<TrustSighting>,
+}
+
+/// What a measured folder-trust block shows. Reading it sends nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustSighting {
+    /// The folder row, trimmed, exactly as drawn: an absolute path.
+    pub folder: String,
+    /// The arrow that moves the selection onto trust-yes; `None` when trust-yes
+    /// is already selected.
+    pub toward_yes: Option<crate::tmux::Key>,
 }
 
 /// Whether `buf` shows a prompt only the HUMAN may answer, for `agent_bin` —
@@ -221,8 +233,82 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
             Some(HumanPrompt {
                 question: reported(spec.question, window[question]),
                 keys: after[keys].trim().to_owned(),
+                trust: spec.trust.and_then(|trust| {
+                    trust_block(window, question, question + 1 + keys, trust, spec.selected)
+                }),
             })
         })
+}
+
+/// The trust block bound to the ONE match [`human_prompt_class`] chose — its
+/// question row at `question`, its hint row at `hint` — or `None` unless the
+/// window holds that block whole: heading, one absolute folder row, every
+/// paragraph, exactly the measured options with one selected, the hint, and
+/// no more rows below it than the tool draws. A third option, a reordered
+/// pair, or a live prompt drawn under a quoted block reads as `None`.
+fn trust_block(
+    window: &[&str],
+    question: usize,
+    hint: usize,
+    spec: crate::tool::TrustSpec,
+    glyph: char,
+) -> Option<TrustSighting> {
+    let filled = |row: &&&str| !row.trim().is_empty();
+    let mut above = window[..question].iter().rev().filter(filled);
+    let folder = above.next()?.trim();
+    if above.next()?.trim() != spec.heading || !folder.starts_with('/') {
+        return None;
+    }
+    if window[hint].trim() != spec.hint
+        || window[hint + 1..].iter().filter(filled).count() > spec.trailer
+    {
+        return None;
+    }
+    let runs: Vec<&[&str]> = window[question..hint]
+        .split(|row| row.trim().is_empty())
+        .filter(|run| !run.is_empty())
+        .collect();
+    let (options, paragraphs) = runs.split_last()?;
+    let joined = |run: &[&str]| {
+        run.iter()
+            .map(|row| row.trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if paragraphs.len() != spec.paragraphs.len()
+        || paragraphs
+            .iter()
+            .zip(spec.paragraphs)
+            .any(|(run, want)| joined(run) != *want)
+    {
+        return None;
+    }
+    let drawn: Vec<(bool, &str)> = options
+        .iter()
+        .map(|row| match row.trim().strip_prefix(glyph) {
+            Some(rest) => (true, rest.trim_start()),
+            None => (false, row.trim()),
+        })
+        .collect();
+    let chosen = drawn.iter().filter(|(on, _)| *on).count();
+    if chosen != 1
+        || drawn
+            .iter()
+            .map(|(_, text)| *text)
+            .ne(spec.options.iter().copied())
+    {
+        return None;
+    }
+    let at = drawn.iter().position(|(on, _)| *on)?;
+    let yes = spec.options.iter().position(|option| *option == spec.yes)?;
+    Some(TrustSighting {
+        folder: folder.to_owned(),
+        toward_yes: match yes.cmp(&at) {
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some(crate::tmux::Key::Down),
+            std::cmp::Ordering::Less => Some(crate::tmux::Key::Up),
+        },
+    })
 }
 
 /// Whether `row` is the prompt's question row.
@@ -5468,6 +5554,92 @@ tail line
             );
         }
         assert_eq!(claude(&fixture("agy-trust-modal-frame")), None);
+    }
+
+    /// The trust block read WHOLE from the measured frames: the folder as drawn
+    /// and the arrow onto trust-yes (claude preselects No, agy Yes).
+    #[test]
+    fn the_measured_trust_blocks_name_their_folder_and_the_arrow_onto_yes() {
+        use crate::tmux::Key::{Down, Up};
+        let sighting = |frame: &str, bin: &str| super::human_prompt_class(frame, bin)?.trust;
+        let seen = |folder: &str, toward_yes| {
+            Some(super::TrustSighting {
+                folder: folder.to_owned(),
+                toward_yes,
+            })
+        };
+        for size in ["80x24", "200x50"] {
+            let frame = claude_frame(&format!("claude-trust/claude-trust-modal-{size}.txt"));
+            let folder = "/tmp/claude-trust-probe";
+            assert_eq!(
+                sighting(&frame, "claude"),
+                seen(folder, Some(Down)),
+                "{size}"
+            );
+            let yes = frame
+                .replace("❯ No, exit", "  No, exit")
+                .replace("  Yes, I trust", "❯ Yes, I trust");
+            assert_eq!(sighting(&yes, "claude"), seen(folder, None), "{size}");
+        }
+        let agy = fixture("agy-trust-modal-frame");
+        assert_eq!(sighting(&agy, "agy"), seen("/tmp/agy-trust-probe", None));
+        let no = agy
+            .replace("> Yes", "  Yes")
+            .replace("  No, exit", "> No, exit");
+        assert_eq!(sighting(&no, "agy"), seen("/tmp/agy-trust-probe", Some(Up)));
+        // The frame's model label under the hint is agy's ONE trailer row.
+        assert!(
+            agy.contains("Gemini 3.8 Flash · high"),
+            "trailer load-bearing"
+        );
+    }
+
+    /// Anything but the measured block WHOLE is still a prompt to NAME, and
+    /// never one to answer.
+    #[test]
+    fn a_prompt_that_is_not_the_whole_measured_trust_block_is_named_but_not_trust() {
+        let agy = fixture("agy-trust-modal-frame");
+        let claude = claude_frame("claude-trust/claude-trust-modal-80x24.txt");
+        let hint = "  ↑/↓ Navigate · enter Confirm";
+        for (bin, frame, from, to) in [
+            ("agy", &agy, "> Yes", "  Allow all commands\n> Yes"),
+            (
+                "agy",
+                &agy,
+                "> Yes, I trust this folder\n  No, exit",
+                "  No, exit\n> Yes, I trust this folder",
+            ),
+            ("agy", &agy, "  No, exit", "> No, exit"),
+            ("agy", &agy, "/tmp/agy-trust-probe", "~"),
+            ("agy", &agy, "/tmp/agy-trust-probe", "/tmp/a\n/tmp/b"),
+            ("agy", &agy, "Accessing workspace:", "Tool output:"),
+            ("agy", &agy, "read, edit, and execute", "execute"),
+            (
+                "agy",
+                &agy,
+                hint,
+                "  ↑/↓ Navigate · enter Confirm · a always",
+            ),
+            (
+                "agy",
+                &agy,
+                hint,
+                "  ↑/↓ Navigate · enter Confirm\nstatus\nmore",
+            ),
+            (
+                "claude",
+                &claude,
+                "Security guide",
+                "Security guide\n\nAnything else",
+            ),
+            ("claude", &claude, "If not,", "If so,"),
+            ("claude", &claude, "Esc to cancel", "Esc to cancel\nbelow"),
+        ] {
+            let drifted = frame.replacen(from, to, 1);
+            let found = super::human_prompt_class(&drifted, bin)
+                .unwrap_or_else(|| panic!("{bin}: {to:?} is still named"));
+            assert_eq!(found.trust, None, "{bin}: {from:?} -> {to:?}");
+        }
     }
 
     /// Composed claude frames, idle and busy: a composer is not a prompt.

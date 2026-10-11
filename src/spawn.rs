@@ -1221,6 +1221,41 @@ fn unproved_recovery(facts: &Facts, dir: &Path, pane: &str, slot: &str) -> Brief
     }
 }
 
+/// How many polls one brief readiness chunk takes while `auto_trust` may
+/// answer a trust block between chunks.
+const TRUST_CHUNK_POLLS: u32 = 4;
+
+/// The brief's readiness wait, [`BRIEF_READY_POLLS`] in all. With `auto_trust`
+/// on it runs in chunks, and a measured trust block drawn for this seat between
+/// them is answered inside the wait, until an answer is tried that is not a
+/// "not yet"; with it off, the one wait as before.
+fn brief_ready(
+    dir: &Path,
+    server: &ServerId,
+    pane: &str,
+    slot: &str,
+    (model, composed): (crate::tool::InputModel, crate::tool::Composed),
+    err: &mut impl Write,
+) -> bool {
+    let mut trying = crate::autotrust::on(dir);
+    let mut left = BRIEF_READY_POLLS;
+    while left > 0 {
+        let chunk = if trying {
+            left.min(TRUST_CHUNK_POLLS)
+        } else {
+            left
+        };
+        if deliver::wait_input_ready(server, pane, model, composed, chunk) {
+            return true;
+        }
+        left -= chunk;
+        trying = trying
+            && crate::autotrust::in_wait(dir, server, slot, pane, err)
+                == crate::autotrust::InWait::Again;
+    }
+    false
+}
+
 /// Deliver the brief by paste: every claude/opencode spawn, and the `UserTurn`
 /// spawns the fold does not take (no prompt, or past the bound).
 #[allow(
@@ -1244,7 +1279,7 @@ fn deliver_brief(
     let model = kind.adapter().input.model;
     let composed = kind.adapter().input.composed;
     // DO NOT paste into a state we could not confirm idle.
-    if !deliver::wait_input_ready(&facts.server, pane, model, composed, BRIEF_READY_POLLS) {
+    if !brief_ready(dir, &facts.server, pane, slot, (model, composed), err) {
         return Ok(Some(BriefRefusal {
             reason: "input never reached a confirmed-idle state (busy, modal, or unreadable)"
                 .to_owned(),

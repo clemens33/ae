@@ -29,6 +29,7 @@ mod archive_from;
 mod archive_publish;
 mod archive_purge;
 mod autoreseat;
+mod autotrust_spec;
 mod board;
 mod board_stream_spec;
 mod brief;

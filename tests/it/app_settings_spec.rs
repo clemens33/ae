@@ -38,11 +38,12 @@ const WAIT: Duration = Duration::from_secs(20);
 const FRAME: Duration = Duration::from_secs(3);
 const REFRESH_SLACK: Duration = Duration::from_secs(12);
 const HINT: &str = "  browse   ? keys";
-const WORKSPACE_KEYS: [&str; 20] = [
+const WORKSPACE_KEYS: [&str; 21] = [
     "main",
     "workers",
     "layout",
     "auto_upgrade",
+    "auto_trust",
     "fleet_order",
     "restore",
     "palette",
@@ -932,6 +933,7 @@ fn config_draws_all_documented_keys_and_launch_session_global_default_provenance
         "fleet_order",
         "restore",
         "auto_upgrade",
+        "auto_trust",
         "auto_reseat",
         "auto_reseat_sessions",
         "auto_reseat_grace_secs",

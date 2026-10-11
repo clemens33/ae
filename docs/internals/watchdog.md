@@ -514,8 +514,8 @@ behaves exactly as without the feature.
 
 ## Human-only prompts
 
-A modal only the human may answer is NAMED and never answered: no key reaches it, and ae writes
-no tool's trust list or config. `watchdog::human_prompt_class` is the one detector, pure over a
+A modal only the human may answer is NAMED and never answered — except the measured folder-trust
+block below, under `auto_trust` — and ae writes no tool's trust list or config itself. `watchdog::human_prompt_class` is the one detector, pure over a
 frame and the seat's binary name; the shape comes from that tool's adapter row
 (`tool::PromptSpec`), so a tool with no row, or a renamed binary, reads as no prompt.
 
@@ -540,11 +540,25 @@ so a fresh launch, a relaunch and a reseat that carries its conversation paste n
 seat and exit without looking; the watchdog names the modal there, and a spawn brief waits in the
 brief retry, which refuses while the prompt is up.
 
+**`auto_trust`** (global, default `on`). `tool::TrustSpec` carries each tool's whole measured trust
+block — heading, folder row, paragraphs, options in order, hint, trailer rows — and the detector
+reports a `TrustSighting` (folder, arrow onto Yes) only when the match it chose is that block
+exactly. `autotrust::due` asks, each cycle such a block is up, whether it is this seat's: the
+recorded server, slot, session uuid, one pane for the slot, ONE live tool process under it
+(the episode `<slot>:<launch_id>:<pid>`) and the recorded folder canonically equal to the drawn
+one, and a STRICT journal read with no `auto-trust-reserved` for the episode; a journal ae cannot
+read strictly is doubt, said once on stderr. From the bound, `book_human_prompt` books
+`AnswerTrust` instead of the naming; `deliver::answer_trust` answers under the send-lock (two
+equal reads, reservation read back, at most one arrow and two more reads, Enter, every key
+re-proven and recorded), and an answer that does not land names the prompt as before. A busy
+send-lock spends nothing and is retried next cycle without naming again.
+
 Named residuals: claude's accessible `Enter y/n:` branch, a project-settings warning block and
 panes narrower than about 65 columns are unmeasured and can push the modal out of the window, so
 they degrade to the generic "never landed" text; a fresh home's bypass-acceptance screen is
-unmeasured; the trust key's meaning is unmeasured by rule (Yes is never pressed), so a reseat does
-not refuse on a guess before it stops a tool — measured only: "No, exit" writes no project entry;
+unmeasured; a reseat does not refuse on a trust guess before it stops a tool — measured only:
+"No, exit" writes no project entry; a folder path that wraps, or one damaged journal line, keeps
+`auto_trust` from answering (named as before);
 a human who answers after the fail-fast sends the seed by hand; a turnless relaunch and a carried
 reseat exit by their ordinary rules while the seat may sit on the modal, left to the watchdog.
 

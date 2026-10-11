@@ -6,6 +6,9 @@
 
 pub mod notice;
 pub mod region;
+pub(crate) mod trust;
+
+pub(crate) use trust::{FRAME_GAP, TrustAnswer, answer_trust};
 
 use std::fmt;
 use std::io::{self, Write};

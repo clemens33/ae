@@ -1856,15 +1856,56 @@ pub enum Restore {
 /// `off` disables; any other value and every reader error restores and is named.
 #[must_use]
 pub fn global_restore(global: Option<&Path>) -> Restore {
+    match global_switch(global, "restore") {
+        Ok(true) => Restore::On,
+        Ok(false) => Restore::Off,
+        Err(why) => Restore::Unusable(why),
+    }
+}
+
+/// The global `[workspace] auto_trust` ruling: whether ae answers a measured
+/// folder-trust prompt for a seat's own folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoTrust {
+    On,
+    Off,
+    /// Answers NOTHING, like `Off` — a path that presses keys fails closed;
+    /// carries the escaped reason for the one note.
+    Unusable(String),
+}
+
+impl AutoTrust {
+    /// Whether this ruling lets ae answer.
+    #[must_use]
+    pub fn answers(&self) -> bool {
+        *self == Self::On
+    }
+}
+
+/// GLOBAL ONLY, through the same reader as `restore`, so a project
+/// `.ae/config` never votes. Absent and exact `on` answer, exact `off` does
+/// not; any other value and every reader error answers nothing and is named.
+#[must_use]
+pub fn global_auto_trust(global: Option<&Path>) -> AutoTrust {
+    match global_switch(global, "auto_trust") {
+        Ok(true) => AutoTrust::On,
+        Ok(false) => AutoTrust::Off,
+        Err(why) => AutoTrust::Unusable(why),
+    }
+}
+
+/// A global-only `on`/`off` key: absent and exact `on` are `true`, exact `off`
+/// is `false`, trimmed, last line wins; anything else is the escaped reason.
+fn global_switch(global: Option<&Path>, key: &str) -> Result<bool, String> {
     let Some(file) = global else {
-        return Restore::On;
+        return Ok(true);
     };
-    match read_global_workspace_key(file, "restore") {
-        Err(why) => Restore::Unusable(why.escape_debug().to_string()),
+    match read_global_workspace_key(file, key) {
+        Err(why) => Err(why.escape_debug().to_string()),
         Ok(value) => match value.as_deref().map(str::trim) {
-            None | Some("on") => Restore::On,
-            Some("off") => Restore::Off,
-            Some(other) => Restore::Unusable(format!("{other:?} is not on or off")),
+            None | Some("on") => Ok(true),
+            Some("off") => Ok(false),
+            Some(other) => Err(format!("{other:?} is not on or off")),
         },
     }
 }
@@ -2398,6 +2439,34 @@ mod tests {
         let unreadable = global_restore(Some(&std::env::temp_dir()));
         assert!(matches!(unreadable, Restore::Unusable(why) if why.contains("could not read")));
         assert!(!unusable("[workspace]\nrestore = x\u{1b}[2J\n").contains('\u{1b}'));
+    }
+
+    /// PIN: `auto_trust` reads the restore grammar under its OWN key, but an
+    /// unusable value answers NOTHING: a path that presses keys fails closed.
+    #[test]
+    fn auto_trust_answers_only_on_absent_or_exact_on() {
+        let read = |text: &str| global_auto_trust(Some(NamedTemp::new("trust", text).path()));
+        assert!(global_auto_trust(None).answers());
+        for (text, want) in [
+            ("[workspace]\nrestore = off\n", AutoTrust::On),
+            ("[workspace]\nauto_trust =  on \n", AutoTrust::On),
+            ("[workspace]\nauto_trust = off\n", AutoTrust::Off),
+            (
+                "[workspace]\nauto_trust = on\nauto_trust = off\n",
+                AutoTrust::Off,
+            ),
+            ("[other]\nauto_trust = off\n", AutoTrust::On),
+        ] {
+            assert_eq!(read(text), want, "{text:?}");
+        }
+        for value in ["ON", "yes", "1", "\"\""] {
+            let ruling = read(&format!("[workspace]\nauto_trust = {value}\n"));
+            assert!(matches!(&ruling, AutoTrust::Unusable(why) if why.contains("not on or off")));
+            assert!(!ruling.answers(), "{value}");
+        }
+        assert!(!read("[workspace]\nauto_trust\n").answers());
+        assert!(!global_auto_trust(Some(&std::env::temp_dir())).answers());
+        assert!(!AutoTrust::Off.answers());
     }
 
     #[test]

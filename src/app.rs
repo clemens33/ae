@@ -4581,10 +4581,12 @@ mod tests {
         assert_eq!(header.global, current.display().to_string());
         assert!(header.current_global.is_none(), "not distinct");
         assert!(header.session.is_none(), "no overlay selected");
-        assert_eq!(rows.len(), 20);
+        assert_eq!(rows.len(), 21);
         let row = |key: &str| rows.iter().find(|row| row.key == key).expect(key);
         assert_eq!(row("chat").value, "on");
         assert_eq!(row("chat").source, settings::ConfigSource::Default);
+        assert_eq!(row("auto_trust").value, "on");
+        assert_eq!(row("auto_trust").source, settings::ConfigSource::Default);
     }
 
     /// No home session: one honest row, never guessed defaults.

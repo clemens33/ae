@@ -13,6 +13,7 @@ pub mod app;
 pub mod archive;
 pub mod attention;
 pub mod autoreseat;
+pub mod autotrust;
 pub mod autoupgrade;
 pub mod board;
 pub mod brief;
@@ -2995,6 +2996,20 @@ pub(crate) fn state_root() -> Option<std::path::PathBuf> {
 pub(crate) fn fleet_order_at(global: Option<&std::path::Path>) -> theme::FleetOrder {
     let (names, _ignored) = config::fleet_order_entries(&config::global_fleet_order(global));
     theme::FleetOrder::from_validated(names)
+}
+
+/// The global config a session's own watchdog reads: the state root's, or —
+/// with no root to name — the one two levels above the session's directory.
+/// The watchdog and `auto_trust`'s in-wait answers read the same file.
+pub(crate) fn global_config_of(meta_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    state_root()
+        .or_else(|| {
+            meta_dir
+                .parent()
+                .and_then(std::path::Path::parent)
+                .map(std::path::Path::to_path_buf)
+        })
+        .map(|root| doors::config_file(shape::current(), &root))
 }
 
 /// [`fleet_order_at`] for a caller that holds no path of its own.

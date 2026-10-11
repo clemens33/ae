@@ -4627,8 +4627,16 @@ const fn chunk_polls(model: crate::tool::InputModel) -> u32 {
 /// The launch turn's readiness wait. A tool whose adapter row names a
 /// human-only prompt is waited on in chunks, its pane read for that prompt
 /// between them through the same capture door readiness uses; every other
-/// tool waits exactly as before, in one piece.
-fn wait_ready(server: &ServerId, pane: &str, tool: ToolKind, on: OnHumanPrompt) -> Readiness {
+/// tool waits exactly as before, in one piece. A measured trust block between
+/// chunks is handed to `trusted`, and one it answered reads as no prompt, so
+/// the wait goes on toward a ready box.
+fn wait_ready(
+    server: &ServerId,
+    pane: &str,
+    tool: ToolKind,
+    on: OnHumanPrompt,
+    mut trusted: impl FnMut() -> bool,
+) -> Readiness {
     let input = tool.adapter().input;
     let polled =
         |polls| deliver::wait_input_ready(server, pane, input.model, input.composed, polls);
@@ -4643,10 +4651,12 @@ fn wait_ready(server: &ServerId, pane: &str, tool: ToolKind, on: OnHumanPrompt) 
         if polled(chunk_polls(input.model)) {
             return ReadyRead::Ready;
         }
-        ReadyRead::Unready(
-            transport::capture_screen(server, pane, tmux::Styling::Plain)
-                .and_then(|frame| crate::watchdog::human_prompt_class(&frame, tool.adapter().name)),
-        )
+        let prompt = transport::capture_screen(server, pane, tmux::Styling::Plain)
+            .and_then(|frame| crate::watchdog::human_prompt_class(&frame, tool.adapter().name));
+        if prompt.as_ref().is_some_and(|asked| asked.trust.is_some()) && trusted() {
+            return ReadyRead::Unready(None);
+        }
+        ReadyRead::Unready(prompt)
     });
     settle(reads, on)
 }
@@ -4672,7 +4682,17 @@ pub(crate) fn deliver_launch_turn(
 ) -> io::Result<TurnOutcome> {
     let model = tool.adapter().input.model;
     let mut outcome = TurnOutcome::Undelivered;
-    let reason = match wait_ready(server, pane, tool, on_prompt) {
+    // `auto_trust` answers a trust block inside this wait until an answer is
+    // tried that is not a "not yet".
+    let mut tried = crate::autotrust::InWait::Again;
+    let trusted = || {
+        if tried == crate::autotrust::InWait::Again {
+            tried = crate::autotrust::in_wait(dir, server, slot, pane, &mut *err);
+            return tried == crate::autotrust::InWait::Trusted;
+        }
+        false
+    };
+    let reason = match wait_ready(server, pane, tool, on_prompt, trusted) {
         Readiness::Ready => {
         // NO select-pane: `paste-buffer -t` writes to the NAMED pane, and
         // selecting mid-send routes the human's in-flight keystrokes into the
@@ -7233,6 +7253,7 @@ mod tests {
         super::ReadyRead::Unready(Some(crate::watchdog::HumanPrompt {
             question: question.to_owned(),
             keys: "Enter to confirm · Esc to cancel".to_owned(),
+            trust: None,
         }))
     }
 
@@ -7252,6 +7273,7 @@ mod tests {
         super::Readiness::Blocked(crate::watchdog::HumanPrompt {
             question: question.to_owned(),
             keys: "Enter to confirm · Esc to cancel".to_owned(),
+            trust: None,
         })
     }
 

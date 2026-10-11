@@ -501,6 +501,29 @@ pub(crate) struct PromptSpec {
     /// How far up from the last non-blank row the whole shape must sit, in
     /// ROWS: from the title's rule when there is a title, else the question.
     pub(crate) window: usize,
+    /// The folder-trust block this prompt can be, MEASURED whole; the only
+    /// prompt `auto_trust` may answer. `None` answers nothing.
+    pub(crate) trust: Option<TrustSpec>,
+}
+
+/// A folder-trust modal exactly as one version draws it. Wrapped rows are
+/// joined with one space, so the block reads the same at every width that
+/// keeps its folder on one row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrustSpec {
+    /// The row above the ONE folder row, which sits directly above the question.
+    pub(crate) heading: &'static str,
+    /// Every paragraph from the question to the options, in order, the
+    /// question's own first.
+    pub(crate) paragraphs: &'static [&'static str],
+    /// The option rows in drawn order, selection glyph stripped.
+    pub(crate) options: &'static [&'static str],
+    /// The option that trusts the folder.
+    pub(crate) yes: &'static str,
+    /// The key-hint row, trimmed.
+    pub(crate) hint: &'static str,
+    /// The most non-blank rows the modal draws below its hint.
+    pub(crate) trailer: usize,
 }
 
 /// How a human-only prompt's question row is recognised, once trimmed.
@@ -629,6 +652,20 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         selected: '❯',
         keys: &["to confirm · "],
         window: 20,
+        trust: Some(TrustSpec {
+            heading: "Accessing workspace:",
+            paragraphs: &[
+                "Quick safety check: Is this a project you created or one you trust? (Like your own \
+                 code, a well-known open source project, or work from your team). If not, take a \
+                 moment to review what's in this folder first.",
+                "Claude Code'll be able to read, edit, and execute files here.",
+                "Security guide",
+            ],
+            options: &["No, exit", "Yes, I trust this folder"],
+            yes: "Yes, I trust this folder",
+            hint: "Enter to confirm · Esc to cancel",
+            trailer: 0,
+        }),
     }),
     identity: IdentitySpec::BorderComposer,
     model: ModelSpec::ReportOnly(&["--model"]),
@@ -805,6 +842,17 @@ const AGY: ToolAdapter = ToolAdapter {
         selected: '>',
         keys: &["enter Confirm", "↑/↓ Navigate"],
         window: 15,
+        trust: Some(TrustSpec {
+            heading: "Accessing workspace:",
+            paragraphs: &[
+                "Do you trust the contents of this project?",
+                "Antigravity CLI requires permission to read, edit, and execute files here.",
+            ],
+            options: &["Yes, I trust this folder", "No, exit"],
+            yes: "Yes, I trust this folder",
+            hint: "↑/↓ Navigate · enter Confirm",
+            trailer: 1,
+        }),
     }),
     identity: IdentitySpec::TrailingLabel,
     model: ModelSpec::Unobserved,
@@ -1448,6 +1496,21 @@ mod tests {
                         selected: '❯',
                         keys: &["to confirm · "],
                         window: 20,
+                        trust: Some(TrustSpec {
+                            heading: "Accessing workspace:",
+                            paragraphs: &[
+                                "Quick safety check: Is this a project you created or one you \
+                                 trust? (Like your own code, a well-known open source project, \
+                                 or work from your team). If not, take a moment to review \
+                                 what's in this folder first.",
+                                "Claude Code'll be able to read, edit, and execute files here.",
+                                "Security guide",
+                            ],
+                            options: &["No, exit", "Yes, I trust this folder"],
+                            yes: "Yes, I trust this folder",
+                            hint: "Enter to confirm · Esc to cancel",
+                            trailer: 0,
+                        }),
                     }),
                     identity: IdentitySpec::BorderComposer,
                     model: ModelSpec::ReportOnly(&["--model"]),
@@ -1605,6 +1668,18 @@ mod tests {
                         selected: '>',
                         keys: &["enter Confirm", "↑/↓ Navigate"],
                         window: 15,
+                        trust: Some(TrustSpec {
+                            heading: "Accessing workspace:",
+                            paragraphs: &[
+                                "Do you trust the contents of this project?",
+                                "Antigravity CLI requires permission to read, edit, and \
+                                 execute files here.",
+                            ],
+                            options: &["Yes, I trust this folder", "No, exit"],
+                            yes: "Yes, I trust this folder",
+                            hint: "↑/↓ Navigate · enter Confirm",
+                            trailer: 1,
+                        }),
                     }),
                     identity: IdentitySpec::TrailingLabel,
                     model: ModelSpec::Unobserved,
