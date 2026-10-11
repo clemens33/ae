@@ -551,7 +551,9 @@ read strictly is doubt, said once on stderr. From the bound, `book_human_prompt`
 `AnswerTrust` instead of the naming; `deliver::answer_trust` answers under the send-lock (two
 equal reads, reservation read back, at most one arrow and two more reads, Enter, every key
 re-proven and recorded), and an answer that does not land names the prompt as before. A busy
-send-lock spends nothing and is retried next cycle without naming again.
+send-lock, or a client's input on the pane within `VIEW_GRACE` (4 s), spends nothing before the
+reservation and is retried each later cycle without naming again; after it, that input stops the
+answer before its next key as `auto-trust-failed`, and the start stays spent.
 
 Named residuals: claude's accessible `Enter y/n:` branch, a project-settings warning block and
 panes narrower than about 65 columns are unmeasured and can push the modal out of the window, so

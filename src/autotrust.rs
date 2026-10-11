@@ -67,9 +67,14 @@ pub(crate) fn due(seat: &Seat<'_>, sighting: &TrustSighting) -> Due {
     let Ok(proof) = prove(seat, &sighting.folder) else {
         return Due::No;
     };
-    match ledger(crate::store::open(seat.dir).events_source()) {
+    owed(crate::store::open(seat.dir).events_source(), &proof.episode)
+}
+
+/// The journal's verdict on a proven start: doubt, spent, or owed an answer.
+fn owed(source: SourceRead, episode: &str) -> Due {
+    match ledger(source) {
         Err(why) => Due::Doubt(why),
-        Ok(events) if spent(&events, &proof.episode) => Due::No,
+        Ok(events) if spent(&events, episode) => Due::No,
         Ok(_) => Due::Yes,
     }
 }
@@ -385,7 +390,7 @@ fn line(seat: &Seat<'_>, proof: &Proof, action: &str, summary: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RESERVED, ledger, place, spent, tool_pid};
+    use super::{Due, RESERVED, ledger, owed, place, spent, tool_pid};
     use crate::procs::Proc;
     use crate::store::SourceRead;
 
@@ -425,10 +430,18 @@ mod tests {
     }
 
     /// The reservation of THIS start spends it; another start's, or another
-    /// record carrying the same ref, does not.
+    /// record carrying the same ref, does not. Only an unspent start of a
+    /// strict journal is owed an answer.
     #[test]
     fn only_a_reservation_of_the_same_start_spends_it() {
-        let events = ledger(SourceRead::Ready(RESERVATION.as_bytes().to_vec())).expect("ledger");
+        let journal = || SourceRead::Ready(RESERVATION.as_bytes().to_vec());
+        assert_eq!(owed(journal(), "main:start:7"), Due::No, "spent");
+        assert_eq!(owed(journal(), "main:start:8"), Due::Yes, "unspent");
+        assert!(matches!(
+            owed(SourceRead::Absent, "main:start:8"),
+            Due::Doubt(_)
+        ));
+        let events = ledger(journal()).expect("ledger");
         assert!(spent(&events, "main:start:7"));
         assert!(!spent(&events, "main:start:8"));
         let key = RESERVATION.replace("auto-trust-reserved", "auto-trust-key");
