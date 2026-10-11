@@ -3957,6 +3957,23 @@ mod tests {
         }
     }
 
+    /// The status note runs to the right gutter, not to half the width: at 40
+    /// cells a 39-cell note is cut at its 38th and not before.
+    #[test]
+    fn the_peek_status_note_runs_to_the_right_gutter() {
+        let body = crate::app::peek::Body::Lines(vec!["x".to_owned()]);
+        let view = crate::app::peek::View {
+            age_secs: 123_456_789,
+            ..peek_view(Some(&body))
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+        let _ = super::paint_peek(&view, None, &mut buf, &mut super::Layout::default());
+        assert_eq!(
+            line(&buf, 1).concat().trim_end(),
+            "  STALE · captured 123456789s ago · 1 ro",
+        );
+    }
+
     /// A long line wraps at the pane width with its continuation rows
     /// hanging two cells, and a line that fits exactly does not wrap.
     #[test]

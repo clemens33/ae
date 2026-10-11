@@ -1104,15 +1104,19 @@ mod tests {
         assert_eq!(model.peek_back(), Some(0));
     }
 
-    /// A fleet change or a restart keeps the open panel where it was.
+    /// A fleet change that takes the selected session away rebuilds the model
+    /// and keeps the open panel where it was; a restart does the same.
     #[test]
     fn a_reconcile_or_restart_keeps_the_open_peek() {
         let both = fleet(&["api", "web"]);
         let mut model = Model::new(&both);
+        let _ = model.key(Key::Digit(2), &both, false, true);
+        assert_eq!(model.selected(), Some("web"));
         model.open_peek(5);
         model.set_peek_page_rows(4);
         let _ = model.key(Key::PageUp, &both, true, true);
         model.reconcile(&fleet(&["api"]));
+        assert_eq!(model.selected(), Some("api"), "the model was rebuilt");
         assert_eq!(
             (model.peek_back(), model.peek_generation()),
             (Some(4), Some(5))

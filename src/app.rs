@@ -2335,17 +2335,12 @@ fn peek_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
     if *key == Key::Interrupt {
         return None;
     }
-    let Key::Text(bytes) = key else {
-        return Some(peek_keys(app, model::browse_keys(key)));
-    };
-    let mut redraw = false;
-    for (at, &byte) in bytes.iter().enumerate() {
-        if !app.model.peek_open() {
-            return browse(app, &Key::Text(bytes[at..].to_vec()), origin).map(|rest| redraw | rest);
-        }
-        redraw |= peek_keys(app, model::browse_keys(&Key::Text(vec![byte])));
+    if matches!(key, Key::Text(_)) {
+        // `browse` feeds the open panel byte by byte and hands the rest of
+        // the chunk to the mode it is really in once the panel closes.
+        return browse(app, key, origin);
     }
-    Some(redraw)
+    Some(peek_keys(app, model::browse_keys(key)))
 }
 
 /// Feed `keys` to the open peek panel; a close they cause tells the reader.
@@ -6110,5 +6105,124 @@ mod tests {
         assert_eq!(app.note().as_deref(), Some("q again to quit"));
         let _ = pressed(&mut app, b"v");
         assert_eq!(pressed(&mut app, b"vqq"), None, "the second q quits");
+    }
+
+    /// The pane's state belongs to the model's panel: the same generation
+    /// keeps it, another generation or a closed panel starts it afresh.
+    #[test]
+    fn the_pane_state_starts_afresh_when_the_models_panel_is_not_its_own() {
+        let (mut app, _asks) = peeker();
+        let holding = || super::PeekPane {
+            generation: 1,
+            target: Some(("aedev".to_owned(), "colead".to_owned())),
+            shown: Some(super::Body::Lines(vec!["old".to_owned()])),
+            held: Some(super::Body::Lines(vec!["newer".to_owned()])),
+            at: Some(Instant::now()),
+            painted: Some(3),
+        };
+        let afresh = |pane: &super::PeekPane, generation: u64| {
+            pane.generation == generation
+                && pane.target.is_none()
+                && pane.shown.is_none()
+                && pane.held.is_none()
+                && pane.at.is_none()
+                && pane.painted.is_none()
+        };
+        app.model.open_peek(1);
+        app.peek = holding();
+        app.peek_sync();
+        assert!(!afresh(&app.peek, 1), "its own generation keeps its state");
+        assert_eq!(app.peek.painted, Some(3));
+        app.model.open_peek(2);
+        app.peek_sync();
+        assert!(afresh(&app.peek, 2), "another generation starts afresh");
+        app.peek = holding();
+        app.model.close_peek();
+        app.peek_sync();
+        assert!(afresh(&app.peek, 0), "a closed panel holds nothing");
+    }
+
+    /// The pane starts on the model's generation, every open its own, and
+    /// keeps its seat through the first frames: the title names the seat,
+    /// before and after a capture.
+    #[test]
+    fn the_panel_starts_on_the_models_generation_and_its_title_names_the_seat() {
+        let (mut app, _asks) = peeker();
+        let _ = pressed(&mut app, b"v");
+        assert_eq!(app.peek.generation, 1);
+        let _ = pressed(&mut app, b"v");
+        let _ = pressed(&mut app, b"v");
+        assert_eq!(app.peek.generation, 2, "a reopen is its own generation");
+        assert!(framed(&mut app).contains("Peek · aedev · colead"));
+        app.answer(Answer::Peek {
+            generation: 2,
+            at: Instant::now(),
+            body: super::Body::Lines(vec!["ROW".to_owned()]),
+        });
+        let shown = framed(&mut app);
+        assert!(shown.contains("Peek · aedev · colead") && shown.contains("ROW"));
+    }
+
+    /// A capture that aged and any other line that ended lapse in one call,
+    /// each saying it did.
+    #[test]
+    fn an_aged_capture_lapses_together_with_every_line_that_ends() {
+        let t0 = Instant::now();
+        let at = t0 + super::FLASH_WINDOW + Duration::from_millis(1);
+        for (armed, flash, word) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            let (mut app, _asks) = peeker();
+            let _ = pressed(&mut app, b"v");
+            app.peek.at = Some(t0);
+            app.peek.painted = Some(0);
+            app.armed = armed.then_some(super::Armed {
+                at: t0,
+                what: super::Arm::Quit,
+            });
+            app.flash = flash.then(|| ("paste not taken: x".to_owned(), t0));
+            app.settling = word.then(|| super::Settling {
+                at: t0,
+                id: "r".to_owned(),
+                word: "delivered".to_owned(),
+                about: "aedev".to_owned(),
+            });
+            assert!(app.lapse(at), "{armed} {flash} {word} lapsed");
+            let left = (
+                app.armed.is_some(),
+                app.flash.is_some(),
+                app.settling.is_some(),
+            );
+            assert_eq!(left, (false, false, false), "{armed} {flash} {word}");
+        }
+    }
+
+    /// A chunk that opens or closes the panel redraws whatever bytes follow it,
+    /// also ones the next mode swallows.
+    #[test]
+    fn a_chunk_that_opens_or_closes_the_panel_redraws_whatever_follows() {
+        let (mut app, _asks) = peeker();
+        assert_eq!(pressed(&mut app, b"vz"), Some(true), "opens; z dies");
+        assert!(app.model.peek_open());
+        assert_eq!(
+            pressed(&mut app, b"vz"),
+            Some(true),
+            "closes; z is browse's"
+        );
+        assert!(!app.model.peek_open());
+    }
+
+    /// With the panel open a scroll key redraws and a key it swallows does not.
+    #[test]
+    fn an_open_panel_redraws_for_a_scroll_and_not_for_a_swallowed_key() {
+        let (mut app, _asks) = peeker();
+        let _ = pressed(&mut app, b"v");
+        assert_eq!(pressed(&mut app, b"k"), Some(true), "up scrolls");
+        assert_eq!(app.model.peek_back(), Some(1));
+        assert_eq!(pressed(&mut app, b"z"), Some(false), "z is swallowed");
+        assert_eq!(app.model.peek_back(), Some(1));
     }
 }
