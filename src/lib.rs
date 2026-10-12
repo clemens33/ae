@@ -3336,8 +3336,8 @@ pub fn run_with(
         cli::Request::RegisterSid { dir, slot, id } => {
             session_launch::capture::register_sid(dir, slot, id.as_deref(), out, err)?
         }
-        cli::Request::Requests { dir, mode } => {
-            let rendered = requests::render(dir, *mode, &calling_viewer(dir));
+        cli::Request::Requests { dir, mode, limit } => {
+            let rendered = requests::render(dir, *mode, &calling_viewer(dir), *limit);
             out.write_all(&rendered.stdout)?;
             err.write_all(&rendered.stderr)?;
             rendered.code

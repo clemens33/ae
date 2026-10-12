@@ -70,7 +70,7 @@ When another agent hands you an exact `reply` or `send` command, run it
 | `ask <agent> <question>` | Tracked request — embeds your identity and an exact reply command with a request id. Once the request is recorded as pending, an unconfirmed submit included, stdout is that id alone on one line (`id=$(ae @<session> ask <agent> <question>)`, or the full helper path); stderr is unchanged and a refusal prints nothing on stdout. |
 | `review <agent> <request>` | Like `ask`, but with the critical-review prompt template (findings-first, BLOCKER/IMPORTANT/NIT); prints its request id the same way. |
 | `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Verified against the request's stored **slot** (the routing key), not the display name; `--as <agent>` sets the displayed sender only and cannot bypass that check. |
-| `requests [mine\|inbox\|all]` | Inspect `pending`, `replied`, `cancelled` or `retired` request state from `events.jsonl` without peeking panes; `retired` means either party's seat closed it without a reply. |
+| `requests [mine\|inbox\|all] [--limit N]` | Inspect `pending`, `replied`, `cancelled` or `retired` request state from `events.jsonl` without peeking panes; `retired` means either party's seat closed it without a reply. Shows every pending plus the newest 10 closed (`--limit N`, `0` = all); a footer names the hidden count and the full command. |
 | `say <text>` | Push a free-text line to the human's Telegram chat (args or piped stdin). Emits a `chat` event the [Telegram bridge](telegram.md) forwards; a Telegram reply routes back to you. Pane output is not forwarded — this is how you answer the human on Telegram. |
 
 All messaging helpers emit a structured event into the caller's `events.jsonl`

@@ -164,13 +164,13 @@ attempt and the paste is pasted next cycle, not this one.
 
 ## How `requests` reads events
 
-`requests [mine|inbox|all]` walks `events.jsonl` backward via `tac` and collects:
+`requests [mine|inbox|all] [--limit N]` walks `events.jsonl` backward via `tac` and collects:
 
 - The latest `ask` / `review` event per `ref` → request row.
 - The latest `reply` or authorized `cancel` event per `ref` → terminal row.
 - The ledger's forward `open_requests` reading → whether an otherwise-pending valid row is `retired` because either party's seat was retired.
 
-A request is `replied` only when the reply's `actor` equals the request's `target` AND the reply's `target` equals the request's `actor`. Stray reply events (wrong actor / wrong target) leave the request `pending`. An authorized withdrawal is `cancelled`; a request closed by either party's seat retirement is `retired`, not `replied`. Without the reply check a misrouted or manual reply could falsely close a request.
+A request is `replied` only when the reply's `actor` equals the request's `target` AND the reply's `target` equals the request's `actor`. Stray reply events (wrong actor / wrong target) leave the request `pending`. An authorized withdrawal is `cancelled`; a request closed by either party's seat retirement is `retired`, not `replied`. Without the reply check a misrouted or manual reply could falsely close a request. The printed table is bounded — every pending row plus the newest 10 closed (`--limit N` overrides, `0` shows all) — with one footer line naming the hidden count and the full command when rows are hidden.
 
 The core's request lookup returns the matched request as a tab-separated row. When the event carries routing-key fields the row is seven columns — `action  actor  target  actor_slot  actor_session  target_slot  target_session` — and `reply` verifies the responder's live slot against `target_slot` + `target_session` before delivering, so identity survives a name change. An event without those fields yields a three-column row (`action  actor  target`) and pairing falls back to the display name. The sensor also carries the opening `target_server` / `target_pane` / `target_session_uuid` when present (`Request::recorded_target`); those members are not printed on the seven-column table.
 

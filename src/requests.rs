@@ -75,6 +75,16 @@ impl Mode {
     pub fn needs_identity(self) -> bool {
         self != Self::All
     }
+
+    /// The token the helper takes for this mode, as the footer spells it.
+    #[must_use]
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Mine => "mine",
+            Self::Inbox => "inbox",
+            Self::All => "all",
+        }
+    }
 }
 
 /// Who is asking — the pane identity read from tmux.
@@ -296,7 +306,7 @@ impl Request {
             &self.id,
             displayed(&self.from),
             displayed(&self.to),
-            &self.summary,
+            &clip_summary(&self.summary),
         );
     }
 }
@@ -348,6 +358,12 @@ pub fn is_slot(text: &str) -> bool {
 pub const NO_IDENTITY: &str =
     "Error: could not detect current agent identity; use 'requests all' outside an ae pane";
 
+/// Closed rows shown when the caller names no `--limit`.
+pub const DEFAULT_CLOSED_LIMIT: usize = 10;
+
+/// Summary characters kept on a row; the cut is the ONE cutter's.
+pub const SUMMARY_CHARS: usize = 160;
+
 /// The exit status of the identity refusal.
 pub const EXIT_NO_IDENTITY: u8 = 1;
 
@@ -358,6 +374,28 @@ pub fn header() -> Vec<u8> {
     write_row(
         &mut out, b"STATUS", b"TYPE", b"ID", b"FROM", b"TO", b"SUMMARY",
     );
+    out
+}
+
+/// The one footer: hidden count plus the runnable command showing it.
+fn footer(dir: &Path, hidden: usize, mode: Mode) -> Vec<u8> {
+    format!(
+        "{hidden} older closed requests hidden; all of them: {} {} --limit 0\n",
+        crate::launch::shell_quote(&dir.join("requests").display().to_string()),
+        mode.token(),
+    )
+    .into_bytes()
+}
+
+/// A summary as the row prints it: [`SUMMARY_CHARS`] through the ONE cutter.
+fn clip_summary(summary: &[u8]) -> Vec<u8> {
+    if let Ok(text) = std::str::from_utf8(summary) {
+        return crate::event_text::clip_head(text, SUMMARY_CHARS).into_bytes();
+    }
+    let mut out = summary[..summary.len().min(SUMMARY_CHARS)].to_vec();
+    if summary.len() > SUMMARY_CHARS {
+        out.extend_from_slice("…".as_bytes());
+    }
     out
 }
 
@@ -372,9 +410,9 @@ pub struct Output {
     pub code: u8,
 }
 
-/// Render the surface over the session meta directory `dir`.
+/// Render the surface over `dir`, bounded by `limit` (`None` = default, `Some(0)` = all).
 #[must_use]
-pub fn render(dir: &Path, mode: Mode, viewer: &Viewer) -> Output {
+pub fn render(dir: &Path, mode: Mode, viewer: &Viewer, limit: Option<usize>) -> Output {
     if mode.needs_identity() && !viewer.is_known() {
         return Output {
             stdout: Vec::new(),
@@ -392,29 +430,59 @@ pub fn render(dir: &Path, mode: Mode, viewer: &Viewer) -> Output {
         session_id: crate::tracked::routing_id(dir, &viewer.slot, &viewer.session, session),
         ..viewer.clone()
     };
+    let key = SessionKey::new(session, &own_id);
     Output {
-        stdout: table_in(&container, SessionKey::new(session, &own_id), mode, &viewer),
+        stdout: table_in(Some(dir), &container, key, mode, &viewer, limit),
         stderr: Vec::new(),
         code: 0,
     }
 }
 
-/// The session-less compatibility table for one container's bytes.
-///
-/// It deliberately preserves pre-retire statuses because its callers have no
-/// routing-key session; session-bound surfaces must use [`render`].
+/// The session-less compatibility table: pre-retire statuses and no bound,
+/// having no session to name in a footer; session surfaces use [`render`].
 #[must_use]
 pub fn table(container: &[u8], mode: Mode, viewer: &Viewer) -> Vec<u8> {
-    table_in(container, SessionKey::default(), mode, viewer)
+    table_in(
+        None,
+        container,
+        SessionKey::default(),
+        mode,
+        viewer,
+        Some(0),
+    )
 }
 
-/// The table for one container whose session is known.
-fn table_in(container: &[u8], session: SessionKey<'_>, mode: Mode, viewer: &Viewer) -> Vec<u8> {
+/// The table for a known session: pending rows print, closed keep the newest
+/// `limit` after the mode filter; `dir` is `None` only when unbounded.
+fn table_in(
+    dir: Option<&Path>,
+    container: &[u8],
+    session: SessionKey<'_>,
+    mode: Mode,
+    viewer: &Viewer,
+    limit: Option<usize>,
+) -> Vec<u8> {
+    let shown: Vec<Request> = states_in(container, session)
+        .into_iter()
+        .filter(|request| request.shown_to(mode, viewer))
+        .collect();
+    let budget = match limit.unwrap_or(DEFAULT_CLOSED_LIMIT) {
+        0 => usize::MAX,
+        n => n,
+    };
+    let closed = shown.iter().filter(|r| r.status != Status::Pending).count();
+    let hidden = closed.saturating_sub(budget);
     let mut out = header();
-    for request in states_in(container, session) {
-        if request.shown_to(mode, viewer) {
-            request.write_line(&mut out);
+    let mut skipped = 0;
+    for request in &shown {
+        if request.status != Status::Pending && skipped < hidden {
+            skipped += 1;
+            continue;
         }
+        request.write_line(&mut out);
+    }
+    if let Some(dir) = dir.filter(|_| hidden > 0) {
+        out.extend_from_slice(&footer(dir, hidden, mode));
     }
     out
 }
@@ -909,7 +977,7 @@ mod tests {
     #[test]
     fn a_missing_container_is_quiet_and_succeeds() {
         let scratch = Scratch::new("absent");
-        let out = render(&scratch.0, Mode::All, &Viewer::default());
+        let out = render(&scratch.0, Mode::All, &Viewer::default(), None);
         assert_eq!(out.stdout, header());
         assert!(out.stderr.is_empty(), "absent is quiet, not degraded");
         assert_eq!(out.code, 0);
@@ -920,7 +988,7 @@ mod tests {
         let scratch = Scratch::new("noid");
         fs::write(scratch.0.join("events.jsonl"), container(&[ASK])).expect("write");
         for mode in [Mode::Mine, Mode::Inbox] {
-            let out = render(&scratch.0, mode, &Viewer::default());
+            let out = render(&scratch.0, mode, &Viewer::default(), None);
             assert!(
                 out.stdout.is_empty(),
                 "{mode:?}: the refusal precedes the header"
@@ -935,7 +1003,7 @@ mod tests {
     fn all_needs_no_identity() {
         let scratch = Scratch::new("all-noid");
         fs::write(scratch.0.join("events.jsonl"), container(&[ASK])).expect("write");
-        let out = render(&scratch.0, Mode::All, &Viewer::default());
+        let out = render(&scratch.0, Mode::All, &Viewer::default(), None);
         assert_eq!(out.code, 0);
         assert!(text(&out.stdout).contains("the question"));
     }
@@ -982,7 +1050,7 @@ mod tests {
         )
         .expect("write ledger");
 
-        let view = text(&render(&dir, Mode::All, &Viewer::default()).stdout);
+        let view = text(&render(&dir, Mode::All, &Viewer::default(), None).stdout);
         assert!(view.contains("retired"), "{view}");
         assert!(!view.contains("pending"), "{view}");
     }
@@ -1001,7 +1069,7 @@ mod tests {
         )
         .expect("write ledger");
 
-        let view = text(&render(&dir, Mode::All, &Viewer::default()).stdout);
+        let view = text(&render(&dir, Mode::All, &Viewer::default(), None).stdout);
         assert!(view.contains("retired"), "{view}");
         assert!(!view.contains("pending"), "{view}");
     }
@@ -1019,7 +1087,7 @@ mod tests {
         )
         .expect("write ledger");
 
-        let view = text(&render(&dir, Mode::All, &Viewer::default()).stdout);
+        let view = text(&render(&dir, Mode::All, &Viewer::default(), None).stdout);
         assert!(view.contains("pending"), "{view}");
         assert!(!view.contains("retired"), "{view}");
     }
@@ -1040,7 +1108,7 @@ mod tests {
         )
         .expect("write ledger");
 
-        let view = text(&render(&dir, Mode::All, &Viewer::default()).stdout);
+        let view = text(&render(&dir, Mode::All, &Viewer::default(), None).stdout);
         let retired = view
             .lines()
             .find(|line| line.contains("retired-request"))
@@ -1763,6 +1831,17 @@ mod tests {
             text(&rendered)
         );
         assert!(text(&rendered).contains("one two"));
+    }
+
+    #[test]
+    fn a_byte_summary_no_utf8_reading_takes_is_cut_raw_and_kept_whole() {
+        use super::clip_summary;
+        let invalid = vec![0xff; 200];
+        let clipped = clip_summary(&invalid);
+        assert_eq!(&clipped[..160], [0xff; 160].as_slice());
+        assert!(clipped.ends_with("…".as_bytes()));
+        let short = vec![0xff; 10];
+        assert_eq!(clip_summary(&short), short);
     }
 
     #[test]

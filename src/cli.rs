@@ -336,12 +336,14 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
-    /// `_requests <meta-dir> [mine|inbox|all]` — the `requests` helper surface.
+    /// `_requests <meta-dir> [mine|inbox|all] [--limit N]` — the helper surface.
     Requests {
         /// The session meta directory the helper derives from `$0`.
         dir: PathBuf,
         /// The mode, defaulting to `mine`.
         mode: Mode,
+        /// The caller's `--limit`: `None` is the default, `Some(0)` every row.
+        limit: Option<usize>,
     },
     /// `_events-tail <meta-dir>` — the `events-tail` helper surface.
     State {
@@ -826,13 +828,13 @@ impl Request {
     /// let argv = ["_requests".to_owned(), "/s/tg1".to_owned(), "all".to_owned()];
     /// assert_eq!(
     ///     Request::parse(&argv),
-    ///     Request::Requests { dir: "/s/tg1".into(), mode: Mode::All }
+    ///     Request::Requests { dir: "/s/tg1".into(), mode: Mode::All, limit: None }
     /// );
     /// // The mode defaults, exactly as the helper's `${1:-mine}` does.
     /// let argv = ["_requests".to_owned(), "/s/tg1".to_owned()];
     /// assert_eq!(
     ///     Request::parse(&argv),
-    ///     Request::Requests { dir: "/s/tg1".into(), mode: Mode::Mine }
+    ///     Request::Requests { dir: "/s/tg1".into(), mode: Mode::Mine, limit: None }
     /// );
     /// ```
     #[must_use]
@@ -1374,18 +1376,41 @@ impl Request {
         }
     }
 
-    /// `_requests <meta-dir> [mine|inbox|all]`.
+    /// `_requests <meta-dir> [mine|inbox|all] [--limit N]`: the directory is
+    /// verbatim; bad options and a missing value exit 2, as a bad mode does.
     fn parse_requests(tail: &[String]) -> Self {
-        let (dir, token) = match tail {
-            [] => return Self::MissingOperand(REQUESTS),
-            [dir] => (dir, None),
-            [dir, mode] => (dir, Some(mode.as_str())),
-            [_, _, extra, ..] => return Self::UsageError(extra.clone()),
+        let [dir, rest @ ..] = tail else {
+            return Self::MissingOperand(REQUESTS);
+        };
+        let mut limit: Option<usize> = None;
+        let mut operands: Vec<&String> = Vec::new();
+        let mut words = rest.iter();
+        while let Some(word) = words.next() {
+            match word.as_str() {
+                "--limit" if limit.is_none() => {
+                    let Some(value) = words.next() else {
+                        return Self::MissingOperand(REQUESTS);
+                    };
+                    match value.parse::<usize>() {
+                        Ok(n) => limit = Some(n),
+                        Err(_) => return Self::UsageError(value.clone()),
+                    }
+                }
+                "--limit" => return Self::UsageError(word.clone()),
+                option if option.starts_with("--") => return Self::UsageError(word.clone()),
+                _ => operands.push(word),
+            }
+        }
+        let token = match operands.as_slice() {
+            [] => None,
+            [mode] => Some(mode.as_str()),
+            [_, extra, ..] => return Self::UsageError((*extra).clone()),
         };
         match Mode::parse(token) {
             Some(mode) => Self::Requests {
                 dir: dir.into(),
                 mode,
+                limit,
             },
             // `token` is necessarily `Some` on this arm: `Mode::parse(None)` is
             // the documented `mine` default and cannot fail.
@@ -2062,7 +2087,8 @@ mod tests {
             Request::parse(&argv(&[REQUESTS, "/s/tg1"])),
             Request::Requests {
                 dir: "/s/tg1".into(),
-                mode: Mode::Mine
+                mode: Mode::Mine,
+                limit: None
             },
             "the absent mode is `mine`, as the helper's ${{1:-mine}} is"
         );
@@ -2075,9 +2101,35 @@ mod tests {
                 Request::parse(&argv(&[REQUESTS, "/s/tg1", token])),
                 Request::Requests {
                     dir: "/s/tg1".into(),
-                    mode
+                    mode,
+                    limit: None
                 },
                 "{token}"
+            );
+        }
+    }
+
+    #[test]
+    fn requests_limit_rides_beside_the_mode_and_bad_limits_exit_two() {
+        for words in [
+            vec![REQUESTS, "/s/tg1", "all", "--limit", "3"],
+            vec![REQUESTS, "/s/tg1", "--limit", "0"],
+        ] {
+            let request = Request::parse(&argv(&words));
+            assert!(
+                matches!(request, Request::Requests { limit: Some(_), .. }),
+                "{words:?}"
+            );
+        }
+        for tail in [
+            vec![REQUESTS, "/s/tg1", "all", "--limit", "x"],
+            vec![REQUESTS, "/s/tg1", "--limit", "1", "--limit", "2"],
+            vec![REQUESTS, "/s/tg1", "--limit"],
+        ] {
+            assert_eq!(
+                Request::parse(&argv(&tail)).exit_code(),
+                Some(2),
+                "{tail:?}"
             );
         }
     }
@@ -2195,7 +2247,8 @@ mod tests {
                 Request::parse(&argv(&[REQUESTS, path, "all"])),
                 Request::Requests {
                     dir: path.into(),
-                    mode: Mode::All
+                    mode: Mode::All,
+                    limit: None
                 },
                 "{path}"
             );

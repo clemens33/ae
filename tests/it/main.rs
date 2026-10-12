@@ -82,6 +82,7 @@ mod reader;
 mod refusal_rig;
 mod renametell_notice_spec;
 mod renametell_routing_spec;
+mod reqfilter_spec;
 mod reseat;
 mod reseat_carry;
 mod reseat_headroom_spec;
