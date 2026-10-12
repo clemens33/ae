@@ -48,8 +48,7 @@ fn frame(width: u16, height: u16, count: usize, entry: &SessionEntry) -> String 
     let fleet = fleet(count);
     let model = Model::new(&fleet);
     let now = Timestamp::from_epoch(1_791_446_400);
-    let memo = b"2026-10-08T08:00:00Z\tcl:lead\tparking\tkeep-this-topic\n";
-    let overview = overview::of(entry, None, Ok(memo.as_slice()), now);
+    let overview = overview::of(entry, None, None, now);
     let lane = Lane::default();
     let screen = Screen {
         fleet: &fleet,
@@ -86,6 +85,11 @@ fn sidebar(screen: &str) -> Vec<String> {
         .lines()
         .map(|line| line.chars().take(width).collect())
         .collect()
+}
+
+/// The chat header row: the session, its pair and its recorded dir.
+fn header(screen: &str) -> &str {
+    screen.lines().nth(1).unwrap_or_default()
 }
 
 fn border(screen: &str) -> Option<usize> {
@@ -143,7 +147,7 @@ fn minimum_frame_keeps_the_capped_list_and_chat_usable() {
     assert!(side[5].contains("side01"));
     assert!(side[11].contains("side04"));
     assert!(side[13].contains("20 more"));
-    assert!(side[15].contains("Overview") && side[15].contains("Agents"));
+    assert!(side[15].contains("Agents") && !side[15].contains("Overview"));
     assert!(
         screen.contains("Enter writes"),
         "composer survives: {screen}"
@@ -165,57 +169,6 @@ fn one_session_keeps_its_content_sized_list_at_both_required_frames() {
         assert!(sidebar(&screen)[5].contains("side01"));
         assert!(screen.contains("Enter writes"));
     }
-}
-
-#[test]
-fn overview_draws_launch_facts_first_in_the_existing_mode_vocabulary() {
-    for (recorded, displayed, source) in [
-        ("local", "local", false),
-        ("git", "worktree", true),
-        ("worktree", "worktree", true),
-        ("full", "copy", true),
-        ("copy", "copy", true),
-        ("foreign-mode", "foreign-mode", false),
-    ] {
-        let mut entry = SessionEntry::new("side01", Status::Running);
-        entry.mode = Some(recorded.to_owned());
-        entry.work_dir = Some("/launch/work".to_owned());
-        entry.origin = Some("/launch/source".to_owned());
-        entry.branch = Some("live-branch-is-not-a-launch-fact".to_owned());
-        entry.goal = Some("keep-this-goal".to_owned());
-        let rows = body(&frame(160, 45, 1, &entry));
-        let mut facts = vec![format!("mode: {displayed}"), "dir: /launch/work".to_owned()];
-        if source {
-            facts.push("source: /launch/source".to_owned());
-        }
-        assert_eq!(&rows[..facts.len()], &facts, "mode={recorded}");
-        assert_eq!(rows[facts.len()], "", "one gap before Goal");
-        assert_eq!(rows[facts.len() + 1], "Goal");
-        assert!(rows.iter().any(|row| row.contains("keep-this-goal")));
-        assert!(rows.iter().any(|row| row.contains("keep-this-topic")));
-        assert!(
-            !rows
-                .iter()
-                .any(|row| row.starts_with("branch:") || row.starts_with("started"))
-        );
-    }
-}
-
-#[test]
-fn missing_launch_values_are_unrecorded_and_local_has_no_source_row() {
-    let mut entry = SessionEntry::new("side01", Status::Stopped);
-    let rows = body(&frame(160, 45, 1, &entry));
-    assert_eq!(&rows[..2], ["mode: unrecorded", "dir: unrecorded"]);
-    for mode in ["git", "full"] {
-        entry.mode = Some(mode.to_owned());
-        let rows = body(&frame(160, 45, 1, &entry));
-        assert_eq!(rows[1], "dir: unrecorded");
-        assert_eq!(rows[2], "source: unrecorded");
-    }
-    entry.mode = Some("local".to_owned());
-    entry.origin = Some("do-not-show-local-origin".to_owned());
-    let rows = body(&frame(160, 45, 1, &entry));
-    assert!(!rows.iter().any(|row| row.contains("source:")));
 }
 
 struct Rig {
@@ -354,32 +307,16 @@ fn live_facts_refresh_from_the_selected_world_even_without_a_session_id() {
         "GUARD actual app reads fixture lane",
         |screen| screen.contains("side-live-lane"),
     );
-    let initial = rig.wait(&pane, WAIT, "launch facts are first", |screen| {
-        body(screen)
-            .first()
-            .is_some_and(|row| row == "mode: worktree")
+    rig.wait(&pane, WAIT, "the recorded dir is in the header", |screen| {
+        header(screen).contains("/launch/work")
     });
-    assert_eq!(
-        &body(&initial)[..3],
-        [
-            "mode: worktree",
-            "dir: /launch/work",
-            "source: /launch/source"
-        ]
-    );
     for id in [None, Some("not-a-canonical-id")] {
         rig.meta("full", "/replacement/work", id);
         rig.wait(
             &pane,
             WAIT,
-            "same-world launch values refresh; id is not a facts gate",
-            |screen| {
-                body(screen).starts_with(&[
-                    "mode: copy".to_owned(),
-                    "dir: /replacement/work".to_owned(),
-                    "source: /launch/source".to_owned(),
-                ])
-            },
+            "the same world's dir refreshes; id is not a facts gate",
+            |screen| header(screen).contains("/replacement/work"),
         );
     }
 }
@@ -404,25 +341,20 @@ fn keys_repaint_while_the_background_fleet_read_is_held() {
         assert!(Instant::now() < until, "fleet read never attested held");
         std::thread::sleep(Duration::from_millis(25));
     }
-    rig.key(&pane, "\t");
+    rig.key(&pane, "s");
     rig.wait(
         &pane,
         WAIT,
-        "Tab repaints while world read is held",
-        |screen| screen.contains("No seat facts"),
+        "settings repaints while world read is held",
+        |screen| screen.contains("Settings"),
     );
     assert!(gate.exists(), "key did not release the background read");
-    rig.key(&pane, "\t");
-    let shown = rig.wait(
+    rig.key(&pane, "\x1b");
+    rig.wait(
         &pane,
         WAIT,
-        "Overview repaints held snapshot launch facts",
-        |screen| {
-            body(screen)
-                .first()
-                .is_some_and(|row| row == "mode: worktree")
-        },
+        "Esc repaints the held snapshot's dir",
+        |screen| header(screen).contains("/launch/work"),
     );
-    assert_eq!(body(&shown)[1], "dir: /launch/work");
     fs::remove_file(gate).expect("release fixture reader");
 }

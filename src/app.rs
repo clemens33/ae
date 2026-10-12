@@ -1,8 +1,8 @@
 //! `ae app`: the Side Quiet layout — the fleet in a sidebar, the selected
-//! session's Overview or Agents beside it, and the selected session's chat.
+//! session's Agents beside it, and the selected session's chat.
 //!
 //! The pure halves live in the submodules: [`fleet`] folds the sidebar rows,
-//! [`overview`] the Overview tab, [`model`] the browse reducer and [`draw`] the
+//! [`overview`] what waits on the human and the working dir, [`model`] the browse reducer and [`draw`] the
 //! cells. Each reads only what the existing owners already computed. The
 //! world is read on the [`loader`]'s one background thread, through those
 //! owners; this file draws what it last answered, so no key waits on a read.
@@ -37,7 +37,7 @@ use crate::digest::{SessionEntry, Status};
 use crate::inventory::ServerId;
 use crate::listing::World;
 use crate::time::Timestamp;
-use crate::{brief, doors, theme, tmux, transport};
+use crate::{doors, theme, tmux, transport};
 
 use loader::{Answer, Binding, PeekAsk, Request, Wake};
 use peek::Body;
@@ -293,7 +293,6 @@ struct App {
     ids: BTreeMap<String, String>,
     facts: BTreeMap<String, fleet::Facts>,
     needs: BTreeMap<String, Section>,
-    memos: BTreeMap<String, Result<Vec<brief::Filed>, String>>,
     /// Each session's lead pair as the last fleet read found it.
     pairs: BTreeMap<String, Result<Vec<Seat>, String>>,
     /// Each session's last read lane, by name: what a selection shows at once.
@@ -431,7 +430,6 @@ impl App {
             ids: BTreeMap::new(),
             facts: BTreeMap::new(),
             needs: BTreeMap::new(),
-            memos: BTreeMap::new(),
             pairs: BTreeMap::new(),
             shown: BTreeMap::new(),
             looks: BTreeMap::new(),
@@ -756,7 +754,6 @@ impl App {
         let drawn: Vec<String> = self.fleet.rows.iter().map(|row| row.name.clone()).collect();
         self.pending = Some(read.fleet.rows.iter().map(|row| row.name.clone()).collect());
         self.fleet = read.fleet.arranged(&drawn);
-        self.memos = read.memos;
         self.pairs = read.pairs;
         self.fleeted = true;
         self.merged = None;
@@ -1027,7 +1024,7 @@ impl App {
             let _ = input.tick(Reading::Owner, at);
             input
         });
-        let how = "(Agents tab: n/p, oo opens a seat)";
+        let how = "(Agents: n/p, oo opens a seat)";
         let restored = input
             .draft()
             .is_empty()
@@ -1089,9 +1086,9 @@ impl App {
 
     /// Show the selected session from what was answered: its last read lane,
     /// or `loading` until its first read lands — never another session's
-    /// lane — and its Overview from the fleet's read.
+    /// lane — and its open asks and working dir from the fleet's read.
     fn show(&mut self) {
-        let now = Timestamp::now();
+        let (now, user) = (Timestamp::now(), doors::home());
         let Some(name) = self.model.selected().map(str::to_owned) else {
             (self.lane, self.overview) = (Rc::default(), overview::Overview::default());
             self.loading = false;
@@ -1115,7 +1112,6 @@ impl App {
             return;
         }
         let empty = SessionEntry::new(&name, Status::Unknown);
-        let listed = self.entry(&name).is_some();
         let entry = self.entry(&name).unwrap_or(&empty).clone();
         if !self.dirs.contains_key(&name) {
             let gap = format!("{name} has no record directory ae can read");
@@ -1125,27 +1121,13 @@ impl App {
             });
             self.lane = self.merge(&name, Some(lane));
             self.loading = false;
-            self.overview = overview::of(&entry, None, Err(gap), now);
-            self.unlist(listed);
+            self.overview = overview::of(&entry, None, user.as_deref(), now);
             return;
         }
         let shown = self.shown.get(&name).map(|shown| Rc::clone(&shown.lane));
         self.loading = shown.is_none();
         self.lane = self.merge(&name, shown);
-        let memo = self.memos.get(&name).map_or_else(
-            || Err("memo not read yet".to_owned()),
-            |memo| memo.as_deref().map_err(String::clone),
-        );
-        self.overview = overview::of_filed(&entry, self.needs.get(&name), memo, now);
-        self.unlist(listed);
-    }
-
-    /// A selection the world read holds no entry for names that in place of
-    /// launch facts it would only have guessed.
-    fn unlist(&mut self, listed: bool) {
-        if !listed {
-            self.overview.launch = vec![overview::LAUNCH_GAP.to_owned()];
-        }
+        self.overview = overview::of(&entry, self.needs.get(&name), user.as_deref(), now);
     }
 
     /// Session `name`'s lane `base` with ae's own notices in it by time —
@@ -1654,13 +1636,9 @@ impl App {
                 self.write(false);
                 act
             }
-            draw::Hit::Tab(tab) => {
-                self.write(false);
-                self.model.show_tab(tab)
-            }
             draw::Hit::Compose if !self.composing() => {
                 self.model
-                    .key(model::Key::Compose, &self.fleet, self.can_compose(), true)
+                    .key(model::Key::Compose, &self.fleet, self.can_compose())
             }
             draw::Hit::Compose => return false,
             draw::Hit::Seat(name) => {
@@ -2033,7 +2011,7 @@ impl App {
             }
             self.reread();
         }
-        // A held drag keeps the screen as drawn: re-aging the Overview under it
+        // A held drag keeps the screen as drawn: re-aging the Agents body under it
         // would change the cells it lit.
         if ran || !self.holds_lane() {
             self.show();
@@ -2053,7 +2031,7 @@ impl App {
         about: &str,
         outcome: submit::Outcome,
     ) -> Vec<String> {
-        let check = format!("check {seat} pane (Agents tab: n/p, oo opens a seat)");
+        let check = format!("check {seat} pane (Agents: n/p, oo opens a seat)");
         let word = match outcome {
             submit::Outcome::Sent(_, kept) => {
                 self.sent.insert(self.sent_key(about, &id));
@@ -2831,7 +2809,7 @@ fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
     }
     let mut redraw = false;
     for key in model::browse_keys(key) {
-        let act = app.model.key(key, &app.fleet, app.can_compose(), true);
+        let act = app.model.key(key, &app.fleet, app.can_compose());
         redraw |= apply(app, &act, origin)?;
     }
     Some(redraw)
@@ -2875,7 +2853,7 @@ fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
     }
     let mut redraw = disarmed;
     for key in model::browse_keys(&Key::Text(vec![byte])) {
-        let act = app.model.key(key, &app.fleet, app.can_compose(), true);
+        let act = app.model.key(key, &app.fleet, app.can_compose());
         redraw |= apply(app, &act, origin)?;
     }
     Some(redraw)
@@ -2914,7 +2892,7 @@ fn settings_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
     for key in model::browse_keys(key) {
         // The overlay branch returns no Quit, Select or Compose; a close
         // shows as the state it leaves behind, told below.
-        if app.model.key(key, &app.fleet, app.can_compose(), true) == model::Act::Redraw {
+        if app.model.key(key, &app.fleet, app.can_compose()) == model::Act::Redraw {
             redraw = true;
         }
     }
@@ -2944,7 +2922,7 @@ fn peek_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
 fn peek_keys(app: &mut App, keys: Vec<model::Key>) -> bool {
     let mut redraw = false;
     for key in keys {
-        redraw |= app.model.key(key, &app.fleet, false, false) == model::Act::Redraw;
+        redraw |= app.model.key(key, &app.fleet, false) == model::Act::Redraw;
     }
     if !app.model.peek_open() {
         app.close_peek();
@@ -2967,7 +2945,7 @@ fn settings_byte(app: &mut App, byte: u8) -> bool {
     }
     let mut redraw = false;
     for key in model::browse_keys(&Key::Text(vec![byte])) {
-        if app.model.key(key, &app.fleet, app.can_compose(), true) == model::Act::Redraw {
+        if app.model.key(key, &app.fleet, app.can_compose()) == model::Act::Redraw {
             redraw = true;
         }
     }
@@ -3026,7 +3004,7 @@ mod tests {
         App, USAGE, browse, draw, facts_of, fleet, run, select, settings, settings_key, take_keys,
     };
     use crate::app::fleet::{Counts, Fleet, Row};
-    use crate::app::model::{Drag, Edge, Key as Browse, Model, SettingsTab, Tab};
+    use crate::app::model::{Drag, Edge, Key as Browse, Model, SettingsTab};
     use crate::attention::Reason;
     use crate::console::input::{Effect, Input, Key, Mouse, MouseKind, Reading};
     use crate::console::lane::{Item, Kind, Lane};
@@ -3274,7 +3252,7 @@ mod tests {
 
     /// A fleet read that empties the fleet, then one that fills it again,
     /// keeps both chosen sizes and the drag still held: a read is not input.
-    /// The refilled fleet otherwise starts fresh, on its first row's Overview.
+    /// The refilled fleet otherwise starts fresh, on its first row.
     #[test]
     fn an_emptied_then_refilled_fleet_keeps_its_sizes_and_drag() {
         let rule_row = |shown: &str| shown.lines().position(|line| line.starts_with('─'));
@@ -3300,7 +3278,6 @@ mod tests {
         let row = rule_row(&widened).expect("list rule");
         assert!(app.mouse(mouse(super::MouseKind::Click, 2, row)));
         assert!(app.mouse(mouse(super::MouseKind::Drag, 2, row + 3)));
-        app.model.show_tab(Tab::Agents);
         app.answer(Answer::Fleet(empty));
         assert_eq!(
             app.model.selected(),
@@ -3320,45 +3297,12 @@ mod tests {
             Some("web"),
             "the first row is selected"
         );
-        assert_eq!(app.model.tab(), Tab::Overview, "on a fresh Overview");
         assert!(app.model.drag().is_some(), "the drag is still held");
         assert!(
             app.mouse(mouse(super::MouseKind::Drag, 2, row + 4)),
             "and still drags"
         );
         assert_eq!(rule_row(&framed(&mut app)), Some(row + 4));
-    }
-
-    /// Leaving writing on the current tab must repaint immediately, keeping the draft.
-    #[test]
-    fn a_same_tab_mouse_click_ends_writing_and_requests_redraw() {
-        let root = Root::new("mouse-same-tab");
-        let (mut app, _reader) = housed(&root);
-        app.fleet = one_row(Some("api"));
-        app.model = Model::new(&app.fleet);
-        app.world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
-        let at = writing(&mut app);
-        assert_eq!(app.compose(Key::Text(b"kept draft".to_vec()), at), Some(()));
-        let shown = framed(&mut app);
-        let (row, column) = shown
-            .lines()
-            .enumerate()
-            .find_map(|(row, line)| {
-                line.find("Overview")
-                    .map(|byte| (row, line[..byte].chars().count()))
-            })
-            .expect("drawn Overview tab");
-        assert!(
-            app.mouse(super::Mouse {
-                kind: super::MouseKind::Click,
-                column: u16::try_from(column).expect("frame column"),
-                row: u16::try_from(row).expect("frame row"),
-            }),
-            "the mode change needs an immediate redraw"
-        );
-        assert!(!app.composing());
-        assert_eq!(app.model.tab(), crate::app::model::Tab::Overview);
-        assert_eq!(drafted(&app), "kept draft");
     }
 
     /// The bottom keys row is outside chat, while the composer just above still scrolls.
@@ -3421,9 +3365,9 @@ mod tests {
         assert_eq!(framed(&mut app), end, "and draws nothing new");
     }
 
-    /// Every drawn tab label includes its last cell and excludes the next blank cell.
+    /// The Agents heading is a label, not a target: no cell of it hits.
     #[test]
-    fn mouse_tab_targets_end_at_the_last_drawn_label_cell() {
+    fn the_agents_heading_is_no_click_target() {
         let mut app = app(None);
         app.fleet = one_row(None);
         app.model = Model::new(&app.fleet);
@@ -3436,30 +3380,24 @@ mod tests {
             },
         );
         let shown = framed(&mut app);
-        for (label, tab) in [
-            ("Overview", crate::app::model::Tab::Overview),
-            ("Agents 0", crate::app::model::Tab::Agents),
-        ] {
-            let (row, column) = shown
-                .lines()
-                .enumerate()
-                .find_map(|(row, line)| {
-                    line.find(label)
-                        .map(|byte| (row, line[..byte].chars().count()))
-                })
-                .expect("drawn tab label");
-            let mut mouse = super::Mouse {
+        let (row, column) = (shown.lines().enumerate())
+            .find_map(|(row, line)| {
+                line.find("Agents 0")
+                    .map(|byte| (row, line[..byte].chars().count()))
+            })
+            .expect("drawn heading");
+        for cell in 0.."Agents 0".len() {
+            let mouse = super::Mouse {
                 kind: super::MouseKind::Click,
-                column: u16::try_from(column + label.chars().count() - 1).expect("last label cell"),
+                column: u16::try_from(column + cell).expect("frame column"),
                 row: u16::try_from(row).expect("frame row"),
             };
             assert!(
-                matches!(app.layout.hit(mouse), Some(super::draw::Hit::Tab(hit)) if hit == tab),
-                "last cell of {label}"
+                app.layout.hit(mouse).is_none(),
+                "cell {cell} of the heading"
             );
-            mouse.column += 1;
-            assert!(app.layout.hit(mouse).is_none(), "one cell past {label}");
         }
+        assert!(!shown.contains("Overview"), "{shown}");
     }
 
     /// B2-F4: a frame bounds the scroll to the pages the lane holds — the
@@ -3477,13 +3415,13 @@ mod tests {
             coverage: Vec::new(),
         });
         for _ in 0..80 {
-            let _ = app.model.key(Browse::PageUp, &app.fleet, false, true);
+            let _ = app.model.key(Browse::PageUp, &app.fleet, false);
         }
         let shown = framed(&mut app);
         let bound = app.model.pages();
         assert!(bound > 0 && bound < 80, "clamped to the lane: {bound}");
         assert!(shown.contains("oldest turn"), "the bound shows the oldest");
-        let _ = app.model.key(Browse::PageDown, &app.fleet, false, true);
+        let _ = app.model.key(Browse::PageDown, &app.fleet, false);
         assert!(
             !framed(&mut app).contains("oldest turn"),
             "one fewer hides it"
@@ -3854,7 +3792,7 @@ mod tests {
         assert!(app.entry("zzz").is_none());
         app.fleet = one_row(None);
         app.model = Model::new(&app.fleet);
-        assert!(framed(&mut app).contains("Overview   Agents"));
+        assert!(framed(&mut app).contains("Agents"));
     }
 
     /// D3 (docs/app.md Ownership): a selection is read-only and says why
@@ -4630,7 +4568,7 @@ mod tests {
         let shown = framed(&mut app);
         assert!(shown.contains("web turn"), "{shown}");
         assert!(!shown.contains("ops turn"), "{shown}");
-        let _ = app.model.key(Browse::Digit(2), &app.fleet, false, true);
+        let _ = app.model.key(Browse::Digit(2), &app.fleet, false);
         app.show();
         let shown = framed(&mut app);
         assert!(shown.contains("ops turn"), "the cached lane shows at once");
@@ -4644,7 +4582,7 @@ mod tests {
         let mut app = app(None);
         two(&mut app);
         app.answer(view("web", ID, 1, "web turn"));
-        let _ = app.model.key(Browse::Digit(2), &app.fleet, false, true);
+        let _ = app.model.key(Browse::Digit(2), &app.fleet, false);
         app.show();
         let shown = framed(&mut app);
         assert!(!shown.contains("web turn"), "{shown}");
@@ -4656,17 +4594,46 @@ mod tests {
         assert!(shown.contains("ops turn") && !shown.contains("loading"));
     }
 
-    /// A selection the world holds an entry for draws that entry's launch
-    /// facts; one the world does not hold names the gap and guesses none.
+    /// R6: the header names the selected session's recorded work dir beside
+    /// its name, `$HOME` as `~`, cut from the LEFT with an ellipsis when it
+    /// does not fit so the leaf stays; none recorded, or a selection the world
+    /// does not hold, draws none.
     #[test]
-    fn a_selection_outside_the_world_names_its_launch_gap() {
+    fn the_header_shows_the_recorded_work_dir_home_shortened_cut_from_the_left() {
+        let home = crate::doors::home().expect("a test HOME");
+        let tail = "projects/clemens33/ae/crates/with/deeply/nested/directories/of/leaf-dir";
         let mut app = app(None);
         two(&mut app);
+        app.world.sessions[0].work_dir = Some(format!("{}/{tail}", home.display()));
         app.show();
-        assert_eq!(app.overview.launch[0], "mode: unrecorded");
+        let header = |app: &mut App, width| {
+            let shown = framed_at(app, width);
+            shown.lines().nth(1).expect("header row").to_owned()
+        };
+        let wide = header(&mut app, 220);
+        assert!(wide.contains(&format!("~/{tail}")), "{wide}");
+        let narrow = header(&mut app, 100);
+        assert!(
+            narrow.contains('…') && narrow.contains("/leaf-dir"),
+            "{narrow}"
+        );
+        assert!(
+            !narrow.contains("~/projects/clemens33/ae/crates"),
+            "{narrow}"
+        );
+        app.world.sessions[0].work_dir = None;
+        app.show();
+        let none = header(&mut app, 160);
+        assert!(!none.contains('…') && !none.contains('~'), "{none}");
+        // A selection the world holds no entry for guesses no dir and no ask.
         app.world = World::new(Timestamp::now(), Vec::new());
         app.show();
-        assert_eq!(app.overview.launch, [crate::app::overview::LAUNCH_GAP]);
+        assert_eq!(app.overview, crate::app::overview::Overview::default());
+        let unlisted = header(&mut app, 160);
+        assert!(
+            !unlisted.contains('~') && !unlisted.contains('/'),
+            "{unlisted}"
+        );
     }
 
     /// A lane older than the one shown, or read as an identity the session
@@ -4693,7 +4660,6 @@ mod tests {
             fleet: app.fleet.clone(),
             pairs: std::collections::BTreeMap::new(),
             scanned: true,
-            memos: std::collections::BTreeMap::new(),
         };
         app.answer(Answer::Fleet(read));
         let shown = framed(&mut app);
@@ -4741,7 +4707,6 @@ mod tests {
             fleet: one_row(Some("api")),
             pairs: std::collections::BTreeMap::new(),
             scanned: true,
-            memos: std::collections::BTreeMap::new(),
         };
         app.answer(Answer::Fleet(read));
         assert_eq!(app.dressed(), (Some(off), None), "home's read look stays");
@@ -4761,7 +4726,6 @@ mod tests {
             fleet: app.fleet.clone(),
             pairs: app.pairs.clone(),
             scanned: true,
-            memos: std::collections::BTreeMap::new(),
         }
     }
 
@@ -5046,16 +5010,16 @@ mod tests {
             look: Some(drawn),
             zone: Some("+0200".to_owned()),
         });
-        let _ = app.model.key(Browse::Digit(2), &app.fleet, false, true);
+        let _ = app.model.key(Browse::Digit(2), &app.fleet, false);
         assert_eq!(app.dressed(), (None, None), "home unread: no colour");
-        let _ = app.model.key(Browse::Digit(1), &app.fleet, false, true);
+        let _ = app.model.key(Browse::Digit(1), &app.fleet, false);
         app.answer(Answer::Look {
             name: "api".to_owned(),
             look: None,
             zone: None,
         });
         assert_eq!(app.dressed().1, None, "web's zone never dresses home");
-        let _ = app.model.key(Browse::Digit(2), &app.fleet, false, true);
+        let _ = app.model.key(Browse::Digit(2), &app.fleet, false);
         assert_eq!(app.dressed().1, Some("+0200"));
         app.answer(Answer::Look {
             name: "api".to_owned(),
@@ -5482,11 +5446,11 @@ mod tests {
         app.fleet = one_row(Some("api"));
         app.open_settings();
         app.model.set_settings_page_rows(5);
-        app.model.key(Browse::PageDown, &app.fleet, false, true);
+        app.model.key(Browse::PageDown, &app.fleet, false);
         assert_eq!(app.model.settings().expect("open").scroll, 5);
-        app.model.key(Browse::PageDown, &app.fleet, false, true);
+        app.model.key(Browse::PageDown, &app.fleet, false);
         assert_eq!(app.model.settings().expect("open").scroll, 10);
-        app.model.key(Browse::PageUp, &app.fleet, false, true);
+        app.model.key(Browse::PageUp, &app.fleet, false);
         assert_eq!(app.model.settings().expect("open").scroll, 5);
     }
 
@@ -5773,7 +5737,7 @@ mod tests {
             .unwrap_or_else(|| panic!("drawn {want}"))
     }
 
-    /// Painting the open overlay strips what it covers: session, tab and
+    /// Painting the open overlay strips what it covers: session and
     /// compose targets, borders and chat geometry go, the gear target stays.
     #[test]
     fn settings_paint_strips_covered_targets_borders_and_chat() {
@@ -5789,9 +5753,6 @@ mod tests {
             strip_cell(&shown, &app, "web", "session target", |hit| {
                 matches!(hit, Some(super::draw::Hit::Session(_)))
             });
-        let (tab_row, tab_column) = strip_cell(&shown, &app, "Agents 0", "tab target", |hit| {
-            matches!(hit, Some(super::draw::Hit::Tab(_)))
-        });
         let (compose_row, compose_column) =
             strip_cell(&shown, &app, "api", "compose target", |hit| {
                 matches!(hit, Some(super::draw::Hit::Compose))
@@ -5812,10 +5773,6 @@ mod tests {
         assert!(
             app.layout.hit(click(session_column, session_row)).is_none(),
             "covered session target gone"
-        );
-        assert!(
-            app.layout.hit(click(tab_column, tab_row)).is_none(),
-            "covered tab target gone"
         );
         assert!(
             app.layout.hit(click(compose_column, compose_row)).is_none(),
@@ -7122,15 +7079,33 @@ mod tests {
         assert!(app.restart_due(quiet).is_some(), "released and copied");
     }
 
-    /// The Overview's ages are judged at the press while the button is down:
-    /// a second turning under a drag does not change the cells it lit.
+    /// The Agents body's ages are judged at the press while the button is
+    /// down: a second turning under a drag does not change the cells it lit.
     #[test]
-    fn the_overview_ages_wait_for_a_held_drag() {
+    fn the_agents_ages_wait_for_a_held_drag() {
         let mut app = turned(&[]);
-        let mut entry = crate::digest::SessionEntry::new("api", crate::digest::Status::Running);
-        entry.goal = Some("BODYWORD".to_owned());
-        entry.goal_set_epoch = Some(crate::time::Timestamp::now().epoch() - 30);
+        let entry = crate::digest::SessionEntry::new("api", crate::digest::Status::Running);
         app.world.sessions = vec![entry];
+        app.dirs
+            .insert("api".to_owned(), PathBuf::from("/nonexistent"));
+        let since = (crate::time::Timestamp::now().epoch() - 30) * 1_000_000;
+        app.needs.insert(
+            "api".to_owned(),
+            crate::console::needs::Section {
+                rows: vec![crate::console::needs::Row {
+                    seat: seat_ref("main", "lead"),
+                    lead_pair: true,
+                    verdict: crate::console::needs::Verdict::Reason(Reason::WaitingUser),
+                    source: crate::console::needs::Source::Declaration,
+                    stale: None,
+                    since_micros: Some(since),
+                    detail: "BODYWORD".to_owned(),
+                    record: None,
+                }],
+            },
+        );
+        // The row a press lands on stays as drawn: its seat is focused already.
+        app.focus_seat(Some("lead".to_owned()));
         app.show();
         let (_, x, y) = shown(&mut app, "BODYWORD");
         app.mouse(at(MouseKind::Click, x, y));
@@ -7507,7 +7482,6 @@ mod tests {
         let view = super::handover::View {
             session: "web".to_owned(),
             id: ID.to_owned(),
-            tab: Tab::Agents,
             focus: None,
             sidebar: None,
             list: None,
@@ -7610,7 +7584,6 @@ mod tests {
         app.answer(handed(2, 3));
         refold(&mut app, &reader, &root, &[("web", Status::Running)]);
         assert_eq!(app.model.selected(), Some("web"));
-        assert_eq!(app.model.tab(), Tab::Agents, "the tab was restored");
         assert_eq!(app.model.scroll_rows(10), 23, "and the scroll");
         assert!(app.keep.is_none(), "applied once");
     }

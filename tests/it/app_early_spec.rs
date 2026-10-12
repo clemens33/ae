@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use super::loader::{Answer, Reader};
-use super::model::Tab;
 use super::tests::{Root, entry, session};
 use super::{App, EARLY_CAP, EARLY_NOTICE, take_keys};
 use crate::console::input::{Key, Mouse, MouseKind};
@@ -70,16 +69,9 @@ fn navigation_has_no_pre_fleet_mutation_and_replays_in_byte_order() {
             (Key::Text(b"21".to_vec()), at),
         ],
     );
-    assert_eq!(
-        (app.model.tab(), app.model.pages()),
-        (Tab::Overview, 0),
-        "cold model never navigates"
-    );
+    assert_eq!(app.model.pages(), 0, "cold model never navigates");
     loaded(&mut app, "early-order");
-    assert_eq!(
-        (app.model.selected(), app.model.tab(), app.model.pages()),
-        (Some("api"), Tab::Agents, 0)
-    );
+    assert_eq!((app.model.selected(), app.model.pages()), (Some("api"), 0));
     assert!(app.early.is_empty());
 }
 
@@ -138,10 +130,7 @@ fn all_pre_fleet_mouse_kinds_are_dropped_under_the_same_notice() {
         assert_eq!(app.note().as_deref(), Some(NOTICE), "mouse drop is visible");
         assert_eq!(app.model, before, "mouse never mutates the cold model");
         loaded(&mut app, "early-mouse");
-        assert_eq!(
-            (app.model.selected(), app.model.tab(), app.model.pages()),
-            (Some("api"), Tab::Overview, 0)
-        );
+        assert_eq!((app.model.selected(), app.model.pages()), (Some("api"), 0));
         assert!(app.early.is_empty() && app.deferred.is_empty());
     }
 }

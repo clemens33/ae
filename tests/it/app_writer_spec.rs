@@ -636,7 +636,7 @@ fn busy_entry_is_held_across_reads_and_retry_drops_its_own_old_tail() {
     for text in ["j", "\t", "q", "n", "TAIL"] {
         rig.raw(&pane, text);
         rig.wait(&pane, "held stream cannot become browse commands", |s| {
-            s.contains(&busy) && s.contains("Overview")
+            s.contains(&busy) && s.contains("Agents")
         });
     }
     drop(witness);
@@ -651,7 +651,7 @@ fn busy_entry_is_held_across_reads_and_retry_drops_its_own_old_tail() {
         "fresh Enter retry acquires and drops old retry tail",
         |s| writing(s) && s.contains("keys typed before writing started"),
     );
-    assert!(screen.contains("Topics"), "held Tab never changed Overview");
+    assert!(screen.contains("Agents"), "held keys never left the frame");
     assert!(!rig.draft_row(&screen).contains("RETRY"));
     assert!(rig.asks().is_empty());
     rig.held();
@@ -677,7 +677,7 @@ fn nonregular_lease_has_its_own_held_refusal_and_reads_no_kept_draft() {
     );
     rig.raw(&pane, "q\tTAIL");
     rig.wait(&pane, "nonregular HELD mode swallows keys", |s| {
-        s.contains("not writing") && s.contains("Overview")
+        s.contains("not writing") && s.contains("Agents")
     });
     assert_eq!(
         fs::read_to_string(rig.tool.dir.join("console.draft")).expect("kept file"),
@@ -768,32 +768,24 @@ fn esc_interrupt_quit_and_crash_release_the_kernel_lease() {
 }
 
 #[test]
-fn session_card_and_tab_click_leave_write_mode_and_release() {
-    for (tag, target) in [("wbcard", "card"), ("wbtab", "Agents")] {
-        let rig = Rig::new(tag);
-        let pane = rig.console(false);
-        rig.enter(&pane);
-        rig.typed(&pane, "click-draft");
-        if target == "card" {
-            // The list card is the first occurrence below its Sessions row;
-            // the chat heading on row 1 is deliberately not a click target.
-            let screen = rig.screen(&pane);
-            let y = screen
-                .lines()
-                .enumerate()
-                .find_map(|(y, row)| {
-                    (y >= 5 && row.split_whitespace().any(|w| w == rig.home)).then_some(y)
-                })
-                .expect("drawn home card");
-            rig.raw(&pane, &format!("\x1b[<0;3;{}M", y + 1));
-        } else {
-            rig.click(&pane, target);
-        }
-        rig.wait(&pane, "R-B5 clicked card/tab leaves writing", |s| {
-            s.contains("draft kept") && s.contains("Enter writes")
-        });
-        rig.free();
-    }
+fn session_card_click_leaves_write_mode_and_release() {
+    let rig = Rig::new("wbcard");
+    let pane = rig.console(false);
+    rig.enter(&pane);
+    rig.typed(&pane, "click-draft");
+    // The list card is the first occurrence below its Sessions row; the chat
+    // heading on row 1 is deliberately not a click target.
+    let screen = rig.screen(&pane);
+    let y = screen
+        .lines()
+        .enumerate()
+        .find_map(|(y, row)| (y >= 5 && row.split_whitespace().any(|w| w == rig.home)).then_some(y))
+        .expect("drawn home card");
+    rig.raw(&pane, &format!("\x1b[<0;3;{}M", y + 1));
+    rig.wait(&pane, "R-B5 clicked card leaves writing", |s| {
+        s.contains("draft kept") && s.contains("Enter writes")
+    });
+    rig.free();
 }
 
 #[test]

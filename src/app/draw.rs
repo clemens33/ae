@@ -14,8 +14,8 @@ use ratatui_core::style::{Color, Modifier, Style};
 use ratatui_core::text::{Line, Span};
 
 use super::fleet::{Counts, Facts, Fleet, Line2, Row, summary};
-use super::model::{Drag, Edge, Model, SettingsTab, Split, Tab};
-use super::overview::Overview;
+use super::model::{Drag, Edge, Model, SettingsTab, Split};
+use super::overview::{Open, Overview};
 use super::peek;
 use super::select::{self, Map, Region};
 use super::settings::{AboutFacts, ConfigView, InstructionsView, SettingsBodies};
@@ -26,7 +26,7 @@ use crate::console::lane::Lane;
 use crate::console::view;
 use crate::console::wrap::wrap;
 use crate::digest::{SessionEntry, Status};
-use crate::event_text::clip_head;
+use crate::event_text::{clip_head, clip_tail};
 use crate::quota::view::Tone;
 use crate::theme::{Look, Mark, Palette};
 use crate::time::Timestamp;
@@ -82,7 +82,7 @@ const LEFT: u16 = 2;
 /// Where a session row's name starts.
 const NAME: u16 = 6;
 /// The narrowest a drag leaves the sidebar: the tab row still keeps a gap
-/// between `Agents NN` and `Tab`, and a name beside its counts.
+/// between the `Agents NN` heading and its rule, and a name beside its counts.
 const SIDEBAR_FLOOR: u16 = 30;
 /// The chat columns a drag leaves right of the rule.
 const CHAT_FLOOR: u16 = 40;
@@ -95,7 +95,6 @@ const LANE_FLOOR: u16 = 3;
 #[derive(Debug, Clone)]
 pub(crate) enum Hit {
     Session(String),
-    Tab(Tab),
     /// A drawn seat row: moves the highlight to that seat.
     Seat(String),
     Compose,
@@ -314,6 +313,23 @@ impl Paint {
     /// A mark's accent.
     fn mark(self, mark: Mark) -> Style {
         self.fg(|palette| palette.accent(mark))
+    }
+
+    /// The focused seat's row `area`: the selected ground, the dim words in
+    /// the selected ink so only it and the accents sit on it; else reverse video.
+    fn lift(self, buf: &mut Buffer, area: Rect) {
+        let Some(palette) = self.0 else {
+            buf.set_style(area, Style::new().add_modifier(Modifier::REVERSED));
+            return;
+        };
+        buf.set_style(area, Style::new().bg(colour(palette.selected)));
+        let (dim, ink) = (colour(palette.dim), colour(palette.selected_ink));
+        for position in area.intersection(buf.area).positions() {
+            let cell = &mut buf[position];
+            if cell.fg == dim {
+                cell.fg = ink;
+            }
+        }
     }
 
     /// The selected name: the title hue, or bold and reverse with no colour.
@@ -697,7 +713,7 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         return;
     };
     let tabs = list.end + 1;
-    tab_row(ctx, buf, tabs, end, layout);
+    agents_heading(ctx, buf, tabs, end);
     let border = paint.rule(dragged(model, Edge::List));
     put(
         buf,
@@ -708,20 +724,24 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         border,
     );
     layout.border(buf, Edge::List, tabs + 1, Rect::new(0, tabs + 1, rule, 1));
-    let body = match model.tab() {
-        Tab::Overview => overview_rows(ctx, room, rule >= 44),
-        Tab::Agents => agent_rows(ctx, entry),
-    };
-    tab_body(ctx, buf, body, tabs + 2, rule, room, layout);
+    tab_body(
+        ctx,
+        buf,
+        &agent_rows(ctx, entry, room),
+        tabs + 2,
+        rule,
+        room,
+        layout,
+    );
 }
 
-/// The tab body from row `top` down to the floor, in the sidebar's `room`,
+/// The Agents body from row `top` down to the floor, in the sidebar's `room`,
 /// scrolled to the model's row; a body that does not fit names the rows it
 /// hides on its last row.
 fn tab_body(
     ctx: &Ctx<'_, '_>,
     buf: &mut Buffer,
-    mut body: Vec<Cells>,
+    body: &[Cells],
     top: u16,
     rule: u16,
     room: u16,
@@ -730,10 +750,6 @@ fn tab_body(
     let (end, paint) = (rule - 2, ctx.paint);
     let floor = buf.area.height.saturating_sub(2);
     let room_rows = floor.saturating_sub(top);
-    // A body that would lose rows gives up its gaps first.
-    if body.len() > usize::from(room_rows) {
-        body.retain(|row| row.left.width() > 0);
-    }
     // A body that still does not fit gives its last row to the rows it hides.
     let cut = body.len() > usize::from(room_rows);
     let shown = usize::from(room_rows.saturating_sub(u16::from(cut)));
@@ -769,32 +785,34 @@ fn tab_body(
         .find(|seat| Some(seat.as_str()) == asked))
     .or(layout.seats.first())
     .cloned();
+    let mut before = None;
     for (step, row) in drawn.enumerate() {
         let y = top + cells(step);
-        if let Some(seat) = &row.seat {
+        let seat = row.seat.as_deref();
+        let focused = seat.is_some() && layout.focused.as_deref() == seat;
+        if let Some(seat) = seat {
             layout.record(
                 buf,
                 Rect::new(LEFT, y, end - LEFT, 1),
-                Hit::Seat(seat.clone()),
+                Hit::Seat(seat.to_owned()),
             );
-            if layout.focused.as_ref() == Some(seat) {
-                let glyph = if ctx.icons { "▸" } else { ">" };
-                put(
-                    buf,
-                    0,
-                    y,
-                    glyph,
-                    1,
-                    paint.fg(|p| p.title).add_modifier(Modifier::BOLD),
-                );
-            }
         }
+        // One glyph, on the seat's first drawn row; its rows share the ground.
+        if focused && before != seat {
+            let glyph = if ctx.icons { "▸" } else { ">" };
+            let ink = paint.fg(|p| p.selected_ink).add_modifier(Modifier::BOLD);
+            put(buf, 0, y, glyph, 1, ink);
+        }
+        before = seat;
         let used = put_line(buf, LEFT, y, &row.left, room);
         if let Some(right) = &row.right {
             let width = cells(right.width());
             if used + 1 + width <= end {
                 put_line(buf, end - width, y, right, width);
             }
+        }
+        if focused {
+            paint.lift(buf, Rect::new(0, y, end, 1));
         }
     }
 }
@@ -979,50 +997,14 @@ fn seats_word(seats: usize) -> String {
     }
 }
 
-/// The tab row: Overview and Agents, the showing one bold and underlined.
-fn tab_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, y: u16, end: u16, layout: &mut Layout) {
-    let paint = ctx.paint;
-    let style = |showing: bool| {
-        if showing {
-            paint
-                .fg(|p| p.text)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else {
-            paint.fg(|p| p.dim)
-        }
-    };
-    let tab = ctx.screen.model.tab();
-    let agents = match ctx.screen.agents {
+/// The heading over the body: `Agents` and the seat count.
+fn agents_heading(ctx: &Ctx<'_, '_>, buf: &mut Buffer, y: u16, end: u16) {
+    let words = match ctx.screen.agents {
         Some(Facts::Seats { agents, .. }) => format!("Agents {}", agents.len()),
         _ => "Agents".to_owned(),
     };
-    let x = put(
-        buf,
-        LEFT,
-        y,
-        "Overview",
-        end - LEFT,
-        style(tab == Tab::Overview),
-    );
-    layout.record(
-        buf,
-        Rect::new(LEFT, y, x - LEFT, 1),
-        Hit::Tab(Tab::Overview),
-    );
-    let after = put(
-        buf,
-        x + 3,
-        y,
-        &agents,
-        end.saturating_sub(x + 3),
-        style(tab == Tab::Agents),
-    );
-    layout.record(
-        buf,
-        Rect::new(x + 3, y, after.saturating_sub(x + 3), 1),
-        Hit::Tab(Tab::Agents),
-    );
-    put(buf, end - 3, y, "Tab", 3, paint.fg(|p| p.dim));
+    let style = ctx.paint.fg(|p| p.text).add_modifier(Modifier::BOLD);
+    put(buf, LEFT, y, &words, end - LEFT, style);
 }
 
 /// A body row: its left text and, right-aligned, an optional word.
@@ -1047,122 +1029,39 @@ impl Cells {
         self.seat = Some(seat.to_owned());
         self
     }
-
-    fn blank() -> Self {
-        Self::of(Vec::new())
-    }
 }
 
-/// The Overview tab: the launch facts, the goal, what waits on you, the latest
-/// decision and the latest memo per topic. Narrow, every item takes one
-/// clipped line.
-fn overview_rows(ctx: &Ctx<'_, '_>, room: u16, wide: bool) -> Vec<Cells> {
+/// The Agents body: each seat with its state, then its client, the model its
+/// frame drew and the effort, each only when known and never the profile, then
+/// the reason it waits on the human. An ask from a seat the roster lacks is an
+/// entry of its own after the roster; a session ae has no seat facts for says why.
+fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> {
     let paint = ctx.paint;
-    let overview = ctx.screen.overview;
     let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
-    let heading =
-        |words: String| Cells::of(vec![Span::styled(words, text.add_modifier(Modifier::BOLD))]);
-    let quiet = |words: &str| Cells::of(vec![Span::styled(words.to_owned(), dim)]);
-    let mut rows: Vec<Cells> = overview
-        .launch
-        .iter()
-        .map(|fact| quiet(&clip_head(fact, usize::from(room))))
-        .collect();
-    if !rows.is_empty() {
-        rows.push(Cells::blank());
-    }
-    rows.push(heading("Goal".to_owned()));
-    rows.push(match &overview.goal {
-        Some((goal, since)) => Cells::of(vec![Span::styled(aged(goal, *since, room), text)]),
-        None => quiet("No goal set."),
-    });
-    rows.push(Cells::blank());
-    rows.push(heading(format!("Waiting on you {}", overview.open.len())));
-    if overview.open.is_empty() {
-        rows.push(quiet("Nothing waits on you."));
-    }
-    let mark = Span::styled("⚠ ", paint.fg(|p| p.needs_you));
-    for open in &overview.open {
-        let room = room.saturating_sub(2);
-        if wide {
-            rows.push(
-                Cells::of(vec![
-                    mark.clone(),
-                    Span::styled(clip_head(&open.text, usize::from(room)), text),
-                ])
-                .of_seat(&open.seat),
-            );
-            let asked = format!("  asked by {} · {}", open.seat, age(open.age_secs));
-            rows.push(Cells::of(vec![Span::styled(asked, dim)]).of_seat(&open.seat));
-        } else {
-            let line = aged(&open.text, open.age_secs, room);
-            rows.push(Cells::of(vec![mark.clone(), Span::styled(line, text)]).of_seat(&open.seat));
-        }
-    }
-    rows.push(Cells::blank());
-    rows.push(heading("Decided · latest memo".to_owned()));
-    let gap = overview
-        .memo_gap
-        .as_ref()
-        .map(|why| format!("Memo unreadable: {why}"));
-    match (&overview.decided, &gap) {
-        (_, Some(gap)) => rows.push(quiet(gap)),
-        (Some(line), None) => rows.push(Cells::of(vec![Span::styled(
-            aged(&line.text, line.age_secs, room),
-            text,
-        )])),
-        (None, None) => rows.push(quiet("No decision memo.")),
-    }
-    rows.push(Cells::blank());
-    rows.push(heading("Topics".to_owned()));
-    if let Some(gap) = &gap {
-        rows.push(quiet(gap));
-    } else if overview.topics.is_empty() {
-        rows.push(quiet("No topics."));
-    }
-    for line in overview.topics.iter().filter(|_| gap.is_none()) {
-        let topic = Span::styled(line.topic.clone(), text.add_modifier(Modifier::BOLD));
-        if wide {
-            rows.push(Cells::of(vec![
-                topic,
-                Span::styled(format!("  {}", age(line.age_secs)), dim),
-            ]));
-            let shown = clip_head(&line.text, usize::from(room.saturating_sub(2)));
-            rows.push(Cells::of(vec![Span::styled(format!("  {shown}"), text)]));
-        } else {
-            let room = room.saturating_sub(cells(line.topic.chars().count()) + 1);
-            let shown = aged(&line.text, line.age_secs, room);
-            rows.push(Cells::of(vec![
-                topic,
-                Span::styled(format!(" {shown}"), text),
-            ]));
-        }
-    }
-    rows
-}
-
-/// The Agents tab: each seat with its state, then client, profile and model;
-/// a session ae has no seat facts for says why.
-fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry) -> Vec<Cells> {
-    let paint = ctx.paint;
-    let dim = paint.fg(|p| p.dim);
     let gap = |words: &str| vec![Cells::of(vec![Span::styled(words.to_owned(), dim)])];
-    if entry.status == Status::Stopped {
-        return gap("Not running: no seat facts.");
-    }
-    let agents = match ctx.screen.agents {
-        Some(Facts::Seats { agents, .. }) => agents,
-        Some(Facts::OtherServer) => return gap("No seat facts: on another tmux server."),
-        Some(Facts::NotPublished) | None => return gap("No seat facts: watchdog publishes none."),
+    let open = &ctx.screen.overview.open;
+    let reason = |ask: &Open| {
+        let words = format!(
+            "  {}",
+            aged(&ask.text, ask.age_secs, room.saturating_sub(2))
+        );
+        Cells::of(vec![Span::styled(words, text)]).of_seat(&ask.seat)
     };
-    let mut rows = Vec::new();
+    let (mut rows, agents) = match ctx.screen.agents {
+        _ if entry.status == Status::Stopped => (gap("Not running: no seat facts."), &[][..]),
+        Some(Facts::Seats { agents, .. }) => (Vec::new(), agents.as_slice()),
+        Some(Facts::OtherServer) => (gap("No seat facts: on another tmux server."), &[][..]),
+        Some(Facts::NotPublished) | None => {
+            (gap("No seat facts: watchdog publishes none."), &[][..])
+        }
+    };
     for agent in agents {
         let mark = agent.mark();
         rows.push(Cells {
             left: Line::from(vec![
                 Span::styled(mark.glyph(ctx.icons), paint.mark(mark)),
                 Span::raw(" "),
-                Span::styled(agent.name.clone(), paint.fg(|p| p.text)),
+                Span::styled(agent.name.clone(), text),
             ]),
             right: Some(Line::from(Span::styled(
                 agent.state.clone(),
@@ -1170,7 +1069,7 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry) -> Vec<Cells> {
             ))),
             seat: Some(agent.name.clone()),
         });
-        let facts: Vec<&str> = [&agent.client, &agent.profile, &agent.model]
+        let facts: Vec<&str> = [&agent.client, &agent.model, &agent.effort]
             .into_iter()
             .map(String::as_str)
             .filter(|fact| !fact.is_empty())
@@ -1179,6 +1078,21 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry) -> Vec<Cells> {
             Cells::of(vec![Span::styled(format!("  {}", facts.join(" · ")), dim)])
                 .of_seat(&agent.name),
         );
+        rows.extend(open.iter().filter(|ask| ask.seat == agent.name).map(reason));
+    }
+    let listed = |ask: &&Open| agents.iter().any(|agent| agent.name == ask.seat);
+    for ask in open.iter().filter(|ask| !listed(ask)) {
+        let mark = Mark::NeedsYou;
+        rows.push(Cells {
+            left: Line::from(vec![
+                Span::styled(mark.glyph(ctx.icons), paint.mark(mark)),
+                Span::raw(" "),
+                Span::styled(ask.seat.clone(), text),
+            ]),
+            right: Some(Line::from(Span::styled("needs you", paint.mark(mark)))),
+            seat: Some(ask.seat.clone()),
+        });
+        rows.push(reason(ask));
     }
     rows
 }
@@ -1413,13 +1327,35 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
         .as_deref()
         .filter(|_| wide)
         .map(|branch| format!("{branch}  ·  {activity}"));
-    for right in branch.iter().chain(std::iter::once(&activity)) {
-        let width = cells(right.chars().count());
-        if after + 2 + width <= end {
-            put(buf, end - width, 1, right, width, paint.fg(|p| p.dim));
-            break;
-        }
-    }
+    // The recorded working dir sits after the pair, cut from the left; the
+    // branch gives way to it before the activity does.
+    let dir = screen.overview.dir.as_deref().unwrap_or_default();
+    let from = if middle.is_empty() { after } else { after + 3 };
+    let wanted = if dir.is_empty() {
+        after
+    } else {
+        from + cells(dir.chars().count().min(12))
+    };
+    let width = |right: &&String| cells(right.chars().count());
+    let rights: Vec<&String> = branch.iter().chain(std::iter::once(&activity)).collect();
+    let room_for = |right: &&String| after + 2 + width(right) <= end;
+    let right = (rights.iter())
+        .find(|right| room_for(right) && end.saturating_sub(width(right) + 2) >= wanted)
+        .or_else(|| rights.iter().find(|right| room_for(right)));
+    let stop = right.map_or(end, |right| {
+        put(
+            buf,
+            end - width(right),
+            1,
+            right,
+            width(right),
+            paint.fg(|p| p.dim),
+        );
+        end - width(right) - 2
+    });
+    let room = stop.saturating_sub(from);
+    let shown = clip_tail(dir, usize::from(room));
+    put(buf, from, 1, &shown, room, paint.fg(|p| p.dim));
 }
 
 /// The composer's address row, the input row under it and the hint under that.
@@ -1467,11 +1403,10 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 15] = [
+const BROWSE_KEYS: [(&str, &str); 14] = [
     ("1-9", "select that session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
-    ("Tab", "Overview / Agents tab"),
     ("oo", "open seat; twice in 2 s"),
     ("v", "peek at the seat's screen"),
     ("n/p", "next / previous seat"),
@@ -2133,6 +2068,7 @@ fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line<'_>, max: u16) -> u16 
 mod tests {
     use ratatui_core::buffer::Buffer;
     use ratatui_core::layout::{Position, Rect};
+    use ratatui_core::style::Modifier;
 
     use super::{
         Composer, LEFT, Paint, Screen, aged, dragged_to, draw, instructions_body, keys_body,
@@ -2140,7 +2076,6 @@ mod tests {
     use crate::app::fleet::{Counts, Facts, Fleet, Line2, Row};
     use crate::app::model::{Drag, Edge, Model};
     use crate::app::overview::{Open, Overview};
-    use crate::brief::TopicLine;
     use crate::console::input::View;
     use crate::console::input::{Mouse, MouseKind};
     use crate::console::lane::{Item, Kind, Lane};
@@ -2164,33 +2099,16 @@ mod tests {
         }
     }
 
-    /// The sweep's populated Overview body and lane: every section filled,
-    /// a lane that scrolls, a coverage line.
+    /// The sweep's populated asks and lane: an open ask, a recorded dir, a lane
+    /// that scrolls, a coverage line.
     fn sweep_body() -> (Overview, Lane) {
-        let topic = TopicLine {
-            topic: "parking".to_owned(),
-            age_secs: Some(60),
-            author: "lead".to_owned(),
-            text: "resume here: a topic text long enough to clip".to_owned(),
-        };
         let overview = Overview {
-            goal: Some((
-                "a goal long enough to clip in the narrow sidebar".to_owned(),
-                Some(9),
-            )),
             open: vec![Open {
                 seat: "colead".to_owned(),
                 text: "an open question long enough to clip".to_owned(),
                 age_secs: Some(5),
             }],
-            decided: Some(topic.clone()),
-            topics: vec![topic; 4],
-            memo_gap: None,
-            launch: vec![
-                "mode: worktree".to_owned(),
-                "dir: a launch directory long enough to clip".to_owned(),
-                "source: /src".to_owned(),
-            ],
+            dir: Some("~/a/launch/directory/long/enough/to/clip".to_owned()),
         };
         let item = Item {
             micros: 1_759_500_000_000_000,
@@ -2339,8 +2257,8 @@ mod tests {
         let read_only = Composer::ReadOnly {
             why: "owned elsewhere",
         };
-        // Each geometry the frame draws: the Overview and Agents bodies, and
-        // the browse and compose composers. Foreign, no-home and mono draw
+        // Each geometry the frame draws: the Agents body without and with
+        // seats, and the browse and compose composers. Foreign, no-home and mono draw
         // the same rows with other words, so they add no geometry.
         for (at, (count, agents, composer)) in [
             (12, false, read_only),
@@ -2359,10 +2277,7 @@ mod tests {
             };
             let mut model = Model::new(&fleet);
             for _ in 0..40 {
-                let _ = model.key(crate::app::model::Key::PageUp, &fleet, false, true);
-            }
-            if agents {
-                let _ = model.key(crate::app::model::Key::Tab, &fleet, false, true);
+                let _ = model.key(crate::app::model::Key::PageUp, &fleet, false);
             }
             let screen = Screen {
                 fleet: &fleet,
@@ -2506,7 +2421,7 @@ mod tests {
         }
 
         fn key(&mut self, key: crate::app::model::Key) {
-            let _ = self.model.key(key, &self.fleet, false, true);
+            let _ = self.model.key(key, &self.fleet, false);
         }
 
         fn draw(&self, width: u16, height: u16, composer: Composer<'_>) -> Buffer {
@@ -2622,66 +2537,45 @@ mod tests {
         assert_eq!(spot(&buf, "1 seat, not running").map(|at| at.1), Some(6));
     }
 
-    /// Frames calm r18 (160x45) and needs-you r17 (100x30): the tab row reads
-    /// `Overview`@2, `Agents N`@13 and `Tab` ending two cells before the
-    /// sidebar's `│`; the showing tab is bold and underlined, the other one
-    /// as dim as `Tab`. 90x20 is the narrowest sidebar (rule 34).
+    /// Frames calm r18 (160x45) and needs-you r17 (100x30): the row the tab
+    /// row held now carries the static `Agents N` heading at the sidebar's
+    /// left edge, bold, with no `Overview` or `Tab` word. 90x20 is the
+    /// narrowest sidebar (rule 34).
     #[test]
-    fn the_tab_row_sits_where_the_frames_put_it() {
-        use ratatui_core::style::Modifier;
-        for (width, height, border) in [(160, 43, 44_u16), (100, 28, 34), (90, 20, 34)] {
-            for agents in [false, true] {
-                let mut shot = Shot::new();
-                shot.agents = Some(match sweep_seats() {
-                    Facts::Seats { id, agents } => Facts::Seats {
-                        id,
-                        agents: agents.into_iter().take(6).collect(),
-                    },
-                    other => other,
-                });
-                if agents {
-                    shot.key(crate::app::model::Key::Tab);
-                }
-                let buf = shot.draw(width, height, READ_ONLY);
-                let size = format!("{width}x{height} agents {agents}");
-                let (y, x) = spot(&buf, "Overview").expect("a tab row");
-                assert_eq!(x, 2, "{size}");
-                assert_eq!(spot(&buf, "Agents 6"), Some((y, 13)), "{size}");
-                let tab = border - 5;
-                assert_eq!(spot(&buf, "Tab  │"), Some((y, usize::from(tab))), "{size}");
-                let (overview, agents_cell, tab) = (&buf[(2, y)], &buf[(13, y)], &buf[(tab, y)]);
-                let shown = Modifier::BOLD | Modifier::UNDERLINED;
-                let (on, off) = if agents {
-                    (agents_cell, overview)
-                } else {
-                    (overview, agents_cell)
-                };
-                assert!(on.modifier.contains(shown), "{size}: the showing tab");
-                assert!(
-                    !off.modifier.contains(Modifier::BOLD),
-                    "{size}: the other tab"
-                );
-                assert_eq!(off.fg, tab.fg, "{size}: the other tab is as dim as Tab");
-                assert_ne!(on.fg, tab.fg, "{size}: the showing tab is not dim");
-            }
+    fn the_agents_heading_sits_where_the_frames_put_the_tab_row() {
+        for (width, height) in [(160, 43), (100, 28), (90, 20)] {
+            let mut shot = Shot::new();
+            shot.agents = Some(match sweep_seats() {
+                Facts::Seats { id, agents } => Facts::Seats {
+                    id,
+                    agents: agents.into_iter().take(6).collect(),
+                },
+                other => other,
+            });
+            let buf = shot.draw(width, height, READ_ONLY);
+            let size = format!("{width}x{height}");
+            let (y, x) = spot(&buf, "Agents 6").expect("a heading");
+            assert_eq!(x, 2, "{size}");
+            assert!(buf[(2, y)].modifier.contains(Modifier::BOLD), "{size}");
+            assert_eq!(spot(&buf, "Overview"), None, "{size}");
+            assert_eq!(spot(&buf, "Tab  │"), None, "{size}");
         }
     }
 
-    /// At 100x30 the Overview is narrow: a topic row keeps its age inside the
-    /// sidebar, ending one cell before the two blank cells the `│` stands
-    /// after (frame needs-you r17 geometry: content stops at end-1 = 31).
+    /// At 100x30 the sidebar is narrow: an ask's reason row keeps its age
+    /// inside the column, ending one cell before the two blank cells the `│`
+    /// stands after (frame needs-you r17 geometry: content stops at end-1 = 31).
     #[test]
-    fn a_narrow_topic_row_keeps_its_age_inside_the_column() {
+    fn a_narrow_reason_row_keeps_its_age_inside_the_column() {
         let mut shot = Shot::new();
-        shot.overview.topics = vec![TopicLine {
-            topic: "parking".to_owned(),
-            age_secs: Some(360),
-            author: "lead".to_owned(),
+        shot.overview.open = vec![Open {
+            seat: "ghost".to_owned(),
             text: "resume at scope checks after the fixtures land on main".to_owned(),
+            age_secs: Some(360),
         }];
         let buf = shot.draw(100, 30, READ_ONLY);
-        let (y, x) = spot(&buf, "parking").expect("the topic row");
-        assert_eq!(x, 2);
+        let (y, x) = spot(&buf, "resume").expect("the reason row");
+        assert_eq!(x, 4);
         let text: String = line(&buf, y)[..34].concat();
         assert!(text.trim_end().ends_with("6m"), "the age is kept: {text:?}");
         assert_eq!(last_ink(&buf, y, 34), Some(31), "{text:?}");
@@ -2947,7 +2841,6 @@ mod tests {
     fn a_cut_body_names_its_hidden_rows_in_the_dim_hue() {
         let mut shot = Shot::new();
         shot.agents = Some(sweep_seats());
-        shot.key(crate::app::model::Key::Tab);
         let buf = shot.draw(100, 24, READ_ONLY);
         assert_eq!(
             spot(&buf, "↓ 7 more rows"),
@@ -3439,8 +3332,8 @@ mod tests {
                 last + 2,
                 "{size}: the more row follows the last session's two lines"
             );
-            let tabs = spot(&buf, "Overview").expect("the tab row").0;
-            assert_eq!(tabs, y + 2, "{size}: one blank row, then the tabs");
+            let tabs = spot(&buf, "Agents").expect("the heading").0;
+            assert_eq!(tabs, y + 2, "{size}: one blank row, then the heading");
         }
         let mut empty = Shot::new();
         empty.fleet.rows.clear();
@@ -3448,9 +3341,9 @@ mod tests {
         let buf = empty.draw(160, 43, READ_ONLY);
         let none = spot(&buf, "No sessions.").expect("the empty list").0;
         assert_eq!(
-            spot(&buf, "Overview").map(|at| at.0),
+            spot(&buf, "Agents").map(|at| at.0),
             Some(none + 2),
-            "one blank row, then the tabs"
+            "one blank row, then the heading"
         );
         // (e)/(f) frame many 100x30 r14: the more row counts the needy rows it hides.
         for (select, more) in [
@@ -3462,12 +3355,9 @@ mod tests {
             shot.fleet = frame_fleet();
             shot.model = Model::new(&shot.fleet);
             if let Some(digit) = select {
-                let _ = shot.model.key(
-                    crate::app::model::Key::Digit(digit),
-                    &shot.fleet,
-                    false,
-                    true,
-                );
+                let _ = shot
+                    .model
+                    .key(crate::app::model::Key::Digit(digit), &shot.fleet, false);
             }
             let buf = shot.draw(100, 28, READ_ONLY);
             let (y, _) = spot(&buf, "more").expect("the more row");
@@ -3572,40 +3462,6 @@ mod tests {
         assert_eq!(buf[(41, 3)].symbol(), "!");
     }
 
-    /// A body that fits exactly keeps its gaps; one row short, it gives the
-    /// gaps up first and loses nothing else. One session puts the tabs at
-    /// row 8 and the body at row 10; the empty Overview is eleven rows, so
-    /// it reaches row 20 exactly at 100x23 (the floor at row 21).
-    #[test]
-    fn an_overview_that_fits_exactly_keeps_its_gaps() {
-        let mut shot = Shot::new();
-        shot.fleet.rows = vec![row("api", 1, false)];
-        shot.model = Model::new(&shot.fleet);
-        let buf = shot.draw(100, 23, READ_ONLY);
-        let topics = spot(&buf, "Topics").expect("the topics heading").0;
-        assert_eq!(
-            spot(&buf, "No topics.").map(|at| at.0),
-            Some(20),
-            "the last row above the floor"
-        );
-        assert_eq!(topics, 19);
-        assert!(
-            line(&buf, topics - 1)[..34].concat().trim().is_empty(),
-            "the gap above Topics stays"
-        );
-        let buf = shot.draw(100, 22, READ_ONLY);
-        let topics = spot(&buf, "Topics").expect("the topics heading").0;
-        assert!(
-            !line(&buf, topics - 1)[..34].concat().trim().is_empty(),
-            "the gaps go first"
-        );
-        assert_eq!(
-            spot(&buf, "No topics.").map(|at| at.0),
-            Some(topics + 1),
-            "nothing else is lost"
-        );
-    }
-
     /// Frame agents r20-r35: a seat's state is right-aligned at the
     /// sidebar's end with blanks before it, never against the name. A state
     /// that would touch the name is dropped; one blank between is enough.
@@ -3625,7 +3481,6 @@ mod tests {
                 id,
                 agents: vec![seat],
             });
-            shot.key(crate::app::model::Key::Tab);
             let buf = shot.draw(160, 43, READ_ONLY);
             let (y, _) = spot(&buf, &"n".repeat(cells)).expect("the seat row");
             let row = line(&buf, y)[..44].concat();
@@ -3905,13 +3760,17 @@ mod tests {
             assert_eq!(at(30, row), Some((Edge::List, rule)), "row {row}");
         }
         assert_eq!(at(30, rule + 2), None);
-        assert_eq!(at(2, rule - 1), None, "a tab label is a target");
+        assert_eq!(
+            at(2, rule - 1),
+            Some((Edge::List, rule)),
+            "the heading is no target"
+        );
         assert_eq!(at(44, rule), Some((Edge::Sidebar, 44)), "the corner");
         assert_eq!(at(43, rule), Some((Edge::List, rule)), "its own cell");
         assert_eq!(at(44, 44), None, "the keys row");
     }
 
-    /// Two seats on the Agents tab, by name.
+    /// Two seats in the Agents body, by name.
     fn seat_facts(names: &[&str]) -> Facts {
         let Facts::Seats { id, agents } = sweep_seats() else {
             unreachable!("the sweep draws seats")
@@ -3961,14 +3820,17 @@ mod tests {
     fn the_focused_seats_rows_are_marked() {
         let mut shot = Shot::new();
         shot.agents = Some(seat_facts(&["lead", "colead"]));
-        let _ = shot
-            .model
-            .key(crate::app::model::Key::Tab, &shot.fleet, false, true);
         let (buf, layout) = framed(&shot, 160, None);
         assert_eq!(layout.seats, ["lead", "colead"]);
         assert_eq!(layout.focused.as_deref(), Some("lead"));
         let first = *marked(&buf, "▸").first().expect("a marked row");
-        assert_eq!(marked(&buf, "▸"), [first, first + 1]);
+        assert_eq!(marked(&buf, "▸"), [first], "one glyph, on the first row");
+        let reversed = |y| buf[(8, y)].modifier.contains(Modifier::REVERSED);
+        assert!(reversed(first) && reversed(first + 1), "no colour: reverse");
+        assert!(
+            !reversed(first + 2) && !reversed(first + 3),
+            "the other seat"
+        );
         let seat = |buf: &Buffer, y| line(buf, y).concat();
         assert!(seat(&buf, first).contains("lead"), "its first row");
         assert!(seat(&buf, first + 2).contains("colead"), "the next seat");
@@ -3995,34 +3857,150 @@ mod tests {
         assert!(seat(rule - 3) && !seat(rule - 2), "a seat ends at the body");
         shot.model.set_focus(Some("colead".to_owned()));
         let (buf, layout) = framed(&shot, 160, None);
-        assert_eq!(marked(&buf, "▸"), [first + 2, first + 3]);
+        assert_eq!(marked(&buf, "▸"), [first + 2]);
         assert_eq!(layout.focused.as_deref(), Some("colead"));
         shot.model.set_focus(Some("ghost".to_owned()));
         let (_, layout) = framed(&shot, 160, None);
         assert_eq!(layout.focused.as_deref(), Some("lead"), "an undrawn name");
         let ascii = Look::read("off", "darcula", "on", "on");
         let (buf, _) = framed(&shot, 160, Some(&ascii));
-        assert_eq!(marked(&buf, ">"), [first, first + 1]);
+        assert_eq!(marked(&buf, ">"), [first]);
+        // Scrolled so the focused seat's name is gone, its first DRAWN row
+        // takes the glyph.
+        let names: Vec<String> = (0..20).map(|n| format!("s{n:02}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        shot.agents = Some(seat_facts(&names));
+        shot.model.set_focus(None);
+        assert!(shot.model.wheel_body(false, 9));
+        let (buf, layout) = framed(&shot, 160, None);
+        assert_eq!(layout.focused.as_deref(), Some("s01"));
+        assert_eq!(marked(&buf, "▸"), [first], "its first drawn row");
+        assert!(
+            line(&buf, first).concat().contains("claude"),
+            "not its name"
+        );
     }
 
-    /// A tab body that draws no seat focuses nothing; a waiting entry is the
-    /// seat's two rows wide and its one row narrow.
+    /// R3: with a look, the focused seat's rows share the selected ground out
+    /// to the body's end and the glyph is the selected ink, never the title
+    /// or a state hue; the next seat keeps the sidebar's ground. On the
+    /// ground only the selected ink and the marks' accents are drawn, so the
+    /// pairs are the ones `theme`'s contrast bar already measures.
     #[test]
-    fn overview_entries_are_seat_rows_wide_and_narrow() {
+    fn the_focused_seat_sits_on_the_selected_ground_in_every_palette() {
         let mut shot = Shot::new();
-        let (_, layout) = framed(&shot, 160, None);
-        assert_eq!((layout.seats.len(), layout.focused), (0, None));
-        shot.overview.open = vec![Open {
-            seat: "colead".to_owned(),
-            text: "a question".to_owned(),
-            age_secs: Some(5),
-        }];
-        let (buf, layout) = framed(&shot, 160, None);
-        assert_eq!(layout.seats, ["colead"]);
-        assert_eq!(marked(&buf, "▸").len(), 2, "both rows of a wide entry");
-        let (buf, layout) = framed(&shot, 100, None);
-        assert_eq!(layout.seats, ["colead"]);
-        assert_eq!(marked(&buf, "▸").len(), 1, "the one row of a narrow entry");
+        shot.agents = Some(seat_facts(&["lead", "colead"]));
+        for name in ["darcula", "a", "b"] {
+            let look = Look::read("on", name, "on", "on");
+            let (buf, _) = framed(&shot, 160, Some(&look));
+            let palette = look.palette;
+            let first = *marked(&buf, "▸").first().expect("a marked row");
+            let rule = (0..160)
+                .find(|x| buf[(*x, first)].symbol() == "│")
+                .expect("the rule");
+            let ground = super::colour(palette.selected);
+            let ink = super::colour(palette.selected_ink);
+            let glyph = &buf[(0, first)];
+            assert_eq!(
+                (glyph.fg, glyph.modifier.contains(Modifier::BOLD)),
+                (ink, true)
+            );
+            for y in [first, first + 1] {
+                for x in 0..rule - 2 {
+                    assert_eq!(buf[(x, y)].bg, ground, "{name} ({x},{y})");
+                }
+                let mark = super::colour(palette.accent(Mark::WaitingAgent));
+                let drawn: Vec<_> = (0..rule - 2)
+                    .map(|x| &buf[(x, y)])
+                    .filter(|cell| cell.symbol() != " ")
+                    .collect();
+                assert!(!drawn.is_empty(), "{name} row {y}");
+                for cell in drawn {
+                    let ok = cell.fg == ink || cell.fg == mark;
+                    assert!(ok, "{name}: {:?} {:?}", cell.symbol(), cell.fg);
+                }
+            }
+            let sidebar = super::colour(palette.base);
+            for y in [first + 2, first + 3] {
+                assert_eq!(buf[(5, y)].bg, sidebar, "{name}: the next seat");
+            }
+        }
+    }
+
+    /// R1/R4: a seat's second row is its client, the model its frame drew and
+    /// the effort, each only when known, and never its profile name.
+    #[test]
+    fn the_agents_second_row_is_client_model_and_effort_never_the_profile() {
+        let mut shot = Shot::new();
+        let seat = |name: &str, model: &str, effort: &str| PickerAgent {
+            name: name.to_owned(),
+            profile: "sonnet55x".to_owned(),
+            state: "working".to_owned(),
+            pane: "%7".to_owned(),
+            client: "claude".to_owned(),
+            model: model.to_owned(),
+            effort: effort.to_owned(),
+            drift: false,
+        };
+        shot.agents = Some(Facts::Seats {
+            id: "$1".to_owned(),
+            agents: vec![
+                seat("seat-a", "Sonnet 5.5", "xhigh"),
+                seat("seat-b", "", ""),
+                seat("seat-c", "", "max"),
+                PickerAgent {
+                    client: String::new(),
+                    ..seat("seat-d", "", "")
+                },
+            ],
+        });
+        let (buf, _) = framed(&shot, 160, None);
+        let below = |name: &str| {
+            let y = spot(&buf, name).expect(name).0 + 1;
+            line(&buf, y)[..34].concat().trim().to_owned()
+        };
+        assert_eq!(below("seat-a"), "claude · Sonnet 5.5 · xhigh");
+        assert_eq!(below("seat-b"), "claude", "no placeholder");
+        assert_eq!(below("seat-c"), "claude · max");
+        assert_eq!(below("seat-d"), "", "the row stays: the geometry is stable");
+        let frame: String = (0..45).map(|y| line(&buf, y).concat()).collect();
+        assert!(!frame.contains("sonnet55x"), "the profile is not drawn");
+    }
+
+    /// R7: a seat that waits on the human keeps its reason on its own rows;
+    /// an ask from a seat the roster lacks is its own entry after the roster,
+    /// so none is lost; and no Overview or Tab word is left in the frame.
+    #[test]
+    fn a_seat_waiting_on_the_human_keeps_its_reason_on_its_agents_rows() {
+        let mut shot = Shot::new();
+        shot.agents = Some(seat_facts(&["seat-a", "seat-b"]));
+        shot.overview.open = vec![
+            Open {
+                seat: "seat-b".to_owned(),
+                text: "Approve X?".to_owned(),
+                age_secs: Some(240),
+            },
+            Open {
+                seat: "ghost".to_owned(),
+                text: "registry down".to_owned(),
+                age_secs: Some(3600),
+            },
+        ];
+        let look = Look::read("on", "darcula", "on", "on");
+        let (buf, layout) = framed(&shot, 160, Some(&look));
+        let at = |name: &str| spot(&buf, name).expect(name).0;
+        let sidebar = |y| line(&buf, y)[..40].concat().trim().to_owned();
+        assert_eq!(at("seat-b"), at("seat-a") + 2, "seat-a asks nothing");
+        assert_eq!(sidebar(at("seat-b") + 2), "Approve X? · 4m");
+        assert_eq!(layout.seats, ["seat-a", "seat-b", "ghost"]);
+        assert!(at("ghost") > at("seat-b") + 2, "after the roster");
+        assert!(sidebar(at("ghost")).starts_with("⚠ ghost"), "its own entry");
+        assert_eq!(sidebar(at("ghost") + 1), "registry down · 1h");
+        let frame: String = (0..45).map(|y| line(&buf, y).concat()).collect();
+        assert!(
+            !frame.contains("Overview") && !frame.contains("Tab"),
+            "{frame}"
+        );
     }
 
     /// R4(d)/I2: each section of the Keys tab says what its own `^C` and its
@@ -4086,7 +4064,6 @@ mod tests {
                     age_secs: Some(60),
                 };
                 shot.fleet.home = Some("界api".to_owned());
-                shot.overview.goal = Some(("goal remains here".to_owned(), Some(60)));
                 shot.model = Model::new(&shot.fleet);
                 let (buf, layout) = declutter_frame(&shot, width, icons);
                 let name = declutter_line(&buf, &layout, 5);
@@ -4096,7 +4073,6 @@ mod tests {
                 assert!(!name.contains(counts), "counts belong below: {name:?}");
                 assert!(below.contains(counts), "{width}/{icons}: {below:?}");
                 assert!(!below.contains("goal"), "{below:?}");
-                assert!(spot(&buf, "goal remains here").is_some());
                 for y in [5, 6] {
                     for column in [0, super::NAME, layout.list.width - 1] {
                         assert!(

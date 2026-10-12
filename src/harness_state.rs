@@ -549,13 +549,14 @@ fn parse_claude_identity(line: &str) -> HarnessIdentity {
 /// manual choice is never followed. STANDING OBLIGATION, like a toolchain pin —
 /// add the label when a new claude model ships, or it stays silently
 /// unfollowable.
-const CLAUDE_MODELS: [&str; 6] = [
+const CLAUDE_MODELS: [&str; 7] = [
     "Fable 5.1",
     "Opus 4.8",
     "Opus 5 (1M context)",
     "Opus 5",
     "Opus 5.5",
     "Opus 5.5 (1M context)",
+    "Sonnet 5.5",
 ];
 
 /// Is this the spelling a display-label harness's own footer draws? Because the
@@ -1428,6 +1429,9 @@ mod tests {
         for (drawn, model, effort) in [
             ("Fable 5.1 (1M context)", None, None),
             ("Opus 5.5", Some("Opus 5.5"), None),
+            ("Sonnet 5.5", Some("Sonnet 5.5"), None),
+            ("Sonnet 5.5 (xhigh)", Some("Sonnet 5.5"), Some("xhigh")),
+            ("Sonnet 5.5 (1M context)", None, None),
             ("Opus 5.5 (1M context)", Some("Opus 5.5 (1M context)"), None),
             ("Opus 5.5 (2M context) (xhigh)", None, Some("xhigh")),
             ("Opus 5.5 (2M context)", None, None),

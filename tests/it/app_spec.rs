@@ -22,11 +22,12 @@
 )]
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ae::app::draw::{Composer, Screen, draw};
 use ae::app::fleet::{Counts, Facts, Fleet, Line2, Row, rows};
-use ae::app::model::{Act, Key as AppKey, Model, Tab, browse_keys};
+use ae::app::model::{Act, Key as AppKey, Model, browse_keys};
 use ae::app::overview::{self, Open};
 use ae::attention::Reason;
 use ae::console::input::{ESC_IDLE, Key, Keys};
@@ -540,33 +541,33 @@ fn app_model_digit_and_arrows() {
     let fleet = model_fleet();
     let mut model = Model::new(&fleet);
     assert!(matches!(
-        model.key(AppKey::Digit(3), &fleet, true, true),
+        model.key(AppKey::Digit(3), &fleet, true),
         Act::Select(ref name) if name == "infra"
     ));
     assert_eq!(model.selected(), Some("infra"));
     assert!(
-        matches!(model.key(AppKey::Digit(3), &fleet, true, true), Act::None),
+        matches!(model.key(AppKey::Digit(3), &fleet, true), Act::None),
         "re-selecting answers nothing"
     );
     assert!(
-        matches!(model.key(AppKey::Digit(9), &fleet, true, true), Act::None),
+        matches!(model.key(AppKey::Digit(9), &fleet, true), Act::None),
         "no row answers nothing"
     );
     assert!(matches!(
-        model.key(AppKey::Down, &fleet, true, true),
+        model.key(AppKey::Down, &fleet, true),
         Act::Select(ref name) if name == "ops"
     ));
     assert!(
-        matches!(model.key(AppKey::Down, &fleet, true, true), Act::None),
+        matches!(model.key(AppKey::Down, &fleet, true), Act::None),
         "the bottom clamps"
     );
     assert!(matches!(
-        model.key(AppKey::Up, &fleet, true, true),
+        model.key(AppKey::Up, &fleet, true),
         Act::Select(ref name) if name == "infra"
     ));
-    let _ = model.key(AppKey::Digit(1), &fleet, true, true);
+    let _ = model.key(AppKey::Digit(1), &fleet, true);
     assert!(
-        matches!(model.key(AppKey::Up, &fleet, true, true), Act::None),
+        matches!(model.key(AppKey::Up, &fleet, true), Act::None),
         "the top clamps"
     );
 }
@@ -578,16 +579,16 @@ fn app_model_next_need_walks_and_wraps() {
     let fleet = model_fleet();
     let mut model = Model::new(&fleet);
     assert!(matches!(
-        model.key(AppKey::NextNeed, &fleet, true, true),
+        model.key(AppKey::NextNeed, &fleet, true),
         Act::Select(ref name) if name == "infra"
     ));
     assert!(matches!(
-        model.key(AppKey::NextNeed, &fleet, true, true),
+        model.key(AppKey::NextNeed, &fleet, true),
         Act::Select(ref name) if name == "ops"
     ));
     assert!(
         matches!(
-        model.key(AppKey::NextNeed, &fleet, true, true), Act::Select(ref name) if name == "infra"),
+        model.key(AppKey::NextNeed, &fleet, true), Act::Select(ref name) if name == "infra"),
         "wraps around"
     );
     let quiet = Fleet {
@@ -596,48 +597,41 @@ fn app_model_next_need_walks_and_wraps() {
     };
     let mut model = Model::new(&quiet);
     assert!(matches!(
-        model.key(AppKey::NextNeed, &quiet, true, true),
+        model.key(AppKey::NextNeed, &quiet, true),
         Act::None
     ));
 }
 
-/// Tab toggles the tab; with the Agents tab cut it answers nothing. Compose
+/// Tab answers nothing: the Overview tab it toggled is gone. Compose
 /// opens on an eligible selected row, including without home. Esc returns home.
 #[test]
 fn app_model_tab_compose_esc() {
     let fleet = model_fleet();
     let mut model = Model::new(&fleet);
-    assert!(matches!(model.tab(), Tab::Overview));
-    assert!(matches!(
-        model.key(AppKey::Tab, &fleet, true, true),
-        Act::Redraw
-    ));
-    assert!(matches!(model.tab(), Tab::Agents));
     assert!(
-        matches!(model.key(AppKey::Tab, &fleet, true, false), Act::None),
-        "P4 cut: Tab answers nothing"
+        matches!(model.key(AppKey::Tab, &fleet, true), Act::None),
+        "Tab answers nothing"
     );
-    assert!(matches!(model.tab(), Tab::Agents), "the tab holds");
     assert!(
-        matches!(model.key(AppKey::Compose, &fleet, true, true), Act::Compose),
+        matches!(model.key(AppKey::Compose, &fleet, true), Act::Compose),
         "eligible selected home composes"
     );
-    let _ = model.key(AppKey::Digit(3), &fleet, true, true);
+    let _ = model.key(AppKey::Digit(3), &fleet, true);
     assert!(
-        matches!(model.key(AppKey::Compose, &fleet, true, true), Act::Compose),
+        matches!(model.key(AppKey::Compose, &fleet, true), Act::Compose),
         "eligible selected non-home composes"
     );
     assert!(
         matches!(
-        model.key(AppKey::Esc, &fleet, true, true), Act::Select(ref name) if name == "api"),
+        model.key(AppKey::Esc, &fleet, true), Act::Select(ref name) if name == "api"),
         "Esc returns home"
     );
     assert!(
-        matches!(model.key(AppKey::Esc, &fleet, true, true), Act::None),
+        matches!(model.key(AppKey::Esc, &fleet, true), Act::None),
         "Esc on home answers nothing"
     );
     assert!(
-        matches!(model.key(AppKey::Compose, &fleet, false, true), Act::None),
+        matches!(model.key(AppKey::Compose, &fleet, false), Act::None),
         "ineligible selection composes nothing"
     );
     let homeless = Fleet {
@@ -646,14 +640,11 @@ fn app_model_tab_compose_esc() {
     };
     let mut model = Model::new(&homeless);
     assert!(
-        matches!(
-            model.key(AppKey::Compose, &homeless, true, true),
-            Act::Compose
-        ),
+        matches!(model.key(AppKey::Compose, &homeless, true), Act::Compose),
         "eligible selected session needs no home"
     );
     assert!(
-        matches!(model.key(AppKey::Esc, &homeless, true, true), Act::None),
+        matches!(model.key(AppKey::Esc, &homeless, true), Act::None),
         "no home answers nothing"
     );
 }
@@ -664,17 +655,14 @@ fn app_model_page_and_quit() {
     let fleet = model_fleet();
     let mut model = Model::new(&fleet);
     assert!(matches!(
-        model.key(AppKey::PageUp, &fleet, true, true),
+        model.key(AppKey::PageUp, &fleet, true),
         Act::Redraw
     ));
     assert!(matches!(
-        model.key(AppKey::PageDown, &fleet, true, true),
+        model.key(AppKey::PageDown, &fleet, true),
         Act::Redraw
     ));
-    assert!(matches!(
-        model.key(AppKey::Quit, &fleet, true, true),
-        Act::Quit
-    ));
+    assert!(matches!(model.key(AppKey::Quit, &fleet, true), Act::Quit));
 }
 
 // ---------------------------------------------------------------------------
@@ -866,33 +854,19 @@ fn app_keys_idle_expires_lone_esc() {
 // overview::of
 // ---------------------------------------------------------------------------
 
-fn memo_fixture() -> Vec<u8> {
-    b"2025-10-09T04:00:00Z\tcl:lead\tparking\tfirst parking\n\
-       2025-10-09T05:00:00Z\tcl:lead\tdecision\tKeep the cookie path\n\
-       2025-10-09T06:00:00Z\tcl:lead\tparking\tsecond parking\n\
-       2025-10-09T05:30:00Z\tcl:colead\tauth-v2\trefresh in review\n"
-        .to_vec()
-}
-
-/// Goal from the entry, Open from every Section row in order, Decided the
-/// latest decision memo, Topics the latest per topic minus decision.
+/// Open from every Section row in order, the dir from the record under the
+/// viewer's home.
 #[test]
-fn app_overview_folds_goal_open_decided_topics() {
+fn app_overview_folds_open_and_dir() {
     let mut entry = SessionEntry::new("api", Status::Running);
-    entry.goal = Some("Ship the v2 auth endpoints".to_owned());
-    entry.goal_set_epoch = Some(NOW - 7200);
+    entry.work_dir = Some("/home/me/projects/ae".to_owned());
     let needs = Section {
         rows: vec![
             need("main", "lead", Reason::WaitingUser, "Approve X?", 240),
             need("worker.0", "colead", Reason::Blocked, "registry down", 3600),
         ],
     };
-    let memo = memo_fixture();
-    let overview = overview::of(&entry, Some(&needs), Ok(memo.as_slice()), now());
-    assert_eq!(
-        overview.goal,
-        Some(("Ship the v2 auth endpoints".to_owned(), Some(7200)))
-    );
+    let overview = overview::of(&entry, Some(&needs), Some(Path::new("/home/me")), now());
     assert_eq!(overview.open.len(), 2, "every Section row opens");
     assert_eq!(overview.open[0].seat.as_str(), "lead", "the seat NAME asks");
     assert_eq!(overview.open[0].text.as_str(), "Approve X?");
@@ -900,46 +874,25 @@ fn app_overview_folds_goal_open_decided_topics() {
     assert_eq!(overview.open[1].seat.as_str(), "colead");
     assert_eq!(overview.open[1].text.as_str(), "registry down");
     assert_eq!(overview.open[1].age_secs, Some(3600));
-    let decided = overview.decided.expect("the decision memo");
-    assert_eq!(decided.topic.as_str(), "decision");
-    assert_eq!(decided.text.as_str(), "Keep the cookie path");
-    let topics: Vec<&str> = overview
-        .topics
-        .iter()
-        .map(|line| line.topic.as_str())
-        .collect();
-    assert_eq!(
-        topics,
-        ["parking", "auth-v2"],
-        "newest first, decision above"
-    );
-    assert_eq!(overview.topics[0].text, "second parking", "latest wins");
-    assert_eq!(overview.memo_gap, None);
+    assert_eq!(overview.dir.as_deref(), Some("~/projects/ae"));
 }
 
-/// An unreadable memo is named, never shown as empty; Open never depends on
-/// it. No goal, no needs, empty memo is the empty Overview.
+/// No needs and no recorded dir is the empty Overview; a dir outside the
+/// home stays verbatim and an empty record names none.
 #[test]
-fn app_overview_names_memo_gap_and_empty() {
-    let entry = SessionEntry::new("api", Status::Running);
-    let needs = Section {
-        rows: vec![need("main", "lead", Reason::WaitingUser, "Approve X?", 60)],
-    };
-    let overview = overview::of(&entry, Some(&needs), Err("denied".to_owned()), now());
-    assert_eq!(overview.goal, None);
-    assert_eq!(overview.open.len(), 1, "Open stands without the memo");
-    assert_eq!(overview.decided, None);
-    assert!(overview.topics.is_empty());
-    assert!(
-        overview.memo_gap.is_some_and(|gap| !gap.is_empty()),
-        "the gap is named"
-    );
-    let overview = overview::of(&entry, None, Ok(b"".as_slice()), now());
-    assert_eq!(overview.goal, None);
+fn app_overview_is_empty_without_needs_or_dir() {
+    let mut entry = SessionEntry::new("api", Status::Running);
+    let overview = overview::of(&entry, None, None, now());
     assert!(overview.open.is_empty());
-    assert_eq!(overview.decided, None);
-    assert!(overview.topics.is_empty());
-    assert_eq!(overview.memo_gap, None);
+    assert_eq!(overview.dir, None);
+    entry.work_dir = Some("/srv/ae".to_owned());
+    let home = Some(Path::new("/home/me"));
+    assert_eq!(
+        overview::of(&entry, None, home, now()).dir.as_deref(),
+        Some("/srv/ae")
+    );
+    entry.work_dir = Some(String::new());
+    assert_eq!(overview::of(&entry, None, home, now()).dir, None);
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,32 +985,11 @@ fn draw_fleet() -> Fleet {
 
 fn draw_overview() -> ae::app::overview::Overview {
     ae::app::overview::Overview {
-        goal: Some(("Ship the v2 auth endpoints".to_owned(), Some(7200))),
         open: vec![Open {
             seat: "lead".to_owned(),
             text: "Approve runner cost: +$40/month?".to_owned(),
             age_secs: Some(240),
         }],
-        decided: Some(ae::brief::TopicLine {
-            topic: "decision".to_owned(),
-            age_secs: Some(60),
-            author: "cl:lead".to_owned(),
-            text: "Keep the cookie path".to_owned(),
-        }),
-        topics: vec![
-            ae::brief::TopicLine {
-                topic: "parking".to_owned(),
-                age_secs: Some(360),
-                author: "cl:lead".to_owned(),
-                text: "resume at scope checks".to_owned(),
-            },
-            ae::brief::TopicLine {
-                topic: "auth-v2".to_owned(),
-                age_secs: Some(180),
-                author: "cl:colead".to_owned(),
-                text: "refresh in review".to_owned(),
-            },
-        ],
         ..Default::default()
     }
 }
@@ -1112,8 +1044,8 @@ fn agents6() -> Facts {
     }
 }
 
-/// The 160x43 home view: sidebar geometry, needy lighting, tabs, Overview,
-/// chat column, composer and keys row, every colour from the darcula owner.
+/// The 160x43 home view: sidebar geometry, needy lighting, the Agents
+/// heading and body, chat column, composer and keys row, every colour from the darcula owner.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1184,16 +1116,15 @@ fn app_draw_home_160x43() {
     assert_eq!(cell_at(&buf, 2, 11).symbol(), "⚠");
     assert_eq!(cell_at(&buf, 2, 11).fg, hex(palette.needs_you));
     assert!(row_text(&buf, 12).contains("Approve runner cost"));
-    // Tabs, rule, and the Overview body in order.
-    assert!(row_text(&buf, 14).contains("Overview"));
+    // The heading, rule, and the Agents body in order.
     assert!(row_text(&buf, 14).contains("Agents 6"));
+    assert!(!row_text(&buf, 14).contains("Overview"));
     assert!(cell_at(&buf, 2, 14).modifier.contains(Modifier::BOLD));
-    assert!(cell_at(&buf, 2, 14).modifier.contains(Modifier::UNDERLINED));
-    assert!(side_text(&buf, 14, 44).ends_with("Tab"));
+    assert!(!side_text(&buf, 14, 44).ends_with("Tab"));
     assert_eq!(
         side_text(&buf, 15, 44),
         "─".repeat(44),
-        "the tab rule spans the sidebar"
+        "the heading rule spans the sidebar"
     );
     let body: Vec<String> = (16..30).map(|y| row_text(&buf, y)).collect();
     let at = |needle: &str| {
@@ -1204,11 +1135,12 @@ fn app_draw_home_160x43() {
                 panic!("body holds {needle:?}:\n{body_text}")
             })
     };
-    assert!(at("Goal") < at("Waiting on you 1"));
-    assert!(at("Waiting on you 1") < at("Decided · latest memo"));
-    assert!(at("Decided · latest memo") < at("Topics"));
-    assert!(body[at("Waiting on you 1") + 1].contains("⚠"));
-    assert!(body[at("Waiting on you 1") + 2].contains("asked by lead"));
+    assert!(at("lead") < at("builder"), "seats in roster order");
+    assert!(
+        body[at("lead") + 2].contains("Approve runner cost"),
+        "the lead's reason sits under its seat rows"
+    );
+    assert!(!body.join("\n").contains("asked by"), "no asked-by row");
     // The chat column: header, rule, bottom-anchored turns, composer, keys.
     let head = row_text(&buf, 1);
     assert_eq!(cell_at(&buf, 47, 1).symbol(), "a", "chat starts at x = 47");
@@ -1272,7 +1204,7 @@ fn app_draw_home_160x43() {
 fn app_draw_non_home_address_names_the_selected_target() {
     let fleet = draw_fleet();
     let mut model = Model::new(&fleet);
-    let _ = model.key(AppKey::Digit(3), &fleet, true, true);
+    let _ = model.key(AppKey::Digit(3), &fleet, true);
     let overview = draw_overview();
     let mut infra = SessionEntry::new("infra", Status::Running);
     infra.branch = Some("ci/arm".to_owned());
@@ -1332,13 +1264,7 @@ fn app_draw_no_home_names_the_selected_target() {
         home: None,
     };
     let model = Model::new(&fleet);
-    let overview = ae::app::overview::Overview {
-        goal: None,
-        open: vec![],
-        decided: None,
-        topics: vec![],
-        ..Default::default()
-    };
+    let overview = ae::app::overview::Overview::default();
     let entry = SessionEntry::new("docs", Status::Running);
     let pair = ["lead".to_owned(), "colead".to_owned()];
     let lane = Lane {
@@ -1417,7 +1343,7 @@ fn app_draw_theme_off_is_plain() {
     assert_eq!(cell_at(&buf, 2, 11).symbol(), "⚠");
 }
 
-/// The 100x28 shape: a 34-wide sidebar, the Overview in one line per item,
+/// The 100x28 shape: a 34-wide sidebar, one line per item,
 /// and a header that drops the branch before the activity.
 #[test]
 fn app_draw_narrow_100x28() {
@@ -1462,14 +1388,6 @@ fn app_draw_narrow_100x28() {
     assert!(!head.contains("feat/auth-v2"), "the branch goes first");
     let text = all_text(&buf);
     assert!(!text.contains("asked by"), "no second lines");
-    let topics = text
-        .lines()
-        .find(|row| row.contains("parking"))
-        .expect("the topic line");
-    assert!(
-        topics.contains("resume at scope checks"),
-        "one line: {topics:?}"
-    );
 }
 
 /// Below 90x20 the sidebar goes away: one dim header line over the full-width
@@ -1523,7 +1441,7 @@ fn app_draw_small_falls_back() {
     }
 }
 
-/// The Agents tab lists seat, state and client · profile · model; a session
+/// The Agents body lists seat, state and client · model · effort; a session
 /// with no seat facts names its gap, and a stopped session its rest.
 #[test]
 #[allow(
@@ -1560,8 +1478,7 @@ fn app_draw_agents_tab_and_gaps() {
         }
     }
     let fleet = draw_fleet();
-    let mut model = Model::new(&fleet);
-    let _ = model.key(AppKey::Tab, &fleet, true, true);
+    let model = Model::new(&fleet);
     let overview = draw_overview();
     let entry = draw_entry();
     let pair = ["lead".to_owned(), "colead".to_owned()];
@@ -1582,10 +1499,7 @@ fn app_draw_agents_tab_and_gaps() {
     );
     let text = all_text(&buf);
     assert!(text.contains("builder"), "seats list");
-    assert!(
-        text.contains("claude · sonnet55x · Sonnet 5.5"),
-        "facts list"
-    );
+    assert!(text.contains("claude · Sonnet 5.5 · xhigh"), "facts list");
     let state_row = (0..buf.area.height)
         .map(|y| side_text(&buf, y, 44))
         .find(|row| row.contains("builder"))
@@ -1652,14 +1566,11 @@ fn app_draw_next_need_scrolls_into_view() {
     };
     let mut model = Model::new(&fleet);
     let overview = ae::app::overview::Overview {
-        goal: None,
         open: vec![Open {
             seat: "lead".to_owned(),
             text: "Wake up?".to_owned(),
             age_secs: Some(60),
         }],
-        decided: None,
-        topics: vec![],
         ..Default::default()
     };
     let entry = SessionEntry::new("s1", Status::Running);
@@ -1694,7 +1605,7 @@ fn app_draw_next_need_scrolls_into_view() {
         assert!(!list_holds(&buf, "s7"), "below the fold at first");
         assert_eq!(side_text(&buf, 3, 44).trim(), "↓ !", "off-screen cue");
     }
-    let _ = model.key(AppKey::NextNeed, &fleet, true, true);
+    let _ = model.key(AppKey::NextNeed, &fleet, true);
     assert_eq!(model.selected(), Some("s7"));
     let screen = Screen {
         fleet: &fleet,

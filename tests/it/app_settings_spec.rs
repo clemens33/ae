@@ -972,7 +972,7 @@ fn covered_session_targets_and_drag_borders_cannot_act_through_settings() {
     let (pane, _) = rig.direct(220, 60, &rig.root.join("config"));
     rig.ready(&pane);
     let before = rig.wait(&pane, WAIT, "covered targets drawn before open", |s| {
-        s.contains("settings-other") && s.contains("Overview")
+        s.contains("settings-other") && s.contains("Agents")
     });
     let target = |needle: &str| {
         before
@@ -982,7 +982,6 @@ fn covered_session_targets_and_drag_borders_cannot_act_through_settings() {
             .expect("drawn old target")
     };
     let session = target("settings-other");
-    let tab = target("Overview");
     let border = before
         .lines()
         .next()
@@ -1004,7 +1003,6 @@ fn covered_session_targets_and_drag_borders_cannot_act_through_settings() {
     rig.settings(&pane);
     rig.tab(&pane, "3", "About");
     rig.click(&pane, session.0, session.1);
-    rig.click(&pane, tab.0, tab.1);
     rig.click(&pane, border, 1);
     rig.literal(
         &pane,

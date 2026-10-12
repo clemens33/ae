@@ -69,7 +69,7 @@ fn test_browse_keys_v_maps_to_peek_and_p_remains_seat_prev() {
     let fleet = Fleet::default();
     let mut model = Model::new(&fleet);
     assert_eq!(
-        model.key(Key::Peek, &fleet, false, false),
+        model.key(Key::Peek, &fleet, false),
         Act::Peek,
         "Key::Peek in browse mode triggers Act::Peek"
     );
@@ -88,7 +88,7 @@ fn test_model_peek_open_close_keys() {
         assert!(model.peek_open(), "step {step}: open after open_peek");
         assert_eq!(model.peek_back(), Some(0), "step {step}: back 0 on open");
         assert_eq!(
-            model.key(key, &fleet, false, false),
+            model.key(key, &fleet, false),
             Act::Redraw,
             "step {step}: key closes peek"
         );
@@ -106,7 +106,7 @@ fn test_model_peek_open_close_keys() {
         Key::SeatPrev,
     ] {
         assert_eq!(
-            model.key(key, &fleet, true, true),
+            model.key(key, &fleet, true),
             Act::None,
             "key swallowed while peek open"
         );
@@ -126,19 +126,19 @@ fn test_model_peek_scroll_keys_and_clamping() {
     model.set_peek_page_rows(5);
     model.clamp_peek(20);
 
-    assert_eq!(model.key(Key::Up, &fleet, false, false), Act::Redraw);
+    assert_eq!(model.key(Key::Up, &fleet, false), Act::Redraw);
     assert_eq!(model.peek_back(), Some(1), "Up increments back");
 
-    assert_eq!(model.key(Key::Down, &fleet, false, false), Act::Redraw);
+    assert_eq!(model.key(Key::Down, &fleet, false), Act::Redraw);
     assert_eq!(model.peek_back(), Some(0), "Down decrements back");
 
-    assert_eq!(model.key(Key::Down, &fleet, false, false), Act::Redraw);
+    assert_eq!(model.key(Key::Down, &fleet, false), Act::Redraw);
     assert_eq!(model.peek_back(), Some(0), "Down saturates at 0");
 
-    assert_eq!(model.key(Key::PageUp, &fleet, false, false), Act::Redraw);
+    assert_eq!(model.key(Key::PageUp, &fleet, false), Act::Redraw);
     assert_eq!(model.peek_back(), Some(5), "PageUp adds page_rows");
 
-    assert_eq!(model.key(Key::PageDown, &fleet, false, false), Act::Redraw);
+    assert_eq!(model.key(Key::PageDown, &fleet, false), Act::Redraw);
     assert_eq!(model.peek_back(), Some(0), "PageDown subtracts page_rows");
 
     model.peek_wheel(true);

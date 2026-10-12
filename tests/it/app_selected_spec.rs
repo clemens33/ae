@@ -310,7 +310,7 @@ impl Rig {
         let sessions = format!("▣ {count} ");
         self.wait(&self.s, &pane, "GUARD target rows loaded", |screen| {
             screen.contains(&sessions)
-                && (count == 0 || (screen.contains("Overview") && screen.contains(&self.t.name)))
+                && (count == 0 || (screen.contains("Agents") && screen.contains(&self.t.name)))
         });
         (pane, gates)
     }

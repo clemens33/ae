@@ -1,5 +1,4 @@
-//! The browse reducer: which session is selected, which tab shows, how far
-//! the chat scrolls. Keys in, an act out; it draws nothing and reads nothing.
+//! The browse reducer: which session is selected, how far the chat scrolls. Keys in, an act out; it draws nothing and reads nothing.
 
 use super::fleet::Fleet;
 use super::handover::View;
@@ -94,14 +93,6 @@ pub enum Act {
     Quit,
 }
 
-/// The selected session's tab.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Tab {
-    #[default]
-    Overview,
-    Agents,
-}
-
 /// A border the mouse can drag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Edge {
@@ -169,7 +160,6 @@ pub(crate) struct PeekOverlay {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Model {
     selected: Option<String>,
-    tab: Tab,
     /// Keyboard pages scrolled back from the newest turn.
     pages: usize,
     /// Wheel rows between pages, normalized after each frame.
@@ -190,7 +180,7 @@ pub struct Model {
     note: Option<String>,
     /// The marked turn, by the fingerprint that names it across re-reads.
     turn: Option<u64>,
-    /// How many times what the panels show has changed: a session, a tab, an overlay.
+    /// How many times what the panels show has changed: a session, an overlay.
     epoch: u64,
 }
 
@@ -208,10 +198,10 @@ impl Model {
         }
     }
 
-    /// Take one key. `can_compose` says the selected session may be written;
-    /// `agents_tab` says the Agents tab exists. An open overlay owns every
-    /// key first; closed behavior is exactly what it always was.
-    pub fn key(&mut self, key: Key, fleet: &Fleet, can_compose: bool, agents_tab: bool) -> Act {
+    /// Take one key. `can_compose` says the selected session may be written.
+    /// An open overlay owns every key first; closed behavior is exactly what
+    /// it always was.
+    pub fn key(&mut self, key: Key, fleet: &Fleet, can_compose: bool) -> Act {
         if self.settings.is_some() {
             return self.settings_key(key);
         }
@@ -236,16 +226,6 @@ impl Model {
                     .map(|step| (after + step) % count)
                     .find(|candidate| fleet.rows[*candidate].needy);
                 self.select(fleet, target)
-            }
-            Key::Tab if agents_tab => {
-                self.tab = match self.tab {
-                    Tab::Overview => Tab::Agents,
-                    Tab::Agents => Tab::Overview,
-                };
-                self.body_top = 0;
-                self.moved();
-                self.focus = None;
-                Act::Redraw
             }
             Key::Compose if can_compose && self.selected.is_some() => Act::Compose,
             Key::Esc => {
@@ -290,7 +270,7 @@ impl Model {
 
     /// Select row `target`; selecting nothing, or what is already selected,
     /// answers nothing. A new selection reads its chat from the newest turn
-    /// and its tab body from the first row.
+    /// and its body from the first row.
     fn choose(&mut self, fleet: &Fleet, target: Option<usize>) -> Act {
         let Some(row) = target.and_then(|target| fleet.rows.get(target)) else {
             return Act::None;
@@ -350,12 +330,6 @@ impl Model {
         self.selected.as_deref()
     }
 
-    /// The tab showing.
-    #[must_use]
-    pub fn tab(&self) -> Tab {
-        self.tab
-    }
-
     /// Ceiling page count, including a partial wheel page. After a frame's
     /// clamp, the residual is smaller than that frame's page size.
     #[must_use]
@@ -407,17 +381,6 @@ impl Model {
         let row = fleet.rows.iter().position(|row| row.name == name)?;
         self.list_top = Some(start);
         Some(self.choose(fleet, Some(row)))
-    }
-
-    pub(crate) fn show_tab(&mut self, tab: Tab) -> Act {
-        if self.tab == tab {
-            return Act::None;
-        }
-        self.tab = tab;
-        self.body_top = 0;
-        self.focus = None;
-        self.moved();
-        Act::Redraw
     }
 
     /// The seat the highlight was moved to, by name.
@@ -486,7 +449,6 @@ impl Model {
     pub fn reconcile(&mut self, fleet: &Fleet) {
         if self.position(fleet).is_none() {
             *self = Self {
-                tab: self.tab,
                 split: self.split,
                 drag: self.drag,
                 settings: self.settings,
@@ -498,7 +460,7 @@ impl Model {
     }
 
     /// What a restarting app hands on: the selection (bound to its `id`, the
-    /// uuid its meta records), the tab and the preferences. `None` when nothing
+    /// uuid its meta records) and the preferences. `None` when nothing
     /// is selected, the `id` is unreadable or a name fails its grammar.
     #[must_use]
     pub(crate) fn view(&self, id: &str) -> Option<View> {
@@ -506,7 +468,6 @@ impl Model {
         Some(View {
             session,
             id: (!id.is_empty()).then(|| id.to_owned())?,
-            tab: self.tab,
             focus: self.focus.clone().filter(|seat| is_agent_name(seat)),
             sidebar: self.split.sidebar,
             list: self.split.list,
@@ -526,7 +487,6 @@ impl Model {
         }
         *self = Self {
             selected: Some(view.session.clone()),
-            tab: view.tab,
             pages: view.pages,
             rows: view.rows,
             list_top: view.list_top,
@@ -554,8 +514,8 @@ impl Model {
         };
     }
 
-    /// How many times what the panels show has changed: the selection, the
-    /// tab, an overlay, or the whole model rebuilt. Never on a no-op, so a
+    /// How many times what the panels show has changed: the selection, an
+    /// overlay, or the whole model rebuilt. Never on a no-op, so a
     /// selection made against one count is stale at any other.
     #[must_use]
     pub fn epoch(&self) -> u64 {
@@ -829,7 +789,7 @@ mod tests {
     //! selected session sits beside the sidebar; the tab stays as you move
     //! between sessions) and the start rule (home first, else the first row).
 
-    use super::{Act, Drag, Edge, Key, Model, SettingsTab, Tab};
+    use super::{Act, Drag, Edge, Key, Model, SettingsTab};
     use crate::app::fleet::{Counts, Fleet, Line2, Row};
     use crate::theme::Mark;
 
@@ -849,20 +809,29 @@ mod tests {
         }
     }
 
+    /// R5: Tab frees up in browse: there is no tab to switch, so nothing moves.
     #[test]
-    fn a_selection_that_leaves_the_fleet_goes_home_on_the_same_tab() {
+    fn tab_in_browse_changes_nothing() {
         let both = fleet(&["api", "web"]);
         let mut model = Model::new(&both);
-        let _ = model.key(Key::Digit(2), &both, false, true);
-        let _ = model.key(Key::Tab, &both, false, true);
-        assert_eq!((model.selected(), model.tab()), (Some("web"), Tab::Agents));
+        model.set_focus(Some("scout".to_owned()));
+        let before = model.clone();
+        assert_eq!(model.key(Key::Tab, &both, false), Act::None);
+        assert_eq!(model, before);
+    }
+
+    #[test]
+    fn a_selection_that_leaves_the_fleet_goes_home() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        let _ = model.key(Key::Digit(2), &both, false);
+        assert_eq!(model.selected(), Some("web"));
         model.reconcile(&fleet(&["api"]));
         assert_eq!(
             model.selected(),
             Some("api"),
             "the selection is a sidebar row"
         );
-        assert_eq!(model.tab(), Tab::Agents, "the tab stays");
     }
 
     /// The mark names a turn until the selection changes; the same selection
@@ -872,22 +841,16 @@ mod tests {
         let both = fleet(&["api", "web"]);
         let mut model = Model::new(&both);
         model.set_turn(Some(7));
-        let _ = model.key(Key::Digit(1), &both, false, true);
+        let _ = model.key(Key::Digit(1), &both, false);
         assert_eq!(model.turn(), Some(7), "the same selection keeps it");
-        assert_eq!(model.key(Key::Copy, &both, false, true), Act::Copy);
-        assert_eq!(
-            model.key(Key::TurnOlder, &both, false, true),
-            Act::TurnOlder
-        );
-        assert_eq!(
-            model.key(Key::TurnNewer, &both, false, true),
-            Act::TurnNewer
-        );
-        let _ = model.key(Key::Digit(2), &both, false, true);
+        assert_eq!(model.key(Key::Copy, &both, false), Act::Copy);
+        assert_eq!(model.key(Key::TurnOlder, &both, false), Act::TurnOlder);
+        assert_eq!(model.key(Key::TurnNewer, &both, false), Act::TurnNewer);
+        let _ = model.key(Key::Digit(2), &both, false);
         assert_eq!(model.turn(), None, "another session clears it");
         model.set_turn(Some(7));
         model.open_settings(1);
-        assert_eq!(model.key(Key::Copy, &both, false, true), Act::None);
+        assert_eq!(model.key(Key::Copy, &both, false), Act::None);
         model.close_settings();
         assert_eq!(
             model.turn(),
@@ -905,7 +868,7 @@ mod tests {
         let scroll = |pages: usize, notches: usize, lo: usize, hi: usize| {
             let mut model = Model::new(&one);
             for _ in 0..pages {
-                let _ = model.key(Key::PageUp, &one, false, true);
+                let _ = model.key(Key::PageUp, &one, false);
             }
             for _ in 0..notches {
                 model.wheel(true, 10, 1000);
@@ -945,7 +908,7 @@ mod tests {
         });
         assert!(model.drag_to(50));
         assert!(!model.drag_to(50), "the same size is no change");
-        let _ = model.key(Key::Digit(2), &both, false, true);
+        let _ = model.key(Key::Digit(2), &both, false);
         model.reconcile(&fleet(&["api"]));
         assert_eq!(model.split().sidebar, Some(50));
         assert!(model.let_go(), "the drag outlived the fleet change");
@@ -959,7 +922,7 @@ mod tests {
     fn reconcile_keeps_the_open_overlay_whole() {
         let both = fleet(&["api", "web"]);
         let mut model = Model::new(&both);
-        let _ = model.key(Key::Digit(2), &both, false, true);
+        let _ = model.key(Key::Digit(2), &both, false);
         assert_eq!(model.selected(), Some("web"));
         model.open_settings(42);
         let open = model.settings.as_mut().expect("open");
@@ -1000,15 +963,15 @@ mod tests {
         let three = fleet(&["api", "web", "db"]);
         let mut model = Model::new(&three);
         let _ = model.wheel_list(false, 0, 2);
-        assert_eq!(model.key(Key::Digit(1), &three, false, true), Act::Redraw);
+        assert_eq!(model.key(Key::Digit(1), &three, false), Act::Redraw);
         assert_eq!(model.list_top(), None);
-        assert_eq!(model.key(Key::Digit(1), &three, false, true), Act::None);
+        assert_eq!(model.key(Key::Digit(1), &three, false), Act::None);
     }
 
     /// A click keeps the window it was drawn from; a new selection and a tab
     /// change start the body at its first row (rulings A2, A3).
     #[test]
-    fn a_click_pins_the_window_and_selection_or_tab_resets_the_body() {
+    fn a_click_pins_the_window_and_selection_resets_the_body() {
         let three = fleet(&["api", "web", "db"]);
         let mut model = Model::new(&three);
         assert!(model.wheel_body(false, 10));
@@ -1016,12 +979,6 @@ mod tests {
         let act = model.select_name(&three, "web", 1);
         assert_eq!(act, Some(Act::Select("web".to_owned())));
         assert_eq!((model.list_top(), model.body_top()), (Some(1), 0));
-        let _ = model.wheel_body(false, 10);
-        assert_eq!(model.show_tab(Tab::Agents), Act::Redraw);
-        assert_eq!(model.body_top(), 0);
-        let _ = model.wheel_body(false, 10);
-        let _ = model.key(Key::Tab, &three, false, true);
-        assert_eq!(model.body_top(), 0);
     }
 
     /// A frame settles a wheeled list and the body to what it drew; a list
@@ -1063,28 +1020,20 @@ mod tests {
     /// or a tab change forgets it, selecting what is selected keeps it, and
     /// the open overlay owns the seat keys.
     #[test]
-    fn the_seat_focus_resets_on_a_new_selection_or_tab() {
+    fn the_seat_focus_resets_on_a_new_selection() {
         let both = fleet(&["api", "web"]);
         let mut model = Model::new(&both);
         let focus = |model: &mut Model| model.set_focus(Some("scout".to_owned()));
         focus(&mut model);
         assert_eq!(model.focus(), Some("scout"));
-        assert_eq!(model.key(Key::Digit(1), &both, false, true), Act::None);
+        assert_eq!(model.key(Key::Digit(1), &both, false), Act::None);
         assert_eq!(model.focus(), Some("scout"), "the same selection keeps it");
-        let _ = model.key(Key::Digit(2), &both, false, true);
+        let _ = model.key(Key::Digit(2), &both, false);
         assert_eq!(model.focus(), None);
         focus(&mut model);
-        let _ = model.key(Key::Tab, &both, false, true);
-        assert_eq!(model.focus(), None);
-        focus(&mut model);
-        assert_eq!(model.show_tab(Tab::Overview), Act::Redraw);
-        assert_eq!(model.focus(), None);
-        focus(&mut model);
-        assert_eq!(model.show_tab(Tab::Overview), Act::None, "no tab change");
-        assert_eq!(model.focus(), Some("scout"));
         model.open_settings(1);
         for key in [Key::Open, Key::SeatNext, Key::SeatPrev] {
-            assert_eq!(model.key(key, &both, true, true), Act::None, "{key:?}");
+            assert_eq!(model.key(key, &both, true), Act::None, "{key:?}");
         }
     }
 
@@ -1093,10 +1042,10 @@ mod tests {
     fn v_asks_to_peek_unless_settings_is_open() {
         let both = fleet(&["api", "web"]);
         let mut model = Model::new(&both);
-        assert_eq!(model.key(Key::Peek, &both, true, true), Act::Peek);
+        assert_eq!(model.key(Key::Peek, &both, true), Act::Peek);
         assert!(!model.peek_open(), "the key asks; the app opens");
         model.open_settings(1);
-        assert_eq!(model.key(Key::Peek, &both, true, true), Act::None);
+        assert_eq!(model.key(Key::Peek, &both, true), Act::None);
     }
 
     /// With the panel open the scroll keys move it a line or a page, the close
@@ -1107,7 +1056,7 @@ mod tests {
         let mut model = Model::new(&both);
         model.open_peek(7);
         model.set_peek_page_rows(5);
-        let go = |model: &mut Model, key| model.key(key, &both, true, true);
+        let go = |model: &mut Model, key| model.key(key, &both, true);
         assert_eq!(go(&mut model, Key::Up), Act::Redraw);
         assert_eq!(model.peek_back(), Some(1));
         assert_eq!(go(&mut model, Key::PageUp), Act::Redraw);
@@ -1139,11 +1088,11 @@ mod tests {
         let both = fleet(&["api"]);
         let mut model = Model::new(&both);
         model.open_peek(1);
-        assert_eq!(model.key(Key::PageUp, &both, true, true), Act::Redraw);
+        assert_eq!(model.key(Key::PageUp, &both, true), Act::Redraw);
         assert_eq!(model.peek_back(), Some(1));
         for key in [Key::Esc, Key::Quit, Key::Peek] {
             model.open_peek(1);
-            assert_eq!(model.key(key, &both, true, true), Act::Redraw, "{key:?}");
+            assert_eq!(model.key(key, &both, true), Act::Redraw, "{key:?}");
             assert!(!model.peek_open(), "{key:?} closes");
             assert_eq!(model.peek_back(), None);
         }
@@ -1186,11 +1135,11 @@ mod tests {
     fn a_reconcile_or_restart_keeps_the_open_peek() {
         let both = fleet(&["api", "web"]);
         let mut model = Model::new(&both);
-        let _ = model.key(Key::Digit(2), &both, false, true);
+        let _ = model.key(Key::Digit(2), &both, false);
         assert_eq!(model.selected(), Some("web"));
         model.open_peek(5);
         model.set_peek_page_rows(4);
-        let _ = model.key(Key::PageUp, &both, true, true);
+        let _ = model.key(Key::PageUp, &both, true);
         model.reconcile(&fleet(&["api"]));
         assert_eq!(model.selected(), Some("api"), "the model was rebuilt");
         assert_eq!(
@@ -1216,18 +1165,15 @@ mod tests {
         let both = fleet(&["api", "web"]);
         let mut model = Model::new(&both);
         let mut last = model.epoch();
-        let _ = model.key(Key::Digit(2), &both, false, true);
+        let _ = model.key(Key::Digit(2), &both, false);
         moved(&model, &mut last, "another session");
-        let _ = model.key(Key::Digit(2), &both, false, true);
-        let _ = model.show_tab(Tab::Overview);
-        assert_eq!(model.epoch(), last, "the same session and tab move nothing");
-        let _ = model.show_tab(Tab::Agents);
-        moved(&model, &mut last, "another tab");
-        let _ = model.key(Key::Tab, &both, false, true);
-        moved(&model, &mut last, "the tab key");
+        let _ = model.key(Key::Digit(2), &both, false);
+        assert_eq!(model.epoch(), last, "the same session moves nothing");
+        let _ = model.key(Key::Tab, &both, false);
+        assert_eq!(model.epoch(), last, "the tab key moves nothing");
         model.open_settings(1);
         moved(&model, &mut last, "settings open");
-        let _ = model.key(Key::Esc, &both, false, true);
+        let _ = model.key(Key::Esc, &both, false);
         moved(&model, &mut last, "settings closed by Esc");
         model.close_settings();
         assert_eq!(
@@ -1241,7 +1187,7 @@ mod tests {
         moved(&model, &mut last, "settings closed");
         model.open_peek(3);
         moved(&model, &mut last, "peek open");
-        let _ = model.key(Key::Peek, &both, true, true);
+        let _ = model.key(Key::Peek, &both, true);
         moved(&model, &mut last, "peek closed by its key");
         model.close_peek();
         assert_eq!(model.epoch(), last, "closing a closed panel moves nothing");
@@ -1273,7 +1219,6 @@ mod tests {
         let view = View {
             session: "web".into(),
             id,
-            tab: Tab::Agents,
             focus: None,
             sidebar: None,
             list: None,

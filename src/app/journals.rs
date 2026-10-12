@@ -1,20 +1,20 @@
 //! What the reader keeps between fleet reads: each session's parsed journal
-//! and memo, reused while the file's [`Identity`] is the one it had when it
-//! was read, and read whole again by today's readers on any change. A file
-//! that is not a regular file, or whose read failed, is never kept.
+//! (the bytes [`SessionRead::open`] reads), reused while the file's
+//! [`Identity`] is the one it had when it was read, and read whole again on any
+//! change. A file that is not a regular file, or whose read failed, is never
+//! kept.
 //!
 //! Nothing here reads a file itself: the identities come from the store, the
-//! bytes from [`SessionRead::open`] and [`store::SessionStore::memo_bytes`].
+//! bytes from [`SessionRead::open`].
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::brief::{self, Filed};
 use crate::session::{RecordSnapshot, SessionRead};
 use crate::store::{self, Identity};
 
-/// The parsed journals and memos of the sessions the last fleet read listed.
+/// The parsed journals of the sessions the last fleet read listed.
 #[derive(Default)]
 pub(super) struct Journals {
     held: BTreeMap<PathBuf, Held>,
@@ -24,7 +24,6 @@ pub(super) struct Journals {
 #[derive(Default)]
 struct Held {
     events: Option<(Identity, SessionRead)>,
-    memo: Option<(Identity, Vec<Filed>)>,
 }
 
 impl Journals {
@@ -48,21 +47,6 @@ impl Journals {
         read
     }
 
-    /// The memo of `dir`, folded as the reader folds it now.
-    pub(super) fn memo(&mut self, dir: &Path) -> io::Result<Vec<Filed>> {
-        let store = store::open(dir);
-        let identity = store.memo_identity();
-        let held = self.held.entry(dir.to_path_buf()).or_default();
-        if let (Some(now), Some((then, filed))) = (identity, &held.memo)
-            && now == *then
-        {
-            return Ok(filed.clone());
-        }
-        let filed = store.memo_bytes().map(|bytes| brief::filed(&bytes));
-        held.memo = identity.zip(filed.as_ref().ok().cloned());
-        filed
-    }
-
     /// Keep only the sessions under `dirs`.
     pub(super) fn retain(&mut self, dirs: &[PathBuf]) {
         self.held.retain(|dir, _| dirs.contains(dir));
@@ -78,23 +62,18 @@ impl Journals {
 #[cfg(test)]
 pub(super) mod tests {
     use std::collections::BTreeSet;
-    use std::io;
     use std::path::{Path, PathBuf};
 
     use super::super::fleet_spec::{self, Files};
     use super::Journals;
-    use crate::brief::Filed;
     use crate::session::RecordSnapshot;
 
-    /// Runs `read`, adding the bytes the journal and memo parsers were handed
-    /// meanwhile — on this thread, wherever the parse happened — to `costs`.
-    pub(in crate::app) fn metered<T>(costs: &mut (u64, u64), read: impl FnOnce() -> T) -> T {
-        let parsed = || (crate::events::parsed_bytes(), crate::brief::parsed_bytes());
-        let before = parsed();
+    /// Runs `read`, adding the bytes the journal parser was handed meanwhile —
+    /// on this thread, wherever the parse happened — to `costs`.
+    pub(in crate::app) fn metered<T>(costs: &mut u64, read: impl FnOnce() -> T) -> T {
+        let before = crate::events::parsed_bytes();
         let answer = read();
-        let after = parsed();
-        costs.0 = costs.0.saturating_add(after.0.saturating_sub(before.0));
-        costs.1 = costs.1.saturating_add(after.1.saturating_sub(before.1));
+        *costs = costs.saturating_add(crate::events::parsed_bytes().saturating_sub(before));
         answer
     }
 
@@ -102,7 +81,7 @@ pub(super) mod tests {
     #[derive(Default)]
     struct Metered {
         journals: Journals,
-        costs: (u64, u64),
+        costs: u64,
     }
 
     impl Files for Metered {
@@ -110,11 +89,7 @@ pub(super) mod tests {
             let journals = &mut self.journals;
             metered(&mut self.costs, || journals.snapshot(dir))
         }
-        fn memo(&mut self, dir: &Path) -> io::Result<Vec<Filed>> {
-            let journals = &mut self.journals;
-            metered(&mut self.costs, || journals.memo(dir))
-        }
-        fn costs(&self) -> (u64, u64) {
+        fn costs(&self) -> u64 {
             self.costs
         }
         fn retain(&mut self, dirs: &[PathBuf]) {
@@ -126,7 +101,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_kept_journal_and_memo_answer_every_change_as_a_full_read() {
+    fn a_kept_journal_answers_every_change_as_a_full_read() {
         fleet_spec::file_changes(Metered::default);
     }
 

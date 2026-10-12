@@ -112,8 +112,27 @@ fn list_and_body_ship_their_cells_and_list_clamps_before_lane() {
         let mut app = app();
         app.fleet.rows[0].home = false;
         app.fleet.rows[0].counts = fleet::Counts::Marks(vec![]);
-        app.overview.goal = Some(("BODY_ALPHA".to_owned(), None));
-        let mut end = drag(&mut app, if mode == 1 { "BODY_ALPHA" } else { "one" });
+        let seat = |name: &str| crate::tmux::PickerAgent {
+            name: name.to_owned(),
+            profile: "p".to_owned(),
+            state: "working".to_owned(),
+            pane: "%7".to_owned(),
+            client: "claude".to_owned(),
+            model: String::new(),
+            effort: String::new(),
+            drift: false,
+        };
+        let agents = vec![seat("first"), seat("BODYSEAT")];
+        app.facts.insert(
+            "one".to_owned(),
+            fleet::Facts::Seats {
+                id: "$1".to_owned(),
+                agents,
+            },
+        );
+        // The row a press lands on stays as drawn: the seat is focused already.
+        app.focus_seat(Some("BODYSEAT".to_owned()));
+        let mut end = drag(&mut app, if mode == 1 { "BODYSEAT" } else { "one" });
         if mode == 2 {
             end.0 = 150;
             mouse(&mut app, MouseKind::Drag, end);
@@ -174,21 +193,17 @@ fn lane_growth_and_resize_clear_mid_drag_and_ship_nothing() {
 }
 
 #[test]
-fn session_tab_and_modal_round_trips_cancel_even_before_a_frame() {
-    for change in 0..4 {
+fn session_and_modal_round_trips_cancel_even_before_a_frame() {
+    for change in 0..3 {
         let mut app = app();
         let end = drag(&mut app, "alphaZ");
         mouse(&mut app, MouseKind::Release, end);
         match change {
             0 => {
-                let _ = app.model.key(model::Key::Digit(2), &app.fleet, false, true);
-                let _ = app.model.key(model::Key::Digit(1), &app.fleet, false, true);
+                let _ = app.model.key(model::Key::Digit(2), &app.fleet, false);
+                let _ = app.model.key(model::Key::Digit(1), &app.fleet, false);
             }
             1 => {
-                let _ = app.model.show_tab(model::Tab::Agents);
-                let _ = app.model.show_tab(model::Tab::Overview);
-            }
-            2 => {
                 app.model.open_settings(17);
                 app.model.close_settings();
             }

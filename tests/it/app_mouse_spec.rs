@@ -515,26 +515,6 @@ fn click_selects_session_row() {
     });
 }
 
-/// Ruling 5: clicking a tab label shows that tab, like Tab would.
-#[test]
-fn click_tab_label_switches_tabs() {
-    let rig = Rig::new("amtab", 0, &[]);
-    let pane = rig.open_app();
-    let screen = rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("▣ 1 ") && screen.contains("Overview")
-    });
-    let (col, row) = cell_of(&screen, "Agents").expect("the Agents label");
-    rig.click(&pane, col, row);
-    let screen = rig.wait(&pane, WAIT, "Agents shows", |screen| {
-        screen.contains("No seat facts")
-    });
-    let (col, row) = cell_of(&screen, "Overview").expect("the Overview label");
-    rig.click(&pane, col, row);
-    rig.wait(&pane, WAIT, "Overview returns", |screen| {
-        screen.contains("Goal")
-    });
-}
-
 /// Ruling 5: clicking the composer starts writing exactly where Enter would;
 /// while writing, a row click returns to browsing with the draft kept.
 #[test]
@@ -888,28 +868,6 @@ fn one_wheel_notch_moves_exactly_three_rows() {
             .lines()
             .position(|line| line.contains(MARK))
             .is_some_and(|at| at == row1)
-    });
-}
-
-/// While writing, a tab-label click returns to browsing with the draft kept,
-/// then shows that tab.
-#[test]
-fn click_tab_while_writing_returns_with_draft() {
-    let rig = Rig::new("amtabw", 0, &[]);
-    let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("▣ 1 ")
-    });
-    rig.tmux(&["send-keys", "-t", &pane, "i"]);
-    rig.wait(&pane, WAIT, "writing starts", writing);
-    rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "tabdraft"]);
-    let screen = rig.wait(&pane, WAIT, "the draft shows", |screen| {
-        screen.contains("tabdraft")
-    });
-    let (col, row) = cell_of(&screen, "Agents").expect("the Agents label");
-    rig.click(&pane, col, row);
-    rig.wait(&pane, WAIT, "Agents with the draft kept", |screen| {
-        screen.contains("No seat facts") && screen.contains("draft kept")
     });
 }
 

@@ -1,6 +1,6 @@
 //! Frozen appuse A acceptance. Oracle: lead ruling A1-A3 and the drawn frame.
 //! Real app, private tmux/socket/stores; no model-private API or substitute reducer.
-//! List wheel = one whole session; Overview/Agents = three rendered text rows.
+//! List wheel = one whole session; the Agents body = three rendered text rows.
 //! Baseline controls establish the fixture and pointer before every RED assertion.
 
 #![allow(
@@ -97,27 +97,18 @@ impl Rig {
             "@ae_agent",
             "lead",
         ]);
-        rig.topics(30);
         rig.agents();
         rig
     }
 
-    fn topics(&self, count: usize) {
-        let mut rows = String::new();
-        for at in 0..count {
-            writeln!(
-                rows,
-                "2026-10-07T16:00:{at:02}Z\tcl:lead\ttopic{at:02}\tbody{at:02}"
-            )
-            .expect("memo row");
-        }
-        fs::write(self.tool.dir.join("memo.tsv"), rows).expect("fixture memos");
-    }
-
     fn agents(&self) {
-        let mut raw = format!("v1;{};300", ae::time::Timestamp::now().epoch());
+        let mut raw = format!("v2;{};300", ae::time::Timestamp::now().epoch());
         for at in 0..20 {
-            write!(raw, ";seat{at:02}:sonnet55x:working:").expect("seat fact");
+            write!(
+                raw,
+                ";seat{at:02}:sonnet55x:working::claude:Sonnet 5.5:xhigh:"
+            )
+            .expect("seat fact");
         }
         assert_eq!(
             ae::tmux::parse_picker_agents(&raw, ae::time::Timestamp::now().epoch())
@@ -126,6 +117,11 @@ impl Rig {
             20
         );
         self.tmux(&["set-option", "-t", &self.home, "@ae_agents", &raw]);
+    }
+
+    /// The watchdog publishes no seat facts any more.
+    fn unpublish(&self) {
+        self.tmux(&["set-option", "-u", "-t", &self.home, "@ae_agents"]);
     }
 
     fn tmux(&self, tail: &[&str]) -> String {
@@ -191,7 +187,7 @@ impl Rig {
 
     fn ready(&self, pane: &str) -> String {
         let first = self.wait(pane, WAIT, "GUARD undragged app frame", |s| {
-            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("Overview")
+            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("Agents 20")
         });
         let edge = first
             .lines()
@@ -219,8 +215,8 @@ impl Rig {
             Some(24)
         );
         assert_eq!(self.cards(&pinned).len(), 8);
-        self.wait(pane, WAIT, "GUARD home, overflow and memos ready", |s| {
-            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("topic29")
+        self.wait(pane, WAIT, "GUARD home, overflow and seats ready", |s| {
+            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("seat05")
         })
     }
 
@@ -316,9 +312,9 @@ fn sidebar_cell(screen: &str, needle: &str) -> (usize, usize) {
 }
 
 fn body_rows(screen: &str) -> Vec<String> {
-    // A capture can fall between the resize clear and the tab's repaint.
-    // Wait predicates must see no body yet, rather than panic on its label.
-    let Some(top) = screen.lines().position(|row| row.contains("Overview")) else {
+    // A capture can fall between the resize clear and the repaint. Wait
+    // predicates must see no body yet, rather than panic on its heading.
+    let Some(top) = screen.lines().position(|row| row.starts_with("  Agents")) else {
         return Vec::new();
     };
     let Some(width) = drawn_rule(screen) else {
@@ -345,25 +341,6 @@ fn body(screen: &str) -> Vec<String> {
     body_rows(screen)
         .into_iter()
         .filter(|line| !line.contains("more rows"))
-        .map(|line| {
-            // Compare content identity, independent of a refresh crossing an age minute.
-            let text = line.trim();
-            if text.starts_with("topic") && !text.contains("body") {
-                text.split_whitespace()
-                    .next()
-                    .expect("topic name")
-                    .to_owned()
-            } else if text.starts_with("wheel-goal")
-                || (text.starts_with("topic") && text.contains("body"))
-            {
-                text.split(" · ")
-                    .next()
-                    .expect("content before age")
-                    .to_owned()
-            } else {
-                line
-            }
-        })
         .collect()
 }
 
@@ -376,33 +353,15 @@ fn more(screen: &str) -> String {
 }
 
 #[test]
-fn guard_complete_drawn_rows_prove_overview_agents_and_resize_oracles() {
+fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
     let rig = Rig::new("wloracle");
     let pane = rig.open();
     let first = rig.ready(&pane);
     assert_eq!(body_rows(&first).len(), 18, "GUARD original body rectangle");
     rig.tmux(&["resize-window", "-t", &pane, "-x", "160", "-y", "100"]);
-    let complete = rig.wait(&pane, FRAME, "GUARD all Overview content fits", |s| {
-        s.lines().count() == 100 && s.contains("body00") && !s.contains("more rows")
+    let complete = rig.wait(&pane, FRAME, "GUARD all Agents content fits", |s| {
+        s.lines().count() == 100 && s.contains("seat19") && !s.contains("more rows")
     });
-    let mut expected = vec![
-        "mode: local",
-        "dir: unrecorded",
-        "Goal",
-        "wheel-goal",
-        "Waiting on you 0",
-        "Nothing waits on you.",
-        "Decided · latest memo",
-        "No decision memo.",
-        "Topics",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    for at in (0..30).rev() {
-        expected.push(format!("topic{at:02}"));
-        expected.push(format!("body{at:02}"));
-    }
     let nonempty = |s: &str| {
         body(s)
             .iter()
@@ -410,29 +369,7 @@ fn guard_complete_drawn_rows_prove_overview_agents_and_resize_oracles() {
             .filter(|row| !row.is_empty())
             .collect::<Vec<_>>()
     };
-    assert_eq!(
-        nonempty(&complete),
-        expected,
-        "GUARD 69 exact compacted rows"
-    );
-    let visible = if first.contains("more rows") { 17 } else { 18 };
-    assert_eq!(
-        nonempty(&first),
-        expected[..visible],
-        "GUARD original rows match complete content"
-    );
-    rig.report(&pane, 65, (2, cell(&complete, "Overview").1 + 2), 40);
-    std::thread::sleep(Duration::from_millis(150));
-    assert_eq!(
-        nonempty(&rig.screen(&pane)),
-        expected,
-        "fitting Overview wheel is a no-op"
-    );
-    rig.literal(&pane, "\t");
-    let agents = rig.wait(&pane, FRAME, "GUARD all Agents content fits", |s| {
-        s.contains("seat19")
-    });
-    let seats = nonempty(&agents);
+    let seats = nonempty(&complete);
     assert_eq!(seats.len(), 40, "GUARD twenty two-row seats");
     for at in 0..20 {
         let name = format!("seat{at:02}");
@@ -443,31 +380,33 @@ fn guard_complete_drawn_rows_prove_overview_agents_and_resize_oracles() {
             Some(name.as_str()),
             "GUARD seat row order"
         );
-        assert_eq!(seats[2 * at + 1], "sonnet55x", "GUARD profile facts row");
+        assert_eq!(
+            seats[2 * at + 1],
+            "claude · Sonnet 5.5 · xhigh",
+            "GUARD facts row"
+        );
     }
-    assert!(seats[3].contains("sonnet55x"));
-    rig.report(&pane, 65, (2, cell(&agents, "Overview").1 + 2), 40);
+    let visible = if first.contains("more rows") { 17 } else { 18 };
+    assert_eq!(
+        nonempty(&first),
+        seats[..visible],
+        "GUARD original rows match complete content"
+    );
+    rig.report(&pane, 65, (2, cell(&complete, "Agents 20").1 + 2), 40);
     std::thread::sleep(Duration::from_millis(150));
     assert_eq!(
         nonempty(&rig.screen(&pane)),
         seats,
         "fitting Agents wheel is a no-op"
     );
-    rig.literal(&pane, "\t");
     rig.tmux(&["resize-window", "-t", &pane, "-x", "100", "-y", "80"]);
-    let narrow = rig.wait(&pane, FRAME, "GUARD complete narrow topics fit", |s| {
+    let narrow = rig.wait(&pane, FRAME, "GUARD complete narrow seats fit", |s| {
         s.lines().count() == 80
             && drawn_rule(s) == Some(34)
-            && s.contains("body00")
+            && s.contains("seat19")
             && !s.contains("more rows")
     });
-    let mut expected_narrow = expected[..9].to_vec();
-    expected_narrow.extend((0..30).rev().map(|at| format!("topic{at:02} body{at:02}")));
-    assert_eq!(
-        nonempty(&narrow),
-        expected_narrow,
-        "GUARD narrow layout has 39 rows"
-    );
+    assert_eq!(nonempty(&narrow).len(), 40, "GUARD narrow layout rows");
 }
 
 #[test]
@@ -510,18 +449,13 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
     let rig = Rig::new("wlmarker");
     let pane = rig.open();
     let first = rig.ready(&pane);
-    // Contract fixture: two facts + seven section rows + sixty topic rows = 69.
-    // The drawn 18-row body gives one row to the marker, leaving 17 content rows.
-    let marked = rig.wait(
-        &pane,
-        FRAME,
-        "A-BODY-MARKER top hides 52 of 69 compacted rows",
-        |s| {
-            body_rows(s)
-                .last()
-                .is_some_and(|row| row.trim() == "↓ 52 more rows")
-        },
-    );
+    // Contract fixture: twenty seats of two rows = 40 text rows. The drawn
+    // 18-row body gives one row to the marker, leaving 17 content rows.
+    let marked = rig.wait(&pane, FRAME, "A-BODY-MARKER top hides 23 of 40 rows", |s| {
+        body_rows(s)
+            .last()
+            .is_some_and(|row| row.trim() == "↓ 23 more rows")
+    });
     assert_eq!(body(&marked).len(), 17);
     let point = sidebar_cell(&marked, "more rows");
     rig.report(&pane, 0, point, 1);
@@ -541,7 +475,7 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
         |s| {
             body_rows(s)
                 .last()
-                .is_some_and(|row| row.trim() == "↑ 3 · ↓ 49 more rows")
+                .is_some_and(|row| row.trim() == "↑ 3 · ↓ 20 more rows")
         },
     );
     assert_eq!(body(&down).first(), body(&first).get(3));
@@ -553,22 +487,16 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
         |s| {
             body_rows(s)
                 .last()
-                .is_some_and(|row| row.trim() == "↑ 52 more rows")
-                && body(s).last().is_some_and(|row| row.contains("body00"))
+                .is_some_and(|row| row.trim() == "↑ 23 more rows")
+                && body(s).last().is_some_and(|row| row.contains("Sonnet 5.5"))
         },
     );
-    rig.topics(0);
+    rig.unpublish();
     rig.wait(
         &pane,
         WAIT,
         "A-BODY-MARKER-FITS no cut marker when body fits",
-        |s| {
-            s.contains("No topics.")
-                && !s.contains("more rows")
-                && body(s)
-                    .first()
-                    .is_some_and(|row| row.contains("mode: local"))
-        },
+        |s| s.contains("No seat facts") && !s.contains("more rows"),
     );
 }
 
@@ -659,99 +587,46 @@ fn clicked_revealed_card_keeps_window_and_same_selection_key_reveals_it() {
 }
 
 #[test]
-fn overview_wheel_moves_three_drawn_rows_and_tabs_and_selection_reset_body() {
+fn selecting_another_session_resets_the_wheeled_body() {
     let rig = Rig::new("wlover");
-    fs::write(
-        rig.root.join("sessions/ws00/memo.tsv"),
-        fs::read(rig.tool.dir.join("memo.tsv")).expect("fixture topic bytes"),
-    )
-    .expect("foreign session overflow");
     let pane = rig.open();
     let first = rig.ready(&pane);
     let rows = body(&first);
-    assert!(
-        rows[0].contains("mode: local") && rows.len() > 6,
-        "GUARD overflow body drawn"
-    );
-    let point = (2, cell(&first, "Overview").1 + 2);
+    let point = (2, cell(&first, "Agents 20").1 + 2);
+    let foreign = |s: &str| {
+        s.lines().nth(1).is_some_and(|line| line.contains("ws00"))
+            && s.contains("Not running: no seat facts.")
+            && !s.contains("more rows")
+    };
     rig.report(&pane, 65, point, 1);
-    let down = rig.wait(&pane, FRAME, "A-OVERVIEW-UNIT three text rows down", |s| {
+    rig.wait(&pane, FRAME, "A-RESET-KEY-PRECOND scrolled", |s| {
         body(s).first() == rows.get(3)
     });
-    assert_eq!(rig.cards(&down), rig.cards(&first));
-    rig.home_holds(&down, false);
-    rig.report(&pane, 64, point, 1);
-    rig.wait(
-        &pane,
-        FRAME,
-        "A-OVERVIEW-UP returns exactly to first row",
-        |s| body(s) == rows,
-    );
-    rig.report(&pane, 65, point, 40);
-    let bottom = rig.wait(
-        &pane,
-        FRAME,
-        "A-OVERVIEW-BOTTOM last topic reachable",
-        |s| body(s).last().is_some_and(|row| row.contains("body00")),
-    );
-    rig.report(&pane, 65, point, 40);
-    rig.report(&pane, 64, point, 1);
-    let reversed = rig.wait(
-        &pane,
-        FRAME,
-        "A-OVERVIEW-REVERSE starts at clamped bottom",
-        |s| body(s).get(3) == body(&bottom).first(),
-    );
-    assert!(!body(&reversed)[0].contains("mode: local"));
-    rig.literal(&pane, "\t\t");
-    let reset = rig.wait(&pane, FRAME, "A-OVERVIEW-TAB reset", |s| body(s) == rows);
-    rig.report(&pane, 65, point, 1);
-    rig.wait(
-        &pane,
-        FRAME,
-        "A-OVERVIEW-SELECT-PRECOND scrolled again",
-        |s| body(s).first() == rows.get(3),
-    );
     rig.literal(&pane, "2");
     rig.wait(
         &pane,
         FRAME,
-        "A-OVERVIEW-KEY-SELECT reset overflowing foreign body",
-        |s| {
-            s.lines().nth(1).is_some_and(|line| line.contains("ws00"))
-                && body(s)
-                    .first()
-                    .is_some_and(|row| row.contains("mode: local"))
-                && s.contains("topic29")
-        },
+        "A-RESET-KEY-SELECT foreign body at its top",
+        foreign,
     );
     rig.literal(&pane, "\x1b");
-    rig.wait(&pane, FRAME, "A-OVERVIEW-ESC reset home body", |s| {
-        body(s) == body(&reset)
+    rig.wait(&pane, FRAME, "A-RESET-ESC home body at its top", |s| {
+        body(s) == rows
     });
     rig.report(&pane, 65, point, 1);
-    let wheeled = rig.wait(
-        &pane,
-        FRAME,
-        "A-OVERVIEW-CLICK-PRECOND scrolled again",
-        |s| body(s).first() == rows.get(3),
-    );
+    let wheeled = rig.wait(&pane, FRAME, "A-RESET-CLICK-PRECOND scrolled", |s| {
+        body(s).first() == rows.get(3)
+    });
     rig.report(&pane, 0, sidebar_cell(&wheeled, "ws00"), 1);
     rig.wait(
         &pane,
         FRAME,
-        "A-OVERVIEW-CLICK-SELECT reset overflowing foreign body",
-        |s| {
-            s.lines().nth(1).is_some_and(|line| line.contains("ws00"))
-                && body(s)
-                    .first()
-                    .is_some_and(|row| row.contains("mode: local"))
-                && s.contains("topic29")
-        },
+        "A-RESET-CLICK-SELECT foreign body at its top",
+        foreign,
     );
     rig.literal(&pane, "\x1b");
-    let selected = rig.wait(&pane, FRAME, "A-OVERVIEW-SELECT home reset", |s| {
-        body(s) == body(&reset)
+    let selected = rig.wait(&pane, FRAME, "A-RESET-SELECT home body at its top", |s| {
+        body(s) == rows
     });
     rig.home_holds(&selected, false);
 }
@@ -760,20 +635,13 @@ fn overview_wheel_moves_three_drawn_rows_and_tabs_and_selection_reset_body() {
 fn agents_wheel_moves_three_text_rows_including_half_a_seat_and_clamps() {
     let rig = Rig::new("wlagent");
     let pane = rig.open();
-    rig.ready(&pane);
-    rig.literal(&pane, "\t");
-    let first = rig.wait(
-        &pane,
-        FRAME,
-        "GUARD published twenty-seat Agents body",
-        |s| body(s).first().is_some_and(|row| row.contains("seat00")) && s.contains("Agents 20"),
-    );
+    let first = rig.ready(&pane);
     let rows = body(&first);
     assert!(
-        rows[3].contains("sonnet55x") && !rows[3].contains("seat01"),
+        rows[0].contains("seat00") && rows[3].contains("Sonnet 5.5") && !rows[3].contains("seat01"),
         "GUARD fourth row is seat facts"
     );
-    let point = (2, cell(&first, "Overview").1 + 2);
+    let point = (2, cell(&first, "Agents 20").1 + 2);
     rig.report(&pane, 65, point, 1);
     let down = rig.wait(
         &pane,
@@ -796,7 +664,7 @@ fn agents_wheel_moves_three_text_rows_including_half_a_seat_and_clamps() {
             let rows = body(s);
             rows.len() > 1
                 && rows[rows.len() - 2].contains("seat19")
-                && rows[rows.len() - 1].contains("sonnet55x")
+                && rows[rows.len() - 1].contains("Sonnet 5.5")
         },
     );
     assert_eq!(
@@ -839,7 +707,7 @@ fn list_and_body_wheel_while_writing_keep_exact_draft_mode_selection_and_journal
     rig.home_holds(&list, true);
     assert!(list.contains("WHEEL-draft-123"));
     let rows = body(&list);
-    rig.report(&pane, 65, (2, cell(&list, "Overview").1 + 2), 1);
+    rig.report(&pane, 65, (2, cell(&list, "Agents 20").1 + 2), 1);
     let down = rig.wait(&pane, FRAME, "A-WRITE-BODY scrolls without editing", |s| {
         body(s).first() == rows.get(3)
     });
@@ -866,14 +734,14 @@ fn refresh_clamps_shrunk_list_and_body_before_drawing() {
     let down = rig.wait(&pane, FRAME, "A-REFRESH-PRECOND list at bottom", |s| {
         rig.cards(s) == rig.names[5..13]
     });
-    rig.report(&pane, 65, (2, cell(&down, "Overview").1 + 2), 40);
-    rig.wait(&pane, FRAME, "A-REFRESH-BODY-PRECOND final topic", |s| {
-        body(s).last().is_some_and(|row| row.contains("body00"))
+    rig.report(&pane, 65, (2, cell(&down, "Agents 20").1 + 2), 40);
+    rig.wait(&pane, FRAME, "A-REFRESH-BODY-PRECOND final seat", |s| {
+        body(s).last().is_some_and(|row| row.contains("Sonnet 5.5"))
     });
     for name in &rig.names[3..] {
         fs::remove_dir_all(rig.root.join("sessions").join(name)).expect("shrink fixture fleet");
     }
-    rig.topics(0);
+    rig.unpublish();
     let shrunk = rig.wait(
         &pane,
         WAIT,
@@ -881,10 +749,8 @@ fn refresh_clamps_shrunk_list_and_body_before_drawing() {
         |s| {
             s.contains("▣ 3 ")
                 && rig.cards(s) == rig.names[..3]
-                && body(s)
-                    .first()
-                    .is_some_and(|row| row.contains("mode: local"))
-                && s.contains("No topics.")
+                && s.contains("No seat facts")
+                && !s.contains("more rows")
         },
     );
     rig.home_holds(&shrunk, false);
@@ -895,17 +761,17 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
     let rig = Rig::new("wlresize");
     let pane = rig.open();
     let first = rig.ready(&pane);
-    rig.report(&pane, 65, (2, cell(&first, "Overview").1 + 2), 40);
+    rig.report(&pane, 65, (2, cell(&first, "Agents 20").1 + 2), 40);
     rig.wait(&pane, FRAME, "A-RESIZE-PRECOND body at bottom", |s| {
-        body(s).last().is_some_and(|row| row.contains("body00"))
+        body(s).last().is_some_and(|row| row.contains("Sonnet 5.5"))
     });
     rig.tmux(&["resize-window", "-t", &pane, "-x", "100", "-y", "28"]);
     let narrow = rig.wait(&pane, FRAME, "A-RESIZE-NARROW body drawn", |s| {
-        s.lines().count() == 28 && s.contains("topic") && rig.cards(s).len() == 7
+        s.lines().count() == 28 && s.contains("seat") && rig.cards(s).len() == 7
     });
-    rig.report(&pane, 65, (2, cell(&narrow, "Overview").1 + 2), 40);
-    rig.wait(&pane, FRAME, "A-RESIZE-NARROW-BOTTOM final topic", |s| {
-        body(s).last().is_some_and(|row| row.contains("body00"))
+    rig.report(&pane, 65, (2, cell(&narrow, "Agents 20").1 + 2), 40);
+    rig.wait(&pane, FRAME, "A-RESIZE-NARROW-BOTTOM final seat", |s| {
+        body(s).last().is_some_and(|row| row.contains("Sonnet 5.5"))
     });
     rig.tmux(&["resize-window", "-t", &pane, "-x", "160", "-y", "100"]);
     rig.wait(
@@ -914,10 +780,8 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
         "A-RESIZE-GROW all body fits and top visible",
         |s| {
             s.lines().count() == 100
-                && body(s)
-                    .first()
-                    .is_some_and(|row| row.contains("mode: local"))
-                && s.contains("body00")
+                && body(s).first().is_some_and(|row| row.contains("seat00"))
+                && s.contains("seat19")
         },
     );
     rig.tmux(&["resize-window", "-t", &pane, "-x", "80", "-y", "24"]);
@@ -962,13 +826,13 @@ fn wheel_ends_drag_then_list_scrolls_and_later_motion_cannot_move_border() {
 }
 
 #[test]
-fn guard_header_tab_rule_keys_and_settings_never_scroll_underlying_sidebar() {
+fn guard_header_heading_rule_keys_and_settings_never_scroll_underlying_sidebar() {
     let rig = Rig::new("wlareas");
     let pane = rig.open();
     let first = rig.ready(&pane);
     let rows = body(&first);
     let cards = rig.cards(&first);
-    let tab = cell(&first, "Overview");
+    let tab = cell(&first, "Agents 20");
     for point in [
         (2, 1),
         (2, 3),

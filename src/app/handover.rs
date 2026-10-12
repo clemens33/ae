@@ -8,9 +8,9 @@
 //! `v1|pane|version|at|session|uuid|tab|focus|sidebar|list|pages|rows|list_top|body_top`
 //!
 //! Empty means `None`. Integers are canonical decimal. [`parse`] accepts only
-//! text that [`Handover::render`] could have written.
+//! text that [`Handover::render`] could have written, except that the
+//! `overview` view token an older core wrote reads as `agents`, the one view.
 
-use super::model::Tab;
 use crate::archive::canonical_uuid;
 use crate::config::is_agent_name;
 use crate::session_launch::name::is_session_name;
@@ -36,7 +36,6 @@ pub struct View {
     /// The selected session's canonical uuid: another incarnation of the name
     /// never inherits the view.
     pub id: String,
-    pub tab: Tab,
     pub focus: Option<String>,
     pub sidebar: Option<u16>,
     pub list: Option<u16>,
@@ -70,10 +69,6 @@ impl Handover {
     pub fn render(&self) -> String {
         let view = &self.view;
         let small = |n: Option<u16>| n.map(|n| n.to_string()).unwrap_or_default();
-        let tab = match view.tab {
-            Tab::Overview => "overview",
-            Tab::Agents => "agents",
-        };
         let fields = [
             "v1".to_owned(),
             self.pane.clone(),
@@ -81,7 +76,7 @@ impl Handover {
             self.at.to_string(),
             view.session.clone(),
             view.id.clone(),
-            tab.to_owned(),
+            "agents".to_owned(),
             view.focus.clone().unwrap_or_default(),
             small(view.sidebar),
             small(view.list),
@@ -180,11 +175,9 @@ pub fn parse(text: &str) -> Option<Handover> {
             .ok()
     };
     let size = |text: &str, max: usize| usize::try_from(number(text, max as u64)?).ok();
-    let tab = match *tab {
-        "overview" => Tab::Overview,
-        "agents" => Tab::Agents,
-        _ => return None,
-    };
+    if !matches!(*tab, "overview" | "agents") {
+        return None;
+    }
     let focus = match *focus {
         "" => None,
         name if is_agent_name(name) => Some(name.to_owned()),
@@ -195,7 +188,6 @@ pub fn parse(text: &str) -> Option<Handover> {
     let view = View {
         session: is_session_name(session).then(|| (*session).to_owned())?,
         id: (!id.is_empty() && canonical_uuid(id) == *id).then(|| (*id).to_owned())?,
-        tab,
         focus,
         sidebar: small(sidebar)?,
         list: small(list)?,
@@ -229,11 +221,21 @@ mod tests {
     #[test]
     fn what_parses_renders_back_to_the_same_text() {
         let bare = WIRE
-            .replace("|agents|colead|31|9|", "|overview||||")
+            .replace("|agents|colead|31|9|", "|agents||||")
             .replace("|1|4", "||0");
         for text in [WIRE, bare.as_str()] {
             assert_eq!(parse(text).map(|h| h.render()).as_deref(), Some(text));
         }
+    }
+
+    /// R8: an older core wrote the Agents view as `agents` and the other as
+    /// `overview`; a restart into this core reads both as the one view and
+    /// writes `agents` back, never refusing the token.
+    #[test]
+    fn an_older_cores_overview_token_reads_as_the_agents_view() {
+        let old = WIRE.replace("|agents|", "|overview|");
+        assert_ne!(old, WIRE);
+        assert_eq!(parse(&old).map(|h| h.render()).as_deref(), Some(WIRE));
     }
 
     #[test]

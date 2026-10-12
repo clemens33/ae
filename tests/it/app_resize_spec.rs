@@ -288,6 +288,21 @@ impl Rig {
         self.tmux(&["send-keys", "-t", pane, "-l", "--", bytes]);
     }
 
+    /// Everything sent before this call has been processed once the settings
+    /// overlay it opens has drawn and the Esc that closes it has gone again.
+    fn ordered(&self, pane: &str, why: &str) -> String {
+        let overlay = |screen: &str| {
+            screen
+                .lines()
+                .next()
+                .is_some_and(|row| row.contains("Settings"))
+        };
+        self.send(pane, "s");
+        self.wait(pane, MOVE, why, overlay);
+        self.send(pane, "\x1b");
+        self.wait(pane, MOVE, why, |screen| !overlay(screen))
+    }
+
     fn report(&self, pane: &str, code: u8, col: usize, row: usize, suffix: char) {
         self.send(
             pane,
@@ -320,7 +335,7 @@ impl Rig {
             pane,
             WAIT,
             "fixture loaded and home owns composer",
-            |screen| screen.contains("Overview") && screen.contains("Enter writes"),
+            |screen| screen.contains("Agents") && screen.contains("Enter writes"),
         )
     }
 
@@ -406,13 +421,7 @@ fn live_vertical_drag_moves_chat_and_release_ends_it() {
     );
     rig.release(&pane, 66, 1);
     rig.motion(&pane, 76, 1);
-    rig.send(&pane, "\t");
-    let screen = rig.wait(
-        &pane,
-        MOVE,
-        "ordered Tab sentinel processed after orphan motion",
-        |screen| screen.contains("No seat facts"),
-    );
+    let screen = rig.ordered(&pane, "ordered sentinel processed after orphan motion");
     assert_eq!(vertical_rule(&screen), Some(66), "release ends drag");
 }
 
@@ -425,7 +434,7 @@ fn live_vertical_drag_clamps_both_ends_and_keeps_rows_legible() {
     rig.vertical(&pane, 119); // 160 - rule - one rule cell = 40 chat columns.
     rig.motion(&pane, 0, 1);
     let screen = rig.vertical(&pane, 30); // plan's chosen minimum, >= brief's 28.
-    assert!(screen.contains("Overview") && screen.contains("Agents"));
+    assert!(screen.contains("Agents") && !screen.contains("Overview"));
     assert!(screen.contains("more"), "list elision still fits");
     assert!(
         screen.contains("Enter writes"),
@@ -445,9 +454,9 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     );
     rig.grab_horizontal(&pane, 20);
     let screen = rig.horizontal(&pane, 20);
-    let (_, tab) = cell_of(&screen, "Overview").expect("tabs stay above rule");
+    let (_, tab) = cell_of(&screen, "Agents").expect("heading stays above rule");
     assert_eq!(tab, 19);
-    assert!(cell_of(&screen, "Goal").is_some_and(|(_, row)| row > 20));
+    assert!(cell_of(&screen, "No seat facts").is_some_and(|(_, row)| row > 20));
     rig.motion(&pane, 1, 44);
     rig.horizontal(&pane, 39); // floor43; body40,41,42 = three rows.
     rig.motion(&pane, 1, 0);
@@ -479,7 +488,7 @@ fn live_horizontal_minimum_keeps_one_session_and_more_row() {
             .nth(7)
             .is_some_and(|row| row.contains("more"))
     );
-    assert!(screen.contains("Goal"), "tab body remains usable");
+    assert!(screen.contains("No seat facts"), "the body remains usable");
     rig.release(&pane, 1, 0);
 }
 
@@ -503,24 +512,12 @@ fn live_zero_distance_grab_keeps_both_default_rules_for_one_and_many_sessions() 
         let horizontal = horizontal_rule(&before).expect("drawn horizontal rule");
         rig.click(&pane, vertical, 1);
         rig.motion(&pane, vertical, 1);
-        rig.send(&pane, "\t");
-        let after = rig.wait(
-            &pane,
-            MOVE,
-            "ordered Tab after zero-distance vertical motion",
-            |screen| screen.contains("No seat facts"),
-        );
+        let after = rig.ordered(&pane, "ordered after zero-distance vertical motion");
         assert_eq!(vertical_rule(&after), Some(vertical));
         assert_eq!(horizontal_rule(&after), Some(horizontal));
         rig.click(&pane, 1, horizontal);
         rig.motion(&pane, 1, horizontal);
-        rig.send(&pane, "\t");
-        let after = rig.wait(
-            &pane,
-            MOVE,
-            "ordered Tab after zero-distance horizontal motion",
-            |screen| screen.contains("Goal"),
-        );
+        let after = rig.ordered(&pane, "ordered after zero-distance horizontal motion");
         assert_eq!(vertical_rule(&after), Some(vertical));
         assert_eq!(horizontal_rule(&after), Some(horizontal));
     }
@@ -640,13 +637,7 @@ fn live_wheel_cancels_drag_and_chat_wheel_still_scrolls() {
     rig.vertical(&pane, 66);
     rig.wheel(&pane, true, 2, 1); // sidebar wheel ends drag, otherwise no-op.
     rig.motion(&pane, 80, 1);
-    rig.send(&pane, "\t");
-    let screen = rig.wait(
-        &pane,
-        MOVE,
-        "Tab sentinel processed after wheel and orphan motion",
-        |screen| screen.contains("No seat facts"),
-    );
+    let screen = rig.ordered(&pane, "sentinel processed after wheel and orphan motion");
     assert_eq!(vertical_rule(&screen), Some(66));
     assert!(!screen.contains("newer turns below"));
     for _ in 0..8 {

@@ -58,7 +58,7 @@ fn test_s2_paused_answer_held_and_refusal_adopts_immediately() {
     let initial = (0..70).map(|i| format!("INITIAL ROW {i}")).collect();
     answer(&mut app, 1, Body::Lines(initial));
     assert!(framed(&mut app).contains("INITIAL ROW 69"));
-    let _ = app.model.key(Key::Up, &app.fleet, false, false);
+    let _ = app.model.key(Key::Up, &app.fleet, false);
     let before = framed(&mut app);
     assert_eq!(app.model.peek_back(), Some(1), "real paused viewport");
     answer(&mut app, 1, Body::Lines(vec!["NEWER ROW".to_owned(); 70]));

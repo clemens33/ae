@@ -201,16 +201,12 @@ fn transition_epoch_remembers_a_switch_away_and_back() {
     let fleet = fleet();
     let mut model = model::Model::new(&fleet);
     let old = model.epoch();
-    let _ = model.key(model::Key::Digit(1), &fleet, false, true);
+    let _ = model.key(model::Key::Digit(1), &fleet, false);
     assert_eq!(model.epoch(), old, "same session is no transition");
-    let _ = model.key(model::Key::Digit(2), &fleet, false, true);
-    let _ = model.key(model::Key::Digit(1), &fleet, false, true);
+    let _ = model.key(model::Key::Digit(2), &fleet, false);
+    let _ = model.key(model::Key::Digit(1), &fleet, false);
     assert_eq!(model.selected(), Some("one"));
     assert_ne!(model.epoch(), old, "R6 session away/back");
-    let old = model.epoch();
-    let _ = model.key(model::Key::Tab, &fleet, false, true);
-    let _ = model.key(model::Key::Tab, &fleet, false, true);
-    assert_ne!(model.epoch(), old, "R6 tab away/back");
     let old = model.epoch();
     model.open_peek(17);
     model.close_peek();
@@ -486,8 +482,7 @@ fn live_drag_copies_exact_cells_cancel_leaves_buffer_and_peek_resumes() {
     rig.mouse(0, at, true);
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(rig.buffer(), CANCEL, "R4 plain click never ships selection");
-    rig.raw("\t");
-    rig.wait("Agents tab", |s| {
+    rig.wait("Agents body", |s| {
         s.lines()
             .any(|row| row.starts_with('▸') || row.starts_with('>'))
     });

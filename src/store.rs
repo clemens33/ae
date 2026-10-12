@@ -456,11 +456,6 @@ impl SessionStore {
         Identity::of(&self.events_path())
     }
 
-    /// The memo container's [`Identity`], `None` unless it is a regular file.
-    pub(crate) fn memo_identity(&self) -> Option<Identity> {
-        Identity::of(&self.memo_path())
-    }
-
     /// The meta file's path.
     #[must_use]
     pub fn meta_path(&self) -> PathBuf {
@@ -1399,12 +1394,13 @@ mod tests {
         std::fs::create_dir(store.events_path()).unwrap();
         assert_eq!(store.events_identity(), None, "a directory");
         std::fs::remove_dir(store.events_path()).unwrap();
-        std::os::unix::fs::symlink(dir.join("target"), store.memo_path()).unwrap();
-        assert_eq!(store.memo_identity(), None, "a dangling link");
+        std::os::unix::fs::symlink(dir.join("target"), store.events_path()).unwrap();
+        assert_eq!(store.events_identity(), None, "a dangling link");
         std::fs::write(dir.join("target"), b"memo\n").unwrap();
-        std::fs::write(store.events_path(), b"{}\n").unwrap();
-        let linked = store.memo_identity().expect("a link to a regular file");
+        let linked = store.events_identity().expect("a link to a regular file");
         assert_eq!(linked.bytes(), 5, "the target's length");
+        std::fs::remove_file(store.events_path()).unwrap();
+        std::fs::write(store.events_path(), b"{}\n").unwrap();
         let before = store.events_identity().expect("a regular file");
         assert_eq!(store.events_identity(), Some(before), "nothing changed");
         assert_ne!(before, linked, "another file");

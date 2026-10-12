@@ -8,7 +8,6 @@
 //! sequence), so nothing read for one session can be drawn under another.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::Instant;
@@ -17,7 +16,6 @@ use super::handover::{self, View};
 use super::journals::Journals;
 use super::peek::{self, Body};
 use super::{REFRESH, facts_of, fleet, proven_pane};
-use crate::brief::Filed;
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::needs::{SeatRef, Section};
@@ -150,8 +148,6 @@ pub(super) struct FleetRead {
     pub(super) pairs: BTreeMap<String, Result<Vec<Seat>, String>>,
     /// No durable source failed: a session missing from `dirs` is gone.
     pub(super) scanned: bool,
-    /// Each session's memo, read and folded here: the show only ages it.
-    pub(super) memos: BTreeMap<String, Result<Vec<Filed>, String>>,
 }
 
 /// One read of session `name` through its console.
@@ -265,17 +261,16 @@ pub(super) struct Reader {
     /// The session the open overlay's instructions tab is for: the selection
     /// when it opened, never retargeted while it stays open.
     settings_session: Option<String>,
-    /// The fleet's journals and memos as last read.
+    /// The fleet's journals as last read.
     journals: Journals,
     /// Sessions whose last stage read was answered: one still staging is due
     /// again at once, one whose read failed waits its tier.
     answered: BTreeSet<String>,
 }
 
-/// Where [`Reader::fold`] reads a session's needs and memo.
+/// Where [`Reader::fold`] reads a session's needs.
 struct Sources<'a> {
     needs: &'a mut dyn FnMut(&str, &Path) -> Result<Section, String>,
-    memo: &'a mut dyn FnMut(&Path) -> io::Result<Vec<Filed>>,
 }
 
 /// Start the reader on its own thread; answers arrive on `wake`.
@@ -565,10 +560,7 @@ impl Reader {
             console::lead_pair_at(dir)
                 .and_then(|lead_pair| console::needs_in(name, dir, snapshot, lead_pair, panes))
         };
-        let mut sources = Sources {
-            needs: &mut needs,
-            memo: &mut |dir| journals.memo(dir),
-        };
+        let mut sources = Sources { needs: &mut needs };
         let order = crate::fleet_order();
         let home = self.home.as_deref();
         let mut read = Self::fold_from(
@@ -613,7 +605,7 @@ impl Reader {
         crate::console::toggle::restart_plan(server, pane, home, &self.root, dir)
     }
 
-    /// [`Reader::fold_from`] with every needs and memo read now and nothing
+    /// [`Reader::fold_from`] with every needs read now and nothing
     /// kept: the full read a kept one must equal.
     #[cfg(test)]
     pub(super) fn fold(
@@ -626,10 +618,6 @@ impl Reader {
     ) -> FleetRead {
         let mut sources = Sources {
             needs: &mut console::needs_of,
-            memo: &mut |dir| {
-                let bytes = crate::store::open(dir).memo_bytes()?;
-                Ok(crate::brief::filed(&bytes))
-            },
         };
         let home = self.home.as_deref();
         Self::fold_from(home, dirs, world, picker, order, now, &mut sources)
@@ -637,8 +625,8 @@ impl Reader {
 
     /// Fold one read of the fleet: the seat facts of every live session, the
     /// stopped ones' last sign of life, the needs of every live session that
-    /// asks for attention, each session's identity and memo, the sidebar rows
-    /// and each lead pair — the needs and memos read from `sources`.
+    /// asks for attention, each session's identity, the sidebar rows and
+    /// each lead pair — the needs read from `sources`.
     fn fold_from(
         home: Option<&str>,
         dirs: BTreeMap<String, PathBuf>,
@@ -687,13 +675,6 @@ impl Reader {
                 ((name.clone(), id), (name.clone(), pair))
             })
             .unzip();
-        let memos = dirs
-            .iter()
-            .map(|(name, dir)| {
-                let memo = (sources.memo)(dir).map_err(|err| format!("memo unreadable ({err})"));
-                (name.clone(), memo)
-            })
-            .collect();
         FleetRead {
             dirs,
             ids,
@@ -703,7 +684,6 @@ impl Reader {
             fleet,
             pairs,
             scanned: true,
-            memos,
         }
     }
 
@@ -1601,7 +1581,7 @@ mod tests {
     /// The reader under test, with every parse its fleet and view reads caused.
     struct Metered {
         reader: Reader,
-        costs: (u64, u64),
+        costs: u64,
     }
 
     impl fleet_spec::ReaderFiles for Metered {
@@ -1623,7 +1603,7 @@ mod tests {
                 _ => panic!("a view read"),
             }
         }
-        fn costs(&self) -> (u64, u64) {
+        fn costs(&self) -> u64 {
             self.costs
         }
         fn cached_dirs(&self) -> BTreeSet<PathBuf> {
@@ -1634,7 +1614,7 @@ mod tests {
     fn reader(root: &Path) -> Metered {
         Metered {
             reader: Reader::new(root.to_path_buf(), None, None),
-            costs: (0, 0),
+            costs: 0,
         }
     }
 

@@ -153,25 +153,23 @@ fn row_with(screen: &str, needle: &str) -> Option<Vec<char>> {
 }
 
 /// #47, #49, #46: the first paint lists the session the root holds (docs/app.md:
-/// one row per session), `Tab` shows the Agents tab well inside one refresh
-/// (`POLL_SECS` = 5, so 2 s leaves load slack), and a resize re-lays the frame
-/// out at the new width: at 100 columns the sidebar's rule stands at 34
-/// (frame 100x30: `Tab` ends two cells before `│`@34).
+/// one row per session), the Agents body shows at once, and a resize re-lays
+/// the frame out at the new width: at 100 columns the sidebar's rule stands at
+/// 34.
 #[test]
-fn the_live_app_paints_takes_tab_and_relays_out_on_resize() {
+fn the_live_app_paints_and_relays_out_on_resize() {
     let rig = Rig::new("appl", false);
     let pane = rig.open_app();
     let name = rig.name.clone();
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
         screen.contains("▣ 1 ") && screen.lines().any(|row| row.contains(&name))
     });
-    rig.tmux(&["send-keys", "-t", &pane, "Tab"]);
     let painted = rig.tmux(&["capture-pane", "-e", "-p", "-t", &pane]);
     assert!(!painted.contains("38;2;"), "theme off draws no colour (R7)");
     rig.wait(
         &pane,
         Duration::from_secs(2),
-        "Tab shows Agents at once",
+        "the Agents body shows at once",
         |screen| screen.contains("No seat facts"),
     );
     rig.tmux(&["resize-window", "-t", &pane, "-x", "100", "-y", "30"]);
@@ -179,7 +177,7 @@ fn the_live_app_paints_takes_tab_and_relays_out_on_resize() {
         &pane,
         WAIT,
         "the frame re-lays out at 100 columns",
-        |screen| row_with(screen, "Overview").is_some_and(|row| row.get(34) == Some(&'│')),
+        |screen| row_with(screen, "Agents").is_some_and(|row| row.get(34) == Some(&'│')),
     );
 }
 

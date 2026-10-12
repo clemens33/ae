@@ -305,6 +305,8 @@ pub(crate) enum Cut {
     MiddleDots,
     /// `abc…`: the trailing ellipsis aligned dialog columns draw.
     TrailingEllipsis,
+    /// `…xyz`: the leading ellipsis a path draws, so its leaf stays.
+    LeadingEllipsis,
 }
 
 /// Session text projected to printable ASCII: ANSI sequences collapse to one
@@ -359,6 +361,14 @@ pub(crate) fn clip_to_width(clean: &str, max: usize, cut: Cut) -> String {
             out.push('…');
             out
         }
+        Cut::LeadingEllipsis => {
+            if max == 0 {
+                return String::new();
+            }
+            let mut out = String::from('…');
+            out.extend(&chars[chars.len() - (max - 1)..]);
+            out
+        }
     }
 }
 
@@ -408,6 +418,13 @@ pub fn clip_head(text: &str, max: usize) -> String {
     clip_to_width(text, max, Cut::TrailingEllipsis)
 }
 
+/// The tail-keeping cut for a path: an over-budget value keeps its end and
+/// begins with `…`, so the leaf dir stays readable.
+#[must_use]
+pub fn clip_tail(text: &str, max: usize) -> String {
+    clip_to_width(text, max, Cut::LeadingEllipsis)
+}
+
 /// Skip one escape sequence after its `\u{1b}` was folded to a `?`: a CSI runs
 /// to its final byte, an OSC to BEL or ST, and anything else loses its single
 /// introducer.
@@ -437,9 +454,9 @@ fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cut, char_count, char_prefix, char_slice, clip_head, clip_to_width, display_cell,
-        display_column, event_line, extract, last_records, pad_left_aligned, read_lines, records,
-        reversed,
+        Cut, char_count, char_prefix, char_slice, clip_head, clip_tail, clip_to_width,
+        display_cell, display_column, event_line, extract, last_records, pad_left_aligned,
+        read_lines, records, reversed,
     };
 
     fn padded(field: &[u8], width: usize) -> Vec<u8> {
@@ -636,6 +653,18 @@ mod tests {
         assert_eq!(clip_head("abcdefghij", 7), "abcdef…");
         assert_eq!(clip_head("Grüße ◆ header", 20), "Grüße ◆ header");
         assert_eq!(clip_head("Grüße ◆ header", 8), "Grüße ◆…");
+    }
+
+    /// The path projector: the head is lost, the leaf kept, `…` leads, and the
+    /// result is exactly `max` characters.
+    #[test]
+    fn clip_tail_keeps_the_leaf_and_leads_with_the_ellipsis() {
+        assert_eq!(clip_tail("~/a/b/leaf", 10), "~/a/b/leaf");
+        assert_eq!(clip_tail("~/a/b/leaf", 9), "…a/b/leaf");
+        assert_eq!(clip_tail("~/a/b/leaf", 5), "…leaf");
+        assert_eq!(clip_tail("~/a/b/leaf", 1), "…");
+        assert_eq!(clip_tail("~/a/b/leaf", 0), "");
+        assert_eq!(clip_tail("", 4), "");
     }
 
     /// The one cutter counts characters, so the dialog's own `—` joiner —

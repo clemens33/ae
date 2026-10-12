@@ -223,7 +223,7 @@ fn new_browse_letters_route_to_open_and_focus_while_enter_keeps_composing() {
     ] {
         assert_eq!(browse_keys(&input::Key::Text(vec![byte])), [key]);
         let fleet = ae::app::fleet::Fleet::default();
-        assert_eq!(Model::new(&fleet).key(key, &fleet, false, true), act);
+        assert_eq!(Model::new(&fleet).key(key, &fleet, false), act);
     }
     assert_eq!(browse_keys(&input::Key::Enter), [Key::Compose]);
     assert!(

@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ae::app::handover::{self, Handover, Verdict, View};
-use ae::app::model::Tab;
 
 const ID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
 const WEB_ID: &str = "6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11";
@@ -24,7 +23,6 @@ fn view() -> View {
     View {
         session: "web".into(),
         id: WEB_ID.into(),
-        tab: Tab::Agents,
         focus: Some("colead".into()),
         sidebar: Some(31),
         list: Some(9),
@@ -55,7 +53,6 @@ fn grammar_accepts_exact_literal_and_empty_optional_fields() {
     let mut want = envelope();
     (want.pane, want.version, want.at) = ("%0".into(), "2026.10.56".into(), 1);
     want.view = View {
-        tab: Tab::Overview,
         focus: None,
         sidebar: None,
         list: None,

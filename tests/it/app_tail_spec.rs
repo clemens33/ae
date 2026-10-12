@@ -157,7 +157,7 @@ fn drawn_chat_equals_the_full_reference_at_bottom_middle_and_top() {
                     );
                 }
             }
-            let _ = model.key(Key::PageUp, &fleet, false, false);
+            let _ = model.key(Key::PageUp, &fleet, false);
         }
     }
 }

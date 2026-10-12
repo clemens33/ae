@@ -39,7 +39,7 @@ ae chat [session] [--follow] [--all]
                        chat asks and replies, live decision cards, and every
                        seat that needs you; /open <seat> selects its pane
 ae app [session]       The fleet as a terminal UI: sessions in a sidebar, the selected
-                       one's Overview or Agents, and its chat; typing asks at home
+                       one's Agents, and its chat; typing asks at home
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup

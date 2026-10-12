@@ -205,7 +205,7 @@ impl Rig {
             })
             .expect("stamped app pane");
         self.wait_screen(&pane, "GUARD home ready", |text| {
-            text.contains("Enter writes") && text.contains("Overview")
+            text.contains("Enter writes") && text.contains("Agents")
         });
         pane
     }

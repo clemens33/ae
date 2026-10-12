@@ -326,10 +326,14 @@ fn an_idle_app_paints_no_frame_until_something_changes() {
         &format!("cat >> {}", quote(&written.to_string_lossy())),
     ]);
     let size = || fs::metadata(&written).expect("capture").len();
-    rig.keys(&pane, "Tab");
-    rig.wait(&pane, FRAME, "the Agents tab paints", |screen| {
-        screen.contains("No seat facts")
-    });
+    let settings = |screen: &str| {
+        screen
+            .lines()
+            .next()
+            .is_some_and(|row| row.contains("Settings"))
+    };
+    rig.keys(&pane, "s");
+    rig.wait(&pane, FRAME, "the settings overlay paints", settings);
     // The repaint reached the capture; wait until it has all arrived.
     let until = Instant::now() + FRAME;
     let mut seen = 0;
@@ -348,11 +352,9 @@ fn an_idle_app_paints_no_frame_until_something_changes() {
         );
         std::thread::sleep(Duration::from_millis(25));
     }
-    rig.keys(&pane, "Tab");
-    // The goal is already on the screen in the sidebar's fleet row, so it proves
-    // nothing: only the Overview body, with the Agents body gone, is the repaint.
-    rig.wait(&pane, FRAME, "the Overview repaints", |screen| {
-        screen.contains("Waiting on you") && !screen.contains("No seat facts")
+    rig.keys(&pane, "Escape");
+    rig.wait(&pane, FRAME, "the browse frame repaints", |screen| {
+        !settings(screen) && screen.contains("No seat facts")
     });
     // The capture file is fed by an asynchronous `cat`, so it can trail the screen.
     let until = Instant::now() + FRAME;

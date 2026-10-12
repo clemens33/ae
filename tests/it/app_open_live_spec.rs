@@ -402,7 +402,7 @@ impl Rig {
         let screen = self.screen(app);
         let tab = screen
             .lines()
-            .position(|row| row.contains("Overview") && row.contains("Agents"));
+            .position(|row| row.trim_start().starts_with("Agents"));
         let row = screen
             .lines()
             .enumerate()
@@ -415,7 +415,6 @@ impl Rig {
     }
 
     fn agents(&self, app: &str) {
-        self.key(app, "Tab");
         self.wait_screen(app, "GUARD Agents facts drawn", |s| {
             s.lines()
                 .any(|row| row.split('│').next().unwrap_or("").contains("scout"))
@@ -424,7 +423,6 @@ impl Rig {
 
     fn focused(&self, app: &str, seat: &str) {
         self.wait_screen(app, "R4 focused seat visibly identified", |s| {
-            let lines: Vec<&str> = s.lines().collect();
             let marked = |row: &str| row.starts_with('>') || row.starts_with('▸');
             let named = |row: &str| {
                 row.split('│')
@@ -433,9 +431,7 @@ impl Rig {
                     .split_whitespace()
                     .any(|word| word == seat)
             };
-            lines
-                .windows(2)
-                .any(|pair| pair.iter().all(|row| marked(row)) && pair.iter().any(|row| named(row)))
+            s.lines().any(|row| marked(row) && named(row))
         });
     }
 
@@ -554,7 +550,7 @@ fn agents_next_previous_and_mouse_focus_open_the_drawn_seat() {
 }
 
 #[test]
-fn overview_need_for_spawned_seat_has_the_same_open_action() {
+fn agents_need_for_spawned_seat_has_the_same_open_action() {
     let rig = Rig::new("need");
     let event = format!(
         "{{\"ts\":\"{}\",\"actor\":\"scout\",\"actor_slot\":\"spawned.0\",\"actor_session\":\"{HOME}\",\"action\":\"state\",\"ref\":\"blocked\",\"summary\":\"SCOUT-DEPENDENCY-BLOCK\"}}\n",
@@ -567,8 +563,8 @@ fn overview_need_for_spawned_seat_has_the_same_open_action() {
     .expect("blocked spawned seat needs a human");
     let app = rig.app(&rig.socket);
     let viewer = rig.attach(HOME);
-    rig.wait_screen(&app, "GUARD Overview waiting-on-you entry exists", |s| {
-        s.contains("Waiting on you") && s.contains("scout")
+    rig.wait_screen(&app, "GUARD the seat's reason is drawn on its rows", |s| {
+        s.contains("SCOUT-DEPENDENCY-BLOCK") && s.contains("scout")
     });
     rig.click(&app, "scout", true);
     rig.focused(&app, "scout");

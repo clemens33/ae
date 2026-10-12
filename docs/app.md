@@ -1,7 +1,7 @@
 # The app
 
 `ae app [session]` draws the fleet as a terminal UI: every session in a
-sidebar, the selected session's Overview or Agents beside it, and the selected
+sidebar, the selected session's Agents beside it, and the selected
 session's chat on the right. It is a second view of the data [the chat](chat.md)
 already reads, through the same owners, and it writes nothing into any session
 but the asks you type into the selected one; opening a seat only moves a tmux
@@ -39,17 +39,16 @@ recorded config first.
   stopped ones come last. Your own input never reorders the list. A needy row carries a `│` edge and `!` reaches it. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
-- **Tabs** under the list: **Overview** (how the session was launched — `mode`,
-  `dir` and, for a copy or worktree, `source`, spelled as the session menu
-  spells them and `unrecorded` where the record says nothing — then the goal,
-  what waits on you, the latest decision memo, the topics) and **Agents**
-  (every seat with its client,
-  profile, model and state, from the watchdog's published roster). A session
-  on another tmux server, or one whose watchdog publishes nothing, names that
-  gap instead of seats. The tab stays as you move between sessions. A tab
-  body that does not fit gives its last row to the rows it hides,
-  `↑ a · ↓ b more rows`, and the wheel moves it three rows a notch; another
-  session or tab starts at its first row.
+- **Agents** under the list: every seat of the selected session with its
+  state, and under it its client, the model its own frame drew and the effort
+  that frame drew, each only when known, never the profile name (from the
+  watchdog's published roster). A seat that waits on the human carries its
+  reason and age on a third row; a reason from a seat the roster lacks is drawn
+  as an entry of its own after the roster, so no ask is lost. A session on
+  another tmux server, or one whose watchdog publishes nothing, names that gap
+  instead of seats. The body that does not fit gives its last row to the rows
+  it hides, `↑ a · ↓ b more rows`, and the wheel moves it three rows a notch;
+  another session starts at its first row.
 - **Chat** column: the selected session's lane, newest at the bottom, with its
   coverage rows, then the composer. Only the rows on screen and a page beyond
   are drawn: older turns are drawn as you scroll back to them, and the oldest
@@ -59,20 +58,22 @@ recorded config first.
   the composer first, to one input row at least. A resize sizes it again, and
   leaving writing gives the rows back.
 
-The session list takes two thirds of the rows it shares with the tab body,
+The session list takes two thirds of the rows it shares with the Agents body,
 and never fewer than the 11 rows (18 from 40 high) it once had, though never
-more than the rows it shares (10 at 90x20, which leaves the tab body one row);
+more than the rows it shares (10 at 90x20, which leaves the body one row);
 it is sized to its sessions when they need fewer, so 24 sessions show 11 at
-160x45 where they showed 8. The launch facts come from the same listing the sidebar row comes
-from, not from a second read of the session's record. A session replaced
-between two reads of its record can therefore show the previous incarnation's
-facts for at most one refresh (5 seconds); a selection the listing does not
-hold says `launch facts unavailable: session not in this read`.
+160x45 where they showed 8. The chat header names the selected session's
+recorded working dir beside its name, your `$HOME` as `~`, cut from the left
+with `…` when the row is short so the leaf stays; it comes from the same
+listing the sidebar row comes from, not from a second read of the session's
+record, and a session with none recorded (or none in the listing) draws none.
+A session replaced between two reads of its record can therefore show the
+previous incarnation's dir for at most one refresh (5 seconds).
 
 Both borders can be dragged with the mouse. The rule between the sidebar and
 the chat sets the sidebar's width: at least 30 cells, and the chat keeps at
-least 40. The rule under the tabs moves the split between the session list and
-the tab: the list keeps one session and its more row, the tab three rows (or
+least 40. The rule under the `Agents` heading moves the split between the session
+list and the body: the list keeps one session and its more row, the body three rows (or
 as few as it had undragged). The rule being dragged is drawn in the title
 colour, reversed with `theme = off`; letting go ends the drag. The sizes last
 for this run of the app and are not remembered; a smaller pane narrows them
@@ -99,13 +100,13 @@ The status strip and the picker keep their own order.
 ## Reading
 
 A background reader does every read — the fleet, each session's lane, the
-looks, the memos, whether the session being written is still proven — so no key waits on one. It reads the
+looks, whether the session being written is still proven — so no key waits on one. It reads the
 fleet first, then a lane the composer just wrote into, the selected session,
 the fleet again every 5 seconds, home, the sessions one and then two rows from
 the selection, and the rest in sidebar order, keeping at most 16 lanes; the
 selected session and home are read again every 5 seconds. Until the first
 fleet read the list says `loading`, and a key read until then is not lost: `q` and
-`^C` act at once, the digits, `!`, `j`, `k`, the arrows, `Tab`, the page keys and
+`^C` act at once, the digits, `!`, `j`, `k`, the arrows, the page keys and
 `Esc` wait (64 at most, the oldest go first) and replay on that read, and
 anything else is dropped under one hint, `input before sessions loaded was
 dropped`. A session whose lane was not read yet
@@ -138,10 +139,9 @@ Browsing:
 | `1`-`9` | select that session |
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
-| `Tab` | Overview / Agents |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `v` | peek at the highlighted seat's screen, read-only ([Peeking at an agent](#peeking-at-an-agent)) |
-| `n` / `p` | highlight the next / previous seat the tab body shows |
+| `n` / `p` | highlight the next / previous seat the body shows |
 | `PgUp` / `PgDn` | scroll the chat a page |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
 | `y` | copy the marked turn ([Copying a turn](#copying-a-turn)) |
@@ -149,8 +149,7 @@ Browsing:
 | Click a fold row, or `Enter` with a marked turn that has one | show that turn whole or fold it again ([Long turns](#long-turns)) |
 | Click session row | select that session |
 | Click a seat row | highlight that seat |
-| Click Overview / Agents | show that tab |
-| Wheel over chat or a tab body | scroll three rows per notch, also while writing |
+| Wheel over chat or the Agents body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
 | Drag a border | resize the sidebar or the session list, also while writing |
 | Click composer | write the selected session, when no other app writes it |
@@ -208,9 +207,9 @@ key is swallowed until `Esc` browses, `^C` quits, a click acts or `Enter` tries
 again; while the session is not proven, `Enter` stays held. The other app letting go
 does not start writing by itself.
 
-While writing, clicking a session row or tab returns to browsing and keeps the
-draft, then selects the row or tab (a turn: marks it). Blank rows and the "more" row do nothing.
-A press within a cell of a border grabs it unless a row or tab is drawn there.
+While writing, clicking a session row returns to browsing and keeps the
+draft, then selects the row (a turn: marks it). Blank rows and the "more" row do nothing.
+A press within a cell of a border grabs it unless a row is drawn there.
 Any key, paste, press or wheel notch ends a drag whose release never arrived,
 then acts as it always does.
 
@@ -222,11 +221,11 @@ seat of the selected session. It is the proof and the guarded select `ae chat`'s
 `/open` makes, plus one tmux client: nothing is typed into the seat and no
 record is written.
 
-The highlight is a `▸` (`>` with `icons = off`) in the first column of a seat's
-rows in the tab body: on Agents every seat, on Overview each **Waiting on you**
-entry (both rows of it). It starts on the first seat drawn, `n` / `p` step it
-through the drawn seats and wrap, a click on a seat row puts it there, and
-changing session or tab resets it. Rows scrolled out of the body are not
+The highlight is one `▸` (`>` with `icons = off`) in the first column of the
+seat's first drawn row, and the selected ground (reverse video with `theme =
+off`) across all of the seat's rows, never a state colour. It starts on the
+first seat drawn, `n` / `p` step it through the drawn seats and wrap, a click
+on a seat row puts it there, and changing session resets it. Rows scrolled out of the body are not
 stepped to; wheel first. `Enter` still writes.
 
 A key acts on the seats the last frame drew, as it drew them: the seat's slot
@@ -370,7 +369,7 @@ paste buffer works regardless; outside tmux the OSC 52 write is all there is.
 ## Selecting text
 
 Drag over drawn text with the left button, in the chat, the peek panel, the
-session list or the tab body: the cells light up while you drag (reverse video,
+session list or the Agents body: the cells light up while you drag (reverse video,
 so text that is already reversed shows its inverse), and letting go copies
 exactly the lit text the way `y` does. The hint row answers with the same
 `copied N lines to the tmux buffer; …` words (outside tmux,
@@ -389,10 +388,10 @@ A press with no motion is the click it always was, a border still grabs first,
 and the wheel is unchanged. `Esc` with a selection held only clears it (a second
 `Esc` does what it always did); so does the next press. The selection also
 goes, copying nothing, when what you selected changes before the copy leaves:
-another session, tab, Settings or the peek panel, a resize, or the cells under
+another session, Settings or the peek panel, a resize, or the cells under
 it. While the button is down and until the copy is out, a new read of the chat,
 the session list or the looks waits (a peek capture, in its panel), the
-Overview's ages stand still and a restart into a new core waits; they land just
+Agents body's ages stand still and a restart into a new core waits; they land just
 after the copy, so the copy is the cells you saw. A drag with no mouse input for
 10 s is cleared (`selection cleared: no mouse input for 10 s`). A copy leaves
 only after the frame that shows it.
@@ -450,7 +449,7 @@ one with no recorded `session_id`, one whose lead pair cannot be read and one
 not recorded in this state root are read-only and say why.
 
 Every way out of writing releases the lease — `Esc`, `^C`, a crash, a click on
-a session row or tab, and a read that finds the session no longer proven — and
+a session row, and a read that finds the session no longer proven — and
 Settings keeps it while open. Each ask and `/close` goes through the chat's
 admission, which re-proves the lease and re-reads the meta's `session_id` and
 lead pair against those the entry proved, then asks as `console:local` in that
@@ -485,7 +484,7 @@ from memory, once, with one `ae` line `draft for <session> dropped: <why>`; an
 id ae could not read drops nothing. The kept draft on disk comes back only when
 writing starts into an empty composer, under the `Kept line, maybe already
 sent` banner, which names a way to check the target pair from the app (the
-Agents tab: `n` / `p`, `oo` opens a seat), never `prefix H`, which jumps the
+Agents: `n` / `p`, `oo` opens a seat), never `prefix H`, which jumps the
 host's own pair; a draft kept in memory wins, never merged. The owner `ae chat`
 tries the lease inside its own admission: while an app writes its session, it
 refuses its sends and `/close`.
@@ -502,7 +501,7 @@ leaves no line: tmux replaces the app in the same pane. A restart tmux refuses e
 app with `ae app: could not restart into ae <V> - <why>` above the usual line.
 
 The restart keeps your view. Just before the respawn the old app sets one
-session option, `@ae_app_view`: the selected session (with its uuid), the tab,
+session option, `@ae_app_view`: the selected session (with its uuid),
 the seat highlight, the dragged sizes and the scroll. The new app, once it
 proves it is the chat window of its session, reads the option and unsets it,
 whatever it held. It uses it only for the same pane, its own version, within

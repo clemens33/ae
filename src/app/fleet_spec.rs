@@ -5,14 +5,13 @@
 #[cfg(test)]
 use std::collections::BTreeSet;
 use std::fs::{self, FileTimes, OpenOptions};
-use std::io::{self, Write};
+use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use super::loader::{Answer, FleetRead, Reader, ViewRead};
 use super::tests::{ID, Root};
-use crate::brief::{self, Filed};
 use crate::console::Console;
 use crate::inventory::{FailedSource, ServerId};
 use crate::session::RecordSnapshot;
@@ -20,9 +19,8 @@ use crate::time::Timestamp;
 
 pub(super) trait Files {
     fn snapshot(&mut self, dir: &Path) -> RecordSnapshot;
-    fn memo(&mut self, dir: &Path) -> io::Result<Vec<Filed>>;
-    /// Cumulative bytes handed to the journal and memo parsers.
-    fn costs(&self) -> (u64, u64);
+    /// Cumulative bytes handed to the journal parser.
+    fn costs(&self) -> u64;
     fn retain(&mut self, dirs: &[PathBuf]);
     fn cached_dirs(&self) -> BTreeSet<PathBuf>;
 }
@@ -30,7 +28,7 @@ pub(super) trait Files {
 pub(super) trait ReaderFiles {
     fn fleet(&mut self) -> FleetRead;
     fn view(&mut self, name: &str) -> Option<ViewRead>;
-    fn costs(&self) -> (u64, u64);
+    fn costs(&self) -> u64;
     fn cached_dirs(&self) -> BTreeSet<PathBuf>;
 }
 
@@ -39,10 +37,6 @@ fn event(words: &str) -> Vec<u8> {
         "{{\"ts\":\"2026-01-01T00:00:00Z\",\"actor\":\"lead\",\"action\":\"goal\",\"summary\":\"{words}\"}}\n"
     )
     .into_bytes()
-}
-
-fn memo(words: &str) -> Vec<u8> {
-    format!("2026-01-01T00:00:00Z\tlead\tgoal\t{words}\n").into_bytes()
 }
 
 fn seed(root: &Root, name: &str) -> PathBuf {
@@ -56,7 +50,6 @@ fn seed(root: &Root, name: &str) -> PathBuf {
     )
     .expect("fixture meta");
     fs::write(dir.join("events.jsonl"), event("first")).expect("fixture journal");
-    fs::write(dir.join("memo.tsv"), memo("first")).expect("fixture memo");
     dir
 }
 
@@ -83,24 +76,17 @@ fn same_files<F: Files>(subject: &mut F, dir: &Path) {
         RecordSnapshot::read(dir),
         "snapshot {dir:?}"
     );
-    let actual = subject.memo(dir).map_err(|why| why.kind());
-    let expected = crate::store::open(dir)
-        .memo_bytes()
-        .map(|bytes| brief::filed(&bytes))
-        .map_err(|why| why.kind());
-    assert_eq!(actual, expected, "memo {dir:?}");
 }
 
 /// A sequence, not isolated cold reads: every mutation follows a held read.
 pub(super) fn file_changes<F: Files>(make: impl Fn() -> F) {
     let root = Root::new("fleet-spec-files");
     let dir = seed(&root, "api");
-    let (journal, notes) = (dir.join("events.jsonl"), dir.join("memo.tsv"));
+    let journal = dir.join("events.jsonl");
     let mut subject = make();
     same_files(&mut subject, &dir);
     for words in ["second", "third"] {
         append(&journal, &event(words));
-        append(&notes, &memo(words));
         same_files(&mut subject, &dir);
     }
     let partial = event("partial");
@@ -124,16 +110,13 @@ pub(super) fn file_changes<F: Files>(make: impl Fn() -> F) {
         Vec::new(),
     ] {
         fs::write(&journal, bytes).expect("same inode rewrite/truncate");
-        fs::write(&notes, memo("rewritten")).expect("memo rewrite");
         same_files(&mut subject, &dir);
     }
     fs::write(&journal, event("again")).expect("grow after truncate");
     same_files(&mut subject, &dir);
     let replacement = dir.join("replacement");
-    for (path, bytes) in [(&journal, event("new inode")), (&notes, memo("new inode"))] {
-        fs::write(&replacement, bytes).expect("replacement file");
-        fs::rename(&replacement, path).expect("replace inode");
-    }
+    fs::write(&replacement, event("new inode")).expect("replacement file");
+    fs::rename(&replacement, &journal).expect("replace inode");
     same_files(&mut subject, &dir);
     fs::write(
         dir.join("meta"),
@@ -153,7 +136,6 @@ pub(super) fn file_identity<F: Files>(make: impl Fn() -> F) {
     let root = Root::new("fleet-spec-identity");
     let dir = seed(&root, "api");
     let path = dir.join("events.jsonl");
-    let notes = dir.join("memo.tsv");
     let base = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
     let stamp = |path: &Path, nanos| {
         OpenOptions::new()
@@ -164,13 +146,10 @@ pub(super) fn file_identity<F: Files>(make: impl Fn() -> F) {
             .expect("nanosecond mtime");
     };
     stamp(&path, 100);
-    stamp(&notes, 100);
     let mut subject = make();
     same_files(&mut subject, &dir);
     fs::write(&path, event("other")).expect("same length rewrite");
-    fs::write(&notes, memo("other")).expect("same length memo rewrite");
     stamp(&path, 200);
-    stamp(&notes, 200);
     same_files(&mut subject, &dir);
     let original = subject.snapshot(&dir).events.expect("journal");
     assert_eq!(original.events[0].summary.as_deref(), Some("other"));
@@ -180,12 +159,10 @@ pub(super) fn file_identity<F: Files>(make: impl Fn() -> F) {
 pub(super) fn file_shapes<F: Files>(make: impl Fn() -> F) {
     let root = Root::new("fleet-spec-shapes");
     let dir = seed(&root, "api");
-    let (journal, notes) = (dir.join("events.jsonl"), dir.join("memo.tsv"));
+    let journal = dir.join("events.jsonl");
     let mut subject = make();
     same_files(&mut subject, &dir);
-    for path in [&journal, &notes] {
-        fs::remove_file(path).expect("delete held file");
-    }
+    fs::remove_file(&journal).expect("delete held file");
     same_files(&mut subject, &dir);
     assert!(
         subject
@@ -195,53 +172,34 @@ pub(super) fn file_shapes<F: Files>(make: impl Fn() -> F) {
             .events
             .is_empty()
     );
-    for path in [&journal, &notes] {
-        fs::create_dir(path).expect("directory replaces file");
-    }
+    fs::create_dir(&journal).expect("directory replaces file");
     same_files(&mut subject, &dir);
     assert!(
         subject.snapshot(&dir).events.is_none(),
         "journal directory is unreadable"
     );
-    assert!(
-        subject
-            .memo(&dir)
-            .expect("memo directory is empty")
-            .is_empty()
-    );
-    for path in [&journal, &notes] {
-        fs::remove_dir(path).expect("remove nonregular");
-    }
+    fs::remove_dir(&journal).expect("remove nonregular");
     fs::write(&journal, event("recovered")).expect("recreate journal");
-    fs::write(&notes, memo("recovered")).expect("recreate memo");
     same_files(&mut subject, &dir);
-    for path in [&journal, &notes] {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o0)).expect("unreadable fixture");
-    }
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o0)).expect("unreadable fixture");
     if matches!(
         crate::store::read_source(&journal),
         crate::store::SourceRead::Unreadable(_)
     ) {
         same_files(&mut subject, &dir);
         assert!(subject.snapshot(&dir).events.is_none());
-        assert_eq!(
-            subject.memo(&dir).expect_err("unreadable memo").kind(),
-            io::ErrorKind::PermissionDenied
-        );
     }
-    for path in [&journal, &notes] {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("restore permissions");
-    }
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).expect("restore permissions");
     same_files(&mut subject, &dir);
-    fs::remove_file(&notes).expect("replace memo by dangling link");
-    symlink(dir.join("missing"), &notes).expect("dangling memo");
+    fs::remove_file(&journal).expect("replace journal by dangling link");
+    symlink(dir.join("missing"), &journal).expect("dangling journal");
     same_files(&mut subject, &dir);
     let target = dir.join("target");
-    fs::write(&target, memo("target one")).expect("link target appears");
-    fs::remove_file(&notes).expect("remove dangling link");
-    symlink(&target, &notes).expect("live memo link");
+    fs::write(&target, event("target one")).expect("link target appears");
+    fs::remove_file(&journal).expect("remove dangling link");
+    symlink(&target, &journal).expect("live journal link");
     same_files(&mut subject, &dir);
-    fs::write(&target, memo("target two!")).expect("target length changes");
+    fs::write(&target, event("target two!")).expect("target length changes");
     same_files(&mut subject, &dir);
 }
 
@@ -251,27 +209,19 @@ pub(super) fn file_costs<F: Files>(make: impl Fn() -> F) {
     let mut subject = make();
     same_files(&mut subject, &dir);
     let warm = subject.costs();
-    assert!(warm.0 > 0 && warm.1 > 0, "cold parses both fixture files");
+    assert!(warm > 0, "cold parses the fixture journal");
     same_files(&mut subject, &dir);
     assert_eq!(
         subject.costs(),
         warm,
-        "unchanged journal AND memo parse zero bytes"
+        "an unchanged journal parses zero bytes"
     );
     append(&dir.join("events.jsonl"), &event("append"));
     same_files(&mut subject, &dir);
     assert_eq!(
         subject.costs(),
-        (warm.0 + length(&dir.join("events.jsonl")), warm.1),
-        "change reparses the WHOLE journal, memo remains cached"
-    );
-    fs::write(dir.join("memo.tsv"), memo("change")).expect("changed memo");
-    let before = subject.costs();
-    same_files(&mut subject, &dir);
-    assert_eq!(
-        subject.costs(),
-        (before.0, before.1 + length(&dir.join("memo.tsv"))),
-        "memo change leaves journal cached"
+        warm + length(&dir.join("events.jsonl")),
+        "change reparses the WHOLE journal"
     );
 }
 
@@ -291,10 +241,7 @@ pub(super) fn file_eviction<F: Files>(make: impl Fn() -> F) {
     same_files(&mut subject, &one);
     assert_eq!(
         subject.costs(),
-        (
-            before.0 + length(&one.join("events.jsonl")),
-            before.1 + length(&one.join("memo.tsv"))
-        ),
+        before + length(&one.join("events.jsonl")),
         "evicted source re-enters cold"
     );
     subject.retain(&[]);
@@ -330,7 +277,6 @@ fn equal_fleet(actual: &FleetRead, expected: &FleetRead) {
     assert_eq!(actual.fleet, expected.fleet, "rows");
     assert_eq!(actual.pairs, expected.pairs, "pairs");
     assert_eq!(actual.scanned, expected.scanned, "scanned");
-    assert_eq!(actual.memos, expected.memos, "memos");
 }
 
 fn same_fleet<R: ReaderFiles>(subject: &mut R, root: &Path) -> FleetRead {
@@ -380,7 +326,6 @@ pub(super) fn reader_changes<R: ReaderFiles>(make: impl Fn(&Path) -> R) {
     let seq = same_view(&mut subject, &api, "api");
     append(&api.join("events.jsonl"), &event("appended"));
     append(&api.join("events.jsonl"), b"{\"ts\":\"2026-01-01T00:00:00Z\",\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"colead\",\"ref\":\"open-spec\"}\n");
-    append(&api.join("memo.tsv"), &memo("appended"));
     same_fleet(&mut subject, &root.0);
     assert!(
         same_view(&mut subject, &api, "api") > seq,
@@ -438,20 +383,20 @@ pub(super) fn reader_costs<R: ReaderFiles>(make: impl Fn(&Path) -> R) {
     );
     same_view(&mut subject, &api, "api");
     let warm = subject.costs();
-    assert!(warm.0 > 0 && warm.1 > 0, "actual reader cold parses");
+    assert!(warm > 0, "actual reader cold parses");
     same_fleet(&mut subject, &root.0);
     same_view(&mut subject, &api, "api");
     assert_eq!(
         subject.costs(),
         warm,
-        "idle REAL fleet + view + memo paths parse zero bytes"
+        "idle REAL fleet + view paths parse zero bytes"
     );
     append(&api.join("events.jsonl"), &event("changed live journal"));
     same_fleet(&mut subject, &root.0);
     same_view(&mut subject, &api, "api");
     assert_eq!(
         subject.costs(),
-        (warm.0 + length(&api.join("events.jsonl")), warm.1),
+        warm + length(&api.join("events.jsonl")),
         "changed REAL fleet + needs + view parse journal once"
     );
     let removed = root.0.join("sessions/session00");
@@ -465,10 +410,7 @@ pub(super) fn reader_costs<R: ReaderFiles>(make: impl Fn(&Path) -> R) {
     let before = subject.costs();
     seed(&root, "session00");
     same_fleet(&mut subject, &root.0);
-    assert!(
-        subject.costs().0 > before.0 && subject.costs().1 > before.1,
-        "re-entry reads cold"
-    );
+    assert!(subject.costs() > before, "re-entry reads cold");
 }
 
 struct Servers(Vec<(ServerId, String)>);
@@ -568,7 +510,6 @@ pub(super) fn reader_servers<R: ReaderFiles>(make: impl Fn(&Path) -> R) {
 #[derive(Default)]
 struct BaselineFiles {
     journal: u64,
-    memo: u64,
 }
 impl Files for BaselineFiles {
     fn snapshot(&mut self, dir: &Path) -> RecordSnapshot {
@@ -580,13 +521,8 @@ impl Files for BaselineFiles {
         }
         read
     }
-    fn memo(&mut self, dir: &Path) -> io::Result<Vec<Filed>> {
-        let bytes = crate::store::open(dir).memo_bytes()?;
-        self.memo = self.memo.saturating_add(bytes.len() as u64);
-        Ok(brief::filed(&bytes))
-    }
-    fn costs(&self) -> (u64, u64) {
-        (self.journal, self.memo)
+    fn costs(&self) -> u64 {
+        self.journal
     }
     fn retain(&mut self, _: &[PathBuf]) {}
     fn cached_dirs(&self) -> BTreeSet<PathBuf> {
@@ -598,7 +534,6 @@ struct BaselineReader {
     root: PathBuf,
     reader: Reader,
     journal: u64,
-    memo: u64,
 }
 impl BaselineReader {
     fn new(root: &Path) -> Self {
@@ -606,7 +541,6 @@ impl BaselineReader {
             root: root.to_path_buf(),
             reader: Reader::new(root.to_path_buf(), None, None),
             journal: 0,
-            memo: 0,
         }
     }
 }
@@ -632,7 +566,6 @@ impl ReaderFiles for BaselineReader {
             if read.needs.contains_key(name) {
                 self.journal = self.journal.saturating_add(bytes);
             }
-            self.memo = self.memo.saturating_add(length(&dir.join("memo.tsv")));
         }
         read
     }
@@ -646,8 +579,8 @@ impl ReaderFiles for BaselineReader {
             .saturating_add(length(&self.reader_root_dir(name).join("events.jsonl")));
         Some(read)
     }
-    fn costs(&self) -> (u64, u64) {
-        (self.journal, self.memo)
+    fn costs(&self) -> u64 {
+        self.journal
     }
     fn cached_dirs(&self) -> BTreeSet<PathBuf> {
         BTreeSet::new()

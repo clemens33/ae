@@ -137,7 +137,7 @@ impl Rig {
             })
             .expect("stamped app pane");
         self.wait(&pane, WAIT, "GUARD home ready", |f| {
-            f.text.contains("Enter writes") && f.text.contains("Overview")
+            f.text.contains("Enter writes") && f.text.contains("Agents")
         });
         pane
     }
@@ -716,7 +716,7 @@ fn leaving_writing_compacts_kept_draft_and_discards_the_old_grown_hit_target() {
         &pane,
         FRAME,
         "GUARD Tab after old composer row still browses",
-        |f| f.text.contains("No seat facts"),
+        |f| f.text.contains("draft kept"),
     );
     assert_eq!(browsed.cursor.0, 0);
     assert!(browsed.text.contains("draft kept"));
@@ -827,7 +827,7 @@ fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
         &pane,
         WAIT,
         "GUARD outside app drew selected session",
-        |f| f.text.contains("▣ 1 ") && f.text.contains("Overview"),
+        |f| f.text.contains("▣ 1 ") && f.text.contains("Agents"),
     );
     let address = format!("to {} (not home) › lead", rig.home);
     assert!(

@@ -392,27 +392,23 @@ fn clicks_repaint_selection_before_a_held_world_refresh_finishes() {
 }
 
 #[test]
-fn tab_repaints_during_a_held_refresh() {
+fn settings_repaints_during_a_held_refresh() {
     let rig = Rig::new("sntab", &[]);
     let (pane, _) = rig.open();
     rig.ready(&pane, 1);
-    // Establish the existing tab/scroll oracles before holding any read.
-    rig.keys(&pane, "Tab");
-    rig.wait(&pane, WAIT, "fixture Agents panel", |screen| {
-        screen.contains("No seat facts")
-    });
-    rig.keys(&pane, "Tab");
-    rig.wait(&pane, WAIT, "fixture Overview returns", |screen| {
-        screen.contains(&format!("goal-{}", rig.home))
-    });
     let hold = rig.hold("@world");
     rig.held(&hold, "@world", "periodic world refresh");
-    rig.keys(&pane, "Tab");
+    rig.keys(&pane, "s");
     rig.wait(
         &pane,
         FRAME,
-        "Tab paints Agents while refresh is held",
-        |screen| screen.contains("No seat facts"),
+        "settings paints while refresh is held",
+        |screen| {
+            screen
+                .lines()
+                .next()
+                .is_some_and(|row| row.contains("Settings"))
+        },
     );
     assert!(hold.path.exists());
 }

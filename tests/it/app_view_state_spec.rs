@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use super::handover::{Handover, View};
 use super::loader::{Answer, FleetRead, Reader};
-use super::model::{Drag, Edge, Key as Browse, Tab};
+use super::model::{Drag, Edge, Key as Browse};
 use super::tests::{ID, Root, entry, session};
 use super::{App, take_keys};
 use crate::console::input::{Key, Mouse, MouseKind};
@@ -25,7 +25,6 @@ fn saved() -> View {
     View {
         session: "web".into(),
         id: ID.into(),
-        tab: Tab::Agents,
         focus: Some("colead".into()),
         sidebar: Some(31),
         list: Some(9),
@@ -76,7 +75,6 @@ fn restored(app: &App) {
         Some("web"),
         "identity-keyed selection restored"
     );
-    assert_eq!(app.model.tab(), Tab::Agents);
     assert_eq!(app.model.focus(), Some("colead"));
     assert_eq!(
         (app.model.split().sidebar, app.model.split().list),
@@ -92,7 +90,7 @@ fn matching_complete_read_applies_all_preferences_together() {
     let (root, mut app) = pending();
     app.answer(Answer::Fleet(read(&root, &["api", "web"], true)));
     restored(&app);
-    app.model.key(Browse::Digit(1), &app.fleet, false, true);
+    app.model.key(Browse::Digit(1), &app.fleet, false);
     app.answer(Answer::Fleet(read(&root, &["api", "web"], true)));
     assert_eq!(
         app.model.selected(),
@@ -115,10 +113,7 @@ fn incomplete_omission_or_unreadable_uuid_defers_then_a_later_match_applies() {
         }
         app.answer(Answer::Fleet(first));
         assert!(app.keep.is_some(), "incomplete absence proves nothing");
-        assert_eq!(
-            (app.model.selected(), app.model.tab()),
-            (Some("api"), Tab::Overview)
-        );
+        assert_eq!(app.model.selected(), Some("api"));
         app.answer(Answer::Fleet(read(&root, &["api", "web"], true)));
         restored(&app);
     }
@@ -146,14 +141,7 @@ fn complete_absence_unreadable_or_replaced_incarnation_discards_all_preferences(
         app.answer(Answer::Fleet(next));
         assert!(app.keep.is_none(), "case {case}: decisive read discards");
         assert_eq!(app.model.selected(), Some("api"));
-        assert_eq!(
-            (
-                app.model.tab(),
-                app.model.focus(),
-                app.model.scroll_rows(10)
-            ),
-            (Tab::Overview, None, 0)
-        );
+        assert_eq!((app.model.focus(), app.model.scroll_rows(10)), (None, 0));
         assert_eq!(
             (
                 app.model.split().sidebar,
@@ -192,11 +180,7 @@ fn delayed_handover_retains_write_epoch_and_expires_while_pending() {
         at: Timestamp::now().epoch() - 61,
     });
     app.answer(Answer::Fleet(read(&root, &["api", "web"], true)));
-    assert_eq!(
-        app.model.tab(),
-        Tab::Overview,
-        "receipt cannot renew the epoch"
-    );
+    assert_eq!(app.model.focus(), None, "receipt cannot renew the epoch");
 }
 
 #[test]
@@ -239,10 +223,9 @@ fn writer_snapshot_preserves_only_view_and_requires_a_readable_selection_uuid() 
     session(&root, "web", "");
     let mut app = App::new(Some("api".into()), None, None, None);
     app.answer(Answer::Fleet(read(&root, &["api", "web"], true)));
-    app.model.key(Browse::Digit(2), &app.fleet, false, true);
-    app.model.show_tab(Tab::Agents);
+    app.model.key(Browse::Digit(2), &app.fleet, false);
     app.model.set_focus(Some("colead".into()));
-    app.model.key(Browse::PageUp, &app.fleet, false, true);
+    app.model.key(Browse::PageUp, &app.fleet, false);
     app.model.wheel_body(false, 20);
     app.model.grab(Drag {
         edge: Edge::Sidebar,
@@ -283,7 +266,6 @@ fn model_adopt_cannot_select_a_row_missing_from_the_fleet() {
     let mut model = super::model::Model::new(&fleet);
     model.adopt(&fleet, &saved());
     assert_eq!(model.selected(), Some("api"));
-    assert_eq!(model.tab(), Tab::Overview);
     assert!(
         model.view("").is_none(),
         "missing UUID prevents any snapshot"
