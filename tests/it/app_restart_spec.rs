@@ -36,7 +36,7 @@ impl Hand {
             String::new()
         };
         let command = format!(
-            "printf '%s\\n' \"$$\" \"$PWD\" > {}; env -u AE_NO_AUTOSTART -u AE_SESSION -u CODEX_HOME -u CLAUDE_CONFIG_DIR {outside} HOME={} AE_HOME={} CONFIG_FILE={} TMUX_TMPDIR={} AE_RESTART_PROBE='literal $probe' {} app {operand} <&0 & pid=$!; printf '%s\\n' \"$pid\" > {}; wait \"$pid\"; rc=$?; stty -a > {}; printf 'BACK rc=%s\\n' \"$rc\"; sleep 30",
+            "exec 3<&0; printf '%s\\n' \"$$\" \"$PWD\" > {}; env -u AE_NO_AUTOSTART -u AE_SESSION -u CODEX_HOME -u CLAUDE_CONFIG_DIR {outside} HOME={} AE_HOME={} CONFIG_FILE={} TMUX_TMPDIR={} AE_RESTART_PROBE='literal $probe' {} app {operand} <&3 3<&- & pid=$!; printf '%s\\n' \"$pid\" > {}; wait \"$pid\"; rc=$?; stty -a > {}; printf 'BACK rc=%s\\n' \"$rc\"; sleep 30",
             q(&rig.scratch.join("shell")),
             q(&rig.home),
             q(&rig.ae_home),
