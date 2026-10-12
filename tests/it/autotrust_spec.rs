@@ -52,7 +52,8 @@ sub composer {
     $frame = decode_utf8(get("$root/idle"));
     $trusted = 1; draw();
 }
-print "\e[?2004h"; draw(); put("$root/ready", "$$");
+print "\e[?2004h"; draw(); put("$root/ready.tmp", "$$");
+rename("$root/ready.tmp", "$root/ready") or die 'publish ready';
 while (1) {
     if (-e "$root/repaint") {
         $frame = decode_utf8(get("$root/repaint")); unlink "$root/repaint";

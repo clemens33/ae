@@ -179,9 +179,13 @@ impl Rig {
             tool: other,
         };
         let rig = Self { s, t, root };
+        // Selection fixtures keep card positions stable across journal-driven refreshes.
         fs::write(
             rig.root.join("config"),
-            "[workspace]\nchat = app\nicons = off\n",
+            format!(
+                "[workspace]\nchat = app\nicons = off\nfleet_order = {},{}\n",
+                rig.s.name, rig.t.name
+            ),
         )
         .expect("private config");
         for (target, uuid) in [(&rig.s, S_ID), (&rig.t, T_ID)] {
@@ -326,12 +330,7 @@ impl Rig {
 
     fn select(&self, pane: &str, target: &Target) -> String {
         let screen = self.wait(&self.s, pane, "GUARD complete target card", |screen| {
-            screen.lines().any(|row| {
-                row.chars()
-                    .take(44)
-                    .collect::<String>()
-                    .contains(&target.name)
-            })
+            card_position(screen, &target.name).is_some()
         });
         let (x, y) = card(&screen, &target.name);
         self.raw(&self.s, pane, &format!("\x1b[<0;{};{}M", x + 1, y + 1));
@@ -543,15 +542,22 @@ impl Rig {
 }
 
 fn card(screen: &str, name: &str) -> (usize, usize) {
-    screen
-        .lines()
-        .enumerate()
-        .find_map(|(y, row)| {
-            let side = row.chars().take(44).collect::<String>();
-            side.find(name)
-                .map(|byte| (side[..byte].chars().count(), y))
-        })
-        .expect("drawn target card")
+    card_position(screen, name).expect("drawn target card")
+}
+
+/// A numbered card, excluding the attention summary that also names a session.
+fn card_position(screen: &str, name: &str) -> Option<(usize, usize)> {
+    screen.lines().enumerate().find_map(|(y, row)| {
+        let side = row.chars().take(44).collect::<String>();
+        let mut words = side.trim_start().trim_start_matches('│').split_whitespace();
+        words.next()?; // Status mark.
+        let index = words.next()?.parse::<u8>().ok()?;
+        if !(1..=9).contains(&index) || words.next()? != name {
+            return None;
+        }
+        side.find(name)
+            .map(|byte| (side[..byte].chars().count(), y))
+    })
 }
 
 fn composer_has(screen: &str, text: &str) -> bool {
@@ -617,6 +623,18 @@ fn lease(dir: &Path) -> File {
 
 fn free(dir: &Path) {
     drop(lease(dir));
+}
+
+#[test]
+fn selecting_a_needy_card_ignores_its_attention_summary() {
+    let rig = Rig::new("bsdiag", false);
+    let (pane, _) = rig.app("diag", true);
+    rig.select(&pane, &rig.t);
+    fs::write(rig.s.dir.join("events.jsonl"), format!("{{\"ts\":\"{}\",\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"waiting-user\",\"summary\":\"review required\"}}\n", ae::time::Timestamp::now())).expect("fixture attention");
+    rig.wait(&rig.s, &pane, "GUARD home attention summary", |s| {
+        s.contains(&format!("{} needs you", rig.s.name))
+    });
+    rig.select(&pane, &rig.s);
 }
 
 #[test]

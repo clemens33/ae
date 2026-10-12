@@ -1601,20 +1601,22 @@ mod tests {
     }
 
     const SHORT: [Duration; 2] = [Duration::from_millis(400), Duration::from_millis(600)];
+    // These calls assert answers, not deadlines: leave room for a loaded host.
+    const GENEROUS: [Duration; 2] = [Duration::from_secs(20), Duration::from_secs(20)];
     const VERSION_OK: &str = "printf '%s\\n' 1.2.14";
     const BOTH_CALLS: &str = "--version\n-p /quota --output-format json\n";
 
     #[test]
     fn the_agy_leg_runs_the_version_gate_then_the_fixed_quota_call() {
         let fake = FakeAgy::new("ok", VERSION_OK, "printf '%s' '{\"status\":\"SUCCESS\"}'");
-        match fake.run(SHORT) {
+        match fake.run(GENEROUS) {
             AgyRun::Done { text, .. } => assert_eq!(text, "{\"status\":\"SUCCESS\"}"),
             other => panic!("the call answered: {other:?}"),
         }
         assert_eq!(fake.read("argv"), BOTH_CALLS);
         // Exactly 64 KiB is still an answer; one byte more is refused below.
         let full = FakeAgy::new("full", VERSION_OK, "exec /usr/bin/head -c 65536 /dev/zero");
-        assert!(matches!(full.run(SHORT), AgyRun::Done { text, .. } if text.len() == 65_536));
+        assert!(matches!(full.run(GENEROUS), AgyRun::Done { text, .. } if text.len() == 65_536));
         assert_eq!(AGY_DEADLINES.map(|deadline| deadline.as_secs()), [3, 8]);
     }
 
@@ -1623,11 +1625,14 @@ mod tests {
         // A fresh scratch dir, so never this process's own HOME.
         let fake = FakeAgy::new("home", VERSION_OK, "printf '%s' \"$HOME\"");
         let home = fake.dir.display().to_string();
-        assert!(matches!(fake.run(SHORT), AgyRun::Done { text } if text == home));
+        assert!(matches!(fake.run(GENEROUS), AgyRun::Done { text } if text == home));
         let raw = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/tmp/\xff");
         let path = [("PATH", home.as_str())];
         // A HOME agy cannot be handed starts nothing: one run in the log.
-        assert_eq!(agy_quota_with(raw.as_ref(), &path, SHORT), AgyRun::Failed);
+        assert_eq!(
+            agy_quota_with(raw.as_ref(), &path, GENEROUS),
+            AgyRun::Failed
+        );
         assert_eq!(fake.read("argv"), BOTH_CALLS);
     }
 
@@ -1682,8 +1687,7 @@ mod tests {
         ] {
             let fake = FakeAgy::new(tag, VERSION_OK, quota);
             let started = std::time::Instant::now();
-            let generous = [SHORT[0], Duration::from_secs(20)];
-            assert_eq!(fake.run(generous), AgyRun::Failed, "{tag}");
+            assert_eq!(fake.run(GENEROUS), AgyRun::Failed, "{tag}");
             assert!(started.elapsed() < Duration::from_secs(10), "{tag}");
             assert_eq!(fake.read("argv"), BOTH_CALLS, "{tag}");
         }
