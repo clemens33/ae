@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.56] - 2026-10-12
+- Stabilize app selection and fake process test fixtures
+
 ## [v2026.10.55] - 2026-10-11
 - Ae app: drag over drawn text to select it, and letting go copies exactly the lit cells
 - The live selection spec waits for the peek copy itself, not for a hint an earlier copy left on the row
