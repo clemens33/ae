@@ -92,7 +92,8 @@ impl Rig {
                 &[&args[..], &["-t", "aeprobe", app.as_str()]].concat(),
             );
             rig.tmux(&inner, &["select-window", "-t", rig.app.trim()]);
-            let attach = format!("env TERM=xterm-ghostty tmux -S {} attach", inner.display());
+            // tmux attach needs its TERM's terminfo, which the Linux gate image lacks for ghostty.
+            let attach = format!("env TERM=xterm-256color tmux -S {} attach", inner.display());
             rig.term = rig.tmux(
                 &rig.outer,
                 &["new-window", "-d", "-P", "-F", "#{pane_id}", &attach],
