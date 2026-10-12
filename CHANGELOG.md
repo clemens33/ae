@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.58] - 2026-10-12
+- Add the instance owner for state root, config, HOME and own server
+
 ## [v2026.10.57] - 2026-10-12
 - **app**: Compact session sidebar and composer footer
 
