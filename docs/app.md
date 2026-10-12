@@ -34,9 +34,9 @@ recorded config first.
   then the question that needs you or `seat down`. `↑` / `↓` beside the `!` key
   show needy rows outside the list. Running sessions come in
   this order: the orchestrator, then the sessions your `[workspace]
-  fleet_order` names (the pins), then the rest by your latest activity, newest
-  first, and a session with none known after them in creation order; stopped
-  ones come last. A needy row carries a `│` edge and `!` reaches it. The wheel moves a list that does not fit one session a notch; a
+  fleet_order` names (the pins), then the rest by their newest AI answer to
+  you, newest first, and a session with none after them in creation order;
+  stopped ones come last. Your own input never reorders the list. A needy row carries a `│` edge and `!` reaches it. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
 - **Tabs** under the list: **Overview** (how the session was launched — `mode`,
@@ -85,12 +85,12 @@ only says how large it needs to be. Colours come from the session's own look
 
 ### Order
 
-Your activity in a session is the later of two things: the last time a tmux
-client attached to it, switched into it or gave it a key or mouse input
-(tmux's `session_activity`, counted only once it is later than the session's
-creation, so a session nobody has touched stays unknown), and the newest
-question you asked it through the chat or the app. Output from agents never
-counts, nor do ae's own commands. A new read of the fleet can move a row, and
+A session's place in the sidebar is its newest AI answer to you: the newest
+reply an agent addressed to your chat or your bridge. Nothing you do moves a
+row: not a question you ask, not typing, attaching, switching, clicking or
+scrolling. An answer a lead gives only in its pane, without a reply record,
+moves no row either, and neither do ae's own commands. A new read of the
+fleet can move a row, and
 only when a frame is drawn: a key or click always acts on the row it showed,
 even one the terminal splits over several reads; a click whose frame is gone
 when it completes is not taken, and the hint row says so.

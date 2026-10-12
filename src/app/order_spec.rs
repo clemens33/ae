@@ -94,10 +94,23 @@ fn recorded(root: &Root, name: &str, actor: &str, action: &str, epoch: i64) {
         .expect("fixture event");
 }
 
+fn answered(root: &Root, name: &str, sink: &str, epoch: i64) {
+    let dir = session(root, name, "");
+    let line = format!(
+        "{{\"ts\":\"{}\",\"actor\":\"lead\",\"action\":\"reply\",\"target\":\"{sink}\",\"target_session\":\"{name}\",\"summary\":\"fixture\"}}\n",
+        Timestamp::from_epoch(epoch)
+    );
+    store::open(&dir)
+        .append_event(&line)
+        .expect("fixture event");
+}
+
 #[test]
-fn orchestrator_then_config_pins_then_human_recency_then_unknown_then_stopped() {
+fn orchestrator_then_config_pins_then_answer_recency_then_unknown_then_stopped() {
     let root = Root::new("order-precedence");
     recorded(&root, "stopold", "console:local", "ask", NOW - 1);
+    answered(&root, "recent", "console:local", NOW - 10);
+    answered(&root, "older", "telegram:42", NOW - 20);
     for (name, tail) in [
         ("orchestrator", ""),
         ("pin1", ""),
@@ -175,8 +188,9 @@ fn equal_activity_and_unknowns_keep_creation_order_instead_of_input_or_name_orde
 }
 
 #[test]
-fn untouched_and_invalid_tmux_times_cannot_outrank_a_known_human_visit() {
+fn untouched_and_invalid_tmux_times_cannot_outrank_a_known_ai_answer() {
     let root = Root::new("order-untouched");
+    answered(&root, "visited", "console:local", NOW - 10);
     let read = fold(
         &root,
         &[
@@ -202,15 +216,17 @@ fn untouched_and_invalid_tmux_times_cannot_outrank_a_known_human_visit() {
 }
 
 #[test]
-fn newest_exact_console_ask_counts_on_a_foreign_server_and_other_events_do_not() {
+fn newest_reply_to_a_human_sink_counts_and_other_records_do_not() {
     let root = Root::new("order-human-journal");
     recorded(&root, "remote", "console:local", "ask", NOW - 10);
     recorded(&root, "remote", "console:local", "ask", NOW - 100);
-    recorded(&root, "remote", "lead", "reply", NOW - 1);
+    answered(&root, "remote", "console:local", NOW - 50);
+    answered(&root, "remote", "telegram:42", NOW - 5);
     recorded(&root, "agent", "lead", "ask", NOW);
-    recorded(&root, "near", "console:localx", "ask", NOW);
+    answered(&root, "near", "console:localx", NOW);
     recorded(&root, "review", "console:local", "review", NOW);
     recorded(&root, "cancel", "console:local", "cancel", NOW);
+    answered(&root, "ledger", "ae:seats:0199c0de", NOW);
     let read = fold(
         &root,
         &[
@@ -218,39 +234,81 @@ fn newest_exact_console_ask_counts_on_a_foreign_server_and_other_events_do_not()
             ("near", Status::Running),
             ("review", Status::Running),
             ("cancel", Status::Running),
-            ("visited", Status::Running),
+            ("ledger", Status::Running),
             ("remote", Status::Running),
         ],
-        &[("visited", 9, "1791455980", "1791454000", "")],
+        &[],
         &FleetOrder::EMPTY,
     );
     assert_eq!(
         names(&read.fleet),
-        ["remote", "visited", "agent", "cancel", "near", "review"]
+        ["remote", "agent", "cancel", "ledger", "near", "review"]
     );
 }
 
 #[test]
-fn human_activity_is_the_maximum_of_tmux_visit_and_ask_even_for_untouched_sessions() {
+fn newest_ai_answer_wins_regardless_of_tmux_touch_even_for_untouched_sessions() {
     let root = Root::new("order-source-max");
-    recorded(&root, "tmux", "console:local", "ask", NOW - 100);
-    recorded(&root, "ask", "console:local", "ask", NOW - 10);
-    recorded(&root, "untouched", "console:local", "ask", NOW - 30);
+    answered(&root, "older", "console:local", NOW - 100);
+    answered(&root, "older", "telegram:42", NOW - 90);
+    answered(&root, "newer", "discord:7", NOW - 10);
     let read = fold(
         &root,
         &[
-            ("ask", Status::Running),
+            ("newer", Status::Running),
             ("untouched", Status::Running),
-            ("tmux", Status::Running),
+            ("older", Status::Running),
         ],
         &[
-            ("ask", 0, "1791455900", "1791454000", ""),
+            ("newer", 0, "1791455900", "1791454000", ""),
             ("untouched", 1, "1791455999", "1791455999", ""),
-            ("tmux", 2, "1791455995", "1791454000", ""),
+            ("older", 2, "1791455995", "1791454000", ""),
         ],
         &FleetOrder::EMPTY,
     );
-    assert_eq!(names(&read.fleet), ["tmux", "ask", "untouched"]);
+    assert_eq!(names(&read.fleet), ["newer", "older", "untouched"]);
+}
+
+#[test]
+fn sidebar_orders_running_rows_by_newest_ai_answer_to_human() {
+    let root = Root::new("order-answer-key");
+    answered(&root, "console", "console:local", NOW - 30);
+    answered(&root, "tg", "telegram:42", NOW - 10);
+    answered(&root, "dc", "discord:7", NOW - 20);
+    let read = fold(
+        &root,
+        &[
+            ("console", Status::Running),
+            ("tg", Status::Running),
+            ("dc", Status::Running),
+            ("none", Status::Running),
+        ],
+        &[
+            ("none", 0, "1791455999", "1791454000", ""),
+            ("console", 1, "1791455990", "1791454000", ""),
+            ("dc", 2, "1791455980", "1791454000", ""),
+            ("tg", 3, "1791455970", "1791454000", ""),
+        ],
+        &FleetOrder::EMPTY,
+    );
+    assert_eq!(names(&read.fleet), ["tg", "dc", "console", "none"]);
+}
+
+#[test]
+fn human_input_and_tmux_touch_move_no_row() {
+    let root = Root::new("order-human-still");
+    recorded(&root, "touched", "console:local", "ask", NOW - 10);
+    answered(&root, "answered", "console:local", NOW - 100);
+    let read = fold(
+        &root,
+        &[("touched", Status::Running), ("answered", Status::Running)],
+        &[
+            ("touched", 0, "1791455999", "1791454000", ""),
+            ("answered", 1, "1791455000", "1791454000", ""),
+        ],
+        &FleetOrder::EMPTY,
+    );
+    assert_eq!(names(&read.fleet), ["answered", "touched"]);
 }
 
 #[test]
@@ -267,6 +325,7 @@ fn parser_preserves_new_and_legacy_goals_with_pipes_and_a_numeric_legacy_goal() 
 #[test]
 fn sidebar_recency_leaves_strip_and_picker_creation_order_unchanged() {
     let root = Root::new("order-sidebar-only");
+    answered(&root, "new", "console:local", NOW - 10);
     let sessions = [("old", Status::Running), ("new", Status::Running)];
     let live = [
         ("old", 0, "1791455000", "1791454000", ""),
@@ -308,6 +367,9 @@ fn read_order(root: &Root, live: &[Live<'_>]) -> FleetRead {
 
 fn initial_app(root: &Root) -> App {
     let mut app = App::new(None, None, None, None);
+    answered(root, "a", "console:local", NOW - 10);
+    answered(root, "b", "console:local", NOW - 20);
+    answered(root, "c", "console:local", NOW - 30);
     app.answer(Answer::Fleet(read_order(
         root,
         &[
@@ -321,6 +383,7 @@ fn initial_app(root: &Root) -> App {
 }
 
 fn reordered(root: &Root) -> FleetRead {
+    answered(root, "b", "console:local", NOW - 5);
     read_order(
         root,
         &[
@@ -389,6 +452,7 @@ fn two_unpainted_reads_keep_the_drawn_click_name_and_use_the_latest_order_on_fra
         )
         .expect("b target in the drawn frame");
     app.answer(Answer::Fleet(reordered(&root)));
+    answered(&root, "c", "console:local", NOW - 1);
     app.answer(Answer::Fleet(read_order(
         &root,
         &[

@@ -183,6 +183,15 @@ pub fn is_external(target: &str) -> bool {
         || target.starts_with("ae:seats:")
 }
 
+/// Whether `target` is a sink where the HUMAN reads an AI answer: every
+/// [`is_external`] sink except ae's own `ae:` ledger namespaces. A `reply`
+/// to one of these is the sidebar's ordering key; a reply to `ae:compact:`,
+/// `ae:reboot:` or `ae:seats:` is ledger automation, never an answer.
+#[must_use]
+pub fn is_human_sink(target: &str) -> bool {
+    is_external(target) && !target.starts_with("ae:")
+}
+
 /// The actor the human's console asks as, and the ONE sink a `reply` to such
 /// an ask names. Only the console's own submit builds it: no helper speaks as
 /// it and nothing but a `reply` is addressed to it.

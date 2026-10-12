@@ -100,10 +100,10 @@ impl Fleet {
 }
 
 /// The sidebar's rows: running sessions with the orchestrator first, then the
-/// human's `fleet_order` pins, then the rest by the human's latest use,
-/// newest first (`human_epoch`), a session never used after them in creation
-/// order; then stopped ones as the picker sorts them — dated by `last_live`
-/// newest first, undated after, ties by name.
+/// human's `fleet_order` pins, then the rest by the newest AI answer to the
+/// human, newest first (`answer_epoch`); a session never answered after them
+/// in creation order; then stopped ones as the picker sorts them — dated by
+/// `last_live` newest first, undated after, ties by name.
 #[must_use]
 pub fn rows(
     world: &World,
@@ -145,7 +145,7 @@ pub fn rows(
                 entry.name == crate::orchestrator::ORCHESTRATOR_SESSION
                     || order.place(&entry.name) != usize::MAX
             });
-    rest.sort_by_key(|entry| std::cmp::Reverse(entry.human_epoch));
+    rest.sort_by_key(|entry| std::cmp::Reverse(entry.answer_epoch));
     let ordered = pinned
         .into_iter()
         .chain(rest)

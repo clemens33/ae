@@ -1271,18 +1271,20 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_bridge_reply_stays_an_event_only_record() {
-        let (dir, id) = one_ask_from("telegram:42", "bridge-bytes");
-        assert_eq!(lead_replies(&dir, &id, "the answer"), (0, String::new()));
-        let events = journal(&dir);
-        assert_eq!(
-            events[1],
-            format!(
-                "{{\"ts\":\"2026-09-30T12:01:00Z\",\"actor\":\"lead\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"s\",\"actor_session_id\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"caller_server\":\"/tmp/ae\",\"caller_pane\":\"%3\",\"caller_session_uuid\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"summary\":\"the answer\"}}"
-            )
-        );
-        assert_eq!(stored(&dir), 0);
-        let _ = std::fs::remove_dir_all(&dir);
+    fn chat_bridge_replies_stay_event_only_records() {
+        for (sink, tag) in [("telegram:42", "bridge-tg"), ("discord:7", "bridge-dc")] {
+            let (dir, id) = one_ask_from(sink, tag);
+            assert_eq!(lead_replies(&dir, &id, "the answer"), (0, String::new()));
+            let events = journal(&dir);
+            assert_eq!(
+                events[1],
+                format!(
+                    "{{\"ts\":\"2026-09-30T12:01:00Z\",\"actor\":\"lead\",\"action\":\"reply\",\"target\":\"{sink}\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"s\",\"actor_session_id\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"caller_server\":\"/tmp/ae\",\"caller_pane\":\"%3\",\"caller_session_uuid\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"summary\":\"the answer\"}}"
+                )
+            );
+            assert_eq!(stored(&dir), 0);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Fn doc: a pinned asker is its slot in the session recording its id

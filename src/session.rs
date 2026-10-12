@@ -854,12 +854,15 @@ pub fn entry_from(
     let read = snapshot.events.as_ref();
     if let Some(read) = read {
         entry.last_active_epoch = read.last_active.map(Timestamp::epoch);
-        entry.human_epoch = read
+        entry.answer_epoch = read
             .events
             .iter()
             .filter(|event| {
-                event.actor == crate::tracked::CONSOLE_SINK
-                    && event.action == crate::tracked::Kind::Ask.action()
+                event.action == crate::reply::ACTION
+                    && event
+                        .target
+                        .as_deref()
+                        .is_some_and(crate::tracked::is_human_sink)
             })
             .map(|event| event.ts.epoch())
             .max();

@@ -642,23 +642,12 @@ impl Reader {
     fn fold_from(
         home: Option<&str>,
         dirs: BTreeMap<String, PathBuf>,
-        mut world: World,
+        world: World,
         picker: Option<&[tmux::PickerSession]>,
         order: &theme::FleetOrder,
         now: Timestamp,
         sources: &mut Sources<'_>,
     ) -> FleetRead {
-        // A tmux client's touch is a human's too: the later of it and the ask.
-        let touches: BTreeMap<&str, i64> = picker
-            .into_iter()
-            .flatten()
-            .filter_map(|row| Some((row.name.as_str(), row.touched()?)))
-            .collect();
-        for entry in &mut world.sessions {
-            if let Some(at) = touches.get(entry.name.as_str()) {
-                entry.human_epoch = entry.human_epoch.max(Some(*at));
-            }
-        }
         let facts = world
             .sessions
             .iter()
