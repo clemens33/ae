@@ -18,6 +18,62 @@ use crate::board::{clock_text, terminal_text};
 use crate::theme::{Look, Palette};
 use crate::time::Timestamp;
 
+/// Logical display lines of a decision reason; every other body stays raw.
+/// The renderers still neutralise and wrap each line through their usual door.
+pub(crate) fn body_lines(item: &Item) -> Vec<&str> {
+    if !matches!(item.kind, Kind::Card { .. }) {
+        return vec![&item.body];
+    }
+    let mut parts: Vec<_> = item.body.split(" | ").collect();
+    let mut suffix = Vec::new();
+    if let Some(last) = parts.last_mut() {
+        for marker in [" Details ", " details: ", " (recommend "] {
+            if let Some(at) = last.rfind(marker)
+                && if marker == " (recommend " {
+                    last.ends_with(')') || last.ends_with(").")
+                } else {
+                    last[..at].ends_with('.') || last[..at].ends_with(')')
+                }
+            {
+                suffix.push(&last[at + 1..]);
+                *last = &last[..at];
+            }
+        }
+    }
+    let first = parts.first().copied().unwrap_or("");
+    let label = parts.get(1).and_then(|next| match next.get(..2)? {
+        "2 " => Some("1 "),
+        "2." => Some("1."),
+        "2)" => Some("1)"),
+        "b " => Some("a "),
+        "b." => Some("a."),
+        "b)" => Some("a)"),
+        _ => None,
+    });
+    let option = label.and_then(|label| {
+        first.match_indices(label).find_map(|(at, _)| {
+            (at == 0 || first[..at].ends_with(". ") || first[..at].ends_with(": ")).then_some(at)
+        })
+    });
+    let intro = option.map_or(first, |at| &first[..at.saturating_sub(1)]);
+    let mut lines = Vec::new();
+    if !intro.is_empty() || option.is_none() {
+        if let Some(at) = intro.find(": ")
+            && (parts.len() > 1 || option.is_some())
+        {
+            lines.extend([&intro[..=at], &intro[at + 2..]]);
+        } else {
+            lines.push(intro);
+        }
+    }
+    if let Some(at) = option {
+        lines.push(&first[at..]);
+    }
+    lines.extend(parts.into_iter().skip(1));
+    lines.extend(suffix.into_iter().rev());
+    lines
+}
+
 /// Lane text a [`Style`] has already neutralised and dressed: the one text a
 /// paint writes as it is. Only [`Printed::lane`] makes one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -716,7 +772,7 @@ impl Printed {
             self.day = Some(day);
         }
         out.push_str(&self.style.head_in(&item.kind, &time, self.width));
-        for line in item.body.lines() {
+        for line in body_lines(item).into_iter().flat_map(str::lines) {
             out.push_str(&self.style.line_in(&item.kind, line, self.width));
         }
         if let Kind::Asked { id, .. } | Kind::NotDelivered { id, .. } = &item.kind
@@ -981,6 +1037,94 @@ mod tests {
             items,
             coverage: coverage.iter().map(|gap| (*gap).to_owned()).collect(),
         }
+    }
+
+    #[test]
+    fn decision_cards_render_context_options_and_details_on_their_own_lines() {
+        let reason = "Next release step: dev is live and verified. 1 merge A now, then B - recommended | 2 merge A only, B later | 3 owner merges. Details memo rel.";
+        let want = [
+            "  Next release step:",
+            "  dev is live and verified.",
+            "  1 merge A now, then B - recommended",
+            "  2 merge A only, B later",
+            "  3 owner merges.",
+            "  Details memo rel.",
+        ];
+        for (body, expected) in [
+            (reason, want.to_vec()),
+            (
+                "Waiting on colead for the S2 freeze report",
+                vec!["  Waiting on colead for the S2 freeze report"],
+            ),
+            (
+                "Release v1: approve the tag",
+                vec!["  Release v1: approve the tag"],
+            ),
+        ] {
+            let lane = lane(vec![item(card("lead"), T, body)], &[]);
+            let shown = Printed::default().step(&lane, 0, true);
+            assert_eq!(
+                shown
+                    .lines()
+                    .filter(|line| line.starts_with("  "))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(lane.items[0].body, body);
+        }
+        let ordinary = lane(vec![item(said("lead"), T, reason)], &[]);
+        assert!(
+            Printed::default()
+                .step(&ordinary, 0, true)
+                .contains(&format!("  {reason}\n"))
+        );
+        for (one, two) in [
+            ("1 ", "2 "),
+            ("1.", "2."),
+            ("1)", "2)"),
+            ("a ", "b "),
+            ("a.", "b."),
+            ("a)", "b)"),
+        ] {
+            let body = format!("Context. {one}keep: fast | {two}wait. details: memo rel.");
+            let card = item(card("lead"), T, &body);
+            let want = format!("Context.\n{one}keep: fast\n{two}wait.\ndetails: memo rel.");
+            assert_eq!(super::body_lines(&card).join("\n"), want);
+        }
+        let both = item(card("lead"), T, "A | B (recommend A). Details memo x.");
+        assert_eq!(
+            super::body_lines(&both).join("\n"),
+            "A\nB\n(recommend A).\nDetails memo x."
+        );
+    }
+
+    #[test]
+    fn dressed_decision_cards_wrap_each_option_and_neutralise_its_controls() {
+        let lane = lane(
+            vec![item(
+                card("lead"),
+                T,
+                "Pick: vertical panes stay readable\x1b[2J | horizontal context stays visible",
+            )],
+            &[],
+        );
+        let mut printed = Printed::styled(dressed("on", ""));
+        printed.set_width(Some(25));
+        let shown = unstyled(&printed.step(&lane, 0, true));
+        assert_eq!(
+            shown
+                .lines()
+                .skip_while(|line| !line.starts_with("▌  Pick:"))
+                .filter_map(|line| line.strip_prefix("▌  "))
+                .collect::<Vec<_>>(),
+            [
+                "Pick:",
+                "vertical panes stay",
+                "readable\u{fffd}[2J",
+                "horizontal context",
+                "stays visible",
+            ]
+        );
     }
 
     #[test]

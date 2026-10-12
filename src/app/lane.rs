@@ -83,7 +83,10 @@ pub(super) fn tail(
         if let Some(visited) = visited.as_deref_mut() {
             visited.push(at);
         }
-        for (gap, piece) in wrap(&terminal_text(&item.body), width, 2) {
+        for (gap, piece) in view::body_lines(item)
+            .into_iter()
+            .flat_map(|line| wrap(&terminal_text(line), width, 2))
+        {
             rows.push(Line::from(vec![
                 Span::raw(" ".repeat(gap)),
                 Span::styled(piece, paint.fg(|p| p.text)),
@@ -153,7 +156,10 @@ pub(super) fn rows(
             Span::styled(format!("  {minute}  "), paint.fg(|p| p.dim)),
             Span::styled(terminal_text(&qualifier), paint.fg(|p| p.dim)),
         ]));
-        for (gap, piece) in wrap(&terminal_text(&item.body), width, 2) {
+        for (gap, piece) in view::body_lines(item)
+            .into_iter()
+            .flat_map(|line| wrap(&terminal_text(line), width, 2))
+        {
             rows.push(Line::from(vec![
                 Span::raw(" ".repeat(gap)),
                 Span::styled(piece, paint.fg(|p| p.text)),
@@ -355,6 +361,87 @@ mod tests {
             need,
             None,
         )
+    }
+
+    #[test]
+    fn decision_cards_render_options_as_separate_rows_without_changing_other_turns() {
+        let reason = "Pick layout: vertical keeps panes readable | horizontal shows more context (recommend vertical because readability; details: .local/layout.md)";
+        let want = [
+            "  Pick layout:",
+            "  vertical keeps panes readable",
+            "  horizontal shows more context",
+            "  (recommend vertical because readability; details: .local/layout.md)",
+        ];
+        for (kind, body, expected) in [
+            (Kind::Card { seat: s() }, reason, want.to_vec()),
+            (Kind::Said { who: s() }, reason, vec![]),
+            (
+                Kind::Card { seat: s() },
+                "Waiting on colead for the S2 freeze report",
+                vec!["  Waiting on colead for the S2 freeze report"],
+            ),
+            (
+                Kind::Card { seat: s() },
+                "Release v1: approve the tag",
+                vec!["  Release v1: approve the tag"],
+            ),
+        ] {
+            let lane = Lane {
+                items: vec![item(kind, body)],
+                coverage: vec![],
+            };
+            let full = super::rows(&lane, 400, Paint::of(None), &view::Style::PLAIN, "lead");
+            let shown = tail(
+                &lane,
+                400,
+                Paint::of(None),
+                &view::Style::PLAIN,
+                "lead",
+                100,
+                None,
+            );
+            assert_eq!(shown.rows, full);
+            let body_rows: Vec<_> = full[1..].iter().map(text).collect();
+            if expected.is_empty() {
+                assert_eq!(body_rows, [format!("  {reason}")]);
+            } else {
+                assert_eq!(body_rows, expected);
+            }
+            assert_eq!(
+                lane.items[0].body, body,
+                "display leaves the stored reason raw"
+            );
+        }
+    }
+
+    #[test]
+    fn decision_card_rows_wrap_under_their_own_text_and_neutralise_controls() {
+        let lane = Lane {
+            items: vec![item(
+                Kind::Card { seat: s() },
+                "Pick: vertical panes stay readable\x1b[2J | horizontal context stays visible",
+            )],
+            coverage: vec![],
+        };
+        let shown = tail(
+            &lane,
+            25,
+            Paint::of(None),
+            &view::Style::PLAIN,
+            "lead",
+            100,
+            None,
+        );
+        assert_eq!(
+            shown.rows[1..].iter().map(text).collect::<Vec<_>>(),
+            [
+                "  Pick:",
+                "  vertical panes stay",
+                "  readable\u{fffd}[2J",
+                "  horizontal context",
+                "  stays visible",
+            ]
+        );
     }
 
     /// A turn's key follows everything that tells it apart.

@@ -42,6 +42,8 @@ the window on demand. See [Keys](#keys).
   is counted in a coverage row, never shown.
 - **Decision cards**: a lead-pair seat's CURRENT `waiting-user` declaration as
   `DECISION <seat>`, the watchdog's `human-prompt` as `NEEDS YOU <seat>`.
+  In chat and `ae app`, ` | ` separates options onto their own lines; decision
+  headings, recommendations and trailing details pointers stand separately too.
   `--follow` prints `-- closed: …` when one stops standing.
 - **Coverage rows** for anything it cannot read: a torn or absent transcript,
   an unsupported harness, an unreadable journal, skipped journal lines.
