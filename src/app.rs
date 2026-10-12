@@ -89,6 +89,8 @@ const FLASH_WINDOW: Duration = Duration::from_secs(5);
 /// The most UTF-8 bytes one copy writes to the terminal clipboard outside tmux;
 /// more is refused, never cut.
 const CLIP_MAX: usize = 65536;
+/// How long a drag holds the reads back without any mouse input.
+const LANE_HOLD: Duration = Duration::from_secs(10);
 /// The most replaced layouts kept for a click made on one of them.
 const HISTORY: usize = 8;
 /// The most navigation keys held for the first fleet read; the oldest go first.
@@ -226,6 +228,8 @@ struct Held {
     /// The button is still down.
     down: bool,
     stage: Stage,
+    /// The last mouse input of the drag.
+    touched: Instant,
 }
 
 /// Where a release's copy stands. It lives in [`Held`], so whatever ends the
@@ -392,6 +396,8 @@ struct App {
     early_named: bool,
     /// A copy outside tmux, for the loop to write to the terminal.
     clip: Option<String>,
+    /// The newest read of each kind, kept back while a drag holds the screen.
+    parked: Vec<Answer>,
 }
 
 impl App {
@@ -469,11 +475,19 @@ impl App {
             early: Vec::new(),
             early_named: false,
             clip: None,
+            parked: Vec::new(),
         }
     }
 
     /// Fold one answer from the reader.
     fn answer(&mut self, answer: Answer) {
+        let paints = matches!(
+            answer,
+            Answer::Fleet(_) | Answer::Look { .. } | Answer::View(_)
+        );
+        if paints && (!self.parked.is_empty() || self.holds_lane()) {
+            return self.park(answer);
+        }
         match answer {
             Answer::Fleet(read) => {
                 self.absorb(read);
@@ -1383,7 +1397,7 @@ impl App {
     fn restart_due(&self, now: Instant) -> Option<(String, toggle::Restart)> {
         let upgrade = self.upgrade.as_ref()?;
         let restart = upgrade.restart.as_ref().ok()?;
-        (self.blocker(now).is_none() && self.clip.is_none())
+        (self.blocker(now).is_none() && self.clip.is_none() && !self.holds_lane())
             .then(|| (upgrade.version.clone(), restart.clone()))
     }
 
@@ -1636,6 +1650,7 @@ impl App {
             before,
             down: true,
             stage: Stage::None,
+            touched: Instant::now(),
         });
     }
 
@@ -1645,6 +1660,7 @@ impl App {
     /// whether that was the drag's first cell; `None` with no such selection.
     fn follow(&mut self, mouse: Mouse) -> Option<(bool, bool)> {
         let held = self.select.as_mut().filter(|held| held.down)?;
+        held.touched = Instant::now();
         let first = !held.sel.moved();
         let changed = held.sel.extend(Position::new(mouse.column, mouse.row));
         if first && held.sel.moved() && std::mem::take(&mut held.toggled) {
@@ -1686,6 +1702,56 @@ impl App {
         let epoch = self.model.epoch();
         let stale = self.select.take_if(|held| held.epoch != epoch);
         stale.is_some_and(|held| held.sel.moved())
+    }
+
+    /// A drag, or the copy it asked for, owns the screen: the cells it lit are
+    /// the cells that ship. Not past [`LANE_HOLD`] without mouse input.
+    fn holds_lane(&self) -> bool {
+        (self.select.as_ref()).is_some_and(|held| {
+            (held.down || held.stage != Stage::None) && held.touched.elapsed() < LANE_HOLD
+        })
+    }
+
+    /// Keep a read back while a drag holds the screen: one per kind and name,
+    /// the newest, carrying what the one it replaced alone had read.
+    fn park(&mut self, mut answer: Answer) {
+        let same = |old: &Answer| match (old, &answer) {
+            (Answer::Fleet(_), Answer::Fleet(_)) => true,
+            (Answer::Look { name: a, .. }, Answer::Look { name: b, .. }) => a == b,
+            (Answer::View(a), Answer::View(b)) => a.name == b.name,
+            _ => false,
+        };
+        if let Some(at) = self.parked.iter().position(same)
+            && let (Answer::View(old), Answer::View(new)) = (self.parked.remove(at), &mut answer)
+            && old.id == new.id
+        {
+            new.needs = new.needs.take().or(old.needs);
+            new.roster = new.roster.take().or(old.roster);
+        }
+        self.parked.push(answer);
+    }
+
+    /// Let the parked reads in, oldest first, once nothing holds them: the drag
+    /// ended and its copy shipped, or it went quiet for [`LANE_HOLD`] and is
+    /// cleared, saying so. Whether any landed.
+    fn unpark(&mut self) -> bool {
+        if self.parked.is_empty() || self.holds_lane() {
+            return false;
+        }
+        if (self.select)
+            .take_if(|held| held.down || held.stage != Stage::None)
+            .is_some()
+        {
+            let line = format!(
+                "selection cleared: no mouse input for {} s",
+                LANE_HOLD.as_secs()
+            );
+            self.flash = Some((line, Instant::now()));
+        }
+        for answer in std::mem::take(&mut self.parked) {
+            self.answer(answer);
+        }
+        true
     }
 
     /// A newer peek capture waits while a selection in the panel is held down
@@ -1743,7 +1809,7 @@ impl App {
     /// A frame's debts, settled together: the copy it shipped and the asks
     /// that waited for it. Neither skips the other; whether a frame is due.
     fn owed(&mut self) -> bool {
-        self.shipped() | self.deliver()
+        self.shipped() | self.deliver() | self.unpark() | self.deliver()
     }
 
     /// Ship the copy the last frame highlighted, now that it is written: the
@@ -1889,7 +1955,11 @@ impl App {
             }
             self.reread();
         }
-        self.show();
+        // A held drag keeps the screen as drawn: re-aging the Overview under it
+        // would change the cells it lit.
+        if ran || !self.holds_lane() {
+            self.show();
+        }
         ran
     }
 
@@ -6731,6 +6801,99 @@ mod tests {
             Some(super::Stage::Ready(text)) => Some(text),
             _ => None,
         }
+    }
+
+    /// A read landing in the middle of a drag waits: the release copies the
+    /// cells the human saw, a wide and a combined symbol whole, and then the
+    /// read lands.
+    #[test]
+    fn a_read_during_a_drag_waits_for_the_copy_it_would_have_cleared() {
+        let mut app = turned(&["qq\u{4f60}e\u{301}zz beta"]);
+        let (_, x, y) = shown(&mut app, "qq");
+        app.mouse(at(MouseKind::Click, x + 2, y));
+        app.mouse(at(MouseKind::Drag, x + 4, y));
+        app.answer(view("api", ID, 1, "omega"));
+        assert!(app.shown.is_empty(), "the read waits for the drag");
+        app.mouse(at(MouseKind::Release, x + 4, y));
+        let _ = shown(&mut app, "qq");
+        assert_eq!(staged(&app), Some("\u{4f60}e\u{301}"), "the cells seen");
+        assert!(app.owed());
+        assert_eq!(app.clip.as_deref(), Some("\u{4f60}e\u{301}"));
+        let landed = app.shown.get("api").map(|shown| shown.seq);
+        assert_eq!(landed, Some(1), "then the read lands");
+    }
+
+    /// Whatever ends a drag lets the waiting read land, and a drag that goes
+    /// quiet for the hold clears itself, saying so: nothing waits for good.
+    #[test]
+    fn every_end_of_a_drag_lets_the_waiting_read_land() {
+        for end in 0..4 {
+            let mut app = turned(&["alpha beta gamma"]);
+            let (_, x, y) = shown(&mut app, "alpha");
+            app.mouse(at(MouseKind::Click, x, y));
+            app.mouse(at(MouseKind::Drag, x + 3, y));
+            app.answer(view("api", ID, 1, "omega"));
+            assert!(app.shown.is_empty(), "end {end}: the read waits");
+            match end {
+                0 => drop(take_keys(&mut app, vec![(Key::Escape, Instant::now())])),
+                1 => drop(app.mouse(at(MouseKind::Click, 100, 44))),
+                2 => {
+                    app.model.open_settings(1);
+                    app.model.close_settings();
+                    assert!(app.stale_selection());
+                }
+                _ => {
+                    let quiet = Instant::now().checked_sub(super::LANE_HOLD * 2);
+                    app.select.as_mut().expect("a drag").touched = quiet.expect("uptime");
+                }
+            }
+            let _ = app.owed();
+            assert_eq!(app.shown.len(), 1, "end {end}: the read landed");
+            assert!(app.select.is_none() && app.parked.is_empty(), "end {end}");
+            let said = app.flash.as_ref().map(|(line, _)| line.as_str());
+            assert_eq!(
+                said.is_some_and(|l| l.starts_with("selection cleared")),
+                end == 3
+            );
+        }
+    }
+
+    /// A held drag is never restarted away, however long the keys were quiet:
+    /// the restart waits for the release and its copy.
+    #[test]
+    fn no_restart_while_a_drag_is_held() {
+        let mut app = turned(&["alpha beta gamma"]);
+        app.answer(upgrade_to(Ok(())));
+        let (_, x, y) = shown(&mut app, "alpha");
+        app.mouse(at(MouseKind::Click, x, y));
+        app.mouse(at(MouseKind::Drag, x + 3, y));
+        let quiet = Instant::now() + super::REFRESH * 2;
+        assert_eq!(app.restart_due(quiet), None, "the drag is held");
+        app.mouse(at(MouseKind::Release, x + 3, y));
+        let _ = shown(&mut app, "alpha");
+        let _ = app.owed();
+        app.clip = None;
+        assert!(app.restart_due(quiet).is_some(), "released and copied");
+    }
+
+    /// The Overview's ages are judged at the press while the button is down:
+    /// a second turning under a drag does not change the cells it lit.
+    #[test]
+    fn the_overview_ages_wait_for_a_held_drag() {
+        let mut app = turned(&[]);
+        let mut entry = crate::digest::SessionEntry::new("api", crate::digest::Status::Running);
+        entry.goal = Some("BODYWORD".to_owned());
+        entry.goal_set_epoch = Some(crate::time::Timestamp::now().epoch() - 30);
+        app.world.sessions = vec![entry];
+        app.show();
+        let (_, x, y) = shown(&mut app, "BODYWORD");
+        app.mouse(at(MouseKind::Click, x, y));
+        app.mouse(at(MouseKind::Drag, x + 3, y));
+        std::thread::sleep(Duration::from_millis(1100));
+        let _ = app.owed();
+        app.mouse(at(MouseKind::Release, x + 3, y));
+        let _ = shown(&mut app, "BODYWORD");
+        assert_eq!(staged(&app), Some("BODY"), "the cells seen at the press");
     }
 
     /// The drag paints the cells it covers, the release asks for a copy of

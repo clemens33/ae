@@ -372,9 +372,12 @@ and the wheel is unchanged. `Esc` with a selection held only clears it (a second
 `Esc` does what it always did); so does the next press. The selection also
 goes, copying nothing, when what you selected changes before the copy leaves:
 another session, tab, Settings or the peek panel, a resize, or the cells under
-it. A new peek capture waits while a selection in the panel is held down, and
-is drawn on the first frame after the copy. A copy leaves only after the frame
-that shows it.
+it. While the button is down and until the copy is out, a new read of the chat,
+the session list or the looks waits (a peek capture, in its panel), the
+Overview's ages stand still and a restart into a new core waits; they land just
+after the copy, so the copy is the cells you saw. A drag with no mouse input for
+10 s is cleared (`selection cleared: no mouse input for 10 s`). A copy leaves
+only after the frame that shows it.
 
 ## Settings
 

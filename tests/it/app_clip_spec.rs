@@ -144,6 +144,11 @@ impl Rig {
 
     /// Drag over the fixture text, first cell to last.
     fn drag(&self) {
+        self.drag_around(|| ());
+    }
+
+    /// The same drag, with `between` done while the button is down.
+    fn drag_around(&self, between: impl FnOnce()) {
         let screen = self.wait("fixture text drawn", |s| s.contains(TEXT));
         let (row, line) = screen
             .lines()
@@ -154,6 +159,7 @@ impl Rig {
         let last = x + TEXT.chars().count() - 1;
         self.mouse(0, false, (x, row));
         self.mouse(32, false, (x + 5, row));
+        between();
         self.mouse(32, false, (last, row));
         self.mouse(0, true, (last, row));
     }
@@ -177,6 +183,27 @@ fn a_drag_in_a_plain_terminal_reaches_the_terminal_clipboard() {
     });
     let said = "sent 1 line to the terminal clipboard - unconfirmed";
     rig.wait("the hint row says what was sent", |s| s.contains(said));
+}
+
+/// A turn that lands while the button is down does not cost the copy: the
+/// release copies what was under the drag at the press, and the turn shows
+/// after. The wait outlasts the 5 s poll, so the read happens mid-drag.
+#[test]
+fn a_turn_landing_mid_drag_does_not_cost_the_copy() {
+    let rig = Rig::new("lane", false);
+    let late = super::board::user("2026-10-12T10:00:30Z", "CLIPLATE a turn lands");
+    let path = rig.scratch.join(format!("store/projects/work/{TID}.jsonl"));
+    rig.drag_around(|| {
+        let old = fs::read_to_string(&path).expect("transcript");
+        fs::write(&path, format!("{old}{late}\n")).expect("a turn lands");
+        std::thread::sleep(Duration::from_secs(7));
+    });
+    let hint = |s: &str| s.contains("selection cleared") || s.contains("terminal clipboard");
+    rig.wait("the release answers on the hint row", hint);
+    rig.wait("the copy never reached the terminal", |_| {
+        rig.buffers(&rig.outer) == [TEXT]
+    });
+    rig.wait("the turn shows after the copy", |s| s.contains("CLIPLATE"));
 }
 
 /// A copy accepted in the same batch as the quit still reaches the terminal.
