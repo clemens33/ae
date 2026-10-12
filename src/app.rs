@@ -46,6 +46,7 @@ pub mod draw;
 pub mod fleet;
 #[cfg(test)]
 mod fleet_spec;
+pub mod handover;
 mod journals;
 mod lane;
 #[cfg(test)]
@@ -62,6 +63,9 @@ mod select_spec;
 mod settings;
 mod tty;
 pub mod upgrade;
+#[cfg(test)]
+#[path = "../tests/it/app_view_state_spec.rs"]
+mod view_spec;
 
 /// What `ae app` says, on stderr, when it has no terminal to draw on.
 pub const NO_TERMINAL: &str = "ae app draws a terminal UI; use ae chat to print the lane\n";
@@ -249,7 +253,18 @@ struct Lease {
     named: bool,
 }
 
+/// A view an earlier app handed over, waiting for the fleet read that settles
+/// it; `at` is when it was written.
+struct Keep {
+    view: handover::View,
+    at: i64,
+}
+
 /// Everything the app was answered, and the browse and compose state.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts of one loop, each read where it is set: loading, fleeted, touched, restored, again"
+)]
 struct App {
     home: Option<String>,
     model: model::Model,
@@ -354,6 +369,12 @@ struct App {
     shot: Buffer,
     /// The last frame left a hint it did not draw: draw again.
     again: bool,
+    /// The handed-over view, until a fleet read applies or drops it.
+    keep: Option<Keep>,
+    /// Input was read, a key or a click: no handed-over view is taken after it.
+    touched: bool,
+    /// A handed-over scroll is applied and its lane is not read yet.
+    restored: bool,
 }
 
 impl App {
@@ -425,6 +446,9 @@ impl App {
             select: None,
             shot: Buffer::default(),
             again: false,
+            keep: None,
+            touched: false,
+            restored: false,
         }
     }
 
@@ -449,6 +473,9 @@ impl App {
                 instructions,
             } => self.settled(generation, quota, config, about, instructions),
             Answer::Core(seen) => self.upgrade = seen,
+            Answer::Handover { view, at } => {
+                self.keep = (!self.touched).then_some(Keep { view, at });
+            }
             Answer::Peek {
                 generation,
                 at,
@@ -702,6 +729,7 @@ impl App {
                 self.notice(&key.0, format!("draft for {} dropped: {why}", key.0));
             }
         }
+        self.settle_keep(read.scanned);
         if self.model.selected().is_none() {
             self.model.restart(&self.fleet);
         }
@@ -731,6 +759,63 @@ impl App {
         }
         self.evict();
         self.show();
+    }
+
+    /// Settle the handed-over view with this read: applied when it lists the
+    /// session as the incarnation the view was written for, dropped when it is
+    /// stale, proves the session gone or replaced, and kept for a later read
+    /// when an incomplete one cannot say.
+    fn settle_keep(&mut self, scanned: bool) {
+        let Some(keep) = self.keep.take() else {
+            return;
+        };
+        let name = keep.view.session.as_str();
+        let row = self.fleet.rows.iter().any(|row| row.name == name);
+        let id = self.ids.get(name).map(String::as_str);
+        let now = Timestamp::now().epoch();
+        match handover::decide(keep.at, now, &keep.view, row, id, scanned) {
+            handover::Verdict::Apply => {
+                self.model.adopt(&self.fleet, &keep.view);
+                self.restored = true;
+            }
+            handover::Verdict::Defer => self.keep = Some(keep),
+            handover::Verdict::Discard => {}
+        }
+    }
+
+    /// What this app hands to the one that replaces it in `pane`, at `now`:
+    /// the view of its selection, bound to the uuid the last read recorded.
+    fn handover(&self, pane: &str, version: &str, now: i64) -> Option<handover::Handover> {
+        let name = self.model.selected()?;
+        let view = self.model.view(self.ids.get(name)?)?;
+        Some(handover::Handover {
+            pane: pane.to_owned(),
+            version: version.to_owned(),
+            at: now,
+            view,
+        })
+    }
+
+    /// Publish [`App::handover`] on the home session, best effort: a restart
+    /// never waits on it and never fails for it.
+    fn publish_view(&self, restart: &toggle::Restart, version: &str) {
+        let Some(home) = self.home.as_deref() else {
+            return;
+        };
+        let now = Timestamp::now().epoch();
+        let Some(text) = self.handover(&restart.pane, version, now) else {
+            return;
+        };
+        if let Some(id) = transport::observe_session_id(&restart.server, home) {
+            let scope = tmux::OptionScope::Session;
+            let _ = transport::publish_option(
+                &restart.server,
+                scope,
+                &id,
+                handover::OPTION,
+                &text.render(),
+            );
+        }
     }
 
     /// One read of a session's lane. A lane read as an identity its session
@@ -2067,8 +2152,12 @@ impl App {
         }
         self.model
             .settle(self.layout.list_start, self.layout.body_top);
-        // Held keys replay from the scroll they were read at, as one read.
-        if self.deferred.is_empty() {
+        // Held keys replay from the scroll they were read at, as one read. A
+        // handed-over scroll waits for the lane it scrolls: until that is
+        // read there is no bound to hold it to.
+        let waits = self.restored && self.loading;
+        self.restored = waits;
+        if self.deferred.is_empty() && !waits {
             self.model
                 .clamp_scroll(self.layout.max_scroll, self.layout.page_rows);
         }
@@ -2319,6 +2408,7 @@ fn end(
     drop(tty);
     let in_tmux = app.server.is_some();
     if let Some((version, restart)) = restart {
+        app.publish_view(&restart, &version);
         // The lease goes before the pane, so the app that replaces it can
         // write at once.
         drop(app);
@@ -2368,6 +2458,11 @@ fn drain(
                 crate::read_gate("@app-keys");
                 fed = true;
                 app.last_input = Some(stamp);
+                // A lone Esc, a paste start or a dropped control byte decodes
+                // to no key yet: the read itself is the human's input.
+                if !bytes.is_empty() {
+                    (app.keep, app.touched) = (None, true);
+                }
                 keys.feed(&bytes, stamp)
             }
             Wake::Answer(answer) => {
@@ -2392,6 +2487,10 @@ fn drain(
 /// unless it would lose an ask or a draft. Any key but a browsing letter or
 /// `^C` ends the armed press.
 fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
+    if !keyed.is_empty() {
+        // Whatever the human did, a view handed over later never yanks it.
+        (app.keep, app.touched) = (None, true);
+    }
     let mut redraw = false;
     let mut keyed = keyed.into_iter();
     while let Some((key, origin)) = keyed.next() {
@@ -6863,5 +6962,87 @@ mod tests {
         assert_eq!(app.model.turn(), None, "a drag leaves the mark as it was");
         let _ = shown(&mut app, "alpha");
         assert_eq!(staged(&app), Some("alpha"));
+    }
+
+    /// A view handed over for `web`, written now.
+    fn handed(pages: usize, rows: usize) -> Answer {
+        let view = super::handover::View {
+            session: "web".to_owned(),
+            id: ID.to_owned(),
+            tab: Tab::Agents,
+            focus: None,
+            sidebar: None,
+            list: None,
+            pages,
+            rows,
+            list_top: None,
+            body_top: 0,
+        };
+        let at = Timestamp::now().epoch();
+        Answer::Handover { view, at }
+    }
+
+    /// A raw read that decodes to no key - a lone Esc, a paste start, a
+    /// dropped `^Z` - still ends a handed-over view, waiting or yet to come.
+    #[test]
+    fn raw_input_that_decodes_to_no_key_cancels_a_handed_over_view() {
+        for raw in [&b"\x1b"[..], b"\x1b[200~", b"\x1a"] {
+            for waiting in [true, false] {
+                let root = Root::new("raw-cancel");
+                session(&root, "web", "");
+                let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
+                let mut app = App::new(Some("api".to_owned()), None, None, None);
+                let (wake, wakes) = std::sync::mpsc::channel();
+                let mut keys = crate::console::input::Keys::app();
+                let sent = loader::Wake::Keys(Instant::now(), raw.to_vec());
+                let late = loader::Wake::Answer(Box::new(handed(0, 0)));
+                if waiting {
+                    app.answer(handed(0, 0));
+                    wake.send(sent).expect("sent");
+                } else {
+                    wake.send(sent).expect("sent");
+                    wake.send(late).expect("sent");
+                }
+                assert!(super::drain(&mut app, &mut keys, &wakes, &mut None).is_some());
+                assert!(
+                    app.touched && app.keep.is_none(),
+                    "{raw:?} waiting={waiting}"
+                );
+                let live = [("api", Status::Running), ("web", Status::Running)];
+                refold(&mut app, &reader, &root, &live);
+                assert_eq!(app.model.selected(), Some("api"), "{raw:?} no late yank");
+            }
+        }
+    }
+
+    /// A restored scroll waits for the lane it scrolls: the frame before the
+    /// session's first read keeps it, and the read then bounds it as ever.
+    #[test]
+    fn a_restored_scroll_survives_the_frame_before_its_lane_is_read() {
+        let root = Root::new("keep-scroll");
+        session(&root, "web", "");
+        let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
+        let mut app = App::new(Some("api".to_owned()), None, None, None);
+        app.answer(handed(2, 3));
+        let live = [("api", Status::Running), ("web", Status::Running)];
+        refold(&mut app, &reader, &root, &live);
+        assert_eq!(app.model.selected(), Some("web"));
+        assert!(app.loading, "web's lane is not read yet");
+        let _ = framed(&mut app);
+        assert_eq!(app.model.scroll_rows(10), 23, "loading frame keeps it");
+        app.answer(Answer::View(ViewRead {
+            name: "web".to_owned(),
+            id: ID.to_owned(),
+            seq: 1,
+            lane: Lane {
+                items: (0..400).map(|at| said(&format!("turn {at}"), at)).collect(),
+                coverage: Vec::new(),
+            },
+            needs: None,
+            roster: None,
+        }));
+        let _ = framed(&mut app);
+        assert_ne!(app.model.scroll_rows(10), 0, "a long history keeps it");
+        assert!(!app.loading);
     }
 }

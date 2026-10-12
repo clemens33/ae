@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::Instant;
 
+use super::handover::{self, View};
 use super::journals::Journals;
 use super::peek::{self, Body};
 use super::{REFRESH, facts_of, fleet, proven_pane};
@@ -121,6 +122,12 @@ pub(super) enum Answer {
     },
     /// What the command link says to this app, after every fleet read.
     Core(Option<super::upgrade::Upgrade>),
+    /// The view the restart that started this app handed over, written at
+    /// `at` (epoch seconds). Sent once, before the first fleet read.
+    Handover {
+        view: View,
+        at: i64,
+    },
     /// One capture of the open peek panel's pane, or the refusal that stood
     /// in its place, read at `at` for `generation`.
     Peek {
@@ -333,6 +340,11 @@ impl Reader {
     /// Read until the UI is gone.
     fn run(mut self, asks: &Receiver<Request>, wake: &Sender<Wake>) {
         let send = |answer| wake.send(Wake::Answer(Box::new(answer))).is_ok();
+        if let Some((view, at)) = self.handover()
+            && !send(Answer::Handover { view, at })
+        {
+            return;
+        }
         loop {
             loop {
                 match asks.try_recv() {
@@ -366,6 +378,29 @@ impl Reader {
                 return;
             }
         }
+    }
+
+    /// The view the restart that started this app handed over: read, and
+    /// unset whatever it was, only by the app that proves it is the chat of
+    /// its home session; it counts only when it is for this pane, this
+    /// version and fresh. Anything else is today's default view.
+    fn handover(&self) -> Option<(View, i64)> {
+        let ((server, pane), home) = (self.own.as_ref()?, self.home.as_deref()?);
+        let text = transport::observe_session_option(server, home, handover::OPTION)?;
+        let panes = transport::observe_window_panes(server, home)?;
+        let uuid = transport::observe_session_option(server, home, theme::SESSION_ID_OPTION)?;
+        let dir = console::locate(&self.root, home);
+        let bound = dir
+            .as_deref()
+            .map(console::recorded_uuid)
+            .unwrap_or_default();
+        console::toggle::own_chat(&panes, pane, &uuid, &bound).ok()?;
+        let id = transport::observe_session_id(server, home)?;
+        let _ = transport::clear_option(server, tmux::OptionScope::Session, &id, handover::OPTION);
+        let held = handover::parse(&text)?;
+        let now = Timestamp::now().epoch();
+        held.admits(pane, crate::VERSION, now)
+            .then_some((held.view, held.at))
     }
 
     pub(super) fn take(&mut self, request: Request) {

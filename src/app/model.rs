@@ -2,7 +2,10 @@
 //! the chat scrolls. Keys in, an act out; it draws nothing and reads nothing.
 
 use super::fleet::Fleet;
+use super::handover::View;
+use crate::config::is_agent_name;
 use crate::console::input;
+use crate::session_launch::name::is_session_name;
 
 /// The chat rows one wheel notch scrolls.
 pub(crate) const WHEEL_ROWS: usize = 3;
@@ -492,6 +495,50 @@ impl Model {
                 ..Self::new(fleet)
             };
         }
+    }
+
+    /// What a restarting app hands on: the selection (bound to its `id`, the
+    /// uuid its meta records), the tab and the preferences. `None` when nothing
+    /// is selected, the `id` is unreadable or a name fails its grammar.
+    #[must_use]
+    pub(crate) fn view(&self, id: &str) -> Option<View> {
+        let session = self.selected.clone().filter(|name| is_session_name(name))?;
+        Some(View {
+            session,
+            id: (!id.is_empty()).then(|| id.to_owned())?,
+            tab: self.tab,
+            focus: self.focus.clone().filter(|seat| is_agent_name(seat)),
+            sidebar: self.split.sidebar,
+            list: self.split.list,
+            pages: self.pages,
+            rows: self.rows,
+            list_top: self.list_top,
+            body_top: self.body_top,
+        })
+    }
+
+    /// Take over a handed view when `fleet` lists its session: the selection
+    /// and every preference together, nothing else. A row the fleet does not
+    /// list changes nothing; the caller has already proven the incarnation.
+    pub(crate) fn adopt(&mut self, fleet: &Fleet, view: &View) {
+        if !fleet.rows.iter().any(|row| row.name == view.session) {
+            return;
+        }
+        *self = Self {
+            selected: Some(view.session.clone()),
+            tab: view.tab,
+            pages: view.pages,
+            rows: view.rows,
+            list_top: view.list_top,
+            body_top: view.body_top,
+            focus: view.focus.clone(),
+            split: Split {
+                sidebar: view.sidebar,
+                list: view.list,
+            },
+            epoch: self.epoch.wrapping_add(1),
+            ..Self::default()
+        };
     }
 
     /// Start again on `fleet`, as [`Model::new`] does, keeping the sizes the

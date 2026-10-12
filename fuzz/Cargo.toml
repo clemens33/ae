@@ -208,3 +208,10 @@ path = "fuzz_targets/console_command.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "app_view"
+path = "fuzz_targets/app_view.rs"
+test = false
+doc = false
+bench = false

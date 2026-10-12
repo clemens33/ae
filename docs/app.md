@@ -466,6 +466,19 @@ A restart into another installed core ([upgrade.md](upgrade.md#automatic-checks)
 leaves no line: tmux replaces the app in the same pane. A restart tmux refuses ends the
 app with `ae app: could not restart into ae <V> - <why>` above the usual line.
 
+The restart keeps your view. Just before the respawn the old app sets one
+session option, `@ae_app_view`: the selected session (with its uuid), the tab,
+the seat highlight, the dragged sizes and the scroll. The new app, once it
+proves it is the chat window of its session, reads the option and unsets it,
+whatever it held. It uses it only for the same pane, its own version, within
+60 s, and only on a fleet read that lists that session with that uuid. A
+complete read that omits it, or lists another uuid, drops the view; an
+incomplete one that cannot say waits for the next. Anything else, any key or
+click before it applies included, leaves the default view. Settings, peek,
+drafts and marked turns never carry: they hold a restart back. A core without this feature ignores the option, and a leftover
+one is refused and cleared by the next app that reads it or dies with the
+tmux server.
+
 ## Residuals
 
 - Typing in the app counts as activity in the session that hosts it, so that
@@ -485,10 +498,11 @@ app with `ae app: could not restart into ae <V> - <why>` above the usual line.
   pane on screen and `prefix h` respawns it; any other tmux pane closes with
   the process. Every exit ae controls, a panic included, puts the terminal back.
 - A lone `Esc` waits 50 ms to tell itself from an escape sequence.
-- A restart into another core keeps no view state: the selection, tab, scroll
-  and dragged sizes start fresh. A key typed between the last idle check and
-  the respawn is lost. The hint follows the fleet read, so it can be up to
-  5 s behind the link.
+- A restart keeps the view only for an untouched app: a key or a click
+  before it applies, or a session that left or was replaced, shows the
+  default view. A key typed between the last idle check and the respawn is
+  lost. The hint follows the fleet read, so it can be up to 5 s behind the
+  link.
 - `^Z` and `^\` are dropped and never suspend or quit.
 - The panic hook that restores the terminal stays installed after the app
   leaves its screen; it would only restore the same mode again.
