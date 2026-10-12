@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.61] - 2026-10-12
+- Ae quota: one shared view for the tmux dialog and the app tab
+
 ## [v2026.10.60] - 2026-10-12
 - **app**: Copy to the terminal clipboard when ae app runs outside tmux
 - **app**: A held drag keeps the screen it copies from
