@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.60] - 2026-10-12
+- **app**: Copy to the terminal clipboard when ae app runs outside tmux
+- **app**: A held drag keeps the screen it copies from
+- **app**: Attach the nested clipboard rig with a TERM the Linux gate image has
+- **app**: Owed settles a held drag once, with pins for the parked reads
+- **app**: Sidebar orders running rows by newest AI answer to human
+- Publish onto every named instance root and prune only what none references
+
 ## [v2026.10.59] - 2026-10-12
 - Bound requests table: newest closed rows, --limit, footer, clipped excerpts
 - Render decision card options on separate lines
