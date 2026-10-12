@@ -1809,7 +1809,7 @@ impl App {
     /// A frame's debts, settled together: the copy it shipped and the asks
     /// that waited for it. Neither skips the other; whether a frame is due.
     fn owed(&mut self) -> bool {
-        self.shipped() | self.deliver() | self.unpark() | self.deliver()
+        self.shipped() | self.deliver() | self.unpark()
     }
 
     /// Ship the copy the last frame highlighted, now that it is written: the
@@ -6856,6 +6856,116 @@ mod tests {
                 end == 3
             );
         }
+    }
+
+    /// A held drag keeps the newest read of each kind and name, in arrival
+    /// order: a newer one replaces the older, another name or kind stays, and
+    /// a view carries what the one it replaced alone read - of the same id.
+    #[test]
+    fn parked_reads_keep_the_newest_of_each_kind_and_name() {
+        let mut app = turned(&["alpha beta gamma"]);
+        let (_, x, y) = shown(&mut app, "alpha");
+        app.mouse(at(MouseKind::Click, x, y));
+        app.mouse(at(MouseKind::Drag, x + 3, y));
+        let look = |name: &str| Answer::Look {
+            name: name.to_owned(),
+            look: None,
+            zone: None,
+        };
+        let seen = |name: &str, id: &str, seq, needs: bool| {
+            let Answer::View(mut read) = view(name, id, seq, "omega") else {
+                unreachable!("a view");
+            };
+            read.needs = needs.then(|| crate::console::needs::Section { rows: Vec::new() });
+            Answer::View(read)
+        };
+        let answers = vec![
+            Answer::Fleet(read_of(&app, &[])),
+            look("b"),
+            look("a"),
+            look("a"),
+            seen("c", ID, 1, true),
+            seen("c", ID, 2, false),
+            seen("d", ID, 1, true),
+            seen("d", "other", 2, false),
+            seen("e", ID, 1, false),
+            Answer::Fleet(read_of(&app, &[])),
+        ];
+        for answer in answers {
+            app.answer(answer);
+        }
+        let kinds: Vec<String> = app
+            .parked
+            .iter()
+            .map(|answer| match answer {
+                Answer::Fleet(_) => "fleet".to_owned(),
+                Answer::Look { name, .. } => format!("look {name}"),
+                Answer::View(read) => {
+                    format!("{} {} {}", read.name, read.seq, read.needs.is_some())
+                }
+                _ => "other".to_owned(),
+            })
+            .collect();
+        let want = [
+            "look b",
+            "look a",
+            "c 2 true",
+            "d 2 false",
+            "e 1 false",
+            "fleet",
+        ];
+        assert_eq!(kinds, want);
+    }
+
+    /// Parked reads land after a shipped copy without touching its highlight or
+    /// saying the selection was cleared; a drag that went quiet after its
+    /// release, its copy still unframed, is cleared and says so.
+    #[test]
+    fn parked_reads_land_after_a_copy_and_a_quiet_requested_drag_is_cleared() {
+        let mut app = turned(&["alpha beta gamma"]);
+        let (_, x, y) = shown(&mut app, "alpha");
+        app.mouse(at(MouseKind::Click, x, y));
+        app.mouse(at(MouseKind::Drag, x + 3, y));
+        app.answer(view("api", ID, 1, "omega"));
+        app.mouse(at(MouseKind::Release, x + 3, y));
+        let _ = shown(&mut app, "alpha");
+        let _ = app.owed();
+        let said = app.flash.as_ref().map(|(line, _)| line.as_str());
+        assert!(said.is_some_and(|line| line.starts_with("sent 1 line")));
+        assert!(app.select.is_some() && app.parked.is_empty() && app.shown.len() == 1);
+        app.mouse(at(MouseKind::Click, x, y));
+        app.mouse(at(MouseKind::Drag, x + 3, y));
+        app.mouse(at(MouseKind::Release, x + 3, y));
+        app.answer(view("api", ID, 2, "omega"));
+        let quiet = Instant::now().checked_sub(super::LANE_HOLD * 2);
+        app.select.as_mut().expect("a drag").touched = quiet.expect("uptime");
+        let _ = app.owed();
+        assert!(app.select.is_none() && app.parked.is_empty());
+        let said = app.flash.as_ref().map(|(line, _)| line.as_str());
+        assert!(said.is_some_and(|line| line.starts_with("selection cleared: no mouse")));
+    }
+
+    /// One frame can owe a queued ask's delivery and the parked reads it lets
+    /// in together: each makes the frame due, whatever the other did.
+    #[test]
+    fn a_frame_owes_the_asks_and_the_parked_reads_it_lets_in_together() {
+        let mut app = turned(&["alpha beta gamma"]);
+        let (_, x, y) = shown(&mut app, "alpha");
+        app.mouse(at(MouseKind::Click, x, y));
+        app.mouse(at(MouseKind::Drag, x + 3, y));
+        app.answer(view("api", ID, 1, "omega"));
+        let quiet = Instant::now().checked_sub(super::LANE_HOLD * 2);
+        app.select.as_mut().expect("a drag").touched = quiet.expect("uptime");
+        app.queued.push(super::Queued {
+            key: ("api".to_owned(), "id".to_owned()),
+            entry: 0,
+            raw: b"hi".to_vec(),
+            seat: "lead".to_owned(),
+            body: "hi".to_owned(),
+            about: "api".to_owned(),
+        });
+        assert!(app.owed(), "an ask ran and a read landed");
+        assert!(app.queued.is_empty() && app.parked.is_empty());
     }
 
     /// A held drag is never restarted away, however long the keys were quiet:
