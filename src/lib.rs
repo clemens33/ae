@@ -39,6 +39,7 @@ pub mod harness_state;
 pub mod identity;
 pub mod init;
 pub mod install;
+pub mod instance;
 pub mod interrupt;
 pub mod inventory;
 pub mod json;
@@ -1366,13 +1367,7 @@ impl<D: inventory::Discovery> inventory::Discovery for FleetDiscovery<'_, D> {
         server: &inventory::ServerId,
     ) -> std::result::Result<Vec<inventory::DiscoveredSession>, inventory::QueryFailed> {
         match self.inner.enumerate(server) {
-            Err(_)
-                if self.default_is_optional
-                    && server
-                        == &inventory::ServerId::Selected(meta::Selector::Name(
-                            doors::DEFAULT_SERVER_NAME.to_owned(),
-                        )) =>
-            {
+            Err(_) if self.default_is_optional && server == &crate::instance::own_server() => {
                 Ok(Vec::new())
             }
             // A REBOOT, and the listing's version of the resume's proof: this
@@ -3095,8 +3090,7 @@ pub(crate) fn world_read(
     let mut sockets = SocketPaths::asking(transport::observe_socket_path);
     let entitled = sockets.deduplicated(entitled);
     let default_recorded = scan.records.iter().any(|record| {
-        record.server.entitles()
-            == Some(&meta::Selector::Name(doors::DEFAULT_SERVER_NAME.to_owned()))
+        record.server.entitles() == Some(&meta::Selector::Name(crate::instance::own_server_name()))
     });
     let tmux = transport::Tmux;
     let recorded = inventory::RecordedOn::of(&scan.records);

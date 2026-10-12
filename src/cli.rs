@@ -3,7 +3,7 @@
 //! Deliberately hand-rolled. A CLI argument parser is a dependency this crate
 //! does not need — no dependency exists until a measured need does.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::filters::{ListArgs, UnknownFlag};
 use crate::requests::Mode;
@@ -1504,6 +1504,91 @@ impl Request {
             | Self::Context { .. } => None,
         }
     }
+
+    /// The SESSION directory this request's argv names, when it names one —
+    /// the operand a helper link's position or an internal verb's first word
+    /// carries. Exhaustive by construction: a new variant must say which it is.
+    #[must_use]
+    pub fn session_dir(&self) -> Option<&Path> {
+        match self {
+            Self::Say { dir, .. }
+            | Self::Peek { dir, .. }
+            | Self::Agents { dir, .. }
+            | Self::Focus { dir, .. }
+            | Self::CaptureSid { dir, .. }
+            | Self::RegisterSid { dir, .. }
+            | Self::Requests { dir, .. }
+            | Self::State { dir, .. }
+            | Self::Goal { dir, .. }
+            | Self::Memo { dir, .. }
+            | Self::Ask { dir, .. }
+            | Self::Review { dir, .. }
+            | Self::Reply { dir, .. }
+            | Self::Send { dir, .. }
+            | Self::Relay { dir, .. }
+            | Self::Interrupt { dir, .. }
+            | Self::EventsTail { dir, .. }
+            | Self::ArchivePreview { dir, .. }
+            | Self::ArchivePublish { dir, .. }
+            | Self::ArchivePurge { dir, .. }
+            | Self::EndLocalTeardown { dir, .. }
+            | Self::EndNonlocalTeardown { dir, .. }
+            | Self::WatchdogRun { dir, .. }
+            | Self::MetaInit { dir, .. }
+            | Self::Spawn { dir, .. }
+            | Self::Relaunch { dir, .. }
+            | Self::Retire { dir, .. }
+            | Self::Roster { dir, .. }
+            | Self::ManifestRender { dir, .. }
+            | Self::Context { dir, .. }
+            | Self::Monitor { dir, .. }
+            | Self::CompactFreeze { dir, .. }
+            | Self::CompactRevalidate { dir, .. }
+            | Self::CompactArchive { dir, .. }
+            | Self::CompactTeardown { dir, .. }
+            | Self::CompactWait { dir, .. }
+            | Self::CompactCancel { dir, .. }
+            | Self::CompactMemoBaseline { dir, .. }
+            | Self::CompactFindOutstanding { dir, .. }
+            | Self::Quota { dir, .. }
+            | Self::Usage { dir, .. }
+            | Self::Run { dir, .. }
+            | Self::ShimsRender { dir, .. } => Some(dir),
+            Self::AutoReseat { tail } => tail.first().map(Path::new),
+            Self::Version
+            | Self::Help
+            | Self::Next { .. }
+            | Self::Orchestrator { .. }
+            | Self::ConsoleToggle { .. }
+            | Self::Reader { .. }
+            | Self::Launch { .. }
+            | Self::Watchdog { .. }
+            | Self::Telegram { .. }
+            | Self::ArchiveFromPreflight { .. }
+            | Self::TelegramRun { .. }
+            | Self::LaunchPlan { .. }
+            | Self::End { .. }
+            | Self::Stop { .. }
+            | Self::SessionMenu { .. }
+            | Self::Compact { .. }
+            | Self::NetProbe { .. }
+            | Self::Doctor { .. }
+            | Self::Init { .. }
+            | Self::Brief { .. }
+            | Self::Board { .. }
+            | Self::App { .. }
+            | Self::Console { .. }
+            | Self::Rename { .. }
+            | Self::Reseat { .. }
+            | Self::CheckDeps { .. }
+            | Self::Install { .. }
+            | Self::Autoupgrade { .. }
+            | Self::LaunchCandidate(_)
+            | Self::List(_)
+            | Self::MissingOperand(_)
+            | Self::UsageError(_) => None,
+        }
+    }
 }
 
 /// Read the watchdog's knob flags — every one `--flag <number>`, in any order.
@@ -1672,6 +1757,41 @@ mod tests {
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_session_dir_operand_is_named_exactly_where_argv_carries_one() {
+        let named = [
+            argv(&[SEND, "/s/demo", "lead", "hi"]),
+            argv(&[STATE, "/s/demo", "working"]),
+            argv(&[RUN, "/s/demo", "main"]),
+            argv(&[RUN, "--command-snapshot", "claude", "/s/demo", "main"]),
+            argv(&[WATCHDOG_RUN, "/s/demo"]),
+            argv(&[QUOTA, "/s/demo"]),
+            argv(&["_capture-sid", "/s/demo", "main", "%1"]),
+            argv(&["_auto-reseat", "/s/demo", "main", "k"]),
+            argv(&[ARCHIVE_PREVIEW, "/s/demo"]),
+            argv(&[COMPACT_FREEZE, "/s/demo"]),
+        ];
+        for words in named {
+            let request = Request::parse(&words);
+            assert_eq!(
+                request.session_dir(),
+                Some(std::path::Path::new("/s/demo")),
+                "{words:?} -> {request:?}"
+            );
+        }
+        for words in [
+            argv(&["list"]),
+            argv(&["version"]),
+            argv(&[TELEGRAM_RUN, "/u/me/.ae"]),
+            argv(&["_stop", "--supervise", "demo"]),
+            argv(&["_autoupgrade"]),
+            argv(&["demo"]),
+        ] {
+            let request = Request::parse(&words);
+            assert_eq!(request.session_dir(), None, "{words:?} -> {request:?}");
+        }
     }
 
     #[test]

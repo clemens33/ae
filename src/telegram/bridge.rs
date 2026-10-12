@@ -41,9 +41,7 @@ impl Paths {
     #[must_use]
     pub fn under(ae_home: impl Into<PathBuf>) -> Self {
         let ae_home = ae_home.into();
-        let home = ae_home
-            .parent()
-            .map_or_else(|| ae_home.clone(), Path::to_path_buf);
+        let home = crate::instance::user_home(&ae_home).unwrap_or_else(|| ae_home.clone());
         Self {
             config: ae_home.join("config"),
             ae_home,

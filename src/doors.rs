@@ -68,13 +68,11 @@ fn same_directory(left: &Path, right: &Path) -> bool {
     }
 }
 
-/// Where this invocation's state lives — derived, shape-aware.
+/// Where this invocation's state lives — derived by [`crate::instance`].
 #[must_use]
 pub fn state_root(shape: &Shape) -> Option<PathBuf> {
-    if let Some(home) = shape.published_home() {
-        return Some(home.to_path_buf());
-    }
-    ae_home().or_else(|| home().map(|home| home.join(".ae")))
+    let env = crate::instance::Env::read(shape);
+    crate::instance::select(shape, &env).map(|selection| selection.root().to_path_buf())
 }
 
 /// `AE_HOME` as declared, empty folded to unset.
@@ -88,20 +86,25 @@ pub fn ae_home() -> Option<PathBuf> {
     raw.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
-/// The global config this invocation reads.
+/// The global config this invocation reads — derived by [`crate::instance`].
 #[must_use]
 pub fn config_file(shape: &Shape, root: &Path) -> PathBuf {
-    if shape.honours_environment() {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a door: CONFIG_FILE names the global config a checkout run reads — the orchestrator recipe and the bash suites"
-        )]
-        let raw = std::env::var_os("CONFIG_FILE");
-        if let Some(named) = raw.filter(|value| !value.is_empty()) {
-            return PathBuf::from(named);
-        }
+    crate::instance::config_for(shape, &crate::instance::Env::read(shape), root)
+}
+
+/// `CONFIG_FILE` as a checkout declares it, empty folded to unset; a published
+/// core reads no such variable.
+#[must_use]
+pub fn declared_config_file(shape: &Shape) -> Option<PathBuf> {
+    if !shape.honours_environment() {
+        return None;
     }
-    root.join("config")
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: CONFIG_FILE names the global config a checkout run reads — the orchestrator recipe and the bash suites"
+    )]
+    let raw = std::env::var_os("CONFIG_FILE");
+    raw.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 /// The project-local config override at `<cwd>/.ae/config`, when there is one.
@@ -460,9 +463,7 @@ pub fn probe_target(declared: Option<&Declared>) -> Option<ServerId> {
 #[must_use]
 pub fn launch_target(declared: Option<&Declared>) -> Option<ServerId> {
     let Some(declared) = declared else {
-        return Some(ServerId::Selected(crate::meta::Selector::Name(
-            DEFAULT_SERVER_NAME.to_owned(),
-        )));
+        return Some(crate::instance::own_server());
     };
     if declared.kind == "ambiguous" {
         return None;
@@ -484,7 +485,7 @@ pub fn resolve_launch_server(declared: Option<&Declared>) -> (String, String) {
     if let Some(declared) = declared {
         return (declared.kind.clone(), declared.value.clone());
     }
-    ("name".to_owned(), DEFAULT_SERVER_NAME.to_owned())
+    ("name".to_owned(), crate::instance::own_server_name())
 }
 
 /// Turn a server's own `#{socket_path}` answer into the recorded pair.

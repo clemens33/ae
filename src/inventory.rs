@@ -657,7 +657,7 @@ pub fn entitled_servers(ambient: Option<&ServerId>, durable: &[DurableRecord]) -
             }
         }
     }
-    let default = ServerId::Selected(Selector::Name(crate::doors::DEFAULT_SERVER_NAME.to_owned()));
+    let default = crate::instance::own_server();
     if !entitled.contains(&default) {
         entitled.push(default);
     }

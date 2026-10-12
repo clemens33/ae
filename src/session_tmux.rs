@@ -738,7 +738,7 @@ pub(crate) fn publish_launcher(
     config: &Path,
     server: &ServerId,
 ) -> Vec<String> {
-    if let Some(home) = root.parent() {
+    if let Some(home) = crate::instance::user_home(root) {
         let link = home.join(".local").join("bin").join("ae");
         if crate::lifecycle::path_exists(&link) {
             return vec![link.display().to_string()];
@@ -975,6 +975,10 @@ pub(crate) fn interpret_pane_id(succeeded: bool, stdout: &str) -> Option<String>
     let id = stdout.trim();
     (id.starts_with('%') && id.len() > 1).then(|| id.to_owned())
 }
+
+#[cfg(test)]
+#[path = "../tests/it/aeinstance_p1_launcher.rs"]
+mod aeinstance_p1_launcher;
 
 #[cfg(test)]
 mod tests {

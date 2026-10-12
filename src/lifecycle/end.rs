@@ -1745,7 +1745,7 @@ fn purge_conversation_files(
 ) -> io::Result<()> {
     let text = String::from_utf8_lossy(bytes);
     let parsed = meta::Meta::parse(&text);
-    let home = root.parent().map(Path::to_path_buf);
+    let home = crate::instance::user_home(root);
     // Every conversation this session can NAME: each seat's current id and the
     // predecessors it abandoned — same proof, same body, same promise. A
     // predecessor carries the TOOL that owns it, and that tool decides which
@@ -1867,7 +1867,7 @@ fn purge_config_home(
             (path.clone(), true)
         }
         meta::RecordedConfigHome::Missing => {
-            let Some(home) = state_root.parent() else {
+            let Some(home) = crate::instance::user_home(state_root) else {
                 warn_config_home(entry, tool, "legacy HOME is unavailable", err)?;
                 return Ok(None);
             };

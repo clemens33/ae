@@ -289,10 +289,10 @@ fn superseded_suffix(ae_home: &Path, seen: Option<&str>) -> String {
     let Some(seen) = seen else {
         return String::new();
     };
-    let Some(home) = ae_home.parent() else {
+    let Some(home) = crate::instance::user_home(ae_home) else {
         return String::new();
     };
-    let Ok(paths) = crate::install::fixed_paths(home) else {
+    let Ok(paths) = crate::install::fixed_paths(&home) else {
         return String::new();
     };
     let Ok(installed) = crate::install::current_public_version(&paths) else {
@@ -334,7 +334,7 @@ impl DetachedArgv {
 }
 
 fn detached_argv(ae_home: &Path) -> Option<DetachedArgv> {
-    let home = ae_home.parent()?;
+    let home = crate::instance::user_home(ae_home)?;
     let command = home.join(".local").join("bin").join("ae");
     Some(DetachedArgv(vec![
         command.to_string_lossy().into_owned(),
@@ -446,7 +446,7 @@ pub fn run(tail: &[String]) -> u8 {
     };
     let check = &mut claim.check;
 
-    let Some(home) = ae_home.parent() else {
+    let Some(home) = crate::instance::user_home(ae_home) else {
         finish_failure(
             ae_home,
             check,
@@ -456,7 +456,7 @@ pub fn run(tail: &[String]) -> u8 {
         );
         return crate::entry::EXIT_FAILED;
     };
-    let paths = match crate::install::fixed_paths(home) {
+    let paths = match crate::install::fixed_paths(&home) {
         Ok(paths) => paths,
         Err(why) => {
             finish_failure(ae_home, check, CheckResult::FailedInstall, "pointer", &why);
@@ -498,7 +498,7 @@ pub fn run(tail: &[String]) -> u8 {
             return crate::entry::EXIT_FAILED;
         }
     };
-    match crate::upgrade::delegate_automatic(&prepared, home) {
+    match crate::upgrade::delegate_automatic(&prepared, &home) {
         Ok(crate::upgrade::AutomaticInstall::Published(published)) => {
             check.result = CheckResult::Installed;
             let detail = if published.notes.is_empty() {
