@@ -327,23 +327,27 @@ nothing added. It goes to tmux's default paste buffer (`prefix ]` pastes it)
 with `tmux load-buffer`, and also to the terminal clipboard (OSC 52) of the one
 client provably showing the app: the clients whose active pane is the app's,
 the one with the newest input. None or a tie names nobody, and the buffer is
-still loaded. The hint row says what happened for a few seconds, and never
-that the clipboard was reached, because tmux gives no acknowledgement:
+still loaded. Outside tmux there is no buffer and no client: the app writes the
+text to its own terminal as an OSC 52 write, up to 65536 bytes. The hint row
+says what happened for a few seconds, and never that the clipboard was
+reached, because neither tmux nor the terminal gives an acknowledgement:
 
 | Hint row | Meaning |
 |---|---|
 | `copied N lines to the tmux buffer; terminal clipboard if your terminal allows it` | loaded, with a client named |
 | `copied N lines to the tmux buffer only - <why>` | loaded, no client named: `no tmux client is showing this app`, `two clients showing this app were active in the same second`, `the tmux clients did not answer` or `the client name failed its grammar` |
 | `copied N lines (preview only: <why>) to the tmux buffer…` | the text is not the whole body ([Residuals](#residuals)) |
-| `copy failed: …` | tmux refused the load, or the app is not inside tmux (then it says to hold Shift/Option and drag to select) |
+| `copy failed: …` | tmux refused the load |
+| `sent N lines to the terminal clipboard - unconfirmed` | the app is not inside tmux: it wrote the text to its own terminal as an OSC 52 write, which nothing acknowledges |
+| `not copied: N bytes is over the 65536-byte clipboard limit` | outside tmux only: the text is refused whole, never cut |
 | `no turn marked - click one or press [ ]`, `nothing to copy: that turn has no text`, `that turn changed or left the lane - mark it again` | nothing was copied; the last one also clears the mark |
 
-The terminal must take OSC 52 and let tmux use it. iTerm2: Settings > General >
+The terminal must take OSC 52, and inside tmux let tmux use it. iTerm2: Settings > General >
 Selection > "Applications in terminal may access clipboard". Terminal.app has
 no OSC 52. Alacritty with `TERM=alacritty` needs
 `set -as terminal-features ',alacritty*:clipboard'` in tmux (with `TERM=xterm*`
-tmux's default `terminal-features` already carry the clipboard). The paste
-buffer works regardless.
+tmux's default `terminal-features` already carry the clipboard). Inside tmux the
+paste buffer works regardless; outside tmux the OSC 52 write is all there is.
 
 ## Selecting text
 
@@ -351,8 +355,10 @@ Drag over drawn text with the left button, in the chat, the peek panel, the
 session list or the tab body: the cells light up while you drag (reverse video,
 so text that is already reversed shows its inverse), and letting go copies
 exactly the lit text the way `y` does. The hint row answers with the same
-`copied N lines to the tmux buffer; …` words; in the peek panel, which covers
-that row, the answer replaces `Esc close` on its last row for a few seconds.
+`copied N lines to the tmux buffer; …` words (outside tmux,
+`sent N lines to the terminal clipboard - unconfirmed`); in the peek panel,
+which covers that row, the answer replaces `Esc close` on its last row for a
+few seconds.
 
 The text is the drawn cells, row by row, each row cut at its last character
 and the rows joined by a newline (an empty row stays, nothing follows the last

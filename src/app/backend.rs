@@ -38,6 +38,36 @@ pub(crate) fn clean(symbol: &str) -> &str {
     }
 }
 
+/// `bytes` as RFC 4648 base64, padded.
+pub(crate) fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for group in bytes.chunks(3) {
+        let word = (group.iter()).fold(0_u32, |word, byte| (word << 8) | u32::from(*byte));
+        let word = word << (8 * (3 - group.len()));
+        for place in 0..=group.len() {
+            let digit = usize::try_from((word >> (18 - 6 * place)) & 63).unwrap_or(0);
+            out.push(char::from(DIGITS[digit]));
+        }
+        out.extend(std::iter::repeat_n('=', 3 - group.len()));
+    }
+    out
+}
+
+impl<W: Write> Ansi<W> {
+    /// Set the terminal's clipboard to `text` with an OSC 52 write, `ESC ] 52 ;
+    /// c ; <base64> BEL`: the data is base64, so no byte of `text` reaches the
+    /// terminal as a control. Blank text writes nothing, because an empty
+    /// OSC 52 payload clears the clipboard instead.
+    pub(crate) fn clipboard(&mut self, text: &str) -> io::Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        write!(self.out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+        self.out.flush()
+    }
+}
+
 /// The SGR parameters that set `cell`'s whole look from a reset.
 fn sgr(cell: &Cell) -> String {
     let mut params = vec!["0".to_owned()];
@@ -254,6 +284,35 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    /// Oracle: RFC 4648 section 10's test vectors, and `ESC ] 52 ; c ; <data> BEL`
+    /// as xterm's OSC 52 sets the clipboard selection `c`.
+    #[test]
+    fn the_clipboard_is_an_osc_52_selection_of_rfc_4648_base64() {
+        for (plain, coded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(super::base64(plain.as_bytes()), coded, "{plain:?}");
+            let sent = written(|ansi| ansi.clipboard(plain));
+            let wanted = format!("\x1b]52;c;{coded}\x07");
+            assert_eq!(
+                sent,
+                if plain.is_empty() { "" } else { &wanted },
+                "{plain:?}"
+            );
+        }
+        // `base64 <<<` of these bytes: controls and non-ASCII travel only as data.
+        assert_eq!(
+            written(|ansi| ansi.clipboard("a\x1b\x07\n\u{4f60}")),
+            "\x1b]52;c;YRsHCuS9oA==\x07"
+        );
     }
 
     /// Counts the flushes that reach it.

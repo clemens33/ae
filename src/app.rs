@@ -86,6 +86,9 @@ const NOTICES: usize = 5;
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 /// How long a refused paste or an outcome word stays on the hint row.
 const FLASH_WINDOW: Duration = Duration::from_secs(5);
+/// The most UTF-8 bytes one copy writes to the terminal clipboard outside tmux;
+/// more is refused, never cut.
+const CLIP_MAX: usize = 65536;
 /// The most replaced layouts kept for a click made on one of them.
 const HISTORY: usize = 8;
 /// The most navigation keys held for the first fleet read; the oldest go first.
@@ -387,6 +390,8 @@ struct App {
     early: Vec<(Key, Instant)>,
     /// The drop of an early key was told on the hint row.
     early_named: bool,
+    /// A copy outside tmux, for the loop to write to the terminal.
+    clip: Option<String>,
 }
 
 impl App {
@@ -463,6 +468,7 @@ impl App {
             restored: false,
             early: Vec::new(),
             early_named: false,
+            clip: None,
         }
     }
 
@@ -1301,10 +1307,18 @@ impl App {
 
     /// Send `text` to the tmux buffer and to the terminal clipboard of the
     /// client showing this app; the words say what reached where. `count` is
-    /// how the text is named.
-    fn ship(&self, text: &str, count: &str) -> String {
+    /// how the text is named. Outside tmux there is no client to name: the
+    /// loop writes the text to the terminal itself.
+    fn ship(&mut self, text: &str, count: &str) -> String {
         let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
-            return "copy failed: ae app is not running inside tmux - hold Shift/Option and drag to select".to_owned();
+            if text.len() > CLIP_MAX {
+                let size = text.len();
+                return format!(
+                    "not copied: {size} bytes is over the {CLIP_MAX}-byte clipboard limit"
+                );
+            }
+            self.clip = Some(text.to_owned());
+            return format!("sent {count} to the terminal clipboard - unconfirmed");
         };
         let viewer = match transport::observe_clients(server) {
             None => Err("the tmux clients did not answer".to_owned()),
@@ -1369,8 +1383,7 @@ impl App {
     fn restart_due(&self, now: Instant) -> Option<(String, toggle::Restart)> {
         let upgrade = self.upgrade.as_ref()?;
         let restart = upgrade.restart.as_ref().ok()?;
-        self.blocker(now)
-            .is_none()
+        (self.blocker(now).is_none() && self.clip.is_none())
             .then(|| (upgrade.version.clone(), restart.clone()))
     }
 
@@ -2387,7 +2400,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         // A release's copy ships only once the frame showing it is out. An
         // ask waits for the frame that names its target; its outcome needs
         // another.
-        dirty = app.owed();
+        dirty = settle(&mut app, terminal.backend_mut())?;
         // Held keys replay as soon as the frame above has produced more.
         let wait = if app.deferred.is_empty() {
             TICK
@@ -2402,7 +2415,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             };
         }
         let Some(redraw) = drain(&mut app, &mut keys, &wakes, &mut first) else {
-            break 0;
+            break clipped(&mut app, terminal.backend_mut()).map(|()| 0)?;
         };
         dirty |= redraw | app.lapse(Instant::now());
         app.focus();
@@ -2457,6 +2470,23 @@ pub fn exit_hint(in_tmux: bool) -> &'static str {
         "ae app closed - run: ae app (in a chat window, prefix h reopens it)"
     } else {
         "ae app closed - run: ae app"
+    }
+}
+
+/// What a frame owes (`App::owed`), then the copy staged for the terminal
+/// outside tmux: written once the frame is out, so no escape lands inside it.
+fn settle<W: Write>(app: &mut App, backend: &mut backend::Ansi<W>) -> std::io::Result<bool> {
+    let dirty = app.owed();
+    clipped(app, backend)?;
+    Ok(dirty)
+}
+
+/// The copy staged for the terminal, written. A quit writes it too: a copy
+/// accepted in the batch that quit is not lost with the app.
+fn clipped<W: Write>(app: &mut App, backend: &mut backend::Ansi<W>) -> std::io::Result<()> {
+    match app.clip.take() {
+        Some(text) => backend.clipboard(&text),
+        None => Ok(()),
     }
 }
 
@@ -6087,8 +6117,9 @@ mod tests {
         assert_eq!(empty.model.turn(), None);
     }
 
-    /// Every refusal before a tmux call is a plain hint; only the missing
-    /// tmux says `copy failed`. The stale mark is cleared, the others kept.
+    /// Every refusal before a copy is a plain hint; outside tmux the copy goes
+    /// to the terminal and is not claimed to have arrived. The stale mark is
+    /// cleared, the others kept.
     #[test]
     fn a_copy_that_cannot_reach_tmux_says_why_on_the_hint_row() {
         let mut app = turned(&["one", ""]);
@@ -6109,8 +6140,42 @@ mod tests {
         app.model.set_turn(Some(key_of(&app, 0)));
         assert_eq!(
             hint(&mut app),
-            "copy failed: ae app is not running inside tmux - hold Shift/Option and drag to select"
+            "sent 1 line to the terminal clipboard - unconfirmed"
         );
+        assert_eq!(app.clip.as_deref(), Some("one"), "staged for the terminal");
+    }
+
+    /// The terminal clipboard takes 65536 UTF-8 bytes; one more is refused by
+    /// name before anything is staged, and nothing is ever cut.
+    #[test]
+    fn the_terminal_clipboard_takes_65536_bytes_and_refuses_one_more() {
+        let mut app = app(Some("api"));
+        let fits = format!("{}a", "\u{4f60}".repeat(21845));
+        assert_eq!(fits.len(), 65536);
+        assert!(app.ship(&fits, "1 line").starts_with("sent 1 line "));
+        assert_eq!(app.clip.as_deref(), Some(fits.as_str()));
+        app.clip = None;
+        let said = app.ship(&format!("{fits}b"), "1 line");
+        assert_eq!(
+            said,
+            "not copied: 65537 bytes is over the 65536-byte clipboard limit"
+        );
+        assert_eq!(app.clip, None);
+    }
+
+    /// Inside tmux the copy is tmux's, whatever it says: the app writes no
+    /// escape of its own there, for tmux takes or drops one by `set-clipboard`.
+    #[test]
+    fn inside_tmux_a_copy_stages_nothing_for_the_terminal() {
+        let mut app = app(Some("api"));
+        let socket = std::path::PathBuf::from("/nonexistent-appclip/sock");
+        app.server = Some(crate::inventory::ServerId::Selected(
+            crate::meta::Selector::Socket(socket),
+        ));
+        app.pane = Some("%1".to_owned());
+        let said = app.ship("alpha", "1 line");
+        assert!(said.starts_with("copy failed: "), "{said}");
+        assert_eq!(app.clip, None);
     }
 
     /// The fingerprints are built once for each lane: a frame, a key and a
@@ -6688,7 +6753,7 @@ mod tests {
         assert_eq!(staged(&app), Some("beta"), "the very cells painted");
         assert!(app.ship_staged());
         let said = app.flash.as_ref().map(|(line, _)| line.as_str());
-        assert!(said.is_some_and(|line| line.starts_with("copy failed")));
+        assert!(said.is_some_and(|line| line.starts_with("sent 1 line to the terminal")));
         assert!(!app.ship_staged(), "a copy ships once");
         let (buf, ..) = shown(&mut app, "alpha");
         assert_eq!(lit(&buf, y).len(), 4, "the highlight stays");

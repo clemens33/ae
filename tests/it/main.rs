@@ -6,6 +6,7 @@
 
 mod aeinstance_p1_spec;
 mod app_cli_spec;
+mod app_clip_spec;
 mod app_composer_spec;
 mod app_copy_spec;
 mod app_live;
