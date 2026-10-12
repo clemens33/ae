@@ -27,12 +27,12 @@ recorded config first.
 
 ## Layout
 
-- **Sidebar** (44 cells from 140 wide, 34 from 90x20): the session count, what
-  needs you (`Nothing needs you.`, `<name> needs you` for one, `<N> need you`
-  for several, then `· above` / `· below` — with a count when several — for
-  needy rows outside the list), then one row per session — its mark, its
-  number, its name (`this window` on home), the seat counts on the right, and
-  under it the goal or the question that needs you. Running sessions come in
+- **Sidebar** (44 cells from 140 wide, 34 from 90x20): a summary row of icon
+  counts — sessions `▣`, agents `◈`, working `●`, needing you `⚠` (`+?` where a
+  running session's seats are unknown) — then one row per session: its mark,
+  its number, its name (`this window` on home), and under it the seat counts,
+  then the question that needs you or `seat down`. `↑` / `↓` beside the `!` key
+  show needy rows outside the list. Running sessions come in
   this order: the orchestrator, then the sessions your `[workspace]
   fleet_order` names (the pins), then the rest by your latest activity, newest
   first, and a session with none known after them in creation order; stopped
@@ -162,7 +162,7 @@ Browsing:
 No single printable key quits or moves your client: an armed `q` or `o` is
 disarmed by any other key or when its 2 seconds pass, so typing a word
 while browsing leaves the app up and no key reaches another pane. The keys
-row is the mode word (`browse`, `write`, `held`, `settings` or `peek`), at most one
+row is the word `settings` in Settings, `peek` in the peek panel, at most one
 hint where its key works (`? keys` while browsing, which lists every key;
 `Esc close` in Settings or the peek panel; none while writing or held, which take every key),
 and at its right end `ae <version>` and the gear (the peek panel draws no gear). Narrowing drops the version

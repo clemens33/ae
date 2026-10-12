@@ -408,7 +408,7 @@ impl InstalledRig {
 fn installed_app_idle_restarts_into_newer_link_core() {
     let rig = InstalledRig::new("upn", true);
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("Sessions"));
+    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
     rig.repoint_link("2026.10.99");
 
     let restarted = rig.wait_restarted(WAIT, "idle app restarts into newer link core");
@@ -433,7 +433,7 @@ fn installed_app_idle_restarts_into_older_link_core() {
     let rig = InstalledRig::new("upo", true);
     // Q-A rollback ruling: older link version also restarts
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("Sessions"));
+    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
     rig.repoint_link("2026.10.40");
 
     let restarted = rig.wait_restarted(WAIT, "idle app restarts into older link core");
@@ -454,12 +454,12 @@ fn installed_app_idle_restarts_into_older_link_core() {
 fn installed_app_busy_with_draft_never_restarts_and_shows_busy_hint() {
     let rig = InstalledRig::new("upb", true);
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("Sessions 1"));
+    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
 
     // Enter compose mode (Enter or i per model.rs) then type text into composer
     rig.tmux(&["send-keys", "-t", &pane, "i"]);
     rig.wait(&pane, WAIT, "write mode acquired", |s| {
-        s.lines().any(|l| l.trim_start().starts_with("write"))
+        crate::app_mode::writing(s)
     });
     rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "draft content"]);
     rig.wait(&pane, WAIT, "draft content entered", |s| {
@@ -515,7 +515,7 @@ fn standalone_app_in_unstamped_pane_hints_only() {
         "remain-on-exit",
         "on",
     ]);
-    rig.wait(&unstamped, WAIT, "first paint", |s| s.contains("Sessions"));
+    rig.wait(&unstamped, WAIT, "first paint", |s| s.contains("▣ 1 "));
     rig.repoint_link("2026.10.99");
 
     rig.wait(
@@ -536,7 +536,7 @@ fn standalone_app_in_unstamped_pane_hints_only() {
 fn checkout_shape_never_restarts_and_shows_no_hint() {
     let rig = InstalledRig::new("upc", true);
     let pane = rig.open_checkout_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("Sessions"));
+    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
     rig.repoint_link("2026.10.99");
 
     // Hold >= 2*REFRESH (12s) before asserting checkout never hints or restarts
@@ -553,7 +553,7 @@ fn checkout_shape_never_restarts_and_shows_no_hint() {
 fn auto_upgrade_disabled_hints_only() {
     let rig = InstalledRig::new("upd", false); // auto_upgrade = off
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("Sessions"));
+    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
     rig.repoint_link("2026.10.99");
 
     rig.wait(

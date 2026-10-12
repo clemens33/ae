@@ -1,49 +1,58 @@
-//! Which mode an `ae app` capture shows: its last physical row begins with the
-//! mode word, and nothing else on the screen can say it.
+//! Writing has only the version/gear footer; a held composer is distinguished
+//! by its fixed address row, never by arbitrary chat text.
 
-/// Whether `screen` shows the app writing: the final physical row of the
-/// capture begins, past its margin, with the mode word `write`. A browse,
-/// held or settings row begins with its own word, a blank row says nothing,
-/// and a `write` further up the screen is chat text, not the mode.
+/// The footer has no mode/hint while writing; a held address is four rows
+/// above it, under the composer rule. Blank, browse and settings reject.
 pub fn writing(screen: &str) -> bool {
-    screen
-        .lines()
-        .next_back()
-        .is_some_and(|row| row.trim_start().starts_with("write"))
+    let mut rows = screen.lines().rev();
+    let footer = rows.next().unwrap_or_default();
+    let address = rows.nth(3).unwrap_or_default();
+    let rule = rows.next().unwrap_or_default();
+    let held = address.contains("not writing:") && rule.trim_end().ends_with("────");
+    !held && footer.trim_start().starts_with("ae ") && footer.trim_end().ends_with(['⚙', '*'])
 }
 
 /// A frame whose final row is `keys`.
 fn frame(keys: &str) -> String {
-    format!("to api › lead\n\nEnter writes\n\n{keys}")
+    format!("────\nto api › lead\n\n\n\n{keys}")
 }
 
 #[test]
-fn the_write_word_on_the_final_row_is_writing_with_or_without_a_note() {
+fn the_version_only_footer_is_writing_with_or_without_a_note() {
     for keys in [
-        "  write      ae 2026.10.45 ⚙",
-        "  write      ae 2026.10.45 *",
+        "             ae 2026.10.45 ⚙",
+        "             ae 2026.10.45 *",
     ] {
         assert!(writing(&frame(keys)), "{keys}");
-        let noted = format!("to api › lead\nx\nq again to quit\n\n{keys}");
+        let noted =
+            format!("not writing: chat text\n────\nto api › lead\nx\nq again to quit\n\n{keys}");
         assert!(writing(&noted), "a note on the note row: {keys}");
+        let draft =
+            format!("────\nto api › lead\nnot writing: draft text\nlast draft row\n\n\n{keys}");
+        assert!(writing(&draft), "draft prose is not the held address");
     }
 }
 
 #[test]
 fn the_other_modes_and_a_blank_final_row_are_not_writing() {
     for keys in [
-        "  browse   ? keys      ae 2026.10.45 ⚙",
-        "  held      ae 2026.10.45 ⚙",
+        "     ? keys      ae 2026.10.45 ⚙",
         "  settings   Esc close      ae 2026.10.45 ⚙",
         "",
     ] {
         assert!(!writing(&frame(keys)), "{keys:?}");
     }
+    for gear in ["⚙", "*"] {
+        let held =
+            format!("────\nnot writing: refused · Esc browses\n\n\n\n  ae 2026.10.45 {gear}");
+        assert!(!writing(&held), "a blank-left held footer is not writable");
+    }
 }
 
 #[test]
-fn a_write_word_above_the_final_row_is_chat_text_not_the_mode() {
-    let screen = "  write notes\nfine\n  browse   ? keys\n";
+fn a_version_above_the_final_row_is_chat_text_not_the_mode() {
+    let screen = "  ae chat text\nfine\n     ? keys\n";
     assert!(!writing(screen));
     assert!(!writing(""));
+    assert!(!writing("ae chat text"));
 }

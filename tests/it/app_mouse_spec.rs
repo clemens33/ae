@@ -481,7 +481,7 @@ fn guard_literal_arrow_moves_selection() {
     let rig = Rig::new("amguard", 0, &["amstop"]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("Sessions 2") && screen.contains("amstop")
+        screen.contains("▣ 2 ") && screen.contains("amstop")
     });
     rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "\x1b[B"]);
     rig.wait(&pane, WAIT, "Down selects the stopped row", |screen| {
@@ -501,7 +501,7 @@ fn click_selects_session_row() {
     let pane = rig.open_app();
     let home = rig.name.clone();
     let screen = rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("Sessions 2") && screen.contains("amstop")
+        screen.contains("▣ 2 ") && screen.contains("amstop")
     });
     let (col, row) = sidebar_cell_of(&screen, "amstop").expect("the stopped row");
     rig.click(&pane, col, row);
@@ -521,7 +521,7 @@ fn click_tab_label_switches_tabs() {
     let rig = Rig::new("amtab", 0, &[]);
     let pane = rig.open_app();
     let screen = rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("Sessions 1") && screen.contains("Overview")
+        screen.contains("▣ 1 ") && screen.contains("Overview")
     });
     let (col, row) = cell_of(&screen, "Agents").expect("the Agents label");
     rig.click(&pane, col, row);
@@ -570,7 +570,7 @@ fn click_blank_row_noops() {
     let pane = rig.open_app();
     let home = rig.name.clone();
     let screen = rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("Sessions 2") && screen.contains("Enter writes")
+        screen.contains("▣ 2 ") && screen.contains("Enter writes")
     });
     let (col, row) = sidebar_cell_of(&screen, &home).expect("the home row");
     let rows: Vec<&str> = screen.lines().collect();
@@ -601,7 +601,7 @@ fn click_more_row_noops() {
     let rig = Rig::new("ammore", 0, &stopped);
     let pane = rig.open_app();
     let screen = rig.wait(&pane, WAIT, "the windowed list", |screen| {
-        screen.contains("Sessions 13") && screen.contains("more")
+        screen.contains("▣ 13 ") && screen.contains("more")
     });
     let (col, row) = sidebar_cell_of(&screen, "more").expect("the more row");
     rig.click(&pane, col, row);
@@ -654,7 +654,7 @@ fn wheel_over_sidebar_noops() {
     let pane = rig.open_app();
     let home = rig.name.clone();
     let screen = rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("Sessions 2") && screen.contains("scrollprobe-newest")
+        screen.contains("▣ 2 ") && screen.contains("scrollprobe-newest")
     });
     let (col, row) = sidebar_cell_of(&screen, &home).expect("the home row");
     for _ in 0..3 {
@@ -681,7 +681,7 @@ fn narrow_clicks_hit_drawn_only() {
     let home = rig.name.clone();
     let address = format!("to {home}");
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("Sessions 1")
+        screen.contains("▣ 1 ")
     });
     rig.tmux(&["resize-window", "-t", &pane, "-x", "80", "-y", "24"]);
     let screen = rig.wait(&pane, WAIT, "the sidebar goes", |screen| {
@@ -699,7 +699,7 @@ fn tiny_clicks_noop() {
     let rig = Rig::new("amtiny", 0, &["amstop"]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("Sessions 2")
+        screen.contains("▣ 2 ")
     });
     rig.tmux(&["resize-window", "-t", &pane, "-x", "30", "-y", "10"]);
     rig.wait(&pane, WAIT, "the needs-size note", |screen| {
@@ -710,7 +710,7 @@ fn tiny_clicks_noop() {
     std::thread::sleep(SETTLE);
     rig.tmux(&["resize-window", "-t", &pane, "-x", "160", "-y", "45"]);
     rig.wait(&pane, WAIT, "home still selected", |screen| {
-        screen.contains("Sessions 2") && screen.contains("Enter writes")
+        screen.contains("▣ 2 ") && screen.contains("Enter writes")
     });
 }
 
@@ -720,7 +720,7 @@ fn live_app_enables_mouse_mode() {
     let rig = Rig::new("amflag", 0, &[]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("Sessions 1")
+        screen.contains("▣ 1 ")
     });
     let flag = rig.tmux(&["display-message", "-p", "-t", &pane, "#{mouse_any_flag}"]);
     assert_eq!(flag.trim(), "1", "mouse mode is on in the app pane");
@@ -777,7 +777,7 @@ fn live_app_mouse_mode_set_exact() {
         ),
     );
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("Sessions 1")
+        screen.contains("▣ 1 ")
     });
     for (format, want) in [
         ("#{mouse_any_flag}", "1"),
@@ -791,7 +791,7 @@ fn live_app_mouse_mode_set_exact() {
     }
     rig.tmux(&["send-keys", "-t", &pane, "q", "q"]);
     rig.wait(&pane, WAIT, "the app quit", |screen| {
-        !screen.contains("Sessions 1")
+        !screen.contains("▣ 1 ")
     });
     for format in ["#{mouse_any_flag}", "#{mouse_sgr_flag}"] {
         let got = rig.tmux(&["display-message", "-p", "-t", &pane, format]);
@@ -832,7 +832,7 @@ fn click_composer_on_stopped_row_noops() {
     let rig = Rig::new("amforeign", 0, &["amstop"]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("Sessions 2")
+        screen.contains("▣ 2 ")
     });
     rig.tmux(&["send-keys", "-t", &pane, "2"]);
     let screen = rig.wait(
@@ -898,7 +898,7 @@ fn click_tab_while_writing_returns_with_draft() {
     let rig = Rig::new("amtabw", 0, &[]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("Sessions 1")
+        screen.contains("▣ 1 ")
     });
     rig.tmux(&["send-keys", "-t", &pane, "i"]);
     rig.wait(&pane, WAIT, "writing starts", writing);

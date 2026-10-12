@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use ae::app::draw::{Composer, Screen, draw};
-use ae::app::fleet::{Counts, Facts, Fleet, Line2, Row, attention, rows};
+use ae::app::fleet::{Counts, Facts, Fleet, Line2, Row, rows};
 use ae::app::model::{Act, Key as AppKey, Model, Tab, browse_keys};
 use ae::app::overview::{self, Open};
 use ae::attention::Reason;
@@ -490,51 +490,6 @@ fn needy(name: &str, index: usize, mark: Mark) -> Row {
         line2: Line2::NoGoal,
         home: false,
     }
-}
-
-/// R1: one needy session keeps its name; several use only the count at any width.
-#[test]
-fn app_attention_line_names_the_needy() {
-    let fleet = Fleet {
-        rows: vec![calm("api", 1), needy("infra", 2, Mark::NeedsYou)],
-        home: Some("api".to_owned()),
-    };
-    assert_eq!(attention(&fleet, 0..2, 44), "infra needs you");
-    let quiet = Fleet {
-        rows: vec![calm("api", 1), calm("docs", 2)],
-        home: Some("api".to_owned()),
-    };
-    assert_eq!(attention(&quiet, 0..2, 44), "Nothing needs you.");
-    let fleet = Fleet {
-        rows: vec![
-            calm("api", 1),
-            needy("infra", 2, Mark::NeedsYou),
-            needy("billing", 3, Mark::NeedsYou),
-            needy("ops", 4, Mark::Dead),
-        ],
-        home: Some("api".to_owned()),
-    };
-    let full = attention(&fleet, 0..4, 44);
-    assert_eq!(full, "3 need you");
-    let compact = attention(&fleet, 0..4, 20);
-    assert_eq!(compact, "3 need you");
-}
-
-/// R1: an offscreen lone session has a plain-word location suffix.
-#[test]
-fn app_attention_line_marks_scrolled_out_needy() {
-    let fleet = Fleet {
-        rows: vec![
-            calm("api", 1),
-            calm("docs", 2),
-            needy("infra", 3, Mark::NeedsYou),
-        ],
-        home: Some("api".to_owned()),
-    };
-    let below = attention(&fleet, 0..2, 44);
-    assert_eq!(below, "infra needs you · below");
-    let above = attention(&fleet, 2..3, 44);
-    assert_eq!(above, "infra needs you");
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,17 +1154,13 @@ fn app_draw_home_160x43() {
         assert_eq!(cell_at(&buf, 44, y).fg, hex(palette.border));
     }
     assert_ne!(cell_at(&buf, 44, 42).symbol(), "│", "keys own the row");
-    // Header, attention, and the `!` that reaches the needy.
-    assert!(row_text(&buf, 1).contains("Sessions 3"), "counts sessions");
+    // Fleet summary and the `!` that reaches the needy.
+    assert!(row_text(&buf, 1).contains("▣ 3 "), "counts sessions");
     assert_eq!(cell_at(&buf, 2, 1).fg, hex(palette.text));
-    assert!(
-        row_text(&buf, 3).starts_with("  infra needs you"),
-        "names it"
-    );
-    assert_eq!(cell_at(&buf, 2, 3).fg, hex(palette.needs_you));
+    assert!(side_text(&buf, 3, 40).is_empty(), "attention prose removed");
     assert_eq!(cell_at(&buf, 41, 3).symbol(), "!");
     assert!(cell_at(&buf, 41, 3).modifier.contains(Modifier::BOLD));
-    // The selected home row: title name, dim window tag, right counts.
+    // The selected home row: title name, dim window tag, counts below.
     assert_eq!(cell_at(&buf, 2, 5).symbol(), Mark::Working.glyph(true));
     assert_eq!(cell_at(&buf, 2, 5).fg, hex(palette.working));
     assert_eq!(cell_at(&buf, 6, 5).symbol(), "a");
@@ -1217,8 +1168,8 @@ fn app_draw_home_160x43() {
     assert_eq!(cell_at(&buf, 8, 5).symbol(), "i");
     assert_eq!(cell_at(&buf, 6, 5).fg, hex(palette.title));
     assert!(row_text(&buf, 5).contains("this window"));
-    assert!(side_text(&buf, 5, 44).ends_with("●3 ◔1 ✓2"), "right counts");
-    assert!(row_text(&buf, 6).contains("Ship the v2 auth endpoints"));
+    assert!(side_text(&buf, 6, 44).ends_with("●3 ◔1 ✓2"), "counts below");
+    assert!(!row_text(&buf, 6).contains("Ship the v2 auth endpoints"));
     assert_eq!(cell_at(&buf, 2, 8).symbol(), Mark::Working.glyph(true));
     assert!(
         cell_at(&buf, 6, 8).modifier.contains(Modifier::BOLD),
@@ -1300,8 +1251,8 @@ fn app_draw_home_160x43() {
     assert!(chat_text(&buf, 41, 44).trim_start().is_empty());
     let keys = row_text(&buf, 42);
     assert!(
-        keys.trim_start().starts_with("browse"),
-        "BROWSE word: {keys:?}"
+        keys.trim_start().starts_with("? keys"),
+        "browse hint without a mode word: {keys:?}"
     );
     assert!(keys.contains("? keys"), "the one hint: {keys:?}");
     for gone in [
@@ -1501,7 +1452,7 @@ fn app_draw_narrow_100x28() {
     }
     assert_ne!(cell_at(&buf, 34, 27).symbol(), "│", "keys own the row");
     assert!(
-        row_text(&buf, 27).trim_start().starts_with("browse"),
+        row_text(&buf, 27).trim_start().starts_with("? keys"),
         "keys span the last row"
     );
     let head = row_text(&buf, 1);
@@ -1740,7 +1691,7 @@ fn app_draw_next_need_scrolls_into_view() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 160, 30));
         draw(&screen, &mut buf);
         assert!(!list_holds(&buf, "s7"), "below the fold at first");
-        assert!(row_text(&buf, 3).contains("s7"), "but always named");
+        assert_eq!(side_text(&buf, 3, 44).trim(), "↓ !", "off-screen cue");
     }
     let _ = model.key(AppKey::NextNeed, &fleet, true, true);
     assert_eq!(model.selected(), Some("s7"));

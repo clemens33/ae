@@ -129,7 +129,7 @@ fn undragged_tall_frames_show_more_of_twenty_four_sessions() {
             screen
                 .lines()
                 .last()
-                .is_some_and(|row| row.contains("browse"))
+                .is_some_and(|row| row.contains("? keys"))
         );
     }
 }
@@ -152,7 +152,7 @@ fn minimum_frame_keeps_the_capped_list_and_chat_usable() {
         screen
             .lines()
             .last()
-            .is_some_and(|row| row.contains("browse"))
+            .is_some_and(|row| row.contains("? keys"))
     );
 }
 

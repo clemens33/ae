@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ae::app::draw::{Composer, Screen, draw};
-use ae::app::fleet::{Counts, Fleet, Line2, Row, attention};
+use ae::app::fleet::{Counts, Fleet, Line2, Row};
 use ae::app::model::Model;
 use ae::app::overview::Overview;
 use ae::console::lane::Lane;
@@ -41,49 +41,6 @@ fn fleet(needy: &[usize]) -> Fleet {
             .collect(),
         home: None,
     }
-}
-
-#[test]
-fn attention_quiet_keeps_the_sentence() {
-    assert_eq!(attention(&fleet(&[]), 2..7, 1), "Nothing needs you.");
-}
-
-#[test]
-fn attention_one_visible_names_it_without_a_mark() {
-    assert_eq!(attention(&fleet(&[2]), 2..3, 44), "session-2 needs you");
-}
-
-#[test]
-fn attention_one_above_uses_a_plain_location() {
-    assert_eq!(
-        attention(&fleet(&[2]), 3..7, 44),
-        "session-2 needs you · above"
-    );
-}
-
-#[test]
-fn attention_one_at_the_exclusive_end_is_below() {
-    assert_eq!(
-        attention(&fleet(&[2]), 0..2, 44),
-        "session-2 needs you · below"
-    );
-}
-
-#[test]
-fn attention_many_counts_only_needy_rows_above_and_below() {
-    let fleet = fleet(&[0, 2, 3, 5, 7, 8, 9]);
-    for (visible, expected) in [
-        (0..10, "7 need you"),
-        (0..7, "7 need you · 3 below"),
-        (2..10, "7 need you · 1 above"),
-        (2..7, "7 need you · 1 above · 3 below"),
-        (0..0, "7 need you · 7 below"),
-    ] {
-        for width in [1, 20, 44, 160] {
-            assert_eq!(attention(&fleet, visible.clone(), width), expected);
-        }
-    }
-    assert_eq!(attention(&self::fleet(&[2, 3]), 2..4, 44), "2 need you");
 }
 
 fn painted(fleet: &Fleet, look: &Look) -> Buffer {
@@ -119,19 +76,27 @@ fn attention_draw_keeps_session_count_and_next_need_cell_in_both_looks() {
             &fleet(&[0, 1, 2, 3, 4, 5, 6]),
             &Look::read(mode, "", mode, "off"),
         );
-        assert!(row(&buf, 1).starts_with("  Sessions 10"));
-        assert!(row(&buf, 3).starts_with("  7 need you  "));
+        let glyph = if mode == "on" { "▣" } else { "#" };
+        assert!(row(&buf, 1).starts_with(&format!("  {glyph} 10 ")));
+        assert_eq!(row(&buf, 3).chars().take(40).collect::<String>().trim(), "");
         assert_eq!(buf[(40, 3)].symbol(), " ", "blank before the key");
         assert_eq!(buf[(41, 3)].symbol(), "!");
     }
 }
 
 #[test]
-fn attention_draw_still_clips_a_single_long_name_before_next_need() {
+fn attention_draw_hides_a_single_long_name_beside_next_need() {
     let mut fleet = fleet(&[0]);
     fleet.rows[0].name = "n".repeat(80);
     let buf = painted(&fleet, &Look::read("on", "", "off", "off"));
-    assert_eq!(&row(&buf, 3)[2..40], "n".repeat(38));
+    assert!(
+        row(&buf, 3)
+            .chars()
+            .take(40)
+            .collect::<String>()
+            .trim()
+            .is_empty()
+    );
     assert_eq!(buf[(40, 3)].symbol(), " ");
     assert_eq!(buf[(41, 3)].symbol(), "!");
 }
@@ -512,7 +477,7 @@ fn settings_mouse_tabs_and_close_preserve_the_writing_draft() {
     rig.keys(&pane, "Enter");
     rig.literal(&pane, "draft-before");
     rig.wait(&pane, WAIT, "draft is being written", |s| {
-        s.contains("draft-before") && s.lines().last().is_some_and(|line| line.contains("write"))
+        s.contains("draft-before") && crate::app_mode::writing(s)
     });
     rig.gear(&pane);
     rig.wait(&pane, WAIT, "gear opens during writing", is_settings);
@@ -528,9 +493,7 @@ fn settings_mouse_tabs_and_close_preserve_the_writing_draft() {
     let (x, y) = close_target(&screen);
     rig.click(&pane, x, y);
     rig.wait(&pane, WAIT, "close resumes writing", |s| {
-        !is_settings(s)
-            && s.contains("draft-before")
-            && s.lines().last().is_some_and(|line| line.contains("write"))
+        !is_settings(s) && s.contains("draft-before") && crate::app_mode::writing(s)
     });
     rig.writer_held();
     rig.literal(&pane, "-after");

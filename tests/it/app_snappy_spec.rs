@@ -243,7 +243,7 @@ impl Rig {
 
     fn ready(&self, pane: &str, count: usize) -> String {
         self.wait(pane, WAIT, "fixture fleet and home lane drawn", |screen| {
-            screen.contains(&format!("Sessions {count}"))
+            screen.contains(&format!("▣ {count} "))
                 && header_is(screen, &self.home)
                 && screen.contains(&format!("{}-newest-39", self.home))
         })

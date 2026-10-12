@@ -37,7 +37,7 @@ const TID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);
 const FRAME: Duration = Duration::from_secs(3);
 const REFRESH_SLACK: Duration = Duration::from_secs(12);
-const HINT: &str = "  browse   ? keys";
+const HINT: &str = "     ? keys";
 const WORKSPACE_KEYS: [&str; 21] = [
     "main",
     "workers",
@@ -605,7 +605,7 @@ fn gear_opens_and_modal_keys_preserve_the_composer_draft_and_mode() {
     rig.keys(&pane, "Enter");
     rig.literal(&pane, "draft-s");
     rig.wait(&pane, WAIT, "s is typed into the composer", |s| {
-        s.contains("draft-s") && s.lines().last().is_some_and(|line| line.contains("write"))
+        s.contains("draft-s") && crate::app_mode::writing(s)
     });
     rig.gear(&pane);
     rig.wait(&pane, FRAME, "gear opens while writing", is_settings);
@@ -616,11 +616,7 @@ fn gear_opens_and_modal_keys_preserve_the_composer_draft_and_mode() {
         &pane,
         FRAME,
         "modal q closes rather than entering the draft",
-        |s| {
-            !is_settings(s)
-                && s.contains("draft-s")
-                && s.lines().last().is_some_and(|line| line.contains("write"))
-        },
+        |s| !is_settings(s) && s.contains("draft-s") && crate::app_mode::writing(s),
     );
     rig.literal(&pane, "-resumed");
     let screen = rig.wait(

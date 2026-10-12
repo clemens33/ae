@@ -381,14 +381,14 @@ fn keys_row_is_the_mode_word_one_hint_the_version_and_the_gear_at_every_width() 
         let look = ae::theme::Look::read("off", "", "off", "off");
         let buf = super::closed_frame(width, 28, &look, true);
         let row = super::row(&buf, 27);
-        assert!(row.starts_with("  browse   ? keys"), "{width}: {row}");
+        assert!(row.starts_with("     ? keys"), "{width}: {row}");
         let rest = row
             .trim_end()
             .strip_suffix(tail.as_str())
             .expect("version and gear end the row");
         assert_eq!(
             rest.trim_end(),
-            "  browse   ? keys",
+            "     ? keys",
             "{width}: no other key is named"
         );
     }

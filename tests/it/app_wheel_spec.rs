@@ -191,7 +191,7 @@ impl Rig {
 
     fn ready(&self, pane: &str) -> String {
         let first = self.wait(pane, WAIT, "GUARD undragged app frame", |s| {
-            s.contains("Sessions 13") && s.contains("Enter writes") && s.contains("Overview")
+            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("Overview")
         });
         let edge = first
             .lines()
@@ -220,7 +220,7 @@ impl Rig {
         );
         assert_eq!(self.cards(&pinned).len(), 8);
         self.wait(pane, WAIT, "GUARD home, overflow and memos ready", |s| {
-            s.contains("Sessions 13") && s.contains("Enter writes") && s.contains("topic29")
+            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("topic29")
         })
     }
 
@@ -879,7 +879,7 @@ fn refresh_clamps_shrunk_list_and_body_before_drawing() {
         WAIT,
         "A-REFRESH-CLAMP current content visible",
         |s| {
-            s.contains("Sessions 3")
+            s.contains("▣ 3 ")
                 && rig.cards(s) == rig.names[..3]
                 && body(s)
                     .first()
@@ -922,7 +922,7 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
     );
     rig.tmux(&["resize-window", "-t", &pane, "-x", "80", "-y", "24"]);
     let hidden = rig.wait(&pane, FRAME, "GUARD sidebar hidden", |s| {
-        s.contains("sidebar needs") && !s.contains("Sessions 13")
+        s.contains("sidebar needs") && !s.contains("▣ 13 ")
     });
     let chat = cell(&hidden, "to ");
     rig.report(&pane, 64, (2, chat.1), 1);
@@ -991,7 +991,7 @@ fn guard_header_tab_rule_keys_and_settings_never_scroll_underlying_sidebar() {
     rig.report(&pane, 65, (2, 6), 20);
     rig.literal(&pane, "s");
     let closed = rig.wait(&pane, FRAME, "GUARD closed Settings", |s| {
-        s.contains("Sessions 13") && s.contains("Enter writes")
+        s.contains("▣ 13 ") && s.contains("Enter writes")
     });
     assert_eq!(rig.cards(&closed), cards, "covered list never moved");
     assert_eq!(body(&closed), rows, "covered body never moved");

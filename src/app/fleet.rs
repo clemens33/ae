@@ -291,36 +291,36 @@ pub(crate) fn micros_age(micros: Option<i64>, now: Timestamp) -> Option<i64> {
     micros.map(|micros| now.epoch().saturating_sub(micros / 1_000_000).max(0))
 }
 
-/// The attention line, for the rows `visible` (positions in `fleet.rows`)
-/// shows: the one needy session by name, or how many need you, then where the
-/// needy rows outside the view sit. The caller's put clips it to the room.
-#[must_use]
-pub fn attention(fleet: &Fleet, visible: std::ops::Range<usize>, _width: u16) -> String {
-    let needy: Vec<(usize, &Row)> = fleet
-        .rows
-        .iter()
-        .enumerate()
-        .filter(|(_, row)| row.needy)
-        .collect();
-    let single = needy.len() == 1;
-    let head = match needy.as_slice() {
-        [] => return "Nothing needs you.".to_owned(),
-        [(_, row)] => format!("{} needs you", row.name),
-        many => format!("{} need you", many.len()),
-    };
-    let above = needy.iter().filter(|(at, _)| *at < visible.start).count();
-    let below = needy.iter().filter(|(at, _)| *at >= visible.end).count();
-    let places = [(above, "above"), (below, "below")]
-        .into_iter()
-        .filter(|(count, _)| *count > 0)
-        .map(|(count, place)| {
-            if single {
-                format!(" · {place}")
-            } else {
-                format!(" · {count} {place}")
+/// The whole fleet in numbers for the header; `unknown` makes `agents` and
+/// `working` lower bounds (a running session published no seat facts).
+#[derive(Debug, Default)]
+pub(super) struct Summary {
+    pub agents: usize,
+    pub working: usize,
+    pub needy: usize,
+    pub unknown: bool,
+}
+
+/// The fleet's [`Summary`], counted from each row's seat counts, never its mark.
+pub(super) fn summary(fleet: &Fleet) -> Summary {
+    let mut sum = Summary::default();
+    for row in &fleet.rows {
+        sum.needy += usize::from(row.needy);
+        match (&row.counts, &row.line2) {
+            (Counts::Marks(marks), _) => marks.iter().for_each(|(mark, _, count)| {
+                sum.agents = sum.agents.saturating_add(*count);
+                sum.working = sum
+                    .working
+                    .saturating_add(count * usize::from(*mark == Mark::Working));
+            }),
+            (Counts::Stopped, Line2::NotRunning { seats, .. }) => {
+                sum.agents = sum.agents.saturating_add(*seats);
             }
-        });
-    head + &places.collect::<String>()
+            (Counts::Unknown, _) => sum.unknown = true,
+            (Counts::Stopped, _) => {}
+        }
+    }
+    sum
 }
 
 #[cfg(test)]
@@ -331,7 +331,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{Counts, Fleet, Line2, Row, attention, rows};
+    use super::{Counts, Fleet, Line2, Row, rows};
     use crate::digest::{SessionEntry, Status};
     use crate::listing::World;
     use crate::theme::{FleetOrder, Mark};
@@ -384,27 +384,5 @@ mod tests {
     fn home_is_kept_only_when_its_session_has_a_row() {
         assert_eq!(fleet_of(&["api"], "api").home.as_deref(), Some("api"));
         assert_eq!(fleet_of(&["web"], "api").home, None);
-    }
-
-    fn needy_at(needy: usize) -> Fleet {
-        let row = |at: usize| Row {
-            name: format!("s{at}"),
-            index: at + 1,
-            mark: Mark::NeedsYou,
-            needy: at == needy,
-            counts: Counts::Marks(vec![(Mark::NeedsYou, false, 1)]),
-            line2: Line2::NoGoal,
-            home: false,
-        };
-        Fleet {
-            rows: (0..5).map(row).collect(),
-            home: None,
-        }
-    }
-
-    #[test]
-    fn a_needy_row_above_the_view_carries_a_plain_location() {
-        assert_eq!(attention(&needy_at(0), 1..4, 44), "s0 needs you · above");
-        assert_eq!(attention(&needy_at(1), 1..4, 44), "s1 needs you");
     }
 }

@@ -224,8 +224,7 @@ impl Rig {
                     let address = format!("to {} › lead", self.home);
                     f.text.lines().last().is_some_and(|row| {
                         row.chars().count() == width
-                            && (row.trim_start().starts_with("write")
-                                || row.trim_start().starts_with("browse"))
+                            && (writing(&f.text) || row.trim_start().starts_with("? keys"))
                     }) && f.text.lines().enumerate().any(|(row, text)| {
                         row >= height - 4 - cap && row <= height - 5 && text.contains(&address)
                     })
@@ -828,7 +827,7 @@ fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
         &pane,
         WAIT,
         "GUARD outside app drew selected session",
-        |f| f.text.contains("Sessions 1") && f.text.contains("Overview"),
+        |f| f.text.contains("▣ 1 ") && f.text.contains("Overview"),
     );
     let address = format!("to {} (not home) › lead", rig.home);
     assert!(
