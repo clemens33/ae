@@ -7125,4 +7125,45 @@ mod tests {
         let again = vec![(Key::Text(b"q".to_vec()), at + Duration::from_millis(1))];
         assert!(take_keys(&mut app, again).is_none(), "the second q quits");
     }
+
+    /// A handed-over view finds its session when that is the fleet's only row.
+    #[test]
+    fn a_handed_over_view_restores_on_a_fleet_whose_only_row_is_its_session() {
+        let root = Root::new("sole-row");
+        session(&root, "web", "");
+        let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
+        let mut app = App::new(Some("api".to_owned()), None, None, None);
+        app.answer(handed(2, 3));
+        refold(&mut app, &reader, &root, &[("web", Status::Running)]);
+        assert_eq!(app.model.selected(), Some("web"));
+        assert_eq!(app.model.tab(), Tab::Agents, "the tab was restored");
+        assert_eq!(app.model.scroll_rows(10), 23, "and the scroll");
+        assert!(app.keep.is_none(), "applied once");
+    }
+
+    /// Once its lane is read, a restored scroll is bound by it and waits no more.
+    #[test]
+    fn a_restored_scroll_is_bounded_by_the_lane_once_it_is_read() {
+        let root = Root::new("bound-scroll");
+        session(&root, "web", "");
+        let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
+        let mut app = App::new(Some("api".to_owned()), None, None, None);
+        app.answer(handed(2, 3));
+        let live = [("api", Status::Running), ("web", Status::Running)];
+        refold(&mut app, &reader, &root, &live);
+        app.answer(view("web", ID, 1, "short"));
+        let _ = framed(&mut app);
+        assert_eq!(app.model.scroll_rows(10), 0, "a short lane bounds it");
+        assert!(!app.restored, "and the wait is over");
+    }
+
+    /// A key dropped before the first fleet read says so on the hint row now.
+    #[test]
+    fn a_key_dropped_before_the_first_fleet_read_repaints_its_notice() {
+        let mut app = App::new(Some("api".to_owned()), None, None, None);
+        let dropped = take_keys(&mut app, vec![(Key::Text(b"v".to_vec()), Instant::now())]);
+        assert_eq!(dropped, Some(true), "the notice repaints before the fleet");
+        let said = "input before sessions loaded was dropped";
+        assert_eq!(app.note().as_deref(), Some(said));
+    }
 }

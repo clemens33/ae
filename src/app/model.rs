@@ -1260,4 +1260,29 @@ mod tests {
         model.reconcile(&fleet(&["web"]));
         moved(&model, &mut last, "a selection that left the fleet");
     }
+
+    /// An adopted view changes what the panels show: a selection made at the
+    /// count before it is stale.
+    #[test]
+    fn an_adopted_view_moves_the_epoch_once() {
+        use crate::app::handover::View;
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        let before = model.epoch();
+        let id = "6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11".to_owned();
+        let view = View {
+            session: "web".into(),
+            id,
+            tab: Tab::Agents,
+            focus: None,
+            sidebar: None,
+            list: None,
+            pages: 0,
+            rows: 0,
+            list_top: None,
+            body_top: 0,
+        };
+        model.adopt(&both, &view);
+        assert_eq!(model.epoch(), before + 1);
+    }
 }

@@ -235,4 +235,13 @@ mod tests {
             assert_eq!(parse(text).map(|h| h.render()).as_deref(), Some(text));
         }
     }
+
+    #[test]
+    fn a_matching_uuid_without_a_listed_row_is_never_applied() {
+        let view = parse(WIRE).map(|h| h.view).expect("the wire parses");
+        let id = Some(view.id.as_str());
+        assert_eq!(decide(5, 5, &view, false, id, true), Verdict::Discard);
+        assert_eq!(decide(5, 5, &view, false, id, false), Verdict::Defer);
+        assert_eq!(decide(5, 5, &view, true, id, false), Verdict::Apply);
+    }
 }
