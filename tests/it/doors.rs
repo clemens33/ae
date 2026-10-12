@@ -22,6 +22,7 @@
               about what PRODUCT code may reach"
 )]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
@@ -711,7 +712,7 @@ fn strip_comments(source: &str) -> String {
 }
 
 /// `code` with the CONTENTS of string and char literals blanked out.
-fn strip_literals(code: &str) -> String {
+pub(crate) fn strip_literals(code: &str) -> String {
     let src: Vec<char> = code.chars().collect();
     let mut out = String::with_capacity(code.len());
     let mut index = 0;
@@ -822,12 +823,14 @@ fn literal_end(src: &[char], index: usize) -> usize {
     src.len()
 }
 
-/// Every `src/**.rs` production half: comment lines dropped and everything from
-/// the first `#[cfg(test)]` cut off, so a fixture is never mistaken for a
-/// product line.
+/// Every `src/**.rs` production half: comment lines dropped, then the cut
+/// `phase2::product_head` owns (gated registrations and items removed, the
+/// first gated test body cuts), so a fixture is never mistaken for a product
+/// line. A file its parent declares `#[cfg(test)] mod name;` is test-only and
+/// left out whole.
 fn product_halves() -> Vec<(String, String)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut halves = Vec::new();
+    let mut files = Vec::new();
     for path in rust_sources() {
         let Ok(relative) = path.strip_prefix(root) else {
             continue;
@@ -839,22 +842,80 @@ fn product_halves() -> Vec<(String, String)> {
         let text = fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("{name} must be readable: {err}"));
         let code = text
-            .split_once("\n#[cfg(test)]\n")
-            .map_or(text.clone(), |(product, _)| product.to_owned());
-        halves.push((
-            name,
-            code.lines()
-                .filter(|line| !line.trim_start().starts_with("//"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ));
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        files.push((name, code));
     }
+    let test_only = test_only_files(&files);
+    let halves: Vec<(String, String)> = files
+        .into_iter()
+        .filter(|(name, _)| !test_only.contains(name))
+        .map(|(name, code)| (name, crate::phase2::product_head(&code)))
+        .collect();
     assert!(
         halves.len() > 5,
         "the source walk found {} product halves; a guard that scans nothing passes forever",
         halves.len()
     );
     halves
+}
+
+/// The files `files` declare as `#[cfg(test)] mod name;`: a parent `a/b.rs`
+/// owns `a/b/name.rs`; `lib.rs`, `main.rs` and `mod.rs` own `name.rs` beside them.
+fn test_only_files(files: &[(String, String)]) -> BTreeSet<String> {
+    files
+        .iter()
+        .flat_map(|(name, code)| {
+            let base = match name.rsplit_once('/') {
+                Some((dir, "lib.rs" | "main.rs" | "mod.rs")) => dir.to_owned(),
+                _ => name.trim_end_matches(".rs").to_owned(),
+            };
+            crate::phase2::test_only_modules(code)
+                .into_iter()
+                .map(move |module| format!("{base}/{module}.rs"))
+        })
+        .collect()
+}
+
+#[test]
+fn a_cfg_test_module_registration_names_its_child_file_at_any_depth() {
+    let decl = |name: &str| {
+        (
+            name.to_owned(),
+            "#[cfg(test)]\nmod spec;\nmod live;\n".to_owned(),
+        )
+    };
+    let files = [
+        decl("src/lib.rs"),
+        decl("src/app.rs"),
+        decl("src/board/follow.rs"),
+    ];
+    assert_eq!(
+        test_only_files(&files),
+        BTreeSet::from(
+            ["src/spec.rs", "src/app/spec.rs", "src/board/follow/spec.rs"].map(str::to_owned)
+        ),
+    );
+}
+
+#[test]
+fn the_door_scan_reaches_app_registrations_and_leaves_test_only_files_out() {
+    let halves = product_halves();
+    let last = crate::phase2::last_ungated_app_registration();
+    assert!(
+        halves
+            .iter()
+            .any(|(name, code)| name == "src/app.rs" && code.lines().any(|line| line == last)),
+        "the scan must reach {last:?} past app.rs's first gate"
+    );
+    assert!(
+        halves
+            .iter()
+            .all(|(name, _)| name != "src/app/fleet_spec.rs"),
+        "a registered test-only spec file is not product"
+    );
 }
 
 /// The bodies of production functions, with braces inside literals ignored.
@@ -985,9 +1046,25 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
     }
 }
 
+/// DEBT, not design: production tool decisions outside `src/tool.rs` that this
+/// guard first saw once its cut reached past `quota.rs:45`. A row is keyed by
+/// file, needle and EXACT count, never a file skip: a fifth branch fails, and
+/// so does a removed branch whose row stays. Slice `toolrows` moves each
+/// branch into an adapter row and deletes its row here.
+const TOOL_BRANCH_DEBT: [(&str, &str, usize); 2] = [
+    // `model_family` and its family helper: model-scoped quota windows are
+    // Claude-only today (slice toolrows).
+    ("src/quota.rs", "ToolKind::Claude", 2),
+    // The agy quota leg: the spoken-groups filter and the home-inheriting
+    // leg (slice toolrows).
+    ("src/quota.rs", "ToolKind::Agy", 2),
+];
+
 /// Lexical guard for direct `ToolKind::Variant` decisions in each production
-/// half. Aliases, glob-imported variants, and code after the first test module
-/// are outside what this source-text check can prove.
+/// half (the cut `phase2::product_head` owns: gated registrations and items
+/// removed, a gated test body cuts, registered test-only files left out), less
+/// the exact-count `TOOL_BRANCH_DEBT` rows. Aliases, glob-imported variants,
+/// and code after a cut are outside what this source-text check can prove.
 #[test]
 fn per_tool_branches_live_only_in_the_adapter_rows() {
     let variants = [
@@ -1001,6 +1078,12 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
             || panic!("the adapter source was not scanned"),
             |(_, code)| code,
         );
+    for (file, _, _) in TOOL_BRANCH_DEBT {
+        assert!(
+            halves.iter().any(|(name, _)| name == file),
+            "debt row names {file}, which was not scanned"
+        );
+    }
     for variant in variants {
         let needle = format!("ToolKind::{variant}");
         assert!(
@@ -1011,9 +1094,15 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
             if name == "src/tool.rs" {
                 continue;
             }
-            assert!(
-                !code.contains(&needle),
-                "{name} branches on {needle}; production tool decisions belong in src/tool.rs"
+            let owed = TOOL_BRANCH_DEBT
+                .iter()
+                .find(|(file, debt, _)| file == name && *debt == needle)
+                .map_or(0, |row| row.2);
+            assert_eq!(
+                code.matches(&needle).count(),
+                owed,
+                "{name} branches on {needle} other than its {owed} debt row(s); \
+                 production tool decisions belong in src/tool.rs"
             );
         }
     }
