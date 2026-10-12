@@ -383,6 +383,8 @@ struct App {
     read_line: String,
     /// Another installed core, as the last fleet read found the command link.
     upgrade: Option<upgrade::Upgrade>,
+    /// The version an exec restart failed into, and why: never tried again.
+    failed: Option<(String, String)>,
     /// When the last key, click or paste was read.
     last_input: Option<Instant>,
     /// The drag in progress, or the highlight it left.
@@ -474,6 +476,7 @@ impl App {
             sent: BTreeSet::new(),
             read_line: String::new(),
             upgrade: None,
+            failed: None,
             last_input: None,
             select: None,
             shot: Buffer::default(),
@@ -1424,7 +1427,12 @@ impl App {
                 let here = |s: &&Settling| self.model.selected() == Some(s.about.as_str());
                 settling.filter(here).map(|settling| settling.word.clone())
             })
-            .or_else(|| self.upgrade.as_ref().map(upgrade::hint))
+            .or_else(|| {
+                let failed = self.failed.as_ref();
+                self.upgrade
+                    .as_ref()
+                    .map(|seen| upgrade::hint(seen, failed))
+            })
     }
 
     /// What holds a restart back now: any draft, not only the writer's —
@@ -1445,11 +1453,12 @@ impl App {
     }
 
     /// The restart due now: another core is installed, this app may restart
-    /// into it, and nothing holds it back.
-    fn restart_due(&self, now: Instant) -> Option<(String, toggle::Restart)> {
+    /// into it, no exec into it has failed, and nothing holds it back.
+    fn restart_due(&self, now: Instant) -> Option<(String, upgrade::Via)> {
         let upgrade = self.upgrade.as_ref()?;
         let restart = upgrade.restart.as_ref().ok()?;
-        (self.blocker(now).is_none() && self.clip.is_none() && !self.holds_lane())
+        let tried = (self.failed.as_ref()).is_some_and(|(version, _)| *version == upgrade.version);
+        (!tried && self.blocker(now).is_none() && self.clip.is_none() && !self.holds_lane())
             .then(|| (upgrade.version.clone(), restart.clone()))
     }
 
@@ -2465,13 +2474,9 @@ fn forward(reads: Receiver<(Instant, Vec<u8>)>, wake: Sender<Wake>) -> std::io::
 ///
 /// [`crate::Error::Io`] when the terminal or `err` cannot be written.
 pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
-    let session = match tail {
-        [] => None,
-        [name] if !name.starts_with('-') => Some(name.clone()),
-        _ => {
-            write!(err, "{USAGE}")?;
-            return Ok(crate::entry::EXIT_USAGE);
-        }
+    let Some((session, handed)) = operands(tail) else {
+        write!(err, "{USAGE}")?;
+        return Ok(crate::entry::EXIT_USAGE);
     };
     if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         write!(err, "{NO_TERMINAL}")?;
@@ -2481,6 +2486,8 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         writeln!(err, "ae: {}", crate::NO_STATE_ROOT)?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
+    // The human's operands as typed: what an exec restart hands on, unchanged.
+    let typed: Vec<String> = session.iter().cloned().collect();
     let home = session.or_else(crate::calling_session_name);
     if let Some(name) = home.as_deref()
         && console::locate(&root, name).is_none()
@@ -2493,17 +2500,11 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         write!(err, "{NO_TERMINAL}")?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
-    let declared = doors::declared_server(crate::shape::current());
-    let server = doors::launch_target(declared.as_ref());
     let (wake, wakes) = mpsc::channel();
     let (caller, pane) = (doors::caller_server(), doors::calling_pane_id());
-    let mut reader = loader::Reader::new(root.clone(), home.clone(), server.clone());
-    reader.settings_paths(loader::SettingsPaths {
-        home: doors::home(),
-        global: doors::config_file(crate::shape::current(), &root),
-        local: doors::local_config(&doors::cwd()),
-    });
-    reader.own_pane(caller.clone(), pane.clone());
+    let (keep, landed) = handed_on(handed);
+    let own = (caller.clone(), pane.clone());
+    let reader = reader_of(&root, home.clone(), own, landed);
     let started = forward(reads, wake.clone()).and_then(|()| loader::spawn(reader, wake));
     let (ask, reader) = match started {
         Ok(started) => started,
@@ -2522,6 +2523,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     let mut size = tty.size().unwrap_or((80, 24));
     let mut terminal = Terminal::new(backend::Ansi::new(out, size))?;
     let mut app = App::new(home, caller, pane, Some(ask));
+    app.keep = keep;
     let mut keys = Keys::app();
     let (mut dirty, mut first, mut restart) = (true, None, None);
     let code = loop {
@@ -2563,12 +2565,109 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         if reader.is_finished() {
             break 1;
         }
-        restart = app.restart_due(Instant::now());
-        if restart.is_some() {
-            break 0;
+        match step(&mut app, &tty, &mut terminal, &typed, err)? {
+            Step::Stay(redraw) => dirty |= redraw,
+            Step::Respawn(version, respawn) => {
+                restart = Some((version, respawn));
+                break 0;
+            }
+            Step::Quit(code) => return Ok(code),
         }
     };
     end(tty, app, code, restart, err)
+}
+
+/// The reader of an app for `home`, in the `own` server and pane tmux names,
+/// told the version an exec `landed` this app in when that is not this one.
+fn reader_of(
+    root: &Path,
+    home: Option<String>,
+    own: (Option<ServerId>, Option<String>),
+    landed: Option<String>,
+) -> loader::Reader {
+    let declared = doors::declared_server(crate::shape::current());
+    let server = doors::launch_target(declared.as_ref());
+    let mut reader = loader::Reader::new(root.to_path_buf(), home, server);
+    reader.settings_paths(loader::SettingsPaths {
+        home: doors::home(),
+        global: doors::config_file(crate::shape::current(), root),
+        local: doors::local_config(&doors::cwd()),
+    });
+    reader.own_pane(own.0, own.1).landed(landed);
+    reader
+}
+
+/// What the view an exec restart handed on behind [`handover::FLAG`] gives
+/// this process: the view it keeps, or the version it was meant to be.
+fn handed_on(text: Option<String>) -> (Option<Keep>, Option<String>) {
+    let now = Timestamp::now().epoch();
+    match text.map(|text| upgrade::carried(&text, std::process::id(), crate::VERSION, now)) {
+        Some(upgrade::Carried::View(view, at)) => (Some(Keep { view, at }), None),
+        Some(upgrade::Carried::Landed(version)) => (None, Some(version)),
+        Some(upgrade::Carried::Ignored) | None => (None, None),
+    }
+}
+
+/// What the loop does about the restart due now.
+enum Step {
+    /// Nothing due, or an exec that failed and took the terminal back: go on,
+    /// redrawing everything when it did.
+    Stay(bool),
+    /// End into the chat window's respawn.
+    Respawn(String, toggle::Restart),
+    /// The terminal was not taken back: end with this code.
+    Quit(u8),
+}
+
+/// The restart due now, if any: a chat window ends into its respawn; any other
+/// app replaces its process with the core the link names, handing on the
+/// human's `typed` operands and the view, the terminal put back first exactly
+/// as on quit — exec keeps the pid, so the shell that started it stays. An
+/// exec returns only when it failed: the SAME terminal is taken back and the
+/// app told why, so it never tries that version again.
+fn step<W: Write>(
+    app: &mut App,
+    tty: &tty::Tty,
+    terminal: &mut Terminal<backend::Ansi<W>>,
+    typed: &[String],
+    err: &mut impl Write,
+) -> crate::Result<Step> {
+    let (version, link) = match app.restart_due(Instant::now()) {
+        None => return Ok(Step::Stay(false)),
+        Some((version, upgrade::Via::Respawn(respawn))) => {
+            return Ok(Step::Respawn(version, respawn));
+        }
+        Some((version, upgrade::Via::Exec { link })) => (version, link),
+    };
+    let pid = format!("%{}", std::process::id());
+    let view = app.handover(&pid, &version, Timestamp::now().epoch());
+    let view = view.map(|handover| handover.render());
+    let argv = upgrade::exec_argv(&link, typed, view, &version, crate::VERSION);
+    tty.suspend();
+    let why = crate::run::exec_unchanged(&argv).to_string();
+    if let Err(lost) = tty.resume() {
+        let said = format!("ae app: could not restart into ae {version} - {why}; {lost}");
+        writeln!(err, "{}", terminal_text(&said))?;
+        return Ok(Step::Quit(crate::entry::EXIT_FAILED));
+    }
+    app.failed = Some((version, why));
+    terminal.clear()?;
+    Ok(Step::Stay(true))
+}
+
+/// `ae app`'s operands: the home session as typed, and the view an exec
+/// restart handed on behind [`handover::FLAG`], last. `None` is a usage error.
+fn operands(tail: &[String]) -> Option<(Option<String>, Option<String>)> {
+    let session = |name: &String| (!name.starts_with('-')).then(|| name.clone());
+    match tail {
+        [] => Some((None, None)),
+        [name] => Some((Some(session(name)?), None)),
+        [flag, text] if flag == handover::FLAG => Some((None, Some(text.clone()))),
+        [name, flag, text] if flag == handover::FLAG => {
+            Some((Some(session(name)?), Some(text.clone())))
+        }
+        _ => None,
+    }
 }
 
 /// How `ae app` ends, its terminal put back first: restarted into the core
@@ -6465,17 +6564,34 @@ mod tests {
         assert_eq!(mark(&mut app, 0), (false, None), "wholly out of the window");
     }
 
-    /// Another core at `2026.10.99`, which the app restarts into, or `why` not.
-    fn upgrade_to(restart: Result<(), &str>) -> Answer {
-        let restart = restart.map(|()| crate::console::toggle::Restart {
+    /// Another core at `2026.10.99`, which the app moves to `by`, or `why` not.
+    fn upgrade_by(by: Result<super::upgrade::Via, &str>) -> Answer {
+        Answer::Core(Some(super::upgrade::Upgrade {
+            version: "2026.10.99".to_owned(),
+            restart: by.map_err(str::to_owned),
+        }))
+    }
+
+    /// The chat window's respawn into `2026.10.99`.
+    fn respawn() -> super::upgrade::Via {
+        super::upgrade::Via::from(crate::console::toggle::Restart {
             server: crate::inventory::ServerId::Ambient,
             pane: "%1".to_owned(),
             command: vec!["ae".to_owned(), "app".to_owned(), "api".to_owned()],
-        });
-        Answer::Core(Some(super::upgrade::Upgrade {
-            version: "2026.10.99".to_owned(),
-            restart: restart.map_err(str::to_owned),
-        }))
+        })
+    }
+
+    /// A hand-started app's exec of the command link.
+    fn exec() -> super::upgrade::Via {
+        super::upgrade::Via::Exec {
+            link: "/home/me/.local/bin/ae".into(),
+        }
+    }
+
+    /// Another core at `2026.10.99`, which the chat window restarts into, or
+    /// `why` not.
+    fn upgrade_to(restart: Result<(), &str>) -> Answer {
+        upgrade_by(restart.map(|()| respawn()))
     }
 
     /// U3: an app with nothing to lose restarts into the linked core; writing
@@ -6488,11 +6604,8 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(app.restart_due(t0), None, "no other core, no restart");
         app.answer(upgrade_to(Ok(())));
-        let (version, restart) = app.restart_due(t0).expect("an idle app restarts");
-        assert_eq!(
-            (version.as_str(), restart.pane.as_str()),
-            ("2026.10.99", "%1")
-        );
+        let due = Some(("2026.10.99".to_owned(), respawn()));
+        assert_eq!(app.restart_due(t0), due, "an idle app restarts");
         let waits = "ae 2026.10.99 installed - restarts when idle";
         assert_eq!(app.note().as_deref(), Some(waits));
         let at = writing(&mut app);
@@ -6507,6 +6620,41 @@ mod tests {
         );
         assert_eq!(app.restart_due(at), None);
         assert_eq!(app.note().as_deref(), Some(waits));
+    }
+
+    /// G3: an exec that failed is never tried again for its version, the hint
+    /// row saying why; a link naming another version is tried.
+    #[test]
+    fn a_failed_exec_is_not_retried_for_its_version_and_says_why() {
+        let mut app = app(None);
+        app.answer(upgrade_by(Ok(exec())));
+        let quiet = Instant::now() + super::REFRESH;
+        let why = "Permission denied (os error 13)".to_owned();
+        app.failed = Some(("2026.10.99".to_owned(), why));
+        assert_eq!(app.restart_due(quiet), None);
+        let said = "could not restart into ae 2026.10.99 - Permission denied (os error 13)";
+        assert_eq!(app.note().as_deref(), Some(said));
+        app.answer(Answer::Core(Some(super::upgrade::Upgrade {
+            version: "2026.10.100".to_owned(),
+            restart: Ok(exec()),
+        })));
+        let due = app.restart_due(quiet).map(|(version, _)| version);
+        assert_eq!(due.as_deref(), Some("2026.10.100"), "another version");
+        assert_eq!(
+            app.note().as_deref(),
+            Some("ae 2026.10.100 installed - restarts when idle")
+        );
+    }
+
+    /// The operands the frozen spec leaves out: a dash is never a session, two
+    /// bare words are a usage error, and the internal view is not in the usage.
+    #[test]
+    fn the_app_takes_a_session_and_an_internal_view_last() {
+        let words = |words: &[&str]| words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        for tail in [&["-h"][..], &["-w", "--app-view", "x"], &["web", "x"]] {
+            assert_eq!(super::operands(&words(tail)), None, "{tail:?}");
+        }
+        assert!(!super::USAGE.contains("--app-view"), "internal");
     }
 
     /// U3: every key read stamps the quiet window a restart waits out; an

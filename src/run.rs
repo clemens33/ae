@@ -451,23 +451,43 @@ fn publish_marker(marker: &Path) -> Result<(), String> {
 
 /// Replace this process with the planned command.
 fn exec(plan: &Plan) -> std::io::Error {
+    exec_with(&plan.argv, plan.clear, &plan.unset, &plan.set)
+}
+
+/// Replace this process with `argv`, its environment exactly as it is: how a
+/// restarting `ae app` becomes the core the command link names.
+pub(crate) fn exec_unchanged(argv: &[String]) -> std::io::Error {
+    exec_with(argv, false, &[], &[])
+}
+
+/// THE exec: the one place this process replaces itself. `argv` empty is an
+/// error, never a panic.
+fn exec_with(
+    argv: &[String],
+    clear: bool,
+    unset: &[String],
+    set: &[(String, String)],
+) -> std::io::Error {
     use std::os::unix::process::CommandExt as _;
 
+    let Some((program, rest)) = argv.split_first() else {
+        return std::io::Error::new(std::io::ErrorKind::InvalidInput, "no command to run");
+    };
     #[allow(
         clippy::disallowed_types,
-        reason = "the pane's own exec: _run BECOMES the tool, which is what keeps pane_current_command reporting it"
+        reason = "the process's own exec, never a child: _run BECOMES the tool, which keeps pane_current_command reporting it, and a restarting ae app BECOMES the linked core, whose same pid keeps the shell that started it"
     )]
-    let mut command = std::process::Command::new(&plan.argv[0]);
-    command.args(&plan.argv[1..]);
+    let mut command = std::process::Command::new(program);
+    command.args(rest);
     // `env -i` FIRST, so the ordered unsets and sets that follow it are applied
     // to the empty environment the operator asked for rather than to the pane's.
-    if plan.clear {
+    if clear {
         command.env_clear();
     }
-    for name in &plan.unset {
+    for name in unset {
         command.env_remove(name);
     }
-    for (name, value) in &plan.set {
+    for (name, value) in set {
         command.env(name, value);
     }
     command.exec()
@@ -2190,6 +2210,14 @@ mod tests {
     fn a_command_line_that_is_only_a_prefix_has_no_binary_to_exec() {
         let words = crate::words::split_words("env -u A", &|_| None).expect("splits");
         assert!(peel_env(words).is_err());
+    }
+
+    /// The one exec refuses an empty argv with an error, never a panic, and
+    /// never replaces this process.
+    #[test]
+    fn an_empty_argv_is_an_error_and_no_exec() {
+        let why = exec_unchanged(&[]);
+        assert_eq!(why.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

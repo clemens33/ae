@@ -23,6 +23,9 @@ use ae::inventory::ServerId;
 use ae::shape::Shape;
 use ae::tmux::WindowPane;
 
+#[path = "app_restart_spec.rs"]
+mod standalone_restart;
+
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -40,6 +43,11 @@ fn pane(id: &str, console: Option<&str>, agent: Option<&str>) -> WindowPane {
     }
 }
 
+// Identity on base, Respawn after the restart transport becomes an enum.
+fn restart_via<T: From<Restart>>(restart: Restart) -> T {
+    T::from(restart)
+}
+
 fn check_seen(link: Result<&str, &str>, auto: bool) -> Option<Upgrade> {
     let inst = Shape::Installed {
         home: "/Users/test/.ae".into(),
@@ -51,11 +59,11 @@ fn check_seen(link: Result<&str, &str>, auto: bool) -> Option<Upgrade> {
         |_| link.map(str::to_owned).map_err(str::to_owned),
         || auto,
         || {
-            Ok(Restart {
+            Ok(restart_via(Restart {
                 server: ServerId::Ambient,
                 pane: "%0".into(),
                 command: vec!["ae".into()],
-            })
+            }))
         },
     )
 }
@@ -74,14 +82,14 @@ fn seen_detects_newer_and_older_link_versions_and_ignores_equal_or_unparseable()
         check_seen(Ok("2026.10.51"), true),
         Some(Upgrade {
             version: "2026.10.51".into(),
-            restart: ok.clone()
+            restart: ok.clone().map(restart_via)
         })
     );
     assert_eq!(
         check_seen(Ok("2026.10.49"), true),
         Some(Upgrade {
             version: "2026.10.49".into(),
-            restart: ok
+            restart: ok.map(restart_via)
         })
     );
     // 3. Equal version, 4. unparseable, 5. read error -> None
@@ -485,7 +493,7 @@ fn installed_app_busy_with_draft_never_restarts_and_shows_busy_hint() {
 }
 
 #[test]
-fn standalone_app_in_unstamped_pane_hints_only() {
+fn standalone_app_in_unstamped_pane_restarts_into_the_linked_core() {
     let rig = InstalledRig::new("ups", true);
     let link_str = rig.link.display().to_string();
     let home_env = format!("HOME={}", rig.home.display());
@@ -518,17 +526,10 @@ fn standalone_app_in_unstamped_pane_hints_only() {
     rig.wait(&unstamped, WAIT, "first paint", |s| s.contains("▣ 1 "));
     rig.repoint_link("2026.10.99");
 
-    rig.wait(
-        &unstamped,
-        WAIT,
-        "standalone app shows hint only",
-        |screen| screen.contains("ae 2026.10.99 installed - restart ae app to use it"),
-    );
-    // Hold >= REFRESH + 5s (10s) after hint appears before asserting no restart
-    std::thread::sleep(Duration::from_secs(10));
+    let restarted = rig.wait_restarted(WAIT, "a hand-started idle app must restart");
     assert!(
-        !rig.restarted_log.exists(),
-        "standalone app must never restart"
+        restarted.starts_with(&format!("app {} --app-view v1|", rig.session)),
+        "human operand and existing handover grammar: {restarted}"
     );
 }
 

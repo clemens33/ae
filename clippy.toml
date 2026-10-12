@@ -14,8 +14,8 @@ allow-panic-in-tests = true
 # THE DOORS are inventoried by `tests/it/doors.rs`, which asserts the exact
 # number of relaxation sites per file and goes red when one appears or
 # vanishes. Product doors, one site each: `src/transport.rs` (`run`, the tmux
-# child every liveness answer needs), `src/run.rs` (the exec of the agent
-# tool), `src/upgrade.rs` (the `tar` extraction), `src/install.rs` (running
+# child every liveness answer needs), `src/run.rs` (the process's own exec: `_run` becoming
+# the agent tool, a restarting `ae app` becoming the linked core), `src/upgrade.rs` (the `tar` extraction), `src/install.rs` (running
 # the verified core to ask its version). Suite doors: `tests/it/cli.rs` (the
 # black-box `ae()` runner and its helpers), `tests/it/install.rs`,
 # `tests/it/shape.rs`, `tests/it/parity.rs` (`mod raw`), `tests/it/doors.rs`.

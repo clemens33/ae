@@ -236,6 +236,14 @@ pub(super) struct Reader {
     server: Option<ServerId>,
     /// The server and pane this app runs in, from tmux's own markers.
     own: Option<(ServerId, String)>,
+    /// The version an exec restart meant this app to be, when it landed in
+    /// another core: such an app never restarts again.
+    landed: Option<String>,
+    /// The version the command link already named at this app's first look,
+    /// when not its own: this core did not arrive through that link, and an
+    /// exec of it would only land here again.
+    unlinked: Option<String>,
+    looked: bool,
     writing: Option<Box<Binding>>,
     consoles: BTreeMap<String, Console>,
     /// When each session's last read COMPLETED.
@@ -296,6 +304,9 @@ impl Reader {
             home,
             server,
             own: None,
+            landed: None,
+            unlinked: None,
+            looked: false,
             writing: None,
             consoles: BTreeMap::new(),
             read_at: BTreeMap::new(),
@@ -329,6 +340,13 @@ impl Reader {
     /// before spawn.
     pub(super) fn own_pane(&mut self, server: Option<ServerId>, pane: Option<String>) -> &mut Self {
         self.own = server.zip(pane);
+        self
+    }
+
+    /// The version an exec restart meant this app to be, when it is not this
+    /// one; set once before spawn.
+    pub(super) fn landed(&mut self, version: Option<String>) -> &mut Self {
+        self.landed = version;
         self
     }
 
@@ -584,20 +602,44 @@ impl Reader {
     }
 
     /// What the command link says to this app, read with the fleet: once per
-    /// refresh, from the installed shape only.
-    fn core(&self) -> Option<super::upgrade::Upgrade> {
+    /// refresh, from the installed shape only. The first look, itself
+    /// included, fixes the version this app never execs into.
+    fn core(&mut self) -> Option<super::upgrade::Upgrade> {
         let shape = crate::shape::current();
-        super::upgrade::seen(
+        let upgrade = super::upgrade::seen(
             shape,
             |_| super::upgrade::link_version(crate::doors::home().as_deref()),
             || crate::autoupgrade::automatic(shape, crate::doors::no_autostart()),
             || self.restart(),
+        );
+        if !std::mem::replace(&mut self.looked, true) {
+            self.unlinked = upgrade.as_ref().map(|upgrade| upgrade.version.clone());
+        }
+        upgrade.map(|upgrade| super::upgrade::unlinked(upgrade, self.unlinked.as_deref()))
+    }
+
+    /// How this app moves to the linked core: by its own pane's stamp, a chat
+    /// window's proven respawn or an exec of the link. An app an exec landed
+    /// in another core does not move again.
+    fn restart(&self) -> Result<super::upgrade::Via, String> {
+        if let Some(version) = &self.landed {
+            return Err(format!(
+                "restarted for ae {version} but running ae {}",
+                crate::VERSION
+            ));
+        }
+        let stamp =
+            (self.own.as_ref()).map(|(server, pane)| transport::observe_pane_console(server, pane));
+        super::upgrade::via(
+            stamp.as_ref().map(Option::as_deref),
+            || self.chat_restart(),
+            || super::upgrade::link_path(crate::doors::home().as_deref()),
         )
     }
 
     /// The restart of this app in its own pane, proven as the chat window of
     /// home, the session it was started for.
-    fn restart(&self) -> Result<crate::console::toggle::Restart, String> {
+    fn chat_restart(&self) -> Result<crate::console::toggle::Restart, String> {
         let (Some((server, pane)), Some(home)) = (&self.own, &self.home) else {
             return Err("this app runs in no tmux pane of a home session".to_owned());
         };

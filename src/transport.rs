@@ -840,6 +840,17 @@ pub fn observe_pane_current_path(server: &ServerId, pane: &str) -> Option<String
     tmux::interpret_display_value(succeeded, &stdout)
 }
 
+/// `pane`'s `@ae_console` stamp, empty when it carries none, or `None` when
+/// tmux did not answer.
+#[must_use]
+pub fn observe_pane_console(server: &ServerId, pane: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_console_args(server, pane));
+    tmux::interpret_pane_console(succeeded, &stdout)
+}
+
 /// The id tmux holds for the session named exactly `name` on `server`.
 #[must_use]
 pub fn observe_session_id(server: &ServerId, name: &str) -> Option<String> {

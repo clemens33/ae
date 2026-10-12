@@ -94,14 +94,29 @@ vote, and an invalid explicit value disables scheduling and is reported by `ae v
 A running installed `ae app` follows the command link without starting a check. With each
 fleet read (every 5 s) it compares the version the link names with its own; any other valid
 version, newer or older, counts. A checkout or displaced app never looks. Under the policy
-above, an app proven its session's chat window — the pane stamped with the session's uuid,
-the meta agreeing, the session still `chat = app` — restarts itself once idle: no draft in
-any composer, nothing queued or held, not writing, Settings closed, no turn marked, no armed
-key and no key for 5 s. It restores the terminal, releases its writer lease, and has tmux
-respawn its own pane with the argv `prefix h` starts, so the pane and its stamp stay. Until
-then the hint row says `ae <V> installed - restarts when idle`; every other app, and any app
-under `auto_upgrade = off` or `AE_NO_AUTOSTART`, says `ae <V> installed - restart ae app to
-use it`.
+above, an app restarts itself once idle: no draft in any composer, nothing queued or held,
+not writing, Settings closed, no turn marked, no armed key and no key for 5 s. How depends
+on its own pane's `@ae_console` stamp:
+
+- A stamped pane is a chat window. Proven its session's chat window — stamped with the
+  session's uuid, the meta agreeing, the session still `chat = app` — the app restores the
+  terminal, releases its writer lease, and has tmux respawn its own pane with the argv
+  `prefix h` starts, so the pane and its stamp stay. A chat window whose proof fails only
+  hints, and never execs.
+- An unstamped pane, or no tmux at all — an app you started by hand — replaces its own
+  process with the command link: `<link> app [session]`, your operands as typed, the
+  environment and working directory unchanged. Exec keeps the pid, so the shell that started
+  it is still its parent and gets its prompt back when the new app quits. The terminal is put
+  back exactly as on quit first. An exec that fails takes the same terminal back, says
+  `could not restart into ae <V> - <why>` on the hint row, and never tries that version again.
+  An app whose first look already finds the link naming another version did not start from
+  that link: an exec would land in this same core again, so it never execs into that version
+  and only hints.
+- A pane tmux does not answer for only hints.
+
+Until then the hint row says `ae <V> installed - restarts when idle`; an app that will not
+restart, and any app under `auto_upgrade = off` or `AE_NO_AUTOSTART`, says `ae <V>
+installed - restart ae app to use it`.
 
 Scheduling only starts a fixed detached `_autoupgrade` argv through the existing process
 door. It has null standard streams, clears inherited `AE_VERSION`, and is reaped by a small

@@ -3354,6 +3354,22 @@ pub fn pane_current_path_args(server: &ServerId, pane: &str) -> Vec<String> {
     args
 }
 
+/// `display-message -p -t <pane> '#{@ae_console}'`: the chat-window stamp of
+/// one pane.
+#[must_use]
+pub fn pane_console_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "-t", pane, "#{@ae_console}"].map(ToOwned::to_owned));
+    args
+}
+
+/// The stamp a completed [`pane_console_args`] run reported: `Some("")` for an
+/// unstamped pane, `None` when tmux did not answer — never the same thing.
+#[must_use]
+pub fn interpret_pane_console(succeeded: bool, stdout: &str) -> Option<String> {
+    succeeded.then(|| stdout.lines().next().unwrap_or_default().trim().to_owned())
+}
+
 /// The single value a `display-message -p` answer carries: its first line,
 /// trimmed, and only when the query SUCCEEDED.
 #[must_use]
@@ -6792,6 +6808,25 @@ mod tests {
             Some("3.7b".to_owned())
         );
         assert_eq!(interpret_display_value(false, "3.7b\n"), None);
+    }
+
+    /// A pane's chat stamp: an unstamped pane is an empty stamp, never the
+    /// same thing as tmux not answering.
+    #[test]
+    fn an_unstamped_pane_is_not_an_unanswered_one() {
+        assert_eq!(
+            super::pane_console_args(&ServerId::Ambient, "%3"),
+            ["display-message", "-p", "-t", "%3", "#{@ae_console}"]
+        );
+        assert_eq!(
+            super::interpret_pane_console(true, "u\n"),
+            Some("u".to_owned())
+        );
+        assert_eq!(
+            super::interpret_pane_console(true, "\n"),
+            Some(String::new())
+        );
+        assert_eq!(super::interpret_pane_console(false, "u\n"), None);
     }
 
     #[test]

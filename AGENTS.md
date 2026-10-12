@@ -83,8 +83,9 @@ freeze protocol and every hard rule remain mandatory.
 An upgrade is not a binary swap: it migrates, repoints and relinks every placeable session
 before it moves the command link, reports and skips stopped unplaceable sessions, then prunes
 unreferenced versions. A seat's pane line names the command link when installed and stays runnable across the upgrade.
-A running installed `ae app` follows the link itself: in its session's chat window it
-restarts into the linked core once idle, anywhere else it only hints.
+A running installed `ae app` follows the link itself once idle: in its session's chat window tmux
+respawns its pane, any other app execs the linked core in place (same pid, its shell kept); a
+chat window whose proof fails only hints.
 A publish is `$HOME`-pinned, so a checkout run whose state root differs
 REFUSES `ae upgrade` before downloading anything.
 Live upgrade probes therefore go in a sandboxed `$HOME`, never `ae-dev`. Why:

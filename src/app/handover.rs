@@ -1,9 +1,12 @@
 //! The view a restarting `ae app` hands to the app that replaces it.
 //!
-//! The old app publishes one session-scoped tmux option, the new app in the
-//! same pane reads it once and unsets it, valid or not. Any client on the
-//! server can set that option, so it is hostile text: one canonical line,
-//! fixed field order, every field bounded. Pure: no clock, no tmux, no app.
+//! A respawned chat window's old app publishes one session-scoped tmux option,
+//! the new app in the same pane reads it once and unsets it, valid or not; its
+//! `pane` is that pane. An app that execs passes the same line as the internal
+//! argument [`FLAG`]; its `pane` is `%<pid>`, the process exec keeps. Any
+//! client on the server can set the option and anyone can type the argument,
+//! so it is hostile text: one canonical line, fixed field order, every field
+//! bounded. Pure: no clock, no tmux, no app.
 //!
 //! `v1|pane|version|at|session|uuid|tab|focus|sidebar|list|pages|rows|list_top|body_top`
 //!
@@ -17,6 +20,10 @@ use crate::session_launch::name::is_session_name;
 
 /// The session option the handover rides.
 pub const OPTION: &str = "@ae_app_view";
+/// The internal `ae app` argument an exec restart hands the handover on by,
+/// never shown in the usage text. An older core is never handed it, so every
+/// later core must keep accepting it.
+pub const FLAG: &str = "--app-view";
 /// How old a handover may be, inclusive, whether read or still waiting.
 pub const MAX_AGE_SECS: i64 = 60;
 /// The whole text, in bytes.

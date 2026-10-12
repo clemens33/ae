@@ -497,8 +497,12 @@ reopens it)` inside tmux, `ae app closed - run: ae app` outside it. A reader
 that stopped says so on the line above.
 
 A restart into another installed core ([upgrade.md](upgrade.md#automatic-checks))
-leaves no line: tmux replaces the app in the same pane. A restart tmux refuses ends the
-app with `ae app: could not restart into ae <V> - <why>` above the usual line.
+leaves no line. In a chat window tmux replaces the app in the same pane, and a restart
+tmux refuses ends the app with `ae app: could not restart into ae <V> - <why>` above the
+usual line. Anywhere else the app replaces its own process, so the shell you started it
+from stays; an exec that fails keeps the app running with `could not restart into ae <V>
+- <why>` on the hint row, and only when the terminal cannot be taken back does it end
+with that line.
 
 The restart keeps your view. Just before the respawn the old app sets one
 session option, `@ae_app_view`: the selected session (with its uuid),
@@ -512,6 +516,16 @@ click before it applies included, leaves the default view. Settings, peek,
 drafts and marked turns never carry: they hold a restart back. A core without this feature ignores the option, and a leftover
 one is refused and cleared by the next app that reads it or dies with the
 tmux server.
+
+An app that execs carries the same line as an internal argument,
+`--app-view <view>`, after your operands — not in the usage text, never typed
+by hand — bound to its own process id instead of a pane, since exec keeps
+it. The new app adopts it only for that pid, its own version and within 60 s,
+under the same fleet-read rules; anything else, typed or stale, is ignored and
+leaves the default view. A view that names another version means the exec
+landed in a core the link did not name: that app shows the hint and never
+restarts again. Only a newer core is handed the view, since an older one may
+not know the argument.
 
 ## Residuals
 
@@ -537,6 +551,16 @@ tmux server.
   default view. A key typed between the last idle check and the respawn is
   lost. The hint follows the fleet read, so it can be up to 5 s behind the
   link.
+- An exec restart into an OLDER core (a rollback) starts with a fresh view.
+  A key read but not yet handled at the exec is lost, and a tmux query the
+  app had in flight finishes as an orphan of the new app (one zombie process
+  until that app exits). The internal `--app-view` argument is visible in
+  `ps` while the new app runs: session name, uuid, highlighted seat and
+  scroll.
+- An app started by a core's own path while the link names another version,
+  or one an upgrade overtakes before its first fleet read, only hints for
+  that version and never execs into it: it cannot tell either from a link
+  whose core is not the version the link names.
 - `^Z` and `^\` are dropped and never suspend or quit.
 - The panic hook that restores the terminal stays installed after the app
   leaves its screen; it would only restore the same mode again.

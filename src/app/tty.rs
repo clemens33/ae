@@ -27,6 +27,7 @@ pub(crate) struct Tty {
     fd: OwnedFd,
     screen: File,
     saved: Termios,
+    raw: Termios,
 }
 
 impl Tty {
@@ -70,7 +71,31 @@ impl Tty {
             previous(info);
         }));
         let _ = (&screen).write_all(ENTER.as_bytes());
-        Ok(Self { fd, screen, saved })
+        Ok(Self {
+            fd,
+            screen,
+            saved,
+            raw,
+        })
+    }
+
+    /// The terminal put back exactly as on quit, this `Tty` kept: a restart
+    /// whose exec fails [`Tty::resume`]s the same one, hook and descriptors.
+    pub(crate) fn suspend(&self) {
+        restore(&self.fd, &self.screen, &self.saved);
+    }
+
+    /// Raw mode and the app's screen again after [`Tty::suspend`]. `Err`
+    /// names why the terminal refused.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "THE terminal door: raw mode taken back after a restart that did not happen (clippy.toml)"
+    )]
+    pub(crate) fn resume(&self) -> Result<(), String> {
+        termios::tcsetattr(&self.fd, OptionalActions::Now, &self.raw)
+            .map_err(|err| format!("raw mode refused ({err})"))?;
+        let _ = (&self.screen).write_all(ENTER.as_bytes());
+        Ok(())
     }
 
     /// The window size, columns then rows; `None` when the terminal will not say.
