@@ -49,11 +49,13 @@ pub enum Kind {
     /// The watchdog's standing `human-prompt` verdict on a seat.
     NeedsYou { seat: String },
     /// The human's console ask `id` to `to`; `uncertain` when its submit was
-    /// not confirmed.
+    /// not confirmed. `gap` is why the row shows its journal summary instead of
+    /// the stored whole text; `None` for the whole.
     Asked {
         to: String,
         id: String,
         uncertain: bool,
+        gap: Option<String>,
     },
     /// A console ask ae gave up delivering.
     NotDelivered { to: String, id: String },
@@ -97,16 +99,47 @@ pub enum Body {
     NotUtf8,
 }
 
-/// Why an answer shows its summary instead of `body`; `None` for the whole.
+/// Why an ask shows its summary when its stored message is over the cap.
+pub(crate) const ASK_OVER_GAP: &str = "full text not shown: stored message over 64 KiB";
+
+/// Why a row of a record an older core wrote shows its summary.
+pub(crate) const OLD_CORE_GAP: &str = "body missing (old core)";
+
+/// Why a row shows its summary instead of `body`; `None` for the whole.
 fn body_gap(body: &Body) -> Option<String> {
     Some(match body {
         Body::Whole(_) => return None,
-        Body::OldCore => "body missing (old core)".to_owned(),
+        Body::OldCore => OLD_CORE_GAP.to_owned(),
         Body::Missing => "body missing".to_owned(),
         Body::Refused(why) => format!("body refused: {why}"),
         Body::Oversized => format!("body over {} bytes", reply::CONSOLE_BODY_CAP),
         Body::NotUtf8 => "body not UTF-8".to_owned(),
     })
+}
+
+/// Take the stored whole body of the record `what` names into `text`, or say in
+/// `gaps` why its summary stays; the gap is the reason, `None` for the whole.
+/// `over` words a body over the cap where the row has its own.
+fn adopt(
+    read: Body,
+    text: &mut String,
+    what: &str,
+    gaps: &mut Vec<String>,
+    over: Option<&str>,
+) -> Option<String> {
+    let gap = match (&read, over) {
+        (Body::Oversized, Some(words)) => Some(words.to_owned()),
+        _ => body_gap(&read),
+    };
+    if let Body::Whole(whole) = read {
+        *text = whole;
+    }
+    if let Some(gap) = &gap {
+        gaps.push(format!(
+            "{what} — {gap}; its 600-character summary is shown"
+        ));
+    }
+    gap
 }
 
 /// One lane row: epoch micros (a journal record's second widened), what it
@@ -252,6 +285,8 @@ fn console_items(
         let kind = if event.actor == tracked::CONSOLE_SINK {
             match event.action.as_str() {
                 action if action == tracked::Kind::Ask.action() => {
+                    let uncertain = text.starts_with(tracked::UNCONFIRMED_SUMMARY_PREFIX);
+                    let mut gap = Some(OLD_CORE_GAP.to_owned());
                     if !key.is_empty() {
                         let (closed, replies, moved) = (false, 0, false);
                         let thread = Thread {
@@ -261,9 +296,19 @@ fn console_items(
                             moved,
                         };
                         threads.insert(key, thread);
+                        // An ask an older core recorded has no body to read.
+                        if event.body_file.is_some() {
+                            let what = format!("ask to {to}");
+                            let over = Some(ASK_OVER_GAP);
+                            gap = adopt(body(event), &mut text, &what, gaps, over);
+                        }
                     }
-                    let uncertain = text.starts_with(tracked::UNCONFIRMED_SUMMARY_PREFIX);
-                    Kind::Asked { to, id, uncertain }
+                    Kind::Asked {
+                        to,
+                        id,
+                        uncertain,
+                        gap,
+                    }
                 }
                 tracked::ABANDONED_ACTION => Kind::NotDelivered { to, id },
                 CANCEL => {
@@ -291,16 +336,8 @@ fn console_items(
                         profile.unwrap_or_else(|| "unrecorded".to_owned())
                     });
                     let seat = thread.ask.target.clone().unwrap_or_default();
-                    let read = body(event);
-                    let gap = body_gap(&read);
-                    if let Body::Whole(whole) = read {
-                        text = whole;
-                    }
-                    if let Some(gap) = &gap {
-                        gaps.push(format!(
-                            "reply from {seat} — {gap}; its 600-character summary is shown"
-                        ));
-                    }
+                    let what = format!("reply from {seat}");
+                    let gap = adopt(body(event), &mut text, &what, gaps, None);
                     Kind::Answer {
                         seat,
                         id,
@@ -998,6 +1035,33 @@ mod tests {
             let named = format!("reply from lead — {gap}; its 600-character summary is shown");
             assert_eq!((rows[1].as_str(), coverage), (row.as_str(), vec![named]));
         }
+    }
+
+    #[test]
+    fn an_ask_whose_stored_text_cannot_be_read_names_why_and_keeps_its_summary() {
+        let mut stored = asked("q");
+        stored.body_file = Some("/m/messages/x.txt".to_owned());
+        let over = "full text not shown: stored message over 64 KiB";
+        let cases = [
+            (Body::Missing, "body missing"),
+            (Body::Refused("odd".to_owned()), "body refused: odd"),
+            (Body::NotUtf8, "body not UTF-8"),
+            (Body::Oversized, over),
+        ];
+        for (body, gap) in cases {
+            let (rows, coverage) = thread(&[stored.clone()], &|_| body.clone());
+            let named = format!("ask to lead — {gap}; its 600-character summary is shown");
+            assert_eq!(rows, [format!("you → lead · {gap}: q")]);
+            assert_eq!(coverage, [named]);
+        }
+        let (rows, coverage) = thread(&[stored.clone()], &whole);
+        assert_eq!(
+            (rows, coverage),
+            (vec!["you → lead: WHOLE q".to_owned()], vec![])
+        );
+        // A record of an older core has no body to read: nothing to name.
+        let (rows, coverage) = thread(&[asked("q")], &|_| Body::Missing);
+        assert_eq!((rows, coverage), (vec!["you → lead: q".to_owned()], vec![]));
     }
 
     /// A console row is its record's place in the read: two identical records

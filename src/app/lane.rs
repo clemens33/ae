@@ -14,9 +14,9 @@ use ratatui_core::text::{Line, Span};
 
 use super::draw::Paint;
 use crate::board::{clock_text, terminal_text};
-use crate::console::lane::{Item, Kind, Lane};
-use crate::console::view;
+use crate::console::lane::{Item, Kind, Lane, OLD_CORE_GAP};
 use crate::console::wrap::wrap;
+use crate::console::{fold, view};
 use crate::state::CHAT_SUMMARY_CAP;
 
 /// Who speaks a turn, which is all its colour says.
@@ -45,12 +45,23 @@ pub(super) struct Turn {
     pub(super) at: usize,
     pub(super) first: usize,
     pub(super) rows: usize,
+    /// The row, counted from `first`, that folds or unfolds the turn.
+    pub(super) fold: Option<usize>,
 }
 
-/// The newest `need` rows of `lane` or more, as [`rows`] draws them: turns
-/// from the newest back, whole, then coverage rows from the last back, until
-/// `need` rows stand. `visited` gets the index of each item whose body this
-/// call wrapped, in the order it wrapped them.
+/// What a frame draws of the lane beyond the lane itself: the chat's own style
+/// and main seat, which turns show whole and which asks went through, one
+/// entry per item.
+pub(super) struct Show<'a> {
+    pub(super) clock: &'a view::Style,
+    pub(super) main: &'a str,
+    /// `None` folds nothing and draws no fold row.
+    pub(super) open: Option<&'a [bool]>,
+    pub(super) sent: &'a [bool],
+}
+
+/// [`tail_with`] for a lane that folds nothing and sent nothing.
+#[cfg(test)]
 pub(super) fn tail(
     lane: &Lane,
     width: usize,
@@ -58,10 +69,32 @@ pub(super) fn tail(
     clock: &view::Style,
     main: &str,
     need: usize,
+    visited: Option<&mut Vec<usize>>,
+) -> Tail {
+    let show = Show {
+        clock,
+        main,
+        open: None,
+        sent: &[],
+    };
+    tail_with(lane, width, paint, &show, need, visited)
+}
+
+/// The newest `need` rows of `lane` or more, as [`rows`] draws them: turns
+/// from the newest back, whole, then coverage rows from the last back, until
+/// `need` rows stand. `visited` gets the index of each item whose body this
+/// call wrapped, in the order it wrapped them.
+pub(super) fn tail_with(
+    lane: &Lane,
+    width: usize,
+    paint: Paint,
+    show: &Show<'_>,
+    need: usize,
     mut visited: Option<&mut Vec<usize>>,
 ) -> Tail {
-    // Newest first, each turn's item and rows in order; reversed into place below.
-    let mut turns: Vec<(usize, Vec<Line<'static>>)> = Vec::new();
+    // Newest first, each turn's item, rows and fold row in order; reversed
+    // into place below.
+    let mut turns: Vec<(usize, Vec<Line<'static>>, Option<usize>)> = Vec::new();
     let mut count = 0;
     let mut items = lane.items.iter().enumerate().rev();
     while count < need {
@@ -72,28 +105,29 @@ pub(super) fn tail(
         if at > 0 || !lane.coverage.is_empty() {
             rows.push(Line::default());
         }
-        let (speaker, qualifier, voice) = head(&item.kind, main);
-        let (_, time) = clock_text(clock.shift(item.micros));
-        let minute: String = time.chars().take(5).collect();
-        rows.push(Line::from(vec![
-            Span::styled(terminal_text(&speaker), voiced(paint, voice)),
-            Span::styled(format!("  {minute}  "), paint.fg(|p| p.dim)),
-            Span::styled(terminal_text(&qualifier), paint.fg(|p| p.dim)),
-        ]));
+        let sent = show.sent.get(at).copied().unwrap_or(false);
+        rows.push(header(item, show.clock, show.main, paint, sent));
         if let Some(visited) = visited.as_deref_mut() {
             visited.push(at);
         }
-        for (gap, piece) in view::body_lines(item)
-            .into_iter()
-            .flat_map(|line| wrap(&terminal_text(line), width, 2))
-        {
+        let body = body_rows(item, width, paint);
+        let foldable = show.open.is_some() && fold::foldable(body.len(), 1);
+        let open = show.open.is_none_or(|open| open.get(at) == Some(&true));
+        let (body, hidden) = fold::folded(body, open, 1);
+        rows.extend(body);
+        let fold = foldable.then(|| {
+            let words = match hidden {
+                0 => "show fewer lines".to_owned(),
+                hidden => fold::line(hidden),
+            };
             rows.push(Line::from(vec![
-                Span::raw(" ".repeat(gap)),
-                Span::styled(piece, paint.fg(|p| p.text)),
+                Span::raw("  "),
+                Span::styled(words, paint.fg(|p| p.dim)),
             ]));
-        }
+            rows.len() - 1
+        });
         count += rows.len();
-        turns.push((at, rows));
+        turns.push((at, rows, fold));
     }
     let mut gaps = lane.coverage.iter().rev();
     let mut coverage = Vec::new();
@@ -108,12 +142,13 @@ pub(super) fn tail(
     let mut rows = Vec::with_capacity(count);
     rows.extend(coverage.into_iter().rev());
     let mut placed = Vec::with_capacity(turns.len());
-    for (at, turn) in turns.into_iter().rev() {
+    for (at, turn, fold) in turns.into_iter().rev() {
         let spacer = usize::from(turn.first().is_some_and(|line| line.spans.is_empty()));
         placed.push(Turn {
             at,
             first: rows.len() + spacer,
             rows: turn.len() - spacer,
+            fold: fold.map(|row| row - spacer),
         });
         rows.extend(turn);
     }
@@ -122,6 +157,32 @@ pub(super) fn tail(
         complete: items.len() == 0 && gaps.len() == 0,
         turns: placed,
     }
+}
+
+/// A turn's header row: its speaker, minute and qualifier.
+fn header(item: &Item, clock: &view::Style, main: &str, paint: Paint, sent: bool) -> Line<'static> {
+    let (speaker, qualifier, voice) = head(&item.kind, main, sent);
+    let (_, time) = clock_text(clock.shift(item.micros));
+    let minute: String = time.chars().take(5).collect();
+    Line::from(vec![
+        Span::styled(terminal_text(&speaker), voiced(paint, voice)),
+        Span::styled(format!("  {minute}  "), paint.fg(|p| p.dim)),
+        Span::styled(terminal_text(&qualifier), paint.fg(|p| p.dim)),
+    ])
+}
+
+/// A turn's body rows, wrapped to `width`.
+fn body_rows(item: &Item, width: usize, paint: Paint) -> Vec<Line<'static>> {
+    let lines = view::body_lines(item).into_iter();
+    lines
+        .flat_map(|line| wrap(&terminal_text(line), width, 2))
+        .map(|(gap, piece)| {
+            Line::from(vec![
+                Span::raw(" ".repeat(gap)),
+                Span::styled(piece, paint.fg(|p| p.text)),
+            ])
+        })
+        .collect()
 }
 
 /// The rows of `lane`, oldest first, `width` cells wide, a blank row between
@@ -148,30 +209,15 @@ pub(super) fn rows(
         if !rows.is_empty() {
             rows.push(Line::default());
         }
-        let (speaker, qualifier, voice) = head(&item.kind, main);
-        let (_, time) = clock_text(clock.shift(item.micros));
-        let minute: String = time.chars().take(5).collect();
-        rows.push(Line::from(vec![
-            Span::styled(terminal_text(&speaker), voiced(paint, voice)),
-            Span::styled(format!("  {minute}  "), paint.fg(|p| p.dim)),
-            Span::styled(terminal_text(&qualifier), paint.fg(|p| p.dim)),
-        ]));
-        for (gap, piece) in view::body_lines(item)
-            .into_iter()
-            .flat_map(|line| wrap(&terminal_text(line), width, 2))
-        {
-            rows.push(Line::from(vec![
-                Span::raw(" ".repeat(gap)),
-                Span::styled(piece, paint.fg(|p| p.text)),
-            ]));
-        }
+        rows.push(header(item, clock, main, paint, false));
+        rows.extend(body_rows(item, width, paint));
     }
     rows
 }
 
 /// The speaker, what the turn is and its voice. The words are the chat's
 /// tag reordered so the speaker leads: `you … to lead`, `lead … said`.
-fn head(kind: &Kind, main: &str) -> (String, String, Voice) {
+fn head(kind: &Kind, main: &str, through: bool) -> (String, String, Voice) {
     let seat = |name: &str| match name {
         "ae" => Voice::System,
         name if name == main => Voice::Lead,
@@ -188,11 +234,21 @@ fn head(kind: &Kind, main: &str) -> (String, String, Voice) {
             prior(*generation)
         )),
         Kind::Inbound { from, to } => (from.clone(), format!("to {to}"), Voice::You),
-        Kind::Asked { to, uncertain, .. } => you(if *uncertain {
-            format!("to {to} · uncertain: check the {to} pane")
-        } else {
-            format!("to {to}")
-        }),
+        Kind::Asked {
+            to, uncertain, gap, ..
+        } => {
+            let mut what = format!("to {to}");
+            if *uncertain {
+                let _ = write!(what, " · uncertain: check the {to} pane");
+            } else if through {
+                what.push_str(" · sent");
+            }
+            // A legacy ask has no stored body to name as missing.
+            if let Some(gap) = gap.as_deref().filter(|gap| *gap != OLD_CORE_GAP) {
+                let _ = write!(what, " · {gap}");
+            }
+            you(what)
+        }
         Kind::NotDelivered { to, .. } => you(format!("to {to} · not delivered")),
         Kind::Closed { .. } => you("closed an ask".to_owned()),
         Kind::Assistant {
@@ -266,8 +322,8 @@ pub(super) fn preview_why(item: &Item) -> Option<String> {
         Kind::Answer { gap, .. } => gap.clone(),
         Kind::Reply { .. } => Some("the record keeps no body".to_owned()),
         Kind::Unadmitted { .. } => Some("not admitted".to_owned()),
+        Kind::Asked { gap, .. } => gap.as_ref().map(|_| summary.to_owned()),
         Kind::Inbound { .. }
-        | Kind::Asked { .. }
         | Kind::NotDelivered { .. }
         | Kind::Card { .. }
         | Kind::NeedsYou { .. } => Some(summary.to_owned()),
@@ -319,7 +375,7 @@ mod tests {
     use ratatui_core::text::Line;
 
     use super::{Paint, key, mark_rows, preview_why, tail};
-    use crate::console::lane::{Item, Kind, Lane};
+    use crate::console::lane::{Item, Kind, Lane, OLD_CORE_GAP};
     use crate::console::view;
 
     fn item(kind: Kind, body: &str) -> Item {
@@ -486,6 +542,16 @@ mod tests {
                     to: s(),
                     id: s(),
                     uncertain: false,
+                    gap: None,
+                },
+                None,
+            ),
+            (
+                Kind::Asked {
+                    to: s(),
+                    id: s(),
+                    uncertain: false,
+                    gap: Some("body missing".to_owned()),
                 },
                 Some(summary),
             ),
@@ -566,6 +632,80 @@ mod tests {
             for (was, now) in plain[1..].iter().zip(&marked[1..]) {
                 assert_eq!(now, &format!("{bar}{}", &was[1..]));
             }
+        }
+    }
+
+    fn shown_with(item: Item, open: Option<&[bool]>, sent: bool) -> super::Tail {
+        let lane = Lane {
+            items: vec![item],
+            coverage: vec![],
+        };
+        let show = super::Show {
+            clock: &view::Style::PLAIN,
+            main: "x",
+            open,
+            sent: &[sent],
+        };
+        super::tail_with(&lane, 40, Paint::of(None), &show, 100, None)
+    }
+
+    fn rows_of(shown: &super::Tail) -> Vec<String> {
+        shown.rows.iter().map(text).collect()
+    }
+
+    #[test]
+    fn a_long_turn_folds_to_eight_rows_and_its_fold_row_toggles_it() {
+        let lines = |n: usize| (1..=n).map(|n| format!("l{n}")).collect::<Vec<_>>();
+        let turn =
+            |n: usize, open: Option<&[bool]>| shown_with(said(&lines(n).join("\n")), open, false);
+        // Ten rows show whole and a lane that folds nothing never has a fold row.
+        for shown in [turn(10, Some(&[false])), turn(12, None)] {
+            assert_eq!(shown.turns[0].fold, None);
+        }
+        assert_eq!(rows_of(&turn(10, Some(&[false]))).len(), 11);
+        let folded = turn(11, Some(&[false]));
+        let rows = rows_of(&folded);
+        assert_eq!(folded.turns[0].fold, Some(9));
+        assert_eq!(rows[8], "  l8");
+        assert_eq!(rows[9], "  ... 3 more lines");
+        assert_eq!(rows.len(), 10);
+        let open = turn(12, Some(&[true]));
+        let rows = rows_of(&open);
+        assert_eq!((rows.len(), open.turns[0].fold), (14, Some(13)));
+        assert_eq!(
+            (rows[12].as_str(), rows[13].as_str()),
+            ("  l12", "  show fewer lines")
+        );
+    }
+
+    #[test]
+    fn an_ask_header_says_sent_and_names_why_it_shows_a_summary_but_a_legacy_ask_names_nothing() {
+        let ask = |uncertain: bool, gap: Option<&str>| {
+            let kind = Kind::Asked {
+                to: s(),
+                id: "q".to_owned(),
+                uncertain,
+                gap: gap.map(str::to_owned),
+            };
+            item(kind, "body")
+        };
+        for (item, sent, want) in [
+            (ask(false, None), true, "to lead · sent"),
+            (ask(false, None), false, "to lead"),
+            (
+                ask(false, Some("body missing")),
+                true,
+                "to lead · sent · body missing",
+            ),
+            (ask(false, Some(OLD_CORE_GAP)), true, "to lead · sent"),
+            (
+                ask(true, None),
+                true,
+                "to lead · uncertain: check the lead pane",
+            ),
+        ] {
+            let head = text(&shown_with(item, None, sent).rows[0]);
+            assert!(head.ends_with(want), "{head:?} for {want:?}");
         }
     }
 }

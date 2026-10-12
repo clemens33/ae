@@ -146,6 +146,7 @@ Browsing:
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
 | `y` | copy the marked turn ([Copying a turn](#copying-a-turn)) |
 | Click a turn | mark it; clicking the marked turn again unmarks it |
+| Click a fold row, or `Enter` with a marked turn that has one | show that turn whole or fold it again ([Long turns](#long-turns)) |
 | Click session row | select that session |
 | Click a seat row | highlight that seat |
 | Click Overview / Agents | show that tab |
@@ -307,6 +308,23 @@ Named limits. The pane can change between the proof and the capture of one
 cycle; the panel only displays, so nothing is moved or typed on that account.
 A capture is plain text: styling and images the seat's tool draws are not
 shown.
+
+## Long turns
+
+A turn of more than ten rows, as the app draws them at the chat's width, shows its first
+eight and a dim row `... N more lines`; ten rows or fewer show whole. A fold must save at
+least one rendered row; the fold row is one row here, so that rule never moves the
+ten-row line. The fold row is a
+click target and `Enter` on a marked turn that has one toggles it too, the mark kept;
+the unfolded turn ends in `show fewer lines`. Enter with no mark, on a short turn or
+over a composed draft keeps its usual job and never puts the draft aside. A decision
+card folds after its options are split. Which turns you opened lives only in this
+app's memory, per session incarnation: a different session, a replaced one or a
+restart shows every turn folded, and a new turn starts folded. A sent ask's header
+reads `to <seat> · sent`; a failed outcome keeps its alert line. The ask body is the
+stored whole text; one that could not be read shows its summary and the reason in
+the header ([Residuals](#residuals)). `/more` is the tmux chat's: typed here it is
+refused with a hint to use the fold row.
 
 ## Copying a turn
 
@@ -547,5 +565,5 @@ tmux server.
   a terminal that sends only legacy X10 reports gets no drag. Inside tmux a
   binding that replaces the default `MouseDrag1Pane` keeps drags from the app.
 - Dragged sizes are not remembered when the app quits.
-- A copy is the whole recorded body for transcript turns, an admitted answer and a short `say` line. An ask, a bridge message, a not-delivered line and a card or needs-you line copy the journal's summary (line breaks flattened, 600 characters), a `say` of 3500 characters or more its capped summary, a bridge reply nothing (the record keeps no body) and an unadmitted reply stays a preview; the hint row says `preview only` for each. An answer whose body could not be read copies its summary with the reason.
+- A copy is the whole recorded body for transcript turns, an admitted answer, an ask whose stored text was read and a short `say` line. An ask whose text could not be read, a bridge message, a not-delivered line and a card or needs-you line copy the journal's summary (line breaks flattened, 600 characters), a `say` of 3500 characters or more its capped summary, a bridge reply nothing (the record keeps no body) and an unadmitted reply stays a preview; the hint row says `preview only` for each. An answer whose body could not be read copies its summary with the reason.
 - A turn is named by a 64-bit fingerprint of its record, so two identical records mark together. `[` / `]` stop at the oldest row the last frame produced; a second press after the next frame goes on. tmux keeps 50 buffers by default, so the 51st copy drops the oldest.

@@ -101,6 +101,7 @@ fn chat_wrap_every_visual_header_body_and_status_row_keeps_voice_bar_and_fits() 
             to: to.to_owned(),
             id: ID.to_owned(),
             uncertain: false,
+            gap: None,
         },
         body,
     );
@@ -302,6 +303,7 @@ fn chat_wrap_ask_answer_closed_and_unadmitted_headers_hide_request_ids_only() {
                 to: "lead".to_owned(),
                 id: ID.to_owned(),
                 uncertain: false,
+                gap: None,
             },
             "you → lead",
         ),
@@ -310,6 +312,7 @@ fn chat_wrap_ask_answer_closed_and_unadmitted_headers_hide_request_ids_only() {
                 to: "lead".to_owned(),
                 id: ID.to_owned(),
                 uncertain: true,
+                gap: None,
             },
             "you → lead · uncertain: check the lead pane",
         ),

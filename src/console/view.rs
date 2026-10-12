@@ -10,13 +10,25 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use super::fold;
 use super::input::{Effect, Size};
-use super::lane::{Item, Kind, Lane, Seat};
+use super::lane::{Item, Kind, Lane, OLD_CORE_GAP, Seat};
 use super::needs::{Cause, Row, Section, Source, Verdict};
-use super::wrap::{clip, wrap};
+use super::wrap::{clip, wrap, wrap_in};
 use crate::board::{clock_text, terminal_text};
+use crate::event_text::cell;
 use crate::theme::{Look, Palette};
 use crate::time::Timestamp;
+
+/// What follows the words of the header of an ask that went through.
+const SENT: &str = " · sent";
+
+/// The cells of the bar every dressed row starts with.
+const BAR_CELLS: usize = 1;
+
+fn cells(text: &str) -> usize {
+    text.chars().map(cell).sum()
+}
 
 /// Logical display lines of a decision reason; every other body stays raw.
 /// The renderers still neutralise and wrap each line through their usual door.
@@ -182,8 +194,14 @@ impl Style {
     /// A row's header, with its own newline.
     #[must_use]
     pub fn head(&self, kind: &Kind, time: &str) -> String {
+        self.head_with(kind, time, false)
+    }
+
+    /// [`Style::head`], its words followed by the dim [`SENT`] when `sent`.
+    fn head_with(&self, kind: &Kind, time: &str, sent: bool) -> String {
+        let suffix = if sent { SENT } else { "" };
         let Some(dress) = &self.0 else {
-            return terminal_text(&format!("## {time} {}\n", tag(kind)));
+            return terminal_text(&format!("## {time} {}{suffix}\n", tag(kind)));
         };
         let voice = dress.voice(kind);
         let bold = matches!(
@@ -192,14 +210,15 @@ impl Style {
         );
         let (stamp, words) = (self.paint(|p| p.dim, false, time), tag(kind));
         let words = self.paint(|p| Dress::hue(p, voice), bold, &words);
-        format!("{} {stamp} {words}\n", self.bar(kind))
+        let suffix = self.paint(|p| p.dim, false, suffix);
+        format!("{} {stamp} {words}{suffix}\n", self.bar(kind))
     }
 
     /// [`Style::head`] for a pane `width` cells wide: every visual row keeps the bar,
     /// a dressed style wrapping the header like a body row.
-    fn head_in(&self, kind: &Kind, time: &str, width: Option<usize>) -> String {
+    fn head_in(&self, kind: &Kind, time: &str, width: Option<usize>, sent: bool) -> String {
         let (Some(dress), Some(width)) = (&self.0, width) else {
-            return self.head(kind, time);
+            return self.head_with(kind, time, sent);
         };
         let (voice, mut stamp) = (dress.voice(kind), time.len());
         let bold = matches!(
@@ -208,12 +227,14 @@ impl Style {
         );
         let text = terminal_text(&format!("{time} {}", tag(kind)));
         let mut out = String::new();
+        let mut last = 0;
         for (gap, piece) in wrap(&text, width, 1) {
             let (dim, words) = piece
                 .split_at_checked(stamp.min(piece.len()))
                 .unwrap_or(("", &piece));
             stamp -= dim.len();
             let (sep, words) = words.split_at(words.len() - words.trim_start().len());
+            last = gap + cells(&piece);
             let words = self.paint(|p| Dress::hue(p, voice), bold, words);
             let dim = self.paint(|p| p.dim, false, dim);
             let _ = writeln!(
@@ -223,13 +244,28 @@ impl Style {
                 " ".repeat(gap)
             );
         }
+        if sent {
+            // The suffix rides the header's last row while the pane holds it,
+            // else it takes a row of its own.
+            if last + cells(SENT) + BAR_CELLS <= width {
+                out.truncate(out.len() - 1);
+                let _ = writeln!(out, "{}", self.paint(|p| p.dim, false, SENT));
+            } else {
+                for (gap, piece) in wrap(&SENT[1..], width, 1) {
+                    let tail = self.paint(|p| p.dim, false, &piece);
+                    let _ = writeln!(out, "{}{}{tail}", self.bar(kind), " ".repeat(gap));
+                }
+            }
+        }
         out
     }
 
-    /// [`Style::line`] for a pane `width` cells wide: every visual row keeps the bar.
-    fn line_in(&self, kind: &Kind, text: &str, width: Option<usize>) -> String {
-        let (Some(_), Some(width)) = (&self.0, width) else {
-            return self.line(kind, text);
+    /// [`Style::line`] for a pane `width` cells wide: every visual row keeps the
+    /// bar. One string per visual row, each with its own newline. A plain style
+    /// wraps only when `fold` counts its rows; a pipe's bytes never wrap.
+    fn line_rows(&self, kind: &Kind, text: &str, width: Option<usize>, fold: bool) -> Vec<String> {
+        let Some(width) = width.filter(|_| self.0.is_some() || fold) else {
+            return vec![self.line(kind, text)];
         };
         self.rows(kind, &terminal_text(text), width, str::to_owned)
     }
@@ -239,30 +275,27 @@ impl Style {
         let (Some(_), Some(width)) = (&self.0, width) else {
             return self.under(kind, line);
         };
-        self.rows(kind, &terminal_text(line), width, |piece| {
+        let rows = self.rows(kind, &terminal_text(line), width, |piece| {
             self.status_as(line, piece)
-        })
+        });
+        rows.concat()
     }
 
-    /// `text` wrapped, each row behind the bar of `kind`, its piece dressed by `dress`.
+    /// `text` wrapped, each row behind the bar of `kind`, its piece dressed by
+    /// `dress`, with its own newline.
     fn rows(
         &self,
         kind: &Kind,
         text: &str,
         width: usize,
         dress: impl Fn(&str) -> String,
-    ) -> String {
-        let mut out = String::new();
-        for (gap, piece) in wrap(text, width, 2) {
-            let _ = writeln!(
-                out,
-                "{}{}{}",
-                self.bar(kind),
-                " ".repeat(gap),
-                dress(&piece)
-            );
-        }
-        out
+    ) -> Vec<String> {
+        let bar = if self.0.is_some() { BAR_CELLS } else { 0 };
+        let rows = wrap_in(text, width, 2, bar).into_iter();
+        let row = |(gap, piece): (usize, String)| {
+            format!("{}{}{}\n", self.bar(kind), " ".repeat(gap), dress(&piece))
+        };
+        rows.map(row).collect()
     }
 
     /// One body line of a row, with its own newline.
@@ -359,7 +392,7 @@ impl Dress {
         };
         if starts("sent") {
             palette.done
-        } else if starts("uncertain") || starts("no record of") {
+        } else if starts("uncertain") || starts("no record of") || starts("the draft is kept") {
             palette.waiting_agent
         } else if starts("not delivered") || starts("refused") {
             palette.dead
@@ -423,10 +456,19 @@ pub(super) fn tag(kind: &Kind) -> String {
         Kind::Said { who } => format!("said {who}"),
         Kind::Card { seat } => format!("DECISION {seat} · waiting-user"),
         Kind::NeedsYou { seat } => format!("NEEDS YOU {seat} · needs you in its pane"),
-        Kind::Asked { to, uncertain, .. } => match uncertain {
-            true => format!("you → {to} · uncertain: check the {to} pane"),
-            false => format!("you → {to}"),
-        },
+        Kind::Asked {
+            to, uncertain, gap, ..
+        } => {
+            let mut tag = format!("you → {to}");
+            if *uncertain {
+                let _ = write!(tag, " · uncertain: check the {to} pane");
+            }
+            // A legacy ask has no stored body to name as missing.
+            if let Some(gap) = gap.as_deref().filter(|gap| *gap != OLD_CORE_GAP) {
+                let _ = write!(tag, " · {gap}");
+            }
+            tag
+        }
         Kind::NotDelivered { to, .. } => format!("you → {to} · not delivered"),
         Kind::Closed { .. } => "you closed an ask".to_owned(),
         Kind::Answer {
@@ -473,6 +515,16 @@ pub struct Printed {
     pending: Vec<Pending>,
     /// Submission ids survive a journal rebase; their outcomes print once.
     outcomes: BTreeSet<String>,
+    /// Whether a turn longer than [`fold::SHOWN`] rows prints folded: only
+    /// where a `/more` can be typed.
+    fold: bool,
+    /// The folds this console printed, by the handle its fold row names.
+    handles: BTreeMap<u32, Slot>,
+    /// The handle the next fold takes.
+    handle: u32,
+    /// The lane of the last pass, which a `/more` reads its turn from. Kept
+    /// only while folding.
+    last: Lane,
     style: Style,
     width: Option<usize>,
     /// The "needs you" section last printed from a settled read, by its rows.
@@ -488,11 +540,53 @@ pub struct Printed {
     needs_doubt: BTreeSet<&'static str>,
 }
 
+/// A folded turn a handle names: its identity in a lane, never its text.
+#[derive(Debug)]
+struct Slot {
+    /// [`turn_key`]'s hash and which of the lane's equal ones it is.
+    turn: (u64, usize),
+    /// Named by its journal position, which a rewritten journal reuses.
+    record: bool,
+    /// The journal was rewritten under a `record` turn.
+    stale: bool,
+    /// The turn is an ask this chat saw go through, and what stayed to say of it.
+    outcome: Option<(bool, String)>,
+}
+
+/// What a submission's outcome puts on the console: the ask it answers, the
+/// line that stays visible under it, and whether the ask went through, which
+/// its header says instead of a line.
 #[derive(Debug)]
 struct Pending {
     id: String,
     line: String,
+    sent: bool,
     passes: u8,
+}
+
+impl Pending {
+    /// The lines this outcome prints when its ask row never comes.
+    fn lines(&self) -> impl Iterator<Item = &str> {
+        let sent = self.sent.then_some("sent");
+        sent.into_iter()
+            .chain((!self.line.is_empty()).then_some(self.line.as_str()))
+    }
+}
+
+/// What names a turn across passes: its journal position when it has one, else
+/// its words.
+fn turn_key(item: &Item) -> String {
+    match &item.record {
+        Some(record) => format!("{CONSOLE_KEY}{record}"),
+        None => format!("{}|{:?}|{}", item.micros, item.kind, item.body),
+    }
+}
+
+fn hashed(key: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl Printed {
@@ -511,10 +605,17 @@ impl Printed {
         &self.style
     }
 
-    /// Whether this console is dressed: only a dressed console asks tmux for its pane.
+    /// Whether this console is dressed.
     #[must_use]
     pub fn dressed(&self) -> bool {
         self.style.0.is_some()
+    }
+
+    /// Whether this console folds long turns, which it can only do by counting
+    /// the rows its pane draws.
+    #[must_use]
+    pub fn folds(&self) -> bool {
+        self.fold
     }
 
     /// The pane width, in cells, the rows printed from now on are wrapped to.
@@ -546,9 +647,46 @@ impl Printed {
             self.pending.push(Pending {
                 id: id.to_owned(),
                 line,
+                sent: false,
                 passes: 2,
             });
         }
+    }
+
+    /// [`Printed::outcome`] for an ask that went through: its header says so
+    /// when its row prints, and `warn`, what is left to say of it, stays
+    /// visible under the row.
+    pub fn sent(&mut self, id: &str, warn: Option<String>) {
+        if self.outcomes.insert(id.to_owned()) {
+            self.pending.push(Pending {
+                id: id.to_owned(),
+                line: warn.unwrap_or_default(),
+                sent: true,
+                passes: 2,
+            });
+        }
+    }
+
+    /// Fold turns longer than [`fold::SHOWN`] rows from now on: set only where
+    /// a `/more` can be typed, for a pipe or a file prints whole.
+    pub fn set_fold(&mut self, on: bool) {
+        self.fold = on;
+    }
+
+    /// Keep `lane`, the one a pass just printed from, for the next `/more`.
+    pub fn keep(&mut self, lane: Lane) {
+        if self.fold {
+            self.last = lane;
+        }
+    }
+
+    /// [`Printed::more`] over the lane [`Printed::keep`] kept last.
+    ///
+    /// # Errors
+    ///
+    /// As [`Printed::more`].
+    pub fn more_last(&self, handle: &str) -> Result<String, String> {
+        self.more(handle, &self.last)
     }
 
     /// Flush held outcomes when this follow cannot continue. Their ids stay
@@ -556,7 +694,9 @@ impl Printed {
     pub fn flush_outcomes(&mut self) -> String {
         let mut out = String::new();
         for pending in std::mem::take(&mut self.pending) {
-            let _ = writeln!(out, "{}", self.style.status(&pending.line));
+            for line in pending.lines() {
+                let _ = writeln!(out, "{}", self.style.status(line));
+            }
         }
         out
     }
@@ -573,19 +713,17 @@ impl Printed {
         }
         let (mut in_lane, mut standing) = (BTreeMap::new(), BTreeMap::new());
         for item in &lane.items {
-            let key = match &item.record {
-                Some(record) => format!("{CONSOLE_KEY}{record}"),
-                None => format!("{}|{:?}|{}", item.micros, item.kind, item.body),
-            };
+            let key = turn_key(item);
             let nth: &mut usize = in_lane.entry(key.clone()).or_default();
             *nth += 1;
+            let turn = (hashed(&key), *nth);
             if matches!(item.kind, Kind::Card { .. } | Kind::NeedsYou { .. }) {
                 standing.insert(key.clone(), tag(&item.kind));
             }
             let printed = self.shown.entry(key).or_default();
-            if *nth > *printed {
+            if turn.1 > *printed {
                 *printed += 1;
-                self.row(item, &mut out);
+                self.row(item, turn, &mut out);
             }
         }
         // Only a lane whose journal was READ can say a card stopped standing; a
@@ -594,7 +732,9 @@ impl Printed {
             for mut pending in std::mem::take(&mut self.pending) {
                 pending.passes -= 1;
                 if pending.passes == 0 {
-                    let _ = writeln!(out, "{}", self.style.status(&pending.line));
+                    for line in pending.lines() {
+                        let _ = writeln!(out, "{}", self.style.status(line));
+                    }
                 } else {
                     self.pending.push(pending);
                 }
@@ -760,28 +900,120 @@ impl Printed {
     /// (`before` records, `now` now) no longer names; every other memory stays.
     pub fn rebase(&mut self, before: usize, now: usize) -> String {
         self.shown.retain(|key, _| !key.starts_with(CONSOLE_KEY));
+        for slot in self.handles.values_mut() {
+            slot.stale |= slot.record;
+        }
         self.style.dim(&format!(
             "-- journal rewritten ({before} records before, {now} now): the chat thread is shown again as the journal stands\n\n"
         ))
     }
 
-    fn row(&mut self, item: &Item, out: &mut String) {
-        let (day, time) = clock_text(self.style.shift(item.micros));
+    /// The rows of `item`'s body below its header, one string each.
+    fn body_rows(&self, item: &Item) -> Vec<String> {
+        let lines = body_lines(item).into_iter().flat_map(str::lines);
+        let rows = lines.flat_map(|line| {
+            self.style
+                .line_rows(&item.kind, line, self.width, self.fold)
+        });
+        rows.collect()
+    }
+
+    /// `item`'s header, drawn at this console's width.
+    fn header_of(&self, item: &Item, sent: bool) -> String {
+        let (_, time) = clock_text(self.style.shift(item.micros));
+        self.style.head_in(&item.kind, &time, self.width, sent)
+    }
+
+    fn row(&mut self, item: &Item, turn: (u64, usize), out: &mut String) {
+        let (day, _) = clock_text(self.style.shift(item.micros));
         if self.day.as_deref() != Some(day.as_str()) {
             out.push_str(&self.style.day(&day));
             self.day = Some(day);
         }
-        out.push_str(&self.style.head_in(&item.kind, &time, self.width));
-        for line in body_lines(item).into_iter().flat_map(str::lines) {
-            out.push_str(&self.style.line_in(&item.kind, line, self.width));
+        let pending = match &item.kind {
+            Kind::Asked { id, .. } | Kind::NotDelivered { id, .. } => {
+                let at = self.pending.iter().position(|pending| pending.id == *id);
+                at.map(|at| self.pending.remove(at))
+            }
+            _ => None,
+        };
+        let outcome = pending.as_ref().map(|p| (p.sent, p.line.clone()));
+        let sent = outcome.as_ref().is_some_and(|(sent, _)| *sent);
+        out.push_str(&self.header_of(item, sent));
+        let rows = self.body_rows(item);
+        let more = format!(
+            "{} (/more {})",
+            fold::line(rows.len().saturating_sub(fold::SHOWN)),
+            self.handle + 1
+        );
+        let marker = self.marker_rows(&item.kind, &more);
+        let (rows, hidden) = fold::folded(rows, !self.fold, marker);
+        out.extend(rows);
+        if hidden > 0 {
+            self.handle += 1;
+            let record = item.record.is_some();
+            let slot = Slot {
+                turn,
+                record,
+                stale: false,
+                outcome,
+            };
+            self.handles.insert(self.handle, slot);
+            out.push_str(&self.style.under_in(&item.kind, &more, self.width));
         }
-        if let Kind::Asked { id, .. } | Kind::NotDelivered { id, .. } = &item.kind
-            && let Some(at) = self.pending.iter().position(|pending| pending.id == *id)
-        {
-            let pending = self.pending.remove(at);
+        if let Some(pending) = pending.filter(|pending| !pending.line.is_empty()) {
             out.push_str(&self.style.under_in(&item.kind, &pending.line, self.width));
         }
         out.push('\n');
+    }
+
+    /// The physical rows the fold line `line` of a `kind` turn takes in this
+    /// console's pane: a dressed console wraps it itself, a plain one leaves it
+    /// to the terminal.
+    fn marker_rows(&self, kind: &Kind, line: &str) -> usize {
+        if self.dressed() {
+            return self
+                .style
+                .under_in(kind, line, self.width)
+                .matches('\n')
+                .count();
+        }
+        (2 + cells(line)).div_ceil(self.width.unwrap_or(usize::MAX).max(1))
+    }
+
+    /// Folded turn `handle` whole, as the lane `lane` holds it now: its header
+    /// and every row. It prints nothing by itself and remembers nothing.
+    ///
+    /// # Errors
+    ///
+    /// The refusal line, by name: no such fold, a turn named by a journal
+    /// position the journal has since rewritten, or one no longer in `lane`.
+    pub fn more(&self, handle: &str, lane: &Lane) -> Result<String, String> {
+        let refused = |why: &str| format!("refused: /more {handle}: {why}");
+        let slot = handle
+            .parse::<u32>()
+            .ok()
+            .and_then(|n| self.handles.get(&n));
+        let slot = slot.ok_or_else(|| refused("this chat folded no such turn"))?;
+        if slot.stale {
+            return Err(refused("the journal was rewritten since that fold"));
+        }
+        let mut seen: BTreeMap<u64, usize> = BTreeMap::new();
+        let item = lane.items.iter().find(|item| {
+            let hash = hashed(&turn_key(item));
+            let nth = seen.entry(hash).or_default();
+            *nth += 1;
+            (hash, *nth) == slot.turn
+        });
+        let item = item.ok_or_else(|| refused("that turn is no longer in this chat's read"))?;
+        let (sent, warn) = slot.outcome.clone().unwrap_or_default();
+        let mut out = self.header_of(item, sent);
+        out.extend(self.body_rows(item));
+        if !warn.is_empty() {
+            out.push_str(&self.style.under_in(&item.kind, &warn, self.width));
+        }
+        out.push('\n');
+        Ok(out)
     }
 }
 
@@ -993,7 +1225,7 @@ fn micros_of(now: Timestamp) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Printed, Style, Zone, header};
+    use super::{Printed, Style, Zone, cells, header};
     use crate::attention::Reason;
     use crate::console::input::Size;
     use crate::console::lane::{Item, Kind, Lane, Seat};
@@ -1327,6 +1559,7 @@ mod tests {
                 to: "lead".to_owned(),
                 id: "id".to_owned(),
                 uncertain: false,
+                gap: None,
             },
             Kind::NotDelivered {
                 to: "lead".to_owned(),
@@ -1361,6 +1594,7 @@ mod tests {
                 to,
                 id,
                 uncertain: false,
+                gap: None,
             },
             "closed" => Kind::Closed { id },
             _ => Kind::NotDelivered { to, id },
@@ -1669,6 +1903,7 @@ mod tests {
             to: "lead".to_owned(),
             id: "id".to_owned(),
             uncertain: false,
+            gap: None,
         };
         let got = printed.step(&lane(vec![item(kind, T, "q\n  r")], &["gap"]), 0, true);
         let want = "coverage incomplete: gap\n# 2026-09-30 +0200\n▌ 08:01:00 you → lead\n▌  q\n▌    r\n▌  sent id\n\n";
@@ -1720,6 +1955,7 @@ mod tests {
             to: "lead".to_owned(),
             id: id.to_owned(),
             uncertain: false,
+            gap: None,
         };
         assert_eq!(
             Style::PLAIN.head(&ask, "06:01:00"),
@@ -1835,5 +2071,162 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("no pane carries main"), "{text}");
+    }
+
+    #[test]
+    fn a_plain_chat_folds_by_the_rows_it_wraps_and_a_pipe_prints_whole() {
+        let text = vec!["word"; 60].join(" ");
+        let lane = lane(vec![item(said("lead"), T, &text)], &[]);
+        let mut piped = Printed::default();
+        piped.set_width(Some(20));
+        assert!(piped.step(&lane, 0, true).contains(&format!("  {text}\n")));
+        piped.keep(lane.clone());
+        assert!(
+            piped.more_last("1").is_err(),
+            "a pipe keeps no lane to read"
+        );
+        let mut chat = Printed::default();
+        chat.set_fold(true);
+        chat.set_width(Some(20));
+        let shown = chat.step(&lane, 0, true);
+        let body: Vec<_> = shown
+            .lines()
+            .filter(|row| row.starts_with("  word"))
+            .collect();
+        assert_eq!(body.len(), 8, "{shown}");
+        assert!(body.iter().all(|row| cells(row) <= 20), "{shown}");
+        chat.keep(lane);
+        let whole = chat.more_last("1").expect("the fold named");
+        let rows: Vec<_> = whole
+            .lines()
+            .filter(|row| row.starts_with("  word"))
+            .collect();
+        assert!(shown.contains(&format!("... {} more lines (/more 1)", rows.len() - 8)));
+        let joined: Vec<_> = rows.iter().map(|row| row.trim()).collect();
+        assert_eq!(joined.join(" "), text, "every word is shown");
+    }
+
+    #[test]
+    fn a_fold_keeps_its_asks_sent_word_and_kept_draft_warning_in_more() {
+        let text = vec!["word"; 60].join(" ");
+        let lane = lane(vec![item(asked("asked"), T, &text)], &[]);
+        let mut printed = Printed::default();
+        printed.set_fold(true);
+        printed.set_width(Some(24));
+        printed.sent("id", Some("the draft is kept (probe)".to_owned()));
+        let shown = printed.step(&lane, 0, true);
+        assert!(shown.contains("## 06:01:00 you → lead · sent\n"), "{shown}");
+        assert!(shown.contains("the draft is kept (probe)\n"), "{shown}");
+        assert!(!shown.lines().any(|row| row.trim() == "sent"), "{shown}");
+        printed.keep(lane);
+        let whole = printed.more_last("1").expect("the fold named");
+        assert!(whole.contains("## 06:01:00 you → lead · sent\n"), "{whole}");
+        assert!(whole.contains("the draft is kept (probe)\n"), "{whole}");
+        assert!(!whole.contains("more lines"), "{whole}");
+    }
+
+    #[test]
+    fn a_sent_header_is_dim_and_never_draws_a_row_wider_than_its_pane() {
+        let ask = item(asked("asked"), T, "q");
+        let dim = format!("{} · sent\x1b[0m", sgr(Palette::DARCULA.dim));
+        for width in [None, Some(80)] {
+            let mut printed = Printed::styled(dressed("on", ""));
+            printed.set_width(width);
+            assert!(printed.header_of(&ask, true).contains(&dim), "{width:?}");
+            assert!(
+                !printed.header_of(&ask, false).contains("sent"),
+                "{width:?}"
+            );
+        }
+        for width in 3..=40 {
+            let mut printed = Printed::styled(dressed("on", ""));
+            printed.set_width(Some(width));
+            let head = unstyled(&printed.header_of(&ask, true));
+            assert!(
+                head.lines().all(|row| row.chars().count() <= width),
+                "{width}: {head:?}"
+            );
+            let flat: String = head
+                .chars()
+                .filter(|ch| !ch.is_whitespace() && *ch != '▌')
+                .collect();
+            assert!(flat.contains("sent"), "{width}: {head:?}");
+        }
+    }
+
+    #[test]
+    fn a_folding_plain_chat_draws_short_turns_as_a_pipe_does() {
+        // What a terminal draws: each tab spent to the next stop of eight.
+        let drawn = |text: &str| {
+            let spent = text.lines().map(|line| {
+                let mut row = String::new();
+                for ch in line.trim_end().chars() {
+                    let spaces = if ch == '\t' {
+                        8 - row.chars().count() % 8
+                    } else {
+                        0
+                    };
+                    row.push_str(&" ".repeat(spaces));
+                    if ch != '\t' {
+                        row.push(ch);
+                    }
+                }
+                row.trim_end().to_owned()
+            });
+            spent.collect::<Vec<_>>()
+        };
+        let lane = lane(
+            vec![item(said("lead"), T, "a\tb\n\tindent\n  two\n\nlast\né\tb")],
+            &[],
+        );
+        let mut chat = Printed::default();
+        chat.set_fold(true);
+        chat.set_width(Some(80));
+        let piped = Printed::default().step(&lane, 0, true);
+        assert_eq!(drawn(&chat.step(&lane, 0, true)), drawn(&piped));
+    }
+
+    #[test]
+    fn a_fold_never_takes_more_physical_rows_than_the_turn_it_hides() {
+        // A turn of `rows` one-cell lines behind `indent` spaces at `width`: the
+        // physical rows it takes and whether it folded.
+        let made_in = |dressed_look: bool, fold: bool, width: usize, rows: usize, indent| {
+            let text = std::iter::repeat_n(format!("{}x", " ".repeat(indent)), rows)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let lane = lane(vec![item(said("lead"), T, &text)], &[]);
+            let mut printed = if dressed_look {
+                Printed::styled(dressed("on", ""))
+            } else {
+                Printed::default()
+            };
+            printed.set_fold(fold);
+            printed.set_width(Some(width));
+            let shown = unstyled(&printed.step(&lane, 0, true));
+            let taken = |row: &str| row.chars().count().div_ceil(width).max(1);
+            (
+                shown.lines().map(taken).sum::<usize>(),
+                shown.contains("(/more"),
+            )
+        };
+        let made = |look, fold, width, rows| made_in(look, fold, width, rows, 0);
+        for look in [false, true] {
+            for width in [3, 5, 8, 10, 12, 20, 40, 80] {
+                let (whole, folded) = (made(look, false, width, 11), made(look, true, width, 11));
+                assert_eq!(made_in(look, true, width, 11, 20).0, folded.0, "deep");
+                assert!(
+                    folded.0 <= whole.0,
+                    "{look} {width}: {folded:?} vs {whole:?}"
+                );
+            }
+            assert!(made(look, true, 80, 11).1 && !made(look, true, 5, 11).1);
+        }
+        // At width 10 the line takes 3 rows plain (8 + 3 = 11) and 5 dressed
+        // (8 + 5 = 13): a turn that equals the shown rows plus the line stays
+        // whole, one row longer folds and saves that row.
+        for (look, equal) in [(false, 11), (true, 13)] {
+            assert!(!made(look, true, 10, equal).1, "{look}: equal stays whole");
+            assert!(made(look, true, 10, equal + 1).1, "{look}: one more folds");
+        }
     }
 }

@@ -18,17 +18,29 @@ const BAR: usize = 1;
 /// two scalars, and always takes one scalar, so no text is dropped even in a
 /// pane too narrow for it.
 pub(crate) fn wrap(text: &str, width: usize, first: usize) -> Vec<(usize, String)> {
-    let cap = width.saturating_sub(BAR + 2);
+    wrap_in(text, width, first, BAR)
+}
+
+/// [`wrap`] for rows that start with `bar` cells instead of the bar: none for
+/// a plain row, which sits at the pane's edge. A plain line that fits whole,
+/// margin and indent included, keeps its own bytes, tabs too, for the
+/// terminal spends them itself.
+pub(crate) fn wrap_in(text: &str, width: usize, first: usize, bar: usize) -> Vec<(usize, String)> {
+    let cap = width.saturating_sub(bar + 2);
     let mut rows = Vec::new();
     for (at, line) in text.split('\n').enumerate() {
         let lead = if at == 0 { first } else { 2 };
-        let flat = expand_tabs(line, BAR + lead);
+        let flat = expand_tabs(line, bar + lead);
+        if bar == 0 && lead + flat.chars().map(cell).sum::<usize>() <= width {
+            rows.push((lead, line.to_owned()));
+            continue;
+        }
         let content = flat.trim_start_matches(' ');
         let hang = flat.len() - content.len();
         let mut gap = (lead + hang).min(cap);
         let mut rest = content;
         loop {
-            let (piece, tail) = split_row(rest, width.saturating_sub(BAR + gap));
+            let (piece, tail) = split_row(rest, width.saturating_sub(bar + gap));
             rows.push((gap, piece.to_owned()));
             if tail.is_empty() {
                 break;

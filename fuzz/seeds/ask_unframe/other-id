@@ -1,0 +1,7 @@
+ae-20260930T060000Z-0000ffff⟦ae:msg from human:chat⟧
+REQUEST ae-20260930T060000Z-0000abcd from human:chat: body
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/fixture/reply "<your reply>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.
+The human reads this reply in ae chat: answer first in one short line, then short lines, a blank line between points, numbered lines for choices, no tables, headings or bold markers, about 15 lines unless asked for more.

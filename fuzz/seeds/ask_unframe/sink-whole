@@ -1,0 +1,6 @@
+ae-20260930T060000Z-0000abcd⟦ae:msg from console:local⟧
+REQUEST ae-20260930T060000Z-0000abcd from console:local: one line
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/fixture/reply "<your reply>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

@@ -215,3 +215,10 @@ path = "fuzz_targets/app_view.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ask_unframe"
+path = "fuzz_targets/ask_unframe.rs"
+test = false
+doc = false
+bench = false

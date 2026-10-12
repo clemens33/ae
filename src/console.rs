@@ -16,6 +16,7 @@ use crate::{
 };
 use lane::Seat;
 
+pub(crate) mod fold;
 pub mod input;
 pub mod lane;
 pub mod needs;
@@ -257,7 +258,9 @@ impl Console {
         self.printed.set_width(size.map(|size| size.width));
         text.push_str(&self.printed.step(&read.lane, read.board_gaps, read.settled));
         let now = crate::time::Timestamp::now();
-        text.push_str(&self.printed.needs(&read.needs, size, now));
+        let needs_size = size.filter(|_| self.printed.dressed());
+        text.push_str(&self.printed.needs(&read.needs, needs_size, now));
+        self.printed.keep(read.lane);
         Ok(text)
     }
 
@@ -565,25 +568,37 @@ pub(crate) fn lead_pair_at(dir: &Path) -> Result<bool, String> {
     Ok(lifecycle::meta_value(&bytes, "layout") == "lead-pair")
 }
 
-/// A console reply's stored body, read only from THIS session's `messages/`:
-/// the recorded path must end in a `messages` directory and a name the reply
-/// writer gives this request, and the read takes that name from `dir` itself,
-/// never the recorded directory, so no record can point the console elsewhere.
+/// A console ask's or reply's stored body, read only from THIS session's
+/// `messages/`: the recorded path must end in a `messages` directory and a
+/// name the writer gives this request, and the read takes that name from `dir`
+/// itself, never the recorded directory, so no record can point the console
+/// elsewhere. The file is read at most [`reply::CONSOLE_BODY_CAP`] bytes, and
+/// an ask's is the delivered envelope, so only [`tracked::uncompose_ask`]'s
+/// answer is the whole text.
 fn body_for(dir: &Path, event: &Event) -> lane::Body {
     const CAP: u64 = reply::CONSOLE_BODY_CAP as u64;
     let Some(recorded) = event.body_file.as_deref().map(Path::new) else {
         return lane::Body::OldCore;
     };
     let id = event.reference.as_deref().unwrap_or("");
+    let (action, noun) = match event.action.as_str() {
+        action if action == tracked::Kind::Ask.action() => (action, "an ask"),
+        _ => (reply::ACTION, "a reply"),
+    };
     let in_messages = recorded.parent().and_then(Path::file_name) == Some("messages".as_ref());
     let name = recorded.file_name().and_then(|name| name.to_str());
-    let Some(name) = name.filter(|name| in_messages && is_reply_body_name(id, name)) else {
-        return lane::Body::Refused("not a reply body in this session's messages".to_owned());
+    let Some(name) = name.filter(|name| in_messages && is_body_name(id, action, name)) else {
+        return lane::Body::Refused(format!("not {noun} body in this session's messages"));
     };
     match store::read_capped_in(&dir.join("messages"), name, CAP) {
-        Ok(SourceRead::Ready(bytes)) => {
-            String::from_utf8(bytes).map_or(lane::Body::NotUtf8, lane::Body::Whole)
-        }
+        Ok(SourceRead::Ready(bytes)) => match String::from_utf8(bytes) {
+            Err(_) => lane::Body::NotUtf8,
+            Ok(text) if action == reply::ACTION => lane::Body::Whole(text),
+            Ok(text) => tracked::uncompose_ask(&text, id).map_or_else(
+                || lane::Body::Refused("not the envelope ae delivers an ask in".to_owned()),
+                |whole| lane::Body::Whole(whole.to_owned()),
+            ),
+        },
         Ok(SourceRead::Absent) => lane::Body::Missing,
         Ok(SourceRead::Invalid(what)) => lane::Body::Refused(what),
         Ok(SourceRead::Unreadable(why)) => lane::Body::Refused(format!("unreadable ({why})")),
@@ -591,12 +606,14 @@ fn body_for(dir: &Path, event: &Event) -> lane::Body {
     }
 }
 
-/// `<id>.reply.<six lowercase hex>.txt` — the name `deliver::store_body`
-/// publishes a reply to request `id` under.
-fn is_reply_body_name(id: &str, name: &str) -> bool {
+/// `<id>.<action>.<six lowercase hex>.txt` — the name `deliver::store_body`
+/// publishes a request's ask or reply under.
+fn is_body_name(id: &str, action: &str, name: &str) -> bool {
     let hex = name
         .strip_prefix(id)
-        .and_then(|rest| rest.strip_prefix(".reply."))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_prefix(action))
+        .and_then(|rest| rest.strip_prefix('.'))
         .and_then(|rest| rest.strip_suffix(".txt"));
     let lower_hex = |byte: u8| matches!(byte, b'0'..=b'9' | b'a'..=b'f');
     !id.is_empty() && hex.is_some_and(|hex| hex.len() == 6 && hex.bytes().all(lower_hex))
@@ -670,10 +687,21 @@ pub(crate) fn recorded_uuid(dir: &Path) -> String {
 /// look is drawn. Only then does it ask tmux — for the session's palette and
 /// icons, and once for the viewer's clock zone.
 fn dress(name: &str, seats: &[Seat]) -> view::Style {
-    use std::io::IsTerminal as _;
-    let tty = std::io::stdout().is_terminal();
+    let tty = stdout_is_terminal();
     let (look, zone) = look_of(name, tty);
     view::Style::resolve(tty, look, zone.as_deref(), lead_name(seats))
+}
+
+/// Whether turns fold: the keys that type `/more` come from a terminal and the
+/// rows it would count go to one, so a redirected chat prints every turn whole.
+fn folding(input_terminal: bool, output_terminal: bool) -> bool {
+    input_terminal && output_terminal
+}
+
+/// Whether this chat's output is a terminal, the one place that asks.
+fn stdout_is_terminal() -> bool {
+    use std::io::IsTerminal as _;
+    std::io::stdout().is_terminal()
 }
 
 /// Session `name`'s drawn look and the viewer's zone, asked of tmux only for
@@ -758,7 +786,14 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     let mut term = None;
     if args.input {
         match term::Term::start(&console) {
-            Ok(started) => term = args.follow.then_some(started),
+            Ok(started) => {
+                term = args.follow.then_some(started);
+                // A fold is read whole only through `/more` on a terminal: a
+                // redirected chat prints every turn whole.
+                console
+                    .printed
+                    .set_fold(folding(term.is_some(), stdout_is_terminal()));
+            }
             Err(off) => write!(out, "{}", console.printed.style().dim(&off))?,
         }
     }
@@ -771,10 +806,10 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
 }
 
 /// The size in cells of the pane this chat draws in, asked of tmux through the
-/// pane-size door; `None` when the console is not dressed, is in no tmux pane or
-/// tmux does not answer, and then its rows are not wrapped.
+/// pane-size door; `None` when the console is neither dressed nor folding, is in
+/// no tmux pane or tmux does not answer, and then its rows are not wrapped.
 fn pane_size(printed: &view::Printed) -> Option<input::Size> {
-    if !printed.dressed() {
+    if !printed.dressed() && !printed.folds() {
         return None;
     }
     let declared = doors::declared_server(crate::shape::current());
@@ -839,6 +874,10 @@ fn pump(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/it/longpaste_console_spec.rs"]
+mod longpaste_spec;
 
 #[cfg(test)]
 pub(super) mod tests {
@@ -911,6 +950,57 @@ pub(super) mod tests {
             r#"{{"ts":"2026-09-30T06:01:00Z","actor":"lead","action":"reply","target":"console:local","ref":"{REQ}","body_file":"{path}"}}"#
         );
         Event::parse_line(&line).expect("a reply record")
+    }
+
+    #[test]
+    fn a_chat_folds_only_with_a_terminal_both_ways() {
+        let table = [(false, false), (false, true), (true, false), (true, true)];
+        assert_eq!(
+            table.map(|(i, o)| super::folding(i, o)),
+            [false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn an_ask_file_that_is_not_the_delivered_envelope_shows_its_summary_and_no_raw_frame() {
+        let rig = Rig::new("bad-ask");
+        let dir = rig.0.join("s");
+        fs::create_dir_all(dir.join("messages")).expect("messages");
+        let name = format!("{REQ}.ask.00000a.txt");
+        let raw = "⟦ae:msg from human:chat⟧\nREQUEST x: half a frame\nno footer";
+        fs::write(dir.join("messages").join(&name), raw).expect("a valid UTF-8 file");
+        let record = format!(
+            r#"{{"ts":"2026-09-30T06:00:00Z","actor":"console:local","action":"ask","target":"lead","ref":"{REQ}","body_file":"/x/messages/{name}","summary":"SUMMARY"}}"#
+        );
+        let ask = Event::parse_line(&record).expect("an ask record");
+        let body = super::body_for(&dir, &ask);
+        assert!(
+            matches!(&body, Body::Refused(why) if why.contains("not the envelope")),
+            "{body:?}"
+        );
+        let lane = super::lane::fold(
+            "s",
+            &[],
+            &[ask],
+            &crate::board::Observation::default(),
+            0,
+            &|e| super::body_for(&dir, e),
+        );
+        let shown = Printed::default().step(&lane, 0, true);
+        assert_eq!(lane.items[0].body, "SUMMARY");
+        assert!(
+            lane.coverage
+                .join(" ")
+                .contains("ask to lead — body refused: not the envelope")
+        );
+        assert!(
+            shown.contains("you → lead · body refused: not the envelope"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("half a frame") && !shown.contains("⟦ae:msg"),
+            "{shown}"
+        );
     }
 
     #[test]

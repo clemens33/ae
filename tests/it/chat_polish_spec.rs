@@ -232,9 +232,7 @@ impl Rig {
         let id = self.ask_ids(1).pop().expect("one recorded ask");
         self.wait("outcome follows the recorded ask body", |screen| {
             let text = screen.replace('\n', "");
-            text.find(literal)
-                .zip(text.rfind("sent"))
-                .is_some_and(|(body, outcome)| body < outcome)
+            text.contains(literal) && text.contains("· sent")
         });
         id
     }
@@ -493,25 +491,22 @@ fn two_asks_keep_header_outcome_pairs_in_sequence() {
     rig.key("Enter");
     let _first = rig.ask_ids(1).pop().expect("first recorded ask");
     rig.wait("first outcome printed", |screen| {
-        screen
-            .find("sequence probe one")
-            .zip(screen.find("sent"))
-            .is_some_and(|(body, outcome)| body < outcome)
+        screen.contains("sequence probe one") && screen.contains("· sent")
     });
     rig.paste("sequence probe two");
     rig.key("Enter");
     let ids = rig.ask_ids(2);
     assert_ne!(ids[0], ids[1], "pairing ids stay distinct in journal");
     let screen = rig.wait("both pairs visible", |screen| {
-        screen.matches("you → lead").count() == 2 && screen.matches("sent").count() == 2
+        screen.matches("you → lead").count() == 2 && screen.matches("· sent").count() == 2
     });
     let positions = [
         screen.find("you → lead").expect("first header"),
+        screen.find("· sent").expect("first outcome"),
         screen.find("sequence probe one").expect("first body"),
-        screen.find("sent").expect("first outcome"),
         screen.rfind("you → lead").expect("second header"),
+        screen.rfind("· sent").expect("second outcome"),
         screen.find("sequence probe two").expect("second body"),
-        screen.rfind("sent").expect("second outcome"),
     ];
     assert!(
         positions.windows(2).all(|pair| pair[0] < pair[1]),
@@ -528,6 +523,7 @@ fn asked(id: &str, body: &str) -> Item {
             to: "lead".to_owned(),
             id: id.to_owned(),
             uncertain: false,
+            gap: None,
         },
         body: body.to_owned(),
         record: None,

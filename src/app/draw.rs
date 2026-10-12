@@ -109,6 +109,8 @@ pub(crate) enum Hit {
     PeekClose,
     /// A drawn chat turn, by its fingerprint: marks it, or unmarks it.
     Turn(u64),
+    /// A drawn fold row, by its turn's fold key: folds or unfolds the turn.
+    Fold(u64),
 }
 
 /// A border as drawn: its edge, where it stands, its own cells and the cells
@@ -137,6 +139,8 @@ pub(crate) struct Layout {
     /// The turns the frame produced, newest first: fingerprint, the rows
     /// between its last row and the newest row, and its row count.
     pub turns: Vec<(u64, usize, usize)>,
+    /// The turns with a fold row: fingerprint, then fold key.
+    pub folds: Vec<(u64, u64)>,
     /// The cell the terminal cursor shows: the draft's, while writing.
     pub cursor: Option<Position>,
     /// Body rows the open full-pane panel (settings or peek) shows at once.
@@ -276,6 +280,7 @@ impl Layout {
         self.max_scroll = 0;
         self.complete = true;
         self.turns.clear();
+        self.folds.clear();
         self.cursor = None;
         self.settings_page_rows = 0;
         self.settings_max_scroll = 0;
@@ -353,6 +358,12 @@ pub(crate) struct Wait<'a> {
     /// The lane's turns' fingerprints, in item order: with none, no turn is
     /// marked or clickable.
     pub(crate) keys: &'a [u64],
+    /// The same turns' fold keys.
+    pub(crate) folds: &'a [u64],
+    /// Which of them show whole; with none, nothing folds.
+    pub(crate) open: &'a [bool],
+    /// Which of them are asks that went through.
+    pub(crate) sent: &'a [bool],
 }
 
 /// Draw `screen` into `buf`, whose area starts at the origin — the app hands
@@ -1218,19 +1229,11 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         mut rows,
         complete,
         turns,
-    } = super::lane::tail(
-        screen.lane,
-        usize::from(room),
-        paint,
-        &clock,
-        main,
-        need,
-        None,
-    );
+    } = lane_tail(ctx, &clock, main, (room, need));
     if ctx.wait.lane {
         rows.push(Line::from(Span::styled("loading", dim)));
     }
-    let (turns, bars) = place_turns(ctx, &turns, &mut rows, layout);
+    let (turns, bars, folds) = place_turns(ctx, &turns, &mut rows, layout);
     let last = rows
         .len()
         .saturating_sub(scroll)
@@ -1239,6 +1242,13 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let y0 = bottom - cells(last - first);
     for (step, line) in rows[first..last].iter().enumerate() {
         put_line(buf, left, y0 + cells(step), line, room);
+    }
+    // A fold row is recorded before its turn: the first target to hold a cell wins.
+    for (key, row) in folds {
+        if (first..last).contains(&row) {
+            let rect = Rect::new(left, y0 + cells(row - first), room, 1);
+            layout.record(buf, rect, Hit::Fold(key));
+        }
     }
     turn_targets(buf, layout, &turns, (first..last, left, y0, room));
     layout.lane(buf, (left, top, room, room_rows), &bars, (first..last, y0));
@@ -1289,20 +1299,50 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.complete = complete;
 }
 
-/// The produced turns with their fingerprints and row spans, oldest first. The
+/// The lane's newest rows as the app's own state shows them: `size` is the
+/// column's width and how many rows are wanted.
+fn lane_tail(
+    ctx: &Ctx<'_, '_>,
+    clock: &view::Style,
+    main: &str,
+    size: (u16, usize),
+) -> super::lane::Tail {
+    let show = super::lane::Show {
+        clock,
+        main,
+        open: (!ctx.wait.open.is_empty()).then_some(ctx.wait.open),
+        sent: ctx.wait.sent,
+    };
+    let (room, need) = size;
+    let lane = ctx.screen.lane;
+    super::lane::tail_with(lane, usize::from(room), ctx.paint, &show, need, None)
+}
+
+/// A turn's fingerprint and the rows it spans.
+type TurnSpan = (u64, Range<usize>);
+
+/// The produced turns with their fingerprints and row spans, oldest first, the
+/// bars of the marked one and each fold row as its fold key and row. The
 /// marked turn is recoloured in place, and the frame keeps each turn's place
-/// for the keys.
+/// and fold for the keys.
 fn place_turns(
     ctx: &Ctx<'_, '_>,
     turns: &[super::lane::Turn],
     rows: &mut [Line<'static>],
     layout: &mut Layout,
-) -> (Vec<(u64, Range<usize>)>, Vec<usize>) {
-    let turns: Vec<(u64, Range<usize>)> = (turns.iter())
-        .filter_map(|turn| {
-            let key = *ctx.wait.keys.get(turn.at)?;
-            Some((key, turn.first..turn.first + turn.rows))
-        })
+) -> (Vec<TurnSpan>, Vec<usize>, Vec<(u64, usize)>) {
+    let keyed: Vec<_> = (turns.iter())
+        .filter_map(|turn| Some((turn, *ctx.wait.keys.get(turn.at)?)))
+        .collect();
+    let turns: Vec<TurnSpan> = (keyed.iter())
+        .map(|(turn, key)| (*key, turn.first..turn.first + turn.rows))
+        .collect();
+    let folds: Vec<(u64, usize)> = (keyed.iter())
+        .filter_map(|(turn, _)| Some((*ctx.wait.folds.get(turn.at)?, turn.first + turn.fold?)))
+        .collect();
+    layout.folds = (keyed.iter())
+        .filter(|(turn, _)| turn.fold.is_some())
+        .filter_map(|(turn, key)| Some((*key, *ctx.wait.folds.get(turn.at)?)))
         .collect();
     let mut bars = Vec::new();
     for (key, span) in &turns {
@@ -1315,7 +1355,7 @@ fn place_turns(
     layout.turns = (turns.iter().rev())
         .map(|(key, span)| (*key, end - span.end, span.len()))
         .collect();
-    (turns, bars)
+    (turns, bars, folds)
 }
 
 /// A turn's rows are its target, across the column: the column keeps two

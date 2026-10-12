@@ -288,6 +288,10 @@ fuzz_target!(|data: &[u8]| {
                 "a named close is one word"
             ),
             Effect::Open(seat) => panic!("no roster was set, so nothing opens: {seat:?}"),
+            Effect::More(number) => assert!(
+                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()),
+                "a fold number is digits: {number:?}"
+            ),
             Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => {}
         }
     }

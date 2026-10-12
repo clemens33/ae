@@ -403,16 +403,47 @@ pub fn compose(kind: Kind, req_id: &str, sender: &str, body: &str, reply_cmd: &s
         text.push_str("\n\n");
         text.push_str(instructions);
     }
-    text.push_str(
-        "\n\nREQUIRED: When you have finished, you MUST run this exact command to reply:\n",
-    );
+    text.push_str(REQUIRED_HEAD);
     text.push_str(reply_cmd);
-    text.push_str("\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.");
+    text.push_str(NO_PEEK_LINE);
     if sender == CONSOLE_DISPLAY {
         text.push('\n');
         text.push_str(CHAT_REPLY_STYLE);
     }
     text
+}
+
+/// What opens the REQUIRED footer [`compose`] ends a message with.
+const REQUIRED_HEAD: &str =
+    "\n\nREQUIRED: When you have finished, you MUST run this exact command to reply:\n";
+
+/// The footer line after the reply command.
+const NO_PEEK_LINE: &str =
+    "\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.";
+
+/// The human's own words in the stored body of console ask `id`: what the
+/// delivery framed, with the envelope [`compose`] and the peer marker wrote
+/// taken off — nothing else. The prefix is the exact marker and `REQUEST` line
+/// for either name the console reads as, the tail is the LAST REQUIRED footer
+/// and nothing after it but one reply-command line, the fixed line and the
+/// optional chat style line, so text of the human's that looks like either
+/// survives and a file that is not that whole envelope is `None`.
+#[must_use]
+pub fn uncompose_ask<'a>(framed: &'a str, id: &str) -> Option<&'a str> {
+    [CONSOLE_DISPLAY, CONSOLE_SINK]
+        .into_iter()
+        .find_map(|sender| {
+            let head = crate::provenance::first_line(
+                &crate::provenance::peer(sender),
+                &format!("{} {id} from {sender}: ", Kind::Ask.header()),
+            );
+            let rest = framed.strip_prefix(head.as_str())?;
+            let at = rest.rfind(REQUIRED_HEAD)?;
+            let (command, after) = rest[at + REQUIRED_HEAD.len()..].split_once(NO_PEEK_LINE)?;
+            let style = after.strip_prefix('\n');
+            let ended = after.is_empty() || style == Some(CHAT_REPLY_STYLE);
+            (ended && !command.contains('\n')).then(|| &rest[..at])
+        })
 }
 
 // ---- resolution -----------------------------------------------------------
@@ -3660,5 +3691,35 @@ mod tests {
         let pinned = crate::events::RoutingMember::Value(UUID.to_owned());
         assert_eq!(ask.actor_session_id, pinned);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The reader takes off exactly what the delivery put on, whichever name
+    /// the console framed it as, and only that.
+    #[test]
+    fn the_console_reads_back_the_text_the_delivery_framed() {
+        let id = "ae-20260930T060000Z-0000abcd";
+        let frame = |sender: &str, body: &str| {
+            let text = compose(Kind::Ask, id, sender, body, "/x/reply \"<your reply>\"");
+            crate::provenance::first_line(&crate::provenance::peer(sender), &text)
+        };
+        let human = "line\n\nREQUIRED: When you have finished, you MUST run this exact command to reply:\n/x\n";
+        for sender in [super::CONSOLE_DISPLAY, super::CONSOLE_SINK] {
+            for body in ["", "q", human] {
+                let framed = frame(sender, body);
+                assert_eq!(super::uncompose_ask(&framed, id), Some(body), "{sender}");
+            }
+        }
+        let framed = frame(super::CONSOLE_SINK, "q");
+        let style = super::CHAT_REPLY_STYLE;
+        assert!(!framed.contains(style) && frame(super::CONSOLE_DISPLAY, "q").contains(style));
+        let torn = [
+            frame("lead", "q"),
+            framed.replace("/x/reply", "/x\n/reply"),
+            format!("{framed}\n{style}\nmore"),
+            "⟦ae:msg from console:local⟧\nREQUEST x".to_owned(),
+        ];
+        for text in torn {
+            assert_eq!(super::uncompose_ask(&text, id), None, "{text:?}");
+        }
     }
 }

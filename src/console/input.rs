@@ -739,6 +739,8 @@ pub enum Command {
     Close(Option<String>),
     /// Select the pane of the seat by this name, in this chat's session.
     Open(String),
+    /// Print the folded turn with this fold number whole.
+    More(String),
     Refused(String),
 }
 
@@ -786,6 +788,12 @@ pub fn command_to(raw: &[u8], pair: &[String], speaker: &str) -> Command {
                 Command::Open((*name).to_owned())
             }
             ("/open", _) => Command::Refused("/open takes one agent name".to_owned()),
+            ("/more", [number])
+                if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                Command::More((*number).to_owned())
+            }
+            ("/more", _) => Command::Refused("/more takes one fold number".to_owned()),
             _ => Command::Refused(format!(
                 "unknown command {word}; to send it, name a seat: @{speaker} {word}"
             )),
@@ -832,6 +840,8 @@ pub enum Effect {
     Close(Option<String>),
     /// Select this seat's pane, as the chat's last settled read named it.
     Open(SeatRef),
+    /// Print the folded turn with this fold number whole.
+    More(String),
 }
 
 /// The console's input as a step machine. It composes asks only while it owns
@@ -953,7 +963,11 @@ impl Input {
                 Some(Entered::Line(raw)) if self.since.is_none() => {
                     match command_to(&raw, &self.pair, self.speaker()) {
                         Command::Open(name) => self.open(&name),
-                        Command::Refused(why) if raw.split(|b| *b == b' ').next() == Some(b"/open") => {
+                        Command::More(number) => Effect::More(number),
+                        Command::Refused(why)
+                            if [&b"/open"[..], b"/more"]
+                                .contains(&raw.split(|b| *b == b' ').next().unwrap_or(&[])) =>
+                        {
                             Effect::Print(format!("refused: {why}"))
                         }
                         _ => Effect::Print(
@@ -970,6 +984,7 @@ impl Input {
                     }
                     Command::Close(id) => Effect::Close(id),
                     Command::Open(name) => self.open(&name),
+                    Command::More(number) => Effect::More(number),
                     Command::Refused(why) => Effect::Print(format!("refused: {why}")),
                 },
             };
@@ -1235,7 +1250,7 @@ pub fn paint(
                 out.push('\n');
             }
             // The console acts on these before it paints; nothing is drawn.
-            Effect::Ask { .. } | Effect::Close(_) | Effect::Open(_) => {}
+            Effect::Ask { .. } | Effect::Close(_) | Effect::Open(_) | Effect::More(_) => {}
         }
     }
     if let Some(view) = view {

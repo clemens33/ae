@@ -14,8 +14,9 @@
 //! through the chat's own proof (`term::prove_open`).
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::io::{IsTerminal as _, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -69,6 +70,10 @@ pub mod upgrade;
 #[cfg(test)]
 #[path = "../tests/it/app_view_state_spec.rs"]
 mod view_spec;
+
+#[cfg(test)]
+#[path = "../tests/it/app_longpaste_spec.rs"]
+mod longpaste_spec;
 
 /// What `ae app` says, on stderr, when it has no terminal to draw on.
 pub const NO_TERMINAL: &str = "ae app draws a terminal UI; use ae chat to print the lane\n";
@@ -371,6 +376,10 @@ struct App {
     queued: Vec<Queued>,
     /// The outcome word of the last ask, until the lane shows it.
     settling: Option<Settling>,
+    /// The long turns this app shows whole, by [`App::fold_key`]. Memory only.
+    expanded: BTreeSet<u64>,
+    /// The asks this app saw go through, by [`App::sent_key`]. Memory only.
+    sent: BTreeSet<u64>,
     /// What the read-only composer says: `read_only`, with how to resume.
     read_line: String,
     /// Another installed core, as the last fleet read found the command link.
@@ -463,6 +472,8 @@ impl App {
             admitted: None,
             queued: Vec::new(),
             settling: None,
+            expanded: BTreeSet::new(),
+            sent: BTreeSet::new(),
             read_line: String::new(),
             upgrade: None,
             last_input: None,
@@ -1268,6 +1279,65 @@ impl App {
         keys
     }
 
+    /// What names `item` for its fold across re-reads: the selected session,
+    /// its incarnation and the turn's journal position, or its words when it
+    /// has none. A changed body keeps it; another incarnation never shares it.
+    fn fold_key(&self, item: &Item) -> u64 {
+        let name = self.model.selected().unwrap_or_default();
+        let mut hasher = DefaultHasher::new();
+        (name, self.ids.get(name)).hash(&mut hasher);
+        match item.record {
+            Some(record) => (0_u8, record).hash(&mut hasher),
+            None => (1_u8, item.micros, &item.kind, &item.body).hash(&mut hasher),
+        }
+        hasher.finish()
+    }
+
+    /// What names the ask `id` this app sent to session `name`.
+    fn sent_key(&self, name: &str, id: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        (name, self.ids.get(name), id).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Each lane turn's fold key, whether it shows whole and whether it is an
+    /// ask that went through: built per frame, from the sets alone.
+    fn fold_state(&self) -> (Vec<u64>, Vec<bool>, Vec<bool>) {
+        let name = self.model.selected().unwrap_or_default();
+        let items = &self.lane.items;
+        let folds: Vec<u64> = items.iter().map(|item| self.fold_key(item)).collect();
+        let open = folds
+            .iter()
+            .map(|key| self.expanded.contains(key))
+            .collect();
+        let sent = items.iter().map(|item| match &item.kind {
+            Kind::Asked { id, .. } => self.sent.contains(&self.sent_key(name, id)),
+            _ => false,
+        });
+        (folds, open, sent.collect())
+    }
+
+    /// Fold or unfold the turn with fold key `key`.
+    fn toggle_fold(&mut self, key: u64) {
+        if !self.expanded.remove(&key) {
+            self.expanded.insert(key);
+        }
+    }
+
+    /// Enter on a marked turn that has a fold row: toggle it, the mark kept.
+    /// A draft held anywhere is never put aside by it. Whether it toggled.
+    fn toggle_marked(&mut self) -> bool {
+        let Some(mark) = self.model.turn().filter(|_| !self.protects()) else {
+            return false;
+        };
+        let fold = self.layout.folds.iter().find(|(turn, _)| *turn == mark);
+        let Some(&(_, key)) = fold else {
+            return false;
+        };
+        self.toggle_fold(key);
+        true
+    }
+
     /// `[` / `]`: mark the next older / newer turn the last frame produced and
     /// bring it into view; with none marked, the newest turn the frame shows.
     /// An edge is a no-op that keeps the mark. Whether anything moved.
@@ -1610,6 +1680,10 @@ impl App {
                     .set_turn((self.model.turn() != Some(key)).then_some(key));
                 return true;
             }
+            draw::Hit::Fold(key) => {
+                self.toggle_fold(key);
+                return true;
+            }
         };
         apply(self, &act, Instant::now()).unwrap_or(false)
             || was_writing != self.composing()
@@ -1855,6 +1929,10 @@ impl App {
                 }
                 Effect::Close(id) => self.close(id.as_deref()),
                 Effect::Open(seat) => self.open_written(&seat),
+                Effect::More(_) => {
+                    "refused: /more is the tmux chat's; click or press Enter on the fold line"
+                        .to_owned()
+                }
                 Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => continue,
             };
             self.notice(&about, line);
@@ -1963,9 +2041,11 @@ impl App {
         ran
     }
 
-    /// What an ask's outcome shows. The lane already draws an uncertain or
-    /// undelivered ask in the same words, so those wait on the hint row until
-    /// it holds the ask; the rest has no lane line and is a notice.
+    /// What an ask's outcome shows. A sent ask is the lane's `· sent` header
+    /// suffix and only its kept-draft warning is a notice; the lane already
+    /// draws an uncertain or undelivered ask in the same words, so those wait
+    /// on the hint row until it holds the ask; the rest has no lane line and
+    /// is a notice.
     fn settle(
         &mut self,
         id: String,
@@ -1976,7 +2056,16 @@ impl App {
         let check = format!("check {seat} pane (Agents tab: n/p, oo opens a seat)");
         let word = match outcome {
             submit::Outcome::Sent(_, kept) => {
-                return ["sent".to_owned()].into_iter().chain(kept).collect();
+                self.sent.insert(self.sent_key(about, &id));
+                let (at, about) = (Instant::now(), about.to_owned());
+                let word = "sent".to_owned();
+                self.settling = Some(Settling {
+                    at,
+                    id,
+                    word,
+                    about,
+                });
+                return kept.into_iter().collect();
             }
             submit::Outcome::Unknown(..) => {
                 return vec![format!(
@@ -2224,6 +2313,7 @@ impl App {
             .take_if(|settling| lane.items.iter().any(|item| shown(item, &settling.id)));
         self.model.set_note(self.note());
         let keys = self.keys();
+        let (folds, open, sent) = self.fold_state();
         let name = self.model.selected();
         let unread = name
             .filter(|_| !self.fleeted)
@@ -2248,6 +2338,9 @@ impl App {
             fleet: !self.fleeted,
             lane: self.loading,
             keys: &keys,
+            folds: &folds,
+            open: &open,
+            sent: &sent,
         };
         let drawn = draw::draw_with_layout(&screen, wait, buf);
         let replaced = std::mem::replace(&mut self.layout, drawn);
@@ -2731,6 +2824,9 @@ fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
     }
     if let Key::Pasted(bytes) = key {
         paste(app, bytes, origin);
+        return Some(true);
+    }
+    if *key == Key::Enter && app.toggle_marked() {
         return Some(true);
     }
     let mut redraw = false;
@@ -6152,6 +6248,56 @@ mod tests {
 
     fn key_of(app: &App, at: usize) -> u64 {
         super::lane::key(&app.lane.items[at])
+    }
+
+    /// A real Enter on a writable selection starts writing (the Keys table);
+    /// it folds or unfolds instead only when a MARKED turn has a fold row, and
+    /// never once the composer is already taking keys.
+    #[test]
+    fn enter_toggles_only_a_marked_turn_that_has_a_fold_row() {
+        let root = Root::new("fold-enter");
+        let long = (1..=12).map(|n| format!("row {n}")).collect::<Vec<_>>();
+        let long = long.join("\n");
+        let long = long.as_str();
+        // One real Enter on the writable home `api`, its newest turn marked
+        // or not, the composer already open or not: the state it left, and
+        // the frame.
+        let pressed = |bodies: &[&str], marked: bool, open: bool| {
+            let (mut app, _reader) = housed(&root);
+            app.take(Reading::Owner, Instant::now());
+            if let Answer::View(mut read) = view("api", ID, 1, "") {
+                read.lane.items = bodies.iter().zip(0..).map(|(b, at)| said(b, at)).collect();
+                app.answer(Answer::View(read));
+            }
+            if open {
+                writing(&mut app);
+            }
+            let _ = framed(&mut app);
+            assert!(!marked || app.step_turn(false), "the newest turn is marked");
+            let folds = framed(&mut app).contains("more lines");
+            assert_eq!(folds, bodies.contains(&long), "folded");
+            let mark = app.model.turn();
+            assert!(take_keys(&mut app, vec![(Key::Enter, Instant::now())]).is_some());
+            let queued = (app.queued.len(), app.expanded.len());
+            let kept = app.model.turn() == mark;
+            (
+                (app.composing(), drafted(&app), queued, kept),
+                framed(&mut app),
+            )
+        };
+        let writes = (true, String::new(), (0, 0), true);
+        for (bodies, marked, open) in [
+            (&["short"][..], true, false),
+            (&[long, "short"], true, false),
+            (&[long], false, false),
+            (&[long], true, true),
+        ] {
+            let (state, _) = pressed(bodies, marked, open);
+            assert_eq!(state, writes, "{bodies:?} marked {marked} open {open}");
+        }
+        let (state, shown) = pressed(&[long], true, false);
+        assert_eq!(state, (false, String::new(), (0, 1), true), "toggles");
+        assert!(shown.contains("row 12") && !pressed(&[long], true, true).1.contains("row 12"));
     }
 
     /// `[` and `]` walk the produced turns: none marked takes the newest,

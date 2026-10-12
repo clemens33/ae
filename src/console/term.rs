@@ -281,6 +281,10 @@ impl Term {
                 )
             }
             Effect::Open(seat) => Effect::Print(self.open(console, &seat)),
+            Effect::More(handle) => match console.printed.more_last(&handle) {
+                Ok(text) => console.printed.lane(text),
+                Err(why) => Effect::Print(why),
+            },
             effect => effect,
         };
         Some(effects.into_iter().map(act).collect())
@@ -373,7 +377,10 @@ impl Term {
         if matches!(outcome, submit::Outcome::Unknown(..)) {
             return Effect::Print(line);
         }
-        console.printed.outcome(&id, line);
+        match outcome {
+            submit::Outcome::Sent(_, kept) => console.printed.sent(&id, kept),
+            _ => console.printed.outcome(&id, line),
+        }
         match console.pass() {
             Ok(text) => console.printed.lane(text),
             Err(why) => {

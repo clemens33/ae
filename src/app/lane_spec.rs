@@ -63,6 +63,7 @@ fn kind(index: usize) -> Kind {
             to: seat(),
             id: id(),
             uncertain: true,
+            gap: None,
         },
         8 => Kind::NotDelivered {
             to: seat(),

@@ -29,8 +29,15 @@ the window on demand. See [Keys](#keys).
 - **Chat-bridge asks and replies** (`telegram:` / `discord:`), every thread
   with its target named. A reply is the journal's 600-character summary,
   tagged `preview (600-char summary)`.
-- **Chat asks** as `you → <seat>`, each answer whole from the reply's stored
-  body (at most 65536 bytes), and each `/close` as `you closed an ask`. No row
+- **Chat asks** as `you → <seat>`, each ask and each answer whole from its
+  stored body (at most 65536 bytes, read only from the session's own
+  `messages/`; an ask's file is the delivered message, and its text is what
+  that envelope wraps), and each `/close` as `you closed an ask`. A body that
+  cannot be read shows the journal's 600-character summary and names why in
+  the header and a coverage row (`full text not shown: stored message over 64
+  KiB`, `body missing`, `body refused: …`); an ask an older core recorded has
+  no stored text and names nothing. An ask that went through says so in its
+  header, `you → <seat> · sent`, not on a line of its own. No row
   draws a request id: the journal keeps it, the chat pairs by it. An answer
   counts only from the slot, session, server, pane and session uuid the ask
   reached; any other reply shows as `not admitted: stale|unproven <field>`.
@@ -50,6 +57,25 @@ the window on demand. See [Keys](#keys).
 - `--all` shows every assistant reply of the lead pair, answers to agents
   included, and reads OpenCode and Antigravity replies too.
 - **Needs you**, after the lane: see [below](#needs-you).
+
+## Long turns
+
+A turn of more than ten rows, as the pane draws them, shows its first eight and a
+fold line, `... N more lines (/more n)`; ten rows or fewer show whole. Only an
+input-taking chat whose input AND output are terminals folds: it counts rows by
+asking tmux for its pane's width (plain text too, wrapped like the dressed look),
+while a pipe, a file, a redirected `--follow --input`, a one-shot print and
+`--follow` without a terminal print every turn whole. A fold must save at least one
+rendered row: it folds only when the eight shown rows plus the rows its own line
+takes (the line wraps in a narrow pane) are fewer than the turn's rows, else the
+turn shows whole; at normal widths that is still every turn of more than ten rows. `/more n`
+prints turn `n` whole, header and every row; it writes no event, is
+repeatable, and works in a read-only chat too. A handle names one fold of this
+chat: a number it never drew, a turn a rewritten journal has since moved, or one no
+longer in the read is refused by name. The rows come through the same
+neutraliser as every other row; `/more` takes ASCII digits only (`/more` alone or
+`/more x` is refused as `/more takes one fold number`). A decision card folds after its
+options are split onto their own lines.
 
 ## Needs you
 
@@ -106,9 +132,11 @@ colour from the session's own palette: you, the lead seat, the other lead-pair
 seat, and ae itself (`said ae`, coverage rows, `-- closed:` and the rewrite
 notice, all dim). A bar (`▌`, or `|` when `icons` is off) runs down the left of
 every message, its header in the speaker's colour after a dim time; headers of
-`you → <seat>` are bold. Status lines are green (`sent`), amber (`uncertain`,
-`no record of`) or red (`not delivered`, `refused`), and the input prompt wears
-your colour. Times and the day divider use the viewer's zone: the chat asks
+`you → <seat>` are bold, and a sent ask's header ends in a dim `· sent`. Status
+lines are green (`sent`, only for an ask whose row never shows), amber
+(`uncertain`, `no record of`, `the draft is kept`) or red (`not delivered`,
+`refused`), and the input prompt wears your colour. Times and the day divider
+use the viewer's zone: the chat asks
 the session's tmux once for `#{t/f/%z:start_time}` and keeps only a `[+-]HHMM`
 answer (`# 2026-10-03 +0200`); any other answer, or a tmux without that
 modifier, keeps `UTC`. A zone change mid-session (daylight saving) is not
@@ -157,7 +185,7 @@ only the watchdog daemon ends a wait on pane input.
 ## Input
 
 The window runs `--input` behind a fixed `stty` wrapper; only the owner chat
-(first live stamped pane) asks, another is read-only and takes only `/open`. A line asks the
+(first live stamped pane) asks, another is read-only and takes only `/open` and `/more`. A line asks the
 speaker, `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
 `/close <id>` a named one (ids are not drawn, a script may still name one), other
 `/word`s are refused, five asks open at most. A lead pair changed since
@@ -166,8 +194,9 @@ While an [`ae app`](app.md#ownership) writes to the session, a send or `/close`
 is refused at once with `an ae app is writing to <session>`, nothing kept or sent:
 the owner chat tries the app's writer lease inside its admission and drops it.
 `/open <seat>` selects any roster seat's pane, see [Open](#open).
-Recorded asks show their header and body before the submit result. If the row
-stays missing for two readable passes, the result prints on a line of its own;
+Recorded asks show their header (`· sent` once it went through) and body before
+any other submit result. If the row stays missing for two readable passes, the
+result prints on a line of its own;
 unknown results and refusals print immediately.
 
 The speaker is the seat of the last `@<seat> text` line that asked (`@<main> text`
@@ -219,8 +248,8 @@ banner names every lead-pair seat for that reason.
 ## Open
 
 `/open <seat>` selects a seat's pane in this session, from the owner chat or a
-read-only one; a read-only chat composes `/open` lines and refuses anything
-else. It types nothing into the pane and writes no record. ae proves the seat
+read-only one; a read-only chat composes `/open` and `/more` lines and refuses
+anything else. It types nothing into the pane and writes no record. ae proves the seat
 against the meta and tmux at that moment — the roster still seats that name in
 that slot, the session uuid still matches the chat's, exactly one live pane
 carries the slot and the name, and the server lists that pane in this session
