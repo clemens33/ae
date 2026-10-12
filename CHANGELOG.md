@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.59] - 2026-10-12
+- Bound requests table: newest closed rows, --limit, footer, clipped excerpts
+- Render decision card options on separate lines
+- Ae app: a restart into another core keeps the view the human had
+- Ae app: keys read before the first fleet read are not lost
+- Ae app: pin the survivors of the view handover mutation run
+
 ## [v2026.10.58] - 2026-10-12
 - Add the instance owner for state root, config, HOME and own server
 
