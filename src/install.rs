@@ -134,6 +134,14 @@ pub fn fixed_paths(home_var: &Path) -> Result<Paths, String> {
     Ok(Paths { home, link })
 }
 
+/// Whether `<home>/instances` is PROVED absent. Only `NotFound` proves it: a
+/// node of any kind, or a read that failed for any other reason, may hide a
+/// named instance root.
+pub(crate) fn instances_absent(paths: &Paths) -> bool {
+    door::lstat(&paths.home.join(crate::instance::INSTANCES))
+        .is_err_and(|why| why.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// Prepare the fixed ae home so a caller can place a lock inside it, using the
 /// same symlink-resistant path checks publication itself relies on.
 ///
@@ -694,7 +702,7 @@ fn publish_with_mode(
         .map_err(|why| format!("could not write install journal: {why}"))?;
 
     match publish_steps(bundle, paths, &mut journal) {
-        Ok(mut published) => {
+        Ok((mut published, held)) => {
             // THE COMMIT. Everything above is reversible by [`replay`], and the
             // journal's `link_old` names the version directory it would relink
             // to. So the version sweep may not run until the journal is GONE:
@@ -711,10 +719,11 @@ fn publish_with_mode(
             // publish is committed and irreversible, but no other publisher may
             // move the command link while the sweep decides what nothing points
             // at any more.
-            published.notes.extend(crate::migrate::prune_versions(
+            published.notes.extend(crate::migrate::prune_fleet(
                 &paths.home,
                 &paths.link,
                 &bundle.version,
+                &held,
             ));
             Ok(AutomaticPublish::Published(published))
         }
@@ -763,12 +772,13 @@ pub(crate) fn current_public_version(paths: &Paths) -> Result<String, String> {
     Ok(version.to_owned())
 }
 
-/// Everything between the journal's creation and its removal.
+/// Everything between the journal's creation and its removal, answering the
+/// named instance roots the sweep HELD beside the publication.
 fn publish_steps(
     bundle: &Bundle,
     paths: &Paths,
     journal: &mut Journal,
-) -> Result<Published, String> {
+) -> Result<(Published, Vec<String>), String> {
     let versions = paths.versions();
     mkdir_recorded(&versions, journal, paths)?;
     let version_dir = versions.join(&bundle.version);
@@ -780,7 +790,13 @@ fn publish_steps(
     // fails here while `~/.local/bin/ae` still names the core that built it; a
     // stopped one is reported and skipped untouched.
     let core = version_dir.join(crate::shape::CORE);
-    let notes = crate::migrate::onto(&paths.home, &core, &bundle.version)?;
+    let mut notes = crate::migrate::onto(&paths.home, &core, &bundle.version)?;
+    // THEN every named instance root, which shares this store and this link.
+    // The default root went first so its refusal stays exactly what it was; a
+    // named root in doubt or failing part-way is reported and HELD, never a
+    // reason to leave the default on the old core.
+    let (named, held) = crate::migrate::onto_fleet(&paths.home, &core, &bundle.version);
+    notes.extend(named);
 
     let parent = paths
         .link
@@ -789,11 +805,12 @@ fn publish_steps(
     mkdir_recorded(parent, journal, paths)?;
     validate_bin_destination(&paths.link, &paths.home)?;
     relink(&paths.link, &core)?;
-    Ok(Published {
+    let published = Published {
         version_dir,
         version: bundle.version.clone(),
         notes,
-    })
+    };
+    Ok((published, held))
 }
 
 /// Stage the three members, mode them, and rename the whole directory in.

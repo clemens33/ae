@@ -28,6 +28,10 @@ use super::parity::Invocation;
 use super::parity::capture::raw;
 use super::phase2::{run_tmux, tmux_present};
 
+#[cfg(test)]
+#[path = "aeinstance_p2_spec.rs"]
+mod aeinstance_p2_spec;
+
 /// A fixture `$HOME`: `<home>/.ae` is the state root, `<home>/.local/bin/ae`
 /// the command link — the two paths a publish derives.
 struct Rig {

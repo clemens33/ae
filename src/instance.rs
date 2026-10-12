@@ -85,6 +85,25 @@ pub fn config_for(shape: &Shape, env: &Env, root: &Path) -> PathBuf {
     }
 }
 
+/// The directory under a base that holds the named instance roots.
+pub const INSTANCES: &str = "instances";
+
+/// The one instance name the checkout's `ae-dev` server already spells.
+const RESERVED: &str = "dev";
+
+/// Whether `name` can name an instance: `^[a-z0-9][a-z0-9-]{0,23}$`, lowercase
+/// because APFS folds case, and never [`RESERVED`].
+#[must_use]
+pub fn is_instance_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    name != RESERVED
+        && (1..=24).contains(&bytes.len())
+        && bytes.first() != Some(&b'-')
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
 /// The user HOME a state root sits under — what a publish, a command link and
 /// a harness's default config home are spelled from. ONE owner, so nothing
 /// re-derives it as `root.parent()` at its own site.
@@ -191,6 +210,12 @@ mod tests {
         );
         assert_eq!(user_home(Path::new("/")), None);
         assert_eq!(own_server_name(), "ae");
+        for good in ["a", "mic", "work-2", "0", &"x".repeat(24)] {
+            assert!(is_instance_name(good), "{good}");
+        }
+        for bad in ["", "dev", "Work", "-a", "a_b", "a.b", ".a", &"x".repeat(25)] {
+            assert!(!is_instance_name(bad), "{bad}");
+        }
         assert_eq!(
             own_server(),
             ServerId::Selected(Selector::Name("ae".to_owned()))

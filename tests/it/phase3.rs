@@ -1713,6 +1713,8 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     assert_eq!(
         product,
         vec![
+            // The cfg(test) floor spec lists its owned HOME to prove refusal created no locks/state.
+            "src/../tests/it/aeinstance_p2_upgrade.rs".to_owned(),
             // THE terminal door of `ae app`: rustix termios takes raw mode,
             // restores the saved mode and reads the window size, on the
             // terminal the app was started in and nowhere else.

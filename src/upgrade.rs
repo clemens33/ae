@@ -30,6 +30,12 @@ pub const TIMEOUT_LATEST_MANIFEST: Duration = Duration::from_secs(2);
 const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 const MAX_ARCHIVE_BYTES: u64 = 64 << 20;
 
+/// The newest release whose publish sweeps the DEFAULT root alone. Installing
+/// it, or anything older, beside named instances would leave them on a core it
+/// then prunes — so a pin at or below it refuses while `<home>/instances` may
+/// exist. Set at landing to the version the instance-aware publish rebases on.
+const INSTANCE_UNAWARE_LAST: &str = "2026.10.59";
+
 /// The two platforms ae publishes for.
 ///
 /// # Errors
@@ -429,6 +435,11 @@ fn upgrade_with(
     fetcher: &mut impl FnMut(&str, u64, Duration) -> Result<Vec<u8>, String>,
 ) -> Result<ManualOutcome, String> {
     let paths = crate::install::fixed_paths(home)?;
+    // BEFORE anything is written, locked or fetched: an old pin is refused
+    // here, while refusing is still free.
+    if let Some(refusal) = instance_floor(pin, &paths) {
+        return Err(refusal);
+    }
     crate::install::prepare_home(&paths)?;
     let _held = crate::autoupgrade::lock(&paths.home, crate::autoupgrade::MANUAL_LOCK_WAIT)
         .map_err(|why| {
@@ -469,6 +480,26 @@ fn upgrade_with(
             Err("manual upgrade unexpectedly used the automatic version guard".to_owned())
         }
     })
+}
+
+/// The refusal a pin at or below [`INSTANCE_UNAWARE_LAST`] earns while named
+/// instances are not PROVED absent, or `None`.
+fn instance_floor(pin: &Pin, paths: &crate::install::Paths) -> Option<String> {
+    let Pin::Exact(version) = pin else {
+        return None;
+    };
+    let newer = crate::install::compare_versions(version, INSTANCE_UNAWARE_LAST)
+        == Some(std::cmp::Ordering::Greater);
+    if newer || crate::install::instances_absent(paths) {
+        return None;
+    }
+    Some(format!(
+        "refusing AE_VERSION={version}: ae {INSTANCE_UNAWARE_LAST} and older publish only the \
+         default instance, and {} exists or cannot be proved absent — that core would leave \
+         every named instance behind and prune the versions they use. Pin a version newer \
+         than {INSTANCE_UNAWARE_LAST}.",
+        paths.home.join(crate::instance::INSTANCES).display()
+    ))
 }
 
 /// Automatic discovery is always latest and has a foreground-safe deadline.
@@ -663,9 +694,23 @@ fn extract(archive: &Path, into: &Path, root: &str) -> Result<(), String> {
     Ok(())
 }
 
+// `#[path = ""]`: the nested `#[path]` children below resolve from src/, not src/upgrade/tests/.
 #[cfg(test)]
+#[path = ""]
 mod tests {
     use super::*;
+
+    #[path = "../tests/it/aeinstance_p2_upgrade.rs"]
+    mod aeinstance_p2_upgrade;
+
+    #[test]
+    fn the_instance_floor_never_claims_a_release_this_build_has_not_reached() {
+        assert!(crate::install::is_version(INSTANCE_UNAWARE_LAST));
+        assert_ne!(
+            crate::install::compare_versions(INSTANCE_UNAWARE_LAST, crate::VERSION),
+            Some(std::cmp::Ordering::Greater)
+        );
+    }
 
     #[test]
     fn only_the_two_published_platforms_have_a_bundle_name() {

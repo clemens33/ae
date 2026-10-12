@@ -33,6 +33,9 @@
 //! * `ae upgrade` / `ae _install` ([`crate::install::publish`]) — the whole
 //!   sweep below. A refusal on a running session aborts before the command link
 //!   is repointed; a stopped unplaceable session is reported and skipped.
+//!   Named instance roots under `<root>/instances` follow the default one,
+//!   stricter (`onto_fleet`): a root in any doubt is skipped untouched, one that
+//!   fails part-way is reported, and either freezes the version sweep.
 //!
 //! WHAT THIS DOES NOT PROMISE. There is no quiescent cut across the sweep, the
 //! command repoint and the version prune: each session's lifecycle lock is
@@ -581,11 +584,39 @@ fn unreadable_refusal(name: &str, why: &std::io::Error) -> String {
 ///
 /// The first non-skippable session that could not be migrated, named — nothing
 /// after it is attempted.
+pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, String> {
+    onto_scoped(root, core, version, Scope::Default)
+}
+
+/// Which root a sweep runs over, because the two answer damage differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// The default root: a stopped unplaceable session is skipped, and an
+    /// abort leaves the ae command where it was.
+    Default,
+    /// A named instance root, swept AFTER the default: every unplaceable or
+    /// unreadable session refuses, running or not, and an abort never stops
+    /// the publish, so it may not claim the command stayed put.
+    Named,
+}
+
+impl Scope {
+    /// Whether a STOPPED session the chain cannot place may be skipped.
+    fn skips(self) -> bool {
+        self == Self::Default
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the two-pass publish sweep reads as one order: placement proof, then locked repoint with its skips"
 )]
-pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, String> {
+fn onto_scoped(
+    root: &Path,
+    core: &Path,
+    version: &str,
+    scope: Scope,
+) -> Result<Vec<String>, String> {
     // PASS ONE, READ-ONLY: every session is asked whether the chain can place
     // it, and NOTHING is written until they all can. Without this the sweep
     // could repoint the first sessions and then refuse on the fourth, leaving
@@ -596,13 +627,17 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
     // converges: those sessions skip both passes untouched (reported below
     // like any unplaceable session). An unattributable damaged carrier names
     // no session to skip, so the sweep refuses rather than migrating blind.
+    //
+    // A named root proves its whole ancestry FIRST, because every read below
+    // goes through it: a root that vanished, or a link that replaced a part of
+    // it, is doubt — never an empty sessions root.
+    if scope == Scope::Named
+        && let Some(why) = named_chain(root, None)
+    {
+        return Err(format!("{why}.{}", already(scope, &[], version)));
+    }
     let pending = pending_rename_names(root)?;
-    let census = taken(root).map_err(|why| {
-        format!(
-            "the sessions under {} could not be enumerated ({why}); nothing was migrated and the ae command was not moved",
-            crate::lifecycle::sessions_dir(root).display()
-        )
-    })?;
+    let census = taken(root).map_err(|why| census_failed(scope, root, &why))?;
     for name in &census {
         if pending.iter().any(|held| held == name) {
             continue;
@@ -615,12 +650,12 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
             // has the exact session; a live one refuses here, while refusing is
             // still free.
             Err(why) if why.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) if !running_on_legacy_server(name) => continue,
+            Err(_) if scope.skips() && !running_on_legacy_server(name) => continue,
             Err(why) => return Err(unreadable_refusal(name, &why)),
         };
         match migrate(&text) {
             Ok(_) => {}
-            Err(_) if !unplaceable_is_running(&text, name) => {}
+            Err(_) if scope.skips() && !unplaceable_is_running(&text, name) => {}
             Err(refusal) => return Err(refusal.line(name)),
         }
     }
@@ -648,6 +683,10 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
             continue;
         }
         let dir = crate::lifecycle::sessions_dir(root).join(&name);
+        // A named session's chain is proved BEFORE its lock is created — the
+        // lock file is written inside `sessions` — and again once it is held.
+        reproved(scope, root, &dir, &name)
+            .map_err(|why| format!("{why}{}", already(scope, &repointed, version)))?;
         // The lifecycle lock, so a resume or an end cannot land inside a
         // migration. A session whose lock is held is a session in the middle
         // of exactly the operation this sweep must not race.
@@ -655,9 +694,13 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
             return Err(format!(
                 "session {name:?} is busy (another start, resume or end is in progress); \
                  retry the upgrade shortly.{}",
-                already(&repointed, version)
+                already(scope, &repointed, version)
             ));
         };
+        // Again HERE, under the lock and before any read or write: anything on
+        // the chain swapped for a link since would otherwise be written through.
+        reproved(scope, root, &dir, &name)
+            .map_err(|why| format!("{why}{}", already(scope, &repointed, version)))?;
         // Re-read both facts under the lifecycle lock. A stopped session from
         // pass one may have started before this pass; that one must now abort,
         // while a session that is still stopped must never take the meta lock
@@ -666,11 +709,11 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
                 if let Err(refusal) = migrate(&text) {
-                    if unplaceable_is_running(&text, &name) {
+                    if !scope.skips() || unplaceable_is_running(&text, &name) {
                         return Err(format!(
                             "{}{}",
                             refusal.line(&name),
-                            already(&repointed, version)
+                            already(scope, &repointed, version)
                         ));
                     }
                     notes.push(skipped_refusal(&name, &refusal));
@@ -678,7 +721,7 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
                 }
             }
             Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
-            Err(why) if !running_on_legacy_server(&name) => {
+            Err(why) if scope.skips() && !running_on_legacy_server(&name) => {
                 notes.push(skipped_unreadable(&name, &why));
                 continue;
             }
@@ -686,7 +729,7 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
                 return Err(format!(
                     "{}{}",
                     unreadable_refusal(&name, &why),
-                    already(&repointed, version)
+                    already(scope, &repointed, version)
                 ));
             }
         }
@@ -714,12 +757,16 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
                 return Err(format!(
                     "{}{}",
                     refusal.line(&name),
-                    already(&repointed, version)
+                    already(scope, &repointed, version)
                 ));
             }
         }
-        repoint(&dir, core, version)
-            .map_err(|why| format!("session {name:?}: {why}.{}", already(&repointed, version)))?;
+        repoint(&dir, core, version).map_err(|why| {
+            format!(
+                "session {name:?}: {why}.{}",
+                already(scope, &repointed, version)
+            )
+        })?;
         // RECORDED HERE, not after the helpers. The meta already names the new
         // core at this point, so a helper failure below leaves this session
         // repointed — reporting it as untouched would send an operator looking
@@ -729,7 +776,7 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
             format!(
                 "session {name:?}: {why}. Its meta already names {version} while some of its \
                  helpers still name the old core, so it is PARTIALLY relinked.{}",
-                already(&repointed, version)
+                already(scope, &repointed, version)
             )
         })?;
         notes.extend(restart_daemons(root, &dir, &name, core, &mut bridges));
@@ -752,8 +799,32 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
     Ok(notes)
 }
 
+/// The abort for a sessions root that could not be enumerated.
+fn census_failed(scope: Scope, root: &Path, why: &std::io::Error) -> String {
+    let outcome = match scope {
+        Scope::Default => "nothing was migrated and the ae command was not moved",
+        Scope::Named => "nothing in this instance was migrated",
+    };
+    format!(
+        "the sessions under {} could not be enumerated ({why}); {outcome}",
+        crate::lifecycle::sessions_dir(root).display()
+    )
+}
+
 /// The sentence an abort owes the operator: which sessions already moved.
-fn already(repointed: &[String], version: &str) -> String {
+fn already(scope: Scope, repointed: &[String], version: &str) -> String {
+    if scope == Scope::Named {
+        return format!(
+            " {} session(s) of this instance already name {version}{}; repair it, then run \
+             AE_VERSION={version} ae upgrade.",
+            repointed.len(),
+            if repointed.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", repointed.join(", "))
+            }
+        );
+    }
     if repointed.is_empty() {
         return " No session was repointed and the ae command was not moved.".to_owned();
     }
@@ -978,6 +1049,240 @@ fn start_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> Str
     }
 }
 
+// ─── the named instance roots ────────────────────────────────────────────
+
+/// The named instance roots under one base, read WITHOUT following a link.
+#[derive(Debug, Default)]
+struct Fleet {
+    /// Every root proved a real directory with a selectable name, by name.
+    named: Vec<(String, PathBuf)>,
+    /// `(label, why)` for every entry that could not be proved. Any one of
+    /// them freezes the version sweep: its sessions' pins are unknown.
+    doubts: Vec<(String, String)>,
+}
+
+/// `lstat`, for the fleet's classification of what a link could hide.
+fn lstat(path: &Path) -> std::io::Result<std::fs::Metadata> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the publish classifies every named instance root and its sessions WITHOUT following a link"
+    )]
+    let meta = std::fs::symlink_metadata(path);
+    meta
+}
+
+/// A directory's entries, for the fleet sweep, sorted; a listing that failed
+/// half-way is a failure, never a shorter list.
+fn listing(dir: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the publish enumerates the named instance roots and their sessions it must migrate or hold"
+    )]
+    let entries = std::fs::read_dir(dir)?;
+    let mut found = entries.collect::<std::io::Result<Vec<_>>>()?;
+    found.sort_by_key(std::fs::DirEntry::file_name);
+    Ok(found)
+}
+
+/// Why `path` is not a real directory, or `None` when it is one.
+fn not_real_dir(path: &Path) -> Option<String> {
+    match lstat(path) {
+        Ok(meta) if meta.file_type().is_dir() => None,
+        Ok(_) => Some(format!("{} is not a real directory", path.display())),
+        Err(why) => Some(format!("{} could not be read ({why})", path.display())),
+    }
+}
+
+/// The named roots under `base`. An absent `<base>/instances` is an EMPTY
+/// fleet with no doubt — the byte-identical publish of a machine with none.
+fn fleet(base: &Path) -> Fleet {
+    let mut fleet = Fleet::default();
+    let container = base.join(crate::instance::INSTANCES);
+    let every = "every named instance".to_owned();
+    if lstat(&container).is_err_and(|why| why.kind() == std::io::ErrorKind::NotFound) {
+        return fleet;
+    }
+    if let Some(why) = not_real_dir(&container) {
+        fleet.doubts.push((every, why));
+        return fleet;
+    }
+    let entries = match listing(&container) {
+        Ok(entries) => entries,
+        Err(why) => {
+            let why = format!("{} could not be listed ({why})", container.display());
+            fleet.doubts.push((every, why));
+            return fleet;
+        }
+    };
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // A dot entry (`.DS_Store`) can never be selected, so it hides no root.
+        if name.starts_with('.') {
+            continue;
+        }
+        if !crate::instance::is_instance_name(&name) {
+            let why = "not a selectable instance name".to_owned();
+            fleet.doubts.push((format!("instance {name:?}"), why));
+            continue;
+        }
+        let root = entry.path();
+        match not_real_dir(&root) {
+            Some(why) => fleet.doubts.push((format!("instance {name}"), why)),
+            None => fleet.named.push((name, root)),
+        }
+    }
+    fleet
+}
+
+/// The versions a meta's core rows record.
+fn core_versions(bytes: &[u8]) -> Vec<String> {
+    let mut found = Vec::new();
+    for key in CORE_ROWS {
+        let Some(value) = crate::meta::first_value(bytes, key) else {
+            continue;
+        };
+        let value = value.strip_suffix(b"\r").unwrap_or(value);
+        let version = if key == CORE_ROWS[0] {
+            version_of(&String::from_utf8_lossy(value))
+        } else {
+            std::str::from_utf8(value)
+                .ok()
+                .filter(|version| !version.is_empty())
+                .map(ToOwned::to_owned)
+        };
+        found.extend(version);
+    }
+    found
+}
+
+/// Why the meta node of `dir` is in doubt: anything but a regular file, link
+/// included, or an `lstat` that failed for any reason but absence.
+fn meta_node(dir: &Path) -> Result<(), String> {
+    let meta = crate::store::open(dir).meta_path();
+    match lstat(&meta) {
+        Ok(node) if node.file_type().is_file() => Ok(()),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(format!("{} is not a regular file", meta.display())),
+        Err(why) => Err(format!("{} could not be read ({why})", meta.display())),
+    }
+}
+
+/// Whether the meta node of `dir` is PROVED absent: `NotFound` and nothing else.
+fn meta_absent(dir: &Path) -> bool {
+    lstat(&crate::store::open(dir).meta_path())
+        .is_err_and(|why| why.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// Why a named `root` — its `instances` container and itself — is in doubt.
+fn named_root_doubt(root: &Path) -> Option<String> {
+    match root.parent() {
+        Some(container) => not_real_dir(container).or_else(|| not_real_dir(root)),
+        None => Some(format!("{} has no container", root.display())),
+    }
+}
+
+/// Why the chain from the container down to `dir`'s meta is in doubt: every
+/// directory on it a real one, the meta a regular file or genuinely absent.
+fn named_chain(root: &Path, dir: Option<&Path>) -> Option<String> {
+    named_root_doubt(root)
+        .or_else(|| not_real_dir(&crate::lifecycle::sessions_dir(root)))
+        .or_else(|| dir.and_then(|dir| not_real_dir(dir).or_else(|| meta_node(dir).err())))
+}
+
+/// A named session's chain, re-proved before a lock or a write; the default
+/// root keeps the sweep it always had.
+fn reproved(scope: Scope, root: &Path, dir: &Path, name: &str) -> Result<(), String> {
+    if scope.skips() {
+        return Ok(());
+    }
+    named_chain(root, Some(dir)).map_or(Ok(()), |why| Err(format!("session {name:?}: {why}.")))
+}
+
+/// READ-ONLY proof that every session under the named `root` is placeable,
+/// answering the versions their core rows record. Stricter than the default
+/// sweep by ruling: a pending rename, a sessions entry that is not a real
+/// directory, an unreadable meta or one the chain cannot place — running or
+/// not — is doubt about the WHOLE root, so nothing of it is written and no
+/// version is pruned.
+fn strict_proof(root: &Path) -> Result<Option<Vec<String>>, String> {
+    if let Some(why) = named_root_doubt(root) {
+        return Err(why);
+    }
+    let sessions = crate::lifecycle::sessions_dir(root);
+    if lstat(&sessions).is_err_and(|why| why.kind() == std::io::ErrorKind::NotFound) {
+        return Ok(None);
+    }
+    // The ancestry FIRST: the rename scan reads the carriers inside
+    // `sessions`, and through a link it would classify what lives elsewhere.
+    if let Some(why) = not_real_dir(&sessions) {
+        return Err(why);
+    }
+    if !crate::rename::pending_intents(root).is_empty()
+        || !crate::rename::pending_damaged(root).is_empty()
+    {
+        return Err("a rename is in progress".to_owned());
+    }
+    let entries = listing(&sessions)
+        .map_err(|why| format!("{} could not be listed ({why})", sessions.display()))?;
+    let mut versions = Vec::new();
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let dir = entry.path();
+        if let Some(why) = not_real_dir(&dir).or_else(|| meta_node(&dir).err()) {
+            return Err(format!("session {name:?}: {why}"));
+        }
+        let bytes = match crate::meta::read_bytes(&dir) {
+            Ok(bytes) => bytes,
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound && meta_absent(&dir) => {
+                continue;
+            }
+            Err(why) => return Err(unreadable_refusal(&name, &why)),
+        };
+        migrate(&String::from_utf8_lossy(&bytes)).map_err(|refusal| refusal.line(&name))?;
+        versions.extend(core_versions(&bytes));
+    }
+    Ok(Some(versions))
+}
+
+/// Bring every named instance root under `base` onto `core`, AFTER the default
+/// root and in name order. A root in doubt is skipped untouched and one that
+/// fails part-way is reported; neither stops the publish, and both are HELD —
+/// returned beside the notes — so the version sweep removes nothing.
+pub(crate) fn onto_fleet(base: &Path, core: &Path, version: &str) -> (Vec<String>, Vec<String>) {
+    let fleet = fleet(base);
+    let repair = format!("repair it, then run AE_VERSION={version} ae upgrade");
+    let mut notes = Vec::new();
+    let mut held = Vec::new();
+    for (label, why) in fleet.doubts {
+        notes.push(format!("skipped {label}: {why} — {repair}"));
+        held.push(label);
+    }
+    for (name, root) in fleet.named {
+        let label = format!("instance {name}");
+        match strict_proof(&root) {
+            Err(why) => {
+                notes.push(format!("skipped {label}: {why} — {repair}"));
+                held.push(label);
+                continue;
+            }
+            // No sessions directory: nothing to move and nothing pinned.
+            Ok(None) => continue,
+            Ok(Some(_)) => {}
+        }
+        match onto_scoped(&root, core, version, Scope::Named) {
+            Ok(done) => notes.extend(done.into_iter().map(|note| format!("{label}: {note}"))),
+            Err(why) => {
+                notes.push(format!("{label}: {why}"));
+                held.push(label);
+            }
+        }
+    }
+    (notes, held)
+}
+
 // ─── the version-directory sweep ─────────────────────────────────────────
 
 /// Delete every `versions/<V>` no session meta names, keeping `published` and
@@ -1001,8 +1306,30 @@ fn start_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> Str
 ///
 /// Best effort: a directory that will not go is reported and the rest are
 /// still swept. A failed cleanup is disk space, not a broken install.
+///
+/// Named instance roots under `root` are swept too: their core rows join the
+/// keep-set only through `strict_proof`, and any doubt about one removes
+/// nothing. With no `<root>/instances` the sweep is the default root's alone.
 #[must_use]
 pub fn prune_versions(root: &Path, link: &Path, published: &str) -> Vec<String> {
+    prune_fleet(root, link, published, &[])
+}
+
+/// [`prune_versions`], told which named roots the publish itself HELD — skipped
+/// or failed part-way — so it removes nothing while any of them is unrepaired.
+#[must_use]
+pub(crate) fn prune_fleet(
+    root: &Path,
+    link: &Path,
+    published: &str,
+    held: &[String],
+) -> Vec<String> {
+    if !held.is_empty() {
+        return vec![format!(
+            "WARNING: no version was removed — {} did not move onto {published}, so the versions it records cannot be ruled out of use",
+            held.join(", ")
+        )];
+    }
     let mut keep: Vec<String> = vec![published.to_owned()];
     if let Some(current) = current_link_version(link)
         && !keep.contains(&current)
@@ -1037,23 +1364,21 @@ pub fn prune_versions(root: &Path, link: &Path, published: &str) -> Vec<String> 
                 )];
             }
         };
-        for key in CORE_ROWS {
-            let Some(value) = crate::meta::first_value(&bytes, key) else {
-                continue;
-            };
-            let value = value.strip_suffix(b"\r").unwrap_or(value);
-            let version = if key == CORE_ROWS[0] {
-                version_of(&String::from_utf8_lossy(value))
-            } else {
-                std::str::from_utf8(value)
-                    .ok()
-                    .filter(|version| !version.is_empty())
-                    .map(ToOwned::to_owned)
-            };
-            if let Some(version) = version
-                && !keep.contains(&version)
-            {
-                keep.push(version);
+        keep.extend(core_versions(&bytes));
+    }
+    let fleet = fleet(root);
+    if let Some((label, why)) = fleet.doubts.first() {
+        return vec![format!(
+            "WARNING: no version was removed — {label}: {why}, so the versions it records cannot be ruled out of use"
+        )];
+    }
+    for (name, named) in &fleet.named {
+        match strict_proof(named) {
+            Ok(versions) => keep.extend(versions.into_iter().flatten()),
+            Err(why) => {
+                return vec![format!(
+                    "WARNING: no version was removed — instance {name}: {why}, so the versions it records cannot be ruled out of use"
+                )];
             }
         }
     }
@@ -1138,6 +1463,98 @@ fn version_dirs(root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_core_row_names_its_version_by_shape_and_an_empty_row_names_none() {
+        let meta = b"ae_core=/h/.ae/versions/2026.1.1/ae-core\r\nae_core_version=2026.2.2\n";
+        assert_eq!(core_versions(meta), ["2026.1.1", "2026.2.2"]);
+        let none = b"ae_core=/h/.ae/elsewhere/ae-core\nae_core_version=\n";
+        assert!(core_versions(none).is_empty());
+    }
+
+    #[test]
+    fn a_named_abort_names_the_repair_and_never_a_command_left_in_place() {
+        for repointed in [Vec::new(), vec!["demo".to_owned()]] {
+            let said = already(Scope::Named, &repointed, "2099.1.1");
+            assert!(said.contains("AE_VERSION=2099.1.1 ae upgrade"), "{said}");
+            assert!(
+                !said.to_lowercase().contains("command was not moved"),
+                "{said}"
+            );
+        }
+        assert!(already(Scope::Default, &[], "2099.1.1").contains("ae command was not moved"));
+        let (root, why) = (Path::new("/h/.ae"), std::io::Error::other("denied"));
+        assert_eq!(
+            census_failed(Scope::Default, root, &why),
+            "the sessions under /h/.ae/sessions could not be enumerated (denied); nothing was \
+             migrated and the ae command was not moved"
+        );
+        assert!(!census_failed(Scope::Named, root, &why).contains("command"));
+    }
+
+    /// A scratch named root holding one session directory, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ae-p2-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("sessions/demo")).expect("scratch root");
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_link_in_a_named_root_is_doubt_and_never_absence() {
+        // A readable meta link and a dangling one: neither is a meta, neither is none.
+        for dangling in [false, true] {
+            let root = Scratch::new(if dangling { "dangling" } else { "linked" });
+            let target = root.0.join("elsewhere");
+            if !dangling {
+                std::fs::write(&target, "meta_version=4\nae_core_version=2026.1.1\n")
+                    .expect("meta");
+            }
+            std::os::unix::fs::symlink(&target, root.0.join("sessions/demo/meta")).expect("link");
+            let why = strict_proof(&root.0).expect_err("a linked meta is doubt");
+            assert!(why.contains("not a regular file"), "{why}");
+        }
+        // A sessions link is refused BEFORE the rename scan reads a carrier through it.
+        let root = Scratch::new("sessions");
+        let outside = root.0.join("outside");
+        std::fs::create_dir(&outside).expect("outside");
+        std::fs::write(outside.join(".rename.0000000000000000.intent"), "x").expect("carrier");
+        std::fs::remove_dir_all(root.0.join("sessions")).expect("clear sessions");
+        std::os::unix::fs::symlink(&outside, root.0.join("sessions")).expect("sessions link");
+        let why = strict_proof(&root.0).expect_err("a sessions link is doubt");
+        assert!(why.contains("not a real directory"), "{why}");
+    }
+
+    #[test]
+    fn a_named_chain_is_proved_from_its_container_down_and_a_gap_is_doubt() {
+        let scratch = Scratch::new("chain");
+        let root = scratch.0.join("instances/a");
+        let dir = root.join("sessions/demo");
+        std::fs::create_dir_all(&dir).expect("named session");
+        std::fs::write(dir.join("meta"), "meta_version=4\n").expect("meta");
+        assert_eq!(named_chain(&root, Some(&dir)), None);
+        assert!(named_chain(&scratch.0.join("instances/gone"), Some(&dir)).is_some());
+        // An ancestor swapped for a link: the session still lstats as a real dir.
+        let moved = scratch.0.join("moved");
+        std::fs::rename(root.join("sessions"), &moved).expect("move sessions");
+        std::os::unix::fs::symlink(&moved, root.join("sessions")).expect("sessions link");
+        assert!(lstat(&dir).is_ok_and(|node| node.is_dir()));
+        assert!(named_chain(&root, Some(&dir)).is_some_and(|why| why.contains("sessions")));
+        std::fs::rename(scratch.0.join("instances"), scratch.0.join("real")).expect("move roots");
+        std::os::unix::fs::symlink(scratch.0.join("real"), scratch.0.join("instances"))
+            .expect("link");
+        assert!(named_root_doubt(&root).is_some_and(|why| why.contains("instances")));
+    }
 
     #[test]
     fn a_meta_at_the_current_version_is_already_where_the_chain_ends() {
