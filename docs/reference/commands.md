@@ -609,25 +609,43 @@ source share one section. That is why the dialog can show fewer sections than
 `ae quota`, whose full table may repeat a scope to preserve each rollout owner's
 provenance.
 
-Each scope section is one header row with the client identity, then one indented row
-per window. Every window row keeps the derived percentage and its reason (`xN`,
-`unlimited`, or `spend-cap`), the window-reset countdown, observation age, and
-`fresh`/`stale` verdict. With no usable observation the section says `unknown`,
-`unsupported`, `read-error`, or `truncated`; a config failure becomes
-`quota: unavailable`. These rows are keyless and cannot trigger an action; only
-`Close` dismisses the dialog. `ae quota`
-remains the full view with rollout provenance, raw values, credits, paths, hints, and notes.
-Any `read-error` or
-`truncated` sibling makes the scope section report that incomplete status instead of its
-window rows; an `unknown` sibling does not erase an observed same-source window.
+The dialog is one table, laid out by the same pure formatter `ae app`'s Settings > Quota
+tab uses (`src/quota/view.rs`). A dim column header (`WINDOW`, an 8-cell bar, `USED`,
+`COUNTS`, `NOTE`, `RESETS`, `SEEN`) sits above each scope: a head row naming the client
+(`claude · cc`), its profiles and any account fact (`credits 12.40`, `spend cap reached`),
+then one indented row per window. A window's name is plain (`Session 5h`, `Weekly 7d`,
+`Weekly Fable 7d`; a qualified session keeps its qualifier). The bar is filled to the
+judged percentage in eighths (`█`/`░`, or `#`/`.` when the session's icons are off), `USED`
+is the vendor's own percentage, and `COUNTS` (`→ 48.5%`) appears only when the judged
+percentage reads differently — a reset in hand, `unlimited` credits or a reached spend cap
+— with `NOTE` naming the reason (`1 reset in hand`, `credits unlimited`, `spend cap
+reached`), the level (`low`, `critical`) and `stale`. `RESETS` is the window-reset
+countdown and `SEEN` the age of the observation. Scopes run worst first: critical
+or spend-capped, then low, then untrusted (stale or unreadable), then calm, highest judged
+percentage first within a band, config order breaking ties; a scope's windows keep their
+stable bucket order. Each row is drawn in its tone
+(an inline tmux `#[fg]`), and every row also carries its word, so the dialog reads the
+same with colour stripped. With no usable observation the scope says why in words (`no reading
+ae can trust (last report 2d 4h ago) — run /usage in a claude session`, `quota file
+unreadable`, `read cut short`, `this client reports no quota`); a config failure becomes one
+`quota: unavailable` head. A narrow client drops, in order, `SEEN`, the bar and the long
+note words, then elides window names from the tail with `…` (floor 12 columns); a short client
+folds calm windows into one `+N calm scopes, M calm windows — ae quota` line (`+1 calm scope`,
+`1 calm window` in the singular; either half alone when the other is zero), trouble
+rows never fold, and a client that still cannot hold the table is refused with the size it
+needs. These rows are keyless and cannot trigger an action; only `Close` dismisses the
+dialog. `ae quota` remains the full view with rollout provenance, raw values, credits,
+paths, hints, and notes. Any `read-error` or `truncated` sibling makes the scope report that
+incomplete status instead of its window rows; an `unknown` sibling does not erase an
+observed same-source window. The dialog reads no pace.
 
 Ae first proves the original orchestrator-only menu fits. It draws the quota entry row only when
 it fits by its actual rendered width. Otherwise the
 existing blank separator becomes one bounded `+Nr +Nc` overflow notice, leaving the original
 Start/Resume/Pause row and base height intact. Very small clients therefore see the overflow
 notice instead of the entry; a client too small for even that original menu keeps the
-original refusal. Display cells are
-printable ASCII and visibly elide long scope or bucket labels from the middle.
+original refusal. The orchestrator menu's display cells are printable ASCII; the quota
+dialog's bar glyphs are the one exception (see above).
 
 The menu offers exactly one orchestrator action from a complete raw metadata
 census. No recorded role plus no canonical saved/live namesake offers **Start**.
@@ -971,9 +989,9 @@ log under the default home, so its profiles and clients share one scope. The sam
 retained Codex rollout whose recorded config home did not resolve: two seats that failed for the
 same reason are two failures that read alike, not one account, so each keeps its own row and its own
 rollout. The settings quota dialog groups by the same rule, so the two surfaces never disagree about
-whether something is one account. On a short client the dialog drops calm rows first, burning rows
-last, and admits the dropped count in one inert row; only a client narrower than the dialog, or
-below one row plus that admission, refuses — and every refusal is told on the invoking client.
+whether something is one account. On a short client the dialog folds calm windows first and admits the dropped count in one inert
+row; low, critical, stale and unreadable rows never fold. Only a client too small for the table
+that remains refuses — and every refusal is told on the invoking client.
 
 A `manual_resets` declaration belongs to its `[clients]` label, so only that label's OWN scope may
 spend it, and only when that scope proved a source. A profile that reaches the same label under a

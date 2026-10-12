@@ -731,6 +731,14 @@ pub fn menu_title_style(palette: &Palette) -> String {
     style(&[&format!("fg={} bold", palette.title)])
 }
 
+/// The style one menu ROW is drawn in: the palette hue `token` as its
+/// foreground. Emitted into the item name, which `display-menu` format-expands,
+/// before the escaped label.
+#[must_use]
+pub fn menu_row_style(token: &str) -> String {
+    style(&[&format!("fg={token}")])
+}
+
 // ---------------------------------------------------------------------------
 // status-format[0] — the session's own line
 // ---------------------------------------------------------------------------

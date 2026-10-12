@@ -3174,7 +3174,7 @@ mod tests {
             .iter()
             .filter_map(|item| match &item.action {
                 crate::tmux::MenuAction::Run(command) => Some(command.as_str()),
-                crate::tmux::MenuAction::Disabled => None,
+                crate::tmux::MenuAction::Disabled | crate::tmux::MenuAction::Styled(_) => None,
             })
             .collect();
         assert!(

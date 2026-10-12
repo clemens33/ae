@@ -27,6 +27,7 @@ use crate::console::view;
 use crate::console::wrap::wrap;
 use crate::digest::{SessionEntry, Status};
 use crate::event_text::clip_head;
+use crate::quota::view::Tone;
 use crate::theme::{Look, Mark, Palette};
 use crate::time::Timestamp;
 
@@ -1573,7 +1574,13 @@ pub(crate) fn paint_settings(
             ],
             close: (SETTINGS_CLOSE, Hit::SettingsClose),
             selected,
-            body: &settings_body(tab, bodies, paint, width),
+            body: &settings_body(
+                tab,
+                bodies,
+                paint,
+                width,
+                look.is_none_or(|look| look.icons),
+            ),
             scroll: Scroll::Top(scroll),
         },
     );
@@ -1774,6 +1781,7 @@ fn settings_body(
     bodies: &SettingsBodies,
     paint: Paint,
     width: u16,
+    icons: bool,
 ) -> Vec<(String, Style)> {
     let dim = paint.fg(|p| p.dim);
     let text = paint.fg(|p| p.text);
@@ -1782,14 +1790,28 @@ fn settings_body(
     match tab {
         SettingsTab::Quota => match bodies.quota.as_ref() {
             None => vec![("loading".to_owned(), dim)],
-            Some(rows) if rows.is_empty() => vec![("no quota scopes read".to_owned(), dim)],
-            Some(rows) => rows
-                .iter()
-                .map(|row| {
-                    let style = if row.header { head } else { text };
-                    (clean(&row.label), style)
-                })
-                .collect(),
+            Some(scopes) if scopes.is_empty() => vec![("no quota scopes read".to_owned(), dim)],
+            Some(scopes) => crate::quota::view::layout(
+                scopes,
+                crate::quota::view::Geometry {
+                    width: usize::from(width.saturating_sub(LEFT)),
+                    rows: None,
+                    icons,
+                },
+            )
+            .into_iter()
+            .map(|line| {
+                let style = match line.tone {
+                    Tone::Plain => text,
+                    Tone::Dim => dim,
+                    Tone::Head => head,
+                    Tone::Low => paint.fg(|p| p.waiting_agent),
+                    Tone::Critical => paint.fg(|p| p.needs_you),
+                    Tone::Stale => paint.fg(|p| p.stale),
+                };
+                (clean(&line.text), style)
+            })
+            .collect(),
         },
         SettingsTab::Config => match &bodies.config {
             ConfigView::Loading => vec![("loading".to_owned(), dim)],

@@ -302,25 +302,42 @@ fn oversized_stdout_is_refused_without_echoing_vendor_bytes() {
 }
 
 /// Structural safety pin complements the driver's in-crate observe runtime pin.
-/// Neither local observer may gain a path to the on-demand executor.
+/// Neither local observer — nor the dialog facts builder — may gain a path
+/// to the on-demand executor, and the dialog path never reads pace (D6).
 #[test]
 fn local_observers_never_reference_the_on_demand_leg_or_run_wrapper() {
     let source = include_str!("../../src/quota.rs");
-    for (start, end) in [
-        ("pub(crate) fn observe(", "pub(crate) fn observe_full("),
-        (
-            "pub(crate) fn observe_full(",
-            "pub(crate) fn quota_dialog_rows(",
-        ),
-    ] {
-        let body = source
+    let slice = |start: &str, end: &str| {
+        source
             .split_once(start)
-            .expect("local observer")
+            .unwrap_or_else(|| panic!("{start} opens a slice"))
             .1
             .split_once(end)
-            .expect("observer boundary")
-            .0;
+            .unwrap_or_else(|| panic!("{end} closes it"))
+            .0
+    };
+    for (start, end) in [
+        ("pub(crate) fn observe(", "pub(crate) fn observe_full("),
+        ("pub(crate) fn observe_full(", "fn view_of("),
+    ] {
+        let body = slice(start, end);
         for forbidden in ["run_agy_quota", "run_with(", "spawn_until("] {
+            assert!(!body.contains(forbidden), "{start} references {forbidden}");
+        }
+    }
+    for (start, end) in [
+        ("fn quota_view(", "impl SettingsScope"),
+        ("fn view_of(", "Read configured client scopes"),
+    ] {
+        let body = slice(start, end);
+        for forbidden in [
+            "run_agy_quota",
+            "run_with(",
+            "spawn_until(",
+            "observe_full(",
+            "PaceTable",
+            "pace::",
+        ] {
             assert!(!body.contains(forbidden), "{start} references {forbidden}");
         }
     }

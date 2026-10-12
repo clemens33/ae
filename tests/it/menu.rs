@@ -2236,7 +2236,7 @@ fn draw_direct_quota_dialog(
     let dialog = dialog
         .spawn()
         .unwrap_or_else(|error| panic!("the direct quota dialog invocation starts: {error}"));
-    let (geometry, raw) = wait_for_direct_dialog_geometry(&record, "session 5h");
+    let (geometry, raw) = wait_for_direct_dialog_geometry(&record, "Session 5h");
     assert!(
         tmux(socket, scratch, &["detach-client", "-t", &client]).0,
         "the direct client detaches after its terminal capture"
@@ -3381,7 +3381,7 @@ fn settings_quota_entry_opens_the_per_window_dialog_and_close_dismisses_it() {
                 |seen| seen.contains("settings") && seen.contains("Client quotas..."),
             );
             assert!(
-                !settings.contains("session 5h"),
+                !settings.contains("Session 5h"),
                 "no inline quota rows behind the entry: {settings}"
             );
             // Mutate the invoking session's quota AFTER settings is on screen:
@@ -3410,7 +3410,19 @@ fn settings_quota_entry_opens_the_per_window_dialog_and_close_dismisses_it() {
                     )
                     .1
                 },
-                |seen| seen.contains("Client quotas") && seen.contains("session 5h"),
+                |seen| seen.contains("Client quotas") && seen.contains("Session 5h"),
+            );
+            let styled = tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-e", "-p", "-t", "dialog-viewer"],
+            )
+            .1;
+            assert!(
+                styled
+                    .lines()
+                    .any(|line| line.contains("Session 5h") && line.contains('\u{1b}')),
+                "the Low window row carries its own style past tmux: {styled:?}"
             );
             assert!(
                 settings_marker(&socket, &scratch, "viewed").is_empty(),
@@ -3461,21 +3473,31 @@ fn settings_quota_entry_opens_the_per_window_dialog_and_close_dismisses_it() {
         settings_seen.contains("Start orchestrator"),
         "{settings_seen}"
     );
-    assert!(dialog_seen.contains("claude/menu-claude"), "{dialog_seen}");
     assert!(
-        dialog_seen.contains("  session 5h | 83%"),
+        dialog_seen.contains("claude · menu-claude"),
+        "{dialog_seen}"
+    );
+    assert!(dialog_seen.contains("menu-supported"), "{dialog_seen}");
+    let window = dialog_seen
+        .lines()
+        .find(|line| line.contains("Session 5h"))
+        .unwrap_or_else(|| panic!("the window row draws: {dialog_seen}"));
+    assert!(
+        window.contains("83%") && !dialog_seen.contains("82%"),
         "the dialog rereads at open time under the invoking overlay: {dialog_seen}"
     );
-    assert!(
-        !dialog_seen.contains("82%"),
-        "no stale settings-time value: {dialog_seen}"
-    );
+    assert!(window.contains("low"), "{dialog_seen}");
     assert!(
         !dialog_seen.contains("other-claude") && !dialog_seen.contains("11%"),
         "the other session's overlay never leaks in: {dialog_seen}"
     );
-    assert!(dialog_seen.contains("fresh"), "{dialog_seen}");
-    assert!(dialog_seen.contains("unsupported"), "{dialog_seen}");
+    assert!(!dialog_seen.contains("fresh"), "{dialog_seen}");
+    assert!(!dialog_seen.contains("window resets"), "{dialog_seen}");
+    assert!(!dialog_seen.contains(" | "), "{dialog_seen}");
+    assert!(
+        dialog_seen.contains("this client reports no quota"),
+        "{dialog_seen}"
+    );
     assert!(dialog_seen.contains("Close"), "{dialog_seen}");
     assert!(
         !dialog_seen.contains("Start orchestrator"),
@@ -3866,12 +3888,15 @@ fn quota_dialog_draws_centred_with_indented_windows_from_either_split_pane() {
         draw_direct_quota_dialog(&socket, &scratch, &root, &config, 100, false, "left");
     for (side, drawn) in [("right", &dialog_right), ("left", &dialog_left)] {
         let text = String::from_utf8_lossy(&drawn.raw);
-        assert!(text.contains("claude/menu-claude"), "{side}: {text:?}");
+        assert!(text.contains("claude · menu-claude"), "{side}: {text:?}");
         assert!(
-            text.contains("  session 5h | 82%"),
+            text.contains("  Session 5h") && text.contains("82%"),
             "{side} keeps the two-space window indent in raw terminal bytes: {text:?}"
         );
-        assert!(text.contains("unsupported"), "{side}: {text:?}");
+        assert!(
+            text.contains("this client reports no quota"),
+            "{side}: {text:?}"
+        );
         assert!(text.contains("Close"), "{side}: {text:?}");
         assert_direct_dialog_centred(drawn.geometry, 100);
     }
@@ -8759,9 +8784,10 @@ fn cell_clipping_runs_through_the_one_cutter() {
         "a second clipper appeared"
     );
     assert_eq!(defs, 1, "the cutter is defined more than once");
-    // The prose projector over the same cutter: one definition, three callers —
-    // the nudge body, `ae app`'s drawn rows, and the `requests` excerpts, which
-    // clip through it rather than beside it.
+    // The prose projector over the same cutter: one definition, four callers —
+    // the nudge body, `ae app`'s drawn rows, the `requests` excerpts, and the
+    // quota view's scope heads and elided names, which clip through it rather
+    // than beside it.
     let head_needle = ["clip", "_head("].concat();
     let head_def = ["fn clip", "_head"].concat();
     let (mut head_holders, mut head_defs) = (Vec::new(), 0);
@@ -8786,6 +8812,7 @@ fn cell_clipping_runs_through_the_one_cutter() {
             "draw.rs".to_owned(),
             "event_text.rs".to_owned(),
             "requests.rs".to_owned(),
+            "view.rs".to_owned(),
             "watchdog_daemon.rs".to_owned(),
         ],
         "the prose projector gained an unnamed caller"

@@ -115,7 +115,7 @@ pub(super) enum Answer {
     /// stay.
     Settings {
         generation: u64,
-        quota: Vec<super::settings::QuotaRow>,
+        quota: Vec<crate::quota::view::Scope>,
         config: Option<super::settings::ConfigView>,
         about: Option<super::settings::AboutFacts>,
         instructions: Option<super::settings::InstructionsView>,
@@ -901,13 +901,7 @@ impl Reader {
                 sessions: Some(roots.sessions()),
                 now: crate::time::Timestamp::now().epoch(),
             };
-            crate::quota::quota_dialog_rows(&inputs)
-                .into_iter()
-                .map(|row| super::settings::QuotaRow {
-                    label: row.label,
-                    header: matches!(row.kind, crate::quota::DialogRowKind::Header),
-                })
-                .collect()
+            crate::quota::view_of(&inputs)
         };
         let (config, about, instructions) = if self.settings_full {
             (None, None, None)

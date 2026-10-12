@@ -1135,7 +1135,7 @@ fn run_quota_dialog(
     let home = doors::home();
     let roots = inventory::Roots::under(&root);
     let now = time::Timestamp::now().epoch();
-    let rows = quota::quota_dialog_rows(&quota::Inputs {
+    let scopes = quota::view_of(&quota::Inputs {
         home: home.as_deref(),
         global: Some(&config),
         local: local.as_deref(),
@@ -1143,7 +1143,6 @@ fn run_quota_dialog(
         now,
     });
     let look = picker_look(server, Some(&client.session_id));
-    let menu = settings_menu::quota_dialog_menu(&rows, &look.palette);
     // PROOF round, immediately before the draw: the scan above cannot
     // interleave a replacement past this point. A refusal reports through the
     // same owner as every other dialog failure, so the invoking client reads
@@ -1159,23 +1158,29 @@ fn run_quota_dialog(
             return EXIT_UNAVAILABLE;
         }
     };
-    // Fit against the LIVE dimensions from the proof round, degrading before
-    // refusing; what still refuses — too narrow, or below the floor — reports
-    // through the same owner, quoting the FULL menu's budget. The refusal
-    // keeps its exit code after the tell, as every menu continuation does: a
-    // hand-run is indistinguishable from the menu row and reads the same code.
-    let Some(menu) =
-        settings_menu::quota_dialog_menu_fitted(&rows, &look.palette, live.width, live.height)
-    else {
-        let (columns, lines) = session_menu::menu_budget(&menu);
-        report(
-            &format!(
-                "this terminal is {}x{}; quota needs {columns}x{lines}",
-                live.width, live.height
-            ),
-            err,
-        );
-        return EXIT_UNAVAILABLE;
+    // Lay the facts out against the LIVE dimensions from the proof round;
+    // what still refuses — too narrow, or below the floor — reports through
+    // the same owner, quoting the FULL menu's budget. The refusal keeps its
+    // exit code after the tell, as every menu continuation does: a hand-run is
+    // indistinguishable from the menu row and reads the same code.
+    let menu = match settings_menu::quota_dialog_menu(
+        &scopes,
+        &look.palette,
+        look.icons,
+        live.width,
+        live.height,
+    ) {
+        Ok(menu) => menu,
+        Err((columns, lines)) => {
+            report(
+                &format!(
+                    "this terminal is {}x{}; quota needs {columns}x{lines}",
+                    live.width, live.height
+                ),
+                err,
+            );
+            return EXIT_UNAVAILABLE;
+        }
     };
     if !transport::display_menu_centred(server, &client_name, &live.session_id, &menu, menu_mouse) {
         report(

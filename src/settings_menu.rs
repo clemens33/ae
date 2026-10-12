@@ -389,7 +389,8 @@ pub(crate) fn menu(
             String::new(),
             MenuAction::Disabled,
         ),
-        MenuAction::Disabled => (label, key, MenuAction::Disabled),
+        // A control never carries a style; were one to, it stays inert here.
+        MenuAction::Disabled | MenuAction::Styled(_) => (label, key, MenuAction::Disabled),
     };
     let mut items = vec![
         MenuItem {
@@ -530,80 +531,78 @@ pub(crate) fn menu_for_awareness(
     menu_with_quota(control, launcher, snapshot, version, palette, entry)
 }
 
-/// Build the observational quota dialog: informational rows are selectable
-/// no-ops, so tmux opens on the first data row and Enter dismisses it. The
-/// blank separator stays disabled.
-pub(crate) fn quota_dialog_menu(
-    rows: &[crate::quota::DialogRow],
-    palette: &crate::theme::Palette,
-) -> Menu {
-    let kept: Vec<&crate::quota::DialogRow> = rows.iter().collect();
-    quota_dialog_menu_degraded(&kept, 0, palette)
-}
-
-/// Fit the quota dialog to a live client, degrading before refusing.
+/// Build the observational quota dialog for a live client, or the room it
+/// would need.
 ///
-/// A fitting client draws [`quota_dialog_menu`] byte for byte. A short one
-/// drops rows until it fits — calm from the bottom, then emptied headers,
-/// then burning from the bottom — and admits the dropped count in one inert
-/// row, so a partial list never reads as complete. Width never degrades.
-#[must_use]
-pub(crate) fn quota_dialog_menu_fitted(
-    rows: &[crate::quota::DialogRow],
+/// The view facts are laid out HERE, after the client's width and height are
+/// known: content width is the client less the menu's four border columns, and
+/// the lines are the client's rows less the separator, `Close` and the menu's
+/// own frame. Informational rows are selectable no-ops drawn in their tone, so
+/// tmux opens on the first data row and Enter dismisses it; the admit row and
+/// the blank separator stay disabled. A client the lines cannot fit refuses
+/// with the budget of the UNCONSTRAINED menu, so the number it quotes is the
+/// room the whole dialog wants, not the room a squeezed one happened to take.
+pub(crate) fn quota_dialog_menu(
+    scopes: &[crate::quota::view::Scope],
     palette: &crate::theme::Palette,
+    icons: bool,
     client_width: usize,
     client_height: usize,
-) -> Option<Menu> {
-    let full = quota_dialog_menu(rows, palette);
-    let (columns, lines) = crate::session_menu::menu_budget(&full);
+) -> Result<Menu, (usize, usize)> {
+    use crate::quota::view::{Geometry, layout};
+    // The menu's two border columns and one padding cell each side; its two
+    // frame rows, the status line, the separator and `Close`. BORDERS is the
+    // same 4 `session_menu::menu_budget` adds per row, which the fit check below
+    // measures with; keep the two in step.
+    const BORDERS: usize = 4;
+    const FRAME_ROWS: usize = 5;
+    let build = |geometry| quota_dialog_menu_of(&layout(scopes, geometry), palette);
+    let fitted = build(Geometry {
+        width: client_width.saturating_sub(BORDERS),
+        rows: Some(client_height.saturating_sub(FRAME_ROWS)),
+        icons,
+    });
+    let (columns, lines) = crate::session_menu::menu_budget(&fitted);
     if client_width >= columns && client_height >= lines {
-        return Some(full);
+        return Ok(fitted);
     }
-    if client_width < columns {
-        return None;
-    }
-    let mut kept: Vec<&crate::quota::DialogRow> = rows.iter().collect();
-    loop {
-        let menu = quota_dialog_menu_degraded(&kept, rows.len() - kept.len(), palette);
-        let (columns, lines) = crate::session_menu::menu_budget(&menu);
-        if client_width >= columns && client_height >= lines {
-            return Some(menu);
-        }
-        // Past the full-menu check only the admit row can overrun the width,
-        // and it is mandatory once a row dropped: width is not degradable.
-        if client_width < columns || kept.len() <= 1 {
-            return None;
-        }
-        kept.remove(drop_candidate(&kept)?);
-    }
+    Err(crate::session_menu::menu_budget(&build(Geometry {
+        width: usize::MAX,
+        rows: None,
+        icons,
+    })))
 }
 
-/// Build over kept rows plus, past the first drop, one inert admit row with
-/// the exact dropped count. Close stays the one keyed row.
-fn quota_dialog_menu_degraded(
-    kept: &[&crate::quota::DialogRow],
-    dropped: usize,
+/// The menu over already laid-out lines: each line one toned row, a blank
+/// separator, then `Close` as the one keyed row.
+fn quota_dialog_menu_of(
+    lines: &[crate::quota::view::Line],
     palette: &crate::theme::Palette,
 ) -> Menu {
-    let mut items = Vec::with_capacity(kept.len() + 3);
-    items.extend(kept.iter().map(|row| {
+    use crate::quota::view::{Tone, is_admit};
+    let mut items = Vec::with_capacity(lines.len() + 2);
+    items.extend(lines.iter().map(|line| {
         debug_assert!(
-            !row.label.starts_with('-'),
+            !line.text.starts_with('-'),
             "quota dialog rows must not start with tmux's disabled marker"
         );
+        let token = match line.tone {
+            Tone::Plain | Tone::Head => palette.text,
+            Tone::Dim => palette.dim,
+            Tone::Low => palette.waiting_agent,
+            Tone::Critical => palette.needs_you,
+            Tone::Stale => palette.stale,
+        };
         MenuItem {
-            label: row.label.clone(),
+            label: line.text.clone(),
             key: String::new(),
-            action: MenuAction::Run(String::new()),
+            action: if is_admit(line) {
+                MenuAction::Disabled
+            } else {
+                MenuAction::Styled(crate::theme::menu_row_style(token))
+            },
         }
     }));
-    if dropped > 0 {
-        items.push(MenuItem {
-            label: format!("+{dropped} more — run ae quota"),
-            key: String::new(),
-            action: MenuAction::Disabled,
-        });
-    }
     items.push(MenuItem {
         label: String::new(),
         key: String::new(),
@@ -615,25 +614,6 @@ fn quota_dialog_menu_degraded(
         title_style: crate::theme::menu_title_style(palette),
         items,
     }
-}
-
-/// The next row a short client drops: the bottom-most calm row; past those,
-/// the bottom-most header scoping no kept window; past those, the bottom-most
-/// burning row. A header with a kept window is never named.
-fn drop_candidate(kept: &[&crate::quota::DialogRow]) -> Option<usize> {
-    use crate::quota::DialogRowKind::{Calm, Header, LowOrWorse};
-    if let Some(victim) = kept.iter().rposition(|row| row.kind == Calm) {
-        return Some(victim);
-    }
-    let mut below = kept.len();
-    while let Some(header) = kept[..below].iter().rposition(|row| row.kind == Header) {
-        // The first row below decides: headers arrive in scope order.
-        if kept.get(header + 1).is_none_or(|row| row.kind == Header) {
-            return Some(header);
-        }
-        below = header;
-    }
-    kept.iter().rposition(|row| row.kind == LowOrWorse)
 }
 
 /// Replace the existing blank separator with a bounded quota overflow notice.
@@ -1087,7 +1067,7 @@ mod tests {
         );
         match &built.items[2].action {
             crate::tmux::MenuAction::Run(command) => command.clone(),
-            crate::tmux::MenuAction::Disabled => String::new(),
+            crate::tmux::MenuAction::Disabled | crate::tmux::MenuAction::Styled(_) => String::new(),
         }
     }
 
@@ -1377,7 +1357,7 @@ mod tests {
                 .iter()
                 .filter_map(|item| match &item.action {
                     crate::tmux::MenuAction::Run(command) => Some(command.clone()),
-                    crate::tmux::MenuAction::Disabled => None,
+                    crate::tmux::MenuAction::Disabled | crate::tmux::MenuAction::Styled(_) => None,
                 })
                 .collect()
         }
@@ -1432,201 +1412,103 @@ mod tests {
     }
 
     #[test]
-    fn quota_dialog_menu_rows_are_inert_and_undimmed_with_one_close_row() {
-        let rows = [
-            crate::quota::DialogRow {
-                label: "codex/cx".to_owned(),
-                kind: crate::quota::DialogRowKind::Header,
-            },
-            crate::quota::DialogRow {
-                label: "  session 5h | 39% | window resets 3h | seen 0m | fresh".to_owned(),
-                kind: crate::quota::DialogRowKind::Calm,
-            },
-        ];
-        let built = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
-        assert_eq!(built.title, super::QUOTA_DIALOG_TITLE);
-        assert_eq!(built.items.len(), rows.len() + 2);
-        for item in &built.items[..rows.len()] {
-            assert!(item.key.is_empty());
-            assert!(matches!(
-                item.action,
-                crate::tmux::MenuAction::Run(ref command) if command.is_empty()
-            ));
+    fn quota_dialog_menu_builds_toned_rows_separator_and_close() {
+        use crate::quota::view::{Level, Scope, Window};
+        let calm = Window {
+            name: "Session 5h".to_owned(),
+            raw: Some("31%".to_owned()),
+            counts: None,
+            fill: Some(2),
+            why: None,
+            level: Level::Headroom,
+            stale: false,
+            resets: Some("2h10m".to_owned()),
+            seen: Some("2m".to_owned()),
+        };
+        let low = Window {
+            name: "Weekly 7d".to_owned(),
+            raw: Some("88%".to_owned()),
+            fill: Some(7),
+            level: Level::Low,
+            ..calm.clone()
+        };
+        let scopes = vec![Scope {
+            title: "claude · cc".to_owned(),
+            profiles: String::new(),
+            account: None,
+            only: None,
+            windows: vec![calm, low],
+        }];
+        let menu = super::quota_dialog_menu(&scopes, &crate::theme::Palette::DARCULA, true, 90, 40)
+            .expect("a fitting client draws");
+        assert_eq!(menu.title, super::QUOTA_DIALOG_TITLE);
+        assert_eq!(menu.items.len(), 6);
+        for item in &menu.items[..4] {
+            assert!(
+                matches!(item.action, crate::tmux::MenuAction::Styled(_)),
+                "{label}",
+                label = item.label
+            );
         }
-        let separator = &built.items[rows.len()];
+        let styled = menu
+            .items
+            .iter()
+            .find(|item| item.label.contains("88%"))
+            .expect("low row");
+        assert!(
+            matches!(&styled.action, crate::tmux::MenuAction::Styled(style) if style == "#[fg=#D9A441]")
+        );
+        let separator = &menu.items[4];
         assert!(separator.label.is_empty());
         assert!(matches!(
             separator.action,
             crate::tmux::MenuAction::Disabled
         ));
-        let close = &built.items[rows.len() + 1];
-        assert_eq!(close.label, "Close");
-        assert_eq!(close.key, "c");
-        assert!(matches!(
-            close.action,
-            crate::tmux::MenuAction::Run(ref command) if command.is_empty()
-        ));
+        assert_eq!(
+            (menu.items[5].label.as_str(), menu.items[5].key.as_str()),
+            ("Close", "c")
+        );
     }
 
     #[test]
-    fn quota_dialog_information_rows_render_without_the_dim_marker() {
-        let rows = [
-            crate::quota::DialogRow {
-                label: "codex/cx".to_owned(),
-                kind: crate::quota::DialogRowKind::Header,
-            },
-            crate::quota::DialogRow {
-                label: "  session 5h | 39%".to_owned(),
-                kind: crate::quota::DialogRowKind::Calm,
-            },
-        ];
-        let menu = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
-        let server = ServerId::Selected(Selector::Socket(PathBuf::from("/tmp/ae-quota.sock")));
-        let argv =
-            crate::tmux::display_menu_centred_args(&server, "/dev/ttys004", "%12", &menu, false);
-        let first_item = argv
-            .iter()
-            .position(|word| word == "--")
-            .expect("menu items follow the flag separator")
-            + 1;
-        for (index, row) in rows.iter().enumerate() {
-            let label = &argv[first_item + index * 3];
-            assert_eq!(label, &row.label, "quota row {index} is not dimmed");
-            assert!(!label.starts_with('-'), "quota row {index}: {label}");
-        }
+    fn quota_dialog_menu_reports_the_full_budget_below_the_floor() {
+        use crate::quota::view::{Level, Scope, Window};
+        let scopes = vec![Scope {
+            title: "claude · cc".to_owned(),
+            profiles: String::new(),
+            account: None,
+            only: None,
+            windows: vec![Window {
+                name: "Session 5h".to_owned(),
+                raw: Some("31%".to_owned()),
+                counts: None,
+                fill: Some(2),
+                why: None,
+                level: Level::Headroom,
+                stale: false,
+                resets: Some("2h10m".to_owned()),
+                seen: Some("2m".to_owned()),
+            }],
+        }];
+        let full = super::quota_dialog_menu(&scopes, &crate::theme::Palette::DARCULA, true, 90, 40)
+            .expect("a fitting client draws");
+        let need = super::quota_dialog_menu(&scopes, &crate::theme::Palette::DARCULA, true, 30, 40)
+            .expect_err("below the floor refuses");
+        assert_eq!(need, crate::session_menu::menu_budget(&full));
+        assert!(need.0 > 30, "{need:?}");
     }
 
     #[test]
     #[should_panic(expected = "quota dialog rows must not start with tmux's disabled marker")]
-    fn quota_dialog_rejects_a_row_that_would_reintroduce_tmux_dimming() {
-        let rows = [crate::quota::DialogRow {
-            label: "-would be dimmed".to_owned(),
-            kind: crate::quota::DialogRowKind::Calm,
+    fn quota_dialog_rejects_a_head_that_would_reintroduce_tmux_dimming() {
+        let scopes = vec![crate::quota::view::Scope {
+            title: "-would be dimmed".to_owned(),
+            profiles: String::new(),
+            account: None,
+            only: None,
+            windows: Vec::new(),
         }];
-        let _ = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
-    }
-
-    fn dialog_row(label: &str, kind: crate::quota::DialogRowKind) -> crate::quota::DialogRow {
-        crate::quota::DialogRow {
-            label: label.to_owned(),
-            kind,
-        }
-    }
-
-    fn fitted(
-        rows: &[crate::quota::DialogRow],
-        width: usize,
-        height: usize,
-    ) -> Option<crate::tmux::Menu> {
-        super::quota_dialog_menu_fitted(rows, &crate::theme::Palette::DARCULA, width, height)
-    }
-
-    fn fitted_argv(menu: &crate::tmux::Menu) -> Vec<String> {
-        let server = ServerId::Selected(Selector::Socket(PathBuf::from("/tmp/ae-quota.sock")));
-        crate::tmux::display_menu_centred_args(&server, "/dev/ttys004", "%12", menu, false)
-    }
-
-    fn fitted_labels(menu: &crate::tmux::Menu) -> Vec<&str> {
-        menu.items.iter().map(|item| item.label.as_str()).collect()
-    }
-
-    #[test]
-    fn quota_dialog_fitted_is_byte_identical_when_the_client_fits() {
-        use crate::quota::DialogRowKind::{Calm, Header};
-        let rows = [
-            dialog_row("codex/cx", Header),
-            dialog_row("  calm one", Calm),
-            dialog_row("  calm two", Calm),
-        ];
-        let full = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
-        let (columns, lines) = crate::session_menu::menu_budget(&full);
-        for (width, height) in [(columns, lines), (columns + 40, lines + 20)] {
-            let menu = fitted(&rows, width, height).expect("a fitting client draws");
-            assert_eq!(fitted_argv(&menu), fitted_argv(&full), "{width}x{height}");
-        }
-    }
-
-    #[test]
-    fn quota_dialog_fitted_drops_calm_rows_first_and_admits_the_count() {
-        use crate::quota::DialogRowKind::{Calm, Header};
-        let mut rows = vec![dialog_row("codex/cx", Header)];
-        rows.extend((0..41).map(|n| dialog_row(&format!("  calm {n:02}"), Calm)));
-        let full = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
-        let (_, lines) = crate::session_menu::menu_budget(&full);
-        assert_eq!(lines, 47, "the pin is a 47-line dialog");
-        // Roomy width like the incident's 296-wide terminal: height is pinned.
-        let menu = fitted(&rows, 296, 46).expect("a 46-line client opens");
-        let labels = fitted_labels(&menu);
-        assert_eq!(labels.len(), 43, "40 kept + admit + separator + Close");
-        assert_eq!(labels[40], "+2 more \u{2014} run ae quota");
-        assert!(labels[41].is_empty(), "the separator follows the admit");
-        assert_eq!(labels[42], "Close");
-        assert!(
-            !labels[..40].contains(&"  calm 40"),
-            "the bottom calm row drops first: {labels:?}"
-        );
-        assert!(
-            !labels[..40].contains(&"  calm 39"),
-            "then the next one up: {labels:?}"
-        );
-        assert!(labels[..40].contains(&"  calm 38"), "{labels:?}");
-        assert!(matches!(
-            menu.items[40].action,
-            crate::tmux::MenuAction::Disabled
-        ));
-        assert_eq!(menu.items[42].key, "c");
-    }
-
-    #[test]
-    fn quota_dialog_fitted_keeps_a_burning_row_below_dropped_calm_ones() {
-        use crate::quota::DialogRowKind::{Calm, Header, LowOrWorse};
-        let rows = [
-            dialog_row("codex/cx", Header),
-            dialog_row("  calm one", Calm),
-            dialog_row("  calm two", Calm),
-            dialog_row("  burning low", LowOrWorse),
-        ];
-        let full = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
-        let lines = crate::session_menu::menu_budget(&full).1;
-        let menu = fitted(&rows, 80, lines - 1).expect("one short opens");
-        let labels = fitted_labels(&menu);
-        assert_eq!(labels[0], "codex/cx");
-        assert!(labels.contains(&"  burning low"), "{labels:?}");
-        assert!(!labels.contains(&"  calm one"), "{labels:?}");
-        assert!(!labels.contains(&"  calm two"), "{labels:?}");
-        assert!(
-            labels.contains(&"+2 more \u{2014} run ae quota"),
-            "{labels:?}"
-        );
-        // Burning rows drop only past every calm row and emptied header.
-        let rows = [
-            dialog_row("codex/cx", Header),
-            dialog_row("  burning one", LowOrWorse),
-            dialog_row("  burning two", LowOrWorse),
-        ];
-        let menu = fitted(&rows, 80, 7).expect("the floor keeps one");
-        let labels = fitted_labels(&menu);
-        assert_eq!(
-            labels,
-            ["codex/cx", "+2 more \u{2014} run ae quota", "", "Close"]
-        );
-    }
-
-    #[test]
-    fn quota_dialog_fitted_refuses_below_the_floor_or_too_narrow() {
-        use crate::quota::DialogRowKind::{Calm, Header};
-        let rows = [
-            dialog_row("codex/cx", Header),
-            dialog_row("  calm one", Calm),
-            dialog_row("  calm two", Calm),
-        ];
-        let full = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
-        let (columns, lines) = crate::session_menu::menu_budget(&full);
-        assert!(fitted(&rows, 80, 6).is_none(), "below the floor refuses");
-        assert!(
-            fitted(&rows, columns - 1, lines).is_none(),
-            "width never degrades"
-        );
+        let _ = super::quota_dialog_menu(&scopes, &crate::theme::Palette::DARCULA, true, 90, 40);
     }
 
     #[test]

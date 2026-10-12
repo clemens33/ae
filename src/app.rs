@@ -671,7 +671,7 @@ impl App {
     fn settled(
         &mut self,
         generation: u64,
-        quota: Vec<settings::QuotaRow>,
+        quota: Vec<crate::quota::view::Scope>,
         config: Option<settings::ConfigView>,
         about: Option<settings::AboutFacts>,
         instructions: Option<settings::InstructionsView>,
@@ -5068,17 +5068,23 @@ mod tests {
         assert_eq!(order(&asks), ["settings false", "settings true"]);
     }
 
+    /// A quota scope that draws as one head line: facts, not an oracle.
+    fn quota_scope(title: &str) -> crate::quota::view::Scope {
+        crate::quota::view::Scope {
+            title: title.to_owned(),
+            profiles: String::new(),
+            account: None,
+            only: None,
+            windows: Vec::new(),
+        }
+    }
+
     /// Only the open generation paints; quota-only answers keep the rest.
     #[test]
     fn settled_merges_own_generation_and_drops_stale() {
         let mut app = app(Some("api"));
         app.open_settings();
-        let quota = || {
-            vec![settings::QuotaRow {
-                label: "q".to_owned(),
-                header: false,
-            }]
-        };
+        let quota = || vec![quota_scope("q")];
         let config = || settings::ConfigView::Rows {
             header: settings::ConfigHeader::default(),
             rows: Vec::new(),
@@ -5098,19 +5104,10 @@ mod tests {
             app.settings_bodies.config,
             settings::ConfigView::Rows { .. }
         ));
-        app.settled(
-            1,
-            vec![settings::QuotaRow {
-                label: "q2".to_owned(),
-                header: false,
-            }],
-            None,
-            None,
-            None,
-        );
+        app.settled(1, vec![quota_scope("q2")], None, None, None);
         assert_eq!(app.settings_bodies.quota.as_ref().expect("quota").len(), 1);
         assert_eq!(
-            app.settings_bodies.quota.as_ref().expect("quota")[0].label,
+            app.settings_bodies.quota.as_ref().expect("quota")[0].title,
             "q2"
         );
         assert!(
@@ -5127,7 +5124,7 @@ mod tests {
         app.close_settings();
         app.settled(1, quota(), Some(config()), Some(about()), None);
         assert_eq!(
-            app.settings_bodies.quota.as_ref().expect("quota")[0].label,
+            app.settings_bodies.quota.as_ref().expect("quota")[0].title,
             "q2",
             "closed drops"
         );
@@ -5937,10 +5934,7 @@ mod tests {
         }
         let rows = |count: usize| {
             (0..count)
-                .map(|at| settings::QuotaRow {
-                    label: format!("row-{at}"),
-                    header: false,
-                })
+                .map(|at| quota_scope(&format!("row-{at}")))
                 .collect::<Vec<_>>()
         };
         let bodies = settings::SettingsBodies {
@@ -5959,7 +5953,8 @@ mod tests {
         );
         assert_eq!(rows[3].trim(), "row-4", "clamped to the last page");
         assert_eq!(rows[8].trim(), "row-9");
-        assert_eq!(layout.settings_max_scroll, 4);
+        // Ten heads plus the one column-header line above them.
+        assert_eq!(layout.settings_max_scroll, 5);
         assert_eq!(layout.settings_page_rows, 6);
     }
 
@@ -5969,11 +5964,8 @@ mod tests {
     fn reselecting_the_open_tab_restores_its_first_row() {
         let mut app = app(Some("api"));
         app.open_settings();
-        let quota: Vec<settings::QuotaRow> = (0..60)
-            .map(|at| settings::QuotaRow {
-                label: format!("qrow-{at:02}"),
-                header: false,
-            })
+        let quota: Vec<crate::quota::view::Scope> = (0..60)
+            .map(|at| quota_scope(&format!("qrow-{at:02}")))
             .collect();
         app.answer(Answer::Settings {
             generation: 1,
@@ -5992,7 +5984,8 @@ mod tests {
         let top = first_body_row(&framed(&mut app));
         assert!(top.contains("qrow-00"), "starts at the top:\n{top}");
         let at = Instant::now();
-        assert!(take_keys(&mut app, vec![(Key::Text(b"j".to_vec()), at)]).is_some());
+        // Two lines: the first body line is the column header, not a `qrow-`.
+        assert!(take_keys(&mut app, vec![(Key::Text(b"jj".to_vec()), at)]).is_some());
         let scrolled = first_body_row(&framed(&mut app));
         assert_ne!(scrolled, top, "j scrolls off the top");
         assert!(scrolled.contains("qrow-01"), "one row down:\n{scrolled}");
@@ -6011,11 +6004,8 @@ mod tests {
     fn an_overscrolled_overlay_settles_before_the_next_key() {
         let mut app = app(Some("api"));
         app.open_settings();
-        let quota: Vec<settings::QuotaRow> = (0..10)
-            .map(|at| settings::QuotaRow {
-                label: format!("qrow-{at:02}"),
-                header: false,
-            })
+        let quota: Vec<crate::quota::view::Scope> = (0..10)
+            .map(|at| quota_scope(&format!("qrow-{at:02}")))
             .collect();
         app.answer(Answer::Settings {
             generation: 1,

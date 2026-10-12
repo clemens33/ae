@@ -470,7 +470,7 @@ impl Rig {
             let name = format!("c{index:02}");
             let home = self.root.join(&name);
             fs::create_dir_all(&home).expect("fixture quota home");
-            // One session window, raw 66% and one reset => effective 33% x1.
+            // One session window, raw 66% and one reset => judged 33%.
             // A fresh timestamp keeps the live refresh test independent of date.
             fs::write(home.join(".claude.json"), cache(percent)).expect("fixture quota cache");
             writeln!(
@@ -660,7 +660,7 @@ fn held_settings_read_shows_loading_on_every_tab_and_keys_keep_working() {
         &pane,
         WAIT,
         "released real read replaces loading with fixture quota",
-        |s| s.contains("claude/") && s.contains("33% x1") && !s.contains("loading"),
+        |s| s.contains("claude · c00") && s.contains("→ 33%") && !s.contains("loading"),
     );
 }
 
@@ -793,26 +793,35 @@ fn quota_fixture_rows_keep_the_shared_effective_derivation_and_refresh_while_ope
     rig.ready(&pane);
     rig.settings(&pane);
     let screen = rig.wait(&pane, WAIT, "fixture quota window drawn", |s| {
-        s.contains("33% x1")
+        s.contains("1 reset in hand")
     });
-    let quota_rows = screen
+    assert!(screen.contains("claude · c00"), "{screen}");
+    let header = screen
         .lines()
-        .filter(|line| line.contains("window resets"))
+        .find(|line| line.contains("WINDOW"))
+        .unwrap_or_else(|| panic!("the column header draws: {screen}"));
+    for column in ["USED", "COUNTS", "NOTE", "RESETS", "SEEN"] {
+        assert!(header.contains(column), "{header}");
+    }
+    let windows = screen
+        .lines()
+        .filter(|line| line.contains("Session 5h"))
         .collect::<Vec<_>>();
     assert_eq!(
-        quota_rows.len(),
+        windows.len(),
         1,
         "one fixture window, no invented rows: {screen}"
     );
-    let label = quota_rows[0].trim_start();
+    let label = windows[0];
+    assert!(label.contains("66%"), "vendor raw: {label}");
+    assert!(label.contains("→ 33%"), "judged counts: {label}");
     assert!(
-        label.starts_with("session 5h | 33% x1 | window resets "),
-        "shared row: {label}"
+        label.contains("###....."),
+        "ascii bar of the judged: {label}"
     );
-    assert!(
-        label.contains(" | seen ") && label.ends_with(" | fresh"),
-        "shared provenance: {label}"
-    );
+    assert!(!label.contains("x1"), "{label}");
+    assert!(!screen.contains("window resets"), "{screen}");
+    assert!(!screen.contains("| fresh"), "{screen}");
     assert_eq!(
         fs::read(&cache_path).expect("cache after open"),
         cache_before,
@@ -823,7 +832,7 @@ fn quota_fixture_rows_keep_the_shared_effective_derivation_and_refresh_while_ope
         &pane,
         REFRESH_SLACK,
         "open quota refreshes: raw 80 / (1+1) = 40",
-        |s| s.contains("40% x1") && !s.contains("33% x1"),
+        |s| s.contains("→ 40%") && !s.contains("→ 33%"),
     );
     assert_eq!(
         fs::read(rig.root.join("config")).expect("config after settings"),
@@ -839,7 +848,7 @@ fn settings_scroll_keys_and_wheel_use_the_panel_body_and_reset_on_tab_switch() {
     rig.ready(&pane);
     rig.settings(&pane);
     let first = rig.wait(&pane, WAIT, "scrollable fixture quota body drawn", |s| {
-        s.contains("33% x1")
+        s.contains("1 reset in hand")
     });
     let top = first.lines().nth(3).expect("first body row").to_owned();
     for (down, up) in [("j", "k"), ("Down", "Up"), ("PageDown", "PageUp")] {

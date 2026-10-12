@@ -8,6 +8,7 @@ pub mod claude;
 pub mod codex;
 pub mod grok;
 mod pace;
+pub mod view;
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -731,40 +732,8 @@ pub(crate) struct Observation {
     pub(crate) now: i64,
 }
 
-/// One display-ready, bounded quota-dialog row: a scope header with the client
-/// identity, or one indented window line beneath it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DialogRow {
-    pub(crate) label: String,
-    pub(crate) kind: DialogRowKind,
-}
-
-/// What a quota-dialog row is, for the short-client drop order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DialogRowKind {
-    /// A scope header: drops only after its last window went.
-    Header,
-    /// A headroom window, or one with nothing usable to judge: drops first.
-    Calm,
-    /// A window the ONE classifier judged Low-or-worse: drops last.
-    LowOrWorse,
-}
-
 const SETTINGS_SCOPE_MAX: usize = 36;
 const SETTINGS_BUCKET_MAX: usize = 30;
-const SETTINGS_DERIVATION_MAX: usize = 14;
-const SETTINGS_TIME_MAX: usize = 20;
-const SETTINGS_ROW_MAX: usize = "quota  ".len()
-    + SETTINGS_SCOPE_MAX
-    + " | ".len()
-    + SETTINGS_BUCKET_MAX
-    + " | ".len()
-    + SETTINGS_DERIVATION_MAX
-    + " | window resets ".len()
-    + SETTINGS_TIME_MAX
-    + " | seen ".len()
-    + SETTINGS_TIME_MAX
-    + " | stale".len();
 
 #[derive(Debug, Clone)]
 struct SettingsReading {
@@ -1011,15 +980,23 @@ impl Observation {
         scopes
     }
 
-    /// Render every scope as one header row plus one indented row per adopted
-    /// quota window — the quota dialog's per-window listing. Every percentage
-    /// comes from [`derived`], the same derivation the table and the watchdog
-    /// read; scopes with nothing usable render their status instead of a guess.
-    pub(crate) fn quota_dialog_rows(&self) -> Vec<DialogRow> {
-        self.dialog_scopes()
+    /// Every scope as view facts, worst first: the one projection both quota
+    /// screens lay out. Every percentage comes from [`derived`], the same
+    /// derivation the table and the watchdog read, and every level from the one
+    /// classifier; a scope with nothing usable states why instead of a guess.
+    pub(crate) fn quota_view(&self) -> Vec<view::Scope> {
+        let mut ranked: Vec<Ranked> = self
+            .dialog_scopes()
             .iter()
-            .flat_map(|scope| scope.dialog_rows(self.home.as_deref(), self.now))
-            .collect()
+            .map(|scope| scope.viewed(self.home.as_deref(), self.now))
+            .collect();
+        // Stable: scopes that tie keep the configured order.
+        ranked.sort_by(|left, right| {
+            left.band
+                .cmp(&right.band)
+                .then_with(|| right.judged.total_cmp(&left.judged))
+        });
+        ranked.into_iter().map(|ranked| ranked.scope).collect()
     }
 
     /// Render one advisory line from the same sanitized, width-bounded cells
@@ -1133,52 +1110,38 @@ impl SettingsScope {
         }
     }
 
-    /// One header row plus one two-space-indented row per adopted window, in a
+    /// This scope as view facts, with the rank that orders it: its windows in a
     /// stable bucket/qualifier/window order that no input order can change.
-    /// Proven on a real menu draw to survive `display-menu` verbatim; the
-    /// indent is part of the label, not a menu property.
-    fn dialog_rows(&self, home: Option<&Path>, now: i64) -> Vec<DialogRow> {
-        let mut rows = vec![DialogRow {
-            label: settings_cell(
-                &format!(
-                    "{}/{}",
-                    self.group.tool.as_str(),
-                    scope_identity(&self.group, home)
-                ),
-                SETTINGS_SCOPE_MAX,
-            ),
-            kind: DialogRowKind::Header,
-        }];
+    fn viewed(&self, home: Option<&Path>, now: i64) -> Ranked {
+        let title = format!(
+            "{} · {}",
+            self.group.tool.as_str(),
+            settings_cell(&scope_identity(&self.group, home), SETTINGS_SCOPE_MAX)
+        );
+        let profiles = self
+            .group
+            .profiles
+            .iter()
+            .map(|profile| settings_cell(profile, SETTINGS_SCOPE_MAX))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let account = self.account_words();
         let incomplete = self
             .statuses
             .iter()
             .any(|status| matches!(status, Status::ReadError | Status::Truncated));
         if incomplete || self.readings.is_empty() {
-            let status = settings_status(&self.statuses);
-            let mut label = format!("  {}", status.as_str());
-            // The age belongs to a scope with NOTHING usable: it is the only
-            // provenance such a line has. An `incomplete` scope that still
-            // adopted a reading keeps the bare status — attaching a sibling's
-            // fresh age to a failed row would be another sample's story.
-            if self.readings.is_empty()
-                && let Some(observed) = stated_observed_at(self.observed, now)
-            {
-                let _ = write!(
-                    label,
-                    " | seen {}",
-                    span_label(now.saturating_sub(observed))
-                );
-            }
-            if let Some(hint) = manual_refresh_hint(self.group.tool, self.statuses.iter().copied())
-            {
-                let _ = write!(label, " | {hint}");
-            }
-            debug_assert!(label.len() <= SETTINGS_ROW_MAX);
-            rows.push(DialogRow {
-                label,
-                kind: DialogRowKind::Calm,
-            });
-            return rows;
+            return Ranked {
+                band: Band::Untrusted,
+                judged: -1.0,
+                scope: view::Scope {
+                    title,
+                    profiles,
+                    account,
+                    only: Some(self.unusable_words(now)),
+                    windows: Vec::new(),
+                },
+            };
         }
         let mut readings: Vec<&SettingsReading> = self.readings.iter().collect();
         readings.sort_by(|left, right| {
@@ -1189,47 +1152,178 @@ impl SettingsScope {
                 .then_with(|| left.qualifier.cmp(&right.qualifier))
                 .then_with(|| left.window_minutes.cmp(&right.window_minutes))
         });
-        for reading in readings {
-            let row = &reading.reading.row;
-            let bucket = settings_cell(&bucket_label(row), SETTINGS_BUCKET_MAX);
-            let window = row.window_minutes.map(window_label);
-            let window = window.as_deref().unwrap_or("-");
-            let where_ = if window == "-" {
-                bucket
-            } else {
-                format!("{bucket} {window}")
-            };
-            let used =
-                derived(&self.policy, row).map_or_else(|| "-".to_owned(), Derived::settings_cell);
-            let reset = row
-                .resets_at
-                .map_or_else(|| "?".to_owned(), |at| span_label(at.saturating_sub(now)));
-            let seen = row
-                .observed_at
-                .map_or_else(|| "?".to_owned(), |at| span_label(now.saturating_sub(at)));
-            let status = freshness(row.observed_at, row.resets_at, now).as_str();
-            debug_assert!(reset.len() <= SETTINGS_TIME_MAX);
-            debug_assert!(seen.len() <= SETTINGS_TIME_MAX);
-            let label =
-                format!("  {where_} | {used} | window resets {reset} | seen {seen} | {status}");
-            debug_assert!(label.len() <= SETTINGS_ROW_MAX);
-            // The drop order's ONLY judgement: the one classifier, fresh — the
-            // dialog holds no hysteresis state.
-            let low_or_worse = matches!(
-                Classified::first(reading.reading.clone()).level(),
-                QuotaLevel::Low | QuotaLevel::Critical
-            );
-            rows.push(DialogRow {
-                label,
-                kind: if low_or_worse {
-                    DialogRowKind::LowOrWorse
-                } else {
-                    DialogRowKind::Calm
-                },
+        let mut band = Band::Calm;
+        let mut judged_max = f64::MIN;
+        let windows = readings
+            .into_iter()
+            .map(|reading| {
+                let (window, window_band, judged) = self.window_view(reading, now);
+                band = band.min(window_band);
+                judged_max = judged_max.max(judged);
+                window
+            })
+            .collect();
+        Ranked {
+            band,
+            judged: judged_max,
+            scope: view::Scope {
+                title,
+                profiles,
+                account,
+                only: None,
+                windows,
+            },
+        }
+    }
+
+    /// The account facts that belong to the scope, not to one window.
+    fn account_words(&self) -> Option<String> {
+        let credits = &self.policy.account.credits;
+        if self.policy.spend_capped() {
+            return Some(match credits {
+                Credits::Available(balance) => format!(
+                    "credits {} · spend cap reached",
+                    settings_cell(balance, CREDIT_BALANCE_MAX)
+                ),
+                _ => "spend cap reached".to_owned(),
             });
         }
-        rows
+        match credits {
+            Credits::Unreported => None,
+            Credits::Unlimited => Some("credits unlimited".to_owned()),
+            Credits::Available(balance) => Some(format!(
+                "credits {}",
+                settings_cell(balance, CREDIT_BALANCE_MAX)
+            )),
+            Credits::AvailableUnknown => Some("credits available".to_owned()),
+            Credits::Exhausted => Some("no credits".to_owned()),
+        }
     }
+
+    /// The words for a scope with nothing usable. The age belongs only to a
+    /// scope with NO reading: it is the only provenance such a line has, and an
+    /// incomplete scope that still adopted one must not borrow a sibling's.
+    fn unusable_words(&self, now: i64) -> String {
+        let mut words = match settings_status(&self.statuses) {
+            Status::Unsupported => "this client reports no quota",
+            Status::ReadError => "quota file unreadable",
+            Status::Truncated => "read cut short",
+            _ => "no reading ae can trust",
+        }
+        .to_owned();
+        if self.readings.is_empty()
+            && let Some(observed) = stated_observed_at(self.observed, now)
+        {
+            let _ = write!(
+                words,
+                " (last report {} ago)",
+                span_label(now.saturating_sub(observed))
+            );
+        }
+        if let Some(hint) = manual_refresh_hint(self.group.tool, self.statuses.iter().copied()) {
+            let _ = write!(words, " — {hint}");
+        }
+        words
+    }
+
+    /// One adopted window as view facts, with the band and judged percentage
+    /// the scope's rank is made of.
+    fn window_view(&self, reading: &SettingsReading, now: i64) -> (view::Window, Band, f64) {
+        let row = &reading.reading.row;
+        let derived = derived(&self.policy, row);
+        let judged = derived.map(Derived::judged);
+        let raw = derived.map(|derived| pct_label(derived.used));
+        // COUNTS names the judged percentage only where it reads differently
+        // from the vendor's: a reset in hand that saturates at 100% moved
+        // nothing the operator can see.
+        let counts = judged
+            .map(pct_label)
+            .filter(|judged| raw.as_deref() != Some(judged.as_str()));
+        let fill = judged.map(bar_cells);
+        let why = derived.and_then(|derived| match derived.effective {
+            Effective::Resets { resets, .. } if resets > 0 => Some(view::Why::Resets(resets)),
+            Effective::Unlimited => Some(view::Why::Unlimited),
+            Effective::SpendCapped => Some(view::Why::SpendCap),
+            Effective::Raw | Effective::Resets { .. } => None,
+        });
+        // The drop order's ONLY judgement: the one classifier, fresh — the
+        // dialog holds no hysteresis state.
+        let level = match Classified::first(reading.reading.clone()).level() {
+            QuotaLevel::Headroom => view::Level::Headroom,
+            QuotaLevel::Low => view::Level::Low,
+            QuotaLevel::Critical => view::Level::Critical,
+        };
+        let stale = freshness(row.observed_at, row.resets_at, now) == Status::Stale;
+        let band = match (level, stale) {
+            (view::Level::Critical, _) => Band::Critical,
+            (view::Level::Low, _) => Band::Low,
+            (view::Level::Headroom, true) => Band::Untrusted,
+            (view::Level::Headroom, false) => Band::Calm,
+        };
+        let window = view::Window {
+            name: view_window_name(row),
+            raw,
+            counts,
+            fill,
+            why,
+            level,
+            stale,
+            resets: row.resets_at.map(|at| span_label(at.saturating_sub(now))),
+            seen: row.observed_at.map(|at| span_label(now.saturating_sub(at))),
+        };
+        (window, band, judged.unwrap_or(-1.0))
+    }
+}
+
+/// How worrying a scope reads, worst first. The order of the variants IS the
+/// sort order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Band {
+    Critical,
+    Low,
+    /// A stale window, or no usable reading at all.
+    Untrusted,
+    Calm,
+}
+
+/// A scope's view facts together with where they sort.
+struct Ranked {
+    band: Band,
+    judged: f64,
+    scope: view::Scope,
+}
+
+/// The plain name of a window: `Session`, `Weekly`, `Weekly Fable`, a client's
+/// own bucket id as it is, then the window length.
+fn view_window_name(row: &Row) -> String {
+    let base = match (row.bucket.as_str(), row.qualifier.as_deref()) {
+        ("session", Some(qualifier)) if !qualifier.is_empty() => format!("Session {qualifier}"),
+        ("session", _) => "Session".to_owned(),
+        ("weekly_all", _) => "Weekly".to_owned(),
+        ("weekly_scoped", Some(qualifier)) => format!("Weekly {qualifier}"),
+        (bucket, Some(qualifier)) => format!("{bucket} {qualifier}"),
+        (bucket, None) => bucket.to_owned(),
+    };
+    let base = settings_cell(&base, SETTINGS_BUCKET_MAX);
+    row.window_minutes.map_or_else(
+        || base.clone(),
+        |minutes| format!("{base} {}", window_label(minutes)),
+    )
+}
+
+/// A percentage as the dialog spells it, clamped to a window's own range.
+fn pct_label(value: f64) -> String {
+    percent_label(&format!("{:.1}", value.clamp(0.0, 100.0)))
+}
+
+/// The filled cells of an 8-cell bar for a judged percentage.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the clamped, rounded value lies in 0..=8"
+)]
+fn bar_cells(judged: f64) -> u8 {
+    (judged.clamp(0.0, 100.0) / 100.0 * 8.0).round() as u8
 }
 
 fn settings_same_scope(left: &Group, right: &Group) -> bool {
@@ -1601,18 +1695,13 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
     )
 }
 
-/// Read the bounded local sources and return display-ready quota-dialog rows.
+/// Read the bounded local sources and return the quota view facts.
 /// Configuration failure is informational in this surface: it becomes one
-/// honest row and cannot remove the dialog.
-pub(crate) fn quota_dialog_rows(inputs: &Inputs<'_>) -> Vec<DialogRow> {
+/// honest scope and cannot remove the dialog.
+pub(crate) fn view_of(inputs: &Inputs<'_>) -> Vec<view::Scope> {
     observe(inputs).map_or_else(
-        |_| {
-            vec![DialogRow {
-                label: "quota: unavailable".to_owned(),
-                kind: DialogRowKind::Header,
-            }]
-        },
-        |observation| observation.quota_dialog_rows(),
+        |_| view::unavailable(),
+        |observation| observation.quota_view(),
     )
 }
 
@@ -3904,7 +3993,7 @@ mod tests {
     }
 
     #[test]
-    fn dialog_projection_carries_real_partial_codex_failures_into_the_scope() {
+    fn view_facts_carry_real_partial_codex_failures_into_the_scope() {
         const NOW: i64 = 1_788_858_600;
         let root = std::path::PathBuf::from(format!(
             "/tmp/ae-quota-settings-partial-{}",
@@ -3965,7 +4054,7 @@ mod tests {
                 home: Some(root.clone()),
                 now: NOW,
             }
-            .quota_dialog_rows()
+            .quota_view()
         };
         let mut short = Budget {
             files_left: 4_096,
@@ -3984,20 +4073,24 @@ mod tests {
         assert_eq!(summary.hint, scope.hint);
         assert!(super::settings_summary_scope(&truncated.all[0], summary));
         let truncated = project(truncated);
-        let truncated_status = truncated
-            .iter()
-            .find(|row| row.label.ends_with("truncated"))
-            .unwrap_or_else(|| panic!("a truncated status row: {truncated:?}"));
-        assert!(!truncated_status.label.contains("30%"), "{truncated:?}");
+        assert!(
+            truncated
+                .iter()
+                .any(|scope| scope.only.as_deref() == Some("read cut short")
+                    && scope.windows.is_empty()),
+            "{truncated:?}"
+        );
 
         std::fs::remove_file(&paths[1]).expect("replace one rollout with damage");
         std::fs::create_dir(&paths[1]).expect("an unreadable rollout-shaped entry");
         let failed = project(codex_groups(&scope, &fleet, NOW, &mut Budget::new()));
-        let failed_status = failed
-            .iter()
-            .find(|row| row.label.ends_with("read-error"))
-            .unwrap_or_else(|| panic!("a read-error status row: {failed:?}"));
-        assert!(!failed_status.label.contains("30%"), "{failed:?}");
+        assert!(
+            failed.iter().any(
+                |scope| scope.only.as_deref() == Some("quota file unreadable")
+                    && scope.windows.is_empty()
+            ),
+            "{failed:?}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4253,148 +4346,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_row_shows_its_observation_age_and_keeps_its_numbers_blank() {
-        const NOW: i64 = 1_000_000;
-        let group = unusable_claude_group(NOW, Some(NOW - 15 * 3_600));
-        let table = render_at(std::slice::from_ref(&group), None, NOW);
-        assert!(table.contains("15h00m"), "the age survives: {table}");
-        assert!(table.contains("unknown (run"), "the hint is shown: {table}");
-        assert!(
-            table.contains("claude session)"),
-            "the hint is complete: {table}"
-        );
-        assert!(
-            !table.contains("8%"),
-            "a refused percentage stays blank: {table}"
-        );
-        assert!(
-            !table.contains("59%"),
-            "a refused percentage stays blank: {table}"
-        );
-
-        let rows = super::Observation {
-            groups: vec![group],
-            rendered: Vec::new(),
-            home: None,
-            now: NOW,
-        }
-        .quota_dialog_rows();
-        assert_eq!(
-            rows.iter()
-                .map(|row| row.label.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "claude//tmp/mic/.claude-mic",
-                "  unknown | seen 15h00m | run /usage in a claude session",
-            ]
-        );
-    }
-
-    #[test]
-    fn a_missing_cache_keeps_the_hint_and_claims_no_age() {
-        const NOW: i64 = 1_000_000;
-        let group = unusable_claude_group(NOW, None);
-        let table = render_at(std::slice::from_ref(&group), None, NOW);
-        assert!(table.contains("unknown (run"), "{table}");
-        let rows = super::Observation {
-            groups: vec![group],
-            rendered: Vec::new(),
-            home: None,
-            now: NOW,
-        }
-        .quota_dialog_rows();
-        assert_eq!(rows[1].label, "  unknown | run /usage in a claude session");
-    }
-
-    #[test]
-    fn a_future_skewed_stamp_states_no_age() {
-        const NOW: i64 = 1_000_000;
-        let group = unusable_claude_group(NOW, Some(NOW + FUTURE_SKEW_SECS));
-        let table = render_at(std::slice::from_ref(&group), None, NOW);
-        assert!(
-            !table.contains("0m ago"),
-            "a refused future stamp states no age: {table}"
-        );
-        assert!(
-            table.contains("unknown (run"),
-            "the row is still reported unknown and named: {table}"
-        );
-        let rows = super::Observation {
-            groups: vec![group],
-            rendered: Vec::new(),
-            home: None,
-            now: NOW,
-        }
-        .quota_dialog_rows();
-        assert_eq!(
-            rows[1].label, "  unknown | run /usage in a claude session",
-            "a future stamp adds no seen field"
-        );
-        assert!(!rows[1].label.contains("seen"), "{:?}", rows[1].label);
-
-        // The rule's owner: a stamp at or before `now` is stated, a later one
-        // is not.
-        assert_eq!(super::stated_observed_at(Some(NOW + 1), NOW), None);
-        assert_eq!(super::stated_observed_at(Some(NOW), NOW), Some(NOW));
-        assert_eq!(super::stated_observed_at(Some(NOW - 1), NOW), Some(NOW - 1));
-        assert_eq!(super::stated_observed_at(None, NOW), None);
-    }
-
-    #[test]
-    fn the_manual_refresh_hint_is_derived_at_render_time_not_from_scope_identity() {
-        const NOW: i64 = 1_000_000;
-        // The hint matrix: only a Claude scope holding NOTHING usable gets it.
-        let hint =
-            |tool, statuses: Vec<Status>| super::manual_refresh_hint(tool, statuses.into_iter());
-        assert_eq!(
-            hint(ToolKind::Claude, vec![Status::Unknown, Status::Unknown]),
-            Some("run /usage in a claude session")
-        );
-        assert_eq!(hint(ToolKind::Claude, vec![Status::Fresh]), None);
-        assert_eq!(
-            hint(ToolKind::Claude, vec![Status::Unknown, Status::ReadError]),
-            None
-        );
-        assert_eq!(hint(ToolKind::Claude, Vec::new()), None);
-        assert_eq!(hint(ToolKind::Codex, vec![Status::Unknown]), None);
-
-        // A stored hint (an unresolved source) is identity; the refresh hint is
-        // an observation. They must not share the field, or two groups of one
-        // scope whose staleness differs would split in `settings_same_scope`.
-        let stale = unusable_claude_group(NOW, Some(NOW - 15 * 3_600));
-        let mut fresh = stale.clone();
-        fresh.rows[0].status = Status::Fresh;
-        fresh.rows[0].resets_at = Some(NOW + 60_000);
-        assert!(stale.hint.is_none() && fresh.hint.is_none());
-        assert!(
-            super::settings_same_scope(&stale, &fresh),
-            "staleness never enters the scope identity tuple"
-        );
-        let merged = super::Observation {
-            groups: vec![stale, fresh],
-            rendered: Vec::new(),
-            home: None,
-            now: NOW,
-        }
-        .quota_dialog_rows();
-        assert_eq!(merged[0].label, "claude//tmp/mic/.claude-mic");
-        assert_eq!(
-            merged
-                .iter()
-                .filter(|row| !row.label.starts_with(' '))
-                .count(),
-            1,
-            "one scope header, never two: {merged:?}"
-        );
-        assert_eq!(
-            merged.len(),
-            2,
-            "one header and the one window the observation still adopts: {merged:?}"
-        );
-        assert!(merged[1].label.ends_with("| stale"), "{merged:?}");
-    }
-
-    #[test]
     fn an_expired_claude_cache_observes_end_to_end_without_storing_its_hint() {
         let root = std::path::PathBuf::from(format!(
             "/tmp/ae-quota-claude-refresh-{}",
@@ -4442,16 +4393,16 @@ mod tests {
         assert!(table.contains("15h00m"), "{table}");
         assert!(table.contains("/usage"), "{table}");
         assert!(!table.contains("8%"), "{table}");
-        let rows = observation.quota_dialog_rows();
+        let scopes = observation.quota_view();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].title, "claude · ~/.claude-mic");
         assert_eq!(
-            rows.iter()
-                .map(|row| row.label.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "claude/~/.claude-mic",
-                "  unknown | seen 15h00m | run /usage in a claude session",
-            ]
+            scopes[0].only.as_deref(),
+            Some(
+                "no reading ae can trust (last report 15h00m ago) — run /usage in a claude session"
+            )
         );
+        assert!(scopes[0].windows.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4607,102 +4558,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn dialog_projection_lists_every_window_under_one_scope_header() {
-        let mut older = declared_group(Some(1), "80");
-        older.rollout = Some("older".to_owned());
-        older.owner = Some("one:lead".to_owned());
-        older.rows[0].bucket = "weekly".to_owned();
-        older.rows[0].observed_at = Some(9_800);
-        older.rows[0].resets_at = Some(20_000);
+    use super::view::{Level, Why};
 
-        let mut newer = declared_group(Some(1), "90");
-        newer.rollout = Some("newer".to_owned());
-        newer.owner = Some("two:lead".to_owned());
-        newer.rows[0].bucket = "weekly".to_owned();
-        newer.rows[0].observed_at = Some(9_900);
-        newer.rows[0].resets_at = Some(20_000);
-        newer.rows.push(Row {
-            bucket: "session".to_owned(),
-            qualifier: None,
-            window_minutes: Some(300),
-            used_percent: Some("70".to_owned()),
-            resets_at: Some(10_600),
-            observed_at: Some(9_900),
-            status: Status::Fresh,
-        });
-
-        let observation = super::Observation {
-            groups: vec![older, newer],
+    fn viewed(groups: Vec<super::Group>) -> Vec<super::view::Scope> {
+        super::Observation {
+            groups,
             rendered: Vec::new(),
             home: None,
             now: 10_000,
-        };
-        // The newer rollout wins each shared window; both windows are listed.
-        assert_eq!(
-            observation
-                .quota_dialog_rows()
-                .iter()
-                .map(|row| row.label.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "codex/cx",
-                "  session 5h | 35% x1 | window resets 10m | seen 1m | fresh",
-                "  weekly (pro) 7d | 45% x1 | window resets 2h46m | seen 1m | fresh",
-            ]
-        );
+        }
+        .quota_view()
+    }
+
+    fn named(client: &str, used: &str, resets: Option<u8>) -> super::Group {
+        let mut group = declared_group(resets, used);
+        group.clients = vec![client.to_owned()];
+        group
     }
 
     #[test]
-    fn dialog_projection_lists_windows_in_a_stable_order_whatever_the_input_order() {
-        let mut forward = declared_group(None, "100");
-        forward.rows[0].bucket = "weekly".to_owned();
-        forward.rows[0].resets_at = Some(10_000 + 4 * 24 * 60 * 60);
-        forward.rows.push(Row {
-            bucket: "session".to_owned(),
+    fn view_facts_list_every_window_with_derivation_cells() {
+        let mut group = declared_group(Some(1), "90");
+        group.rows[0].bucket = "session".to_owned();
+        group.rows[0].qualifier = None;
+        group.rows[0].window_minutes = Some(300);
+        group.rows[0].resets_at = Some(10_600);
+        group.rows.push(Row {
+            bucket: "weekly_all".to_owned(),
             qualifier: None,
-            window_minutes: Some(300),
-            used_percent: Some("100".to_owned()),
-            resets_at: Some(10_000 + 18 * 60),
+            window_minutes: Some(10_080),
+            used_percent: Some("12".to_owned()),
+            resets_at: Some(20_000),
             observed_at: Some(9_900),
             status: Status::Fresh,
         });
-        let mut reverse = forward.clone();
-        reverse.rows.reverse();
-        let render = |group| {
-            super::Observation {
-                groups: vec![group],
-                rendered: Vec::new(),
-                home: None,
-                now: 10_000,
-            }
-            .quota_dialog_rows()
-            .into_iter()
-            .map(|row| row.label)
-            .collect::<Vec<_>>()
-        };
-        let forward = render(forward);
-        let reverse = render(reverse);
-        assert_eq!(forward, reverse, "row order cannot decide the listing");
+        let scopes = viewed(vec![group]);
+        assert_eq!(scopes.len(), 1);
+        let scope = &scopes[0];
+        assert_eq!(scope.title, "codex · cx");
+        assert_eq!(scope.profiles, "solx");
+        assert!(scope.account.is_none());
+        let names: Vec<&str> = scope.windows.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["Session 5h", "Weekly 7d"]);
+        let first = &scope.windows[0];
         assert_eq!(
-            forward,
-            [
-                "codex/cx",
-                "  session 5h | 100% | window resets 18m | seen 1m | fresh",
-                "  weekly (pro) 7d | 100% | window resets 4d | seen 1m | fresh",
-            ]
+            (first.raw.as_deref(), first.counts.as_deref()),
+            (Some("90%"), Some("45%"))
         );
+        assert_eq!(first.why, Some(Why::Resets(1)));
+        assert_eq!(first.fill, Some(4));
+        assert_eq!(first.level, Level::Headroom);
+        assert!(!first.stale);
+        assert_eq!(
+            (first.resets.as_deref(), first.seen.as_deref()),
+            (Some("10m"), Some("1m"))
+        );
+        assert_eq!(scope.windows[1].counts.as_deref(), Some("6%"));
     }
 
     #[test]
-    fn dialog_projection_sorts_windows_by_bucket_qualifier_and_window() {
-        let mut forward = declared_group(None, "100");
-        forward.rows[0].bucket = "weekly".to_owned();
-        forward.rows[0].qualifier = Some("pro".to_owned());
-        forward.rows[0].window_minutes = Some(10_080);
-        forward.rows[0].resets_at = Some(20_000);
-        forward.rows[0].observed_at = Some(9_900);
-        forward.rows.push(Row {
+    fn view_facts_keep_windows_in_stable_bucket_order() {
+        let mut group = declared_group(None, "100");
+        group.rows[0].bucket = "weekly".to_owned();
+        group.rows[0].qualifier = Some("pro".to_owned());
+        group.rows.push(Row {
             bucket: "session".to_owned(),
             qualifier: Some("team".to_owned()),
             window_minutes: Some(300),
@@ -4711,7 +4630,7 @@ mod tests {
             observed_at: Some(9_900),
             status: Status::Fresh,
         });
-        forward.rows.push(Row {
+        group.rows.push(Row {
             bucket: "monthly".to_owned(),
             qualifier: Some("enterprise".to_owned()),
             window_minutes: Some(43_200),
@@ -4720,230 +4639,201 @@ mod tests {
             observed_at: Some(9_900),
             status: Status::Fresh,
         });
-        let mut reverse = forward.clone();
-        reverse.rows.reverse();
-        let mut rotated = forward.clone();
-        rotated.rows.rotate_left(1);
-        let render = |group| {
-            super::Observation {
-                groups: vec![group],
-                rendered: Vec::new(),
-                home: None,
-                now: 10_000,
-            }
-            .quota_dialog_rows()
-            .into_iter()
-            .map(|row| row.label)
-            .collect::<Vec<_>>()
-        };
-        let forward = render(forward);
-        let reverse = render(reverse);
-        let rotated = render(rotated);
-        assert_eq!(forward, reverse, "row order cannot decide a final tie");
-        assert_eq!(forward, rotated, "a rotation cannot decide a final tie");
-        assert_eq!(
-            forward
+        let mut flipped = group.clone();
+        flipped.rows.reverse();
+        let names = |group| {
+            viewed(vec![group])[0]
+                .windows
                 .iter()
-                .map(|label| label
-                    .split('|')
-                    .next()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned())
-                .collect::<Vec<_>>(),
-            [
-                "codex/cx",
-                "monthly (enterprise) 30d",
-                "session (team) 5h",
-                "weekly (pro) 7d"
-            ],
-            "{forward:?}"
+                .map(|w| w.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let (forward, reverse) = (names(group), names(flipped));
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            forward,
+            ["monthly enterprise 30d", "Session team 5h", "weekly pro 7d"]
         );
     }
 
     #[test]
-    fn dialog_projection_reports_each_unusable_scope_without_guessing_zero() {
-        let statuses = [
+    fn view_facts_sort_scopes_worst_first_by_band() {
+        let mut stale = named("stale30", "30", None);
+        stale.rows[0].observed_at = Some(9_000);
+        let mut capped = named("capped", "10", None);
+        capped.policy = Policy::new(
+            None,
+            Account {
+                credits: Credits::Available("12.40".to_owned()),
+                credits_observed_at: Some(9_900),
+                spend_control_reached: Some(true),
+                spend_observed_at: Some(9_900),
+            },
+        );
+        let mut unknown = named("unknown", "0", None);
+        unknown.rows = vec![super::placeholder(Status::Unknown)];
+        let scopes = viewed(vec![
+            named("calm", "30", None),
+            named("low85", "85", None),
+            capped,
+            stale,
+            named("low90", "90", None),
+            unknown,
+        ]);
+        let titles: Vec<&str> = scopes.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "codex · capped",
+                "codex · low90",
+                "codex · low85",
+                "codex · stale30",
+                "codex · unknown",
+                "codex · calm"
+            ]
+        );
+        assert_eq!(
+            scopes[0].account.as_deref(),
+            Some("credits 12.40 · spend cap reached")
+        );
+    }
+
+    #[test]
+    fn view_facts_report_unusable_scopes_without_numbers() {
+        for (index, status) in [
             Status::Unknown,
             Status::Unsupported,
             Status::ReadError,
             Status::Truncated,
-        ];
-        let groups: Vec<Group> = statuses
-            .iter()
-            .enumerate()
-            .map(|(index, status)| {
-                let mut group = declared_group(None, "0");
-                group.home = Some(std::path::PathBuf::from(format!("/scope-{index}")));
-                group.source = Some(std::path::PathBuf::from(format!("/scope-{index}/cache")));
-                group.clients = vec![format!("client-{index}")];
-                group.rows = vec![super::placeholder(*status)];
-                group
-            })
-            .collect();
-        let rows = super::Observation {
-            groups,
-            rendered: Vec::new(),
-            home: None,
-            now: 10_000,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut group = named(&format!("client-{index}"), "0", None);
+            group.rows = vec![super::placeholder(*status)];
+            let scopes = viewed(vec![group]);
+            assert_eq!(scopes.len(), 1);
+            assert!(scopes[0].windows.is_empty());
+            let want = match status {
+                Status::Unsupported => "this client reports no quota",
+                Status::ReadError => "quota file unreadable",
+                Status::Truncated => "read cut short",
+                _ => "no reading ae can trust",
+            };
+            assert_eq!(scopes[0].only.as_deref(), Some(want));
         }
-        .quota_dialog_rows();
-        // One header plus one indented status row per scope.
-        assert_eq!(rows.len(), 2 * statuses.len());
-        for (pair, status) in rows.chunks_exact(2).zip(statuses) {
-            assert!(!pair[0].label.starts_with(' '), "{pair:?}");
-            assert!(pair[1].label.ends_with(status.as_str()), "{pair:?}");
-            assert!(pair[1].label.starts_with("  "), "{pair:?}");
-            assert!(!pair[1].label.contains("0%"), "{pair:?}");
-        }
+        let scopes = viewed(vec![unusable_claude_group(10_000, Some(9_900))]);
+        assert_eq!(
+            scopes[0].only.as_deref(),
+            Some("no reading ae can trust (last report 1m ago) — run /usage in a claude session")
+        );
+        let scopes = viewed(vec![unusable_claude_group(10_000, None)]);
+        assert_eq!(
+            scopes[0].only.as_deref(),
+            Some("no reading ae can trust — run /usage in a claude session")
+        );
+        let scopes = viewed(vec![unusable_claude_group(
+            10_000,
+            Some(10_000 + FUTURE_SKEW_SECS),
+        )]);
+        assert_eq!(
+            scopes[0].only.as_deref(),
+            Some("no reading ae can trust — run /usage in a claude session")
+        );
     }
 
     #[test]
-    fn dialog_projection_never_hides_incomplete_sibling_evidence_behind_a_fresh_row() {
-        for status in [Status::ReadError, Status::Truncated] {
-            let mut good = declared_group(None, "30");
-            good.rollout = Some("good".to_owned());
-            let mut incomplete = good.clone();
-            incomplete.rollout = Some("incomplete".to_owned());
-            incomplete.rows = vec![super::placeholder(status)];
-            for groups in [
-                vec![good.clone(), incomplete.clone()],
-                vec![incomplete.clone(), good.clone()],
-            ] {
-                let rows = super::Observation {
-                    groups,
-                    rendered: Vec::new(),
-                    home: None,
-                    now: 10_000,
-                }
-                .quota_dialog_rows();
-                let labels = rows
-                    .iter()
-                    .map(|row| row.label.as_str())
-                    .collect::<Vec<_>>();
-                assert_eq!(labels[0], "codex/cx");
-                assert_eq!(labels[1], format!("  {}", status.as_str()));
-                assert!(!labels[1].contains("30%"), "{labels:?}");
-                assert!(!labels[1].ends_with("fresh"), "{labels:?}");
-            }
-        }
+    fn view_facts_keep_incomplete_evidence_without_sibling_numbers() {
+        let mut good = named("cx", "30", None);
+        good.rollout = Some("good".to_owned());
+        let mut incomplete = good.clone();
+        incomplete.rollout = Some("incomplete".to_owned());
+        incomplete.rows = vec![super::placeholder(Status::ReadError)];
+        let scopes = viewed(vec![good, incomplete]);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].only.as_deref(), Some("quota file unreadable"));
+        assert!(scopes[0].windows.is_empty());
     }
 
     #[test]
-    fn dialog_completeness_attaches_to_the_exact_unresolved_codex_scope() {
-        let mut first = declared_group(None, "30");
-        first.source = None;
-        first.profiles = vec!["first-profile".to_owned()];
-        first.hint = Some("first unresolved source".to_owned());
-        let mut second = first.clone();
-        second.profiles = vec!["second-profile".to_owned()];
-        second.hint = Some("second unresolved source".to_owned());
-
-        let summary = Group {
-            profiles: second.profiles.clone(),
-            tool: second.tool,
-            home: second.home.clone(),
-            source: second.source.clone(),
-            clients: second.clients.clone(),
-            rollout: None,
-            owner: None,
-            rows: Vec::new(),
-            hint: second.hint.clone(),
-            policy: Policy::default(),
-            notes: Vec::new(),
-            summary: Some(super::RolloutSummary {
-                hidden: 0,
-                unreadable: 0,
-                oldest_observed: None,
-                not_read: true,
-                status: Some(Status::Truncated),
-            }),
-        };
-        let rows = super::Observation {
-            groups: vec![first, second],
-            rendered: vec![summary],
-            home: None,
-            now: 10_000,
-        }
-        .quota_dialog_rows();
-
-        let labels = rows
-            .iter()
-            .map(|row| row.label.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(labels.len(), 4);
-        assert!(labels[1].contains(" | 30% | "), "{labels:?}");
-        assert!(labels[1].ends_with(" | fresh"), "{labels:?}");
-        assert!(labels[3].ends_with("truncated"), "{labels:?}");
-        assert!(!labels[3].contains("30%"), "{labels:?}");
-    }
-
-    #[test]
-    fn dialog_projection_allowlists_ascii_then_bounds_hostile_display_cells() {
-        assert_eq!(super::settings_cell("#[fg=red]#", 20), "#[fg=red]#");
-        assert_eq!(super::settings_cell("\u{1b}[31m", 20), "?");
-        assert_eq!(super::settings_cell("\u{0007}", 20), "?");
-        assert_eq!(super::settings_cell("中", 20), "?");
-        assert_eq!(super::settings_cell("⚙\u{fe0f}", 20), "??");
-        let mut group = declared_group(None, "80");
-        group.clients = vec![format!(
-            "#[fg=red]#\u{1b}[31m\u{0007}{}中⚙\u{fe0f}",
-            "long".repeat(40),
-        )];
+    fn view_facts_sanitize_hostile_cells_before_ae_glyphs() {
+        let mut group = named(
+            &format!("#[fg=red]#\u{1b}[31m\u{7}{}中⚙️", "long".repeat(40)),
+            "80",
+            None,
+        );
         group.rows[0].bucket = format!("bucket-{}", "x".repeat(80));
-        group.rows.push(Row {
-            bucket: "other".to_owned(),
-            qualifier: None,
-            window_minutes: Some(300),
-            used_percent: Some("10".to_owned()),
-            resets_at: Some(20_000),
-            observed_at: Some(9_900),
-            status: Status::Fresh,
-        });
-        let rows = super::Observation {
-            groups: vec![group],
-            rendered: Vec::new(),
-            home: None,
-            now: 10_000,
-        }
-        .quota_dialog_rows();
-        assert!(rows.iter().all(|row| row.label.is_ascii()), "{rows:?}");
+        let scopes = viewed(vec![group]);
+        let title = &scopes[0].title;
+        assert!(title.contains("#[fg=red]#"), "{title}");
+        assert!(title.contains("..."), "{title}");
         assert!(
-            rows.iter().any(|row| row.label.contains("#[fg=red]#")),
-            "{rows:?}"
+            title.chars().all(|ch| ch == '·' || ch.is_ascii()),
+            "{title}"
         );
-        assert!(
-            rows.iter().any(|row| row.label.ends_with(" | fresh")),
-            "{rows:?}"
-        );
-        assert!(
-            !rows
-                .iter()
-                .any(|row| row.label.contains('中') || row.label.contains('⚙')),
-            "{rows:?}"
-        );
-        assert!(
-            rows.iter()
-                .all(|row| row.label.len() <= super::SETTINGS_ROW_MAX),
-            "{rows:?}"
-        );
-        assert!(
-            rows.iter()
-                .any(|row| row.label.contains(" | window resets ")),
-            "{rows:?}"
-        );
-        assert!(
-            rows.iter().any(|row| row.label.contains(" | seen ")),
-            "{rows:?}"
-        );
+        assert!(!title.contains('中') && !title.contains('⚙'), "{title}");
+        let tail = |tail: &str| {
+            let pad = "scope-".repeat(8);
+            let mut entry = named(&format!("{pad}claude{tail}"), "80", None);
+            entry.source = Some(std::path::PathBuf::from(format!("/s{tail}")));
+            entry
+        };
+        let scopes = viewed(vec![tail(""), tail("-mic")]);
+        assert!(scopes[0].title.contains("...") && scopes[0].title.contains("claude"));
+        assert!(!scopes[0].title.contains("claude-mic"));
+        assert!(scopes[1].title.contains("claude-mic"));
     }
 
     #[test]
-    fn dialog_projection_applies_an_account_only_fact_to_every_window_in_the_scope() {
-        let observed = declared_group(None, "10");
+    fn view_facts_name_why_the_judged_moved() {
+        let reset = named("reset", "90", Some(1));
+        let mut unlimited = named("unlimited", "90", None);
+        unlimited.policy = Policy::new(
+            None,
+            Account {
+                credits: Credits::Unlimited,
+                credits_observed_at: Some(9_900),
+                spend_control_reached: None,
+                spend_observed_at: None,
+            },
+        );
+        let mut capped = named("capped", "10", None);
+        capped.policy = Policy::new(
+            None,
+            Account {
+                credits: Credits::Unlimited,
+                credits_observed_at: Some(9_900),
+                spend_control_reached: Some(true),
+                spend_observed_at: Some(9_900),
+            },
+        );
+        let scopes = viewed(vec![
+            reset,
+            unlimited,
+            capped,
+            named("zero", "90", Some(0)),
+            named("huge", "1e100", Some(1)),
+        ]);
+        let by = |client: &str| {
+            scopes
+                .iter()
+                .find(|s| s.title == format!("codex · {client}"))
+                .expect("scope")
+        };
+        assert_eq!(by("reset").windows[0].counts.as_deref(), Some("45%"));
+        assert_eq!(by("reset").windows[0].why, Some(Why::Resets(1)));
+        assert_eq!(by("unlimited").windows[0].counts.as_deref(), Some("0%"));
+        assert_eq!(
+            by("unlimited").account.as_deref(),
+            Some("credits unlimited")
+        );
+        assert_eq!(by("capped").windows[0].counts.as_deref(), Some("100%"));
+        assert_eq!(by("capped").account.as_deref(), Some("spend cap reached"));
+        assert_eq!(by("zero").windows[0].counts, None);
+        assert_eq!(by("huge").windows[0].raw.as_deref(), Some("100%"));
+        assert_eq!(by("huge").windows[0].counts, None);
+        let observed = named("cx", "10", None);
         let mut account_only = observed.clone();
-        account_only.rollout = Some("account-only".to_owned());
-        account_only.owner = Some("other:lead".to_owned());
         account_only.rows = vec![super::placeholder(Status::Unknown)];
         account_only.policy = Policy::new(
             None,
@@ -4954,141 +4844,9 @@ mod tests {
                 spend_observed_at: Some(9_950),
             },
         );
-        let rows = super::Observation {
-            groups: vec![observed, account_only],
-            rendered: Vec::new(),
-            home: None,
-            now: 10_000,
-        }
-        .quota_dialog_rows();
-        assert!(
-            rows.iter()
-                .any(|row| row.label.contains(" | 100% spend-cap | ")),
-            "{rows:?}"
-        );
-    }
-
-    #[test]
-    fn dialog_projection_names_why_the_effective_percentage_moved() {
-        let mut raw = declared_group(None, "90");
-        raw.clients = vec!["raw".to_owned()];
-
-        let mut reset = declared_group(Some(1), "90");
-        reset.clients = vec!["reset".to_owned()];
-
-        let mut unlimited = declared_group(None, "90");
-        unlimited.clients = vec!["unlimited".to_owned()];
-        unlimited.policy = Policy::new(
-            None,
-            Account {
-                credits: Credits::Unlimited,
-                credits_observed_at: Some(9_900),
-                spend_control_reached: None,
-                spend_observed_at: None,
-            },
-        );
-
-        let mut capped = declared_group(None, "10");
-        capped.clients = vec!["capped".to_owned()];
-        capped.policy = Policy::new(
-            None,
-            Account {
-                credits: Credits::Unlimited,
-                credits_observed_at: Some(9_900),
-                spend_control_reached: Some(true),
-                spend_observed_at: Some(9_900),
-            },
-        );
-
-        let rows = super::Observation {
-            groups: vec![raw, reset, unlimited, capped],
-            rendered: Vec::new(),
-            home: None,
-            now: 10_000,
-        }
-        .quota_dialog_rows();
-        let find = |scope: &str| {
-            rows.iter()
-                .position(|row| row.label == format!("codex/{scope}"))
-                .and_then(|header| rows.get(header + 1).map(|row| row.label.as_str()))
-        };
-        assert!(find("raw").is_some_and(|row| row.contains(" | 90% | ")));
-        assert!(find("reset").is_some_and(|row| row.contains(" | 45% x1 | ")));
-        assert!(find("unlimited").is_some_and(|row| row.contains(" | 0% unlimited | ")));
-        assert!(find("capped").is_some_and(|row| row.contains(" | 100% spend-cap | ")));
-    }
-
-    #[test]
-    fn dialog_projection_saturates_a_huge_reset_derived_percentage_as_one_field() {
-        let huge = declared_group(Some(1), "1e100");
-        let rows = super::Observation {
-            groups: vec![huge],
-            rendered: Vec::new(),
-            home: None,
-            now: 10_000,
-        }
-        .quota_dialog_rows();
-        assert!(
-            rows.iter().any(|row| row.label.contains(" | 100% x1 | ")),
-            "{rows:?}"
-        );
-        assert!(
-            rows.iter()
-                .all(|row| row.label.len() <= super::SETTINGS_ROW_MAX),
-            "{rows:?}"
-        );
-    }
-
-    #[test]
-    fn dialog_projection_elides_scope_and_bucket_with_distinguishing_tails() {
-        let mut first = declared_group(None, "80");
-        first.clients = vec![format!("{}claude", "scope-".repeat(8))];
-        first.rows[0].bucket = format!("{}weekly", "bucket-".repeat(8));
-        first.rows.push(Row {
-            bucket: "session".to_owned(),
-            qualifier: None,
-            window_minutes: Some(300),
-            used_percent: Some("10".to_owned()),
-            resets_at: Some(20_000),
-            observed_at: Some(9_900),
-            status: Status::Fresh,
-        });
-
-        let mut second = first.clone();
-        second.clients = vec![format!("{}claude-mic", "scope-".repeat(8))];
-        second.source = Some(std::path::PathBuf::from("/distinct/source"));
-
-        let rows = super::Observation {
-            groups: vec![first, second],
-            rendered: Vec::new(),
-            home: None,
-            now: 10_000,
-        }
-        .quota_dialog_rows();
-        let headers = rows
-            .iter()
-            .filter(|row| !row.label.starts_with(' '))
-            .collect::<Vec<_>>();
-        let windows = rows
-            .iter()
-            .filter(|row| row.label.starts_with(' '))
-            .collect::<Vec<_>>();
-        assert_eq!(headers.len(), 2);
-        assert_eq!(windows.len(), 4);
-        assert!(
-            headers.iter().all(|row| row.label.contains("...")),
-            "{rows:?}"
-        );
-        assert!(headers[0].label.contains("claude"), "{rows:?}");
-        assert!(!headers[0].label.contains("claude-mic"), "{rows:?}");
-        assert!(headers[1].label.contains("claude-mic"), "{rows:?}");
-        assert!(
-            windows
-                .iter()
-                .filter(|row| row.label.contains("weekly"))
-                .all(|row| row.label.contains("...")),
-            "{rows:?}"
-        );
+        let merged = viewed(vec![observed, account_only]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].windows[0].counts.as_deref(), Some("100%"));
     }
 
     #[test]

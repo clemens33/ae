@@ -69,13 +69,6 @@ pub(crate) enum ConfigView {
     Unreadable(String),
 }
 
-/// One drawn quota row: the owner's label, verbatim.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct QuotaRow {
-    pub(crate) label: String,
-    pub(crate) header: bool,
-}
-
 /// The about tab's read facts. The ae version and the links are draw-site
 /// constants, so they travel no channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,7 +124,8 @@ pub(crate) enum InstructionsView {
 /// Everything the overlay draws. Cold until the first answer lands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettingsBodies {
-    pub(crate) quota: Option<Vec<QuotaRow>>,
+    /// The quota facts, laid out at draw time against the panel's own width.
+    pub(crate) quota: Option<Vec<crate::quota::view::Scope>>,
     pub(crate) config: ConfigView,
     pub(crate) about: Option<AboutFacts>,
     pub(crate) instructions: InstructionsView,

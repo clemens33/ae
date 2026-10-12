@@ -1680,15 +1680,20 @@ pub fn menu_literal(text: &str) -> String {
 }
 
 /// What choosing one menu row does.
+#[derive(Debug)]
 pub enum MenuAction {
     /// Run this tmux command — built from ids this crate validated, never from
     /// text a session named itself.
     Run(String),
     /// Nothing: the row is drawn dim and cannot be chosen.
     Disabled,
+    /// A selectable no-op drawn in this style: ae's own `#[…]` directive,
+    /// emitted BEFORE the escaped label the way the title's is.
+    Styled(String),
 }
 
 /// One row of a tmux menu.
+#[derive(Debug)]
 pub struct MenuItem {
     /// The visible text, unescaped — [`display_menu_args`] escapes it.
     pub label: String,
@@ -1699,6 +1704,7 @@ pub struct MenuItem {
 }
 
 /// A menu ae asks tmux to draw.
+#[derive(Debug)]
 pub struct Menu {
     /// The bordered title, unescaped.
     pub title: String,
@@ -1874,6 +1880,9 @@ fn item_words(item: &MenuItem) -> Vec<String> {
             String::new(),
             String::new(),
         ],
+        MenuAction::Styled(style) => {
+            vec![format!("{style}{label}"), item.key.clone(), String::new()]
+        }
     }
 }
 
