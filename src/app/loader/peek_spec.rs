@@ -53,6 +53,7 @@ fn answer(app: &mut App, generation: u64, body: Body) {
 #[test]
 fn test_s2_paused_answer_held_and_refusal_adopts_immediately() {
     let mut app = App::new(Some("aedev".to_owned()), None, None, None);
+    app.fleeted = true;
     app.model.open_peek(1);
     let initial = (0..70).map(|i| format!("INITIAL ROW {i}")).collect();
     answer(&mut app, 1, Body::Lines(initial));
@@ -89,6 +90,7 @@ fn test_s2_paused_answer_held_and_refusal_adopts_immediately() {
 fn test_s3_stale_generation_dropped_and_close_sends_none() {
     let (ask_tx, ask_rx) = mpsc::channel();
     let mut app = App::new(Some("aedev".to_owned()), None, None, Some(ask_tx));
+    app.fleeted = true;
     app.model.open_peek(2);
     answer(
         &mut app,
@@ -138,6 +140,7 @@ fn test_s4_pre_panel_refusal_sends_no_request() {
             Some("%999".to_owned()),
             Some(ask_tx),
         );
+        app.fleeted = true;
         let status = if why == "stopped" {
             Status::Stopped
         } else {

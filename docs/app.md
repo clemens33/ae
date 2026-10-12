@@ -104,7 +104,11 @@ fleet first, then a lane the composer just wrote into, the selected session,
 the fleet again every 5 seconds, home, the sessions one and then two rows from
 the selection, and the rest in sidebar order, keeping at most 16 lanes; the
 selected session and home are read again every 5 seconds. Until the first
-fleet read the list says `loading`. A session whose lane was not read yet
+fleet read the list says `loading`, and a key read until then is not lost: `q` and
+`^C` act at once, the digits, `!`, `j`, `k`, the arrows, `Tab`, the page keys and
+`Esc` wait (64 at most, the oldest go first) and replay on that read, and
+anything else is dropped under one hint, `input before sessions loaded was
+dropped`. A session whose lane was not read yet
 shows one dim `loading` row, and one read before shows its last lane at once.
 A lane fills in stages, each its own read: the session's journal first, then
 the lead pair's current conversations, then — for the selected session only —

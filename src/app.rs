@@ -43,6 +43,9 @@ use peek::Body;
 
 mod backend;
 pub mod draw;
+#[cfg(test)]
+#[path = "../tests/it/app_early_spec.rs"]
+mod early_spec;
 pub mod fleet;
 #[cfg(test)]
 mod fleet_spec;
@@ -85,6 +88,10 @@ const QUIT_WINDOW: Duration = Duration::from_secs(2);
 const FLASH_WINDOW: Duration = Duration::from_secs(5);
 /// The most replaced layouts kept for a click made on one of them.
 const HISTORY: usize = 8;
+/// The most navigation keys held for the first fleet read; the oldest go first.
+const EARLY_CAP: usize = 64;
+/// What the hint row says once when a key read before the fleet is dropped.
+const EARLY_NOTICE: &str = "input before sessions loaded was dropped";
 
 /// One session's last read lane, and what it was read as.
 struct Shown {
@@ -263,7 +270,7 @@ struct Keep {
 /// Everything the app was answered, and the browse and compose state.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent facts of one loop, each read where it is set: loading, fleeted, touched, restored, again"
+    reason = "independent facts of one loop, each read where it is set: loading, fleeted, touched, restored, early_named, again"
 )]
 struct App {
     home: Option<String>,
@@ -375,6 +382,11 @@ struct App {
     touched: bool,
     /// A handed-over scroll is applied and its lane is not read yet.
     restored: bool,
+    /// Navigation keys read before the first fleet read, with their read
+    /// instants, replayed on it.
+    early: Vec<(Key, Instant)>,
+    /// The drop of an early key was told on the hint row.
+    early_named: bool,
 }
 
 impl App {
@@ -449,13 +461,23 @@ impl App {
             keep: None,
             touched: false,
             restored: false,
+            early: Vec::new(),
+            early_named: false,
         }
     }
 
     /// Fold one answer from the reader.
     fn answer(&mut self, answer: Answer) {
         match answer {
-            Answer::Fleet(read) => self.absorb(read),
+            Answer::Fleet(read) => {
+                self.absorb(read);
+                // What was read before the fleet navigates it now, at the
+                // instants it was read. A press armed by a later key stays
+                // armed: the key that ended any older one has already acted.
+                let (early, armed) = (std::mem::take(&mut self.early), self.armed.take());
+                let _ = take_keys(self, early);
+                self.armed = armed;
+            }
             Answer::Look { name, look, zone } => drop(self.looks.insert(name, (look, zone))),
             // Only the entry writing now: a late proof of an older one is stale.
             Answer::Owned { entry, reading, at }
@@ -2494,6 +2516,10 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
     let mut redraw = false;
     let mut keyed = keyed.into_iter();
     while let Some((key, origin)) = keyed.next() {
+        if !app.fleeted && key != Key::Interrupt {
+            redraw |= early(app, &key, origin)?;
+            continue;
+        }
         if !app.deferred.is_empty() || !app.queued.is_empty() || app.unbounded(&key) {
             app.deferred.push((key, origin));
             app.deferred.extend(keyed);
@@ -2532,6 +2558,41 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         };
     }
     Some(redraw)
+}
+
+/// Take a key read before the first fleet read, a Text run byte by byte:
+/// `q` presses its armed key now, a navigation key waits for the fleet it
+/// navigates ([`EARLY_CAP`], the oldest go first) and nothing else is taken,
+/// told once on the hint row. Each of those ends an armed press. `Some(true)`,
+/// or `None` to quit.
+fn early(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
+    let pieces = match key {
+        Key::Text(bytes) => bytes.iter().map(|byte| Key::Text(vec![*byte])).collect(),
+        other => vec![other.clone()],
+    };
+    for piece in pieces {
+        if piece == Key::Text(b"q".to_vec()) {
+            browse(app, &piece, origin)?;
+            continue;
+        }
+        app.armed = None;
+        let nav = match &piece {
+            Key::Up | Key::Down | Key::PageUp | Key::PageDown | Key::Tab | Key::Escape => true,
+            Key::Text(byte) => matches!(byte.as_slice(), [b'1'..=b'9' | b'!' | b'j' | b'k']),
+            _ => false,
+        };
+        let evicted = nav && app.early.len() >= EARLY_CAP;
+        if evicted {
+            app.early.remove(0);
+        }
+        if nav {
+            app.early.push((piece, origin));
+        }
+        if (!nav || evicted) && !std::mem::replace(&mut app.early_named, true) {
+            app.flash = Some((EARLY_NOTICE.to_owned(), Instant::now()));
+        }
+    }
+    Some(true)
 }
 
 /// Take one key: `Some(redraw)`, or `None` to quit. A batched Text key
@@ -5414,6 +5475,7 @@ mod tests {
     #[test]
     fn settings_title_click_requests_its_frame_without_a_background_answer() {
         let mut app = App::new(None, None, None, None);
+        app.fleeted = true;
         app.open_settings();
         let (_wake, wakes) = std::sync::mpsc::channel();
         let mut keys = crate::console::input::Keys::app();
@@ -5449,6 +5511,7 @@ mod tests {
     fn settings_chunk_swallowed_byte_keeps_earlier_redraw() {
         let (ask, asks) = std::sync::mpsc::channel();
         let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.fleeted = true;
         app.fleet = Fleet {
             rows: vec![row("api", 1, true), row("web", 2, false)],
             home: Some("api".to_owned()),
@@ -6258,6 +6321,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let server = Some(crate::inventory::ServerId::Ambient);
         let mut app = App::new(Some("aedev".to_owned()), server, None, Some(tx));
+        app.fleeted = true;
         app.world
             .sessions
             .push(SessionEntry::new("aedev", Status::Running));
@@ -7044,5 +7108,21 @@ mod tests {
         let _ = framed(&mut app);
         assert_ne!(app.model.scroll_rows(10), 0, "a long history keeps it");
         assert!(!app.loading);
+    }
+
+    /// Cold `2q` arms quit after queueing the 2: its replay keeps the press.
+    #[test]
+    fn a_press_armed_before_the_fleet_survives_the_replay_of_the_keys_before_it() {
+        let root = Root::new("early-armed");
+        session(&root, "web", "");
+        let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
+        let mut app = App::new(Some("api".to_owned()), None, None, None);
+        let at = Instant::now();
+        let _ = take_keys(&mut app, vec![(Key::Text(b"2q".to_vec()), at)]);
+        let live = [("api", Status::Running), ("web", Status::Running)];
+        refold(&mut app, &reader, &root, &live);
+        assert_eq!(app.model.selected(), Some("web"), "the 2 was replayed");
+        let again = vec![(Key::Text(b"q".to_vec()), at + Duration::from_millis(1))];
+        assert!(take_keys(&mut app, again).is_none(), "the second q quits");
     }
 }
