@@ -1182,9 +1182,7 @@ fn product_source() -> Vec<(String, String)> {
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let module = code
-                .split_once("#[cfg(test)]")
-                .map_or(code.clone(), |(module, _)| module.to_owned());
+            let module = product_head(&code).to_owned();
             let name = path
                 .file_name()
                 .map(|leaf| leaf.to_string_lossy().into_owned())
@@ -1194,6 +1192,122 @@ fn product_source() -> Vec<(String, String)> {
         .collect();
     modules.sort();
     modules
+}
+
+/// `code` up to the first `#[cfg(test)]` that gates anything but a bodiless
+/// `mod name;` registration. A registration (`src/app.rs` lists its spec
+/// modules that way, `#[path]` included) opens no test body, so the product
+/// code after it is still product; a gated module body or item cuts as ever.
+fn product_head(code: &str) -> &str {
+    const GATE: &str = "#[cfg(test)]";
+    let mut offset = 0;
+    for line in code.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(GATE) {
+            let after = offset + (line.len() - trimmed.len()) + GATE.len();
+            if !registers_module(&code[after..]) {
+                return &code[..offset];
+            }
+        }
+        offset += line.len();
+    }
+    code
+}
+
+/// Whether the item after a `#[cfg(test)]` is exactly `[pub] mod name;`, past
+/// any attributes. Anything else, or any doubt, is not a registration.
+fn registers_module(rest: &str) -> bool {
+    let mut rest = rest.trim_start();
+    while let Some(attr) = rest.strip_prefix("#[") {
+        let mut depth = 1_usize;
+        let closed = attr.find(|ch| {
+            match ch {
+                '[' => depth += 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
+            depth == 0
+        });
+        let Some(end) = closed else { return false };
+        rest = attr[end + 1..].trim_start();
+    }
+    let Some((head, _)) = rest.split_once(';') else {
+        return false;
+    };
+    let mut words = head.split_whitespace();
+    let first = words.next();
+    let keyword = if first.is_some_and(|word| word.starts_with("pub")) {
+        words.next()
+    } else {
+        first
+    };
+    keyword == Some("mod")
+        && words
+            .next()
+            .is_some_and(|name| name.chars().all(|ch| ch.is_alphanumeric() || ch == '_'))
+        && words.next().is_none()
+}
+
+#[test]
+fn the_product_cut_skips_a_module_registration_and_stops_at_a_body() {
+    let tail = "#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+    let registered = format!(
+        "use a;\n#[cfg(test)]\n#[path = \"../tests/it/x.rs\"]\nmod early_spec;\n\
+         pub mod fleet;\n#[cfg(test)]\npub(crate) mod late_spec;\nfn product() {{ read(); }}\n{tail}"
+    );
+    assert_eq!(
+        Some(product_head(&registered)),
+        registered.strip_suffix(tail),
+        "registrations, `#[path]` and `pub(crate)` ones included, are skipped; the module body cuts"
+    );
+    for gated in [
+        "#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n",
+        "#[cfg(test)]\n#[allow(\n    clippy::x,\n)]\nmod tests {\n    fn t() {}\n}\n",
+        "    #[cfg(test)]\n    pub(crate) fn same_members(&self) -> bool {\n        true\n    }\n",
+        "#[cfg(test)]\nconst CAP: usize = 1;\n",
+        "#[cfg(test)]\npub(crate) use tests::{a, b};\n",
+    ] {
+        let code = format!("fn before() {{}}\n{gated}fn after() {{}}\n");
+        assert_eq!(
+            product_head(&code),
+            "fn before() {}\n",
+            "a gated body or item cuts: {gated}"
+        );
+    }
+    for whole in [
+        "fn only() {}\n",
+        "let s = \"#[cfg(test)]\";\nfn only() {}\n",
+    ] {
+        assert_eq!(
+            product_head(whole),
+            whole,
+            "no gate at a line start: {whole}"
+        );
+    }
+}
+
+#[test]
+fn the_scan_reaches_the_app_registrations_after_its_spec_block() {
+    // `src/app.rs` interleaves `#[cfg(test)] mod …_spec;` registrations with
+    // product ones; the last ungated one sits past the first gate.
+    let Ok(text) = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"))
+    else {
+        panic!("src/app.rs must be readable");
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(last) = lines.windows(2).rev().find_map(|pair| {
+        (pair[1].starts_with("mod ") && pair[1].ends_with(';') && !pair[0].starts_with("#["))
+            .then_some(pair[1])
+    }) else {
+        panic!("src/app.rs registers an ungated module");
+    };
+    let visible = product_source()
+        .into_iter()
+        .find_map(|(name, code)| (name == "app.rs").then_some(code));
+    assert!(
+        visible.is_some_and(|code| code.lines().any(|line| line == last)),
+        "the scan must reach {last:?}"
+    );
 }
 
 /// Where a needle appears in product code, file by file, with counts.

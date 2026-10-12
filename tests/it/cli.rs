@@ -2359,6 +2359,61 @@ fn a_helper_surface_asked_wrong_exits_two_and_prints_nothing() {
 }
 
 #[test]
+fn an_unknown_requests_option_before_a_mode_word_is_the_token_the_usage_error_names() {
+    // The option is what is wrong; the mode word after it is a valid operand and
+    // must not be blamed in its place.
+    let root = scratch("requests-unknown-option");
+    let dir = plant_events(&root, "tg1", &[PLANTED_ASK]);
+    let dir = dir.to_string_lossy().into_owned();
+    for mode in ["mine", "inbox", "all"] {
+        let argv = [ae::cli::REQUESTS, &dir, "--bogus", mode];
+        let parsed = ae::cli::Request::parse(&argv.map(String::from));
+        assert_eq!(
+            parsed,
+            ae::cli::Request::UsageError("--bogus".to_owned()),
+            "{mode}"
+        );
+        assert_eq!(parsed.exit_code(), Some(2), "{mode}");
+        let out = ae().args(argv).output().expect("the ae binary should run");
+        assert_eq!(out.status.code(), Some(2), "{mode}: {:?}", out.status);
+        assert!(out.stdout.is_empty(), "{mode}: stdout must stay empty");
+        let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
+        assert!(stderr.contains("--bogus"), "{mode}: {stderr}");
+    }
+}
+
+#[test]
+fn a_requests_summary_no_utf8_reading_takes_is_clipped_only_past_the_cap() {
+    // `SUMMARY_CHARS` is what a row KEEPS: a summary at the cap is whole, the
+    // first byte past it is cut and marked. Invalid UTF-8 takes the byte cutter.
+    let summary_column = |len: usize| {
+        let mut line = br#"{"ts":"t1","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","summary":""#
+            .to_vec();
+        line.extend(std::iter::repeat_n(0xff_u8, len));
+        line.extend_from_slice(b"\"}\n");
+        let table = ae::requests::table(
+            &line,
+            ae::requests::Mode::All,
+            &ae::requests::Viewer::default(),
+        );
+        let row = table
+            .strip_suffix(b"\n")
+            .and_then(|rows| rows.rsplit(|b| *b == b'\n').next());
+        let row = row.expect("the table has a row");
+        let start = row
+            .iter()
+            .position(|b| *b == 0xff)
+            .expect("the summary is in the row");
+        row[start..].to_vec()
+    };
+    assert_eq!(ae::requests::SUMMARY_CHARS, 160, "the cap this pins");
+    assert_eq!(summary_column(160), vec![0xff; 160], "at the cap: whole");
+    let mut cut = vec![0xff; 160];
+    cut.extend_from_slice("…".as_bytes());
+    assert_eq!(summary_column(161), cut, "one past the cap: cut and marked");
+}
+
+#[test]
 fn the_underscore_spellings_are_commands_and_never_launch_candidates() {
     // Grammar is not narrowed by these two: a leading underscore is
     // not a legal session name, so nothing that WAS a launch candidate stopped
