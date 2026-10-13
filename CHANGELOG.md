@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.62] - 2026-10-13
+- Chat, app: fold long pasted turns, show asks whole, fold the sent outcome into the ask header
+- The sidebar is agents only
+- Ae app: a hand-started app restarts into the linked core by exec
+- Keep the restarting app on the pane terminal under a POSIX sh
+
 ## [v2026.10.61] - 2026-10-12
 - Ae quota: one shared view for the tmux dialog and the app tab
 
