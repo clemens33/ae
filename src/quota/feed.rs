@@ -418,4 +418,53 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn the_drain_keeps_sixty_four_kibibytes_and_not_one_byte_more() {
+        // 65_536 is the plan's bound, spelled apart from the constant it pins.
+        let padded = |len: usize| {
+            let mut payload = BOTH.as_bytes().to_vec();
+            payload.resize(len, b' ');
+            Cursor::new(payload)
+        };
+        let kept = super::drain(&mut padded(65_536)).unwrap_or_default();
+        assert_eq!(extract(&kept).len(), 2);
+        assert_eq!(super::drain(&mut padded(65_537)), None);
+    }
+
+    /// A reader that answers each read from its script, then reports the end.
+    struct Scripted(Vec<Result<&'static [u8], std::io::ErrorKind>>);
+
+    impl std::io::Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Ok(0);
+            }
+            let bytes = self.0.remove(0)?;
+            buf[..bytes.len()].copy_from_slice(bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_retried_and_any_other_failure_keeps_nothing() {
+        use std::io::ErrorKind::{Interrupted, Other};
+        let drained = |script| super::drain(&mut Scripted(script));
+        let ab = b"ab".as_slice();
+        assert_eq!(
+            drained(vec![Err(Interrupted), Ok(ab), Ok(b"c")]),
+            Some(b"abc".to_vec())
+        );
+        assert_eq!(drained(vec![Ok(ab), Err(Other), Ok(b"c")]), None);
+    }
+
+    /// A contract pin, not a plan rule: the plan bounds a record at 1024 bytes,
+    /// and `parse` judges that bound before it decodes a byte, so one byte over
+    /// it is a shape refusal whatever the bytes hold.
+    #[test]
+    fn the_record_cap_is_judged_before_the_bytes_are_decoded() {
+        use super::ParseError;
+        assert_eq!(parse(&[0xff; 1024]), Err(ParseError::Utf8));
+        assert_eq!(parse(&[0xff; 1025]), Err(ParseError::Shape));
+    }
 }
