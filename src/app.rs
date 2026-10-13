@@ -6385,7 +6385,7 @@ mod tests {
     #[test]
     fn enter_toggles_only_a_marked_turn_that_has_a_fold_row() {
         let root = Root::new("fold-enter");
-        let long = (1..=12).map(|n| format!("row {n}")).collect::<Vec<_>>();
+        let long = (1..=32).map(|n| format!("row {n}")).collect::<Vec<_>>();
         let long = long.join("\n");
         let long = long.as_str();
         // One real Enter on the writable home `api`, its newest turn marked
@@ -6426,7 +6426,7 @@ mod tests {
         }
         let (state, shown) = pressed(&[long], true, false);
         assert_eq!(state, (false, String::new(), (0, 1), true), "toggles");
-        assert!(shown.contains("row 12") && !pressed(&[long], true, true).1.contains("row 12"));
+        assert!(shown.contains("row 32") && !pressed(&[long], true, true).1.contains("row 32"));
     }
 
     /// `[` and `]` walk the produced turns: none marked takes the newest,

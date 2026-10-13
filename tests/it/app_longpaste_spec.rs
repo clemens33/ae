@@ -1,4 +1,5 @@
 //! Frozen app acceptance from R1-R7 + lead GO 2026-10-12 15:09Z.
+//! turnfmt PHASE A ruling 2026-10-13: a turn folds past 30 rows, shows first 24.
 #![allow(clippy::expect_used, clippy::disallowed_methods, reason = "fixture")]
 use super::{
     App, fleet,
@@ -108,17 +109,20 @@ fn click(app: &mut App, needle: &str) {
 }
 
 #[test]
-fn app_shows_ten_rows_whole_and_eleven_as_first_eight_plus_three_more() {
-    for n in [8, 9, 10, 11, 12] {
+fn app_shows_thirty_rows_whole_and_thirty_one_as_first_24_plus_seven_more() {
+    for n in [24, 25, 30, 31, 32] {
         let (_, shown) = frame(&mut app(&lines(n)));
-        assert!(shown.contains("line-08"));
-        assert_eq!(shown.contains("line-09"), (9..=10).contains(&n));
-        assert_eq!(shown.contains(&format!("... {} more lines", n - 8)), n > 10);
+        assert!(shown.contains("line-24"));
+        assert_eq!(shown.contains("line-25"), (25..=30).contains(&n));
+        assert_eq!(
+            shown.contains(&format!("... {} more lines", n - 24)),
+            n > 30
+        );
     }
-    let body = "x".repeat(108 * 11);
+    let body = "x".repeat(108 * 31);
     let (_, shown) = frame(&mut app(&body));
     assert!(
-        shown.contains("... 3 more lines"),
+        shown.contains("... 7 more lines"),
         "R2 rendered wrap rows: {shown}"
     );
 }
@@ -131,33 +135,33 @@ fn short_app_preserves_blank_rows_tab_spacing_and_trailing_newline() {
 
 #[test]
 fn click_and_marked_enter_toggle_and_keep_state_through_reread_and_new_turns() {
-    let mut app = app(&lines(12));
-    click(&mut app, "... 4 more lines");
-    assert!(frame(&mut app).1.contains("line-12"));
-    app.lane = lane(vec![turn(&lines(13), 0), turn("new turn", 1)]);
-    assert!(frame(&mut app).1.contains("line-13"));
+    let mut app = app(&lines(32));
+    click(&mut app, "... 8 more lines");
+    assert!(frame(&mut app).1.contains("line-32"));
+    app.lane = lane(vec![turn(&lines(33), 0), turn("new turn", 1)]);
+    assert!(frame(&mut app).1.contains("line-33"));
     press(&mut app, Key::Text(b"[".to_vec()));
     press(&mut app, Key::Text(b"[".to_vec()));
     let marked = app.model.turn();
     press(&mut app, Key::Enter);
     assert_eq!(app.model.turn(), marked, "toggle preserves mark");
-    assert!(!frame(&mut app).1.contains("line-09"));
+    assert!(!frame(&mut app).1.contains("line-25"));
     press(&mut app, Key::Enter);
-    assert!(frame(&mut app).1.contains("line-13"));
+    assert!(frame(&mut app).1.contains("line-33"));
     press(&mut app, Key::Text(b"2".to_vec()));
-    app.lane = lane(vec![turn(&lines(13), 0)]);
-    assert!(!frame(&mut app).1.contains("line-09"));
+    app.lane = lane(vec![turn(&lines(33), 0)]);
+    assert!(!frame(&mut app).1.contains("line-25"));
     app.ids.insert("two".into(), ID.replace("1234", "bbbb"));
-    click(&mut app, "... 5 more lines");
+    click(&mut app, "... 9 more lines");
     app.ids.insert("two".into(), ID.into());
-    assert!(!frame(&mut app).1.contains("line-09"));
-    assert!(!frame(&mut self::app(&lines(13))).1.contains("line-09"));
+    assert!(!frame(&mut app).1.contains("line-25"));
+    assert!(!frame(&mut self::app(&lines(33))).1.contains("line-25"));
 }
 
 #[test]
 fn a_toggle_preserves_a_composed_draft_and_enter_submits_it() {
     let root = Root::new("longpaste-draft");
-    let mut app = app(&lines(12));
+    let mut app = app(&lines(32));
     app.world.sessions[0].status = Status::Running;
     app.dirs.insert("api".into(), root.0.join("sessions/api"));
     app.pairs.insert(
@@ -173,7 +177,7 @@ fn a_toggle_preserves_a_composed_draft_and_enter_submits_it() {
         id: ID.into(),
         seq: 1,
         lane: Lane {
-            items: vec![turn(&lines(12), 0)],
+            items: vec![turn(&lines(32), 0)],
             coverage: vec![],
         },
         needs: None,
@@ -185,7 +189,7 @@ fn a_toggle_preserves_a_composed_draft_and_enter_submits_it() {
     app.write(true);
     assert!(app.composing());
     press(&mut app, Key::Text(b"keep this draft".to_vec()));
-    click(&mut app, "... 4 more lines");
+    click(&mut app, "... 8 more lines");
     assert_eq!(
         app.shown_input().expect("composer").draft(),
         "keep this draft"
@@ -194,7 +198,7 @@ fn a_toggle_preserves_a_composed_draft_and_enter_submits_it() {
     press(&mut app, Key::Enter);
     assert_eq!(app.queued.len(), 1, "Enter submits draft before any toggle");
     assert_eq!(app.queued[0].body, "keep this draft");
-    assert!(frame(&mut app).1.contains("line-12"));
+    assert!(frame(&mut app).1.contains("line-32"));
 }
 
 #[test]
@@ -256,7 +260,7 @@ fn successful_outcomes_live_in_the_ask_header_and_failures_keep_visible_lines() 
 
 #[test]
 fn decision_options_are_split_before_folding_and_full_toggle_keeps_last_option() {
-    let body = (1..=12)
+    let body = (1..=32)
         .map(|n| format!("choice-{n:02}"))
         .collect::<Vec<_>>()
         .join(" | ");
@@ -267,7 +271,7 @@ fn decision_options_are_split_before_folding_and_full_toggle_keeps_last_option()
     };
     app.lane = lane(vec![card]);
     let shown = frame(&mut app).1;
-    assert!(shown.contains("choice-08") && !shown.contains("choice-09"));
-    click(&mut app, "... 4 more lines");
-    assert!(frame(&mut app).1.contains("choice-12"));
+    assert!(shown.contains("choice-24") && !shown.contains("choice-25"));
+    click(&mut app, "... 8 more lines");
+    assert!(frame(&mut app).1.contains("choice-32"));
 }

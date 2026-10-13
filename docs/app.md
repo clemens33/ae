@@ -315,10 +315,10 @@ shown.
 
 ## Long turns
 
-A turn of more than ten rows, as the app draws them at the chat's width, shows its first
-eight and a dim row `... N more lines`; ten rows or fewer show whole. A fold must save at
+A turn of more than thirty rows, as the app draws them at the chat's width, shows its first
+24 and a dim row `... N more lines`; thirty rows or fewer show whole. A fold must save at
 least one rendered row; the fold row is one row here, so that rule never moves the
-ten-row line. The fold row is a
+thirty-row line. The fold row is a
 click target and `Enter` on a marked turn that has one toggles it too, the mark kept;
 the unfolded turn ends in `show fewer lines`. Enter with no mark, on a short turn or
 over a composed draft keeps its usual job and never puts the draft aside. A decision

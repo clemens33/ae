@@ -654,27 +654,27 @@ mod tests {
     }
 
     #[test]
-    fn a_long_turn_folds_to_eight_rows_and_its_fold_row_toggles_it() {
+    fn a_long_turn_folds_to_twenty_four_rows_and_its_fold_row_toggles_it() {
         let lines = |n: usize| (1..=n).map(|n| format!("l{n}")).collect::<Vec<_>>();
         let turn =
             |n: usize, open: Option<&[bool]>| shown_with(said(&lines(n).join("\n")), open, false);
-        // Ten rows show whole and a lane that folds nothing never has a fold row.
-        for shown in [turn(10, Some(&[false])), turn(12, None)] {
+        // Thirty rows show whole and a lane that folds nothing never has a fold row.
+        for shown in [turn(30, Some(&[false])), turn(32, None)] {
             assert_eq!(shown.turns[0].fold, None);
         }
-        assert_eq!(rows_of(&turn(10, Some(&[false]))).len(), 11);
-        let folded = turn(11, Some(&[false]));
+        assert_eq!(rows_of(&turn(30, Some(&[false]))).len(), 31);
+        let folded = turn(31, Some(&[false]));
         let rows = rows_of(&folded);
-        assert_eq!(folded.turns[0].fold, Some(9));
-        assert_eq!(rows[8], "  l8");
-        assert_eq!(rows[9], "  ... 3 more lines");
-        assert_eq!(rows.len(), 10);
-        let open = turn(12, Some(&[true]));
+        assert_eq!(folded.turns[0].fold, Some(25));
+        assert_eq!(rows[24], "  l24");
+        assert_eq!(rows[25], "  ... 7 more lines");
+        assert_eq!(rows.len(), 26);
+        let open = turn(32, Some(&[true]));
         let rows = rows_of(&open);
-        assert_eq!((rows.len(), open.turns[0].fold), (14, Some(13)));
+        assert_eq!((rows.len(), open.turns[0].fold), (34, Some(33)));
         assert_eq!(
-            (rows[12].as_str(), rows[13].as_str()),
-            ("  l12", "  show fewer lines")
+            (rows[32].as_str(), rows[33].as_str()),
+            ("  l32", "  show fewer lines")
         );
     }
 

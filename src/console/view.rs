@@ -2075,7 +2075,7 @@ mod tests {
 
     #[test]
     fn a_plain_chat_folds_by_the_rows_it_wraps_and_a_pipe_prints_whole() {
-        let text = vec!["word"; 60].join(" ");
+        let text = vec!["word"; 100].join(" ");
         let lane = lane(vec![item(said("lead"), T, &text)], &[]);
         let mut piped = Printed::default();
         piped.set_width(Some(20));
@@ -2093,7 +2093,7 @@ mod tests {
             .lines()
             .filter(|row| row.starts_with("  word"))
             .collect();
-        assert_eq!(body.len(), 8, "{shown}");
+        assert_eq!(body.len(), 24, "{shown}");
         assert!(body.iter().all(|row| cells(row) <= 20), "{shown}");
         chat.keep(lane);
         let whole = chat.more_last("1").expect("the fold named");
@@ -2101,14 +2101,14 @@ mod tests {
             .lines()
             .filter(|row| row.starts_with("  word"))
             .collect();
-        assert!(shown.contains(&format!("... {} more lines (/more 1)", rows.len() - 8)));
+        assert!(shown.contains(&format!("... {} more lines (/more 1)", rows.len() - 24)));
         let joined: Vec<_> = rows.iter().map(|row| row.trim()).collect();
         assert_eq!(joined.join(" "), text, "every word is shown");
     }
 
     #[test]
     fn a_fold_keeps_its_asks_sent_word_and_kept_draft_warning_in_more() {
-        let text = vec!["word"; 60].join(" ");
+        let text = vec!["word"; 130].join(" ");
         let lane = lane(vec![item(asked("asked"), T, &text)], &[]);
         let mut printed = Printed::default();
         printed.set_fold(true);
@@ -2212,21 +2212,23 @@ mod tests {
         let made = |look, fold, width, rows| made_in(look, fold, width, rows, 0);
         for look in [false, true] {
             for width in [3, 5, 8, 10, 12, 20, 40, 80] {
-                let (whole, folded) = (made(look, false, width, 11), made(look, true, width, 11));
-                assert_eq!(made_in(look, true, width, 11, 20).0, folded.0, "deep");
+                let (whole, folded) = (made(look, false, width, 31), made(look, true, width, 31));
+                assert_eq!(made_in(look, true, width, 31, 20).0, folded.0, "deep");
                 assert!(
                     folded.0 <= whole.0,
                     "{look} {width}: {folded:?} vs {whole:?}"
                 );
             }
-            assert!(made(look, true, 80, 11).1 && !made(look, true, 5, 11).1);
+            assert!(made(look, true, 80, 31).1 && !made(look, true, 3, 31).1);
         }
-        // At width 10 the line takes 3 rows plain (8 + 3 = 11) and 5 dressed
-        // (8 + 5 = 13): a turn that equals the shown rows plus the line stays
-        // whole, one row longer folds and saves that row.
-        for (look, equal) in [(false, 11), (true, 13)] {
-            assert!(!made(look, true, 10, equal).1, "{look}: equal stays whole");
-            assert!(made(look, true, 10, equal + 1).1, "{look}: one more folds");
+        // The fold line takes 7 rows plain at width 4 (24 + 7 = 31) and 8 dressed
+        // at width 7 (24 + 8 = 32): a turn that equals the shown rows plus the
+        // line stays whole, one row longer folds and saves that row.
+        let folds =
+            |look, width, rows| made(look, true, width, rows).0 < made(look, false, width, rows).0;
+        for (look, width, equal) in [(false, 4, 31), (true, 7, 32)] {
+            assert!(!folds(look, width, equal), "{look}: equal stays whole");
+            assert!(folds(look, width, equal + 1), "{look}: one more folds");
         }
     }
 }

@@ -60,15 +60,15 @@ the window on demand. See [Keys](#keys).
 
 ## Long turns
 
-A turn of more than ten rows, as the pane draws them, shows its first eight and a
-fold line, `... N more lines (/more n)`; ten rows or fewer show whole. Only an
+A turn of more than thirty rows, as the pane draws them, shows its first 24 and a
+fold line, `... N more lines (/more n)`; thirty rows or fewer show whole. Only an
 input-taking chat whose input AND output are terminals folds: it counts rows by
 asking tmux for its pane's width (plain text too, wrapped like the dressed look),
 while a pipe, a file, a redirected `--follow --input`, a one-shot print and
 `--follow` without a terminal print every turn whole. A fold must save at least one
-rendered row: it folds only when the eight shown rows plus the rows its own line
+rendered row: it folds only when the 24 shown rows plus the rows its own line
 takes (the line wraps in a narrow pane) are fewer than the turn's rows, else the
-turn shows whole; at normal widths that is still every turn of more than ten rows. `/more n`
+turn shows whole; at normal widths that is still every turn of more than thirty rows. `/more n`
 prints turn `n` whole, header and every row; it writes no event, is
 repeatable, and works in a read-only chat too. A handle names one fold of this
 chat: a number it never drew, a turn a rewritten journal has since moved, or one no

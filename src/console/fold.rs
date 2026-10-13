@@ -2,11 +2,11 @@
 //! tmux chat and `ae app` fold by one rule and each keeps its own row layout.
 
 /// The rows a folded turn shows.
-pub(crate) const SHOWN: usize = 8;
+pub(crate) const SHOWN: usize = 24;
 
 /// The fewest rows a fold must hide: a fold always saves rows, so it costs
 /// none. A turn of up to `SHOWN + MIN_HIDDEN - 1` rows shows whole.
-pub(crate) const MIN_HIDDEN: usize = 3;
+pub(crate) const MIN_HIDDEN: usize = 7;
 
 /// Whether a turn of `count` rows has a fold, when the fold line takes `marker`
 /// rows to draw: it hides [`MIN_HIDDEN`] rows or more and, the line drawn,
@@ -37,14 +37,14 @@ mod tests {
     use super::{MIN_HIDDEN, SHOWN, foldable, folded, line};
 
     #[test]
-    fn a_turn_folds_from_eleven_rows_and_hides_what_it_names() {
+    fn a_turn_folds_from_thirty_one_rows_and_hides_what_it_names() {
         let rows = |n: usize| (1..=n).collect::<Vec<_>>();
-        for n in [0, 1, SHOWN, 9, 10] {
+        for n in [0, 1, SHOWN, 25, 30] {
             assert!(!foldable(n, 1), "{n} rows show whole");
             assert_eq!(folded(rows(n), false, 1), (rows(n), 0));
         }
-        assert_eq!(SHOWN + MIN_HIDDEN, 11);
-        for n in [11, 12, 400] {
+        assert_eq!(SHOWN + MIN_HIDDEN, 31);
+        for n in [31, 32, 400] {
             assert!(foldable(n, 1));
             assert_eq!(folded(rows(n), false, 1), (rows(SHOWN), n - SHOWN));
             assert_eq!(folded(rows(n), true, 1), (rows(n), 0), "open shows all");
@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn a_fold_whose_line_takes_more_rows_than_it_saves_leaves_the_turn_whole() {
         // Folds exactly when the shown rows and the line leave it shorter.
-        for (count, marker) in [(11, 2), (11, 3), (12, 3), (12, 4), (13, 5), (14, 5)] {
+        for (count, marker) in [(31, 6), (31, 7), (32, 7), (32, 8), (33, 9), (34, 9)] {
             let folds = count > SHOWN + marker;
             assert_eq!(foldable(count, marker), folds, "{count}, line {marker}");
             let rows = (0..count).collect::<Vec<_>>();
