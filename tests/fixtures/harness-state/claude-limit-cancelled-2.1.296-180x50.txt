@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 with low effort · Claude Pro
+ ▝▝   ▝▝   /tmp/probe/work
+
+
+❯ say hi                                                                                                                                                                            
+  ⎿  You've hit your weekly limit · resets 1am (Europe/Berlin)
+     Use your limit reset to reset it now: clau.de/reset
+     /usage-credits to finish what you’re working on.
+
+⏺ Usage limit reached · continuing automatically at 1am · esc to cancel
+
+✻ Churned for 0s · done 10:22 AM
+
+❯ ping 1                                                                                                                                                                            
+
+⏺ Usage limit reached again · continuing automatically at 1am · esc to cancel
+  ⎿  You've hit your weekly limit · resets 1am (Europe/Berlin)
+     Use your limit reset to reset it now: clau.de/reset
+     /usage-credits to finish what you’re working on.
+
+✻ Sautéed for 0s · done 10:23 AM                                                                                                                                                    
+
+❯ ping 2                                                                                                                                                                            
+
+⏺ Usage limit reached again · continuing automatically at 1am · esc to cancel
+  ⎿  You've hit your weekly limit · resets 1am (Europe/Berlin)
+     Use your limit reset to reset it now: clau.de/reset
+     /usage-credits to finish what you’re working on.
+
+✻ Sautéed for 0s · done 10:23 AM
+
+❯ ping 3                                                                                                                                                                            
+                                                        
+⏺ Usage limit reached again · continuing automatically at 1am · esc to cancel
+  ⎿  You've hit your weekly limit · resets 1am (Europe/Berlin)
+     Use your limit reset to reset it now: clau.de/reset
+     /usage-credits to finish what you’re working on.
+
+✻ Baked for 0s · done 10:23 AM
+
+⏺ Automatic continue cancelled · /rate-limit-options to re-arm                                                                                                                    
+
+                                                                                                                                                                                  
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                         
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  🧠 Opus 5.5 (low)  📁 work  🌿 HEAD  $0.00  5h 0%  7d 100%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -426,6 +426,20 @@ pub fn limit_notice(buf: &str, agent_bin: &str) -> Option<String> {
     Some(crate::event_text::display_column(&cell, NOTICE_CELLS))
 }
 
+/// The drawn rows of the cell [`limit_notice`] reads — the notice row and its
+/// continuation up to the first blank row — or `None` when it reads none.
+#[must_use]
+pub fn limit_rows<'a>(buf: &'a str, agent_bin: &str) -> Option<Vec<&'a str>> {
+    let (window, at, _) = newest_row(buf, banner_for(agent_bin)?)?;
+    Some(
+        window[at..]
+            .iter()
+            .copied()
+            .take_while(|row| !row.trim().is_empty())
+            .collect(),
+    )
+}
+
 /// Which class of upstream trouble `buf` shows for `agent_bin`, if any — the
 /// ONE classifier, of which [`shows_throttle`] is the union answer. Both
 /// classes are read from the tool's OWN rows alone, by one reader: its

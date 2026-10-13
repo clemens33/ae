@@ -4553,6 +4553,13 @@ struct AutoSeat {
 enum AutoAct {
     /// Hand `agent` to the trigger.
     Trigger { agent: String },
+    /// Say, once per episode, that the limited seat has no candidate at all.
+    Unmapped {
+        slot: String,
+        agent: String,
+        key: Timestamp,
+        profile: String,
+    },
     /// Name why the due seat is not moved, once per episode and reason.
     Held {
         slot: String,
@@ -4592,6 +4599,7 @@ enum AutoAct {
 /// on a crossing, re-arms on relief, and is decided like a limit episode while
 /// its account still reads within the gap of the threshold. A headroom hold the
 /// journal already ends on is not named again, a restart included.
+#[allow(clippy::too_many_lines, reason = "one ordered decision per seat")]
 fn auto_acts(
     settings: &crate::autoreseat::Settings,
     seats: &[AutoSeat],
@@ -4600,7 +4608,7 @@ fn auto_acts(
     now: i64,
     named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
 ) -> Vec<AutoAct> {
-    use crate::autoreseat::{Decision, Room, Trigger};
+    use crate::autoreseat::{Decision, Ineligible, Room, Trigger};
     named.retain(|(slot, _, _)| seats.iter().any(|seat| seat.slot == *slot));
     let mut acts = Vec::new();
     let mut due: Option<(Timestamp, &AutoSeat)> = None;
@@ -4613,7 +4621,25 @@ fn auto_acts(
             orchestrator,
         };
         match crate::autoreseat::eligible(settings, &asked) {
-            Err(crate::autoreseat::Ineligible::Unmapped) if seat.derives => {}
+            Err(Ineligible::Unmapped) if seat.derives => {}
+            Err(Ineligible::Unmapped) if seat.limited => {
+                let found = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent);
+                let said = crate::autoreseat::leg::ineligible_summary(Ineligible::Unmapped);
+                if let Some(open) = found.filter(|open| !open.holds_with(said))
+                    && let Decision::Attempt | Decision::Hold(_) =
+                        crate::autoreseat::decide(Some(&open), settings.grace_secs, &seat.pane, now)
+                {
+                    let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
+                    let (key, profile) = (open.key, seat.profile.clone());
+                    acts.push(AutoAct::Unmapped {
+                        slot,
+                        agent,
+                        key,
+                        profile,
+                    });
+                }
+                continue;
+            }
             Err(_) => continue,
             Ok(_) => {}
         }
@@ -6442,7 +6468,8 @@ impl Cycle<'_> {
             AutoAct::Held { slot, agent, .. }
             | AutoAct::Overdue { slot, agent, .. }
             | AutoAct::Open { slot, agent, .. }
-            | AutoAct::Rearm { slot, agent, .. } => (slot, agent),
+            | AutoAct::Rearm { slot, agent, .. }
+            | AutoAct::Unmapped { slot, agent, .. } => (slot, agent),
             AutoAct::Trigger { .. } => return Ok(()),
         };
         let lock = crate::autoreseat::lock_path(self.meta_dir, slot);
@@ -6466,6 +6493,31 @@ impl Cycle<'_> {
                 if headroom.is_some_and(|open| open.key == *key && open.open.is_none()) {
                     let action = crate::autoreseat::REARMED_ACTION;
                     journal.record_referring(action, agent, &key.to_string(), summary, err)?;
+                }
+                return Ok(());
+            }
+            AutoAct::Unmapped { key, profile, .. } => {
+                let summary = crate::autoreseat::leg::ineligible_summary(
+                    crate::autoreseat::Ineligible::Unmapped,
+                );
+                let found = crate::autoreseat::episode(&events, self.session, slot, agent);
+                if crate::autoreseat::owed(found.as_ref(), *key, false, now)
+                    && !found.as_ref().is_some_and(|open| open.holds_with(summary))
+                {
+                    journal.record_referring(
+                        crate::autoreseat::HELD_ACTION,
+                        agent,
+                        &key.to_string(),
+                        summary,
+                        err,
+                    )?;
+                    crate::autoreseat::leg::tell_unmapped(
+                        self.meta_dir,
+                        (self.session, slot, agent),
+                        profile,
+                        *key,
+                        Timestamp::from_epoch(now),
+                    );
                 }
                 return Ok(());
             }
@@ -13636,12 +13688,23 @@ mod tests {
             sessions: Some(vec!["other".to_owned()]),
             ..on.clone()
         };
-        for settings in [&off, &unmapped, &elsewhere] {
+        for settings in [&off, &elsewhere] {
             assert!(
                 acts(settings, &both, &limits, 300).is_empty(),
                 "{settings:?}"
             );
         }
+        let said = |slot: &str, agent: &str, at| AutoAct::Unmapped {
+            slot: slot.to_owned(),
+            agent: agent.to_owned(),
+            key: key(at),
+            profile: "sol6x".to_owned(),
+        };
+        assert_eq!(
+            acts(&unmapped, &both, &limits, 300),
+            [said("spawned.1", "one", 200), said("spawned.2", "two", 100)],
+            "an unmapped limited seat is said, never moved"
+        );
         let main = [seat("main", "one", Frame::Clear)];
         assert!(
             acts(&on, &main, &limits, 300).is_empty(),

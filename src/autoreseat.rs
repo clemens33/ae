@@ -1320,6 +1320,7 @@ pub enum Ending<'a> {
     Held(&'a str),
     Refused(&'a str),
     Failed(&'a str),
+    Unmapped(&'a str),
 }
 
 /// What a move changed, as its notice names it.
@@ -1406,9 +1407,22 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
         Ending::Held(why) => {
             format!("{agent} not moved yet — {why}. Next: ae tries once more if it stays eligible.")
         }
-        Ending::Refused(why) => format!(
-            "{agent} not moved — {why}. Next: move it by hand (ae reseat {session} {agent} \
-             --using <profile>) or wait for the reset."
+        Ending::Refused(why) => {
+            let next = why.find("once its box is empty").and_then(|at| {
+                why.get(at..at + why[at..].find(" --stop-unknown")? + " --stop-unknown".len())
+            });
+            let hand = format!(
+                "move it by hand (ae reseat {session} {agent} --using <profile>) or wait for the reset"
+            );
+            format!(
+                "{agent} not moved — {why}. Next: {}.",
+                next.unwrap_or(&hand)
+            )
+        }
+        Ending::Unmapped(profile) => format!(
+            "{agent} not moved — no declared or derived candidate for {profile}. Next: add an \
+             [auto_reseat] row for {profile}, or move it by hand (ae reseat {session} {agent} \
+             --using <profile>)."
         ),
         Ending::Failed(why) => format!(
             "{agent} move failed — {why}. Next: relaunch {agent} if its pane sits at a shell, \

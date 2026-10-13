@@ -1269,6 +1269,14 @@ impl ToolKind {
     pub(crate) const fn board_has_paste_wrapper(self) -> bool {
         matches!(self, Self::Claude)
     }
+
+    /// Whether `row` is this harness's row for a usage-limit wait the human
+    /// cancelled: only claude 2.1.296's is measured.
+    #[must_use]
+    pub(crate) fn limit_wait_cancelled(self, row: &str) -> bool {
+        matches!(self, Self::Claude)
+            && row == "⏺ Automatic continue cancelled · /rate-limit-options to re-arm"
+    }
 }
 
 #[cfg(test)]

@@ -83,7 +83,16 @@ Then, under `.lifecycle.<session>.lock`:
    draws its own frame, so it reads `Unknown` and fails closed (pinned on a
    measured muse capture), every unmodelled composer is `Unknown` always, and
    even claude proves `Idle` from the pane's recent output, so a seat that has
-   not finished a turn since it started needs the flag.
+   not finished a turn since it started needs the flag. The other proof is the
+   vendor's usage limit on BOTH readings over an empty box (`limit_proven`):
+   with an `Unknown` verdict the limit row must be the nearest row above the
+   box, never one left in the transcript, or claude 2.1.296's own measured
+   `⏺ Automatic continue cancelled · /rate-limit-options to re-arm` row (a limit
+   wait the human cancelled, a finished turn); claude 2.1.296 draws a `⚠ Usage limit
+   reached` row and its `Continuing automatically at` row BELOW the box, which
+   the frame grammar reads as footer there only. The unreadable-frame refusal
+   leads with the exact `ae reseat … --stop-unknown` command and its
+   precondition, because a journal record keeps only the line's head.
 
    Then `respawn-pane -k -c <work_dir>` through `session_tmux::Op::RespawnPane`
    — the op the monitor panes already use, on the existing tmux door. Measured
@@ -92,7 +101,10 @@ Then, under `.lifecycle.<session>.lock`:
    `-c` directory. A tmux that refuses the argv leaves the tool running and
    says so in its own words. A BOUNDED 10 s wait for `pane_back_at_shell`
    follows — a shell in the foreground with nothing under it, every gap false
-   so it times out rather than call a pane it could not read idle — and on
+   so it times out rather than call a pane it could not read idle. It must hold
+   UNBROKEN for `STOP_SETTLE` (1 s, `settled`), because a fresh shell reads idle
+   before its startup hooks start their children and the dead proof would then
+   refuse busy; a child later than that window still races (named residual). On
    timeout the refusal names what holds the pane with the meta untouched.
    Last, the stop's own event, written once the pane is PROVEN back at its
    shell and never before, naming the binary ended because the meta keeps only
@@ -390,9 +402,12 @@ followed model never crosses an account. A store is `reseat::account_of`'s
 canonical path: equal paths are one account, and an unknown one equals nothing.
 A tool with no account variable has one shared store, where only a
 byte-identical command is the same profile: a respelled flag is not. A seat with
-no row and no family is unmapped: the daemon skips it without a record, and a
-leg that finds it so holds with `held: no declared or derived candidate for this
-profile`. The daemon asks for a family only for a seat eligible but for its row,
+no row and no family is unmapped: a leg that finds it so holds with `held: no
+declared or derived candidate for this profile`, and the daemon, which opens no
+attempt for it, journals that same hold ONCE per limit episode past the grace
+(`AutoAct::Unmapped`, deduped by the journal, so a restart repeats nothing) and
+tells the lead pair and the spawner to add an `[auto_reseat]` row or move it by
+hand. A hold is not terminal: a row added later moves the seat next cycle. The daemon asks for a family only for a seat eligible but for its row,
 and only while it could act — on its limit, at or near its threshold, or inside
 an episode — reading the identity config once for each such seat per cycle.
 

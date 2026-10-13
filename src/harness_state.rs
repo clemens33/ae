@@ -448,7 +448,9 @@ fn claude_input_frame(lines: &[Cow<'_, str>], prompt_index: usize) -> bool {
     let after = &lines[prompt_index + 1..];
     claude_border(before)
         && after.first().is_some_and(|line| claude_border(line))
-        && after.iter().all(|line| claude_chrome(line))
+        && after
+            .iter()
+            .all(|line| claude_chrome(line) || claude_limit_footer(line))
         && after.iter().any(|line| line.starts_with('🧠'))
         && after.iter().any(|line| line.starts_with('⏵'))
 }
@@ -475,6 +477,12 @@ fn claude_chrome(line: &str) -> bool {
         || line.starts_with('⏵')
         || line.starts_with('✔')
         || line.starts_with("⎿  Tip:")
+}
+
+/// The two rows Claude Code 2.1.296 draws BELOW the box on a usage limit (measured):
+/// footer only — above the box they are transcript and prove nothing idle.
+fn claude_limit_footer(line: &str) -> bool {
+    line.starts_with("⚠ Usage limit reached") || line.starts_with("Continuing automatically at ")
 }
 
 fn claude_border(line: &str) -> bool {

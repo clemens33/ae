@@ -395,15 +395,28 @@ const fn skip_word(skip: Skip) -> &'static str {
     }
 }
 
-/// `text` as one control-free line of at most [`SUMMARY_CHARS`]: the pack's
-/// neutraliser, then the journal's own flattening, held tighter than its cap
-/// because the full text is on the leg's error stream.
+/// `text` as one control-free line of at most [`SUMMARY_CHARS`], or through a named
+/// `ae reseat` command kept WHOLE up to `REASON_MAX`, else dropped whole.
 fn bounded(text: &str) -> String {
-    crate::state::summary_of(&crate::seatpack::neutralise(text))
+    let clean = crate::seatpack::neutralise(text);
+    let keep = match (clean.find("ae reseat "), clean.find(STOP_UNKNOWN)) {
+        (Some(start), Some(at)) => {
+            let whole = clean[..at + STOP_UNKNOWN.len()].chars().count();
+            if whole <= crate::state::REASON_MAX {
+                whole.max(SUMMARY_CHARS)
+            } else {
+                clean[..start].chars().count().min(SUMMARY_CHARS)
+            }
+        }
+        _ => SUMMARY_CHARS,
+    };
+    crate::state::summary_of(&clean)
         .chars()
-        .take(SUMMARY_CHARS)
+        .take(keep)
         .collect()
 }
+
+const STOP_UNKNOWN: &str = " --stop-unknown";
 
 /// `_auto-reseat <dir> <slot> <key>`: move the seat at `slot` off its usage
 /// limit as the watchdog, and journal ONE outcome for the attempt under `key`.
@@ -838,6 +851,33 @@ fn tell(argv: &Argv, now: Timestamp, told: Told<'_>, text: &str) {
     for recipient in super::recipients(roster, lead_pair, &argv.slot, spawner) {
         let _ = crate::transport::deliver(&send, &recipient, text, false, &notice_env(text));
     }
+}
+
+/// Tell, as an ending is told, that the seat at `slot` sits on its limit with no
+/// candidate at all: no attempt, so no leg, ever opens to say it.
+pub(crate) fn tell_unmapped(
+    dir: &Path,
+    (session, slot, agent): (&str, &str, &str),
+    profile: &str,
+    key: Timestamp,
+    now: Timestamp,
+) {
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let events = crate::watchdog_daemon::read_events(dir);
+    let argv = Argv {
+        session: session.to_owned(),
+        dir: dir.to_path_buf(),
+        slot: slot.to_owned(),
+        key,
+    };
+    let told = (
+        meta.roster(),
+        crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair",
+        super::spawner(&events, session, slot, agent),
+    );
+    let text = super::notice(session, agent, &super::Ending::Unmapped(profile));
+    tell(&argv, now, told, &text);
 }
 
 /// Journal the attempt, release the seat's lock `held`, THEN start the leg:

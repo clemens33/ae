@@ -1074,3 +1074,548 @@ fn a_trigger_the_seat_refuses_is_said_and_asked_again_until_it_moves() {
     assert_eq!(booked(&rig, ATTEMPT_ACTION), 1, "one attempt");
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
 }
+
+// Frozen limitstop acceptance: real 2.1.296 limit furniture, stop safety,
+// actionable refusal, and the daemon's previously silent no-candidate path.
+const LIMITSTOP_FRAME: &str =
+    include_str!("../fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+
+/// Playback replaces only the external harness; the stop, process proof,
+/// journal, watchdog and notice delivery remain the product's real path.
+const LIMITSTOP_PLAYBACK: &str = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+system("stty raw -echo 2>/dev/null");
+binmode(STDIN, ':raw');
+binmode(STDOUT, ':raw');
+$| = 1;
+my $last = '';
+while (1) {
+    my $state = -e "__CLEAR__" ? 'clear' : 'limit';
+    if ($last ne $state) {
+        print "\e[H\e[2J";
+        if ($state eq 'clear') {
+            print "\r\n" x 50;
+            print "Usage restored\r\n";
+        } else {
+            open(my $frame, '<', "__FRAME__") or die;
+            while (my $row = <$frame>) { $row =~ s/\n\z//; print "$row\r\n"; }
+            close($frame);
+        }
+        open(my $drawn, '>', "__DRAWN__.$$") or die;
+        print $drawn $state eq 'limit' ? "Usage limit reached" : "done (0s)";
+        close($drawn);
+        $last = $state;
+    }
+    my $ready = '';
+    vec($ready, fileno(STDIN), 1) = 1;
+    if (select($ready, undef, undef, 0.05) > 0) {
+        my $chunk = '';
+        sysread(STDIN, $chunk, 4096);
+        open(my $received, '>>', "__RECEIVED__") or die;
+        print $received $chunk;
+        close($received);
+    }
+}
+"#;
+
+fn limitstop_playback(rig: &Rig, tool: &str, frame: &str) -> String {
+    limitstop_playback_as(rig, tool, frame, "scout")
+}
+
+fn limitstop_playback_as(rig: &Rig, tool: &str, frame: &str, agent: &str) -> String {
+    let frame_path = rig.scratch.join("limitstop-frame.txt");
+    assert!(std::fs::write(&frame_path, frame).is_ok(), "playback frame");
+    let body = LIMITSTOP_PLAYBACK
+        .replace("__FRAME__", &frame_path.display().to_string())
+        .replace(
+            "__CLEAR__",
+            &rig.scratch.join("limitstop-clear").display().to_string(),
+        )
+        .replace(
+            "__DRAWN__",
+            &rig.scratch.join("drawn").display().to_string(),
+        )
+        .replace(
+            "__RECEIVED__",
+            &rig.scratch.join("received").display().to_string(),
+        );
+    assert!(
+        std::fs::write(rig.scratch.join(format!("{tool}.pl")), body).is_ok(),
+        "playback harness"
+    );
+    rig.seat_rows("spawned.0", agent, tool, tool);
+    let pane = rig.new_pane("spawned.0", agent);
+    assert!(
+        rig.tmux(&["resize-window", "-t", &pane, "-x", "200", "-y", "60"])
+            .0,
+        "the entire frozen frame fits"
+    );
+    rig.start(&pane, "spawned.0", tool);
+    pane
+}
+
+fn limitstop_attempt(tag: &str, frame: &str) -> (Rig, String) {
+    let rig = Rig::new(tag);
+    configure(&rig, ON_NOW, "fake-opencode");
+    let pane = limitstop_playback(&rig, "claude", frame);
+    journal(&rig, "limit", None);
+    journal(&rig, ATTEMPT_ACTION, Some(KEY));
+    (rig, pane)
+}
+
+#[test]
+fn limitstop_the_real_limit_frame_is_stopped_by_the_limit_leg() {
+    let (rig, pane) = limitstop_attempt("limitstopreal", LIMITSTOP_FRAME);
+    let pid = rig.tool_pid(&pane, "claude").expect("the limited tool");
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(0),
+        "the real terminal limit frame must move under proven-stop policy: out={out} err={err}"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "claude").is_none(), "old tool stopped");
+    assert!(rig.tool_pid(&pane, "opencode").is_some(), "replacement up");
+    assert_ne!(rig.tool_pid(&pane, "opencode"), Some(pid));
+    assert_eq!(
+        one_outcome(&rig, DONE_ACTION).reference.as_deref(),
+        Some("fake-claude")
+    );
+}
+
+#[test]
+fn limitstop_busy_wins_even_with_the_real_limit_footer_and_stop_unknown() {
+    // The busy row was measured live; Busy AT a limit cannot be reproduced
+    // because every limited turn ends immediately. Only this combination is synthetic.
+    let busy = include_str!("../fixtures/harness-state/claude-busy-167x40.txt")
+        .lines()
+        .find(|row| row.starts_with("✻ Enchanting"))
+        .expect("measured busy row");
+    let frame = LIMITSTOP_FRAME.replace("✻ Baked for 0s · done 10:23 AM", busy);
+    let (rig, pane) = limitstop_attempt("limitstopbusy", &frame);
+    let before = rig.tool_pid(&pane, "claude");
+    assert_eq!(
+        ae::harness_state::classify(&rig.capture(&pane), ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Busy,
+        "a limit warning cannot hide the current running turn"
+    );
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(err.contains("BUSY"), "busy must refuse: {err}");
+    one_outcome(&rig, HELD_ACTION);
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane,
+        &[
+            "reseat",
+            &rig.session,
+            "scout",
+            "--using",
+            "fake-opencode",
+            "--stop-unknown",
+        ],
+    );
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(err.contains("BUSY"), "flag never lifts Busy: {err}");
+    assert_eq!(rig.tool_pid(&pane, "claude"), before);
+    untouched(&rig, &pane);
+}
+
+#[test]
+fn limitstop_a_stale_transcript_limit_above_an_unproven_turn_cannot_stop_it() {
+    let frame: String = LIMITSTOP_FRAME
+        .replace(
+            "✻ Baked for 0s · done 10:23 AM",
+            "⏺ Running a tool after the earlier limit",
+        )
+        .lines()
+        .filter(|row| {
+            !row.trim_start().starts_with("⚠ Usage limit reached")
+                && !row.trim_start().starts_with("Continuing automatically at")
+        })
+        .fold(String::new(), |mut frame, row| {
+            frame.push_str(row);
+            frame.push('\n');
+            frame
+        });
+    let (rig, pane) = limitstop_attempt("limitstophistory", &frame);
+    let before = rig.tool_pid(&pane, "claude");
+    let captured = rig.capture(&pane);
+    assert!(
+        ae::watchdog::limit_notice(&captured, "claude").is_some(),
+        "historical vendor row still in window"
+    );
+    assert_eq!(
+        ae::harness_state::classify(&captured, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "empty composer does not prove this current turn ended"
+    );
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(1),
+        "a transcript-only limit cannot justify stopping: out={out} err={err}"
+    );
+    assert_eq!(rig.tool_pid(&pane, "claude"), before, "same tool remains");
+    one_outcome(&rig, REFUSED_ACTION);
+    untouched(&rig, &pane);
+}
+
+#[test]
+fn limitstop_an_unreadable_limit_refusal_records_and_tells_the_exact_next_command() {
+    let frame = LIMITSTOP_FRAME.replace("❯\u{a0}\n", "❯ draft text\n");
+    let (rig, pane) = limitstop_attempt("limitstopnext", &frame);
+    link_send(&rig);
+    rig.start(&rig.main_pane, "main", "opencode");
+    let command = format!(
+        "ae reseat {} scout --using fake-opencode --stop-unknown",
+        rig.session
+    );
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(code, Some(1), "draft must refuse: out={out} err={err}");
+    untouched(&rig, &pane);
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    assert!(
+        refused
+            .summary
+            .as_deref()
+            .is_some_and(|line| line.contains(&command)),
+        "the refusal record must retain the selected candidate and complete command: {refused:?}"
+    );
+    let chats = said(&rig);
+    assert_eq!(chats.len(), 1, "one human notice: {chats:?}");
+    assert!(
+        chats[0]
+            .summary
+            .as_deref()
+            .is_some_and(|line| line.contains(&command)),
+        "human notice must name that same exact command: {chats:?}"
+    );
+    let told: Vec<_> = records(&rig)
+        .into_iter()
+        .filter(|event| {
+            event.action == "auto-reseat-notice" && event.target.as_deref() == Some("lead")
+        })
+        .collect();
+    assert_eq!(told.len(), 1, "lead notice delivered once: {told:?}");
+    assert!(
+        told[0]
+            .summary
+            .as_deref()
+            .is_some_and(|line| line.contains(&command)),
+        "delivered notice retains command: {told:?}"
+    );
+}
+
+#[test]
+fn limitstop_max_length_names_keep_the_complete_command_and_precondition() {
+    let mut rig = Rig::new("limitstopmax");
+    let session = "s".repeat(128);
+    let agent = "a".repeat(64);
+    let profile = "p".repeat(64);
+    assert!(
+        rig.tmux(&["rename-session", "-t", &rig.session, &session])
+            .0
+    );
+    let dir = rig.scratch.join("sessions").join(&session);
+    assert!(std::fs::rename(&rig.dir, &dir).is_ok());
+    rig.dir = dir;
+    rig.session = session;
+    rebind(&rig, "session", &rig.session);
+    configure(&rig, ON_NOW, &profile);
+    let config = rig.scratch.join("config");
+    let text =
+        std::fs::read_to_string(&config).unwrap_or_else(|why| panic!("fixture config: {why}"));
+    let value = text
+        .lines()
+        .find_map(|row| row.strip_prefix("fake-opencode = "))
+        .expect("the external replacement command");
+    assert!(
+        std::fs::write(
+            &config,
+            text.replace("[profiles]", &format!("[profiles]\n{profile} = {value}"))
+        )
+        .is_ok()
+    );
+    let frame = LIMITSTOP_FRAME.replace("❯\u{a0}\n", "❯ draft text\n");
+    let pane = limitstop_playback_as(&rig, "claude", &frame, &agent);
+    for (action, reference) in [("limit", ""), (ATTEMPT_ACTION, KEY)] {
+        let event = format!(
+            r#"{{"ts":"{KEY}","actor":"watchdog","action":"{action}","target":"{agent}","target_slot":"spawned.0","target_session":"{}","ref":"{reference}"}}"#,
+            rig.session
+        );
+        let appended = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(rig.dir.join("events.jsonl"))
+            .and_then(|mut file| writeln!(file, "{event}"));
+        assert!(appended.is_ok(), "max-name episode");
+    }
+    link_send(&rig);
+    rig.start(&rig.main_pane, "main", "opencode");
+    let command = format!(
+        "ae reseat {} {agent} --using {profile} --stop-unknown",
+        rig.session
+    );
+    let precondition = "once its box is empty and the limit line is its newest row";
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(code, Some(1), "draft must refuse: out={out} err={err}");
+    untouched(&rig, &pane);
+    let events = records(&rig);
+    let outcomes = with_action(&events, REFUSED_ACTION);
+    assert_eq!(outcomes.len(), 1, "one refused outcome: {}", rig.events());
+    let summary = outcomes[0].summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.contains(&command),
+        "max-name record keeps full command: {summary}"
+    );
+    assert!(
+        summary
+            .find(precondition)
+            .zip(summary.find(&command))
+            .is_some_and(|(before, command)| before < command),
+        "record states precondition first: {summary}"
+    );
+    let chats = said(&rig);
+    assert_eq!(chats.len(), 1, "one human notice");
+    let notice = chats[0].summary.as_deref().unwrap_or_default();
+    let next = notice
+        .split_once("Next:")
+        .map(|(_, next)| next)
+        .unwrap_or_default();
+    assert!(
+        next.contains(&command),
+        "max-name notice Next keeps full command: {notice}"
+    );
+    assert!(
+        next.find(precondition)
+            .zip(next.find(&command))
+            .is_some_and(|(before, command)| before < command),
+        "Next states precondition first: {notice}"
+    );
+}
+
+fn limitstop_no_candidate(tag: &str) -> (Rig, String) {
+    let rig = Rig::new(tag);
+    configure_from(&rig, ON_NOW, "fake-grok", "fake-opencode");
+    // Muse has one shared account. With no sibling and no explicit map,
+    // this profile has no candidate; this does not depend on local config.
+    assert!(
+        std::fs::copy(
+            rig.scratch.join("tools/claude"),
+            rig.scratch.join("tools/muse")
+        )
+        .is_ok()
+    );
+    let config = rig.scratch.join("config");
+    let text =
+        std::fs::read_to_string(&config).unwrap_or_else(|why| panic!("fixture config: {why}"));
+    let row = format!(
+        "fake-muse = \"{} {}\"\n[workspace]",
+        rig.scratch.join("tools/muse").display(),
+        rig.scratch.join("muse.pl").display()
+    );
+    assert!(std::fs::write(&config, text.replace("[workspace]", &row)).is_ok());
+    let frame = "◆ Usage limit reached · /upgrade for increased limits\n\n✻ Fake · done (0s)\n────────────────────────────────────────────────────────────\n❯\n────────────────────────────────────────────────────────────\n  🧠 Muse synthetic status\n  ⏵⏵ accept edits on\n";
+    let pane = limitstop_playback(&rig, "muse", frame);
+    rebind(&rig, "layout", "lead-pair");
+    rig.start(&rig.main_pane, "main", "opencode");
+    rig.seat("worker.0", "colead", "opencode");
+    rig.seat("spawned.1", "spawner", "opencode");
+    let event = format!(
+        r#"{{"ts":"{KEY}","actor":"spawner","action":"spawn","target":"scout","target_slot":"spawned.0","target_session":"{}"}}"#,
+        rig.session
+    );
+    let mut events = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(rig.dir.join("events.jsonl"))
+        .unwrap_or_else(|why| panic!("fixture journal: {why}"));
+    writeln!(events, "{event}").unwrap_or_else(|why| panic!("fixture spawn record: {why}"));
+    (rig, pane)
+}
+
+fn limitstop_candidate_hold(rig: &Rig) -> Vec<Event> {
+    records(rig)
+        .into_iter()
+        .filter(|event| event.action == HELD_ACTION && event.target.as_deref() == Some("scout"))
+        .collect()
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one episode pins the hold, recipient route, restart and configuration recovery"
+)]
+fn limitstop_an_unmapped_limit_has_one_hold_and_one_notice_then_a_map_still_moves_it() {
+    let (rig, pane) = limitstop_no_candidate("limitstopunmapped");
+    // Fixed observation time covers multiple daemon cycles even on the old
+    // code, where no hold appears. A missing record fails an assertion.
+    let started = Instant::now();
+    assert!(
+        watch_until(&rig, || {
+            started.elapsed() >= Duration::from_secs(6)
+                && (limitstop_candidate_hold(&rig).is_empty()
+                    || records(&rig)
+                        .iter()
+                        .filter(|event| event.action == "auto-reseat-notice")
+                        .count()
+                        == 3)
+        }),
+        "the hold and its recipient deliveries must complete: {}\n{}",
+        rig.events(),
+        daemon_err(&rig)
+    );
+    let held = limitstop_candidate_hold(&rig);
+    assert_eq!(
+        held.len(),
+        1,
+        "a due unmapped limit must be explained once: {}",
+        rig.events()
+    );
+    assert!(
+        held[0]
+            .summary
+            .as_deref()
+            .is_some_and(|line| line.contains("candidate") || line.contains("[auto_reseat]")),
+        "named no-candidate reason: {held:?}"
+    );
+    let limits: Vec<_> = records(&rig)
+        .into_iter()
+        .filter(|event| event.action == "limit" && event.target.as_deref() == Some("scout"))
+        .collect();
+    assert_eq!(
+        held[0].reference.as_deref(),
+        Some(limits[0].ts.to_string().as_str()),
+        "held belongs to this episode"
+    );
+    assert!(rig.tool_pid(&pane, "muse").is_some(), "held tool remains");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-muse");
+    let notices = said(&rig);
+    assert_eq!(
+        notices.len(),
+        1,
+        "one human notice per episode: {notices:?}"
+    );
+    let notice = notices[0].summary.as_deref().unwrap_or_default();
+    assert!(
+        notice.contains("fake-muse") && notice.contains("[auto_reseat]"),
+        "notice says which row to add: {notice}"
+    );
+    assert!(
+        notice.contains(&format!("ae reseat {} scout --using", rig.session)),
+        "manual move is actionable: {notice}"
+    );
+    let targets: Vec<_> = records(&rig)
+        .into_iter()
+        .filter(|event| event.action == "auto-reseat-notice")
+        .map(|event| event.target.unwrap_or_default())
+        .collect();
+    assert_eq!(
+        targets,
+        ["lead", "colead", "spawner"],
+        "same recipient route as refusal, without scout"
+    );
+    // Each watch_until starts a fresh daemon; OwnedChild drop kills and waits
+    // the preceding daemon. A restart must not repeat the same hold or notice; a held episode
+    // remains open so an operator's new row is tried immediately.
+    let restarted = Instant::now();
+    assert!(watch_until(&rig, || restarted.elapsed() >= Duration::from_secs(4)));
+    assert_eq!(limitstop_candidate_hold(&rig).len(), 1, "restart dedupes");
+    assert_eq!(said(&rig).len(), 1, "restart does not retell");
+    configure_from(&rig, ON_NOW, "fake-muse", "fake-opencode");
+    assert!(
+        watch_until(&rig, || booked(&rig, DONE_ACTION) == 1),
+        "new mapping must recover a held episode: {}\n{}",
+        rig.events(),
+        daemon_err(&rig)
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "muse").is_none(), "old tool stopped");
+    assert!(
+        rig.tool_pid(&pane, "opencode").is_some(),
+        "replacement running"
+    );
+    assert_eq!(
+        booked(&rig, REFUSED_ACTION),
+        0,
+        "no terminal refusal blocks recovery"
+    );
+}
+
+#[test]
+fn limitstop_operator_ineligible_unmapped_limits_stay_silent() {
+    for (tag, switch) in [
+        ("limitstopoff", "off"),
+        (
+            "limitstopnotlisted",
+            "all\nauto_reseat_sessions = elsewhere",
+        ),
+    ] {
+        let (rig, pane) = limitstop_no_candidate(tag);
+        configure_from(&rig, switch, "fake-grok", "fake-opencode");
+        let started = Instant::now();
+        assert!(
+            watch_until(&rig, || {
+                booked(&rig, "limit") == 1 && started.elapsed() >= Duration::from_secs(4)
+            }),
+            "limit is latched: {}",
+            rig.events()
+        );
+        assert!(
+            limitstop_candidate_hold(&rig).is_empty(),
+            "operator choice stays silent: {}",
+            rig.events()
+        );
+        assert!(said(&rig).is_empty(), "no human notice: {}", rig.events());
+        assert!(rig.tool_pid(&pane, "muse").is_some(), "same seat remains");
+    }
+}
+
+#[test]
+fn limitstop_an_unmapped_second_episode_gets_a_fresh_hold_and_notice() {
+    let (rig, pane) = limitstop_no_candidate("limitstoprearm");
+    let phase = std::cell::Cell::new(0);
+    let started = Instant::now();
+    // Keep ONE daemon observing limit, actual relief, then the second limit:
+    // restarting between relief and its read would discard its capture latch.
+    assert!(
+        watch_until(&rig, || {
+            let held = limitstop_candidate_hold(&rig).len();
+            let notices = records(&rig)
+                .iter()
+                .filter(|event| event.action == "auto-reseat-notice")
+                .count();
+            if phase.get() == 0 && held == 1 && said(&rig).len() == 1 && notices == 3 {
+                assert!(std::fs::write(rig.scratch.join("limitstop-clear"), "").is_ok());
+                phase.set(1);
+            } else if phase.get() == 1 && booked(&rig, "alert-cleared") == 1 {
+                assert!(std::fs::remove_file(rig.scratch.join("limitstop-clear")).is_ok());
+                phase.set(2);
+            }
+            started.elapsed() >= Duration::from_secs(6)
+                && (held == 0
+                    || (phase.get() == 2 && held == 2 && said(&rig).len() == 2 && notices == 6))
+        }),
+        "two episodes complete: {}",
+        rig.events()
+    );
+    let held = limitstop_candidate_hold(&rig);
+    assert_eq!(
+        held.len(),
+        2,
+        "fresh hold after observed relief: {}",
+        rig.events()
+    );
+    assert_eq!(said(&rig).len(), 2, "fresh human notice per episode");
+    assert_eq!(
+        booked(&rig, "alert-cleared"),
+        1,
+        "actual relief was observed"
+    );
+    assert_ne!(held[0].reference, held[1].reference, "fresh episode key");
+    assert!(
+        rig.tool_pid(&pane, "muse").is_some(),
+        "held process remains"
+    );
+}

@@ -606,6 +606,43 @@ fn pane_back_at_shell(probe: &ObservedPaneProbe, table: Option<&[procs::Proc]>) 
         && table.is_some_and(|table| !procs::has_any_descendant(table, probe.pid))
 }
 
+/// How long a respawned shell must read idle, unbroken, before the dead proof.
+const STOP_SETTLE: Duration = Duration::from_secs(1);
+
+/// The index of the reading that completes [`STOP_SETTLE`] of unbroken quiet
+/// since the respawn, or `None`: a fresh shell reads idle before its startup
+/// hooks spawn, so any unclean reading, a failed probe included, restarts it.
+/// Named residual: a child later than the window still races the dead proof.
+fn settled(readings: impl IntoIterator<Item = (Duration, bool)>) -> Option<usize> {
+    let mut since = None;
+    for (at, (elapsed, back)) in readings.into_iter().enumerate() {
+        if !back {
+            since = None;
+            continue;
+        }
+        let first = *since.get_or_insert(elapsed);
+        if elapsed.saturating_sub(first) >= STOP_SETTLE {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// The post-stop wait: at most [`STOP_POLLS`] of `tick` (pause, then time since
+/// the respawn) and `read` (probe and table, `None` if it failed), [`settled`].
+fn wait_back_at_shell(
+    mut tick: impl FnMut() -> Duration,
+    mut read: impl FnMut() -> Option<(ObservedPaneProbe, Option<Vec<procs::Proc>>)>,
+) -> bool {
+    settled((0..STOP_POLLS).map(|_| {
+        let at = tick();
+        let back =
+            read().is_some_and(|(probe, table)| pane_back_at_shell(&probe, table.as_deref()));
+        (at, back)
+    }))
+    .is_some()
+}
+
 /// What a timed-out stop SAYS, from the last reading it could take.
 ///
 /// The two cases need different advice and conflating them wastes a human's
@@ -641,9 +678,24 @@ fn stop_timeout_advice(probe: Option<&ObservedPaneProbe>) -> (String, &'static s
 /// EMPTY box is the frame grammar's own recognition: it reads a frame only
 /// when the prompt row holds nothing, so a draft reads no frame at all. A
 /// tool with neither grammar proves nothing.
+///
+/// The row must be CURRENT: an unknown verdict proves the limit only when the
+/// nearest row above the box is that cell, never a limit left in the transcript,
+/// or claude 2.1.296's own row for a limit wait the human cancelled (measured).
 fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
-    crate::watchdog::limit_notice(capture, agent_bin).is_some()
-        && crate::harness_state::read_frame(capture, tool).is_some()
+    let (Some(rows), Some(frame)) = (
+        crate::watchdog::limit_rows(capture, agent_bin),
+        crate::harness_state::read_frame(capture, tool),
+    ) else {
+        return false;
+    };
+    frame.state != HarnessState::Unknown
+        || frame.current.is_some_and(|current| {
+            tool.limit_wait_cancelled(&current)
+                || rows
+                    .iter()
+                    .any(|row| row.trim().replace('\u{a0}', " ") == current)
+        })
 }
 
 /// The seat's current harness frame, fail-closed, and whether that SAME
@@ -695,9 +747,10 @@ fn stop_running_tool(
     dir: &Path,
     target: &Target,
     bytes: &[u8],
-    policy: StopPolicy,
+    parsed: &Parsed,
     err: &mut impl Write,
 ) -> io::Result<Stop> {
+    let policy = parsed.stop;
     let agent_bin = crate::deliver::recorded_binary(dir, &target.slot);
     // IS IT RUNNING? Read the way the dead proof reads it, from ONE probe and
     // ONE process-table snapshot. A seat with no recorded tool, or a pane that
@@ -808,11 +861,25 @@ fn stop_running_tool(
         return Ok(Stop::Refused { transient: true });
     }
     if !may_stop((first, first_limited), (second, second_limited), policy) {
+        // The next step FIRST, with its precondition: a record keeps only the
+        // line's head, and `--stop-unknown` is safe only on what a human sees.
+        let limited = transport::capture_pane(&target.server, &target.pane)
+            .is_some_and(|capture| crate::watchdog::limit_notice(&capture, &agent_bin).is_some());
         writeln!(
             err,
-            "Error: ae cannot read '{}'s frame in pane {} of '{}', so it cannot tell a running \
-             turn from an idle box — pass --stop-unknown to stop it anyway. Nothing was reseated.",
-            agent_bin, target.pane, target.agent
+            "Error: once its box is empty and {}, run: ae reseat {} {} --using {} --stop-unknown \
+             — ae cannot read '{}'s frame in pane {}, so it cannot tell a running turn from an \
+             idle box. Nothing was reseated.",
+            if limited {
+                "the limit line is its newest row"
+            } else {
+                "no turn runs"
+            },
+            parsed.session,
+            target.agent,
+            parsed.profile,
+            agent_bin,
+            target.pane
         )?;
         return Ok(Stop::Refused { transient: false });
     }
@@ -836,14 +903,17 @@ fn stop_running_tool(
         )?;
         return Ok(Stop::Failed);
     }
-    for _ in 0..STOP_POLLS {
+    let respawned_at = std::time::Instant::now();
+    let tick = || {
         std::thread::sleep(STOP_POLL);
-        let Some(probe) = transport::observe_pane_probe(&target.server, &target.pane) else {
-            continue;
-        };
-        if pane_back_at_shell(&probe, procs::snapshot().as_deref()) {
-            return Ok(Stop::Stopped(agent_bin));
-        }
+        respawned_at.elapsed()
+    };
+    let read = || {
+        transport::observe_pane_probe(&target.server, &target.pane)
+            .map(|probe| (probe, procs::snapshot()))
+    };
+    if wait_back_at_shell(tick, read) {
+        return Ok(Stop::Stopped(agent_bin));
     }
     // PAST THE KILL and still not idle: say what holds the pane, because this
     // is the one refusal where the seat's tool has already been stopped. The
@@ -1144,7 +1214,7 @@ fn run_parsed(
         )?;
     }
     // THE STOP, before the dead proof and before anything durable is written.
-    let stopped = match stop_running_tool(&dir, &target, &locked, parsed.stop, err)? {
+    let stopped = match stop_running_tool(&dir, &target, &locked, parsed, err)? {
         Stop::Refused { transient } => return Ok(Ended::Refused { transient }),
         Stop::Failed => return Ok(Ended::Failed),
         // The record goes in only once the pane is PROVEN back at its shell:
@@ -2206,5 +2276,274 @@ mod tests {
                 "{first:?} then {second:?} under --stop-unknown"
             );
         }
+    }
+
+    /// The measured real frame must justify the limit stop on BOTH captures.
+    /// One limited frame beside an unreadable, unproven frame cannot do so.
+    #[test]
+    fn limitstop_the_real_limit_requires_two_proven_captures() {
+        const REAL: &str =
+            include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+        let limited = (
+            crate::harness_state::classify(REAL, super::ToolKind::Claude),
+            super::limit_proven(REAL, "claude", super::ToolKind::Claude),
+        );
+        let unread = (super::HarnessState::Unknown, false);
+        assert!(
+            super::may_stop(limited, limited, super::StopPolicy::Proven),
+            "two real terminal usage-limit captures must authorize the proven stop"
+        );
+        assert!(
+            !super::may_stop(limited, unread, super::StopPolicy::Proven),
+            "a limit only in the first read must refuse"
+        );
+        assert!(
+            !super::may_stop(unread, limited, super::StopPolicy::Proven),
+            "a limit only in the second read must refuse"
+        );
+    }
+
+    #[test]
+    fn limitstop_measured_cancelled_continue_is_finished_only_when_current() {
+        const CANCELLED: &str = include_str!(
+            "../tests/fixtures/harness-state/claude-limit-cancelled-2.1.296-180x50.txt"
+        );
+        let current = (
+            crate::harness_state::classify(CANCELLED, super::ToolKind::Claude),
+            super::limit_proven(CANCELLED, "claude", super::ToolKind::Claude),
+        );
+        assert!(
+            super::may_stop(current, current, super::StopPolicy::Proven),
+            "measured cancelled continuation with an empty box is a finished limit on both reads"
+        );
+        let historical = CANCELLED.replace(
+            "⏺ Automatic continue cancelled · /rate-limit-options to re-arm",
+            "⏺ Automatic continue cancelled · /rate-limit-options to re-arm\n\n⏺ Running a tool after the earlier limit",
+        );
+        assert_eq!(
+            crate::harness_state::classify(&historical, super::ToolKind::Claude),
+            super::HarnessState::Unknown,
+            "newest current row is unproven"
+        );
+        assert!(
+            crate::watchdog::limit_notice(&historical, "claude").is_some(),
+            "limit still visible"
+        );
+        let active = (
+            super::HarnessState::Unknown,
+            super::limit_proven(&historical, "claude", super::ToolKind::Claude),
+        );
+        assert!(
+            !super::may_stop(active, active, super::StopPolicy::Proven),
+            "a historical cancelled row above an unproven current turn cannot authorize stopping"
+        );
+        assert!(
+            !super::may_stop(current, active, super::StopPolicy::Proven),
+            "both reads must prove finished"
+        );
+        assert!(
+            !super::may_stop(active, current, super::StopPolicy::Proven),
+            "second read cannot repair the first"
+        );
+    }
+
+    fn limitstop_shell_probe(
+        clean: bool,
+    ) -> (
+        crate::tmux::ObservedPaneProbe,
+        Option<Vec<crate::procs::Proc>>,
+    ) {
+        use crate::procs::Proc;
+        let mut table = vec![Proc {
+            pid: 10,
+            ppid: 1,
+            comm: "fish".to_owned(),
+        }];
+        if !clean {
+            table.push(Proc {
+                pid: 20,
+                ppid: 10,
+                comm: "startup-hook".to_owned(),
+            });
+        }
+        (
+            crate::tmux::ObservedPaneProbe {
+                command: "fish".to_owned(),
+                pid: Some(10),
+            },
+            Some(table),
+        )
+    }
+
+    /// The production wait consumes actual probes/tables through its source,
+    /// with a deterministic clock. `None` is a FAILED pane probe, not a child.
+    fn limitstop_wait(points: &[(u64, Option<bool>)]) -> (bool, usize, usize) {
+        let ticks = std::cell::Cell::new(0);
+        let reads = std::cell::Cell::new(0);
+        let complete = super::wait_back_at_shell(
+            || {
+                let at = ticks.get();
+                assert!(
+                    at < 50,
+                    "production wait must stop before a fifty-first poll"
+                );
+                ticks.set(at + 1);
+                std::time::Duration::from_millis(points.get(at).map_or(10_000, |point| point.0))
+            },
+            || {
+                let at = reads.get();
+                reads.set(at + 1);
+                points
+                    .get(at)
+                    .and_then(|point| point.1)
+                    .map(limitstop_shell_probe)
+            },
+        );
+        (complete, ticks.get(), reads.get())
+    }
+
+    #[test]
+    fn limitstop_production_wait_resets_after_a_failed_probe() {
+        let points = [
+            (200, Some(true)),
+            (400, None),
+            (600, Some(true)),
+            (800, Some(true)),
+            (1000, Some(true)),
+            (1200, Some(true)),
+            (1400, Some(true)),
+            (1600, Some(true)),
+        ];
+        assert_eq!(
+            limitstop_wait(&points),
+            (true, 8, 8),
+            "failed probe breaks quiet; production wait consumes one second after fresh clean probe"
+        );
+    }
+
+    #[test]
+    fn limitstop_production_wait_is_bounded_and_does_not_take_the_first_clean_probe() {
+        let points: Vec<_> = (1..=super::STOP_POLLS)
+            .map(|poll| (u64::from(poll) * 200, Some(poll == 1)))
+            .collect();
+        assert_eq!(
+            limitstop_wait(&points),
+            (false, 50, 50),
+            "production wait refuses at its ten-second bound despite an early clean poll"
+        );
+        assert_eq!(points.last().map(|point| point.0), Some(10_000));
+    }
+
+    #[test]
+    fn limitstop_timeout_advice_keeps_the_other_two_branches() {
+        let missing = super::stop_timeout_advice(None);
+        assert_eq!(missing.0, "the pane stopped answering");
+        assert_eq!(missing.1, "look at the pane before trying again.");
+        let (mut probe, _) = limitstop_shell_probe(true);
+        probe.command = "worker".to_owned();
+        let running = super::stop_timeout_advice(Some(&probe));
+        assert_eq!(running.0, "'worker' holds its foreground");
+        assert_eq!(
+            running.1,
+            "look at the pane: the respawn did not leave a shell, so re-running will not help."
+        );
+    }
+
+    /// Deterministic process-table readings, not sleeps or mocked stop results.
+    /// A false item presents a real descendant beneath the fresh fish shell.
+    fn limitstop_shell_readings(points: &[(u64, bool)]) -> Vec<(std::time::Duration, bool)> {
+        use crate::procs::Proc;
+        let probe = crate::tmux::ObservedPaneProbe {
+            command: "fish".to_owned(),
+            pid: Some(10),
+        };
+        points
+            .iter()
+            .map(|&(millis, clean)| {
+                let mut table = vec![Proc {
+                    pid: 10,
+                    ppid: 1,
+                    comm: "fish".to_owned(),
+                }];
+                if !clean {
+                    table.push(Proc {
+                        pid: 20,
+                        ppid: 10,
+                        comm: "startup-hook".to_owned(),
+                    });
+                }
+                (
+                    std::time::Duration::from_millis(millis),
+                    super::pane_back_at_shell(&probe, Some(&table)),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn limitstop_a_child_at_the_fourth_probe_resets_the_quiet_window() {
+        let readings = limitstop_shell_readings(&[
+            (0, true),
+            (200, true),
+            (400, true),
+            (600, false),
+            (800, true),
+            (1000, true),
+            (1200, true),
+            (1400, true),
+            (1600, true),
+            (1800, true),
+        ]);
+        assert_eq!(
+            super::settled(readings),
+            Some(9),
+            "a startup child at probe four resets quiet; settle only one second after it disappears"
+        );
+    }
+
+    #[test]
+    fn limitstop_quiet_time_is_measured_from_the_first_clean_probe() {
+        assert_eq!(
+            super::settled(limitstop_shell_readings(&[(0, true), (999, true)])),
+            None,
+            "999 milliseconds of observed quiet cannot settle the shell"
+        );
+    }
+
+    #[test]
+    fn limitstop_exactly_one_second_of_observed_quiet_settles() {
+        assert_eq!(
+            super::settled(limitstop_shell_readings(&[
+                (0, true),
+                (999, true),
+                (1000, true)
+            ])),
+            Some(2),
+            "exactly one second of uninterrupted quiet settles the shell"
+        );
+    }
+
+    #[test]
+    fn limitstop_bound_exhaustion_with_a_startup_child_cannot_settle() {
+        let points: Vec<_> = (1..=super::STOP_POLLS)
+            .map(|poll| (u64::from(poll) * 200, poll == 1))
+            .collect();
+        assert_eq!(
+            super::settled(limitstop_shell_readings(&points)),
+            None,
+            "the ten-second bound ends without success when startup never becomes quiet"
+        );
+        let probe = crate::tmux::ObservedPaneProbe {
+            command: "fish".to_owned(),
+            pid: Some(10),
+        };
+        assert_eq!(
+            super::stop_timeout_advice(Some(&probe)),
+            (
+                "its shell is back but something still runs under it".to_owned(),
+                "re-run the reseat once that finishes."
+            ),
+            "a timeout keeps the existing actionable refusal"
+        );
     }
 }
