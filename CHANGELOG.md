@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.67] - 2026-10-13
+- The inert phase 1 model for quota-driven effort step-down
+- Frozen phase 2 resume acceptance tests
+- Phase 2 resume replays, refuses or drops a recorded effort move
+- Draw composer address without the not-home suffix
+
 ## [v2026.10.66] - 2026-10-13
 - Fix drifted docs: app module map, theme writers, quota header
 - Feed Claude quota from the statusline
