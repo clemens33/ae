@@ -6218,7 +6218,7 @@ fn a_right_click_offers_stop_and_only_a_confirmed_row_stops_the_clicked_session(
     );
     let events = events_of(&root.join("sessions").join("menu-clicked"));
     assert!(
-        events.contains("stop confirmed on the session menu by client"),
+        events.contains("stop confirmed by client"),
         "the human's confirmation is recorded with its provenance: {events}"
     );
 }
@@ -6313,7 +6313,7 @@ fn confirming_the_session_you_are_viewing_still_completes_out_of_pane() {
     );
     let events = events_of(&root.join("sessions").join("self-stopped"));
     assert!(
-        events.contains("stop confirmed on the session menu by client"),
+        events.contains("stop confirmed by client"),
         "the provenance survives the pane that asked: {events}"
     );
 }
@@ -8784,8 +8784,8 @@ fn cell_clipping_runs_through_the_one_cutter() {
         "a second clipper appeared"
     );
     assert_eq!(defs, 1, "the cutter is defined more than once");
-    // The prose projector over the same cutter: one definition, four callers —
-    // the nudge body, `ae app`'s drawn rows, the `requests` excerpts, and the
+    // The prose projector over the same cutter: one definition, five callers —
+    // the nudge body, app rows and menu/question labels, `requests` excerpts, and the
     // quota view's scope heads and elided names, which clip through it rather
     // than beside it.
     let head_needle = ["clip", "_head("].concat();
@@ -8811,6 +8811,7 @@ fn cell_clipping_runs_through_the_one_cutter() {
         [
             "draw.rs".to_owned(),
             "event_text.rs".to_owned(),
+            "menu.rs".to_owned(),
             "requests.rs".to_owned(),
             "view.rs".to_owned(),
             "watchdog_daemon.rs".to_owned(),

@@ -140,6 +140,9 @@ pub(super) struct FleetRead {
     pub(super) dirs: BTreeMap<String, PathBuf>,
     /// Each session's recorded `session_id`, canonical or empty.
     pub(super) ids: BTreeMap<String, String>,
+    /// The `ids` its raw meta names exactly once, in this same read: the only
+    /// identity a session menu may act on.
+    pub(super) sole: BTreeMap<String, String>,
     pub(super) world: World,
     pub(super) facts: BTreeMap<String, fleet::Facts>,
     pub(super) needs: BTreeMap<String, Section>,
@@ -711,7 +714,7 @@ impl Reader {
             .collect();
         let fleet = fleet::rows(&world, &facts, &last_live, order, &needs, home, now);
         // Each identity and its lead pair from one console, so they agree.
-        let (ids, pairs) = dirs
+        let (ids, pairs): (BTreeMap<String, String>, _) = dirs
             .iter()
             .map(|(name, dir)| {
                 let console = Console::open(name.clone(), dir.clone());
@@ -720,9 +723,16 @@ impl Reader {
                 ((name.clone(), id), (name.clone(), pair))
             })
             .unzip();
+        let sole = (ids.iter())
+            .filter_map(|(name, id)| {
+                let one = sole_uuid(dirs.get(name)?)?;
+                (one == *id).then(|| (name.clone(), one))
+            })
+            .collect();
         FleetRead {
             dirs,
             ids,
+            sole,
             world,
             facts,
             needs,
@@ -998,6 +1008,15 @@ pub(super) fn reading(console: &Console, seats: &[Seat]) -> Reading {
         Ok(()) => Reading::Owner,
         Err(why) => Reading::NotOwner(why),
     }
+}
+
+/// The canonical `session_id` the raw meta in `dir` names exactly once, as
+/// it reads now; `None` for a doubled, absent or unreadable row.
+pub(super) fn sole_uuid(dir: &Path) -> Option<String> {
+    let bytes = crate::meta::read_bytes(dir).ok()?;
+    let one = crate::meta::sole_value(&bytes, "session_id")?;
+    let one = crate::archive::canonical_uuid(&String::from_utf8_lossy(one));
+    (!one.is_empty()).then_some(one)
 }
 
 #[cfg(test)]

@@ -510,8 +510,10 @@ impl StopExpectation {
                 "'{name}' no longer proves the orchestrator role"
             ));
         }
-        let uuid = crate::archive::canonical_uuid(&meta_value(&bytes, "session_id"));
-        if uuid != self.uuid {
+        // EXACTLY ONE row: a doubled identity does not say which was confirmed.
+        let uuid = meta::sole_value(&bytes, "session_id")
+            .map(|value| crate::archive::canonical_uuid(&String::from_utf8_lossy(value)));
+        if uuid.as_deref() != Some(self.uuid.as_str()) {
             return ExpectCheck::Refused(format!(
                 "the state directory of '{name}' was replaced since it was confirmed"
             ));
@@ -1692,10 +1694,7 @@ fn stop_one(
                     &dir,
                     name,
                     STOP_REQUEST_ACTION,
-                    &format!(
-                        "stop confirmed on the session menu by client {} ({id})",
-                        expect.client
-                    ),
+                    &format!("stop confirmed by client {} ({id})", expect.client),
                 );
                 Some((server, id))
             }

@@ -91,6 +91,7 @@ SGR mouse reports and legacy X10 payloads. Whole and split reads must yield the
 same keys and origin stamps after adjacent literal runs are joined and idle
 sequences expire. The chat decoder is checked to emit no mouse keys. Tracked
 seeds cover clicks, both wheel directions, a left press dragged and released,
+a plain right press (the session menu) beside its dropped release and modified twin,
 releases and left motion among modified and other-button reports that stay
 dropped, X10 with an ESC payload byte, and an oversized report followed by a
 valid click.

@@ -27,6 +27,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ae::console::input::{ESC_IDLE, Key, Keys, Mouse, MouseKind};
+#[path = "app_menu_input_spec.rs"]
+mod decoder;
 
 // ---------------------------------------------------------------------------
 // decoder: SGR through the public app decoder
@@ -77,9 +79,9 @@ fn sgr_wheel_reports_direction() {
 }
 
 /// appresize ruling 3 supersedes the old release drop: unmodified left
-/// release is admitted; other buttons still vanish, then a click decodes.
+/// release is admitted; unsupported reports vanish, then a click decodes.
 #[test]
-fn sgr_release_admitted_and_other_buttons_dropped_then_click() {
+fn sgr_release_admitted_and_unsupported_reports_dropped_then_click() {
     assert_eq!(
         feed(&mut Keys::app(), b"\x1b[<0;5;5m\x1b[<0;9;9M"),
         [
@@ -90,7 +92,6 @@ fn sgr_release_admitted_and_other_buttons_dropped_then_click() {
     for dropped in [
         b"\x1b[<3;5;5m".as_slice(),
         b"\x1b[<1;5;5M".as_slice(),
-        b"\x1b[<2;5;5M".as_slice(),
         b"\x1b[<64;5;5m".as_slice(),
     ] {
         let mut app = Keys::app();

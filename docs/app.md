@@ -140,6 +140,7 @@ Browsing:
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
+| `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | `v` | peek at the highlighted seat's screen, read-only ([Peeking at an agent](#peeking-at-an-agent)) |
 | `n` / `p` | highlight the next / previous seat the body shows |
 | `PgUp` / `PgDn` | scroll the chat a page |
@@ -272,6 +273,34 @@ window selection (tmux session state, as the fleet picker does). The client
 list is read last, right before the move; a client that detaches in that
 instant makes the move fail with `uncertain`. The cursor steps only through the
 rows drawn.
+
+## Session menu
+
+While browsing, `m` opens a menu on the selected session's card; a right press
+opens it on the card under the pointer, also while writing or held; the draft
+or the held reason is still there when it closes. It offers `Open` and `Stop…`
+(`Stop...` with `icons = off`), and on the orchestrator `Open` only. `o`, `s` or
+a click acts, `↑` / `↓` and `Enter` choose, and `Esc`, `^C`, `m`, a right press
+or a press outside close it. Opening it selects nothing.
+
+The menu acts on the card as that frame drew it. A card that is stopped, in an
+unknown state, on another tmux server, or whose record names no single
+`session_id` shows why in the menu, and both items refuse with that reason. A
+record that no longer names the session the menu was drawn from refuses too.
+
+`Open` is `oo` on the session's main seat. `Stop…` asks first. The question
+says what a stop does and, on the app's own session, that this app closes;
+`Cancel` is focused. `s` / `c`, `←` / `→` or `Tab` move the focus, `Enter`
+presses it, `y` stops and `n`, `q` or `Esc` cancels. The answer is proven again
+against what the question captured: its deadline, the session's record and
+the client you asked from. The stop is then handed to the same guarded owner
+the tmux session menu's Stop uses, which proves the tmux session, its server
+and that client again under its lock. `Stopping '<name>'.` means it was handed
+over, not that it finished.
+
+A menu or question takes only input made after a frame showing it was written:
+a key typed before then is dropped and the hint row says to press again. One
+that does not fit the window closes, and the hint row says so.
 
 ## Peeking at an agent
 
@@ -595,6 +624,9 @@ not know the argument.
 - Dragged sizes are not remembered when the app quits.
 - A copy is the whole recorded body for transcript turns, an admitted answer, an ask whose stored text was read and a short `say` line. An ask whose text could not be read, a bridge message, a not-delivered line and a card or needs-you line copy the journal's summary (line breaks flattened, 600 characters), a `say` of 3500 characters or more its capped summary, a bridge reply nothing (the record keeps no body) and an unadmitted reply stays a preview; the hint row says `preview only` for each. An answer whose body could not be read copies its summary with the reason.
 - A turn is named by a 64-bit fingerprint of its record, so two identical records mark together. `[` / `]` stop at the oldest row the last frame produced; a second press after the next frame goes on. tmux keeps 50 buffers by default, so the 51st copy drops the oldest.
+- A Stop answered in the app is checked against the tmux session id the menu
+  was drawn with only by the stop's own owner, after the app already said
+  `Stopping '<name>'.`; a refusal then shows on the asking client's status line.
 - The unread cue is memory in the running app: a restart shows no marks, and a session met for the first time is shown as already seen. A session absent from one fleet read loses its mark and is seen afresh when it returns. A mark needs an answer strictly newer than the last moment the app showed that session selected, whole seconds, so an answer in the second you left it is not marked. It appears with the next fleet read (up to 5 s).
 - The holder named in a writer refusal is the place the holding app's pane had when it took the lease (`<session>:<window index>`, as tmux answered), not a liveness proof: a crashed app leaves its record behind, so a refusal that meets it can name a place that has let go, and a window renumbered since is named by its old index. A holder outside tmux, one tmux did not answer for, one whose session name is not an ae session name, the owner chat's probe and an app of an older core leave no record: the refusal says `holder unknown`, as it does for a record cut short by an app still writing it.
 - The refusal row is one line, clipped from the right: a chat column narrower than `not writing: an ae app is writing to <session> (held at <session>:<window>) · Esc browses` loses `Esc browses` first. `Esc` still browses.

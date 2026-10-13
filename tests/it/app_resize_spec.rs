@@ -65,13 +65,13 @@ fn drag_and_release_survive_every_read_boundary_and_keep_origin() {
     }
 }
 
-/// Exhaustive SGR button-byte table: modifiers, non-left motion, any-motion,
-/// other buttons and non-left releases remain dropped; next click survives.
+/// Exhaustive SGR table: plain left/right presses, left drag/release and wheels
+/// are admitted; modifiers, other motion/buttons/releases drop whole.
 #[test]
-fn only_the_five_unmodified_sgr_reports_are_admitted() {
+fn only_the_six_unmodified_sgr_reports_are_admitted() {
     for code in 0..=127 {
         for suffix in ['M', 'm'] {
-            let allowed = matches!((code, suffix), (0 | 32 | 64 | 65, 'M') | (0, 'm'));
+            let allowed = matches!((code, suffix), (0 | 2 | 32 | 64 | 65, 'M') | (0, 'm'));
             if allowed {
                 continue;
             }

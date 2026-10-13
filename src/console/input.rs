@@ -49,6 +49,8 @@ pub enum MouseKind {
     Drag,
     /// The left button let go.
     Release,
+    /// An unmodified right press: the session menu. Its release is dropped.
+    Menu,
 }
 
 /// One key, as the composer takes it.
@@ -279,7 +281,7 @@ impl Keys {
 }
 
 /// The only SGR reports the app admits: unmodified left press, motion while
-/// held and release, and vertical wheel.
+/// held and release, unmodified right press, and vertical wheel.
 fn mouse(seq: &[u8]) -> Option<Key> {
     let (last, body) = seq.strip_prefix(b"\x1b[<")?.split_last()?;
     let body = std::str::from_utf8(body).ok()?;
@@ -293,6 +295,7 @@ fn mouse(seq: &[u8]) -> Option<Key> {
         (0, b'M') => MouseKind::Click,
         (32, b'M') => MouseKind::Drag,
         (0, b'm') => MouseKind::Release,
+        (2, b'M') => MouseKind::Menu,
         (64, b'M') => MouseKind::WheelUp,
         (65, b'M') => MouseKind::WheelDown,
         _ => return None,

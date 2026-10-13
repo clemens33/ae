@@ -57,6 +57,7 @@ mod lane;
 #[cfg(test)]
 mod lane_spec;
 mod loader;
+mod menu;
 pub mod model;
 #[cfg(test)]
 mod order_spec;
@@ -299,6 +300,8 @@ struct App {
     world: World,
     dirs: BTreeMap<String, PathBuf>,
     ids: BTreeMap<String, String>,
+    /// The `ids` the last fleet read found named exactly once.
+    sole: BTreeMap<String, String>,
     facts: BTreeMap<String, fleet::Facts>,
     needs: BTreeMap<String, Section>,
     /// Each session's lead pair as the last fleet read found it.
@@ -416,6 +419,13 @@ struct App {
     clip: Option<String>,
     /// The newest read of each kind, kept back while a drag holds the screen.
     parked: Vec<Answer>,
+    /// The open session menu or Stop question: it takes every key first.
+    modal: Option<menu::Modal>,
+    /// Every key read at or before this was spent on a modal: dropped, never
+    /// replayed into the mode under it.
+    cut: Option<Instant>,
+    /// The state root a Stop is handed under; `None` for an app driven by hand.
+    root: Option<PathBuf>,
     /// When each session was last shown selected: the unread cue's memory.
     cue: cue::Cue,
 }
@@ -440,6 +450,7 @@ impl App {
             world: World::new(Timestamp::now(), Vec::new()),
             dirs: BTreeMap::new(),
             ids: BTreeMap::new(),
+            sole: BTreeMap::new(),
             facts: BTreeMap::new(),
             needs: BTreeMap::new(),
             pairs: BTreeMap::new(),
@@ -498,6 +509,9 @@ impl App {
             early_named: false,
             clip: None,
             parked: Vec::new(),
+            modal: None,
+            cut: None,
+            root: None,
             cue: cue::Cue::default(),
         }
     }
@@ -684,6 +698,7 @@ impl App {
             }
             MouseKind::Drag => self.stretch(mouse),
             MouseKind::Release => self.finish(mouse),
+            MouseKind::Menu => false,
         }
     }
 
@@ -762,6 +777,7 @@ impl App {
         });
         self.dirs = read.dirs;
         self.ids = read.ids;
+        self.sole = read.sole;
         self.world = read.world;
         self.facts = read.facts;
         self.needs = read.needs;
@@ -1469,7 +1485,7 @@ impl App {
             !self.deferred.is_empty(),
             self.composing(),
             self.held.is_some(),
-            self.model.settings_open() || self.model.peek_open(),
+            self.model.settings_open() || self.model.peek_open() || self.modal.is_some(),
             self.model.turn().is_some(),
             self.armed.is_some(),
             self.last_input,
@@ -1508,6 +1524,7 @@ impl App {
             return false;
         };
         matches!(mouse.kind, MouseKind::WheelUp | MouseKind::WheelDown)
+            && self.modal.is_none()
             && self.layout.in_chat(*mouse)
             && !self.layout.complete
             && self.model.wheel_passes(
@@ -1522,7 +1539,11 @@ impl App {
     /// so an ask in flight or a read since cannot move its target. A held wheel
     /// notch keeps replaying against the newest frame, which bounds it. One
     /// made on a frame the bound dropped is not taken, and the hint row says so.
+    /// A right press opens the menu on the card its frame drew there.
     fn mouse_made(&mut self, mouse: Mouse, origin: Instant) -> bool {
+        if mouse.kind == MouseKind::Menu && !self.model.settings_open() && !self.model.peek_open() {
+            return self.menu_press(mouse, origin);
+        }
         // Every press ends a selection first, a stale or refused one too: no
         // frame is kept to aim a drag at.
         let cleared = mouse.kind == MouseKind::Click && self.unselect();
@@ -1606,7 +1627,7 @@ impl App {
                 moved || ended
             }
             MouseKind::Release => self.finish(mouse) || ended,
-            MouseKind::Drag => ended,
+            MouseKind::Drag | MouseKind::Menu => ended,
         }
     }
 
@@ -1633,7 +1654,7 @@ impl App {
                 }
                 _ => false,
             },
-            MouseKind::Drag | MouseKind::Release => false,
+            MouseKind::Drag | MouseKind::Release | MouseKind::Menu => false,
         }
     }
 
@@ -1686,6 +1707,7 @@ impl App {
             draw::Hit::SettingsTab(_) | draw::Hit::SettingsClose | draw::Hit::PeekClose => {
                 return held;
             }
+            draw::Hit::Item(_) | draw::Hit::Modal => return held,
             draw::Hit::Turn(key) => {
                 self.write(false);
                 self.model
@@ -2371,7 +2393,11 @@ impl App {
             open: &open,
             sent: &sent,
         };
-        let drawn = draw::draw_with_layout(&screen, wait, buf);
+        let mut drawn = draw::draw_with_layout(&screen, wait, buf);
+        let cards = drawn
+            .sessions()
+            .map(|name| (name.to_owned(), self.card(name)));
+        drawn.cards = cards.collect();
         let replaced = std::mem::replace(&mut self.layout, drawn);
         self.history.push((Instant::now(), replaced));
         if self.history.len() > HISTORY {
@@ -2410,6 +2436,7 @@ impl App {
         }
         let drawn = self.model.selected().map(|name| self.freeze(name));
         self.drawn = drawn;
+        self.paint_modal(look.as_ref(), buf);
         self.settle_selection(buf);
     }
 
@@ -2439,7 +2466,313 @@ impl App {
             self.model.clamp_peek(bounds.max_back);
         }
     }
+
+    /// The card `name` shows as the app reads it now: what a frame freezes.
+    fn card(&self, name: &str) -> menu::Card {
+        let main = match self.pairs.get(name) {
+            Some(Ok(pair)) => (pair.first().map(|seat| seat.name.clone()))
+                .ok_or_else(|| format!("{name}'s record names no main seat")),
+            Some(Err(why)) => Err(why.clone()),
+            None => Err(format!("{name}'s lead pair was not read")),
+        };
+        menu::Card::new(
+            name,
+            self.ids.get(name).map_or("", String::as_str),
+            self.sole.get(name).map(String::as_str),
+            self.entry(name).map(|entry| entry.status),
+            self.facts.get(name),
+            main,
+        )
+    }
+
+    /// The layout on screen when input read at `origin` was made.
+    fn layout_at(&self, origin: Instant) -> &draw::Layout {
+        (self.history.iter())
+            .find(|(replaced, _)| origin <= *replaced)
+            .map_or(&self.layout, |(_, layout)| layout)
+    }
+
+    /// Spend every key read at or before `origin` on the modal it changed.
+    fn spend(&mut self, origin: Instant) {
+        self.cut = self.cut.max(Some(origin));
+    }
+
+    /// A key read at or before the last modal change: spent.
+    fn spent(&self, origin: Instant) -> bool {
+        self.cut.is_some_and(|cut| origin <= cut)
+    }
+
+    /// The menu on `card`, drawn by the frame input read at `origin` was made
+    /// on, or the hint row says none opened; that read is spent either way.
+    /// Opening selects nothing.
+    fn open_menu(&mut self, card: Option<menu::Card>, origin: Instant) -> bool {
+        self.spend(origin);
+        let Some(card) = card else {
+            let line = "menu not opened: no card is on screen for it".to_owned();
+            self.flash = Some((line, Instant::now()));
+            return true;
+        };
+        self.unselect();
+        self.modal = Some(menu::Modal::Menu(menu::Menu::new(card)));
+        true
+    }
+
+    /// A right press: the menu on the card the frame on screen at `origin`
+    /// drew under it. One made on a frame the bound dropped opens none.
+    fn menu_press(&mut self, mouse: Mouse, origin: Instant) -> bool {
+        let ended = self.model.let_go();
+        if self.lost.is_some_and(|lost| origin <= lost) {
+            self.spend(origin);
+            let line = "menu not opened: its frame is gone".to_owned();
+            self.flash = Some((line, Instant::now()));
+            return true;
+        }
+        let layout = self.layout_at(origin);
+        let Some(draw::Hit::Session(name)) = layout.hit(mouse) else {
+            return ended;
+        };
+        let card = layout.cards.get(&name).cloned();
+        self.open_menu(card, origin)
+    }
+
+    /// Input the open modal takes only once a frame showing it was written
+    /// before the input was read: earlier input is dropped, and the hint row
+    /// says to press again.
+    fn unseen(&mut self, origin: Instant) -> bool {
+        let Some(modal) = &self.modal else {
+            return false;
+        };
+        if modal.shown_at().is_some_and(|shown| origin > shown) {
+            return false;
+        }
+        let word = modal.word();
+        let line = format!("not taken: the {word} was not on screen yet - press again");
+        self.flash = Some((line, Instant::now()));
+        true
+    }
+
+    /// A key with a modal open: nothing under the modal sees it.
+    fn modal_key(&mut self, key: &Key, origin: Instant) -> bool {
+        if self.unseen(origin) {
+            return true;
+        }
+        let Some(modal) = self.modal.as_mut() else {
+            return false;
+        };
+        let step = modal.key(key);
+        self.stepped(step, origin)
+    }
+
+    /// A mouse report with a modal open: motion and the wheel die, a press
+    /// acts on the frame it was made on.
+    fn modal_mouse(&mut self, mouse: Mouse, origin: Instant) -> bool {
+        let right = mouse.kind == MouseKind::Menu;
+        if !right && mouse.kind != MouseKind::Click {
+            return false;
+        }
+        if self.unseen(origin) {
+            return true;
+        }
+        if self.lost.is_some_and(|lost| origin <= lost) {
+            let line = "click not taken: its frame is gone".to_owned();
+            self.flash = Some((line, Instant::now()));
+            return true;
+        }
+        let hit = self.layout_at(origin).hit(mouse);
+        let Some(modal) = &self.modal else {
+            return false;
+        };
+        let step = modal.press(right, hit.as_ref());
+        self.stepped(step, origin)
+    }
+
+    /// Carry out what input read at `origin` did to the modal: one that ends
+    /// it spends that read.
+    fn stepped(&mut self, step: menu::Step, origin: Instant) -> bool {
+        if step.ends() {
+            self.spend(origin);
+        }
+        match step {
+            menu::Step::Kept => return false,
+            menu::Step::Moved => {}
+            menu::Step::Close => self.modal = None,
+            menu::Step::Act(item) => self.act(item),
+            menu::Step::Affirm => self.affirm(),
+        }
+        true
+    }
+
+    /// `item` of the open menu: its card's refusal, else Open or the Stop
+    /// question. The menu closes either way.
+    fn act(&mut self, item: menu::Item) {
+        let Some(menu::Modal::Menu(menu)) = self.modal.take() else {
+            return;
+        };
+        let (name, card) = (menu.card.name.clone(), menu.card);
+        if let Some(why) = card.refusal(item) {
+            let line = format!("refused: {} {name}: {why}; nothing done", item.word());
+            return self.tell(&name, line);
+        }
+        match item {
+            menu::Item::Open => {
+                let line = self.open_card(&card);
+                self.tell(&name, line);
+            }
+            menu::Item::Stop => match self.question(card) {
+                Ok(question) => self.modal = Some(menu::Modal::Question(question)),
+                Err(line) => self.tell(&name, line),
+            },
+        }
+    }
+
+    /// An outcome, on the hint row now and in `name`'s lane.
+    fn tell(&mut self, name: &str, line: String) {
+        self.flash = Some((line.clone(), Instant::now()));
+        self.notice(name, line);
+        self.show();
+    }
+
+    /// Open `card`'s main seat: its record must still name the incarnation
+    /// the card was drawn from, then `/open`'s own proof.
+    fn open_card(&self, card: &menu::Card) -> String {
+        let name = &card.name;
+        let sole = self.dirs.get(name).and_then(|dir| loader::sole_uuid(dir));
+        if sole.as_deref() != Some(card.uuid.as_str()) {
+            return format!("refused: Open {name}: {REPLACED}; nothing selected");
+        }
+        match &card.main {
+            Ok(main) => {
+                let seat = SeatRef {
+                    slot: "main".to_owned(),
+                    name: main.clone(),
+                };
+                self.open(name, &card.uuid, Ok(&seat), main)
+            }
+            Err(why) => format!("refused: Open {name}: {why}; nothing selected"),
+        }
+    }
+
+    /// The Stop question for `card`: every fact its answer is proven against
+    /// is read now and frozen in it, or the refusal line for the first that
+    /// does not hold.
+    fn question(&self, mut card: menu::Card) -> Result<menu::Question, String> {
+        let name = card.name.clone();
+        let refuse = |why: &str| format!("refused: Stop {name}: {why}; nothing stopped");
+        let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
+            return Err(refuse(&Refusal::NoTmux.why()));
+        };
+        let dir =
+            (self.dirs.get(&name)).ok_or_else(|| refuse("ae read no record directory for it"))?;
+        if loader::sole_uuid(dir).as_deref() != Some(card.uuid.as_str()) {
+            return Err(refuse(REPLACED));
+        }
+        let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+        let recorded = crate::session_launch::recorded_server_resolved(dir);
+        if !recorded.is_some_and(|recorded| sockets.proven_same(server, &recorded)) {
+            return Err(refuse(&Refusal::Elsewhere(name.clone()).why()));
+        }
+        let id = crate::lifecycle::live_id(server, &name)
+            .ok_or_else(|| refuse("tmux does not list it on this server"))?;
+        if card.id.as_ref().is_some_and(|painted| *painted != id) {
+            return Err(refuse(
+                "its tmux session was replaced since the menu was drawn",
+            ));
+        }
+        let clients = transport::observe_clients(server)
+            .ok_or_else(|| refuse(&Refusal::Unread("the tmux clients".to_owned()).why()))?;
+        let client = open::copy_client(&clients, pane).map_err(|why| refuse(&why.why()))?;
+        let asker = transport::observe_menu_client(server, &client)
+            .ok_or_else(|| refuse("the asking client did not answer"))?;
+        let identity = transport::observe_server_identity(server)
+            .ok_or_else(|| refuse("the tmux server did not answer"))?;
+        card.home = asker.session_name == name;
+        let expect = crate::lifecycle::StopExpectation {
+            session_id: id,
+            uuid: card.uuid.clone(),
+            server_pid: identity.pid,
+            server_start: identity.start,
+            deadline: Timestamp::now().epoch() + crate::session_menu::CONFIRM_WINDOW_SECS,
+            client,
+            client_pid: asker.pid,
+            server: server.clone(),
+            require_meta_agent: false,
+        };
+        Ok(menu::Question::new(card, expect))
+    }
+
+    /// The question answered Stop: its deadline, the record and the asking
+    /// client proven once more against what it froze, never captured again,
+    /// then the one guarded Stop owner, detached.
+    fn affirm(&mut self) {
+        let Some(menu::Modal::Question(question)) = self.modal.take() else {
+            return;
+        };
+        let name = question.card.name.clone();
+        let line = (self.stop(&question))
+            .unwrap_or_else(|why| format!("refused: Stop {name}: {why}; nothing stopped"));
+        self.tell(&name, line);
+    }
+
+    /// [`App::affirm`]'s proofs, then the owner's own line.
+    fn stop(&self, question: &menu::Question) -> Result<String, String> {
+        let (expect, name) = (&question.expect, &question.card.name);
+        if Timestamp::now().epoch() > expect.deadline {
+            return Err("the question expired - ask again".to_owned());
+        }
+        let dir = (self.dirs.get(name)).ok_or("ae read no record directory for it")?;
+        if loader::sole_uuid(dir).as_deref() != Some(expect.uuid.as_str()) {
+            return Err(REPLACED.to_owned());
+        }
+        let (Some(pane), Some(root)) = (&self.pane, &self.root) else {
+            return Err(Refusal::NoTmux.why());
+        };
+        let clients =
+            transport::observe_clients(&expect.server).ok_or("the tmux clients did not answer")?;
+        let client = open::copy_client(&clients, pane).map_err(|why| why.why())?;
+        let pid = transport::observe_menu_client(&expect.server, &client).map(|asker| asker.pid);
+        if client != expect.client || pid.as_ref() != Some(&expect.client_pid) {
+            return Err("the client that was asked changed or is gone".to_owned());
+        }
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        crate::lifecycle::stop_confirmed(root, expect, name, &mut out, &mut err)
+            .map_err(|why| why.to_string())?;
+        out.extend(err);
+        Ok(String::from_utf8_lossy(&out).trim().to_owned())
+    }
+
+    /// Paint the open modal over the frame. One that does not fit whole is
+    /// taken down, the hint row says what it needed, and every key read so
+    /// far is spent: nothing it held can act.
+    fn paint_modal(&mut self, look: Option<&theme::Look>, buf: &mut Buffer) {
+        let Some(modal) = &self.modal else {
+            return;
+        };
+        let icons = look.is_none_or(|look| look.icons);
+        match menu::paint(modal, draw::Paint::of(look), icons, buf, &mut self.layout) {
+            Ok(()) => self.layout.cursor = None,
+            Err(why) => {
+                self.modal = None;
+                self.spend(Instant::now());
+                self.flash = Some((why, Instant::now()));
+                self.again = true;
+            }
+        }
+    }
+
+    /// The frame just written showed the open modal whole at `at`: the first
+    /// such frame dates which input counts as made on it.
+    fn frame_shown(&mut self, at: Instant) {
+        if self.layout.shows_modal()
+            && let Some(modal) = self.modal.as_mut()
+        {
+            modal.stamp(at);
+        }
+    }
 }
+
+/// Why a menu action refuses an incarnation its record no longer names.
+const REPLACED: &str =
+    "its record no longer names the session_id the menu was drawn from - replaced or changed";
 
 /// How a copy names its text: `1 line`, `3 lines`.
 fn lines_word(text: &str) -> String {
@@ -2515,6 +2848,10 @@ fn forward(reads: Receiver<(Instant, Vec<u8>)>, wake: Sender<Wake>) -> std::io::
 /// # Errors
 ///
 /// [`crate::Error::Io`] when the terminal or `err` cannot be written.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the one loop: its setup, then draw, show, drain"
+)]
 pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
     let Some((session, handed)) = operands(tail) else {
         write!(err, "{USAGE}")?;
@@ -2565,6 +2902,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     let mut size = tty.size().unwrap_or((80, 24));
     let mut terminal = Terminal::new(backend::Ansi::new(out, size))?;
     let mut app = App::new(home, caller, pane, Some(ask));
+    app.root = Some(root);
     app.keep = keep;
     let mut keys = Keys::app();
     let (mut dirty, mut first, mut restart) = (true, None, None);
@@ -2581,6 +2919,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
                     frame.set_cursor_position(at);
                 }
             })?;
+            app.frame_shown(Instant::now());
         }
         // A release's copy ships only once the frame showing it is out. An
         // ask waits for the frame that names its target; its outcome needs
@@ -2843,6 +3182,18 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
             let quit = held && app.queued.is_empty() && !app.protects();
             return (!quit).then_some(true);
         }
+        // A read spent on a modal changes nothing more; an open modal takes
+        // every key and press before any mode under it.
+        if app.spent(origin) {
+            continue;
+        }
+        if app.modal.is_some() {
+            redraw |= match &key {
+                Key::Mouse(mouse) => app.modal_mouse(*mouse, origin),
+                key => app.modal_key(key, origin),
+            };
+            continue;
+        }
         let browsing = !app.model.settings_open() && !app.composing() && app.held.is_none();
         if key != Key::Interrupt && !(browsing && matches!(key, Key::Text(_))) {
             redraw |= app.armed.take().is_some();
@@ -2978,10 +3329,14 @@ fn paste(app: &mut App, bytes: &[u8], origin: Instant) {
 }
 
 /// One Text byte while browsing: `q` and `o` press their armed key, `s`
-/// opens the settings and `?` its keys, anything else decodes as it always
-/// has and ends the armed press. Browsing on entry; the caller routes the
-/// modes.
+/// opens the settings and `?` its keys, `m` the menu on the
+/// selection's card, anything else decodes as it always has and ends the
+/// armed press. A byte of a read the menu spent does nothing. Browsing on
+/// entry; the caller routes the modes.
 fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
+    if app.spent(origin) {
+        return Some(false);
+    }
     let disarmed = !matches!(byte, b'q' | b'o') && app.armed.take().is_some();
     match byte {
         b'q' => return app.press(Arm::Quit, origin).is_none().then_some(true),
@@ -2993,6 +3348,10 @@ fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
             app.open_settings();
             app.model.show_settings_tab(model::SettingsTab::Keys);
             return Some(true);
+        }
+        b'm' => {
+            let card = (app.model.selected()).and_then(|name| app.layout.cards.get(name));
+            return Some(app.open_menu(card.cloned(), origin));
         }
         _ => {}
     }
@@ -3159,6 +3518,8 @@ mod tests {
     use crate::theme::Mark;
     use crate::time::Timestamp;
     use crate::tmux;
+    mod menu_acceptance;
+    mod menu_units;
 
     pub(in crate::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
 
@@ -4826,6 +5187,7 @@ mod tests {
                 .into_iter()
                 .map(|(name, id)| (name.to_owned(), id.to_owned()))
                 .collect(),
+            sole: std::collections::BTreeMap::new(),
             world: app.world.clone(),
             facts: app.facts.clone(),
             needs: app.needs.clone(),
@@ -4873,6 +5235,7 @@ mod tests {
         let read = loader::FleetRead {
             dirs: app.dirs.clone(),
             ids: std::iter::once(("api".to_owned(), ID.to_owned())).collect(),
+            sole: std::collections::BTreeMap::new(),
             world: app.world.clone(),
             facts: app.facts.clone(),
             needs: app.needs.clone(),
@@ -4892,6 +5255,7 @@ mod tests {
                 .iter()
                 .map(|(name, id)| ((*name).to_owned(), (*id).to_owned()))
                 .collect(),
+            sole: std::collections::BTreeMap::new(),
             world: app.world.clone(),
             facts: app.facts.clone(),
             needs: app.needs.clone(),

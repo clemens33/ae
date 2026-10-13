@@ -108,6 +108,10 @@ pub(crate) enum Hit {
     PeekClose,
     /// A drawn chat turn, by its fingerprint: marks it, or unmarks it.
     Turn(u64),
+    /// The open modal's item or button, by its place in it.
+    Item(usize),
+    /// The open modal's own cells: a press there is the modal's.
+    Modal,
     /// A drawn fold row, by its turn's fold key: folds or unfolds the turn.
     Fold(u64),
 }
@@ -160,11 +164,41 @@ pub(crate) struct Layout {
     /// The seats the tab body drew, in drawn order, and the one it highlighted.
     pub seats: Vec<String>,
     pub focused: Option<String>,
+    /// Each card the frame drew, as the app read it then: a menu opened on
+    /// this frame acts on that and on nothing a later read changed.
+    pub(super) cards: std::collections::BTreeMap<String, super::menu::Card>,
 }
 
 impl Layout {
     fn record(&mut self, buf: &Buffer, area: Rect, target: Hit) {
         self.targets.push((area.intersection(buf.area), target));
+    }
+
+    /// Record `target` over `area` ahead of every target under it: an
+    /// overlay's cells are its own.
+    pub(super) fn overlay(&mut self, buf: &Buffer, area: Rect, target: Hit) {
+        self.targets
+            .insert(0, (area.intersection(buf.area), target));
+    }
+
+    /// The sessions whose cards the frame drew.
+    pub(super) fn sessions(&self) -> impl Iterator<Item = &str> {
+        self.targets.iter().filter_map(|(_, target)| match target {
+            Hit::Session(name) => Some(name.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The frame painted a modal whole.
+    pub(super) fn shows_modal(&self) -> bool {
+        (self.targets.iter()).any(|(_, target)| matches!(target, Hit::Modal))
+    }
+
+    /// Where the frame drew `name`'s card.
+    pub(super) fn card_at(&self, name: &str) -> Option<Rect> {
+        (self.targets.iter()).find_map(|(area, target)| {
+            matches!(target, Hit::Session(at) if at == name).then_some(*area)
+        })
     }
 
     pub fn hit(&self, mouse: Mouse) -> Option<Hit> {
@@ -304,7 +338,7 @@ impl Paint {
     }
 
     /// A ground from the palette, or none.
-    fn ground(self, token: impl Fn(&Palette) -> &'static str) -> Style {
+    pub(super) fn ground(self, token: impl Fn(&Palette) -> &'static str) -> Style {
         self.0.map_or_else(Style::new, |palette| {
             Style::new().bg(colour(token(&palette)))
         })
@@ -1409,11 +1443,12 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 14] = [
+const BROWSE_KEYS: [(&str, &str); 15] = [
     ("1-9", "select that session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
     ("oo", "open seat; twice in 2 s"),
+    ("m", "session menu; right-click a card too"),
     ("v", "peek at the seat's screen"),
     ("n/p", "next / previous seat"),
     ("PgUp/PgDn", "scroll the chat"),
@@ -2041,7 +2076,7 @@ fn aged(text: &str, since: Option<i64>, room: u16) -> String {
 }
 
 /// A count of cells as a coordinate.
-fn cells(count: usize) -> u16 {
+pub(super) fn cells(count: usize) -> u16 {
     u16::try_from(count).unwrap_or(u16::MAX)
 }
 
@@ -2053,7 +2088,7 @@ fn inside(buf: &Buffer, x: u16, y: u16) -> bool {
 
 /// Write `text` at (x, y), at most `max` cells and never past the buffer;
 /// answers the column after it.
-fn put(buf: &mut Buffer, x: u16, y: u16, text: &str, max: u16, style: Style) -> u16 {
+pub(super) fn put(buf: &mut Buffer, x: u16, y: u16, text: &str, max: u16, style: Style) -> u16 {
     if !inside(buf, x, y) {
         return x;
     }

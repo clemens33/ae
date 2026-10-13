@@ -27,6 +27,8 @@ use std::time::Duration;
 use super::cli::{OwnedScratch, ae, bounded};
 use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
 use super::phase2::run_tmux;
+#[path = "lifecycle_stop_sole_uuid_spec.rs"]
+mod stop_sole_uuid;
 
 const UUID: &str = "33333333-3333-3333-3333-333333333333";
 
@@ -3809,10 +3811,7 @@ fn a_confirmed_stop_that_cannot_take_the_lock_writes_nothing_to_the_target() {
     let (code, out, err) = rig.run(&borrowed);
     assert_eq!(code, Some(0), "stdout={out} stderr={err}");
     let events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
-    assert!(
-        events.contains("stop confirmed on the session menu by client"),
-        "{events}"
-    );
+    assert!(events.contains("stop confirmed by client"), "{events}");
     assert!(events.contains("\"action\":\"stop-result\""), "{events}");
 }
 

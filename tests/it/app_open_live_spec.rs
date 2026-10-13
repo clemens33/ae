@@ -14,6 +14,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "app_menu_live_spec.rs"]
+mod menu_live;
 #[path = "app_typing_open_spec.rs"]
 mod typing;
 
