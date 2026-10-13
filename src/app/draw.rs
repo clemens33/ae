@@ -866,6 +866,12 @@ fn session(ctx: &Ctx<'_, '_>, buf: &mut Buffer, row: &Row, y: u16, end: u16, sel
     }
     let mark = if stopped { dim } else { paint.mark(row.mark) };
     put(buf, LEFT, y, row.mark.glyph(ctx.icons), 1, mark);
+    // The unread cue rides the blank gutter cell, so no column moves.
+    if !selected && ctx.screen.model.is_unread(&row.name) {
+        let cue = if ctx.icons { "\u{25b8}" } else { ">" };
+        let style = paint.fg(|p| p.title).add_modifier(Modifier::BOLD);
+        put(buf, 1, y, cue, 1, style);
+    }
     if row.index <= 9 {
         put(buf, LEFT + 2, y, &row.index.to_string(), 1, dim);
     }
@@ -1476,22 +1482,17 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let gear_cells = cells(Span::raw(gear).width());
     let room = |need: u16| hints_end.saturating_add(2).saturating_add(need) <= width;
     let style = paint.fg(|p| p.dim);
+    // The click covers the gear and the blank before it, like the status
+    // line's settings range; `room` keeps that blank free.
+    let target = Rect::new(width.saturating_sub(gear_cells + 1), y, gear_cells + 1, 1);
     if room(tail_cells) {
         put(buf, width - tail_cells, y, &tail, tail_cells, style);
         if !peeking {
-            layout.record(
-                buf,
-                Rect::new(width - gear_cells, y, gear_cells, 1),
-                Hit::Settings,
-            );
+            layout.record(buf, target, Hit::Settings);
         }
     } else if !peeking && room(gear_cells) {
         put(buf, width - gear_cells, y, gear, gear_cells, style);
-        layout.record(
-            buf,
-            Rect::new(width - gear_cells, y, gear_cells, 1),
-            Hit::Settings,
-        );
+        layout.record(buf, target, Hit::Settings);
     }
 }
 
@@ -4554,5 +4555,91 @@ mod tests {
                 assert_eq!(buf[(31, 6)].symbol(), "…");
             }
         }
+    }
+
+    /// R1: two session rows under `look`, `unread` marked; the rest of the
+    /// screen rides a stock shot (its selection is api, as here).
+    fn laid_cue(look: &Look, unread: Vec<String>) -> Buffer {
+        let shot = Shot::new();
+        let rows = vec![row("api", 1, false), row("beta", 2, false)];
+        let fleet = Fleet {
+            rows,
+            home: Some("api".to_owned()),
+        };
+        let mut model = Model::new(&fleet);
+        model.set_unread(unread.into_iter().collect());
+        let base = shot.screen(browsing(""));
+        let screen = Screen {
+            fleet: &fleet,
+            model: &model,
+            look: Some(*look),
+            ..base
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
+        super::draw_with_layout(&screen, super::Wait::default(), &mut buf);
+        buf
+    }
+
+    /// `name`'s row: its y and the cue cell at col 1.
+    fn cue_cell(buf: &Buffer, name: &str) -> (u16, String) {
+        for y in 0..buf.area.height {
+            if line(buf, y)[6..6 + name.len()].concat() == name {
+                return (y, buf[(1, y)].symbol().to_owned());
+            }
+        }
+        panic!("row {name} not drawn");
+    }
+
+    /// The cue glyph reads in both palettes and in ASCII, and it moves no column.
+    #[test]
+    fn unread_cue_cell_reads_in_every_palette_and_ascii_without_shifting() {
+        for (icons, palette, glyph) in [
+            ("on", "darcula", "▸"),
+            ("on", "neutral", "▸"),
+            ("on", "warm", "▸"),
+            ("off", "darcula", ">"),
+        ] {
+            let look = Look::read(icons, palette, "on", "on");
+            let buf = laid_cue(&look, vec!["beta".to_owned()]);
+            assert_eq!(cue_cell(&buf, "beta").1, glyph, "{icons}/{palette}");
+            let blank = cue_cell(&buf, "api").1;
+            assert_eq!(blank, " ", "{icons}/{palette}: control");
+            let (y, _) = cue_cell(&buf, "beta");
+            assert_eq!(buf[(4, y)].symbol(), "2", "index col");
+            assert_eq!(line(&buf, y)[6..10].concat(), "beta", "name col");
+        }
+    }
+
+    /// R3: the gear click covers the gear cell and its leading blank, no
+    /// further; drawn cells are exactly what base draws.
+    #[test]
+    fn gear_click_covers_the_leading_blank_and_no_further() {
+        let shot = Shot::new();
+        let at_mouse = |col: u16| Mouse {
+            kind: MouseKind::Click,
+            column: col,
+            row: 0,
+        };
+        let settings = |layout: &super::Layout, col: u16| {
+            matches!(layout.hit(at_mouse(col)), Some(super::Hit::Settings))
+        };
+        let gear = "\u{2699}";
+        let tail = format!("{} {gear}", crate::version_line());
+        let head = "     ? keys";
+        let full = head.chars().count() + 2 + tail.chars().count();
+        for (width, drawn) in [(full, tail.as_str()), (full - 1, gear)] {
+            let at = u16::try_from(width).unwrap_or(0);
+            let (row, layout) = shot.keys_at(at, browsing(""));
+            let pad = " ".repeat(width - head.chars().count() - drawn.chars().count());
+            let want = format!("{head}{pad}{drawn}");
+            assert_eq!(row, want, "w={width}: drawn unchanged");
+            assert!(settings(&layout, at - 1), "w={width}: gear cell");
+            assert!(settings(&layout, at - 2), "w={width}: leading blank");
+            assert!(!settings(&layout, at - 3), "w={width}: two left is not");
+        }
+        let at = u16::try_from(head.chars().count() + 2).unwrap_or(0);
+        let (row, layout) = shot.keys_at(at, browsing(""));
+        assert!(!row.contains(gear), "narrow: no gear drawn");
+        assert!(!settings(&layout, at - 1), "narrow: no target");
     }
 }

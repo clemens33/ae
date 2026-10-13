@@ -1122,3 +1122,41 @@ fn refresh_releases_an_identity_pair_or_home_that_is_no_longer_proven() {
         rig.wait(&pane, "R-B5 refresh left write mode", |s| !writing(s));
     }
 }
+
+/// appcue R2 writer half: the owner's entry records its pane's place, so a
+/// second attempt names it; after release, a non-recording holder reads
+/// unknown. Both refusals keep `Esc browses` on the row (I2 clip check).
+#[test]
+fn refusal_names_the_recording_holders_place_then_unknown_after_release() {
+    let rig = Rig::new("wbcue");
+    let owner = rig.console(false);
+    rig.raw(&owner, "i");
+    rig.wait(&owner, "owner holds the kernel lease", writing);
+    let at = rig.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &owner,
+        "#{session_name} | #{window_index}",
+    ]);
+    let place = at.trim().replace(" | ", ":");
+    let want = format!("an ae app is writing to {} (held at {place})", rig.home);
+    let (second, _) = rig.outside("second");
+    rig.raw(&second, "i");
+    rig.wait(&second, "refusal names the owner's recorded place", |s| {
+        s.contains(&want) && s.contains("Esc browses")
+    });
+    rig.key(&owner, "Escape");
+    rig.free();
+    let witness = rig.lease();
+    rig.key(&second, "Escape");
+    rig.wait(&second, "held mode ends on escape", |s| {
+        s.contains("Enter writes")
+    });
+    rig.raw(&second, "i");
+    let unknown = format!("an ae app is writing to {} (holder unknown)", rig.home);
+    rig.wait(&second, "non-recording holder reads unknown", |s| {
+        s.contains(&unknown) && s.contains("Esc browses")
+    });
+    drop(witness);
+}

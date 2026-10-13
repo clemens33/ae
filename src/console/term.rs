@@ -10,7 +10,7 @@ use super::input::{self, Effect, Input, Reading, Screen, Seen, Size};
 use super::lane::Seat;
 use super::needs::SeatRef;
 use super::open::{self, Refusal};
-use super::{Console, submit};
+use super::{Console, holder, submit};
 use crate::inventory::ServerId;
 use crate::{archive, doors, lifecycle, meta, theme, time, tmux, tracked, transport};
 
@@ -105,11 +105,20 @@ pub(crate) fn still(pair: &[Seat], seats: Result<Vec<Seat>, String>) -> Result<(
 }
 
 /// The writer lease on `console`'s session, taken without waiting; a refusal
-/// names the app that holds it, or the lock node ae will not open.
+/// names the app that holds it, or the lock node ae will not open. The holder
+/// is named only from a record that parses; anything else reads `holder unknown`.
 pub(crate) fn lease(console: &Console) -> Result<std::fs::File, String> {
-    let taken = crate::store::open(&console.dir).console_writer();
-    taken.map_err(|why| match why.kind() {
-        std::io::ErrorKind::WouldBlock => format!("an ae app is writing to {}", console.name),
+    let store = crate::store::open(&console.dir);
+    store.console_writer().map_err(|why| match why.kind() {
+        std::io::ErrorKind::WouldBlock => {
+            let record = store.console_writer_holder();
+            let held = record.and_then(|body| holder::parse(&body));
+            let at = held.map_or_else(
+                || "holder unknown".to_owned(),
+                |(session, window)| format!("held at {session}:{window}"),
+            );
+            format!("an ae app is writing to {} ({at})", console.name)
+        }
         std::io::ErrorKind::InvalidInput => "the writer lease is not a regular file".to_owned(),
         kind => format!("the writer lease could not be taken ({kind})"),
     })
@@ -680,5 +689,43 @@ mod tests {
                 .unwrap()
                 .contains("no longer follows")
         );
+    }
+}
+
+/// appcue R2 frozen acceptance: the refusal names the recorded holder's place,
+/// else says it is unknown.
+#[cfg(test)]
+mod appcue_lease_tests {
+    use crate::console::Console;
+    use crate::store::{SessionStore as Store, open};
+    use std::fs::File;
+    fn scratch() -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(format!("/tmp/ae-cue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    fn refused(console: &Console) -> String {
+        let Err(said) = super::lease(console) else {
+            panic!("lease unheld")
+        };
+        said
+    }
+    #[test]
+    fn refusal_names_the_holder_or_says_unknown_byte_exact() {
+        let dir = scratch();
+        let console = Console::bound("api".into(), dir.clone(), "uuid".into());
+        let store = open(&dir);
+        let mut held = store.console_writer().unwrap();
+        let note = |held: &mut File, bytes: &[u8]| Store::console_writer_note(held, bytes).unwrap();
+        let at = "an ae app is writing to api (held at alpha:2)";
+        let unknown = "an ae app is writing to api (holder unknown)";
+        note(&mut held, b"1 alpha 2\n");
+        assert_eq!(refused(&console), at);
+        note(&mut held, b"");
+        assert_eq!(refused(&console), unknown);
+        note(&mut held, &[b'x'; 161]);
+        assert_eq!(refused(&console), unknown);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

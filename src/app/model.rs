@@ -1,5 +1,7 @@
 //! The browse reducer: which session is selected, how far the chat scrolls. Keys in, an act out; it draws nothing and reads nothing.
 
+use std::collections::BTreeSet;
+
 use super::fleet::Fleet;
 use super::handover::View;
 use crate::config::is_agent_name;
@@ -178,6 +180,8 @@ pub struct Model {
     peek: Option<PeekOverlay>,
     /// The transient line the hint row shows: the App writes it each frame.
     note: Option<String>,
+    /// The sessions the sidebar marks unread; the App writes it each frame.
+    unread: BTreeSet<String>,
     /// The marked turn, by the fingerprint that names it across re-reads.
     turn: Option<u64>,
     /// How many times what the panels show has changed: a session, an overlay.
@@ -627,6 +631,16 @@ impl Model {
     /// Replace the transient hint-row line.
     pub(crate) fn set_note(&mut self, note: Option<String>) {
         self.note = note;
+    }
+
+    /// Replace the sessions the sidebar marks unread.
+    pub(crate) fn set_unread(&mut self, unread: BTreeSet<String>) {
+        self.unread = unread;
+    }
+
+    /// Whether the sidebar marks `name` unread.
+    pub(crate) fn is_unread(&self, name: &str) -> bool {
+        self.unread.contains(name)
     }
 
     /// Whether the overlay is open.

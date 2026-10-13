@@ -93,7 +93,7 @@ prints `you are in '<name>'` and exits 0. Naming another running session still s
 the current tmux client to it.
 
 Entering a session by any path — fleet-strip click, prefix-s, `ae next`, the orchestrator
-picker, or plain `tmux switch-client`/`attach` — lands on that session's lead pane.
+picker, or plain `tmux switch-client`/`attach` — lands on that session's lead pane, except that opening a seat from `ae app` lands on that seat's pane ([Opening a seat](../app.md#opening-a-seat)).
 
 ### Retired words
 

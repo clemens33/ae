@@ -222,3 +222,10 @@ path = "fuzz_targets/ask_unframe.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "lease_holder"
+path = "fuzz_targets/lease_holder.rs"
+test = false
+doc = false
+bench = false

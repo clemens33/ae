@@ -17,6 +17,7 @@ use crate::{
 use lane::Seat;
 
 pub(crate) mod fold;
+pub mod holder;
 pub mod input;
 pub mod lane;
 pub mod needs;

@@ -193,7 +193,7 @@ open at most. A refused line (a cap, a refused command, a read-only chat) stays 
 composer, ahead of anything typed since. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
 While an [`ae app`](app.md#ownership) writes to the session, a send or `/close`
-is refused at once with `an ae app is writing to <session>`, nothing kept or sent:
+is refused at once with `an ae app is writing to <session> (held at <session>:<window>)`, or `(holder unknown)` when the app left no record that reads, nothing kept or sent:
 the owner chat tries the app's writer lease inside its admission and drops it.
 `/open <seat>` selects any roster seat's pane, see [Open](#open).
 Recorded asks show their header (`· sent` once it went through) and body before

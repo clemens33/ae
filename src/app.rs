@@ -43,6 +43,7 @@ use loader::{Answer, Binding, PeekAsk, Request, Wake};
 use peek::Body;
 
 mod backend;
+mod cue;
 pub mod draw;
 #[cfg(test)]
 #[path = "../tests/it/app_early_spec.rs"]
@@ -265,11 +266,18 @@ impl PeekPane {
 /// The writer lease this app holds while it writes.
 struct Lease {
     /// Held open: dropping it releases the lease.
-    _file: File,
+    file: File,
     /// When it was taken: no key read before it is draft.
     at: Instant,
     /// The keys dropped for that have been named.
     named: bool,
+}
+
+impl Drop for Lease {
+    /// Empty the holder record before the lock goes (a crash skips this).
+    fn drop(&mut self) {
+        let _ = crate::store::SessionStore::console_writer_note(&mut self.file, b"");
+    }
 }
 
 /// A view an earlier app handed over, waiting for the fleet read that settles
@@ -408,6 +416,8 @@ struct App {
     clip: Option<String>,
     /// The newest read of each kind, kept back while a drag holds the screen.
     parked: Vec<Answer>,
+    /// When each session was last shown selected: the unread cue's memory.
+    cue: cue::Cue,
 }
 
 impl App {
@@ -488,6 +498,7 @@ impl App {
             early_named: false,
             clip: None,
             parked: Vec::new(),
+            cue: cue::Cue::default(),
         }
     }
 
@@ -1013,11 +1024,12 @@ impl App {
             Some(bound) => term::still(bound, Ok(pair)).map(|()| bound.clone())?,
             None => pair,
         };
-        let file = term::lease(&console)?;
+        let mut file = term::lease(&console)?;
+        self.note_holder(&mut file);
         let at = Instant::now();
         let draft = submit::restore(console.dir());
         self.lease = Some(Lease {
-            _file: file,
+            file,
             at,
             named: false,
         });
@@ -1039,6 +1051,18 @@ impl App {
         });
         self.effects(restored.unwrap_or_default());
         Ok(())
+    }
+
+    /// Record where this app's pane sits in the lease just taken; outside
+    /// tmux, or when tmux or the grammar refuses, the record stays empty.
+    fn note_holder(&self, lease: &mut File) {
+        let place = (self.server.as_ref().zip(self.pane.as_deref()))
+            .and_then(|(server, pane)| transport::observe_pane_place(server, pane));
+        let record = place.and_then(|(session, window)| console::holder::encode(&session, &window));
+        let _ = crate::store::SessionStore::console_writer_note(
+            lease,
+            record.as_deref().unwrap_or_default(),
+        );
     }
 
     /// Session `name`'s record directory when it may be written now, else
@@ -2308,6 +2332,14 @@ impl App {
         self.settling
             .take_if(|settling| lane.items.iter().any(|item| shown(item, &settling.id)));
         self.model.set_note(self.note());
+        let selected = self.model.selected();
+        let rows = self.fleet.rows.iter().map(|row| {
+            let skip = row.home || selected == Some(row.name.as_str());
+            let at = self.world.sessions.iter().find(|e| e.name == row.name);
+            (row.name.as_str(), at.and_then(|e| e.answer_epoch), skip)
+        });
+        let unread = self.cue.frame(rows, Timestamp::now().epoch());
+        self.model.set_unread(unread);
         let keys = self.keys();
         let (folds, open, sent) = self.fold_state();
         let name = self.model.selected();
@@ -3782,7 +3814,10 @@ mod tests {
         let _other = store.console_writer().expect("a demotion frees the lease");
         app.take(Reading::Owner, Instant::now());
         app.write(true);
-        assert_eq!(app.held.as_deref(), Some("an ae app is writing to api"));
+        assert_eq!(
+            app.held.as_deref(),
+            Some("an ae app is writing to api (holder unknown)")
+        );
     }
 
     /// ^J is a line break in the draft and Enter everywhere else: it starts
@@ -4023,7 +4058,10 @@ mod tests {
         let dir = root.0.join("sessions").join("api");
         let busy = crate::store::open(&dir).console_writer();
         app.write(true);
-        assert_eq!(app.held.as_deref(), Some("an ae app is writing to api"));
+        assert_eq!(
+            app.held.as_deref(),
+            Some("an ae app is writing to api (holder unknown)")
+        );
         refold(&mut app, &reader, &root, &[("api", Status::Stopped)]);
         assert_eq!(app.held.as_deref(), Some("api is stopped"));
         meta(&root, &ID.replace("1234", "bbbb"), "colead");
@@ -4357,7 +4395,7 @@ mod tests {
     fn a_paste_while_held_is_refused_on_the_hint_row_fragment_by_fragment() {
         let root = Root::new("held-paste");
         let (mut app, _reader) = housed(&root);
-        app.held = Some("an ae app is writing to api".to_owned());
+        app.held = Some("an ae app is writing to api (holder unknown)".to_owned());
         let at = Instant::now();
         for fragment in [b"one".as_slice(), b"two"] {
             app.flash = None;
@@ -7794,5 +7832,59 @@ mod tests {
         assert_eq!(dropped, Some(true), "the notice repaints before the fleet");
         let said = "input before sessions loaded was dropped";
         assert_eq!(app.note().as_deref(), Some(said));
+    }
+
+    /// Like [`refold`], but each world entry carries its own answer epoch.
+    fn refold_answered(app: &mut App, reader: &Reader, root: &Root, live: &[(&str, Option<i64>)]) {
+        let dir = |name: &str| (name.to_owned(), root.0.join("sessions").join(name));
+        let dirs = live.iter().map(|(name, _)| dir(name)).collect();
+        let world = live.iter().map(|(name, answered)| {
+            let mut e = entry(name, Status::Running, None);
+            e.answer_epoch = *answered;
+            e
+        });
+        let world = World::new(Timestamp::now(), world.collect());
+        let order = crate::theme::FleetOrder::EMPTY;
+        let read = reader.fold(dirs, world, None, &order, Timestamp::now());
+        app.answer(Answer::Fleet(read));
+    }
+
+    /// Select by row name, through the digit key its index owns.
+    fn select(app: &mut App, name: &str) {
+        let rows = &app.fleet.rows;
+        let index = rows.iter().find(|row| row.name == name).unwrap().index;
+        let digit = u8::try_from(index).unwrap_or(0);
+        app.model
+            .key(super::model::Key::Digit(digit), &app.fleet, false);
+        assert_eq!(app.model.selected(), Some(name));
+    }
+
+    /// First sight baselines; a strictly newer answer marks until its session
+    /// is selected; home never marks. New answers use now+3600: every frame-now
+    /// in this test is smaller, so `>` is deterministic, never a same-second flake.
+    #[test]
+    fn unread_marks_a_new_answer_until_its_session_is_selected() {
+        let root = Root::new("cue");
+        let (mut app, reader) = housed(&root);
+        let now = Timestamp::now().epoch();
+        let live = |beta| [("api", Some(now + 3600)), ("beta", beta)];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
+        let marked = |app: &mut App, buf: &mut Buffer, name: &str| {
+            app.frame(buf);
+            app.model.is_unread(name)
+        };
+        refold_answered(&mut app, &reader, &root, &live(Some(now - 100)));
+        assert_eq!(app.model.selected(), Some("api"));
+        assert!(!marked(&mut app, &mut buf, "beta"), "first sight baselines");
+        assert!(!marked(&mut app, &mut buf, "api"), "home never marks");
+        select(&mut app, "beta");
+        marked(&mut app, &mut buf, "beta");
+        refold_answered(&mut app, &reader, &root, &live(Some(now + 3600)));
+        assert!(!marked(&mut app, &mut buf, "beta"), "selected never marks");
+        select(&mut app, "api");
+        assert!(marked(&mut app, &mut buf, "beta"), "a newer answer marks");
+        assert!(!marked(&mut app, &mut buf, "api"), "home never marks");
+        select(&mut app, "beta");
+        assert!(!marked(&mut app, &mut buf, "beta"), "selecting clears");
     }
 }

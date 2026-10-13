@@ -3400,6 +3400,25 @@ pub fn interpret_pane_console(succeeded: bool, stdout: &str) -> Option<String> {
     succeeded.then(|| stdout.lines().next().unwrap_or_default().trim().to_owned())
 }
 
+/// `display-message -p -t <pane>`: its session name and window index, printed.
+#[must_use]
+pub fn pane_place_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    let format = "#{session_name} | #{window_index}";
+    args.extend(["display-message", "-p", "-t", pane, format].map(ToOwned::to_owned));
+    args
+}
+
+/// The two fields [`pane_place_args`] printed, split raw, or `None`.
+#[must_use]
+pub fn interpret_pane_place(succeeded: bool, stdout: &str) -> Option<(String, String)> {
+    if !succeeded {
+        return None;
+    }
+    let (session, window) = stdout.lines().next()?.split_once(FIELD_SEPARATOR)?;
+    Some((session.trim().to_owned(), window.trim().to_owned()))
+}
+
 /// The single value a `display-message -p` answer carries: its first line,
 /// trimmed, and only when the query SUCCEEDED.
 #[must_use]
@@ -7031,5 +7050,28 @@ mod tests {
                 "#{pane_current_path}"
             ]
         );
+    }
+}
+
+/// appcue R2 frozen acceptance: the pane-place query prints (never flashes)
+/// and its two fields split raw; validation lives in the encoder downstream.
+#[cfg(test)]
+mod appcue_place_tests {
+    #[test]
+    fn pane_place_args_print_and_interpret_splits_two_fields() {
+        let args = super::pane_place_args(&super::ServerId::Ambient, "%7");
+        assert!(args.contains(&"-p".to_owned()), "prints");
+        assert!(!args.contains(&"-d".to_owned()), "never transient");
+        let targeted = args.windows(2).any(|w| w == ["-t", "%7"]);
+        assert!(targeted, "targets the pane: {args:?}");
+        let both = args
+            .iter()
+            .any(|a| a.contains("#{session_name}") && a.contains("#{window_index}"));
+        assert!(both, "both fields: {args:?}");
+        let split = super::interpret_pane_place;
+        assert_eq!(split(true, "alpha | 2"), Some(("alpha".into(), "2".into())));
+        assert_eq!(split(false, "alpha | 2"), None);
+        assert_eq!(split(true, "nope"), None);
+        assert_eq!(split(true, "a | b | c"), Some(("a".into(), "b | c".into())));
     }
 }

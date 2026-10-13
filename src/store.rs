@@ -795,6 +795,27 @@ impl SessionStore {
         lock(&self.dir.join(CONSOLE_WRITER), Duration::ZERO)
     }
 
+    /// Replace what the held lease says of its holder with `record` (empty
+    /// clears it). Not atomic: a reader between cut and write sees none.
+    ///
+    /// # Errors
+    ///
+    /// The cut or the write.
+    pub fn console_writer_note(lease: &mut File, record: &[u8]) -> io::Result<()> {
+        lease.set_len(0)?;
+        lease.write_all(record)
+    }
+
+    /// The lease file's bytes when they fit [`crate::console::holder::HOLDER_CAP`].
+    #[must_use]
+    pub fn console_writer_holder(&self) -> Option<Vec<u8>> {
+        let cap = crate::console::holder::HOLDER_CAP;
+        match read_capped_in(&self.dir, CONSOLE_WRITER, cap) {
+            Ok(SourceRead::Ready(body)) => Some(body),
+            _ => None,
+        }
+    }
+
     /// Cap the event container to its newest `keep` lines on resume.
     ///
     /// `pin` names a line a cut may not take: when the cut drops every one, the

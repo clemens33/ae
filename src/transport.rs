@@ -851,6 +851,16 @@ pub fn observe_pane_console(server: &ServerId, pane: &str) -> Option<String> {
     tmux::interpret_pane_console(succeeded, &stdout)
 }
 
+/// The session name and window index of `pane`, raw; `None` if tmux is silent.
+#[must_use]
+pub fn observe_pane_place(server: &ServerId, pane: &str) -> Option<(String, String)> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_place_args(server, pane));
+    tmux::interpret_pane_place(succeeded, &stdout)
+}
+
 /// The id tmux holds for the session named exactly `name` on `server`.
 #[must_use]
 pub fn observe_session_id(server: &ServerId, name: &str) -> Option<String> {

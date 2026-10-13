@@ -36,7 +36,7 @@ recorded config first.
   this order: the orchestrator, then the sessions your `[workspace]
   fleet_order` names (the pins), then the rest by their newest AI answer to
   you, newest first, and a session with none after them in creation order;
-  stopped ones come last. Your own input never reorders the list. A needy row carries a `│` edge and `!` reaches it. The wheel moves a list that does not fit one session a notch; a
+  stopped ones come last. Your own input never reorders the list. A needy row carries a `│` edge and `!` reaches it. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
 - **Agents** under the list: every seat of the selected session with its
@@ -169,7 +169,7 @@ while browsing leaves the app up and no key reaches another pane. The keys
 row is the word `settings` in Settings, `peek` in the peek panel, at most one
 hint where its key works (`? keys` while browsing, which lists every key;
 `Esc close` in Settings or the peek panel; while writing `Enter sends · Alt+Enter ^J newline · Esc browses`; none while held, which takes every key),
-and at its right end `ae <version>` and the gear (the peek panel draws no gear). Narrowing drops the version
+and at its right end `ae <version>` and the gear (the peek panel draws no gear). The gear's click covers the gear and the blank before it, as the status line's settings button pads its glyph. Narrowing drops the version
 first, then the gear.
 
 A paste while browsing is never read as keys. On a writable session it starts
@@ -201,7 +201,7 @@ before that moment — the rest of the read that started writing included — ar
 dropped, and one `ae` line says `dropped the keys typed before writing
 started`; `Esc` and `^C` are never dropped. While another app writes, or when
 the lease's lock file is not a regular file, writing does not start: the
-composer reads `not writing: an ae app is writing to <session> · Esc browses` (or
+composer reads `not writing: an ae app is writing to <session> (held at <holder session>:<window>) · Esc browses`, or `(holder unknown)` in place of the place when the app left no record that reads (or
 `not writing: the writer lease is not a regular file · Esc browses`) and every
 key is swallowed until `Esc` browses, `^C` quits, a click acts or `Enter` tries
 again; while the session is not proven, `Enter` stays held. The other app letting go
@@ -595,3 +595,6 @@ not know the argument.
 - Dragged sizes are not remembered when the app quits.
 - A copy is the whole recorded body for transcript turns, an admitted answer, an ask whose stored text was read and a short `say` line. An ask whose text could not be read, a bridge message, a not-delivered line and a card or needs-you line copy the journal's summary (line breaks flattened, 600 characters), a `say` of 3500 characters or more its capped summary, a bridge reply nothing (the record keeps no body) and an unadmitted reply stays a preview; the hint row says `preview only` for each. An answer whose body could not be read copies its summary with the reason.
 - A turn is named by a 64-bit fingerprint of its record, so two identical records mark together. `[` / `]` stop at the oldest row the last frame produced; a second press after the next frame goes on. tmux keeps 50 buffers by default, so the 51st copy drops the oldest.
+- The unread cue is memory in the running app: a restart shows no marks, and a session met for the first time is shown as already seen. A session absent from one fleet read loses its mark and is seen afresh when it returns. A mark needs an answer strictly newer than the last moment the app showed that session selected, whole seconds, so an answer in the second you left it is not marked. It appears with the next fleet read (up to 5 s).
+- The holder named in a writer refusal is the place the holding app's pane had when it took the lease (`<session>:<window index>`, as tmux answered), not a liveness proof: a crashed app leaves its record behind, so a refusal that meets it can name a place that has let go, and a window renumbered since is named by its old index. A holder outside tmux, one tmux did not answer for, one whose session name is not an ae session name, the owner chat's probe and an app of an older core leave no record: the refusal says `holder unknown`, as it does for a record cut short by an app still writing it.
+- The refusal row is one line, clipped from the right: a chat column narrower than `not writing: an ae app is writing to <session> (held at <session>:<window>) · Esc browses` loses `Esc browses` first. `Esc` still browses.
