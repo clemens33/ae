@@ -38,6 +38,24 @@ fn a_timestamp_split_across_rows_ends_dim_and_the_words_after_it_wear_the_speake
     );
 }
 
+/// The indented body rows a decision card with `body` prints.
+fn card_rows(body: &str) -> Vec<String> {
+    let lane = Lane {
+        items: vec![Item {
+            micros: 1_790_748_060_000_000,
+            kind: Kind::Card {
+                seat: "lead".to_owned(),
+            },
+            body: body.to_owned(),
+            record: None,
+        }],
+        coverage: vec![],
+    };
+    let shown = Printed::default().step(&lane, 0, true);
+    let rows = shown.lines().filter(|line| line.starts_with("  "));
+    rows.map(str::to_owned).collect()
+}
+
 #[test]
 fn an_option_label_at_column_zero_of_a_decision_card_stays_one_whole_line() {
     // A reason may open on its first option: `1 keep: fast | 2 wait`. A label at
@@ -50,25 +68,23 @@ fn an_option_label_at_column_zero_of_a_decision_card_stays_one_whole_line() {
         ("a.", "b."),
         ("a)", "b)"),
     ] {
-        let lane = Lane {
-            items: vec![Item {
-                micros: 1_790_748_060_000_000,
-                kind: Kind::Card {
-                    seat: "lead".to_owned(),
-                },
-                body: format!("{one}keep: fast | {two}wait"),
-                record: None,
-            }],
-            coverage: vec![],
-        };
-        let shown = Printed::default().step(&lane, 0, true);
-        assert_eq!(
-            shown
-                .lines()
-                .filter(|line| line.starts_with("  "))
-                .collect::<Vec<_>>(),
-            [format!("  {one}keep: fast"), format!("  {two}wait")],
-            "{one:?}"
-        );
+        let rows = card_rows(&format!("{one}keep: fast | {two}wait"));
+        assert_eq!(rows, [format!("  {one}keep: fast"), format!("  {two}wait")]);
+    }
+}
+
+#[test]
+fn an_option_label_after_a_colon_space_opens_the_options_of_a_decision_card() {
+    // `Next: pick: 1 keep | 2 wait`: the label follows `: `, so the options start
+    // there and the intro is still split at its own `: `.
+    for (one, two) in [("1 ", "2 "), ("a)", "b)")] {
+        let rows = card_rows(&format!("Next: pick: {one}keep | {two}wait"));
+        let want = [
+            "  Next:",
+            "  pick:",
+            &format!("  {one}keep"),
+            &format!("  {two}wait"),
+        ];
+        assert_eq!(rows, want);
     }
 }
