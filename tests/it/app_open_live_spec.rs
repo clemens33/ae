@@ -547,6 +547,12 @@ fn agents_next_previous_and_mouse_focus_open_the_drawn_seat() {
     rig.focused(&app, "colead");
     rig.click(&app, "scout", true);
     rig.focused(&app, "scout");
+    // The click opens scout's seat view (livepeek R1); `oo` is swallowed
+    // while it is viewed, so Esc returns to the chat first.
+    rig.key(&app, "Escape");
+    rig.wait_screen(&app, "GUARD seat view closed back to chat", |s| {
+        !s.contains("viewing scout")
+    });
     rig.raw(&app, "oo");
     rig.opened(&viewer, HOME, &rig.scout);
 }
@@ -570,6 +576,12 @@ fn agents_need_for_spawned_seat_has_the_same_open_action() {
     });
     rig.click(&app, "scout", true);
     rig.focused(&app, "scout");
+    // The click opens scout's seat view (livepeek R1); `oo` is swallowed
+    // while it is viewed, so Esc returns to the chat first.
+    rig.key(&app, "Escape");
+    rig.wait_screen(&app, "GUARD seat view closed back to chat", |s| {
+        !s.contains("viewing scout")
+    });
     rig.raw(&app, "oo");
     rig.opened(&viewer, HOME, &rig.scout);
 }

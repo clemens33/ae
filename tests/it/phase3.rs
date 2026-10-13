@@ -1715,6 +1715,9 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
         vec![
             // The cfg(test) floor spec lists its owned HOME to prove refusal created no locks/state.
             "src/../tests/it/aeinstance_p2_upgrade.rs".to_owned(),
+            // The livepeek frozen acceptance spec's owned fixtures: session
+            // dirs and journals it writes and reads back under its own Root.
+            "src/../tests/it/app_livepeek_spec.rs".to_owned(),
             // THE terminal door of `ae app`: rustix termios takes raw mode,
             // restores the saved mode and reads the window size, on the
             // terminal the app was started in and nowhere else.
