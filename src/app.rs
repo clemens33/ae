@@ -1025,8 +1025,9 @@ impl App {
             None => pair,
         };
         let mut file = term::lease(&console)?;
-        self.note_holder(&mut file);
+        // Stamped before the tmux call: keys read while it runs still count.
         let at = Instant::now();
+        self.note_holder(&mut file);
         let draft = submit::restore(console.dir());
         self.lease = Some(Lease {
             file,
