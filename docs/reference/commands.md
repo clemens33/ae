@@ -620,10 +620,12 @@ is the vendor's own percentage, and `COUNTS` (`→ 48.5%`) appears only when the
 percentage reads differently — a reset in hand, `unlimited` credits or a reached spend cap
 — with `NOTE` naming the reason (`1 reset in hand`, `credits unlimited`, `spend cap
 reached`), the level (`low`, `critical`) and `stale`. `RESETS` is the window-reset
-countdown and `SEEN` the age of the observation. Scopes run worst first: critical
-or spend-capped, then low, then untrusted (stale or unreadable), then calm, highest judged
-percentage first within a band, config order breaking ties; a scope's windows keep their
-stable bucket order. Each row is drawn in its tone
+countdown and `SEEN` the age of the observation. Like `ae quota`, determinable scopes come
+first, most available first: available headroom is 100 minus the worst judged percentage
+among the newest usable fresh or stale readings per window, under the scope's merged account
+policy. Exhausted or spend-capped windows count as zero headroom. Unreadable scopes and scopes
+with no usable reading come last; ties keep their existing order, and a scope's windows keep
+their stable bucket order. Each row is drawn in its tone
 (an inline tmux `#[fg]`), and every row also carries its word, so the dialog reads the
 same with colour stripped. With no usable observation the scope says why in words (`no reading
 ae can trust (last report 2d 4h ago) — run /usage in a claude session or feed ae from your

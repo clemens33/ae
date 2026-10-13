@@ -940,6 +940,56 @@ impl Advisory {
 }
 
 impl Observation {
+    /// The one display order: readable scopes first, most headroom first.
+    /// Judge adopted windows under the merged scope policy, as the view does;
+    /// exhausted windows have zero headroom and equal keys keep input order.
+    fn ordered_scopes(&self) -> Vec<SettingsScope> {
+        let mut ranked: Vec<_> = self
+            .dialog_scopes()
+            .into_iter()
+            .map(|scope| {
+                let incomplete = scope
+                    .statuses
+                    .iter()
+                    .any(|status| matches!(status, Status::ReadError | Status::Truncated));
+                let worst = if incomplete {
+                    f64::INFINITY
+                } else {
+                    scope
+                        .readings
+                        .iter()
+                        .filter_map(|reading| {
+                            derived(&scope.policy, &reading.reading.row)
+                                .map(|value| value.judged().clamp(0.0, 100.0))
+                        })
+                        .reduce(f64::max)
+                        .unwrap_or(f64::INFINITY)
+                };
+                (worst, scope)
+            })
+            .collect();
+        ranked.sort_by(|left, right| left.0.total_cmp(&right.0));
+        ranked.into_iter().map(|(_, scope)| scope).collect()
+    }
+
+    /// Preserve rollout order; unmatched table-only groups keep input order last.
+    fn ordered_groups<'a>(&self, groups: &'a [Group]) -> Vec<&'a Group> {
+        let scopes = self.ordered_scopes();
+        scopes
+            .iter()
+            .flat_map(|scope| {
+                groups
+                    .iter()
+                    .filter(move |group| settings_same_scope(&scope.group, group))
+            })
+            .chain(groups.iter().filter(|group| {
+                !scopes
+                    .iter()
+                    .any(|scope| settings_same_scope(&scope.group, group))
+            }))
+            .collect()
+    }
+
     /// Group every known client scope once, merging repeated windows through
     /// [`Reading::adopt`] — the same provenance rule the watchdog uses.
     ///
@@ -985,23 +1035,15 @@ impl Observation {
         scopes
     }
 
-    /// Every scope as view facts, worst first: the one projection both quota
+    /// Every scope as view facts, headroom first: the one projection both quota
     /// screens lay out. Every percentage comes from [`derived`], the same
     /// derivation the table and the watchdog read, and every level from the one
     /// classifier; a scope with nothing usable states why instead of a guess.
     pub(crate) fn quota_view(&self) -> Vec<view::Scope> {
-        let mut ranked: Vec<Ranked> = self
-            .dialog_scopes()
+        self.ordered_scopes()
             .iter()
             .map(|scope| scope.viewed(self.home.as_deref(), self.now))
-            .collect();
-        // Stable: scopes that tie keep the configured order.
-        ranked.sort_by(|left, right| {
-            left.band
-                .cmp(&right.band)
-                .then_with(|| right.judged.total_cmp(&left.judged))
-        });
-        ranked.into_iter().map(|ranked| ranked.scope).collect()
+            .collect()
     }
 
     /// Render one advisory line from the same sanitized, width-bounded cells
@@ -1115,9 +1157,9 @@ impl SettingsScope {
         }
     }
 
-    /// This scope as view facts, with the rank that orders it: its windows in a
+    /// This scope as view facts: its windows in a
     /// stable bucket/qualifier/window order that no input order can change.
-    fn viewed(&self, home: Option<&Path>, now: i64) -> Ranked {
+    fn viewed(&self, home: Option<&Path>, now: i64) -> view::Scope {
         let title = format!(
             "{} · {}",
             self.group.tool.as_str(),
@@ -1136,16 +1178,12 @@ impl SettingsScope {
             .iter()
             .any(|status| matches!(status, Status::ReadError | Status::Truncated));
         if incomplete || self.readings.is_empty() {
-            return Ranked {
-                band: Band::Untrusted,
-                judged: -1.0,
-                scope: view::Scope {
-                    title,
-                    profiles,
-                    account,
-                    only: Some(self.unusable_words(now)),
-                    windows: Vec::new(),
-                },
+            return view::Scope {
+                title,
+                profiles,
+                account,
+                only: Some(self.unusable_words(now)),
+                windows: Vec::new(),
             };
         }
         let mut readings: Vec<&SettingsReading> = self.readings.iter().collect();
@@ -1157,27 +1195,16 @@ impl SettingsScope {
                 .then_with(|| left.qualifier.cmp(&right.qualifier))
                 .then_with(|| left.window_minutes.cmp(&right.window_minutes))
         });
-        let mut band = Band::Calm;
-        let mut judged_max = f64::MIN;
         let windows = readings
             .into_iter()
-            .map(|reading| {
-                let (window, window_band, judged) = self.window_view(reading, now);
-                band = band.min(window_band);
-                judged_max = judged_max.max(judged);
-                window
-            })
+            .map(|reading| self.window_view(reading, now))
             .collect();
-        Ranked {
-            band,
-            judged: judged_max,
-            scope: view::Scope {
-                title,
-                profiles,
-                account,
-                only: None,
-                windows,
-            },
+        view::Scope {
+            title,
+            profiles,
+            account,
+            only: None,
+            windows,
         }
     }
 
@@ -1237,9 +1264,8 @@ impl SettingsScope {
         words
     }
 
-    /// One adopted window as view facts, with the band and judged percentage
-    /// the scope's rank is made of.
-    fn window_view(&self, reading: &SettingsReading, now: i64) -> (view::Window, Band, f64) {
+    /// One adopted window as view facts.
+    fn window_view(&self, reading: &SettingsReading, now: i64) -> view::Window {
         let row = &reading.reading.row;
         let derived = derived(&self.policy, row);
         let judged = derived.map(Derived::judged);
@@ -1265,13 +1291,7 @@ impl SettingsScope {
             QuotaLevel::Critical => view::Level::Critical,
         };
         let stale = freshness(row.observed_at, row.resets_at, now) == Status::Stale;
-        let band = match (level, stale) {
-            (view::Level::Critical, _) => Band::Critical,
-            (view::Level::Low, _) => Band::Low,
-            (view::Level::Headroom, true) => Band::Untrusted,
-            (view::Level::Headroom, false) => Band::Calm,
-        };
-        let window = view::Window {
+        view::Window {
             name: view_window_name(row),
             raw,
             counts,
@@ -1281,27 +1301,8 @@ impl SettingsScope {
             stale,
             resets: row.resets_at.map(|at| span_label(at.saturating_sub(now))),
             seen: row.observed_at.map(|at| span_label(now.saturating_sub(at))),
-        };
-        (window, band, judged.unwrap_or(-1.0))
+        }
     }
-}
-
-/// How worrying a scope reads, worst first. The order of the variants IS the
-/// sort order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Band {
-    Critical,
-    Low,
-    /// A stale window, or no usable reading at all.
-    Untrusted,
-    Calm,
-}
-
-/// A scope's view facts together with where they sort.
-struct Ranked {
-    band: Band,
-    judged: f64,
-    scope: view::Scope,
 }
 
 /// The plain name of a window: `Session`, `Weekly`, `Weekly Fable`, a client's
@@ -1841,6 +1842,7 @@ fn run_with(
     if let Some(answer) = answer
         && let Some((rows, hint)) = agy_rows(&answer, now)
     {
+        replace_agy(&mut observation.groups, &legs, rows.clone(), hint);
         replace_agy(&mut observation.rendered, &legs, rows, hint);
     }
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
@@ -1848,7 +1850,7 @@ fn run_with(
         out,
         "{}",
         render_with_pace(
-            &observation.rendered,
+            observation.ordered_groups(&observation.rendered),
             &pace,
             observation.home.as_deref().or(inputs.home),
             observation.now
@@ -3189,11 +3191,26 @@ fn manual_refresh_hint(
 /// The table with no history behind it: every PACE cell is `-`.
 #[cfg(test)]
 fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
-    render_with_pace(groups, &pace::PaceTable::default(), home, now)
+    render_observation_at(&Observation {
+        groups: groups.to_vec(),
+        rendered: groups.to_vec(),
+        home: home.map(Path::to_path_buf),
+        now,
+    })
 }
 
-fn render_with_pace(
-    groups: &[Group],
+#[cfg(test)]
+fn render_observation_at(observation: &Observation) -> String {
+    render_with_pace(
+        observation.ordered_groups(&observation.rendered),
+        &pace::PaceTable::default(),
+        observation.home.as_deref(),
+        observation.now,
+    )
+}
+
+fn render_with_pace<'a>(
+    groups: impl IntoIterator<Item = &'a Group>,
     pace: &pace::PaceTable,
     home: Option<&Path>,
     now: i64,
@@ -4940,7 +4957,7 @@ mod tests {
     }
 
     #[test]
-    fn view_facts_sort_scopes_worst_first_by_band() {
+    fn view_facts_sort_scopes_by_available_headroom() {
         let mut stale = named("stale30", "30", None);
         stale.rows[0].observed_at = Some(9_000);
         let mut capped = named("capped", "10", None);
@@ -4967,16 +4984,16 @@ mod tests {
         assert_eq!(
             titles,
             [
-                "codex · capped",
-                "codex · low90",
-                "codex · low85",
+                "codex · calm",
                 "codex · stale30",
-                "codex · unknown",
-                "codex · calm"
+                "codex · low85",
+                "codex · low90",
+                "codex · capped",
+                "codex · unknown"
             ]
         );
         assert_eq!(
-            scopes[0].account.as_deref(),
+            scopes[4].account.as_deref(),
             Some("credits 12.40 · spend cap reached")
         );
     }
@@ -5091,6 +5108,210 @@ mod tests {
         );
         assert!(super::strictly_newer(None, Some(i64::MIN)));
         assert!(!super::strictly_newer(Some(5), Some(5)));
+    }
+
+    #[test]
+    fn scope_order_uses_worst_effective_window_and_keeps_ties_and_unknowns_stable() {
+        let mut stale = named("stale", "20", None);
+        stale.rows[0].observed_at = Some(9_000);
+        let mut capped = named("capped", "5", Some(9));
+        capped.policy.account = Account {
+            credits: Credits::Unlimited,
+            credits_observed_at: Some(9_900),
+            spend_control_reached: Some(true),
+            spend_observed_at: Some(9_900),
+        };
+        let mut unlimited = named("unlimited", "100", None);
+        unlimited.policy.account = Account {
+            credits: Credits::Unlimited,
+            credits_observed_at: Some(9_900),
+            ..Account::default()
+        };
+        let mut worst = named("worst", "1", None);
+        let mut weekly = worst.rows[0].clone();
+        weekly.bucket = "weekly".to_owned();
+        weekly.used_percent = Some("70".to_owned());
+        worst.rows.push(weekly);
+        let missing = |client, status| {
+            let mut group = named(client, "0", None);
+            group.rows[0].status = status;
+            group
+        };
+        let groups = vec![
+            missing("unknown", Status::Unknown),
+            worst,
+            capped,
+            stale,
+            named("reset", "90", Some(2)),
+            named("tie", "30", None),
+            missing("unsupported", Status::Unsupported),
+            unlimited,
+            named("exhausted", "150", None),
+            missing("unreadable", Status::ReadError),
+            named("invalid", "NaN", None),
+        ];
+        let expected = [
+            "unlimited",
+            "stale",
+            "reset",
+            "tie",
+            "worst",
+            "capped",
+            "exhausted",
+            "unknown",
+            "unsupported",
+            "unreadable",
+            "invalid",
+        ];
+        let table = render_at(&groups, None, 10_000);
+        let positions: Vec<usize> = expected
+            .iter()
+            .map(|client| table.find(&format!("codex · {client}")).expect("scope row"))
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{table}"
+        );
+        let scopes = viewed(groups);
+        let heads: Vec<String> = super::view::layout(
+            &scopes,
+            super::view::Geometry {
+                width: 160,
+                rows: None,
+                icons: false,
+            },
+        )
+        .into_iter()
+        .filter(|line| line.tone == super::view::Tone::Head)
+        .map(|line| {
+            line.text
+                .split("   ")
+                .next()
+                .expect("scope title")
+                .to_owned()
+        })
+        .collect();
+        let expected: Vec<String> = expected
+            .iter()
+            .map(|client| format!("codex · {client}"))
+            .collect();
+        assert_eq!(heads, expected, "dialog and app use this shared layout");
+    }
+
+    #[test]
+    fn scope_order_keeps_rollouts_together_and_uses_the_newest_window() {
+        let mut first = named("multi", "10", None);
+        first.owner = Some("first".to_owned());
+        let mut hidden = first.clone();
+        hidden.owner = Some("hidden".to_owned());
+        hidden.rows[0].used_percent = Some("95".to_owned());
+        hidden.rows[0].observed_at = Some(9_800);
+        let mut second = first.clone();
+        second.owner = Some("second".to_owned());
+        let other = named("other", "50", None);
+        let observation = super::Observation {
+            groups: vec![hidden, first.clone(), second.clone(), other.clone()],
+            rendered: vec![first, second, other],
+            home: None,
+            now: 10_000,
+        };
+        let table = super::render_observation_at(&observation);
+        let other = table.find("codex · other").expect("other scope");
+        let first = table.find("first").expect("first owner");
+        let second = table.find("second").expect("second owner");
+        assert!(first < second && second < other, "{table}");
+        assert!(
+            !table.contains("hidden"),
+            "display cap is unchanged: {table}"
+        );
+        let scopes = observation.quota_view();
+        assert_eq!(
+            scopes
+                .iter()
+                .map(|scope| scope.title.as_str())
+                .collect::<Vec<_>>(),
+            ["codex · multi", "codex · other"]
+        );
+        assert_eq!(scopes[0].windows[0].raw.as_deref(), Some("10%"));
+    }
+
+    #[test]
+    fn scope_order_keeps_rendered_only_unresolved_summaries() {
+        let mut rollout = named("unresolved", "10", None);
+        rollout.source = None;
+        rollout.rollout = Some("one".to_owned());
+        let mut summary = rollout.clone();
+        summary.rollout = None;
+        summary.rows.clear();
+        summary.summary = Some(super::RolloutSummary {
+            hidden: 2,
+            unreadable: 1,
+            oldest_observed: Some(9_900),
+            not_read: false,
+            status: Some(Status::ReadError),
+        });
+        let other = named("other", "50", None);
+        let observation = super::Observation {
+            groups: vec![rollout.clone(), other.clone()],
+            rendered: vec![rollout, summary, other],
+            home: None,
+            now: 10_000,
+        };
+        let table = super::render_observation_at(&observation);
+        assert!(
+            table.contains("read-error"),
+            "summary must stay visible: {table}"
+        );
+        assert!(
+            table.contains("+2 rollouts not shown (1 unreadable)"),
+            "hidden count must stay visible: {table}"
+        );
+        assert!(table.contains("codex · unresolved"), "{table}");
+        assert!(table.contains("codex · other"), "{table}");
+    }
+
+    #[test]
+    fn scope_order_keeps_unreadable_scopes_after_usable_siblings() {
+        for status in [Status::ReadError, Status::Truncated] {
+            let good = named("incomplete", "1", None);
+            let mut incomplete = good.clone();
+            incomplete.rows = vec![super::placeholder(status)];
+            let groups = vec![good, named("usable", "100", None), incomplete];
+            let table = render_at(&groups, None, 10_000);
+            assert!(
+                table.find("codex · usable").expect("usable scope")
+                    < table.find("codex · incomplete").expect("incomplete scope"),
+                "{table}"
+            );
+            let scopes = viewed(groups);
+            assert_eq!(scopes[0].title, "codex · usable");
+            assert_eq!(scopes[1].title, "codex · incomplete");
+            assert!(scopes[1].only.is_some());
+            assert!(scopes[1].windows.is_empty());
+        }
+    }
+
+    #[test]
+    fn scope_order_judges_the_newest_window_under_merged_account_policy() {
+        let window = named("credited", "80", None);
+        let mut account = window.clone();
+        account.rows = vec![super::placeholder(Status::Unknown)];
+        account.policy.account = Account {
+            credits: Credits::Unlimited,
+            credits_observed_at: Some(9_950),
+            ..Account::default()
+        };
+        let groups = vec![named("other", "20", None), window, account];
+        let table = render_at(&groups, None, 10_000);
+        assert!(
+            table.find("codex · credited").expect("credited scope")
+                < table.find("codex · other").expect("other scope"),
+            "{table}"
+        );
+        let scopes = viewed(groups);
+        assert_eq!(scopes[0].title, "codex · credited");
+        assert_eq!(scopes[0].windows[0].counts.as_deref(), Some("0%"));
+        assert_eq!(scopes[0].windows[0].why, Some(Why::Unlimited));
     }
 
     #[test]

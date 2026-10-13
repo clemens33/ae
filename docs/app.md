@@ -445,7 +445,8 @@ tabs: Keys lists every key of browsing, writing, a held composer, Settings and
 the mouse
 (`?` opens it while browsing); Quota draws the same table as the tmux quota dialog from one formatter — a column
 header, a head per scope, then per window a name, an 8-cell bar, `USED`, `COUNTS`, `NOTE`,
-`RESETS` and `SEEN`, scopes worst first — laid out at the pane's width: `SEEN` and then the bar
+`RESETS` and `SEEN`, determinable scopes first, most available first, unreadable scopes last —
+laid out at the pane's width: `SEEN` and then the bar
 drop first on a narrow pane, `#`/`.` replace the bar glyphs with icons off, and a pane
 narrower than the table's floor clips each row at its edge; Config shows every
 `[workspace]` key the home session runs
