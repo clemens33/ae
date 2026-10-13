@@ -77,6 +77,10 @@ mod view_spec;
 #[path = "../tests/it/app_longpaste_spec.rs"]
 mod longpaste_spec;
 
+#[cfg(test)]
+#[path = "../tests/it/app_livepeek_spec.rs"]
+mod livepeek_spec;
+
 /// What `ae app` says, on stderr, when it has no terminal to draw on.
 pub const NO_TERMINAL: &str = "ae app draws a terminal UI; use ae chat to print the lane\n";
 

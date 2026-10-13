@@ -156,7 +156,11 @@ fn test_model_peek_scroll_keys_and_clamping() {
 
 #[test]
 fn test_peek_constants_pin() {
-    assert_eq!(PEEK_EVERY, Duration::from_secs(2), "D2 2s cadence");
+    assert_eq!(
+        PEEK_EVERY,
+        Duration::from_millis(500),
+        "livepeek R2 500ms cadence"
+    );
     assert_eq!(HISTORY, 200, "200 lines history capture");
     assert_eq!(KEPT_LINES, 400, "400 lines max kept in buffer");
     assert_eq!(LINE_CHARS, 2000, "2000 max line chars including ellipsis");

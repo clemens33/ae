@@ -11,7 +11,7 @@ use ratatui_core::layout::Rect;
 use super::{Answer, Job, PeekAsk, Reader, Request};
 use crate::app::fleet::{Counts, Fleet, Line2, Row};
 use crate::app::model::Key;
-use crate::app::peek::{Body, PEEK_EVERY};
+use crate::app::peek::Body;
 use crate::app::{App, Drawn, take_keys};
 use crate::console::input::{self, Mouse, MouseKind};
 use crate::console::needs::SeatRef;
@@ -60,13 +60,34 @@ fn test_s2_paused_answer_held_and_refusal_adopts_immediately() {
     assert!(framed(&mut app).contains("INITIAL ROW 69"));
     let _ = app.model.key(Key::Up, &app.fleet, false);
     let before = framed(&mut app);
+    let region = app
+        .layout
+        .map
+        .regions
+        .iter()
+        .find(|r| r.panel == crate::app::select::Panel::Peek)
+        .expect("drawn seat body")
+        .area;
+    let body_cells = |screen: &str| {
+        screen
+            .lines()
+            .skip(usize::from(region.y))
+            .take(usize::from(region.height))
+            .map(|line| {
+                line.chars()
+                    .skip(usize::from(region.x))
+                    .take(usize::from(region.width))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
     assert_eq!(app.model.peek_back(), Some(1), "real paused viewport");
     answer(&mut app, 1, Body::Lines(vec!["NEWER ROW".to_owned(); 70]));
     let paused = framed(&mut app);
     // Status may truthfully add "newer waiting"; every body cell stays fixed.
     assert_eq!(
-        before.lines().skip(3).take(41).collect::<Vec<_>>(),
-        paused.lines().skip(3).take(41).collect::<Vec<_>>(),
+        body_cells(&before),
+        body_cells(&paused),
         "paused body changes no painted cell"
     );
     assert!(paused.contains("paused") && !paused.contains("NEWER ROW"));
@@ -195,16 +216,16 @@ fn test_s5_reader_cadence_and_no_duplicate_queue() {
     reader.fleet_at = Some(t0);
     assert!(matches!(reader.next(t0), Job::Peek(_)), "first peek due");
     reader.peek = Some((sample_ask(), Some(t0)));
-    for millis in [0, 1000, 1999] {
+    for millis in [0, 100, 499] {
         let job = reader.next(t0 + Duration::from_millis(millis));
         assert!(
-            matches!(job, Job::Wait(until) if until == t0 + PEEK_EVERY),
+            matches!(job, Job::Wait(until) if until == t0 + Duration::from_millis(500)),
             "no early or duplicate peek at {millis}ms"
         );
     }
     assert!(
-        matches!(reader.next(t0 + PEEK_EVERY), Job::Peek(_)),
-        "due at 2s"
+        matches!(reader.next(t0 + Duration::from_millis(500)), Job::Peek(_)),
+        "due at 500ms"
     );
     reader.take(Request::Peek(None));
     assert!(
@@ -214,7 +235,7 @@ fn test_s5_reader_cadence_and_no_duplicate_queue() {
 }
 
 #[test]
-fn test_keys_row_click_close_and_app_wheel() {
+fn test_viewing_keys_escape_close_and_column_wheel() {
     let (ask_tx, ask_rx) = mpsc::channel();
     let mut app = App::new(Some("aedev".to_owned()), None, None, Some(ask_tx));
     app.model.open_peek(1);
@@ -222,7 +243,7 @@ fn test_keys_row_click_close_and_app_wheel() {
     let screen = framed(&mut app);
     let bottom = screen.lines().nth(44).unwrap_or_default();
     assert!(
-        bottom.contains("peek") && bottom.contains("Esc close"),
+        bottom.contains("viewing") && bottom.contains("Esc chat"),
         "peek keys: {bottom}"
     );
     assert!(
@@ -235,7 +256,7 @@ fn test_keys_row_click_close_and_app_wheel() {
     );
     let wheeled = app.mouse(Mouse {
         kind: MouseKind::WheelUp,
-        column: 10,
+        column: 100,
         row: 10,
     });
     assert!(
@@ -244,30 +265,23 @@ fn test_keys_row_click_close_and_app_wheel() {
     );
     let wheeled = app.mouse(Mouse {
         kind: MouseKind::WheelDown,
-        column: 10,
+        column: 100,
         row: 10,
     });
     assert!(
         wheeled && app.model.peek_back() == Some(0),
         "App wheel newer = 3 rows"
     );
-    // Click the title label actually recorded by the panel, rather than dead hint text.
-    let title = screen.lines().next().unwrap_or_default();
-    let byte = title.find("Esc close").expect("drawn title close label");
-    let col = u16::try_from(title[..byte].chars().count()).expect("title column fits");
+    // The full-pane close label is replaced by session-row click (livepeek spec) or Esc.
     while ask_rx.try_recv().is_ok() {}
-    assert!(app.mouse(Mouse {
-        kind: MouseKind::Click,
-        column: col,
-        row: 0
-    }));
-    assert!(!app.model.peek_open(), "drawn close click closes");
+    assert!(take_keys(&mut app, vec![(input::Key::Escape, Instant::now())]).is_some());
+    assert!(!app.model.peek_open(), "Esc returns to chat");
     assert_eq!(
         ask_rx
             .try_iter()
             .filter(|r| matches!(r, Request::Peek(None)))
             .count(),
         1,
-        "click sends one close"
+        "Esc sends one close"
     );
 }
