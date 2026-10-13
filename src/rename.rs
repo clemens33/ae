@@ -3893,6 +3893,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn effort_resume_rename_owner_preserves_raw_claims_and_conversation_identity() {
+        for mode in ["local", "full"] {
+            let root = scratch(&format!("effort-rename-{mode}"));
+            let dir = root.join("sessions/tfoobar");
+            std::fs::create_dir_all(&dir).expect("new session dir");
+            let before = format!(
+                "session=tfoo\nsession_id=e795c9e9-1234-4890-abcd-ef0123456789\nmode={mode}\norigin=/o\nwork_dir=/wt/tfoo\nseat.main=lead\nharness_session.main=22222222-2222-4222-8222-222222222222\nclient.main=custom\nconfig_home.main=/unchanged/home\neffort.main=v1 applied slot:main base:xhigh low:high at:80 ep:1700000000 sid:e795c9e9-1234-4890-abcd-ef0123456789 agent:lead tool:codex launch:tok-1 pid:42 conv:22222222-2222-4222-8222-222222222222 profile:custom client:custom model:gpt-6.1-sol win:weekly/~/10080/1700000000/1700000100\neffort.spawned.0\neffort.spawned.0=damaged duplicate\r\neffort.spawned.0=second duplicate\n"
+            );
+            std::fs::write(dir.join("meta"), &before).expect("old meta");
+            let mut intent = trap_intent("tfoo", "tfoobar", "/wt/tfoo", "/wt/tfoobar");
+            if mode == "local" {
+                intent.mode = WorkMode::Local;
+            }
+            do_meta(&root, &intent).expect("rename meta owner");
+            let mut expected = before.replace("session=tfoo\n", "session=tfoobar\n");
+            if mode == "full" {
+                expected = expected.replace("work_dir=/wt/tfoo\n", "work_dir=/wt/tfoobar\n");
+            }
+            assert_eq!(
+                std::fs::read_to_string(dir.join("meta")).expect("renamed meta"),
+                expected,
+                "only rename's session and managed work path change"
+            );
+            std::fs::remove_dir_all(root).expect("scratch cleanup");
+        }
+    }
+
+    #[test]
     fn only_a_name_matched_end_naming_the_session_strands_a_request() {
         let id = "0199c0de-1111-4890-abcd-ef0123456789";
         let request = |extra: &str| {

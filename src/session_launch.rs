@@ -5644,6 +5644,85 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
               about what PRODUCT code may reach"
 )]
 mod tests {
+    mod effort_resume_spec {
+        use super::super::meta_document;
+        use super::resume_parts;
+
+        #[test]
+        fn effort_resume_rebuild_keeps_a_single_applied_claim_verbatim() {
+            const VALID: &str = "v1 applied slot:main base:xhigh low:high at:80 ep:1700000000 sid:11111111-1111-4111-8111-111111111111 agent:lead tool:claude launch:tok-1 pid:42 conv:22222222-2222-4222-8222-222222222222 profile:fable5 client:- model:opus win:weekly/~/10080/1700000000/1700000100";
+            let row = format!("effort.main={VALID}\n");
+            let prior = format!("seat.main=lead\nprofile.main=fable5\n{row}");
+            let (root, _, env, shape, launching, watchdog) = resume_parts(&prior);
+            let rebuilt =
+                meta_document(&env, &shape, &launching, watchdog, None).expect("retained document");
+            assert!(
+                rebuilt.contains(&row),
+                "valid applied row survives a whole rebuild"
+            );
+            assert!(matches!(
+                crate::effort::stored(rebuilt.as_bytes(), "main"),
+                crate::effort::Stored::Present(_)
+            ));
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn effort_resume_rebuild_carries_raw_claims_only_for_retained_launching_slots() {
+            let rows = "effort.main=not-a-record\neffort.main\neffort.main=duplicate\r\n";
+            let prior =
+                format!("seat.main=lead\nprofile.main=fable5\n{rows}effort.spawned.0=foreign\n");
+            let (root, _, env, mut shape, launching, watchdog) = resume_parts(&prior);
+            let rebuilt =
+                meta_document(&env, &shape, &launching, watchdog, None).expect("resume document");
+            let carried: Vec<_> = rebuilt
+                .split_terminator('\n')
+                .filter(|line| line.split('=').next() == Some("effort.main"))
+                .collect();
+            assert_eq!(
+                carried,
+                [
+                    "effort.main=not-a-record",
+                    "effort.main",
+                    "effort.main=duplicate\r"
+                ]
+            );
+            assert!(
+                !rebuilt.contains("effort.spawned.0"),
+                "only retained launching slots carry"
+            );
+            shape.resuming = false;
+            let fresh =
+                meta_document(&env, &shape, &launching, watchdog, None).expect("fresh document");
+            assert!(
+                !fresh.contains("effort."),
+                "a new conversation inherits no override"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn effort_resume_rebuild_keeps_non_utf8_claim_damaged_instead_of_absent() {
+            let (root, dir, env, shape, launching, watchdog) =
+                resume_parts("seat.main=lead\nprofile.main=fable5\n");
+            std::fs::write(
+                dir.join("meta"),
+                b"seat.main=lead\nprofile.main=fable5\neffort.main=\xff\n",
+            )
+            .expect("hostile raw meta");
+            let rebuilt =
+                meta_document(&env, &shape, &launching, watchdog, None).expect("resume document");
+            assert!(
+                rebuilt.contains("effort.main=\u{fffd}\n"),
+                "named lossy text carry"
+            );
+            assert_eq!(
+                crate::effort::stored(rebuilt.as_bytes(), "main"),
+                crate::effort::Stored::Damaged(crate::effort::Damage::Encoding)
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
     use super::{
         AttachAction, EVENTS_KEEP, ExpectedLaunch, ExpectedState, Mode, Plan, ToolKind,
         attach_action, expected_launch_argv, launch_token, launch_turn_is_pasted, layout_argvs,

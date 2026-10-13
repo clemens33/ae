@@ -534,6 +534,60 @@ fn frozen_relative_time(now: Timestamp, timestamp: Option<i64>) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod effort_resume_spec {
+        use super::{args, render, world};
+        use crate::effort::{Damage, Record, State, Stored};
+
+        const VALID: &str = "v1 applied slot:main base:xhigh low:high at:80 ep:1700000000 sid:11111111-1111-4111-8111-111111111111 agent:lead tool:codex launch:tok-1 pid:42 conv:22222222-2222-4222-8222-222222222222 profile:custom client:- model:gpt-6.1-sol win:weekly/~/10080/1700000000/1700000100";
+
+        #[test]
+        fn effort_resume_list_reports_applied_pending_damage_without_changing_json() {
+            let mut world = world();
+            let baseline = render(&args(&["--all", "--json"]), &world);
+            let record = Record::parse(VALID).expect("independent P1-valid record");
+            for (stored, cell) in [
+                (
+                    Stored::Present(record.clone()),
+                    " · effort:high (auto from xhigh)",
+                ),
+                (
+                    Stored::Present(Record {
+                        state: State::PendingDown,
+                        ..record.clone()
+                    }),
+                    " · effort:pending xhigh->high",
+                ),
+                (
+                    Stored::Present(Record {
+                        state: State::PendingUp,
+                        ..record.clone()
+                    }),
+                    " · effort:pending high->xhigh",
+                ),
+                (Stored::Damaged(Damage::Duplicated), " · effort:damaged"),
+                (Stored::Absent, ""),
+            ] {
+                world
+                    .sessions
+                    .iter_mut()
+                    .find(|session| session.name == "live")
+                    .expect("live fixture")
+                    .agents[0]
+                    .effort = Some(stored);
+                let text = render(&args(&["--all"]), &world);
+                if cell.is_empty() {
+                    assert!(!text.contains("effort:"));
+                } else {
+                    assert!(text.contains(cell), "literal effort cell {cell:?}: {text}");
+                }
+                assert_eq!(
+                    render(&args(&["--all", "--json"]), &world),
+                    baseline,
+                    "display-only field keeps JSON bytes"
+                );
+            }
+        }
+    }
     /// The whitespace-collapsed fields of the row mentioning `needle`.
     fn row_fields(rendered: &str, needle: &str) -> Vec<String> {
         rendered
@@ -597,6 +651,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            effort: None,
         }
     }
 
@@ -1799,6 +1854,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                effort: None,
             }];
             let rendered = table(&[&session]);
             assert!(
@@ -1836,6 +1892,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                effort: None,
             }];
             row_fields(&table(&[&session]), "fake:lead")
         };
@@ -1889,6 +1946,7 @@ mod tests {
                 own_work,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                effort: None,
             }];
             let rendered = table(&[&session]);
             rendered
@@ -1940,6 +1998,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            effort: None,
         }];
         let rendered = table(&[&session]);
         let row = rendered
@@ -1971,6 +2030,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            effort: None,
         }];
         // The short session id now sits between the reference and the semantic
         // fields, on every status, because frozen rendered it on both grammars
@@ -2009,6 +2069,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                effort: None,
             },
             AgentEntry {
                 reference: "colead".to_owned(),
@@ -2024,6 +2085,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                effort: None,
             },
         ];
 

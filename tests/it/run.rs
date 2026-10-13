@@ -368,6 +368,562 @@ impl Drop for Rig {
     }
 }
 
+// Frozen P2 spec. Uses this module's existing process door and reporting tool.
+mod effort_resume_spec {
+    use super::super::effort_resume_spec::{CONV, SID, VALID, applied_journal, journal_line};
+    use super::*;
+
+    fn rig(tag: &str, tool: &str, state: &str) -> Rig {
+        let rig = Rig::new(tag);
+        let flags = if tool == "codex" {
+            "--yolo -m gpt-6.1-sol -c model_reasoning_effort=xhigh"
+        } else {
+            "--permission-mode bypassPermissions --model gpt-6.1-sol --effort xhigh"
+        };
+        rig.only_profile(&format!("EFFORT_ACCOUNT=kept {} {flags}", rig.tool(tool)));
+        rig.seat("custom", CONV);
+        rig.append_meta(&format!("session_id={SID}\nagent_bin.main={tool}\n"));
+        let row = VALID
+            .replace("v1 applied", &format!("v1 {state}"))
+            .replace("tool:codex", &format!("tool:{tool}"));
+        rig.append_meta(&format!("effort.main={row}\n"));
+        std::fs::write(rig.dir.join("events.jsonl"), applied_journal())
+            .unwrap_or_else(|why| panic!("independent applied journal: {why}"));
+        rig.transcript(tool, CONV);
+        rig.started();
+        rig
+    }
+
+    fn switch(rig: &Rig, rows: &str) {
+        let old = std::fs::read_to_string(&rig.config)
+            .unwrap_or_else(|why| panic!("fixture config: {why}"));
+        std::fs::write(&rig.config, format!("{old}\n[workspace]\n{rows}\n"))
+            .unwrap_or_else(|why| panic!("global switch fixture: {why}"));
+    }
+
+    fn invoke(rig: &Rig, print: bool, snapshot: Option<&str>) -> std::process::Output {
+        let mut cmd = ae();
+        cmd.env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
+            .env("HOME", &rig.home)
+            .env("AE_HOME", &rig.scratch)
+            .env("CONFIG_FILE", &rig.config)
+            .current_dir(&rig.project)
+            .arg(ae::cli::RUN);
+        if print {
+            cmd.arg("--print");
+        }
+        if let Some(snapshot) = snapshot {
+            cmd.arg("--command-snapshot").arg(snapshot);
+        }
+        cmd.arg(&rig.dir)
+            .arg("main")
+            .output()
+            .unwrap_or_else(|why| panic!("existing CLI runner door: {why}"))
+    }
+
+    fn argv(output: &std::process::Output) -> Vec<String> {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let parsed = ae::json::parse(String::from_utf8_lossy(&output.stdout).trim())
+            .unwrap_or_else(|why| panic!("print JSON: {why}"));
+        let ae::json::Value::Obj(fields) = parsed else {
+            panic!("plan object")
+        };
+        let Some((_, ae::json::Value::Arr(words))) = fields.into_iter().find(|(k, _)| k == "argv")
+        else {
+            panic!("argv")
+        };
+        words
+            .into_iter()
+            .map(|value| match value {
+                ae::json::Value::Str(s) => s,
+                _ => panic!("argv string"),
+            })
+            .collect()
+    }
+
+    fn assert_effort(words: &[String], tool: &str, level: &str) {
+        if tool == "codex" {
+            assert_eq!(
+                words
+                    .iter()
+                    .filter(|word| word.starts_with("model_reasoning_effort="))
+                    .count(),
+                1
+            );
+            assert!(carries(
+                words,
+                &["-c", &format!("model_reasoning_effort={level}")]
+            ));
+        } else {
+            assert_eq!(
+                words
+                    .iter()
+                    .filter(|word| word.as_str() == "--effort")
+                    .count(),
+                1
+            );
+            assert!(carries(words, &["--effort", level]));
+        }
+    }
+
+    fn discards(rig: &Rig) -> Vec<ae::events::Event> {
+        std::fs::read_to_string(rig.dir.join("events.jsonl"))
+            .unwrap_or_else(|why| panic!("fixture journal: {why}"))
+            .lines()
+            .map(|line| {
+                ae::events::Event::parse_line(line)
+                    .unwrap_or_else(|why| panic!("journal record: {why}"))
+            })
+            .filter(|event| event.action == "effort-discarded")
+            .collect()
+    }
+
+    #[test]
+    fn effort_resume_cli_replays_one_flag_and_preserves_identity_for_both_tools() {
+        for tool in ["codex", "claude"] {
+            let rig = rig(&format!("p2replay-{tool}"), tool, "applied");
+            let before = std::fs::read(rig.dir.join("meta")).expect("meta before");
+            let events = std::fs::read(rig.dir.join("events.jsonl")).expect("events before");
+            let words = argv(&invoke(&rig, true, None));
+            assert!(
+                words.iter().any(|word| word == CONV),
+                "same retained conversation"
+            );
+            assert_effort(&words, tool, "high");
+            assert!(carries(
+                &words,
+                if tool == "codex" {
+                    &["-m", "gpt-6.1-sol"]
+                } else {
+                    &["--model", "gpt-6.1-sol"]
+                }
+            ));
+            if tool == "codex" {
+                assert!(carries(
+                    &words,
+                    &[
+                        "--yolo",
+                        "-m",
+                        "gpt-6.1-sol",
+                        "resume",
+                        CONV,
+                        "-c",
+                        "model_reasoning_effort=high"
+                    ]
+                ));
+            }
+            assert_eq!(
+                std::fs::read(rig.dir.join("meta")).expect("after"),
+                before,
+                "print is effort-write-free"
+            );
+            assert_eq!(
+                std::fs::read(rig.dir.join("events.jsonl")).expect("after"),
+                events
+            );
+            assert!(String::from_utf8_lossy(&before).contains("profile.main=custom\n"));
+            // The ordinary resolver and the transported command share the contract.
+            let command = format!(
+                "EFFORT_ACCOUNT=kept {} {}",
+                rig.tool(tool),
+                if tool == "codex" {
+                    "--yolo -m gpt-6.1-sol -c model_reasoning_effort=xhigh"
+                } else {
+                    "--permission-mode bypassPermissions --model gpt-6.1-sol --effort xhigh"
+                }
+            );
+            assert_eq!(argv(&invoke(&rig, true, Some(&command))), words);
+        }
+    }
+
+    #[test]
+    fn effort_resume_cli_max_replays_xhigh_and_retained_rebuild_or_rename_keeps_it() {
+        let rig = rig("p2max", "codex", "applied");
+        for path in [
+            &rig.config,
+            &rig.dir.join("meta"),
+            &rig.dir.join("events.jsonl"),
+        ] {
+            let text = std::fs::read_to_string(path).expect("fixture");
+            let text = text
+                .replace("model_reasoning_effort=xhigh", "model_reasoning_effort=max")
+                .replace("base:xhigh low:high", "base:max low:xhigh")
+                .replace("xhigh->high", "max->xhigh")
+                .replace("session=fixture", "session=renamed")
+                .replace("launch_id.main=tok-1", "launch_id.main=retained-rebuild");
+            std::fs::write(path, text).expect("retained rebuild facts");
+        }
+        assert_effort(&argv(&invoke(&rig, true, None)), "codex", "xhigh");
+    }
+
+    #[test]
+    fn effort_resume_cli_real_replay_retains_client_account_and_config_home() {
+        let rig = rig("p2client", "codex", "applied");
+        let store = rig.home.join("selected-store");
+        let rolls = store.join("sessions/2026/10/13");
+        std::fs::create_dir_all(&rolls).expect("client store");
+        std::fs::write(rolls.join(format!("rollout-{CONV}.jsonl")), "{}\n")
+            .expect("same conversation in selected account");
+        let canonical = std::fs::canonicalize(&store).expect("canonical store");
+        std::fs::write(&rig.config, format!("[clients]\nselected = {} config_home={}\n[profiles]\ncustom = \"selected --yolo -m gpt-6.1-sol -c model_reasoning_effort=xhigh\"\n[roster]\nlead = custom\n[workspace]\nmain = lead\n", rig.tool("codex"), canonical.display())).expect("client profile");
+        let path = rig.dir.join("meta");
+        let text = std::fs::read_to_string(&path)
+            .expect("meta")
+            .replace("client:-", "client:selected");
+        std::fs::write(
+            &path,
+            format!(
+                "{text}client.main=selected\nconfig_home.main={}\n",
+                canonical.display()
+            ),
+        )
+        .expect("pinned account");
+        let output = invoke(&rig, false, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let words: Vec<String> = std::fs::read_to_string(&rig.out)
+            .expect("tool report")
+            .split(RS)
+            .map(str::to_owned)
+            .collect();
+        assert_effort(&words, "codex", "high");
+        assert!(words.contains(&format!("CODEX_HOME={}", canonical.display())));
+        let meta = std::fs::read_to_string(&path).expect("after");
+        assert!(meta.contains("client.main=selected\n"));
+        assert!(meta.contains("profile.main=custom\n"));
+        assert!(meta.contains(&format!("harness_session.main={CONV}\n")));
+        assert!(meta.contains("effort.main="));
+        let notice = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            notice.contains("effort high")
+                && notice.contains("xhigh")
+                && notice.contains("auto_effort = off"),
+            "truthful replay/recovery notice: {notice}"
+        );
+        assert!(!notice.contains("cache stays warm"));
+    }
+
+    #[test]
+    fn effort_resume_cli_pending_on_refuses_before_tool_or_new_marker() {
+        for state in ["pending-down", "pending-up"] {
+            let rig = rig(state, "codex", state);
+            let before = std::fs::read(rig.dir.join("meta")).expect("before");
+            for print in [true, false] {
+                let output = invoke(&rig, print, None);
+                assert!(!output.status.success(), "pending {state} refuses");
+                assert!(String::from_utf8_lossy(&output.stderr).contains("auto_effort = off"));
+                assert!(!rig.out.exists(), "vendor never executes");
+                assert_eq!(std::fs::read(rig.dir.join("meta")).expect("after"), before);
+                assert!(discards(&rig).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn effort_resume_cli_off_print_is_read_only_real_run_discards_once_and_closes() {
+        for state in ["applied", "pending-down", "pending-up"] {
+            let rig = rig(&format!("p2off-{state}"), "codex", state);
+            switch(&rig, "auto_effort = off");
+            let before = std::fs::read(rig.dir.join("meta")).expect("before");
+            assert_effort(&argv(&invoke(&rig, true, None)), "codex", "xhigh");
+            assert_eq!(
+                std::fs::read(rig.dir.join("meta")).expect("after print"),
+                before
+            );
+            assert!(discards(&rig).is_empty());
+            let output = invoke(&rig, false, None);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !std::fs::read_to_string(rig.dir.join("meta"))
+                    .expect("after run")
+                    .contains("effort.main")
+            );
+            let records = discards(&rig);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].actor, "watchdog");
+            assert_eq!(records[0].summary.as_deref(), Some("off"));
+            let words: Vec<String> = std::fs::read_to_string(&rig.out)
+                .expect("reported argv")
+                .split(RS)
+                .map(str::to_owned)
+                .collect();
+            assert_effort(&words, "codex", "xhigh");
+            let all: Vec<_> = std::fs::read_to_string(rig.dir.join("events.jsonl"))
+                .expect("journal")
+                .lines()
+                .map(|s| ae::events::Event::parse_line(s).expect("event"))
+                .collect();
+            assert_eq!(
+                ae::effort::fold(
+                    &all,
+                    ae::events::SessionKey::new("fixture", SID),
+                    "main",
+                    "lead"
+                ),
+                ae::effort::Fold::Armed
+            );
+            assert!(invoke(&rig, false, None).status.success());
+            assert_eq!(discards(&rig).len(), 1, "Absent emits no second discard");
+        }
+    }
+
+    #[test]
+    fn effort_resume_cli_fallback_and_create_drop_old_override_at_baseline() {
+        for create in [false, true] {
+            let rig = rig(
+                if create { "p2create" } else { "p2fallback" },
+                "claude",
+                "pending-up",
+            );
+            if create {
+                std::fs::remove_file(rig.dir.join("launch.main.started")).expect("first start");
+            } else {
+                std::fs::remove_dir_all(rig.home.join(".claude/projects"))
+                    .expect("gone conversation");
+            }
+            let output = invoke(&rig, false, None);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let text = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+            assert!(
+                !text.contains("effort.main"),
+                "old override cleared: {text}"
+            );
+            assert_eq!(discards(&rig).len(), 1);
+            assert_eq!(discards(&rig)[0].summary.as_deref(), Some("fresh"));
+            let words: Vec<String> = std::fs::read_to_string(&rig.out)
+                .expect("argv")
+                .split(RS)
+                .map(str::to_owned)
+                .collect();
+            assert_effort(&words, "claude", "xhigh");
+            assert!(!carries(&words, &["--resume", CONV]));
+            if !create {
+                assert!(text.contains(&format!("harness_session_prior.main=claude:{CONV}")));
+            }
+        }
+    }
+
+    #[test]
+    fn effort_resume_cli_new_compact_conversation_clears_same_id_compact_preserves() {
+        let rig = rig("p2compact", "codex", "applied");
+        assert_effort(&argv(&invoke(&rig, true, None)), "codex", "high");
+        let new_id = "33333333-3333-4333-8333-333333333333";
+        let path = rig.dir.join("meta");
+        let text = std::fs::read_to_string(&path).expect("meta").replace(
+            &format!("harness_session.main={CONV}"),
+            &format!("harness_session.main={new_id}"),
+        );
+        std::fs::write(&path, text).expect("new compact conversation");
+        rig.transcript("codex", new_id);
+        assert!(invoke(&rig, false, None).status.success());
+        assert!(
+            !std::fs::read_to_string(path)
+                .expect("meta")
+                .contains("effort.main")
+        );
+        assert_eq!(discards(&rig)[0].summary.as_deref(), Some("fresh"));
+    }
+
+    #[test]
+    fn effort_resume_cli_model_follow_and_profile_effort_edits_win() {
+        for model in [false, true] {
+            let rig = rig(
+                if model { "p2model" } else { "p2baseline" },
+                "codex",
+                "applied",
+            );
+            if model {
+                rig.append_meta(
+                    "observed_model.main=gpt-6-astra\nobserved_model_pin.main=gpt-6.1-sol\n",
+                );
+            } else {
+                let text = std::fs::read_to_string(&rig.config)
+                    .expect("config")
+                    .replace("model_reasoning_effort=xhigh", "model_reasoning_effort=max");
+                std::fs::write(&rig.config, text).expect("new profile effort");
+            }
+            let words = argv(&invoke(&rig, true, None));
+            assert_effort(&words, "codex", if model { "xhigh" } else { "max" });
+            if model {
+                assert!(carries(&words, &["-m", "gpt-6-astra"]));
+            }
+            assert!(
+                std::fs::read_to_string(rig.dir.join("meta"))
+                    .expect("meta")
+                    .contains("effort.main")
+            );
+        }
+    }
+
+    #[test]
+    fn effort_resume_cli_yield_and_strict_journal_errors_prevent_replay() {
+        for kind in [
+            "yield",
+            "absent",
+            "directory",
+            "damaged",
+            "nonutf8",
+            "discarded",
+        ] {
+            let rig = rig(&format!("p2ledger-{kind}"), "codex", "applied");
+            let path = rig.dir.join("events.jsonl");
+            match kind {
+                "yield" => std::fs::write(
+                    &path,
+                    format!(
+                        "{}{}",
+                        applied_journal(),
+                        journal_line("effort-yielded", "1700000000", "manual-effort")
+                    ),
+                )
+                .expect("yield"),
+                "discarded" => std::fs::write(
+                    &path,
+                    format!(
+                        "{}{}",
+                        applied_journal(),
+                        journal_line("effort-discarded", "1700000000", "off")
+                    ),
+                )
+                .expect("discard gap"),
+                "absent" => std::fs::remove_file(&path).expect("absent"),
+                "directory" => {
+                    std::fs::remove_file(&path).expect("remove");
+                    std::fs::create_dir(&path).expect("invalid node");
+                }
+                "nonutf8" => std::fs::write(&path, b"\xff").expect("invalid UTF8"),
+                _ => std::fs::write(&path, "not JSON\n").expect("damaged ledger"),
+            }
+            assert_effort(&argv(&invoke(&rig, true, None)), "codex", "xhigh");
+            assert!(
+                std::fs::read_to_string(rig.dir.join("meta"))
+                    .expect("meta")
+                    .contains("effort.main")
+            );
+        }
+    }
+
+    #[test]
+    fn effort_resume_cli_unusable_and_hostile_rows_never_inject_or_discard() {
+        for kind in [
+            "unusable",
+            "duplicate-switch",
+            "bare",
+            "duplicate-row",
+            "hostile",
+        ] {
+            let rig = rig(&format!("p2bad-{kind}"), "codex", "applied");
+            match kind {
+                "unusable" => switch(&rig, "auto_effort = uncertain"),
+                "duplicate-switch" => switch(&rig, "auto_effort = on\nauto_effort = on"),
+                "duplicate-row" => rig.append_meta(&format!("effort.main={VALID}\n")),
+                _ => {
+                    let path = rig.dir.join("meta");
+                    let text = std::fs::read_to_string(&path).expect("meta");
+                    let replacement = if kind == "bare" {
+                        "effort.main"
+                    } else {
+                        "effort.main=--effort max --model injected"
+                    };
+                    std::fs::write(
+                        path,
+                        text.replace(&format!("effort.main={VALID}"), replacement),
+                    )
+                    .expect("hostile fixture");
+                }
+            }
+            let before = std::fs::read(rig.dir.join("meta")).expect("before");
+            let words = argv(&invoke(&rig, true, None));
+            assert_effort(&words, "codex", "xhigh");
+            assert!(!words.iter().any(|s| s == "injected"));
+            assert!(discards(&rig).is_empty());
+            assert_eq!(std::fs::read(rig.dir.join("meta")).expect("after"), before);
+        }
+    }
+
+    #[test]
+    fn effort_resume_cli_switch_ignores_local_overlay_in_both_directions() {
+        for global_off in [false, true] {
+            let rig = rig(
+                if global_off { "p2goff" } else { "p2gon" },
+                "codex",
+                "applied",
+            );
+            if global_off {
+                switch(&rig, "auto_effort = off");
+            }
+            let local = rig.project.join(".ae");
+            std::fs::create_dir_all(&local).expect("local overlay");
+            std::fs::write(
+                local.join("config"),
+                format!(
+                    "[workspace]\nauto_effort = {}\n",
+                    if global_off { "on" } else { "off" }
+                ),
+            )
+            .expect("local switch");
+            assert_effort(
+                &argv(&invoke(&rig, true, None)),
+                "codex",
+                if global_off { "xhigh" } else { "high" },
+            );
+        }
+    }
+
+    #[test]
+    fn effort_resume_cli_append_failure_keeps_override_on_exact_and_fallback() {
+        for fallback in [false, true] {
+            let rig = rig(
+                if fallback { "p2append-fb" } else { "p2append" },
+                "claude",
+                "applied",
+            );
+            switch(&rig, "auto_effort = off");
+            std::fs::remove_file(rig.dir.join("events.jsonl")).expect("remove ledger");
+            std::fs::create_dir(rig.dir.join("events.jsonl")).expect("append refuses directory");
+            if fallback {
+                std::fs::remove_dir_all(rig.home.join(".claude/projects")).expect("gone store");
+            }
+            let output = invoke(&rig, false, None);
+            assert!(
+                output.status.success(),
+                "baseline still launches: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                std::fs::read_to_string(rig.dir.join("meta"))
+                    .expect("meta")
+                    .contains(&format!(
+                        "effort.main={}",
+                        VALID.replace("tool:codex", "tool:claude")
+                    ))
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("effort"),
+                "failed discard is named"
+            );
+        }
+    }
+}
+
 // ---- the helper links -----------------------------------------------------
 
 #[test]

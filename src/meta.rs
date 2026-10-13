@@ -2748,7 +2748,263 @@ mod tests {
         reason = "fixtures build and inspect real directories; the boundary is about \
                   what PRODUCT code may reach"
     )]
+    // Frozen P2 owner tests: real locks, real journal append and publication.
+    mod effort_resume_spec {
+        use super::super::{
+            Discard, EffortProof, RewriteError, discard_effort, discard_error,
+            record_fallback_fresh_discarding,
+        };
+        use super::Scratch;
+        use crate::tool::ToolKind;
 
+        const SID: &str = "11111111-1111-4111-8111-111111111111";
+        const CONV: &str = "22222222-2222-4222-8222-222222222222";
+        const NEW: &str = "33333333-3333-4333-8333-333333333333";
+        const ROWS: &str = "effort.main=old\neffort.main\neffort.main=duplicate\r\n";
+        const LINE: &str = "{\"ts\":\"2023-11-14T22:13:20Z\",\"actor\":\"watchdog\",\"action\":\"effort-discarded\",\"target\":\"lead\",\"target_slot\":\"main\",\"target_session\":\"fixture\",\"target_session_id\":\"11111111-1111-4111-8111-111111111111\",\"ref\":\"\",\"summary\":\"off\"}";
+
+        fn original() -> String {
+            format!(
+                "session_id={SID}\nseat.main=lead\nagent_bin.main=claude\nlaunch_id.main=tok-1\nharness_session.main={CONV}\n{ROWS}effort.spawned.0=foreign\ngoal=keep me\n"
+            )
+        }
+        fn proof() -> EffortProof<'static> {
+            EffortProof {
+                session_id: SID,
+                slot: "main",
+                agent: "lead",
+                tool: ToolKind::Claude,
+                launch_id: "tok-1",
+                rows: ROWS
+                    .split_terminator('\n')
+                    .map(|line| line.as_bytes().to_vec())
+                    .collect(),
+            }
+        }
+        fn fixture(tag: &str, text: &str) -> Scratch {
+            let scratch = Scratch::new(tag);
+            std::fs::write(scratch.0.join("meta"), text).expect("owned meta fixture");
+            scratch
+        }
+        fn journal(scratch: &Scratch) -> String {
+            std::fs::read_to_string(scratch.0.join("events.jsonl")).unwrap_or_default()
+        }
+        fn fallback(
+            scratch: &Scratch,
+            proof: &EffortProof<'_>,
+            id: &str,
+        ) -> (Result<(), RewriteError>, Discard) {
+            record_fallback_fresh_discarding(
+                &scratch.0,
+                "main",
+                "lead",
+                ToolKind::Claude,
+                "tok-1",
+                id,
+                Some(NEW),
+                proof,
+                LINE,
+            )
+        }
+
+        #[test]
+        fn effort_resume_owned_discard_removes_all_raw_rows_and_only_its_slot() {
+            let old = original();
+            let scratch = fixture("effp2-discard", &old);
+            assert!(matches!(
+                discard_effort(&scratch.0, &proof(), LINE),
+                Discard::Done
+            ));
+            assert_eq!(
+                std::fs::read_to_string(scratch.0.join("meta")).expect("published"),
+                old.replace(ROWS, "")
+            );
+            assert_eq!(journal(&scratch), format!("{LINE}\n"));
+            assert!(matches!(
+                discard_effort(&scratch.0, &proof(), LINE),
+                Discard::Moved
+            ));
+            assert_eq!(
+                journal(&scratch),
+                format!("{LINE}\n"),
+                "a stale retry writes nothing"
+            );
+        }
+
+        #[test]
+        fn effort_resume_owned_discard_guard_misses_write_zero_meta_and_journal() {
+            let old = original();
+            let cases = [
+                old.replace(SID, NEW),
+                old.replace("seat.main=lead", "seat.main=successor"),
+                old.replace("agent_bin.main=claude", "agent_bin.main=codex"),
+                old.replace("launch_id.main=tok-1", "launch_id.main=tok-2"),
+                format!("{old}launch_id.main=tok-1\n"),
+                format!("{old}session_id={SID}\n"),
+                old.replace("effort.main=old", "effort.main=changed"),
+                old.replace(
+                    ROWS,
+                    "effort.main=duplicate\r\neffort.main\neffort.main=old\n",
+                ),
+                old.replace("seat.main=lead\n", ""),
+            ];
+            for (index, current) in cases.iter().enumerate() {
+                let scratch = fixture(&format!("effp2-moved-{index}"), current);
+                std::fs::write(scratch.0.join("events.jsonl"), "prior bytes\n")
+                    .expect("journal fixture");
+                assert!(
+                    matches!(discard_effort(&scratch.0, &proof(), LINE), Discard::Moved),
+                    "guard case {index}"
+                );
+                assert_eq!(
+                    std::fs::read(scratch.0.join("meta")).expect("unchanged"),
+                    current.as_bytes()
+                );
+                assert_eq!(journal(&scratch), "prior bytes\n", "guard precedes append");
+            }
+        }
+
+        #[test]
+        fn effort_resume_append_failure_keeps_raw_override_and_names_failure() {
+            let old = original();
+            let scratch = fixture("effp2-append", &old);
+            std::fs::create_dir(scratch.0.join("events.jsonl")).expect("unwritable journal node");
+            assert!(
+                matches!(discard_effort(&scratch.0, &proof(), LINE), Discard::NotJournaled(why) if !why.is_empty())
+            );
+            assert_eq!(
+                std::fs::read(scratch.0.join("meta")).expect("unchanged"),
+                old.as_bytes()
+            );
+        }
+
+        #[test]
+        fn effort_resume_owned_discard_can_recover_non_utf8_raw_claims() {
+            let scratch = fixture("effp2-raw-encoding", &original());
+            let mut bytes = original().replace(ROWS, "").into_bytes();
+            bytes.extend_from_slice(b"effort.main=\xff\n");
+            std::fs::write(scratch.0.join("meta"), &bytes).expect("non-UTF8 effort fixture");
+            let mut proof = proof();
+            proof.rows = vec![b"effort.main=\xff".to_vec()];
+            assert!(matches!(
+                discard_effort(&scratch.0, &proof, LINE),
+                Discard::Done
+            ));
+            assert_eq!(
+                std::fs::read(scratch.0.join("meta")).expect("published"),
+                original().replace(ROWS, "").as_bytes()
+            );
+            assert_eq!(journal(&scratch), format!("{LINE}\n"));
+        }
+
+        #[test]
+        fn effort_resume_fallback_journals_discard_and_replaces_conversation_and_rows_together() {
+            let scratch = fixture("effp2-fallback", &original());
+            let (result, discarded) = fallback(&scratch, &proof(), CONV);
+            assert!(result.is_ok());
+            assert!(matches!(discarded, Discard::Done));
+            let next = std::fs::read_to_string(scratch.0.join("meta")).expect("published");
+            assert!(next.contains(&format!("harness_session.main={NEW}\n")));
+            assert!(next.contains(&format!("harness_session_prior.main=claude:{CONV}\n")));
+            assert!(
+                !next
+                    .lines()
+                    .any(|line| line.split('=').next() == Some("effort.main"))
+            );
+            assert!(next.contains("effort.spawned.0=foreign\n"));
+            assert_eq!(journal(&scratch), format!("{LINE}\n"));
+        }
+
+        #[test]
+        fn effort_resume_fallback_progresses_after_append_failure_but_keeps_override() {
+            let scratch = fixture("effp2-fallback-append", &original());
+            std::fs::create_dir(scratch.0.join("events.jsonl")).expect("append failure");
+            let (result, discarded) = fallback(&scratch, &proof(), CONV);
+            assert!(result.is_ok());
+            assert!(matches!(discarded, Discard::NotJournaled(_)));
+            let next =
+                std::fs::read_to_string(scratch.0.join("meta")).expect("fallback still published");
+            assert!(next.contains(&format!("harness_session.main={NEW}\n")));
+            assert!(
+                next.contains(ROWS),
+                "unrecorded discard never removes the override"
+            );
+        }
+
+        #[test]
+        fn effort_resume_fallback_guard_failure_and_effort_proof_failure_differ() {
+            let old = original();
+            let scratch = fixture("effp2-fallback-moved", &old);
+            let (result, discarded) = fallback(&scratch, &proof(), NEW);
+            assert!(result.is_err());
+            assert!(matches!(discarded, Discard::Moved));
+            assert_eq!(
+                std::fs::read(scratch.0.join("meta")).expect("unchanged"),
+                old.as_bytes()
+            );
+            assert!(!scratch.0.join("events.jsonl").exists());
+            let mut stale = proof();
+            stale.rows = vec![b"effort.main=stale".to_vec()];
+            let (result, discarded) = fallback(&scratch, &stale, CONV);
+            assert!(result.is_ok());
+            assert!(matches!(discarded, Discard::Moved));
+            let next = std::fs::read_to_string(scratch.0.join("meta")).expect("ordinary fallback");
+            assert!(next.contains(&format!("harness_session.main={NEW}\n")));
+            assert!(next.contains(ROWS));
+            assert!(!scratch.0.join("events.jsonl").exists());
+        }
+
+        #[test]
+        fn effort_resume_publication_error_distinguishes_visibility_from_durability() {
+            let pre = RewriteError::NotWritten(std::io::Error::other("pre-rename"));
+            let post = RewriteError::Unknown(std::io::Error::other("post-rename"));
+            assert!(
+                matches!(discard_error(&pre), Discard::NotPublished(why) if why.contains("pre-rename"))
+            );
+            assert!(
+                matches!(discard_error(&post), Discard::Unsynced(why) if why.contains("post-rename"))
+            );
+            assert_eq!(
+                post.cause().to_string(),
+                "post-rename",
+                "borrow preserves the fallback error"
+            );
+        }
+
+        #[test]
+        fn effort_resume_reseat_fresh_and_carried_drop_all_old_scope_rows() {
+            use super::super::{Conversation, SeatMove, reseated};
+            for conversation in [
+                Conversation::Fresh {
+                    id: NEW,
+                    capture_floor: 1_700_000_010,
+                },
+                Conversation::Carried {
+                    config_home: "/selected",
+                    config_home_base: None,
+                },
+            ] {
+                let result = reseated(
+                    &original(),
+                    "main",
+                    &SeatMove {
+                        profile: "custom",
+                        binary: "claude",
+                        launch_id: "tok-2",
+                        conversation,
+                    },
+                );
+                assert!(
+                    !result
+                        .lines()
+                        .any(|line| line.split('=').next() == Some("effort.main")),
+                    "{result}"
+                );
+                assert!(result.contains("effort.spawned.0=foreign\n"));
+                assert!(result.contains("goal=keep me\n"));
+            }
+        }
+    }
     #[test]
     fn both_session_id_readers_take_the_row_the_same_way() {
         let dir = std::env::temp_dir().join(format!("ae-meta-sid-{}", std::process::id()));

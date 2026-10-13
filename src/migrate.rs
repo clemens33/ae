@@ -1465,6 +1465,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn effort_resume_upgrade_chain_preserves_raw_effort_claims() {
+        let claims = "effort.main=v1 applied slot:main base:xhigh low:high at:80 ep:1700000000 sid:11111111-1111-4111-8111-111111111111 agent:lead tool:codex launch:tok-1 pid:42 conv:22222222-2222-4222-8222-222222222222 profile:custom client:- model:gpt-6.1-sol win:weekly/~/10080/1700000000/1700000100\neffort.spawned.0\neffort.spawned.0=damaged duplicate\r\neffort.spawned.0=second duplicate\n";
+        for version in ["schema=2\n", "meta_version=2\n", "meta_version=3\n"] {
+            let before = format!("{version}session=fixture\nseat.main=lead\n{claims}");
+            let after = migrate(&before)
+                .expect("placeable pre-upgrade meta")
+                .expect("migration performed")
+                .text;
+            assert!(
+                after.contains(claims),
+                "ordered raw claims survive: {after:?}"
+            );
+            assert!(after.contains("session=fixture\nseat.main=lead\n"));
+            assert!(migrate(&after).expect("current meta").is_none());
+        }
+    }
+
+    #[test]
     fn a_core_row_names_its_version_by_shape_and_an_empty_row_names_none() {
         let meta = b"ae_core=/h/.ae/versions/2026.1.1/ae-core\r\nae_core_version=2026.2.2\n";
         assert_eq!(core_versions(meta), ["2026.1.1", "2026.2.2"]);

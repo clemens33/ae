@@ -582,6 +582,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                effort: None,
             };
             assert_eq!(agent.display_session_id(), want, "{why}");
             // The RAW field is untouched: resume and capture logic still need it.
@@ -617,6 +618,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            effort: None,
         };
         let short = agent.display_session_id();
         assert_eq!(
@@ -667,6 +669,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            effort: None,
         }];
         Digest::new(
             Timestamp::parse("2026-05-29T14:00:00Z").expect("the documented stamp"),
@@ -995,6 +998,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            effort: None,
         }
         .to_json();
         let json::Value::Obj(fields) = &value else {

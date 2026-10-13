@@ -1285,6 +1285,20 @@ mod tests {
     use super::{EXIT_REFUSED, EXIT_USAGE, US};
     use std::path::{Path, PathBuf};
 
+    #[test]
+    fn effort_resume_slot_reuse_clears_owned_effort_rows() {
+        let scratch = Scratch::new("effort-slot-reuse");
+        let before = "session=fixture\nseat.spawned.0=scout\nlaunch_id.spawned.0=old-launch\neffort.spawned.0=v1 applied slot:spawned.0 base:xhigh low:high at:80 ep:1700000000 sid:11111111-1111-4111-8111-111111111111 agent:scout tool:codex launch:old-launch pid:42 conv:22222222-2222-4222-8222-222222222222 profile:custom client:- model:gpt-6.1-sol win:weekly/~/10080/1700000000/1700000100\neffort.spawned.0\neffort.spawned.0=damaged duplicate\neffort.main=foreign\neffort.spawned.01=neighbor\ngoal=keep\n";
+        scratch.file("meta", before);
+        let _held = crate::meta::lock(scratch.dir()).expect("owner meta lock");
+        super::drop_slot(scratch.dir(), before, "spawned.0").expect("drop old slot");
+        assert_eq!(
+            scratch.meta(),
+            "session=fixture\neffort.main=foreign\neffort.spawned.01=neighbor\ngoal=keep\n",
+            "no old effort claim may survive into a reused slot"
+        );
+    }
+
     /// A scratch directory, unique per INSTANCE (pid + counter) because plain
     /// `cargo test` runs these in threads and a shared path would let one test
     /// publish over another's meta.

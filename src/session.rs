@@ -2705,6 +2705,37 @@ mod tests {
     }
 
     #[test]
+    fn effort_resume_listing_producer_attaches_owned_record_and_damage_by_slot() {
+        use crate::effort::{Damage, Record, Stored};
+        const VALID: &str = "v1 applied slot:main base:xhigh low:high at:80 ep:1700000000 sid:11111111-1111-4111-8111-111111111111 agent:lead tool:codex launch:tok-1 pid:42 conv:22222222-2222-4222-8222-222222222222 profile:custom client:- model:gpt-6.1-sol win:weekly/~/10080/1700000000/1700000100";
+        let scratch = Scratch::new("effp2-list-producer");
+        for (rows, expected) in [
+            (
+                format!("effort.main={VALID}\n"),
+                Stored::Present(Record::parse(VALID).expect("literal record")),
+            ),
+            ("effort.main\n".into(), Stored::Damaged(Damage::Bare)),
+            (
+                format!("effort.main={VALID}\neffort.main={VALID}\n"),
+                Stored::Damaged(Damage::Duplicated),
+            ),
+            ("effort.spawned.0=other\n".into(), Stored::Absent),
+        ] {
+            scratch.meta(&format!("{META}{rows}"));
+            let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(
+                entry.agents.len(),
+                1,
+                "optional family does not doubt the roster"
+            );
+            assert_eq!(
+                entry.agents[0].effort.as_ref().unwrap_or(&Stored::Absent),
+                &expected
+            );
+        }
+    }
+
+    #[test]
     fn sc_509b_a_session_whose_meta_will_not_read_is_degraded() {
         // Meta absence is real loss: mode, origin, work_dir, goal and the roster.
         let scratch = Scratch::new("nometa");
