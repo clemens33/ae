@@ -100,7 +100,7 @@ fn peek_footer_keeps_copy_note_and_version_without_gear_or_target() {
     app.model.open_peek(0);
     app.flash = Some(("copied 2 lines".into(), std::time::Instant::now()));
     let buf = frame(&mut app, 160, 43);
-    assert!(row(&buf, 42, 0).starts_with("  peek   copied 2 lines"));
+    assert!(row(&buf, 42, 0).starts_with("  viewing   copied 2 lines"));
     assert!(row(&buf, 42, 0).ends_with(&crate::version_line()));
     assert!(!row(&buf, 42, 0).contains('│'), "footer clears the sidebar");
     assert!(app.layout.hit(click(159, 42)).is_none());
