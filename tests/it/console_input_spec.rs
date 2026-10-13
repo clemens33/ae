@@ -129,6 +129,12 @@ impl Output {
     fn clear(&mut self) {
         self.bytes.clear();
     }
+
+    /// Offset into the SAME lossy conversion `wait` hands its closure: text
+    /// grown past it arrived after the mark.
+    fn mark(&self) -> usize {
+        super::console_p35_spec::marked_len(&self.bytes)
+    }
 }
 
 impl Drop for Output {
@@ -356,6 +362,7 @@ fn typed_text_uses_the_real_console_ask_and_marker_path() {
     );
     let mut output = Output::attach(&rig, &pane, "w1");
     rig.ready(&pane, &mut output);
+    let mark = output.mark();
     rig.type_line(&pane, "independent typed request");
     let ask = rig.asked(&mut output, "independent typed request");
     assert_eq!(ask.target.as_deref(), Some("lead"));
@@ -380,10 +387,14 @@ fn typed_text_uses_the_real_console_ask_and_marker_path() {
         received.contains(&format!("REQUEST {id} from human:chat:")),
         "{received}"
     );
-    output.wait("the chat reports the ask outcome after its body", |text| {
-        text.find("independent typed request")
-            .zip(text.rfind("sent"))
-            .is_some_and(|(body, outcome)| body < outcome)
+    output.wait("the chat reports the sent ask with its body", |text| {
+        text.get(mark..).is_some_and(|after| {
+            // The lane card prints its `sent` header before its body rows; a
+            // merged text+Enter read skips the draft echo, never the card.
+            after
+                .match_indices("sent")
+                .any(|(at, _)| after[at..].contains("independent typed request"))
+        })
     });
     assert_eq!(rig.asks().len(), 1);
 }
@@ -397,13 +408,18 @@ fn a_typed_ask_never_prints_its_request_id_into_the_chat_pane() {
     let pane = rig.toggle();
     let mut output = Output::attach(&rig, &pane, "w1");
     rig.ready(&pane, &mut output);
+    let mark = output.mark();
     rig.type_line(&pane, "an id free request");
     let ask = rig.asked(&mut output, "an id free request");
     let id = ask.reference.expect("request id");
-    output.wait("the chat reports the ask outcome after its body", |text| {
-        text.find("an id free request")
-            .zip(text.rfind("sent"))
-            .is_some_and(|(body, outcome)| body < outcome)
+    output.wait("the chat reports the sent ask with its body", |text| {
+        text.get(mark..).is_some_and(|after| {
+            // The lane card prints its `sent` header before its body rows; a
+            // merged text+Enter read skips the draft echo, never the card.
+            after
+                .match_indices("sent")
+                .any(|(at, _)| after[at..].contains("an id free request"))
+        })
     });
     let shown = String::from_utf8_lossy(&output.bytes);
     assert!(!shown.contains(&id), "{shown}");

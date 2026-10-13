@@ -95,6 +95,24 @@ impl Output {
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.bytes).into_owned()
     }
+
+    /// Offset into the SAME lossy conversion `wait` hands its closure: text
+    /// grown past it arrived after the mark.
+    fn mark(&self) -> usize {
+        marked_len(&self.bytes)
+    }
+}
+
+/// Lossy length of `bytes` minus a trailing split sequence, so the mark is a
+/// char boundary of every later conversion, at or before every byte that
+/// arrives after it. A trailing incomplete sequence would render as U+FFFD
+/// now but complete later, shifting all later offsets.
+pub(crate) fn marked_len(bytes: &[u8]) -> usize {
+    let tail = bytes
+        .utf8_chunks()
+        .last()
+        .map_or(0, |chunk| chunk.invalid().len());
+    String::from_utf8_lossy(&bytes[..bytes.len() - tail]).len()
 }
 
 impl Drop for Output {
@@ -307,15 +325,21 @@ impl Rig {
         self.tmux(&["send-keys", "-t", pane, "Enter"]);
     }
 
-    fn asked(&self, out: &mut Output, body: &str) -> Event {
+    fn asked(&self, out: &mut Output, body: &str, mark: usize) -> Event {
         out.wait("real console records and confirms the ask", |text| {
             self.asks().iter().any(|ask| {
                 ask.summary.as_deref() == Some(body)
                     && ask.reference.is_some()
-                    && text
-                        .find(body)
-                        .zip(text.rfind("sent"))
-                        .is_some_and(|(body, outcome)| body < outcome)
+                    && text.get(mark..).is_some_and(|after| {
+                        // The lane card prints its `sent` header before its
+                        // body rows. A merged text+Enter read skips the draft
+                        // echo, never the card; an earlier card's `sent` never
+                        // repaints (view.rs:659-668 queues once per id,
+                        // consumed at print :933-942 or expiry :732-741).
+                        after
+                            .match_indices("sent")
+                            .any(|(at, _)| after[at..].contains(body))
+                    })
             })
         });
         self.asks()
@@ -372,8 +396,9 @@ fn a_kept_draft_is_restored_literally_with_an_all_seats_uncertainty_banner() {
         !rig.tool.events().contains("\"action\":\"cancel\""),
         "restore never closes"
     );
+    let mark = out.mark();
     rig.enter(&pane, "");
-    let ask = rig.asked(&mut out, "/close x");
+    let ask = rig.asked(&mut out, "/close x", mark);
     assert_eq!(ask.target.as_deref(), Some("colead"));
     assert_eq!(ask.target_slot, RoutingMember::Value("worker.0".to_owned()));
     assert!(
@@ -469,10 +494,12 @@ fn the_real_console_routes_follow_ups_to_the_speaker_and_restarts_at_main() {
     let first = rig.open();
     let mut out = Output::attach(&rig, &first, "first");
     ready(&mut out);
+    let first_mark = out.mark();
     rig.enter(&first, "@colead first request");
-    rig.asked(&mut out, "first request");
+    rig.asked(&mut out, "first request", first_mark);
+    let follow_mark = out.mark();
     rig.enter(&first, "sticky follow up");
-    let ask = rig.asked(&mut out, "sticky follow up");
+    let ask = rig.asked(&mut out, "sticky follow up", follow_mark);
     assert_eq!(ask.target.as_deref(), Some("colead"));
     assert_eq!(ask.target_slot, RoutingMember::Value("worker.0".to_owned()));
     assert!(
@@ -490,8 +517,9 @@ fn the_real_console_routes_follow_ups_to_the_speaker_and_restarts_at_main() {
     let restarted = rig.open();
     let mut restarted_out = Output::attach(&rig, &restarted, "restarted");
     ready(&mut restarted_out);
+    let mark = restarted_out.mark();
     rig.enter(&restarted, "fresh process request");
-    let ask = rig.asked(&mut restarted_out, "fresh process request");
+    let ask = rig.asked(&mut restarted_out, "fresh process request", mark);
     assert_eq!(ask.target.as_deref(), Some("lead"));
     assert_eq!(ask.target_slot, RoutingMember::Value("main".to_owned()));
 }
@@ -567,4 +595,17 @@ fn refused_routes_preserve_the_speaker_and_only_a_restart_resets_it() {
         "lead",
         "after restart",
     );
+}
+
+#[test]
+fn a_mark_drops_a_trailing_split_sequence_and_stays_an_exact_prefix() {
+    // U+00B7 (·, 2 bytes) and U+1F600 (4 bytes) cut mid-sequence.
+    assert_eq!(marked_len(b"x\xc2"), 1);
+    assert_eq!(marked_len(b"x\xf0\x9f\x98"), 1);
+    assert_eq!(marked_len("x·".as_bytes()), 3);
+    // Each mark is an exact prefix of the completed conversion.
+    let done = String::from_utf8_lossy("x·!".as_bytes());
+    assert_eq!(&done[..marked_len(b"x\xc2")], "x");
+    let done = String::from_utf8_lossy("x😀!".as_bytes());
+    assert_eq!(&done[..marked_len(b"x\xf0\x9f\x98")], "x");
 }
