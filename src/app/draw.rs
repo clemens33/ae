@@ -173,6 +173,10 @@ pub(crate) struct Layout {
     /// Each card the frame drew, as the app read it then: a menu opened on
     /// this frame acts on that and on nothing a later read changed.
     pub(super) cards: std::collections::BTreeMap<String, super::menu::Card>,
+    /// The session the frame drew those seats for: a delayed click replayed
+    /// against this frame opens only that session's seat, never a same-named
+    /// one of the session selected since.
+    pub seats_session: Option<String>,
 }
 
 impl Layout {
@@ -516,6 +520,7 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
         0..width
     };
     layout.chat = Rect::new(chat.start, 0, width - chat.start, height);
+    layout.seats_session = ctx.screen.selected.map(|entry| entry.name.clone());
     chat_column(&ctx, buf, chat.start + 2..width - 2, &mut layout);
     // The warning rides the chat's rule row, over the left of the rule.
     if let Some(line) = fallback {
@@ -1512,7 +1517,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
                 crate::board::terminal_text(seat)
             )),
             Line::default(),
-            "click the session for its chat".to_owned(),
+            "Esc or click the session for its chat".to_owned(),
         ),
         Composer::NoHome => (
             quiet("read-only · no home session: ae app <session> picks one".to_owned()),
@@ -4528,7 +4533,7 @@ mod tests {
         for words in [
             &["j/k", "scroll a line"][..],
             &["PgUp", "scroll a page"],
-            &["Esc q v", "close"],
+            &["Esc q v", "back to chat", "click the session"],
             &["wheel", "3 rows"],
             &["any other", "nothing reaches the pane"],
         ] {

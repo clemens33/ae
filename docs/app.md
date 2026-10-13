@@ -141,7 +141,7 @@ Browsing:
 | `!` | the next session that needs you |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
-| `v` | peek at the highlighted seat's screen, read-only ([Peeking at an agent](#peeking-at-an-agent)) |
+| Click a seat, or `v` on the highlighted seat | watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)) |
 | `n` / `p` | highlight the next / previous seat the body shows |
 | `PgUp` / `PgDn` | scroll the chat a page |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
@@ -174,11 +174,12 @@ takes every key), and at its right end `ae <version>` and the gear. A
 pending line — an armed key, a refused paste, an ask on its way —
 replaces the composer's hint in full ink; the `·` separator and the
 mode's keys follow only when the whole of it fits.
-Settings and the peek panel keep one footer row with the mode word
-(`settings`, `peek`), its hint (`Esc close`), the version and the gear
-(the peek panel draws no gear). The gear's click covers the gear and the
-blank before it, as the status line's settings button pads its glyph.
-Narrowing drops the version first, then the gear.
+Settings and a viewed seat keep one footer row with the mode word
+(`settings`, `viewing`), its hint (`Esc close` in Settings, `Esc chat`
+while viewing), the version and the gear (no gear while viewing). The
+gear's click covers the gear and the blank before it, as the status
+line's settings button pads its glyph. Narrowing drops the version first,
+then the gear.
 
 A paste while browsing is never read as keys. On a writable session it starts
 writing with the paste as the draft, every fragment of it kept and nothing in
@@ -311,41 +312,52 @@ that does not fit the window closes, and the hint row says so.
 
 ## Peeking at an agent
 
-`v` opens a read-only panel over the whole pane on the highlighted seat: the
-seat's screen and recent history as plain text. Nothing is typed into the seat,
-no record is written and no client moves. The seat is the one `oo` would open,
+Click a seat in the sidebar, or `v` on the highlighted seat, and that seat's
+live screen replaces the chat where the chat lane is: the seat's screen and
+recent history as plain text. The sidebar stays drawn and clickable, and
+clicking another seat retargets the view. Nothing is typed into the seat, no
+record is written and no client moves. The seat is the one `oo` would open,
 as the last frame drew it; with no session selected or none highlighted, in a
-stopped session, with no readable record directory, or outside tmux, the key
-opens nothing and the hint row says why (`refused: peek <seat>: <why>`, or
-`refused: peek: no session is selected`).
+stopped session, with no readable record directory, or outside tmux, the click
+or the key opens nothing and the hint row says why (`refused: peek <seat>:
+<why>`, or `refused: peek: no session is selected`).
 
 Every capture, the first included, proves the pane as `oo` does: the session is
 on the server the app runs on, the roster still seats that name in that slot,
 the pane carries it, is alive and is listed in the session. A pane that fails
-the proof is not read; the panel shows the refusal by name (`refused: peek
+the proof is not read; the view shows the refusal by name (`refused: peek
 <seat>: <why>`) in place of any earlier text. A capture tmux did not return
 shows `capture failed: tmux did not return the pane's screen`, an empty screen
 `(the pane shows nothing)`; the status line then reads `not captured`.
 
-The reader captures again every 2 seconds: 200 lines of history above the
-screen, the newest 400 kept, at most 2000 characters a line (`…` ends a cut
+The reader captures again every 500 milliseconds: 200 lines of history above
+the screen, the newest 400 kept, at most 2000 characters a line (`…` ends a cut
 one). Pane text is hostile, so each line is neutralised when painted (a
-control character or escape shows as `�`) and then wrapped to the pane, each
-continuation row two cells in. No colour is requested.
+control character or escape shows as `�`) and then wrapped to the chat column,
+each continuation row two cells in. No colour is requested.
 
-The title row reads `Peek · <session> · <seat>` and, at its right end, `Esc
-close`; under it a status: `loading` until the first answer, then `captured Ns
-ago · R rows`, led by `STALE · ` from 5 seconds on. `j` / `k`, `↓` / `↑` scroll a
-line, `PgUp` / `PgDn` a page, the wheel three rows a notch, anywhere. Scrolled
-back, the panel is paused: a newer capture waits (`paused · B back · newer
-waiting`) and is shown once you are back at the newest row; a refusal or a
-failed capture shows at once and returns to the newest row. `Esc`, `q`, `v` or a
-click on `Esc close` close it (`q` here is no `qq`), `^C` quits at once. Every
-other key, a paste and every other press is swallowed, so none reaches the pane.
-An upgrade restart waits while the panel is open.
+The column header and rule stay; under the rule a status: `loading` until the
+first answer, then `captured Ns ago · R rows`, led by `STALE · ` from 5 seconds
+on. `j` / `k`, `↓` / `↑` scroll a line, `PgUp` / `PgDn` a page; the wheel
+moves one session a notch over the session list, three rows a notch over the
+Agents body or the viewed screen, and nothing anywhere else. Scrolled back,
+the view is paused: a newer capture waits
+(`paused · B back · newer waiting`) and is shown once you are back at the
+newest row; a refusal or a failed capture shows at once and returns to the
+newest row. `Esc`, `q`, `v` close it (`q` here is no `qq`), `^C` quits at once;
+so do a click on the selected session's row and any session switch, which land
+back in that session's chat. Every other key, a paste and every other press is
+swallowed, so none reaches the pane; session keys wait for `Esc` first. An
+upgrade restart waits while a seat is viewed.
+
+While a seat is viewed the composer writes nowhere: its row reads `viewing
+<seat> · read-only · Esc chat`, and the keys row `viewing   Esc chat`. `y`
+copies nothing here: it only shows the note `drag to copy text`. A mouse drag
+over the viewed text copies as in the chat, and the outcome note rides the
+keys row.
 
 Named limits. The pane can change between the proof and the capture of one
-cycle; the panel only displays, so nothing is moved or typed on that account.
+cycle; the view only displays, so nothing is moved or typed on that account.
 A capture is plain text: styling and images the seat's tool draws are not
 shown.
 
@@ -409,14 +421,13 @@ paste buffer works regardless; outside tmux the OSC 52 write is all there is.
 
 ## Selecting text
 
-Drag over drawn text with the left button, in the chat, the peek panel, the
+Drag over drawn text with the left button, in the chat, a viewed seat, the
 session list or the Agents body: the cells light up while you drag (reverse video,
 so text that is already reversed shows its inverse), and letting go copies
 exactly the lit text the way `y` does. The hint row answers with the same
 `copied N lines to the tmux buffer; …` words (outside tmux,
-`sent N lines to the terminal clipboard - unconfirmed`); in the peek panel,
-which covers that row, the answer replaces `Esc close` on its last row for a
-few seconds.
+`sent N lines to the terminal clipboard - unconfirmed`); while a seat is
+viewed the answer rides the keys row instead, for a few seconds.
 
 The text is the drawn cells, row by row, each row cut at its last character
 and the rows joined by a newline (an empty row stays, nothing follows the last
@@ -429,9 +440,9 @@ A press with no motion is the click it always was, a border still grabs first,
 and the wheel is unchanged. `Esc` with a selection held only clears it (a second
 `Esc` does what it always did); so does the next press. The selection also
 goes, copying nothing, when what you selected changes before the copy leaves:
-another session, Settings or the peek panel, a resize, or the cells under
+another session, Settings or a seat view, a resize, or the cells under
 it. While the button is down and until the copy is out, a new read of the chat,
-the session list or the looks waits (a peek capture, in its panel), the
+the session list or the looks waits (a seat capture, in its column), the
 Agents body's ages stand still and a restart into a new core waits; they land just
 after the copy, so the copy is the cells you saw. A drag with no mouse input for
 10 s is cleared (`selection cleared: no mouse input for 10 s`). A copy leaves
@@ -491,8 +502,10 @@ one with no recorded `session_id`, one whose lead pair cannot be read and one
 not recorded in this state root are read-only and say why.
 
 Every way out of writing releases the lease — `Esc`, `^C`, a crash, a click on
-a session row, and a read that finds the session no longer proven — and
-Settings keeps it while open. Each ask and `/close` goes through the chat's
+a session row, opening a seat view, and a read that finds the session no longer
+proven — and Settings keeps it while open. The view keeps the draft it
+interrupted: `Esc` returns to the chat and `Enter` retakes the lease to
+continue it. Each ask and `/close` goes through the chat's
 admission, which re-proves the lease and re-reads the meta's `session_id` and
 lead pair against those the entry proved, then asks as `console:local` in that
 session under the same five-open cap; the ask reaches the session's own recorded
@@ -554,8 +567,8 @@ whatever it held. It uses it only for the same pane, its own version, within
 60 s, and only on a fleet read that lists that session with that uuid. A
 complete read that omits it, or lists another uuid, drops the view; an
 incomplete one that cannot say waits for the next. Anything else, any key or
-click before it applies included, leaves the default view. Settings, peek,
-drafts and marked turns never carry: they hold a restart back. A core without this feature ignores the option, and a leftover
+click before it applies included, leaves the default view. Settings, a viewed
+seat, drafts and marked turns never carry: they hold a restart back. A core without this feature ignores the option, and a leftover
 one is refused and cleared by the next app that reads it or dies with the
 tmux server.
 

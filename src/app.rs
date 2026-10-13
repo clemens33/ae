@@ -629,6 +629,9 @@ impl App {
             .unwrap_or_else(|| session.clone());
         match self.peek_ask(&session, drawn.as_ref()) {
             Ok(ask) => {
+                if self.composing() {
+                    self.write(false);
+                }
                 self.peek_generation = ask.generation;
                 self.model.open_peek(ask.generation);
                 self.peek = PeekPane {
@@ -683,25 +686,44 @@ impl App {
         }
     }
 
-    /// A mouse event with the peek panel open: the wheel scrolls wherever it
-    /// lands, a press on the drawn close label closes, a press on its body
-    /// begins a selection, and any other press dies.
+    /// A mouse event with a seat viewed: the sidebar stays live — a press
+    /// on the viewed session returns to its chat, one on another session
+    /// or seat goes through the ordinary press (which closes or retargets
+    /// the view) — the wheel scrolls what it lands on, and a press on the
+    /// viewed body begins a selection.
     fn peek_mouse(&mut self, mouse: Mouse, fresh: bool) -> bool {
         match mouse.kind {
             MouseKind::WheelUp | MouseKind::WheelDown => {
-                self.model.peek_wheel(mouse.kind == MouseKind::WheelUp);
-                true
+                let up = mouse.kind == MouseKind::WheelUp;
+                if self.layout.in_list(mouse) {
+                    let start = self.layout.list_start.unwrap_or(0);
+                    self.model.wheel_list(up, start, self.layout.list_max)
+                } else if self.layout.in_body(mouse) {
+                    self.model.wheel_body(up, self.layout.body_max)
+                } else if self.layout.in_chat(mouse) {
+                    self.model.peek_wheel(up);
+                    true
+                } else {
+                    false
+                }
             }
-            MouseKind::Click if matches!(self.layout.hit(mouse), Some(draw::Hit::PeekClose)) => {
-                self.close_peek();
-                true
+            MouseKind::Click => match self.layout.hit(mouse) {
+                Some(draw::Hit::Session(name)) if self.model.selected() == Some(name.as_str()) => {
+                    self.close_peek();
+                    true
+                }
+                Some(draw::Hit::Session(_) | draw::Hit::Seat(_)) => self.clicked(mouse, fresh),
+                _ if self.layout.grab(mouse).is_some() => self.clicked(mouse, fresh),
+                _ => {
+                    self.arm(mouse, None, fresh);
+                    false
+                }
+            },
+            MouseKind::Drag => self.drag(mouse) || self.stretch(mouse),
+            MouseKind::Release => {
+                let ended = self.model.let_go();
+                self.finish(mouse) || ended
             }
-            MouseKind::Click => {
-                self.arm(mouse, None, fresh);
-                false
-            }
-            MouseKind::Drag => self.stretch(mouse),
-            MouseKind::Release => self.finish(mouse),
             MouseKind::Menu => false,
         }
     }
@@ -1523,8 +1545,13 @@ impl App {
 
     /// A wheel notch landing past a bound the last frame has not proven the
     /// top — page keys may have asked further back — waits for the next
-    /// frame rather than stopping short at it.
+    /// frame rather than stopping short at it. A viewed seat owns its wheel
+    /// at once: the chat the bounds describe is hidden, so its bound waits
+    /// for nothing.
     fn unbounded(&self, key: &Key) -> bool {
+        if self.model.peek_open() {
+            return false;
+        }
         let Key::Mouse(mouse) = key else {
             return false;
         };
@@ -1702,7 +1729,24 @@ impl App {
             }
             draw::Hit::Compose => return false,
             draw::Hit::Seat(name) => {
+                // The click opens only the seat it named, as the frame that
+                // drew it bound it: a delayed click replayed after the seat
+                // left, or after its session gave way to another, refuses by
+                // that name instead of falling back to another highlight.
+                let bound = self.model.selected().is_some_and(|session| {
+                    self.layout.seats_session.as_deref() == Some(session)
+                        && self.drawn.as_ref().is_some_and(|drawn| {
+                            drawn.session == session
+                                && drawn.rows.iter().any(|(row, _)| row == &name)
+                        })
+                });
+                if !bound && self.model.selected().is_some() {
+                    let line = format!("refused: peek {name}: the view changed");
+                    self.flash = Some((line, Instant::now()));
+                    return true;
+                }
                 self.focus_seat(Some(name));
+                self.open_peek();
                 return true;
             }
             draw::Hit::Settings => {
@@ -3184,7 +3228,10 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         if key == Key::Newline && !app.composing() {
             key = Key::Enter;
         }
-        if !app.fleeted && key != Key::Interrupt {
+        // An open overlay or seat view owns its keys even before the first
+        // fleet read lands; only plain navigation waits for the fleet.
+        let modal = app.model.settings_open() || app.model.peek_open();
+        if !app.fleeted && !modal && key != Key::Interrupt {
             redraw |= early(app, &key, origin)?;
             continue;
         }
@@ -3435,10 +3482,16 @@ fn peek_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
     Some(peek_keys(app, model::browse_keys(key)))
 }
 
-/// Feed `keys` to the open peek panel; a close they cause tells the reader.
+/// Feed `keys` to the seat view; a close they cause tells the reader.
+/// `y` copies no turn here: it only says how copying works in the view.
 fn peek_keys(app: &mut App, keys: Vec<model::Key>) -> bool {
     let mut redraw = false;
     for key in keys {
+        if key == model::Key::Copy {
+            app.flash = Some(("drag to copy text".to_owned(), Instant::now()));
+            redraw = true;
+            continue;
+        }
         redraw |= app.model.key(key, &app.fleet, false) == model::Act::Redraw;
     }
     if !app.model.peek_open() {
@@ -3478,6 +3531,9 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
     match act {
         model::Act::Quit => None,
         model::Act::Select(_) => {
+            if app.model.peek_open() {
+                app.close_peek();
+            }
             app.show();
             Some(true)
         }
@@ -7377,8 +7433,8 @@ mod tests {
     }
 
     /// The pane starts on the model's generation, every open its own, and
-    /// keeps its seat through the first frames: the title names the seat,
-    /// before and after a capture.
+    /// keeps its seat through the first frames: the composer row names the
+    /// viewed seat, before and after a capture.
     #[test]
     fn the_panel_starts_on_the_models_generation_and_its_title_names_the_seat() {
         let (mut app, _asks) = peeker();
@@ -7387,14 +7443,246 @@ mod tests {
         let _ = pressed(&mut app, b"v");
         let _ = pressed(&mut app, b"v");
         assert_eq!(app.peek.generation, 2, "a reopen is its own generation");
-        assert!(framed(&mut app).contains("Peek · aedev · colead"));
+        assert!(framed(&mut app).contains("viewing colead"));
         app.answer(Answer::Peek {
             generation: 2,
             at: Instant::now(),
             body: super::Body::Lines(vec!["ROW".to_owned()]),
         });
         let shown = framed(&mut app);
-        assert!(shown.contains("Peek · aedev · colead") && shown.contains("ROW"));
+        assert!(shown.contains("viewing colead") && shown.contains("ROW"));
+    }
+
+    /// Two running sessions drawing `seats` (slot, name) each: the seat-click
+    /// binding fixture, api selected first. Each caller passes its own `tag`:
+    /// `Root` keys only pid plus tag, so shared tags race under `cargo test`.
+    fn bound_app(
+        tag: &str,
+        names: &[&str],
+        seats: &[(&str, &str)],
+    ) -> (Root, App, std::sync::mpsc::Receiver<loader::Request>) {
+        use crate::console::needs::SeatRef;
+
+        let root = Root::new(tag);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            Some(names[0].to_owned()),
+            Some(crate::inventory::ServerId::Ambient),
+            None,
+            Some(tx),
+        );
+        (app.fleeted, app.loading) = (true, false);
+        app.fleet = Fleet {
+            home: Some(names[0].to_owned()),
+            rows: Vec::new(),
+        };
+        for (at, name) in names.iter().enumerate() {
+            let dir = session(&root, name, "");
+            app.dirs.insert((*name).to_owned(), dir);
+            app.ids.insert((*name).to_owned(), ID.to_owned());
+            app.world.sessions.push(entry(name, Status::Running, None));
+            app.fleet.rows.push(row(name, at + 1, at == 0));
+            let roster: Vec<SeatRef> = seats
+                .iter()
+                .map(|(slot, name)| SeatRef {
+                    slot: (*slot).into(),
+                    name: (*name).into(),
+                })
+                .collect();
+            app.facts.insert(
+                (*name).to_owned(),
+                fleet::Facts::Seats {
+                    id: ID.to_owned(),
+                    agents: roster
+                        .iter()
+                        .map(|seat| tmux::PickerAgent {
+                            name: seat.name.clone(),
+                            profile: "sol61x".into(),
+                            state: "working".into(),
+                            pane: "%7".into(),
+                            client: String::new(),
+                            model: String::new(),
+                            effort: String::new(),
+                            drift: false,
+                        })
+                        .collect(),
+                },
+            );
+            app.shown.insert(
+                (*name).to_owned(),
+                super::Shown {
+                    id: ID.to_owned(),
+                    seq: 1,
+                    lane: Rc::new(Lane {
+                        coverage: Vec::new(),
+                        items: Vec::new(),
+                    }),
+                    roster: Some(roster),
+                },
+            );
+        }
+        app.model = Model::new(&app.fleet);
+        app.model.set_focus(Some("colead".to_owned()));
+        app.show();
+        (root, app, rx)
+    }
+
+    /// The click on the drawn seat target `seat` in `shown`.
+    fn seat_cell(shown: &str, app: &App, seat: &str) -> super::Mouse {
+        let click = |column: usize, row: usize| super::Mouse {
+            kind: super::MouseKind::Click,
+            column: u16::try_from(column).expect("frame column"),
+            row: u16::try_from(row).expect("frame row"),
+        };
+        shown
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.match_indices(seat).find_map(|(byte, _)| {
+                    let column = line[..byte].chars().count();
+                    matches!(
+                        app.layout.hit(click(column, row)),
+                        Some(super::draw::Hit::Seat(name)) if name == seat
+                    )
+                    .then_some(click(column, row))
+                })
+            })
+            .unwrap_or_else(|| panic!("drawn seat target {seat}"))
+    }
+
+    /// B2: a seat click delayed past the frame that drew it refuses by the
+    /// clicked name once that seat is gone, and never falls back to the
+    /// highlight it would have opened instead.
+    #[test]
+    fn a_delayed_seat_click_after_removal_refuses_by_name_and_opens_nothing() {
+        let (_root, mut app, asks) = bound_app(
+            "livepeek-bind-removal",
+            &["api"],
+            &[("main", "lead"), ("worker.0", "colead")],
+        );
+        let first = framed(&mut app);
+        let at = seat_cell(&first, &app, "colead");
+        let origin = Instant::now();
+        if let Some(fleet::Facts::Seats { agents, .. }) = app.facts.get_mut("api") {
+            agents.retain(|agent| agent.name != "colead");
+        }
+        if let Some(shown) = app.shown.get_mut("api")
+            && let Some(roster) = shown.roster.as_mut()
+        {
+            roster.retain(|seat| seat.name != "colead");
+        }
+        let _second = framed(&mut app);
+        assert_eq!(
+            app.drawn.as_ref().and_then(|drawn| drawn.focused.clone()),
+            Some("lead".to_owned()),
+            "the trap: a live highlight to fall back to"
+        );
+        assert!(app.mouse_made(at, origin), "the stale click is taken");
+        assert!(!app.model.peek_open(), "nothing opens");
+        assert!(asks.try_recv().is_err(), "nothing asked");
+        let (line, _) = app.flash.clone().expect("a refusal");
+        assert_eq!(line, "refused: peek colead: the view changed");
+    }
+
+    /// B2: the same delayed click after a session switch refuses too, even
+    /// when the new session seats the same name: the click stays bound to
+    /// the frame that drew it.
+    #[test]
+    fn a_delayed_seat_click_after_a_session_switch_refuses_despite_same_names() {
+        let (_root, mut app, asks) = bound_app(
+            "livepeek-bind-switch",
+            &["api", "web"],
+            &[("main", "lead"), ("worker.0", "colead")],
+        );
+        let first = framed(&mut app);
+        let at = seat_cell(&first, &app, "colead");
+        let origin = Instant::now();
+        let _ = app.model.key(Browse::Digit(2), &app.fleet, false);
+        app.show();
+        let _second = framed(&mut app);
+        assert_eq!(app.model.selected(), Some("web"));
+        assert!(
+            app.drawn
+                .as_ref()
+                .is_some_and(|drawn| drawn.rows.iter().any(|(name, _)| name == "colead")),
+            "the trap: the new session seats the same name"
+        );
+        assert!(app.mouse_made(at, origin), "the stale click is taken");
+        assert!(!app.model.peek_open(), "nothing opens");
+        assert!(asks.try_recv().is_err(), "nothing asked");
+        let (line, _) = app.flash.clone().expect("a refusal");
+        assert_eq!(line, "refused: peek colead: the view changed");
+    }
+
+    /// B2: while a seat is viewed the wheel scrolls the viewed screen where
+    /// the chat column is drawn, and dies anywhere else — the keys row
+    /// scrolls nothing.
+    #[test]
+    fn a_wheel_while_viewing_scrolls_only_where_it_lands() {
+        let (mut app, _asks) = peeker();
+        let _ = pressed(&mut app, b"v");
+        assert!(app.model.peek_open());
+        let _shown = framed(&mut app);
+        let wheel = |column: u16, row: u16| super::Mouse {
+            kind: super::MouseKind::WheelUp,
+            column,
+            row,
+        };
+        let chat = (0..160)
+            .find(|column| app.layout.in_chat(wheel(*column, 10)))
+            .expect("a chat cell");
+        let before = app.model.peek_back().unwrap_or(0);
+        assert!(app.mouse(wheel(chat, 10)), "the viewed screen scrolls");
+        assert!(
+            app.model.peek_back().unwrap_or(0) > before,
+            "the notch lands on the view"
+        );
+        assert!(!app.mouse(wheel(100, 44)), "the keys row is no scroll");
+        assert_eq!(
+            app.model.peek_back().unwrap_or(0),
+            before.saturating_add(crate::app::model::WHEEL_ROWS),
+            "nothing else moved it"
+        );
+    }
+
+    /// B2: a wheel over the viewed screen is handled at once even where the
+    /// hidden chat's bound is unproven: the view waits for no frame.
+    #[test]
+    fn a_viewed_wheel_is_never_deferred_on_the_hidden_chat_bound() {
+        let (mut app, _asks) = peeker();
+        let _ = pressed(&mut app, b"v");
+        assert!(app.model.peek_open());
+        let _shown = framed(&mut app);
+        let chat = (0..160)
+            .find(|column| {
+                app.layout.in_chat(super::Mouse {
+                    kind: super::MouseKind::WheelUp,
+                    column: *column,
+                    row: 10,
+                })
+            })
+            .expect("a chat cell");
+        let wheel = Key::Mouse(super::Mouse {
+            kind: super::MouseKind::WheelUp,
+            column: chat,
+            row: 10,
+        });
+        app.layout.complete = false;
+        app.layout.max_scroll = 0;
+        assert!(
+            !app.unbounded(&wheel),
+            "the view owns its wheel despite the hidden bound"
+        );
+        let _ = take_keys(&mut app, vec![(wheel.clone(), Instant::now())]);
+        assert!(app.deferred.is_empty(), "nothing deferred");
+        let _ = pressed(&mut app, b"q");
+        assert!(!app.model.peek_open());
+        app.layout.complete = false;
+        app.layout.max_scroll = 0;
+        assert!(
+            app.unbounded(&wheel),
+            "the same bound defers once the chat is back"
+        );
     }
 
     /// A capture that aged and any other line that ended lapse in one call,
