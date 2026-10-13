@@ -3729,6 +3729,60 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_completion_alone_and_with_a_hint_owes_the_next_frame() {
+        for success in [true, false] {
+            for hint in [false, true] {
+                let root = Root::new("image-redraw-pin");
+                let (mut app, _reader) = housed(&root);
+                let at = writing(&mut app);
+                assert_eq!(app.compose(Key::Text(b"kept".to_vec()), at), Some(()));
+                let _ = framed(&mut app);
+                let path = root.0.join("sessions/api/messages/img-pin.png");
+                if success {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, b"\x89PNG\r\n\x1a\nimage").unwrap();
+                }
+                let writer = app.writer.as_ref().unwrap();
+                let (send, recv) = std::sync::mpsc::channel();
+                app.clipboard = Some(((writer.key(), writer.entry), recv));
+                assert!(!app.owed(), "pending read and no other debt owe no frame");
+                assert!(app.clipboard.is_some());
+                assert_eq!(drafted(&app), "kept");
+                assert!(app.flash.is_none());
+                app.again = hint;
+                let answer = if success {
+                    Ok(path.clone())
+                } else {
+                    Err("clipboard tool failed".to_owned())
+                };
+                send.send(answer).unwrap();
+                let mut backend = super::backend::Ansi::new(Vec::new(), (160, 45));
+                assert!(
+                    super::settle(&mut app, &mut backend).unwrap(),
+                    "completion owes a frame: success {success}, other hint {hint}"
+                );
+                assert!(app.clipboard.is_none());
+                if success {
+                    assert_eq!(drafted(&app), format!("kept {}", path.display()));
+                    assert!(app.flash.is_none());
+                } else {
+                    assert_eq!(drafted(&app), "kept");
+                    assert_eq!(
+                        app.flash.as_ref().map(|(line, _)| line.as_str()),
+                        Some("paste not taken: clipboard tool failed")
+                    );
+                }
+                let frame = framed(&mut app);
+                assert!(frame.contains(if success {
+                    "img-pin.png"
+                } else {
+                    "paste not taken: clipboard tool failed"
+                }));
+            }
+        }
+    }
+
+    #[test]
     fn image_paste_browses_without_fetching_and_ignores_a_repeat() {
         let mut app = app(None);
         let _ = pressed(&mut app, b"\x16");
