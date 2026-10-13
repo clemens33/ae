@@ -307,6 +307,7 @@ fn window(group: &crate::quota::Group, row: &crate::quota::Row, now: i64) -> Opt
     Some(super::Window {
         judged: judged.judged(),
         critical: judged.level() == crate::quota::QuotaLevel::Critical,
+        long: crate::quota::proven_long(row.window_minutes),
         observed_at: judged.observed_at(),
         resets_at: row.resets_at,
         status,
@@ -1838,6 +1839,7 @@ mod tests {
             windows: vec![crate::autoreseat::Window {
                 judged,
                 critical: judged >= 95.0,
+                long: true,
                 observed_at: 0,
                 resets_at: None,
                 status: crate::quota::Status::Fresh,
@@ -2400,6 +2402,7 @@ mod tests {
                         windows: vec![Window {
                             judged,
                             critical: judged >= 95.0,
+                            long: true,
                             observed_at: now.epoch(),
                             resets_at: None,
                             status: crate::quota::Status::Fresh,

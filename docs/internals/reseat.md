@@ -490,8 +490,8 @@ the daemon journals target-less as `auto-reseat-notice` once per start), the
 daemon judges every eligible seat whose limit latch does NOT stand against its
 OWN client scope — the one `quota::recorded_identity` join the throttle line and
 the checkpoint ask make — over its held quota observation: the worst usable
-(fresh or stale) window, rows scoped to another model family left out, by the
-one derived percentage. At or past the threshold it books
+(fresh or stale) window proven at least one day long, rows scoped to another
+model family left out, by the one derived percentage. At or past the threshold it books
 `auto-reseat-headroom`, whose `ts` is the episode KEY and whose summary,
 `headroom <pct>% <window>`, every later record of the episode quotes whole. The
 episode stays due under that key while the scope reads within 5 points of the
@@ -508,7 +508,8 @@ one — the same two attempts, the same trigger, leg, records and endings, each
 summary naming the trigger. A hold the journal already ends on is not named
 again, a daemon restart included. The trigger re-reads the scope and declines
 once it has relief. The chooser adds two skips: `no headroom` for a candidate
-with a usable window at or past the threshold, and `left on headroom` for a
+with a usable window at or past the threshold that is proven at least one day
+long or critical, and `left on headroom` for a
 profile the seat left on headroom until a reading after the move proves it
 below the threshold, or its reset passed. A successful headroom attempt names
 each candidate it passed over. A drawn limit outranks the whole path: a latched

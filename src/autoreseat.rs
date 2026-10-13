@@ -1050,6 +1050,9 @@ pub struct Window {
     pub judged: f64,
     /// The one classifier put this window at critical.
     pub critical: bool,
+    /// The vendor stated a length of at least a day ([`crate::quota::proven_long`]):
+    /// only such a window decides headroom.
+    pub long: bool,
     pub observed_at: i64,
     pub resets_at: Option<i64>,
     pub status: Status,
@@ -1080,7 +1083,8 @@ pub enum Skip {
     PeerLatched,
     Exhausted,
     LeftOnLimit,
-    /// A usable window judged at or past the headroom threshold.
+    /// A usable long window, or a critical one, judged at or past the headroom
+    /// threshold.
     NoRoom,
     LeftOnHeadroom,
 }
@@ -1139,7 +1143,9 @@ pub fn choose_with(candidates: &[Candidate], now: i64, room: Option<u8>) -> Choi
 /// profile left on headroom waits the same way, its bar the threshold `room`
 /// names rather than critical. A number ae cannot use proves nothing either
 /// way. A spend cap needs no rule of its own, because it judges as exhausted.
-/// With `room`, a candidate with any usable window at or past it has none.
+/// With `room`, a candidate with a usable window at or past it has none — a
+/// long window, or a short one the classifier put at critical, so a seat never
+/// moves onto an account whose short window is spent.
 fn passed_over(candidate: &Candidate, now: i64, room: Option<u8>) -> Option<Skip> {
     if !candidate.configured {
         return Some(Skip::Unconfigured);
@@ -1147,11 +1153,13 @@ fn passed_over(candidate: &Candidate, now: i64, room: Option<u8>) -> Option<Skip
     if candidate.peer_latched {
         return Some(Skip::PeerLatched);
     }
-    let crossed = |window: &Window| room.is_some_and(|at| window.judged >= f64::from(at));
+    let over = |window: &Window, at: u8| {
+        window.judged >= f64::from(at) && (window.long || window.critical)
+    };
+    let crossed = |window: &Window| room.is_some_and(|at| over(window, at));
     if let Some(left) = candidate.left_at {
         let bar = room.filter(|_| candidate.left_on_headroom);
-        let spent =
-            |window: &Window| bar.map_or(window.critical, |at| window.judged >= f64::from(at));
+        let spent = |window: &Window| bar.map_or(window.critical, |at| over(window, at));
         let still = if candidate.left_on_headroom {
             Skip::LeftOnHeadroom
         } else {
@@ -1184,7 +1192,7 @@ fn passed_over(candidate: &Candidate, now: i64, room: Option<u8>) -> Option<Skip
 }
 
 /// What the seat's OWN account says about its headroom, judged against the
-/// threshold `at`: the worst usable window decides.
+/// threshold `at`: the worst usable window proven at least a day long decides.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Room {
     /// No usable window of the seat's own account: nothing is decided.
@@ -1202,7 +1210,7 @@ pub enum Room {
 pub fn room(windows: &[Window], at: u8) -> Room {
     let worst = windows
         .iter()
-        .filter(|window| usable(window))
+        .filter(|window| window.long && usable(window))
         .max_by(|left, right| left.judged.total_cmp(&right.judged));
     let at = f64::from(at);
     match worst {
@@ -2005,6 +2013,7 @@ mod tests {
         Window {
             judged,
             critical,
+            long: true,
             observed_at,
             resets_at: None,
             status,
@@ -2812,6 +2821,44 @@ mod tests {
         );
     }
 
+    fn short(judged: f64, critical: bool) -> Window {
+        Window {
+            long: false,
+            label: "session 5h".to_owned(),
+            ..window(judged, critical, 6_000, Status::Fresh)
+        }
+    }
+
+    #[test]
+    fn only_a_window_proven_a_day_long_decides_room() {
+        let weekly = window(50.0, false, 1, Status::Fresh);
+        assert_eq!(room(&[short(99.0, true)], 95), Room::Unread);
+        assert_eq!(
+            room(&[short(99.0, true), weekly.clone()], 95),
+            Room::Relieved(weekly)
+        );
+        assert_eq!(
+            room(
+                &[short(40.0, false), window(94.0, false, 1, Status::Fresh)],
+                95
+            ),
+            Room::Near
+        );
+    }
+
+    #[test]
+    fn a_short_window_blocks_a_headroom_target_only_at_critical() {
+        let choose = |windows| choose_with(&[candidate("far", windows)], NOW, Some(80));
+        assert!(choose(vec![short(85.0, false)]).pick.is_some());
+        let spent = choose(vec![short(96.0, true)]);
+        assert_eq!(spent.pick, None);
+        assert_eq!(spent.skipped, [("far".to_owned(), Skip::NoRoom)]);
+        // Below the threshold a critical short window is only deprioritized.
+        let below = choose_with(&[candidate("far", vec![short(96.0, true)])], NOW, Some(98));
+        assert_eq!(below.pick, Some(("far".to_owned(), Tier::Critical)));
+        let long = choose(vec![window(85.0, false, 6_000, Status::Fresh)]);
+        assert_eq!(long.skipped, [("far".to_owned(), Skip::NoRoom)]);
+    }
     #[test]
     fn a_headroom_episode_passes_over_a_candidate_without_room_where_a_limit_takes_it() {
         let near = candidate("near", vec![window(96.0, true, 6_000, Status::Fresh)]);

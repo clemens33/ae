@@ -724,24 +724,37 @@ fn threshold_config_is_bounded_global_default_and_bad_values_note_once() {
 }
 
 #[test]
-fn either_weekly_or_session_crossing_moves_an_idle_seat_before_a_limit() {
-    for (tag, windows, named) in [
+fn only_a_weekly_crossing_moves_an_idle_seat_before_a_limit() {
+    for (tag, windows, named, moves) in [
         (
             "hrweekly",
             vec![("session", 5.0), ("weekly_all", 95.0)],
             "weekly",
+            true,
         ),
         (
             "hrsession",
             vec![("session", 95.0), ("weekly_all", 5.0)],
             "session",
+            false,
         ),
     ] {
         let rig = Rig::new(tag);
         configure(&rig, "", "fake-claude", "fake-opencode");
         quota(&rig, "home", &windows, 0);
         let pane = seat(&rig, "claude");
+        let pid = rig.tool_pid(&pane, "claude");
         let _watch = watch(&rig);
+        if !moves {
+            sweeps(&rig);
+            assert!(
+                auto_records(&rig).is_empty(),
+                "a short crossing opens no episode: {}",
+                rig.events()
+            );
+            unchanged(&rig, &pane, "fake-claude", pid);
+            continue;
+        }
         until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
         assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
         assert!(rig.tool_pid(&pane, "opencode").is_some(), "moved in place");
@@ -893,7 +906,7 @@ fn a_candidate_at_headroom_is_skipped_for_an_unknown_candidate_and_named() {
     );
     quota(&rig, "home", &[("weekly_all", 96.0)], 0);
     quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
-    quota(&rig, "home-b", &[("session", 96.0)], 900);
+    quota(&rig, "home-b", &[("weekly_all", 96.0)], 900);
     let pane = seat(&rig, "claude");
     let _watch = watch(&rig);
     until(&rig, || booked(&rig, DONE_ACTION).len() == 1);

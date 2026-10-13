@@ -16,7 +16,7 @@ use crate::config::IdentityConfig;
 use crate::events::{Event, SessionKey};
 use crate::launch_cmd::{EffortRefusal, effort_skeleton, model_flag_value};
 use crate::meta::RecordedClient;
-use crate::quota::{Status, WindowKey};
+use crate::quota::{LONG_MINUTES, Status, WindowKey, proven_long};
 use crate::time::Timestamp;
 use crate::tool::ToolKind;
 
@@ -224,11 +224,6 @@ pub fn twin_in(
     })
 }
 
-/// Only a window PROVEN at least one day long decides effort: a shorter one
-/// resets before a lower tier pays for itself, and a length the vendor never
-/// stated proves nothing.
-pub const LONG_MINUTES: u32 = 1440;
-
 /// The most windows one record carries.
 pub const MAX_WINDOWS: usize = 8;
 
@@ -251,11 +246,7 @@ impl Window {
     /// Whether this window decides effort: usable and proven long.
     #[must_use]
     pub fn long(&self) -> bool {
-        self.usable
-            && self
-                .key
-                .minutes
-                .is_some_and(|minutes| minutes >= LONG_MINUTES)
+        self.usable && proven_long(self.key.minutes)
     }
 }
 
@@ -410,6 +401,7 @@ pub fn relieved(scope: &Scope, threshold: u8) -> Option<bool> {
         .map(|window| crate::autoreseat::Window {
             judged: window.judged,
             critical: false,
+            long: true,
             observed_at: window.observed_at,
             resets_at: window.resets_at,
             status: Status::Fresh,

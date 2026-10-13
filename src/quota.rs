@@ -88,6 +88,17 @@ impl Status {
     }
 }
 
+/// Only a window PROVEN at least one day long decides effort and auto reseat
+/// headroom: a shorter one resets before either pays for itself, and a length
+/// the vendor never stated proves nothing.
+pub const LONG_MINUTES: u32 = 1440;
+
+/// Whether a window of `minutes` is proven at least [`LONG_MINUTES`] long.
+#[must_use]
+pub const fn proven_long(minutes: Option<u32>) -> bool {
+    matches!(minutes, Some(minutes) if minutes >= LONG_MINUTES)
+}
+
 /// One window's identity inside its scope — bucket, qualifier and length, the
 /// identity the settings dialog folds rows by — never a display label.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

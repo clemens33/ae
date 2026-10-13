@@ -13830,6 +13830,7 @@ mod tests {
         let window = |judged: f64| Window {
             judged,
             critical: judged >= 95.0,
+            long: true,
             observed_at: 90,
             resets_at: None,
             status: crate::quota::Status::Fresh,
