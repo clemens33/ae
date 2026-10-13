@@ -222,6 +222,12 @@ impl Layout {
         self.chat.contains((mouse.column, mouse.row).into())
     }
 
+    /// The chat lane above its last row: the panel footer owns that row, so
+    /// a wheel there never reaches the body drawn above it.
+    pub(crate) fn in_chat_body(&self, mouse: Mouse) -> bool {
+        self.in_chat(mouse) && mouse.row < self.chat.bottom().saturating_sub(1)
+    }
+
     pub(crate) fn in_list(&self, mouse: Mouse) -> bool {
         self.list.contains((mouse.column, mouse.row).into())
     }

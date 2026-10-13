@@ -700,7 +700,7 @@ impl App {
                     self.model.wheel_list(up, start, self.layout.list_max)
                 } else if self.layout.in_body(mouse) {
                     self.model.wheel_body(up, self.layout.body_max)
-                } else if self.layout.in_chat(mouse) {
+                } else if self.layout.in_chat_body(mouse) {
                     self.model.peek_wheel(up);
                     true
                 } else {
