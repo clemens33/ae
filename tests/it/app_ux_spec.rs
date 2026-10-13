@@ -463,7 +463,11 @@ fn settings_close_label_uses_the_resized_drawn_cells_even_at_the_minimum() {
     rig.wait(&pane, WAIT, "drawn close label closes", |s| !is_settings(s));
     rig.resize(&pane, 160, 30);
     rig.wait(&pane, WAIT, "home frame resized back", |s| {
-        s.contains("appux-fixture-lane")
+        s.lines().count() == 30
+            && s.contains("appux-fixture-lane")
+            && s.lines().last().is_some_and(|line| {
+                line.chars().count() == 160 && line.ends_with(&format!("{} *", ae::version_line()))
+            })
     });
     rig.settings(&pane);
     rig.gear(&pane);
