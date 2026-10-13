@@ -1902,6 +1902,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A private publish into a directory takes one plain file name inside a
+    /// real directory, and writes nothing anywhere for anything else.
+    #[test]
+    fn a_private_publish_into_a_directory_takes_one_plain_file_name_only() {
+        let root = scratch("publish-in");
+        let dir = root.join("dir");
+        std::fs::create_dir(&dir).unwrap();
+        for name in ["", ".", "..", "../b", "x/a"] {
+            let refused =
+                super::publish_private_in(&dir, name, b"x").map_err(|why| why.to_string());
+            assert_eq!(refused, Err("not one file name".to_owned()), "{name:?}");
+        }
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        let (file, linked) = (root.join("file"), root.join("linked"));
+        std::fs::write(&file, b"").unwrap();
+        std::os::unix::fs::symlink(&dir, &linked).unwrap();
+        for not_dir in [&file, &linked] {
+            let refused =
+                super::publish_private_in(not_dir, "a", b"x").map_err(|why| why.to_string());
+            let why = "the directory is not a real directory".to_owned();
+            assert_eq!(refused, Err(why), "{not_dir:?}");
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert_eq!(std::fs::read(&file).unwrap(), b"");
+        super::publish_private_in(&dir, "a", b"x").unwrap();
+        assert_eq!(std::fs::read(dir.join("a")).unwrap(), b"x");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A private publish is 0600, replaces whole, and a failed replacement —
     /// at the temp or at the rename — leaves the old bytes and no temp.
     #[test]
