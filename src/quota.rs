@@ -1,7 +1,9 @@
 //! Vendor quota snapshots parsed from local client-owned caches.
 //!
-//! Parsing stays separate from discovery and rendering: the client files are
-//! hostile persisted state, while this module is a pure bytes-to-rows boundary.
+//! The parsers under `quota/` are pure: hostile bytes in, rows out. This
+//! parent module is not — it discovers and reads the client files (hostile
+//! persisted state), runs the one on-demand agy leg for [`run`], folds the
+//! rows and renders the operator table.
 
 pub mod agy;
 pub mod claude;

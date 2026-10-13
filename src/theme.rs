@@ -14,12 +14,16 @@
 //!   options — measured on tmux 3.7b, `set-option -t <session>` on one of those
 //!   lands on the session's CURRENT window alone — so they are stamped per
 //!   window, and never on the global-window table.
-//! * **Three writers, one job each.** A LAUNCH writes the layout, the look
-//!   facts and the attention seed. A RENAME rewrites the layout and the facts
-//!   and leaves every verdict alone. The WATCHDOG owns the verdicts, refreshing
-//!   them each cycle, and rewrites the layout only when the look stamp says the
-//!   look changed under it. Every format references `@ae_*` rather than a fact
-//!   of its own, so nothing here polls and no format ever runs `#()`.
+//! * **Four writers, one job each** (AGENTS.md §How to work here owns the
+//!   rule). A LAUNCH writes the layout, the look facts and the attention
+//!   seed. A RENAME rewrites the layout and the facts and leaves every
+//!   verdict alone. The WATCHDOG owns the verdicts, refreshing them each
+//!   cycle, and rewrites the layout only when the look stamp says the look
+//!   changed under it. The ADOPTER — any running watchdog — writes
+//!   [`FLEET_STRIP_OPTION`], and nothing else, into a same-server ae session
+//!   with no live watchdog of its own (`watchdog_daemon`'s adoption writes).
+//!   Every format references `@ae_*` rather than a fact of its own, so
+//!   nothing here polls and no format ever runs `#()`.
 //! * **Spaces, not commas, inside `#[…]`.** A `#{W:a,b}` or `#{?c,a,b}` splits
 //!   on commas, so a comma-separated style list inside one would tear the
 //!   format in half. tmux reads a space-separated style list identically, and

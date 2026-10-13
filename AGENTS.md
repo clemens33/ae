@@ -27,11 +27,21 @@ reasoning, the retired rules and every measurement narrative are in
 ## Structure
 
 ```
-src/                — Rust sources. main.rs thin (argv in, exit code out); lib.rs and one
-                      module per domain hold everything testable. theme.rs is PURE: the
-                      palettes, the seven marks and every tmux format ae draws a session with
-src/app/            — `ae app`: PURE fleet, overview, model, peek and draw halves; backend.rs the
-                      one writer of its escapes; tty.rs the terminal door (rustix termios)
+src/                — Rust sources. main.rs thin (argv in, exit code out); lib.rs and the
+                      modules beside it, grouped by domain (some a file, some a file plus a
+                      directory of submodules), hold everything testable. theme.rs is PURE:
+                      the palettes, the seven marks and every tmux format ae draws a session with
+src/app/            — `ae app`; src/app.rs is the coordinator (loop, frame, keys, the one
+                      write). loader.rs the one background reader; journals.rs its
+                      parsed-journal cache; backend.rs the one writer of its escapes;
+                      tty.rs the terminal door (rustix termios); settings.rs the
+                      settings-overlay bodies, read by the loader through `config`;
+                      upgrade.rs the follow-the-link restart verdicts. PURE halves:
+                      fleet.rs sidebar rows, overview.rs what waits + the work dir,
+                      model.rs the browse reducer, lane.rs chat turns as rows, draw.rs
+                      the cells, peek.rs the peek panel, select.rs text selection,
+                      menu.rs the card session menu and its Stop question,
+                      cue.rs unread cues, handover.rs the restart view
 tests/it/           — the one integration-test target. The behaviours of the retired bash
                       suites are pinned here as Rust tests.
                       doors.rs = capability boundary; gate.rs = justfile/install guards;
