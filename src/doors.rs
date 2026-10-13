@@ -251,6 +251,18 @@ fn strict_dir_core(
     }
 }
 
+/// `CLAUDE_CONFIG_DIR` exactly as the caller has it, empty included: the
+/// Claude config home a statusline feed was started under. Read by
+/// `_quota-feed` alone; every other reader judges a seat's recorded command.
+#[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a door: the statusline feed's Claude account is the config home its own claude ran under"
+)]
+pub fn claude_config_dir() -> Option<std::ffi::OsString> {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+}
+
 /// `AE_NO_AUTOSTART=1`: start NEITHER companion.
 #[must_use]
 pub fn no_autostart() -> bool {

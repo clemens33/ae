@@ -70,6 +70,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quota_feed"
+path = "fuzz_targets/quota_feed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "quota_codex_rollout"
 path = "fuzz_targets/quota_codex_rollout.rs"
 test = false

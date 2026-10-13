@@ -265,6 +265,28 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         Some("upgrade") => return upgrade::run(&args[1..], out, err),
         _ => {}
     }
+    // A STATUSLINE'S PIPE. It drains stdin to EOF on every path, so the
+    // script upstream never meets a closed pipe; it pays the gate, but a
+    // refusal is silent; and it writes neither stream and exits 0, because a
+    // statusline must never show ae noise.
+    if args.first().map(String::as_str) == Some(cli::QUOTA_FEED) {
+        let payload = quota::feed::drain(&mut std::io::stdin().lock());
+        if let (Some(payload), Ok(None), Some(root), [_]) = (
+            payload,
+            install_gate(&mut std::io::sink()),
+            state_root(),
+            args,
+        ) {
+            quota::publish_feed(
+                &root,
+                doors::claude_config_dir().as_deref(),
+                doors::home().as_deref(),
+                &payload,
+                time::Timestamp::now().epoch(),
+            );
+        }
+        return Ok(0);
+    }
     // THE GATE, above every remaining word.
     if let Some(code) = install_gate(err)? {
         return Ok(code);

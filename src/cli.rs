@@ -244,6 +244,10 @@ pub const INSTALL: &str = "_install";
 /// The detached installed-only automatic release check.
 pub const AUTOUPGRADE: &str = "_autoupgrade";
 
+/// A statusline's pipe into ae: `_quota-feed`, the payload on stdin. Answered
+/// above the gate's refusal text by [`crate::run`], silent on every path.
+pub const QUOTA_FEED: &str = "_quota-feed";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {

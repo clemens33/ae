@@ -626,9 +626,9 @@ percentage first within a band, config order breaking ties; a scope's windows ke
 stable bucket order. Each row is drawn in its tone
 (an inline tmux `#[fg]`), and every row also carries its word, so the dialog reads the
 same with colour stripped. With no usable observation the scope says why in words (`no reading
-ae can trust (last report 2d 4h ago) — run /usage in a claude session`, `quota file
-unreadable`, `read cut short`, `this client reports no quota`); a config failure becomes one
-`quota: unavailable` head. A narrow client drops, in order, `SEEN`, the bar and the long
+ae can trust (last report 2d 4h ago) — run /usage in a claude session or feed ae from your
+statusline`, `quota file unreadable`, `read cut short`, `this client reports no quota`);
+a config failure becomes one `quota: unavailable` head. A narrow client drops, in order, `SEEN`, the bar and the long
 note words, then elides window names from the tail with `…` (floor 12 columns); a short client
 folds calm windows into one `+N calm scopes, M calm windows — ae quota` line (`+1 calm scope`,
 `1 calm window` in the singular; either half alone when the other is zero), trouble
@@ -1116,12 +1116,54 @@ when a `/usage` fetch succeeds there — at most once every five minutes, and th
 serves it for at most an hour — so an unused config home can stay `unknown` while ae re-reads
 its file on every invocation. Codex rollouts move on the seat's own API turns, so an idle seat
 ages out the same way. When a Claude scope holds no usable window, the table names the manual
-action in its STATUS cell and the dialog's status line names it too
-(`run /usage in a claude session`); the hint and the observation age are derived per render and
-are never part of the scope identity, and no percentage is shown while the status is `unknown`.
+action in its STATUS cell and the dialog's status line names it too (`run /usage in a
+claude session or feed ae from your statusline`, see below); the hint and the observation age are
+derived per render and are never part of the scope identity, and no percentage is shown while the status
+is `unknown`.
 Cached Claude numbers become `unknown` when the file's current and cached account UUIDs disagree;
 the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
 are reduced to printable table cells before widths or wrapping are calculated.
+
+### Feed Claude quota from your statusline
+
+Claude Code (2.1.80 and later) pipes a JSON payload to its `statusLine` command on every
+update, and that payload carries the account's five-hour and seven-day windows. One line in your
+statusline script hands it to ae, so the Claude rows stay fresh while you work instead of waiting
+for a `/usage`. For a script that already read stdin into `input`:
+
+```sh
+printf '%s' "$input" | ae _quota-feed     # bash, zsh
+```
+
+```fish
+printf '%s' $input | ae _quota-feed       # fish
+```
+
+A script that has not read stdin yet starts with `input=$(cat)` (fish: `set input (cat | string collect)`).
+
+Each login keys its own record by the Claude config home of the claude running the statusline:
+`CLAUDE_CONFIG_DIR` when that claude has one — a client with `config_home=` sets it, and the
+statusline inherits it, so a `cc-mic` login needs nothing extra — else the default account behind
+`~/.claude.json`. Put the line in the statusline each login's own `settings.json` names.
+
+`ae _quota-feed` reads stdin to its end (at most 64 KiB kept; a longer payload is drained and
+ignored), writes nothing to stdout or stderr and always exits 0, a broken install included. It
+keeps one record per config home under ae's own state (`~/.ae/quota-feed/`, files 0600 in a 0700
+directory), never in the vendor's files, and rewrites it when a window changes, otherwise at most
+once a minute. Each window is judged alone: one the payload states validly is recorded, one that is
+missing or malformed is left out, and a payload with no valid window keeps the last record.
+
+The feed is a second observation of the same `session` and `weekly_all` windows the `/usage`
+cache reports. Per window the newer observation wins (a tie keeps the cache), and its `OBSERVED`
+age is when ae received the payload. `EFFECTIVE`, `PACE`, the watchdog advisory and checkpoint
+ask, the dialog and the app's Quota tab read it like any other observation. The table does not say
+which source a row came from; the age does — a Claude row seen a minute ago that nobody ran
+`/usage` for came from the feed.
+
+Gaps: no windows before a session's first API response, and none at all for API-key, Bedrock or
+Vertex sessions; model-scoped windows (`weekly_scoped Fable`) are not in the payload and stay
+`/usage`-only; after an account switch inside one config home the old account's numbers stand
+until the next payload.
 
 Grok Build reports its weekly credit window in its own debug log, `~/.grok/logs/unified.jsonl`
 (the record `billing: fetched credits config`). ae reads only the last 512 KiB of that file and

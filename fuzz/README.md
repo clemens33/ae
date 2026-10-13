@@ -58,6 +58,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `launch_cmd_lex` | `launch_cmd::lex_simple_command` | one profile command string |
 | `config_command` | `config::IdentityConfig::command` | first line the profile, the rest one config text |
 | `quota_claude_cache` | `quota::claude::parse` | one Claude settings file, at a fixed and a chosen clock |
+| `quota_feed` | `quota::feed::extract` + `quota::feed::parse`, plus `render` on whatever parsed | one Claude statusline payload, or one `quota-feed` record; a record that parses must render back to its own bytes |
 | `quota_codex_rollout` | `quota::codex::parse` (rows, account facts and the thinned per-window history) | first byte the record boundary, the rest a rollout tail |
 | `quota_grok_log` | `quota::grok::parse` | first byte the line boundary, the rest a grok debug-log tail, at a fixed and a chosen clock |
 | `quota_agy_output` | `quota::agy::{version, supports_quota, parse}` | one agy stdout capture: a `--version` answer and a `/quota` report, at a fixed and a chosen clock |

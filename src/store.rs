@@ -317,6 +317,35 @@ pub fn publish_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     publish_private_with(path, bytes, |from, to| std::fs::rename(from, to))
 }
 
+/// [`publish_private`] of the one file `name` directly inside `dir`, where
+/// `dir` must itself be a directory — a link there is refused, never written
+/// through — and `name` one plain file name. The residual between the check
+/// and the publish is the one [`read_capped_in`] names.
+///
+/// # Errors
+///
+/// A name or directory refused, or the publish itself.
+pub fn publish_private_in(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not one file name",
+        ));
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: classifies the directory itself WITHOUT following a link, before any write under it — see clippy.toml"
+    )]
+    let observed = std::fs::symlink_metadata(dir)?;
+    if !observed.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the directory is not a real directory",
+        ));
+    }
+    publish_private(&dir.join(name), bytes)
+}
+
 /// [`publish_private`] with its last step handed in, so a test can fail the
 /// rename itself.
 pub(crate) fn publish_private_with(

@@ -8,6 +8,7 @@
 pub mod agy;
 pub mod claude;
 pub mod codex;
+pub mod feed;
 pub mod grok;
 mod pace;
 pub mod view;
@@ -24,6 +25,8 @@ use crate::tool::{QuotaSource, ToolKind};
 use crate::transport::AgyRun;
 
 const CLAUDE_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// The statusline feed's record ceiling, as the store reads take it.
+const FEED_CAP: u64 = feed::RECORD_MAX as u64;
 const CODEX_TAIL_BYTES: u64 = 256 * 1024;
 const SESSION_META_MAX_BYTES: u64 = 1024 * 1024;
 const QUOTA_MAX_FILES: usize = 4_096;
@@ -452,7 +455,7 @@ impl Reading {
     /// policy says, while the declaration and the account facts merge on their
     /// own provenance.
     pub(crate) fn adopt(&mut self, incoming: &Self) -> Adopted {
-        let newer = incoming.observed_at > self.observed_at;
+        let newer = strictly_newer(Some(self.observed_at), Some(incoming.observed_at));
         let repolicied = self.policy.absorb(&incoming.policy);
         if newer {
             self.row = incoming.row.clone();
@@ -1612,7 +1615,7 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
         let quota = scope.tool.adapter().quota;
         match quota.source {
             QuotaSource::ClaudeCache => {
-                let observed = rows_or_placeholder(read_claude(scope, inputs.now, &mut budget));
+                let observed = claude_observed(scope, inputs, &mut budget);
                 let group = Group {
                     profiles: scope.profiles.clone(),
                     tool: scope.tool,
@@ -2303,25 +2306,15 @@ fn resolved_scope_paths(
         });
     }
     let source = match tool.adapter().quota.source {
-        QuotaSource::ClaudeCache if resolution.explicit => home
-            .as_ref()
-            .map(|config_home| config_home.join(".claude.json")),
-        QuotaSource::ClaudeCache => match &resolution.base {
-            crate::launch_cmd::Resolved::Path(_) => {
-                match crate::run::canonical_config_home(&resolution.base)? {
-                    crate::launch_cmd::Resolved::Path(base) => Some(base.join(".claude.json")),
-                    crate::launch_cmd::Resolved::Absent
-                    | crate::launch_cmd::Resolved::Unknown(_) => None,
-                }
+        QuotaSource::ClaudeCache => {
+            if let (false, crate::launch_cmd::Resolved::Unknown(reason)) =
+                (resolution.explicit, &resolution.base)
+                && hint.is_none()
+            {
+                hint = Some(reason.clone());
             }
-            crate::launch_cmd::Resolved::Absent => None,
-            crate::launch_cmd::Resolved::Unknown(reason) => {
-                if hint.is_none() {
-                    hint = Some(reason.clone());
-                }
-                None
-            }
-        },
+            claude_source(resolution.explicit, home.as_deref(), &resolution.base)?
+        }
         QuotaSource::CodexRollouts => home
             .as_ref()
             .map(|config_home| config_home.join("sessions")),
@@ -2343,6 +2336,185 @@ fn canonical_source(path: PathBuf) -> Result<PathBuf, String> {
             Err("quota source did not resolve to a path".to_owned())
         }
     }
+}
+
+/// The RAW `.claude.json` a Claude scope reads: under its canonical config
+/// home when the home is explicit, else under its canonical effective HOME.
+/// The cache read opens exactly this path, so its own link refusal stands;
+/// only an identity is ever canonicalised past it, by [`canonical_source`].
+fn claude_source(
+    explicit: bool,
+    home: Option<&Path>,
+    base: &crate::launch_cmd::Resolved,
+) -> Result<Option<PathBuf>, String> {
+    if explicit {
+        return Ok(home.map(|home| home.join(".claude.json")));
+    }
+    Ok(match crate::run::canonical_config_home(base)? {
+        crate::launch_cmd::Resolved::Path(base) => Some(base.join(".claude.json")),
+        crate::launch_cmd::Resolved::Absent | crate::launch_cmd::Resolved::Unknown(_) => None,
+    })
+}
+
+/// The Claude scope a statusline feed runs under — the same key a configured
+/// scope of that config home carries — or `None` when the caller's
+/// `CLAUDE_CONFIG_DIR` is set but empty or relative, which names no home ae
+/// could join.
+fn claude_feed_scope(config_dir: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    use crate::launch_cmd::Resolved;
+    let source = match config_dir.map(Path::new) {
+        Some(dir) if dir.is_absolute() => {
+            match crate::run::canonical_config_home(&Resolved::Path(dir.to_path_buf())).ok()? {
+                Resolved::Path(home) => claude_source(true, Some(&home), &Resolved::Absent),
+                Resolved::Absent | Resolved::Unknown(_) => return None,
+            }
+        }
+        Some(_) => return None,
+        None => {
+            let base = home.filter(|home| home.is_absolute())?.to_path_buf();
+            claude_source(false, None, &Resolved::Path(base))
+        }
+    };
+    canonical_source(source.ok()??).ok()
+}
+
+/// `ae _quota-feed` past its drain and its gate: record what `payload` states
+/// for the caller's own Claude scope under the state root `root`, or nothing.
+/// An unchanged payload is not written again for [`feed::REWRITE_SECS`].
+pub(crate) fn publish_feed(
+    root: &Path,
+    config_dir: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+    payload: &[u8],
+    now: i64,
+) {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let windows = feed::extract(payload);
+    let Some(scope) = claude_feed_scope(config_dir, home).filter(|_| !windows.is_empty()) else {
+        return;
+    };
+    let dir = root.join(feed::DIR);
+    let name = feed::file_name(&scope);
+    let record = feed::Record {
+        scope,
+        received_at: now,
+        windows,
+    };
+    let held = match crate::store::read_capped_in(&dir, &name, FEED_CAP) {
+        Ok(crate::store::SourceRead::Ready(bytes)) => feed::parse(&bytes).ok(),
+        _ => None,
+    };
+    if held.is_some_and(|held| !feed::due(&held, &record)) {
+        return;
+    }
+    let Some(text) = feed::render(&record) else {
+        return;
+    };
+    // A directory already there is the expected case; anything that is not a
+    // real directory is refused by the publish below.
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    let _ = crate::store::publish_private_in(&dir, &name, text.as_bytes());
+}
+
+/// A Claude scope's windows: its `/usage` cache with its statusline feed beside it.
+fn claude_observed(scope: &Scope, inputs: &Inputs<'_>, budget: &mut Budget) -> Observed {
+    let read = read_claude(scope, inputs.now, budget);
+    let fed = read_feed(
+        inputs.sessions,
+        scope.source_key.as_deref(),
+        inputs.now,
+        budget,
+    );
+    rows_or_placeholder(with_feed(read, fed))
+}
+
+/// The windows this scope's statusline feed recorded, judged at `now`. A
+/// record that is missing, damaged, or names another scope supplies nothing,
+/// and every read is charged to the budget before it happens, whatever it finds.
+fn read_feed(
+    sessions: Option<&Path>,
+    key: Option<&Path>,
+    now: i64,
+    budget: &mut Budget,
+) -> Vec<Row> {
+    let (Some(root), Some(key)) = (sessions.and_then(Path::parent), key) else {
+        return Vec::new();
+    };
+    // The capped read takes one byte past the cap to see an oversized record.
+    let allowance = FEED_CAP + 1;
+    if !budget.claim_file() || !budget.reserve_bytes(allowance) {
+        return Vec::new();
+    }
+    let read = crate::store::read_capped_in(&root.join(feed::DIR), &feed::file_name(key), FEED_CAP);
+    // Only what was read stays charged: nothing for an absent record, its
+    // length for a whole one, the whole allowance for anything else.
+    let (bytes, charged) = match read {
+        Ok(crate::store::SourceRead::Ready(bytes)) => {
+            let len = u64::try_from(bytes.len()).unwrap_or(allowance);
+            (bytes, len)
+        }
+        Ok(crate::store::SourceRead::Absent) => (Vec::new(), 0),
+        _ => (Vec::new(), allowance),
+    };
+    budget.refund_bytes(allowance.saturating_sub(charged));
+    let record = match feed::parse(&bytes) {
+        Ok(record) if record.scope == key && !budget.expired() => record,
+        _ => return Vec::new(),
+    };
+    record
+        .windows
+        .into_iter()
+        .map(|window| Row {
+            bucket: window.bucket.to_owned(),
+            qualifier: None,
+            window_minutes: Some(window.window_minutes),
+            used_percent: Some(window.used_percent),
+            resets_at: Some(window.resets_at),
+            observed_at: Some(record.received_at),
+            status: freshness(Some(record.received_at), Some(window.resets_at), now),
+        })
+        .collect()
+}
+
+/// The cache's rows with the feed's beside them. Per window the strictly newer
+/// observation stays — the clock [`Reading::adopt`] keeps — and a model-scoped
+/// window, which the feed never states, stays the cache's. A damaged cache keeps
+/// its placeholder, so the damage stays in view.
+fn with_feed(read: ReadRows, fed: Vec<Row>) -> ReadRows {
+    if fed.is_empty() {
+        return read;
+    }
+    let mut observed = match read {
+        ReadRows::Missing => Observed {
+            rows: Vec::new(),
+            account: Account::default(),
+            series: Vec::new(),
+        },
+        other => rows_or_placeholder(other),
+    };
+    for row in fed {
+        let held = observed
+            .rows
+            .iter_mut()
+            .find(|held| held.bucket == row.bucket && held.qualifier.is_none());
+        match held {
+            Some(held) if strictly_newer(held.observed_at, row.observed_at) => *held = row,
+            Some(_) => {}
+            None => observed.rows.push(row),
+        }
+    }
+    observed.rows.sort_by(|left, right| {
+        left.bucket
+            .cmp(&right.bucket)
+            .then_with(|| left.qualifier.cmp(&right.qualifier))
+    });
+    ReadRows::Rows(observed)
+}
+
+/// The one observation clock: a stamp replaces the held one only when it is
+/// strictly newer, and any stamp is newer than none.
+fn strictly_newer(held: Option<i64>, incoming: Option<i64>) -> bool {
+    incoming > held
 }
 
 fn unknown_scope(
@@ -2983,9 +3155,10 @@ fn short_path(path: &Path, home: Option<&Path>) -> String {
 }
 
 /// The manual refresh a Claude scope can be told to run when it holds nothing
-/// usable: Claude Code's cache moves only when a `/usage` fetch succeeds, so
-/// ae cannot refresh it, and the honest answer is to name the action that can.
-const CLAUDE_REFRESH_HINT: &str = "run /usage in a claude session";
+/// usable: Claude Code's cache moves only when a `/usage` fetch succeeds and
+/// the statusline feed only when a statusline hands ae a payload, so ae cannot
+/// refresh either, and the honest answer is to name the actions that can.
+const CLAUDE_REFRESH_HINT: &str = "run /usage in a claude session or feed ae from your statusline";
 
 /// The manual refresh a scope's own renderer may show, or `None`.
 ///
@@ -4509,7 +4682,7 @@ mod tests {
         assert_eq!(
             scopes[0].only.as_deref(),
             Some(
-                "no reading ae can trust (last report 15h00m ago) — run /usage in a claude session"
+                "no reading ae can trust (last report 15h00m ago) — run /usage in a claude session or feed ae from your statusline"
             )
         );
         assert!(scopes[0].windows.is_empty());
@@ -4809,6 +4982,107 @@ mod tests {
     }
 
     #[test]
+    fn a_feed_read_is_charged_to_the_budget_whatever_the_record_holds() {
+        let root =
+            std::path::PathBuf::from(format!("/tmp/ae-quota-feed-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join(super::feed::DIR);
+        std::fs::create_dir_all(&dir).expect("feed directory");
+        let (key, sessions) = (Path::new("/k/.claude.json"), root.join("sessions"));
+        let charged = |bytes: Option<&[u8]>, budget: &mut Budget| {
+            let path = dir.join(super::feed::file_name(key));
+            let _ = std::fs::remove_file(&path);
+            if let Some(bytes) = bytes {
+                std::fs::write(&path, bytes).expect("record");
+            }
+            let before = budget.bytes_left;
+            let rows = super::read_feed(Some(&sessions), Some(key), 1_000, budget).len();
+            (rows, before - budget.bytes_left)
+        };
+        let good =
+            "ae-quota-feed 1\nscope /k/.claude.json\nreceived 999\nwindow session 1 4070908800\n";
+        let foreign = good.replace("/k/", "/other/");
+        let mut budget = Budget::new();
+        let len = |text: &str| u64::try_from(text.len()).unwrap_or(u64::MAX);
+        assert_eq!(charged(Some(b"damaged"), &mut budget), (0, 7));
+        assert_eq!(
+            charged(Some(foreign.as_bytes()), &mut budget),
+            (0, len(&foreign))
+        );
+        assert_eq!(charged(Some(good.as_bytes()), &mut budget), (1, len(good)));
+        // The capped read takes one byte past the cap to see an oversized
+        // record, so that byte is charged too, however long the file is.
+        assert_eq!(charged(Some(&[b'x'; 4096]), &mut budget), (0, 1025));
+        assert_eq!(charged(None, &mut budget), (0, 0));
+        budget.bytes_left = 1025;
+        assert_eq!(charged(Some(good.as_bytes()), &mut budget), (1, len(good)));
+        budget.bytes_left = 1024;
+        assert_eq!(charged(Some(good.as_bytes()), &mut budget), (0, 0));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_fed_window_joins_the_cache_by_its_stamp_and_never_hides_damage() {
+        let row = |bucket: &str, qualifier: Option<&str>, observed_at: Option<i64>| super::Row {
+            bucket: bucket.to_owned(),
+            qualifier: qualifier.map(str::to_owned),
+            window_minutes: Some(300),
+            used_percent: Some("1".to_owned()),
+            resets_at: Some(9),
+            observed_at,
+            status: Status::Fresh,
+        };
+        let cache = |rows| {
+            ReadRows::Rows(super::Observed {
+                rows,
+                account: super::Account::default(),
+                series: Vec::new(),
+            })
+        };
+        let seen = |read| match read {
+            ReadRows::Rows(observed) => observed
+                .rows
+                .into_iter()
+                .map(|row| (row.bucket, row.qualifier.is_some(), row.observed_at))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let fed = || {
+            vec![
+                row("session", None, Some(5)),
+                row("weekly_all", None, Some(5)),
+            ]
+        };
+        assert!(matches!(
+            super::with_feed(ReadRows::Missing, Vec::new()),
+            ReadRows::Missing
+        ));
+        assert_eq!(
+            seen(super::with_feed(ReadRows::Failed, fed())),
+            [
+                ("-".to_owned(), false, None),
+                ("session".to_owned(), false, Some(5)),
+                ("weekly_all".to_owned(), false, Some(5))
+            ]
+        );
+        let held = vec![
+            row("session", None, None),
+            row("weekly_all", None, Some(7)),
+            row("weekly_all", Some("Fable"), Some(1)),
+        ];
+        assert_eq!(
+            seen(super::with_feed(cache(held), fed())),
+            [
+                ("session".to_owned(), false, Some(5)),
+                ("weekly_all".to_owned(), false, Some(7)),
+                ("weekly_all".to_owned(), true, Some(1)),
+            ]
+        );
+        assert!(super::strictly_newer(None, Some(i64::MIN)));
+        assert!(!super::strictly_newer(Some(5), Some(5)));
+    }
+
+    #[test]
     fn view_facts_report_unusable_scopes_without_numbers() {
         for (index, status) in [
             Status::Unknown,
@@ -4835,12 +5109,16 @@ mod tests {
         let scopes = viewed(vec![unusable_claude_group(10_000, Some(9_900))]);
         assert_eq!(
             scopes[0].only.as_deref(),
-            Some("no reading ae can trust (last report 1m ago) — run /usage in a claude session")
+            Some(
+                "no reading ae can trust (last report 1m ago) — run /usage in a claude session or feed ae from your statusline"
+            )
         );
         let scopes = viewed(vec![unusable_claude_group(10_000, None)]);
         assert_eq!(
             scopes[0].only.as_deref(),
-            Some("no reading ae can trust — run /usage in a claude session")
+            Some(
+                "no reading ae can trust — run /usage in a claude session or feed ae from your statusline"
+            )
         );
         let scopes = viewed(vec![unusable_claude_group(
             10_000,
@@ -4848,7 +5126,9 @@ mod tests {
         )]);
         assert_eq!(
             scopes[0].only.as_deref(),
-            Some("no reading ae can trust — run /usage in a claude session")
+            Some(
+                "no reading ae can trust — run /usage in a claude session or feed ae from your statusline"
+            )
         );
     }
 

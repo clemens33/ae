@@ -159,10 +159,30 @@ impl Install {
         for (name, value) in extra {
             command.env(name, value);
         }
+        let mut feed_input = (argv.first() == Some(&"_quota-feed")).then(|| {
+            std::fs::File::open(self.scratch.join("feed-stdin"))
+                .unwrap_or_else(|why| panic!("fixture statusline stdin: {why}"))
+        });
+        if let Some(file) = &feed_input {
+            command.stdin(
+                file.try_clone()
+                    .unwrap_or_else(|why| panic!("stdin clone: {why}")),
+            );
+        }
         let out = command
             .args(argv)
             .output()
             .unwrap_or_else(|why| panic!("the planted core should run: {why}"));
+        if let Some(file) = &mut feed_input {
+            assert_eq!(
+                std::io::Seek::stream_position(file)
+                    .unwrap_or_else(|why| panic!("stdin offset: {why}")),
+                file.metadata()
+                    .unwrap_or_else(|why| panic!("stdin size: {why}"))
+                    .len(),
+                "a broken installed feed still drains stdin to EOF"
+            );
+        }
         (
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -550,6 +570,31 @@ fn an_internal_entry_pays_the_install_gate_and_publishes_nothing() {
     assert!(
         !rig.home.join(".ae").join("upgrade.check").exists(),
         "a refused automatic check published state"
+    );
+}
+
+#[test]
+fn a_statusline_feed_on_a_broken_install_drains_silently_and_publishes_nothing() {
+    let rig = Install::plant("feedgate");
+    rig.write_manifest("broken\n");
+    for input in [
+        br#"{"rate_limits":{"five_hour":{"used_percentage":42,"resets_at":4070908800}}}"#.to_vec(),
+        vec![b' '; 2 * 1024 * 1024],
+    ] {
+        assert!(std::fs::write(rig.scratch.join("feed-stdin"), input).is_ok());
+        let (code, out, err) = rig.run(&[], &["_quota-feed"]);
+        assert_eq!(code, Some(0));
+        assert!(out.is_empty() && err.is_empty(), "out={out}; err={err}");
+        assert!(
+            !rig.home.join(".ae/quota-feed").exists(),
+            "broken install cannot publish"
+        );
+    }
+    let (code, _, err) = rig.run(&[], &["_quota", "/missing"]);
+    assert_eq!(code, Some(2));
+    assert!(
+        !err.is_empty(),
+        "ordinary hidden verbs keep the loud refusal"
     );
 }
 
