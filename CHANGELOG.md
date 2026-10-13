@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.64] - 2026-10-13
+- Show agy's quota windows in the tmux dialog and the app's Settings > Quota
+- ^J and Alt+Enter break a line, a paste folds CR, a refusal keeps the draft
+- Ae app: unread cue on sidebar rows, writer-lease holder named in refusals, gear click covers its leading blank
+- Ae app: keep the appcue test modules inside mod tests
+- Ae app: stamp the writer lease before the holder note, so keys typed while the note runs are no longer dropped
+- A long turn folds from 31 rows and shows its first 24
+
 ## [v2026.10.63] - 2026-10-13
 - Source tripwire skips cfg(test) module registrations and pins two owed mutants
 - Source tripwires share one cut that skips gated registrations and items
