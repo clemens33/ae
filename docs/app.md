@@ -246,7 +246,12 @@ can have pressed the key.
   app, the one with the newest input wins; two last active in the same second
   refuse (`two clients showing this app were active in the same second`) and
   move nothing. A control-mode client never records input, so two of them always
-  tie.
+  tie. Entering a session runs its own focus hook, which puts any client
+  arriving there on the session's chat (else its lead). The select waits until
+  that hook has run, so the client ends on the seat, and it proves the seat
+  again first: a seat that changed or died in that instant leaves the client
+  where the hook put it, and the lane says `moved to <session>, but <seat>'s
+  pane changed after the read; the seat was not selected - prefix L goes back`.
 - No client shows the app (`no tmux client is showing this app`), or the app
   runs outside tmux (`ae app is not running inside tmux`): refused.
 

@@ -13,6 +13,7 @@ mod app_live;
 mod app_loop_pin_spec;
 mod app_mode;
 mod app_mouse_spec;
+mod app_open_hook_spec;
 mod app_open_live_spec;
 mod app_open_pure_spec;
 mod app_peek_spec;

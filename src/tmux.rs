@@ -2034,9 +2034,39 @@ pub fn guarded_jump_client_id_command(client: &str, session_id: &str, pane: &str
     )
 }
 
+/// [`guarded_jump_id_command`] for a seat's own pane. The switch fires the
+/// session's `client-session-changed` hook, which tmux runs only after this
+/// command's queue pass; the guarded select waits in `run-shell -C` for the
+/// next event-loop turn, so it lands after the hook instead of under it.
+#[must_use]
+pub fn seat_jump_id_command(session_id: &str, pane: &str) -> String {
+    seat_jump(&switch_id_command(session_id), session_id, pane)
+}
+
+/// The explicit-client form of [`seat_jump_id_command`].
+#[must_use]
+pub fn seat_jump_client_id_command(client: &str, session_id: &str, pane: &str) -> String {
+    seat_jump(
+        &switch_client_id_command(client, session_id),
+        session_id,
+        pane,
+    )
+}
+
 fn guarded_jump(switch: &str, session_id: &str, pane: &str) -> String {
+    format!("{switch} ; {}", guarded_select(session_id, pane))
+}
+
+fn seat_jump(switch: &str, session_id: &str, pane: &str) -> String {
     format!(
-        "{switch} ; if-shell -F -t {pane} '##{{==:##{{session_id}},{session_id}}}' \
+        "{switch} ; run-shell -C {{ {} }}",
+        guarded_select(session_id, pane)
+    )
+}
+
+fn guarded_select(session_id: &str, pane: &str) -> String {
+    format!(
+        "if-shell -F -t {pane} '##{{==:##{{session_id}},{session_id}}}' \
          'select-window -t {pane} ; select-pane -t {pane}'"
     )
 }
@@ -6764,6 +6794,22 @@ mod tests {
         assert_eq!(
             guarded_jump_client_id_command("/dev/ttys001", "$7", "%12"),
             "switch-client -c '/dev/ttys001' -t $7 ; if-shell -F -t %12 '##{==:##{session_id},$7}' 'select-window -t %12 ; select-pane -t %12'"
+        );
+    }
+
+    /// A seat's jump is the session row's guarded select, waiting in
+    /// `run-shell -C` so it runs after the session's focus hook.
+    #[test]
+    fn a_seat_jump_waits_behind_the_session_hook_with_the_same_guard() {
+        use super::{seat_jump_client_id_command, seat_jump_id_command};
+
+        assert_eq!(
+            seat_jump_id_command("$7", "%12"),
+            "switch-client -t $7 ; run-shell -C { if-shell -F -t %12 '##{==:##{session_id},$7}' 'select-window -t %12 ; select-pane -t %12' }"
+        );
+        assert_eq!(
+            seat_jump_client_id_command("/dev/ttys001", "$7", "%12"),
+            "switch-client -c '/dev/ttys001' -t $7 ; run-shell -C { if-shell -F -t %12 '##{==:##{session_id},$7}' 'select-window -t %12 ; select-pane -t %12' }"
         );
     }
 

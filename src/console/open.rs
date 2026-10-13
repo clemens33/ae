@@ -182,6 +182,12 @@ pub fn select_args(server: &ServerId, target: &Target) -> Option<Vec<String>> {
 /// named: ONE `if-shell` whose guard holds before anything moves, so a pane
 /// that changed since the proof moves no client. `None` for a client name that
 /// fails its grammar.
+///
+/// The switch fires the target session's `client-session-changed` hook, which
+/// tmux runs only after this command's own queue pass. The select therefore
+/// waits in `run-shell -C` for the next event-loop turn, lands after the hook,
+/// and proves the seat again there: a seat that changed in between prints
+/// `ae-open:switched`, the client moved and the seat not selected.
 #[must_use]
 pub fn select_args_via(
     server: &ServerId,
@@ -211,12 +217,15 @@ pub fn select_args_via(
         slot = seat.slot,
         name = seat.name,
     );
-    let switch = client.map_or_else(String::new, |client| {
-        format!(
-            "{} ; ",
+    let select =
+        format!("select-window -t {pane} ; select-pane -t {pane} ; display-message -p {SELECTED}");
+    let then = match client {
+        None => select,
+        Some(client) => format!(
+            "{} ; run-shell -C {{ if-shell -F -t {pane} '{guard}' {{ {select} }} {{ display-message -p {SWITCHED} }} }}",
             crate::tmux::switch_client_id_command(client, session_id)
-        )
-    });
+        ),
+    };
     let mut args = crate::tmux::server_args(server);
     args.extend([
         "if-shell".to_owned(),
@@ -224,9 +233,7 @@ pub fn select_args_via(
         "-t".to_owned(),
         pane.clone(),
         guard,
-        format!(
-            "{switch}select-window -t {pane} ; select-pane -t {pane} ; display-message -p {SELECTED}"
-        ),
+        then,
         format!("display-message -p {MOVED}"),
     ]);
     Some(args)
@@ -334,6 +341,9 @@ pub fn copy_args(server: &ServerId, client: Option<&str>) -> Vec<String> {
 /// What the select prints when the guard held, and when it did not.
 const SELECTED: &str = "ae-open:selected";
 const MOVED: &str = "ae-open:moved";
+/// What a handed-over client's select prints when the seat's second proof,
+/// after the switch, failed: the client moved, the seat was not selected.
+const SWITCHED: &str = "ae-open:switched";
 
 /// The chat's line for a finished select of `name`.
 #[must_use]
@@ -360,6 +370,9 @@ pub fn outcome_moved(succeeded: bool, stdout: &str, name: &str, session: &str) -
         (true, SELECTED) => {
             format!("opened {name} in {session} - prefix h opens its chat, prefix L goes back")
         }
+        (true, SWITCHED) => format!(
+            "moved to {session}, but {name}'s pane changed after the read; the seat was not selected - prefix L goes back"
+        ),
         _ => outcome(succeeded, stdout, name),
     }
 }

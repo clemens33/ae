@@ -296,7 +296,11 @@ strips pipes and control bytes from the branch field
 without changing the raw session option, preserving the record boundary.
 Choosing a row switches to its
 captured session id and then selects its published lead pane only while that
-pane still belongs to the chosen session. The orchestrator's own segment
+pane still belongs to the chosen session; the session's own focus hook, which
+tmux runs after that select, has the last word and lands the client on the
+live chat, else the lead. An agent row's select waits in `run-shell -C` until
+that hook has run, so the client rests on that agent's pane, again only while
+it still belongs to the chosen session. The orchestrator's own segment
 remains its separate session range.
 
 Before drawing, the picker fits its title and rows to the captured client in

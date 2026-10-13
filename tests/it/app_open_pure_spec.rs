@@ -128,11 +128,11 @@ fn explicit_client_extends_the_legacy_guarded_select_and_preserves_chat_bytes() 
     );
     assert_eq!(
         moved[5],
-        "switch-client -c '/dev/pts/4' -t $7 ; select-window -t %12 ; select-pane -t %12 ; display-message -p ae-open:selected"
+        "switch-client -c '/dev/pts/4' -t $7 ; run-shell -C { if-shell -F -t %12 '#{&&:#{==:#{session_id},$7},#{&&:#{==:#{@ae_session_uuid},0199c0de-cccc-4890-abcd-ef0123456789},#{&&:#{==:#{@ae_slot},spawned.0},#{&&:#{==:#{@ae_agent},scout},#{==:#{pane_dead},0}}}}}' { select-window -t %12 ; select-pane -t %12 ; display-message -p ae-open:selected } { display-message -p ae-open:switched } }"
     );
     assert_eq!(moved[6], legacy[6]);
     assert!(
-        !moved[4].contains("##{"),
+        !moved[4].contains("##{") && !moved[5].contains("##{"),
         "direct app commands have no display-menu expansion layer"
     );
     for client in ["/dev/ttys003", "client-35", "/dev/pts/4"] {

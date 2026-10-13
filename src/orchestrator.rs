@@ -15,7 +15,8 @@ use std::path::Path;
 use crate::theme::{Mark, Palette};
 use crate::tmux::{
     Menu, MenuAction, MenuItem, PickerPane, PickerSession, guarded_jump_client_id_command,
-    guarded_jump_id_command, switch_client_id_command, switch_id_command,
+    guarded_jump_id_command, seat_jump_client_id_command, seat_jump_id_command,
+    switch_client_id_command, switch_id_command,
 };
 
 /// `--help`, verbatim.
@@ -1409,7 +1410,14 @@ fn session_item(
     MenuItem {
         label: clip_cells(&label, row.max_width),
         key: String::new(),
-        action: picker_action(session, &session.main_pane, panes, client, opened_session),
+        action: picker_action(
+            session,
+            &session.main_pane,
+            Landing::Session,
+            panes,
+            client,
+            opened_session,
+        ),
     }
 }
 
@@ -1499,13 +1507,33 @@ fn agent_item(
     MenuItem {
         label: clip_cells(&label, max_width),
         key: String::new(),
-        action: picker_action(session, &agent.pane, panes, client, opened_session),
+        action: picker_action(
+            session,
+            &agent.pane,
+            Landing::Seat,
+            panes,
+            client,
+            opened_session,
+        ),
     }
+}
+
+/// Which row a picker jump comes from, and so who has the last word on the
+/// pane once the client is in the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Landing {
+    /// A session row: its select runs with the switch, so the session's own
+    /// focus hook, queued behind it, picks the pane.
+    Session,
+    /// An agent row: its select waits behind that hook, so the seat's pane is
+    /// where the client rests.
+    Seat,
 }
 
 fn picker_action(
     session: &PickerSession,
     pane_hint: &str,
+    landing: Landing,
     panes: &[PickerPane],
     client: Option<&str>,
     opened_session: Option<&str>,
@@ -1515,10 +1543,16 @@ fn picker_action(
             .iter()
             .any(|pane| pane.session_id == session.id && pane.pane == pane_hint);
     let action = if pane_is_member {
-        MenuAction::Run(client.map_or_else(
-            || guarded_jump_id_command(&session.id, pane_hint),
-            |client| guarded_jump_client_id_command(client, &session.id, pane_hint),
-        ))
+        MenuAction::Run(match (landing, client) {
+            (Landing::Session, None) => guarded_jump_id_command(&session.id, pane_hint),
+            (Landing::Session, Some(client)) => {
+                guarded_jump_client_id_command(client, &session.id, pane_hint)
+            }
+            (Landing::Seat, None) => seat_jump_id_command(&session.id, pane_hint),
+            (Landing::Seat, Some(client)) => {
+                seat_jump_client_id_command(client, &session.id, pane_hint)
+            }
+        })
     } else {
         MenuAction::Run(client.map_or_else(
             || switch_id_command(&session.id),
@@ -3138,7 +3172,7 @@ mod tests {
                 "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $7 ; if-shell -F -t %10 '##{==:##{session_id},$7}' 'select-window -t %10 ; select-pane -t %10'",
                 "  ● lead ~fable5 working",
                 "",
-                "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $7 ; if-shell -F -t %10 '##{==:##{session_id},$7}' 'select-window -t %10 ; select-pane -t %10'",
+                "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $7 ; run-shell -C { if-shell -F -t %10 '##{==:##{session_id},$7}' 'select-window -t %10 ; select-pane -t %10' }",
                 "rest · idle    main · agents unavailable",
                 "2",
                 "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $2",
@@ -3319,6 +3353,38 @@ mod tests {
             !command.contains("display-menu"),
             "the row has no agent submenu: {command}"
         );
+    }
+
+    /// Only an agent row's select waits behind the session's focus hook, with
+    /// or without a named client; a session row keeps it beside the switch.
+    #[test]
+    fn only_an_agent_row_waits_behind_the_session_hook() {
+        let hub = session("hub", "$7", 3, "%12");
+        let panes = [pane("$7", "%12")];
+        let run = |landing, client| match super::picker_action(
+            &hub, "%12", landing, &panes, client, None,
+        ) {
+            MenuAction::Run(command) => command,
+            other => panic!("a member pane runs one command: {other:?}"),
+        };
+        let select = "if-shell -F -t %12 '##{==:##{session_id},$7}' \
+                      'select-window -t %12 ; select-pane -t %12'";
+        for (client, switch) in [
+            (None, "switch-client -t $7"),
+            (
+                Some("/dev/ttys007"),
+                "switch-client -c '/dev/ttys007' -t $7",
+            ),
+        ] {
+            assert_eq!(
+                run(super::Landing::Seat, client),
+                format!("{switch} ; run-shell -C {{ {select} }}")
+            );
+            assert_eq!(
+                run(super::Landing::Session, client),
+                format!("{switch} ; {select}")
+            );
+        }
     }
 
     #[test]
