@@ -368,12 +368,14 @@ enum Ran {
     TimedOut,
     /// No such program on the child's `PATH`.
     Absent,
-    /// Not started, watched or read back, or its stdout grew past `cap`.
+    Over,
+    /// Not started, watched or read back.
     Failed,
 }
 
 /// [`spawn`]'s sibling for the one leg that talks to the network: it stops
-/// waiting at `deadline`. No stream is a pipe, so nothing blocks: stdin and
+/// waiting at `deadline`. A supplied capture is written by the macOS script;
+/// its stdout is discarded. No stream is a pipe: stdin and
 /// stderr are closed, and stdout is a scratch file whose length each `POLL`
 /// reads from ae's own handle. A stopped child is killed, then reaped; a
 /// grandchild outlives it and can write only into the unlinked scratch inode.
@@ -383,6 +385,7 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     envs: &[(&str, &str)],
     cap: u64,
     deadline: Duration,
+    capture: Option<&CaptureScratch>,
 ) -> Ran {
     const POLL: Duration = Duration::from_millis(25);
     fn halt(child: &mut std::process::Child, ended: Ran) -> Ran {
@@ -390,7 +393,11 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
         let _ = child.wait();
         ended
     }
-    let Some(scratch) = CaptureScratch::tagged("agy") else {
+    let owned = capture
+        .is_none()
+        .then(|| CaptureScratch::tagged(if program == "agy" { "agy" } else { "clipboard" }))
+        .flatten();
+    let Some(scratch) = capture.or(owned.as_ref()) else {
         return Ran::Failed;
     };
     let Ok(handle) = scratch.file().try_clone() else {
@@ -399,7 +406,7 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     // Never a tmux client, so never `-u`.
     let mut command = command_for(program, args, envs, false);
     command.stdin(std::process::Stdio::null());
-    command.stdout(std::process::Stdio::from(handle));
+    command.stdout(capture_output(handle, capture.is_some()));
     command.stderr(std::process::Stdio::null());
     let started = std::time::Instant::now();
     let mut child = match command.spawn() {
@@ -416,7 +423,8 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
         match scratch.file().metadata() {
             Ok(written) if written.len() <= cap => {}
             // Past its cap, or ae's own handle cannot be read.
-            Ok(_) | Err(_) => return halt(&mut child, Ran::Failed),
+            Ok(_) => return halt(&mut child, Ran::Over),
+            Err(_) => return halt(&mut child, Ran::Failed),
         }
         if started.elapsed() >= deadline {
             return halt(&mut child, Ran::TimedOut);
@@ -431,9 +439,79 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     });
     match read {
         Ok(len) if u64::try_from(len).is_ok_and(|len| len <= cap) => Ran::Exited(status, stdout),
-        Ok(_) | Err(_) => Ran::Failed,
+        Ok(_) => Ran::Over,
+        Err(_) => Ran::Failed,
     }
 }
+
+fn capture_output(handle: std::fs::File, separate: bool) -> std::process::Stdio {
+    if separate {
+        std::process::Stdio::null()
+    } else {
+        handle.into()
+    }
+}
+
+/// Fixed clipboard programs; only checkout builds honour the fake-tool door.
+pub(crate) fn run_clipboard_image() -> Result<Vec<u8>, String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "checkout-only clipboard tool seam"
+    )]
+    let fake = crate::shape::current()
+        .honours_environment()
+        .then(|| std::env::var("AE_TEST_CLIPBOARD_TOOL").ok())
+        .flatten();
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "named Linux clipboard display door"
+    )]
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let scratch = if fake.is_none() && cfg!(target_os = "macos") {
+        Some(CaptureScratch::tagged("clipboard").ok_or("clipboard tool failed")?)
+    } else {
+        None
+    };
+    let path = scratch
+        .as_ref()
+        .map(|s| s.path.to_str().ok_or("clipboard tool failed"))
+        .transpose()?
+        .unwrap_or_default();
+    let (program, args): (&str, &[&str]) = if let Some(fake) = fake.as_deref() {
+        (fake, &[])
+    } else if scratch.is_some() {
+        ("osascript", &["-e", CLIPBOARD_SCRIPT, path])
+    } else if wayland {
+        ("wl-paste", &["--no-newline", "--type", "image/png"])
+    } else {
+        (
+            "xclip",
+            &["-selection", "clipboard", "-t", "image/png", "-o"],
+        )
+    };
+    match spawn_until(
+        program,
+        args,
+        &[],
+        20 * 1024 * 1024,
+        Duration::from_secs(8),
+        scratch.as_ref(),
+    ) {
+        Ran::Exited(exit, bytes) if exit.success() => Ok(bytes),
+        Ran::Absent => Err(format!(
+            "clipboard tool missing: {}",
+            Path::new(program)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )),
+        Ran::Over => Err("clipboard image over 20 MiB".to_owned()),
+        Ran::TimedOut => Err("clipboard read timed out".to_owned()),
+        _ => Err("clipboard tool failed".to_owned()),
+    }
+}
+
+const CLIPBOARD_SCRIPT: &str = "on run argv\ntry\nset imageData to the clipboard as «class PNGf»\non error\nreturn\nend try\nset imageFile to open for access POSIX file (item 1 of argv) with write permission\ntry\nset eof imageFile to 0\nwrite imageData to imageFile\nclose access imageFile\non error\nclose access imageFile\nerror number -1\nend try\nend run";
 
 /// Whether a leg starts `program` as a UTF-8 tmux client: every tmux leg ae
 /// reads, never `Terminal`, whose client draws on the human's own terminal.
@@ -645,18 +723,18 @@ fn agy_quota_with(home: &Path, envs: &[(&str, &str)], deadlines: [Duration; 2]) 
     };
     let envs = &[envs, &[("HOME", home)]].concat();
     let [version_deadline, quota_deadline] = deadlines;
-    match spawn_until("agy", &["--version"], envs, 4096, version_deadline) {
+    match spawn_until("agy", &["--version"], envs, 4096, version_deadline, None) {
         Ran::Absent => return AgyRun::Absent,
         Ran::Exited(exit, out) if exit.success() && crate::quota::agy::supports_quota(&out) => {}
-        Ran::Exited(..) | Ran::TimedOut | Ran::Failed => return AgyRun::TooOld,
+        Ran::Exited(..) | Ran::TimedOut | Ran::Failed | Ran::Over => return AgyRun::TooOld,
     }
     let quota = ["-p", "/quota", "--output-format", "json"];
-    match spawn_until("agy", &quota, envs, 65_536, quota_deadline) {
+    match spawn_until("agy", &quota, envs, 65_536, quota_deadline, None) {
         Ran::Exited(exit, out) if exit.success() => {
             String::from_utf8(out).map_or(AgyRun::Failed, |text| AgyRun::Done { text })
         }
         Ran::TimedOut => AgyRun::TimedOut,
-        Ran::Exited(..) | Ran::Absent | Ran::Failed => AgyRun::Failed,
+        Ran::Exited(..) | Ran::Absent | Ran::Failed | Ran::Over => AgyRun::Failed,
     }
 }
 
@@ -1567,6 +1645,27 @@ pub(crate) fn spawn_detached(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_mac_no_image_discards_script_output_and_returns_empty_success() {
+        for outcome in ["error number -1700", "return \"junk stdout\""] {
+            let scratch = super::CaptureScratch::tagged("clip-test").unwrap();
+            let path = scratch.path.to_str().unwrap();
+            let script = super::CLIPBOARD_SCRIPT
+                .replace("set imageData to the clipboard as «class PNGf»", outcome);
+            let out = super::spawn_until(
+                "osascript",
+                &["-e", &script, path],
+                &[],
+                1024,
+                std::time::Duration::from_secs(8),
+                Some(&scratch),
+            );
+            assert!(
+                matches!(out, super::Ran::Exited(exit, bytes) if exit.success() && bytes.is_empty())
+            );
+        }
+    }
     use super::{
         AGY_DEADLINES, AgyRun, CaptureScratch, GIT_LOCAL_ENV_VARS, PROGRAM, Streams, Tmux,
         agy_quota_with, declares_utf8, run, spawn,

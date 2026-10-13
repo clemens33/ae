@@ -330,6 +330,25 @@ fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
     );
 }
 
+/// `transport::run_clipboard_image` is the FIXED-PROGRAM clipboard leg of
+/// the one process door: it chooses the binary and every argument.
+#[test]
+fn run_clipboard_image_has_exactly_one_product_caller() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut holders: Vec<_> = rust_sources()
+        .into_iter()
+        .filter(|p| p.starts_with(root.join("src")))
+        .filter(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("run_clipboard_image(")))
+        .collect();
+    holders.sort();
+    // Control FIRST: a scan that matched nothing would pass this vacuously.
+    assert!(!holders.is_empty(), "empty scan did not run");
+    assert_eq!(
+        holders,
+        [root.join("src/clipboard.rs"), root.join("src/transport.rs")],
+        "the clipboard process leg gained (or lost) a product holder"
+    );
+}
 /// The opencode leg captures through a SCRATCH FILE, never a pipe: the real
 /// `opencode export` exits before its stdout pipe drains (measured on 1.18.31,
 /// 2026-09-18: 131072 of 3949726 bytes arrived through a pipe, the whole
@@ -980,7 +999,7 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
     /// make. The mode is part of the spelling: it is the published file's, and
     /// a caller that changed it would be publishing into someone else's store
     /// at the wrong permissions.
-    const CALLERS: [(&str, &str, &str); 3] = [
+    const CALLERS: [(&str, &str, &str); 4] = [
         (
             "src/lib.rs",
             "crate::init::create_exclusive(path, contents.as_bytes(), 0o666)",
@@ -1007,6 +1026,11 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
             "src/rename.rs",
             "crate::init::create_exclusive(&path, witness_bytes(nonce).as_bytes(), 0o644)",
             "the witness publication must be init's exclusive writer at plain-file mode",
+        ),
+        (
+            "src/clipboard.rs",
+            "crate::init::create_exclusive(&path, &bytes, 0o600)",
+            "the clipboard image publication must be init's exclusive writer at the store's own mode",
         ),
     ];
 

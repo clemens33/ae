@@ -70,6 +70,7 @@ mod fixtures;
 mod floor;
 mod gate;
 mod git;
+mod imgpaste_spec;
 mod init;
 mod install;
 mod launch_context_spec;

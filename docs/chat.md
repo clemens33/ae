@@ -232,7 +232,14 @@ character with the bytes after it; the next arrow or erase key then acts from
 the end of that character. A cursor before a line break at the end of a full
 row is drawn on that row's last cell. `^U` clears the whole draft, wherever the
 cursor is. Up, Down, Insert, PgUp, PgDn and modified navigation keys are
-consumed and do nothing; any other plain control byte is a literal draft byte.
+consumed and do nothing; `^V` reads a clipboard image; any other plain control byte is a literal draft byte.
+`^V` in the owner chat inserts an absolute PNG path at the cursor, with spaces
+where needed; Enter sends it. Images live at 0600 under the session's `messages/`.
+macOS uses osascript; Linux needs wl-paste on Wayland or xclip otherwise.
+Only PNG up to 20 MiB is accepted. A failed or eight-second read prints its
+refusal and keeps the draft. Typing continues during a read; another `^V` is ignored.
+Claude seats can read images by path (verified); other clients are unverified.
+See [image paste #228](https://github.com/clemens33/ae/issues/228).
 Inside a bracketed paste every byte stays literal, an Enter included, except that a
 CR or CRLF becomes one line break (LF). Enter sends; `^J` and Alt+Enter put a line
 break in the draft instead. Shift+Enter is Enter: through tmux the terminal sends it

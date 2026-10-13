@@ -68,6 +68,8 @@ pub enum Key {
     Enter,
     /// `^J` or Alt+Enter: a line break in the draft, never a send.
     Newline,
+    /// `^V` outside a bracketed paste, in either input surface.
+    ImagePaste,
     /// The keys below come only from [`Keys::app`]; the chat's decoder never
     /// spells one.
     Mouse(Mouse),
@@ -233,6 +235,7 @@ impl Keys {
                     0x01 => Key::Home,
                     0x05 => Key::End,
                     0x15 => Key::ClearLine,
+                    0x16 => Key::ImagePaste,
                     b'\r' => Key::Enter,
                     b'\n' => Key::Newline,
                     0x09 if self.app => Key::Tab,
@@ -430,6 +433,7 @@ impl Composer {
             | Key::Interrupt
             | Key::Mouse(_)
             | Key::Pasted(_)
+            | Key::ImagePaste
             | Key::Newline => {}
         }
         None
@@ -441,6 +445,25 @@ impl Composer {
         let _ = self.key(Key::Home);
         let _ = self.key(Key::Text(bytes.to_vec()));
         let _ = self.key(Key::End);
+    }
+
+    fn image_path(&mut self, path: &str) -> Result<(), String> {
+        let cursor = self.snapped();
+        let gap = |byte: Option<&u8>| byte.is_some_and(|b| !matches!(b, b' ' | b'\n'));
+        let left = gap(cursor.checked_sub(1).and_then(|i| self.bytes.get(i)));
+        let right = gap(self.bytes.get(cursor));
+        let text = format!(
+            "{}{}{}",
+            if left { " " } else { "" },
+            path,
+            if right { " " } else { "" }
+        );
+        if self.over || self.bytes.len() + text.len() > CAP {
+            return Err("draft has no room for the clipboard image".to_owned());
+        }
+        self.cursor = cursor;
+        let _ = self.key(Key::Text(text.into_bytes()));
+        Ok(())
     }
 
     /// Where each unit of the draft ends, 0 first: a character, or a byte that
@@ -863,6 +886,7 @@ pub enum Reading {
 /// What the console does next, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    ImagePaste,
     /// Bracketed paste on or off, written before the line that announces it.
     Paste(bool),
     Print(String),
@@ -995,6 +1019,12 @@ impl Input {
             if origin < since {
                 continue;
             }
+            if key == Key::ImagePaste {
+                if self.taking() {
+                    effects.push(Effect::ImagePaste);
+                }
+                continue;
+            }
             let effect = match self.composer.key(key) {
                 None | Some(Entered::Empty) => continue,
                 Some(Entered::Over) => Effect::Print(format!(
@@ -1080,6 +1110,14 @@ impl Input {
     #[must_use]
     pub fn taking(&self) -> bool {
         self.since.is_some()
+    }
+
+    pub(crate) fn writer_epoch(&self) -> Option<Instant> {
+        self.since
+    }
+
+    pub(crate) fn image_path(&mut self, path: &str) -> Result<(), String> {
+        self.composer.image_path(path)
     }
 
     /// Whether a composer is shown: always for the owner, while a draft is
@@ -1303,7 +1341,11 @@ pub fn paint(
                 out.push('\n');
             }
             // The console acts on these before it paints; nothing is drawn.
-            Effect::Ask { .. } | Effect::Close(_) | Effect::Open(_) | Effect::More(_) => {}
+            Effect::Ask { .. }
+            | Effect::Close(_)
+            | Effect::Open(_)
+            | Effect::More(_)
+            | Effect::ImagePaste => {}
         }
     }
     if let Some(view) = view {
@@ -1336,6 +1378,60 @@ mod tests {
         let mut composer = Composer::default();
         let _ = composer.key(Key::Text(bytes.to_vec()));
         composer
+    }
+
+    #[test]
+    fn image_paths_space_neighbours_keep_the_cursor_and_refuse_without_wedging() {
+        for (draft, cursor, expected, after) in [
+            ("", 0, "/img.png", 8),
+            ("ab", 1, "a /img.png b", 11),
+            ("a b", 2, "a /img.png b", 11),
+            ("a\nb", 2, "a\n/img.png b", 11),
+            ("a\nb", 1, "a /img.png\nb", 10),
+            ("a", 1, "a /img.png", 10),
+            ("a", 0, "/img.png a", 9),
+        ] {
+            let mut c = drafted(draft.as_bytes());
+            c.cursor = cursor;
+            c.image_path("/img.png").unwrap();
+            assert_eq!(c.bytes, expected.as_bytes());
+            assert_eq!(c.cursor, after);
+        }
+        let mut c = drafted(&vec![b'x'; CAP - 1]);
+        let saved = (c.bytes.clone(), c.cursor);
+        assert!(c.image_path("/img.png").is_err());
+        assert_eq!((c.bytes.clone(), c.cursor), saved);
+        assert!(!c.over);
+        c.key(Key::Text(vec![b'y']));
+        assert_eq!(
+            c.key(Key::Enter),
+            Some(Entered::Line([vec![b'x'; CAP - 1], vec![b'y']].concat()))
+        );
+    }
+
+    #[test]
+    fn image_paste_decodes_both_modes_across_reads_but_is_literal_in_a_paste() {
+        let at = Instant::now();
+        for (mut keys, literal) in [
+            (Keys::default(), Key::Text(vec![0x16])),
+            (Keys::app(), Key::Pasted(vec![0x16])),
+        ] {
+            assert_eq!(keys.feed(b"a", at), [(Key::Text(vec![b'a']), at)]);
+            assert_eq!(keys.feed(b"\x16", at), [(Key::ImagePaste, at)]);
+            let mut got = Vec::new();
+            for byte in b"\x1b[200~\x16\x1b[201~" {
+                got.extend(keys.feed(&[*byte], at));
+            }
+            assert_eq!(got, [(literal, at)]);
+        }
+        let mut input = Input::new(vec!["lead".to_owned()]);
+        input.tick(Reading::NotOwner("elsewhere".to_owned()), at);
+        assert!(input.chunk(b"\x16", at).is_empty());
+        input.tick(Reading::Owner, at);
+        assert_eq!(input.chunk(b"\x16", at), [Effect::ImagePaste]);
+        input.chunk(b"typed", at);
+        input.image_path("/img.png").unwrap();
+        assert_eq!(input.draft(), "typed /img.png");
     }
 
     /// The write of `view` on a fresh terminal, the screen it leaves behind.
@@ -2333,14 +2429,14 @@ mod tests {
     }
 
     /// docs/app.md: `^Z` and `^\` are dropped and never suspend or quit, and
-    /// no other control byte reaches a draft in the app.
+    /// ^V requests an image, no other unbound control byte reaches a draft.
     #[test]
     fn the_app_drops_every_other_control_byte() {
         let at = Instant::now();
         let mut app = Keys::app();
         assert_eq!(
-            app.feed(b"\x1a\x1c\x02a", at),
-            [(Key::Text(b"a".to_vec()), at)]
+            app.feed(b"\x1a\x1c\x02\x16a", at),
+            [(Key::ImagePaste, at), (Key::Text(b"a".to_vec()), at)]
         );
     }
 

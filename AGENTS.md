@@ -346,6 +346,8 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `PWD` | the caller's working directory; public launch `--dir` overrides it for that launch | both |
 | `AE_HOME` | relocates ALL ae state | CHECKOUT only |
 | `CONFIG_FILE` | which global config is read | CHECKOUT only |
+| `AE_TEST_CLIPBOARD_TOOL` | fake image tool path, read by the transport clipboard leg | CHECKOUT only |
+| `WAYLAND_DISPLAY` | chooses wl-paste rather than xclip on Linux, read by transport | both shapes |
 | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on; absent → named server `ae` | CHECKOUT only |
 | `AE_NO_AUTOSTART` | start no companion: neither the watchdog nor the Telegram bridge | both |
 | `CLAUDE_CONFIG_DIR` | which Claude account a statusline feed belongs to — read by `ae _quota-feed` ALONE, as the caller has it (set but empty or relative records nothing; unset means the default account under `HOME`), joined to the same canonical `.claude.json` key the configured scope carries; its payload is the stdin pipe, drained to EOF on every path. Every other reader judges a seat's recorded command, never this variable | both |

@@ -2015,9 +2015,10 @@ fn settings_body(
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
-const WRITE_KEYS: [(&str, &str); 16] = [
+const WRITE_KEYS: [(&str, &str); 17] = [
     ("Enter", "send the line"),
     ("Alt+Enter ^J", "new line in the draft"),
+    ("^V", "insert a clipboard PNG path"),
     ("Esc", "keep the draft, browse"),
     ("^C", "empty draft quits at once"),
     ("^C", "with a draft: arms; again in 2 s quits"),

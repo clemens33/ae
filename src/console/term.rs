@@ -212,6 +212,7 @@ pub(crate) fn submit_ask(
 /// A console that takes input from its terminal.
 pub(super) struct Term {
     input: Input,
+    clipboard: crate::clipboard::Job<Instant>,
     pair: Vec<Seat>,
     reads: Reads,
     server: Option<ServerId>,
@@ -233,6 +234,7 @@ impl Term {
         let declared = doors::declared_server(crate::shape::current());
         Ok(Self {
             input: Input::new(pair.iter().map(|seat| seat.name.clone()).collect()),
+            clipboard: None,
             pair,
             reads: Reads(Some(reads)),
             server: doors::launch_target(declared.as_ref()),
@@ -273,12 +275,38 @@ impl Term {
     /// Wait for the terminal until `deadline`; what its input did, every ask
     /// and close already carried out, or `None` when it did nothing.
     pub(super) fn wait(&mut self, console: &mut Console, deadline: Instant) -> Option<Vec<Effect>> {
+        let epoch = self.input.writer_epoch();
+        if let Some(answer) = crate::clipboard::poll(&mut self.clipboard, epoch.as_ref())
+            && self.owned(console).is_ok()
+        {
+            let result = crate::clipboard::finish(&mut self.input, answer);
+            return Some(
+                result
+                    .err()
+                    .map(|why| Effect::Print(format!("refused: {why}")))
+                    .into_iter()
+                    .collect(),
+            );
+        }
+        let deadline = if self.clipboard.is_some() {
+            deadline.min(Instant::now() + std::time::Duration::from_millis(100))
+        } else {
+            deadline
+        };
         let effects = match self.reads.wait(deadline) {
             Got::Read(stamp, bytes) => self.input.chunk(&bytes, stamp),
             Got::Ended => self.input.closed(),
             Got::Due => return None,
         };
         let act = |effect| match effect {
+            Effect::ImagePaste => {
+                if self.owned(console).is_ok()
+                    && let Some(epoch) = self.input.writer_epoch()
+                {
+                    crate::clipboard::start(&mut self.clipboard, epoch, console.dir().to_owned());
+                }
+                Effect::ImagePaste
+            }
             Effect::Ask { raw, seat, body } => self.ask(console, &raw, &seat, body),
             Effect::Close(id) => {
                 let owns = || self.owned(console);
@@ -480,6 +508,7 @@ mod tests {
             input,
             pair,
             reads: Reads(None),
+            clipboard: None,
             server: None,
             me: None,
             screen: Screen::default(),
@@ -504,6 +533,7 @@ mod tests {
             input,
             pair,
             reads: Reads(None),
+            clipboard: None,
             server: None,
             me: None,
             screen: Screen::default(),
@@ -547,6 +577,7 @@ mod tests {
             input,
             pair,
             reads,
+            clipboard: None,
             server: None,
             me: None,
             screen,
@@ -635,6 +666,7 @@ mod tests {
             input,
             pair,
             reads,
+            clipboard: None,
             server,
             me,
             screen,

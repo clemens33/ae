@@ -9,7 +9,7 @@
 //! The ONE write is the composer's ask or close into the selected session,
 //! through the chat's own admission path (`term::submit_ask`,
 //! `submit::close_owned`), under that session's writer lease, held while
-//! this app writes it; nothing else here writes into any session. Opening a
+//! this app writes it. Clipboard workers publish inert images for the draft. Opening a
 //! seat writes nothing either: it hands one tmux client to the seat's pane,
 //! through the chat's own proof (`term::prove_open`).
 
@@ -335,6 +335,7 @@ struct App {
     lease: Option<Lease>,
     /// The entry writing now, bound to what it proved; with the lease.
     writer: Option<Binding>,
+    clipboard: crate::clipboard::Job<((String, String), u64)>,
     /// Entries counted, so a late proof of an older one changes nothing.
     entries: u64,
     /// Why the last entry was refused: HELD, every key swallowed until Esc,
@@ -471,6 +472,7 @@ impl App {
             read_only: "the fleet is not read yet".to_owned(),
             lease: None,
             writer: None,
+            clipboard: None,
             entries: 0,
             held: None,
             notices: Vec::new(),
@@ -1966,7 +1968,25 @@ impl App {
     /// A frame's debts, settled together: the copy it shipped and the asks
     /// that waited for it. Neither skips the other; whether a frame is due.
     fn owed(&mut self) -> bool {
-        self.shipped() | self.deliver() | self.unpark()
+        self.shipped() | self.deliver() | self.unpark() | self.image_ready()
+    }
+
+    fn image_ready(&mut self) -> bool {
+        let token = self.writer.as_ref().map(|w| (w.key(), w.entry));
+        let Some(answer) = crate::clipboard::poll(&mut self.clipboard, token.as_ref()) else {
+            return false;
+        };
+        if self.owns(&Cell::default()).is_err() {
+            return false;
+        }
+        let input = token.and_then(|(key, _)| self.inputs.get_mut(&key));
+        if let Some(input) = input {
+            if let Err(why) = crate::clipboard::finish(input, answer) {
+                self.refuse_paste(&why);
+            }
+            self.show();
+        }
+        true
     }
 
     /// Ship the copy the last frame highlighted, now that it is written: the
@@ -1993,6 +2013,18 @@ impl App {
             let about = self.model.selected().or(self.home.as_deref());
             let about = about.unwrap_or_default().to_owned();
             let line = match effect {
+                Effect::ImagePaste => {
+                    if self.owns(&Cell::default()).is_ok()
+                        && let Some(w) = &self.writer
+                    {
+                        crate::clipboard::start(
+                            &mut self.clipboard,
+                            (w.key(), w.entry),
+                            w.console.dir().to_owned(),
+                        );
+                    }
+                    continue;
+                }
                 Effect::Print(line) => line,
                 Effect::Ask { raw, seat, body } => {
                     let Some((key, entry)) = (self.writer.as_ref()).map(|w| (w.key(), w.entry))
@@ -3694,6 +3726,28 @@ mod tests {
     /// The draft the composer shows.
     fn drafted(app: &App) -> String {
         app.shown_input().map(Input::draft).unwrap_or_default()
+    }
+
+    #[test]
+    fn image_paste_browses_without_fetching_and_ignores_a_repeat() {
+        let mut app = app(None);
+        let _ = pressed(&mut app, b"\x16");
+        assert!(app.clipboard.is_none());
+        let (send, recv) = std::sync::mpsc::channel();
+        app.clipboard = Some(((("old".to_owned(), "uuid".to_owned()), 7), recv));
+        crate::clipboard::start(
+            &mut app.clipboard,
+            (("new".to_owned(), "uuid".to_owned()), 8),
+            PathBuf::new(),
+        );
+        assert_eq!(app.clipboard.as_ref().unwrap().0.1, 7);
+        send.send(Err("clipboard tool failed".to_owned())).unwrap();
+        assert!(
+            !app.image_ready(),
+            "old entry must not touch a draft or flash"
+        );
+        assert!(app.clipboard.is_none());
+        assert!(app.flash.is_none());
     }
 
     /// `root`'s home `api` recorded as incarnation `id`, lead pair lead + `peer`.

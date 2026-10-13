@@ -20,6 +20,7 @@ pub mod brief;
 pub mod brief_retry;
 pub mod carry;
 pub mod cli;
+mod clipboard;
 mod compact;
 pub mod config;
 pub mod console;

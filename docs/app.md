@@ -163,6 +163,7 @@ Browsing:
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `qq` | quit: the first `q` only arms (`q again to quit`), the second within 2 seconds quits |
 | `^C` | quit, at once |
+| `^V` while writing | save a clipboard PNG and insert its path; Enter sends |
 
 No single printable key quits or moves your client: an armed `q` or `o` is
 disarmed by any other key or when its 2 seconds pass, so typing a word
@@ -180,6 +181,11 @@ while viewing), the version and the gear (no gear while viewing). The
 gear's click covers the gear and the blank before it, as the status
 line's settings button pads its glyph. Narrowing drops the version first,
 then the gear.
+
+`^V` does nothing while browsing. While writing it reads an image without
+blocking typing; another `^V` is ignored until the read finishes. It accepts
+PNG up to 20 MiB, saved at 0600 under the written session's `messages/`.
+Refusals keep the draft. See [chat image paste](chat.md#input) for tools and client support.
 
 A paste while browsing is never read as keys. On a writable session it starts
 writing with the paste as the draft, every fragment of it kept and nothing in
