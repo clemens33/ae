@@ -37,3 +37,38 @@ fn a_timestamp_split_across_rows_ends_dim_and_the_words_after_it_wear_the_speake
         "{text:?}"
     );
 }
+
+#[test]
+fn an_option_label_at_column_zero_of_a_decision_card_stays_one_whole_line() {
+    // A reason may open on its first option: `1 keep: fast | 2 wait`. A label at
+    // the very start is still the option, so its `: ` is not an intro split.
+    for (one, two) in [
+        ("1 ", "2 "),
+        ("1.", "2."),
+        ("1)", "2)"),
+        ("a ", "b "),
+        ("a.", "b."),
+        ("a)", "b)"),
+    ] {
+        let lane = Lane {
+            items: vec![Item {
+                micros: 1_790_748_060_000_000,
+                kind: Kind::Card {
+                    seat: "lead".to_owned(),
+                },
+                body: format!("{one}keep: fast | {two}wait"),
+                record: None,
+            }],
+            coverage: vec![],
+        };
+        let shown = Printed::default().step(&lane, 0, true);
+        assert_eq!(
+            shown
+                .lines()
+                .filter(|line| line.starts_with("  "))
+                .collect::<Vec<_>>(),
+            [format!("  {one}keep: fast"), format!("  {two}wait")],
+            "{one:?}"
+        );
+    }
+}
