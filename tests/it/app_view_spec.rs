@@ -412,7 +412,7 @@ impl Rig {
 }
 
 fn selected(screen: &str, name: &str) -> bool {
-    screen.lines().nth(1).is_some_and(|row| {
+    screen.lines().next().is_some_and(|row| {
         row.split('│')
             .next_back()
             .unwrap_or_default()

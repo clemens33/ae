@@ -37,7 +37,7 @@ const TID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);
 const FRAME: Duration = Duration::from_secs(3);
 const REFRESH_SLACK: Duration = Duration::from_secs(12);
-const HINT: &str = "     ? keys";
+const HINT: &str = "? keys";
 const WORKSPACE_KEYS: [&str; 21] = [
     "main",
     "workers",
@@ -109,11 +109,14 @@ fn version_and_gear_end_the_keys_row_after_its_one_hint() {
             let look = Look::read(if icons { "on" } else { "off" }, "", "off", "off");
             let buf = closed_frame(width, 28, &look, false);
             let line = row(&buf, 27);
-            assert!(line.starts_with(HINT), "mode word and hint: {line:?}");
+            assert!(
+                line.chars().skip(47).collect::<String>().starts_with(HINT),
+                "mode word and hint: {line:?}"
+            );
             let tail = format!("{} {}", ae::version_line(), if icons { "⚙" } else { "*" });
             assert!(line.trim_end().ends_with(&tail), "right end: {line:?}");
             let start = line.find(&ae::version_line()).expect("drawn version");
-            assert!(start >= HINT.len() + 2, "version overlaps the hint");
+            assert!(start >= 47 + HINT.len() + 2, "version overlaps the hint");
         }
     }
 }
@@ -758,7 +761,7 @@ fn smallest_supported_settings_panel_keeps_title_tabs_and_a_close_hint() {
     rig.tmux(&["resize-window", "-t", &pane, "-x", "40", "-y", "8"]);
     rig.wait(&pane, FRAME, "smallest supported frame repainted", |s| {
         s.lines()
-            .next()
+            .nth(1)
             .is_some_and(|line| line.contains("now 40x8"))
     });
     let screen = rig.settings(&pane);

@@ -322,9 +322,9 @@ fn quote(text: &str) -> String {
 }
 
 /// A plain sidebar capture always lists every name. Only the right-hand
-/// header on row 1 attests selection (160 columns => sidebar rule at 44).
+/// header on row 0 attests selection (160 columns => sidebar rule at 44).
 fn header_is(screen: &str, name: &str) -> bool {
-    screen.lines().nth(1).is_some_and(|line| {
+    screen.lines().next().is_some_and(|line| {
         line.chars()
             .skip(47)
             .collect::<String>()

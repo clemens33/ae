@@ -76,7 +76,10 @@ const MIN: (u16, u16) = (40, 8);
 /// The smallest pane that keeps the sidebar.
 const SIDEBAR_MIN: (u16, u16) = (90, 20);
 /// The first row of the session list.
-const LIST_TOP: u16 = 5;
+const LIST_TOP: u16 = 4;
+/// The row the frame gave back at the top: the list keeps the share it had,
+/// and the tab body takes the row.
+const TOP_GIVEN: u16 = 1;
 /// The sidebar's first content column.
 const LEFT: u16 = 2;
 /// Where a session row's name starts.
@@ -255,13 +258,11 @@ impl Layout {
             Edge::Sidebar => Rect::new(cells.x.saturating_sub(1), cells.y, 3, cells.height),
             Edge::List => Rect::new(cells.x, cells.y.saturating_sub(1), cells.width, 3),
         };
-        // Above the keys row: nothing there grabs a border.
-        let room = Rect::new(0, 0, buf.area.width, buf.area.height.saturating_sub(1));
         self.borders.push(Border {
             edge,
             at,
-            cells: cells.intersection(room),
-            grab: grab.intersection(room),
+            cells: cells.intersection(buf.area),
+            grab: grab.intersection(buf.area),
         });
     }
 
@@ -467,36 +468,45 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
         put(buf, area.x, y, &row, area.width, dim);
         return layout;
     }
-    // The frames' grounds: the chat's ink everywhere, the keys row and the
-    // rule's own column included, and the panel under the sidebar alone.
+    // The frames' grounds: the chat's ink everywhere, the rule's own column
+    // included, and the panel under the sidebar alone.
     buf.set_style(area, ctx.paint.ground(|p| p.ink));
     let (height, width) = (area.height, area.width);
     let split = screen.model.split();
+    let mut fallback = None;
     let chat = if let Some(rule) = sidebar_width(area, split) {
-        buf.set_style(
-            Rect::new(0, 0, rule, height - 1),
-            ctx.paint.ground(|p| p.base),
-        );
-        let cells = Rect::new(rule, 0, 1, height - 1);
+        buf.set_style(Rect::new(0, 0, rule, height), ctx.paint.ground(|p| p.base));
+        let cells = Rect::new(rule, 0, 1, height);
         layout.border(buf, Edge::Sidebar, rule, cells);
         sidebar(&ctx, buf, rule, &mut layout);
         let border = ctx.paint.rule(dragged(screen.model, Edge::Sidebar));
-        for y in 0..height - 1 {
+        for y in 0..height {
             put(buf, rule, y, "│", 1, border);
         }
         rule + 1..width
     } else {
-        let line = format!(
-            "  sidebar needs {}x{} (now {width}x{height})",
+        fallback = Some(format!(
+            "  sidebar needs {}x{} (now {width}x{height}) ",
             SIDEBAR_MIN.0, SIDEBAR_MIN.1
-        );
-        put(buf, 0, 0, &line, width, dim);
+        ));
         0..width
     };
-    layout.chat = Rect::new(chat.start, 0, width - chat.start, height - 1);
+    layout.chat = Rect::new(chat.start, 0, width - chat.start, height);
     chat_column(&ctx, buf, chat.start + 2..width - 2, &mut layout);
-    keys_row(&ctx, buf, &mut layout);
+    // The warning rides the chat's rule row, over the left of the rule.
+    if let Some(line) = fallback {
+        put(buf, 0, 1, &line, width, dim);
+    }
+    if overlay_open(screen.model) {
+        keys_row(&ctx, buf, &mut layout);
+    }
     layout
+}
+
+/// Whether a full-pane panel is open: the footer row is its own, and the
+/// chat's hint row draws no version or gear under it.
+fn overlay_open(model: &Model) -> bool {
+    model.settings_open() || model.peek_open()
 }
 
 /// The cells a draft has in the chat column of `area` split as `split`: what
@@ -510,7 +520,9 @@ pub(crate) fn draft_width(area: Rect, split: Split) -> usize {
 /// height back, so this is one more than the composer's draft rows: ten at
 /// most, fewer where the lane would keep under [`LANE_FLOOR`], one at least.
 pub(crate) fn composer_pane(area: Rect) -> usize {
-    let room = usize::from(area.height.saturating_sub(9 + LANE_FLOOR));
+    // The six fixed rows: header, rule, the gap above the lane's rule, that
+    // rule, the address and the hint.
+    let room = usize::from(area.height.saturating_sub(6 + LANE_FLOOR));
     room.clamp(1, ROWS_MAX) + 1
 }
 
@@ -555,8 +567,9 @@ fn sidebar_clamp(asked: u16, area: Rect) -> u16 {
 /// had, sized to its sessions, until a drag asks for a height of its own.
 fn list_rows(area: Rect, split: Split, count: usize) -> (u16, bool) {
     // Below the list: a blank row, the tab row and the rule; below the body:
-    // two rows.
-    let shared = area.height.saturating_sub(LIST_TOP + 5);
+    // two rows. The list keeps the share it had before the frame gave rows
+    // back, and the body takes them.
+    let shared = area.height.saturating_sub(LIST_TOP + TOP_GIVEN + 5);
     let once = if area.height >= 40 { 18 } else { 11 };
     // Two thirds without the overflow of doubling a tall pane first.
     let default = (shared / 3 * 2 + shared % 3 * 2 / 3).max(once.min(shared));
@@ -581,7 +594,7 @@ fn list_clamp(asked: u16, area: Rect, count: usize) -> u16 {
     // floor: two rows.
     let most = area
         .height
-        .saturating_sub(LIST_TOP + 3 + BODY_FLOOR + 2)
+        .saturating_sub(LIST_TOP + TOP_GIVEN + 3 + BODY_FLOOR + 2)
         .max(undragged);
     asked.min(most).max(least)
 }
@@ -689,9 +702,9 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
     } else {
         paint.fg(|p| p.dim)
     };
-    put_line(buf, LEFT, 1, &summary_line(ctx, fleet, room, tone), room);
+    put_line(buf, LEFT, 0, &summary_line(ctx, fleet, room, tone), room);
     if needy {
-        // The key, and an arrow for each side of the list that hides a needy row.
+        // An arrow for each side of the list that hides a needy row.
         let hides = |rows: Range<usize>| fleet.rows[rows].iter().any(|row| row.needy);
         let mut arrows = String::new();
         arrows.extend(hides(0..list.visible.start).then_some('↑'));
@@ -699,13 +712,11 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         put(
             buf,
             end - 2 - cells(arrows.chars().count()),
-            3,
+            2,
             &arrows,
             2,
             tone,
         );
-        let key = paint.fg(|p| p.text).add_modifier(Modifier::BOLD);
-        put(buf, end - 1, 3, "!", 1, key);
     }
     if count == 0 {
         let empty = if ctx.wait.fleet {
@@ -782,7 +793,7 @@ fn tab_body(
     layout: &mut Layout,
 ) {
     let (end, paint) = (rule - 2, ctx.paint);
-    let floor = buf.area.height.saturating_sub(2);
+    let floor = buf.area.height;
     let room_rows = floor.saturating_sub(top);
     // A body that still does not fit gives its last row to the rows it hides.
     let cut = body.len() > usize::from(room_rows);
@@ -1150,17 +1161,17 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let room = end - left;
     let (dim, border) = (paint.fg(|p| p.dim), paint.fg(|p| p.border));
     header(ctx, buf, left, end);
-    put(buf, left, 2, &"─".repeat(usize::from(room)), room, border);
+    put(buf, left, 1, &"─".repeat(usize::from(room)), room, border);
     // While writing, the composer has a row for each row of the draft's view,
-    // under the address row; the note row, a blank and the keys row follow.
+    // under the address row; the hint row, the pane's last, follows.
     let grown = match screen.composer {
         Composer::Home {
             view: Some(view), ..
         } => cells(view.rows.len().max(1)),
         _ => 1,
     };
-    let composer = height.saturating_sub(4 + grown);
-    let (top, bottom) = (3, composer.saturating_sub(2));
+    let composer = height.saturating_sub(2 + grown);
+    let (top, bottom) = (2, composer.saturating_sub(2));
     let main = screen
         .selected
         .and_then(|entry| entry.main_agent.as_deref())
@@ -1219,12 +1230,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     );
     let (address_row, input_row, hint) = composer_lines(ctx);
     put_line(buf, left, composer, &address_row, room);
-    // A pending line — an armed key, a refused paste, an ask on its way —
-    // takes the hint row, in full ink so it is not missed.
-    match screen.model.note() {
-        Some(note) => put(buf, left, height - 3, note, room, paint.fg(|p| p.text)),
-        None => put(buf, left, height - 3, &hint, room, dim),
-    };
+    hint_row(ctx, buf, layout, (left, end), &hint);
     if let Composer::Home {
         view: Some(view), ..
     } = screen.composer
@@ -1251,6 +1257,48 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.page_rows = room_rows;
     layout.max_scroll = rows.len().saturating_sub(room_rows);
     layout.complete = complete;
+}
+
+/// The hint row, the pane's last: a pending line — an armed key, a refused
+/// paste, an ask on its way — in full ink so it is not missed, else the
+/// composer's hint; then the keys that work in this mode, when they fit whole;
+/// at the right end `ae <version>` and the gear.
+fn hint_row(
+    ctx: &Ctx<'_, '_>,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+    (left, end): (u16, u16),
+    hint: &str,
+) {
+    let (paint, y) = (ctx.paint, buf.area.height - 1);
+    let (first, style) = match ctx.screen.model.note() {
+        Some(note) => (note, paint.fg(|p| p.text)),
+        None => (hint, paint.fg(|p| p.dim)),
+    };
+    let mut at = put(buf, left, y, first, end - left, style);
+    let keys = mode_hint(&ctx.screen.composer);
+    let rest = match (first.is_empty(), keys.is_empty()) {
+        (_, true) => String::new(),
+        (true, false) => keys.to_owned(),
+        (false, false) => format!(" · {keys}"),
+    };
+    if cells(Span::raw(rest.as_str()).width()) <= end.saturating_sub(at) {
+        at = put(buf, at, y, &rest, end - at, paint.fg(|p| p.dim));
+    }
+    // A panel's footer is its own row: no second gear under it.
+    if !overlay_open(ctx.screen.model) {
+        tail(ctx, buf, layout, (y, at), false);
+    }
+}
+
+/// The keys that work in this mode: writing names the three that matter,
+/// held takes every key and says nothing.
+fn mode_hint(composer: &Composer<'_>) -> &'static str {
+    match composer {
+        Composer::Home { view: Some(_), .. } => "Enter sends · Alt+Enter ^J newline · Esc browses",
+        Composer::Held { .. } => "",
+        _ => "? keys",
+    }
 }
 
 /// The lane's newest rows as the app's own state shows them: `size` is the
@@ -1344,12 +1392,12 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
         Some(_) => paint.fg(|p| p.title).add_modifier(Modifier::BOLD),
         None => Style::new().add_modifier(Modifier::BOLD),
     };
-    let after = put(buf, left, 1, &entry.name, end - left, name);
+    let after = put(buf, left, 0, &entry.name, end - left, name);
     let middle = screen.pair.join(" + ");
     let after = put(
         buf,
         after + 3,
-        1,
+        0,
         &middle,
         end.saturating_sub(after + 3),
         paint.fg(|p| p.dim),
@@ -1386,7 +1434,7 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
         put(
             buf,
             end - width(right),
-            1,
+            0,
             right,
             width(right),
             paint.fg(|p| p.dim),
@@ -1395,7 +1443,7 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
     });
     let room = stop.saturating_sub(from);
     let shown = clip_tail(dir, usize::from(room));
-    put(buf, from, 1, &shown, room, paint.fg(|p| p.dim));
+    put(buf, from, 0, &shown, room, paint.fg(|p| p.dim));
 }
 
 /// The composer's address row, the input row under it and the hint under that.
@@ -1461,29 +1509,23 @@ const BROWSE_KEYS: [(&str, &str); 15] = [
     ("qq", "quit: twice within 2 s"),
 ];
 
-/// The keys row, the full width of the last row: Settings' word and at most
-/// one hint from the left, then `ae <version>` and the gear right-aligned.
-/// Narrowing drops the version first, then the gear.
+/// The footer a full-pane panel keeps on the pane's last row, the full width:
+/// the panel's word and its one hint from the left, then `ae <version>` and the
+/// gear right-aligned. The cells are reset first, so the closed frame's hint
+/// row, sidebar ground and rule never show under the panel.
 fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let paint = ctx.paint;
-    let y = buf.area.height - 1;
-    let composing = matches!(ctx.screen.composer, Composer::Home { view: Some(_), .. });
-    let open = ctx.screen.model.settings_open();
+    let (width, y) = (buf.area.width, buf.area.height - 1);
+    for x in 0..width {
+        buf[(x, y)].reset();
+    }
+    buf.set_style(Rect::new(0, y, width, 1), paint.ground(|p| p.ink));
     let peeking = ctx.screen.model.peek_open();
-    let width = buf.area.width;
-    // The one hint is the keys that work in that mode: writing names the three
-    // that matter, held takes every key and says nothing.
-    let (word, hint) = if open {
+    let (word, hint) = if ctx.screen.model.settings_open() {
         ("settings", "Esc close")
-    } else if peeking {
+    } else {
         // The panel covers the hint row, so a copy's outcome rides here.
         ("peek", ctx.screen.model.note().unwrap_or("Esc close"))
-    } else if composing {
-        ("", "Enter sends · Alt+Enter ^J newline · Esc browses")
-    } else if matches!(ctx.screen.composer, Composer::Held { .. }) {
-        ("", "")
-    } else {
-        ("", "? keys")
     };
     let x = put(
         buf,
@@ -1493,11 +1535,7 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
         width - LEFT,
         paint.fg(|p| p.text).add_modifier(Modifier::BOLD),
     );
-    let rest = if hint.is_empty() {
-        String::new()
-    } else {
-        format!("   {hint}")
-    };
+    let rest = format!("   {hint}");
     let hints_end = put(
         buf,
         x,
@@ -1506,8 +1544,21 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
         width.saturating_sub(x),
         paint.fg(|p| p.dim),
     );
+    tail(ctx, buf, layout, (y, hints_end), peeking);
+}
+
+/// `ae <version>` and the gear, right-aligned on row `y`, each only when it
+/// fits after `hints_end` and a gap: narrowing drops the version first, then
+/// the gear. The peek panel hides the gear, because a click on it would be dead.
+fn tail(
+    ctx: &Ctx<'_, '_>,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+    (y, hints_end): (u16, u16),
+    peeking: bool,
+) {
+    let width = buf.area.width;
     let gear = if ctx.icons { "\u{2699}" } else { "*" };
-    // The peek panel hides the gear: a click on it would be dead.
     let tail = if peeking {
         crate::version_line()
     } else {
@@ -1515,8 +1566,8 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     };
     let tail_cells = cells(Span::raw(tail.as_str()).width());
     let gear_cells = cells(Span::raw(gear).width());
-    let room = |need: u16| hints_end.saturating_add(2).saturating_add(need) <= width;
-    let style = paint.fg(|p| p.dim);
+    let room = |need: u16| usize::from(hints_end) + 2 + usize::from(need) <= usize::from(width);
+    let style = ctx.paint.fg(|p| p.dim);
     // The click covers the gear and the blank before it, like the status
     // line's settings range; `room` keeps that blank free.
     let target = Rect::new(width.saturating_sub(gear_cells + 1), y, gear_cells + 1, 1);
@@ -2483,9 +2534,15 @@ mod tests {
             }
         }
 
-        /// Only the keys row, on a buffer `width` wide and one row high: what
-        /// it drew, and the layout it recorded.
-        fn keys_at(&self, width: u16, composer: Composer<'_>) -> (String, super::Layout) {
+        /// One footer row on a one-row buffer: the closed frame's hint row
+        /// in a sidebar-less chat column (cols 2..width-2), or the panel
+        /// footer: what it drew, and the layout it recorded.
+        fn footer_at(
+            &self,
+            width: u16,
+            composer: Composer<'_>,
+            closed: bool,
+        ) -> (String, super::Layout) {
             let screen = self.screen(composer);
             let ctx = super::Ctx {
                 screen: &screen,
@@ -2495,7 +2552,12 @@ mod tests {
             };
             let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
             let mut layout = super::Layout::default();
-            super::keys_row(&ctx, &mut buf, &mut layout);
+            if closed {
+                let (_, _, hint) = super::composer_lines(&ctx);
+                super::hint_row(&ctx, &mut buf, &mut layout, (2, width - 2), &hint);
+            } else {
+                super::keys_row(&ctx, &mut buf, &mut layout);
+            }
             (line(&buf, 0).concat().trim_end().to_owned(), layout)
         }
 
@@ -2533,13 +2595,13 @@ mod tests {
         (0..before).rev().find(|x| buf[(*x, y)].symbol() != " ")
     }
 
-    /// The last cell of the chat column's rule (row 2): where the drawn
+    /// The last cell of the chat column's rule (row 1): where the drawn
     /// column ends. The frames disagree by one at the right edge, so the
     /// header is judged against the rule drawn with it.
     fn rule_end(buf: &Buffer) -> Option<u16> {
         (0..buf.area.width)
             .rev()
-            .find(|x| buf[(*x, 2)].symbol() == "─")
+            .find(|x| buf[(*x, 1)].symbol() == "─")
     }
 
     /// Frame many r17-r18: a stopped session's first line says how long it
@@ -2697,17 +2759,17 @@ mod tests {
         let buf = shot.draw(160, 45, READ_ONLY);
         let end = rule_end(&buf).expect("the rule");
         assert!(
-            last_ink(&buf, 1, 160).is_some_and(|x| x <= end),
+            last_ink(&buf, 0, 160).is_some_and(|x| x <= end),
             "a long name"
         );
         let mut shot = Shot::new();
         shot.pair = vec!["h".repeat(60), "g".repeat(60)];
         let buf = shot.draw(160, 45, READ_ONLY);
         let (y, _) = spot(&buf, "hhh").expect("the long pair middle");
-        assert_eq!(y, 1);
+        assert_eq!(y, 0);
         let end = rule_end(&buf).expect("the rule");
         assert!(
-            last_ink(&buf, 1, 160).is_some_and(|x| x <= end),
+            last_ink(&buf, 0, 160).is_some_and(|x| x <= end),
             "a long middle"
         );
     }
@@ -2720,7 +2782,7 @@ mod tests {
         shot.entry = SessionEntry::new("api", Status::Stopped);
         shot.entry.last_active_epoch = Some(PIN_NOW - 172_800);
         let buf = shot.draw(160, 45, READ_ONLY);
-        let header = line(&buf, 1).concat();
+        let header = line(&buf, 0).concat();
         assert!(header.trim_end().ends_with("stopped 2d"), "{header:?}");
         assert!(!header.contains("active"), "{header:?}");
     }
@@ -2741,13 +2803,13 @@ mod tests {
             // `lead + ` is 7 cells, so the second name fills the middle.
             shot.pair = vec!["lead".to_owned(), "c".repeat(middle - 7)];
             let buf = shot.draw(160, 43, READ_ONLY);
-            let header = line(&buf, 1).concat();
+            let header = line(&buf, 0).concat();
             let shown = header.trim_end();
             assert!(
                 shown.contains(&shot.pair.join(" + ")),
                 "the middle is whole: {header:?}"
             );
-            assert_eq!(last_ink(&buf, 1, 160), rule_end(&buf), "{header:?}");
+            assert_eq!(last_ink(&buf, 0, 160), rule_end(&buf), "{header:?}");
             if fits {
                 assert!(shown.ends_with(branch), "{header:?}");
             } else {
@@ -2848,9 +2910,9 @@ mod tests {
     }
 
     /// The frames' grounds. A frame is the terminal, its last two rows tmux's
-    /// status, so the app pane is 160x43 (100x28). Above the keys row the
-    /// sidebar is panel #313335 and everything from its rule on is base
-    /// #2B2B2B, row 0 included; the keys row is base across the width.
+    /// status, so the app pane is 160x43 (100x28). The sidebar is panel
+    /// #313335 on every row and everything from its rule on is base
+    /// #2B2B2B, the first and last rows included.
     #[test]
     fn the_grounds_are_the_frames() {
         use ratatui_core::style::Color;
@@ -2862,13 +2924,12 @@ mod tests {
             for x in [1, rule - 1] {
                 assert_eq!(buf[(x, 10)].bg, panel, "{size}: the sidebar at {x}");
             }
-            for (x, y) in [
-                (rule, 10),
-                (inside, 0),
-                (inside, 10),
-                (0, height - 1),
-                (inside, height - 1),
-            ] {
+            assert_eq!(
+                buf[(0, height - 1)].bg,
+                panel,
+                "{size}: the sidebar on the last row"
+            );
+            for (x, y) in [(rule, 10), (inside, 0), (inside, 10), (inside, height - 1)] {
                 assert_eq!(buf[(x, y)].bg, chat, "{size}: the chat ground at ({x},{y})");
             }
         }
@@ -2882,18 +2943,19 @@ mod tests {
         shot.agents = Some(sweep_seats());
         let buf = shot.draw(100, 24, READ_ONLY);
         assert_eq!(
-            spot(&buf, "↓ 7 more rows"),
-            Some((21, 2)),
+            spot(&buf, "↓ 4 more rows"),
+            Some((23, 2)),
             "the body's last row"
         );
         let dim = super::colour(crate::theme::Palette::DARCULA.dim);
-        assert_eq!(buf[(2, 21)].fg, dim);
+        assert_eq!(buf[(2, 23)].fg, dim);
         let tall = shot.draw(100, 40, READ_ONLY);
         assert_eq!(spot(&tall, "more rows"), None, "a body that fits");
         shot.fleet = frame_fleet();
-        // A one-row body is only the line naming what it hides.
-        let one_row = shot.draw(100, 20, READ_ONLY);
-        assert_eq!(spot(&one_row, "more rows").map(|at| at.0), Some(17));
+        // The smallest sidebar frame gives the body four rows, the last of
+        // them the line naming what it hides.
+        let smallest = shot.draw(100, 20, READ_ONLY);
+        assert_eq!(spot(&smallest, "↓ 15 more rows").map(|at| at.0), Some(19));
     }
 
     /// docs/app.md: below 40x8 the app only says how large it needs to be;
@@ -2925,10 +2987,10 @@ mod tests {
         assert_eq!(line(&buf, 0).concat(), "ae app needs at least");
     }
 
-    /// Frame calm: the rule stands at 44 on every row above the keys row
-    /// (r0-r41), but leaves the full-width keys row (r42) open.
+    /// The rule stands at 44 on every row, the hint row included: the
+    /// writing hint stands in the chat column right of it.
     #[test]
-    fn the_rule_stops_above_the_keys_row() {
+    fn the_rule_runs_the_full_height_beside_the_hint_row() {
         let draft = View {
             rows: vec!["a short draft".to_owned()],
             cursor_row: 0,
@@ -2942,10 +3004,9 @@ mod tests {
             draft: "a short draft",
         };
         let buf = Shot::new().draw(160, 43, composing);
-        for y in 0..42 {
+        for y in 0..43 {
             assert_eq!(buf[(44, y)].symbol(), "│", "row {y}");
         }
-        assert_ne!(buf[(44, 42)].symbol(), "│", "the keys row");
         let keys = line(&buf, 42).concat();
         assert!(
             keys.contains("Enter sends · Alt+Enter ^J newline · Esc browses"),
@@ -2953,10 +3014,11 @@ mod tests {
         );
     }
 
-    /// Browse, Settings and writing show their hint; held has none. The
-    /// version/gear stay; browse/write/held mode words are absent.
+    /// The closed hint row carries the composer's hint, the mode's keys and
+    /// the version/gear; held has no hint and no keys. A panel's footer
+    /// keeps its mode word and its one hint.
     #[test]
-    fn the_keys_row_is_the_mode_word_and_at_most_one_hint() {
+    fn the_hint_row_and_the_panel_footer_carry_at_most_one_hint() {
         let mut shot = Shot::new();
         let draft = drafted(&["a draft"]);
         let tail = format!("{} \u{2699}", crate::version_line());
@@ -2980,26 +3042,26 @@ mod tests {
             why: "owned elsewhere",
         };
         let cases = [
-            (browsing("kept"), "   ? keys"),
-            (READ_ONLY, "   ? keys"),
+            (browsing("kept"), "draft kept · Enter writes · ? keys"),
+            (READ_ONLY, "? keys"),
             (
                 writing(&draft, "a draft"),
-                "   Enter sends · Alt+Enter ^J newline · Esc browses",
+                "Enter sends · Alt+Enter ^J newline · Esc browses",
             ),
             (refused, ""),
         ];
         for (composer, words) in cases {
-            let (row, _) = shot.keys_at(100, composer);
+            let (row, _) = shot.footer_at(100, composer, true);
             let head = row
                 .strip_suffix(tail.as_str())
                 .expect("version and gear end it");
             assert_eq!(head.trim_end(), format!("  {words}").trim_end(), "{words}");
-            if !words.contains("Enter sends") {
+            if words.is_empty() {
                 assert!(named.iter().all(|key| !row.contains(key)), "{row}");
             }
         }
         shot.model.open_settings(1);
-        let (row, _) = shot.keys_at(100, browsing(""));
+        let (row, _) = shot.footer_at(100, browsing(""), false);
         let head = row
             .strip_suffix(tail.as_str())
             .expect("version and gear end it");
@@ -3010,15 +3072,15 @@ mod tests {
     /// its order): the version goes first, then the gear, and the gear is
     /// the settings click target for as long as it is drawn.
     #[test]
-    fn narrowing_the_keys_row_drops_the_version_then_the_gear() {
+    fn narrowing_the_hint_row_drops_the_version_then_the_gear() {
         let shot = Shot::new();
         let gear = "\u{2699}";
         let tail = format!("{} {gear}", crate::version_line());
-        let head = "     ? keys";
+        let head = "  Enter writes · ? keys";
         let full = head.chars().count() + 2 + tail.chars().count();
         let drop = |width: usize, drawn: &str| {
             let at = u16::try_from(width).unwrap_or(0);
-            let (row, layout) = shot.keys_at(at, browsing(""));
+            let (row, layout) = shot.footer_at(at, browsing(""), true);
             assert!(row.starts_with(head), "{width}: {row:?}");
             assert_eq!(
                 row.trim_start_matches(head).trim(),
@@ -3093,11 +3155,7 @@ mod tests {
             let size = format!("{width}x{height}");
             let (buf, layout) = shot.laid(width, height, writing(&draft, "first words second"));
             let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
-            assert_eq!(
-                ay,
-                height - 6,
-                "{size}: over two draft rows, the note, a blank"
-            );
+            assert_eq!(ay, height - 4, "{size}: over two draft rows and the hint");
             assert_eq!(
                 row_from(&buf, ay, ax),
                 "to api › lead",
@@ -3127,14 +3185,22 @@ mod tests {
         ] {
             let (buf, layout) = shot.laid(100, 30, browsing(draft));
             let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
-            assert_eq!(ay, 25, "{draft:?}");
+            assert_eq!(ay, 27, "{draft:?}");
             assert_eq!(row_from(&buf, ay, ax), "to api › lead", "{draft:?}");
             assert_eq!(
                 row_from(&buf, ay + 1, ax),
                 draft,
                 "{draft:?}: the input row"
             );
-            assert_eq!(row_from(&buf, ay + 2, ax), hint, "{draft:?}: the hint");
+            let shown = row_from(&buf, ay + 2, ax);
+            assert!(
+                shown.starts_with(&format!("{hint} · ? keys")),
+                "{draft:?}: the hint row: {shown:?}"
+            );
+            assert!(
+                shown.ends_with(&format!("{} \u{2699}", crate::version_line())),
+                "{draft:?}: version and gear end it: {shown:?}"
+            );
             assert_eq!(layout.cursor, None, "{draft:?}");
         }
     }
@@ -3159,26 +3225,69 @@ mod tests {
         ] {
             let (buf, _) = shot.laid(100, 30, composer);
             let (ay, ax) = spot(&buf, words).expect("the quiet line");
-            assert_eq!(ay, 25, "{words}");
+            assert_eq!(ay, 27, "{words}");
             assert_eq!(row_from(&buf, ay, ax), words, "{words}");
             assert_eq!(row_from(&buf, ay + 1, ax), "", "{words}: the input row");
-            assert_eq!(row_from(&buf, ay + 2, ax), "", "{words}: the note row");
+            let shown = row_from(&buf, ay + 2, ax);
+            assert_eq!(
+                shown.starts_with("? keys"),
+                !words.starts_with("not writing"),
+                "{words}: the hint row: {shown:?}"
+            );
+            assert!(
+                shown.ends_with(&format!("{} \u{2699}", crate::version_line())),
+                "{words}: the tail stands: {shown:?}"
+            );
         }
     }
 
-    /// A pending line takes the row under the composer, in full ink; writing
-    /// puts no hint on it otherwise.
+    /// A pending line takes the hint row, in full ink; writing otherwise
+    /// shows its keys there.
     #[test]
-    fn a_note_takes_the_row_under_the_composer_and_writing_has_no_hint() {
+    fn a_note_takes_the_hint_row_and_writing_shows_its_keys() {
         let mut shot = Shot::new();
         let draft = drafted(&["hello"]);
         let (buf, _) = shot.laid(100, 30, writing(&draft, "hello"));
         let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
-        assert_eq!(ay, 25);
-        assert_eq!(row_from(&buf, 27, ax), "", "no hint while writing");
+        assert_eq!(ay, 27);
+        assert!(
+            row_from(&buf, 29, ax).starts_with("Enter sends"),
+            "the writing keys on the hint row"
+        );
         shot.model.set_note(Some("q again to quit".to_owned()));
         let (buf, _) = shot.laid(100, 30, writing(&draft, "hello"));
-        assert_eq!(spot(&buf, "q again to quit"), Some((27, ax)));
+        assert_eq!(spot(&buf, "q again to quit"), Some((29, ax)));
+    }
+
+    /// A note that fills the hint row of the widest pane leaves no room for
+    /// the keys after it: the row draws without them, and without wrapping
+    /// the column arithmetic past the u16 edge.
+    #[test]
+    fn a_full_hint_row_at_the_widest_pane_drops_the_keys() {
+        let mut shot = Shot::new();
+        shot.model.set_note(Some("n".repeat(70_000)));
+        let (buf, layout) = shot.laid(u16::MAX, 28, READ_ONLY);
+        assert_eq!(buf[(60_000, 27)].symbol(), "n", "the note fills the row");
+        assert_eq!(
+            buf[(65_532, 27)].symbol(),
+            "n",
+            "the note's last cell stands"
+        );
+        assert_eq!(spot(&buf, "? keys"), None, "no room for the keys");
+        assert_eq!(
+            spot(&buf, &crate::version_line()),
+            None,
+            "no room for the version either"
+        );
+        let click = Mouse {
+            kind: MouseKind::Click,
+            column: u16::MAX - 1,
+            row: 27,
+        };
+        assert!(
+            !matches!(layout.hit(click), Some(super::Hit::Settings)),
+            "no gear, no settings target"
+        );
     }
 
     /// A click anywhere from the address row to the note row opens the
@@ -3204,29 +3313,38 @@ mod tests {
         assert!(!compose(ay + 4), "the blank row");
     }
 
-    /// At the 40x8 floor the lane has no row: the header's rule is the
-    /// composer's top rule, every chat row is whole, and a scrolled lane
-    /// draws no newer-turns hint over the header.
+    /// At the 40x8 floor the lane keeps one row: both rules are drawn,
+    /// every chat row is whole, and a scrolled lane draws no newer-turns
+    /// hint over the header.
     #[test]
     fn the_floor_size_keeps_every_chat_row_whole() {
         let mut shot = Shot::new();
         shot.lane = turns(150);
         shot.model.wheel(true, 10, 100);
         let (buf, _) = shot.laid(40, 8, browsing(""));
-        assert_eq!(spot(&buf, "to api › lead"), Some((3, 2)));
-        assert_eq!(spot(&buf, "Enter writes"), Some((5, 2)));
-        assert_eq!(buf[(2, 2)].symbol(), "─", "the rule");
-        assert!(line(&buf, 1).concat().contains("api"), "the header");
-        assert_eq!(spot(&buf, "newer turns"), None, "no hint over the header");
+        assert_eq!(spot(&buf, "to api › lead"), Some((5, 2)));
+        assert_eq!(spot(&buf, "Enter writes"), Some((7, 2)));
+        // The sidebar warning rides the header rule's left; the rule stands
+        // past it, and the composer's own rule stands over the address.
+        assert_eq!(buf[(35, 1)].symbol(), "─", "the header rule");
+        assert_eq!(buf[(2, 4)].symbol(), "─", "the composer's rule");
+        assert!(line(&buf, 0).concat().contains("api"), "the header");
+        assert_eq!(
+            spot(&buf, "newer turns"),
+            Some((3, 4)),
+            "the hint under the lane's one row, never over the header"
+        );
         assert!(
-            row_from(&buf, 7, 0).trim_start().starts_with("? keys"),
-            "the keys row"
+            row_from(&buf, 7, 0)
+                .trim_start()
+                .starts_with("Enter writes · ? keys"),
+            "the hint row"
         );
     }
 
     /// A tall draft leaves the lane its floor: at 60x20 the composer grows
-    /// to eight draft rows and the lane keeps r3-r5, and no height from 13
-    /// up lets the biggest draft take the lane under it.
+    /// to ten draft rows and an eight-row draft leaves the lane r2-r7, and
+    /// no height from 13 up lets the biggest draft take the lane under it.
     #[test]
     fn a_tall_draft_leaves_the_lane_its_floor() {
         let mut shot = Shot::new();
@@ -3234,21 +3352,21 @@ mod tests {
         let area = Rect::new(0, 0, 60, 20);
         assert_eq!(
             super::composer_pane(area),
-            9,
-            "eight draft rows and one kept back"
+            11,
+            "ten draft rows and one kept back"
         );
         let draft = drafted(&["row"; 8]);
         let (buf, layout) = shot.laid(60, 20, writing(&draft, "row"));
         let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
-        assert_eq!(ay, 8);
-        assert_eq!(buf[(column(ax), 7)].symbol(), "─", "the rule");
-        assert_eq!(layout.page_rows, 3);
+        assert_eq!(ay, 10);
+        assert_eq!(buf[(column(ax), 9)].symbol(), "─", "the rule");
+        assert_eq!(layout.page_rows, 6);
         assert_eq!(
             spot(&buf, "turn 39"),
-            Some((5, ax + 2)),
+            Some((7, ax + 2)),
             "the lane's last row"
         );
-        assert_eq!(row_from(&buf, 6, ax), "", "the blank row over the rule");
+        assert_eq!(row_from(&buf, 8, ax), "", "the blank row over the rule");
         for height in 13..=60 {
             let rows = super::composer_pane(Rect::new(0, 0, 60, height)) - 1;
             let draft = drafted(&["x"].repeat(rows));
@@ -3281,7 +3399,7 @@ mod tests {
             let (buf, layout) = shot.laid(60, 20, composer);
             let (ay, ax) =
                 spot(&buf, &format!("to {}", &home[..home.len().min(8)])).expect("the address");
-            assert_eq!(ay, 15, "{home}");
+            assert_eq!(ay, 17, "{home}");
             assert_eq!(row_from(&buf, ay + 1, ax), full, "{home}: every cell");
             assert_eq!(
                 layout.cursor,
@@ -3314,7 +3432,7 @@ mod tests {
         shot.entry.branch = Some("feat/auth-v2".to_owned());
         shot.entry.last_active_epoch = Some(PIN_NOW - 60);
         for (width, shown) in [(160, true), (140, true), (139, false)] {
-            let header = line(&shot.draw(width, 18, READ_ONLY), 1).concat();
+            let header = line(&shot.draw(width, 18, READ_ONLY), 0).concat();
             let header = header.trim_end();
             assert!(header.ends_with("active 1m"), "{width}x18: {header:?}");
             assert_eq!(
@@ -3431,8 +3549,8 @@ mod tests {
         Fleet { rows, home: None }
     }
 
-    /// R1: several needy rows use a count and plain location suffixes;
-    /// the `!` key remains at sidebar end-1 (col 41 at 160).
+    /// Several needy rows use a count and plain location suffixes; the
+    /// arrows stand alone at the sidebar's end, with no `!` key marker.
     #[test]
     fn the_attention_row_keeps_the_frames_forms() {
         let names = [
@@ -3452,7 +3570,7 @@ mod tests {
             .collect();
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        let attention = line(&buf, 3).concat();
+        let attention = line(&buf, 2).concat();
         assert!(attention[..40].trim().is_empty(), "{attention:?}");
         let mut shot = Shot::new();
         shot.fleet.rows = vec![
@@ -3462,14 +3580,14 @@ mod tests {
         ];
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        assert_eq!(buf[(41, 3)].symbol(), "!", "the key at end-1");
+        assert_eq!(buf[(41, 2)].symbol(), " ", "no key marker at end-1");
         assert_eq!(
-            buf[(40, 3)].symbol(),
+            buf[(40, 2)].symbol(),
             " ",
             "a blank before it: {:?}",
-            line(&buf, 3).concat()
+            line(&buf, 2).concat()
         );
-        // (c) several long names still leave a blank before the key.
+        // (c) several long names still leave the end cells blank.
         let mut shot = Shot::new();
         shot.fleet.rows = vec![
             row("a", 1, false),
@@ -3480,10 +3598,10 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
         assert_eq!(
-            buf[(40, 3)].symbol(),
+            buf[(40, 2)].symbol(),
             " ",
-            "clipped before the key: {:?}",
-            line(&buf, 3).concat()
+            "the end cells stay blank: {:?}",
+            line(&buf, 2).concat()
         );
         // (d) only needy rows outside the view contribute to the suffix.
         let mut shot = Shot::new();
@@ -3504,8 +3622,8 @@ mod tests {
             .collect();
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        assert_eq!(buf[(39, 3)].symbol(), "↓", "off-screen attention below");
-        assert_eq!(buf[(41, 3)].symbol(), "!");
+        assert_eq!(buf[(39, 2)].symbol(), "↓", "off-screen attention below");
+        assert_eq!(buf[(41, 2)].symbol(), " ", "no key marker");
     }
 
     /// Frame agents r20-r35: a seat's state is right-aligned at the
@@ -3539,7 +3657,7 @@ mod tests {
     }
 
     /// Frame many 160: a needy session's bar fills its own two rows and no
-    /// other (r9-r10 infra, r15-r16 billing, r19-r20 ops).
+    /// other (r8-r9 infra, r14-r15 billing, r18-r19 ops).
     #[test]
     fn a_needy_bar_covers_its_own_two_rows() {
         let mut shot = Shot::new();
@@ -3547,7 +3665,7 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
         let barred: Vec<u16> = (0..43).filter(|y| buf[(0, *y)].symbol() == "│").collect();
-        assert_eq!(barred, [9, 10, 15, 16, 19, 20]);
+        assert_eq!(barred, [8, 9, 14, 15, 18, 19]);
     }
 
     /// A long name uses its first line; counts remain below inside the rule.
@@ -3557,9 +3675,9 @@ mod tests {
         shot.fleet.rows = vec![row(&"n".repeat(60), 1, false)];
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        assert_eq!(line(&buf, 5)[6..42].concat(), "n".repeat(36));
-        assert!(line(&buf, 6)[6..42].concat().starts_with("●3 ✓B12"));
-        assert_eq!(buf[(44, 5)].symbol(), "│");
+        assert_eq!(line(&buf, 4)[6..42].concat(), "n".repeat(36));
+        assert!(line(&buf, 5)[6..42].concat().starts_with("●3 ✓B12"));
+        assert_eq!(buf[(44, 4)].symbol(), "│");
     }
 
     /// The home tag follows the name after two blanks, on that row alone;
@@ -3574,17 +3692,17 @@ mod tests {
         let tagged: Vec<u16> = (0..43)
             .filter(|y| sidebar(&buf, *y).contains("this window"))
             .collect();
-        assert_eq!(tagged, [5], "the home row alone");
+        assert_eq!(tagged, [4], "the home row alone");
         assert!(
-            sidebar(&buf, 5).starts_with("  ● 1 api  this window"),
+            sidebar(&buf, 4).starts_with("  ● 1 api  this window"),
             "{:?}",
-            sidebar(&buf, 5)
+            sidebar(&buf, 4)
         );
         for (cells, shown) in [(22, true), (23, false)] {
             let mut shot = Shot::new();
             shot.fleet.rows = vec![row(&"n".repeat(cells), 1, false)];
             shot.model = Model::new(&shot.fleet);
-            let first = sidebar(&shot.draw(160, 43, READ_ONLY), 5);
+            let first = sidebar(&shot.draw(160, 43, READ_ONLY), 4);
             assert_eq!(
                 first.contains("this window"),
                 shown,
@@ -3600,7 +3718,7 @@ mod tests {
         shot.fleet = frame_fleet();
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        for y in [6, 10] {
+        for y in [5, 9] {
             let cells = line(&buf, y);
             assert!(cells[6..42].concat().contains("a question"));
             assert_eq!(cells[42..44].concat(), "  ");
@@ -3685,35 +3803,36 @@ mod tests {
         }
     }
 
-    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 16
-    /// (two-row steps, four shown, the more row, tabs on 15). A press there
+    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 15
+    /// (two-row steps, four shown, the more row, tabs on 14). A press there
     /// moved nowhere keeps it; dragged up and back down past it, it stops on
-    /// 16, never 17, though that leaves the tab body one row.
+    /// 15, never 16.
     #[test]
     fn a_short_pane_keeps_its_undragged_list_rule_reachable() {
         let mut shot = sessions(13);
         let first = shot.draw(100, 20, READ_ONLY);
-        assert_eq!(horizontal(&first), Some(16), "the undragged rule");
-        let still = drag(&mut shot, &first, Edge::List, 16);
-        assert_eq!(horizontal(&still), Some(16), "a press moved nowhere");
+        assert_eq!(horizontal(&first), Some(15), "the undragged rule");
+        let still = drag(&mut shot, &first, Edge::List, 15);
+        assert_eq!(horizontal(&still), Some(15), "a press moved nowhere");
         let up = drag(&mut shot, &still, Edge::List, 12);
         assert_eq!(horizontal(&up), Some(12));
         let down = drag(&mut shot, &up, Edge::List, 19);
-        assert_eq!(horizontal(&down), Some(16), "never past the undragged rule");
+        assert_eq!(horizontal(&down), Some(15), "never past the undragged rule");
     }
 
     /// Ruling 5a: the list keeps one session's rows — two alone, two and the
-    /// more row among several — and above the floor three body rows.
+    /// more row among several — and its dragged-down stop keeps the row
+    /// budget it had, the body taking the rows the frame gave back.
     #[test]
-    fn a_dragged_list_keeps_one_session_and_three_body_rows() {
-        for (count, least) in [(1, 9), (2, 10), (13, 10)] {
+    fn a_dragged_list_keeps_one_session_and_its_row_budget() {
+        for (count, least) in [(1, 8), (2, 9), (13, 9)] {
             let mut shot = sessions(count);
             let first = shot.draw(160, 45, READ_ONLY);
             let top = drag(&mut shot, &first, Edge::List, 0);
             assert_eq!(horizontal(&top), Some(least), "{count} sessions");
             let bottom = drag(&mut shot, &top, Edge::List, 44);
-            // Floor 43: body rows 40, 41 and 42.
-            assert_eq!(horizontal(&bottom), Some(39), "{count} sessions");
+            // Border 38: body rows 39 to 44, the pane's last.
+            assert_eq!(horizontal(&bottom), Some(38), "{count} sessions");
         }
     }
 
@@ -3813,7 +3932,12 @@ mod tests {
         );
         assert_eq!(at(44, rule), Some((Edge::Sidebar, 44)), "the corner");
         assert_eq!(at(43, rule), Some((Edge::List, rule)), "its own cell");
-        assert_eq!(at(44, 44), None, "the keys row");
+        assert_eq!(
+            at(44, 44),
+            Some((Edge::Sidebar, 44)),
+            "the rule runs to the hint row"
+        );
+        assert_eq!(at(159, 44), None, "the gear is a target, not a border");
     }
 
     /// Two seats in the Agents body, by name.
@@ -4112,14 +4236,14 @@ mod tests {
                 shot.fleet.home = Some("界api".to_owned());
                 shot.model = Model::new(&shot.fleet);
                 let (buf, layout) = declutter_frame(&shot, width, icons);
-                let name = declutter_line(&buf, &layout, 5);
-                let below = declutter_line(&buf, &layout, 6);
+                let name = declutter_line(&buf, &layout, 4);
+                let below = declutter_line(&buf, &layout, 5);
                 let counts = if icons { "●3 ✓B12" } else { "*3 +B12" };
                 assert!(name.contains("界 api") && name.contains("this window"));
                 assert!(!name.contains(counts), "counts belong below: {name:?}");
                 assert!(below.contains(counts), "{width}/{icons}: {below:?}");
                 assert!(!below.contains("goal"), "{below:?}");
-                for y in [5, 6] {
+                for y in [4, 5] {
                     for column in [0, super::NAME, layout.list.width - 1] {
                         assert!(
                             matches!(layout.hit(Mouse { kind: MouseKind::Click, column, row: y }), Some(super::Hit::Session(name)) if name == "界api")
@@ -4129,11 +4253,11 @@ mod tests {
                 }
                 shot.fleet.rows[0].line2 = Line2::NoGoal;
                 let (buf, layout) = declutter_frame(&shot, width, icons);
-                let below = declutter_line(&buf, &layout, 6);
+                let below = declutter_line(&buf, &layout, 5);
                 assert!(below.contains(counts) && !below.contains("goal"));
                 shot.fleet.rows[0].counts = Counts::Unknown;
                 let (buf, layout) = declutter_frame(&shot, width, icons);
-                assert!(declutter_line(&buf, &layout, 6).contains("agents ?"));
+                assert!(declutter_line(&buf, &layout, 5).contains("agents ?"));
             }
         }
     }
@@ -4163,15 +4287,15 @@ mod tests {
             (false, "# 9  @ 22+?  * 12+?  ! 3"),
         ] {
             let (buf, layout) = declutter_frame(&shot, 100, icons);
-            assert_eq!(declutter_line(&buf, &layout, 1).trim(), expected);
-            let cue = declutter_line(&buf, &layout, 3);
-            assert_eq!(cue.trim(), "↓ !");
+            assert_eq!(declutter_line(&buf, &layout, 0).trim(), expected);
+            let cue = declutter_line(&buf, &layout, 2);
+            assert_eq!(cue.trim(), "↓");
             shot.key(crate::app::model::Key::NextNeed);
             assert_eq!(shot.model.selected(), Some("s02"));
             shot.key(crate::app::model::Key::NextNeed);
             let (buf, layout) = declutter_frame(&shot, 100, icons);
-            let cue = declutter_line(&buf, &layout, 3);
-            assert_eq!(cue.trim(), "↑↓ !");
+            let cue = declutter_line(&buf, &layout, 2);
+            assert_eq!(cue.trim(), "↑↓");
             shot.key(crate::app::model::Key::Esc);
         }
         shot.fleet.rows.truncate(1);
@@ -4182,10 +4306,10 @@ mod tests {
         ] {
             shot.fleet.rows[0].counts = counts;
             let (buf, layout) = declutter_frame(&shot, 100, false);
-            assert_eq!(declutter_line(&buf, &layout, 1).trim(), expected);
-            assert!(declutter_line(&buf, &layout, 3).trim().is_empty());
+            assert_eq!(declutter_line(&buf, &layout, 0).trim(), expected);
+            assert!(declutter_line(&buf, &layout, 2).trim().is_empty());
             if matches!(shot.fleet.rows[0].counts, Counts::Marks(_)) {
-                assert!(declutter_line(&buf, &layout, 6).contains("no agents"));
+                assert!(declutter_line(&buf, &layout, 5).contains("no agents"));
             }
         }
     }
@@ -4198,7 +4322,7 @@ mod tests {
         shot.fleet.rows[1].needy = true;
         let (buf, layout) = declutter_frame(&shot, 90, false);
         assert_eq!(layout.list.width, 34);
-        let header = declutter_line(&buf, &layout, 1);
+        let header = declutter_line(&buf, &layout, 0);
         assert_eq!(
             header.split_whitespace().collect::<Vec<_>>(),
             ["#", "2", "!", "1"]
@@ -4208,7 +4332,7 @@ mod tests {
             (Mark::Done, false, usize::MAX - 3),
         ]);
         let (buf, layout) = declutter_frame(&shot, 90, false);
-        assert_eq!(declutter_line(&buf, &layout, 1).trim(), "# 2 * 3+? ! 1");
+        assert_eq!(declutter_line(&buf, &layout, 0).trim(), "# 2 * 3+? ! 1");
         shot = sessions(130);
         for row in &mut shot.fleet.rows {
             row.counts = Counts::Marks(Vec::new());
@@ -4219,7 +4343,7 @@ mod tests {
         shot.fleet.rows[1].counts = Counts::Unknown;
         let (buf, layout) = declutter_frame(&shot, 90, false);
         assert_eq!(
-            declutter_line(&buf, &layout, 1).trim(),
+            declutter_line(&buf, &layout, 0).trim(),
             "# 130 @ 1150+? * 1000+? ! 100"
         );
     }
@@ -4245,7 +4369,7 @@ mod tests {
         ] {
             shot.fleet.rows[0].line2 = status;
             let (buf, layout) = declutter_frame(&shot, 90, true);
-            let below = declutter_line(&buf, &layout, 6);
+            let below = declutter_line(&buf, &layout, 5);
             assert!(below.contains(cue) && below.contains("✖12"), "{below:?}");
             assert!(
                 !below.contains("✓12") && !below.contains("·12"),
@@ -4279,9 +4403,9 @@ mod tests {
                 };
                 let (buf, layout) = declutter_frame(&shot, 90, icons);
                 assert_eq!(layout.list.width, 34, "the rendered cell budget");
-                assert_eq!(buf[(34, 6)].symbol(), "│");
+                assert_eq!(buf[(34, 5)].symbol(), "│");
                 assert_eq!(
-                    line(&buf, 6)[start..32].concat().trim_end(),
+                    line(&buf, 5)[start..32].concat().trim_end(),
                     expected.trim_end(),
                     "{icons}/{text}: cell/grapheme/whole-age budget"
                 );
@@ -4331,7 +4455,7 @@ mod tests {
     fn the_peek_keys_row_hides_the_gear_and_keeps_the_version() {
         let mut shot = Shot::new();
         shot.model.open_peek(1);
-        let (row, layout) = shot.keys_at(100, browsing(""));
+        let (row, layout) = shot.footer_at(100, browsing(""), false);
         let tail = crate::version_line();
         assert_eq!(
             row.strip_suffix(tail.as_str())
@@ -4345,7 +4469,7 @@ mod tests {
             row: 0,
         };
         assert!(layout.hit(last).is_none(), "no gear target");
-        let (narrow, _) = shot.keys_at(22, browsing(""));
+        let (narrow, _) = shot.footer_at(22, browsing(""), false);
         assert_eq!(narrow, "  peek   Esc close", "the version drops, no gear");
     }
 
@@ -4470,7 +4594,7 @@ mod tests {
             ]);
             let (buf, layout) = shot.laid(160, 43, READ_ONLY);
             assert_eq!(layout.list.width, 44, "36 cells for counts below the name");
-            assert_eq!(line(&buf, 6)[..45].concat(), format!("      {expected}  │"));
+            assert_eq!(line(&buf, 5)[..45].concat(), format!("      {expected}  │"));
         }
     }
 
@@ -4502,9 +4626,9 @@ mod tests {
             } else {
                 format!("  ● 1 {}  │", "n".repeat(36))
             };
-            assert_eq!(line(&buf, 5)[..45].concat(), expected, "stopped={stopped}");
-            assert_eq!(line(&buf, 5)[42..44].concat(), "  ");
-            assert_eq!(buf[(44, 6)].symbol(), "│");
+            assert_eq!(line(&buf, 4)[..45].concat(), expected, "stopped={stopped}");
+            assert_eq!(line(&buf, 4)[42..44].concat(), "  ");
+            assert_eq!(buf[(44, 5)].symbol(), "│");
         }
     }
 
@@ -4544,7 +4668,7 @@ mod tests {
         let layout =
             super::draw_with_layout(&shot.screen(READ_ONLY), super::Wait::default(), &mut buf);
         assert_eq!(layout.list.width, 32_775);
-        assert_eq!(line(&buf, 5)[32_763..32_776].concat(), "stopped 1m  │");
+        assert_eq!(line(&buf, 4)[32_763..32_776].concat(), "stopped 1m  │");
     }
 
     /// Clipping preserves original grapheme barriers, then appends one ellipsis.
@@ -4585,9 +4709,9 @@ mod tests {
                 };
                 let (buf, layout) = declutter_frame(&shot, 90, icons);
                 assert_eq!(layout.list.width, 34);
-                assert_eq!(buf[(34, 6)].symbol(), "│");
-                assert_eq!(line(&buf, 6)[10..32].concat(), expected, "{icons}/{text}");
-                assert_eq!(buf[(31, 6)].symbol(), "…");
+                assert_eq!(buf[(34, 5)].symbol(), "│");
+                assert_eq!(line(&buf, 5)[10..32].concat(), expected, "{icons}/{text}");
+                assert_eq!(buf[(31, 5)].symbol(), "…");
             }
         }
     }
@@ -4660,11 +4784,11 @@ mod tests {
         };
         let gear = "\u{2699}";
         let tail = format!("{} {gear}", crate::version_line());
-        let head = "     ? keys";
+        let head = "  Enter writes · ? keys";
         let full = head.chars().count() + 2 + tail.chars().count();
         for (width, drawn) in [(full, tail.as_str()), (full - 1, gear)] {
             let at = u16::try_from(width).unwrap_or(0);
-            let (row, layout) = shot.keys_at(at, browsing(""));
+            let (row, layout) = shot.footer_at(at, browsing(""), true);
             let pad = " ".repeat(width - head.chars().count() - drawn.chars().count());
             let want = format!("{head}{pad}{drawn}");
             assert_eq!(row, want, "w={width}: drawn unchanged");
@@ -4673,7 +4797,7 @@ mod tests {
             assert!(!settings(&layout, at - 3), "w={width}: two left is not");
         }
         let at = u16::try_from(head.chars().count() + 2).unwrap_or(0);
-        let (row, layout) = shot.keys_at(at, browsing(""));
+        let (row, layout) = shot.footer_at(at, browsing(""), true);
         assert!(!row.contains(gear), "narrow: no gear drawn");
         assert!(!settings(&layout, at - 1), "narrow: no target");
     }

@@ -774,12 +774,12 @@ fn session_card_click_leaves_write_mode_and_release() {
     rig.enter(&pane);
     rig.typed(&pane, "click-draft");
     // The list card is the first occurrence below its Sessions row; the chat
-    // heading on row 1 is deliberately not a click target.
+    // heading on row 0 is deliberately not a click target.
     let screen = rig.screen(&pane);
     let y = screen
         .lines()
         .enumerate()
-        .find_map(|(y, row)| (y >= 5 && row.split_whitespace().any(|w| w == rig.home)).then_some(y))
+        .find_map(|(y, row)| (y >= 4 && row.split_whitespace().any(|w| w == rig.home)).then_some(y))
         .expect("drawn home card");
     rig.raw(&pane, &format!("\x1b[<0;3;{}M", y + 1));
     rig.wait(&pane, "R-B5 clicked card leaves writing", |s| {

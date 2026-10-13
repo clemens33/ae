@@ -162,12 +162,12 @@ fn drawn_map_names_panel_interiors_and_excludes_header_composer_and_rules() {
     }
     for at in [
         (44, 10),
+        (47, 0),
         (47, 1),
-        (47, 2),
-        (47, 40),
         (47, 42),
+        (47, 43),
         (47, 44),
-        (0, 5),
+        (0, 4),
     ] {
         assert!(map.region_at(at.into()).is_none(), "R3 chrome {at:?}");
     }

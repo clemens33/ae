@@ -213,20 +213,19 @@ impl Rig {
                     f.text.contains("needs at least 40x8")
                 } else {
                     // tmux can resize its old screen before ae repaints: a
-                    // bottom deletion loses the keys row; a top deletion
+                    // bottom deletion loses the hint row; a top deletion
                     // keeps it but can leave the old grown window too tall.
                     let composing = writing(&f.text);
                     let cap = if composing {
-                        height.saturating_sub(12).clamp(1, 10)
+                        height.saturating_sub(9).clamp(1, 10)
                     } else {
                         1
                     };
                     let address = format!("to {} › lead", self.home);
                     f.text.lines().last().is_some_and(|row| {
-                        row.chars().count() == width
-                            && (writing(&f.text) || row.trim_start().starts_with("? keys"))
+                        row.chars().count() == width && (writing(&f.text) || row.contains("? keys"))
                     }) && f.text.lines().enumerate().any(|(row, text)| {
-                        row >= height - 4 - cap && row <= height - 5 && text.contains(&address)
+                        row >= height - 2 - cap && row <= height - 3 && text.contains(&address)
                     })
                 }
         })
@@ -251,7 +250,7 @@ impl Rig {
             .text
             .lines()
             .skip(top + 1)
-            .take((height - 3).saturating_sub(top + 1))
+            .take((height - 1).saturating_sub(top + 1))
             .map(|row| {
                 row.chars()
                     .skip(text_column)
@@ -272,8 +271,8 @@ impl Rig {
         let height = frame.text.lines().count();
         assert_eq!(
             top,
-            height - 4 - rows.len(),
-            "grown composer consumes lane rows, not note/keys"
+            height - 2 - rows.len(),
+            "grown composer consumes lane rows above the hint"
         );
         assert!(writing(&frame.text));
         assert_eq!(
@@ -519,22 +518,22 @@ fn home_cursor_window_keeps_nine_rows_and_the_below_marker() {
 fn short_window_shrinks_composer_first_and_preserves_three_lane_rows() {
     let rig = Rig::new("cwshort", 40);
     let pane = rig.open();
-    rig.resize(&pane, 100, 16);
+    rig.resize(&pane, 100, 13);
     rig.writing(&pane);
     let frame = rig.paste(&pane, &lines(20), "L19");
     let rows = strings(&["… +17 lines above", "L17", "L18", "L19"]);
     rig.holds(&frame, &rows, 3, 3);
     assert_eq!(
         rig.composer(&frame).1,
-        8,
+        7,
         "three lane rows, marker and rule precede composer"
     );
     assert!(
         frame
             .text
             .lines()
-            .take(6)
-            .skip(3)
+            .take(5)
+            .skip(2)
             .any(|row| row.contains("lane-39")),
         "newest turn stays in the three-row lane"
     );
@@ -544,12 +543,12 @@ fn short_window_shrinks_composer_first_and_preserves_three_lane_rows() {
 fn one_and_two_row_windows_omit_markers_but_show_the_cursor_window() {
     let rig = Rig::new("cwtiny", 0);
     let pane = rig.open();
-    rig.resize(&pane, 100, 14);
+    rig.resize(&pane, 100, 11);
     rig.writing(&pane);
     let frame = rig.paste(&pane, &lines(20), "L19");
     rig.holds(&frame, &strings(&["L18", "L19"]), 1, 3);
     assert!(!frame.text.contains("lines above") && !frame.text.contains("lines below"));
-    let small = rig.resize(&pane, 100, 13);
+    let small = rig.resize(&pane, 100, 10);
     rig.holds(&small, &strings(&["L19"]), 0, 3);
     assert!(!small.text.contains("lines above") && !small.text.contains("lines below"));
 }
@@ -561,7 +560,7 @@ fn resize_recomputes_the_window_and_hides_cursor_below_minimum() {
     rig.writing(&pane);
     let frame = rig.paste(&pane, &lines(20), "L19");
     rig.holds(&frame, &tail(), 9, 3);
-    let small = rig.resize(&pane, 100, 16);
+    let small = rig.resize(&pane, 100, 13);
     rig.holds(
         &small,
         &strings(&["… +17 lines above", "L17", "L18", "L19"]),
@@ -590,8 +589,8 @@ fn wheel_over_grown_composer_moves_three_lane_rows_and_bounds_survive_shrink() {
         frame
             .text
             .lines()
-            .skip(3)
-            .take(top - 5)
+            .skip(2)
+            .take(top - 4)
             .map(|row| {
                 row.chars()
                     .skip(47)
@@ -638,7 +637,7 @@ fn wheel_over_grown_composer_moves_three_lane_rows_and_bounds_survive_shrink() {
     let first = compact
         .text
         .lines()
-        .nth(3)
+        .nth(2)
         .expect("oldest lane row")
         .chars()
         .skip(47)
@@ -651,7 +650,7 @@ fn wheel_over_grown_composer_moves_three_lane_rows_and_bounds_survive_shrink() {
         compact
             .text
             .lines()
-            .skip(3)
+            .skip(2)
             .take(4) // coverage notice, gap, turn heading, then its body
             .any(|row| row.contains("lane-00")),
         "oldest turn begins the enlarged lane"
@@ -707,7 +706,7 @@ fn leaving_writing_compacts_kept_draft_and_discards_the_old_grown_hit_target() {
     assert_eq!(kept.cursor.0, 0);
     assert_eq!(
         cell(&kept.text, &rig.address()).1,
-        40,
+        42,
         "browse composer is one row"
     );
     rig.report(&pane, 0, column, old_top, 1);
@@ -720,7 +719,7 @@ fn leaving_writing_compacts_kept_draft_and_discards_the_old_grown_hit_target() {
     );
     assert_eq!(browsed.cursor.0, 0);
     assert!(browsed.text.contains("draft kept"));
-    rig.report(&pane, 0, column, 42, 1); // compact hint is still Compose
+    rig.report(&pane, 0, column, 44, 1); // compact hint is still Compose
     let resumed = rig.wait(
         &pane,
         FRAME,
@@ -755,7 +754,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
         f.text.contains("not writing:")
     });
     assert_eq!(held.cursor.0, 0);
-    assert_eq!(cell(&held.text, "not writing:").1, 40, "Held stays compact");
+    assert_eq!(cell(&held.text, "not writing:").1, 42, "Held stays compact");
     rig.send(&pane, "\x1b");
     let browse = rig.wait(&pane, FRAME, "GUARD held exits to browse", |f| {
         f.text.contains("Enter writes")
@@ -766,7 +765,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
         f.text.contains("zzstop is stopped")
     });
     assert_eq!(foreign.cursor.0, 0);
-    assert_eq!(cell(&foreign.text, "zzstop is stopped").1, 40);
+    assert_eq!(cell(&foreign.text, "zzstop is stopped").1, 42);
     drop(lease);
     let (home_x, home_y) = foreign
         .text
@@ -795,7 +794,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
         f.text.contains("read-only ·")
     });
     assert_eq!(read_only.cursor.0, 0);
-    assert_eq!(cell(&read_only.text, "read-only ·").1, 40);
+    assert_eq!(cell(&read_only.text, "read-only ·").1, 42);
 }
 
 #[test]
@@ -839,7 +838,7 @@ fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
         "B2 no home needed to write"
     );
     assert_eq!(outside.cursor.0, 0);
-    assert_eq!(cell(&outside.text, &address).1, 40);
+    assert_eq!(cell(&outside.text, &address).1, 42);
     rig.send(&pane, "qq");
     let left = rig.wait(&pane, FRAME, "GUARD terminal left app", |f| {
         f.text.contains("C1-LEFT")

@@ -146,7 +146,7 @@ fn instructions_fourth_title_is_clickable_at_width_40_and_held_read_never_blocks
     rig.tmux(&["resize-window", "-t", &pane, "-x", "40", "-y", "8"]);
     rig.wait(&pane, WAIT, "minimum frame before Settings", |s| {
         s.lines()
-            .next()
+            .nth(1)
             .is_some_and(|line| line.contains("now 40x8"))
     });
     let hold = rig.hold();
@@ -227,7 +227,7 @@ fn instructions_selected_stopped_session_uses_its_local_source_and_every_roster_
         .expect("stopped session row");
     rig.click(&pane, line.find(name).expect("name cell"), row);
     rig.wait(&pane, WAIT, "selected stopped session facts", |s| {
-        s.lines().nth(1).is_some_and(|line| line.contains(name))
+        s.lines().next().is_some_and(|line| line.contains(name))
     });
     rig.settings(&pane);
     rig.tab(&pane, "4", "Instructions");

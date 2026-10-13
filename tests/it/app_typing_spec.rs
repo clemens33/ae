@@ -270,7 +270,7 @@ fn word_on_a_stopped_selection(word: &str) {
     // Tab is a later visible effect, proving the word was processed.
     rig.keys(&pane, "Tab");
     rig.wait(&pane, FRAME, "R2 word processed before Agents", |s| {
-        s.lines().nth(1).is_some_and(|row| row.contains(selected)) && s.contains(agents)
+        s.lines().next().is_some_and(|row| row.contains(selected)) && s.contains(agents)
     });
     alive(&rig, &pane);
     assert_eq!(journal(&rig), before);
@@ -380,15 +380,22 @@ fn keys_row_is_the_mode_word_one_hint_the_version_and_the_gear_at_every_width() 
     for width in [40, 60, 89, 160, 300] {
         let look = ae::theme::Look::read("off", "", "off", "off");
         let buf = super::closed_frame(width, 28, &look, true);
-        let row = super::row(&buf, 27);
-        assert!(row.starts_with("     ? keys"), "{width}: {row}");
+        let row: String = super::row(&buf, 27)
+            .chars()
+            .skip(if width >= 140 { 47 } else { 2 })
+            .collect();
+        assert!(row.starts_with("Enter writes · ? keys"), "{width}: {row}");
         let rest = row
             .trim_end()
-            .strip_suffix(tail.as_str())
+            .strip_suffix(if width == 40 && tail.chars().count() > 15 {
+                "*"
+            } else {
+                tail.as_str()
+            })
             .expect("version and gear end the row");
         assert_eq!(
             rest.trim_end(),
-            "     ? keys",
+            "Enter writes · ? keys",
             "{width}: no other key is named"
         );
     }

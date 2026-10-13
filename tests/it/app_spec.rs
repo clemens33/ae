@@ -1080,53 +1080,51 @@ fn app_draw_home_160x43() {
     };
     let mut buf = Buffer::empty(Rect::new(0, 0, 160, 43));
     draw(&screen, &mut buf);
-    // The rule stands at x = 44 in border, every row but the last: the keys
-    // row spans the full width.
-    for y in 0..42 {
+    // The rule stands at x = 44 through the final hint row.
+    for y in 0..43 {
         assert_eq!(cell_at(&buf, 44, y).symbol(), "│", "rule row {y}");
         assert_eq!(cell_at(&buf, 44, y).fg, hex(palette.border));
     }
-    assert_ne!(cell_at(&buf, 44, 42).symbol(), "│", "keys own the row");
-    // Fleet summary and the `!` that reaches the needy.
-    assert!(row_text(&buf, 1).contains("▣ 3 "), "counts sessions");
-    assert_eq!(cell_at(&buf, 2, 1).fg, hex(palette.text));
-    assert!(side_text(&buf, 3, 40).is_empty(), "attention prose removed");
-    assert_eq!(cell_at(&buf, 41, 3).symbol(), "!");
-    assert!(cell_at(&buf, 41, 3).modifier.contains(Modifier::BOLD));
+    assert_eq!(cell_at(&buf, 44, 42).symbol(), "│", "hint stays in chat");
+    // Fleet summary; the lone `!` key marker is gone.
+    assert!(row_text(&buf, 0).contains("▣ 3 "), "counts sessions");
+    assert_eq!(cell_at(&buf, 2, 0).fg, hex(palette.text));
+    assert!(side_text(&buf, 2, 40).is_empty(), "attention prose removed");
+    assert_eq!(cell_at(&buf, 41, 2).symbol(), " ");
     // The selected home row: title name, dim window tag, counts below.
-    assert_eq!(cell_at(&buf, 2, 5).symbol(), Mark::Working.glyph(true));
-    assert_eq!(cell_at(&buf, 2, 5).fg, hex(palette.working));
-    assert_eq!(cell_at(&buf, 6, 5).symbol(), "a");
-    assert_eq!(cell_at(&buf, 7, 5).symbol(), "p");
-    assert_eq!(cell_at(&buf, 8, 5).symbol(), "i");
-    assert_eq!(cell_at(&buf, 6, 5).fg, hex(palette.title));
-    assert!(row_text(&buf, 5).contains("this window"));
-    assert!(side_text(&buf, 6, 44).ends_with("●3 ◔1 ✓2"), "counts below");
-    assert!(!row_text(&buf, 6).contains("Ship the v2 auth endpoints"));
-    assert_eq!(cell_at(&buf, 2, 8).symbol(), Mark::Working.glyph(true));
+    assert_eq!(cell_at(&buf, 2, 4).symbol(), Mark::Working.glyph(true));
+    assert_eq!(cell_at(&buf, 2, 4).fg, hex(palette.working));
+    assert_eq!(cell_at(&buf, 6, 4).symbol(), "a");
+    assert_eq!(cell_at(&buf, 7, 4).symbol(), "p");
+    assert_eq!(cell_at(&buf, 8, 4).symbol(), "i");
+    assert_eq!(cell_at(&buf, 6, 4).fg, hex(palette.title));
+    assert!(row_text(&buf, 4).contains("this window"));
+    assert!(side_text(&buf, 5, 44).ends_with("●3 ◔1 ✓2"), "counts below");
+    assert!(!row_text(&buf, 5).contains("Ship the v2 auth endpoints"));
+    assert_eq!(cell_at(&buf, 2, 7).symbol(), Mark::Working.glyph(true));
     assert!(
-        cell_at(&buf, 6, 8).modifier.contains(Modifier::BOLD),
+        cell_at(&buf, 6, 7).modifier.contains(Modifier::BOLD),
         "a calm name stays bold text"
     );
     // The needy row lights its edge and its mark, nothing else.
-    for y in [11, 12] {
+    for y in [10, 11] {
         assert_eq!(cell_at(&buf, 0, y).symbol(), "│", "edge row {y}");
         assert_eq!(cell_at(&buf, 0, y).fg, hex(palette.needs_you));
     }
-    assert_eq!(cell_at(&buf, 2, 11).symbol(), "⚠");
-    assert_eq!(cell_at(&buf, 2, 11).fg, hex(palette.needs_you));
-    assert!(row_text(&buf, 12).contains("Approve runner cost"));
+    assert_eq!(cell_at(&buf, 2, 10).symbol(), "⚠");
+    assert_eq!(cell_at(&buf, 2, 10).fg, hex(palette.needs_you));
+    assert!(row_text(&buf, 11).contains("Approve runner cost"));
     // The heading, rule, and the Agents body in order.
-    assert!(row_text(&buf, 14).contains("Agents 6"));
-    assert!(!row_text(&buf, 14).contains("Overview"));
-    assert!(cell_at(&buf, 2, 14).modifier.contains(Modifier::BOLD));
-    assert!(!side_text(&buf, 14, 44).ends_with("Tab"));
+    assert!(row_text(&buf, 13).contains("Agents 6"));
+    assert!(!row_text(&buf, 13).contains("Overview"));
+    assert!(cell_at(&buf, 2, 13).modifier.contains(Modifier::BOLD));
+    assert!(!side_text(&buf, 13, 44).ends_with("Tab"));
     assert_eq!(
-        side_text(&buf, 15, 44),
+        side_text(&buf, 14, 44),
         "─".repeat(44),
         "the heading rule spans the sidebar"
     );
-    let body: Vec<String> = (16..30).map(|y| row_text(&buf, y)).collect();
+    let body: Vec<String> = (15..29).map(|y| row_text(&buf, y)).collect();
     let at = |needle: &str| {
         body.iter()
             .position(|row| row.contains(needle))
@@ -1142,17 +1140,17 @@ fn app_draw_home_160x43() {
     );
     assert!(!body.join("\n").contains("asked by"), "no asked-by row");
     // The chat column: header, rule, bottom-anchored turns, composer, keys.
-    let head = row_text(&buf, 1);
-    assert_eq!(cell_at(&buf, 47, 1).symbol(), "a", "chat starts at x = 47");
-    assert_eq!(cell_at(&buf, 48, 1).symbol(), "p");
-    assert_eq!(cell_at(&buf, 49, 1).symbol(), "i");
-    assert_eq!(cell_at(&buf, 47, 1).fg, hex(palette.title));
+    let head = row_text(&buf, 0);
+    assert_eq!(cell_at(&buf, 47, 0).symbol(), "a", "chat starts at x = 47");
+    assert_eq!(cell_at(&buf, 48, 0).symbol(), "p");
+    assert_eq!(cell_at(&buf, 49, 0).symbol(), "i");
+    assert_eq!(cell_at(&buf, 47, 0).fg, hex(palette.title));
     assert!(head.contains("lead + colead"));
     let age = ae::brief::age(Some(60));
     let right = format!("feat/auth-v2  ·  active {age}");
     assert!(head.ends_with(&right), "branch and activity: {head:?}");
     for x in 47..157 {
-        assert_eq!(cell_at(&buf, x, 2).symbol(), "─", "head rule {x}");
+        assert_eq!(cell_at(&buf, x, 1).symbol(), "─", "head rule {x}");
     }
     let text = all_text(&buf);
     let ship = text.find("ship it?").expect("the ask shows");
@@ -1161,30 +1159,31 @@ fn app_draw_home_160x43() {
     assert!(text.contains("08:48"), "viewer clock on the turn");
     assert!(text.contains("to lead"), "the ask names its seat");
     assert!(
-        chat_text(&buf, 35, 44).contains("hello lane"),
+        chat_text(&buf, 37, 44).contains("hello lane"),
         "the newest sits just above the blank"
     );
     assert!(
-        chat_text(&buf, 36, 44).trim_start().is_empty(),
+        chat_text(&buf, 38, 44).trim_start().is_empty(),
         "a blank parts the turn from the composer"
     );
     for x in 47..157 {
-        assert_eq!(cell_at(&buf, x, 37).symbol(), "─", "composer rule {x}");
+        assert_eq!(cell_at(&buf, x, 39).symbol(), "─", "composer rule {x}");
     }
-    assert_eq!(cell_at(&buf, 47, 38).symbol(), "t");
-    assert_eq!(chat_text(&buf, 38, 44).trim_start(), "to api › lead");
-    assert_eq!(cell_at(&buf, 47, 39).symbol(), "c");
-    assert_eq!(chat_text(&buf, 39, 44).trim_start(), "check the scopes");
-    assert_eq!(
-        chat_text(&buf, 40, 44).trim_start(),
-        "draft kept · Enter writes"
-    );
-    assert!(side_text(&buf, 41, 44).trim_start().is_empty());
-    assert_eq!(cell_at(&buf, 44, 41).symbol(), "│");
-    assert!(chat_text(&buf, 41, 44).trim_start().is_empty());
-    let keys = row_text(&buf, 42);
+    assert_eq!(cell_at(&buf, 47, 40).symbol(), "t");
+    assert_eq!(chat_text(&buf, 40, 44).trim_start(), "to api › lead");
+    assert_eq!(cell_at(&buf, 47, 41).symbol(), "c");
+    assert_eq!(chat_text(&buf, 41, 44).trim_start(), "check the scopes");
     assert!(
-        keys.trim_start().starts_with("? keys"),
+        chat_text(&buf, 42, 44)
+            .trim_start()
+            .starts_with("draft kept · Enter writes · ? keys")
+    );
+    assert!(side_text(&buf, 42, 44).trim_start().is_empty());
+    assert_eq!(cell_at(&buf, 44, 42).symbol(), "│");
+    let keys = chat_text(&buf, 42, 44);
+    assert!(
+        keys.trim_start()
+            .starts_with("draft kept · Enter writes · ? keys"),
         "browse hint without a mode word: {keys:?}"
     );
     assert!(keys.contains("? keys"), "the one hint: {keys:?}");
@@ -1192,7 +1191,6 @@ fn app_draw_home_160x43() {
         "1-9 session",
         "! next need",
         "Tab overview / agents",
-        "Enter write",
         "qq quit",
     ] {
         assert!(!keys.contains(gone), "the row names no {gone}: {keys:?}");
@@ -1242,10 +1240,10 @@ fn app_draw_non_home_address_names_the_selected_target() {
     };
     let mut buf = Buffer::empty(Rect::new(0, 0, 160, 43));
     draw(&screen, &mut buf);
-    let head = row_text(&buf, 1);
+    let head = row_text(&buf, 0);
     assert!(head.contains("infra"), "the target is named");
     assert_eq!(
-        chat_text(&buf, 38, 44).trim_start(),
+        chat_text(&buf, 40, 44).trim_start(),
         "to infra (not home) › lead",
         "the drawn address names the non-home target"
     );
@@ -1291,10 +1289,10 @@ fn app_draw_no_home_names_the_selected_target() {
     };
     let mut buf = Buffer::empty(Rect::new(0, 0, 160, 43));
     draw(&screen, &mut buf);
-    assert!(row_text(&buf, 1).contains("docs"));
-    assert!(!row_text(&buf, 1).contains("viewed from"));
+    assert!(row_text(&buf, 0).contains("docs"));
+    assert!(!row_text(&buf, 0).contains("viewed from"));
     assert_eq!(
-        chat_text(&buf, 38, 44).trim_start(),
+        chat_text(&buf, 40, 44).trim_start(),
         "to docs (not home) › lead"
     );
     assert!(all_text(&buf).contains("Enter writes"));
@@ -1335,12 +1333,12 @@ fn app_draw_theme_off_is_plain() {
         assert_eq!(cell.fg, Color::Reset, "no foreground anywhere");
         assert_eq!(cell.bg, Color::Reset, "no ground anywhere");
     }
-    let name = cell_at(&buf, 6, 5);
+    let name = cell_at(&buf, 6, 4);
     assert!(name.modifier.contains(Modifier::BOLD));
     assert!(name.modifier.contains(Modifier::REVERSED));
-    assert!(cell_at(&buf, 47, 1).modifier.contains(Modifier::BOLD));
-    assert_eq!(cell_at(&buf, 0, 11).symbol(), "│");
-    assert_eq!(cell_at(&buf, 2, 11).symbol(), "⚠");
+    assert!(cell_at(&buf, 47, 0).modifier.contains(Modifier::BOLD));
+    assert_eq!(cell_at(&buf, 0, 10).symbol(), "│");
+    assert_eq!(cell_at(&buf, 2, 10).symbol(), "⚠");
 }
 
 /// The 100x28 shape: a 34-wide sidebar, one line per item,
@@ -1374,15 +1372,17 @@ fn app_draw_narrow_100x28() {
     };
     let mut buf = Buffer::empty(Rect::new(0, 0, 100, 28));
     draw(&screen, &mut buf);
-    for y in 0..27 {
+    for y in 0..28 {
         assert_eq!(cell_at(&buf, 34, y).symbol(), "│", "rule row {y}");
     }
-    assert_ne!(cell_at(&buf, 34, 27).symbol(), "│", "keys own the row");
+    assert_eq!(cell_at(&buf, 34, 27).symbol(), "│", "hint stays in chat");
     assert!(
-        row_text(&buf, 27).trim_start().starts_with("? keys"),
-        "keys span the last row"
+        chat_text(&buf, 27, 34)
+            .trim_start()
+            .starts_with("Enter writes · ? keys"),
+        "hint stays in the chat on the last row"
     );
-    let head = row_text(&buf, 1);
+    let head = row_text(&buf, 0);
     assert!(head.contains("api"), "the session is named");
     assert!(head.contains("active"), "activity survives");
     assert!(!head.contains("feat/auth-v2"), "the branch goes first");
@@ -1422,13 +1422,13 @@ fn app_draw_small_falls_back() {
     };
     let mut buf = Buffer::empty(Rect::new(0, 0, 89, 30));
     draw(&screen, &mut buf);
-    let head = row_text(&buf, 0);
+    let head = row_text(&buf, 1);
     assert!(
         head.contains("sidebar needs 90x20"),
         "the dim line: {head:?}"
     );
-    assert_eq!(cell_at(&buf, 0, 0).fg, hex(palette.dim));
-    assert_ne!(cell_at(&buf, 44, 5).symbol(), "│", "no sidebar rule");
+    assert_eq!(cell_at(&buf, 0, 1).fg, hex(palette.dim));
+    assert_ne!(cell_at(&buf, 44, 4).symbol(), "│", "no sidebar rule");
     assert!(all_text(&buf).contains("hello lane"), "the chat stays");
     let mut buf = Buffer::empty(Rect::new(0, 0, 39, 7));
     draw(&screen, &mut buf);
@@ -1598,12 +1598,12 @@ fn app_draw_next_need_scrolls_into_view() {
         now: now(),
     };
     let list_holds =
-        |buf: &Buffer, name: &str| (5..16).any(|y| side_text(buf, y, 44).contains(name));
+        |buf: &Buffer, name: &str| (4..15).any(|y| side_text(buf, y, 44).contains(name));
     {
         let mut buf = Buffer::empty(Rect::new(0, 0, 160, 30));
         draw(&screen, &mut buf);
         assert!(!list_holds(&buf, "s7"), "below the fold at first");
-        assert_eq!(side_text(&buf, 3, 44).trim(), "↓ !", "off-screen cue");
+        assert_eq!(side_text(&buf, 2, 44).trim(), "↓", "off-screen cue");
     }
     let _ = model.key(AppKey::NextNeed, &fleet, true);
     assert_eq!(model.selected(), Some("s7"));
@@ -1667,7 +1667,7 @@ fn app_draw_zone_shifts_lane_clock() {
 }
 
 /// Home selected but not the owner: the composer names the existing reason
-/// and the way back, at the address row 39; the header stays the home form.
+/// and the way back, at the address row 40; the header stays the home form.
 #[test]
 fn app_draw_home_not_owner_is_read_only() {
     let fleet = draw_fleet();
@@ -1694,9 +1694,9 @@ fn app_draw_home_not_owner_is_read_only() {
     };
     let mut buf = Buffer::empty(Rect::new(0, 0, 160, 43));
     draw(&screen, &mut buf);
-    assert!(!row_text(&buf, 1).contains("viewed from"));
+    assert!(!row_text(&buf, 0).contains("viewed from"));
     assert_eq!(
-        chat_text(&buf, 38, 44).trim_start(),
+        chat_text(&buf, 40, 44).trim_start(),
         "read-only · owned elsewhere"
     );
 }

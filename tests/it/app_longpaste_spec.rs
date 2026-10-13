@@ -73,7 +73,7 @@ fn app(body: &str) -> App {
 fn frame(app: &mut App) -> (Buffer, String) {
     let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
     app.frame(&mut buf);
-    let text = (3..38)
+    let text = (2..40)
         .map(|y| {
             (47..158)
                 .map(|x| buf[(x, y)].symbol())
@@ -90,7 +90,7 @@ fn press(app: &mut App, key: Key) {
 }
 fn click(app: &mut App, needle: &str) {
     let (buf, _) = frame(app);
-    let row = (3..38)
+    let row = (2..40)
         .find(|&y| {
             (47..158)
                 .map(|x| buf[(x, y)].symbol())

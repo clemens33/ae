@@ -337,7 +337,7 @@ impl Rig {
         self.wait(&self.s, pane, "GUARD selected target header", |screen| {
             screen
                 .lines()
-                .nth(1)
+                .next()
                 .is_some_and(|row| row.contains(&target.name))
         })
     }
@@ -351,7 +351,7 @@ impl Rig {
         assert!(
             screen
                 .lines()
-                .nth(1)
+                .next()
                 .is_some_and(|row| row.contains(&target.name)),
             "target header"
         );
@@ -452,7 +452,7 @@ impl Rig {
                     .trim()
                     .parse::<usize>()
                     .ok()
-                    == Some(41)
+                    == Some(43)
         });
         self.typed(pane, command);
         self.raw(&self.s, pane, "\r");
@@ -562,14 +562,14 @@ fn card_position(screen: &str, name: &str) -> Option<(usize, usize)> {
 
 fn composer_has(screen: &str, text: &str) -> bool {
     let Some(start) = screen.lines().enumerate().find_map(|(row, line)| {
-        (row >= 32 && line.chars().skip(47).collect::<String>().starts_with("to ")).then_some(row)
+        (row >= 34 && line.chars().skip(47).collect::<String>().starts_with("to ")).then_some(row)
     }) else {
         return false;
     };
     screen
         .lines()
         .skip(start)
-        .take(42 - start)
+        .take(44 - start)
         .any(|row| row.chars().skip(47).collect::<String>().contains(text))
 }
 
@@ -632,7 +632,7 @@ fn selecting_a_needy_card_ignores_its_attention_summary() {
     rig.select(&pane, &rig.t);
     fs::write(rig.s.dir.join("events.jsonl"), format!("{{\"ts\":\"{}\",\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"waiting-user\",\"summary\":\"review required\"}}\n", ae::time::Timestamp::now())).expect("fixture attention");
     rig.wait(&rig.s, &pane, "GUARD home attention summary", |s| {
-        s.lines().nth(1).is_some_and(|row| {
+        s.lines().next().is_some_and(|row| {
             row.chars()
                 .take(44)
                 .collect::<String>()
@@ -706,7 +706,7 @@ fn outside_tmux_without_home_writes_the_selected_running_session() {
     assert!(
         frame
             .lines()
-            .nth(1)
+            .next()
             .is_some_and(|row| row.contains(&rig.s.name))
     );
     rig.enter(&pane, &rig.s, false);
@@ -816,7 +816,7 @@ fn writing_keys_and_list_wheel_cannot_readdress_a_target() {
     assert!(
         frame
             .lines()
-            .nth(1)
+            .next()
             .is_some_and(|row| row.contains(&rig.t.name))
     );
     assert!(frame.contains("j!1-q-after-wheel") && writing(&frame));
@@ -1405,7 +1405,7 @@ fn late_proof(another: bool) {
     // an i in the exit chunk is correctly refused by B1's release cut.
     rig.raw(&rig.s, &pane, "i");
     rig.wait(&rig.s, &pane, "GUARD new writer before late S proof", |s| {
-        writing(s) && s.lines().nth(1).is_some_and(|r| r.contains(&target.name))
+        writing(s) && s.lines().next().is_some_and(|r| r.contains(&target.name))
     });
     held(&target.dir);
     rig.typed(&pane, "-new-entry");
@@ -1419,7 +1419,7 @@ fn late_proof(another: bool) {
     assert!(
         survived
             .lines()
-            .nth(1)
+            .next()
             .is_some_and(|r| r.contains(&target.name))
     );
     assert!(!survived.contains("not writing:"));
@@ -1456,29 +1456,29 @@ fn non_home_address_uses_its_drawn_width_for_whole_draft_and_terminal_cursor() {
         &pane,
         "B2 three complete rows with selected address",
         |s| {
-            s.lines().nth(38).is_some_and(|r| r.contains(&address))
-                && s.lines()
-                    .nth(39)
-                    .is_some_and(|r| r.trim_end().ends_with(&"a".repeat(width)))
-                && s.lines()
-                    .nth(40)
-                    .is_some_and(|r| r.trim_end().ends_with(&"a".repeat(width)))
+            s.lines().nth(40).is_some_and(|r| r.contains(&address))
                 && s.lines()
                     .nth(41)
+                    .is_some_and(|r| r.trim_end().ends_with(&"a".repeat(width)))
+                && s.lines()
+                    .nth(42)
+                    .is_some_and(|r| r.trim_end().ends_with(&"a".repeat(width)))
+                && s.lines()
+                    .nth(43)
                     .is_some_and(|r| r.trim_end().ends_with("end"))
         },
     );
     for (row, text) in [
-        (38, address.clone()),
-        (39, "a".repeat(width)),
-        (40, "a".repeat(width)),
-        (41, "end".to_owned()),
+        (40, address.clone()),
+        (41, "a".repeat(width)),
+        (42, "a".repeat(width)),
+        (43, "end".to_owned()),
     ] {
         let line = frame.lines().nth(row).expect("composer row");
         let chat = line.chars().skip(47).collect::<String>();
         assert_eq!(chat.trim_end(), text, "row {row}");
     }
-    assert_eq!(cursor(&rig, &rig.s, &pane), (1, 47 + 3, 41));
+    assert_eq!(cursor(&rig, &rig.s, &pane), (1, 47 + 3, 43));
     rig.raw(&rig.s, &pane, "\r");
     rig.wait(&rig.s, &pane, "B2 wrap changes display only", |s| {
         s.contains("sent") && Rig::event_count(&rig.t, "ask") == 1
@@ -1511,7 +1511,7 @@ fn cached_target_outside_this_state_root_refuses_without_recreating_its_director
     assert!(
         refused
             .lines()
-            .nth(1)
+            .next()
             .is_some_and(|r| r.contains(&rig.t.name))
     );
     let reason = refused

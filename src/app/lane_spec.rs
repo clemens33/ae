@@ -307,7 +307,7 @@ fn app(lane: Lane) -> App {
 }
 
 const AREA: Rect = Rect::new(0, 0, 160, 37);
-const PAGE: usize = 27;
+const PAGE: usize = 30;
 
 fn frame(app: &mut App) -> Buffer {
     let mut buf = Buffer::empty(AREA);
@@ -322,16 +322,16 @@ fn assert_window(buf: &Buffer, full: &[Line<'static>], scroll: usize) {
     for (offset, line) in visible.iter().enumerate() {
         expected.set_line(
             47,
-            30 - count + u16::try_from(offset).expect("one page"),
+            32 - count + u16::try_from(offset).expect("one page"),
             line,
             111,
         );
     }
     let last = full.len().saturating_sub(scroll).max(PAGE.min(full.len()));
     if scroll > 0 && last < full.len() {
-        expected.set_stringn(47, 30, "↓ newer turns below · PgDn", 111, Style::new());
+        expected.set_stringn(47, 32, "↓ newer turns below · PgDn", 111, Style::new());
     }
-    for y in 3..=30 {
+    for y in 2..=32 {
         for x in 47..158 {
             assert_eq!(
                 buf[(x, y)],

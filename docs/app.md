@@ -31,8 +31,8 @@ recorded config first.
   counts — sessions `▣`, agents `◈`, working `●`, needing you `⚠` (`+?` where a
   running session's seats are unknown) — then one row per session: its mark,
   its number, its name (`this window` on home), and under it the seat counts,
-  then the question that needs you or `seat down`. `↑` / `↓` beside the `!` key
-  show needy rows outside the list. Running sessions come in
+  then the question that needs you or `seat down`. `↑` / `↓` show needy
+  rows outside the list, and `!` reaches the next one. Running sessions come in
   this order: the orchestrator, then the sessions your `[workspace]
   fleet_order` names (the pins), then the rest by their newest AI answer to
   you, newest first, and a session with none after them in creation order;
@@ -158,7 +158,7 @@ Browsing:
 | `Enter` or `i` | write the selected session, when no other app writes it |
 | `s` | open Settings |
 | `?` | open Settings on its Keys tab, the list of every key |
-| Click the gear at the keys row's right end | open Settings, also while writing |
+| Click the gear at the hint row's right end | open Settings, also while writing |
 | Click a Settings tab title | show that tab, like `Tab` and `1`-`5` |
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `qq` | quit: the first `q` only arms (`q again to quit`), the second within 2 seconds quits |
@@ -166,12 +166,19 @@ Browsing:
 
 No single printable key quits or moves your client: an armed `q` or `o` is
 disarmed by any other key or when its 2 seconds pass, so typing a word
-while browsing leaves the app up and no key reaches another pane. The keys
-row is the word `settings` in Settings, `peek` in the peek panel, at most one
-hint where its key works (`? keys` while browsing, which lists every key;
-`Esc close` in Settings or the peek panel; while writing `Enter sends · Alt+Enter ^J newline · Esc browses`; none while held, which takes every key),
-and at its right end `ae <version>` and the gear (the peek panel draws no gear). The gear's click covers the gear and the blank before it, as the status line's settings button pads its glyph. Narrowing drops the version
-first, then the gear.
+while browsing leaves the app up and no key reaches another pane. The
+closed frame's hint row carries the composer's hint and the mode's keys
+(`? keys` while browsing, which lists every key; while writing
+`Enter sends · Alt+Enter ^J newline · Esc browses`; none while held, which
+takes every key), and at its right end `ae <version>` and the gear. A
+pending line — an armed key, a refused paste, an ask on its way —
+replaces the composer's hint in full ink; the `·` separator and the
+mode's keys follow only when the whole of it fits.
+Settings and the peek panel keep one footer row with the mode word
+(`settings`, `peek`), its hint (`Esc close`), the version and the gear
+(the peek panel draws no gear). The gear's click covers the gear and the
+blank before it, as the status line's settings button pads its glyph.
+Narrowing drops the version first, then the gear.
 
 A paste while browsing is never read as keys. On a writable session it starts
 writing with the paste as the draft, every fragment of it kept and nothing in
@@ -433,7 +440,7 @@ only after the frame that shows it.
 ## Settings
 
 `s` opens the read-only Settings overlay over the whole pane, as does the
-gear (`*` with `icons = off`) at the keys row's right end — the gear also
+gear (`*` with `icons = off`) at the hint row's right end — the gear also
 while writing, where `s` stays draft text; `Esc`, `q` or `s` closes it, `^C`
 quits. While open the overlay owns every key and click: `Tab`, `1`-`5` and a
 click on a tab title switch tabs, a click on the drawn `Esc close` label or on

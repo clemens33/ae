@@ -77,10 +77,10 @@ fn attention_draw_keeps_session_count_and_next_need_cell_in_both_looks() {
             &Look::read(mode, "", mode, "off"),
         );
         let glyph = if mode == "on" { "▣" } else { "#" };
-        assert!(row(&buf, 1).starts_with(&format!("  {glyph} 10 ")));
-        assert_eq!(row(&buf, 3).chars().take(40).collect::<String>().trim(), "");
-        assert_eq!(buf[(40, 3)].symbol(), " ", "blank before the key");
-        assert_eq!(buf[(41, 3)].symbol(), "!");
+        assert!(row(&buf, 0).starts_with(&format!("  {glyph} 10 ")));
+        assert_eq!(row(&buf, 2).chars().take(40).collect::<String>().trim(), "");
+        assert_eq!(buf[(40, 2)].symbol(), " ", "lone key marker removed");
+        assert_eq!(buf[(41, 2)].symbol(), " ");
     }
 }
 
@@ -90,15 +90,15 @@ fn attention_draw_hides_a_single_long_name_beside_next_need() {
     fleet.rows[0].name = "n".repeat(80);
     let buf = painted(&fleet, &Look::read("on", "", "off", "off"));
     assert!(
-        row(&buf, 3)
+        row(&buf, 2)
             .chars()
             .take(40)
             .collect::<String>()
             .trim()
             .is_empty()
     );
-    assert_eq!(buf[(40, 3)].symbol(), " ");
-    assert_eq!(buf[(41, 3)].symbol(), "!");
+    assert_eq!(buf[(40, 2)].symbol(), " ");
+    assert_eq!(buf[(41, 2)].symbol(), " ");
 }
 
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";

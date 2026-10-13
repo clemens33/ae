@@ -449,7 +449,7 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     let pane = rig.open_app();
     assert_eq!(
         horizontal_rule(&rig.ready(&pane)),
-        Some(9),
+        Some(8),
         "unchanged one-row default"
     );
     rig.grab_horizontal(&pane, 20);
@@ -458,9 +458,9 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     assert_eq!(tab, 19);
     assert!(cell_of(&screen, "No seat facts").is_some_and(|(_, row)| row > 20));
     rig.motion(&pane, 1, 44);
-    rig.horizontal(&pane, 39); // floor43; body40,41,42 = three rows.
+    rig.horizontal(&pane, 38); // list drag budget stays; body gains reclaimed rows.
     rig.motion(&pane, 1, 0);
-    rig.horizontal(&pane, 9); // one session needs two list rows, no more row.
+    rig.horizontal(&pane, 8); // one session needs two list rows, no more row.
     rig.release(&pane, 1, 0);
 }
 
@@ -471,21 +471,21 @@ fn live_horizontal_minimum_keeps_one_session_and_more_row() {
     let screen = rig.ready(&pane);
     assert_eq!(
         horizontal_rule(&screen),
-        Some(30),
+        Some(29),
         "larger undragged windowed default"
     );
     rig.grab_horizontal(&pane, 0);
-    let screen = rig.horizontal(&pane, 10);
+    let screen = rig.horizontal(&pane, 9);
     assert!(
         screen
             .lines()
-            .nth(5)
+            .nth(4)
             .is_some_and(|row| row.contains(&rig.name))
     );
     assert!(
         screen
             .lines()
-            .nth(7)
+            .nth(6)
             .is_some_and(|row| row.contains("more"))
     );
     assert!(screen.contains("No seat facts"), "the body remains usable");
@@ -536,7 +536,7 @@ fn live_chosen_sizes_survive_shrink_hidden_sidebar_and_growth() {
     // Resize is not input: active drag continues, display clamps only.
     rig.resize(&pane, 90, 20);
     let screen = rig.vertical(&pane, 49);
-    assert_eq!(horizontal_rule(&screen), Some(14));
+    assert_eq!(horizontal_rule(&screen), Some(13));
     rig.resize(&pane, 160, 45);
     let screen = rig.vertical(&pane, 66);
     assert_eq!(horizontal_rule(&screen), Some(30));
@@ -680,7 +680,7 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
         let rows = screen
             .lines()
             .skip(top + 1)
-            .take(26 - top)
+            .take(28 - top)
             .map(|row| {
                 row.chars()
                     .skip(column)
@@ -694,7 +694,7 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
     assert_eq!(
         composer(&before),
         (
-            24,
+            26,
             37,
             vec!["a".repeat(61), format!("{}wrap-end", "a".repeat(19))]
         ),
@@ -709,17 +709,22 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
             "#{cursor_flag},#{cursor_x},#{cursor_y}"
         ])
         .trim(),
-        "1,64,26"
+        "1,64,28"
     );
     rig.grab_vertical(&pane, 56);
     let after = rig.vertical(&pane, 56);
-    assert!(writing(&after), "drag keeps composing active");
+    let footer = after.lines().last().expect("hint row");
+    assert_eq!(
+        footer.chars().skip(59).collect::<String>().trim(),
+        format!("{} \u{2699}", ae::version_line()),
+        "39 cells drop the whole writing hint; the cursor below proves writing"
+    );
     assert!(after.contains("wrap-end"), "draft kept");
     // Whole draft after the drag: 80 = 2*39 + 2, then wrap-end.
     assert_eq!(
         composer(&after),
         (
-            23,
+            25,
             59,
             vec!["a".repeat(39), "a".repeat(39), "aawrap-end".to_owned()]
         ),
@@ -734,7 +739,7 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
             "#{cursor_flag},#{cursor_x},#{cursor_y}"
         ])
         .trim(),
-        "1,69,26"
+        "1,69,28"
     );
     rig.release(&pane, 56, 1);
 }

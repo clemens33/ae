@@ -567,7 +567,7 @@ fn click_blank_row_noops() {
         "still browsing home:\n{screen}"
     );
     assert!(
-        screen.lines().nth(1).is_some_and(|row| row.contains(&home)),
+        screen.lines().next().is_some_and(|row| row.contains(&home)),
         "no selection moved:\n{screen}"
     );
 }
@@ -595,7 +595,7 @@ fn click_more_row_noops() {
     assert!(
         screen
             .lines()
-            .nth(1)
+            .next()
             .is_some_and(|row| row.contains(&rig.name)),
         "no selection moved:\n{screen}"
     );

@@ -3495,6 +3495,10 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    mod chrome_spec {
+        include!("../tests/it/app_chrome_spec.rs");
+    }
+
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
@@ -3811,9 +3815,9 @@ mod tests {
         assert_eq!(rule_row(&framed(&mut app)), Some(row + 4));
     }
 
-    /// The bottom keys row is outside chat, while the composer just above still scrolls.
+    /// The bottom hint row is inside chat and scrolls, like the composer above it.
     #[test]
-    fn mouse_wheel_on_the_keys_row_is_a_full_noop() {
+    fn mouse_wheel_on_the_hint_row_scrolls() {
         let mut app = app(None);
         app.fleet = one_row(None);
         app.model = Model::new(&app.fleet);
@@ -3828,14 +3832,14 @@ mod tests {
             column: 159,
             row: 44,
         };
-        assert!(!app.mouse(mouse), "keys-row wheel is a full no-op");
-        assert_eq!(app.model.scroll_rows(app.layout.page_rows), 0);
+        assert!(app.mouse(mouse), "hint-row wheel scrolls");
+        assert_eq!(app.model.scroll_rows(app.layout.page_rows), 3);
         mouse.row -= 1;
         assert!(app.mouse(mouse), "the composer is inside chat");
-        assert_eq!(app.model.scroll_rows(app.layout.page_rows), 3);
+        assert_eq!(app.model.scroll_rows(app.layout.page_rows), 6);
         mouse.row += 1;
         mouse.kind = super::MouseKind::WheelDown;
-        assert!(!app.mouse(mouse), "keys-row wheel down is also a no-op");
+        assert!(app.mouse(mouse), "hint-row wheel down scrolls back");
         assert_eq!(app.model.scroll_rows(app.layout.page_rows), 3);
     }
 
@@ -3850,7 +3854,7 @@ mod tests {
         let cards = |shown: &str| -> Vec<(usize, u8)> {
             let name = |w: &str| w.strip_prefix('n')?.parse().ok();
             let card = |(y, l): (usize, &str)| Some((y, l.split_whitespace().find_map(name)?));
-            shown.lines().enumerate().skip(5).filter_map(card).collect()
+            shown.lines().enumerate().skip(4).filter_map(card).collect()
         };
         let first = cards(&framed(&mut app));
         let row = u16::try_from(first.last().expect("drawn cards").0).expect("row");
@@ -4260,7 +4264,7 @@ mod tests {
         assert!(
             shown
                 .lines()
-                .nth(39)
+                .nth(41)
                 .expect("first draft row")
                 .contains("first")
         );
@@ -4270,7 +4274,7 @@ mod tests {
             row,
         };
         let taken = app.lease.as_ref().map(|lease| lease.at);
-        for row in 38..=42 {
+        for row in 40..=44 {
             assert!(
                 matches!(app.layout.hit(press(row)), Some(super::draw::Hit::Compose)),
                 "address, grown row or note {row}"
@@ -4287,17 +4291,17 @@ mod tests {
         assert!(
             shown
                 .lines()
-                .nth(40)
+                .nth(42)
                 .expect("compact composer")
                 .contains("to api")
         );
         assert!(!matches!(
-            app.layout.hit(press(39)),
+            app.layout.hit(press(41)),
             Some(super::draw::Hit::Compose)
         ));
-        let _ = app.click(press(39));
+        let _ = app.click(press(41));
         assert!(!app.composing(), "old upper row cannot restart writing");
-        for row in 40..=42 {
+        for row in 42..=44 {
             assert!(matches!(
                 app.layout.hit(press(row)),
                 Some(super::draw::Hit::Compose)
@@ -4794,16 +4798,16 @@ mod tests {
         text(&buf)
     }
 
-    /// P1: a pending line takes the hint row, the third from the bottom.
+    /// P1: a pending line takes the hint row, the pane's last row.
     #[test]
-    fn a_pending_line_is_drawn_on_the_hint_row_above_the_keys_row() {
+    fn a_pending_line_is_drawn_on_the_hint_row() {
         let root = Root::new("hint-row");
         let (mut app, _reader) = housed(&root);
         app.refuse_paste("read-only");
         let shown = framed_at(&mut app, 160);
         let rows: Vec<&str> = shown.lines().collect();
-        assert!(rows[42].contains("paste not taken: read-only"), "{shown}");
-        assert!(rows[41].trim().is_empty() || !rows[41].contains("paste not taken"));
+        assert!(rows[44].contains("paste not taken: read-only"), "{shown}");
+        assert!(rows[43].trim().is_empty() || !rows[43].contains("paste not taken"));
     }
 
     /// The settings overlay puts three cells between its tab titles when all of
@@ -5120,7 +5124,7 @@ mod tests {
         let shown = framed(&mut app);
         assert!(!shown.contains("web turn"), "{shown}");
         assert_eq!(shown.matches("loading").count(), 1, "{shown}");
-        let header = shown.lines().nth(1).expect("header row");
+        let header = shown.lines().next().expect("header row");
         assert!(header.contains("ops"), "{header}");
         app.answer(view("ops", ID, 2, "ops turn"));
         let shown = framed(&mut app);
@@ -5141,7 +5145,7 @@ mod tests {
         app.show();
         let header = |app: &mut App, width| {
             let shown = framed_at(app, width);
-            shown.lines().nth(1).expect("header row").to_owned()
+            shown.lines().next().expect("header row").to_owned()
         };
         let wide = header(&mut app, 220);
         assert!(wide.contains(&format!("~/{tail}")), "{wide}");
@@ -5214,7 +5218,7 @@ mod tests {
         let mut app = App::new(Some("api".to_owned()), None, None, None);
         app.show();
         let shown = framed(&mut app);
-        assert!(shown.lines().nth(1).is_some_and(|row| row.contains("api")));
+        assert!(shown.lines().next().is_some_and(|row| row.contains("api")));
         assert_eq!(shown.matches("loading").count(), 2, "{shown}");
         assert!(!shown.contains("Overview"), "{shown}");
         assert!(!shown.contains("No sessions."), "{shown}");
@@ -5425,7 +5429,7 @@ mod tests {
             assert!(super::drain(app, &mut keys, &wakes, &mut first).is_some());
             app.frame(&mut buf);
             if app.deferred.is_empty() {
-                return app.model.scroll_rows(27);
+                return app.model.scroll_rows(30);
             }
         }
         panic!("keys still held");
@@ -5439,12 +5443,12 @@ mod tests {
         let down = b"\x1b[<65;48;6M";
         let mut bytes = b"\x1b[5~".repeat(3);
         bytes.extend_from_slice(down);
-        assert_eq!(replayed(&mut scrolled(160), &bytes), 81 - 3);
+        assert_eq!(replayed(&mut scrolled(160), &bytes), 90 - 3);
         // Past the true top the notch is taken from where the pages asked,
         // then bounded: the top, not three rows under it.
         let mut bytes = b"\x1b[5~".repeat(100);
         bytes.extend_from_slice(down);
-        let top = 80 * 3 - 1 - 27;
+        let top = 80 * 3 - 1 - 30;
         assert_eq!(replayed(&mut scrolled(80), &bytes), top);
     }
 
@@ -5457,15 +5461,15 @@ mod tests {
         app.frame(&mut buf);
         assert!(!app.layout.complete);
         let edge = app.layout.max_scroll;
-        assert_eq!((edge - 27) % 3, 0, "the edge is whole notches above a page");
+        assert_eq!((edge - 30) % 3, 0, "the edge is whole notches above a page");
         let (_wake, wakes) = std::sync::mpsc::channel();
         let mut keys = crate::console::input::Keys::app();
         let mut bytes = b"\x1b[5~".to_vec();
-        bytes.extend(b"\x1b[<64;48;6M".repeat((edge - 27) / 3));
+        bytes.extend(b"\x1b[<64;48;6M".repeat((edge - 30) / 3));
         let mut read = Some(loader::Wake::Keys(Instant::now(), bytes));
         assert!(super::drain(&mut app, &mut keys, &wakes, &mut read).is_some());
         assert!(app.deferred.is_empty(), "held at the edge");
-        assert_eq!(app.model.scroll_rows(27), edge);
+        assert_eq!(app.model.scroll_rows(30), edge);
         let mut up = Some(loader::Wake::Keys(
             Instant::now(),
             b"\x1b[<64;48;6M".to_vec(),
@@ -6409,9 +6413,9 @@ mod tests {
         }
     }
 
-    /// The panel grounds only the rows above the keys row: with a drawn
-    /// DARCULA look the closed last row is all ink, and the open overlay
-    /// paints base over the covered rows while the last row stays ink.
+    /// The panel grounds only the rows above its footer: with a drawn
+    /// DARCULA look the closed hint row is ink over the chat, and the open
+    /// overlay paints base over the covered rows while the footer stays ink.
     #[test]
     fn settings_panel_grounds_covered_rows_and_keeps_keys_ink() {
         use ratatui_core::style::Color;
@@ -6428,8 +6432,8 @@ mod tests {
         });
         let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
         app.frame(&mut buf);
-        for x in 0..160 {
-            assert_eq!(buf[(x, 44)].bg, ink, "closed keys row ink at {x}");
+        for x in 45..160 {
+            assert_eq!(buf[(x, 44)].bg, ink, "closed hint row ink at {x}");
         }
         app.open_settings();
         app.frame(&mut buf);
