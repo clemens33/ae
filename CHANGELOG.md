@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.63] - 2026-10-13
+- Source tripwire skips cfg(test) module registrations and pins two owed mutants
+- Source tripwires share one cut that skips gated registrations and items
+- Pin the column-zero option label of a decision card
+- Pin the option label after a colon in a decision card
+- Ae app: a cross-session open lands on the seat pane, not the chat
+
 ## [v2026.10.62] - 2026-10-13
 - Chat, app: fold long pasted turns, show asks whole, fold the sent outcome into the ask header
 - The sidebar is agents only
