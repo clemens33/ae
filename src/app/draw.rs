@@ -67,6 +67,9 @@ pub enum Composer<'a> {
     /// The selected session, its entry refused: HELD until Esc, ^C, a click
     /// or an Enter that tries again.
     Held { why: &'a str },
+    /// A seat's live screen is shown in place of the chat: read-only, and
+    /// the row says how the chat comes back.
+    Viewing { seat: &'a str },
     /// No session selected.
     NoHome,
 }
@@ -296,10 +299,31 @@ impl Layout {
         self.strip(|hit| matches!(hit, Hit::Settings));
     }
 
-    /// [`Layout::strip_for_settings`] for the peek panel, which keeps no
-    /// target: its own close label is recorded after.
-    pub(crate) fn strip_for_peek(&mut self) {
-        self.strip(|_| false);
+    /// The lane's selectable cells this frame drew, if it drew any: the
+    /// chat column the seat view paints into.
+    pub(crate) fn lane_area(&self) -> Option<Rect> {
+        self.map
+            .regions
+            .iter()
+            .find(|region| region.panel == select::Panel::Lane)
+            .map(|region| region.area)
+    }
+
+    /// Retire the chat column's own targets and lane selection for the seat
+    /// view painted over it, and let a drag select in `body` instead. The
+    /// sidebar's targets, borders and scroll bounds stand.
+    pub(crate) fn peek_column(&mut self, buf: &Buffer, body: Rect) {
+        self.targets
+            .retain(|(_, hit)| !matches!(hit, Hit::Compose | Hit::Turn(_) | Hit::Fold(_)));
+        if let Some(lane) = self.lane_area() {
+            self.map
+                .regions
+                .retain(|region| region.panel != select::Panel::Lane);
+            self.map
+                .blanks
+                .retain(|blank| blank.intersection(lane).is_empty());
+        }
+        self.selectable(buf, select::Panel::Peek, body);
     }
 
     fn strip(&mut self, keep: impl Fn(&Hit) -> bool) {
@@ -1176,10 +1200,8 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         .selected
         .and_then(|entry| entry.main_agent.as_deref())
         .or_else(|| match screen.composer {
-            Composer::Home { .. } | Composer::ReadOnly { .. } | Composer::Held { .. } => {
-                screen.pair.first().map(String::as_str)
-            }
             Composer::NoHome => None,
+            _ => screen.pair.first().map(String::as_str),
         })
         .unwrap_or_default();
     let clock = view::Style::resolve(true, screen.look, screen.zone, main);
@@ -1217,7 +1239,8 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     }
     turn_targets(buf, layout, &turns, (first..last, left, y0, room));
     layout.lane(buf, (left, top, room, room_rows), &bars, (first..last, y0));
-    if room_rows > 0 && scroll > 0 && last < rows.len() {
+    let viewing = matches!(screen.composer, Composer::Viewing { .. });
+    if room_rows > 0 && scroll > 0 && last < rows.len() && !viewing {
         put(buf, left, bottom, "↓ newer turns below · PgDn", room, dim);
     }
     put(
@@ -1249,11 +1272,13 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     } else {
         put_line(buf, left, composer + 1, &input_row, room);
     }
-    layout.record(
-        buf,
-        Rect::new(left, composer, room, grown + 2),
-        Hit::Compose,
-    );
+    if !viewing {
+        layout.record(
+            buf,
+            Rect::new(left, composer, room, grown + 2),
+            Hit::Compose,
+        );
+    }
     layout.page_rows = room_rows;
     layout.max_scroll = rows.len().saturating_sub(room_rows);
     layout.complete = complete;
@@ -1481,6 +1506,14 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
             Line::default(),
             String::new(),
         ),
+        Composer::Viewing { seat } => (
+            quiet(format!(
+                "viewing {} · read-only · Esc chat",
+                crate::board::terminal_text(seat)
+            )),
+            Line::default(),
+            "click the session for its chat".to_owned(),
+        ),
         Composer::NoHome => (
             quiet("read-only · no home session: ae app <session> picks one".to_owned()),
             Line::default(),
@@ -1524,8 +1557,8 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let (word, hint) = if ctx.screen.model.settings_open() {
         ("settings", "Esc close")
     } else {
-        // The panel covers the hint row, so a copy's outcome rides here.
-        ("peek", ctx.screen.model.note().unwrap_or("Esc close"))
+        // A copy's outcome rides here as well as on the hint row.
+        ("viewing", ctx.screen.model.note().unwrap_or("Esc chat"))
     };
     let x = put(
         buf,
@@ -1800,7 +1833,11 @@ pub(crate) fn paint_peek(
             hits: &[],
             close: (PEEK_CLOSE, Hit::PeekClose),
             selected: 0,
-            body: &peek_rows(view, paint, buf.area.width),
+            body: &peek_rows(
+                view,
+                paint,
+                usize::from(buf.area.width.saturating_sub(LEFT)) + 1,
+            ),
             scroll: Scroll::Back(view.back),
         },
     );
@@ -1818,13 +1855,56 @@ pub(crate) fn paint_peek(
     }
 }
 
-/// The peek body's rows: each captured line neutralised, then wrapped to the
-/// pane with its continuation rows hanging two cells; before the first answer
-/// one dim `loading`.
-fn peek_rows(view: &peek::View<'_>, paint: Paint, width: u16) -> Vec<(String, Style)> {
+/// Paint the seat view into the frame's chat column: the status on the
+/// lane's first row, the captured body under it, wrapped to the column.
+/// The sidebar and the composer rows the frame drew stand.
+pub(crate) fn paint_peek_column(
+    view: &peek::View<'_>,
+    look: Option<&Look>,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+) -> Bounds {
+    let Some(lane) = layout.lane_area() else {
+        layout.peek_column(buf, Rect::default());
+        return Bounds::default();
+    };
+    let paint = Paint::of(look);
+    for y in lane.y..lane.bottom() {
+        for x in lane.x..lane.right() {
+            buf[(x, y)].reset();
+        }
+    }
+    buf.set_style(lane, paint.ground(|p| p.ink));
+    put(
+        buf,
+        lane.x,
+        lane.y,
+        &peek::status(view),
+        lane.width,
+        paint.fg(|p| p.dim),
+    );
+    let body = Rect::new(
+        lane.x,
+        lane.y.saturating_add(1),
+        lane.width,
+        lane.height.saturating_sub(1),
+    );
+    let rows = peek_rows(view, paint, usize::from(lane.width) + 1);
+    let visible = usize::from(body.height);
+    let (start, max_back) = peek::window(rows.len(), visible, view.back);
+    for (at, (text, style)) in rows.iter().skip(start).take(visible).enumerate() {
+        put(buf, body.x, body.y + cells(at), text, body.width, *style);
+    }
+    layout.peek_column(buf, body);
+    Bounds { visible, max_back }
+}
+
+/// The peek body's rows: each captured line neutralised, then wrapped to
+/// `room` with its continuation rows hanging two cells; before the first
+/// answer one dim `loading`. `wrap` measures from a one-cell bar the
+/// painter does not draw, so `room` is the drawn width plus one.
+fn peek_rows(view: &peek::View<'_>, paint: Paint, room: usize) -> Vec<(String, Style)> {
     let text = paint.fg(|p| p.text);
-    // `wrap` measures from a one-cell bar the panel does not draw.
-    let room = usize::from(width.saturating_sub(LEFT)) + 1;
     let rows = |line: &str| {
         wrap(&crate::board::terminal_text(line), room, 0)
             .into_iter()
@@ -1960,7 +2040,7 @@ const MOUSE_KEYS: [(&str, &str); 4] = [
 const PEEK_KEYS: [(&str, &str); 6] = [
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
-    ("Esc q v", "close; click Esc close too"),
+    ("Esc q v", "back to chat; click the session too"),
     ("^C", "quit"),
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; nothing reaches the pane"),
@@ -2747,6 +2827,16 @@ mod tests {
         shot.lane = turns(150);
         let buf = shot.draw(160, 45, READ_ONLY);
         assert!(spot(&buf, HINT).is_some(), "a long lane a page up");
+        // A viewed seat replaces the column: no chat hint under its screen,
+        // and the chat scroll is kept for the return.
+        let viewing = shot.draw(160, 45, Composer::Viewing { seat: "colead" });
+        assert_eq!(spot(&viewing, HINT), None, "viewing suppresses the hint");
+        assert_eq!(shot.model.pages(), 1, "the chat scroll is retained");
+        let back = shot.draw(160, 45, READ_ONLY);
+        assert!(
+            spot(&back, HINT).is_some(),
+            "the hint returns with the chat"
+        );
     }
 
     /// The header stays inside the chat column (frames: header text never
@@ -4449,7 +4539,7 @@ mod tests {
         }
     }
 
-    /// With the peek panel open the keys row says `peek` and `Esc close`,
+    /// With a seat viewed the keys row says `viewing` and `Esc chat`,
     /// keeps the version and records no gear, which would be a dead click.
     #[test]
     fn the_peek_keys_row_hides_the_gear_and_keeps_the_version() {
@@ -4460,7 +4550,7 @@ mod tests {
         assert_eq!(
             row.strip_suffix(tail.as_str())
                 .map(|head| head.trim_end().to_owned()),
-            Some("  peek   Esc close".to_owned()),
+            Some("  viewing   Esc chat".to_owned()),
             "{row:?}"
         );
         let last = Mouse {
@@ -4470,7 +4560,7 @@ mod tests {
         };
         assert!(layout.hit(last).is_none(), "no gear target");
         let (narrow, _) = shot.footer_at(22, browsing(""), false);
-        assert_eq!(narrow, "  peek   Esc close", "the version drops, no gear");
+        assert_eq!(narrow, "  viewing   Esc chat", "the version drops, no gear");
     }
 
     fn peek_view(body: Option<&crate::app::peek::Body>) -> crate::app::peek::View<'_> {
@@ -4559,18 +4649,31 @@ mod tests {
         assert!(rows.iter().all(|row| row.chars().count() == 40));
     }
 
-    /// Stripping for the peek panel keeps no target, border or scroll bound
-    /// the closed frame had recorded.
+    /// Retiring the column for the seat view keeps the sidebar's targets
+    /// and seats, and drops the chat's own Compose target.
     #[test]
-    fn stripping_for_the_peek_panel_keeps_no_closed_frame_target() {
+    fn the_peek_column_keeps_the_sidebar_targets() {
         let mut shot = Shot::new();
         shot.agents = Some(seat_facts(&["lead", "colead"]));
-        let (_, mut layout) = framed(&shot, 160, None);
+        let (buf, mut layout) = framed(&shot, 160, None);
         assert!(!layout.targets.is_empty(), "the closed frame has targets");
-        layout.strip_for_peek();
-        assert!(layout.targets.is_empty());
-        assert!(layout.seats.is_empty() && layout.focused.is_none());
-        assert!(layout.complete);
+        let lane = layout.lane_area().expect("lane drawn");
+        layout.peek_column(&buf, lane);
+        assert!(
+            layout
+                .targets
+                .iter()
+                .any(|(_, hit)| matches!(hit, super::Hit::Session(_))),
+            "sidebar targets stand"
+        );
+        assert!(
+            !layout
+                .targets
+                .iter()
+                .any(|(_, hit)| matches!(hit, super::Hit::Compose)),
+            "the composer target is gone"
+        );
+        assert!(!layout.seats.is_empty(), "drawn seats stand");
     }
 
     /// Last whole count spans stay when they fit; overflow leaves one ellipsis.

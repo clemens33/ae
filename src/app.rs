@@ -1215,9 +1215,10 @@ impl App {
         self.world.sessions.iter().find(|entry| entry.name == name)
     }
 
-    /// Whether Enter may start a line: the selection's last reading proved it.
+    /// Whether Enter may start a line: the selection's last reading proved
+    /// it, and no seat's screen stands in the chat's place.
     fn can_compose(&self) -> bool {
-        self.read_only.is_empty() && self.model.selected().is_some()
+        self.read_only.is_empty() && self.model.selected().is_some() && !self.model.peek_open()
     }
 
     /// One key while composing: Esc keeps the draft and browses, ^C quits,
@@ -2320,6 +2321,14 @@ impl App {
 
     /// The composer line for the selection.
     fn composer(&self) -> draw::Composer<'_> {
+        if self.model.peek_open() {
+            let seat = self
+                .peek
+                .target
+                .as_ref()
+                .map_or("", |(_, seat)| seat.as_str());
+            return draw::Composer::Viewing { seat };
+        }
         match (self.model.selected(), &self.held) {
             (None, _) => draw::Composer::NoHome,
             (Some(_), Some(why)) => draw::Composer::Held { why },
@@ -2444,12 +2453,12 @@ impl App {
         self.settle_selection(buf);
     }
 
-    /// Paint the open peek panel over the frame: its newest body with its age
-    /// as of now, then keep the viewport inside what was drawn.
+    /// Paint the viewed seat's screen into the frame's chat column: its
+    /// newest body with its age as of now, then keep the viewport inside
+    /// what was drawn. The sidebar stands as drawn.
     fn paint_peek(&mut self, look: Option<&theme::Look>, buf: &mut Buffer) {
         self.peek_sync();
         self.peek_adopt();
-        self.layout.strip_for_peek();
         let age = self.peek.age(Instant::now());
         let (session, seat) = match &self.peek.target {
             Some((session, seat)) => (session.as_str(), seat.as_str()),
@@ -2463,7 +2472,7 @@ impl App {
             back: self.model.peek_back().unwrap_or(0),
             newer_waiting: self.peek.held.is_some(),
         };
-        let bounds = draw::paint_peek(&view, look, buf, &mut self.layout);
+        let bounds = draw::paint_peek_column(&view, look, buf, &mut self.layout);
         self.peek.painted = Some(age);
         self.model.set_peek_page_rows(bounds.visible);
         if self.deferred.is_empty() {

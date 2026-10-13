@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crate::console::open::Refusal;
 
-/// How often the open panel's pane is captured again.
-pub const PEEK_EVERY: Duration = Duration::from_secs(2);
+/// How often the viewed seat's pane is captured again.
+pub const PEEK_EVERY: Duration = Duration::from_millis(500);
 /// The lines of history captured above the visible screen.
 pub const HISTORY: u32 = 200;
 /// The most captured lines kept: the newest.
