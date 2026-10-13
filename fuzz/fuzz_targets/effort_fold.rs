@@ -34,6 +34,17 @@ fuzz_target!(|data: &[u8]| {
         .expect("a spawn record parses"),
     );
     assert_eq!(fold(&reborn, session, "spawned.0", "scout"), Fold::Armed);
+    // So does a resume that dropped the seat's record, whatever came before.
+    for (reference, summary) in [("1700000000", "off"), ("", "fresh")] {
+        let mut discarded = events.clone();
+        discarded.push(
+            Event::parse_line(&format!(
+                r#"{{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"effort-discarded","target":"scout","target_slot":"spawned.0","target_session":"seat-session","target_session_id":"{SID}","ref":"{reference}","summary":"{summary}"}}"#
+            ))
+            .expect("a discard record parses"),
+        );
+        assert_eq!(fold(&discarded, session, "spawned.0", "scout"), Fold::Armed);
+    }
     let open = match &folded {
         Fold::Open(episode) => Some(episode),
         Fold::Armed | Fold::Doubt(_) => None,

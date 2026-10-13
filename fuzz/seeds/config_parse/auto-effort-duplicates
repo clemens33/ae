@@ -1,0 +1,6 @@
+[workspace]
+auto_effort = off
+auto_effort = on
+auto_effort nonsense
+[workspace
+auto_effort = "off"

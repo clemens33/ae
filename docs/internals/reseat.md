@@ -176,6 +176,30 @@ of one tool may well serve a different one), and `client` (a launch's
 The client row is removed rather than emptied: an empty override is not the
 same fact as no override.
 
+Both arms also REMOVE every `effort.<slot>` line, bare, damaged and CR-ended
+ones included: a quota-driven effort record belongs to the setup that is
+leaving, and the `reseat` record resets the seat's effort fold in the journal.
+A resume decides the same record in `effort::on_resume`, first rule wins:
+
+| Seat on resume | Effort record |
+|---|---|
+| no record | nothing |
+| not the retained conversation (create, fallback, a new compacted id) | dropped, `fresh` |
+| `auto_effort = off` | dropped, `off` |
+| switch unusable, record damaged, another seat or setup, journal unproven, yielded | kept, profile as written |
+| a move still pending, switch on | refused before the start marker |
+| applied, guard and journal agree | one effort value rewritten to the recorded level |
+
+A drop journals `effort-discarded` as the watchdog FIRST, then publishes the
+meta without the lines, under one hold of `meta.lock`, and only while the
+seat, its launch and the raw lines are still the ones `_run` read. A fallback
+drops them in its own replacement. Each discard says one stderr line: a seat
+that moved or a record that could not be journaled keeps the lines; a journaled
+discard whose meta write failed keeps them too, and the next off-resume
+discards again; one whose directory sync failed has them visibly gone, durability
+unproven. A kept record says nothing. Either way the launch goes ahead at the
+profile's effort.
+
 A conversation the tagger cannot prove is not handed on: `prior_with` refuses
 an id it cannot judge rather than recording a guess, so a seat whose capture
 never completed leaves no predecessor row.

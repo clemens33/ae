@@ -1160,6 +1160,7 @@ fn agent_entries(
                     }),
                 model_drift,
                 auto_reseat_open: false,
+                effort: Some(meta.effort(&slot.slot)),
             };
             // Read only for a seat whose standing reason is its limit: the
             // suffix says the move off it is under way.

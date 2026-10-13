@@ -265,7 +265,7 @@ fn tool_pid(table: &[Proc], pane_pid: u32, tool: &str) -> Result<u32, String> {
 /// The journal, read strictly: absent, unreadable, not a regular file, not
 /// UTF-8, or ANY non-blank line [`Event::parse_line`] refuses is doubt, and
 /// doubt never answers.
-fn ledger(source: SourceRead) -> Result<Vec<Event>, String> {
+pub(crate) fn ledger(source: SourceRead) -> Result<Vec<Event>, String> {
     let bytes = match source {
         SourceRead::Ready(bytes) => bytes,
         SourceRead::Absent => return Err("the journal does not exist yet".to_owned()),

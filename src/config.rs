@@ -1784,8 +1784,24 @@ pub fn read_global_text(file: &Path) -> Result<Option<String>, String> {
 ///
 /// An explicit occurrence of `key` does not use the shared entry grammar.
 pub fn workspace_key_in(file: &Path, text: &str, key: &str) -> Result<Option<String>, String> {
+    workspace_key_occurrences(file, text, key)?
+        .pop()
+        .transpose()
+}
+
+/// Every `[workspace]` claim of `key` in `text`, in order, each its own result:
+/// the value, or why that line does not use the shared entry grammar.
+///
+/// # Errors
+///
+/// The text is outside the shared line grammar.
+fn workspace_key_occurrences(
+    file: &Path,
+    text: &str,
+    key: &str,
+) -> Result<Vec<Result<String, String>>, String> {
     let mut section = String::new();
-    let mut found = None;
+    let mut found = Vec::new();
     for item in config_lines(file, text) {
         let ConfigLine::Plain(_, raw) = item.map_err(|why| why.to_string())? else {
             continue;
@@ -1802,7 +1818,7 @@ pub fn workspace_key_in(file: &Path, text: &str, key: &str) -> Result<Option<Str
             continue;
         }
         if key_claim(line) == Some(key) {
-            found = Some(
+            found.push(
                 parse_entry(line)
                     .filter(|(parsed, _)| *parsed == key)
                     .map(|(_, value)| value)
@@ -1817,10 +1833,54 @@ pub fn workspace_key_in(file: &Path, text: &str, key: &str) -> Result<Option<Str
                     .next()
                     .is_some_and(|byte| byte.is_ascii_whitespace()))
         {
-            found = Some(Err(format!("{key} is malformed")));
+            found.push(Err(format!("{key} is malformed")));
         }
     }
-    found.transpose()
+    Ok(found)
+}
+
+/// The global `[workspace] auto_effort` ruling: whether a resume replays a
+/// quota-driven effort move ae proved and recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoEffort {
+    On,
+    /// The kill switch: a resume drops the seat's record.
+    Off,
+    /// Neither replays nor drops; carries the escaped reason.
+    Unusable(String),
+}
+
+/// [`AutoEffort`] over global text already read. STRICT, unlike the other
+/// switches: none, or one occurrence of exact `on` or `off`; a second
+/// occurrence or any claim outside the grammar is doubt, never last-wins.
+#[must_use]
+pub fn auto_effort_in(file: &Path, text: &str) -> AutoEffort {
+    let unusable = |why: &str| AutoEffort::Unusable(why.escape_debug().to_string());
+    match workspace_key_occurrences(file, text, "auto_effort") {
+        Err(why) => unusable(&why),
+        Ok(found) => match found.as_slice() {
+            [] => AutoEffort::On,
+            [Ok(value)] if value.trim() == "on" => AutoEffort::On,
+            [Ok(value)] if value.trim() == "off" => AutoEffort::Off,
+            [Ok(value)] => unusable(&format!("{value:?} is not on or off")),
+            [Err(why)] => unusable(why),
+            _ => unusable("auto_effort is set more than once"),
+        },
+    }
+}
+
+/// GLOBAL ONLY, like `restore`, so a project `.ae/config` never votes. No
+/// file is `On`; a file ae cannot read is `Unusable`.
+#[must_use]
+pub fn global_auto_effort(global: Option<&Path>) -> AutoEffort {
+    let Some(file) = global else {
+        return AutoEffort::On;
+    };
+    match read_global_text(file) {
+        Ok(None) => AutoEffort::On,
+        Ok(Some(text)) => auto_effort_in(file, &text),
+        Err(why) => AutoEffort::Unusable(why.escape_debug().to_string()),
+    }
 }
 
 /// The raw global `[workspace] fleet_order` value, or `""` when there is none.

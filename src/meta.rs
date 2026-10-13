@@ -469,6 +469,9 @@ pub struct Meta {
     server_kind: Option<String>,
     /// Whether either selector key appeared more than once.
     server_duplicated: bool,
+    /// Every `effort.<slot>` line, kept RAW for [`crate::effort::stored`]: the
+    /// family is that reader's own, so it never doubts the roster.
+    effort_rows: Vec<String>,
     anomalies: Vec<Anomaly>,
 }
 
@@ -504,6 +507,11 @@ impl Meta {
         let mut seen: Vec<String> = Vec::new();
         for (index, raw) in text.split('\n').enumerate() {
             let line = index + 1;
+            // The effort family is its reader's, RAW: a CR is that reader's to judge.
+            if raw.starts_with(crate::effort::META_PREFIX) {
+                meta.effort_rows.push(raw.to_owned());
+                continue;
+            }
             // One trailing carriage return is line ENDING, not value: a CRLF
             // meta would otherwise put an invisible byte on the end of a path.
             let raw = raw.strip_suffix('\r').unwrap_or(raw);
@@ -1236,6 +1244,17 @@ impl Meta {
     #[must_use]
     pub fn anomalies(&self) -> &[Anomaly] {
         &self.anomalies
+    }
+
+    /// The seat's `effort.<slot>` record, as its one reader judges it.
+    #[must_use]
+    pub fn effort(&self, slot: &str) -> crate::effort::Stored {
+        let mut rows = String::new();
+        for row in &self.effort_rows {
+            rows.push_str(row);
+            rows.push('\n');
+        }
+        crate::effort::stored(rows.as_bytes(), slot)
     }
 }
 
@@ -2164,9 +2183,11 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
             ));
         }
     }
-    rows.iter().fold(text.to_owned(), |document, (key, value)| {
+    let next = rows.iter().fold(text.to_owned(), |document, (key, value)| {
         rewritten(&document, key, value.as_deref())
-    })
+    });
+    // The effort record belongs to the setup that is leaving, carried or not.
+    String::from_utf8_lossy(&without_effort(next.as_bytes(), slot)).into_owned()
 }
 
 /// Publish [`reseated`] as ONE guarded replacement: the seat must still be the
@@ -2365,32 +2386,105 @@ pub(crate) fn record_fallback_fresh(
     read_id: &str,
     minted: Option<&str>,
 ) -> Result<(), RewriteError> {
+    let seat = Fallback {
+        slot,
+        agent,
+        tool,
+        launch_id,
+        read_id,
+        minted,
+    };
+    fallback_fresh(dir, &seat, None).0
+}
+
+/// [`record_fallback_fresh`] that also drops the seat's effort record in the
+/// SAME replacement — only when `proof` still holds and `line` was journaled
+/// first. A proof miss or a failed append still publishes the fallback and
+/// keeps the record; a fallback guard miss writes nothing.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "record_fallback_fresh's seven guard facts plus the proof and its record"
+)]
+pub(crate) fn record_fallback_fresh_discarding(
+    dir: &Path,
+    slot: &str,
+    agent: &str,
+    tool: crate::tool::ToolKind,
+    launch_id: &str,
+    read_id: &str,
+    minted: Option<&str>,
+    proof: &EffortProof<'_>,
+    line: &str,
+) -> (Result<(), RewriteError>, Discard) {
+    let seat = Fallback {
+        slot,
+        agent,
+        tool,
+        launch_id,
+        read_id,
+        minted,
+    };
+    fallback_fresh(dir, &seat, Some((proof, line)))
+}
+
+/// The facts a fallback's guard compares.
+struct Fallback<'a> {
+    slot: &'a str,
+    agent: &'a str,
+    tool: crate::tool::ToolKind,
+    launch_id: &'a str,
+    read_id: &'a str,
+    minted: Option<&'a str>,
+}
+
+/// The ONE fallback replacement. Without `effort` the [`Discard`] is
+/// meaningless and dropped.
+fn fallback_fresh(
+    dir: &Path,
+    seat: &Fallback<'_>,
+    effort: Option<(&EffortProof<'_>, &str)>,
+) -> (Result<(), RewriteError>, Discard) {
+    let Fallback {
+        slot,
+        agent,
+        tool,
+        launch_id,
+        read_id,
+        minted,
+    } = *seat;
     let refused = |why: &str| {
-        RewriteError::NotWritten(io::Error::new(io::ErrorKind::InvalidInput, why.to_owned()))
+        let why = io::Error::new(io::ErrorKind::InvalidInput, why.to_owned());
+        (Err(RewriteError::NotWritten(why)), Discard::Moved)
     };
     if minted.is_some_and(|id| !crate::session_launch::capture::is_lowercase_uuid(id)) {
-        return Err(refused("the fresh conversation id is not well-formed"));
+        return refused("the fresh conversation id is not well-formed");
     }
     let path = crate::store::open(dir).meta_path();
-    let _held = crate::store::lock(
+    let held = crate::store::lock(
         &crate::store::open(dir).meta_lock(),
         crate::store::LOCK_WAIT,
-    )
-    .map_err(RewriteError::NotWritten)?;
+    );
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the meta read, for its guarded rewrite — see clippy.toml"
     )]
-    let current = fs::read_to_string(&path).map_err(RewriteError::NotWritten)?;
+    let read = held.and_then(|held| Ok((held, fs::read_to_string(&path)?)));
+    let (_held, current) = match read {
+        Ok(read) => read,
+        Err(why) => {
+            let said = Discard::NotJournaled(why.to_string());
+            return (Err(RewriteError::NotWritten(why)), said);
+        }
+    };
     let parsed = Meta::parse(&current);
     let Some(entry) = parsed.roster().iter().find(|entry| entry.slot == slot) else {
-        return Err(refused("the slot is no longer seated"));
+        return refused("the slot is no longer seated");
     };
     if entry.name != agent
         || crate::tool::ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default())
             != tool
     {
-        return Err(refused("the slot moved to another seat"));
+        return refused("the slot moved to another seat");
     }
     // The launch arm is commit_inner's rule, including absent == absent: a
     // seat that predates launch ids still records its fallback.
@@ -2398,19 +2492,19 @@ pub(crate) fn record_fallback_fresh(
     let first_launch = first_value(current.as_bytes(), &launch_key);
     let sole_launch = sole_value(current.as_bytes(), &launch_key);
     if first_launch.is_some() && sole_launch.is_none() {
-        return Err(refused("the seat records two launch ids"));
+        return refused("the seat records two launch ids");
     }
     let recorded_launch = sole_launch
         .map(String::from_utf8_lossy)
         .map(std::borrow::Cow::into_owned)
         .unwrap_or_default();
     if recorded_launch != launch_id {
-        return Err(refused("the seat was re-created after the compose"));
+        return refused("the seat was re-created after the compose");
     }
     let session_key = format!("{HARNESS_SESSION_PREFIX}{slot}");
     // An absent row reads as the empty string, exactly as `_run` read it.
     if first_value(current.as_bytes(), &session_key).unwrap_or_default() != read_id.as_bytes() {
-        return Err(refused("the conversation moved under the compose"));
+        return refused("the conversation moved under the compose");
     }
     // A resume fallback never crosses tools, so the conversation it passes
     // over belongs to the slot's own recorded binary.
@@ -2438,10 +2532,153 @@ pub(crate) fn record_fallback_fresh(
             Some(&crate::time::Timestamp::now().epoch().to_string()),
         );
     }
-    if next == current {
-        return Ok(());
+    let mut discard = Discard::Moved;
+    if let Some((proof, line)) = effort {
+        discard = journal_discard(dir, current.as_bytes(), proof, line);
+        if matches!(discard, Discard::Done) {
+            next = String::from_utf8_lossy(&without_effort(next.as_bytes(), slot)).into_owned();
+        }
     }
-    publish_bytes(dir, &path, next.as_bytes())
+    if next == current {
+        return (Ok(()), discard);
+    }
+    let published = publish_bytes(dir, &path, next.as_bytes());
+    if let (Err(why), Discard::Done) = (&published, &discard) {
+        discard = discard_error(why);
+    }
+    (published, discard)
+}
+
+/// What became of a resume's effort discard.
+#[derive(Debug)]
+pub(crate) enum Discard {
+    /// Journaled, and the meta without the record published durably.
+    Done,
+    /// The seat or its rows are not the ones proven: nothing was written.
+    Moved,
+    /// The discard was not journaled, so the record stays; a fallback
+    /// replacement may still have published its own rows.
+    NotJournaled(String),
+    /// Journaled, but nothing visible changed: the record stays.
+    NotPublished(String),
+    /// Journaled and the meta without the record IS visible, but the directory
+    /// sync failed, so a crash may bring the record back.
+    Unsynced(String),
+}
+
+/// The [`Discard`] a failed publication after a good append is.
+pub(crate) fn discard_error(why: &RewriteError) -> Discard {
+    match why {
+        RewriteError::NotWritten(cause) => Discard::NotPublished(cause.to_string()),
+        RewriteError::Unknown(cause) => Discard::Unsynced(cause.to_string()),
+    }
+}
+
+/// The seat a discard proves, and the raw `effort.<slot>` lines it read, in
+/// order and byte for byte.
+pub(crate) struct EffortProof<'a> {
+    pub(crate) session_id: &'a str,
+    pub(crate) slot: &'a str,
+    pub(crate) agent: &'a str,
+    pub(crate) tool: crate::tool::ToolKind,
+    pub(crate) launch_id: &'a str,
+    pub(crate) rows: Vec<Vec<u8>>,
+}
+
+/// Whether `current` still holds exactly the seat and the rows `proof` read:
+/// one canonical `session_id`, one `seat.<slot>`, one `agent_bin.<slot>` of
+/// that tool, one `launch_id.<slot>`, and the same raw effort lines.
+fn effort_proof_holds(current: &[u8], proof: &EffortProof<'_>) -> bool {
+    let sole = |key: String| sole_value(current, &key);
+    let text = |value: &[u8]| String::from_utf8_lossy(value).into_owned();
+    let session_id =
+        sole("session_id".to_owned()).map(|row| crate::archive::canonical_uuid(&text(row)));
+    let tool = sole(format!("{ROSTER_BIN_PREFIX}{}", proof.slot))
+        .map(|row| crate::tool::ToolKind::from_binary_name(&text(row)));
+    let rows: Vec<&[u8]> = proof.rows.iter().map(Vec::as_slice).collect();
+    !proof.session_id.is_empty()
+        && session_id.as_deref() == Some(proof.session_id)
+        && sole(format!("{SEAT_PREFIX}{}", proof.slot)) == Some(proof.agent.as_bytes())
+        && tool == Some(proof.tool)
+        && sole(format!("{LAUNCH_ID_PREFIX}{}", proof.slot)) == Some(proof.launch_id.as_bytes())
+        && effort_claims(current, proof.slot) == rows
+}
+
+/// The meta's records, `\n`-separated; a final terminator ends the last one
+/// rather than starting another.
+fn raw_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    body.split(|byte| *byte == b'\n')
+        .filter(move |_| !bytes.is_empty())
+}
+
+/// Whether a raw line claims `effort.<slot>`: its key — before the first `=`,
+/// or the whole line less one trailing CR — is that one.
+fn claims_effort(line: &[u8], slot: &str) -> bool {
+    let key = line.split(|byte| *byte == b'=').next().unwrap_or_default();
+    let key = if key.len() == line.len() {
+        key.strip_suffix(b"\r").unwrap_or(key)
+    } else {
+        key
+    };
+    key.strip_prefix(crate::effort::META_PREFIX.as_bytes()) == Some(slot.as_bytes())
+}
+
+/// Every raw `effort.<slot>` line, bare and CR included, in order.
+pub(crate) fn effort_claims<'a>(bytes: &'a [u8], slot: &str) -> Vec<&'a [u8]> {
+    raw_lines(bytes)
+        .filter(|line| claims_effort(line, slot))
+        .collect()
+}
+
+/// `bytes` without any `effort.<slot>` line; every other line byte for byte.
+fn without_effort(bytes: &[u8], slot: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for line in raw_lines(bytes).filter(|line| !claims_effort(line, slot)) {
+        out.extend_from_slice(line);
+        out.push(b'\n');
+    }
+    out
+}
+
+/// The journal half of a discard, inside the caller's hold of `meta.lock`:
+/// `Done` once `line` is journaled against a `current` that still proves
+/// `proof`; nothing is written otherwise.
+fn journal_discard(dir: &Path, current: &[u8], proof: &EffortProof<'_>, line: &str) -> Discard {
+    if !effort_proof_holds(current, proof) {
+        return Discard::Moved;
+    }
+    match crate::store::open(dir).append_event(&format!("{line}\n")) {
+        Ok(()) => Discard::Done,
+        Err(why) => Discard::NotJournaled(why.to_string()),
+    }
+}
+
+/// Drop the seat's effort record as ONE owned write, under ONE hold of
+/// `meta.lock`: prove `proof` still holds, journal `line`, then publish the
+/// meta without the seat's raw effort lines. Nothing is published unless the
+/// journal took the record first, and a stale proof writes nothing at all.
+pub(crate) fn discard_effort(dir: &Path, proof: &EffortProof<'_>, line: &str) -> Discard {
+    let _held = match lock(dir) {
+        Ok(held) => held,
+        Err(why) => return Discard::NotJournaled(why.to_string()),
+    };
+    let current = match read_bytes(dir) {
+        Ok(current) => current,
+        Err(why) => return Discard::NotJournaled(why.to_string()),
+    };
+    let journaled = journal_discard(dir, &current, proof, line);
+    if !matches!(journaled, Discard::Done) {
+        return journaled;
+    }
+    let next = without_effort(&current, proof.slot);
+    if next == current {
+        return Discard::Done;
+    }
+    match publish_bytes(dir, &crate::store::open(dir).meta_path(), &next) {
+        Ok(()) => Discard::Done,
+        Err(why) => discard_error(&why),
+    }
 }
 
 /// The ONE locked read-modify-write the row writers share: take `meta.lock`,

@@ -4237,7 +4237,18 @@ fn meta_document(
             ));
         }
     };
+    // A quota-driven effort move belongs to the conversation a resume keeps:
+    // its record is carried RAW, every line in order, damage and CR included,
+    // so the resume decision reads what was written. A fresh launch inherits
+    // none, and a line that is not UTF-8 is carried as lossy text, still damage.
+    let mut effort = String::new();
     for agent in launching {
+        if shape.resuming {
+            for line in crate::meta::effort_claims(&prior_meta, &agent.slot) {
+                effort.push_str(&String::from_utf8_lossy(line));
+                effort.push('\n');
+            }
+        }
         if !agent.launch_id.is_empty() {
             row(&format!("launch_id.{}", agent.slot), &agent.launch_id);
         }
@@ -4284,6 +4295,7 @@ fn meta_document(
             Err(why) => return Err(why),
         }
     }
+    body.push_str(&effort);
 
     let seats: Vec<roster::SeatLines> = launching
         .iter()

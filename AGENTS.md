@@ -317,7 +317,7 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 - **A seat resumes on the model the human switched to in its pane.** codex replays the observed id;
   claude's display LABEL becomes the ONE configured pin VALUE it satisfies, among `[profiles]` whose
   resolved command differs in the model flag's VALUE alone — else report-only, saying which refusal.
-  Effort is never followed; a vendor auto-fallback is. `launch_cmd::followed_pin_in`, `run::apply_observed_model`.
+  Manual effort is not followed. A quota-driven effort change that ae proved and recorded is replayed on the same retained seat until recovery; a newer profile/model/client change or manual live effort change yields ownership. Vendor auto-fallback model following is unchanged. `launch_cmd::followed_pin_in`, `run::apply_observed_model`; the replay is `effort::on_resume`, written by `run::effort_on_resume`.
 - Meta v2 roster: `seat.<slot>` / `profile.<slot>` / `agent_bin.<slot>` / `harness_session.<slot>`,
   plus `harness_session_prior.<slot>` — up to four abandoned predecessor conversations, oldest
   first, with the current row cleared to `pending` when a resume falls back. Each element is

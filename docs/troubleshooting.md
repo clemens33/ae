@@ -25,6 +25,8 @@ ae <name>
 
 Resume and session capture for external agent CLIs are best-effort and depend on upstream tool storage formats, which can change. All seven supported tools get exact-session resume once their session id is captured; if capture failed or the recorded conversation is gone, ae starts fresh instead of resuming another seat's newest conversation (Claude and Grok name the new conversation with a fresh `--session-id`; the rest take the bare command).
 
+A resume that refuses with `an effort change is unresolved` met a quota-driven effort move ae recorded but never proved finished. Set the global `[workspace] auto_effort = off` (a project `.ae/config` does not count) and resume again: the record is dropped, `effort-discarded` is journaled, and the seat starts at its profile's effort. This is a rollback, not a live change — a running tool keeps the effort it has until it is resumed. Turning the switch back on adopts nothing. A resume that says `resuming at effort <level>` is replaying a move ae still owns; the same switch drops it.
+
 ## Every session refuses to resume after a reboot
 
 ```

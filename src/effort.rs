@@ -17,6 +17,7 @@ use crate::events::{Event, SessionKey};
 use crate::launch_cmd::{EffortRefusal, effort_skeleton, model_flag_value};
 use crate::meta::RecordedClient;
 use crate::quota::{Status, WindowKey};
+use crate::time::Timestamp;
 use crate::tool::ToolKind;
 
 /// One reasoning-effort level, in ascending order.
@@ -490,7 +491,9 @@ pub enum State {
 impl State {
     const ALL: [Self; 3] = [Self::PendingDown, Self::Applied, Self::PendingUp];
 
-    const fn word(self) -> &'static str {
+    /// The state's one spelling.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
         match self {
             Self::PendingDown => "pending-down",
             Self::Applied => "applied",
@@ -781,12 +784,15 @@ impl Record {
     }
 }
 
+/// The meta key family every effort record lives in: `effort.<slot>`.
+pub const META_PREFIX: &str = "effort.";
+
 /// The `effort.<slot>` record in a session meta's bytes. A line
 /// `effort.<slot>` alone or `effort.<slot>=…` is an occurrence; any other key,
 /// `effort.<slot>x=…` included, is not.
 #[must_use]
 pub fn stored(meta: &[u8], slot: &str) -> Stored {
-    let key = format!("effort.{slot}");
+    let key = format!("{META_PREFIX}{slot}");
     let mut found = Vec::new();
     for line in meta.split(|byte| *byte == b'\n') {
         if line == key.as_bytes() {
@@ -912,6 +918,9 @@ pub const HELD: &str = "effort-held";
 pub const YIELDED: &str = "effort-yielded";
 /// The episode ends unmoved or yielded: ref `<ep>`.
 pub const REARMED: &str = "effort-rearmed";
+/// A resume dropped the seat's record and everything the journal remembers of
+/// its episodes: ref `<ep>` or empty, summary `off` or `fresh`.
+pub const DISCARDED: &str = "effort-discarded";
 
 /// Where one direction of an episode stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1116,9 +1125,21 @@ fn step(
     Ok(())
 }
 
+/// Whether a watchdog [`DISCARDED`] record is one ae writes: ref empty or a
+/// canonical epoch, summary exactly a [`Discarded`] word.
+fn well_formed_discard(event: &Event) -> bool {
+    let reference = event.reference.as_deref().unwrap_or_default();
+    let summary = event.summary.as_deref().unwrap_or_default();
+    (reference.is_empty() || epoch(reference).is_some())
+        && [Discarded::Off, Discarded::Fresh]
+            .iter()
+            .any(|why| why.word() == summary)
+}
+
 /// Fold the seat's effort records, in journal order. Only records addressed
 /// to the seat count, effort records only from the watchdog; a `spawn` or
-/// `reseat` of the seat starts a new incarnation with nothing remembered.
+/// `reseat` of the seat, or a well-formed [`DISCARDED`], starts again with
+/// nothing remembered, doubt included.
 #[must_use]
 pub fn fold(events: &[Event], session: SessionKey<'_>, slot: &str, agent: &str) -> Fold {
     let mut open = None;
@@ -1128,10 +1149,15 @@ pub fn fold(events: &[Event], session: SessionKey<'_>, slot: &str, agent: &str) 
         if !crate::watchdog::event_is_addressed_to_in(event, session, slot, agent) {
             continue;
         }
-        if matches!(event.action.as_str(), "spawn" | "reseat") {
+        let discard = event.actor == "watchdog" && event.action == DISCARDED;
+        if matches!(event.action.as_str(), "spawn" | "reseat")
+            || discard && well_formed_discard(event)
+        {
             open = None;
             closed.clear();
             doubt = None;
+        } else if discard {
+            doubt = Some("unreadable effort discard");
         } else if doubt.is_none()
             && event.actor == "watchdog"
             && event.action.starts_with("effort-")
@@ -1368,4 +1394,182 @@ fn up(
         (Recovery::Relieved, _) => Decision::Hold(Hold::Doubt),
         _ => Decision::Hold(Hold::Pressure),
     }
+}
+
+/// `[workspace] auto_effort`, as a resume reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Switch {
+    /// On, the default.
+    On,
+    /// The kill switch: a resume drops the record.
+    Off,
+    /// Malformed or unreadable: neither replay nor drop.
+    Unusable,
+}
+
+/// Why a resume drops a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discarded {
+    /// `auto_effort = off`.
+    Off,
+    /// The seat does not resume the record's conversation.
+    Fresh,
+}
+
+impl Discarded {
+    /// The [`DISCARDED`] summary.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Fresh => "fresh",
+        }
+    }
+}
+
+/// Why a resume leaves a record alone and launches the profile as written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kept {
+    /// The switch is unusable.
+    Unusable,
+    /// The record cannot be trusted.
+    Damaged(Damage),
+    /// The record belongs to another seat or setup.
+    Foreign(Foreign),
+    /// The human owns the episode.
+    Yielded,
+    /// The journal does not prove the move the record claims.
+    Ledger,
+}
+
+/// What a resume does with the seat's effort record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resume {
+    /// There is none.
+    None,
+    /// Launch the profile with its effort value rewritten to this level.
+    Replay(Level),
+    /// Launch the profile as written and keep the record.
+    Keep(Kept),
+    /// Drop the record, journaling why, and launch the profile as written.
+    Discard {
+        /// The record's episode, when it is readable.
+        episode: Option<i64>,
+        /// Why.
+        why: Discarded,
+    },
+    /// An unresolved move: refuse the launch.
+    Refuse(State),
+}
+
+/// The ONE resume decision. `retained` says the launch resumes the recorded
+/// conversation, proven present; `ledger` is the seat's fold over a strictly
+/// read journal, `None` when that read failed. The first rule that matches
+/// decides: absent, not retained, off, unusable, damaged, another seat, another
+/// conversation, unresolved, another setup, then the journal.
+#[must_use]
+pub fn on_resume(
+    stored: &Stored,
+    guard: Result<(), Foreign>,
+    ledger: Option<&Fold>,
+    switch: Switch,
+    retained: bool,
+) -> Resume {
+    let record = match stored {
+        Stored::Absent => return Resume::None,
+        Stored::Damaged(_) => None,
+        Stored::Present(record) => Some(record),
+    };
+    let episode = record.map(|record| record.episode);
+    let discard = |why| Resume::Discard { episode, why };
+    if !retained {
+        return discard(Discarded::Fresh);
+    }
+    match (switch, stored, record) {
+        (Switch::Off, ..) => return discard(Discarded::Off),
+        (Switch::Unusable, ..) => return Resume::Keep(Kept::Unusable),
+        (Switch::On, Stored::Damaged(damage), _) => return Resume::Keep(Kept::Damaged(*damage)),
+        _ => {}
+    }
+    let Some(record) = record else {
+        return Resume::None;
+    };
+    match guard {
+        Err(Foreign::Conversation) => return discard(Discarded::Fresh),
+        Err(foreign @ (Foreign::Session | Foreign::Slot | Foreign::Agent | Foreign::Tool)) => {
+            return Resume::Keep(Kept::Foreign(foreign));
+        }
+        _ if record.state != State::Applied => return Resume::Refuse(record.state),
+        Err(foreign) => return Resume::Keep(Kept::Foreign(foreign)),
+        Ok(()) => {}
+    }
+    let Some(Fold::Open(open)) = ledger else {
+        return Resume::Keep(Kept::Ledger);
+    };
+    if open.key != record.episode {
+        return Resume::Keep(Kept::Ledger);
+    }
+    if open.yielded {
+        return Resume::Keep(Kept::Yielded);
+    }
+    let down = Transition {
+        direction: Direction::Down,
+        from: record.base,
+        to: record.low,
+    };
+    let moved = matches!(open.down, Leg::Reserved(t) | Leg::Done(t) if t == down);
+    let unspent = matches!(open.up, Leg::Unspent | Leg::Reserved(_) | Leg::Failed(_));
+    if open.threshold == record.threshold && moved && unspent {
+        Resume::Replay(record.low)
+    } else {
+        Resume::Keep(Kept::Ledger)
+    }
+}
+
+/// The seat a [`DISCARDED`] record is routed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscardSeat<'a> {
+    /// The session name.
+    pub session: &'a str,
+    /// The meta `session_id`.
+    pub session_id: &'a str,
+    /// The roster slot.
+    pub slot: &'a str,
+    /// The agent name.
+    pub agent: &'a str,
+}
+
+/// The ONE [`DISCARDED`] journal line, as the watchdog, routed to the seat by
+/// slot and session id so a rename keeps it addressed. No trailing newline.
+#[must_use]
+pub fn discard_line(
+    now: Timestamp,
+    seat: &DiscardSeat<'_>,
+    episode: Option<i64>,
+    why: Discarded,
+) -> String {
+    let reference = episode.map(|key| key.to_string()).unwrap_or_default();
+    let line = crate::tracked::event_line(&crate::tracked::EventFields {
+        ts: now,
+        actor: crate::watchdog::WATCHDOG_ACTOR,
+        action: DISCARDED,
+        target: seat.agent,
+        reference: &reference,
+        actor_slot: "",
+        actor_session: "",
+        target_slot: seat.slot,
+        target_session: seat.session,
+        actor_session_id: "",
+        target_session_id: seat.session_id,
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
+        summary: why.word(),
+        body_file: "",
+    });
+    line.trim_end_matches('\n').to_owned()
 }

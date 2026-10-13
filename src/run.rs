@@ -60,6 +60,47 @@ pub struct Plan {
     /// must still satisfy, and the fresh id. Never part of `render()`, except
     /// through [`Plan::render`]'s illustrative-mint note.
     fresh: Option<FreshRecord>,
+    /// The effort record a real run drops before the exec; `--print` never.
+    effort: Option<EffortStep>,
+    /// What a resume says about an effort move it replays.
+    effort_notice: Option<String>,
+}
+
+/// An effort discard `run` writes after the print gate: the facts its proof
+/// re-checks under the meta lock, and what its record says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EffortStep {
+    session: String,
+    session_id: String,
+    agent: String,
+    tool: ToolKind,
+    launch_id: String,
+    rows: Vec<Vec<u8>>,
+    episode: Option<i64>,
+    why: crate::effort::Discarded,
+}
+
+impl EffortStep {
+    fn proof<'a>(&'a self, slot: &'a str) -> crate::meta::EffortProof<'a> {
+        crate::meta::EffortProof {
+            session_id: &self.session_id,
+            slot,
+            agent: &self.agent,
+            tool: self.tool,
+            launch_id: &self.launch_id,
+            rows: self.rows.clone(),
+        }
+    }
+
+    fn line(&self, slot: &str) -> String {
+        let seat = crate::effort::DiscardSeat {
+            session: &self.session,
+            session_id: &self.session_id,
+            slot,
+            agent: &self.agent,
+        };
+        crate::effort::discard_line(crate::time::Timestamp::now(), &seat, self.episode, self.why)
+    }
 }
 
 /// What a resume FALLBACK records: the `_run` compose's view of the seat,
@@ -354,7 +395,10 @@ pub fn run(
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
-    if let Some(notice) = &plan.model_notice {
+    for notice in [&plan.model_notice, &plan.effort_notice]
+        .into_iter()
+        .flatten()
+    {
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
@@ -386,17 +430,10 @@ pub fn run(
     // row records — and the mint notice is replaced by that report, so stderr
     // never names an id the pane is not opening. A seat with nothing to name
     // still starts fresh, and still says so.
+    let recorded = record_resume(dir, slot, &plan, err)?;
     let mut unnamed = false;
     if let Some(fresh) = plan.fresh.as_ref()
-        && let Err(why) = crate::meta::record_fallback_fresh(
-            dir,
-            slot,
-            &fresh.agent,
-            fresh.tool,
-            &fresh.launch_id,
-            &fresh.read_id,
-            fresh.minted.as_deref(),
-        )
+        && let Err(why) = recorded
     {
         if fresh.minted.is_some() {
             plan.argv = drop_recorded_mint(&plan.argv);
@@ -428,6 +465,56 @@ pub fn run(
     writeln!(err, "ae: could not start {} ({why})", plan.argv[0])?;
     err.flush()?;
     Ok(EXIT_FAILED)
+}
+
+/// Record what a resume FALLBACK decided; the seat's effort discard rides that
+/// same replacement when there is one, else it is its own owned write. Either
+/// way the discard is journaled first, and said on `err`.
+fn record_resume(
+    dir: &Path,
+    slot: &str,
+    plan: &Plan,
+    err: &mut impl Write,
+) -> crate::Result<Result<(), crate::meta::RewriteError>> {
+    let mut discarded = None;
+    let recorded = match (plan.fresh.as_ref(), plan.effort.as_ref()) {
+        (Some(fresh), Some(step)) => {
+            let (recorded, outcome) = crate::meta::record_fallback_fresh_discarding(
+                dir,
+                slot,
+                &fresh.agent,
+                fresh.tool,
+                &fresh.launch_id,
+                &fresh.read_id,
+                fresh.minted.as_deref(),
+                &step.proof(slot),
+                &step.line(slot),
+            );
+            discarded = Some((step.why, outcome));
+            recorded
+        }
+        (Some(fresh), None) => crate::meta::record_fallback_fresh(
+            dir,
+            slot,
+            &fresh.agent,
+            fresh.tool,
+            &fresh.launch_id,
+            &fresh.read_id,
+            fresh.minted.as_deref(),
+        ),
+        (None, step) => {
+            discarded = step.map(|step| {
+                let outcome = crate::meta::discard_effort(dir, &step.proof(slot), &step.line(slot));
+                (step.why, outcome)
+            });
+            Ok(())
+        }
+    };
+    if let Some((why, outcome)) = discarded {
+        writeln!(err, "{}", discard_said(slot, why, &outcome))?;
+        err.flush()?;
+    }
+    Ok(recorded)
 }
 
 /// Create the start marker DURABLY, or say why it could not be.
@@ -552,7 +639,12 @@ fn build_with_snapshot(
                 identity.current.shown()
             )
         });
-    let composed = compose(dir, slot, &seat, &ctx, mode, &identity.effective)?;
+    // ONE probe: the compose and the effort decision must agree on whether the
+    // recorded conversation is the one this launch keeps.
+    let exact =
+        mode == Mode::Resume && resumable(seat.tool, &seat.harness_session, &identity.effective);
+    let (effort, effort_notice) = effort_on_resume(dir, slot, &mut seat, exact)?;
+    let composed = compose(dir, slot, &seat, &ctx, mode, exact)?;
     let words = crate::words::split_words(&composed.cmd, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
     if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {
@@ -574,7 +666,142 @@ fn build_with_snapshot(
         model_notice,
         resume_notice: composed.notice,
         fresh: composed.fresh,
+        effort,
+        effort_notice,
     })
+}
+
+/// The seat's effort record on this launch ([`crate::effort::on_resume`]),
+/// READ ONLY: a replay rewrites `seat.command` here, an unresolved move
+/// refuses the launch, and a discard is handed to `run` to write.
+fn effort_on_resume(
+    dir: &Path,
+    slot: &str,
+    seat: &mut Seat,
+    exact: bool,
+) -> Result<(Option<EffortStep>, Option<String>), String> {
+    use crate::config::AutoEffort;
+    use crate::effort::{Foreign, Resume, State, Stored, Switch};
+    let Ok(bytes) = crate::meta::read_bytes(dir) else {
+        return Ok((None, None));
+    };
+    let stored = crate::effort::stored(&bytes, slot);
+    let record = match &stored {
+        Stored::Absent => return Ok((None, None)),
+        Stored::Damaged(_) => None,
+        Stored::Present(record) => Some(record),
+    };
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let session_id = meta.session_id().unwrap_or_default().to_owned();
+    let switch = match crate::config::global_auto_effort(seat.identity_global.as_deref()) {
+        AutoEffort::On => Switch::On,
+        AutoEffort::Off => Switch::Off,
+        AutoEffort::Unusable(_) => Switch::Unusable,
+    };
+    let mut ledger = None;
+    let mut guard = Ok(());
+    if let Some(record) = record {
+        ledger = crate::autotrust::ledger(crate::store::open(dir).events_source())
+            .ok()
+            .map(|events| {
+                let session = crate::events::SessionKey::new(&seat.session, &session_id);
+                crate::effort::fold(&events, session, slot, &seat.agent)
+            });
+        let entry = meta.roster().iter().find(|entry| entry.slot == slot);
+        let model = crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool);
+        let now = crate::effort::SeatNow {
+            session_id: &session_id,
+            slot,
+            agent: &seat.agent,
+            tool: seat.tool,
+            conversation: exact.then_some(seat.harness_session.as_str()),
+            profile: entry
+                .and_then(|entry| entry.profile.as_deref())
+                .unwrap_or_default(),
+            client: entry.map_or(&crate::meta::RecordedClient::Invalid, |entry| &entry.client),
+            model: model.as_deref(),
+            baseline: crate::launch_cmd::effort_flag(seat.command.as_str(), seat.tool).ok(),
+        };
+        guard = if seat.recorded_tool == seat.tool {
+            crate::effort::guard(record, &now)
+        } else {
+            Err(Foreign::Tool)
+        };
+    }
+    let base = record.map_or("", |record| record.base.word());
+    let low = record.map_or("", |record| record.low.word());
+    match crate::effort::on_resume(&stored, guard, ledger.as_ref(), switch, exact) {
+        Resume::None | Resume::Keep(_) => Ok((None, None)),
+        Resume::Replay(level) => {
+            let said = match crate::launch_cmd::replace_effort_flag(
+                seat.command.as_str(),
+                seat.tool,
+                level,
+            ) {
+                Ok(text) => {
+                    seat.command = seat.command.with_text(text);
+                    format!(
+                        "ae: seat {slot}: resuming at effort {low}, not the profile's {base} — ae lowered it on quota pressure and still owns that move; set [workspace] auto_effort = off and resume to drop it"
+                    )
+                }
+                Err(refusal) => format!(
+                    "ae: seat {slot}: effort {low} could not be replayed ({}) — resuming on the profile's {base}",
+                    refusal.word()
+                ),
+            };
+            Ok((None, Some(said)))
+        }
+        Resume::Refuse(state) => {
+            let (from, to) = if state == State::PendingUp {
+                (low, base)
+            } else {
+                (base, low)
+            };
+            Err(format!(
+                "seat {slot}: an effort change is unresolved ({} {from}->{to}) — set [workspace] auto_effort = off and resume again to discard it",
+                state.word()
+            ))
+        }
+        Resume::Discard { episode, why } => Ok((
+            Some(EffortStep {
+                session: seat.session.clone(),
+                session_id,
+                agent: seat.agent.clone(),
+                tool: seat.recorded_tool,
+                launch_id: seat.launch_id.clone(),
+                rows: crate::meta::effort_claims(&bytes, slot)
+                    .into_iter()
+                    .map(<[u8]>::to_vec)
+                    .collect(),
+                episode,
+                why,
+            }),
+            None,
+        )),
+    }
+}
+
+/// The one line a resume says about the effort record it tried to drop.
+fn discard_said(
+    slot: &str,
+    why: crate::effort::Discarded,
+    outcome: &crate::meta::Discard,
+) -> String {
+    use crate::meta::Discard;
+    let cause = match why {
+        crate::effort::Discarded::Off => "auto_effort = off",
+        crate::effort::Discarded::Fresh => "a new conversation",
+    };
+    let what = match outcome {
+        Discard::Done => format!("dropped ({cause})"),
+        Discard::Moved => "kept — the seat changed under this resume".to_owned(),
+        Discard::NotJournaled(why) => format!("kept — its discard could not be journaled ({why})"),
+        Discard::NotPublished(why) => {
+            format!("kept — journaled, but the meta was not rewritten ({why})")
+        }
+        Discard::Unsynced(why) => format!("dropped ({cause}), but not proven durable ({why})"),
+    };
+    format!("ae: seat {slot}: effort record {what}; resuming on the profile")
 }
 
 /// Honor a recorded manual model on a resumed seat, or say why it cannot be.
@@ -925,11 +1152,10 @@ fn compose(
     seat: &Seat,
     ctx: &str,
     mode: Mode,
-    config_home: &crate::launch_cmd::Resolved,
+    exact: bool,
 ) -> Result<Composed, String> {
     if mode == Mode::Resume {
         // DECIDE, THEN INJECT.
-        let exact = resumable(seat.tool, &seat.harness_session, config_home);
         // A fallback names the fresh conversation it is about to open
         // when the tool takes a launch session id; the exec records the mint
         // before it becomes the tool.
@@ -2243,6 +2469,8 @@ mod tests {
             model_notice: None,
             resume_notice: None,
             fresh: None,
+            effort: None,
+            effort_notice: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -2391,6 +2619,8 @@ mod tests {
             model_notice: None,
             resume_notice: None,
             fresh: None,
+            effort: None,
+            effort_notice: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
@@ -2523,9 +2753,7 @@ mod tests {
             None,
             None,
         );
-        let config_home = crate::launch_cmd::Resolved::Absent;
-        let composed =
-            compose(&dir, "main", &seat, "ctx", Mode::Resume, &config_home).expect("a line");
+        let composed = compose(&dir, "main", &seat, "ctx", Mode::Resume, true).expect("a line");
         let at = |needle: &str| composed.cmd.find(needle).expect(needle);
         assert!(at("-m gpt-6-astra") < at("resume sid"), "{}", composed.cmd);
         assert!(

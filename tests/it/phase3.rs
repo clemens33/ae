@@ -2036,6 +2036,7 @@ fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
         own_work: None,
         model_drift: ae::model_drift::ModelDrift::Quiet,
         auto_reseat_open: false,
+        effort: None,
     }];
     let world = World::new(NOW, vec![entry]);
     let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));

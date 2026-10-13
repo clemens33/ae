@@ -78,6 +78,8 @@ pub struct AgentEntry {
     /// An auto reseat attempt is open in the seat's current limit episode.
     /// TABLE only, same rule as `own_work`.
     pub auto_reseat_open: bool,
+    /// The seat's `effort.<slot>` record. TABLE only, same rule as `own_work`.
+    pub effort: Option<crate::effort::Stored>,
 }
 
 /// Frozen's placeholder for an agent whose session id is absent or unresolved.

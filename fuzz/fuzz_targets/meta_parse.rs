@@ -19,6 +19,7 @@ fuzz_target!(|data: &[u8]| {
     let parsed = ae::meta::Meta::parse(&text);
     for slot in ["main", "worker.0", "spawned.1"] {
         let _ = std::hint::black_box(parsed.launch_id(slot));
+        let _ = std::hint::black_box(parsed.effort(slot));
         let _ = std::hint::black_box(parsed.done_confirmations_pin());
         let raw = parsed.harness_session_prior(slot);
         for element in &raw {

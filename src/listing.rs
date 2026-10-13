@@ -409,6 +409,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                 }
                 crate::model_drift::ModelDrift::Unknown => out.push_str(" · drift:unknown"),
             }
+            effort_cell(agent.effort.as_ref(), &mut out);
             // WHY a seat is quiet without being idle, so the human reads it off
             // the line instead of opening the pane.
             if let Some(reason) = agent.own_work.and_then(crate::session::OwnWork::reason) {
@@ -423,6 +424,25 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         }
     }
     out
+}
+
+/// The effort cell: the level ae runs the seat at and why, a move still
+/// pending, or a record ae cannot trust, as the seat's own record says. No
+/// record draws nothing.
+fn effort_cell(effort: Option<&crate::effort::Stored>, out: &mut String) {
+    use crate::effort::{State, Stored};
+    let Some(Stored::Present(record)) = effort else {
+        if matches!(effort, Some(Stored::Damaged(_))) {
+            out.push_str(" · effort:damaged");
+        }
+        return;
+    };
+    let (base, low) = (record.base.word(), record.low.word());
+    let _ = match record.state {
+        State::Applied => write!(out, " · effort:{low} (auto from {base})"),
+        State::PendingDown => write!(out, " · effort:pending {base}->{low}"),
+        State::PendingUp => write!(out, " · effort:pending {low}->{base}"),
+    };
 }
 
 /// The verdict cell of a seat on its usage limit: the move off it, while an
