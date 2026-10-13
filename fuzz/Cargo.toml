@@ -243,3 +243,24 @@ path = "fuzz_targets/journal_append.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "effort_flag"
+path = "fuzz_targets/effort_flag.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "effort_record"
+path = "fuzz_targets/effort_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "effort_fold"
+path = "fuzz_targets/effort_fold.rs"
+test = false
+doc = false
+bench = false

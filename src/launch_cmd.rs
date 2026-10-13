@@ -45,7 +45,8 @@ impl Split {
 use std::path::{Path, PathBuf};
 
 use crate::config::ResolvedCommand;
-use crate::tool::ToolKind;
+use crate::effort::Level;
+use crate::tool::{EffortSpec, ToolKind};
 
 /// Split `cmd` at its binary word, or `None` when it is malformed or carries
 /// nothing but prefix words.
@@ -202,6 +203,9 @@ pub struct SimpleCommand {
     pub binary: String,
     /// Quote-resolved argv words, parallel to [`Self::words`].
     word_values: Vec<String>,
+    /// Byte range of each argv word in the original command, parallel to
+    /// [`Self::words`].
+    word_spans: Vec<(usize, usize)>,
     /// Index of the executable inside `words` / `word_values`.
     binary_index: usize,
     /// Byte range of the executable word in the original command.
@@ -632,6 +636,234 @@ fn quote_model(value: &str) -> String {
     }
 }
 
+/// Why a profile command proves no single reasoning-effort level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffortRefusal {
+    /// This harness has no effort setting ae reads, or the command launches
+    /// another harness.
+    Unsupported,
+    /// The command is not one simple command.
+    NotSimple(String),
+    /// No effort setting at all.
+    Absent,
+    /// More than one, or a word ae cannot tell from one.
+    Ambiguous,
+    /// The setting is present but its value is missing.
+    MissingValue,
+    /// The value is no level this harness takes (clipped, control-free).
+    UnknownLevel(String),
+    /// The prefix sets or unsets the variable that overrides the flag.
+    Environment,
+}
+
+impl EffortRefusal {
+    /// The stable word a journal record names this refusal by.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::NotSimple(_) => "not-simple",
+            Self::Absent => "no-effort-flag",
+            Self::Ambiguous => "ambiguous-effort",
+            Self::MissingValue => "effort-missing-value",
+            Self::UnknownLevel(_) => "unknown-effort",
+            Self::Environment => "env-effort",
+        }
+    }
+}
+
+/// The one effort occurrence in a lexed command.
+struct EffortFlag {
+    /// The flag word's index in [`SimpleCommand::words`].
+    flag: usize,
+    /// The index of the word that carries the level: the flag word itself
+    /// when joined.
+    value: usize,
+    /// What that word spells before the level.
+    head: String,
+    /// The whole occurrence reduced to one skeleton word.
+    name: String,
+    /// The level, still unchecked.
+    level: String,
+}
+
+/// Find the ONE effort occurrence after the binary and before a `--`, past
+/// which every word is an operand. A word that mentions the setting but is no
+/// occurrence ae can read refuses as ambiguous.
+fn sole_effort(
+    command: &SimpleCommand,
+    names: &[&str],
+    key: Option<&str>,
+) -> Result<EffortFlag, EffortRefusal> {
+    let mut index = command.binary_index + 1;
+    let operands = command.word_values[index..]
+        .iter()
+        .position(|word| word == "--");
+    let values =
+        &command.word_values[..operands.map_or(command.word_values.len(), |at| index + at)];
+    let mut found: Option<EffortFlag> = None;
+    while let Some(word) = values.get(index) {
+        let joined = names
+            .iter()
+            .filter(|name| name.starts_with("--"))
+            .find_map(|name| Some((*name, word.strip_prefix(name)?.strip_prefix('=')?)));
+        let (name, carrier, value, head, width) = match names.iter().find(|name| *name == word) {
+            Some(name) => {
+                let next = values.get(index + 1).map_or("", String::as_str);
+                (*name, next, index + 1, String::new(), 2)
+            }
+            None => match joined {
+                Some((name, rest)) => (name, rest, index, format!("{name}="), 1),
+                None if key.map_or_else(
+                    || names.iter().any(|name| word.starts_with(name)),
+                    |key| word.contains(key),
+                ) =>
+                {
+                    return Err(EffortRefusal::Ambiguous);
+                }
+                None => {
+                    index += 1;
+                    continue;
+                }
+            },
+        };
+        let (head, level) = match key {
+            None => (head, carrier),
+            Some(key) => match carrier
+                .strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix('='))
+            {
+                Some(level) => (format!("{head}{key}="), level),
+                None if carrier.contains(key) => return Err(EffortRefusal::Ambiguous),
+                None => {
+                    index += width;
+                    continue;
+                }
+            },
+        };
+        if found.is_some() {
+            return Err(EffortRefusal::Ambiguous);
+        }
+        if level.is_empty() || (key.is_none() && width == 2 && level.starts_with('-')) {
+            return Err(EffortRefusal::MissingValue);
+        }
+        found = Some(EffortFlag {
+            flag: index,
+            value,
+            head,
+            name: key.map_or_else(|| name.to_owned(), |key| format!("{name} {key}")),
+            level: level.to_owned(),
+        });
+        index += width;
+    }
+    found.ok_or(EffortRefusal::Absent)
+}
+
+/// A lexed command, its one effort occurrence and that occurrence's level.
+fn effort_in(
+    cmd: &str,
+    tool: ToolKind,
+) -> Result<(SimpleCommand, EffortFlag, Level), EffortRefusal> {
+    let (names, key, vocabulary, env) = match tool.adapter().effort {
+        EffortSpec::Unsupported => return Err(EffortRefusal::Unsupported),
+        EffortSpec::Flag {
+            names,
+            vocabulary,
+            env,
+        } => (names, None, vocabulary, env),
+        EffortSpec::ConfigPair {
+            flags,
+            key,
+            vocabulary,
+        } => (flags, Some(key), vocabulary, None),
+    };
+    let command =
+        lex_simple_command(cmd).map_err(|why| EffortRefusal::NotSimple(why.to_string()))?;
+    if command.tool() != tool {
+        return Err(EffortRefusal::Unsupported);
+    }
+    if env.is_some_and(|variable| prefix_mentions(&command, variable)) {
+        return Err(EffortRefusal::Environment);
+    }
+    let flag = sole_effort(&command, names, key)?;
+    let level = Level::parse(&flag.level)
+        .filter(|level| vocabulary.contains(level))
+        .ok_or_else(|| {
+            EffortRefusal::UnknownLevel(
+                flag.level
+                    .chars()
+                    .filter(|ch| !ch.is_control())
+                    .take(32)
+                    .collect(),
+            )
+        })?;
+    Ok((command, flag, level))
+}
+
+/// The ONE reasoning-effort level a profile command sets.
+///
+/// # Errors
+///
+/// The [`EffortRefusal`] when the command proves no single level.
+pub fn effort_flag(cmd: &str, tool: ToolKind) -> Result<Level, EffortRefusal> {
+    effort_in(cmd, tool).map(|(_, _, level)| level)
+}
+
+/// Rewrite the ONE effort value in a profile command to `level`.
+///
+/// The occurrence keeps its form (split or joined, its flag spelling) and
+/// every other byte of the command is kept as written. ae never appends one.
+///
+/// # Errors
+///
+/// The [`EffortRefusal`] when the command proves no single level, or
+/// `UnknownLevel` when this harness does not take `level`.
+pub fn replace_effort_flag(
+    cmd: &str,
+    tool: ToolKind,
+    level: Level,
+) -> Result<String, EffortRefusal> {
+    let (command, flag, _) = effort_in(cmd, tool)?;
+    let vocabulary = match tool.adapter().effort {
+        EffortSpec::Flag { vocabulary, .. } | EffortSpec::ConfigPair { vocabulary, .. } => {
+            vocabulary
+        }
+        EffortSpec::Unsupported => &[],
+    };
+    if !vocabulary.contains(&level) {
+        return Err(EffortRefusal::UnknownLevel(level.word().to_owned()));
+    }
+    let (start, end) = command.word_spans[flag.value];
+    Ok(format!(
+        "{}{}{}{}",
+        &cmd[..start],
+        flag.head,
+        level.word(),
+        &cmd[end..]
+    ))
+}
+
+/// One command reduced to everything BUT its effort value, plus that level:
+/// the leading assignments as written, then every word quote-resolved, the
+/// occurrence collapsed into one word that is the same for its split and
+/// joined forms.
+///
+/// # Errors
+///
+/// The [`EffortRefusal`] when the command proves no single level.
+pub fn effort_skeleton(cmd: &str, tool: ToolKind) -> Result<(Vec<String>, Level), EffortRefusal> {
+    let (command, flag, level) = effort_in(cmd, tool)?;
+    let mut parts = command.assignments.clone();
+    for (index, value) in command.word_values.iter().enumerate() {
+        if index == flag.flag {
+            parts.push(flag.name.clone());
+        } else if index != flag.value {
+            parts.push(value.clone());
+        }
+    }
+    Ok((parts, level))
+}
+
 /// The executable word selected by the same prefix grammar the executor uses.
 pub(crate) struct LaunchBinary<'a> {
     /// Index inside [`SimpleCommand::words`].
@@ -975,11 +1207,8 @@ pub fn lex_simple_command(cmd: &str) -> Result<SimpleCommand, Refusal> {
         .next()
         .unwrap_or(&binary_word.unquoted)
         .to_owned();
-    let byte_at = |char_index: usize| {
-        cmd.char_indices()
-            .nth(char_index)
-            .map_or(cmd.len(), |(byte, _)| byte)
-    };
+    let offsets: Vec<usize> = cmd.char_indices().map(|(byte, _)| byte).collect();
+    let byte_at = |char_index: usize| offsets.get(char_index).copied().unwrap_or(cmd.len());
     Ok(SimpleCommand {
         assignments,
         words,
@@ -989,6 +1218,10 @@ pub fn lex_simple_command(cmd: &str) -> Result<SimpleCommand, Refusal> {
         word_values: lexed[argv_start..]
             .iter()
             .map(|word| word.unquoted.clone())
+            .collect(),
+        word_spans: lexed[argv_start..]
+            .iter()
+            .map(|word| (byte_at(word.start), byte_at(word.end)))
             .collect(),
         binary_index,
         binary_span: (byte_at(binary_word.start), byte_at(binary_word.end)),

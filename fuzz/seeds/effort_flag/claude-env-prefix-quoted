@@ -1,0 +1,2 @@
+claude
+env -u OTHER /opt/claude --effort 'high'

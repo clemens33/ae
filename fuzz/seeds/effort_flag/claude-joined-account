@@ -1,0 +1,2 @@
+claude
+CLAUDE_CONFIG_DIR='/scratch/account a' /opt/claude --model opus --effort=max --permission-mode bypassPermissions

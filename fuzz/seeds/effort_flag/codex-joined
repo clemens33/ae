@@ -1,0 +1,2 @@
+codex
+CODEX_HOME=/scratch/a codex --config=model_reasoning_effort=max -m gpt

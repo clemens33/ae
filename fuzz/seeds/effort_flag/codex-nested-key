@@ -1,0 +1,2 @@
+codex
+codex --config profiles.x.model_reasoning_effort=high

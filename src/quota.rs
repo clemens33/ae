@@ -88,6 +88,30 @@ impl Status {
     }
 }
 
+/// One window's identity inside its scope — bucket, qualifier and length, the
+/// identity the settings dialog folds rows by — never a display label.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WindowKey {
+    /// Vendor bucket identifier.
+    pub bucket: String,
+    /// Optional vendor qualifier.
+    pub qualifier: Option<String>,
+    /// Window duration in minutes, where the vendor states one.
+    pub minutes: Option<u32>,
+}
+
+impl WindowKey {
+    /// The identity of `row`.
+    #[must_use]
+    pub fn of(row: &Row) -> Self {
+        Self {
+            bucket: row.bucket.clone(),
+            qualifier: row.qualifier.clone(),
+            minutes: row.window_minutes,
+        }
+    }
+}
+
 /// One vendor bucket and one of its windows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -1362,9 +1386,7 @@ fn settings_summary_scope(scope: &Group, summary: &Group) -> bool {
 }
 
 fn settings_same_window(left: &Row, right: &Row) -> bool {
-    left.bucket == right.bucket
-        && left.qualifier == right.qualifier
-        && left.window_minutes == right.window_minutes
+    WindowKey::of(left) == WindowKey::of(right)
 }
 
 fn settings_status(statuses: &[Status]) -> Status {

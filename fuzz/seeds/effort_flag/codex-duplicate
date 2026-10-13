@@ -1,0 +1,2 @@
+codex
+codex -c model_reasoning_effort=high --config=model_reasoning_effort=max

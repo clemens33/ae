@@ -65,6 +65,7 @@ mod daemons;
 mod deliver;
 mod doctor;
 mod doors;
+mod effort_spec;
 mod entry;
 mod fixtures;
 mod floor;

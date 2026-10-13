@@ -1,0 +1,2 @@
+codex
+codex -m gpt --yolo -c model_reasoning_effort=xhigh -c other=true

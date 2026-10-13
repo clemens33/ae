@@ -314,10 +314,50 @@ fn window(group: &crate::quota::Group, row: &crate::quota::Row, now: i64) -> Opt
     })
 }
 
-/// The seat's OWN account against the threshold `at`, from `quota`: the
-/// windows of the one scope its recorded identity names — the join the
-/// throttle line and the checkpoint ask make — that bind its model family.
+/// The seat's OWN account as `quota` reads it.
+pub(crate) struct OwnScope {
+    /// Each window that binds the seat's model family, with its identity.
+    pub(crate) windows: Vec<(crate::quota::WindowKey, super::Window)>,
+    /// A usable row of the scope, of ANY length and model family, reports a
+    /// reached spend cap: the cap is the account's, not one window's.
+    pub(crate) spend_capped: bool,
+}
+
+/// The windows of the one scope the seat's recorded identity names — the join
+/// the throttle line and the checkpoint ask make — that bind its model family.
 /// No proven identity, no observation: nothing is read.
+pub(crate) fn own_scope(
+    quota: Option<&crate::quota::Observation>,
+    entry: &crate::meta::RosterEntry,
+    pin: Option<&str>,
+    now: i64,
+) -> Option<OwnScope> {
+    let (Some(seen), Some(identity)) = (quota, crate::quota::recorded_identity(entry)) else {
+        return None;
+    };
+    let mut scope = OwnScope {
+        windows: Vec::new(),
+        spend_capped: false,
+    };
+    for group in seen.groups.iter().filter(|group| {
+        group.tool == identity.tool && group.source.as_ref() == Some(&identity.source)
+    }) {
+        for row in &group.rows {
+            let Some(window) = window(group, row, now) else {
+                continue;
+            };
+            scope.spend_capped |= group.policy.spend_capped() && super::usable(&window);
+            if !crate::quota::scoped_elsewhere(group.tool, row.qualifier.as_deref(), pin) {
+                scope
+                    .windows
+                    .push((crate::quota::WindowKey::of(row), window));
+            }
+        }
+    }
+    Some(scope)
+}
+
+/// The seat's OWN account against the threshold `at`: [`own_scope`]'s windows.
 pub(crate) fn own_room(
     quota: Option<&crate::quota::Observation>,
     entry: &crate::meta::RosterEntry,
@@ -325,26 +365,10 @@ pub(crate) fn own_room(
     at: u8,
     now: i64,
 ) -> Room {
-    let (Some(seen), Some(identity)) = (quota, crate::quota::recorded_identity(entry)) else {
-        return Room::Unread;
-    };
-    let windows: Vec<super::Window> = seen
-        .groups
-        .iter()
-        .filter(|group| {
-            group.tool == identity.tool && group.source.as_ref() == Some(&identity.source)
-        })
-        .flat_map(|group| {
-            group
-                .rows
-                .iter()
-                .filter(|row| {
-                    !crate::quota::scoped_elsewhere(group.tool, row.qualifier.as_deref(), pin)
-                })
-                .filter_map(|row| window(group, row, now))
-        })
-        .collect();
-    super::room(&windows, at)
+    own_scope(quota, entry, pin, now).map_or(Room::Unread, |scope| {
+        let windows: Vec<super::Window> = scope.windows.into_iter().map(|(_, w)| w).collect();
+        super::room(&windows, at)
+    })
 }
 
 /// The quota readings the chooser judges by, read as the session's own
@@ -1116,6 +1140,219 @@ fn record(argv: &Argv, agent: &str, now: Timestamp, action: &str, reference: &st
         summary: &bounded(summary),
         body_file: "",
     }));
+}
+
+#[cfg(test)]
+mod effort_scope_spec {
+    use crate::meta::{
+        RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir, RosterEntry,
+    };
+    use crate::quota::{Account, Credits, Group, Observation, Policy, Row, Status};
+    use crate::tool::ToolKind;
+
+    const NOW: i64 = 1_700_000_010;
+
+    fn seat() -> RosterEntry {
+        RosterEntry {
+            slot: "spawned.0".into(),
+            name: "scout".into(),
+            profile: Some("opusx".into()),
+            client: RecordedClient::Missing,
+            harness_session: None,
+            config_home: RecordedConfigHome::Path("/effort-spec-account".into()),
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("claude".into()),
+            work_dir: RecordedWorkDir::Missing,
+        }
+    }
+
+    fn group(source: &str, qualifier: Option<&str>, percent: &str, policy: Policy) -> Group {
+        Group {
+            profiles: vec!["opusx".into()],
+            tool: ToolKind::Claude,
+            home: None,
+            source: Some(source.into()),
+            clients: vec![],
+            rollout: None,
+            owner: None,
+            rows: vec![Row {
+                bucket: "weekly".into(),
+                qualifier: qualifier.map(str::to_owned),
+                window_minutes: Some(10_080),
+                used_percent: Some(percent.into()),
+                resets_at: Some(NOW + 100_000),
+                observed_at: Some(NOW),
+                status: Status::Fresh,
+            }],
+            hint: None,
+            summary: None,
+            policy,
+            notes: vec![],
+        }
+    }
+
+    fn observation(groups: Vec<Group>) -> Observation {
+        Observation {
+            groups,
+            rendered: vec![],
+            home: None,
+            now: NOW,
+        }
+    }
+
+    #[test]
+    fn effort_scope_uses_existing_effective_math_for_resets_credits_and_stale_rows() {
+        for (policy, expected) in [
+            (Policy::for_tests(Some(1), Account::default()), 47.5_f64),
+            (
+                Policy::for_tests(
+                    None,
+                    Account {
+                        credits: Credits::Unlimited,
+                        credits_observed_at: Some(NOW),
+                        ..Account::default()
+                    },
+                ),
+                0.0,
+            ),
+            (Policy::for_tests(None, Account::default()), 95.0),
+        ] {
+            let mut g = group(
+                "/effort-spec-account/.claude.json",
+                Some("opus"),
+                "95",
+                policy,
+            );
+            g.rows[0].observed_at = Some(NOW - 1000);
+            let observed = observation(vec![g]);
+            let actual = super::own_scope(Some(&observed), &seat(), Some("opus"), NOW);
+            assert!(actual.is_some(), "own recorded account must join");
+            let actual = actual.expect("asserted own scope");
+            assert_eq!(actual.windows.len(), 1);
+            assert_eq!(
+                actual.windows[0].1.judged.to_bits(),
+                expected.to_bits(),
+                "raw95 is never effort's quota arithmetic"
+            );
+            assert_eq!(actual.windows[0].1.status, Status::Stale);
+            assert_eq!(actual.windows[0].0.bucket, "weekly");
+            assert_eq!(actual.windows[0].0.qualifier.as_deref(), Some("opus"));
+            assert_eq!(actual.windows[0].0.minutes, Some(10_080));
+        }
+    }
+
+    #[test]
+    fn effort_scope_ignores_other_accounts_and_model_family_pressure() {
+        let observed = observation(vec![
+            group(
+                "/effort-spec-account/.claude.json",
+                Some("opus"),
+                "40",
+                Policy::default(),
+            ),
+            group(
+                "/effort-spec-account/.claude.json",
+                Some("sonnet"),
+                "99",
+                Policy::default(),
+            ),
+            group(
+                "/effort-spec-other/.claude.json",
+                Some("opus"),
+                "99",
+                Policy::default(),
+            ),
+        ]);
+        let actual = super::own_scope(Some(&observed), &seat(), Some("opus"), NOW);
+        assert!(actual.is_some());
+        let actual = actual.expect("asserted own scope");
+        assert_eq!(
+            actual.windows.len(),
+            1,
+            "foreign account and sonnet family are filtered"
+        );
+        assert_eq!(actual.windows[0].1.judged.to_bits(), 40.0_f64.to_bits());
+        assert!(!actual.spend_capped);
+    }
+
+    #[test]
+    fn effort_scope_any_usable_own_account_cap_precedes_family_and_length_filters() {
+        let capped = Policy::for_tests(
+            None,
+            Account {
+                spend_control_reached: Some(true),
+                spend_observed_at: Some(NOW),
+                ..Account::default()
+            },
+        );
+        let mut foreign_family = group(
+            "/effort-spec-account/.claude.json",
+            Some("sonnet"),
+            "0",
+            capped,
+        );
+        foreign_family.rows[0].window_minutes = Some(300);
+        let observed = observation(vec![foreign_family]);
+        let actual = super::own_scope(Some(&observed), &seat(), Some("opus"), NOW);
+        assert!(actual.is_some());
+        let actual = actual.expect("asserted own scope");
+        assert!(
+            actual.spend_capped,
+            "scope-wide cap holds even when its only usable row is short and another model family"
+        );
+        assert!(
+            actual.windows.is_empty(),
+            "foreign-family pressure remains filtered"
+        );
+    }
+
+    #[test]
+    fn effort_scope_foreign_or_unusable_cap_cannot_block_this_account() {
+        let capped = Policy::for_tests(
+            None,
+            Account {
+                spend_control_reached: Some(true),
+                spend_observed_at: Some(NOW),
+                ..Account::default()
+            },
+        );
+        let mut unusable = group(
+            "/effort-spec-account/.claude.json",
+            Some("opus"),
+            "95",
+            capped.clone(),
+        );
+        unusable.rows[0].resets_at = Some(NOW);
+        let observed = observation(vec![
+            unusable,
+            group(
+                "/effort-spec-other/.claude.json",
+                Some("opus"),
+                "95",
+                capped,
+            ),
+        ]);
+        let actual = super::own_scope(Some(&observed), &seat(), Some("opus"), NOW);
+        assert!(actual.is_some());
+        assert!(!actual.expect("asserted own scope").spend_capped);
+    }
+
+    #[test]
+    fn effort_scope_missing_or_inconsistent_recorded_identity_is_unread() {
+        let observed = observation(vec![group(
+            "/effort-spec-account/.claude.json",
+            None,
+            "95",
+            Policy::default(),
+        )]);
+        let mut entry = seat();
+        entry.config_home = RecordedConfigHome::Missing;
+        assert!(super::own_scope(Some(&observed), &entry, Some("opus"), NOW).is_none());
+        entry = seat();
+        entry.config_home_base = RecordedConfigHomeBase::Path("/other".into());
+        assert!(super::own_scope(Some(&observed), &entry, Some("opus"), NOW).is_none());
+        assert!(super::own_scope(None, &seat(), Some("opus"), NOW).is_none());
+    }
 }
 
 #[cfg(test)]

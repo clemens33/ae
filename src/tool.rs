@@ -4,6 +4,8 @@
 //! mechanics in their owning modules without making those modules classify
 //! tools again.
 
+use crate::effort::Level;
+
 /// Which harness a command launches — the seven ae models, or none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
@@ -420,6 +422,43 @@ impl ModelSpec {
     }
 }
 
+/// How a profile command spells this harness's reasoning effort — data only;
+/// the one grammar reading it is [`crate::launch_cmd::effort_flag`]. Only a
+/// spelling MEASURED for its harness is listed; every other row is
+/// `Unsupported`, and ae derives no effort twin there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EffortSpec {
+    /// ae reads and rewrites no effort for this harness.
+    Unsupported,
+    /// A dedicated flag, split (`--effort high`) or joined (`--effort=high`).
+    Flag {
+        /// The flag spellings.
+        names: &'static [&'static str],
+        /// The levels the flag takes.
+        vocabulary: &'static [Level],
+        /// The variable that overrides the flag: a command whose prefix sets
+        /// or unsets it proves no level.
+        env: Option<&'static str>,
+    },
+    /// A config override, `-c key=level` or, long spellings only,
+    /// `--config=key=level`.
+    ConfigPair {
+        /// The override flag spellings.
+        flags: &'static [&'static str],
+        /// The config key.
+        key: &'static str,
+        /// The levels the key takes.
+        vocabulary: &'static [Level],
+    },
+}
+
+impl EffortSpec {
+    /// Whether ae reads this harness's effort at all.
+    pub(crate) const fn supported(self) -> bool {
+        !matches!(self, Self::Unsupported)
+    }
+}
+
 /// How one drawn model name is judged against the profile's pin.
 ///
 /// Data on the adapter row, next to [`ModelSpec`]: the drift decision matches
@@ -599,6 +638,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) model: ModelSpec,
     /// How a drawn model name is judged against the profile's pin.
     pub(crate) pin_match: PinMatch,
+    /// How a profile command spells the reasoning effort, if ae reads it.
+    pub(crate) effort: EffortSpec,
     /// Local quota discovery behaviour.
     pub(crate) quota: QuotaSpec,
     /// Local usage discovery behaviour.
@@ -670,6 +711,17 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     identity: IdentitySpec::BorderComposer,
     model: ModelSpec::ReportOnly(&["--model"]),
     pin_match: PinMatch::FamilyVersion,
+    effort: EffortSpec::Flag {
+        names: &["--effort"],
+        vocabulary: &[
+            Level::Low,
+            Level::Medium,
+            Level::High,
+            Level::Xhigh,
+            Level::Max,
+        ],
+        env: Some("CLAUDE_CODE_EFFORT_LEVEL"),
+    },
     quota: QuotaSpec {
         source: QuotaSource::ClaudeCache,
         config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -721,6 +773,11 @@ const CODEX: ToolAdapter = ToolAdapter {
     identity: IdentitySpec::StyleFooter,
     model: ModelSpec::Replayable(&["-m", "--model"]),
     pin_match: PinMatch::Exact,
+    effort: EffortSpec::ConfigPair {
+        flags: &["-c", "--config"],
+        key: "model_reasoning_effort",
+        vocabulary: &Level::ALL,
+    },
     quota: QuotaSpec {
         source: QuotaSource::CodexRollouts,
         config_home_env: Some("CODEX_HOME"),
@@ -770,6 +827,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
+    effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -857,6 +915,7 @@ const AGY: ToolAdapter = ToolAdapter {
     identity: IdentitySpec::TrailingLabel,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
+    effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -931,6 +990,7 @@ const GROK: ToolAdapter = ToolAdapter {
     identity: IdentitySpec::BorderText,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
+    effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::GrokLog,
         config_home_env: None,
@@ -991,6 +1051,7 @@ const MUSE: ToolAdapter = ToolAdapter {
     identity: IdentitySpec::RuleFooter,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
+    effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -1071,6 +1132,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     identity: IdentitySpec::RailStatus,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
+    effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -1118,6 +1180,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
+    effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -1529,6 +1592,17 @@ mod tests {
                     identity: IdentitySpec::BorderComposer,
                     model: ModelSpec::ReportOnly(&["--model"]),
                     pin_match: PinMatch::FamilyVersion,
+                    effort: EffortSpec::Flag {
+                        names: &["--effort"],
+                        vocabulary: &[
+                            Level::Low,
+                            Level::Medium,
+                            Level::High,
+                            Level::Xhigh,
+                            Level::Max
+                        ],
+                        env: Some("CLAUDE_CODE_EFFORT_LEVEL"),
+                    },
                     quota: QuotaSpec {
                         source: QuotaSource::ClaudeCache,
                         config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -1579,6 +1653,11 @@ mod tests {
                     identity: IdentitySpec::StyleFooter,
                     model: ModelSpec::Replayable(&["-m", "--model"]),
                     pin_match: PinMatch::Exact,
+                    effort: EffortSpec::ConfigPair {
+                        flags: &["-c", "--config"],
+                        key: "model_reasoning_effort",
+                        vocabulary: &Level::ALL,
+                    },
                     quota: QuotaSpec {
                         source: QuotaSource::CodexRollouts,
                         config_home_env: Some("CODEX_HOME"),
@@ -1627,6 +1706,7 @@ mod tests {
                     identity: IdentitySpec::Unmodelled,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
+                    effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1698,6 +1778,7 @@ mod tests {
                     identity: IdentitySpec::TrailingLabel,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
+                    effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1754,6 +1835,7 @@ mod tests {
                     identity: IdentitySpec::BorderText,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
+                    effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::GrokLog,
                         config_home_env: None,
@@ -1804,6 +1886,7 @@ mod tests {
                     identity: IdentitySpec::RuleFooter,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
+                    effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1858,6 +1941,7 @@ mod tests {
                     identity: IdentitySpec::RailStatus,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
+                    effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1912,6 +1996,7 @@ mod tests {
                 identity: IdentitySpec::Unmodelled,
                 model: ModelSpec::Unobserved,
                 pin_match: PinMatch::Exact,
+                effort: EffortSpec::Unsupported,
                 quota: QuotaSpec {
                     source: QuotaSource::Unsupported,
                     config_home_env: None,

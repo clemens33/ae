@@ -28,6 +28,7 @@ pub mod deliver;
 pub mod digest;
 pub mod doctor;
 pub mod doors;
+pub mod effort;
 pub mod entry;
 pub mod error;
 pub mod event_text;
