@@ -7051,12 +7051,9 @@ mod tests {
             ]
         );
     }
-}
 
-/// appcue R2 frozen acceptance: the pane-place query prints (never flashes)
-/// and its two fields split raw; validation lives in the encoder downstream.
-#[cfg(test)]
-mod appcue_place_tests {
+    /// appcue R2 frozen acceptance: the pane-place query prints (never flashes)
+    /// and its two fields split raw; validation lives in the encoder downstream.
     #[test]
     fn pane_place_args_print_and_interpret_splits_two_fields() {
         let args = super::pane_place_args(&super::ServerId::Ambient, "%7");

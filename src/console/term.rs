@@ -690,12 +690,9 @@ mod tests {
                 .contains("no longer follows")
         );
     }
-}
 
-/// appcue R2 frozen acceptance: the refusal names the recorded holder's place,
-/// else says it is unknown.
-#[cfg(test)]
-mod appcue_lease_tests {
+    /// appcue R2 frozen acceptance: the refusal names the recorded holder's place,
+    /// else says it is unknown.
     use crate::console::Console;
     use crate::store::{SessionStore as Store, open};
     use std::fs::File;
