@@ -269,6 +269,8 @@ pub(super) struct Reader {
     /// The session the open overlay's instructions tab is for: the selection
     /// when it opened, never retargeted while it stays open.
     settings_session: Option<String>,
+    /// The agy answer held between settings reads, so an open overlay asks once per TTL.
+    agy: crate::quota::AgyCache,
     /// The fleet's journals as last read.
     journals: Journals,
     /// Sessions whose last stage read was answered: one still staging is due
@@ -325,6 +327,7 @@ impl Reader {
             settings_full: false,
             peek: None,
             settings_session: None,
+            agy: crate::quota::AgyCache::default(),
             journals: Journals::default(),
             answered: BTreeSet::new(),
         }
@@ -923,7 +926,7 @@ impl Reader {
                 sessions: Some(roots.sessions()),
                 now: crate::time::Timestamp::now().epoch(),
             };
-            crate::quota::view_of(&inputs)
+            crate::quota::view_cached(&inputs, &mut self.agy)
         };
         let (config, about, instructions) = if self.settings_full {
             (None, None, None)
@@ -1488,6 +1491,47 @@ mod tests {
         assert_eq!(read(&reader), Reading::Owner);
         reader.take(Request::Writing(None));
         assert!(reader.owned().is_none(), "a stopped writer, no proof");
+    }
+
+    /// The open overlay reads quota every REFRESH, and agy is a network call:
+    /// the reader holds its answer, so two reads ask agy once and both show
+    /// its window.
+    #[test]
+    fn the_settings_read_asks_agy_once_across_refreshes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        const REPORT: &str = r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage",
+          "data":{"groups":[{"name":"Gemini Models","buckets":[{"id":"gemini-5h",
+          "window":"5h","remaining_fraction":0.75,"reset_time":"2099-01-01T00:00:00Z"}]}]}}}"#;
+        let root = Root::new("settings-agy");
+        let (home, global) = (root.0.join("home"), root.0.join("config"));
+        std::fs::create_dir_all(&home).expect("scratch home");
+        std::fs::write(&global, "[profiles]\na = agy\n").expect("identity config");
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let asked = std::sync::Arc::clone(&calls);
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        reader.settings_paths(super::SettingsPaths {
+            home: Some(home),
+            global,
+            local: None,
+        });
+        reader.agy = crate::quota::AgyCache::new(move |_| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            crate::transport::AgyRun::Done {
+                text: REPORT.to_owned(),
+            }
+        });
+        reader.take(Request::Settings {
+            open: true,
+            generation: 1,
+        });
+        for _ in 0..2 {
+            let Answer::Settings { quota, .. } = reader.settings() else {
+                panic!("a settings answer");
+            };
+            let windows: Vec<usize> = quota.iter().map(|scope| scope.windows.len()).collect();
+            assert_eq!(windows, [1], "{quota:?}");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     /// The instructions tab is for the session selected when the overlay

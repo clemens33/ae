@@ -303,7 +303,8 @@ fn oversized_stdout_is_refused_without_echoing_vendor_bytes() {
 
 /// Structural safety pin complements the driver's in-crate observe runtime pin.
 /// Neither local observer — nor the dialog facts builder — may gain a path
-/// to the on-demand executor, and the dialog path never reads pace (D6).
+/// to the on-demand executor; only the dialog entry may name the agy leg, through
+/// its cache, and it never reads pace (D6) nor calls the CLI's writer.
 #[test]
 fn local_observers_never_reference_the_on_demand_leg_or_run_wrapper() {
     let source = include_str!("../../src/quota.rs");
@@ -325,13 +326,18 @@ fn local_observers_never_reference_the_on_demand_leg_or_run_wrapper() {
             assert!(!body.contains(forbidden), "{start} references {forbidden}");
         }
     }
-    for (start, end) in [
-        ("fn quota_view(", "impl SettingsScope"),
-        ("fn view_of(", "Read configured client scopes"),
+    // The dialog entry (view_of through view_cached) names the leg; the facts builder never does.
+    for (start, end, leg) in [
+        ("fn quota_view(", "impl SettingsScope", false),
+        ("fn view_of(", "Read configured client scopes", true),
     ] {
         let body = slice(start, end);
+        assert_eq!(
+            body.contains("run_agy_quota"),
+            leg,
+            "{start}: the leg is named iff {leg}"
+        );
         for forbidden in [
-            "run_agy_quota",
             "run_with(",
             "spawn_until(",
             "observe_full(",

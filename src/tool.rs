@@ -1197,6 +1197,12 @@ impl ToolKind {
         })
     }
 
+    /// Whether this tool's quota is asked of the tool itself, not read from a file.
+    #[must_use]
+    pub const fn quota_is_asked(self) -> bool {
+        matches!(self, Self::Agy)
+    }
+
     /// Canonical diagnostic and metadata spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

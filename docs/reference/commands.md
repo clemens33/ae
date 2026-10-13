@@ -984,7 +984,8 @@ identity only — one canonical vendor source is one account, whatever labels re
 that resolved NO source is never joined to another, because failing to resolve is not evidence of
 being the same account, and two refusals shown as one would assert what ae cannot observe; they
 render as separate rows, each stating its own refusal. A tool with no local quota source, such as
-`agy`, can never prove one, so each of its profiles is its own scope; Grok's source is the one debug
+`agy`, can never prove one, so each of its profiles is its own scope, until one live agy call
+answers for several on the same HOME (below) and they share that one scope; Grok's source is the one debug
 log under the default home, so its profiles and clients share one scope. The same holds for a
 retained Codex rollout whose recorded config home did not resolve: two seats that failed for the
 same reason are two failures that read alike, not one account, so each keeps its own row and its own
@@ -1149,7 +1150,12 @@ caller's HOME, it asks agy once per run under that HOME: `agy --version` (3 s), 
 -p /quota --output-format json` (8 s). One answer fills every such profile, every row is judged when
 it returns, and a refusal reads `unsupported`, `truncated` or `read-error`, never vendor bytes.
 Beyond that call it makes no network request, reads no credentials, invokes neither tmux nor another
-vendor process, and writes no state; the watchdog and the settings dialog never make it.
+vendor process, and writes no state; the watchdog never makes it, so agy raises no advisory
+(a known gap). The settings quota dialog, tmux and `ae app` alike, makes the same call when it
+opens: `ae app` holds the answer for 300 s, so its 5 s refresh does not ask again, while the tmux
+dialog asks on every open. Either waits for the call (about 7 s measured; up to 11 s, and in the app
+the reader that also refreshes the fleet waits with it), and names a failed answer
+(deadline, agy older than 1.1.11, no usable answer, or agy not on PATH) instead of `unsupported`.
 
 ### Advisories
 

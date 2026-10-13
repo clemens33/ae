@@ -1204,8 +1204,10 @@ impl SettingsScope {
     /// scope with NO reading: it is the only provenance such a line has, and an
     /// incomplete scope that still adopted one must not borrow a sibling's.
     fn unusable_words(&self, now: i64) -> String {
+        let agy = self.group.tool.quota_is_asked();
         let mut words = match settings_status(&self.statuses) {
             Status::Unsupported => "this client reports no quota",
+            Status::ReadError if agy => "quota unreadable",
             Status::ReadError => "quota file unreadable",
             Status::Truncated => "read cut short",
             _ => "no reading ae can trust",
@@ -1214,13 +1216,17 @@ impl SettingsScope {
         if self.readings.is_empty()
             && let Some(observed) = stated_observed_at(self.observed, now)
         {
+            let said = if agy { "asked" } else { "last report" };
             let _ = write!(
                 words,
-                " (last report {} ago)",
+                " ({said} {} ago)",
                 span_label(now.saturating_sub(observed))
             );
         }
-        if let Some(hint) = manual_refresh_hint(self.group.tool, self.statuses.iter().copied()) {
+        // agy's hint is the leg's own reason, or the command to run by hand.
+        let own = self.group.hint.as_deref().filter(|_| agy);
+        let hint = manual_refresh_hint(self.group.tool, self.statuses.iter().copied()).or(own);
+        if let Some(hint) = hint {
             let _ = write!(words, " — {hint}");
         }
         words
@@ -1582,9 +1588,9 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
 
 /// [`observe`], plus the thinned history the sources kept beside their rows.
 ///
-/// Only the operator table reads the history: the watchdog, the autoreseat leg
-/// and the settings dialog keep calling [`observe`], so pace can never reach a
-/// level.
+/// Only the operator table reads the history: the watchdog and the autoreseat leg
+/// keep calling [`observe`], and the dialogs [`view_cached`], so pace can never
+/// reach a level.
 pub(crate) fn observe_full(
     inputs: &Inputs<'_>,
 ) -> Result<(Observation, pace::SeriesSet), crate::config::ConfigError> {
@@ -1697,12 +1703,97 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
 
 /// Read the bounded local sources and return the quota view facts.
 /// Configuration failure is informational in this surface: it becomes one
-/// honest scope and cannot remove the dialog.
+/// honest scope and cannot remove the dialog. Agy is asked through [`view_cached`] (up to 11 s).
 pub(crate) fn view_of(inputs: &Inputs<'_>) -> Vec<view::Scope> {
-    observe(inputs).map_or_else(
-        |_| view::unavailable(),
-        |observation| observation.quota_view(),
-    )
+    view_cached(inputs, &mut AgyCache::default())
+}
+
+/// How long one agy answer is held; below [`FRESH_SECS`], so a held answer still reads Fresh.
+const AGY_TTL_SECS: i64 = 300;
+const _: () = assert!(AGY_TTL_SECS < FRESH_SECS);
+
+/// The agy answer held between dialog reads, and the leg that refreshes it: the
+/// app's reader, re-reading every few seconds, holds one; the one-shot tmux dialog none.
+pub(crate) struct AgyCache {
+    leg: Box<dyn Fn(&Path) -> AgyRun + Send>,
+    held: Option<AgyHeld>,
+}
+
+/// An agy answer, the home it was asked for, and the epochs it was asked and completed at.
+struct AgyHeld {
+    home: PathBuf,
+    asked_at: i64,
+    done_at: i64,
+    answer: AgyRun,
+}
+
+impl AgyCache {
+    pub(crate) fn new(leg: impl Fn(&Path) -> AgyRun + Send + 'static) -> Self {
+        Self {
+            leg: Box::new(leg),
+            held: None,
+        }
+    }
+
+    /// The answer for `home` and its completion epoch: the held one while asked less than
+    /// [`AGY_TTL_SECS`] before `now`, else a new call. A failure is held too, so a hung agy
+    /// costs its deadline once per TTL.
+    fn answer(&mut self, home: &Path, now: i64) -> (AgyRun, i64) {
+        let usable = |held: &&AgyHeld| {
+            held.home == home && (0..AGY_TTL_SECS).contains(&now.saturating_sub(held.asked_at))
+        };
+        if let Some(held) = self.held.as_ref().filter(usable) {
+            return (held.answer.clone(), held.done_at);
+        }
+        let started = Instant::now();
+        let answer = (self.leg)(home);
+        let done_at = completed(now, started.elapsed());
+        self.held = Some(AgyHeld {
+            home: home.to_owned(),
+            asked_at: now,
+            done_at,
+            answer: answer.clone(),
+        });
+        (answer, done_at)
+    }
+}
+
+impl Default for AgyCache {
+    fn default() -> Self {
+        Self::new(crate::transport::run_agy_quota)
+    }
+}
+
+/// [`view_of`] with the agy answer held in `cache`: the dialogs' one reach to the agy leg,
+/// so [`observe`] and its readers stay spawn-free; the answer lands in these groups only.
+pub(crate) fn view_cached(inputs: &Inputs<'_>, cache: &mut AgyCache) -> Vec<view::Scope> {
+    let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
+        return view::unavailable();
+    };
+    let scopes = configured_scopes(&cfg, inputs.home);
+    let legs = agy_legs(&scopes);
+    let asked = inputs
+        .home
+        .filter(|_| !legs.is_empty())
+        .map(|home| cache.answer(home, inputs.now));
+    let now = asked
+        .as_ref()
+        .map_or(inputs.now, |(_, done_at)| inputs.now.max(*done_at));
+    let (mut observation, _) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
+    if let Some((answer, done_at)) = asked {
+        let (mut rows, hint) = agy_rows(&answer, done_at).unwrap_or_else(|| {
+            (
+                vec![placeholder(Status::Unsupported)],
+                Some("agy not found on PATH"),
+            )
+        });
+        // A row with no windows still says when agy was asked, so the dialog can age it.
+        for row in &mut rows {
+            row.observed_at = row.observed_at.or(Some(done_at));
+        }
+        replace_agy(&mut observation.groups, &legs, rows, hint);
+    }
+    observation.quota_view()
 }
 
 /// Read configured client scopes and print the quota table.
@@ -1734,11 +1825,7 @@ fn run_with(
             return Ok(1);
         }
     };
-    let legs: Vec<Leg> = scopes
-        .iter()
-        .filter(|scope| scope.leg)
-        .map(|scope| (scope.profiles.clone(), scope.clients.clone()))
-        .collect();
+    let legs = agy_legs(&scopes);
     let started = Instant::now();
     let answer = inputs.home.filter(|_| !legs.is_empty()).map(leg);
     let now = match answer {
@@ -1746,8 +1833,10 @@ fn run_with(
         None => inputs.now,
     };
     let (mut observation, series) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
-    if let Some(answer) = answer {
-        answer_agy(&mut observation.rendered, &legs, answer, now);
+    if let Some(answer) = answer
+        && let Some((rows, hint)) = agy_rows(&answer, now)
+    {
+        replace_agy(&mut observation.rendered, &legs, rows, hint);
     }
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
     write!(
@@ -1772,28 +1861,45 @@ fn completed(now: i64, elapsed: Duration) -> i64 {
 /// One scope the agy leg answers for: its profiles and its clients.
 type Leg = (Vec<String>, Vec<String>);
 
-/// agy's one answer replaces the placeholder of every scope it speaks for, as ONE group (the
-/// leg asked one login). Absent leaves today's rows; only the operator table is touched.
-fn answer_agy(rendered: &mut Vec<Group>, legs: &[Leg], answer: AgyRun, now: i64) {
+/// What the scopes agy speaks for are told: its rows and the hint beside them. `None` is no
+/// agy at all, which each surface words for itself.
+fn agy_rows(answer: &AgyRun, now: i64) -> Option<(Vec<Row>, Option<&'static str>)> {
     const UNREADABLE: &str = "agy /quota gave no usable answer";
-    let mark = |status, hint| (vec![placeholder(status)], Some(hint));
-    let (rows, hint) = match answer {
-        AgyRun::Absent => return,
+    let (status, hint) = match answer {
+        AgyRun::Absent => return None,
         AgyRun::Done { text } => match agy::parse(text.as_bytes(), now) {
-            Ok(rows) if rows.is_empty() => (vec![placeholder(Status::Unknown)], None),
-            Ok(rows) => (rows, None),
-            Err(_) => mark(Status::ReadError, UNREADABLE),
+            Ok(rows) if !rows.is_empty() => return Some((rows, None)),
+            Ok(_) => (Status::Unknown, None),
+            Err(_) => (Status::ReadError, Some(UNREADABLE)),
         },
-        AgyRun::TooOld => mark(Status::Unsupported, "agy 1.1.11+ required for /quota"),
-        AgyRun::TimedOut => mark(Status::Truncated, "agy /quota passed its 8 s deadline"),
-        AgyRun::Failed => mark(Status::ReadError, UNREADABLE),
+        AgyRun::TooOld => (Status::Unsupported, Some("agy 1.1.11+ required for /quota")),
+        AgyRun::TimedOut => (
+            Status::Truncated,
+            Some("agy /quota passed its 8 s deadline"),
+        ),
+        AgyRun::Failed => (Status::ReadError, Some(UNREADABLE)),
     };
+    Some((vec![placeholder(status)], hint))
+}
+
+/// Every scope the agy leg may speak for: its profiles and its clients.
+fn agy_legs(scopes: &[Scope]) -> Vec<Leg> {
+    scopes
+        .iter()
+        .filter(|scope| scope.leg)
+        .map(|scope| (scope.profiles.clone(), scope.clients.clone()))
+        .collect()
+}
+
+/// agy's one answer replaces the placeholder of every scope it speaks for, as ONE group (the
+/// leg asked one login).
+fn replace_agy(groups: &mut Vec<Group>, legs: &[Leg], rows: Vec<Row>, hint: Option<&str>) {
     let spoken = |group: &Group| {
         group.tool == ToolKind::Agy
             && legs.contains(&(group.profiles.clone(), group.clients.clone()))
     };
-    let first = rendered.iter().position(spoken);
-    let spoke = rendered
+    let first = groups.iter().position(spoken);
+    let spoke = groups
         .extract_if(.., |group| spoken(group))
         .reduce(|mut merged, group| {
             merged.profiles.extend(group.profiles);
@@ -1804,7 +1910,7 @@ fn answer_agy(rendered: &mut Vec<Group>, legs: &[Leg], answer: AgyRun, now: i64)
         let mut seen = std::collections::BTreeSet::new();
         merged.clients.retain(|client| seen.insert(client.clone()));
         (merged.rows, merged.hint) = (rows, hint.map(str::to_owned));
-        rendered.insert(first, merged);
+        groups.insert(first, merged);
     }
 }
 
@@ -3608,6 +3714,8 @@ mod tests {
         vendor_timestamp,
     };
     use crate::tool::ToolKind;
+    use crate::transport::AgyRun;
+    use std::path::Path;
 
     #[test]
     fn only_two_recognized_and_different_families_prove_a_window_binds_elsewhere() {
@@ -5312,5 +5420,178 @@ mod tests {
                 "{used} holds the state it was anchored on"
             );
         }
+    }
+
+    const AGY_REPORT: &str = r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage",
+      "data":{"groups":[
+        {"name":"Gemini Models","buckets":[
+          {"id":"gemini-5h","window":"5h","remaining_fraction":0.75,"reset_time":"2099-01-01T00:00:00Z"},
+          {"id":"gemini-weekly","window":"weekly","remaining_fraction":1,"reset_time":"2099-01-02T00:00:00Z"}]},
+        {"name":"Claude and GPT models","buckets":[
+          {"id":"3p-5h","window":"5h","remaining_fraction":0.5,"reset_time":"2099-01-03T00:00:00Z"},
+          {"id":"3p-weekly","window":"weekly","remaining_fraction":0,"reset_time":"2099-01-04T00:00:00Z"}]}]}}}"#;
+    const AGY_NOW: i64 = 1_788_858_600;
+
+    /// A scratch directory that removes itself, with a config naming `profiles` in it.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn agy_dialog(tag: &str, profiles: &str) -> (Scratch, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("ae-agy-dialog-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch home");
+        let config = root.join("config");
+        std::fs::write(&config, format!("[profiles]\n{profiles}")).expect("identity config");
+        (Scratch(root), config)
+    }
+
+    /// A cache whose leg answers `answer` and counts its calls.
+    fn counting(
+        answer: AgyRun,
+    ) -> (
+        super::AgyCache,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&calls);
+        let cache = super::AgyCache::new(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            answer.clone()
+        });
+        (cache, calls)
+    }
+
+    fn dialog(
+        config: &Path,
+        home: Option<&Path>,
+        cache: &mut super::AgyCache,
+        now: i64,
+    ) -> Vec<super::view::Scope> {
+        let inputs = super::Inputs {
+            home,
+            global: Some(config),
+            local: None,
+            sessions: None,
+            now,
+        };
+        super::view_cached(&inputs, cache)
+    }
+
+    fn agy_scopes(scopes: &[super::view::Scope]) -> Vec<&super::view::Scope> {
+        scopes
+            .iter()
+            .filter(|scope| scope.title.starts_with("agy"))
+            .collect()
+    }
+
+    #[test]
+    fn the_dialog_shows_agys_four_windows_from_one_leg_call() {
+        let (root, config) = agy_dialog("rows", "a = agy\nb = agy -m\n");
+        let (mut cache, calls) = counting(AgyRun::Done {
+            text: AGY_REPORT.to_owned(),
+        });
+        let scopes = dialog(&config, Some(&root.0), &mut cache, AGY_NOW);
+        let [scope] = agy_scopes(&scopes)[..] else {
+            panic!("two agy profiles on one login are one scope: {scopes:?}");
+        };
+        let raw: Vec<_> = scope
+            .windows
+            .iter()
+            .filter_map(|w| w.raw.as_deref())
+            .collect();
+        assert_eq!(raw, ["50%", "100%", "25%", "0%"], "{scope:?}");
+        let seen = scope
+            .windows
+            .iter()
+            .all(|w| w.seen.as_deref() == Some("0m"));
+        assert!(scope.only.is_none() && seen, "{scope:?}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_leg_with_no_rows_is_named_with_its_reason_and_age() {
+        for (answer, reason) in [
+            (AgyRun::TimedOut, "8 s deadline"),
+            (AgyRun::TooOld, "1.1.11+"),
+            (AgyRun::Failed, "no usable answer"),
+            (AgyRun::Absent, "not found"),
+        ] {
+            let (root, config) = agy_dialog("named", "a = agy\n");
+            let (mut cache, _) = counting(answer.clone());
+            let scopes = dialog(&config, Some(&root.0), &mut cache, AGY_NOW);
+            let [scope] = agy_scopes(&scopes)[..] else {
+                panic!("{answer:?}: {scopes:?}");
+            };
+            let only = scope.only.as_deref().unwrap_or_default();
+            assert!(
+                scope.windows.is_empty() && only.contains(reason),
+                "{answer:?}: {only}"
+            );
+            assert!(only.contains("asked 0m ago"), "{answer:?}: {only}");
+            assert!(!only.contains("file"), "{answer:?}: {only}");
+        }
+    }
+
+    #[test]
+    fn the_held_answer_is_reused_until_its_ttl_or_another_home() {
+        let (root, config) = agy_dialog("ttl", "a = agy\n");
+        let (here, other) = (root.0.as_path(), root.0.join("other"));
+        std::fs::create_dir_all(&other).expect("second home");
+        let (mut cache, calls) = counting(AgyRun::Done {
+            text: AGY_REPORT.to_owned(),
+        });
+        let asked = || calls.load(std::sync::atomic::Ordering::SeqCst);
+        let ttl = super::AGY_TTL_SECS;
+        dialog(&config, Some(here), &mut cache, AGY_NOW);
+        let held = dialog(&config, Some(here), &mut cache, AGY_NOW + 190);
+        let seen = agy_scopes(&held)[0].windows[0].seen.clone();
+        assert_eq!((asked(), seen.as_deref()), (1, Some("3m")));
+        dialog(&config, Some(here), &mut cache, AGY_NOW + ttl - 1);
+        assert_eq!(asked(), 1, "one second inside the ttl");
+        dialog(&config, Some(here), &mut cache, AGY_NOW + ttl);
+        assert_eq!(asked(), 2, "the ttl itself asks again");
+        dialog(&config, Some(&other), &mut cache, AGY_NOW + ttl);
+        assert_eq!(asked(), 3, "another home is another login");
+        dialog(&config, Some(&other), &mut cache, AGY_NOW);
+        assert_eq!(asked(), 4, "an answer from the future is never held");
+    }
+
+    #[test]
+    fn no_leg_runs_without_an_agy_scope_on_the_callers_home() {
+        for (tag, profiles, home, shown) in [
+            ("off", "a = HOME=/x agy\n", true, "run agy -p"),
+            ("claude", "a = claude\n", true, ""),
+            ("nohome", "a = agy\n", false, "run agy -p"),
+        ] {
+            let (root, config) = agy_dialog(tag, profiles);
+            let (mut cache, calls) = counting(AgyRun::Failed);
+            let scopes = dialog(
+                &config,
+                home.then_some(root.0.as_path()),
+                &mut cache,
+                AGY_NOW,
+            );
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "{tag}");
+            let words = agy_scopes(&scopes).first().and_then(|s| s.only.clone());
+            assert!(
+                words.unwrap_or_default().contains(shown),
+                "{tag}: {scopes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_config_is_the_one_unavailable_scope() {
+        let (root, config) = agy_dialog("broken", "a = agy\n");
+        std::fs::write(&config, "[agents]\nx = y\n").expect("surviving agents section");
+        let (mut cache, calls) = counting(AgyRun::Failed);
+        let scopes = dialog(&config, Some(&root.0), &mut cache, AGY_NOW);
+        assert_eq!(scopes, super::view::unavailable());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }
