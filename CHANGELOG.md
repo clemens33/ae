@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.66] - 2026-10-13
+- Fix drifted docs: app module map, theme writers, quota header
+- Feed Claude quota from the statusline
+- Pin that a relative CLAUDE_CONFIG_DIR names no feed scope even where it exists
+- Pin that a private publish into a directory takes one plain file name in a real directory
+- Pin the stdin bound, the drain's interrupted-read retry and the record cap edge
+- Order quota scopes by available headroom
+- Ae app: no blank top row, no keys row, no lone '!'
+- **app**: Frozen livepeek phase 1 spec (seat view in chat column)
+- Ae app: seat view paints in the chat column at 500ms cadence
+- Ae app: seat clicks open the view bound to their frame, docs follow
+- **app**: Esc back to chat before oo in open-live specs, register livepeek fixture reads
+- Ae app: viewing wheel dies on the panel footer row
+- **app**: Expect viewing word in peek footer copy-note pin
+- Paste clipboard PNG paths into chat and app drafts
+- Pin clipboard completion as a frame debt
+- Reuse proven journal prefixes and stored chat bodies
+- Auto reseat: stop a seat parked on a usage limit, name unmapped seats, settle the stop
+- Geometry-aware resize-back guard in app_ux_spec (trainh refreeze)
+
 ## [v2026.10.65] - 2026-10-13
 - Ae app: a session menu on each card, with Open and a guarded Stop
 
