@@ -573,7 +573,7 @@ fn kept_draft_banner_names_target_open_keys_without_host_prefix_h() {
     });
     rig.keys(&pane, "2");
     rig.wait(&pane, WAIT, "GUARD foreign input selection", |s| {
-        s.contains("to zzzforeign (not home)") && s.contains("Enter writes")
+        s.contains("to zzzforeign ›") && s.contains("Enter writes")
     });
     rig.keys(&pane, "Enter");
     let shown = rig.wait(&pane, FRAME, "GUARD existing draft restored", |s| {

@@ -561,15 +561,9 @@ pub(crate) fn composer_pane(area: Rect) -> usize {
     room.clamp(1, ROWS_MAX) + 1
 }
 
-/// The address a draft to `target` is drawn under; one that is not the
-/// app's `home` says so.
-pub(crate) fn address(target: &str, home: Option<&str>, speaker: &str) -> String {
-    let away = if home == Some(target) {
-        ""
-    } else {
-        " (not home)"
-    };
-    format!("to {target}{away} › {speaker}")
+/// The address a draft to `target` is drawn under.
+pub(crate) fn address(target: &str, speaker: &str) -> String {
+    format!("to {target} › {speaker}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1494,7 +1488,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
             view,
             draft,
         } => {
-            let address = address(home, ctx.screen.fleet.home.as_deref(), speaker);
+            let address = address(home, speaker);
             let address = Line::from(Span::styled(address, paint.fg(|p| p.title)));
             if view.is_some() {
                 return (address, Line::default(), String::new());

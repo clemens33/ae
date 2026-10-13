@@ -828,7 +828,7 @@ fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
         "GUARD outside app drew selected session",
         |f| f.text.contains("▣ 1 ") && f.text.contains("Agents"),
     );
-    let address = format!("to {} (not home) › lead", rig.home);
+    let address = format!("to {} › lead", rig.home);
     assert!(
         outside.text.contains(&address),
         "B2 selected address outside tmux"

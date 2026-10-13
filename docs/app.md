@@ -502,8 +502,8 @@ An app writes the selected session only while it holds that session's
 **writer lease**, the lock file `.console-writer.lock`: one app at a time per
 session, in any pane or outside tmux, and at most one lease per app. No key or
 wheel notch moves the selection while writing; a click on a session row leaves
-writing first. The composer names its target on its own row: `to <session> › <speaker>` at
-home, `to <session> (not home) › <speaker>` anywhere else. A stopped session,
+writing first. The composer names its target on its own row: `to <session> › <speaker>`,
+at home or anywhere else. A stopped session,
 one with no recorded `session_id`, one whose lead pair cannot be read and one
 not recorded in this state root are read-only and say why.
 

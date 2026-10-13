@@ -324,8 +324,7 @@ impl Rig {
             !home || target.name == self.s.name,
             "only S is this app's home"
         );
-        let suffix = if home { "" } else { " (not home)" };
-        format!("to {}{suffix} › {speaker}", target.name)
+        format!("to {} › {speaker}", target.name)
     }
 
     fn select(&self, pane: &str, target: &Target) -> String {

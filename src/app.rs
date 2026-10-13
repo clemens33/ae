@@ -4535,7 +4535,7 @@ mod tests {
     }
 
     /// B2: a session that is not home is written under its own lease and
-    /// input, after an address saying so; only a read proving its stop ends it.
+    /// input, under its own bare address; only a read proving its stop ends it.
     #[test]
     fn a_selection_that_is_not_home_is_written_under_its_own_lease() {
         let root = Root::new("selected");
@@ -4546,7 +4546,8 @@ mod tests {
         refold(&mut app, &reader, &root, &fleet(Status::Running));
         let _ = app.model.select_name(&app.fleet, "web", 0);
         app.show();
-        assert!(framed(&mut app).contains("to web (not home) › lead   "));
+        assert!(framed(&mut app).contains("to web › lead   "));
+        assert!(!framed(&mut app).contains("(not home)"));
         let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b"w".to_vec()), at), Some(()));
         assert!(crate::store::open(&web).console_writer().is_err());

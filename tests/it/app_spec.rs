@@ -1244,7 +1244,7 @@ fn app_draw_non_home_address_names_the_selected_target() {
     assert!(head.contains("infra"), "the target is named");
     assert_eq!(
         chat_text(&buf, 40, 44).trim_start(),
-        "to infra (not home) › lead",
+        "to infra › lead",
         "the drawn address names the non-home target"
     );
     let text = all_text(&buf);
@@ -1253,7 +1253,7 @@ fn app_draw_non_home_address_names_the_selected_target() {
     assert!(!text.contains("hello lane"), "never the home lane");
 }
 
-/// A selected running session outside home carries the non-home address;
+/// A selected running session outside home carries the target's bare address;
 /// Esc still stays a no-op (pinned in the reducer test).
 #[test]
 fn app_draw_no_home_names_the_selected_target() {
@@ -1291,10 +1291,7 @@ fn app_draw_no_home_names_the_selected_target() {
     draw(&screen, &mut buf);
     assert!(row_text(&buf, 0).contains("docs"));
     assert!(!row_text(&buf, 0).contains("viewed from"));
-    assert_eq!(
-        chat_text(&buf, 40, 44).trim_start(),
-        "to docs (not home) › lead"
-    );
+    assert_eq!(chat_text(&buf, 40, 44).trim_start(), "to docs › lead");
     assert!(all_text(&buf).contains("Enter writes"));
 }
 
