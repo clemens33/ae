@@ -480,6 +480,7 @@ fn unsupported_routes_and_commands_refuse_before_any_journal_or_draft_write() {
         });
         assert_eq!(rig.tool.events(), before, "{line}");
         assert!(!rig.tool.dir.join("console.draft").exists(), "{line}");
+        rig.tmux(&["send-keys", "-t", &pane, "C-u"]);
     }
 }
 
@@ -704,7 +705,7 @@ fn the_fixed_shell_literal_is_present_and_the_opened_pane_uses_it() {
         .split_once("\n#[cfg(test)]\n")
         .expect("terminal test module")
         .0;
-    let literal = r#"stty -icanon -echo -ixon -iexten min 1 time 0 && exec \"$0\" \"$@\""#;
+    let literal = r#"stty -icanon -echo -ixon -iexten -icrnl min 1 time 0 && exec \"$0\" \"$@\""#;
     assert_eq!(
         source.matches(literal).count(),
         1,
@@ -727,7 +728,7 @@ fn the_fixed_shell_literal_is_present_and_the_opened_pane_uses_it() {
     ]);
     for part in [
         "/bin/sh",
-        "stty -icanon -echo -ixon -iexten min 1 time 0",
+        "stty -icanon -echo -ixon -iexten -icrnl min 1 time 0",
         " chat ",
         &rig.name,
         "--follow",

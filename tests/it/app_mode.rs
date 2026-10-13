@@ -1,15 +1,15 @@
-//! Writing has only the version/gear footer; a held composer is distinguished
-//! by its fixed address row, never by arbitrary chat text.
+//! Writing carries its keys hint on the footer; a held composer is
+//! distinguished by its fixed address row, never by arbitrary chat text.
 
-/// The footer has no mode/hint while writing; a held address is four rows
-/// above it, under the composer rule. Blank, browse and settings reject.
+/// The footer carries the writing hint while writing; a held address is four
+/// rows above it, under the composer rule. Blank, browse and settings reject.
 pub fn writing(screen: &str) -> bool {
     let mut rows = screen.lines().rev();
     let footer = rows.next().unwrap_or_default();
     let address = rows.nth(3).unwrap_or_default();
     let rule = rows.next().unwrap_or_default();
     let held = address.contains("not writing:") && rule.trim_end().ends_with("────");
-    !held && footer.trim_start().starts_with("ae ") && footer.trim_end().ends_with(['⚙', '*'])
+    !held && footer.contains("Enter sends") && footer.trim_end().ends_with(['⚙', '*'])
 }
 
 /// A frame whose final row is `keys`.
@@ -18,10 +18,10 @@ fn frame(keys: &str) -> String {
 }
 
 #[test]
-fn the_version_only_footer_is_writing_with_or_without_a_note() {
+fn the_hint_footer_is_writing_with_or_without_a_note() {
     for keys in [
-        "             ae 2026.10.45 ⚙",
-        "             ae 2026.10.45 *",
+        "   Enter sends · Alt+Enter ^J newline · Esc browses      ae 2026.10.45 ⚙",
+        "   Enter sends · Alt+Enter ^J newline · Esc browses      ae 2026.10.45 *",
     ] {
         assert!(writing(&frame(keys)), "{keys}");
         let noted =

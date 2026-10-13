@@ -133,11 +133,15 @@ fn unit_ends(bytes: &[u8]) -> Vec<usize> {
 /// The lines Enter enters when an owning console that restored `kept` is sent
 /// `stream`, written out here from the key table and the editing rules without
 /// `Keys` or `Composer`: text goes in at the cursor, which the arrows, Home,
-/// End, Delete, Backspace and ^U move or erase; a paste is literal to its end.
+/// End, Delete, Backspace and ^U move or erase; a paste is literal to its end
+/// with CR and CRLF folded to LF; ^J and Alt+Enter (`ESC CR`/`ESC LF`) insert
+/// a newline like text, and only a typed CR enters. A refused line goes back
+/// to the draft, like the put-back, and may enter again on a later CR.
 fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
     const CLOSE: &[u8] = b"\x1b[201~";
     let (mut draft, mut cursor) = (kept.to_vec(), kept.len());
     let (mut lines, mut pasting, mut at) = (Vec::new(), false, 0);
+    let mut skip = false;
     while at < stream.len() {
         let rest = &stream[at..];
         if pasting {
@@ -146,10 +150,18 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
                 .rev()
                 .find(|&n| rest.ends_with(&CLOSE[..n]));
             let text = &rest[..close.unwrap_or(rest.len() - held.unwrap_or(0))];
-            draft.splice(cursor..cursor, text.iter().copied());
-            cursor += text.len();
+            let mut folded = Vec::with_capacity(text.len());
+            for &byte in text {
+                let eaten = skip && byte == b'\n';
+                skip = byte == b'\r';
+                if !eaten {
+                    folded.push(if byte == b'\r' { b'\n' } else { byte });
+                }
+            }
+            draft.splice(cursor..cursor, folded.iter().copied());
+            cursor += folded.len();
             let Some(n) = close else { break };
-            (pasting, at) = (false, at + n + CLOSE.len());
+            (pasting, at, skip) = (false, at + n + CLOSE.len(), false);
             continue;
         }
         at += 1;
@@ -165,9 +177,10 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
             at += len - 1;
             match &rest[..len] {
                 b"\x1b[200~" => {
-                    pasting = true;
+                    (pasting, skip) = (true, false);
                     continue;
                 }
+                b"\x1b\r" | b"\x1b\n" => b"\n",
                 seq @ (b"\x1b[D" | b"\x1bOD" | b"\x1b[C" | b"\x1bOC" | b"\x1b[3~") => seq,
                 b"\x1b[H" | b"\x1bOH" | b"\x1b[1~" | b"\x1b[7~" => b"\x01",
                 b"\x1b[F" | b"\x1bOF" | b"\x1b[4~" | b"\x1b[8~" => b"\x05",
@@ -201,11 +214,17 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
             b"\x01" => cursor = 0,
             b"\x05" => cursor = draft.len(),
             b"\x15" => (draft, cursor) = (Vec::new(), 0),
-            b"\r" | b"\n" if !draft.is_empty() => {
-                lines.push(std::mem::take(&mut draft));
-                cursor = 0;
+            b"\r" if !draft.is_empty() => {
+                let line = std::mem::take(&mut draft);
+                lines.push(line.clone());
+                if refused_line(&line) {
+                    cursor = line.len();
+                    draft = line;
+                } else {
+                    cursor = 0;
+                }
             }
-            b"\r" | b"\n" => {}
+            b"\r" => {}
             text => {
                 draft.splice(at_text..at_text, text.iter().copied());
                 cursor = at_text + text.len();
@@ -213,6 +232,29 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
         }
     }
     lines
+}
+
+/// Whether the command grammar refuses `line`, returning it to the draft:
+/// the refused arms of `command_to` for the harness pair, written out here.
+fn refused_line(line: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(line) else {
+        return true;
+    };
+    if let Some(routed) = text.strip_prefix('@') {
+        let cut = routed.split_once(char::is_whitespace);
+        let (seat, body) = cut.unwrap_or((routed, ""));
+        return seat.contains(':') || !["lead", "colead"].contains(&seat) || body.trim().is_empty();
+    }
+    if text.starts_with('/') {
+        let words: Vec<_> = text.split_whitespace().collect();
+        return match words.as_slice() {
+            ["/close"] | ["/close", _] => false,
+            ["/open", name] => !ae::config::is_agent_name(name),
+            ["/more", n] => n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()),
+            _ => true,
+        };
+    }
+    text.trim().is_empty()
 }
 
 fuzz_target!(|data: &[u8]| {

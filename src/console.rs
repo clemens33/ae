@@ -628,20 +628,61 @@ fn is_body_name(id: &str, action: &str, name: &str) -> bool {
 /// # Errors
 ///
 /// Why nothing was appended, by name.
-pub fn close(dir: &Path, session: &str, which: Option<&str>) -> Result<(), String> {
-    let decided = store::open(dir).append_event_decided(|journal| {
+pub fn close(dir: &Path, session: &str, which: Option<&str>) -> Result<Closed, String> {
+    let mut closed = None;
+    let decided = store::open(dir).append_event_decided(|journal| -> Result<String, String> {
         let events = snapshot(journal)?;
         let newest = lane::open_asks(&events, session).last().copied();
         let id = which
             .or(newest)
             .ok_or_else(|| "no open ask to close".to_owned())?;
         lane::may_close(&events, id)?;
+        let asked = events.iter().rev().find(|event| {
+            let ask = tracked::Kind::Ask.action();
+            event.actor == tracked::CONSOLE_SINK
+                && event.action == ask
+                && event.reference.as_deref() == Some(id)
+        });
+        let summary = asked.and_then(|event| event.summary.clone());
+        closed = Some(Closed {
+            id: id.to_owned(),
+            summary: summary.unwrap_or_default(),
+        });
         let (now, summary) = (crate::time::Timestamp::now(), "closed from the console");
         let line = crate::state::event_line(now, tracked::CONSOLE_SINK, lane::CANCEL, id, summary);
         Ok(line)
     });
-    decided.map_err(|why| why.to_string())?
+    decided.map_err(|why| why.to_string())??;
+    closed.ok_or_else(|| "no ask was closed".to_owned())
 }
+
+/// The ask a `/close` withdrew: its request id and the summary its ask recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Closed {
+    pub id: String,
+    pub summary: String,
+}
+
+impl Closed {
+    /// The notice naming it: the id and the first [`CLOSED_CHARS`] characters
+    /// of its words, made inert; the id alone when it recorded none.
+    #[must_use]
+    pub fn line(&self) -> String {
+        let said = self
+            .summary
+            .strip_prefix(tracked::UNCONFIRMED_SUMMARY_PREFIX);
+        let said = terminal_text(said.unwrap_or(&self.summary)).replace(['\n', '\t'], " ");
+        let head: String = said.chars().take(CLOSED_CHARS).collect();
+        if head.trim().is_empty() {
+            return format!("closed {}", self.id);
+        }
+        let more = said.chars().nth(CLOSED_CHARS).is_some();
+        format!("closed {}: {head}{}", self.id, if more { "…" } else { "" })
+    }
+}
+
+/// The most characters of an ask's words a close notice quotes.
+const CLOSED_CHARS: usize = 80;
 
 /// The journal as `/close` decides on it: every complete line an [`Event`],
 /// or a refusal naming the first that is not — never a guess past it.
@@ -1075,6 +1116,26 @@ pub(super) mod tests {
         assert!(shown.contains(whole), "{shown}");
     }
 
+    /// The close notice quotes the ask's recorded words without the unconfirmed
+    /// tag, inert and cut at 80 characters; an ask that recorded none names its id.
+    #[test]
+    fn a_close_notice_names_the_ask_by_its_first_words() {
+        let line = |summary: &str| {
+            let id = "ae-1".to_owned();
+            super::Closed {
+                id,
+                summary: summary.to_owned(),
+            }
+            .line()
+        };
+        assert_eq!(line(""), "closed ae-1");
+        assert_eq!(line("[unconfirmed] fix it"), "closed ae-1: fix it");
+        assert!(!line("a\x1b[31mb").contains('\x1b'), "made inert");
+        let (exact, long) = ("w".repeat(80), "w".repeat(81));
+        assert_eq!(line(&exact), format!("closed ae-1: {exact}"));
+        assert_eq!(line(&long), format!("closed ae-1: {exact}…"));
+    }
+
     /// `/close` appends one console `cancel` only to an open console ask of
     /// THIS journal; any refusal, a journal it cannot read whole included,
     /// leaves every journal byte-identical.
@@ -1092,7 +1153,14 @@ pub(super) mod tests {
         fs::create_dir_all(&other).expect("another session");
         fs::write(other.join("events.jsonl"), format!("{ask}\n")).expect("its journal");
         rig.journal(&[&ask]);
-        assert_eq!(super::close(&dir, "s", Some(REQ)), Ok(()));
+        let named = super::close(&dir, "s", Some(REQ));
+        assert_eq!(
+            named,
+            Ok(super::Closed {
+                id: REQ.to_owned(),
+                summary: String::new()
+            })
+        );
         let closed = journal(&dir);
         let cancel = format!(r#""actor":"console:local","action":"cancel","ref":"{REQ}","#);
         assert!(

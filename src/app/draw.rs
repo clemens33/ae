@@ -1430,14 +1430,16 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
     let open = ctx.screen.model.settings_open();
     let peeking = ctx.screen.model.peek_open();
     let width = buf.area.width;
-    // The one hint is the key that works in that mode: writing and held take
-    // every key, so they say nothing.
+    // The one hint is the keys that work in that mode: writing names the three
+    // that matter, held takes every key and says nothing.
     let (word, hint) = if open {
         ("settings", "Esc close")
     } else if peeking {
         // The panel covers the hint row, so a copy's outcome rides here.
         ("peek", ctx.screen.model.note().unwrap_or("Esc close"))
-    } else if composing || matches!(ctx.screen.composer, Composer::Held { .. }) {
+    } else if composing {
+        ("", "Enter sends · Alt+Enter ^J newline · Esc browses")
+    } else if matches!(ctx.screen.composer, Composer::Held { .. }) {
         ("", "")
     } else {
         ("", "? keys")
@@ -1835,8 +1837,9 @@ fn settings_body(
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
-const WRITE_KEYS: [(&str, &str); 15] = [
+const WRITE_KEYS: [(&str, &str); 16] = [
     ("Enter", "send the line"),
+    ("Alt+Enter ^J", "new line in the draft"),
     ("Esc", "keep the draft, browse"),
     ("^C", "empty draft quits at once"),
     ("^C", "with a draft: arms; again in 2 s quits"),
@@ -1847,7 +1850,7 @@ const WRITE_KEYS: [(&str, &str); 15] = [
     ("Backspace", "erase before the cursor"),
     ("Delete", "erase at the cursor"),
     ("^U", "clear the line"),
-    ("paste", "literal text, never Enter"),
+    ("paste", "literal text, never Enter; CR becomes LF"),
     ("@seat text", "ask that seat"),
     ("/close [id]", "withdraw your open ask"),
     ("/open seat", "open that seat's pane"),
@@ -2908,12 +2911,14 @@ mod tests {
         }
         assert_ne!(buf[(44, 42)].symbol(), "│", "the keys row");
         let keys = line(&buf, 42).concat();
-        assert!(line(&buf, 42)[..44].concat().trim().is_empty());
-        assert!(!keys.contains("Esc browse"), "no key names on the row");
+        assert!(
+            keys.contains("Enter sends · Alt+Enter ^J newline · Esc browses"),
+            "the writing hint stands on the row: {keys:?}"
+        );
     }
 
-    /// Only existing browse/Settings hints remain; typing and held have none.
-    /// The version/gear stay; browse/write/held mode words are absent.
+    /// Browse, Settings and writing show their hint; held has none. The
+    /// version/gear stay; browse/write/held mode words are absent.
     #[test]
     fn the_keys_row_is_the_mode_word_and_at_most_one_hint() {
         let mut shot = Shot::new();
@@ -2941,7 +2946,10 @@ mod tests {
         let cases = [
             (browsing("kept"), "   ? keys"),
             (READ_ONLY, "   ? keys"),
-            (writing(&draft, "a draft"), ""),
+            (
+                writing(&draft, "a draft"),
+                "   Enter sends · Alt+Enter ^J newline · Esc browses",
+            ),
             (refused, ""),
         ];
         for (composer, words) in cases {
@@ -2950,7 +2958,9 @@ mod tests {
                 .strip_suffix(tail.as_str())
                 .expect("version and gear end it");
             assert_eq!(head.trim_end(), format!("  {words}").trim_end(), "{words}");
-            assert!(named.iter().all(|key| !row.contains(key)), "{row}");
+            if !words.contains("Enter sends") {
+                assert!(named.iter().all(|key| !row.contains(key)), "{row}");
+            }
         }
         shot.model.open_settings(1);
         let (row, _) = shot.keys_at(100, browsing(""));
@@ -3038,7 +3048,7 @@ mod tests {
 
     /// The composer is the address on its own row and the draft the rows
     /// under it, from the column's left edge: the cursor follows the last
-    /// row, and writing draws no send hint.
+    /// row, and writing carries its keys hint on the keys row.
     #[test]
     fn a_draft_sits_under_its_address_from_the_columns_left_edge() {
         let shot = Shot::new();
@@ -3066,7 +3076,7 @@ mod tests {
             );
             assert_eq!(buf[(column(ax), ay - 1)].symbol(), "─", "{size}: the rule");
             let all: String = (0..height).map(|y| line(&buf, y).concat()).collect();
-            assert!(!all.contains("Enter sends"), "{size}: no send hint");
+            assert!(all.contains("Enter sends"), "{size}: the writing hint");
         }
     }
 

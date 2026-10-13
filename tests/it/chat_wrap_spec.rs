@@ -402,7 +402,8 @@ fn chat_wrap_bare_close_withdraws_newest_own_open_ask_by_journal_order() {
     ] {
         saved.append_event(&line).expect("seed journal");
     }
-    assert_eq!(close_owned(scratch.path(), "s", None, || Ok(())), Ok(()));
+    let closed = close_owned(scratch.path(), "s", None, || Ok(())).map(drop);
+    assert_eq!(closed, Ok(()));
     let events = journal_events(&saved.container());
     let cancels: Vec<_> = events
         .iter()
@@ -412,7 +413,8 @@ fn chat_wrap_bare_close_withdraws_newest_own_open_ask_by_journal_order() {
     assert_eq!(cancels[0].actor, "console:local");
     assert_eq!(cancels[0].reference.as_deref(), Some(newer));
     assert_eq!(ae::console::lane::open_asks(&events, "s"), vec![older]);
-    assert_eq!(close_owned(scratch.path(), "s", None, || Ok(())), Ok(()));
+    let closed = close_owned(scratch.path(), "s", None, || Ok(())).map(drop);
+    assert_eq!(closed, Ok(()));
     let bytes = saved.container();
     assert!(ae::console::lane::open_asks(&journal_events(&bytes), "s").is_empty());
     let refusal = close_owned(scratch.path(), "s", None, || Ok(())).expect_err("no own open ask");
@@ -442,7 +444,8 @@ fn chat_wrap_close_skips_answered_latest_and_checks_owner_before_writing() {
     assert!(called.get());
     assert_eq!(refused, Err("input owned by window @7".to_owned()));
     assert_eq!(saved.container(), before);
-    assert_eq!(close_owned(scratch.path(), "s", None, || Ok(())), Ok(()));
+    let closed = close_owned(scratch.path(), "s", None, || Ok(())).map(drop);
+    assert_eq!(closed, Ok(()));
     let events = journal_events(&saved.container());
     let canceled = events
         .iter()
@@ -466,7 +469,7 @@ fn chat_wrap_explicit_close_can_still_withdraw_an_older_own_ask() {
             .expect("seed ask");
     }
     assert_eq!(
-        close_owned(scratch.path(), "s", Some(ID), || Ok(())),
+        close_owned(scratch.path(), "s", Some(ID), || Ok(())).map(drop),
         Ok(())
     );
     let events = journal_events(&saved.container());

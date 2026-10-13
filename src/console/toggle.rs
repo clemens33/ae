@@ -485,9 +485,10 @@ fn window_command(launcher: Vec<String>, session: &str, app: bool) -> Vec<String
 }
 
 /// Sets the pane's terminal to hand the console each key as it is typed, with
-/// no echo and no flow control — ^C still interrupts and Enter still reads as a
-/// newline — then execs the console named by its own arguments.
-const TTY_SETUP: &str = "stty -icanon -echo -ixon -iexten min 1 time 0 && exec \"$0\" \"$@\"";
+/// no echo and no flow control — ^C still interrupts, Enter reads as CR and ^J
+/// as LF, two keys — then execs the console named by its own arguments.
+const TTY_SETUP: &str =
+    "stty -icanon -echo -ixon -iexten -icrnl min 1 time 0 && exec \"$0\" \"$@\"";
 
 /// The console window's argv: the terminal set up, then `launcher` running
 /// the console of `session` with its input.

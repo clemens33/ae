@@ -478,7 +478,7 @@ fn outside_tmux_app_writes_home_as_console_local_and_keeps_the_five_open_cap() {
     rig.typed(&pane, "/close");
     rig.key(&pane, "Enter");
     rig.wait(&pane, "app close through console admission", |s| {
-        s.contains("closed an ask")
+        s.contains("closed ")
     });
     assert!(
         rig.tool
@@ -985,7 +985,7 @@ fn owner_chat_submit_and_close_refuse_busy_without_waiting_or_writing_disk() {
     rig.raw(&chat, "/close");
     rig.key(&chat, "Enter");
     rig.wait(&chat, "owner chat closes after app releases", |s| {
-        s.contains("closed an ask")
+        s.contains("closed ")
     });
     assert!(
         rig.tool

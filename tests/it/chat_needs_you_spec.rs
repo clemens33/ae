@@ -872,10 +872,10 @@ fn open_input_usage_and_cross_session_refusals_are_named_in_owner_and_read_only_
         let mut input = Input::new(vec!["lead".to_owned(), "colead".to_owned()]);
         let _ = input.tick(reading.clone(), t);
         for (raw, expected) in [
-            (b"/open\n".as_slice(), "refused: /open takes one agent name"),
-            (b"/open a b\n", "refused: /open takes one agent name"),
+            (b"/open\r".as_slice(), "refused: /open takes one agent name"),
+            (b"/open a b\r", "refused: /open takes one agent name"),
             (
-                b"/open other:scout\n",
+                b"/open other:scout\r",
                 "refused: /open other:scout names another session; this chat opens its own seats",
             ),
         ] {
@@ -884,6 +884,7 @@ fn open_input_usage_and_cross_session_refusals_are_named_in_owner_and_read_only_
                 matches!(effects.as_slice(), [Effect::Print(text)] if text == expected),
                 "/open explains usage or names the foreign target for {reading:?}, {raw:?}: {effects:?}"
             );
+            let _ = input.chunk(b"\x15", t + Duration::from_millis(1));
         }
     }
 }
@@ -897,7 +898,7 @@ fn open_read_only_input_allows_navigation_but_never_asks_or_closes() {
     }]);
     let t = Instant::now();
     let _ = input.tick(Reading::NotOwner("another chat owns input".to_owned()), t);
-    let effects = input.chunk(b"/open lead\n", t + Duration::from_millis(1));
+    let effects = input.chunk(b"/open lead\r", t + Duration::from_millis(1));
     assert!(
         effects
             .iter()
@@ -905,9 +906,9 @@ fn open_read_only_input_allows_navigation_but_never_asks_or_closes() {
         "read-only navigation is an effect: {effects:?}"
     );
     for line in [
-        b"@lead should-not-send\n".as_slice(),
-        b"/close\n",
-        b"ordinary-text\n",
+        b"@lead should-not-send\r".as_slice(),
+        b"/close\r",
+        b"ordinary-text\r",
     ] {
         let effects = input.chunk(line, t + Duration::from_millis(2));
         assert!(
@@ -923,14 +924,14 @@ fn open_read_only_input_allows_navigation_but_never_asks_or_closes() {
     }
     let _ = input.chunk(b"pre-owner-draft", t + Duration::from_millis(3));
     let _ = input.tick(Reading::Owner, t + Duration::from_millis(4));
-    let effects = input.chunk(b"\n", t + Duration::from_millis(5));
+    let effects = input.chunk(b"\r", t + Duration::from_millis(5));
     assert!(
         !effects
             .iter()
             .any(|effect| matches!(effect, Effect::Ask { .. })),
         "promotion drops pre-ownership draft"
     );
-    let effects = input.chunk(b"fresh-owner-line\n", t + Duration::from_millis(6));
+    let effects = input.chunk(b"fresh-owner-line\r", t + Duration::from_millis(6));
     assert!(
         effects
             .iter()
@@ -943,7 +944,7 @@ fn open_input_resolves_only_explicit_roster_snapshot_and_carries_slot_with_name(
     let mut input = Input::new(vec!["lead".to_owned(), "colead".to_owned()]);
     let t = Instant::now();
     let _ = input.tick(Reading::Owner, t);
-    let effects = input.chunk(b"/open scout\n", t);
+    let effects = input.chunk(b"/open scout\r", t);
     assert!(
         !effects
             .iter()
@@ -955,7 +956,7 @@ fn open_input_resolves_only_explicit_roster_snapshot_and_carries_slot_with_name(
         slot: "spawned.7".to_owned(),
         name: "scout".to_owned(),
     }]);
-    let effects = input.chunk(b"/open scout\n", t + Duration::from_millis(1));
+    let effects = input.chunk(b"/open scout\r", t + Duration::from_millis(1));
     let open = effects
         .iter()
         .map(|effect| format!("{effect:?}"))
@@ -1345,7 +1346,7 @@ impl ChatRig {
             self.tmux(&["set-option", "-p", "-t", &owner, "@ae_console", UUID]);
         }
         let command = format!(
-            "stty -icanon -echo; exec env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME={} AE_HOME={} CONFIG_FILE={} AE_TMUX_SERVER_KIND=socket AE_TMUX_SERVER={} {} chat one --follow --input",
+            "stty -icanon -echo -icrnl; exec env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME={} AE_HOME={} CONFIG_FILE={} AE_TMUX_SERVER_KIND=socket AE_TMUX_SERVER={} {} chat one --follow --input",
             quoted(&self.scratch.display().to_string()),
             quoted(&self.scratch.display().to_string()),
             quoted(&self.config.display().to_string()),

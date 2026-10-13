@@ -184,11 +184,13 @@ only the watchdog daemon ends a wait on pane input.
 
 ## Input
 
-The window runs `--input` behind a fixed `stty` wrapper; only the owner chat
+The window runs `--input` behind a fixed `stty` wrapper, which sets `-icrnl` so Enter reads as CR and `^J` as LF. Outside that wrapper (a cooked terminal, ICRNL on) Enter arrives as LF, a newline: `ae chat --input` there never sends, so use the chat window or `ae app`. Only the owner chat
 (first live stamped pane) asks, another is read-only and takes only `/open` and `/more`. A line asks the
 speaker, `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
-`/close <id>` a named one (ids are not drawn, a script may still name one), other
-`/word`s are refused, five asks open at most. A lead pair changed since
+`/close <id>` a named one (ids are not drawn, a script may still name one) and
+prints `closed <id>: <the ask's first words>`, other `/word`s are refused, five asks
+open at most. A refused line (a cap, a refused command, a read-only chat) stays in the
+composer, ahead of anything typed since. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
 While an [`ae app`](app.md#ownership) writes to the session, a send or `/close`
 is refused at once with `an ae app is writing to <session>`, nothing kept or sent:
@@ -201,7 +203,7 @@ unknown results and refusals print immediately.
 
 The speaker is the seat of the last `@<seat> text` line that asked (`@<main> text`
 included); it is the prompt (`to <speaker>> `) and where an unprefixed line goes.
-A refused line, `/close` and a demotion change nothing; a restarted chat
+A refused line, `/close` and a demotion change nothing about the speaker; a restarted chat
 speaks to the main seat (the speaker is process memory only).
 
 The composer shows the whole draft wrapped at the pane's width: the prompt on
@@ -231,7 +233,14 @@ the end of that character. A cursor before a line break at the end of a full
 row is drawn on that row's last cell. `^U` clears the whole draft, wherever the
 cursor is. Up, Down, Insert, PgUp, PgDn and modified navigation keys are
 consumed and do nothing; any other plain control byte is a literal draft byte.
-Inside a bracketed paste every byte stays literal, an Enter included.
+Inside a bracketed paste every byte stays literal, an Enter included, except that a
+CR or CRLF becomes one line break (LF). Enter sends; `^J` and Alt+Enter put a line
+break in the draft instead. Shift+Enter is Enter: through tmux the terminal sends it
+as a plain CR, and telling it apart needs the app to request extended keys (which
+re-encodes `^C`, `^U`, `^A`, `^E`) and a tmux `extended-keys` option ae does not set.
+Residuals: an Esc and an Enter that arrive in one terminal read are read as Alt+Enter,
+and a chat window started by an older core has Enter and `^J` as the same byte until
+`prefix h` reopens it (the window sets `-icrnl`, so Enter reads as CR and `^J` as LF).
 
 When a chat becomes the owner it puts a kept draft back in the composer
 literally — a line kept before a crash or an unconfirmed ask — under `Kept line,

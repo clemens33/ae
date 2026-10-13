@@ -238,7 +238,7 @@ impl Rig {
             &pane,
             "/bin/sh",
             "-c",
-            "stty -icanon -echo -ixon -iexten min 1 time 0 && exec \"$0\" \"$@\"",
+            "stty -icanon -echo -ixon -iexten -icrnl min 1 time 0 && exec \"$0\" \"$@\"",
             "env",
             &home,
             &config,
@@ -552,6 +552,7 @@ fn refused_routes_preserve_the_speaker_and_only_a_restart_resets_it() {
             input.chunk(raw, now).as_slice(),
             [Effect::Print(_)]
         ));
+        let _ = input.chunk(b"\x15", now);
         assert_eq!(input.line().as_deref(), Some("to colead> "));
     }
     let _ = input.tick(Reading::NotOwner("another console".to_owned()), now);

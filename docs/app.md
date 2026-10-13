@@ -168,20 +168,20 @@ disarmed by any other key or when its 2 seconds pass, so typing a word
 while browsing leaves the app up and no key reaches another pane. The keys
 row is the word `settings` in Settings, `peek` in the peek panel, at most one
 hint where its key works (`? keys` while browsing, which lists every key;
-`Esc close` in Settings or the peek panel; none while writing or held, which take every key),
+`Esc close` in Settings or the peek panel; while writing `Enter sends · Alt+Enter ^J newline · Esc browses`; none while held, which takes every key),
 and at its right end `ae <version>` and the gear (the peek panel draws no gear). Narrowing drops the version
 first, then the gear.
 
 A paste while browsing is never read as keys. On a writable session it starts
 writing with the paste as the draft, every fragment of it kept and nothing in
-it acting: a pasted line break is draft text, and the draft is sent only by
+it acting: a pasted line break (CR, CRLF or LF) is a line break in the draft, and the draft is sent only by
 your own `Enter`. On a read-only session or with the composer held it takes
 nothing, and the hint row says why for a few seconds (`paste not taken: …`);
 the Settings overlay swallows a paste silently.
 
 Writing: the draft is the chat's own input — a line asks the speaker,
 `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
-five asks open at most; see [Input](chat.md#input). The composer shows the
+five asks open at most; see [Input](chat.md#input). `Alt+Enter` and `^J` put a line break in the draft, `Enter` sends, and Shift+Enter is `Enter` (tmux hands the app a plain CR for it). A refusal such as the cap keeps the line in the composer. Writing stays on after a send. The composer shows the
 whole draft as the chat does — the same wrap, each pasted line break its own
 row, all of it under the address row from the column's left edge, and past its rows the window
 around the cursor with `… +N lines above` and `… +N lines below` among them

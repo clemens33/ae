@@ -64,6 +64,8 @@ pub enum Key {
     End,
     ClearLine,
     Enter,
+    /// `^J` or Alt+Enter: a line break in the draft, never a send.
+    Newline,
     /// The keys below come only from [`Keys::app`]; the chat's decoder never
     /// spells one.
     Mouse(Mouse),
@@ -90,6 +92,10 @@ pub const ESC_IDLE: std::time::Duration = std::time::Duration::from_millis(50);
 /// however the reads split it. A paste is literal until its own close or the
 /// end of input: nothing inside one is ever Enter, ^U or an erase.
 #[derive(Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "decoder facts the reads set and clear independently: the app flag, a report open or discarded, a CR just folded"
+)]
 pub struct Keys {
     /// An escape sequence begun and not yet complete.
     pending: Vec<u8>,
@@ -104,6 +110,8 @@ pub struct Keys {
     discarded: bool,
     /// Bytes left in a legacy X10 report, consumed even when they are ESC.
     x10: u8,
+    /// The paste's last byte was a CR, so a LF right behind it is the same break.
+    lf_skip: bool,
 }
 
 impl Keys {
@@ -154,7 +162,7 @@ impl Keys {
                 self.pending.push(byte);
                 if self.pending == PASTE_END {
                     self.pending.clear();
-                    self.paste = None;
+                    (self.paste, self.lf_skip) = (None, false);
                 } else if !PASTE_END.starts_with(&self.pending) {
                     let mut held = std::mem::take(&mut self.pending);
                     if held.len() > 1 && byte == 0x1b {
@@ -204,7 +212,7 @@ impl Keys {
                 }
                 self.pending.push(byte);
                 if self.pending == PASTE_START {
-                    self.paste = self.begun.take();
+                    (self.paste, self.lf_skip) = (self.begun.take(), false);
                     self.pending.clear();
                 } else if self.app && self.pending == b"\x1b[<" {
                     self.mouse = true;
@@ -223,7 +231,8 @@ impl Keys {
                     0x01 => Key::Home,
                     0x05 => Key::End,
                     0x15 => Key::ClearLine,
-                    b'\r' | b'\n' => Key::Enter,
+                    b'\r' => Key::Enter,
+                    b'\n' => Key::Newline,
                     0x09 if self.app => Key::Tab,
                     0x03 if self.app => Key::Interrupt,
                     // The app drops every other control: ^Z or ^\\ never
@@ -240,9 +249,21 @@ impl Keys {
         keys
     }
 
-    /// Paste bytes: the chat's are text, the app's stay a [`Key::Pasted`], so
-    /// browsing can swallow a paste whole.
-    fn literal(&self, keys: &mut Vec<(Key, Instant)>, bytes: &[u8], origin: Instant) {
+    /// Paste bytes, a CR or CRLF folded to LF: the chat's are text, the app's
+    /// stay a [`Key::Pasted`], so browsing can swallow a paste whole.
+    fn literal(&mut self, keys: &mut Vec<(Key, Instant)>, bytes: &[u8], origin: Instant) {
+        let mut folded = Vec::with_capacity(bytes.len());
+        for &byte in bytes {
+            let eaten = self.lf_skip && byte == b'\n';
+            self.lf_skip = byte == b'\r';
+            if !eaten {
+                folded.push(if byte == b'\r' { b'\n' } else { byte });
+            }
+        }
+        let bytes = folded.as_slice();
+        if bytes.is_empty() {
+            return;
+        }
         if !self.app {
             text(keys, bytes, origin);
             return;
@@ -318,9 +339,10 @@ fn moving(seq: &[u8]) -> Option<Key> {
 }
 
 /// The editing key a complete escape sequence spells, in either cursor-key
-/// mode; any other sequence is no key.
+/// mode, and Alt+Enter (`ESC CR` or `ESC LF`); any other sequence is no key.
 fn editing(seq: &[u8]) -> Option<Key> {
     Some(match seq {
+        b"\x1b\r" | b"\x1b\n" => Key::Newline,
         b"\x1b[D" | b"\x1bOD" => Key::Left,
         b"\x1b[C" | b"\x1bOC" => Key::Right,
         b"\x1b[H" | b"\x1bOH" | b"\x1b[1~" | b"\x1b[7~" => Key::Home,
@@ -351,6 +373,12 @@ pub struct Composer {
 impl Composer {
     /// Take one key; `Some` for Enter alone.
     pub fn key(&mut self, key: Key) -> Option<Entered> {
+        // A line break goes in like typed text: no snap, the cap rules alike.
+        let key = if key == Key::Newline {
+            Key::Text(b"\n".to_vec())
+        } else {
+            key
+        };
         if !matches!(key, Key::Text(_) | Key::Pasted(_)) {
             self.snap();
         }
@@ -398,9 +426,18 @@ impl Composer {
             | Key::Escape
             | Key::Interrupt
             | Key::Mouse(_)
-            | Key::Pasted(_) => {}
+            | Key::Pasted(_)
+            | Key::Newline => {}
         }
         None
+    }
+
+    /// `bytes` a refused entry gave up, back in front of the draft, the cursor
+    /// at its end: what was typed meanwhile follows in the order it was typed.
+    fn put_back(&mut self, bytes: &[u8]) {
+        let _ = self.key(Key::Home);
+        let _ = self.key(Key::Text(bytes.to_vec()));
+        let _ = self.key(Key::End);
     }
 
     /// Where each unit of the draft ends, 0 first: a character, or a byte that
@@ -968,12 +1005,16 @@ impl Input {
                             if [&b"/open"[..], b"/more"]
                                 .contains(&raw.split(|b| *b == b' ').next().unwrap_or(&[])) =>
                         {
+                            self.composer.put_back(&raw);
                             Effect::Print(format!("refused: {why}"))
                         }
-                        _ => Effect::Print(
-                            "refused: read-only: only /open <agent> works here - prefix h opens the owner chat"
-                                .to_owned(),
-                        ),
+                        _ => {
+                            self.composer.put_back(&raw);
+                            Effect::Print(
+                                "refused: read-only: only /open <agent> works here - prefix h opens the owner chat"
+                                    .to_owned(),
+                            )
+                        }
                     }
                 }
                 Some(Entered::Line(raw)) => match command_to(&raw, &self.pair, self.speaker()) {
@@ -985,12 +1026,21 @@ impl Input {
                     Command::Close(id) => Effect::Close(id),
                     Command::Open(name) => self.open(&name),
                     Command::More(number) => Effect::More(number),
-                    Command::Refused(why) => Effect::Print(format!("refused: {why}")),
+                    Command::Refused(why) => {
+                        self.composer.put_back(&raw);
+                        Effect::Print(format!("refused: {why}"))
+                    }
                 },
             };
             effects.push(effect);
         }
         effects
+    }
+
+    /// An entry the caller could not carry out, back in the composer ahead of
+    /// anything typed since.
+    pub fn put_back(&mut self, raw: &[u8]) {
+        self.composer.put_back(raw);
     }
 
     /// `/open name`: the seat of that name in the last settled roster, or why not.
@@ -1329,9 +1379,59 @@ mod tests {
     }
 
     #[test]
+    fn only_a_cr_is_enter_and_lf_and_alt_enter_are_a_newline_in_both_decoders() {
+        for mut keys in [Keys::default(), Keys::app()] {
+            let got = joined(&mut keys, &[b"\r\n\x1b\r\x1b\n"], Instant::now());
+            assert_eq!(got, [Key::Enter, Key::Newline, Key::Newline, Key::Newline]);
+        }
+    }
+
+    #[test]
+    fn a_paste_folds_cr_and_crlf_to_one_lf_however_the_reads_split_it() {
+        let stream = b"\x1b[200~a\r\nb\r\r\nc\x1b[201~\r\n";
+        let base = Instant::now();
+        for cut in 0..=stream.len() {
+            for mut keys in [Keys::default(), Keys::app()] {
+                let mut got = Vec::new();
+                for (key, _) in [&stream[..cut], &stream[cut..]]
+                    .iter()
+                    .flat_map(|read| keys.feed(read, base))
+                {
+                    match key {
+                        Key::Text(bytes) | Key::Pasted(bytes) => got.extend(bytes),
+                        other => got.extend(format!("<{other:?}>").bytes()),
+                    }
+                }
+                assert_eq!(got, b"a\nb\n\nc<Enter><Newline>", "{cut}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_newline_goes_in_at_the_cursor_and_the_cap_still_binds() {
+        let mut composer = drafted(b"ab");
+        let _ = composer.key(Key::Left);
+        let _ = composer.key(Key::Newline);
+        assert_eq!(composer.bytes, b"a\nb");
+        let mut full = drafted(&vec![b'a'; CAP]);
+        let _ = full.key(Key::Newline);
+        assert!(full.over, "a break past the cap is over");
+    }
+
+    #[test]
+    fn a_line_put_back_leads_what_was_typed_since() {
+        let base = Instant::now();
+        let mut input = owner(base);
+        let _ = input.chunk(b"later", at(base, 1));
+        input.put_back(b"first ");
+        assert_eq!(input.line().as_deref(), Some("to lead> first later"));
+        assert_eq!(asks(&input.chunk(b"\r", at(base, 2))), ["first later"]);
+    }
+
+    #[test]
     fn a_paste_is_one_literal_run_however_its_markers_are_split() {
         let stream = b"x\x1b[200~a\rb\x15\x7f\n\x1b[D\x1b[201~y\r";
-        let want = [Key::Text(b"xa\rb\x15\x7f\n\x1b[Dy".to_vec()), Key::Enter];
+        let want = [Key::Text(b"xa\nb\x15\x7f\n\x1b[Dy".to_vec()), Key::Enter];
         let base = Instant::now();
         for cut in 0..=stream.len() {
             let reads = [&stream[..cut], &stream[cut..]];
@@ -1788,6 +1888,7 @@ mod tests {
                 want,
                 "{line}"
             );
+            let _ = input.chunk(b"\x15", base);
             assert_eq!(input.line(), Some(format!("to {speaker}> ")), "{line}");
         }
         let _ = say(&mut input, b"@colead a\r");
@@ -1842,6 +1943,7 @@ mod tests {
         let _ = input.restore(kept(b"\xff"));
         let not_utf8 = [Effect::Print("refused: the line is not UTF-8".to_owned())];
         assert_eq!(input.chunk(b"\r", base), not_utf8);
+        let _ = input.chunk(b"\x15", base);
         let _ = input.restore(kept(&vec![b'a'; CAP]));
         assert_eq!(
             asks(&input.chunk(b"\r", base))[0].len(),
@@ -1874,7 +1976,7 @@ mod tests {
             input.chunk(b"typed\r", at(base, 3)),
             [Effect::Print(refused.to_owned())]
         );
-        assert_eq!(input.line(), None);
+        assert_eq!(input.line().as_deref(), Some("open> typed"));
         assert_eq!(input.tick(Reading::Owner, at(base, 4)), promoted);
         assert_eq!(input.line().as_deref(), Some("to lead> "));
         assert_eq!(input.chunk(b"half", at(base, 5)), []);
@@ -1993,7 +2095,7 @@ mod tests {
             let mut control = owner(base);
             let _ = control.chunk(&stream[..cut], at(base, 1));
             let _ = control.chunk(&stream[cut..], at(base, 2));
-            assert_eq!(asks(&control.chunk(b"\r", at(base, 3))), ["ab\r"], "{cut}");
+            assert_eq!(asks(&control.chunk(b"\r", at(base, 3))), ["ab\n"], "{cut}");
         }
     }
 

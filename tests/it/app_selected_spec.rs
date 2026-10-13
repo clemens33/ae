@@ -890,7 +890,7 @@ fn per_target_five_open_cap_and_both_close_forms_touch_only_that_journal() {
     rig.select(&pane, &rig.t);
     free(&rig.s.dir);
     rig.enter(&pane, &rig.t, false);
-    rig.command(&pane, "/close", "closed an ask", |_| {
+    rig.command(&pane, "/close", "closed ", |_| {
         Rig::event_count(&rig.t, "cancel") == 1
     });
     let closed = cancelled(&rig, &rig.t);
@@ -904,14 +904,14 @@ fn per_target_five_open_cap_and_both_close_forms_touch_only_that_journal() {
     rig.command(
         &pane,
         &format!("/close {}", t_ids[0]),
-        "closed an ask",
+        &format!("closed {}: t-open-0", t_ids[0]),
         |_| Rig::event_count(&rig.t, "cancel") == 2,
     );
     let closed = cancelled(&rig, &rig.t);
     assert_eq!(closed.len(), 2);
     assert_eq!(closed[1].reference.as_deref(), Some(t_ids[0].as_str()));
     let before = rig.wait(&rig.s, &pane, "GUARD T close completed", |s| {
-        s.contains("closed an ask") && writing(s)
+        s.contains(&format!("closed {}: t-open-0", t_ids[0])) && writing(s)
     });
     let refused_before = before.matches("refused:").count();
     rig.command(&pane, &format!("/close {s_id}"), "refused", |s| {
@@ -978,7 +978,7 @@ fn apps_on_distinct_targets_hold_distinct_leases_and_only_target_chat_is_exclude
     assert!(!rig.s.dir.join("console.draft").exists());
     rig.raw(&rig.t, &t_chat, "\x15/close\r");
     rig.wait(&rig.t, &t_chat, "T chat closes after T app releases", |s| {
-        s.contains("closed an ask")
+        s.contains("closed ")
     });
     assert!(rig.events(&rig.s).iter().all(|e| e.action != "cancel"));
 }

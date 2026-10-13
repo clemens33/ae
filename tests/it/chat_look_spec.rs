@@ -235,7 +235,7 @@ else { exit 1; }
                     .unwrap_or_default()
                     .contains("to lead>")
                 {
-                    std::io::Write::write_all(&mut stdin, b"fixture-typed-ask\n")
+                    std::io::Write::write_all(&mut stdin, b"fixture-typed-ask\r")
                         .expect("type after ownership prompt");
                     // The join packet keeps the pipe open until bounded() ends.
                     return stdin;
@@ -259,7 +259,7 @@ else { exit 1; }
         if tty {
             let command = if input {
                 format!(
-                    "exec /usr/bin/perl {} {} chat one --follow --input",
+                    "stty -icanon -echo -icrnl; exec /usr/bin/perl {} {} chat one --follow --input",
                     quote(&root.join("supervise.pl").to_string_lossy()),
                     quote(env!("CARGO_BIN_EXE_ae"))
                 )

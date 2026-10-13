@@ -358,7 +358,7 @@ fn close_in_the_app_honours_a_retire_of_the_asked_seat() {
     rig.tmux(&["send-keys", "-t", &pane, "-l", "/close"]);
     rig.tmux(&["send-keys", "-t", &pane, "Enter"]);
     let screen = rig.wait(&pane, WAIT, "the close is answered", |screen| {
-        screen.contains("refused: ") || screen.contains("closed an ask")
+        screen.contains("refused: ") || screen.contains("closed ")
     });
     assert!(screen.contains("refused: no open ask to close"), "{screen}");
     assert!(

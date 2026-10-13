@@ -164,7 +164,7 @@ pub fn close_owned(
     session: &str,
     which: Option<&str>,
     owns: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<super::Closed, String> {
     let _admitted = admission(dir)?;
     owns()?;
     super::close(dir, session, which)
@@ -358,7 +358,10 @@ pub(in crate::console) mod tests {
             submit(&dir, "s", b"newer", NEW, owned, never).map(drop),
             owned()
         );
-        assert_eq!(close_owned(&dir, "s", Some(&id(2)), owned), owned());
+        assert_eq!(
+            close_owned(&dir, "s", Some(&id(2)), owned).map(drop),
+            owned()
+        );
         assert_eq!(
             (journal(&dir), draft(&dir)),
             kept,
@@ -382,7 +385,11 @@ pub(in crate::console) mod tests {
             assert_eq!(draft(&dir), SourceRead::Ready(bytes.to_vec()), "{why}");
         }
         fs::write(&events, &before).unwrap();
-        assert_eq!(close_owned(&dir, "s", Some(&id(2)), || Ok(())), Ok(()));
+        let closed = close_owned(&dir, "s", Some(&id(2)), || Ok(()));
+        assert_eq!(
+            closed.map(|closed| (closed.id, closed.summary)),
+            Ok((id(2), "q".to_owned()))
+        );
         let sent = run(&dir, raw, lands(&dir, &ask(NEW, "q"), ""));
         assert_eq!(
             sent,

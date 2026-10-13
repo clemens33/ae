@@ -54,6 +54,7 @@ mod chat_wrap_pins;
 mod chat_wrap_spec;
 mod cli;
 mod compact;
+mod composer_spec;
 mod console;
 mod console_input_spec;
 mod console_p35_spec;

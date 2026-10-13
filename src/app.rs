@@ -2006,7 +2006,16 @@ impl App {
             let told = if live {
                 match self.ask(&q.raw, &q.seat, q.body) {
                     Ok((id, outcome)) => self.settle(id, &q.seat, &q.about, outcome),
-                    Err(refused) => vec![refused],
+                    Err(refused) => {
+                        // A writer the refusal ended got its line back from `unproven`; the
+                        // one still writing gets it here. A newer writer is not touched: the
+                        // line then stays only in the kept-draft file.
+                        let live = (self.writer.as_ref()).is_some_and(|w| w.entry == q.entry);
+                        if let Some(input) = self.inputs.get_mut(&q.key).filter(|_| live) {
+                            input.put_back(&q.raw);
+                        }
+                        vec![refused]
+                    }
                 }
             } else {
                 if let Some(input) = self.inputs.get_mut(&q.key) {
@@ -2080,7 +2089,7 @@ impl App {
         let (console, lost) = (&writer.console, Cell::default());
         let owns = || self.owns(&lost);
         let line = match submit::close_owned(console.dir(), console.name(), id, owns) {
-            Ok(()) => "closed an ask".to_owned(),
+            Ok(closed) => closed.line(),
             Err(why) => format!("refused: {why}"),
         };
         let entry = id.map_or_else(|| "/close".to_owned(), |id| format!("/close {id}"));
@@ -2785,7 +2794,11 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
     }
     let mut redraw = false;
     let mut keyed = keyed.into_iter();
-    while let Some((key, origin)) = keyed.next() {
+    while let Some((mut key, origin)) = keyed.next() {
+        // Only a draft takes a line break; everywhere else ^J is Enter.
+        if key == Key::Newline && !app.composing() {
+            key = Key::Enter;
+        }
         if !app.fleeted && key != Key::Interrupt {
             redraw |= early(app, &key, origin)?;
             continue;
@@ -3770,6 +3783,27 @@ mod tests {
         app.take(Reading::Owner, Instant::now());
         app.write(true);
         assert_eq!(app.held.as_deref(), Some("an ae app is writing to api"));
+    }
+
+    /// ^J is a line break in the draft and Enter everywhere else: it starts
+    /// writing from browse, and while writing it sends nothing.
+    #[test]
+    fn a_newline_key_breaks_the_draft_and_is_enter_outside_it() {
+        let root = Root::new("newline");
+        let (mut app, _reader) = housed(&root);
+        let at = Instant::now();
+        assert!(!app.composing());
+        assert_eq!(take_keys(&mut app, vec![(Key::Newline, at)]), Some(true));
+        assert!(app.composing(), "^J in browse starts writing like Enter");
+        let typed = Instant::now();
+        let keys = vec![
+            (Key::Text(b"ab".to_vec()), typed),
+            (Key::Newline, typed),
+            (Key::Text(b"cd".to_vec()), typed),
+        ];
+        let _ = take_keys(&mut app, keys);
+        assert_eq!(drafted(&app), "ab cd", "one draft, the break a row");
+        assert!(app.queued.is_empty(), "nothing is sent");
     }
 
     /// R-B2/R-B3: the lease's own instant gates the keys: one read before it

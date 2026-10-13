@@ -275,7 +275,7 @@ impl Term {
                 let owns = || self.owned(console);
                 Effect::Print(
                     match submit::close_owned(&console.dir, &console.name, id.as_deref(), owns) {
-                        Ok(()) => "closed an ask".to_owned(),
+                        Ok(closed) => closed.line(),
                         Err(why) => format!("refused: {why}"),
                     },
                 )
@@ -367,11 +367,14 @@ impl Term {
     }
 
     /// Carry one ask through the helpers' own tracked path, as the console.
-    fn ask(&self, console: &mut Console, raw: &[u8], seat: &str, body: String) -> Effect {
+    fn ask(&mut self, console: &mut Console, raw: &[u8], seat: &str, body: String) -> Effect {
         let owns = || still(&self.pair, console.seats()).and_then(|()| self.owned(console));
         let (id, outcome) = match submit_ask(console, owns, raw, seat, body) {
             Ok(submitted) => submitted,
-            Err(why) => return Effect::Print(format!("refused: {why}")),
+            Err(why) => {
+                self.input.put_back(raw);
+                return Effect::Print(format!("refused: {why}"));
+            }
         };
         let line = input::outcome_line(&outcome, seat);
         if matches!(outcome, submit::Outcome::Unknown(..)) {
