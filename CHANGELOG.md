@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.65] - 2026-10-13
+- Ae app: a session menu on each card, with Open and a guarded Stop
+
 ## [v2026.10.64] - 2026-10-13
 - Show agy's quota windows in the tmux dialog and the app's Settings > Quota
 - ^J and Alt+Enter break a line, a paste folds CR, a refusal keeps the draft
