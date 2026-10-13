@@ -5022,6 +5022,17 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_claude_config_dir_names_no_feed_scope_even_where_it_exists() {
+        // `.` always exists under the cwd, so only the relative refusal keeps it
+        // from canonicalising into a scope of whatever directory ae runs in.
+        for dir in ["", ".", "relative"] {
+            let scope =
+                super::claude_feed_scope(Some(std::ffi::OsStr::new(dir)), Some(Path::new("/h")));
+            assert_eq!(scope, None, "{dir:?}");
+        }
+    }
+
+    #[test]
     fn a_fed_window_joins_the_cache_by_its_stamp_and_never_hides_damage() {
         let row = |bucket: &str, qualifier: Option<&str>, observed_at: Option<i64>| super::Row {
             bucket: bucket.to_owned(),
