@@ -236,3 +236,10 @@ path = "fuzz_targets/lease_holder.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "journal_append"
+path = "fuzz_targets/journal_append.rs"
+test = false
+doc = false
+bench = false

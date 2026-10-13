@@ -1718,6 +1718,10 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The livepeek frozen acceptance spec's owned fixtures: session
             // dirs and journals it writes and reads back under its own Root.
             "src/../tests/it/app_livepeek_spec.rs".to_owned(),
+            // Frozen cfg(test) chatperf aliases; not production read doors.
+            "src/../tests/it/chatperf_console_spec.rs".to_owned(),
+            "src/../tests/it/chatperf_strict_spec.rs".to_owned(),
+            "src/app/../../tests/it/chatperf_files_spec.rs".to_owned(),
             // THE terminal door of `ae app`: rustix termios takes raw mode,
             // restores the saved mode and reads the window size, on the
             // terminal the app was started in and nowhere else.

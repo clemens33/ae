@@ -2216,7 +2216,7 @@ impl App {
         };
         let (console, lost) = (&writer.console, Cell::default());
         let owns = || self.owns(&lost);
-        let line = match submit::close_owned(console.dir(), console.name(), id, owns) {
+        let line = match console.close_owned(id, owns) {
             Ok(closed) => closed.line(),
             Err(why) => format!("refused: {why}"),
         };

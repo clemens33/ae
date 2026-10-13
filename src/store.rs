@@ -284,25 +284,45 @@ pub fn read_capped(path: &Path, cap: u64) -> Result<SourceRead, Oversized> {
 ///
 /// [`Oversized`] for a regular file longer than `cap`.
 pub fn read_capped_in(dir: &Path, name: &str, cap: u64) -> Result<SourceRead, Oversized> {
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+    if !plain_file_name(name) {
         return Ok(SourceRead::Invalid(format!(
             "{name:?} is not one file name"
         )));
     }
+    if let Err(source) = body_directory(dir) {
+        return Ok(source);
+    }
+    read_capped(&dir.join(name), cap)
+}
+
+fn plain_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/')
+}
+
+fn body_directory(dir: &Path) -> Result<(), SourceRead> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: classifies the directory itself WITHOUT following a link, before any open under it — see clippy.toml"
     )]
     let observed = std::fs::symlink_metadata(dir);
     match observed {
-        Ok(meta) if meta.is_dir() => read_capped(&dir.join(name), cap),
+        Ok(meta) if meta.is_dir() => Ok(()),
         Ok(meta) => {
             let what = nonregular_leg(meta.file_type()).unwrap_or("a regular file");
-            Ok(SourceRead::Invalid(format!("its directory is {what}")))
+            Err(SourceRead::Invalid(format!("its directory is {what}")))
         }
-        Err(why) if why.kind() == io::ErrorKind::NotFound => Ok(SourceRead::Absent),
-        Err(why) => Ok(SourceRead::Unreadable(why.to_string())),
+        Err(why) if why.kind() == io::ErrorKind::NotFound => Err(SourceRead::Absent),
+        Err(why) => Err(SourceRead::Unreadable(why.to_string())),
     }
+}
+
+/// A memo hit must admit exactly the directory and node the capped read does.
+pub(crate) fn body_identity(dir: &Path, name: &str) -> Option<Identity> {
+    if !plain_file_name(name) {
+        return None;
+    }
+    body_directory(dir).ok()?;
+    Identity::of(&dir.join(name), false)
 }
 
 /// Publish `bytes` at `path`, mode 0600, whole or not at all: an exclusive
@@ -424,12 +444,21 @@ pub(crate) struct Identity {
 impl Identity {
     /// The identity of the regular file at `path`; `None` for anything else,
     /// a dangling link or a metadata read that failed.
-    fn of(path: &Path) -> Option<Self> {
+    fn of(path: &Path, follow: bool) -> Option<Self> {
         #[allow(
             clippy::disallowed_methods,
-            reason = "a door: whether a session file is unchanged since a reader parsed it, by the metadata its open follows — see clippy.toml"
+            reason = "a door: identifies the followed journal file or the body file itself without following a link, matching each reader's admission — see clippy.toml"
         )]
-        let meta = std::fs::metadata(path).ok()?;
+        let meta = if follow {
+            std::fs::metadata(path)
+        } else {
+            std::fs::symlink_metadata(path)
+        }
+        .ok()?;
+        Self::from_meta(&meta)
+    }
+
+    pub(crate) fn from_meta(meta: &std::fs::Metadata) -> Option<Self> {
         meta.is_file().then(|| Self {
             dev: meta.dev(),
             ino: meta.ino(),
@@ -438,6 +467,10 @@ impl Identity {
             ctime: (meta.ctime(), meta.ctime_nsec()),
             mode: meta.mode(),
         })
+    }
+
+    pub(crate) const fn file_key(self) -> (u64, u64) {
+        (self.dev, self.ino)
     }
 
     /// The file's length in bytes.
@@ -482,7 +515,7 @@ impl SessionStore {
 
     /// The event container's [`Identity`], `None` unless it is a regular file.
     pub(crate) fn events_identity(&self) -> Option<Identity> {
-        Identity::of(&self.events_path())
+        Identity::of(&self.events_path(), true)
     }
 
     /// The meta file's path.

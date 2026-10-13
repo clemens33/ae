@@ -695,6 +695,131 @@ pub struct Cursor {
     pub offset: u64,
 }
 
+/// Complete journal bytes and their parsed records, kept by one reader.
+/// An exact prefix comparison proves append; identity is the replacement
+/// cost policy, not a substitute for the byte proof.
+#[derive(Debug, Default)]
+pub struct Held {
+    bytes: Vec<u8>,
+    key: Option<(u64, u64)>,
+    drain: Option<Drain>,
+    clean: bool,
+}
+
+impl Held {
+    /// The file key last supplied to the proof.
+    pub(crate) const fn key(&self) -> Option<(u64, u64)> {
+        self.key
+    }
+
+    /// Prove the complete prefix or discard it. Pure, shared by both reads.
+    pub(crate) fn prefix(&mut self, bytes: &[u8], key: Option<(u64, u64)>) -> usize {
+        // A pure strict read has no file key. Its first runtime observation
+        // may adopt one after the exact byte proof; a known key never changes
+        // without discarding the prefix.
+        if (self.key.is_some() && self.key != key) || !bytes.starts_with(&self.bytes) {
+            *self = Self::default();
+        }
+        self.key = key;
+        self.bytes.len()
+    }
+
+    pub(crate) fn strict_prefix(&mut self, bytes: &[u8], key: Option<(u64, u64)>) -> usize {
+        let start = self.prefix(bytes, key);
+        if !self.clean {
+            self.bytes.clear();
+            self.drain = None;
+            return 0;
+        }
+        start
+    }
+
+    pub(crate) fn events(&self) -> Vec<Event> {
+        self.drain
+            .as_ref()
+            .map(|read| read.events.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn lines(&self) -> usize {
+        self.bytes
+            .split(|byte| *byte == b'\n')
+            .count()
+            .saturating_sub(1)
+    }
+
+    /// Lenient follow: a torn last record is retained for the next read.
+    #[doc(hidden)]
+    pub fn read_bytes(&mut self, mut bytes: Vec<u8>, key: Option<(u64, u64)>) -> &Drain {
+        let start = self.prefix(&bytes, key);
+        let tail = EventLog::parse_bytes(
+            &bytes[start..],
+            Cursor {
+                generation: 0,
+                offset: start as u64,
+            },
+        );
+        let read = self.drain.get_or_insert_with(|| Drain {
+            events: Vec::new(),
+            cursor: Cursor::default(),
+            skipped: Vec::new(),
+            drained: true,
+        });
+        read.events.extend(tail.events);
+        read.skipped.extend(tail.skipped);
+        read.cursor = tail.cursor;
+        read.drained = tail.drained;
+        let complete = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at + 1);
+        bytes.truncate(complete);
+        self.clean = read.skipped.is_empty() && !bytes.contains(&b'\r');
+        self.bytes = bytes;
+        read
+    }
+
+    pub(crate) fn keep_strict(&mut self, bytes: Vec<u8>, events: Vec<Event>) {
+        self.drain = Some(Drain {
+            events,
+            cursor: Cursor {
+                generation: 0,
+                offset: bytes.len() as u64,
+            },
+            skipped: Vec::new(),
+            drained: true,
+        });
+        self.bytes = bytes;
+        self.clean = true;
+    }
+
+    /// Read the opened file once; its fd supplies the identity for the proof.
+    pub(crate) fn open(&mut self, dir: &Path) -> io::Result<&Drain> {
+        let log = EventLog::discover(dir);
+        let (bytes, identity) = match log.read_bytes(Cursor::default()) {
+            Ok(read) => read,
+            Err(why) => {
+                *self = Self::default();
+                return Err(why);
+            }
+        };
+        Ok(self.read_bytes(bytes, identity.map(crate::store::Identity::file_key)))
+    }
+
+    pub(crate) fn session(&mut self, dir: &Path) -> io::Result<crate::session::SessionRead> {
+        let read = self.open(dir)?;
+        let name = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let id = crate::meta::session_id_in(dir);
+        Ok(crate::session::SessionRead::from_drain_in(
+            read,
+            SessionKey::new(name, &id),
+        ))
+    }
+}
+
 impl Cursor {
     /// The start of `generation`.
     #[must_use]
@@ -785,6 +910,11 @@ impl EventLog {
     /// `cursor.offset` is past the file's end — a container truncated, rotated
     /// or replaced beneath the reader.
     pub fn drain(&self, cursor: Cursor) -> io::Result<Drain> {
+        let (bytes, _) = self.read_bytes(cursor)?;
+        Ok(Self::parse_bytes(&bytes, cursor))
+    }
+
+    fn read_bytes(&self, cursor: Cursor) -> io::Result<(Vec<u8>, Option<crate::store::Identity>)> {
         let Some(source) = self
             .sources
             .iter()
@@ -805,19 +935,15 @@ impl EventLog {
         let mut file = match File::open(&source.path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound && cursor == Cursor::default() => {
-                return Ok(Drain {
-                    events: Vec::new(),
-                    cursor,
-                    skipped: Vec::new(),
-                    drained: true,
-                });
+                return Ok((Vec::new(), None));
             }
             Err(err) => return Err(err),
         };
 
         // The same evidence, the other way round: an offset past the end means
         // the container was truncated, rotated or replaced under the reader.
-        let length = file.metadata()?.len();
+        let meta = file.metadata()?;
+        let length = meta.len();
         if cursor.offset > length {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -831,6 +957,13 @@ impl EventLog {
         file.seek(SeekFrom::Start(cursor.offset))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
+        Ok((bytes, crate::store::Identity::from_meta(&meta)))
+    }
+
+    /// The existing lenient parser, independent of a backing file.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn parse_bytes(bytes: &[u8], cursor: Cursor) -> Drain {
         count_parsed(bytes.len());
 
         let mut events = Vec::new();
@@ -867,7 +1000,7 @@ impl EventLog {
         }
 
         let partial = consumed < bytes.len() as u64;
-        Ok(Drain {
+        Drain {
             events,
             cursor: Cursor {
                 generation: cursor.generation,
@@ -875,7 +1008,7 @@ impl EventLog {
             },
             skipped,
             drained: !partial,
-        })
+        }
     }
 
     /// The cursor that follows `drain`'s, advancing a generation when — and

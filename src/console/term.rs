@@ -205,7 +205,15 @@ pub(crate) fn submit_ask(
         }
         String::from_utf8_lossy(&said).into_owned()
     };
-    let outcome = submit::submit(&console.dir, &console.name, raw, &id, owns, deliver)?;
+    let outcome = submit::submit_held(
+        &mut console.held.borrow_mut(),
+        &console.dir,
+        &console.name,
+        raw,
+        &id,
+        owns,
+        deliver,
+    )?;
     Ok((id, outcome))
 }
 
@@ -311,7 +319,13 @@ impl Term {
             Effect::Close(id) => {
                 let owns = || self.owned(console);
                 Effect::Print(
-                    match submit::close_owned(&console.dir, &console.name, id.as_deref(), owns) {
+                    match submit::close_owned_held(
+                        &mut console.held.borrow_mut(),
+                        &console.dir,
+                        &console.name,
+                        id.as_deref(),
+                        owns,
+                    ) {
                         Ok(closed) => closed.line(),
                         Err(why) => format!("refused: {why}"),
                     },

@@ -127,13 +127,33 @@ pub fn submit(
     owns: impl FnOnce() -> Result<(), String>,
     deliver: impl FnOnce() -> String,
 ) -> Result<Outcome, String> {
+    submit_held(
+        &mut crate::events::Held::default(),
+        dir,
+        session,
+        raw,
+        id,
+        owns,
+        deliver,
+    )
+}
+
+pub(crate) fn submit_held(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    raw: &[u8],
+    id: &str,
+    owns: impl FnOnce() -> Result<(), String>,
+    deliver: impl FnOnce() -> String,
+) -> Result<Outcome, String> {
     let store = store::open(dir);
     let _admitted = admission(dir)?;
     owns()?;
     store
         .publish_console_draft(raw)
         .map_err(|why| format!("the draft could not be kept ({why})"))?;
-    let events = super::snapshot(store.events_source())?;
+    let events = super::snapshot_in(held, dir)?;
     let open = lane::open_asks(&events, session);
     if open.len() >= OPEN_CAP {
         let count = open.len();
@@ -142,7 +162,7 @@ pub fn submit(
         ));
     }
     let said = deliver();
-    let outcome = match super::snapshot(store.events_source()) {
+    let outcome = match super::snapshot_in(held, dir) {
         Ok(events) => read_back(&events, id, &said),
         Err(why) => Outcome::Unknown(id.to_owned(), why),
     };
@@ -165,9 +185,25 @@ pub fn close_owned(
     which: Option<&str>,
     owns: impl FnOnce() -> Result<(), String>,
 ) -> Result<super::Closed, String> {
+    close_owned_held(
+        &mut crate::events::Held::default(),
+        dir,
+        session,
+        which,
+        owns,
+    )
+}
+
+pub(crate) fn close_owned_held(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    which: Option<&str>,
+    owns: impl FnOnce() -> Result<(), String>,
+) -> Result<super::Closed, String> {
     let _admitted = admission(dir)?;
     owns()?;
-    super::close(dir, session, which)
+    super::close_held(held, dir, session, which)
 }
 
 fn admission(dir: &Path) -> Result<std::fs::File, String> {

@@ -3,12 +3,13 @@
 //! A READ view of data ae already keeps: it answers nothing, and what it
 //! writes is its own — an ask it submits and `/close`'s withdrawal of one.
 
-use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::board::{self, Generations, Inputs, Replies, Row, follow::Follow, terminal_text};
-use crate::events::Event;
+use crate::events::{Event, Held};
 use crate::store::{self, Oversized, SourceRead};
 use crate::{
     archive, doors, inventory, lifecycle, meta, reply, session, theme, tracked, transport, usage,
@@ -88,6 +89,9 @@ pub(crate) struct Console {
     follow: Option<Follow>,
     /// The last journal read whole, which every later read must begin with.
     journal: Option<Vec<Event>>,
+    /// The same prefix proof the follow, submit and close reads use.
+    held: RefCell<Held>,
+    bodies: RefCell<BTreeMap<String, (store::Identity, lane::Body)>>,
     /// Every roster seat as the last meta read named them: what `/open` takes.
     roster: Option<Vec<needs::SeatRef>>,
     /// A view that redraws its whole lane each read (`ae app`): its lane
@@ -171,6 +175,8 @@ impl Console {
             rows: Vec::new(),
             follow: None,
             journal: None,
+            held: RefCell::default(),
+            bodies: RefCell::default(),
             roster: None,
             standing: false,
             staged: Staged::default(),
@@ -204,6 +210,20 @@ impl Console {
     /// The canonical `session_id` this console is bound to, or empty.
     pub(crate) fn uuid(&self) -> &str {
         &self.uuid
+    }
+
+    pub(crate) fn close_owned(
+        &self,
+        which: Option<&str>,
+        owns: impl FnOnce() -> Result<(), String>,
+    ) -> Result<Closed, String> {
+        submit::close_owned_held(
+            &mut self.held.borrow_mut(),
+            &self.dir,
+            &self.name,
+            which,
+            owns,
+        )
     }
 
     /// Every roster seat as the last read that read its needs and meta named
@@ -266,10 +286,14 @@ impl Console {
     }
 
     /// One read: the first reads everything, each later one asks the board's
-    /// follow for the new transcript bytes and re-reads the whole journal, so a
-    /// replaced or shrunk journal can never hide a record.
+    /// follow for the new transcript bytes and proves the journal prefix before
+    /// parsing only its append. A rewrite, shrink or replacement reads whole.
     pub(crate) fn read(&mut self) -> Result<Read, String> {
-        self.read_with(&mut |dir| session::RecordSnapshot::read(dir))
+        let mut held = self.held.take();
+        let read = self
+            .read_with(&mut |dir| session::RecordSnapshot::read_with(dir, || held.session(dir)));
+        self.held.replace(held);
+        read
     }
 
     /// [`Console::read`] with the session's records read by `records`.
@@ -370,7 +394,7 @@ impl Console {
             (None, Some(last)) if !events.starts_with(last) => Some((last.len(), events.len())),
             _ => None,
         };
-        let body = |event: &Event| body_for(&self.dir, event);
+        let body = |event: &Event| self.body(event);
         let mut lane = lane::fold(&self.name, &seats, &events, &observation, skipped, &body);
         let journal_read = read_gap.is_none();
         let settled = journal_read && self.staged.stage == Stage::Every;
@@ -387,6 +411,45 @@ impl Console {
             settled,
             rebased,
         })
+    }
+
+    /// Only a positively read whole body is memoized. The store checks both
+    /// its directory and node without following links before a cache hit.
+    fn body(&self, event: &Event) -> lane::Body {
+        let name = event
+            .body_file
+            .as_deref()
+            .map(Path::new)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str());
+        let Some(name) = name else {
+            return body_for(&self.dir, event);
+        };
+        let identity = store::body_identity(&self.dir.join("messages"), name);
+        let mut bodies = self.bodies.borrow_mut();
+        if let (Some(now), Some((then, body))) = (identity, bodies.get(name))
+            && now == *then
+        {
+            // Validate the event as well: a rewritten journal may name the
+            // same file for a different request or with a refused parent.
+            let recorded = Path::new(event.body_file.as_deref().unwrap_or(""));
+            let action = if event.action == tracked::Kind::Ask.action() {
+                "ask"
+            } else {
+                reply::ACTION
+            };
+            if recorded.parent().and_then(Path::file_name) == Some("messages".as_ref())
+                && is_body_name(event.reference.as_deref().unwrap_or(""), action, name)
+            {
+                return body.clone();
+            }
+        }
+        bodies.remove(name);
+        let body = body_for(&self.dir, event);
+        if let (Some(identity), lane::Body::Whole(_)) = (identity, &body) {
+            bodies.insert(name.to_owned(), (identity, body.clone()));
+        }
+        body
     }
 
     /// The transcript half of one read, as far as `reach` and the stage reached
@@ -591,6 +654,7 @@ fn body_for(dir: &Path, event: &Event) -> lane::Body {
     let Some(name) = name.filter(|name| in_messages && is_body_name(id, action, name)) else {
         return lane::Body::Refused(format!("not {noun} body in this session's messages"));
     };
+    count_body_read();
     match store::read_capped_in(&dir.join("messages"), name, CAP) {
         Ok(SourceRead::Ready(bytes)) => match String::from_utf8(bytes) {
             Err(_) => lane::Body::NotUtf8,
@@ -606,6 +670,13 @@ fn body_for(dir: &Path, event: &Event) -> lane::Body {
         Err(Oversized) => lane::Body::Oversized,
     }
 }
+
+/// The body files [`body_for`] reads are counted by tests alone.
+#[cfg(not(test))]
+const fn count_body_read() {}
+
+#[cfg(test)]
+use chatperf_spec::count_body_read;
 
 /// `<id>.<action>.<six lowercase hex>.txt` — the name `deliver::store_body`
 /// publishes a request's ask or reply under.
@@ -630,9 +701,21 @@ fn is_body_name(id: &str, action: &str, name: &str) -> bool {
 ///
 /// Why nothing was appended, by name.
 pub fn close(dir: &Path, session: &str, which: Option<&str>) -> Result<Closed, String> {
+    close_held(&mut Held::default(), dir, session, which)
+}
+
+pub(crate) fn close_held(
+    held: &mut Held,
+    dir: &Path,
+    session: &str,
+    which: Option<&str>,
+) -> Result<Closed, String> {
     let mut closed = None;
     let decided = store::open(dir).append_event_decided(|journal| -> Result<String, String> {
-        let events = snapshot(journal)?;
+        let key = store::open(dir)
+            .events_identity()
+            .map(store::Identity::file_key);
+        let events = snapshot_at(held, journal, key)?;
         let newest = lane::open_asks(&events, session).last().copied();
         let id = which
             .or(newest)
@@ -687,13 +770,15 @@ const CLOSED_CHARS: usize = 80;
 
 /// The journal as `/close` decides on it: every complete line an [`Event`],
 /// or a refusal naming the first that is not — never a guess past it.
-fn snapshot(journal: SourceRead) -> Result<Vec<Event>, String> {
+#[doc(hidden)]
+pub fn snapshot(journal: SourceRead) -> Result<Vec<Event>, String> {
     let bytes = match journal {
         SourceRead::Ready(bytes) => bytes,
         SourceRead::Absent => Vec::new(),
         SourceRead::Invalid(what) => return Err(format!("the journal is {what}")),
         SourceRead::Unreadable(why) => return Err(format!("the journal is unreadable ({why})")),
     };
+    count_strict(bytes.len());
     let text = String::from_utf8(bytes).map_err(|_| "the journal is not UTF-8".to_owned())?;
     if !text.is_empty() && !text.ends_with('\n') {
         return Err("the journal ends in a partial record".to_owned());
@@ -707,6 +792,68 @@ fn snapshot(journal: SourceRead) -> Result<Vec<Event>, String> {
         })
         .collect()
 }
+
+/// Strict differential entrypoint; the runtime supplies file identity too.
+#[doc(hidden)]
+pub fn snapshot_from(held: &mut Held, journal: SourceRead) -> Result<Vec<Event>, String> {
+    snapshot_at(held, journal, held.key())
+}
+
+#[doc(hidden)]
+pub fn snapshot_at(
+    held: &mut Held,
+    journal: SourceRead,
+    key: Option<(u64, u64)>,
+) -> Result<Vec<Event>, String> {
+    let bytes = match journal {
+        SourceRead::Ready(bytes) => bytes,
+        SourceRead::Absent => Vec::new(),
+        other => {
+            *held = Held::default();
+            return snapshot(other);
+        }
+    };
+    // SourceRead already classified the node. An identity observation racing
+    // that read can affect cost only: the exact bytes prove correctness.
+    let start = held.strict_prefix(&bytes, key);
+    let base = held.lines();
+    let tail = &bytes[start..];
+    count_strict(tail.len());
+    let text = std::str::from_utf8(tail).map_err(|_| "the journal is not UTF-8".to_owned())?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err("the journal ends in a partial record".to_owned());
+    }
+    let mut events = held.events();
+    for (at, line) in text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+    {
+        events
+            .push(Event::parse_line(line).map_err(|why| {
+                format!("journal line {} is not a record ({why})", base + at + 1)
+            })?);
+    }
+    held.keep_strict(bytes, events.clone());
+    Ok(events)
+}
+
+fn snapshot_in(held: &mut Held, dir: &Path) -> Result<Vec<Event>, String> {
+    let store = store::open(dir);
+    let source = store.events_source();
+    snapshot_at(
+        held,
+        source,
+        store.events_identity().map(store::Identity::file_key),
+    )
+}
+
+/// The bytes a strict read hands its parser are counted by tests alone, in
+/// the same tally as [`crate::events::EventLog::drain`]'s.
+#[cfg(not(test))]
+const fn count_strict(_: usize) {}
+#[cfg(test)]
+use crate::events::count_parsed as count_strict;
 
 /// The session directory `name` records, or why there is none.
 pub(crate) fn locate(root: &Path, name: &str) -> Option<PathBuf> {
@@ -922,6 +1069,18 @@ fn pump(
 mod longpaste_spec;
 
 #[cfg(test)]
+#[path = "../tests/it/chatperf_console_spec.rs"]
+mod chatperf_spec;
+
+#[cfg(test)]
+#[path = "../tests/it/chatperf_strict_spec.rs"]
+mod chatperf_strict_spec;
+
+#[cfg(test)]
+#[path = "../tests/it/chatperf_driver.rs"]
+mod chatperf_driver;
+
+#[cfg(test)]
 pub(super) mod tests {
     use super::{Console, Replies, lane::Body, view::Printed};
     use crate::events::Event;
@@ -944,21 +1103,13 @@ pub(super) mod tests {
             Self(root)
         }
 
+        /// Built by the constructor, so a field a later slice adds takes its
+        /// own default here too.
         pub(super) fn console(&self) -> Console {
-            Console {
-                name: "s".to_owned(),
-                dir: self.0.join("s"),
-                uuid: ID.to_owned(),
-                replies: Replies::Off,
-                home: Some(self.0.clone()),
-                printed: Printed::default(),
-                rows: Vec::new(),
-                follow: None,
-                journal: None,
-                roster: None,
-                standing: false,
-                staged: super::Staged::default(),
-            }
+            let mut console = Console::bound("s".to_owned(), self.0.join("s"), ID.to_owned());
+            console.replies = Replies::Off;
+            console.home = Some(self.0.clone());
+            console
         }
 
         /// The lead's one-line transcript, its mtime `secs` after now.

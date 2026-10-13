@@ -1,18 +1,16 @@
 //! What the reader keeps between fleet reads: each session's parsed journal
-//! (the bytes [`SessionRead::open`] reads), reused while the file's
-//! [`Identity`] is the one it had when it was read, and read whole again on any
-//! change. A file that is not a regular file, or whose read failed, is never
-//! kept.
+//! complete prefix, proved byte for byte before parsing only its append. A
+//! rewrite, shrink or replacement parses whole. A failed read keeps no proof.
 //!
 //! Nothing here reads a file itself: the identities come from the store, the
-//! bytes from [`SessionRead::open`].
+//! bytes and proof from [`Held`], through the existing event-log read door.
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::events::Held;
 use crate::session::{RecordSnapshot, SessionRead};
-use crate::store::{self, Identity};
 
 /// The parsed journals of the sessions the last fleet read listed.
 #[derive(Default)]
@@ -20,31 +18,16 @@ pub(super) struct Journals {
     held: BTreeMap<PathBuf, Held>,
 }
 
-/// One session directory's kept files, each with the identity it was read at.
-#[derive(Default)]
-struct Held {
-    events: Option<(Identity, SessionRead)>,
-}
-
 impl Journals {
-    /// [`RecordSnapshot::read`] of `dir`, its journal reused while unchanged.
+    /// [`RecordSnapshot::read`] of `dir`, its proven prefix reused.
     pub(super) fn snapshot(&mut self, dir: &Path) -> RecordSnapshot {
         RecordSnapshot::read_with(dir, || self.events(dir))
     }
 
     /// The journal of `dir` as [`SessionRead::open`] reads it now.
     fn events(&mut self, dir: &Path) -> io::Result<SessionRead> {
-        // Taken BEFORE the read: a write after it changes the next identity.
-        let identity = store::open(dir).events_identity();
         let held = self.held.entry(dir.to_path_buf()).or_default();
-        if let (Some(now), Some((then, read))) = (identity, &held.events)
-            && now == *then
-        {
-            return Ok(read.clone());
-        }
-        let read = SessionRead::open(dir);
-        held.events = identity.zip(read.as_ref().ok().cloned());
-        read
+        held.session(dir)
     }
 
     /// Keep only the sessions under `dirs`.
@@ -123,5 +106,15 @@ pub(super) mod tests {
     #[test]
     fn only_the_sessions_retained_are_kept() {
         fleet_spec::file_eviction(Metered::default);
+    }
+
+    #[test]
+    fn an_append_is_parsed_alone_and_any_other_change_whole() {
+        fleet_spec::chatperf::file_proof(Metered::default);
+    }
+
+    #[test]
+    fn a_kept_journal_folds_pending_with_the_session_key_of_now() {
+        fleet_spec::chatperf::file_session_key(Metered::default);
     }
 }

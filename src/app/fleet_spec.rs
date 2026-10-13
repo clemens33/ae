@@ -216,12 +216,13 @@ pub(super) fn file_costs<F: Files>(make: impl Fn() -> F) {
         warm,
         "an unchanged journal parses zero bytes"
     );
-    append(&dir.join("events.jsonl"), &event("append"));
+    let appended = event("append");
+    append(&dir.join("events.jsonl"), &appended);
     same_files(&mut subject, &dir);
     assert_eq!(
         subject.costs(),
-        warm + length(&dir.join("events.jsonl")),
-        "change reparses the WHOLE journal"
+        warm + appended.len() as u64,
+        "chatperf 2026-10-13: an append parses only its own bytes"
     );
 }
 
@@ -247,6 +248,9 @@ pub(super) fn file_eviction<F: Files>(make: impl Fn() -> F) {
     subject.retain(&[]);
     assert!(subject.cached_dirs().is_empty(), "no removed source held");
 }
+
+#[path = "../../tests/it/chatperf_files_spec.rs"]
+pub(super) mod chatperf;
 
 /// Oracle uses today's FULL world route and today's fresh fold, never cache.
 fn full_fleet(root: &Path) -> FleetRead {
@@ -391,13 +395,14 @@ pub(super) fn reader_costs<R: ReaderFiles>(make: impl Fn(&Path) -> R) {
         warm,
         "idle REAL fleet + view paths parse zero bytes"
     );
-    append(&api.join("events.jsonl"), &event("changed live journal"));
+    let appended = event("changed live journal");
+    append(&api.join("events.jsonl"), &appended);
     same_fleet(&mut subject, &root.0);
     same_view(&mut subject, &api, "api");
     assert_eq!(
         subject.costs(),
-        warm + length(&api.join("events.jsonl")),
-        "changed REAL fleet + needs + view parse journal once"
+        warm + appended.len() as u64,
+        "chatperf 2026-10-13: changed REAL fleet + needs + view parse the append once"
     );
     let removed = root.0.join("sessions/session00");
     assert!(subject.cached_dirs().contains(&removed));
