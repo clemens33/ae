@@ -111,6 +111,13 @@ pub(crate) fn outcome(
     }
 }
 
+/// The summary of the hold the daemon names for `reason` in an episode with
+/// `cause`: what its writer journals and what its reader compares the journal
+/// with, so the two cannot drift apart.
+pub(crate) fn held_summary(reason: super::HoldReason, cause: &str) -> String {
+    tagged(&reason.record(), cause)
+}
+
 /// `summary` naming its episode's trigger: unchanged for a limit episode, whose
 /// `cause` is empty, and for a headroom one the cause appended inside the
 /// summary bound, so a cut never takes the trigger.
@@ -550,13 +557,19 @@ pub(crate) fn run(
         .headroom_at
         .filter(|_| found.trigger == Trigger::Headroom);
     let eligible = match super::eligible(&settings, &asked) {
-        Err(why) if why != Ineligible::Unmapped => Err(ineligible_record(why)),
+        Err(why) if why != Ineligible::Unmapped => Err((why.class(), ineligible_record(why))),
         declared => {
             let list = listed(dir, &bytes, seat, declared.unwrap_or_default());
             if list.is_empty() {
-                Err(ineligible_record(Ineligible::Unmapped))
+                Err((
+                    CauseClass::NoCandidate,
+                    ineligible_record(Ineligible::Unmapped),
+                ))
             } else if found.trigger == Trigger::Headroom && threshold.is_none() {
-                Err(CauseClass::Ineligible.lead(HEADROOM_OFF))
+                Err((
+                    CauseClass::Ineligible,
+                    CauseClass::Ineligible.lead(HEADROOM_OFF),
+                ))
             } else {
                 Ok(list)
             }
@@ -564,10 +577,15 @@ pub(crate) fn run(
     };
     let list = match eligible {
         Ok(list) => list,
-        Err(summary) => {
+        Err((class, summary)) => {
             let summary = tagged(&summary, &cause);
             let code = close(&argv, &agent, now, (HELD_ACTION, &summary), err)?;
-            tell(&argv, now, told, &notice(super::Ending::Held(&summary)));
+            tell(
+                &argv,
+                now,
+                told,
+                &notice(super::Ending::Held(class, &summary)),
+            );
             return Ok(code);
         }
     };
@@ -588,7 +606,8 @@ pub(crate) fn run(
     let Some((pick, tier)) = choice.pick else {
         let why = tagged(&no_candidate(&choice.skipped), &cause);
         let code = close(&argv, &agent, now, (REFUSED_ACTION, &why), err)?;
-        tell(&argv, now, told, &notice(super::Ending::Refused(&why)));
+        let ending = super::Ending::Refused(CauseClass::NoCandidate, &why);
+        tell(&argv, now, told, &notice(ending));
         return Ok(code);
     };
     // What the move changes, as the notice names it: the tool and model before
@@ -650,9 +669,9 @@ pub(crate) fn run(
                 cause: &cause,
             }))
         }
-        Ended::Refused(class) if class.transient() => notice(super::Ending::Held(&summary)),
-        Ended::Refused(_) => notice(super::Ending::Refused(&summary)),
-        Ended::Failed => notice(super::Ending::Failed(&summary)),
+        Ended::Refused(class) if class.transient() => notice(super::Ending::Held(class, &summary)),
+        Ended::Refused(class) => notice(super::Ending::Refused(class, &summary)),
+        Ended::Failed => notice(super::Ending::Failed(CauseClass::Other, &summary)),
     };
     tell(&argv, now, told, &text);
     Ok(if matches!(ended, Ended::Moved { .. }) {
@@ -971,7 +990,11 @@ fn commit(
     said(
         argv,
         now,
-        &super::notice(&argv.session, agent, &super::Ending::Failed(&why)),
+        &super::notice(
+            &argv.session,
+            agent,
+            &super::Ending::Failed(CauseClass::Other, &why),
+        ),
     );
     Ok(code)
 }
@@ -1083,7 +1106,7 @@ pub(crate) fn trigger(
         Plan::Refuse { key, why } => {
             let argv = argv(key);
             let code = close(&argv, &row.name, now, (REFUSED_ACTION, &why), err)?;
-            let ending = super::Ending::Refused(&why);
+            let ending = super::Ending::Refused(CauseClass::NoCandidate, &why);
             said(&argv, now, &super::notice(own_session, &row.name, &ending));
             Ok(code)
         }
@@ -1522,9 +1545,9 @@ mod tests {
                 }
             );
             let ending = if class.transient() {
-                crate::autoreseat::Ending::Held(&summary)
+                crate::autoreseat::Ending::Held(class, &summary)
             } else {
-                crate::autoreseat::Ending::Refused(&summary)
+                crate::autoreseat::Ending::Refused(class, &summary)
             };
             let told = crate::autoreseat::notice("aedev", "colead", &ending);
             assert!(
@@ -2257,7 +2280,7 @@ mod tests {
                     crate::autoreseat::notice(
                         "aedev",
                         "scout",
-                        &crate::autoreseat::Ending::Failed(why)
+                        &crate::autoreseat::Ending::Failed(CauseClass::Other, why)
                     ),
                 ),
             ]

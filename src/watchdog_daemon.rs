@@ -4701,10 +4701,8 @@ fn auto_acts(
             Decision::Hold(_) | Decision::Attempt if trigger == Trigger::Headroom && !near => {}
             Decision::Hold(reason) => {
                 let said = trigger == Trigger::Headroom
-                    && found.holds_with(&crate::autoreseat::leg::tagged(
-                        reason.summary(),
-                        found.cause(),
-                    ));
+                    && found
+                        .holds_with(&crate::autoreseat::leg::held_summary(reason, found.cause()));
                 named.retain(|(at, held, _)| *at != slot || *held == key);
                 if !said && !named.contains(&(slot.clone(), key, reason)) {
                     named.push((slot.clone(), key, reason));
@@ -13438,7 +13436,7 @@ mod tests {
         };
         let opened = line(key, HEADROOM_ACTION, None, cause);
         let limited = line(key, "limit", None, "");
-        let said = crate::autoreseat::leg::tagged(&HoldReason::Busy.record(), cause);
+        let said = crate::autoreseat::leg::held_summary(HoldReason::Busy, cause);
         let slot = || "spawned.3".to_owned();
         let agent = || "builder".to_owned();
         let held = |reason, trigger| AutoAct::Held {
@@ -13594,16 +13592,36 @@ mod tests {
                 .collect();
             assert_eq!(recorded, expected, "{why}");
             assert!(err.is_empty(), "{why}: {}", String::from_utf8_lossy(&err));
-            // Whatever the daemon names leads with the class of its reason.
+            // Whatever the daemon names leads with the class of its reason,
+            // and a hold is spelled exactly as its reader compares it.
             for event in read_events(&scratch.0).into_iter().skip(before) {
                 let summary = event.summary.unwrap_or_default();
-                match event.action.as_str() {
-                    HELD_ACTION => assert!(
-                        summary.starts_with("busy: held: ")
-                            || summary.starts_with("unknown-frame: held: "),
-                        "{why}: {summary}"
-                    ),
-                    FAILED_ACTION => assert_eq!(summary, "other: failed: no outcome recorded"),
+                match (event.action.as_str(), &act) {
+                    (
+                        HELD_ACTION,
+                        AutoAct::Held {
+                            reason, trigger, ..
+                        },
+                    ) => {
+                        let cause = if *trigger == Trigger::Headroom {
+                            cause
+                        } else {
+                            ""
+                        };
+                        assert_eq!(
+                            summary,
+                            crate::autoreseat::leg::held_summary(*reason, cause),
+                            "{why}"
+                        );
+                        assert!(
+                            summary.starts_with("busy: held: ")
+                                || summary.starts_with("unknown-frame: held: "),
+                            "{why}: {summary}"
+                        );
+                    }
+                    (FAILED_ACTION, _) => {
+                        assert_eq!(summary, "other: failed: no outcome recorded");
+                    }
                     _ => {}
                 }
             }
@@ -13957,8 +13975,8 @@ mod tests {
             &mut named,
         );
         assert!(again.is_empty(), "named once: {again:?}");
-        let summary = crate::autoreseat::leg::tagged(
-            HoldReason::Unproven.summary(),
+        let summary = crate::autoreseat::leg::held_summary(
+            HoldReason::Unproven,
             "headroom 96% weekly_all 7d",
         );
         let mut journaled = opened.to_vec();

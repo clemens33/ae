@@ -894,7 +894,7 @@ fn a_refused_episode_stays_refused_across_a_daemon_restart() {
             .summary
             .as_deref()
             .is_some_and(|line| line.starts_with(
-                "auto reseat: scout not moved — no-candidate: refused: no usable candidate: ghost"
+                "auto reseat: no-candidate: scout not moved — refused: no usable candidate: ghost"
             )),
         "{chats:?}"
     );
@@ -1642,8 +1642,9 @@ fn assert_told_early(rig: &Rig, class: &str, within: usize) {
     assert_eq!(chats.len(), 1, "one human notice: {chats:?}");
     let notice = chats[0].summary.as_deref().unwrap_or_default();
     assert!(
-        notice.find(class).is_some_and(|at| at < within),
-        "the notice names {class:?} within {within} characters: {notice:?}"
+        notice.starts_with(&format!("auto reseat: {class}: "))
+            && notice.find(class).is_some_and(|at| at < within),
+        "the notice leads with {class:?}, within {within} characters: {notice:?}"
     );
 }
 

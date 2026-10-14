@@ -114,6 +114,13 @@ impl CauseClass {
     pub fn lead(self, summary: &str) -> String {
         format!("{}: {summary}", self.word())
     }
+
+    /// `summary` without the class [`Self::lead`] put in front of it, for a
+    /// reader that shows the class elsewhere.
+    #[must_use]
+    pub fn details(self, summary: &str) -> &str {
+        summary.strip_prefix(&self.lead("")).unwrap_or(summary)
+    }
 }
 
 /// The threshold an absent or unusable `auto_reseat_at` means.
@@ -1414,10 +1421,11 @@ pub fn recipients(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending<'a> {
     Moved(Move<'a>),
-    /// Held, quoting the record's summary.
-    Held(&'a str),
-    Refused(&'a str),
-    Failed(&'a str),
+    /// Held, quoting the record's summary under its class. The refused and
+    /// failed endings carry the same pair.
+    Held(CauseClass, &'a str),
+    Refused(CauseClass, &'a str),
+    Failed(CauseClass, &'a str),
     Unmapped(&'a str),
 }
 
@@ -1460,6 +1468,15 @@ pub const NOTICE_CHARS: usize = 400;
 /// The ONE line every recipient and the chat are told for `ending`.
 #[must_use]
 pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
+    // The class of a hold, refusal or failure leads the notice, ahead of the
+    // agent and session names, so no cut of what follows can take it.
+    let class = match ending {
+        Ending::Moved(_) => None,
+        Ending::Held(class, _) | Ending::Refused(class, _) | Ending::Failed(class, _) => {
+            Some(*class)
+        }
+        Ending::Unmapped(_) => Some(CauseClass::NoCandidate),
+    };
     let line = match ending {
         Ending::Moved(moved) => format!(
             "{agent} moved {} -> {}{} (tool {} -> {}, model {} -> {}), {}{}; work tree {}. If \
@@ -1502,10 +1519,12 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
                 ),
             },
         ),
-        Ending::Held(why) => {
+        Ending::Held(class, why) => {
+            let why = class.details(why);
             format!("{agent} not moved yet — {why}. Next: ae tries once more if it stays eligible.")
         }
-        Ending::Refused(why) => {
+        Ending::Refused(class, why) => {
+            let why = class.details(why);
             let next = why.find("once its box is empty").and_then(|at| {
                 why.get(at..at + why[at..].find(" --stop-unknown")? + " --stop-unknown".len())
             });
@@ -1518,24 +1537,34 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
             )
         }
         Ending::Unmapped(profile) => format!(
-            "{agent} not moved — {}. Next: add an [auto_reseat] row for {profile}, or move it by \
-             hand (ae reseat {session} {agent} --using <profile>).",
-            CauseClass::NoCandidate
-                .lead(&format!("no declared or derived candidate for {profile}"))
+            "{agent} not moved — no declared or derived candidate for {profile}. Next: add an \
+             [auto_reseat] row for {profile}, or move it by hand (ae reseat {session} {agent} \
+             --using <profile>)."
         ),
-        Ending::Failed(why) => format!(
-            "{agent} move failed — {why}. Next: relaunch {agent} if its pane sits at a shell, \
-             else reseat it by hand."
+        Ending::Failed(class, why) => format!(
+            "{agent} move failed — {}. Next: relaunch {agent} if its pane sits at a shell, \
+             else reseat it by hand.",
+            class.details(why)
         ),
     };
-    let line = crate::seatpack::neutralise(&format!("auto reseat: {line}"));
-    // A cut takes the details, never the step after them: the step is what the
-    // human acts on, and half a resend condition could ask for a duplicate. Cut
-    // BEFORE `summary_of`, whose own cap would otherwise take the step first.
+    let head = class.map_or_else(
+        || "auto reseat: ".to_owned(),
+        |class| format!("auto reseat: {}: ", class.word()),
+    );
+    let line = crate::seatpack::neutralise(&line);
+    // A cut takes the details, never the head or the step after them: the head
+    // names the cause and the step is what the human acts on, and half a
+    // resend condition could ask for a duplicate. Cut BEFORE `summary_of`,
+    // whose own cap would otherwise take the step first.
     let next = line.rfind(" Next: ").map_or("", |at| &line[at..]);
-    let room = NOTICE_CHARS.saturating_sub(next.chars().count());
+    let room = NOTICE_CHARS.saturating_sub(head.chars().count() + next.chars().count());
     let body = line[..line.len() - next.len()].chars().take(room);
-    let cut: String = body.chain(next.chars()).take(NOTICE_CHARS).collect();
+    let cut: String = head
+        .chars()
+        .chain(body)
+        .chain(next.chars())
+        .take(NOTICE_CHARS)
+        .collect();
     crate::state::summary_of(&cut)
 }
 
@@ -2626,20 +2655,26 @@ mod tests {
         );
         for (ending, want) in [
             (
-                Ending::Held("held: auto reseat is off"),
-                "auto reseat: builder not moved yet — held: auto reseat is off. Next: ae tries once \
-                 more if it stays eligible.",
+                Ending::Held(
+                    CauseClass::Ineligible,
+                    "ineligible: held: auto reseat is off",
+                ),
+                "auto reseat: ineligible: builder not moved yet — held: auto reseat is off. Next: ae \
+                 tries once more if it stays eligible.",
             ),
             (
-                Ending::Refused("refused: no usable candidate: opus55x (exhausted)"),
-                "auto reseat: builder not moved — refused: no usable candidate: opus55x (exhausted). \
-                 Next: move it by hand (ae reseat aedev builder --using <profile>) or wait for the \
-                 reset.",
+                Ending::Refused(
+                    CauseClass::NoCandidate,
+                    "no-candidate: refused: no usable candidate: opus55x (exhausted)",
+                ),
+                "auto reseat: no-candidate: builder not moved — refused: no usable candidate: \
+                 opus55x (exhausted). Next: move it by hand (ae reseat aedev builder --using \
+                 <profile>) or wait for the reset.",
             ),
             (
-                Ending::Failed("Error: the pane never came back"),
-                "auto reseat: builder move failed — Error: the pane never came back. Next: relaunch \
-                 builder if its pane sits at a shell, else reseat it by hand.",
+                Ending::Failed(CauseClass::Other, "other: Error: the pane never came back"),
+                "auto reseat: other: builder move failed — Error: the pane never came back. Next: \
+                 relaunch builder if its pane sits at a shell, else reseat it by hand.",
             ),
         ] {
             let said = notice(SESSION, AGENT, &ending);
@@ -2647,7 +2682,7 @@ mod tests {
             assert!(!said.contains("review pair"), "{said}");
         }
         let hostile = format!("Error: {}\u{1b}[2J\nsecond line", "x".repeat(NOTICE_CHARS));
-        let said = notice(SESSION, AGENT, &Ending::Failed(&hostile));
+        let said = notice(SESSION, AGENT, &Ending::Failed(CauseClass::Other, &hostile));
         assert!(
             said.chars().count() <= NOTICE_CHARS,
             "{}",
@@ -3224,14 +3259,69 @@ mod tests {
                 "{why:?}"
             );
         }
-        // The notice for an unmapped seat leads its reason with the class too.
+        // The notice for an unmapped seat leads with the class, ahead of the agent.
         let told = notice(SESSION, AGENT, &Ending::Unmapped("sol6x"));
         assert!(
             told.starts_with(
-                "auto reseat: builder not moved — no-candidate: no declared or derived candidate \
+                "auto reseat: no-candidate: builder not moved — no declared or derived candidate \
                  for sol6x."
             ),
             "{told}"
         );
+    }
+    /// The boundary the notice cut must hold: a session and agent at their
+    /// longest and a profile at 64 characters leave a notice with almost no
+    /// room beside the whole safe next step, and the class still leads it, the
+    /// step stays whole, and the notice stays inside its bound.
+    #[test]
+    fn a_notice_at_the_longest_names_keeps_its_class_and_the_whole_next_step() {
+        let (session, agent, profile) = ("s".repeat(128), "a".repeat(64), "p".repeat(64));
+        assert!(crate::config::is_agent_name(&agent));
+        assert!(crate::session_launch::name::is_session_name(&session));
+        let command = format!("ae reseat {session} {agent} --using {profile} --stop-unknown");
+        let said = CauseClass::UnknownFrame.lead(&format!(
+            "Error: once its box is empty and the limit line is its newest row, run: {command} \
+             — ae cannot read the frame in pane %1, so it cannot tell a running turn from an \
+             idle box. Nothing was reseated."
+        ));
+        let told = notice(
+            &session,
+            &agent,
+            &Ending::Refused(CauseClass::UnknownFrame, &said),
+        );
+        assert!(told.starts_with("auto reseat: unknown-frame: "), "{told}");
+        assert!(told.contains(&command), "the whole step survives: {told}");
+        assert!(
+            told.chars().count() <= NOTICE_CHARS,
+            "{}",
+            told.chars().count()
+        );
+        // Every other class, with a message long enough to be cut.
+        let long = format!("Error: {}", "x".repeat(900));
+        for class in [
+            CauseClass::CarrySourceMissing,
+            CauseClass::CarryTargetDiffers,
+            CauseClass::CarryUnreadable,
+            CauseClass::Busy,
+            CauseClass::Lock,
+            CauseClass::NoCandidate,
+            CauseClass::Ineligible,
+            CauseClass::Other,
+        ] {
+            let said = class.lead(&long);
+            for ending in [
+                Ending::Held(class, &said),
+                Ending::Refused(class, &said),
+                Ending::Failed(class, &said),
+            ] {
+                let told = notice(&session, &agent, &ending);
+                assert!(
+                    told.starts_with(&format!("auto reseat: {}: ", class.word())),
+                    "{told}"
+                );
+                assert!(told.contains(" Next: "), "the step survives: {told}");
+                assert!(told.chars().count() <= NOTICE_CHARS, "{told}");
+            }
+        }
     }
 }

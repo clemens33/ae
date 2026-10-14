@@ -551,7 +551,11 @@ is: `relaunch <agent>` — the failed notice says so by name.
 
 Every hold, refusal and failure summary, and the notice that quotes it, LEADS
 with a cause class — `<class>: <message>` — so a clip of a long message (a path,
-a profile name) never takes the cause. The class is named where the refusal is
+a profile name) never takes the cause. The notice puts the class AHEAD of the
+agent and session names (`auto reseat: <class>: <agent> not moved — …`), and
+its cut reserves that head and the whole safe next step (a `--stop-unknown`
+command included) before it spends any room on the body, so the longest valid
+names still keep both. The class is named where the refusal is
 decided, never read back out of the printed text: `carry-source-missing` (the
 conversation's transcript is not in the account it moves from),
 `carry-target-differs` (the account it moves to holds a different transcript, a
