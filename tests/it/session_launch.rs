@@ -749,13 +749,9 @@ fn a_client_profile_launches_the_configured_executable_and_home() {
         .lines()
         .find_map(|line| line.strip_prefix("harness_session.main="))
         .unwrap_or_default();
-    let key: String = std::fs::canonicalize(&rig.project)
-        .unwrap_or_else(|_| rig.project.clone())
-        .display()
-        .to_string()
-        .chars()
-        .map(|ch| if ch == '/' { '-' } else { ch })
-        .collect();
+    let key = ae::carry::project_key(
+        &std::fs::canonicalize(&rig.project).unwrap_or_else(|_| rig.project.clone()),
+    );
     let transcript = first_home
         .join("projects")
         .join(key)
@@ -1570,13 +1566,9 @@ fn a_resume_reruns_with_the_resume_variant() {
     let home = rig.scratch.display().to_string();
     // The PHYSICAL path, because the probe asks `getcwd(2)` — which is what
     // claude's own `process.cwd()` asks, and on macOS `/tmp` is a symlink.
-    let key: String = std::fs::canonicalize(&rig.project)
-        .unwrap_or_else(|_| rig.project.clone())
-        .display()
-        .to_string()
-        .chars()
-        .map(|ch| if ch == '/' { '-' } else { ch })
-        .collect();
+    let key = ae::carry::project_key(
+        &std::fs::canonicalize(&rig.project).unwrap_or_else(|_| rig.project.clone()),
+    );
     let transcripts = Path::new(&home).join(".claude/projects").join(key);
     assert!(
         std::fs::create_dir_all(&transcripts).is_ok(),
@@ -3056,11 +3048,9 @@ fn a_stopped_seat_can_repair_within_its_tool_kind_and_keeps_its_conversation() {
     );
     // The conversation must be PROVABLE for a resume to keep it: claude's own
     // transcript, where its store derives it from the pane's cwd.
-    let key = std::fs::canonicalize(&rig.project)
-        .unwrap_or_else(|_| rig.project.clone())
-        .display()
-        .to_string()
-        .replace('/', "-");
+    let key = ae::carry::project_key(
+        &std::fs::canonicalize(&rig.project).unwrap_or_else(|_| rig.project.clone()),
+    );
     let store = rig.scratch.join(".claude/projects").join(key);
     assert!(
         std::fs::create_dir_all(&store).is_ok(),
@@ -5247,12 +5237,7 @@ fn pin_explicit_home(rig: &Rig, session: &str, old_work: &Path) -> (PathBuf, Str
     let home = rig.scratch.join("tool-home");
     assert!(std::fs::create_dir_all(home.join("projects")).is_ok());
     let id = "e795c9e9-1234-4890-abcd-ef0123456789".to_owned();
-    let key: String = old_work
-        .display()
-        .to_string()
-        .chars()
-        .map(|ch| if ch == '/' { '-' } else { ch })
-        .collect();
+    let key = ae::carry::project_key(old_work);
     assert!(
         std::fs::create_dir_all(home.join("projects").join(&key)).is_ok()
             && std::fs::write(
@@ -5276,12 +5261,7 @@ fn pin_explicit_home(rig: &Rig, session: &str, old_work: &Path) -> (PathBuf, Str
 
 /// Plant the tool-store transcript for one cwd under an explicit home.
 fn plant_transcript(home: &Path, cwd: &Path, id: &str) {
-    let key: String = cwd
-        .display()
-        .to_string()
-        .chars()
-        .map(|ch| if ch == '/' { '-' } else { ch })
-        .collect();
+    let key = ae::carry::project_key(cwd);
     assert!(std::fs::create_dir_all(home.join("projects").join(&key)).is_ok());
     assert!(
         std::fs::write(
@@ -7234,14 +7214,7 @@ fn a_retry_over_a_changed_transcript_layout_refuses() {
     assert!(
         std::fs::remove_file(
             home.join("projects")
-                .join(
-                    new_work
-                        .display()
-                        .to_string()
-                        .chars()
-                        .map(|ch| if ch == '/' { '-' } else { ch })
-                        .collect::<String>()
-                )
+                .join(ae::carry::project_key(&new_work))
                 .join(format!("{id}.jsonl"))
         )
         .is_ok()

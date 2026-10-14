@@ -168,24 +168,32 @@ pub(crate) fn plan(moving: &Move<'_>) -> Option<Plan> {
     })
 }
 
-/// The project directory one working copy keys: its path with every `/` as `-`.
+/// The project directory one working copy keys, by claude's own rule: every
+/// character that is not an ASCII letter or digit becomes `-`, one dash per
+/// UTF-16 code unit (claude 2.1.299: `path.replace(/[^a-zA-Z0-9]/g, "-")`, so a
+/// character outside the BMP is a surrogate pair and two dashes).
 ///
-/// THE ONE OWNER of that spelling for code that may move. It deliberately
-/// matches AE'S OWN PROBE (`run::resumable`'s `StoreProbe::ProjectTranscript`)
-/// rather than claude's internal rule, which resolves symbolic links before it
-/// builds the same string: the copy exists to be found by the probe, so a
-/// divergence between the two would put the file where nothing looks. When they
-/// disagree — a working copy reached through a link — the source transcript is
-/// simply not at this key and the carry refuses, which is honest: that seat
-/// could not be exact-resumed in its OLD account either.
+/// THE ONE OWNER of that spelling: `run::resumable`'s probe, the rename
+/// preflight and this account carry all call it, so a copy lands exactly where
+/// claude wrote the transcript and the probe looks for it. Claude resolves
+/// symbolic links in a cwd before it keys it; a working copy reached through a
+/// link is simply not at this key and the carry refuses, which is honest: that
+/// seat could not be exact-resumed in its OLD account either.
+///
+/// RESIDUAL: claude cuts a key longer than 200 characters at 200 and appends a
+/// hash of the path. That is read in its bundle and unmeasured against a real
+/// long-path folder, so it is NOT implemented here.
 #[must_use]
 pub fn project_key(work_dir: &Path) -> String {
-    work_dir
-        .display()
-        .to_string()
-        .chars()
-        .map(|ch| if ch == '/' { '-' } else { ch })
-        .collect()
+    let mut key = String::new();
+    for ch in work_dir.display().to_string().chars() {
+        if ch.is_ascii_alphanumeric() {
+            key.push(ch);
+        } else {
+            key.extend(std::iter::repeat_n('-', ch.len_utf16()));
+        }
+    }
+    key
 }
 
 /// Whether a walk over the copy set WRITES. ONE walk, two uses: `Check`
@@ -544,13 +552,22 @@ mod tests {
     }
 
     #[test]
-    fn the_project_key_is_the_working_copy_with_every_separator_flattened() {
-        // The spelling `run::resumable` reads. Not claude's own rule, which
-        // resolves links first — the copy exists to be found by THAT probe.
-        assert_eq!(
-            super::project_key(Path::new("/Users/x/projects/ae")),
-            "-Users-x-projects-ae"
-        );
+    fn the_project_key_is_claudes_rule_every_non_ascii_alphanumeric_unit_flattened() {
+        // The ORACLE is claude's own rule, not this function: claude 2.1.299
+        // keys a project with `path.replace(/[^a-zA-Z0-9]/g, "-")`, and every
+        // entry under `~/.claude*/projects` on the measuring host matches
+        // `^[A-Za-z0-9-]+$`. That regex has no `u` flag, so it works per UTF-16
+        // code unit: a BMP character (`é`) is one dash and a non-BMP one
+        // (`😀`, a surrogate pair) is two — measured with node on 2026-10-14.
+        for (path, key) in [
+            ("/Users/x/projects/ae", "-Users-x-projects-ae"),
+            ("/Users/u/.ae/worktrees/571", "-Users-u--ae-worktrees-571"),
+            ("/a/b_c d.e", "-a-b-c-d-e"),
+            ("/a/é.b", "-a---b"),
+            ("/a/é😀.b", "-a-----b"),
+        ] {
+            assert_eq!(super::project_key(Path::new(path)), key, "{path}");
+        }
         // A relative path keeps its shape, and the empty one is not special:
         // both are answers a caller has to be able to compare, not panic on.
         assert_eq!(super::project_key(Path::new("a/b")), "a-b");

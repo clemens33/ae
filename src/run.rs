@@ -1288,14 +1288,11 @@ fn resumable(tool: ToolKind, id: &str, config_home: &crate::launch_cmd::Resolved
             let Some(cwd) = working_dir() else {
                 return false;
             };
-            let key: String = cwd
-                .display()
-                .to_string()
-                .chars()
-                .map(|ch| if ch == '/' { '-' } else { ch })
-                .collect();
             crate::lifecycle::path_exists(
-                &home.join("projects").join(key).join(format!("{id}.jsonl")),
+                &home
+                    .join("projects")
+                    .join(crate::carry::project_key(&cwd))
+                    .join(format!("{id}.jsonl")),
             )
         }
         // Codex records under dated directories, so the id is searched for.

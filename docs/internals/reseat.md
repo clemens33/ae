@@ -325,11 +325,13 @@ lookup — `HOME` and nothing else — because `reseat` runs in the caller's pro
 and the caller's environment is not the pane's; the source comes from the seat's
 RECORDED row, because for a retained conversation the record is what names the
 store. And paths are COMPUTED from `carry::project_key`, never searched for,
-which is what makes the result resumable: `project_key` matches AE'S OWN PROBE
-(`run::resumable`) rather than claude's internal rule, which resolves symbolic
-links first. When the two disagree — a working copy reached through a link — the
-transcript is not at this key and the carry refuses, which is honest: that seat
-could not be exact-resumed in its OLD account either.
+which is what makes the result resumable: `project_key` implements claude's own
+rule, every character that is not an ASCII letter or digit becomes `-` (claude
+2.1.299: `path.replace(/[^a-zA-Z0-9]/g, "-")`, per UTF-16 unit), and
+`run::resumable` calls it, so the copy and the probe cannot disagree. Claude
+resolves symbolic links before it keys a cwd; when a working copy is reached
+through a link the transcript is not at this key and the carry refuses, which is
+honest: that seat could not be exact-resumed in its OLD account either.
 
 THE BAR, stated because a guard that oversells itself is the defect it exists
 to prevent: both homes belong to the SAME OS user, so this is no silent
@@ -344,10 +346,13 @@ closed is the window between a classification and the read or write that
 follows it: that needs `openat`/`O_NOFOLLOW`, which has no safe-Rust spelling
 without a libc dependency this crate forbids.
 
-RESIDUAL: `run::resumable` still spells the project key inline, so
-`carry::project_key` is the owner in fact but not yet by construction. Pointing
-it there is queued; meanwhile `tests/it/doors.rs` holds a tripwire over the
-duplicate that names the owner when it drifts.
+RESIDUAL: claude keeps a key of 200 characters or fewer as is and, for a longer
+one, cuts it at 200 and appends `-` plus a hash of the whole path (read in
+2.1.299's bundle, never measured against a real long-path folder).
+`project_key` does not implement that: a work dir whose key passes 200
+characters is not found, so its seat starts fresh and its carry refuses.
+`tests/it/doors.rs` guards that no product file but `src/carry.rs` spells the
+rule.
 
 The human's rulings, 2026-09-19: typing the move with the other account's
 profile IS the consent, so ae prompts for nothing and prints ONE line naming the

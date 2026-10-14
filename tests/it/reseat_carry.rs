@@ -62,10 +62,9 @@ fn write(path: &Path, bytes: &[u8]) {
     assert!(std::fs::write(path, bytes).is_ok(), "{}", path.display());
 }
 
-/// The conversation's whole file set, in `home`.
-fn plant_store(rig: &Rig, home: &Path) {
-    let key = ae::carry::project_key(&work_dir(rig));
-    let project = home.join("projects").join(&key);
+/// The conversation's whole file set, in `home`, under project key `key`.
+fn plant_store_at(home: &Path, key: &str) {
+    let project = home.join("projects").join(key);
     write(&project.join(format!("{ID}.jsonl")), TRANSCRIPT);
     write(
         &project.join(ID).join("tool-results").join("t1.txt"),
@@ -103,6 +102,12 @@ enum Liveness {
 }
 
 fn planted_seat(rig: &Rig, liveness: Liveness) -> String {
+    let work = work_dir(rig);
+    planted_seat_in(rig, liveness, &work, &ae::carry::project_key(&work))
+}
+
+/// The same seat for working copy `work`, whose store sits under `key` in account `a`.
+fn planted_seat_in(rig: &Rig, liveness: Liveness, work: &Path, key: &str) -> String {
     rig.seat_rows("spawned.0", "scout", "claude-a", "claude");
     let pane = rig.new_pane("spawned.0", "scout");
     rig.start(&pane, "spawned.0", "claude");
@@ -141,11 +146,11 @@ fn planted_seat(rig: &Rig, liveness: Liveness) -> String {
         "work_dir={}\nharness_session.spawned.0={ID}\ncapture_floor.spawned.0=100\n\
          launch_time.spawned.0=111\nobserved_model.spawned.0=Opus 5\n\
          config_home.spawned.0={}",
-        work_dir(rig).display(),
+        work.display(),
         account(rig, "a").display()
     );
     assert!(std::fs::write(&meta, text).is_ok(), "the seat's history");
-    plant_store(rig, &account(rig, "a"));
+    plant_store_at(&account(rig, "a"), key);
     pane
 }
 
@@ -296,6 +301,59 @@ fn a_move_between_two_accounts_of_one_tool_carries_the_whole_conversation() {
         rig.events()
     );
     assert!(rig.tool_pid(&pane, "claude").is_some(), "the seat is up");
+}
+
+/// Claude's own project-folder rule, spelled from the requirement and not from
+/// `carry::project_key`: claude 2.1.299 keys a cwd with
+/// `path.replace(/[^a-zA-Z0-9]/g, "-")`, so every non-ASCII-alphanumeric UTF-16
+/// unit becomes one `-` and a dot keeps its own dash.
+fn claude_project_key(cwd: &Path) -> String {
+    cwd.display()
+        .to_string()
+        .encode_utf16()
+        .map(|unit| match u8::try_from(unit) {
+            Ok(byte) if byte.is_ascii_alphanumeric() => char::from(byte),
+            _ => '-',
+        })
+        .collect()
+}
+
+#[test]
+fn a_work_dir_with_dots_carries_its_conversation_at_the_key_claude_spells() {
+    // A seat under `~/.ae/worktrees/...` keeps its transcript in a folder where
+    // the dot became a dash too. The carry computes both ends from the work
+    // dir, so a key that kept the dot would not find the SOURCE transcript and
+    // refuse the move — and, if it found one, would land the copy where the
+    // resume probe never looks.
+    let rig = Rig::new("carrydots");
+    let work = canonical_scratch(&rig).join("my.work_dir");
+    assert!(std::fs::create_dir_all(&work).is_ok(), "a dotted work dir");
+    let key = claude_project_key(&work);
+    assert!(
+        key.ends_with("-my-work-dir"),
+        "the oracle flattens the dot and the underscore: {key}"
+    );
+    planted_seat_in(&rig, Liveness::Dead, &work, &key);
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    assert_eq!(code, Some(0), "out={out} err={err}");
+    assert!(out.contains("carried conversation"), "it carried: {out}");
+    let landed = account(&rig, "b")
+        .join("projects")
+        .join(&key)
+        .join(format!("{ID}.jsonl"));
+    assert_eq!(
+        std::fs::read(&landed).ok(),
+        Some(TRANSCRIPT.to_vec()),
+        "the transcript lands at claude's own key: {}",
+        landed.display()
+    );
+    assert_eq!(
+        rig.meta_row("harness_session.spawned.0"),
+        ID,
+        "the conversation is kept"
+    );
 }
 
 #[test]

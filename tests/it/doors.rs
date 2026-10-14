@@ -1216,39 +1216,43 @@ fn known_session_file_mutations_stay_with_the_store() {
 }
 
 #[test]
-fn the_claude_project_key_is_spelled_in_exactly_two_places_and_they_agree() {
-    // ONE RULE, and for now two spellings of it. `carry::project_key` is the
-    // owner: `rename.rs` reads it, and the account carry builds every path from
-    // it, so a copy lands exactly where the resume probe will look for it.
-    // `run::resumable` still spells the rule INLINE — `src/run.rs` was frozen
-    // for another slice while this one was built, and pointing it at the owner
-    // is a named residual rather than a thing this test wants to hide.
-    //
-    // So the guard is the honest one: if that inline spelling changes, this
-    // goes RED and names where the rule lives. It is a tripwire over a known
-    // duplicate, not a proof of agreement — the proof is the day run.rs calls
-    // `carry::project_key` and this test is deleted with the duplicate.
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let inline = ".map(|ch| if ch == '/' { '-' } else { ch })";
-    let owner = fs::read_to_string(root.join("src/carry.rs")).expect("the owner is readable");
+fn the_claude_project_key_is_spelled_in_src_carry_alone() {
+    // ONE OWNER of claude's project-folder rule: `carry::project_key`. The
+    // resume probe, the rename preflight and the account carry all call it, so
+    // a copy lands exactly where claude wrote the transcript and the probe
+    // looks. `run::resumable` once spelled the rule inline — with only `/` as
+    // `-`, which no claude folder ever matches for a dotted work dir — so the
+    // guard is: nothing outside the owner flattens a path into a key, and the
+    // probe is a CALLER. The shapes are the ones that have actually appeared;
+    // the behaviour itself is pinned by the owner's unit tests.
+    let halves = product_halves();
+    let probe = halves
+        .iter()
+        .find(|(name, _)| name == "src/run.rs")
+        .map_or("", |(_, code)| code.as_str());
     assert!(
-        owner.contains(inline),
-        "carry::project_key no longer spells the rule it owns"
+        probe.contains("crate::carry::project_key("),
+        "src/run.rs::resumable must call ae::carry::project_key, the one owner of claude's \
+         project-folder rule"
     );
-    let probe = fs::read_to_string(root.join("src/run.rs")).expect("the probe is readable");
-    assert_eq!(
-        probe.matches(inline).count(),
-        1,
-        "src/run.rs::resumable's inline project key changed or moved; it must agree with \
-         ae::carry::project_key, which is the owner every other caller reads"
-    );
-    // And nobody else grew a third one while this residual was open.
-    for (name, code) in product_halves() {
-        if name == "src/carry.rs" || name == "src/run.rs" {
+    for (name, code) in halves {
+        if name == "src/carry.rs" {
             continue;
         }
+        for shape in [
+            "== '/' { '-'",
+            ".replace('/', \"-\")",
+            ".replace(\"/\", \"-\")",
+        ] {
+            assert!(
+                !code.contains(shape),
+                "{name} spells the claude project key itself ({shape}); call ae::carry::project_key"
+            );
+        }
         assert!(
-            !code.contains(inline),
+            !code
+                .lines()
+                .any(|line| line.contains("is_ascii_alphanumeric") && line.contains("else { '-' }")),
             "{name} spells the claude project key itself; call ae::carry::project_key"
         );
     }

@@ -54,10 +54,16 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Self {
+        Self::in_project(tag, "project")
+    }
+
+    /// The same rig with the seat's working copy named `project_name`, for a
+    /// pin that needs a work dir claude spells differently from a bare `/`-flatten.
+    fn in_project(tag: &str, project_name: &str) -> Self {
         use std::os::unix::fs::PermissionsExt as _;
         let scratch = super::cli::OwnedScratch::root("run", tag).keep();
         let dir = scratch.join("sessions").join(tag);
-        let project = scratch.join("project");
+        let project = scratch.join(project_name);
         let bin = scratch.join("bin");
         let home = scratch.join("home");
         for path in [&dir, &project, &bin, &home] {
@@ -173,13 +179,9 @@ impl Rig {
                 // The PHYSICAL working directory, because the probe asks
                 // `getcwd(2)` — which is what claude's own `process.cwd()`
                 // asks, and on macOS `/tmp` is a symlink.
-                let key: String = std::fs::canonicalize(&self.project)
-                    .unwrap_or_else(|_| self.project.clone())
-                    .display()
-                    .to_string()
-                    .chars()
-                    .map(|ch| if ch == '/' { '-' } else { ch })
-                    .collect();
+                let key = ae::carry::project_key(
+                    &std::fs::canonicalize(&self.project).unwrap_or_else(|_| self.project.clone()),
+                );
                 let dir = self.home.join(".claude/projects").join(key);
                 assert!(std::fs::create_dir_all(&dir).is_ok(), "a transcript dir");
                 assert!(
@@ -1453,6 +1455,75 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
     }
 }
 
+/// Claude's own project-folder rule, spelled here from the requirement and not
+/// from `carry::project_key`: claude 2.1.299 keys a cwd with
+/// `path.replace(/[^a-zA-Z0-9]/g, "-")`, so every non-ASCII-alphanumeric UTF-16
+/// unit becomes one `-`. A work dir under `~/.ae/worktrees/571` therefore lives
+/// at `-Users-<u>--ae-worktrees-571`, a dot keeping its own dash.
+fn claude_project_key(cwd: &Path) -> String {
+    cwd.display()
+        .to_string()
+        .encode_utf16()
+        .map(|unit| match u8::try_from(unit) {
+            Ok(byte) if byte.is_ascii_alphanumeric() => char::from(byte),
+            _ => '-',
+        })
+        .collect()
+}
+
+/// A claude seat whose work dir holds `.` and `_` keeps its conversation: the
+/// resume probe looks where claude wrote the transcript, `-` for every such
+/// character, and not at the `/`-only spelling that never exists on disk.
+#[test]
+fn a_claude_seat_with_dots_in_its_work_dir_resumes_at_the_key_claude_spells() {
+    let rig = Rig::in_project("dotted-key", "my.proj_x");
+    let id = "u-dotted";
+    let cwd = std::fs::canonicalize(&rig.project).expect("canonical work dir");
+    let claude_key = claude_project_key(&cwd);
+    assert!(
+        claude_key.ends_with("-my-proj-x"),
+        "the oracle flattens the dot and the underscore: {claude_key}"
+    );
+    let slash_only: String = cwd
+        .display()
+        .to_string()
+        .chars()
+        .map(|ch| if ch == '/' { '-' } else { ch })
+        .collect();
+    assert_ne!(
+        claude_key, slash_only,
+        "the fixture tells the two rules apart"
+    );
+
+    let plant = |key: &str| {
+        let dir = rig.home.join(".claude/projects").join(key);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a transcript dir");
+        assert!(
+            std::fs::write(dir.join(format!("{id}.jsonl")), "{}\n").is_ok(),
+            "a transcript"
+        );
+    };
+    rig.seat("claude", id);
+    rig.started();
+
+    // Only a transcript at the `/`-only key: claude never writes there, so the
+    // conversation is NOT provable and the seat starts fresh.
+    plant(&slash_only);
+    let argv = rig.planned_argv();
+    assert!(
+        !carries(&argv, &["--resume", id]),
+        "a transcript at a key claude does not spell proves nothing: {argv:?}"
+    );
+
+    // The transcript where claude wrote it: the seat resumes.
+    plant(&claude_key);
+    let argv = rig.planned_argv();
+    assert!(
+        carries(&argv, &["--resume", id]),
+        "the recorded conversation resumes at claude's own key: {argv:?}"
+    );
+}
+
 /// #56 R5: a pending opencode seat resumes fresh, never `--continue`: the
 /// newest session of the project is not provably its own.
 #[test]
@@ -2114,13 +2185,8 @@ fn a_config_home_is_recorded_before_exec_then_survives_config_and_symlink_change
         "publication precedes exec: {reported:?}"
     );
 
-    let key: String = std::fs::canonicalize(&rig.project)
-        .expect("canonical project")
-        .display()
-        .to_string()
-        .chars()
-        .map(|ch| if ch == '/' { '-' } else { ch })
-        .collect();
+    let key =
+        ae::carry::project_key(&std::fs::canonicalize(&rig.project).expect("canonical project"));
     let transcript = first.join("projects").join(key).join(format!("{id}.jsonl"));
     std::fs::create_dir_all(transcript.parent().expect("transcript directory"))
         .expect("transcript directory");
