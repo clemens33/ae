@@ -1388,13 +1388,38 @@ struct FleetDiscovery<'a, D> {
     recorded: &'a inventory::RecordedOn,
     boot: Option<i64>,
     now: i64,
+    /// What each server answered during this read, a failure included, so the
+    /// inventory and the classification see ONE answer per server.
+    settled: std::cell::RefCell<Vec<(inventory::ServerId, ServerAnswer)>>,
 }
 
+/// What one enumeration of a server answered.
+type ServerAnswer = std::result::Result<Vec<inventory::DiscoveredSession>, inventory::QueryFailed>;
+
 impl<D: inventory::Discovery> inventory::Discovery for FleetDiscovery<'_, D> {
-    fn enumerate(
-        &self,
-        server: &inventory::ServerId,
-    ) -> std::result::Result<Vec<inventory::DiscoveredSession>, inventory::QueryFailed> {
+    fn enumerate(&self, server: &inventory::ServerId) -> ServerAnswer {
+        let known = self
+            .settled
+            .borrow()
+            .iter()
+            .find(|(asked, _)| asked == server)
+            .map(|(_, answer)| answer.clone());
+        if let Some(answer) = known {
+            return answer;
+        }
+        let answer = self.ask(server);
+        self.settled
+            .borrow_mut()
+            .push((server.clone(), answer.clone()));
+        answer
+    }
+}
+
+impl<D: inventory::Discovery> FleetDiscovery<'_, D> {
+    /// The fresh question behind `enumerate`, asked at most once per server per
+    /// read: its answer stands for both phases, and a failure is not retried
+    /// into a different verdict.
+    fn ask(&self, server: &inventory::ServerId) -> ServerAnswer {
         match self.inner.enumerate(server) {
             Err(_) if self.default_is_optional && server == &crate::instance::own_server() => {
                 Ok(Vec::new())
@@ -3129,13 +3154,15 @@ pub(crate) fn world_read(
         recorded: &recorded,
         boot: doors::boot_time(shape::current()),
         now: time::Timestamp::now().epoch(),
+        settled: std::cell::RefCell::default(),
     };
     let taken = inventory::take_entitled(scan, entitled, &discovery, |left, right| {
         sockets.equivalent(left, right)
     });
-    // The SAME discovery for the classification: a server the boot-time proof
-    // read as empty must read as empty in both phases, or the rows would go
-    // `unknown` under a listing that no longer says anything is missing.
+    // The SAME discovery, and so the same ANSWER per server, for the
+    // classification: a server the boot-time proof read as empty must read as
+    // empty in both phases, or the rows would go `unknown` under a listing that
+    // no longer says anything is missing.
     let snapshot = liveness::classify(taken, &discovery);
     // Criterion 3 only: the opposed disk must change HERE, on this function's
     // path, not after it returns.
@@ -3159,9 +3186,12 @@ pub(crate) fn world_read(
 }
 
 /// What tmux says RIGHT NOW about every classified candidate, in snapshot
-/// order, and each Running record's panes it listed.
+/// order, and each Running record's panes it listed. Each server holding a
+/// Running record is asked ONCE (`list-panes -a`), the branch riding on that
+/// same format.
 fn observed_runtimes(snapshot: &liveness::Snapshot) -> (Vec<session::SessionRuntime>, ListedPanes) {
     let mut panes = ListedPanes::new();
+    let mut asked: Vec<(inventory::ServerId, Option<tmux::ServerPanes>)> = Vec::new();
     let runtimes = snapshot
         .sessions
         .iter()
@@ -3178,12 +3208,24 @@ fn observed_runtimes(snapshot: &liveness::Snapshot) -> (Vec<session::SessionRunt
                 return runtime;
             };
             let server = inventory::ServerId::Selected(selector.clone());
-            runtime.branch = transport::observe_branch(&server, &record.name);
+            let at = asked
+                .iter()
+                .position(|(known, _)| *known == server)
+                .unwrap_or_else(|| {
+                    asked.push((server.clone(), transport::observe_all_panes(&server)));
+                    asked.len() - 1
+                });
+            let session = asked[at]
+                .1
+                .as_ref()
+                .and_then(|answer| answer.session(&record.name));
+            runtime.branch = session.and_then(|rows| rows.branch.clone());
             *listed = record
                 .snapshot
                 .meta
                 .as_ref()
-                .and_then(|meta| observed_agents(&server, &record.name, meta));
+                .zip(session)
+                .map(|(meta, rows)| agents_from_panes(&rows.panes, meta));
             if let Some(agents) = listed {
                 runtime.agents.clone_from(agents);
             }
@@ -3201,12 +3243,20 @@ pub(crate) fn observed_agents(
     meta: &meta::Meta,
 ) -> Option<Vec<session::AgentRuntime>> {
     let panes = transport::observe_panes(server, name)?;
+    Some(agents_from_panes(&panes, meta))
+}
+
+/// The roster seats of `meta` as `panes` show them.
+fn agents_from_panes(
+    panes: &[tmux::ObservedPane],
+    meta: &meta::Meta,
+) -> Vec<session::AgentRuntime> {
     let slots: Vec<String> = meta
         .roster()
         .iter()
         .map(|entry| entry.slot.clone())
         .collect();
-    Some(liveness::agent_runtimes(&panes, &slots))
+    liveness::agent_runtimes(panes, &slots)
 }
 
 #[cfg(debug_assertions)]
@@ -3721,6 +3771,61 @@ mod tests {
         assert_eq!(statuses, [Status::Running, Status::Stopped]);
         let listed = std::path::PathBuf::from("/ae-no-such-root/up");
         assert_eq!(panes, super::ListedPanes::from([(listed, None)]));
+    }
+
+    /// R1: both phases of one read consume ONE answer per server, a failure
+    /// stays a failure, and two servers are asked independently.
+    #[test]
+    fn a_fleet_read_asks_each_server_once_and_a_failure_stays_failed() {
+        use crate::inventory::{DiscoveredSession, Discovery, QueryFailed, RecordedOn, ServerId};
+        use crate::meta::Selector;
+        use std::cell::RefCell;
+        struct Counting {
+            asked: RefCell<Vec<ServerId>>,
+            dead: ServerId,
+        }
+        impl Discovery for Counting {
+            fn enumerate(&self, server: &ServerId) -> Result<Vec<DiscoveredSession>, QueryFailed> {
+                self.asked.borrow_mut().push(server.clone());
+                if *server == self.dead {
+                    return Err(QueryFailed);
+                }
+                Ok(vec![DiscoveredSession {
+                    name: "up".to_owned(),
+                    marker: Some("up".to_owned()),
+                }])
+            }
+        }
+        let live = ServerId::Selected(Selector::Socket("/ae-no-such/live.sock".into()));
+        let dead = ServerId::Selected(Selector::Socket("/ae-no-such/dead.sock".into()));
+        let inner = Counting {
+            asked: RefCell::new(Vec::new()),
+            dead: dead.clone(),
+        };
+        let recorded = RecordedOn::default();
+        let discovery = super::FleetDiscovery {
+            inner: &inner,
+            default_is_optional: false,
+            recorded: &recorded,
+            boot: None,
+            now: 0,
+            settled: RefCell::default(),
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                discovery.enumerate(&live),
+                Ok(vec![DiscoveredSession {
+                    name: "up".to_owned(),
+                    marker: Some("up".to_owned()),
+                }])
+            );
+            assert_eq!(discovery.enumerate(&dead), Err(QueryFailed));
+        }
+        assert_eq!(
+            *inner.asked.borrow(),
+            [live, dead],
+            "each server is asked once, in first-asked order; a failure is not retried"
+        );
     }
 
     /// `say`'s record is the builder's, byte for byte, and the watchdog's

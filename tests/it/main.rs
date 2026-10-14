@@ -31,6 +31,7 @@ mod app_ux_spec;
 mod app_view_spec;
 mod app_wheel_spec;
 mod app_writer_spec;
+mod appfanout_spec;
 mod archive;
 mod archive_from;
 mod archive_publish;

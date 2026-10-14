@@ -116,15 +116,15 @@ pub fn observe_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::Obser
     tmux::interpret_panes(succeeded, &stdout).ok()
 }
 
-/// The branch the watchdog last published for `session`, or `None`.
+/// Every pane of every session on `server`, with each session's published
+/// branch, from ONE `list-panes -a` — or `None` when the enumeration failed.
 #[must_use]
-pub fn observe_branch(server: &ServerId, session: &str) -> Option<String> {
+pub fn observe_all_panes(server: &ServerId) -> Option<tmux::ServerPanes> {
     if !addressable(server) {
         return None;
     }
-    let args = tmux::session_option_args(server, session, tmux::BRANCH_OPTION);
-    let (succeeded, stdout) = run(PROGRAM, &args);
-    tmux::interpret_session_option(succeeded, &stdout)
+    let (succeeded, stdout) = run(PROGRAM, &tmux::list_all_panes_args(server));
+    tmux::interpret_all_panes(succeeded, &stdout).ok()
 }
 
 /// One session option's value on `server`, or `None` when it is unset or the

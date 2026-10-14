@@ -15,7 +15,9 @@
 //! | `TMUX` | is this shell in a pane, and which server | both |
 //! | `TMUX_PANE` | which pane, for `stop` and `watchdog` | both (at its own site) |
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::inventory::ServerId;
 use crate::shape::Shape;
@@ -303,18 +305,49 @@ pub fn target_version() -> Option<String> {
 /// `AE_TEST_BOOT_TIME` overrides both, and only in the CHECKOUT shape: the
 /// hermetic suite has to place a boot on either side of a fixture's own
 /// activity, and a real reboot is not a thing a test can arrange.
+///
+/// A value the host PROVED is read once per process and reused: it cannot change
+/// while the process lives, and a long-lived `ae app` asks on every refresh. A
+/// failed read is never remembered, so the next call asks again; the override is
+/// read on every call and never enters the memo.
 #[must_use]
 pub fn boot_time(shape: &Shape) -> Option<i64> {
-    if shape.honours_environment() {
+    let declared = if shape.honours_environment() {
         #[allow(
             clippy::disallowed_methods,
             reason = "a door: AE_TEST_BOOT_TIME places the host's boot on either side of a fixture's recorded activity — the hermetic suite, CHECKOUT only"
         )]
         let raw = std::env::var_os("AE_TEST_BOOT_TIME");
-        if let Some(declared) = raw.filter(|value| !value.is_empty()) {
-            return declared.to_string_lossy().trim().parse().ok();
-        }
+        raw.filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    resolve_boot(declared, &PROVEN_BOOT, read_host_boot)
+}
+
+/// What the host proved about its boot, kept for the life of the process.
+static PROVEN_BOOT: OnceLock<i64> = OnceLock::new();
+
+/// A declared override answers alone and touches nothing; otherwise the proven
+/// value, else one host read whose `Some` is kept and whose `None` is not.
+fn resolve_boot(
+    declared: Option<OsString>,
+    proven: &OnceLock<i64>,
+    host: impl FnOnce() -> Option<i64>,
+) -> Option<i64> {
+    if let Some(declared) = declared {
+        return declared.to_string_lossy().trim().parse().ok();
     }
+    if let Some(boot) = proven.get() {
+        return Some(*boot);
+    }
+    let boot = host()?;
+    let _ = proven.set(boot);
+    Some(boot)
+}
+
+/// One read of the host's boot time: `/proc/stat` where it exists, else sysctl.
+fn read_host_boot() -> Option<i64> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: /proc/stat is where Linux publishes the host's boot time, and its absence is how this reader knows it is not on Linux"
@@ -911,5 +944,52 @@ mod tests {
         let outcome = canonical_strict_dir(&locked.join("child"));
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(outcome, Err(StrictDirError::Unreadable { .. })));
+    }
+
+    #[test]
+    fn a_proven_boot_is_read_from_the_host_once_and_reused() {
+        let slot = OnceLock::new();
+        let reads = &std::cell::Cell::new(0);
+        let host = |boot| {
+            move || {
+                reads.set(reads.get() + 1);
+                Some(boot)
+            }
+        };
+        assert_eq!(resolve_boot(None, &slot, host(1_000)), Some(1_000));
+        assert_eq!(resolve_boot(None, &slot, host(2_000)), Some(1_000));
+        assert_eq!(resolve_boot(None, &slot, host(3_000)), Some(1_000));
+        assert_eq!(reads.get(), 1, "later calls must not reach the host again");
+    }
+
+    #[test]
+    fn a_failed_boot_read_is_not_remembered_and_the_next_call_asks_again() {
+        let slot = OnceLock::new();
+        assert_eq!(resolve_boot(None, &slot, || None), None);
+        assert_eq!(slot.get(), None, "a None must never be stored");
+        assert_eq!(resolve_boot(None, &slot, || None), None);
+        assert_eq!(resolve_boot(None, &slot, || Some(42)), Some(42));
+        assert_eq!(slot.get(), Some(&42));
+    }
+
+    #[test]
+    fn a_declared_boot_is_read_per_call_and_never_enters_or_shadows_the_memo() {
+        let no_host = || -> Option<i64> { panic!("a declared boot must not ask the host") };
+        let slot = OnceLock::new();
+        assert_eq!(resolve_boot(Some("7".into()), &slot, no_host), Some(7));
+        assert_eq!(resolve_boot(Some(" 9 ".into()), &slot, no_host), Some(9));
+        assert_eq!(slot.get(), None, "an override must not be stored");
+        assert_eq!(
+            resolve_boot(Some("not a number".into()), &slot, no_host),
+            None,
+            "an unusable override answers None and does not fall through to the host"
+        );
+        assert_eq!(resolve_boot(None, &slot, || Some(100)), Some(100));
+        assert_eq!(
+            resolve_boot(Some("7".into()), &slot, no_host),
+            Some(7),
+            "a proven host value must not shadow a later override"
+        );
+        assert_eq!(resolve_boot(None, &slot, no_host), Some(100));
     }
 }

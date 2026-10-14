@@ -564,21 +564,104 @@ fn read_pane(line: &str) -> ObservedPane {
         observed: crate::harness_state::HarnessState::Unknown,
     };
     let fields: Vec<&str> = line.trim_end_matches('\r').split(FIELD_SEPARATOR).collect();
-    if fields.len() != PANE_FIELDS {
-        return blank;
-    }
+    <[&str; PANE_FIELDS]>::try_from(fields.as_slice()).map_or(blank, pane_from_cells)
+}
+
+/// The four cells of [`PANE_FORMAT`] as an [`ObservedPane`].
+fn pane_from_cells(cells: [&str; PANE_FIELDS]) -> ObservedPane {
     let usable = |value: &str| Some(value.to_owned()).filter(|v| !v.is_empty());
     ObservedPane {
         // `0`/`1` and nothing else.
-        dead: match fields[0] {
+        dead: match cells[0] {
             "0" => Some(false),
             "1" => Some(true),
             _ => None,
         },
-        slot: usable(fields[1].trim_end()),
-        command: usable(fields[3].trim_end()),
-        observed: crate::harness_state::observed_from_option(fields[2].trim_end()),
+        slot: usable(cells[1].trim_end()),
+        command: usable(cells[3].trim_end()),
+        observed: crate::harness_state::observed_from_option(cells[2].trim_end()),
     }
+}
+
+/// The format `list-panes -a` is asked for: the exact session name, the branch
+/// that session published, then the four [`PANE_FORMAT`] cells. The session
+/// name is its own whole field, so a pane is attributed by equality and never by
+/// containment.
+pub const ALL_PANES_FORMAT: &str = "#{session_name} | #{@ae_branch_name} | #{pane_dead} | #{@ae_slot} | #{@ae_observed} | #{pane_current_command}";
+
+/// How many [`FIELD_SEPARATOR`]-separated fields [`ALL_PANES_FORMAT`] produces per row.
+const ALL_PANES_FIELDS: usize = PANE_FIELDS + 2;
+
+/// The full argument list for enumerating every pane on `server`.
+#[must_use]
+pub fn list_all_panes_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-panes", "-a", "-F", ALL_PANES_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// One session's rows out of a `list-panes -a`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPanes {
+    /// The branch the session published, when a row of it carried one.
+    pub branch: Option<String>,
+    /// Its panes, in the order the server listed them.
+    pub panes: Vec<ObservedPane>,
+}
+
+/// Every session's panes out of ONE `list-panes -a`, keyed by exact session name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerPanes(std::collections::BTreeMap<String, SessionPanes>);
+
+impl ServerPanes {
+    /// The rows of the session named EXACTLY `name`, or `None` when no row
+    /// names it — the same reading a failed `list-panes -t =name` gives.
+    #[must_use]
+    pub fn session(&self, name: &str) -> Option<&SessionPanes> {
+        self.0.get(name)
+    }
+}
+
+/// What a completed `list-panes -a` run means.
+///
+/// # Errors
+///
+/// [`QueryFailed`] whenever the run did not succeed, whatever it printed.
+///
+/// **A ROW IS KEPT ONLY WHOLE.** It must split into exactly [`ALL_PANES_FIELDS`]
+/// fields with a non-empty session name; anything else is dropped, because a
+/// row that does not parse cannot be attributed to a session. That happens to a
+/// non-ae session named with [`FIELD_SEPARATOR`], and it can happen to an ae
+/// pane whose cell carries one. [`interpret_panes`] keeps such a line as a blank
+/// pane because its session is known from the target; here it is not. So an ae
+/// session with one dropped row and another good row can read a missing roster
+/// slot as dead where the per-session read called it unknown. That residual is
+/// accepted: R3 forbids attributing a row we cannot prove.
+pub fn interpret_all_panes(succeeded: bool, stdout: &str) -> Result<ServerPanes, QueryFailed> {
+    if !succeeded {
+        return Err(QueryFailed);
+    }
+    let mut sessions = std::collections::BTreeMap::<String, SessionPanes>::new();
+    for line in stdout.lines() {
+        let fields: Vec<&str> = line.trim_end_matches('\r').split(FIELD_SEPARATOR).collect();
+        let Ok([name, branch, cells @ ..]) =
+            <[&str; ALL_PANES_FIELDS]>::try_from(fields.as_slice())
+        else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let held = sessions.entry(name.to_owned()).or_insert(SessionPanes {
+            branch: None,
+            panes: Vec::new(),
+        });
+        if held.branch.is_none() {
+            held.branch = Some(branch.trim_end().to_owned()).filter(|value| !value.is_empty());
+        }
+        held.panes.push(pane_from_cells(cells));
+    }
+    Ok(ServerPanes(sessions))
 }
 
 /// What an enumeration says about one roster slot.
@@ -7070,5 +7153,120 @@ mod tests {
         assert_eq!(split(false, "alpha | 2"), None);
         assert_eq!(split(true, "nope"), None);
         assert_eq!(split(true, "a | b | c"), Some(("a".into(), "b | c".into())));
+    }
+
+    fn all_panes_row(name: &str, branch: &str, dead: &str, slot: &str, command: &str) -> String {
+        [name, branch, dead, slot, "", command].join(super::FIELD_SEPARATOR)
+    }
+
+    #[test]
+    fn the_all_panes_format_is_the_name_the_branch_then_the_per_session_cells() {
+        assert!(
+            super::ALL_PANES_FORMAT.starts_with("#{session_name} | #{@ae_branch_name} | "),
+            "{}",
+            super::ALL_PANES_FORMAT
+        );
+        assert!(
+            super::ALL_PANES_FORMAT.ends_with(super::PANE_FORMAT),
+            "{}",
+            super::ALL_PANES_FORMAT
+        );
+        let args = super::list_all_panes_args(&ServerId::Selected(Selector::Socket(
+            std::path::PathBuf::from("/tmp/s.sock"),
+        )));
+        assert_eq!(
+            args,
+            [
+                "-S",
+                "/tmp/s.sock",
+                "list-panes",
+                "-a",
+                "-F",
+                super::ALL_PANES_FORMAT
+            ]
+        );
+    }
+
+    #[test]
+    fn rows_are_attributed_by_the_exact_name_never_a_prefix() {
+        let text = [
+            all_panes_row("fan", "", "0", "lead", "claude"),
+            all_panes_row("fanout", "featurex", "0", "lead", "claude"),
+            all_panes_row("fanout", "featurex", "1", "worker", "zsh"),
+        ]
+        .join("\n");
+        let all = super::interpret_all_panes(true, &text).unwrap();
+        let fan = all.session("fan").unwrap();
+        assert_eq!(fan.panes.len(), 1);
+        assert_eq!(fan.branch, None, "an empty branch cell is no branch");
+        let fanout = all.session("fanout").unwrap();
+        assert_eq!(fanout.panes.len(), 2);
+        assert_eq!(fanout.branch.as_deref(), Some("featurex"));
+        assert!(all.session("fa").is_none(), "a prefix names no session");
+        assert!(all.session("fanout2").is_none());
+    }
+
+    #[test]
+    fn a_session_with_no_rows_reads_as_not_listed_and_a_failed_run_as_failed() {
+        let all = super::interpret_all_panes(true, &all_panes_row("up", "", "0", "lead", "claude"))
+            .unwrap();
+        assert!(all.session("gone").is_none());
+        assert!(
+            super::interpret_all_panes(true, "")
+                .unwrap()
+                .session("up")
+                .is_none()
+        );
+        assert_eq!(
+            super::interpret_all_panes(false, "up | | 0 | lead | | x"),
+            Err(QueryFailed)
+        );
+    }
+
+    #[test]
+    fn a_row_that_does_not_parse_is_dropped_and_never_misattributed() {
+        let piped_name = all_panes_row("fan | extra", "", "0", "lead", "claude");
+        let hostile_cell = all_panes_row("fan", "", "0", "lead | worker", "claude");
+        let short = ["fan", "", "0", "lead"].join(super::FIELD_SEPARATOR);
+        let nameless = all_panes_row("", "", "0", "lead", "claude");
+        let text = [
+            piped_name,
+            hostile_cell,
+            short,
+            nameless,
+            all_panes_row("fan", "", "0", "good", "claude"),
+        ]
+        .join("\n");
+        let all = super::interpret_all_panes(true, &text).unwrap();
+        let fan = all.session("fan").unwrap();
+        assert_eq!(
+            fan.panes.len(),
+            1,
+            "only the whole row is kept: {:?}",
+            fan.panes
+        );
+        assert_eq!(fan.panes[0].slot.as_deref(), Some("good"));
+    }
+
+    #[test]
+    fn carriage_returns_and_trailing_blanks_do_not_change_a_cell() {
+        let text = format!(
+            "{}\r\n{}",
+            all_panes_row("up", "br  ", "0", "lead", "claude"),
+            all_panes_row("up", "", "1", "worker", "zsh  ")
+        );
+        let up = super::interpret_all_panes(true, &text).unwrap();
+        let up = up.session("up").unwrap();
+        assert_eq!(up.branch.as_deref(), Some("br"));
+        assert_eq!(up.panes.len(), 2);
+        assert_eq!(up.panes[1].command.as_deref(), Some("zsh"));
+    }
+
+    #[test]
+    fn the_per_session_read_still_keeps_a_malformed_line_as_a_blank_pane() {
+        let panes = super::interpret_panes(true, "0 | lead | | claude\nnot four fields").unwrap();
+        assert_eq!(panes.len(), 2, "interpret_panes keeps every line");
+        assert_eq!(panes[1].slot, None);
+        assert_eq!(panes[1].dead, None);
     }
 }
