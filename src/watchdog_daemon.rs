@@ -4560,6 +4560,14 @@ enum AutoAct {
         key: Timestamp,
         profile: String,
     },
+    /// Say, once per episode, that the last round was refused or failed and
+    /// no attempt follows.
+    GaveUp {
+        slot: String,
+        agent: String,
+        key: Timestamp,
+        profile: String,
+    },
     /// Name why the due seat is not moved, once per episode and reason.
     Held {
         slot: String,
@@ -4625,7 +4633,8 @@ fn auto_acts(
             Err(Ineligible::Unmapped) if seat.limited => {
                 let found = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent);
                 let said = crate::autoreseat::leg::ineligible_record(Ineligible::Unmapped);
-                if let Some(open) = found.filter(|open| !open.holds_with(&said))
+                if let Some(open) =
+                    found.filter(|open| open.terminal.is_none() && !open.holds_with(&said))
                     && let Decision::Attempt | Decision::Hold(_) =
                         crate::autoreseat::decide(Some(&open), settings.grace_secs, &seat.pane, now)
                 {
@@ -4682,6 +4691,19 @@ fn auto_acts(
         let Some(found) = found else {
             continue;
         };
+        if found.gave_up() {
+            if !found.holds_with(crate::autoreseat::GAVE_UP_SUMMARY) {
+                let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
+                let (key, profile) = (found.key, seat.profile.clone());
+                acts.push(AutoAct::GaveUp {
+                    slot,
+                    agent,
+                    key,
+                    profile,
+                });
+            }
+            continue;
+        }
         let (slot, agent, key, trigger) = (
             seat.slot.clone(),
             seat.agent.clone(),
@@ -6456,10 +6478,14 @@ impl Cycle<'_> {
         Ok(())
     }
 
-    /// Journal one hold, overdue failure, headroom opening or re-arm under the
-    /// seat's lock, and only while the journal as it reads NOW still owes it: a
-    /// trigger may have opened an attempt, or the leg ended one, since this
-    /// cycle's read.
+    /// Journal one hold, overdue failure, headroom opening, re-arm or give-up
+    /// under the seat's lock, and only while the journal as it reads NOW still
+    /// owes it: a trigger may have opened an attempt, or the leg ended one,
+    /// since this cycle's read.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered writer per act, each re-reading the journal under the lock"
+    )]
     fn auto_record(&self, act: &AutoAct, now: i64, err: &mut impl Write) -> crate::Result<()> {
         use crate::autoreseat::Trigger;
         let (slot, agent) = match act {
@@ -6467,6 +6493,7 @@ impl Cycle<'_> {
             | AutoAct::Overdue { slot, agent, .. }
             | AutoAct::Open { slot, agent, .. }
             | AutoAct::Rearm { slot, agent, .. }
+            | AutoAct::GaveUp { slot, agent, .. }
             | AutoAct::Unmapped { slot, agent, .. } => (slot, agent),
             AutoAct::Trigger { .. } => return Ok(()),
         };
@@ -6491,6 +6518,23 @@ impl Cycle<'_> {
                 if headroom.is_some_and(|open| open.key == *key && open.open.is_none()) {
                     let action = crate::autoreseat::REARMED_ACTION;
                     journal.record_referring(action, agent, &key.to_string(), summary, err)?;
+                }
+                return Ok(());
+            }
+            AutoAct::GaveUp { key, .. } => {
+                let said = crate::autoreseat::GAVE_UP_SUMMARY;
+                let found = crate::autoreseat::episode(&events, self.session, slot, agent);
+                if found.is_some_and(|open| {
+                    open.key == *key && open.gave_up() && !open.holds_with(said)
+                }) {
+                    let action = crate::autoreseat::HELD_ACTION;
+                    journal.record_referring(action, agent, &key.to_string(), said, err)?;
+                    crate::autoreseat::leg::tell_gave_up(
+                        self.meta_dir,
+                        (self.session, slot, agent),
+                        *key,
+                        Timestamp::from_epoch(now),
+                    );
                 }
                 return Ok(());
             }
@@ -13835,6 +13879,345 @@ mod tests {
         assert!(
             acts(&on, &[one], &refused, 300).is_empty(),
             "an ended episode rests"
+        );
+    }
+
+    /// A limit move that was refused or failed is handed to the trigger again
+    /// once its cooldown has passed, the oldest first and one a cycle, until
+    /// the last round: then the step says once that ae gave up, and a restart
+    /// reads that from the journal.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one table of the step's retry rows")]
+    fn a_refused_limit_seat_is_triggered_again_after_its_cooldown_and_given_up_on_once() {
+        use super::{AutoAct, AutoSeat, auto_acts};
+        use crate::autoreseat::{
+            ATTEMPT_ACTION, DONE_ACTION, FAILED_ACTION, Frame, GAVE_UP_SUMMARY, HELD_ACTION,
+            HoldReason, MAX_ROUNDS, Pane, REFUSED_ACTION, RETRY_COOLDOWN_SECS, Settings, Switch,
+            Trigger,
+        };
+        let record = |at: i64, action: &str, agent: &str, rest: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"{ACTOR}","action":"{action}","target":"{agent}"{rest}}}"#,
+                crate::time::Timestamp::from_epoch(at)
+            ))
+            .expect("a journal line")
+        };
+        let key = |at: i64| crate::time::Timestamp::from_epoch(at);
+        let seat = |slot: &str, agent: &str, frame: Frame, limited: bool| AutoSeat {
+            slot: slot.to_owned(),
+            agent: agent.to_owned(),
+            profile: "sol6x".to_owned(),
+            pane: Pane {
+                frame,
+                human_prompt: false,
+                client_input: None,
+            },
+            limited,
+            room: crate::autoreseat::Room::Unread,
+            derives: false,
+        };
+        let on = Settings {
+            switch: Switch::On,
+            sessions: Some(vec!["dev".to_owned()]),
+            grace_secs: 0,
+            map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            headroom_at: None,
+            headroom_note: None,
+            notes: Vec::new(),
+        };
+        let acts = |seats: &[AutoSeat], events: &[Event], now: i64| {
+            auto_acts(&on, seats, events, ("dev", false), now, &mut Vec::new())
+        };
+        let trigger = |agent: &str| {
+            vec![AutoAct::Trigger {
+                agent: agent.to_owned(),
+            }]
+        };
+        // The journal of `agent`'s limit episode keyed `first`, one attempt
+        // and one closing per entry of `closings`, each attempt one cooldown
+        // after the last closing; and when the last one closed.
+        let rounds = |agent: &str, first: i64, closings: &[&str]| {
+            let by = format!(r#","ref":"{}""#, key(first));
+            let mut events = vec![record(first, "limit", agent, "")];
+            let (mut at, mut closed) = (first + 10, first);
+            for action in closings {
+                closed = at + 10;
+                events.push(record(at, ATTEMPT_ACTION, agent, &by));
+                events.push(record(closed, action, agent, &by));
+                at = closed + RETRY_COOLDOWN_SECS;
+            }
+            (events, closed)
+        };
+        let one = seat("spawned.1", "one", Frame::Clear, true);
+        let (refused, closed) = rounds("one", 100, &[REFUSED_ACTION]);
+        let due = closed + RETRY_COOLDOWN_SECS;
+        assert!(
+            acts(std::slice::from_ref(&one), &refused, due - 1).is_empty(),
+            "cooling down"
+        );
+        assert_eq!(
+            acts(std::slice::from_ref(&one), &refused, due),
+            trigger("one"),
+            "due again"
+        );
+        // The oldest episode first, one a cycle.
+        let (mut both, _) = rounds("one", 100, &[FAILED_ACTION]);
+        both.extend(rounds("two", 50, &[REFUSED_ACTION]).0);
+        let pair = [one.clone(), seat("spawned.2", "two", Frame::Clear, true)];
+        assert_eq!(
+            acts(&pair, &both, due + FAR_OFF),
+            trigger("two"),
+            "oldest first"
+        );
+        // A busy seat is held by the existing rule, never triggered.
+        let busy = seat("spawned.1", "one", Frame::Busy, true);
+        assert_eq!(
+            acts(&[busy], &refused, due),
+            [AutoAct::Held {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                key: key(100),
+                reason: HoldReason::Busy,
+                trigger: Trigger::Limit,
+            }]
+        );
+        // The last round, refused or failed in any mix, is given up on, once.
+        let closings = vec![REFUSED_ACTION, FAILED_ACTION, REFUSED_ACTION];
+        assert_eq!(closings.len(), usize::from(MAX_ROUNDS));
+        let (spent, closed) = rounds("one", 100, &closings);
+        let gave_up = AutoAct::GaveUp {
+            slot: "spawned.1".to_owned(),
+            agent: "one".to_owned(),
+            key: key(100),
+            profile: "sol6x".to_owned(),
+        };
+        for now in [closed + 1, closed + RETRY_COOLDOWN_SECS, closed + FAR_OFF] {
+            assert_eq!(
+                acts(std::slice::from_ref(&one), &spent, now),
+                std::slice::from_ref(&gave_up),
+                "{now}"
+            );
+        }
+        // Said in the journal as a hold, it is not said again after a restart.
+        let mut said = spent.clone();
+        said.push(record(
+            closed + 5,
+            HELD_ACTION,
+            "one",
+            &format!(r#","ref":"{}","summary":"{GAVE_UP_SUMMARY}""#, key(100)),
+        ));
+        assert!(
+            acts(std::slice::from_ref(&one), &said, closed + FAR_OFF).is_empty(),
+            "a restart"
+        );
+        // A done that landed after the last closing ends the path: the seat
+        // moved, so nothing is given up on.
+        let mut moved = spent.clone();
+        moved.push(record(closed + 5, DONE_ACTION, "one", r#","ref":"sol6x""#));
+        assert!(
+            acts(std::slice::from_ref(&one), &moved, closed + FAR_OFF).is_empty(),
+            "a late done"
+        );
+        // A seat whose latch no longer stands is not the limit path's to give up on.
+        let free = seat("spawned.1", "one", Frame::Clear, false);
+        assert!(
+            acts(&[free], &spent, closed + FAR_OFF).is_empty(),
+            "unlatched"
+        );
+    }
+
+    /// Far enough past every cooldown.
+    const FAR_OFF: i64 = 10_000_000;
+
+    /// The give-up is journaled as the seat's hold under the episode key and
+    /// told as every ending is, exactly once and only while it is owed.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table of the writer rows, then its lock and replay"
+    )]
+    fn the_give_up_is_journaled_as_a_hold_and_told_once_while_it_is_owed() {
+        use super::AutoAct;
+        use crate::autoreseat::{
+            ATTEMPT_ACTION, Ending, GAVE_UP_SUMMARY, HELD_ACTION, REFUSED_ACTION,
+            RETRY_COOLDOWN_SECS, Settings, Switch,
+        };
+        let scratch = Scratch::new("auto-record-gave-up");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: Vec::new(),
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            auto: Settings {
+                switch: Switch::On,
+                sessions: None,
+                grace_secs: 0,
+                map: Vec::new(),
+                headroom_at: None,
+                headroom_note: None,
+                notes: Vec::new(),
+            },
+            auto_trust: crate::config::AutoTrust::Off,
+            meta_agent: false,
+            launch_ids: Vec::new(),
+        };
+        let now = crate::time::Timestamp::now().epoch();
+        let at = crate::time::Timestamp::from_epoch;
+        let first = now - 100_000;
+        let line = |when: i64, action: &str, reference: Option<i64>, summary: &str| {
+            let reference =
+                reference.map_or_else(String::new, |value| format!(r#","ref":"{}""#, at(value)));
+            format!(
+                r#"{{"ts":"{}","actor":"{ACTOR}","action":"{action}","target":"builder"{reference},"summary":"{summary}"}}"#,
+                at(when)
+            )
+        };
+        // `count` rounds, each refused one cooldown after the last.
+        let spent = |count: i64| {
+            let mut journal = vec![line(first, "limit", None, "")];
+            for round in 0..count {
+                let attempt = first + 10 + round * (10 + RETRY_COOLDOWN_SECS);
+                journal.push(line(attempt, ATTEMPT_ACTION, Some(first), "from a to b"));
+                journal.push(line(
+                    attempt + 10,
+                    REFUSED_ACTION,
+                    Some(first),
+                    "refused: x",
+                ));
+            }
+            journal
+        };
+        let act = |stamp: i64| AutoAct::GaveUp {
+            slot: "spawned.3".to_owned(),
+            agent: "builder".to_owned(),
+            key: at(stamp),
+            profile: "sol6x".to_owned(),
+        };
+        let reference = at(first).to_string();
+        let mut said = spent(3);
+        said.push(line(now - 50, HELD_ACTION, Some(first), GAVE_UP_SUMMARY));
+        let mut moved = spent(3);
+        moved.push(format!(
+            r#"{{"ts":"{}","actor":"{ACTOR}","action":"auto-reseat-done","target":"builder","ref":"sol6x"}}"#,
+            at(now - 40)
+        ));
+        for (journal, act, written, why) in [
+            (
+                moved,
+                act(first),
+                vec![],
+                "a done after the last closing: the seat moved, nothing to give up on",
+            ),
+            (
+                spent(3),
+                act(first),
+                vec![(HELD_ACTION, Some(reference.clone())), ("chat", None)],
+                "the last round is given up on",
+            ),
+            (
+                said,
+                act(first),
+                vec![],
+                "once: the journal already says it",
+            ),
+            (
+                spent(2),
+                act(first),
+                vec![],
+                "a round is left: nothing is owed",
+            ),
+            (
+                spent(3),
+                act(first + 1),
+                vec![],
+                "another episode's key owes nothing",
+            ),
+        ] {
+            std::fs::write(
+                scratch.0.join("events.jsonl"),
+                journal
+                    .iter()
+                    .fold(String::new(), |text, record| text + record + "\n"),
+            )
+            .expect("events");
+            let before = read_events(&scratch.0).len();
+            let mut err = Vec::new();
+            cycle.auto_record(&act, now, &mut err).expect("the writer");
+            let recorded = read_events(&scratch.0)
+                .into_iter()
+                .skip(before)
+                .collect::<Vec<_>>();
+            let seen: Vec<(String, Option<String>)> = recorded
+                .iter()
+                .map(|event| (event.action.clone(), event.reference.clone()))
+                .collect();
+            let expected: Vec<(String, Option<String>)> = written
+                .into_iter()
+                .map(|(action, reference)| (action.to_owned(), reference))
+                .collect();
+            assert_eq!(seen, expected, "{why}");
+            if let [held, told] = &recorded[..] {
+                assert_eq!(held.summary.as_deref(), Some(GAVE_UP_SUMMARY), "{why}");
+                assert_eq!(
+                    told.summary.as_deref(),
+                    Some(crate::autoreseat::notice("demo", "builder", &Ending::GaveUp).as_str()),
+                    "{why}"
+                );
+            }
+            assert!(err.is_empty(), "{why}: {}", String::from_utf8_lossy(&err));
+        }
+        // Under a rival writer's lock nothing is written however owed, and the
+        // next cycle, lock free, still owes it.
+        std::fs::write(
+            scratch.0.join("events.jsonl"),
+            spent(3)
+                .iter()
+                .fold(String::new(), |text, record| text + record + "\n"),
+        )
+        .expect("events");
+        let lock = crate::autoreseat::lock_path(&scratch.0, "spawned.3");
+        let rival = crate::store::lock(&lock, std::time::Duration::ZERO).expect("a rival's lock");
+        let before = read_events(&scratch.0).len();
+        cycle
+            .auto_record(&act(first), now, &mut Vec::new())
+            .expect("the writer");
+        assert_eq!(read_events(&scratch.0).len(), before, "a held lock");
+        drop(rival);
+        cycle
+            .auto_record(&act(first), now, &mut Vec::new())
+            .expect("the writer");
+        assert_eq!(read_events(&scratch.0).len(), before + 2, "owed again");
+        // And only once: a replay of the same act finds it said.
+        cycle
+            .auto_record(&act(first), now, &mut Vec::new())
+            .expect("the writer");
+        assert_eq!(read_events(&scratch.0).len(), before + 2, "replayed");
+        // A stale act after the latch cleared writes nothing: the episode is gone.
+        let mut cleared = spent(3);
+        cleared.push(line(now - 30, "alert-cleared", None, ""));
+        std::fs::write(
+            scratch.0.join("events.jsonl"),
+            cleared
+                .iter()
+                .fold(String::new(), |text, record| text + record + "\n"),
+        )
+        .expect("events");
+        let before = read_events(&scratch.0).len();
+        cycle
+            .auto_record(&act(first), now, &mut Vec::new())
+            .expect("the writer");
+        assert_eq!(
+            read_events(&scratch.0).len(),
+            before,
+            "after an alert-cleared"
         );
     }
 

@@ -19,6 +19,12 @@
 //! its outcome. Every record this path writes carries the key as its `ref`,
 //! except `auto-reseat-done`, whose `ref` is the profile the seat LEFT.
 //!
+//! A limit move that is REFUSED or FAILED closes a ROUND, not the episode: after
+//! [`RETRY_COOLDOWN_SECS`] from that closing the seat, still latched, is due
+//! again under the same key, and the next attempt (or closing) opens a new round
+//! with its own [`MAX_ATTEMPTS`]. The [`MAX_ROUNDS`]th closing ends the path for
+//! good; a done always does. All of it is read from the journal and the clock.
+//!
 //! A HEADROOM episode is the same path with another opener: it starts at the
 //! first `auto-reseat-headroom` the watchdog booked for the seat after its
 //! newest `spawn`, re-arm or move, and its KEY is that record's timestamp. It
@@ -134,6 +140,16 @@ const HEADROOM_KEY: &str = "auto_reseat_at";
 
 /// Attempts one episode may make: one, and one more after a transient hold.
 pub const MAX_ATTEMPTS: u8 = 2;
+/// How long a limit episode whose move was refused or failed waits, counted
+/// from that closing, before a seat still on the same limit is tried again.
+pub const RETRY_COOLDOWN_SECS: i64 = 1800;
+/// Refused or failed moves (closings) one limit episode may take in all; the
+/// last ends its auto path for good. Each round keeps its [`MAX_ATTEMPTS`], so
+/// one key makes at most `MAX_ROUNDS * MAX_ATTEMPTS` attempts.
+pub const MAX_ROUNDS: u8 = 3;
+/// The hold the daemon journals, once, when the last round was refused or
+/// failed: no further attempt, and the seat is told.
+pub const GAVE_UP_SUMMARY: &str = "held: gave up after repeated refused or failed moves";
 /// How long an attempt may run before its failure is booked without it.
 pub const IN_FLIGHT_SECS: i64 = 180;
 /// The grace a limit is given before the seat is moved.
@@ -631,10 +647,16 @@ pub struct Episode {
     /// The opener's summary, quoted whole by every record that names the
     /// trigger; empty for a limit episode, whose records stay as they were.
     cause: String,
+    /// Attempts of the current round.
     pub attempts: u8,
+    /// Refused or failed closings taken under this key, all rounds.
+    pub rounds: u8,
+    /// When the current round's first closing was journaled.
+    closed_at: Option<Timestamp>,
     /// The newest attempt that has no outcome yet.
     pub open: Option<Timestamp>,
-    /// The first terminal outcome; it ends the episode's auto path.
+    /// The first terminal outcome of the current round. A done is final; a
+    /// refused or failed limit round is reopened once [`Self::cooled`].
     pub terminal: Option<Outcome>,
     /// The newest record of this path is a hold.
     pub held: bool,
@@ -663,6 +685,27 @@ impl Episode {
         self.held && self.last_hold.as_deref() == Some(summary)
     }
 
+    /// Whether the last round of this limit episode was refused or failed:
+    /// the path is over for good, and the seat is owed one word of it.
+    #[must_use]
+    pub fn gave_up(&self) -> bool {
+        self.trigger == Trigger::Limit
+            && matches!(self.terminal, Some(Outcome::Refused | Outcome::Failed))
+            && self.rounds >= MAX_ROUNDS
+    }
+
+    /// Whether a refused or failed limit round, closed at `closed_at`, may be
+    /// tried again at `at`: the cooldown has passed and rounds are left. A
+    /// headroom episode stays closed until its re-arm.
+    fn cooled(&self, at: i64) -> bool {
+        self.trigger == Trigger::Limit
+            && matches!(self.terminal, Some(Outcome::Refused | Outcome::Failed))
+            && self.rounds < MAX_ROUNDS
+            && self
+                .closed_at
+                .is_some_and(|closed| at >= closed.epoch().saturating_add(RETRY_COOLDOWN_SECS))
+    }
+
     fn opened(key: Timestamp) -> Self {
         Self::opened_by(key, Trigger::Limit, String::new())
     }
@@ -674,6 +717,8 @@ impl Episode {
             trigger,
             cause,
             attempts: 0,
+            rounds: 0,
+            closed_at: None,
             open: None,
             terminal: None,
             held: false,
@@ -698,18 +743,39 @@ impl Episode {
                 self.held = true;
                 self.last_hold.clone_from(&event.summary);
             }
-            DONE_ACTION => self.close(Outcome::Done),
-            REFUSED_ACTION if ours => self.close(Outcome::Refused),
-            FAILED_ACTION if ours => self.close(Outcome::Failed),
+            DONE_ACTION => self.close(Outcome::Done, event.ts),
+            REFUSED_ACTION if ours => self.close(Outcome::Refused, event.ts),
+            FAILED_ACTION if ours => self.close(Outcome::Failed, event.ts),
             _ => {}
         }
     }
 
-    /// The first terminal outcome wins; a later one closes nothing new.
-    fn close(&mut self, outcome: Outcome) {
+    /// The first outcome of a round closes it; a refused or failed one counts
+    /// a round and starts its cooldown. A later closing of the same round
+    /// changes nothing — not even the hold it may have followed — except a
+    /// done, which is final: the seat moved.
+    fn close(&mut self, outcome: Outcome, at: Timestamp) {
+        let moved = matches!(self.terminal, Some(Outcome::Refused | Outcome::Failed))
+            && outcome == Outcome::Done;
+        if self.terminal.is_some() && !moved {
+            return;
+        }
         self.open = None;
         self.held = false;
-        self.terminal.get_or_insert(outcome);
+        self.terminal = Some(outcome);
+        if outcome != Outcome::Done {
+            self.rounds = self.rounds.saturating_add(1);
+            self.closed_at = Some(at);
+        }
+    }
+
+    /// A new round: the cooldown passed, so the closed attempts count for
+    /// nothing and the next attempt opens under the same key.
+    fn reopen(&mut self) {
+        self.terminal = None;
+        self.attempts = 0;
+        self.open = None;
+        self.held = false;
     }
 }
 
@@ -740,7 +806,9 @@ pub fn headroom_episode(
 /// either — or a move, whatever its ref — closes every episode still open
 /// beside it. An outcome under a key neither holds closes nothing. A closed
 /// limit episode waits for its `alert-cleared`, a closed headroom one for its
-/// re-arm, before a new one opens.
+/// re-arm, before a new one opens. A limit episode closed `refused` or
+/// `failed` is the exception: its next attempt or closing, journaled after its
+/// cooldown under the same key, opens a new round ([`Episode::cooled`]).
 fn episodes(
     events: &[Event],
     session: &str,
@@ -759,6 +827,16 @@ fn episodes(
         }
         if event.actor != WATCHDOG_ACTOR {
             continue;
+        }
+        if let Some(open) = limit.as_mut()
+            && matches!(
+                event.action.as_str(),
+                ATTEMPT_ACTION | REFUSED_ACTION | FAILED_ACTION
+            )
+            && event.reference.as_deref() == Some(open.reference())
+            && open.cooled(event.ts.epoch())
+        {
+            open.reopen();
         }
         let live = |found: &Option<Episode>| {
             found.as_ref().is_some_and(|open| {
@@ -800,7 +878,7 @@ fn episodes(
                 };
                 for open in [limit.as_mut(), headroom.as_mut()].into_iter().flatten() {
                     if open.terminal.is_none() {
-                        open.close(outcome);
+                        open.close(outcome, event.ts);
                     }
                 }
             }
@@ -991,7 +1069,9 @@ impl HoldReason {
 /// What to do for a latched, eligible seat this cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
-    /// Nothing more this episode: none, a terminal outcome, or attempts spent.
+    /// Nothing now: no episode, a terminal outcome (a refused or failed limit
+    /// round until its cooldown has passed and while rounds are left), or
+    /// attempts spent.
     Rest,
     /// Not due before this epoch.
     Wait {
@@ -1015,7 +1095,8 @@ pub enum Decision {
 /// prove idle; a limit move reads that frame as clear, as it always has.
 #[must_use]
 pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64) -> Decision {
-    let Some(episode) = episode.filter(|found| found.terminal.is_none()) else {
+    let Some(episode) = episode.filter(|found| found.terminal.is_none() || found.cooled(now))
+    else {
         return Decision::Rest;
     };
     if let Some(started) = episode.open {
@@ -1025,7 +1106,8 @@ pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64)
             Decision::Overdue
         };
     }
-    if episode.attempts >= MAX_ATTEMPTS {
+    // A cooled episode's count is its closed round's: the next one starts anew.
+    if episode.terminal.is_none() && episode.attempts >= MAX_ATTEMPTS {
         return Decision::Rest;
     }
     let grace = i64::try_from(grace_secs).unwrap_or(i64::MAX);
@@ -1427,6 +1509,8 @@ pub enum Ending<'a> {
     Refused(CauseClass, &'a str),
     Failed(CauseClass, &'a str),
     Unmapped(&'a str),
+    /// The last round was refused or failed: no further attempt.
+    GaveUp,
 }
 
 /// What a move changed, as its notice names it.
@@ -1465,13 +1549,21 @@ pub enum Nudge {
 /// The widest a notice may be, in characters.
 pub const NOTICE_CHARS: usize = 400;
 
+/// The line for a limit episode whose last round was refused or failed.
+fn gave_up_line(agent: &str, hand: &str) -> String {
+    format!(
+        "{agent} not moved — auto reseat gave up after {MAX_ROUNDS} refused or failed moves. \
+         Next: {hand} or wait for the reset."
+    )
+}
+
 /// The ONE line every recipient and the chat are told for `ending`.
 #[must_use]
 pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
     // The class of a hold, refusal or failure leads the notice, ahead of the
     // agent and session names, so no cut of what follows can take it.
     let class = match ending {
-        Ending::Moved(_) => None,
+        Ending::Moved(_) | Ending::GaveUp => None,
         Ending::Held(class, _) | Ending::Refused(class, _) | Ending::Failed(class, _) => {
             Some(*class)
         }
@@ -1543,6 +1635,7 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
              else reseat it by hand.",
             class.details(why)
         ),
+        Ending::GaveUp => gave_up_line(agent, &hand),
     };
     let head = class.map_or_else(
         || "auto reseat: ".to_owned(),
@@ -1914,13 +2007,18 @@ mod tests {
         let done = fold(&moved).expect("an episode");
         assert_eq!((done.open, done.terminal), (None, Some(Outcome::Done)));
         events.push(routed(780, FAILED_ACTION, KEY));
+        // A second closing inside the same round is the same round's: the
+        // first of a round wins.
+        let mut doubled = events.clone();
+        doubled.push(routed(840, REFUSED_ACTION, KEY));
+        let first = fold(&doubled).expect("an episode");
+        assert_eq!((first.open, first.terminal), (None, Some(Outcome::Failed)));
+        // A done that lands after a failed closing still ends the path: the
+        // seat moved, and a refused or failed round is no longer final.
         events.push(routed(785, DONE_ACTION, "sol6x"));
         events.push(routed(840, REFUSED_ACTION, KEY));
         let closed = fold(&events).expect("an episode");
-        assert_eq!(
-            (closed.open, closed.terminal),
-            (None, Some(Outcome::Failed))
-        );
+        assert_eq!((closed.open, closed.terminal), (None, Some(Outcome::Done)));
         // A done with no attempt open still ends the path: the seat moved.
         let stray = fold(&[limit(), routed(700, DONE_ACTION, "sol6x")]).expect("an episode");
         assert_eq!((stray.attempts, stray.terminal), (0, Some(Outcome::Done)));
@@ -3401,5 +3499,381 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A time far past every cooldown.
+    const FAR: i64 = 10_000_000;
+
+    /// The journal of a limit episode whose moves were each closed by the next
+    /// action in `closings`, an attempt before each, the next attempt one
+    /// cooldown after the last closing; and when the last one closed.
+    fn rounds_of(closings: &[&str]) -> (Vec<Event>, i64) {
+        let mut events = vec![limit()];
+        let (mut attempt, mut closed) = (600, 0);
+        for action in closings {
+            closed = attempt + 30;
+            events.push(routed(attempt, ATTEMPT_ACTION, KEY));
+            events.push(routed(closed, action, KEY));
+            attempt = closed + RETRY_COOLDOWN_SECS;
+        }
+        (events, closed)
+    }
+
+    #[test]
+    fn a_refused_or_failed_limit_move_is_due_again_once_its_cooldown_has_passed() {
+        for action in [REFUSED_ACTION, FAILED_ACTION] {
+            let (events, closed) = rounds_of(&[action]);
+            let due = closed + RETRY_COOLDOWN_SECS;
+            assert_eq!(at(&events, &CLEAR, due - 1), Decision::Rest, "{action}");
+            assert_eq!(at(&events, &CLEAR, due), Decision::Attempt, "{action}");
+            assert_eq!(at(&events, &CLEAR, FAR), Decision::Attempt, "{action}");
+        }
+        // The cooldown counts from the closing, not from the key; and the
+        // refusal the trigger writes when nothing is usable has no attempt
+        // before it.
+        let bare = [limit(), routed(700, REFUSED_ACTION, KEY)];
+        let due = 700 + RETRY_COOLDOWN_SECS;
+        assert_eq!(at(&bare, &CLEAR, due - 1), Decision::Rest);
+        assert_eq!(at(&bare, &CLEAR, due), Decision::Attempt);
+    }
+
+    #[test]
+    fn a_due_retry_answers_to_the_pane_and_the_grace_like_the_first_attempt() {
+        let (events, closed) = rounds_of(&[REFUSED_ACTION]);
+        let due = closed + RETRY_COOLDOWN_SECS;
+        for (pane, reason) in [
+            (pane(Frame::Unread, false, None), HoldReason::Unread),
+            (pane(Frame::Busy, false, None), HoldReason::Busy),
+            (pane(Frame::Draft, false, None), HoldReason::Draft),
+            (pane(Frame::Clear, true, None), HoldReason::HumanPrompt),
+            (
+                pane(Frame::Clear, false, Some(due - 100)),
+                HoldReason::ClientInput,
+            ),
+        ] {
+            assert_eq!(at(&events, &pane, due), Decision::Hold(reason), "{pane:?}");
+        }
+        // A limit move reads a frame ae cannot prove idle as clear, as ever.
+        let unproven = pane(Frame::Unproven, false, None);
+        assert_eq!(at(&events, &unproven, due), Decision::Attempt);
+    }
+
+    #[test]
+    fn each_round_has_its_own_transient_hold_allowance() {
+        let (due, retried) = (
+            730 + RETRY_COOLDOWN_SECS,
+            routed(730 + RETRY_COOLDOWN_SECS, ATTEMPT_ACTION, KEY),
+        );
+        // A first round that used its second attempt before it was refused.
+        let mut events = vec![
+            limit(),
+            routed(600, ATTEMPT_ACTION, KEY),
+            routed(630, HELD_ACTION, KEY),
+            routed(700, ATTEMPT_ACTION, KEY),
+            routed(730, REFUSED_ACTION, KEY),
+        ];
+        assert_eq!(at(&events, &CLEAR, due), Decision::Attempt);
+        events.extend([retried, routed(due + 30, HELD_ACTION, KEY)]);
+        assert_eq!(at(&events, &CLEAR, due + 60), Decision::Attempt);
+        events.extend([
+            routed(due + 70, ATTEMPT_ACTION, KEY),
+            routed(due + 100, HELD_ACTION, KEY),
+        ]);
+        assert_eq!(at(&events, &CLEAR, due + 200), Decision::Rest);
+    }
+
+    #[test]
+    fn a_whole_key_makes_at_most_two_attempts_in_each_of_three_closings() {
+        // Every round uses its transient allowance: attempt, hold, attempt, then
+        // the closing; the next round starts one cooldown after it.
+        let mut events = vec![limit()];
+        let (mut start, mut closed) = (600, 0);
+        for round in 0..MAX_ROUNDS {
+            events.push(routed(start, ATTEMPT_ACTION, KEY));
+            events.push(routed(start + 30, HELD_ACTION, KEY));
+            assert_eq!(
+                at(&events, &CLEAR, start + 60),
+                Decision::Attempt,
+                "{round}"
+            );
+            events.push(routed(start + 60, ATTEMPT_ACTION, KEY));
+            // The second attempt of a round, the sixth of the key in the last,
+            // is judged by the same bound as any open attempt.
+            let bound = start + 60 + IN_FLIGHT_SECS;
+            assert_eq!(
+                at(&events, &CLEAR, bound - 1),
+                Decision::InFlight,
+                "{round}"
+            );
+            assert_eq!(at(&events, &CLEAR, bound), Decision::Overdue, "{round}");
+            closed = start + 90;
+            let action = if round % 2 == 0 {
+                REFUSED_ACTION
+            } else {
+                FAILED_ACTION
+            };
+            events.push(routed(closed, action, KEY));
+            if round + 1 < MAX_ROUNDS {
+                let due = closed + RETRY_COOLDOWN_SECS;
+                assert_eq!(at(&events, &CLEAR, due - 1), Decision::Rest, "{round}");
+                assert_eq!(at(&events, &CLEAR, due), Decision::Attempt, "{round}");
+            }
+            start = closed + RETRY_COOLDOWN_SECS;
+        }
+        let attempts = events
+            .iter()
+            .filter(|event| event.action == ATTEMPT_ACTION)
+            .count();
+        assert_eq!(attempts, 2 * usize::from(MAX_ROUNDS), "six at most");
+        let found = fold(&events).expect("an episode");
+        assert_eq!((found.rounds, found.gave_up()), (MAX_ROUNDS, true));
+        // No seventh attempt, however long the seat stays latched.
+        for since in [
+            closed + 1,
+            closed + RETRY_COOLDOWN_SECS,
+            closed + 7 * RETRY_COOLDOWN_SECS,
+            FAR,
+        ] {
+            assert_eq!(at(&events, &CLEAR, since), Decision::Rest, "{since}");
+        }
+    }
+
+    #[test]
+    fn refusals_with_no_attempt_alone_reach_the_cap() {
+        // The trigger refuses with nothing usable and journals no attempt.
+        let step = RETRY_COOLDOWN_SECS;
+        let mut events = vec![limit(), routed(700, REFUSED_ACTION, KEY)];
+        assert_eq!(fold(&events).map(|found| found.rounds), Some(1));
+        // A second one inside the cooldown is the same round.
+        events.push(routed(710, REFUSED_ACTION, KEY));
+        assert_eq!(fold(&events).map(|found| found.rounds), Some(1));
+        assert_eq!(at(&events, &CLEAR, 700 + step), Decision::Attempt);
+        events.push(routed(700 + step, REFUSED_ACTION, KEY));
+        assert_eq!(fold(&events).map(|found| found.rounds), Some(2));
+        assert_eq!(at(&events, &CLEAR, 700 + 2 * step), Decision::Attempt);
+        events.push(routed(700 + 2 * step, REFUSED_ACTION, KEY));
+        let found = fold(&events).expect("an episode");
+        assert_eq!((found.rounds, found.gave_up()), (MAX_ROUNDS, true));
+        assert_eq!(at(&events, &CLEAR, FAR), Decision::Rest);
+    }
+
+    #[test]
+    fn the_last_round_ends_the_path_for_good_and_no_later_time_revives_it() {
+        for (action, outcome) in [
+            (REFUSED_ACTION, Outcome::Refused),
+            (FAILED_ACTION, Outcome::Failed),
+        ] {
+            for rounds in 1..MAX_ROUNDS {
+                let (events, closed) = rounds_of(&vec![action; usize::from(rounds)]);
+                let found = fold(&events).expect("an episode");
+                assert_eq!((found.rounds, found.gave_up()), (rounds, false), "{action}");
+                let due = closed + RETRY_COOLDOWN_SECS;
+                assert_eq!(
+                    at(&events, &CLEAR, due),
+                    Decision::Attempt,
+                    "{action} {rounds}"
+                );
+            }
+            let (events, closed) = rounds_of(&vec![action; usize::from(MAX_ROUNDS)]);
+            let found = fold(&events).expect("an episode");
+            assert_eq!(
+                (found.rounds, found.gave_up(), found.terminal),
+                (MAX_ROUNDS, true, Some(outcome)),
+                "{action}"
+            );
+            for since in [closed + 1, closed + RETRY_COOLDOWN_SECS, FAR] {
+                assert_eq!(
+                    at(&events, &CLEAR, since),
+                    Decision::Rest,
+                    "{action} {since}"
+                );
+            }
+        }
+        // Refused and failed rounds are counted together.
+        let (mixed, _) = rounds_of(&[REFUSED_ACTION, FAILED_ACTION, REFUSED_ACTION]);
+        let found = fold(&mixed).expect("an episode");
+        assert_eq!((found.rounds, found.gave_up()), (MAX_ROUNDS, true));
+        // The trigger's attempt-less refusal can be the last round.
+        let (mut bare, closed) = rounds_of(&vec![REFUSED_ACTION; usize::from(MAX_ROUNDS) - 1]);
+        bare.push(routed(closed + RETRY_COOLDOWN_SECS, REFUSED_ACTION, KEY));
+        let found = fold(&bare).expect("an episode");
+        assert_eq!((found.rounds, found.gave_up()), (MAX_ROUNDS, true));
+        assert_eq!(at(&bare, &CLEAR, FAR), Decision::Rest);
+        // Holds and a re-booked limit are no rounds.
+        let (mut events, _) = rounds_of(&[REFUSED_ACTION]);
+        events.extend([
+            watchdog(900, LIMIT_ACTION, None),
+            routed(950, HELD_ACTION, KEY),
+        ]);
+        assert_eq!(fold(&events).map(|found| found.rounds), Some(1));
+    }
+
+    #[test]
+    fn a_second_closing_inside_the_cooldown_belongs_to_the_same_round() {
+        // The daemon books an attempt overdue; the slow leg then reports its
+        // own refusal. One round, closed by the first.
+        let events = [
+            limit(),
+            routed(600, ATTEMPT_ACTION, KEY),
+            routed(780, FAILED_ACTION, KEY),
+            routed(800, REFUSED_ACTION, KEY),
+        ];
+        let found = fold(&events).expect("an episode");
+        assert_eq!((found.rounds, found.terminal), (1, Some(Outcome::Failed)));
+        assert_eq!(
+            at(&events, &CLEAR, 780 + RETRY_COOLDOWN_SECS - 1),
+            Decision::Rest
+        );
+        assert_eq!(
+            at(&events, &CLEAR, 780 + RETRY_COOLDOWN_SECS),
+            Decision::Attempt
+        );
+    }
+
+    #[test]
+    fn a_done_never_rearms_whatever_came_before_it() {
+        let moved = [
+            limit(),
+            routed(600, ATTEMPT_ACTION, KEY),
+            routed(700, DONE_ACTION, "sol6x"),
+        ];
+        assert_eq!(at(&moved, &CLEAR, FAR), Decision::Rest);
+        // A done after a refused or failed closing (the overdue-then-slow-leg
+        // race) ends the path too: the seat moved.
+        for action in [REFUSED_ACTION, FAILED_ACTION] {
+            let mut late = rounds_of(&[action]).0;
+            late.push(routed(700, DONE_ACTION, "sol6x"));
+            let found = fold(&late).expect("an episode");
+            assert_eq!(found.terminal, Some(Outcome::Done), "{action}");
+            assert_eq!(at(&late, &CLEAR, FAR), Decision::Rest, "{action}");
+        }
+        // A done in a retry round.
+        let (mut retried, closed) = rounds_of(&[REFUSED_ACTION]);
+        let due = closed + RETRY_COOLDOWN_SECS;
+        retried.extend([
+            routed(due, ATTEMPT_ACTION, KEY),
+            routed(due + 40, DONE_ACTION, "opus55x"),
+        ]);
+        let found = fold(&retried).expect("an episode");
+        assert_eq!(found.terminal, Some(Outcome::Done));
+        assert_eq!(at(&retried, &CLEAR, FAR), Decision::Rest);
+        // The latch never broke: a limit re-booked after the move chains nothing.
+        retried.push(watchdog(due + 900, LIMIT_ACTION, None));
+        assert_eq!(at(&retried, &CLEAR, FAR), Decision::Rest);
+    }
+
+    #[test]
+    fn an_alert_cleared_or_a_spawn_still_resets_a_refused_episode() {
+        let (mut refused, _) = rounds_of(&[REFUSED_ACTION, FAILED_ACTION]);
+        let mut respawned = refused.clone();
+        refused.push(watchdog(5_000, CLEARED_ACTION, None));
+        assert_eq!(fold(&refused), None);
+        assert_eq!(at(&refused, &CLEAR, FAR), Decision::Rest);
+        // The next limit is a fresh episode with a fresh count.
+        refused.push(watchdog(6_000, LIMIT_ACTION, None));
+        let fresh = fold(&refused).expect("a fresh episode");
+        assert_eq!(
+            (fresh.key, fresh.rounds, fresh.terminal, fresh.attempts),
+            (after_key(6_000), 0, None, 0)
+        );
+        respawned.push(spawned(5_000));
+        assert_eq!(fold(&respawned), None);
+    }
+
+    #[test]
+    fn a_restart_that_rebooks_the_limit_reads_the_same_retry_from_the_journal() {
+        let (base, closed) = rounds_of(&[REFUSED_ACTION]);
+        let due = closed + RETRY_COOLDOWN_SECS;
+        // A restart books the limit again: once while cooling down, once
+        // after the retry came due.
+        let mut rebooked = base.clone();
+        rebooked.extend([
+            watchdog(closed + 300, LIMIT_ACTION, None),
+            watchdog(due + 50, LIMIT_ACTION, None),
+        ]);
+        assert_eq!(fold(&rebooked), fold(&base));
+        let found = fold(&rebooked).expect("an episode");
+        assert_eq!((found.reference(), found.rounds), (KEY, 1));
+        for since in [closed + 1, due - 1, due, due + 60] {
+            assert_eq!(
+                at(&rebooked, &CLEAR, since),
+                at(&base, &CLEAR, since),
+                "{since}"
+            );
+        }
+        assert_eq!(at(&rebooked, &CLEAR, due + 60), Decision::Attempt);
+        // The same journal, folded twice, gives the same verdict.
+        assert_eq!(fold(&rebooked), fold(&rebooked));
+    }
+
+    #[test]
+    fn a_retry_attempt_reopens_the_episode_for_the_leg_under_the_same_key() {
+        let seat = (SESSION, SLOT, AGENT);
+        let (mut events, closed) = rounds_of(&[REFUSED_ACTION]);
+        let due = closed + RETRY_COOLDOWN_SECS;
+        // Closed, the leg finds nothing to act on.
+        let shut = keyed(&events, seat, after_key(0)).expect("keyed");
+        assert!(shut.terminal.is_some() && shut.open.is_none());
+        // The retry's attempt, as the trigger journals it, opens it again.
+        events.push(routed(due, ATTEMPT_ACTION, KEY));
+        let found = keyed(&events, seat, after_key(0)).expect("keyed");
+        assert_eq!(found.reference(), KEY);
+        assert_eq!(
+            (found.terminal, found.open, found.attempts, found.rounds),
+            (None, Some(after_key(due)), 1, 1)
+        );
+        // It is in flight and overdue by the same bound.
+        assert_eq!(
+            at(&events, &CLEAR, due + IN_FLIGHT_SECS - 1),
+            Decision::InFlight
+        );
+        assert_eq!(at(&events, &CLEAR, due + IN_FLIGHT_SECS), Decision::Overdue);
+        // Its own closing is the next round.
+        events.push(routed(due + 40, FAILED_ACTION, KEY));
+        let again = keyed(&events, seat, after_key(0)).expect("keyed");
+        assert_eq!(
+            (again.terminal, again.open, again.rounds),
+            (Some(Outcome::Failed), None, 2)
+        );
+        assert_eq!(
+            at(&events, &CLEAR, due + 40 + RETRY_COOLDOWN_SECS - 1),
+            Decision::Rest
+        );
+        assert_eq!(
+            at(&events, &CLEAR, due + 40 + RETRY_COOLDOWN_SECS),
+            Decision::Attempt
+        );
+    }
+
+    #[test]
+    fn a_refused_headroom_episode_is_not_retried_by_the_cooldown() {
+        let events = [
+            crossed(0),
+            routed(5, ATTEMPT_ACTION, KEY),
+            routed(9, REFUSED_ACTION, KEY),
+        ];
+        let found = headroom(&events);
+        assert_eq!(
+            decide(found.as_ref(), 600, &CLEAR, key_epoch() + 9 + FAR),
+            Decision::Rest
+        );
+        assert_eq!(
+            found.map(|found| found.terminal),
+            Some(Some(Outcome::Refused))
+        );
+    }
+
+    #[test]
+    fn the_give_up_notice_names_the_step_the_human_takes() {
+        let line = notice(SESSION, AGENT, &Ending::GaveUp);
+        assert!(line.starts_with("auto reseat: builder not moved"), "{line}");
+        assert!(line.contains("gave up"), "{line}");
+        assert!(
+            line.ends_with(
+                "move it by hand (ae reseat aedev builder --using <profile>) or wait for the reset."
+            ),
+            "{line}"
+        );
+        assert!(line.chars().count() <= NOTICE_CHARS, "{line}");
     }
 }

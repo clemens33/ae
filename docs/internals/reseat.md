@@ -478,10 +478,25 @@ same second share a key, and the leg takes the one whose attempt is in flight. I
 re-chooses from the global config, then moves through `reseat::run_as_watchdog`
 with `StopPolicy::Proven` — a running tool is stopped only on a frame proven
 idle, or proven on the vendor's usage limit over an empty box, on both
-readings — and journals ONE outcome. The first terminal outcome wins; a later
-one closes nothing new. An episode gets at most two attempts: one, and one more
+readings — and journals ONE outcome. The first closing of a round wins; a later
+one closes nothing new. A round gets at most two attempts: one, and one more
 after a transient hold; an attempt still open past 180 s is booked `failed` by
 the daemon.
+
+A LIMIT round closed `auto-reseat-refused` or `-failed` is not the end of its
+episode. Thirty minutes after that closing (`RETRY_COOLDOWN_SECS`), while the seat
+is still latched on the same limit, it is due again under the same key, through
+the same grace, frame and hold rules, one seat a cycle: the trigger journals
+`auto-reseat` (`ref` the key) as ever, which opens a new round, and a refusal the
+trigger writes with no attempt before it (nothing usable) counts as a closing
+too. Three closings in all (`MAX_ROUNDS`, so at most six attempts per key) end
+the path: the daemon journals `auto-reseat-held` (`ref` the key) with
+`held: gave up after repeated refused or failed moves` once, tells the lead pair
+and the spawner as it tells every ending, and a restarted daemon reads the hold
+back and says nothing more. An `auto-reseat-done` is final whenever it lands, and
+an `alert-cleared` or a `spawn` still starts a new episode with a fresh count.
+Nothing here is remembered outside the journal: the fold is the same after a
+restart. A headroom episode is not retried.
 
 The candidates are the `[auto_reseat]` row, then the seat's own family —
 `autoreseat::listed`, which `leg::listed` feeds from the session's identity
@@ -544,8 +559,8 @@ Nothing retries the nudge, and a seeded move gets none.
 The records are `auto-reseat` (the attempt, quoting from and to),
 `auto-reseat-held` (a hold before an attempt, or a transient refusal of one),
 `auto-reseat-done` (the seat moved, `ref` the profile left),
-`auto-reseat-refused` and `auto-reseat-failed` (no further attempt this
-episode), and `auto-reseat-notice` (one per delivery). A move interrupted
+`auto-reseat-refused` and `auto-reseat-failed` (no attempt this round; a limit
+episode tries again after its cooldown until its third), and `auto-reseat-notice` (one per delivery). A move interrupted
 between the stop and the tool starting is finished the same way a manual one
 is: `relaunch <agent>` — the failed notice says so by name.
 
@@ -611,8 +626,10 @@ no second attempt and an unlatched seat opens nothing; a limit supersedes only
 a headroom episode no attempt is moving. An `auto-reseat-refused` or
 `-failed` under the live key of either kind closes EVERY episode still open on
 the seat, and a move closes both whatever its `ref`; an outcome under a key
-neither holds closes nothing. A closed limit episode waits for its
-`alert-cleared` and a fresh `limit`, a closed headroom one for its re-arm. The
+neither holds closes nothing. A limit episode closed `refused` or `failed`
+waits out its cooldown (and is then due again, up to its third closing), a
+closed headroom one for its re-arm; a `done`, or a spent limit episode, waits
+for its `alert-cleared` and a fresh `limit`. The
 kind a profile was left on is the kind of the attempt that moved it, judged when
 that attempt was journaled, so an opener booked in the same second afterwards
 cannot relabel the move.

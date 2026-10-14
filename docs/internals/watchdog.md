@@ -475,7 +475,10 @@ with `failed: no outcome recorded`. The trigger re-derives the decision from a
 fresh capture, so it may decline what this cycle's read decided; the cycle then
 logs `ae: watchdog: auto reseat of <agent> not started this cycle` and the
 next cycle asks again. This budget is the step's own, beside the brief-retry
-rotation's one delivery per cycle.
+rotation's one delivery per cycle. A limit move closed `refused` or `failed` is
+due again 30 minutes later while the seat stays latched, and after its third
+closing the step journals one `auto-reseat-held` saying ae gave up and tells the
+pair ([Moving a seat](reseat.md#automatic-reseat)).
 
 An attempt in flight holds the limit latch: the shell the move leaves is no
 release, so no `alert-cleared` is booked for it, the verdict stays `limit`,

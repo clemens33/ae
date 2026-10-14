@@ -911,10 +911,26 @@ fn tell(argv: &Argv, now: Timestamp, told: Told<'_>, text: &str) {
 /// candidate at all: no attempt, so no leg, ever opens to say it.
 pub(crate) fn tell_unmapped(
     dir: &Path,
-    (session, slot, agent): (&str, &str, &str),
+    seat: (&str, &str, &str),
     profile: &str,
     key: Timestamp,
     now: Timestamp,
+) {
+    tell_ending(dir, seat, key, now, &super::Ending::Unmapped(profile));
+}
+
+/// Tell, as an ending is told, that the last round of the seat's limit episode
+/// was refused or failed: no attempt follows, so no leg ever opens to say it.
+pub(crate) fn tell_gave_up(dir: &Path, seat: (&str, &str, &str), key: Timestamp, now: Timestamp) {
+    tell_ending(dir, seat, key, now, &super::Ending::GaveUp);
+}
+
+fn tell_ending(
+    dir: &Path,
+    (session, slot, agent): (&str, &str, &str),
+    key: Timestamp,
+    now: Timestamp,
+    ending: &super::Ending<'_>,
 ) {
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
     let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
@@ -930,7 +946,7 @@ pub(crate) fn tell_unmapped(
         crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair",
         super::spawner(&events, session, slot, agent),
     );
-    let text = super::notice(session, agent, &super::Ending::Unmapped(profile));
+    let text = super::notice(session, agent, ending);
     tell(&argv, now, told, &text);
 }
 
@@ -2189,6 +2205,119 @@ mod tests {
                     .to_owned()
             }
         );
+    }
+
+    /// A refused or failed limit move is attempted again by the trigger, under
+    /// the same key, only once its cooldown has passed and only until the last
+    /// round; a retry with nothing usable is refused under that key again.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table of retry rows against one seat, read top to bottom"
+    )]
+    fn the_trigger_retries_a_closed_limit_move_under_its_key_after_the_cooldown_and_not_past_the_cap()
+     {
+        use crate::autoreseat::{
+            ATTEMPT_ACTION, FAILED_ACTION, Frame, MAX_ROUNDS, Pane, RETRY_COOLDOWN_SECS, Settings,
+            Switch,
+        };
+        type Gather = dyn Fn(&[String], (&[(String, Timestamp)], &[String])) -> Vec<Candidate>;
+        let key = Timestamp::parse(KEY).expect("the key parses");
+        let record = |since: i64, action: &str, reference: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"{action}","target":"scout","ref":"{reference}"}}"#,
+                Timestamp::from_epoch(key.epoch() + since)
+            ))
+            .expect("a well-formed record")
+        };
+        let on = Settings {
+            switch: Switch::On,
+            sessions: None,
+            grace_secs: 600,
+            map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            headroom_at: None,
+            headroom_note: None,
+            notes: Vec::new(),
+        };
+        let seat = Seat {
+            session: "aedev",
+            slot: "spawned.3",
+            agent: "scout",
+            profile: "sol6x",
+            orchestrator: false,
+        };
+        let clear = Sight {
+            pane: Pane {
+                frame: Frame::Clear,
+                human_prompt: false,
+                client_input: None,
+            },
+            limited: true,
+            near: false,
+        };
+        let usable = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
+            candidates(
+                &declared(list),
+                |_| Some(Resolved { pin: None }),
+                left,
+                None,
+                &[],
+                0,
+            )
+        };
+        let nothing = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
+            candidates(&declared(list), |_| None, left, None, &[], 0)
+        };
+        let at = |since: i64| Timestamp::from_epoch(key.epoch() + since);
+        // A journal of `closings`, an attempt before each, the next one
+        // cooldown after the last closing; and when the last one closed.
+        let rounds = |closings: &[&str]| {
+            let mut events = vec![record(0, "limit", "")];
+            let (mut attempt, mut closed) = (700, 0);
+            for action in closings {
+                closed = attempt + 30;
+                events.push(record(attempt, ATTEMPT_ACTION, KEY));
+                events.push(record(closed, action, KEY));
+                attempt = closed + RETRY_COOLDOWN_SECS;
+            }
+            (events, closed)
+        };
+        let (events, closed) = rounds(&[FAILED_ACTION]);
+        let due = closed + RETRY_COOLDOWN_SECS;
+        let retry = Plan::Attempt {
+            key,
+            to: "opus55x".to_owned(),
+            note: String::new(),
+            cause: String::new(),
+        };
+        let plan_at = |events: &[Event], since: i64, gather: &Gather| {
+            plan(&on, &seat, &clear, events, gather, at(since))
+        };
+        assert!(
+            matches!(plan_at(&events, due - 1, &usable), Plan::Decline(_)),
+            "cooling down"
+        );
+        assert_eq!(plan_at(&events, due, &usable), retry, "due again, same key");
+        assert_eq!(
+            plan_at(&events, due, &nothing),
+            Plan::Refuse {
+                key,
+                why: "no-candidate: refused: no usable candidate: opus55x (not configured here)"
+                    .to_owned()
+            },
+            "a retry with nothing usable is refused under the key again"
+        );
+        let (spent, closed) = rounds(&vec![FAILED_ACTION; usize::from(MAX_ROUNDS)]);
+        for since in [
+            closed + 1,
+            closed + RETRY_COOLDOWN_SECS,
+            closed + 10_000_000,
+        ] {
+            assert!(
+                matches!(plan_at(&spent, since, &usable), Plan::Decline(_)),
+                "past the last round: {since}"
+            );
+        }
     }
 
     /// The attempt is DURABLE before the leg starts, because the leg acts only
