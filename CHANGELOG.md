@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.71] - 2026-10-14
+- A round-trip carry archives the target's stale copies
+
 ## [v2026.10.70] - 2026-10-14
 - Project_key follows claude's rule, run::resumable calls it
 - State the recorded-vs-physical cwd gap, guard a copied key body
