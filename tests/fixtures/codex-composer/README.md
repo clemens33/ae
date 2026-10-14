@@ -8,6 +8,8 @@ the last transcript row through the footer.
 | `codex-idle-0.155.1-200x40.esc` | codex-cli 0.155.1, gpt-6-astra low | idle after one turn: bold `›`, dim placeholder, blank separator, footer in truecolor with dim ` · ` | 2026-09-23, private tmux server, measured |
 | `codex-idle-0.156.1-200x40.esc` | codex-cli 0.156.1, gpt-6-astra low | the same; the footer spells `GPT-6-Astra` and carries no dim separators | 2026-09-23, private tmux server, measured |
 | `codex-starfield-216.esc` | codex-cli 0.155.1, gpt-6-astra xhigh | the idle starfield: braille dots over the row above the composer, the composer row (one dot in place of the space after `›`) and the blank separator above the footer | COMPOSITE, see below |
+| `codex-held-startup-0.162.1-200x40.esc` | codex-cli 0.162.1, stub provider | a paste plus Enter that landed during codex's startup: the composer keeps the chip under a `Working` row and the footer reads bold `Waiting for startup` · bold `esc` cancel; codex submits the held turn itself when the startup turn ends | 2026-10-14, private tmux server, scratch `CODEX_HOME`, measured |
+| `codex-working-draft-0.162.1-200x40.esc` | codex-cli 0.162.1, stub provider | the same chip pasted mid-turn BEFORE any Enter: footer bold `tab` to queue message, genuinely staged and unsent | 2026-10-14, private tmux server, scratch `CODEX_HOME`, measured |
 
 `codex-starfield-216.esc` is the one fixture here not captured whole. Its rows,
 cells and glyphs are the measured plain capture of a live seat (2026-09-22,

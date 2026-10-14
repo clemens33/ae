@@ -377,6 +377,8 @@ struct Gathered {
     /// The first half of `boxed`: the live prompt row sits directly under a
     /// rule (codex's live style proves it outright).
     fenced: bool,
+    /// The row the box ENDS at ([`content_end`]): codex's footer sits below it.
+    end: usize,
 }
 
 impl Gathered {
@@ -407,6 +409,7 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
                 rows: BTreeSet::new(),
                 boxed: true,
                 fenced: true,
+                end,
             };
             gathered.push(&after_first(&found.tail, '›'), composer);
             for seg in &segments[found.index + 1..] {
@@ -451,6 +454,7 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
                 rows: BTreeSet::new(),
                 boxed: fenced && segments.last().is_some_and(|last| end <= last.line),
                 fenced,
+                end,
             };
             gathered.push(
                 found
@@ -965,19 +969,58 @@ fn is_empty_prompt_row(row: &str) -> bool {
     trim_posix(row) == ">"
 }
 
-/// Does Claude's live prompt say it accepted a message into its turn queue?
+/// Did the tool's live prompt accept the message into its own queue?
 ///
-/// The phrase is an affordance the TUI draws after a mid-turn submit, not
-/// draft text. It must therefore never make submit verification retry Enter,
-/// and [`read`] never counts it as a draft. It is the box's WHOLE content,
-/// read as occupancy reads it: claude draws it after an NBSP in its own dim
-/// run (measured, 2.1.280).
+/// Claude: the phrase is an affordance the TUI draws after a mid-turn submit,
+/// not draft text. It must therefore never make submit verification retry
+/// Enter, and [`read`] never counts it as a draft. It is the box's WHOLE
+/// content, read as occupancy reads it: claude draws it after an NBSP in its
+/// own dim run (measured, 2.1.280). Codex: a submit held for its startup
+/// ([`held_for_startup`]); the box keeps the held turn, so [`read`] still
+/// reports it occupied.
 #[must_use]
 pub fn queued_submission(region: &str, model: InputModel) -> bool {
-    if model != InputModel::BorderDelimited {
+    let segments = parse(region);
+    match model {
+        InputModel::BorderDelimited => {
+            gather(&segments, model).is_some_and(|found| queued_affordance(&found, model))
+        }
+        InputModel::StyleDelimited => {
+            gather(&segments, model).is_some_and(|found| held_for_startup(&segments, &found))
+        }
+        InputModel::Unmodelled => false,
+    }
+}
+
+/// Did codex take the turn in its box and HOLD it until its startup ends?
+///
+/// An Enter pressed while codex still starts (measured on 0.162.1: inside the
+/// MCP boot window) is not dropped: the composer keeps the pasted chip, the
+/// footer row below the box becomes `Waiting for startup  · esc cancel`, and
+/// codex submits the held turn itself when its startup turn ends. The footer is
+/// drawn only once a submit is pending — before any Enter the same chip reads
+/// `tab to queue message` — so the box holding content under that footer is the
+/// pending submit, whatever the content is. Pressing Enter again changes
+/// nothing (three presses submitted once). The footer is read only BELOW the
+/// box, so a transcript row quoting it never counts.
+fn held_for_startup(segments: &[Segment], found: &Gathered) -> bool {
+    if squeezed(&found.text).is_empty() {
         return false;
     }
-    gather(&parse(region), model).is_some_and(|found| queued_affordance(&found, model))
+    let Some(first) = segments
+        .iter()
+        .find(|seg| seg.line > found.end && !squeezed(&seg.text).is_empty())
+    else {
+        return false;
+    };
+    let row: String = segments
+        .iter()
+        .filter(|seg| seg.line == first.line)
+        .map(|seg| seg.text.as_str())
+        .collect();
+    trim_posix(&row)
+        .strip_prefix("Waiting for startup")
+        .is_some_and(|rest| rest.starts_with(is_space) && rest.contains("esc cancel"))
 }
 
 /// Whether the gathered box holds claude's queued-messages affordance and
@@ -1018,20 +1061,14 @@ pub fn initializing(capture: &str, model: InputModel) -> bool {
     }
     capture
         .lines()
-        .any(|line| mcp_progress(line) || model_loading(line))
+        .any(|line| mcp_progress(line) || booting_mcp(line) || model_loading(line))
 }
 
 /// `^•[[:space:]]+Starting MCP servers \([0-9]+/[0-9]+\)` — the bullet the TUI
 /// draws starts the line, and the counter is what makes it a class.
 fn mcp_progress(line: &str) -> bool {
-    let Some(after) = line.strip_prefix('•') else {
-        return false;
-    };
-    let rest = after.trim_start_matches(is_space);
-    if rest.len() == after.len() {
-        return false; // at least one space is required
-    }
-    let Some(rest) = rest.strip_prefix("Starting MCP servers (") else {
+    let Some(rest) = bulleted(line).and_then(|row| row.strip_prefix("Starting MCP servers ("))
+    else {
         return false;
     };
     let (count, rest) = digits(rest);
@@ -1043,6 +1080,29 @@ fn mcp_progress(line: &str) -> bool {
     };
     let (count, rest) = digits(rest);
     count > 0 && rest.starts_with(')')
+}
+
+/// `^•[[:space:]]+Booting MCP server: [^[:space:]]+ \([0-9]+s` — what codex
+/// 0.162.1 draws instead of the counter while ONE server boots (measured:
+/// `• Booting MCP server: codex_tui (0s • esc to interrupt)`, t = 0.7 s with
+/// no configured server). A turn submitted inside this window is held by codex.
+fn booting_mcp(line: &str) -> bool {
+    let Some(rest) = bulleted(line).and_then(|row| row.strip_prefix("Booting MCP server: ")) else {
+        return false;
+    };
+    let name = rest.find(is_space).unwrap_or(rest.len());
+    let Some(rest) = rest[name..].strip_prefix(" (") else {
+        return false;
+    };
+    let (count, rest) = digits(rest);
+    name > 0 && count > 0 && rest.starts_with('s')
+}
+
+/// The row after the TUI's status bullet and at least one space, or `None`.
+fn bulleted(line: &str) -> Option<&str> {
+    let after = line.strip_prefix('•')?;
+    let rest = after.trim_start_matches(is_space);
+    (rest.len() != after.len()).then_some(rest)
 }
 
 /// `^│[[:space:]]*model:[[:space:]]+loading([[:space:]].*)?/model to change`
@@ -2032,6 +2092,71 @@ mod tests {
         include_str!("../../tests/fixtures/codex-composer/codex-idle-0.155.1-200x40.esc");
     const CODEX_IDLE_156: &str =
         include_str!("../../tests/fixtures/codex-composer/codex-idle-0.156.1-200x40.esc");
+    /// codex 0.162.1, ae's turn pasted and Enter pressed during startup: the
+    /// chip stays in the composer, the footer reads `Waiting for startup`.
+    const CODEX_HELD: &str =
+        include_str!("../../tests/fixtures/codex-composer/codex-held-startup-0.162.1-200x40.esc");
+    /// The same chip pasted mid-turn, BEFORE any Enter: footer `tab to queue
+    /// message`. Genuinely staged, unsent.
+    const CODEX_DRAFT: &str =
+        include_str!("../../tests/fixtures/codex-composer/codex-working-draft-0.162.1-200x40.esc");
+
+    #[test]
+    fn a_codex_turn_held_for_its_startup_reads_as_queued_and_an_unsent_one_does_not() {
+        let style = InputModel::StyleDelimited;
+        assert!(queued_submission(CODEX_HELD, style));
+        // The box still holds the chip for the quiet gate: queued is a verdict
+        // on the submit, never a claim the box is empty.
+        assert_eq!(occupancy(CODEX_HELD, style), Occupancy::Occupied);
+        assert!(!queued_submission(CODEX_DRAFT, style));
+        for idle in [CODEX_IDLE_155, CODEX_IDLE_156, CODEX_STARFIELD] {
+            assert!(!queued_submission(idle, style));
+        }
+        // The hold is codex's, and only a drawn footer below the box names it.
+        assert!(!queued_submission(CODEX_HELD, InputModel::BorderDelimited));
+        let footer = CODEX_HELD.lines().last().unwrap_or_default();
+        let held_text = CODEX_HELD.replace(footer, "  model gpt-6 · ~/x");
+        assert!(!queued_submission(&held_text, style));
+        // Plain text carries the verdict too, whatever the footer's styling,
+        // and the footer is read only BELOW the box.
+        let held = |above: &str, footer: &str| {
+            format!("{above}\u{1b}[1m›\u{1b}[0m [Pasted Content 70 chars]\n\n  {footer}\n")
+        };
+        assert!(queued_submission(
+            &held("", "Waiting for startup  · esc cancel"),
+            style
+        ));
+        assert!(!queued_submission(
+            &held("  Waiting for startup  · esc cancel\n", "100% context left"),
+            style
+        ));
+        assert!(!queued_submission(
+            &held("", "Waiting for startups  · esc cancel"),
+            style
+        ));
+        assert!(!queued_submission(&held("", "Waiting for startup"), style));
+    }
+
+    #[test]
+    fn codex_booting_one_mcp_server_is_a_start_up_row_like_the_progress_counter() {
+        let style = InputModel::StyleDelimited;
+        // Measured on 0.162.1 with no configured server, t = 0.7 s.
+        let boot = "• Booting MCP server: codex_tui (0s • esc to interrupt)\n";
+        assert!(initializing(boot, style));
+        assert!(initializing(&format!("chrome\n{boot}box\n"), style));
+        // Measured with three slow servers: the counter spelling still holds.
+        assert!(initializing(
+            "• Starting MCP servers (1/4): slowa, slowb, slowc (4s • esc to interrupt)\n",
+            style
+        ));
+        // Once the turn runs the row says `Working`, and quoted frames are
+        // indented, exactly as for the counter.
+        assert!(!initializing("• Working (3s • esc to interrupt)\n", style));
+        assert!(!initializing(&format!("  {boot}"), style));
+        assert!(!initializing("•Booting MCP server: x (0s)\n", style));
+        assert!(!initializing("• Booting MCP server:\n", style));
+        assert!(!initializing(boot, InputModel::BorderDelimited));
+    }
 
     #[test]
     fn a_codex_starfield_is_furniture_and_its_footer_stays_outside_the_box() {

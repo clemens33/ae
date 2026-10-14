@@ -1153,9 +1153,17 @@ pub fn still_staged(server: &ServerId, pane: &str, model: InputModel) -> SubmitS
     if !model.is_modelled() {
         return SubmitState::Unknown(Unverifiable::Unmodelled);
     }
-    match transport::capture_screen(server, pane, Styling::Escapes) {
-        Some(region) if region::queued_submission(&region, model) => SubmitState::Submitted,
-        Some(region) => match region::occupancy(&region, model) {
+    staged_verdict(
+        transport::capture_screen(server, pane, Styling::Escapes).as_deref(),
+        model,
+    )
+}
+
+/// [`still_staged`]'s verdict on ONE capture of a modelled pane, pure.
+fn staged_verdict(capture: Option<&str>, model: InputModel) -> SubmitState {
+    match capture {
+        Some(region) if region::queued_submission(region, model) => SubmitState::Submitted,
+        Some(region) => match region::occupancy(region, model) {
             Occupancy::Idle => SubmitState::Submitted,
             Occupancy::Occupied => SubmitState::StillStaged,
             Occupancy::Unreadable => SubmitState::Unknown(Unverifiable::PaneUnparseable),
@@ -1579,16 +1587,33 @@ pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> Submit
     let _ = transport::send_key(server, pane, Key::Enter);
     for retry in 0..=VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
-        let observed = still_staged(server, pane, model);
-        match observed {
-            SubmitState::Submitted | SubmitState::Unknown(_) => return observed,
-            SubmitState::StillStaged if retry == VERIFY_RETRIES => return SubmitState::StillStaged,
-            SubmitState::StillStaged => {
+        match verified(still_staged(server, pane, model), retry) {
+            Verified::Done(state) => return state,
+            Verified::PressAgain => {
                 let _ = transport::send_key(server, pane, Key::Enter);
             }
         }
     }
     SubmitState::StillStaged
+}
+
+/// What the verification does after one read: settle on a verdict, or press
+/// Enter again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verified {
+    Done(SubmitState),
+    PressAgain,
+}
+
+/// Only a box still holding the turn is pressed again, and the last retry
+/// settles on what it saw. Every other read ends the loop with its own verdict,
+/// so a turn the tool took — a held one included
+/// ([`region::queued_submission`]) — never sees a second Enter.
+const fn verified(observed: SubmitState, retry: usize) -> Verified {
+    match observed {
+        SubmitState::StillStaged if retry < VERIFY_RETRIES => Verified::PressAgain,
+        done => Verified::Done(done),
+    }
 }
 
 // ---- the guarded operation ---------------------------------------------------
@@ -1885,13 +1910,9 @@ pub fn submit_bounded(
     }
     for retry in 0..=VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
-        let observed = still_staged(server, pane, model);
-        match observed {
-            SubmitState::Submitted | SubmitState::Unknown(_) => return Ok(observed),
-            SubmitState::StillStaged if retry == VERIFY_RETRIES => {
-                return Ok(SubmitState::StillStaged);
-            }
-            SubmitState::StillStaged => {
+        match verified(still_staged(server, pane, model), retry) {
+            Verified::Done(state) => return Ok(state),
+            Verified::PressAgain => {
                 if !transport::send_key(server, pane, Key::Enter) {
                     return Err(EnterFailed);
                 }
@@ -2078,10 +2099,10 @@ pub(crate) fn lock_target(dir: &Path, pane: &str, wait: Duration) -> Option<std:
 mod tests {
     use super::{
         DeferHeld, Failure, LivenessRefusal, Occupancy, PaneLiveness, Request, Shape, Snapshot,
-        SubmitState, TargetInput, UNVERIFIED, Unverifiable, VERIFY_POLL, buffer_name, choose_input,
-        frame, freshest_view, instant_alive, is_name_safe, observed_liveness, pane_settled,
-        refuses_as_dead, settle, settle_for, staged_after_settle, store_body, under_lock_refusal,
-        unmodelled_ready,
+        SubmitState, TargetInput, UNVERIFIED, Unverifiable, VERIFY_POLL, Verified, buffer_name,
+        choose_input, frame, freshest_view, instant_alive, is_name_safe, observed_liveness,
+        pane_settled, refuses_as_dead, settle, settle_for, staged_after_settle, staged_verdict,
+        store_body, under_lock_refusal, unmodelled_ready, verified,
     };
     use crate::deliver::region::Reading;
     use crate::inventory::ServerId;
@@ -2425,6 +2446,77 @@ mod tests {
             Some(COMPACT_STAGED.to_owned())
         });
         assert_eq!(staged, SubmitState::StillStaged);
+    }
+
+    /// codex-cli 0.162.1: ae pasted its turn and pressed Enter while codex was
+    /// still starting. The composer keeps the chip, the footer reads
+    /// `Waiting for startup · esc cancel`, and codex submits the held turn
+    /// ITSELF when its startup turn ends. Beside it, the unsent draft codex
+    /// draws mid-turn before any Enter: the same chip, the footer `tab to queue
+    /// message`. Provenance: tests/fixtures/codex-composer/README.md.
+    const CODEX_HELD: &str =
+        include_str!("../tests/fixtures/codex-composer/codex-held-startup-0.162.1-200x40.esc");
+    const CODEX_DRAFT: &str =
+        include_str!("../tests/fixtures/codex-composer/codex-working-draft-0.162.1-200x40.esc");
+
+    #[test]
+    fn a_codex_turn_held_for_its_startup_is_submitted_and_an_unsent_draft_is_not() {
+        let style = InputModel::StyleDelimited;
+        let chip = "[Pasted Content 4052 chars]";
+        // Every read that decides a submit reads the held turn as taken, so no
+        // verdict says "never landed" and no further Enter follows it.
+        assert_eq!(
+            staged_verdict(Some(CODEX_HELD), style),
+            SubmitState::Submitted
+        );
+        for last in [false, true] {
+            assert_eq!(
+                staged_after_settle(Some(CODEX_HELD), style, chip, last),
+                Some(SubmitState::Submitted)
+            );
+        }
+        // The same chip before any Enter is genuinely staged unsent.
+        assert_eq!(
+            staged_verdict(Some(CODEX_DRAFT), style),
+            SubmitState::StillStaged
+        );
+        assert_eq!(
+            staged_after_settle(Some(CODEX_DRAFT), style, chip, true),
+            Some(SubmitState::StillStaged)
+        );
+    }
+
+    #[test]
+    fn a_held_codex_turn_gets_its_one_enter_and_an_unsent_one_the_whole_retry_budget() {
+        // The Enters one submit presses on a pane that keeps showing `frame`:
+        // the first, plus one per read the verification answers by pressing.
+        let enters = |frame: &str| {
+            let observed = staged_verdict(Some(frame), InputModel::StyleDelimited);
+            1 + (0..=super::VERIFY_RETRIES)
+                .take_while(|retry| verified(observed, *retry) == Verified::PressAgain)
+                .count()
+        };
+        assert_eq!(enters(CODEX_HELD), 1, "a second Enter would only repeat");
+        assert_eq!(enters(CODEX_DRAFT), 1 + super::VERIFY_RETRIES);
+        // The last retry settles on what it saw.
+        assert_eq!(
+            verified(SubmitState::StillStaged, super::VERIFY_RETRIES),
+            Verified::Done(SubmitState::StillStaged)
+        );
+    }
+
+    #[test]
+    fn a_codex_footer_naming_the_hold_proves_nothing_without_the_turn_in_the_box() {
+        let style = InputModel::StyleDelimited;
+        let footer = CODEX_HELD.lines().last().unwrap_or_default();
+        // Only the footer, no composer: nothing to be held, nothing readable.
+        assert_eq!(
+            staged_verdict(Some(&format!("{footer}\n")), style),
+            SubmitState::Unknown(Unverifiable::PaneUnparseable)
+        );
+        // An echo of the turn higher up, and a footer that is not the hold's.
+        let echo = CODEX_DRAFT.replace("tab", "esc");
+        assert_eq!(staged_verdict(Some(&echo), style), SubmitState::StillStaged);
     }
 
     #[test]
