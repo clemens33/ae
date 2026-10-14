@@ -1082,6 +1082,24 @@ impl Observation {
             .collect()
     }
 
+    /// Every Claude scope with a resolved source — the ones a statusline feed
+    /// can key — and the newest observation any of its rows carries. `None` is
+    /// a scope with no reading at all. Reads the same groups the table does,
+    /// so `ae doctor` can never name a scope `ae quota` does not list.
+    pub(crate) fn claude_seen(&self) -> Vec<(String, Option<i64>)> {
+        self.groups
+            .iter()
+            .filter(|group| {
+                group.source.is_some()
+                    && group.tool.adapter().quota.source == QuotaSource::ClaudeCache
+            })
+            .map(|group| {
+                let seen = group.rows.iter().filter_map(|row| row.observed_at).max();
+                (scope_identity(group, self.home.as_deref()), seen)
+            })
+            .collect()
+    }
+
     /// Render one advisory line from the same sanitized, width-bounded cells
     /// as the operator table. The helper path is ae-owned rather than vendor
     /// input and remains complete so the recipient can invoke it verbatim.

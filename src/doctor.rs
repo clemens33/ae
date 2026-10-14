@@ -214,6 +214,21 @@ pub struct ProfileFacts {
     pub resolution_error: Option<String>,
 }
 
+/// How old a Claude scope's newest quota reading may be before the report
+/// names the scope: auto reseat judges a scope by its freshest reading, and a
+/// statusline feed lands on every prompt, so an hour without one means nothing
+/// is feeding it.
+pub const QUOTA_READING_MAX_AGE_SECS: i64 = 60 * 60;
+
+/// One Claude quota scope, as `ae quota` lists it, and the newest reading held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaScopeFacts {
+    /// The scope's name — its client labels, else its config home.
+    pub scope: String,
+    /// When its newest window was observed, epoch seconds; `None` for no reading.
+    pub seen: Option<i64>,
+}
+
 /// Everything the report is a function of, read exactly once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
@@ -238,8 +253,13 @@ pub struct Facts {
     pub config: PathBuf,
     /// Why the config could not be read as identity v2, when it could not.
     pub config_error: Option<String>,
-    /// The project override, when one was named.
+    /// The project override the config reader layers over the global one: the
+    /// named `--local`, else `<cwd>/.ae/config`.
     pub local_config: Option<PathBuf>,
+    /// The instant the quota readings below were judged at, epoch seconds.
+    pub now: i64,
+    /// Every Claude quota scope `ae quota` lists, with its newest reading.
+    pub quota: Vec<QuotaScopeFacts>,
     /// `[workspace] main`.
     pub main: Option<String>,
     /// `[workspace] workers`.
@@ -321,6 +341,7 @@ fn fleet_order_row(facts: &Facts, out: &mut Report) {
 pub fn report(facts: &Facts) -> Report {
     let mut out = Report::default();
     install_rows(facts, &mut out);
+    quota_feed_rows(facts, &mut out);
     session_rows(facts, &mut out);
     seat_identity_rows(&facts.seats, &mut out);
     bindings_rows(facts, &mut out);
@@ -455,13 +476,17 @@ fn install_rows(facts: &Facts, out: &mut Report) {
     } else {
         out.push(Level::Ok, "config", &facts.config.display().to_string());
     }
-    match &facts.local_config {
-        Some(path) => out.push(Level::Ok, "local-config", &path.display().to_string()),
-        None => out.push(
+    // WARN, and only when there is one: a file beyond the global config changes
+    // routing for every launch from here, and nothing else says so.
+    if let Some(path) = &facts.local_config {
+        out.push(
             Level::Warn,
             "local-config",
-            "no project override (.ae/config) was named",
-        ),
+            &format!(
+                "{} is read over the global config — its keys win for launches from here",
+                path.display()
+            ),
+        );
     }
 
     match &facts.main {
@@ -500,6 +525,32 @@ fn install_rows(facts: &Facts, out: &mut Report) {
                 }
             }
         }
+    }
+}
+
+/// The `quota-feed` rows: one WARN per Claude quota scope whose newest reading
+/// is absent or older than [`QUOTA_READING_MAX_AGE_SECS`]. Auto reseat's
+/// headroom trigger acts on a reading, so a scope without one is a seat that
+/// moves only AFTER it hits its limit — and nothing else tells the human. A
+/// WARN never costs the exit code, and a tool ae cannot read says nothing here.
+fn quota_feed_rows(facts: &Facts, out: &mut Report) {
+    for scope in &facts.quota {
+        let age = scope.seen.map(|seen| facts.now.saturating_sub(seen));
+        let why = match age {
+            None => "has no quota reading".to_owned(),
+            Some(age) if age > QUOTA_READING_MAX_AGE_SECS => {
+                format!("last quota reading is {} old", crate::brief::age(Some(age)))
+            }
+            Some(_) => continue,
+        };
+        out.push(
+            Level::Warn,
+            "quota-feed",
+            &format!(
+                "{} {why} — auto reseat cannot see its headroom; pipe the statusline payload to 'ae _quota-feed' (docs/reference/commands.md, Feed Claude quota from your statusline)",
+                scope.scope
+            ),
+        );
     }
 }
 
@@ -838,6 +889,14 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
     let sessions = session_facts(root);
     let seats = seat_facts(root, &sessions);
     let bindings = bindings_facts(&sessions, root, &config, core.as_deref());
+    let now = crate::time::Timestamp::now().epoch();
+    let quota = quota_facts(&crate::quota::Inputs {
+        home: home.as_deref(),
+        global: Some(&config),
+        local,
+        sessions: Some(roots.sessions()),
+        now,
+    });
     Facts {
         version: crate::VERSION.to_owned(),
         core_writable: core.as_deref().and_then(is_writable),
@@ -862,6 +921,8 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         config,
         config_error,
         local_config: local.map(Path::to_path_buf),
+        now,
+        quota,
         main: identity.main.filter(|value| !value.is_empty()),
         workers: identity.workers.filter(|value| !value.is_empty()),
         fleet_order,
@@ -874,6 +935,20 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         bindings,
         boot: crate::doors::boot_time(crate::shape::current()),
     }
+}
+
+/// The Claude scopes `ae quota` builds, read as it reads them. A config that
+/// does not parse already fails its own row, and has no scopes to name.
+fn quota_facts(inputs: &crate::quota::Inputs<'_>) -> Vec<QuotaScopeFacts> {
+    crate::quota::observe(inputs)
+        .map(|observation| {
+            observation
+                .claude_seen()
+                .into_iter()
+                .map(|(scope, seen)| QuotaScopeFacts { scope, seen })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// PURE: what doctor may call a seat's reading. A seat is COVERED only when
@@ -1229,7 +1304,13 @@ pub fn run(
     let _ = std::fs::create_dir_all(roots.sessions());
     let _ = std::fs::create_dir_all(roots.worktrees());
 
-    let facts = gather(root, args.global.as_deref(), args.local.as_deref());
+    // The override a launch from here reads, found as every other reader finds
+    // it — `--local` names one explicitly.
+    let local = args
+        .local
+        .clone()
+        .or_else(|| crate::doors::local_config(&crate::doors::cwd()));
+    let facts = gather(root, args.global.as_deref(), local.as_deref());
     let mut document = report(&facts);
     append_autoupgrade_status(crate::shape::current(), &mut document);
     report_pending_renames(root, &mut document);
@@ -1500,6 +1581,8 @@ mod tests {
             config: PathBuf::from("/home/me/.ae/config"),
             config_error: None,
             local_config: None,
+            now: 1_789_200_000,
+            quota: Vec::new(),
             main: Some("lead".to_owned()),
             workers: Some("colead".to_owned()),
             fleet_order: String::new(),
@@ -1660,8 +1743,96 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.ends_with("Summary: 0 failure(s), 1 warning(s)\n"),
+            text.ends_with("Summary: 0 failure(s), 0 warning(s)\n"),
             "{text}"
+        );
+    }
+
+    fn scope(name: &str, seen: Option<i64>) -> QuotaScopeFacts {
+        QuotaScopeFacts {
+            scope: name.to_owned(),
+            seen,
+        }
+    }
+
+    fn rows_labelled(facts: &Facts, label: &str) -> Vec<Row> {
+        report(facts)
+            .rows()
+            .iter()
+            .filter(|row| row.label == label)
+            .cloned()
+            .collect()
+    }
+
+    /// The bound is `QUOTA_READING_MAX_AGE_SECS`, inclusive: exactly at it is
+    /// still a reading, one second past is not.
+    #[test]
+    fn a_quota_scope_is_named_only_when_its_reading_is_absent_or_past_the_bound() {
+        let mut facts = facts();
+        facts.quota = vec![
+            scope("fresh", Some(facts.now - 60)),
+            scope("at-bound", Some(facts.now - QUOTA_READING_MAX_AGE_SECS)),
+            scope(
+                "past-bound",
+                Some(facts.now - QUOTA_READING_MAX_AGE_SECS - 1),
+            ),
+            scope("never", None),
+            scope("future", Some(facts.now + 600)),
+        ];
+        let named: Vec<(String, Level)> = rows_labelled(&facts, "quota-feed")
+            .into_iter()
+            .map(|row| {
+                (
+                    row.detail.split(' ').next().unwrap_or_default().to_owned(),
+                    row.level,
+                )
+            })
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("past-bound".to_owned(), Level::Warn),
+                ("never".to_owned(), Level::Warn)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_quota_feed_row_states_the_age_or_the_absence_and_the_fix_and_never_fails() {
+        let mut facts = facts();
+        facts.quota = vec![
+            scope("work", Some(facts.now - 19 * 3_600)),
+            scope("mic", None),
+        ];
+        let rows = rows_labelled(&facts, "quota-feed");
+        assert!(
+            rows[0]
+                .detail
+                .starts_with("work last quota reading is 19h old"),
+            "{rows:?}"
+        );
+        assert!(
+            rows[1].detail.starts_with("mic has no quota reading"),
+            "{rows:?}"
+        );
+        for row in &rows {
+            assert!(row.detail.contains("ae _quota-feed"), "{row:?}");
+        }
+        let document = report(&facts);
+        assert_eq!((document.failures(), document.exit_code()), (0, 0));
+    }
+
+    #[test]
+    fn a_config_beyond_the_global_one_is_one_row_with_its_path_and_none_is_no_row() {
+        let mut facts = facts();
+        assert!(rows_labelled(&facts, "local-config").is_empty());
+        facts.local_config = Some(PathBuf::from("/work/repo/.ae/config"));
+        let rows = rows_labelled(&facts, "local-config");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].level, Level::Warn);
+        assert!(
+            rows[0].detail.starts_with("/work/repo/.ae/config "),
+            "{rows:?}"
         );
     }
 

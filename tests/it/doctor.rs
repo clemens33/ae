@@ -183,10 +183,10 @@ fn doctor_reads_the_real_state_root_and_reports_a_stopped_session_as_an_orphan()
         stdout.contains("last-live:parked no recorded live activity"),
         "{stdout}"
     );
-    // Seven warnings, and the count is pinned so a new row shows up here:
-    // local-config, workspace.workers, last-live:parked, orphans + its hint,
-    // core-pin + its hint.
-    assert!(stdout.ends_with("failure(s), 7 warning(s)\n"), "{stdout}");
+    // Six warnings, and the count is pinned so a new row shows up here:
+    // workspace.workers, last-live:parked, orphans + its hint, core-pin + its
+    // hint. No `local-config` row: no project override sits beside the caller.
+    assert!(stdout.ends_with("failure(s), 6 warning(s)\n"), "{stdout}");
     // The two roots are CREATED by the report.
     assert!(rig.home.join("worktrees").is_dir(), "the worktrees root");
 }

@@ -65,6 +65,7 @@ mod console_replies_spec;
 mod daemons;
 mod deliver;
 mod doctor;
+mod doctor_feeds_spec;
 mod doors;
 mod effort_resume_spec;
 mod effort_spec;

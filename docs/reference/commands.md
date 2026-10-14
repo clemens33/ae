@@ -951,6 +951,14 @@ than the core probing `bash --version` itself, which would report whatever is fi
 wrapper re-exec'd itself under a modern bash on macOS's 3.2. That wrapper is gone as of
 Z3; what now supplies `--bash-major` to a directly-run `ae-core` is being reworked with it.
 
+Two read-only WARN rows name a silent misconfiguration and never fail the command. A
+`quota-feed` row appears per Claude quota scope — the same scopes `ae quota` lists — whose
+newest reading is absent or more than an hour old: auto reseat's headroom trigger acts on a
+reading, so that scope's seats move only after they hit a limit. The row names the fix, the
+statusline pipe in [Feed Claude quota from your statusline](#feed-claude-quota-from-your-statusline).
+A `local-config` row appears when `--local`, or a `.ae/config` in the directory `ae doctor` runs
+from, layers a second file over the global config; it carries that file's path. No such file, no row.
+
 It also prints the REBOOT EVIDENCE: a `boot` row with the host's boot time, and a
 `last-live:<name>` row per session saying when that session last did something only a
 live session does. Those two numbers are exactly what a resume compares when a recorded
