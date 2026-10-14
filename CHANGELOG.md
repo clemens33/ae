@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.68] - 2026-10-14
+- Console ask oracles tolerate text and Enter arriving in one read
+- Headroom judges only windows proven at least one day long
+
 ## [v2026.10.67] - 2026-10-13
 - The inert phase 1 model for quota-driven effort step-down
 - Frozen phase 2 resume acceptance tests
