@@ -1223,8 +1223,10 @@ fn the_claude_project_key_is_spelled_in_src_carry_alone() {
     // looks. `run::resumable` once spelled the rule inline — with only `/` as
     // `-`, which no claude folder ever matches for a dotted work dir — so the
     // guard is: nothing outside the owner flattens a path into a key, and the
-    // probe is a CALLER. The shapes are the ones that have actually appeared;
-    // the behaviour itself is pinned by the owner's unit tests.
+    // probe is a CALLER. A TRIPWIRE over known shapes, not a proof: the ones
+    // that have actually appeared plus the owner's own body (`len_utf16`,
+    // `repeat_n('-'`), so a copy of it is named too. The behaviour itself is
+    // pinned by the owner's unit tests.
     let halves = product_halves();
     let probe = halves
         .iter()
@@ -1243,6 +1245,8 @@ fn the_claude_project_key_is_spelled_in_src_carry_alone() {
             "== '/' { '-'",
             ".replace('/', \"-\")",
             ".replace(\"/\", \"-\")",
+            ".len_utf16()",
+            "repeat_n('-'",
         ] {
             assert!(
                 !code.contains(shape),

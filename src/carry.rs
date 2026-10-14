@@ -175,10 +175,11 @@ pub(crate) fn plan(moving: &Move<'_>) -> Option<Plan> {
 ///
 /// THE ONE OWNER of that spelling: `run::resumable`'s probe, the rename
 /// preflight and this account carry all call it, so a copy lands exactly where
-/// claude wrote the transcript and the probe looks for it. Claude resolves
-/// symbolic links in a cwd before it keys it; a working copy reached through a
-/// link is simply not at this key and the carry refuses, which is honest: that
-/// seat could not be exact-resumed in its OLD account either.
+/// claude wrote the transcript and the probe looks for it. The carry keys the
+/// RECORDED work dir while the probe keys the pane's physical cwd (`getcwd`),
+/// so a working copy reached through a link can key differently in the two:
+/// the carry then finds no source transcript at its key and refuses, though
+/// the probe may still resume that seat in its OLD account.
 ///
 /// RESIDUAL: claude cuts a key longer than 200 characters at 200 and appends a
 /// hash of the path. That is read in its bundle and unmeasured against a real

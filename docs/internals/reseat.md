@@ -328,10 +328,12 @@ store. And paths are COMPUTED from `carry::project_key`, never searched for,
 which is what makes the result resumable: `project_key` implements claude's own
 rule, every character that is not an ASCII letter or digit becomes `-` (claude
 2.1.299: `path.replace(/[^a-zA-Z0-9]/g, "-")`, per UTF-16 unit), and
-`run::resumable` calls it, so the copy and the probe cannot disagree. Claude
-resolves symbolic links before it keys a cwd; when a working copy is reached
-through a link the transcript is not at this key and the carry refuses, which is
-honest: that seat could not be exact-resumed in its OLD account either.
+`run::resumable` calls it, so the copy and the probe cannot disagree about the
+rule. They can still disagree about the INPUT: the carry keys the RECORDED work
+dir and the probe the pane's physical cwd (`getcwd`), so a working copy reached
+through a link can key differently in the two. The carry then finds no source
+transcript at its key and refuses, though the probe may still resume that seat
+in its OLD account.
 
 THE BAR, stated because a guard that oversells itself is the defect it exists
 to prevent: both homes belong to the SAME OS user, so this is no silent
