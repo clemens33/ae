@@ -51,7 +51,8 @@ Then, under `.lifecycle.<session>.lock`:
     move that will carry (the ladder below, step 1) walks the whole copy set
     with `carry::Mode::Check` — the copy's own walk, every node classified,
     read and compared, nothing created — and a failure refuses here, exit 1,
-    nothing stopped, written or journaled. A tool change (recorded `agent_bin`
+    nothing stopped, written or journaled. What it decided to ARCHIVE is kept
+    as its `carry::Proof` and handed to the copy in step 9a. A tool change (recorded `agent_bin`
     differs from the new binary) prints ONE stderr note instead, a dead pane
     included: if the move succeeds it starts a fresh conversation, a recorded
     id that passes the UUID grammar stays behind as a predecessor, and ae
@@ -311,9 +312,18 @@ The ladder, all of it under the lifecycle lock the verb already holds:
    both accounts resolve to usable paths that DIFFER;
 2. the conversation's bytes are read, and the target project directory
    classified, before anything is written;
+2a. the copy walks the whole set once more WITHOUT writing and requires the
+   very decisions the Check fingerprinted (below), then moves each frozen
+   sidecar aside;
 3. sidecars, then project memory, then — LAST — the transcript, which is the
-   COMMIT MARKER: a crash before it leaves the target with nothing findable, so
-   the next attempt re-copies, finds its own files identical and commits;
+   COMMIT MARKER: a crash before it never leaves the NEW conversation half
+   there. A transcript the target lacked stays absent, and one archived right
+   before its publication leaves its name empty, so nothing is findable; an
+   older round-trip copy stays under its name with its OLD bytes, beside
+   sidecars that may already be archived or refreshed, until its own archive;
+   an identical one stays as it was. That is convergence, not a transaction:
+   the next attempt re-copies, no-ops over its own identical files, archives
+   what is still stale and commits;
 4. back in `reseat`: no seed pack, the start marker PUT BACK — proven writable
    BEFORE step 2, because `clear_slot` removing it and the carry rewriting it
    cannot be one write and the state between them is the one that would open a
@@ -335,11 +345,61 @@ through a link can key differently in the two. The carry then finds no source
 transcript at its key and refuses, though the probe may still resume that seat
 in its OLD account.
 
+ROUND TRIPS (human ruling 2026-10-14). A move back to an account the
+conversation already visited meets that account's OLDER copy: measured on the
+lead's own move, the target transcript was an exact byte prefix of the source
+(171 MB of 674 MB) and one file-history sidecar held other bytes, and both
+refused. Such files are now ARCHIVED, not refused: a transcript that is a STRICT
+byte prefix of the source (shorter, `source[..len] == target`; empty included)
+and a sidecar regular file holding other bytes are renamed, inside the TARGET
+account, into a fresh directory of this move —
+`<account>/ae-carry-archive/<conversation>/<YYYYMMDDTHHMMSSZ>-<pid>.<n>/` (the
+UTC second, no `-` or `:`, so the leaf as a bare name cannot look like
+`host:path`), `0700`, created exclusively (a taken name is never reused; the
+next `<n>` is tried), each file under its own account-relative path — so bytes,
+inode and mtime are kept and nothing is deleted. Equal files stay untouched; target-only
+files are never visited; a forked or longer transcript, a link, a directory
+where a file belongs and an unreadable node still refuse as before. The move
+prints ONE line naming the count and the directory, and the move record carries
+both (`conversation <id>, carried, archived N target files in <dir>`); a move
+that archived nothing prints and records exactly what it did before.
+
+THE CHECK DECIDES, THE COPY RE-PROVES. Each archive decision is FINGERPRINTED
+at the pre-stop Check — device, inode, length, mtime and a SHA-256 digest
+(`install::sha256_hex`), fixed size per file, so the proof does not hold every
+conflicting sidecar's bytes across the stop — and the Check also proves, from
+mode bits alone, that the deepest existing directory on the archive path and
+each archived file's directory are real directories their owner may write in
+and search, on the archived file's device. That is a PROXY: an ACL, a read-only
+mount, a file flag or a directory another user owns can still refuse the copy,
+which is then the loud seed fallback. The copy archives EXACTLY what the Check
+fingerprinted, or nothing: before its first write it walks the set again and
+abandons on any drift — a frozen file gone, changed or now equal, or a
+difference the Check never saw — and it re-proves each file against its
+fingerprint, its identity taken again after the read, only once that file's
+destination directory is prepared, so no step of ae's stands between that
+proof, the destination proven absent by the same no-link walk, and the
+rename. The stale transcript goes aside LAST, right before the
+conversation is published under its name, so the commit marker still comes
+last. A crash between a rename and its publication leaves the name free and the
+next attempt converges; a failure after an archive names the count and the
+directory in the fallback's reason; an earlier archive directory is never
+touched again.
+
+NAMED RESIDUALS of archiving, left open on purpose: a writer of the same OS user
+planting a file at an archive destination between the absent check and the
+rename would be replaced by it (`RENAME_NOREPLACE` needs libc); a change after
+the re-proof, before its rename, is not seen (no `openat` without libc); a
+change the re-proof finds leaves the file where it was and a partial or empty
+archive, which the reason names; and
+a tool running in the target account that holds the stale transcript open
+keeps writing the ARCHIVED inode — ae adds no `lsof` door to look.
+
 THE BAR, stated because a guard that oversells itself is the defect it exists
 to prevent: both homes belong to the SAME OS user, so this is no silent
 clobber, no followed link and no silent skip — not a guarantee against someone
-who can already write in the account. A target name is claimed by the one
-exclusive creation ae already owns, `init::create_exclusive` — a temp under a
+who can already write in the account. A target name ae publishes is claimed by
+the one exclusive creation ae already owns, `init::create_exclusive` — a temp under a
 nonce that call opened, then a `hard_link` onto the final name — and never by a
 rename, which would replace whatever appeared after the check. Every component
 from the account root down is classified before it is used; and an `lstat` that

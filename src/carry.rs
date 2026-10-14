@@ -33,9 +33,15 @@
 //!    `lifecycle/end.rs::safe_entries` classifies a store it is about to delete
 //!    from.
 //! 3. **Nothing in the target is overwritten.** A node that is already there is
-//!    either byte-identical — ae's own interrupted attempt, so it is left
-//!    exactly as it is, mtime included — or it belongs to something else, and
-//!    then the whole carry refuses.
+//!    byte-identical — ae's own interrupted attempt, so it is left exactly as
+//!    it is, mtime included — or it is ARCHIVED, or the whole carry refuses.
+//!    Archived means RENAMED ASIDE, inside the same account, into a directory
+//!    this move created for itself: never deleted, never written over. Only a
+//!    regular file the Check could explain is archived — a transcript whose
+//!    bytes are a STRICT prefix of the source (the older copy an earlier round
+//!    trip left behind) or a sidecar holding other bytes. A transcript that
+//!    forked or runs longer, a link, a directory where a file belongs and a
+//!    node ae cannot read all refuse.
 //! 4. **The copy set is BINDING.** The transcript and every sidecar the source
 //!    actually has. A source that is simply not there is no failure — most
 //!    conversations never wrote a checkpoint — but a read ae cannot make, a
@@ -44,17 +50,33 @@
 //!
 //! **THE TRANSCRIPT IS THE COMMIT MARKER.** Sidecars and project memory are
 //! copied first and the transcript last, so a crash anywhere in the middle
-//! leaves the target with NO conversation — nothing the tool or ae will find,
-//! and nothing that makes the next attempt refuse. That next attempt re-copies,
-//! finds its own earlier files byte-identical, no-ops over them, and commits.
+//! never leaves the NEW conversation half there. What it does leave depends on
+//! what the target held: a transcript it lacked stays absent, and one archived
+//! right before its publication leaves its name empty — in both, nothing the
+//! tool or ae will find; an older copy a round trip left behind is still there
+//! under its name with its OLD bytes, beside sidecars that may already be
+//! archived or refreshed, until its own archive moves it; an identical one stays
+//! exactly as it was. That is not a transaction. It is what makes the next
+//! attempt CONVERGE: it re-copies, finds its own earlier files byte-identical,
+//! no-ops over them, archives what is still stale, and commits.
 //! Every file is published EXCLUSIVELY for the same reason — a temp only that
 //! call opened, then a `hard_link` onto the final name, never a rename: a
 //! half-written sidecar would be neither identical nor explicable, and would
 //! turn one interrupted carry into a permanent seeded fallback.
 //!
+//! **THE CHECK DECIDES WHAT IS ARCHIVED; THE COPY ONLY RE-PROVES IT.** The
+//! pre-stop [`Mode::Check`] fingerprints every node it would archive — identity
+//! and a content digest, fixed size per node — and the [`Mode::Copy`] after the
+//! stop archives EXACTLY that set: each node proven unchanged before the first
+//! write and again immediately before it is moved. A frozen node that is gone,
+//! changed or became equal, and a difference the Check never saw, abandon the
+//! copy to the seed path instead, because the target account is outside ae's
+//! lifecycle lock and the Check is what the human's move was decided on.
+//!
 //! The paths are COMPUTED, never searched for — see [`project_key`], which owns
 //! that spelling and the reason the carry refuses when it cannot compute one.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::tool::{CarrySpec, ToolKind};
@@ -77,6 +99,19 @@ const SIDECAR_ROOTS: [&str; 3] = ["file-history", "session-env", "tasks"];
 /// so it is the one part of the copy set that belongs to the account rather
 /// than to the conversation.
 const MEMORY: &str = "memory";
+
+/// Where, inside the TARGET account, a move archives the files it replaces:
+/// `<account>/ae-carry-archive/<conversation>/<YYYYMMDDTHHMMSSZ>-<pid>.<n>/`,
+/// each file under its own account-relative path. The same account, so the move
+/// is a rename and the bytes never travel; one fresh directory per move, so no
+/// archive is ever written into twice. The stamp is the UTC second with no `-`
+/// or `:`, so the leaf copied as a bare name cannot look like scp's `host:path`.
+const ARCHIVE: &str = "ae-carry-archive";
+
+/// How many names one move tries for its fresh archive directory. Each try is
+/// an exclusive creation, so a collision costs one syscall; the bound only
+/// stops a directory something else keeps filling.
+const ARCHIVE_TRIES: u32 = 64;
 
 /// A move whose conversation can travel, with both ends resolved.
 pub(crate) struct Plan {
@@ -104,11 +139,70 @@ impl Plan {
 }
 
 /// What a finished carry has to say for itself.
+#[derive(Debug, Default)]
 pub(crate) struct Crossing {
     /// The target already had a project memory of its own, so it was LEFT — ae
     /// never merges two accounts' memories, and a human is told which one the
     /// successor is reading.
     pub(crate) memory_kept: bool,
+    /// Out of a [`Mode::Check`]: what the [`Mode::Copy`] after it may archive.
+    proof: Proof,
+    /// Out of a [`Mode::Copy`]: how many target files it archived, and the one
+    /// directory it moved them into. `None` when it archived nothing.
+    archived: Option<(usize, PathBuf)>,
+}
+
+impl Crossing {
+    /// The decisions a Check made, which the Copy acts on and never adds to.
+    pub(crate) fn proof(&self) -> &Proof {
+        &self.proof
+    }
+
+    /// How many target files the copy moved aside, and where. `None` means
+    /// none were, and the move says nothing it did not say before archiving
+    /// existed.
+    pub(crate) fn archived(&self) -> Option<(usize, &Path)> {
+        self.archived
+            .as_ref()
+            .map(|(count, dir)| (*count, dir.as_path()))
+    }
+}
+
+/// Every archive decision one Check made: the ONLY ones a Copy may act on.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Proof {
+    /// The target transcript, a strict byte prefix of the source when checked.
+    stale: Option<Print>,
+    /// Every target sidecar file that held other bytes than the source's.
+    conflicts: Vec<Print>,
+}
+
+impl Proof {
+    fn is_empty(&self) -> bool {
+        self.stale.is_none() && self.conflicts.is_empty()
+    }
+}
+
+/// One target file as the Check saw it, FIXED IN SIZE whatever the file's: a
+/// proof that must survive the stop may not hold the bytes of every file it
+/// covers, so it holds who the file was and a digest of what it held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Print {
+    /// Where it is, relative to the target account.
+    relative: PathBuf,
+    /// Which node it was.
+    stamp: Stamp,
+    /// What it held: SHA-256 of its bytes, through the one digest ae has.
+    digest: String,
+}
+
+/// The identity half of a [`Print`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 /// One seat's move, as the caller resolved it.
@@ -200,82 +294,420 @@ pub fn project_key(work_dir: &Path) -> String {
 /// Whether a walk over the copy set WRITES. ONE walk, two uses: `Check`
 /// classifies, reads and compares every node exactly as `Copy` does — the
 /// transcript, the sidecar trees, project memory, depth and node budget — and
-/// skips only the creation in [`make_dir`] and [`publish`]. It proves the set
-/// as it stands at that moment and no longer: the target account is outside
-/// ae's lifecycle lock, so what appears between a `Check` and its `Copy` is met
-/// by the copy's own refusal.
+/// skips only the creation in [`make_dir`] and [`publish`] and the archiving in
+/// [`set_aside`]. It proves the set as it stands at that moment and no longer:
+/// the target account is outside ae's lifecycle lock, so a `Copy` carries the
+/// Check's [`Proof`], walks the set once more WITHOUT writing, and acts only
+/// when that walk proves the very same decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Mode {
+pub(crate) enum Mode<'a> {
     Check,
-    Copy,
+    /// Write, archiving exactly what this Check proved — or nothing at all.
+    Copy(&'a Proof),
 }
 
 /// CHECK or COPY the conversation. A `Copy` `Err` is the loud fallback: the
 /// seat still moves, on a fresh conversation with the seed pack, and the
 /// reason is what ae prints.
-pub(crate) fn run(plan: &Plan, mode: Mode) -> Result<Crossing, String> {
+pub(crate) fn run(plan: &Plan, mode: Mode<'_>) -> Result<Crossing, String> {
+    let mut aside = Aside::default();
+    match carry(plan, mode, &mut aside) {
+        Ok(mut crossing) => {
+            crossing.archived = aside
+                .dir
+                .filter(|_| aside.count > 0)
+                .map(|dir| (aside.count, dir));
+            Ok(crossing)
+        }
+        // A COPY THAT ARCHIVED AND THEN FAILED has still moved those files, so
+        // the fallback after it must not make that a silent archive: the
+        // reason says how many and where. A directory it created and then
+        // could not fill is named too, never removed behind the reader's back.
+        Err(why) => Err(match aside.dir {
+            Some(dir) => format!(
+                "{why}; {} already archived in {}",
+                files(aside.count),
+                dir.display()
+            ),
+            None => why,
+        }),
+    }
+}
+
+/// `1 target file`, `2 target files` — the one spelling of an archive count.
+pub(crate) fn files(count: usize) -> String {
+    format!("{count} target file{}", if count == 1 { "" } else { "s" })
+}
+
+/// What one Copy has archived so far.
+#[derive(Default)]
+struct Aside {
+    /// The move's fresh directory, created right before its FIRST archive.
+    dir: Option<PathBuf>,
+    count: usize,
+}
+
+fn carry(plan: &Plan, mode: Mode<'_>, aside: &mut Aside) -> Result<Crossing, String> {
     let name = format!("{}.jsonl", plan.id);
     let project: [&str; 2] = ["projects", &plan.key];
+    let transcript: [&str; 3] = [project[0], project[1], &name];
     // THE CONVERSATION ITSELF, read before anything is written: a carry that
     // cannot read the thing it exists to move has nothing to do.
-    let (source_file, node) = under(&plan.from, &[project[0], project[1], &name])?;
+    let (source_file, node) = under(&plan.from, &transcript)?;
     let bytes = read_regular(&source_file, node)?;
     // THE TARGET PROJECT DIRECTORY, before anything is put in it. `under`
     // refuses a link at every level, so this also proves the two components
     // above it.
     let (target, _) = under(&plan.to, &project)?;
-    // ...and whether the conversation is already there, decided BEFORE the
-    // sidecars are copied, so a target holding a different conversation costs
-    // nothing but the reading.
-    let (target_file, node) = under(&plan.to, &[project[0], project[1], &name])?;
-    let committed = match node {
-        Node::Missing => false,
-        // AE'S OWN INTERRUPTED ATTEMPT — or a carry that already finished.
-        Node::File if read_regular(&target_file, node)? == bytes => true,
-        Node::File => {
-            return Err(format!(
-                "{} already holds a different conversation file",
-                target_file.display()
-            ));
-        }
-        other => return Err(format!("{} {}", target_file.display(), other.word())),
+    // ...and what the target already holds under the conversation's name,
+    // decided BEFORE the sidecars are walked, so a target holding a different
+    // conversation costs nothing but the reading.
+    let (target_file, node) = under(&plan.to, &transcript)?;
+    let held = held(&target_file, node, &bytes)?;
+    let mut proof = Proof {
+        stale: match &held {
+            Held::Stale(print) => Some(print.clone().within(&plan.to)?),
+            Held::Missing | Held::Same => None,
+        },
+        conflicts: Vec::new(),
     };
-
+    // THE SURVEY: every sidecar walked WITHOUT writing, in both modes. For a
+    // Check it IS the proof; for a Copy it is the claim-before-write — the
+    // whole set re-read after the stop, so a frozen file that changed or
+    // became equal and a difference the Check never saw all abandon the copy
+    // with nothing written.
     let mut budget = MAX_NODES;
-    // SIDECARS FIRST. Each is optional in the source and binding once present.
-    copy_tree(plan, &[project[0], project[1], &plan.id], &mut budget, mode)?;
-    for root in SIDECAR_ROOTS {
-        copy_tree(plan, &[root, &plan.id], &mut budget, mode)?;
+    for parts in sidecars(&project, &plan.id) {
+        proof
+            .conflicts
+            .extend(copy_tree(plan, &parts, &mut budget, Mode::Check)?);
     }
+    proof.conflicts.sort_by(|a, b| a.relative.cmp(&b.relative));
     // PROJECT MEMORY is not uuid-keyed: it belongs to the working copy and is
     // shared by every conversation in that account. ae copies it only into an
     // account that has none, and NEVER merges two — the human's ruling, and the
     // only safe one, since a merge cannot be undone by hand. Only a real
     // directory is that account's own memory; anything else there is a target
     // ae cannot explain, and it says which.
-    let (target_memory, node) = under(&plan.to, &[project[0], project[1], MEMORY])?;
+    let memory: [&str; 3] = [project[0], project[1], MEMORY];
+    let (target_memory, node) = under(&plan.to, &memory)?;
     let memory_kept = match node {
         Node::Missing => false,
         Node::Dir => true,
         other => return Err(format!("{} {}", target_memory.display(), other.word())),
     };
     if !memory_kept {
-        copy_tree(plan, &[project[0], project[1], MEMORY], &mut budget, mode)?;
+        copy_tree(plan, &memory, &mut budget, Mode::Check)?;
+    }
+    let Mode::Copy(checked) = mode else {
+        // WHERE THE COPY WILL ARCHIVE, proven before anything is stopped.
+        archivable(plan, &proof)?;
+        return Ok(Crossing {
+            memory_kept,
+            proof,
+            archived: None,
+        });
+    };
+    // THE CHECK DECIDED, so the Copy acts on exactly that decision or on
+    // nothing: the human's move was decided on what the Check saw.
+    if let Some(path) = drift(&proof, checked) {
+        return Err(changed(&plan.to.join(path)));
+    }
+    // Each frozen sidecar goes aside now, proven AGAIN at the moment it moves;
+    // the walk below then publishes into the names they left.
+    for print in &checked.conflicts {
+        set_aside(plan, print, aside, mode)?;
+    }
+    let mut budget = MAX_NODES;
+    for parts in sidecars(&project, &plan.id) {
+        copy_tree(plan, &parts, &mut budget, mode)?;
+    }
+    if !memory_kept {
+        copy_tree(plan, &memory, &mut budget, mode)?;
     }
     // THE COMMIT. Last, so everything above is already in place when the
     // conversation becomes findable.
-    if committed {
+    match (held, &checked.stale) {
         // PROVEN AGAIN, at the boundary. The reading above happened before the
         // sidecars were copied; this one is what the caller's `Ok` rests on,
         // because the target account is not under ae's lifecycle lock and the
         // successor is about to resume exactly these bytes.
-        let (_, node) = under(&plan.to, &[project[0], project[1], &name])?;
-        still_holds(&target_file, node, &bytes)?;
-    } else if mode == Mode::Copy {
-        make_dir(&target, mode)?;
-        publish(&target_file, &bytes)?;
+        (Held::Same, _) => {
+            let (_, node) = under(&plan.to, &transcript)?;
+            still_holds(&target_file, node, &bytes)?;
+        }
+        // THE OLDER COPY GOES ASIDE ONLY NOW, right before the conversation
+        // takes its name, so the commit marker is still the last name written.
+        (Held::Stale(_), Some(print)) => {
+            set_aside(plan, print, aside, mode)?;
+            publish(&target_file, &bytes)?;
+        }
+        // Unreachable past the drift proof, and spelled rather than assumed.
+        (Held::Stale(_), None) => return Err(changed(&target_file)),
+        (Held::Missing, _) => {
+            make_dir(&target, mode)?;
+            publish(&target_file, &bytes)?;
+        }
     }
-    Ok(Crossing { memory_kept })
+    Ok(Crossing {
+        memory_kept,
+        proof: Proof::default(),
+        archived: None,
+    })
+}
+
+/// The sidecar trees of one conversation, in the order they are walked: the
+/// uuid directory beside the transcript, then each uuid-keyed store root.
+fn sidecars<'a>(project: &[&'a str; 2], id: &'a str) -> Vec<Vec<&'a str>> {
+    let mut trees = vec![vec![project[0], project[1], id]];
+    trees.extend(SIDECAR_ROOTS.iter().map(|root| vec![*root, id]));
+    trees
+}
+
+/// The first account-relative path two proofs disagree on, or `None` when
+/// they are the same decisions about the same nodes.
+fn drift<'a>(now: &'a Proof, checked: &'a Proof) -> Option<&'a Path> {
+    if now.stale != checked.stale {
+        return now
+            .stale
+            .as_ref()
+            .or(checked.stale.as_ref())
+            .map(|print| print.relative.as_path());
+    }
+    let mut ours = now.conflicts.iter();
+    let mut theirs = checked.conflicts.iter();
+    loop {
+        match (ours.next(), theirs.next()) {
+            (None, None) => return None,
+            (Some(a), Some(b)) if a == b => {}
+            (Some(a), Some(b)) => return Some(a.relative.as_path().min(b.relative.as_path())),
+            (Some(print), None) | (None, Some(print)) => return Some(&print.relative),
+        }
+    }
+}
+
+/// What the target already holds under the conversation's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Held {
+    Missing,
+    /// The very bytes ae is carrying: an interrupted attempt, or a carry that
+    /// already finished.
+    Same,
+    /// A STRICT byte prefix of them: the older copy a round trip left behind.
+    Stale(Print),
+}
+
+/// Judge the target transcript against the source's bytes. Anything that is
+/// neither the same conversation nor an older copy of it — a fork, a longer
+/// file — belongs to something else, and the carry refuses.
+fn held(path: &Path, node: Node, source: &[u8]) -> Result<Held, String> {
+    match node {
+        Node::Missing => return Ok(Held::Missing),
+        Node::File => {}
+        other => return Err(format!("{} {}", path.display(), other.word())),
+    }
+    let different = || {
+        format!(
+            "{} already holds a different conversation file",
+            path.display()
+        )
+    };
+    // THE LENGTH FIRST: a target longer than the source is refused unread, so
+    // the read below is never larger than the source ae already holds.
+    let before = stamp(path)?;
+    if usize::try_from(before.len).map_or(true, |len| len > source.len()) {
+        return Err(different());
+    }
+    let bytes = read_regular(path, node)?;
+    if bytes == source {
+        return Ok(Held::Same);
+    }
+    if bytes.len() < source.len() && source.starts_with(&bytes) {
+        return Ok(Held::Stale(print(path, before, &bytes)?));
+    }
+    Err(different())
+}
+
+/// A [`Print`] of the bytes just read from `path`, whose identity `before` was
+/// taken before the read. A node that moved WHILE it was read is not the node
+/// the bytes came from, so it proves nothing. The path is the absolute one;
+/// [`Print::within`] makes it account-relative.
+fn print(path: &Path, before: Stamp, bytes: &[u8]) -> Result<Print, String> {
+    if stamp(path)? != before || u64::try_from(bytes.len()).ok() != Some(before.len) {
+        return Err(changed(path));
+    }
+    Ok(Print {
+        relative: path.to_path_buf(),
+        stamp: before,
+        digest: crate::install::sha256_hex(bytes),
+    })
+}
+
+impl Print {
+    /// The same print, its path made relative to `account`.
+    fn within(self, account: &Path) -> Result<Self, String> {
+        let relative = self
+            .relative
+            .strip_prefix(account)
+            .map_err(|_| {
+                format!(
+                    "{} is outside {}",
+                    self.relative.display(),
+                    account.display()
+                )
+            })?
+            .to_path_buf();
+        Ok(Self { relative, ..self })
+    }
+}
+
+/// Prove the target file a [`Print`] names is STILL that node holding those
+/// bytes, walking every component from the account root without following a
+/// link. Asked right before the file is moved aside.
+///
+/// The identity is taken again AFTER the read, by [`print`]: a node replaced
+/// or written while it was read would otherwise pass on the old bytes.
+fn still_printed(account: &Path, frozen: &Print) -> Result<PathBuf, String> {
+    let parts: Vec<&OsStr> = frozen.relative.iter().collect();
+    let (path, node) = under(account, &parts)?;
+    if node != Node::File || stamp(&path)? != frozen.stamp {
+        return Err(changed(&path));
+    }
+    let bytes = read_regular(&path, node)?;
+    if print(&path, frozen.stamp, &bytes)?.digest != frozen.digest {
+        return Err(changed(&path));
+    }
+    Ok(path)
+}
+
+/// The words for a target node that is not what the Check saw.
+fn changed(path: &Path) -> String {
+    format!("{} changed after ae checked it", path.display())
+}
+
+/// Move one proven file ASIDE: renamed, inside the same account, into this
+/// move's own fresh directory under its account-relative path. Never a
+/// delete, and never over a name that is there.
+///
+/// The destination is prepared FIRST — the directory, its parents — and only
+/// then is the file proven against its [`Print`] and the destination proven
+/// absent by the same no-link walk from the account root, so nothing ae does
+/// stands between that proof and the rename. A file that changed leaves its
+/// name where it was, and the fallback names the directory, empty or not.
+/// RESIDUAL, named rather than closed: a writer of the same OS user changing
+/// the file, or planting that destination inside ae's own fresh directory,
+/// between those proofs and the rename — `RENAME_NOREPLACE` has no safe-Rust
+/// spelling without libc.
+fn set_aside(plan: &Plan, print: &Print, aside: &mut Aside, mode: Mode<'_>) -> Result<(), String> {
+    let dir = if let Some(dir) = &aside.dir {
+        dir.clone()
+    } else {
+        let dir = fresh_archive(plan, mode)?;
+        aside.dir = Some(dir.clone());
+        dir
+    };
+    let into = dir.join(&print.relative);
+    if let Some(parent) = into.parent() {
+        make_dir(parent, mode)?;
+    }
+    let relative = into
+        .strip_prefix(&plan.to)
+        .map_err(|_| format!("{} is outside {}", into.display(), plan.to.display()))?;
+    let parts: Vec<&OsStr> = relative.iter().collect();
+    let path = still_printed(&plan.to, print)?;
+    match under(&plan.to, &parts)? {
+        (_, Node::Missing) => {}
+        (into, other) => return Err(format!("{} {}", into.display(), other.word())),
+    }
+    std::fs::rename(&path, &into)
+        .map_err(|why| format!("could not archive {} ({why})", path.display()))?;
+    aside.count += 1;
+    Ok(())
+}
+
+/// This move's own archive directory, `0700`, created EXCLUSIVELY: a name that
+/// is already there — another move in the same second, or a crashed one — is
+/// never reused; the next name is tried instead.
+fn fresh_archive(plan: &Plan, mode: Mode<'_>) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let (base, _) = under(&plan.to, &[ARCHIVE, plan.id.as_str()])?;
+    make_dir(&base, mode)?;
+    let stamp: String = crate::time::Timestamp::now()
+        .to_string()
+        .chars()
+        .filter(|ch| *ch != '-' && *ch != ':')
+        .collect();
+    for n in 0..ARCHIVE_TRIES {
+        let dir = base.join(format!("{stamp}-{}.{n}", std::process::id()));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(why) if why.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(why) => return Err(format!("could not create {} ({why})", dir.display())),
+        }
+    }
+    Err(format!(
+        "{} has no free name for this move's archive",
+        base.display()
+    ))
+}
+
+/// Could a Copy archive what this Check found? Proven WITHOUT writing: every
+/// directory the archive writes in — the deepest one that already exists on
+/// its own path, and the directory each archived file leaves — is a real
+/// directory its owner may write in and search, on the device the archived
+/// file is on, so the rename is neither refused nor asked to cross a mount.
+///
+/// A PROXY, said as one: the mode bits are what a Check can read without a
+/// write and without libc. An ACL, a read-only mount, a file flag or a
+/// directory another user owns can still refuse the Copy, and that is met by
+/// the Copy's own failure — the loud fallback to the seed path.
+fn archivable(plan: &Plan, proof: &Proof) -> Result<(), String> {
+    if proof.is_empty() {
+        return Ok(());
+    }
+    let path = [ARCHIVE, plan.id.as_str()];
+    let mut deepest = plan.to.clone();
+    for depth in 1..=path.len() {
+        match under(&plan.to, &path[..depth])? {
+            (dir, Node::Dir) => deepest = dir,
+            (_, Node::Missing) => break,
+            (other, node) => return Err(format!("{} {}", other.display(), node.word())),
+        }
+    }
+    let device = writable(&deepest)?;
+    for print in proof.stale.iter().chain(&proof.conflicts) {
+        let node = plan.to.join(&print.relative);
+        let parent = node.parent().unwrap_or(&plan.to);
+        if writable(parent)? != device || print.stamp.dev != device {
+            return Err(format!(
+                "{} is on another file system than {}, so ae could not archive it there",
+                node.display(),
+                deepest.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The device of `dir`, when it is a real directory its owner may write in and
+/// search.
+fn writable(dir: &Path) -> Result<u64, String> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    match lstat(dir)? {
+        Some(meta) if meta.file_type().is_dir() => {
+            if meta.permissions().mode() & 0o300 == 0o300 {
+                Ok(meta.dev())
+            } else {
+                Err(format!(
+                    "{} is not writable, so ae could not archive the target's own files there",
+                    dir.display()
+                ))
+            }
+        }
+        Some(_) | None => Err(changed(dir)),
+    }
 }
 
 /// Prove the target STILL holds exactly the bytes ae carried.
@@ -293,15 +725,24 @@ fn still_holds(path: &Path, node: Node, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Copy one optional tree, named by its components under each account root. A
-/// source that is not there is `Ok`; anything present is binding.
-fn copy_tree(plan: &Plan, parts: &[&str], budget: &mut usize, mode: Mode) -> Result<(), String> {
+/// source that is not there is `Ok`; anything present is binding. What a Check
+/// would archive comes back, account-relative.
+fn copy_tree(
+    plan: &Plan,
+    parts: &[&str],
+    budget: &mut usize,
+    mode: Mode<'_>,
+) -> Result<Vec<Print>, String> {
     let (source, node) = under(&plan.from, parts)?;
     match node {
-        Node::Missing => Ok(()),
+        Node::Missing => Ok(Vec::new()),
         Node::Dir => {
             let (target, node) = under(&plan.to, parts)?;
             match node {
-                Node::Missing | Node::Dir => copy_dir(&source, &target, MAX_DEPTH, budget, mode),
+                Node::Missing | Node::Dir => copy_dir(&source, &target, MAX_DEPTH, budget, mode)?
+                    .into_iter()
+                    .map(|print| print.within(&plan.to))
+                    .collect(),
                 other => Err(format!("{} {}", target.display(), other.word())),
             }
         }
@@ -317,8 +758,8 @@ fn copy_dir(
     target: &Path,
     depth: usize,
     budget: &mut usize,
-    mode: Mode,
-) -> Result<(), String> {
+    mode: Mode<'_>,
+) -> Result<Vec<Print>, String> {
     if depth == 0 {
         return Err(format!(
             "{} is nested deeper than ae will copy",
@@ -326,6 +767,7 @@ fn copy_dir(
         ));
     }
     make_dir(target, mode)?;
+    let mut conflicts = Vec::new();
     for entry in children(source)? {
         if *budget == 0 {
             return Err(format!(
@@ -339,25 +781,38 @@ fn copy_dir(
         };
         let into = target.join(name);
         match classify(&entry)? {
-            Node::Dir => copy_dir(&entry, &into, depth - 1, budget, mode)?,
-            Node::File => copy_file(&entry, &into, mode)?,
+            Node::Dir => conflicts.extend(copy_dir(&entry, &into, depth - 1, budget, mode)?),
+            Node::File => conflicts.extend(copy_file(&entry, &into, mode)?),
             // A LISTED ENTRY THAT IS GONE is a source ae cannot promise it
             // copied, exactly like one it cannot read. The copy set is binding,
             // so this abandons the carry rather than delivering it short.
             other => return Err(format!("{} {}", entry.display(), other.word())),
         }
     }
-    Ok(())
+    Ok(conflicts)
 }
 
-/// One file into a target that must not already hold a different one.
-fn copy_file(source: &Path, target: &Path, mode: Mode) -> Result<(), String> {
+/// One file into a target that must not already hold a different one. A Check
+/// that meets a different REGULAR file prints it for archiving instead — one
+/// file's bytes at a time, so the proof stays fixed-size per file; a Copy
+/// meets none, because the files the Check printed are already aside.
+fn copy_file(source: &Path, target: &Path, mode: Mode<'_>) -> Result<Option<Print>, String> {
     let bytes = read_regular(source, Node::File)?;
     match classify(target)? {
-        Node::Missing if mode == Mode::Check => Ok(()),
-        Node::Missing => publish(target, &bytes),
-        Node::File if read_regular(target, Node::File)? == bytes => Ok(()),
-        _ => Err(format!("{} already exists", target.display())),
+        Node::Missing if mode == Mode::Check => Ok(None),
+        Node::Missing => publish(target, &bytes).map(|()| None),
+        Node::File => {
+            let before = stamp(target)?;
+            let held = read_regular(target, Node::File)?;
+            if held == bytes {
+                Ok(None)
+            } else if mode == Mode::Check {
+                print(target, before, &held).map(Some)
+            } else {
+                Err(format!("{} already exists", target.display()))
+            }
+        }
+        other => Err(format!("{} {}", target.display(), other.word())),
     }
 }
 
@@ -404,14 +859,15 @@ impl Node {
 /// dependency this crate forbids. Both accounts belong to the same OS user, so
 /// the bar here is no silent clobber, no followed link and no silent skip — not
 /// a guarantee against someone who already owns the account.
-fn under(root: &Path, parts: &[&str]) -> Result<(PathBuf, Node), String> {
+fn under<S: AsRef<OsStr>>(root: &Path, parts: &[S]) -> Result<(PathBuf, Node), String> {
     let mut full = root.to_path_buf();
     for part in parts {
-        let mut components = Path::new(part).components();
+        let part = Path::new(part.as_ref());
+        let mut components = part.components();
         if !matches!(components.next(), Some(std::path::Component::Normal(_)))
             || components.next().is_some()
         {
-            return Err(format!("'{part}' is not a plain file name"));
+            return Err(format!("'{}' is not a plain file name", part.display()));
         }
         full.push(part);
     }
@@ -423,26 +879,33 @@ fn under(root: &Path, parts: &[&str]) -> Result<(PathBuf, Node), String> {
             Node::Missing => return Ok((full, Node::Missing)),
             other => return Err(format!("{} {}", walk.display(), other.word())),
         }
-        walk.push(part);
+        walk.push(part.as_ref());
         node = classify(&walk)?;
     }
     Ok((full, node))
 }
 
-/// What `path` is, without following it. `Missing` is a PROVEN absence and
-/// nothing else: a node ae cannot even stat is a node it cannot promise it
+/// The metadata of `path`, without following it. `None` is a PROVEN absence
+/// and nothing else: a node ae cannot even stat is a node it cannot promise it
 /// copied, so every other failure is an error and the carry is abandoned
 /// loudly rather than reported complete without it.
-fn classify(path: &Path) -> Result<Node, String> {
+fn lstat(path: &Path) -> Result<Option<std::fs::Metadata>, String> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the carry classifies every store node without following it, so a link can never redirect a copy out of the account it names"
     )]
     let meta = std::fs::symlink_metadata(path);
-    let meta = match meta {
-        Ok(meta) => meta,
-        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(Node::Missing),
-        Err(why) => return Err(format!("could not read {} ({why})", path.display())),
+    match meta {
+        Ok(meta) => Ok(Some(meta)),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(why) => Err(format!("could not read {} ({why})", path.display())),
+    }
+}
+
+/// What `path` is, without following it.
+fn classify(path: &Path) -> Result<Node, String> {
+    let Some(meta) = lstat(path)? else {
+        return Ok(Node::Missing);
     };
     let kind = meta.file_type();
     Ok(if kind.is_symlink() {
@@ -454,6 +917,22 @@ fn classify(path: &Path) -> Result<Node, String> {
     } else {
         Node::NonRegular
     })
+}
+
+/// Which regular file `path` is right now. Anything else there is a node that
+/// changed under the reading that classified it.
+fn stamp(path: &Path) -> Result<Stamp, String> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    match lstat(path)? {
+        Some(meta) if meta.file_type().is_file() => Ok(Stamp {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        }),
+        Some(_) | None => Err(changed(path)),
+    }
 }
 
 /// The bytes of `path`, which the caller has already classified as a REGULAR
@@ -739,8 +1218,8 @@ mod tests {
             }),
             ("clash", |plan| {
                 put(
-                    &plan.to.join("file-history").join(ID).join("h@v1"),
-                    b"theirs",
+                    &plan.to.join("projects/-w").join(format!("{ID}.jsonl")),
+                    b"forked transcript",
                 );
             }),
             ("closed", |plan| {
@@ -837,5 +1316,181 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).ok(), Some(b"ae's own\n".to_vec()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ADD-only v1.1 proof pins; no product seam or implementation edits.
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture reads its own regular file before a real same-length inode replacement"
+    )]
+    fn v11_a_same_length_replacement_cannot_freeze_the_previous_inode() {
+        let dir = scratch("rr11inode");
+        let path = dir.join("held");
+        put(&path, b"old");
+        let before = super::stamp(&path).expect("fixture regular file");
+        let bytes = std::fs::read(&path).expect("fixture old bytes");
+        std::fs::rename(&path, dir.join("previous-inode")).expect("fixture old inode retained");
+        put(&path, b"new");
+        let after = super::stamp(&path).expect("fixture replacement");
+        assert_eq!(after.len, before.len, "fixture same-length replacement");
+        assert_ne!(after.ino, before.ino, "fixture distinct live inodes");
+        let frozen = super::print(&path, before, &bytes);
+        std::fs::remove_dir_all(&dir).expect("fixture cleanup");
+        assert!(
+            frozen.is_err(),
+            "R4 a read from another inode is no frozen proof: {frozen:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture reads a pre-planted archive marker in its own scratch account"
+    )]
+    fn v11_a_preplanted_archive_collision_uses_the_next_nonce_without_reuse() {
+        let plan = planted("rr11collision");
+        let base = plan.to.join("ae-carry-archive").join(ID);
+        let start = crate::time::Timestamp::now().epoch();
+        // Cover every second in a bounded interval, including a clock boundary;
+        // a successful retry never depends on two calls sharing one second.
+        for second in start - 2..=start + 120 {
+            let utc = crate::time::Timestamp::from_epoch(second).to_string();
+            let stamp = format!(
+                "{}{}{}T{}{}{}Z",
+                &utc[..4],
+                &utc[5..7],
+                &utc[8..10],
+                &utc[11..13],
+                &utc[14..16],
+                &utc[17..19]
+            );
+            let taken = base.join(format!("{stamp}-{}.0", std::process::id()));
+            put(&taken.join("keep"), b"earlier archive bytes");
+        }
+        let now = crate::time::Timestamp::now().epoch();
+        assert!(
+            (start - 2..=start + 120).contains(&now),
+            "fixture current second has a planted .0"
+        );
+        let fresh = super::fresh_archive(&plan, super::Mode::Copy(&super::Proof::default()))
+            .expect("R3 taken .0 must retry a fresh nonce");
+        let name = fresh
+            .file_name()
+            .expect("nonce name")
+            .to_str()
+            .expect("ASCII nonce");
+        let (prefix, n) = name.rsplit_once('.').expect("documented counter");
+        assert_eq!(n, "1", "R3 .0 is taken; next nonce is .1");
+        let taken = base.join(format!("{prefix}.0"));
+        assert_eq!(
+            std::fs::read(taken.join("keep")).expect("earlier archive kept"),
+            b"earlier archive bytes"
+        );
+        assert!(
+            fresh.is_dir() && fresh != taken,
+            "R3 exclusively fresh directory"
+        );
+        assert!(
+            std::fs::read_dir(&fresh)
+                .expect("new directory readable")
+                .next()
+                .is_none(),
+            "R3 no reuse of old archive"
+        );
+        std::fs::remove_dir_all(plan.from.parent().expect("fixture root"))
+            .expect("fixture cleanup");
+    }
+
+    #[test]
+    fn v11_a_readonly_archive_parent_reports_the_actual_permission_failure() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let plan = planted("rr11permission");
+        let base = plan.to.join("ae-carry-archive").join(ID);
+        std::fs::create_dir_all(&base).expect("fixture archive parent");
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o500))
+            .expect("fixture readonly parent");
+        let fixture = std::fs::create_dir(base.join("permission-probe"));
+        let result = super::fresh_archive(&plan, super::Mode::Copy(&super::Proof::default()));
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture permissions restored");
+        std::fs::remove_dir_all(plan.from.parent().expect("fixture root"))
+            .expect("fixture cleanup");
+        assert_eq!(
+            fixture
+                .expect_err("fixture requires an unprivileged runner")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let why = result.expect_err("R4 archive creation is denied");
+        assert!(
+            why.contains(&base.display().to_string())
+                && why.to_ascii_lowercase().contains("permission denied"),
+            "R4 actual IO cause and archive path are retained: {why}"
+        );
+    }
+
+    #[test]
+    fn v11_the_file_device_must_match_even_when_its_parent_device_matches() {
+        let plan = planted("rr11device");
+        put(
+            &plan.to.join("projects/-w").join(format!("{ID}.jsonl")),
+            b"trans",
+        );
+        let checked = super::run(&plan, super::Mode::Check).expect("fixture local prefix proof");
+        let mut proof = checked.proof.clone();
+        assert!(
+            super::archivable(&plan, &proof).is_ok(),
+            "fixture local devices match"
+        );
+        // A mounted file can have a different device from its containing
+        // directory. Exercise this proof value without privileged mounts;
+        // the real-directory reads and BOTH-device comparison stay unmocked.
+        proof.stale.as_mut().expect("fixture stale file").stamp.dev ^= 1;
+        let result = super::archivable(&plan, &proof);
+        std::fs::remove_dir_all(plan.from.parent().expect("fixture root"))
+            .expect("fixture cleanup");
+        assert!(
+            result.is_err_and(|why| why.contains("another file system")),
+            "R4 known cross-device file must refuse during Check"
+        );
+    }
+
+    #[test]
+    fn v11_owner_write_and_search_bits_do_not_make_a_regular_file_a_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("rr11directory");
+        let path = dir.join("file");
+        put(&path, b"regular file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture owner mode bits");
+        let result = super::writable(&path);
+        std::fs::remove_dir_all(&dir).expect("fixture cleanup");
+        assert!(
+            result.is_err(),
+            "R4 archive proxy proves a real directory, not mode bits alone"
+        );
+    }
+
+    #[test]
+    fn v11_a_regular_file_stamp_refuses_a_real_directory_and_a_link() {
+        let dir = scratch("rr11regular");
+        let path = dir.join("file");
+        put(&path, b"regular file");
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&path, &link).expect("fixture link");
+        assert!(super::stamp(&path).is_ok(), "fixture positive regular file");
+        let directory = super::stamp(&dir);
+        let linked = super::stamp(&link);
+        std::fs::remove_dir_all(&dir).expect("fixture cleanup");
+        assert!(
+            directory.is_err(),
+            "R4 a directory cannot become a regular-file fingerprint"
+        );
+        assert!(
+            linked.is_err(),
+            "R4 a link cannot become a regular-file fingerprint"
+        );
     }
 }

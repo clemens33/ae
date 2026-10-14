@@ -97,6 +97,7 @@ mod reqfilter_spec;
 mod reseat;
 mod reseat_carry;
 mod reseat_headroom_spec;
+mod reseatround_spec;
 mod restore;
 mod restore_spec;
 mod run;

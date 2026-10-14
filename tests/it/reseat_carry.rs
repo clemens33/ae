@@ -424,15 +424,18 @@ fn a_target_account_already_holding_another_conversation_is_refused_before_the_m
 #[test]
 fn a_running_seat_whose_carry_would_fail_is_refused_before_it_is_stopped() {
     // THE PRE-STOP CHECK reads and compares the whole set under the lock BEFORE
-    // the running tool is ended, so a target holding a different sidecar costs
+    // the running tool is ended, so a target holding a linked sidecar costs
     // a refusal — not a stopped tool and a fresh conversation.
     let rig = Rig::new("prestop");
     let pane = running_seat(&rig);
-    let theirs = account(&rig, "b")
+    let linked = account(&rig, "b")
         .join("file-history")
         .join(ID)
         .join("h@v1");
-    write(&theirs, b"another checkpoint");
+    let outside = canonical_scratch(&rig).join("outside-checkpoint");
+    write(&outside, b"another checkpoint");
+    assert!(std::fs::create_dir_all(linked.parent().expect("sidecar parent")).is_ok());
+    assert!(std::os::unix::fs::symlink(&outside, &linked).is_ok());
     let pid = rig.tool_pid(&pane, "claude");
     let (meta, events) = (rig.meta(), rig.events());
 
@@ -453,9 +456,10 @@ fn a_running_seat_whose_carry_would_fail_is_refused_before_it_is_stopped() {
         "nothing written"
     );
     assert_eq!(
-        std::fs::read(&theirs).ok(),
+        std::fs::read(&outside).ok(),
         Some(b"another checkpoint".to_vec())
     );
+    assert_eq!(std::fs::read_link(&linked).ok(), Some(outside));
 }
 
 #[test]

@@ -185,6 +185,10 @@ enum Carried {
     No,
     /// The conversation's files are in the new account.
     Yes,
+    /// They are, and the new account's own older or differing copies of them
+    /// were ARCHIVED first: moved aside, never deleted, into one directory of
+    /// this move that the record names.
+    Archived { count: usize, dir: PathBuf },
     /// The carry was live and REFUSED. The move still happens — a fresh
     /// conversation and the seed pack — and this is what it could not do.
     Seeded(String),
@@ -196,6 +200,11 @@ impl Carried {
         match self {
             Self::No => String::new(),
             Self::Yes => "carried".to_owned(),
+            Self::Archived { count, dir } => format!(
+                "carried, archived {} in {}",
+                crate::carry::files(*count),
+                dir.display()
+            ),
             Self::Seeded(why) => format!("seeded ({why})"),
         }
     }
@@ -206,9 +215,15 @@ impl Carried {
     /// say the opposite of what happened. Every other arm really did leave one.
     fn field(&self) -> &'static str {
         match self {
-            Self::Yes => "conversation",
+            Self::Yes | Self::Archived { .. } => "conversation",
             Self::No | Self::Seeded(_) => "prior",
         }
+    }
+
+    /// Did the conversation travel? Archiving on the way changes what the
+    /// record says, never what the move does.
+    fn travelled(&self) -> bool {
+        matches!(self, Self::Yes | Self::Archived { .. })
     }
 }
 
@@ -1176,21 +1191,28 @@ fn run_parsed(
     // whole copy set is proven by the copy's own walk, writing nothing. A
     // working copy ae cannot use is left to the stop and the dead proof, which
     // name it in their own words.
+    // What it proved is KEPT: the copy after the stop archives exactly what
+    // this Check decided, or nothing.
+    let mut checked = None;
     if let Ok(work_dir) = crate::seat_relaunch::usable_work_dir(&locked)
         && let Some(plan) = carry_plan(&locked, &target.slot, &moving, &prior, &work_dir)
-        && let Err(why) = crate::carry::run(&plan, crate::carry::Mode::Check)
     {
-        let (from, to) = plan.homes();
-        writeln!(
-            err,
-            "Error: '{}' could not carry conversation {} from {} to {} ({why}) — nothing was \
-             stopped or reseated.",
-            target.agent,
-            plan.id(),
-            from.display(),
-            to.display()
-        )?;
-        return Ok(refused);
+        match crate::carry::run(&plan, crate::carry::Mode::Check) {
+            Ok(crossing) => checked = Some(crossing),
+            Err(why) => {
+                let (from, to) = plan.homes();
+                writeln!(
+                    err,
+                    "Error: '{}' could not carry conversation {} from {} to {} ({why}) — nothing \
+                     was stopped or reseated.",
+                    target.agent,
+                    plan.id(),
+                    from.display(),
+                    to.display()
+                )?;
+                return Ok(refused);
+            }
+        }
     }
     // A TOOL CHANGE says what it costs before anything happens, a dead pane
     // included: the successor cannot read the old tool's store, and ae looks
@@ -1268,7 +1290,13 @@ fn run_parsed(
         None => Carried::No,
         Some(plan) => {
             let (from, to) = plan.homes();
-            match crate::carry::run(&plan, crate::carry::Mode::Copy) {
+            // A move whose Check never ran — its working copy was not usable
+            // then — copies with an empty proof, which archives nothing.
+            let unproven = crate::carry::Proof::default();
+            let proof = checked
+                .as_ref()
+                .map_or(&unproven, crate::carry::Crossing::proof);
+            match crate::carry::run(&plan, crate::carry::Mode::Copy(proof)) {
                 Ok(crossing) => {
                     // RULING 1: typing the reseat with the other account's
                     // profile IS the consent, so there is no prompt — but the
@@ -1288,7 +1316,25 @@ fn run_parsed(
                             ""
                         }
                     )?;
-                    Carried::Yes
+                    // WHAT IT ARCHIVED, said on the one line that names the
+                    // directory: the target account's own files were moved,
+                    // so the human is told where they are now.
+                    match crossing.archived() {
+                        Some((count, dir)) => {
+                            writeln!(
+                                out,
+                                "archived {} the target account held for this conversation in \
+                                 {} (moved aside, never deleted)",
+                                crate::carry::files(count),
+                                dir.display()
+                            )?;
+                            Carried::Archived {
+                                count,
+                                dir: dir.to_path_buf(),
+                            }
+                        }
+                        None => Carried::Yes,
+                    }
                 }
                 Err(why) => {
                     // RULING 4: the move still happens, on a fresh conversation
@@ -1312,7 +1358,7 @@ fn run_parsed(
     // the cleanup below removes that file. A CARRIED seat gets neither: the
     // conversation itself travelled, so there is nothing for ae to tell the
     // successor and nothing for a human to re-send by hand.
-    let seed = if carried == Carried::Yes {
+    let seed = if carried.travelled() {
         None
     } else {
         let pack = match crate::seat_pack(
@@ -1344,7 +1390,7 @@ fn run_parsed(
         // the marker was there; a seat that never started must not be handed
         // one it never had.
         let stranded = planned && crate::launch::publish_data(&marker, b"").is_err();
-        let note = match (stranded, carried == Carried::Yes) {
+        let note = match (stranded, carried.travelled()) {
             (true, _) => {
                 " Its start marker could not be put back either, so its next start would open a \
                  NEW conversation beside the one it records."
@@ -1376,7 +1422,7 @@ fn run_parsed(
     // profile, the SOURCE store is untouched and the copy already in the other
     // account is inert because no record names it, so re-running the same
     // reseat puts the marker back and carries again.
-    if carried == Carried::Yes {
+    if carried.travelled() {
         let mut back = crate::launch::publish_data(&marker, b"");
         if back.is_err() {
             back = crate::launch::publish_data(&marker, b"");
@@ -1410,7 +1456,7 @@ fn run_parsed(
             profile: &parsed.profile,
             binary: &moving.binary,
             launch_id: &crate::session_launch::launch_token(moving.tool, None),
-            conversation: match (carried == Carried::Yes, moving.account.as_ref()) {
+            conversation: match (carried.travelled(), moving.account.as_ref()) {
                 // The account rows and the kept conversation are published in
                 // the SAME replacement: a conversation whose store no row names
                 // is the window a later reader would resolve to the home the
@@ -1445,7 +1491,7 @@ fn run_parsed(
             seat,
             agent_bin: moving.binary.clone(),
             work_dir: before.work_dir,
-            id_before: if carried == Carried::Yes {
+            id_before: if carried.travelled() {
                 prior.clone()
             } else {
                 conversation
@@ -1613,7 +1659,7 @@ fn finish(
     }
     writeln!(out, "{line}")?;
     Ok(Ended::Moved {
-        carried: at.carry == Carried::Yes,
+        carried: at.carry.travelled(),
     })
 }
 
