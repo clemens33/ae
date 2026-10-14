@@ -1477,6 +1477,7 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
         }
         Ending::Unmapped(_) => Some(CauseClass::NoCandidate),
     };
+    let hand = format!("move it by hand (ae reseat {session} {agent} --using <profile>)");
     let line = match ending {
         Ending::Moved(moved) => format!(
             "{agent} moved {} -> {}{} (tool {} -> {}, model {} -> {}), {}{}; work tree {}. If \
@@ -1528,18 +1529,14 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
             let next = why.find("once its box is empty").and_then(|at| {
                 why.get(at..at + why[at..].find(" --stop-unknown")? + " --stop-unknown".len())
             });
-            let hand = format!(
-                "move it by hand (ae reseat {session} {agent} --using <profile>) or wait for the reset"
-            );
             format!(
                 "{agent} not moved — {why}. Next: {}.",
-                next.unwrap_or(&hand)
+                next.unwrap_or(&format!("{hand} or wait for the reset"))
             )
         }
         Ending::Unmapped(profile) => format!(
             "{agent} not moved — no declared or derived candidate for {profile}. Next: add an \
-             [auto_reseat] row for {profile}, or move it by hand (ae reseat {session} {agent} \
-             --using <profile>)."
+             [auto_reseat] row for {profile}, or {hand}."
         ),
         Ending::Failed(class, why) => format!(
             "{agent} move failed — {}. Next: relaunch {agent} if its pane sits at a shell, \
@@ -1556,14 +1553,30 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
     // names the cause and the step is what the human acts on, and half a
     // resend condition could ask for a duplicate. Cut BEFORE `summary_of`,
     // whose own cap would otherwise take the step first.
-    let next = line.rfind(" Next: ").map_or("", |at| &line[at..]);
-    let room = NOTICE_CHARS.saturating_sub(head.chars().count() + next.chars().count());
-    let body = line[..line.len() - next.len()].chars().take(room);
+    let at = line.rfind(" Next: ").unwrap_or(line.len());
+    let (body, step) = line.split_at(at);
+    // A profile name is unbounded, so a step that quotes one can fail to fit
+    // beside the head at all. It is then replaced WHOLE by a fixed one that
+    // names only the session and the agent: a clipped command is worse than a
+    // shorter one.
+    let short = match ending {
+        Ending::Refused(..) => Some(format!("Next: {hand} or wait for the reset.")),
+        Ending::Unmapped(_) => Some(format!(
+            "Next: add an [auto_reseat] row for the profile, or {hand}."
+        )),
+        _ => None,
+    };
+    let step = match short {
+        Some(short) if head.chars().count() + step.chars().count() > NOTICE_CHARS => {
+            format!(" {}", crate::seatpack::neutralise(&short))
+        }
+        _ => step.to_owned(),
+    };
+    let room = NOTICE_CHARS.saturating_sub(head.chars().count() + step.chars().count());
     let cut: String = head
         .chars()
-        .chain(body)
-        .chain(next.chars())
-        .take(NOTICE_CHARS)
+        .chain(body.chars().take(room))
+        .chain(step.chars())
         .collect();
     crate::state::summary_of(&cut)
 }
@@ -3321,6 +3334,71 @@ mod tests {
                 );
                 assert!(told.contains(" Next: "), "the step survives: {told}");
                 assert!(told.chars().count() <= NOTICE_CHARS, "{told}");
+            }
+        }
+    }
+
+    /// A profile name has no length bound, so the step that quotes one can fail
+    /// to fit beside the class at all. It is then replaced whole by a fixed
+    /// step, and a notice never prints half a command.
+    #[test]
+    fn a_step_too_long_for_the_notice_is_replaced_whole_and_never_clipped() {
+        let (session, agent) = ("s".repeat(128), "a".repeat(64));
+        for len in [1, 64, 65, 80, 400, 5000] {
+            let profile = "p".repeat(len);
+            let command = format!("ae reseat {session} {agent} --using {profile} --stop-unknown");
+            let said = CauseClass::UnknownFrame.lead(&format!(
+                "Error: once its box is empty and the limit line is its newest row, run: \
+                 {command} — ae cannot read the frame in pane %1. Nothing was reseated."
+            ));
+            let told = notice(
+                &session,
+                &agent,
+                &Ending::Refused(CauseClass::UnknownFrame, &said),
+            );
+            assert!(
+                told.starts_with("auto reseat: unknown-frame: "),
+                "{len}: {told}"
+            );
+            assert!(told.chars().count() <= NOTICE_CHARS, "{len}: {told}");
+            assert!(told.ends_with('.'), "{len}: {told}");
+            // 28 + 7 + 65 + 10 + 193 + 9 + len + 15 + 1 is the whole notice: the
+            // step fits through a 65-character profile and no further.
+            assert_eq!(told.contains(&command), len <= 65, "{len}: {told}");
+            if !told.contains(&command) {
+                // No piece of the command: neither its precondition nor the
+                // start of its profile.
+                assert!(!told.contains("--using p"), "{len}: {told}");
+                assert!(!told.contains("--stop"), "{len}: {told}");
+                assert!(!told.contains("once its box is empty"), "{len}: {told}");
+                assert!(
+                    told.ends_with(&format!(
+                        "Next: move it by hand (ae reseat {session} {agent} --using <profile>) \
+                         or wait for the reset."
+                    )),
+                    "{len}: {told}"
+                );
+            }
+        }
+        // The same for a profile with no candidate.
+        for len in [1, 200, 5000] {
+            let profile = "p".repeat(len);
+            let told = notice(&session, &agent, &Ending::Unmapped(&profile));
+            assert!(
+                told.starts_with("auto reseat: no-candidate: "),
+                "{len}: {told}"
+            );
+            assert!(told.chars().count() <= NOTICE_CHARS, "{len}: {told}");
+            assert!(told.ends_with("--using <profile>)."), "{len}: {told}");
+            assert!(
+                told.contains(" Next: add an [auto_reseat] row for "),
+                "{len}: {told}"
+            );
+            if len >= 200 {
+                assert!(
+                    told.contains(" Next: add an [auto_reseat] row for the profile, or move it"),
+                    "{len}: {told}"
+                );
             }
         }
     }

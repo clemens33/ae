@@ -554,9 +554,12 @@ with a cause class — `<class>: <message>` — so a clip of a long message (a p
 a profile name) never takes the cause. The notice puts the class AHEAD of the
 agent and session names (`auto reseat: <class>: <agent> not moved — …`), and
 its cut reserves that head and the whole safe next step (a `--stop-unknown`
-command included) before it spends any room on the body, so the longest valid
-names still keep both. The class is named where the refusal is
-decided, never read back out of the printed text: `carry-source-missing` (the
+command included) before it spends any room on the body. A profile name has no
+length bound, so a step that quotes one can fail to fit beside the head: it is
+then replaced WHOLE by a fixed step naming only the session and the agent
+(`move it by hand (ae reseat <session> <agent> --using <profile>)`), never
+clipped to half a command or half a resend condition. The class is named
+where the refusal is decided, never read back out of the printed text: `carry-source-missing` (the
 conversation's transcript is not in the account it moves from),
 `carry-target-differs` (the account it moves to holds a different transcript, a
 node of the wrong kind, or a place ae could not archive into),
