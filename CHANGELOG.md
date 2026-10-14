@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.69] - 2026-10-14
+- One tmux enumeration per server per fleet read
+
 ## [v2026.10.68] - 2026-10-14
 - Console ask oracles tolerate text and Enter arriving in one read
 - Headroom judges only windows proven at least one day long
