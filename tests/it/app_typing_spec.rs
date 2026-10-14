@@ -318,9 +318,14 @@ fn nonempty_draft_interrupt_clears_it_and_ctrl_y_brings_it_back() {
     rig.wait(
         &pane,
         FRAME,
-        "C1 interrupt over an empty composer quits",
-        |s| s.contains("ae app closed"),
+        "C1 an interrupt just after a clear arms",
+        |s| s.contains("^C again to quit · ^Y brings draft back"),
     );
+    alive(&rig, &pane);
+    rig.keys(&pane, "C-c");
+    rig.wait(&pane, FRAME, "C1 a further interrupt quits", |s| {
+        s.contains("ae app closed")
+    });
 }
 
 #[test]

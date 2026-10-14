@@ -2012,12 +2012,13 @@ fn settings_body(
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
-const WRITE_KEYS: [(&str, &str); 16] = [
+const WRITE_KEYS: [(&str, &str); 17] = [
     ("Enter", "send the line"),
     ("Alt+Enter ^J", "new line in the draft"),
     ("^V", "insert a clipboard PNG path"),
     ("Esc", "keep the draft, browse"),
     ("^C", "clear a draft; an empty one quits at once"),
+    ("^C", "just after a clear: arms; again in 2 s quits"),
     ("Left Right", "move the cursor"),
     ("Home End", "start / end of line"),
     ("^A ^E", "start / end of line"),
@@ -4332,6 +4333,7 @@ mod tests {
         };
         has("Browse", &["^C", "quit at once"]);
         has("Write", &["^C", "clear a draft", "empty", "quits at once"]);
+        has("Write", &["^C", "after a clear", "arms"]);
         has("Write", &["^U", "whole draft"]);
         has("Write", &["^Y", "cleared draft", "once"]);
         has("Settings", &["gear", "Esc close", "closes"]);

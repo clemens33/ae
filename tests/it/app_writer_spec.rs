@@ -758,8 +758,10 @@ fn esc_interrupt_quit_and_crash_release_the_kernel_lease() {
                 rig.tmux(&["kill-window", "-t", &pane]);
             }
             "C-c" => {
-                rig.key(&pane, "C-c");
-                rig.key(&pane, "C-c");
+                // Clear the draft, arm the guarded quit, quit.
+                for _ in 0..3 {
+                    rig.key(&pane, "C-c");
+                }
             }
             key => rig.key(&pane, key),
         }
