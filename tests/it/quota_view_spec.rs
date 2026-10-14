@@ -288,3 +288,30 @@ fn no_reading_wraps_and_unavailable_is_one_head() {
         ]
     );
 }
+
+/// quotacache: a kept-prior note draws stale above surviving windows — the
+/// contract the cached overlay relies on (kept rows plus a failure note,
+/// never merged).
+#[test]
+fn kept_prior_note_draws_stale_above_surviving_windows() {
+    let mut kept = scope("agy · ag", vec![window("gemini 5h")]);
+    kept.only = Some("last refresh failed — agy /quota gave no usable answer".to_owned());
+    let lines = layout(
+        &[kept],
+        Geometry {
+            width: 76,
+            rows: None,
+            icons: true,
+        },
+    );
+    let note = lines
+        .iter()
+        .position(|line| line.text.contains("last refresh failed"))
+        .expect("the note");
+    assert_eq!(lines[note].tone, Tone::Stale);
+    let first_window = lines
+        .iter()
+        .position(|line| line.text.contains("gemini 5h"))
+        .expect("the kept window");
+    assert!(note < first_window, "note above windows");
+}

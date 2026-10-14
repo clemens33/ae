@@ -274,11 +274,21 @@ pub(super) struct Reader {
     settings_session: Option<String>,
     /// The agy answer held between settings reads, so an open overlay asks once per TTL.
     agy: crate::quota::AgyCache,
+    /// The one agy ask out on its own thread, landed by the next settings read.
+    flight: Option<Flight>,
     /// The fleet's journals as last read.
     journals: Journals,
     /// Sessions whose last stage read was answered: one still staging is due
     /// again at once, one whose read failed waits its tier.
     answered: BTreeSet<String>,
+}
+
+/// An agy ask running off the reader: the home and epoch it was asked for, and where its
+/// answer and completion epoch arrive.
+struct Flight {
+    home: PathBuf,
+    asked_at: i64,
+    done: Receiver<(crate::transport::AgyRun, i64)>,
 }
 
 /// Where [`Reader::fold`] reads a session's needs.
@@ -331,6 +341,7 @@ impl Reader {
             peek: None,
             settings_session: None,
             agy: crate::quota::AgyCache::default(),
+            flight: None,
             journals: Journals::default(),
             answered: BTreeSet::new(),
         }
@@ -927,16 +938,22 @@ impl Reader {
         crate::read_gate("settings");
         let (generation, _) = self.settings.unwrap_or((0, None));
         let paths = self.settings_paths.clone();
+        self.land();
         let quota = {
             let roots = crate::inventory::Roots::under(&self.root);
+            let now = crate::time::Timestamp::now().epoch();
             let inputs = crate::quota::Inputs {
                 home: paths.home.as_deref(),
                 global: Some(paths.global.as_path()),
                 local: paths.local.as_deref(),
                 sessions: Some(roots.sessions()),
-                now: crate::time::Timestamp::now().epoch(),
+                now,
             };
-            crate::quota::view_cached(&inputs, &mut self.agy)
+            let (quota, due) = crate::quota::view_held(&inputs, &self.agy, self.flight.is_some());
+            if let Some(home) = due {
+                self.fly(home, now);
+            }
+            quota
         };
         let (config, about, instructions) = if self.settings_full {
             (None, None, None)
@@ -959,6 +976,43 @@ impl Reader {
             about,
             instructions,
         }
+    }
+
+    /// Settle the agy ask that has finished; one that ended without an answer is a failure.
+    fn land(&mut self) {
+        let Some(flight) = &self.flight else {
+            return;
+        };
+        let (answer, done_at) = match flight.done.try_recv() {
+            Ok(done) => done,
+            Err(TryRecvError::Disconnected) => (crate::transport::AgyRun::Failed, flight.asked_at),
+            Err(TryRecvError::Empty) => return,
+        };
+        self.agy
+            .settle(&flight.home, flight.asked_at, done_at, answer);
+        self.flight = None;
+    }
+
+    /// Ask agy for `home` on its own thread, detached and never waited for: the reader keeps
+    /// answering, and the next settings read after it finishes lands the answer.
+    fn fly(&mut self, home: PathBuf, asked_at: i64) {
+        let (send, done) = std::sync::mpsc::channel();
+        let (leg, asked) = (self.agy.leg(), home.clone());
+        let spawned = std::thread::Builder::new()
+            .name("ae-app-agy".to_owned())
+            .spawn(move || {
+                let _ = send.send(crate::quota::ask(&leg, &asked, asked_at));
+            });
+        if spawned.is_err() {
+            let failed = crate::transport::AgyRun::Failed;
+            self.agy.settle(&home, asked_at, asked_at, failed);
+            return;
+        }
+        self.flight = Some(Flight {
+            home,
+            asked_at,
+            done,
+        });
     }
 
     /// The instructions tab for the session the overlay opened on: its records
@@ -1512,45 +1566,58 @@ mod tests {
         assert!(reader.owned().is_none(), "a stopped writer, no proof");
     }
 
-    /// The open overlay reads quota every REFRESH, and agy is a network call:
-    /// the reader holds its answer, so two reads ask agy once and both show
-    /// its window.
+    /// The leg runs off the reader: the first read asks once and pends, the
+    /// landing paints the window, later reads and a reopen reuse it.
     #[test]
     fn the_settings_read_asks_agy_once_across_refreshes() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        const REPORT: &str = r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage",
-          "data":{"groups":[{"name":"Gemini Models","buckets":[{"id":"gemini-5h",
-          "window":"5h","remaining_fraction":0.75,"reset_time":"2099-01-01T00:00:00Z"}]}]}}}"#;
-        let root = Root::new("settings-agy");
-        let (home, global) = (root.0.join("home"), root.0.join("config"));
-        std::fs::create_dir_all(&home).expect("scratch home");
-        std::fs::write(&global, "[profiles]\na = agy\n").expect("identity config");
-        let calls = std::sync::Arc::new(AtomicUsize::new(0));
-        let asked = std::sync::Arc::clone(&calls);
-        let mut reader = Reader::new(root.0.clone(), None, None);
-        reader.settings_paths(super::SettingsPaths {
-            home: Some(home),
-            global,
-            local: None,
+        use std::sync::atomic::Ordering;
+        let (_root, mut reader, _) =
+            quotacache_setup("settings-agy", "[profiles]\na = agy\n", false);
+        let (gate, leg) = quotacache_gated();
+        reader.agy = crate::quota::AgyCache::new(leg);
+        let entered = gate.entered;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                if let Ok(release) = entered.recv_timeout(QUOTACACHE_GUARD) {
+                    let _ = release.send(());
+                }
+            });
+            reader.take(Request::Settings {
+                open: true,
+                generation: 1,
+            });
+            let first = quotacache_read(&mut reader);
+            assert!(
+                quotacache_only(&first)
+                    .iter()
+                    .any(|only| only.contains(QUOTACACHE_PENDING)),
+                "pending first: {first:?}"
+            );
+            let landed = quotacache_spin(&mut reader, |quota| {
+                quota
+                    .iter()
+                    .map(|scope| scope.windows.len())
+                    .collect::<Vec<_>>()
+                    == [1]
+            });
+            let windows: Vec<usize> = landed.iter().map(|scope| scope.windows.len()).collect();
+            assert_eq!(windows, [1], "the landing paints the window");
+            assert_eq!(gate.calls.load(Ordering::SeqCst), 1);
+            reader.take(Request::Settings {
+                open: false,
+                generation: 1,
+            });
+            reader.take(Request::Settings {
+                open: true,
+                generation: 2,
+            });
+            let reopened = quotacache_read(&mut reader);
+            assert!(
+                reopened.iter().any(|scope| !scope.windows.is_empty()),
+                "retained rows"
+            );
+            assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "no new flight");
         });
-        reader.agy = crate::quota::AgyCache::new(move |_| {
-            asked.fetch_add(1, Ordering::SeqCst);
-            crate::transport::AgyRun::Done {
-                text: REPORT.to_owned(),
-            }
-        });
-        reader.take(Request::Settings {
-            open: true,
-            generation: 1,
-        });
-        for _ in 0..2 {
-            let Answer::Settings { quota, .. } = reader.settings() else {
-                panic!("a settings answer");
-            };
-            let windows: Vec<usize> = quota.iter().map(|scope| scope.windows.len()).collect();
-            assert_eq!(windows, [1], "{quota:?}");
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     /// The instructions tab is for the session selected when the overlay
@@ -1792,5 +1859,432 @@ mod tests {
         assert_eq!(reader.peek.as_ref().expect("ask").1, Some(at));
         let early = reader.next(at + Duration::from_secs(1));
         assert!(!matches!(early, Job::Peek(_)), "not due a second later");
+    }
+
+    /// quotacache frozen acceptance: cached quota first, the leg off the
+    /// reader. Oracle: human ae-20261013T112254Z-09bc7e09, plan 9d0a6855,
+    /// rev2 words. Base API only: every RED is an assertion or an expired
+    /// hang guard on the unchanged tree, never a missing symbol.
+    const QUOTACACHE_GUARD: Duration = Duration::from_secs(10);
+    const QUOTACACHE_REPORT: &str = r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage",
+      "data":{"groups":[{"name":"Gemini Models","buckets":[{"id":"gemini-5h",
+      "window":"5h","remaining_fraction":0.75,"reset_time":"2099-01-01T00:00:00Z"}]}]}}}"#;
+    const QUOTACACHE_PENDING: &str = "asking agy /quota";
+
+    /// A quota fixture root plus its reader: `home/` with an optional claude
+    /// cache, `config` global, and the reader pointed at both.
+    fn quotacache_setup(tag: &str, config: &str, claude: bool) -> (Root, Reader, PathBuf) {
+        let root = Root::new(tag);
+        let (home, global) = (root.0.join("home"), root.0.join("config"));
+        std::fs::create_dir_all(&home).expect("scratch home");
+        if claude {
+            let fetched = crate::time::Timestamp::now().epoch().saturating_mul(1000);
+            let cache = format!(
+                "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{fetched},\"utilization\":{{\"limits\":[{{\"kind\":\"session\",\"percent\":11,\"resets_at\":\"2099-01-01T00:00:00Z\"}}]}}}}}}"
+            );
+            std::fs::write(home.join(".claude.json"), cache).expect("claude cache");
+        }
+        std::fs::write(&global, config).expect("identity config");
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        reader.settings_paths(super::SettingsPaths {
+            home: Some(home),
+            global: global.clone(),
+            local: None,
+        });
+        (root, reader, global)
+    }
+
+    /// A leg that announces each call and waits for its release; unreleased
+    /// calls time out, so failures reap their worker instead of leaking it.
+    struct QuotacacheGate {
+        entered: std::sync::mpsc::Receiver<std::sync::mpsc::Sender<()>>,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    fn quotacache_gated() -> (
+        QuotacacheGate,
+        impl Fn(&std::path::Path) -> crate::transport::AgyRun + Send + Sync,
+    ) {
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&calls);
+        let leg = move |_: &std::path::Path| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (release, held) = std::sync::mpsc::channel();
+            let _ = entered_tx.send(release);
+            let _ = held.recv_timeout(Duration::from_secs(30));
+            crate::transport::AgyRun::Done {
+                text: QUOTACACHE_REPORT.to_owned(),
+            }
+        };
+        (QuotacacheGate { entered, calls }, leg)
+    }
+
+    fn quotacache_fast(
+        answer: crate::transport::AgyRun,
+    ) -> (
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        impl Fn(&std::path::Path) -> crate::transport::AgyRun + Send + Sync,
+    ) {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&calls);
+        let leg = move |_: &std::path::Path| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            answer.clone()
+        };
+        (calls, leg)
+    }
+
+    /// The next settings answer on `wake`; the guard is a hang guard only.
+    fn quotacache_next_settings(
+        wake: &std::sync::mpsc::Receiver<super::Wake>,
+    ) -> (u64, Vec<crate::quota::view::Scope>) {
+        let end = Instant::now() + QUOTACACHE_GUARD;
+        loop {
+            let wait = end.saturating_duration_since(Instant::now());
+            match wake.recv_timeout(wait) {
+                Ok(super::Wake::Answer(boxed)) => {
+                    if let Answer::Settings {
+                        generation, quota, ..
+                    } = *boxed
+                    {
+                        return (generation, quota);
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => panic!("a settings answer within {QUOTACACHE_GUARD:?}: {err}"),
+            }
+        }
+    }
+
+    fn quotacache_only(quota: &[crate::quota::view::Scope]) -> Vec<String> {
+        quota
+            .iter()
+            .filter_map(|scope| scope.only.clone())
+            .collect()
+    }
+
+    fn quotacache_read(reader: &mut Reader) -> Vec<crate::quota::view::Scope> {
+        let Answer::Settings { quota, .. } = reader.settings() else {
+            panic!("a settings answer");
+        };
+        quota
+    }
+
+    /// Read until `ready` or the guard lapses; returns the last quota. The
+    /// guard is a hang guard only: passing needs the asserted values.
+    fn quotacache_spin(
+        reader: &mut Reader,
+        ready: impl Fn(&[crate::quota::view::Scope]) -> bool,
+    ) -> Vec<crate::quota::view::Scope> {
+        let mut quota = Vec::new();
+        let end = Instant::now() + QUOTACACHE_GUARD;
+        while Instant::now() < end {
+            quota = quotacache_read(reader);
+            if ready(&quota) {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        quota
+    }
+
+    /// Cold open answers locals and pending words while the leg is held.
+    /// Base blocks in the leg, so the guard expires.
+    #[test]
+    fn cold_open_answers_locals_and_pending_while_the_leg_is_held() {
+        use std::sync::atomic::Ordering;
+        let (_root, mut reader, _) =
+            quotacache_setup("quotacache-cold", "[profiles]\na = agy\nc = claude\n", true);
+        let (gate, leg) = quotacache_gated();
+        reader.agy = crate::quota::AgyCache::new(leg);
+        let (wake_tx, wake) = std::sync::mpsc::channel();
+        let (ask, reader_done) = super::spawn(reader, wake_tx).expect("reader spawns");
+        let mut app = crate::app::App::new(Some("api".to_owned()), None, None, Some(ask));
+        app.open_settings();
+        let release = gate
+            .entered
+            .recv_timeout(QUOTACACHE_GUARD)
+            .expect("the leg flies");
+        let (generation, quota) = quotacache_next_settings(&wake);
+        assert_eq!(generation, 1, "the open generation answers");
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "one flight");
+        let local = quota
+            .iter()
+            .find(|scope| scope.profiles == "c")
+            .expect("the claude scope");
+        assert_eq!(local.windows.len(), 1, "its cached window: {local:?}");
+        let asking = quotacache_only(&quota);
+        assert!(
+            asking.iter().any(|only| only.contains(QUOTACACHE_PENDING)),
+            "pending words: {asking:?}"
+        );
+        let leg = quota
+            .iter()
+            .find(|scope| scope.profiles == "a")
+            .expect("the leg scope");
+        assert!(leg.windows.is_empty(), "no leg rows yet: {leg:?}");
+        let _ = release.send(());
+        drop(app);
+        reader_done.join().expect("the reader exits");
+    }
+
+    /// A reread and the fleet are answered while the settings leg is held:
+    /// the shared reader keeps scheduling. Base sits in the leg.
+    #[test]
+    fn reread_answers_while_the_settings_leg_is_held() {
+        use std::sync::atomic::Ordering;
+        let (root, mut reader, _) =
+            quotacache_setup("quotacache-reread", "[profiles]\na = agy\n", false);
+        reader
+            .dirs
+            .insert("web".to_owned(), session(&root, "web", ""));
+        reader.rows = rows(&["web"]);
+        reader.ids.insert("web".to_owned(), ID.to_owned());
+        reader.fleet_at = Some(Instant::now());
+        let (gate, leg) = quotacache_gated();
+        reader.agy = crate::quota::AgyCache::new(leg);
+        let (wake_tx, wake) = std::sync::mpsc::channel();
+        let (ask, reader_done) = super::spawn(reader, wake_tx).expect("reader spawns");
+        ask.send(Request::Settings {
+            open: true,
+            generation: 7,
+        })
+        .expect("open");
+        let release = gate
+            .entered
+            .recv_timeout(QUOTACACHE_GUARD)
+            .expect("the leg flies");
+        ask.send(Request::Reread("web".to_owned())).expect("reread");
+        let end = Instant::now() + QUOTACACHE_GUARD;
+        let (mut viewed, mut fleeted) = (false, false);
+        while !(viewed && fleeted) {
+            let wait = end.saturating_duration_since(Instant::now());
+            match wake.recv_timeout(wait) {
+                Ok(super::Wake::Answer(boxed)) if matches!(*boxed, Answer::View(_)) => {
+                    viewed = true;
+                }
+                Ok(super::Wake::Answer(boxed)) if matches!(*boxed, Answer::Fleet(_)) => {
+                    fleeted = true;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(viewed, "a View answer while held");
+        assert!(fleeted, "a Fleet answer while held");
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "one flight");
+        let _ = release.send(());
+        drop(ask);
+        reader_done.join().expect("the reader exits");
+    }
+
+    /// Escape closes while the first leg flies; reopen answers at once with
+    /// no second flight. Base never answers while held. (Landing is pinned
+    /// by the amended refresh test below.)
+    #[test]
+    fn close_reopen_answers_at_once_without_a_second_flight() {
+        use std::sync::atomic::Ordering;
+        let (_root, mut reader, _) =
+            quotacache_setup("quotacache-reopen", "[profiles]\na = agy\n", false);
+        let (gate, leg) = quotacache_gated();
+        reader.agy = crate::quota::AgyCache::new(leg);
+        let (wake_tx, wake) = std::sync::mpsc::channel();
+        let (ask, reader_done) = super::spawn(reader, wake_tx).expect("reader spawns");
+        let mut app = crate::app::App::new(Some("api".to_owned()), None, None, Some(ask));
+        let at = Instant::now();
+        app.open_settings();
+        let release = gate
+            .entered
+            .recv_timeout(QUOTACACHE_GUARD)
+            .expect("the leg flies");
+        let (first, _) = quotacache_next_settings(&wake);
+        assert_eq!(first, 1, "the open generation answers while held");
+        assert!(
+            crate::app::settings_key(&mut app, &crate::console::input::Key::Escape, at)
+                .expect("close")
+        );
+        assert!(!app.model.settings_open(), "Escape closes");
+        app.open_settings();
+        let (second, quota) = quotacache_next_settings(&wake);
+        assert_eq!(second, 2, "reopen answers at once");
+        assert_eq!(
+            gate.calls.load(Ordering::SeqCst),
+            1,
+            "no second flight while one flies"
+        );
+        assert!(
+            quotacache_only(&quota)
+                .iter()
+                .any(|only| only.contains(QUOTACACHE_PENDING)),
+            "still pending: {quota:?}"
+        );
+        let _ = release.send(());
+        drop(app);
+        reader_done.join().expect("the reader exits");
+    }
+
+    /// A completion landed after the config dropped the leg shows no leg
+    /// rows; restoring the config shows the landed rows with no new call.
+    #[test]
+    fn config_change_rejects_the_stale_completion() {
+        use std::sync::atomic::Ordering;
+        let (_root, mut reader, global) = quotacache_setup(
+            "quotacache-config",
+            "[profiles]\na = agy\nc = claude\n",
+            true,
+        );
+        let (gate, leg) = quotacache_gated();
+        reader.agy = crate::quota::AgyCache::new(leg);
+        let entered = gate.entered;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                if let Ok(release) = entered.recv_timeout(QUOTACACHE_GUARD) {
+                    let _ = release.send(());
+                }
+            });
+            reader.take(Request::Settings {
+                open: true,
+                generation: 1,
+            });
+            let first = quotacache_read(&mut reader);
+            assert!(
+                quotacache_only(&first)
+                    .iter()
+                    .any(|only| only.contains(QUOTACACHE_PENDING)),
+                "pending first: {first:?}"
+            );
+            std::fs::write(&global, "[profiles]\nc = claude\n").expect("config drops the leg");
+            let dropped = quotacache_read(&mut reader);
+            assert!(
+                !dropped.iter().any(|scope| scope.profiles == "a"),
+                "no stale leg rows: {dropped:?}"
+            );
+            std::fs::write(&global, "[profiles]\na = agy\nc = claude\n")
+                .expect("config restores the leg");
+            let restored = quotacache_spin(&mut reader, |quota| {
+                quota
+                    .iter()
+                    .any(|scope| scope.profiles == "a" && !scope.windows.is_empty())
+            });
+            assert!(
+                restored
+                    .iter()
+                    .any(|scope| scope.profiles == "a" && !scope.windows.is_empty()),
+                "the landing is honored under the current config"
+            );
+            std::fs::write(&global, "[profiles]\nc = claude\n").expect("config drops the leg");
+            let landed = quotacache_read(&mut reader);
+            assert!(
+                !landed.iter().any(|scope| scope.profiles == "a"),
+                "landed, still no leg rows: {landed:?}"
+            );
+            assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "one flight");
+        });
+    }
+
+    /// A read for a new home re-asks and shows pending: the old home's
+    /// answer is never shown under the new one. Base answers rows.
+    #[test]
+    fn new_home_reasks_and_shows_pending() {
+        use std::sync::atomic::Ordering;
+        let (root, mut reader, _) =
+            quotacache_setup("quotacache-home", "[profiles]\na = agy\n", false);
+        let home_b = root.0.join("home-b");
+        std::fs::create_dir_all(&home_b).expect("second home");
+        let (calls, leg) = quotacache_fast(crate::transport::AgyRun::Done {
+            text: QUOTACACHE_REPORT.to_owned(),
+        });
+        reader.agy = crate::quota::AgyCache::new(leg);
+        reader.take(Request::Settings {
+            open: true,
+            generation: 1,
+        });
+        let first = quotacache_read(&mut reader);
+        assert!(
+            quotacache_only(&first)
+                .iter()
+                .any(|only| only.contains(QUOTACACHE_PENDING)),
+            "pending first: {first:?}"
+        );
+        reader.settings_paths.home = Some(home_b);
+        let moved = quotacache_read(&mut reader);
+        assert!(
+            moved.iter().all(|scope| scope.windows.is_empty()),
+            "no old-home rows under the new one: {moved:?}"
+        );
+        assert!(
+            quotacache_only(&moved)
+                .iter()
+                .any(|only| only.contains(QUOTACACHE_PENDING)),
+            "the new home pends its own ask: {moved:?}"
+        );
+        let relanded = quotacache_spin(&mut reader, |quota| {
+            quota.iter().any(|scope| !scope.windows.is_empty())
+        });
+        assert!(
+            relanded.iter().any(|scope| !scope.windows.is_empty()),
+            "the new home lands its rows"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one flight per home");
+    }
+
+    /// The first failure keeps today's words, invents no rows, and leaves
+    /// locals intact. (Kept-prior needs fabricated age: driver GREEN-side.)
+    #[test]
+    fn first_failure_keeps_words_and_local_rows() {
+        use std::sync::atomic::Ordering;
+        let (_root, mut reader, _) = quotacache_setup(
+            "quotacache-failure",
+            "[profiles]\na = agy\nc = claude\n",
+            true,
+        );
+        let (calls, leg) = quotacache_fast(crate::transport::AgyRun::Failed);
+        reader.agy = crate::quota::AgyCache::new(leg);
+        reader.take(Request::Settings {
+            open: true,
+            generation: 1,
+        });
+        let failed = quotacache_spin(&mut reader, |quota| {
+            quotacache_only(quota)
+                .iter()
+                .any(|only| only.contains("gave no usable answer"))
+        });
+        assert!(
+            quotacache_only(&failed)
+                .iter()
+                .any(|only| only.contains("gave no usable answer")),
+            "failure words land"
+        );
+        let scope = failed
+            .iter()
+            .find(|scope| scope.profiles == "a")
+            .expect("the leg scope");
+        assert!(scope.windows.is_empty(), "no invented rows: {scope:?}");
+        let local = failed
+            .iter()
+            .find(|scope| scope.profiles == "c")
+            .expect("the claude scope");
+        assert_eq!(local.windows.len(), 1, "locals intact: {local:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "one flight");
+    }
+
+    /// A config with no leg starts none: locals answer, the counter stays 0.
+    #[test]
+    fn config_without_a_leg_starts_none() {
+        use std::sync::atomic::Ordering;
+        let (_root, mut reader, _) =
+            quotacache_setup("quotacache-noleg", "[profiles]\nc = claude\n", true);
+        let (calls, leg) = quotacache_fast(crate::transport::AgyRun::Done {
+            text: QUOTACACHE_REPORT.to_owned(),
+        });
+        reader.agy = crate::quota::AgyCache::new(leg);
+        reader.take(Request::Settings {
+            open: true,
+            generation: 1,
+        });
+        let quota = quotacache_read(&mut reader);
+        assert!(!quota.is_empty(), "locals answer");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no flight");
     }
 }

@@ -363,6 +363,8 @@ struct App {
     deferred: Vec<(Key, Instant)>,
     /// The settings overlay's bodies, cold until its answers land.
     settings_bodies: settings::SettingsBodies,
+    /// When an own-generation answer last replaced the quota body: a kept body's age.
+    quota_at: Option<i64>,
     /// The generation the next open mints; answers pin to the open one.
     settings_generation: u64,
     /// The open peek panel's captures, and the generation the next open mints.
@@ -486,6 +488,7 @@ impl App {
             focused: None,
             deferred: Vec::new(),
             settings_bodies: settings::SettingsBodies::default(),
+            quota_at: None,
             settings_generation: 0,
             peek: PeekPane::default(),
             peek_generation: 0,
@@ -746,6 +749,8 @@ impl App {
             return;
         }
         self.settings_bodies.quota = Some(quota);
+        self.settings_bodies.quota_kept = None;
+        self.quota_at = Some(Timestamp::now().epoch());
         if let Some(config) = config {
             self.settings_bodies.config = config;
         }
@@ -767,12 +772,26 @@ impl App {
         self.focus();
         self.settings_generation = self.settings_generation.wrapping_add(1);
         self.model.open_settings(self.settings_generation);
-        self.settings_bodies = settings::SettingsBodies::default();
+        // An earlier open's quota stays drawn, marked kept, until this open's own answer.
+        let quota = self.settings_bodies.quota.take();
+        self.settings_bodies = settings::SettingsBodies {
+            quota_kept: quota.as_ref().map(|_| String::new()),
+            quota,
+            ..settings::SettingsBodies::default()
+        };
         if let Some(ask) = &self.ask {
             let _ = ask.send(Request::Settings {
                 open: true,
                 generation: self.settings_generation,
             });
+        }
+    }
+
+    /// Spell a kept quota body's line from the one epoch, so its age moves with the clock.
+    fn spell_kept(&mut self) {
+        if let (Some(kept), Some(at)) = (&mut self.settings_bodies.quota_kept, self.quota_at) {
+            let age = crate::quota::age_label(Timestamp::now().epoch().saturating_sub(at));
+            *kept = format!("last updated {age} — refreshing");
         }
     }
 
@@ -2503,6 +2522,7 @@ impl App {
             self.model
                 .clamp_scroll(self.layout.max_scroll, self.layout.page_rows);
         }
+        self.spell_kept();
         if let Some(open) = self.model.settings() {
             self.layout.strip_for_settings();
             draw::paint_settings(
@@ -6712,7 +6732,7 @@ mod tests {
             quota: Some(rows(10)),
             config: settings::ConfigView::Loading,
             about: None,
-            instructions: settings::InstructionsView::Loading,
+            ..settings::SettingsBodies::default()
         };
         let mut layout = draw::Layout::default();
         draw::paint_settings(SettingsTab::Quota, 99, &bodies, None, &mut buf, &mut layout);
@@ -8665,5 +8685,118 @@ mod tests {
         assert!(!marked(&mut app, &mut buf, "api"), "home never marks");
         select(&mut app, "beta");
         assert!(!marked(&mut app, &mut buf, "beta"), "selecting clears");
+    }
+
+    /// quotacache P1-P3: a quota scope with one drawn window. Base API only;
+    /// the pins read paint text, never the kept marker the product adds.
+    fn quotacache_scope(title: &str) -> crate::quota::view::Scope {
+        crate::quota::view::Scope {
+            title: title.to_owned(),
+            profiles: "a".to_owned(),
+            account: None,
+            only: None,
+            windows: vec![crate::quota::view::Window {
+                name: "w5h".to_owned(),
+                raw: Some("31%".to_owned()),
+                counts: None,
+                fill: Some(2),
+                why: None,
+                level: crate::quota::view::Level::Headroom,
+                stale: false,
+                resets: Some("2h10m".to_owned()),
+                seen: Some("2m".to_owned()),
+            }],
+        }
+    }
+
+    /// quotacache P1-P3: an app that answered once, closed, and reopened.
+    fn quotacache_reopened() -> App {
+        let mut app = app(Some("api"));
+        app.open_settings();
+        app.answer(Answer::Settings {
+            generation: 1,
+            quota: vec![quotacache_scope("qrow-retained")],
+            config: None,
+            about: None,
+            instructions: None,
+        });
+        app.close_settings();
+        app.open_settings();
+        app
+    }
+
+    /// P1: reopen paints the kept quota snapshot at once, with a kept line
+    /// saying its age, before any new answer lands. Base clears the body on
+    /// open, so the reopened frame says loading. (Reader scheduling stays
+    /// covered by the barrier/channel pins; this pins App paint.)
+    #[test]
+    fn reopen_paints_the_kept_quota_snapshot_at_once() {
+        let mut app = quotacache_reopened();
+        let shown = framed(&mut app);
+        assert!(shown.contains("qrow-retained"), "kept rows paint:\n{shown}");
+        assert!(
+            shown.contains("last updated"),
+            "kept line names the age:\n{shown}"
+        );
+        assert!(
+            shown.contains("— refreshing"),
+            "kept line says refreshing:\n{shown}"
+        );
+        assert!(!shown.contains("loading"), "no loading on reopen:\n{shown}");
+    }
+
+    /// P2: a closed generation changes nothing kept; the new open's first own
+    /// answer replaces the kept body whole and the kept line is gone.
+    #[test]
+    fn closed_answers_keep_nothing_and_the_own_answer_replaces_whole() {
+        let mut app = quotacache_reopened();
+        app.answer(Answer::Settings {
+            generation: 1,
+            quota: vec![quotacache_scope("qrow-fresh")],
+            config: None,
+            about: None,
+            instructions: None,
+        });
+        let kept = framed(&mut app);
+        assert!(
+            kept.contains("qrow-retained"),
+            "closed answer changes nothing:\n{kept}"
+        );
+        app.answer(Answer::Settings {
+            generation: 2,
+            quota: vec![quotacache_scope("qrow-fresh")],
+            config: None,
+            about: None,
+            instructions: None,
+        });
+        let fresh = framed(&mut app);
+        assert!(fresh.contains("qrow-fresh"), "own answer paints:\n{fresh}");
+        assert!(!fresh.contains("qrow-retained"), "replaced whole:\n{fresh}");
+        assert!(!fresh.contains("refreshing"), "kept line gone:\n{fresh}");
+    }
+
+    /// P3: a second reopen before any own answer keeps the body, the line and the
+    /// ORIGINAL epoch; a closed generation's answer cannot move it.
+    #[test]
+    fn a_second_reopen_keeps_the_original_quota_epoch() {
+        let mut app = quotacache_reopened();
+        let past = Timestamp::now().epoch() - 185;
+        app.quota_at = Some(past);
+        app.close_settings();
+        app.open_settings();
+        app.answer(Answer::Settings {
+            generation: 2,
+            quota: vec![quotacache_scope("qrow-closed")],
+            config: None,
+            about: None,
+            instructions: None,
+        });
+        let shown = framed(&mut app);
+        let line = "last updated 3m ago — refreshing";
+        // Kept rows, aged from the original epoch; the closed answer is dropped.
+        assert!(shown.contains("qrow-retained"), "{shown}");
+        assert!(shown.contains(line), "{shown}");
+        assert!(!shown.contains("qrow-closed"), "{shown}");
+        assert_eq!(app.quota_at, Some(past), "the epoch is the original");
     }
 }

@@ -126,6 +126,9 @@ pub(crate) enum InstructionsView {
 pub(crate) struct SettingsBodies {
     /// The quota facts, laid out at draw time against the panel's own width.
     pub(crate) quota: Option<Vec<crate::quota::view::Scope>>,
+    /// Set while `quota` is an earlier open's body, until this open's own answer: the line
+    /// drawn above it saying how old that drawing is.
+    pub(crate) quota_kept: Option<String>,
     pub(crate) config: ConfigView,
     pub(crate) about: Option<AboutFacts>,
     pub(crate) instructions: InstructionsView,
@@ -135,6 +138,7 @@ impl Default for SettingsBodies {
     fn default() -> Self {
         Self {
             quota: None,
+            quota_kept: None,
             config: ConfigView::Loading,
             about: None,
             instructions: InstructionsView::Loading,

@@ -74,7 +74,8 @@ pub struct Scope {
     pub title: String,
     pub profiles: String,
     pub account: Option<String>,
-    /// Set when the scope has no usable window: the words that say why.
+    /// Set when the scope has no usable window: the words that say why. Beside windows
+    /// it is a note on them, such as an agy answer kept past a refresh that had none.
     pub only: Option<String>,
     pub windows: Vec<Window>,
 }

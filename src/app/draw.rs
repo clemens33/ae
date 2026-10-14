@@ -1936,7 +1936,7 @@ fn settings_body(
     let text = paint.fg(|p| p.text);
     let head = paint.fg(|p| p.text).add_modifier(Modifier::BOLD);
     let clean = crate::board::terminal_text;
-    match tab {
+    let mut body = match tab {
         SettingsTab::Quota => match bodies.quota.as_ref() {
             None => vec![("loading".to_owned(), dim)],
             Some(scopes) if scopes.is_empty() => vec![("no quota scopes read".to_owned(), dim)],
@@ -2005,7 +2005,12 @@ fn settings_body(
         },
         SettingsTab::Instructions => instructions_body(&bodies.instructions, width, paint),
         SettingsTab::Keys => keys_body(paint),
+    };
+    // A kept quota body says how old it is, above it, in the stale tone.
+    if let (SettingsTab::Quota, Some(kept)) = (tab, &bodies.quota_kept) {
+        body.insert(0, (clean(kept), paint.fg(|p| p.stale)));
     }
+    body
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
@@ -4909,5 +4914,33 @@ mod tests {
         let (row, layout) = shot.footer_at(at, browsing(""), true);
         assert!(!row.contains(gear), "narrow: no gear drawn");
         assert!(!settings(&layout, at - 1), "narrow: no target");
+    }
+
+    /// I-R1: a kept quota body draws its line first, in the stale tone, above the kept
+    /// rows; without the marker, and on any other tab, no such line is drawn.
+    #[test]
+    fn a_kept_quota_body_draws_its_line_first_in_the_stale_tone() {
+        use crate::app::model::SettingsTab;
+        let look = Look::read("on", "darcula", "on", "on");
+        let paint = Paint::of(Some(&look));
+        let line = "last updated 3m ago — refreshing";
+        let mut bodies = crate::app::settings::SettingsBodies {
+            quota: Some(crate::quota::view::unavailable()),
+            quota_kept: Some(line.to_owned()),
+            ..crate::app::settings::SettingsBodies::default()
+        };
+        let kept = super::settings_body(SettingsTab::Quota, &bodies, paint, 80, true);
+        let stale = paint.fg(|p| p.stale);
+        assert_ne!(stale, paint.fg(|p| p.text), "the stale tone is its own");
+        assert_eq!(kept[0], (line.to_owned(), stale), "{kept:?}");
+        let rows = kept[1..]
+            .iter()
+            .any(|(text, _)| text.contains("quota: unavailable"));
+        assert!(rows, "the kept rows follow: {kept:?}");
+        let config = super::settings_body(SettingsTab::Config, &bodies, paint, 80, true);
+        assert!(!config.iter().any(|(text, _)| text.contains("refreshing")));
+        bodies.quota_kept = None;
+        let fresh = super::settings_body(SettingsTab::Quota, &bodies, paint, 80, true);
+        assert_eq!(fresh[..], kept[1..], "no marker, no line");
     }
 }

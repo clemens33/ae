@@ -17,6 +17,7 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::json::Value;
@@ -1230,6 +1231,9 @@ impl SettingsScope {
                 .then_with(|| left.qualifier.cmp(&right.qualifier))
                 .then_with(|| left.window_minutes.cmp(&right.window_minutes))
         });
+        // agy's note beside the answer it kept past a refresh that had none.
+        let asked = self.group.tool.quota_is_asked();
+        let note = self.group.hint.clone().filter(|_| asked);
         let windows = readings
             .into_iter()
             .map(|reading| self.window_view(reading, now))
@@ -1238,7 +1242,7 @@ impl SettingsScope {
             title,
             profiles,
             account,
-            only: None,
+            only: note,
             windows,
         }
     }
@@ -1751,14 +1755,24 @@ pub(crate) fn view_of(inputs: &Inputs<'_>) -> Vec<view::Scope> {
 const AGY_TTL_SECS: i64 = 300;
 const _: () = assert!(AGY_TTL_SECS < FRESH_SECS);
 
+/// What an agy scope says while its first ask is out.
+const AGY_ASKING: &str = "asking agy /quota";
+const AGY_ABSENT: &str = "agy not found on PATH";
+
+/// The agy leg, shared with the worker that asks it off the app's reader.
+pub(crate) type AgyLeg = Arc<dyn Fn(&Path) -> AgyRun + Send + Sync>;
+
 /// The agy answer held between dialog reads, and the leg that refreshes it: the
 /// app's reader, re-reading every few seconds, holds one; the one-shot tmux dialog none.
 pub(crate) struct AgyCache {
-    leg: Box<dyn Fn(&Path) -> AgyRun + Send>,
+    leg: AgyLeg,
     held: Option<AgyHeld>,
+    /// The last answer with a window, shown in place of a later attempt that has none.
+    usable: Option<AgyHeld>,
 }
 
 /// An agy answer, the home it was asked for, and the epochs it was asked and completed at.
+#[derive(Clone)]
 struct AgyHeld {
     home: PathBuf,
     asked_at: i64,
@@ -1766,34 +1780,77 @@ struct AgyHeld {
     answer: AgyRun,
 }
 
+/// What the agy scopes show: rows, the words beside them, and the epoch the attempt shown
+/// completed at (none while the first ask is out).
+type Shown = (Vec<Row>, Option<String>, Option<i64>);
+
 impl AgyCache {
-    pub(crate) fn new(leg: impl Fn(&Path) -> AgyRun + Send + 'static) -> Self {
+    pub(crate) fn new(leg: impl Fn(&Path) -> AgyRun + Send + Sync + 'static) -> Self {
         Self {
-            leg: Box::new(leg),
+            leg: Arc::new(leg),
             held: None,
+            usable: None,
         }
     }
 
-    /// The answer for `home` and its completion epoch: the held one while asked less than
-    /// [`AGY_TTL_SECS`] before `now`, else a new call. A failure is held too, so a hung agy
+    /// The leg, for a worker that asks it off the reader.
+    pub(crate) fn leg(&self) -> AgyLeg {
+        Arc::clone(&self.leg)
+    }
+
+    /// Whether `home` needs a new ask at `now`: nothing held for it, or the held ask is
+    /// [`AGY_TTL_SECS`] old or from the future. A failure is held too, so a hung agy
     /// costs its deadline once per TTL.
-    fn answer(&mut self, home: &Path, now: i64) -> (AgyRun, i64) {
-        let usable = |held: &&AgyHeld| {
+    pub(crate) fn due(&self, home: &Path, now: i64) -> bool {
+        !self.held.as_ref().is_some_and(|held| {
             held.home == home && (0..AGY_TTL_SECS).contains(&now.saturating_sub(held.asked_at))
+        })
+    }
+
+    /// Hold an attempt for `home`; one with a window is also kept to show past later attempts.
+    pub(crate) fn settle(&mut self, home: &Path, asked_at: i64, done_at: i64, answer: AgyRun) {
+        let held = AgyHeld {
+            home: home.to_owned(),
+            asked_at,
+            done_at,
+            answer,
         };
-        if let Some(held) = self.held.as_ref().filter(usable) {
+        if windowed(&held.answer, done_at) {
+            self.usable = Some(held.clone());
+        }
+        self.held = Some(held);
+    }
+
+    /// The answer for `home` and its completion epoch: the held one unless [`Self::due`],
+    /// else a new call on this thread.
+    fn answer(&mut self, home: &Path, now: i64) -> (AgyRun, i64) {
+        if !self.due(home, now)
+            && let Some(held) = &self.held
+        {
             return (held.answer.clone(), held.done_at);
         }
-        let started = Instant::now();
-        let answer = (self.leg)(home);
-        let done_at = completed(now, started.elapsed());
-        self.held = Some(AgyHeld {
-            home: home.to_owned(),
-            asked_at: now,
-            done_at,
-            answer: answer.clone(),
-        });
+        let (answer, done_at) = ask(&self.leg, home, now);
+        self.settle(home, now, done_at, answer.clone());
         (answer, done_at)
+    }
+
+    /// What the agy scopes show for `home`: the last attempt; a kept answer with its own
+    /// age and a note when the last attempt has no window; the asking words while `pending`
+    /// and nothing is held.
+    fn shown(&self, home: &Path, pending: bool) -> Option<Shown> {
+        let mine = |held: &&AgyHeld| held.home == home;
+        let Some(last) = self.held.as_ref().filter(mine) else {
+            let asking = Some(AGY_ASKING.to_owned());
+            return pending.then_some((vec![placeholder(Status::Unknown)], asking, None));
+        };
+        let kept = self.usable.as_ref().filter(mine);
+        if let Some(kept) = kept.filter(|_| !windowed(&last.answer, last.done_at)) {
+            let note = Some(kept_note(&last.answer, last.done_at));
+            let rows = attempt_rows(&kept.answer, kept.done_at).0;
+            return Some((rows, note, Some(last.done_at)));
+        }
+        let (rows, hint) = attempt_rows(&last.answer, last.done_at);
+        Some((rows, hint.map(str::to_owned), Some(last.done_at)))
     }
 }
 
@@ -1801,6 +1858,14 @@ impl Default for AgyCache {
     fn default() -> Self {
         Self::new(crate::transport::run_agy_quota)
     }
+}
+
+/// Run the agy `leg` for `home`, asked at `asked_at`: its answer and the epoch it completed
+/// at. The app's reader calls this on a worker thread, never on its own.
+pub(crate) fn ask(leg: &AgyLeg, home: &Path, asked_at: i64) -> (AgyRun, i64) {
+    let started = Instant::now();
+    let answer = leg(home);
+    (answer, completed(asked_at, started.elapsed()))
 }
 
 /// [`view_of`] with the agy answer held in `cache`: the dialogs' one reach to the agy leg,
@@ -1811,28 +1876,79 @@ pub(crate) fn view_cached(inputs: &Inputs<'_>, cache: &mut AgyCache) -> Vec<view
     };
     let scopes = configured_scopes(&cfg, inputs.home);
     let legs = agy_legs(&scopes);
-    let asked = inputs
-        .home
-        .filter(|_| !legs.is_empty())
-        .map(|home| cache.answer(home, inputs.now));
-    let now = asked
-        .as_ref()
-        .map_or(inputs.now, |(_, done_at)| inputs.now.max(*done_at));
+    let shown = inputs.home.filter(|_| !legs.is_empty()).map(|home| {
+        let (answer, done_at) = cache.answer(home, inputs.now);
+        let (rows, hint) = attempt_rows(&answer, done_at);
+        (rows, hint.map(str::to_owned), Some(done_at))
+    });
+    compose(inputs, scopes, &legs, shown)
+}
+
+/// [`view_cached`] that never runs the leg: the agy scopes show what `cache` holds, or the
+/// asking words. `flying` says an ask is already out; the home returned is the one a new
+/// ask is due for, which the caller runs off its own thread and settles into `cache`.
+pub(crate) fn view_held(
+    inputs: &Inputs<'_>,
+    cache: &AgyCache,
+    flying: bool,
+) -> (Vec<view::Scope>, Option<PathBuf>) {
+    let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
+        return (view::unavailable(), None);
+    };
+    let scopes = configured_scopes(&cfg, inputs.home);
+    let legs = agy_legs(&scopes);
+    let home = inputs.home.filter(|_| !legs.is_empty());
+    let due = home.filter(|home| !flying && cache.due(home, inputs.now));
+    let shown = home.and_then(|home| cache.shown(home, flying || due.is_some()));
+    (
+        compose(inputs, scopes, &legs, shown),
+        due.map(Path::to_path_buf),
+    )
+}
+
+/// The view facts of `scopes` with the agy scopes showing `shown`, judged at the later of
+/// the read and the instant the shown attempt completed: no row is judged before agy returned.
+fn compose(
+    inputs: &Inputs<'_>,
+    scopes: Vec<Scope>,
+    legs: &[Leg],
+    shown: Option<Shown>,
+) -> Vec<view::Scope> {
+    let done_at = shown.as_ref().and_then(|(_, _, done_at)| *done_at);
+    let now = done_at.map_or(inputs.now, |done_at| inputs.now.max(done_at));
     let (mut observation, _) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
-    if let Some((answer, done_at)) = asked {
-        let (mut rows, hint) = agy_rows(&answer, done_at).unwrap_or_else(|| {
-            (
-                vec![placeholder(Status::Unsupported)],
-                Some("agy not found on PATH"),
-            )
-        });
-        // A row with no windows still says when agy was asked, so the dialog can age it.
-        for row in &mut rows {
-            row.observed_at = row.observed_at.or(Some(done_at));
-        }
-        replace_agy(&mut observation.groups, &legs, rows, hint);
+    if let Some((rows, hint, _)) = shown {
+        replace_agy(&mut observation.groups, legs, rows, hint.as_deref());
     }
     observation.quota_view()
+}
+
+/// One attempt's rows, or a placeholder and its reason. A row with no windows still says
+/// when agy was asked, so the dialog can age it.
+fn attempt_rows(answer: &AgyRun, done_at: i64) -> (Vec<Row>, Option<&'static str>) {
+    let (mut rows, hint) = agy_rows(answer, done_at)
+        .unwrap_or_else(|| (vec![placeholder(Status::Unsupported)], Some(AGY_ABSENT)));
+    for row in &mut rows {
+        row.observed_at = row.observed_at.or(Some(done_at));
+    }
+    (rows, hint)
+}
+
+/// Whether an answer carries a window: only such an answer is kept past later attempts.
+fn windowed(answer: &AgyRun, at: i64) -> bool {
+    matches!(answer, AgyRun::Done { text }
+        if agy::parse(text.as_bytes(), at).is_ok_and(|rows| !rows.is_empty()))
+}
+
+/// The words beside a kept answer: a failed refresh says so with its reason; a missing or
+/// too old agy, or a report with no windows, is said bare.
+fn kept_note(answer: &AgyRun, at: i64) -> String {
+    match (answer, agy_rows(answer, at)) {
+        (_, None) => AGY_ABSENT.to_owned(),
+        (_, Some((_, None))) => "agy /quota reported no windows".to_owned(),
+        (AgyRun::TooOld, Some((_, Some(hint)))) => hint.to_owned(),
+        (_, Some((_, Some(hint)))) => format!("last refresh failed — {hint}"),
+    }
 }
 
 /// Read configured client scopes and print the quota table.
@@ -3618,7 +3734,7 @@ fn stated_observed_at(observed_at: Option<i64>, now: i64) -> Option<i64> {
     observed_at.filter(|observed| *observed <= now)
 }
 
-fn age_label(seconds: i64) -> String {
+pub(crate) fn age_label(seconds: i64) -> String {
     format!("{} ago", span_label(seconds.max(0)))
 }
 
@@ -6140,5 +6256,100 @@ mod tests {
         let scopes = dialog(&config, Some(&root.0), &mut cache, AGY_NOW);
         assert_eq!(scopes, super::view::unavailable());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    const AGY_EMPTY: &str =
+        r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[]}}}"#;
+
+    fn held_view(
+        config: &Path,
+        home: Option<&Path>,
+        cache: &super::AgyCache,
+        flying: bool,
+    ) -> (Vec<super::view::Scope>, Option<std::path::PathBuf>) {
+        let inputs = super::Inputs {
+            home,
+            global: Some(config),
+            local: None,
+            sessions: None,
+            now: AGY_NOW,
+        };
+        super::view_held(&inputs, cache, flying)
+    }
+
+    fn done(text: &str) -> AgyRun {
+        AgyRun::Done {
+            text: text.to_owned(),
+        }
+    }
+
+    /// I1: the app's held view draws exactly what the synchronous dialog draws for the
+    /// same attempt, over every answer, no home and an unreadable config, and runs no leg.
+    #[test]
+    fn the_held_view_draws_what_the_dialog_draws_for_the_same_attempt() {
+        for (tag, answer, home, broken) in [
+            ("rows", done(AGY_REPORT), true, false),
+            ("empty", done(AGY_EMPTY), true, false),
+            ("failed", AgyRun::Failed, true, false),
+            ("late", AgyRun::TimedOut, true, false),
+            ("old", AgyRun::TooOld, true, false),
+            ("absent", AgyRun::Absent, true, false),
+            ("nohome", done(AGY_REPORT), false, false),
+            ("broken", done(AGY_REPORT), true, true),
+        ] {
+            let (root, config) = agy_dialog(&format!("same-{tag}"), "a = agy\nc = claude\n");
+            if broken {
+                std::fs::write(&config, "[agents]\nx = y\n").expect("surviving agents section");
+            }
+            let home = home.then_some(root.0.as_path());
+            let (mut asked, _) = counting(answer);
+            let dialog = dialog(&config, home, &mut asked, AGY_NOW);
+            let (mut cache, calls) = counting(AgyRun::Failed);
+            if let Some(h) = &asked.held {
+                cache.settle(&h.home, h.asked_at, h.done_at, h.answer.clone());
+            }
+            let (view, due) = held_view(&config, home, &cache, false);
+            let calls = calls.load(std::sync::atomic::Ordering::SeqCst);
+            assert_eq!((view, due, calls), (dialog, None, 0), "{tag}");
+        }
+    }
+
+    /// I2: a refresh with no window keeps the last answer that had one, at its own age,
+    /// under the refresh's own words; an expired answer shows at its age while one is due.
+    #[test]
+    fn a_kept_answer_keeps_its_own_age_under_the_refreshs_words() {
+        let failed = "last refresh failed — agy /quota gave no usable answer";
+        let late = "last refresh failed — agy /quota passed its 8 s deadline";
+        for (answer, words) in [
+            (AgyRun::Failed, failed),
+            (done("not json"), failed),
+            (AgyRun::TimedOut, late),
+            (AgyRun::Absent, "agy not found on PATH"),
+            (AgyRun::TooOld, "agy 1.1.11+ required for /quota"),
+            (done(AGY_EMPTY), "agy /quota reported no windows"),
+        ] {
+            let (root, config) = agy_dialog("kept", "a = agy\n");
+            let (mut cache, calls) = counting(AgyRun::Failed);
+            cache.settle(&root.0, AGY_NOW - 600, AGY_NOW - 600, done(AGY_REPORT));
+            cache.settle(&root.0, AGY_NOW - 120, AGY_NOW - 118, answer.clone());
+            let (view, due) = held_view(&config, Some(&root.0), &cache, false);
+            let scope = agy_scopes(&view)[0];
+            assert_eq!(scope.only.as_deref(), Some(words), "{answer:?}");
+            let seen: Vec<_> = scope.windows.iter().map(|w| w.seen.as_deref()).collect();
+            assert_eq!(seen, [Some("10m"); 4], "{answer:?}: its own age");
+            let calls = calls.load(std::sync::atomic::Ordering::SeqCst);
+            assert_eq!((due, calls), (None, 0), "{answer:?}: held for its TTL");
+        }
+        let (root, config) = agy_dialog("expired", "a = agy\n");
+        let (mut cache, _) = counting(AgyRun::Failed);
+        cache.settle(&root.0, AGY_NOW - 600, AGY_NOW - 599, done(AGY_REPORT));
+        let (view, due) = held_view(&config, Some(&root.0), &cache, false);
+        assert_eq!(due.as_deref(), Some(root.0.as_path()), "expired: due");
+        let scope = agy_scopes(&view)[0];
+        let seen: Vec<_> = scope.windows.iter().map(|w| w.seen.as_deref()).collect();
+        assert!(scope.only.is_none(), "{scope:?}");
+        assert_eq!(seen, [Some("9m"); 4], "shown at its real age while due");
+        let (flying, due) = held_view(&config, Some(&root.0), &cache, true);
+        assert_eq!((flying, due), (view, None), "one ask out: the same drawing");
     }
 }

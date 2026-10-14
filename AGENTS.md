@@ -364,7 +364,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 leg of the EXISTING process door (`sysctl -n kern.boottime`, no argument a caller chooses), so
 the `std::process::Command` inventory is unchanged. `tests/it/doors.rs` pins its one product
 caller beside `run_git`'s and `run_ps`'s.
-`transport::run_agy_quota` is that door's on-demand quota leg. It has two callers, both in `src/quota.rs`: `quota::run` (`ae quota`) and the dialogs' `quota::view_cached` (tmux quota dialog and the app's Settings > Quota), which holds the answer for 300 s in the app. `observe`, and so the watchdog, advisories and autoreseat, never reaches it: agy raises no advisory (known gap).
+`transport::run_agy_quota` is that door's on-demand quota leg. It has two callers, both in `src/quota.rs`: `quota::run` (`ae quota`) and `quota::AgyCache`'s default leg. The tmux quota dialog runs that leg inline through `quota::view_cached`; the app's Settings > Quota never does: its reader reads `quota::view_held`, which shows the held answer (one with a window kept past a refresh that had none) or `asking agy /quota`, and runs the leg through `quota::ask` on a detached `ae-app-agy` thread, one ask at a time, landed at the next settings read and held for 300 s. `observe`, and so the watchdog, advisories and autoreseat, never reaches it: agy raises no advisory (known gap).
 
 `doors::canonical_strict_dir` / `canonical_optional_ae` are the strict directory classifier with
 no variable of its own: lstat, canonicalize and metadata proving a recorded worker target or root
