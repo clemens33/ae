@@ -4624,8 +4624,8 @@ fn auto_acts(
             Err(Ineligible::Unmapped) if seat.derives => {}
             Err(Ineligible::Unmapped) if seat.limited => {
                 let found = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent);
-                let said = crate::autoreseat::leg::ineligible_summary(Ineligible::Unmapped);
-                if let Some(open) = found.filter(|open| !open.holds_with(said))
+                let said = crate::autoreseat::leg::ineligible_record(Ineligible::Unmapped);
+                if let Some(open) = found.filter(|open| !open.holds_with(&said))
                     && let Decision::Attempt | Decision::Hold(_) =
                         crate::autoreseat::decide(Some(&open), settings.grace_secs, &seat.pane, now)
                 {
@@ -6497,18 +6497,18 @@ impl Cycle<'_> {
                 return Ok(());
             }
             AutoAct::Unmapped { key, profile, .. } => {
-                let summary = crate::autoreseat::leg::ineligible_summary(
+                let summary = crate::autoreseat::leg::ineligible_record(
                     crate::autoreseat::Ineligible::Unmapped,
                 );
                 let found = crate::autoreseat::episode(&events, self.session, slot, agent);
                 if crate::autoreseat::owed(found.as_ref(), *key, false, now)
-                    && !found.as_ref().is_some_and(|open| open.holds_with(summary))
+                    && !found.as_ref().is_some_and(|open| open.holds_with(&summary))
                 {
                     journal.record_referring(
                         crate::autoreseat::HELD_ACTION,
                         agent,
                         &key.to_string(),
-                        summary,
+                        &summary,
                         err,
                     )?;
                     crate::autoreseat::leg::tell_unmapped(
@@ -6533,14 +6533,14 @@ impl Cycle<'_> {
                 *key,
                 false,
                 crate::autoreseat::HELD_ACTION,
-                reason.summary(),
+                reason.record(),
                 *trigger,
             ),
             AutoAct::Overdue { key, trigger, .. } => (
                 *key,
                 true,
                 crate::autoreseat::FAILED_ACTION,
-                OVERDUE_SUMMARY,
+                crate::autoreseat::CauseClass::Other.lead(OVERDUE_SUMMARY),
                 *trigger,
             ),
             _ => return Ok(()),
@@ -6553,7 +6553,7 @@ impl Cycle<'_> {
             .as_ref()
             .map(|open| open.cause().to_owned())
             .unwrap_or_default();
-        let summary = crate::autoreseat::leg::tagged(summary, &cause);
+        let summary = crate::autoreseat::leg::tagged(&summary, &cause);
         let said = trigger == Trigger::Headroom
             && !overdue
             && found.as_ref().is_some_and(|open| open.holds_with(&summary));
@@ -13438,7 +13438,7 @@ mod tests {
         };
         let opened = line(key, HEADROOM_ACTION, None, cause);
         let limited = line(key, "limit", None, "");
-        let said = crate::autoreseat::leg::tagged(HoldReason::Busy.summary(), cause);
+        let said = crate::autoreseat::leg::tagged(&HoldReason::Busy.record(), cause);
         let slot = || "spawned.3".to_owned();
         let agent = || "builder".to_owned();
         let held = |reason, trigger| AutoAct::Held {
@@ -13518,7 +13518,7 @@ mod tests {
             (
                 vec![
                     limited.clone(),
-                    line(key + 60, HELD_ACTION, Some(key), HoldReason::Busy.summary()),
+                    line(key + 60, HELD_ACTION, Some(key), &HoldReason::Busy.record()),
                 ],
                 held(HoldReason::Busy, Trigger::Limit),
                 vec![(HELD_ACTION, Some(reference.clone()))],
@@ -13594,6 +13594,19 @@ mod tests {
                 .collect();
             assert_eq!(recorded, expected, "{why}");
             assert!(err.is_empty(), "{why}: {}", String::from_utf8_lossy(&err));
+            // Whatever the daemon names leads with the class of its reason.
+            for event in read_events(&scratch.0).into_iter().skip(before) {
+                let summary = event.summary.unwrap_or_default();
+                match event.action.as_str() {
+                    HELD_ACTION => assert!(
+                        summary.starts_with("busy: held: ")
+                            || summary.starts_with("unknown-frame: held: "),
+                        "{why}: {summary}"
+                    ),
+                    FAILED_ACTION => assert_eq!(summary, "other: failed: no outcome recorded"),
+                    _ => {}
+                }
+            }
         }
     }
 

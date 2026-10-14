@@ -113,6 +113,50 @@ const ARCHIVE: &str = "ae-carry-archive";
 /// stops a directory something else keeps filling.
 const ARCHIVE_TRIES: u32 = 64;
 
+/// Which side of the crossing refused, named by the stage that refused it and
+/// never read back out of the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// The conversation's transcript is not in the account it moves from.
+    SourceMissing,
+    /// The target account holds a different transcript, a node of the wrong
+    /// kind where ae would write, or a place ae could not archive into.
+    TargetDiffers,
+    /// Every other refusal: a node ae could not read or classify, a source ae
+    /// will not copy, or a node that changed under the walk.
+    Unreadable,
+}
+
+/// A refusal: its [`Kind`] and the words a human reads. A bare message is
+/// [`Kind::Unreadable`]; the stages that know better say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    kind: Kind,
+    why: String,
+}
+
+impl Refusal {
+    fn new(kind: Kind, why: String) -> Self {
+        Self { kind, why }
+    }
+
+    pub(crate) const fn kind(&self) -> Kind {
+        self.kind
+    }
+}
+
+impl From<String> for Refusal {
+    fn from(why: String) -> Self {
+        Self::new(Kind::Unreadable, why)
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.why)
+    }
+}
+
 /// A move whose conversation can travel, with both ends resolved.
 pub(crate) struct Plan {
     /// The account the conversation lives in now.
@@ -309,7 +353,7 @@ pub(crate) enum Mode<'a> {
 /// CHECK or COPY the conversation. A `Copy` `Err` is the loud fallback: the
 /// seat still moves, on a fresh conversation with the seed pack, and the
 /// reason is what ae prints.
-pub(crate) fn run(plan: &Plan, mode: Mode<'_>) -> Result<Crossing, String> {
+pub(crate) fn run(plan: &Plan, mode: Mode<'_>) -> Result<Crossing, Refusal> {
     let mut aside = Aside::default();
     match carry(plan, mode, &mut aside) {
         Ok(mut crossing) => {
@@ -323,13 +367,16 @@ pub(crate) fn run(plan: &Plan, mode: Mode<'_>) -> Result<Crossing, String> {
         // the fallback after it must not make that a silent archive: the
         // reason says how many and where. A directory it created and then
         // could not fill is named too, never removed behind the reader's back.
-        Err(why) => Err(match aside.dir {
-            Some(dir) => format!(
-                "{why}; {} already archived in {}",
-                files(aside.count),
-                dir.display()
+        Err(refusal) => Err(match aside.dir {
+            Some(dir) => Refusal::new(
+                refusal.kind,
+                format!(
+                    "{refusal}; {} already archived in {}",
+                    files(aside.count),
+                    dir.display()
+                ),
             ),
-            None => why,
+            None => refusal,
         }),
     }
 }
@@ -347,14 +394,19 @@ struct Aside {
     count: usize,
 }
 
-fn carry(plan: &Plan, mode: Mode<'_>, aside: &mut Aside) -> Result<Crossing, String> {
+fn carry(plan: &Plan, mode: Mode<'_>, aside: &mut Aside) -> Result<Crossing, Refusal> {
     let name = format!("{}.jsonl", plan.id);
     let project: [&str; 2] = ["projects", &plan.key];
     let transcript: [&str; 3] = [project[0], project[1], &name];
     // THE CONVERSATION ITSELF, read before anything is written: a carry that
     // cannot read the thing it exists to move has nothing to do.
     let (source_file, node) = under(&plan.from, &transcript)?;
-    let bytes = read_regular(&source_file, node)?;
+    let kind = if node == Node::Missing {
+        Kind::SourceMissing
+    } else {
+        Kind::Unreadable
+    };
+    let bytes = read_regular(&source_file, node).map_err(|why| Refusal::new(kind, why))?;
     // THE TARGET PROJECT DIRECTORY, before anything is put in it. `under`
     // refuses a link at every level, so this also proves the two components
     // above it.
@@ -394,14 +446,17 @@ fn carry(plan: &Plan, mode: Mode<'_>, aside: &mut Aside) -> Result<Crossing, Str
     let memory_kept = match node {
         Node::Missing => false,
         Node::Dir => true,
-        other => return Err(format!("{} {}", target_memory.display(), other.word())),
+        other => {
+            let why = format!("{} {}", target_memory.display(), other.word());
+            return Err(Refusal::new(Kind::TargetDiffers, why));
+        }
     };
     if !memory_kept {
         copy_tree(plan, &memory, &mut budget, Mode::Check)?;
     }
     let Mode::Copy(checked) = mode else {
         // WHERE THE COPY WILL ARCHIVE, proven before anything is stopped.
-        archivable(plan, &proof)?;
+        archivable(plan, &proof).map_err(|why| Refusal::new(Kind::TargetDiffers, why))?;
         return Ok(Crossing {
             memory_kept,
             proof,
@@ -411,7 +466,7 @@ fn carry(plan: &Plan, mode: Mode<'_>, aside: &mut Aside) -> Result<Crossing, Str
     // THE CHECK DECIDED, so the Copy acts on exactly that decision or on
     // nothing: the human's move was decided on what the Check saw.
     if let Some(path) = drift(&proof, checked) {
-        return Err(changed(&plan.to.join(path)));
+        return Err(changed(&plan.to.join(path)).into());
     }
     // Each frozen sidecar goes aside now, proven AGAIN at the moment it moves;
     // the walk below then publishes into the names they left.
@@ -443,7 +498,7 @@ fn carry(plan: &Plan, mode: Mode<'_>, aside: &mut Aside) -> Result<Crossing, Str
             publish(&target_file, &bytes)?;
         }
         // Unreachable past the drift proof, and spelled rather than assumed.
-        (Held::Stale(_), None) => return Err(changed(&target_file)),
+        (Held::Stale(_), None) => return Err(changed(&target_file).into()),
         (Held::Missing, _) => {
             make_dir(&target, mode)?;
             publish(&target_file, &bytes)?;
@@ -500,17 +555,18 @@ enum Held {
 /// Judge the target transcript against the source's bytes. Anything that is
 /// neither the same conversation nor an older copy of it — a fork, a longer
 /// file — belongs to something else, and the carry refuses.
-fn held(path: &Path, node: Node, source: &[u8]) -> Result<Held, String> {
+fn held(path: &Path, node: Node, source: &[u8]) -> Result<Held, Refusal> {
+    let differs = |why: String| Refusal::new(Kind::TargetDiffers, why);
     match node {
         Node::Missing => return Ok(Held::Missing),
         Node::File => {}
-        other => return Err(format!("{} {}", path.display(), other.word())),
+        other => return Err(differs(format!("{} {}", path.display(), other.word()))),
     }
     let different = || {
-        format!(
+        differs(format!(
             "{} already holds a different conversation file",
             path.display()
-        )
+        ))
     };
     // THE LENGTH FIRST: a target longer than the source is refused unread, so
     // the read below is never larger than the source ae already holds.
@@ -732,21 +788,26 @@ fn copy_tree(
     parts: &[&str],
     budget: &mut usize,
     mode: Mode<'_>,
-) -> Result<Vec<Print>, String> {
+) -> Result<Vec<Print>, Refusal> {
     let (source, node) = under(&plan.from, parts)?;
     match node {
         Node::Missing => Ok(Vec::new()),
         Node::Dir => {
             let (target, node) = under(&plan.to, parts)?;
             match node {
-                Node::Missing | Node::Dir => copy_dir(&source, &target, MAX_DEPTH, budget, mode)?
-                    .into_iter()
-                    .map(|print| print.within(&plan.to))
-                    .collect(),
-                other => Err(format!("{} {}", target.display(), other.word())),
+                Node::Missing | Node::Dir => {
+                    Ok(copy_dir(&source, &target, MAX_DEPTH, budget, mode)?
+                        .into_iter()
+                        .map(|print| print.within(&plan.to))
+                        .collect::<Result<Vec<_>, String>>()?)
+                }
+                other => Err(Refusal::new(
+                    Kind::TargetDiffers,
+                    format!("{} {}", target.display(), other.word()),
+                )),
             }
         }
-        other => Err(format!("{} {}", source.display(), other.word())),
+        other => Err(format!("{} {}", source.display(), other.word()).into()),
     }
 }
 
@@ -1251,6 +1312,75 @@ mod tests {
                 before,
                 "{tag}: {checked:?} created something"
             );
+            let _ = std::fs::remove_dir_all(plan.from.parent().unwrap_or(&plan.from));
+        }
+    }
+
+    /// The kind a refusal carries is the stage that made it, whatever its
+    /// message says: a missing source transcript, a target that holds
+    /// something else, and every other refusal are three different things.
+    #[test]
+    fn a_refusal_names_the_stage_that_made_it() {
+        use super::Kind::{SourceMissing, TargetDiffers, Unreadable};
+        type Broken = fn(&super::Plan);
+        let cases: [(&str, Broken, super::Kind); 6] = [
+            (
+                "nosource",
+                |plan| {
+                    let file = plan.from.join("projects/-w").join(format!("{ID}.jsonl"));
+                    assert!(std::fs::remove_file(file).is_ok());
+                },
+                SourceMissing,
+            ),
+            (
+                "srcdir",
+                |plan| {
+                    let file = plan.from.join("projects/-w").join(format!("{ID}.jsonl"));
+                    assert!(std::fs::remove_file(&file).is_ok());
+                    assert!(std::fs::create_dir_all(file).is_ok());
+                },
+                Unreadable,
+            ),
+            (
+                "clash",
+                |plan| {
+                    put(
+                        &plan.to.join("projects/-w").join(format!("{ID}.jsonl")),
+                        b"forked transcript",
+                    );
+                },
+                TargetDiffers,
+            ),
+            (
+                "memory",
+                |plan| {
+                    put(&plan.to.join("projects/-w/memory"), b"not a directory");
+                },
+                TargetDiffers,
+            ),
+            (
+                "targetdir",
+                |plan| {
+                    let file = plan.to.join("projects/-w").join(format!("{ID}.jsonl"));
+                    assert!(std::fs::create_dir_all(file).is_ok());
+                },
+                TargetDiffers,
+            ),
+            (
+                "link",
+                |plan| {
+                    let leaf = plan.from.join("file-history").join(ID).join("h@v1");
+                    assert!(std::fs::remove_file(&leaf).is_ok());
+                    assert!(std::os::unix::fs::symlink("/etc/hosts", &leaf).is_ok());
+                },
+                Unreadable,
+            ),
+        ];
+        for (tag, broken, kind) in cases {
+            let plan = planted(tag);
+            broken(&plan);
+            let refused = super::run(&plan, super::Mode::Check).err();
+            assert_eq!(refused.map(|why| why.kind()), Some(kind), "{tag}");
             let _ = std::fs::remove_dir_all(plan.from.parent().unwrap_or(&plan.from));
         }
     }

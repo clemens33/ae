@@ -509,7 +509,7 @@ fn a_candidate_on_a_spent_account_is_passed_over_for_the_next_declared_one() {
             let refused = one_outcome(&rig, REFUSED_ACTION);
             assert_eq!(
                 refused.summary.as_deref(),
-                Some("refused: no usable candidate: fake-claude-a (exhausted)"),
+                Some("no-candidate: refused: no usable candidate: fake-claude-a (exhausted)"),
                 "{refused:?}"
             );
             assert!(rig.tool_pid(&pane, "claude").is_some(), "still running");
@@ -530,7 +530,7 @@ fn a_seat_with_no_usable_candidate_is_refused_where_it_stands() {
     assert_eq!(refused.reference.as_deref(), Some(KEY), "{refused:?}");
     assert_eq!(
         refused.summary.as_deref(),
-        Some("refused: no usable candidate: ghost (not configured here)"),
+        Some("no-candidate: refused: no usable candidate: ghost (not configured here)"),
         "the skip is named with its reason: {refused:?}"
     );
     untouched(&rig, &pane);
@@ -548,7 +548,7 @@ fn a_switch_turned_off_between_the_legs_holds_and_the_retry_moves_once_it_is_on(
     assert!(
         held.summary
             .as_deref()
-            .is_some_and(|summary| summary.starts_with("held: ")),
+            .is_some_and(|summary| summary.starts_with("ineligible: held: ")),
         "{held:?}"
     );
     untouched(&rig, &pane);
@@ -890,8 +890,12 @@ fn a_refused_episode_stays_refused_across_a_daemon_restart() {
     let chats = said(&rig);
     assert_eq!(chats.len(), 1, "the refusal is said once: {}", rig.events());
     assert!(
-        chats[0].summary.as_deref().is_some_and(|line| line
-            .starts_with("auto reseat: scout not moved — refused: no usable candidate: ghost")),
+        chats[0]
+            .summary
+            .as_deref()
+            .is_some_and(|line| line.starts_with(
+                "auto reseat: scout not moved — no-candidate: refused: no usable candidate: ghost"
+            )),
         "{chats:?}"
     );
 }
@@ -1048,7 +1052,7 @@ fn a_daemon_writer_backs_off_while_another_writer_holds_the_seat() {
     );
     assert_eq!(
         failed.summary.as_deref(),
-        Some("failed: no outcome recorded")
+        Some("other: failed: no outcome recorded")
     );
     untouched(&rig, &pane);
 }
@@ -1618,4 +1622,196 @@ fn limitstop_an_unmapped_second_episode_gets_a_fresh_hold_and_notice() {
         rig.tool_pid(&pane, "muse").is_some(),
         "held process remains"
     );
+}
+
+// Cause classes: every auto reseat outcome leads with a short class word, so a
+// clip of a long message (a path, a profile name) never takes the cause.
+
+/// A record's summary, which must lead with `class` whatever follows it.
+fn assert_leads(event: &Event, class: &str) {
+    let summary = event.summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.starts_with(&format!("{class}: ")),
+        "the summary leads with its class {class:?}: {summary:?}"
+    );
+}
+
+/// The human's chat notice carries `class` in its first `within` characters.
+fn assert_told_early(rig: &Rig, class: &str, within: usize) {
+    let chats = said(rig);
+    assert_eq!(chats.len(), 1, "one human notice: {chats:?}");
+    let notice = chats[0].summary.as_deref().unwrap_or_default();
+    assert!(
+        notice.find(class).is_some_and(|at| at < within),
+        "the notice names {class:?} within {within} characters: {notice:?}"
+    );
+}
+
+#[test]
+fn class_a_refusal_with_no_candidate_leads_with_its_class_when_the_name_clips_the_message() {
+    let long = "g".repeat(150);
+    let (rig, pane) = limited("classnone", "on", &long);
+    remove_unused_profiles(&rig, &["fake-claude-a", "fake-claude-b"]);
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(err.len() > 160, "the message is long enough to clip: {err}");
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    assert_leads(&refused, "no-candidate");
+    assert_told_early(&rig, "no-candidate", 60);
+    untouched(&rig, &pane);
+}
+
+#[test]
+fn class_an_unmapped_hold_leads_with_its_class() {
+    // No row for the seat's profile and no sibling to derive: nothing to move to.
+    let (rig, pane) = limited("classunmapped", "on", "ghost");
+    configure_from(&rig, "on", "fake-other", "ghost");
+    remove_unused_profiles(&rig, &["fake-claude-a", "fake-claude-b"]);
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert_leads(&one_outcome(&rig, HELD_ACTION), "no-candidate");
+    assert_told_early(&rig, "no-candidate", 60);
+    untouched(&rig, &pane);
+}
+
+#[test]
+fn class_a_busy_hold_leads_with_its_class() {
+    let (rig, pane) = limited("classbusy", "on", "fake-opencode");
+    rig.mark_busy(&pane);
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert_leads(&one_outcome(&rig, HELD_ACTION), "busy");
+    assert_told_early(&rig, "busy", 60);
+    untouched(&rig, &pane);
+}
+
+#[test]
+fn class_an_unreadable_frame_refusal_leads_with_its_class_and_keeps_the_command() {
+    let frame = LIMITSTOP_FRAME.replace("❯\u{a0}\n", "❯ draft text\n");
+    let (rig, pane) = limitstop_attempt("classframe", &frame);
+    let command = format!(
+        "ae reseat {} scout --using fake-opencode --stop-unknown",
+        rig.session
+    );
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    assert_leads(&refused, "unknown-frame");
+    let summary = refused.summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.contains(&command),
+        "the command stays whole: {summary}"
+    );
+    untouched(&rig, &pane);
+}
+
+/// The conversation the carry cases move.
+const CARRIED: &str = "22222222-2222-4222-8222-222222222222";
+
+/// A running claude seat on account `a` that records [`CARRIED`] under a
+/// working copy with a long name, moving to account `b`: the carry Check reads
+/// `source` (a planted transcript, or none) and `target` (what account `b`
+/// already holds under the conversation's name) before anything is stopped.
+fn carry_attempt(tag: &str, source: Option<&[u8]>, target: Option<&[u8]>) -> (Rig, String) {
+    let (rig, pane) = limited_on(tag, "claude-a", "on", "fake-claude-b");
+    let scratch = std::fs::canonicalize(&rig.scratch)
+        .unwrap_or_else(|why| panic!("the scratch dir should canonicalize: {why}"));
+    let work = scratch.join(format!("work-{}", "w".repeat(90)));
+    assert!(std::fs::create_dir_all(&work).is_ok(), "a working copy");
+    let (from, to) = (scratch.join("home-a"), scratch.join("home-b"));
+    let meta = rig.dir.join("meta");
+    let text = std::fs::read_to_string(&meta).unwrap_or_default();
+    let mut text = text
+        .lines()
+        .filter(|line| {
+            ![
+                "work_dir=",
+                "harness_session.spawned.0=",
+                "capture_floor.spawned.0=",
+                "launch_time.spawned.0=",
+                "observed_model.spawned.0=",
+                "config_home.spawned.0=",
+                "config_home_base.spawned.0=",
+            ]
+            .iter()
+            .any(|key| line.starts_with(key))
+        })
+        .fold(String::new(), |mut kept, line| {
+            assert!(writeln!(kept, "{line}").is_ok(), "a meta row");
+            kept
+        });
+    assert!(
+        writeln!(
+            text,
+            "work_dir={}\nharness_session.spawned.0={CARRIED}\ncapture_floor.spawned.0=100\n\
+             launch_time.spawned.0=111\nobserved_model.spawned.0=Opus 5\n\
+             config_home.spawned.0={}",
+            work.display(),
+            from.display()
+        )
+        .is_ok(),
+        "the seat's history"
+    );
+    assert!(std::fs::write(&meta, text).is_ok(), "the seat's meta");
+    let key = ae::carry::project_key(&work);
+    for (home, bytes) in [(from, source), (to, target)] {
+        if let Some(bytes) = bytes {
+            let project = home.join("projects").join(&key);
+            assert!(std::fs::create_dir_all(&project).is_ok(), "a project dir");
+            assert!(
+                std::fs::write(project.join(format!("{CARRIED}.jsonl")), bytes).is_ok(),
+                "a transcript"
+            );
+        }
+    }
+    (rig, pane)
+}
+
+#[test]
+fn class_a_carry_whose_source_is_missing_leads_with_its_class_when_the_path_clips_the_message() {
+    let (rig, pane) = carry_attempt("classsrc", None, None);
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(err.len() > 160, "the message is long enough to clip: {err}");
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    assert_leads(&refused, "carry-source-missing");
+    assert!(
+        refused
+            .summary
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .count()
+            <= 200,
+        "{refused:?}"
+    );
+    assert_told_early(&rig, "carry-source-missing", 60);
+    assert!(rig.tool_pid(&pane, "claude").is_some(), "never stopped");
+}
+
+#[test]
+fn class_a_carry_whose_target_holds_a_different_file_leads_with_its_class() {
+    let (rig, pane) = carry_attempt(
+        "classtgt",
+        Some(b"{\"type\":\"user\"}\n"),
+        Some(b"{\"type\":\"fork\"}\n{\"type\":\"longer\"}\n"),
+    );
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    assert_leads(&refused, "carry-target-differs");
+    assert_told_early(&rig, "carry-target-differs", 60);
+    assert!(rig.tool_pid(&pane, "claude").is_some(), "never stopped");
 }

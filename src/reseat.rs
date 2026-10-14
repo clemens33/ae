@@ -48,6 +48,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::autoreseat::CauseClass;
 use crate::harness_state::HarnessState;
 use crate::inventory::ServerId;
 use crate::procs::{self, Descendancy};
@@ -497,11 +498,22 @@ pub(crate) fn account_of(
 pub(crate) enum Ended {
     /// The seat runs its new profile; `carried` when its conversation came too.
     Moved { carried: bool },
-    /// Nothing of the seat changed. A `transient` cause may pass on a retry.
-    Refused { transient: bool },
+    /// Nothing of the seat changed, for the named cause, decided where it was
+    /// refused. A transient one ([`CauseClass::transient`]) may pass on a retry.
+    Refused(CauseClass),
     /// Something was stopped or written and the move did not finish, or the
     /// machinery itself refused.
     Failed,
+}
+
+/// The class a carry refusal is journaled under: the stage that refused it
+/// named the [`crate::carry::Kind`], and this only spells it.
+const fn carry_class(kind: crate::carry::Kind) -> CauseClass {
+    match kind {
+        crate::carry::Kind::SourceMissing => CauseClass::CarrySourceMissing,
+        crate::carry::Kind::TargetDiffers => CauseClass::CarryTargetDiffers,
+        crate::carry::Kind::Unreadable => CauseClass::CarryUnreadable,
+    }
 }
 
 /// What the stop step concluded.
@@ -515,9 +527,9 @@ enum Stop {
     /// The tool was stopped and the pane is back at an idle shell, carrying
     /// the binary that was stopped for the record.
     Stopped(String),
-    /// A refusal was printed and nothing was killed. A `transient` cause — a
+    /// A refusal was printed and nothing was killed. A transient cause — a
     /// delivery in flight or a running turn — may pass on a retry.
-    Refused { transient: bool },
+    Refused(CauseClass),
     /// A refusal was printed and the machinery is what refused: tmux would not
     /// respawn the pane, or the pane was not back at a shell after the kill.
     Failed,
@@ -790,7 +802,7 @@ fn stop_running_tool(
         Ok(work_dir) => work_dir,
         Err(line) => {
             writeln!(err, "{line}")?;
-            return Ok(Stop::Refused { transient: false });
+            return Ok(Stop::Refused(CauseClass::Other));
         }
     };
     // NOT FROM UNDER THE SEAT ITSELF. The pane check upstream catches a caller
@@ -812,7 +824,7 @@ fn stop_running_tool(
                 };
                 if let Some(line) = mixed_refusal(rows, pid, &recorded, target) {
                     writeln!(err, "{line}")?;
-                    return Ok(Stop::Refused { transient: false });
+                    return Ok(Stop::Refused(CauseClass::Other));
                 }
             }
         }
@@ -824,7 +836,7 @@ fn stop_running_tool(
                  shell.",
                 target.agent, target.pane
             )?;
-            return Ok(Stop::Refused { transient: false });
+            return Ok(Stop::Refused(CauseClass::Other));
         }
         CallerStanding::Unprovable(gap) => {
             writeln!(
@@ -833,7 +845,7 @@ fn stop_running_tool(
                  running under it ({gap}) — nothing was stopped.",
                 target.agent, target.pane
             )?;
-            return Ok(Stop::Refused { transient: false });
+            return Ok(Stop::Refused(CauseClass::Other));
         }
     }
     // THE PANE'S SEND-LOCK, so no delivery can land a turn between the frame
@@ -847,7 +859,7 @@ fn stop_running_tool(
              finishes.",
             target.pane, target.agent
         )?;
-        return Ok(Stop::Refused { transient: true });
+        return Ok(Stop::Refused(CauseClass::Lock));
     };
     // THE FRAME. Only a POSITIVELY proven idle box may be stopped, and it is
     // proven TWICE: `Busy` short-circuits on the first reading, and a seat
@@ -867,13 +879,13 @@ fn stop_running_tool(
     let (first, first_limited) = frame(target, tool, &agent_bin);
     if first == HarnessState::Busy {
         busy(err)?;
-        return Ok(Stop::Refused { transient: true });
+        return Ok(Stop::Refused(CauseClass::Busy));
     }
     std::thread::sleep(FRAME_GAP);
     let (second, second_limited) = frame(target, tool, &agent_bin);
     if second == HarnessState::Busy {
         busy(err)?;
-        return Ok(Stop::Refused { transient: true });
+        return Ok(Stop::Refused(CauseClass::Busy));
     }
     if !may_stop((first, first_limited), (second, second_limited), policy) {
         // The next step FIRST, with its precondition: a record keeps only the
@@ -896,7 +908,7 @@ fn stop_running_tool(
             agent_bin,
             target.pane
         )?;
-        return Ok(Stop::Refused { transient: false });
+        return Ok(Stop::Refused(CauseClass::UnknownFrame));
     }
 
     // THE ONLY WRITE. A tmux that refuses the argv leaves the tool running,
@@ -975,7 +987,7 @@ pub(crate) fn run(
     Ok(
         match run_parsed(root, world, &parsed, caller, now, out, err)? {
             Ended::Moved { .. } => 0,
-            Ended::Refused { .. } | Ended::Failed => EXIT_FAILED,
+            Ended::Refused(_) | Ended::Failed => EXIT_FAILED,
         },
     )
 }
@@ -1048,7 +1060,7 @@ fn run_parsed(
     err: &mut impl Write,
 ) -> io::Result<Ended> {
     // Nothing of the seat has changed on any refusal before the stop.
-    let refused = Ended::Refused { transient: false };
+    let refused = Ended::Refused(CauseClass::Other);
     // The seed is built from the world the caller already enumerated, so the
     // pack a successor is handed is the one `ae brief --seat` prints this
     // instant — and an incomplete enumeration refuses rather than packs a
@@ -1169,7 +1181,7 @@ fn run_parsed(
              once that finishes.",
             parsed.session
         )?;
-        return Ok(Ended::Refused { transient: true });
+        return Ok(Ended::Refused(CauseClass::Lock));
     };
     // What the records say NOW, under the lock: the stop reads the working copy
     // from it, and the audit line reads the conversation the predecessor holds.
@@ -1210,7 +1222,7 @@ fn run_parsed(
                     from.display(),
                     to.display()
                 )?;
-                return Ok(refused);
+                return Ok(Ended::Refused(carry_class(why.kind())));
             }
         }
     }
@@ -1237,7 +1249,7 @@ fn run_parsed(
     }
     // THE STOP, before the dead proof and before anything durable is written.
     let stopped = match stop_running_tool(&dir, &target, &locked, parsed, err)? {
-        Stop::Refused { transient } => return Ok(Ended::Refused { transient }),
+        Stop::Refused(class) => return Ok(Ended::Refused(class)),
         Stop::Failed => return Ok(Ended::Failed),
         // The record goes in only once the pane is PROVEN back at its shell:
         // an audit line claiming a stop that did not finish would outlive
@@ -1348,7 +1360,7 @@ fn run_parsed(
                         from.display(),
                         to.display()
                     )?;
-                    Carried::Seeded(why)
+                    Carried::Seeded(why.to_string())
                 }
             }
         }

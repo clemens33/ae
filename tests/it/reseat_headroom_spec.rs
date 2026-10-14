@@ -443,7 +443,7 @@ fn threshold_turned_off_after_a_headroom_attempt_holds_without_moving_the_seat()
     assert_eq!(held[0].reference.as_deref(), Some(key.to_string().as_str()));
     assert_eq!(
         held[0].summary.as_deref(),
-        Some("held: auto_reseat_at is off (headroom 95% weekly_all 7d)")
+        Some("ineligible: held: auto_reseat_at is off (headroom 95% weekly_all 7d)")
     );
     assert_eq!(booked(&rig, ATTEMPT_ACTION).len(), 1);
     assert!(booked(&rig, DONE_ACTION).is_empty());
@@ -1717,7 +1717,7 @@ fn phase2_a_leg_with_no_declared_or_derived_candidate_names_the_hold() {
     assert_eq!(
         held[0].summary.as_deref(),
         Some(
-            "held: no declared or derived candidate for this profile (headroom 95% weekly_all 7d)"
+            "no-candidate: held: no declared or derived candidate for this profile (headroom 95% weekly_all 7d)"
         )
     );
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-source");

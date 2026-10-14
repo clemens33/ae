@@ -549,6 +549,20 @@ episode), and `auto-reseat-notice` (one per delivery). A move interrupted
 between the stop and the tool starting is finished the same way a manual one
 is: `relaunch <agent>` — the failed notice says so by name.
 
+Every hold, refusal and failure summary, and the notice that quotes it, LEADS
+with a cause class — `<class>: <message>` — so a clip of a long message (a path,
+a profile name) never takes the cause. The class is named where the refusal is
+decided, never read back out of the printed text: `carry-source-missing` (the
+conversation's transcript is not in the account it moves from),
+`carry-target-differs` (the account it moves to holds a different transcript, a
+node of the wrong kind, or a place ae could not archive into),
+`carry-unreadable` (any other carry refusal), `busy` (a running turn, a draft, a
+prompt, human input), `unknown-frame` (ae cannot prove the frame idle), `lock`
+(another writer holds the lifecycle or send lock), `no-candidate`, `ineligible`
+(the operator's rules say this seat does not move) and `other`. `busy` and
+`lock` are the transient classes: their record is a hold, every other class a
+refusal. `ae reseat` itself prints its messages unchanged.
+
 ### Headroom episodes
 
 A seat can be moved BEFORE its limit. With `[workspace] auto_reseat_at` (global,

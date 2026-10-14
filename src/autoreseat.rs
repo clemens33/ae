@@ -57,6 +57,65 @@ pub const HEADROOM_ACTION: &str = "auto-reseat-headroom";
 /// A headroom episode ends and the seat is armed again. `ref` = the key.
 pub const REARMED_ACTION: &str = "auto-reseat-headroom-cleared";
 
+/// Why an attempt ended short, as the short word every outcome record leads its
+/// summary with: a clip of the message behind it (a path, a profile name) can
+/// then never take the cause.
+///
+/// The class is decided where the refusal is, never read back out of a printed
+/// message: `reseat::Ended` carries it from the site that refused, and the
+/// leg and the daemon name it where they decline before asking for a move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CauseClass {
+    /// The conversation's transcript is not in the account it moves from.
+    CarrySourceMissing,
+    /// The account it moves to holds something ae will not overwrite or archive.
+    CarryTargetDiffers,
+    /// A carry node ae could not read or classify, or one that changed under it.
+    CarryUnreadable,
+    /// The seat is occupied: a running turn, a draft, a prompt or human input.
+    Busy,
+    /// ae cannot prove the seat's frame idle.
+    UnknownFrame,
+    /// Another writer holds the lifecycle lock or the pane's send-lock.
+    Lock,
+    /// No declared or derived candidate, or none that is usable.
+    NoCandidate,
+    /// The seat may not be moved by auto reseat at all.
+    Ineligible,
+    /// Every other refusal, and every failure.
+    Other,
+}
+
+impl CauseClass {
+    /// The word a summary leads with.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::CarrySourceMissing => "carry-source-missing",
+            Self::CarryTargetDiffers => "carry-target-differs",
+            Self::CarryUnreadable => "carry-unreadable",
+            Self::Busy => "busy",
+            Self::UnknownFrame => "unknown-frame",
+            Self::Lock => "lock",
+            Self::NoCandidate => "no-candidate",
+            Self::Ineligible => "ineligible",
+            Self::Other => "other",
+        }
+    }
+
+    /// Whether the cause may pass on a retry: the record is a hold, not a refusal.
+    #[must_use]
+    pub const fn transient(self) -> bool {
+        matches!(self, Self::Busy | Self::Lock)
+    }
+
+    /// `summary` led by the class: `<class>: <summary>`.
+    #[must_use]
+    pub fn lead(self, summary: &str) -> String {
+        format!("{}: {summary}", self.word())
+    }
+}
+
 /// The threshold an absent or unusable `auto_reseat_at` means.
 pub const DEFAULT_HEADROOM_AT: u8 = 95;
 /// How far below the threshold the seat's own account must read, strictly,
@@ -371,6 +430,20 @@ pub enum Ineligible {
     Slot,
     Class,
     Unmapped,
+}
+
+impl Ineligible {
+    /// The class its hold is journaled under: nothing to move to is
+    /// `no-candidate`, anything else the operator ruled is `ineligible`.
+    #[must_use]
+    pub const fn class(self) -> CauseClass {
+        match self {
+            Self::Unmapped => CauseClass::NoCandidate,
+            Self::Off | Self::Orchestrator | Self::Session | Self::Slot | Self::Class => {
+                CauseClass::Ineligible
+            }
+        }
+    }
 }
 
 /// The candidates `seat` may move to, or why it may not move. Reads no quota
@@ -888,6 +961,23 @@ impl HoldReason {
             Self::ClientInput => "held: a human gave input in the pane",
             Self::Unproven => "held: the seat's frame is not proven idle",
         }
+    }
+
+    /// The class the record names it under: an unreadable or unproven frame is
+    /// `unknown-frame`; a turn, a draft, a prompt or human input is `busy`.
+    #[must_use]
+    pub const fn class(self) -> CauseClass {
+        match self {
+            Self::Unread | Self::Unproven => CauseClass::UnknownFrame,
+            Self::Busy | Self::Draft | Self::HumanPrompt | Self::ClientInput => CauseClass::Busy,
+        }
+    }
+
+    /// The summary the `auto-reseat-held` record carries: the class, then
+    /// [`Self::summary`].
+    #[must_use]
+    pub fn record(self) -> String {
+        self.class().lead(self.summary())
     }
 }
 
@@ -1428,9 +1518,10 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
             )
         }
         Ending::Unmapped(profile) => format!(
-            "{agent} not moved — no declared or derived candidate for {profile}. Next: add an \
-             [auto_reseat] row for {profile}, or move it by hand (ae reseat {session} {agent} \
-             --using <profile>)."
+            "{agent} not moved — {}. Next: add an [auto_reseat] row for {profile}, or move it by \
+             hand (ae reseat {session} {agent} --using <profile>).",
+            CauseClass::NoCandidate
+                .lead(&format!("no declared or derived candidate for {profile}"))
         ),
         Ending::Failed(why) => format!(
             "{agent} move failed — {why}. Next: relaunch {agent} if its pane sits at a shell, \
@@ -3067,5 +3158,80 @@ mod tests {
             routed(20, DONE_ACTION, "opus55x"),
         ];
         assert_eq!(left_on_headroom(&twice, SESSION, SLOT, AGENT), ["sol6x"]);
+    }
+    /// Every outcome a seat can be held, refused or failed with leads with a
+    /// short class word, each class is its own word, and only the two that may
+    /// pass on a retry are transient.
+    #[test]
+    fn every_outcome_record_leads_with_its_cause_class() {
+        let classes = [
+            (
+                CauseClass::CarrySourceMissing,
+                "carry-source-missing",
+                false,
+            ),
+            (
+                CauseClass::CarryTargetDiffers,
+                "carry-target-differs",
+                false,
+            ),
+            (CauseClass::CarryUnreadable, "carry-unreadable", false),
+            (CauseClass::Busy, "busy", true),
+            (CauseClass::UnknownFrame, "unknown-frame", false),
+            (CauseClass::Lock, "lock", true),
+            (CauseClass::NoCandidate, "no-candidate", false),
+            (CauseClass::Ineligible, "ineligible", false),
+            (CauseClass::Other, "other", false),
+        ];
+        for (index, (class, word, transient)) in classes.iter().enumerate() {
+            assert_eq!(class.word(), *word);
+            assert_eq!(class.transient(), *transient, "{word}");
+            assert_eq!(class.lead("the message"), format!("{word}: the message"));
+            assert!(
+                !classes[..index].iter().any(|(_, seen, _)| seen == word),
+                "{word} is its own word"
+            );
+        }
+        // A hold the daemon names: the class is chosen by the reason, and the
+        // record is that class then the reason's own words.
+        for (reason, class) in [
+            (HoldReason::Unread, CauseClass::UnknownFrame),
+            (HoldReason::Unproven, CauseClass::UnknownFrame),
+            (HoldReason::Busy, CauseClass::Busy),
+            (HoldReason::Draft, CauseClass::Busy),
+            (HoldReason::HumanPrompt, CauseClass::Busy),
+            (HoldReason::ClientInput, CauseClass::Busy),
+        ] {
+            assert_eq!(reason.class(), class, "{reason:?}");
+            assert_eq!(
+                reason.record(),
+                format!("{}: {}", class.word(), reason.summary()),
+                "{reason:?}"
+            );
+        }
+        // A seat the path will not move: nothing to move to is its own class.
+        for (why, class) in [
+            (Ineligible::Unmapped, CauseClass::NoCandidate),
+            (Ineligible::Off, CauseClass::Ineligible),
+            (Ineligible::Orchestrator, CauseClass::Ineligible),
+            (Ineligible::Session, CauseClass::Ineligible),
+            (Ineligible::Slot, CauseClass::Ineligible),
+            (Ineligible::Class, CauseClass::Ineligible),
+        ] {
+            assert_eq!(why.class(), class, "{why:?}");
+            assert!(
+                leg::ineligible_record(why).starts_with(&format!("{}: held: ", class.word())),
+                "{why:?}"
+            );
+        }
+        // The notice for an unmapped seat leads its reason with the class too.
+        let told = notice(SESSION, AGENT, &Ending::Unmapped("sol6x"));
+        assert!(
+            told.starts_with(
+                "auto reseat: builder not moved — no-candidate: no declared or derived candidate \
+                 for sol6x."
+            ),
+            "{told}"
+        );
     }
 }

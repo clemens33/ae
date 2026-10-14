@@ -17,8 +17,8 @@ use crate::tracked::EventFields;
 use crate::watchdog::WATCHDOG_ACTOR;
 
 use super::{
-    ATTEMPT_ACTION, Candidate, DONE_ACTION, FAILED_ACTION, HELD_ACTION, Ineligible, Provenance,
-    REFUSED_ACTION, Room, Seat, Shape, Skip, Store, Trigger,
+    ATTEMPT_ACTION, Candidate, CauseClass, DONE_ACTION, FAILED_ACTION, HELD_ACTION, Ineligible,
+    Provenance, REFUSED_ACTION, Room, Seat, Shape, Skip, Store, Trigger,
 };
 
 /// The usage line.
@@ -79,7 +79,8 @@ pub(crate) fn parse_argv(sessions: &Path, argv: &[String]) -> Result<Argv, Strin
 
 /// The record one outcome is journaled as: its action, `ref` and summary. A
 /// move names the profile LEFT, which the next episode's chooser reads; every
-/// other ending names the key and quotes the refusal the reseat printed.
+/// other ending names the key and quotes the refusal the reseat printed, led
+/// by the class the refusing site named so a clip never takes it.
 pub(crate) fn outcome(
     ended: Ended,
     key: &str,
@@ -88,12 +89,14 @@ pub(crate) fn outcome(
     err: &str,
 ) -> (&'static str, String, String) {
     // The refusal itself, not a note the reseat printed on its way to it.
-    let quoted = || {
+    let quoted = |class: CauseClass| {
         bounded(
-            err.lines()
-                .find(|line| line.starts_with("Error:"))
-                .or_else(|| err.lines().find(|line| !line.trim().is_empty()))
-                .unwrap_or("the reseat printed no reason"),
+            &class.lead(
+                err.lines()
+                    .find(|line| line.starts_with("Error:"))
+                    .or_else(|| err.lines().find(|line| !line.trim().is_empty()))
+                    .unwrap_or("the reseat printed no reason"),
+            ),
         )
     };
     match ended {
@@ -102,9 +105,9 @@ pub(crate) fn outcome(
             left.to_owned(),
             format!("to {to}, {}", if carried { "carried" } else { "seeded" }),
         ),
-        Ended::Refused { transient: true } => (HELD_ACTION, key.to_owned(), quoted()),
-        Ended::Refused { transient: false } => (REFUSED_ACTION, key.to_owned(), quoted()),
-        Ended::Failed => (FAILED_ACTION, key.to_owned(), quoted()),
+        Ended::Refused(class) if class.transient() => (HELD_ACTION, key.to_owned(), quoted(class)),
+        Ended::Refused(class) => (REFUSED_ACTION, key.to_owned(), quoted(class)),
+        Ended::Failed => (FAILED_ACTION, key.to_owned(), quoted(CauseClass::Other)),
     }
 }
 
@@ -124,7 +127,12 @@ pub(crate) fn tagged(summary: &str, cause: &str) -> String {
 /// The hold a headroom attempt is closed with once `auto_reseat_at` is off.
 const HEADROOM_OFF: &str = "held: auto_reseat_at is off";
 
-/// The summary of the hold journaled when the seat is no longer eligible.
+/// The hold journaled when the seat is no longer eligible, led by its class.
+pub(crate) fn ineligible_record(why: Ineligible) -> String {
+    why.class().lead(ineligible_summary(why))
+}
+
+/// The words of that hold.
 pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
     match why {
         Ineligible::Off => "held: auto reseat is off",
@@ -491,16 +499,18 @@ pub(crate) fn run(
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
     let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let Some(seat) = meta.roster().iter().find(|row| row.slot == argv.slot) else {
-        let why = format!(
+        let why = CauseClass::Other.lead(&format!(
             "refused: {} seats no agent at slot {}",
             argv.session, argv.slot
-        );
+        ));
         return close(&argv, "", now, (REFUSED_ACTION, &why), err);
     };
     let (agent, profile) = (seat.name.clone(), seat.profile.clone().unwrap_or_default());
     let events = crate::watchdog_daemon::read_events(dir);
     let Some(found) = super::keyed(&events, (&argv.session, &argv.slot, &agent), argv.key) else {
-        let why = format!("refused: the seat is in no limit episode keyed {key}");
+        let why = CauseClass::Other.lead(&format!(
+            "refused: the seat is in no limit episode keyed {key}"
+        ));
         return close(&argv, &agent, now, (REFUSED_ACTION, &why), err);
     };
     let cause = found.cause().to_owned();
@@ -540,13 +550,13 @@ pub(crate) fn run(
         .headroom_at
         .filter(|_| found.trigger == Trigger::Headroom);
     let eligible = match super::eligible(&settings, &asked) {
-        Err(why) if why != Ineligible::Unmapped => Err(ineligible_summary(why)),
+        Err(why) if why != Ineligible::Unmapped => Err(ineligible_record(why)),
         declared => {
             let list = listed(dir, &bytes, seat, declared.unwrap_or_default());
             if list.is_empty() {
-                Err(ineligible_summary(Ineligible::Unmapped))
+                Err(ineligible_record(Ineligible::Unmapped))
             } else if found.trigger == Trigger::Headroom && threshold.is_none() {
-                Err(HEADROOM_OFF)
+                Err(CauseClass::Ineligible.lead(HEADROOM_OFF))
             } else {
                 Ok(list)
             }
@@ -555,7 +565,7 @@ pub(crate) fn run(
     let list = match eligible {
         Ok(list) => list,
         Err(summary) => {
-            let summary = tagged(summary, &cause);
+            let summary = tagged(&summary, &cause);
             let code = close(&argv, &agent, now, (HELD_ACTION, &summary), err)?;
             tell(&argv, now, told, &notice(super::Ending::Held(&summary)));
             return Ok(code);
@@ -640,8 +650,8 @@ pub(crate) fn run(
                 cause: &cause,
             }))
         }
-        Ended::Refused { transient: true } => notice(super::Ending::Held(&summary)),
-        Ended::Refused { transient: false } => notice(super::Ending::Refused(&summary)),
+        Ended::Refused(class) if class.transient() => notice(super::Ending::Held(&summary)),
+        Ended::Refused(_) => notice(super::Ending::Refused(&summary)),
         Ended::Failed => notice(super::Ending::Failed(&summary)),
     };
     tell(&argv, now, told, &text);
@@ -773,7 +783,7 @@ fn attempt_note(cause: &str, skipped: &[(String, Skip)]) -> String {
 
 /// The refusal that names each candidate passed over, and why.
 fn no_candidate(skipped: &[(String, Skip)]) -> String {
-    format!("refused: {}", unusable(skipped))
+    CauseClass::NoCandidate.lead(&format!("refused: {}", unusable(skipped)))
 }
 
 fn unusable(skipped: &[(String, Skip)]) -> String {
@@ -953,7 +963,10 @@ fn commit(
         writeln!(err, "ae: auto reseat: the move could not be started")?;
         return Ok(EXIT_FAILED);
     }
-    let why = tagged("failed: the move could not be started", cause);
+    let why = tagged(
+        &CauseClass::Other.lead("failed: the move could not be started"),
+        cause,
+    );
     let code = close(argv, agent, now, (FAILED_ACTION, &why), err)?;
     said(
         argv,
@@ -1433,18 +1446,30 @@ mod tests {
                 "to opus55x, seeded",
             ),
             (
-                Ended::Refused { transient: true },
+                Ended::Refused(CauseClass::Busy),
                 HELD_ACTION,
                 KEY,
-                "Error: busy",
+                "busy: Error: busy",
             ),
             (
-                Ended::Refused { transient: false },
+                Ended::Refused(CauseClass::Lock),
+                HELD_ACTION,
+                KEY,
+                "lock: Error: busy",
+            ),
+            (
+                Ended::Refused(CauseClass::CarryTargetDiffers),
                 REFUSED_ACTION,
                 KEY,
-                "Error: busy",
+                "carry-target-differs: Error: busy",
             ),
-            (Ended::Failed, FAILED_ACTION, KEY, "Error: busy"),
+            (
+                Ended::Refused(CauseClass::Other),
+                REFUSED_ACTION,
+                KEY,
+                "other: Error: busy",
+            ),
+            (Ended::Failed, FAILED_ACTION, KEY, "other: Error: busy"),
         ] {
             assert_eq!(
                 outcome(ended, KEY, left, "opus55x", "Error: busy\n  next line\n"),
@@ -1465,6 +1490,48 @@ mod tests {
             "{summary:?}"
         );
         assert!(summary.len() <= 200, "{}", summary.len());
+    }
+
+    /// A message long enough to clip keeps the class the refusing site named
+    /// at its head, in every record and in the notice built from it, for every
+    /// class a reseat can end with.
+    #[test]
+    fn a_clipped_outcome_keeps_its_class_in_the_record_and_the_notice() {
+        let path = "/Users/u/".to_owned() + &"deep/".repeat(60);
+        let err = format!("Error: 'colead' could not carry conversation c from {path} to {path}\n");
+        for class in [
+            CauseClass::CarrySourceMissing,
+            CauseClass::CarryTargetDiffers,
+            CauseClass::CarryUnreadable,
+            CauseClass::Busy,
+            CauseClass::UnknownFrame,
+            CauseClass::Lock,
+            CauseClass::Other,
+        ] {
+            let (action, _, summary) = outcome(Ended::Refused(class), KEY, "a", "b", &err);
+            assert!(
+                summary.starts_with(&format!("{}: Error:", class.word())),
+                "{summary:?}"
+            );
+            assert_eq!(
+                action,
+                if class.transient() {
+                    HELD_ACTION
+                } else {
+                    REFUSED_ACTION
+                }
+            );
+            let ending = if class.transient() {
+                crate::autoreseat::Ending::Held(&summary)
+            } else {
+                crate::autoreseat::Ending::Refused(&summary)
+            };
+            let told = crate::autoreseat::notice("aedev", "colead", &ending);
+            assert!(
+                told.find(class.word()).is_some_and(|at| at < 60),
+                "{told:?}"
+            );
+        }
     }
 
     #[test]
@@ -1941,8 +2008,8 @@ mod tests {
     #[test]
     fn an_ending_with_no_error_line_quotes_the_first_line_that_says_anything() {
         for (err, summary) in [
-            ("\n  \ntmux said no\nmore\n", "tmux said no"),
-            ("", "the reseat printed no reason"),
+            ("\n  \ntmux said no\nmore\n", "other: tmux said no"),
+            ("", "other: the reseat printed no reason"),
         ] {
             assert_eq!(
                 outcome(Ended::Failed, KEY, "sol6x", "opus55x", err).2,
@@ -2095,7 +2162,8 @@ mod tests {
             ),
             Plan::Refuse {
                 key,
-                why: "refused: no usable candidate: opus55x (not configured here)".to_owned()
+                why: "no-candidate: refused: no usable candidate: opus55x (not configured here)"
+                    .to_owned()
             }
         );
     }
@@ -2176,7 +2244,7 @@ mod tests {
         );
         assert!(released, "the leg finds the seat's lock free");
         assert_eq!(code.ok(), Some(EXIT_FAILED));
-        let why = "failed: the move could not be started";
+        let why = "other: failed: the move could not be started";
         assert_eq!(
             journal(),
             [
@@ -2428,7 +2496,7 @@ mod tests {
             plan(&settings(Some(95)), &seat, &near, &crossed, at(96.0), now),
             Plan::Refuse {
                 key,
-                why: "refused: no usable candidate: opus55x (no headroom) \
+                why: "no-candidate: refused: no usable candidate: opus55x (no headroom) \
                       (headroom 96% weekly_all 7d)"
                     .to_owned(),
             }
