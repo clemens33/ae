@@ -297,7 +297,7 @@ impl Rig {
                 .next()
                 .is_some_and(|row| row.contains("Settings"))
         };
-        self.send(pane, "s");
+        self.send(pane, ",");
         self.wait(pane, MOVE, why, overlay);
         self.send(pane, "\x1b");
         self.wait(pane, MOVE, why, |screen| !overlay(screen))
@@ -667,7 +667,7 @@ fn live_drag_while_composing_keeps_draft_and_wrap_tracks_width() {
     let before = rig.wait(&pane, MOVE, "long draft drawn", |screen| {
         screen.contains("wrap-end")
     });
-    let address = format!("to {} › lead", rig.name);
+    let address = format!("to {}", rig.name);
     let composer = |screen: &str| {
         let (top, column) = screen
             .lines()

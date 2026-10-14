@@ -31,7 +31,7 @@ mod peek_spec;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
-pub(super) const KEEP: usize = 16;
+pub(super) const KEEP: usize = 64;
 
 /// What the UI asks of the reader.
 pub(super) enum Request {
@@ -962,7 +962,9 @@ impl Reader {
                 .home
                 .as_deref()
                 .and_then(|home| crate::console::locate(&self.root, home));
-            let config = super::settings::resolve_config(home_dir.as_deref(), &paths.global);
+            let selected_dir = (self.settings_session.as_deref())
+                .and_then(|name| crate::console::locate(&self.root, name));
+            let config = super::settings::resolve_config(selected_dir.as_deref(), &paths.global);
             let about_dir = home_dir.unwrap_or_else(|| self.root.join("sessions"));
             let about = self.about(&about_dir, &paths.global);
             (Some(config), Some(about), Some(self.instructions()))
@@ -1118,17 +1120,13 @@ mod tests {
     /// away, then the rest in sidebar order, at most KEEP, each once.
     #[test]
     fn the_order_is_selection_home_neighbours_then_the_rest() {
-        let fleet: Vec<String> = (0..20).map(|at| format!("s{at}")).collect();
+        let fleet: Vec<String> = (0..KEEP + 4).map(|at| format!("s{at}")).collect();
         let kept = order(&fleet, Some("s5"), Some("s0"));
         let names: Vec<&str> = kept.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names.len(), KEEP);
-        assert_eq!(
-            names,
-            [
-                "s5", "s0", "s6", "s4", "s7", "s3", "s1", "s2", "s8", "s9", "s10", "s11", "s12",
-                "s13", "s14", "s15"
-            ]
-        );
+        assert_eq!(names[..8], ["s5", "s0", "s6", "s4", "s7", "s3", "s1", "s2"]);
+        let rest: Vec<String> = (8..KEEP).map(|at| format!("s{at}")).collect();
+        assert_eq!(names[8..], rest);
         let tiers: Vec<Tier> = kept.iter().map(|(_, tier)| *tier).collect();
         assert_eq!(tiers[..2], [Tier::Hot, Tier::Hot]);
         assert!(tiers[2..6].iter().all(|tier| *tier == Tier::Warm));

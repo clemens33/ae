@@ -1,5 +1,5 @@
 //! Independent live menu acceptance, child of `app_open_live_spec.rs`.
-//! Existing private Rig only; real modal, Open, detached Stop and clients.
+//! Existing private Rig only; real modal, detached Stop and clients.
 
 use super::*;
 
@@ -12,7 +12,7 @@ fn owned(tag: &str) -> Rig {
 fn menu(rig: &Rig, app: &str, name: &str) {
     rig.raw(app, "m");
     rig.wait_screen(app, "painted menu", |s| {
-        s.contains(name) && s.contains("Open") && s.contains("Stop")
+        s.contains(name) && s.contains("Stop")
     });
 }
 
@@ -123,45 +123,8 @@ fn right_card(rig: &Rig, app: &str, name: &str) {
         .expect("painted card");
     rig.raw(app, &format!("\x1b[<2;9;{}M", row + 1));
     rig.wait_screen(app, "right menu for painted card", |s| {
-        s.contains(name) && s.contains("Open") && s.contains("Stop")
+        s.contains(name) && s.contains("Stop")
     });
-}
-
-#[test]
-fn right_menu_open_uses_frozen_main_and_existing_one_viewer_owner() {
-    let rig = owned("menu-open-main");
-    rig.foreign();
-    rig.tmux(&["set-environment", "-t", FOREIGN, "AE_SESSION", "1"]);
-    let app = rig.app(&rig.socket);
-    let viewer = rig.attach(HOME);
-    let bystander = rig.attach(FOREIGN);
-    let other_before = rig.viewed(&bystander);
-    let before = events(&rig, FOREIGN);
-    let main = rig
-        .tmux(&[
-            "list-panes",
-            "-s",
-            "-t",
-            FOREIGN,
-            "-F",
-            "#{pane_id}|#{@ae_slot}",
-        ])
-        .lines()
-        .find_map(|row| row.strip_suffix("|main"))
-        .expect("foreign main")
-        .to_owned();
-    right_card(&rig, &app, FOREIGN);
-    rig.raw(&app, "o");
-    Rig::wait(
-        "menu Open chooses main rather than selected/highlighted seat",
-        || rig.viewed(&viewer) == (FOREIGN.to_owned(), main.clone()),
-    );
-    assert_eq!(rig.viewed(&bystander), other_before);
-    assert_eq!(
-        events(&rig, FOREIGN),
-        before,
-        "Open cannot write an ask/stop"
-    );
 }
 
 #[test]
@@ -174,7 +137,7 @@ fn buffered_stop_yes_cannot_affirm_unseen_question() {
     rig.wait_screen(
         &app,
         "opening batch cannot act on either unseen modal",
-        |s| s.contains("Open") && s.contains("Stop") && !s.contains("Cancel"),
+        |s| s.contains("Stop") && !s.contains("Cancel"),
     );
     assert!(live(&rig, HOME));
     assert_eq!(events(&rig, HOME), before);

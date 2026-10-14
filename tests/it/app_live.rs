@@ -349,7 +349,7 @@ fn close_in_the_app_honours_a_retire_of_the_asked_seat() {
     )
     .expect("journal");
     let pane = rig.open_app();
-    let composer = format!("to {name} › lead");
+    let composer = format!("to {name}");
     rig.wait(&pane, WAIT, "the owner composer", |screen| {
         screen.contains(&composer)
     });

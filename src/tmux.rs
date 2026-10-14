@@ -2072,6 +2072,21 @@ pub fn switch_client_args(server: &ServerId, client: &str, session: &str) -> Vec
     args
 }
 
+/// The arguments that run `words` as one background shell job on `server`: the
+/// words are shell-quoted into the job's single command string.
+#[must_use]
+pub fn run_shell_background_args(server: &ServerId, words: &[String]) -> Vec<String> {
+    let mut line = server_args(server);
+    line.extend(["run-shell", "-b"].map(ToOwned::to_owned));
+    line.push(
+        (words.iter())
+            .map(|word| crate::launch::shell_quote(word))
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    line
+}
+
 /// The command that hands the calling client to `pane` of `session`.
 ///
 /// The WINDOW before the pane: a worker lives in its own, and `select-pane`

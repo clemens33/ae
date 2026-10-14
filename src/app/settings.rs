@@ -127,7 +127,7 @@ pub(crate) struct SettingsBodies {
     /// The quota facts, laid out at draw time against the panel's own width.
     pub(crate) quota: Option<Vec<crate::quota::view::Scope>>,
     /// Set while `quota` is an earlier open's body, until this open's own answer: the line
-    /// drawn above it saying how old that drawing is.
+    /// drawn above it saying how old that drawing is, or that its refresh failed.
     pub(crate) quota_kept: Option<String>,
     pub(crate) config: ConfigView,
     pub(crate) about: Option<AboutFacts>,
@@ -184,22 +184,20 @@ const KEYS: [(&str, &str, Scope); 21] = [
     ("purge_agent_history", "off", Scope::Layered),
 ];
 
-/// Resolve the config tab for the home session at `meta_dir`, whose current
+/// Resolve the config tab for the session at `meta_dir`, whose current
 /// global is `current_global`. `launch > session > global > default`; a
 /// missing file contributes nothing, an unreadable or unparsable one turns
-/// the whole tab into its one honest row. Without a home session, or with a
-/// meta that cannot be read, the sources are unknown — also one honest row,
-/// never guessed defaults.
+/// the whole tab into its one honest row. With no session the tab is the
+/// current global alone; a meta that cannot be read leaves its sources
+/// unknown — one honest row, never guessed defaults.
 pub(crate) fn resolve_config(meta_dir: Option<&Path>, current_global: &Path) -> ConfigView {
-    let Some(meta_dir) = meta_dir else {
-        return ConfigView::Unreadable("no home session".to_owned());
-    };
-    let bytes = match crate::meta::read_bytes(meta_dir) {
-        Ok(bytes) => bytes,
-        Err(why) => {
+    let bytes = match meta_dir.map(|dir| (dir, crate::meta::read_bytes(dir))) {
+        None => Vec::new(),
+        Some((_, Ok(bytes))) => bytes,
+        Some((dir, Err(why))) => {
             return ConfigView::Unreadable(format!(
                 "{}: {}",
-                crate::store::open(meta_dir).meta_path().display(),
+                crate::store::open(dir).meta_path().display(),
                 why.to_string().escape_debug()
             ));
         }
@@ -217,11 +215,9 @@ pub(crate) fn resolve_config(meta_dir: Option<&Path>, current_global: &Path) -> 
     .filter(|(_, pin)| !pin.is_empty())
     .collect();
     let origin = value("origin");
-    let overlay = if origin.is_empty() && value(crate::config::LOCAL_CONFIG_KEY).is_empty() {
-        None
-    } else {
-        crate::config::local_overlay(meta_dir, &origin)
-    };
+    let overlay = meta_dir
+        .filter(|_| !origin.is_empty() || !value(crate::config::LOCAL_CONFIG_KEY).is_empty())
+        .and_then(|dir| crate::config::local_overlay(dir, &origin));
     let recorded = value("config");
     let global = if recorded.is_empty() {
         current_global.to_path_buf()

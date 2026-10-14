@@ -482,7 +482,7 @@ fn turn_navigation_bounds_and_settings_retention() {
         rig.buffer().as_deref() == Some("turn one")
     });
 
-    rig.raw(&app, "s");
+    rig.raw(&app, ",");
     rig.wait_screen(&app, "Settings overlay opened", |s| s.contains("Esc close"));
     rig.key(&app, "Escape");
     rig.wait_screen(&app, "Settings overlay closed", |s| {

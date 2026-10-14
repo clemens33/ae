@@ -73,7 +73,6 @@ fn closed_frame(width: u16, height: u16, look: &Look, home: bool) -> Buffer {
     let composer = if home {
         Composer::Home {
             home: "fixture",
-            speaker: "lead",
             view: None,
             draft: "",
         }
@@ -380,8 +379,8 @@ impl Rig {
     }
 
     fn settings(&self, pane: &str) -> String {
-        self.keys(pane, "s");
-        self.wait(pane, FRAME, "s opens the settings frame", is_settings)
+        self.keys(pane, ",");
+        self.wait(pane, FRAME, ", opens the settings frame", is_settings)
     }
 
     fn keys(&self, pane: &str, key: &str) {
@@ -575,7 +574,7 @@ fn settings_keys_tabs_and_all_three_close_keys_act_on_the_drawn_screen() {
     let rig = Rig::new("settingskeys");
     let (pane, _) = rig.direct(220, 60, &rig.root.join("config"));
     rig.ready(&pane);
-    for close in ["Escape", "q", "s"] {
+    for close in ["Escape", "q", ","] {
         let opened = rig.settings(&pane);
         let hints = opened.lines().last().expect("settings keys row");
         assert!(

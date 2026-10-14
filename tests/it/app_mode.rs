@@ -14,7 +14,7 @@ pub fn writing(screen: &str) -> bool {
 
 /// A frame whose final row is `keys`.
 fn frame(keys: &str) -> String {
-    format!("────\nto api › lead\n\n{keys}")
+    format!("────\nto api\n\n{keys}")
 }
 
 #[test]
@@ -24,10 +24,9 @@ fn the_hint_footer_is_writing_with_or_without_a_note() {
         "   Enter sends · Alt+Enter ^J newline · Esc browses      ae 2026.10.45 *",
     ] {
         assert!(writing(&frame(keys)), "{keys}");
-        let noted =
-            format!("not writing: chat text\n────\nto api › lead\nx\nq again to quit · {keys}");
+        let noted = format!("not writing: chat text\n────\nto api\nx\nq again to quit · {keys}");
         assert!(writing(&noted), "a note on the note row: {keys}");
-        let draft = format!("────\nto api › lead\nnot writing: draft text\nlast draft row\n{keys}");
+        let draft = format!("────\nto api\nnot writing: draft text\nlast draft row\n{keys}");
         assert!(writing(&draft), "draft prose is not the held address");
     }
 }

@@ -1,5 +1,6 @@
 //! The session menu `ae app` opens on a card — `m` on the selection, a right
-//! press on any card — and the Stop question its `Stop…` asks. Pure: what a
+//! press on any card — offering Start on a stopped session and Stop on a
+//! running one, and the Stop question its `Stop…` asks. Pure: what a
 //! card offers, what a key or press does, and how both are drawn. The app
 //! proves and acts.
 
@@ -34,12 +35,12 @@ pub(super) struct Card {
     pub(super) id: Option<String>,
     /// Why nothing on the card may act: the first drawn state that refuses.
     pub(super) refused: Option<String>,
-    /// Its main seat's name, or why there is none.
-    pub(super) main: Result<String, String>,
+    /// The session is stopped: the card offers Start, not Stop.
+    pub(super) stopped: bool,
     /// This app's own pane is in it: known once the Stop question read the
     /// clients.
     pub(super) home: bool,
-    /// The orchestrator: Open only.
+    /// The orchestrator: its menu offers nothing.
     pub(super) orchestrator: bool,
 }
 
@@ -53,13 +54,11 @@ impl Card {
         sole: Option<&str>,
         status: Option<Status>,
         facts: Option<&Facts>,
-        main: Result<String, String>,
     ) -> Self {
         let refused = if uuid.is_empty() || sole != Some(uuid) {
             Some(format!("{name}'s record names no single session_id"))
         } else {
             match (status, facts) {
-                (Some(Status::Stopped), _) => Some(format!("{name} is stopped")),
                 (Some(Status::Unknown) | None, _) => Some(format!("{name}'s state is unknown")),
                 (_, Some(Facts::OtherServer)) => Some(format!("{name} is on another tmux server")),
                 _ => None,
@@ -73,7 +72,7 @@ impl Card {
                 _ => None,
             },
             refused,
-            main,
+            stopped: status == Some(Status::Stopped),
             home: false,
             orchestrator: name == crate::orchestrator::ORCHESTRATOR_SESSION,
         }
@@ -81,27 +80,24 @@ impl Card {
 
     /// What the menu offers, in its drawn order.
     pub(super) fn items(&self) -> &'static [Item] {
-        if self.orchestrator {
-            &[Item::Open]
-        } else {
-            &[Item::Open, Item::Stop]
+        match (self.orchestrator, self.stopped) {
+            (true, _) => &[],
+            (false, true) => &[Item::Start],
+            (false, false) => &[Item::Stop],
         }
     }
 
-    /// Why `item` may not act on this card; `None` when it may.
-    pub(super) fn refusal(&self, item: Item) -> Option<&str> {
-        self.refused.as_deref().or(match item {
-            Item::Open => self.main.as_ref().err().map(String::as_str),
-            Item::Stop => None,
-        })
+    /// Why nothing on this card may act; `None` when it may.
+    pub(super) fn refusal(&self) -> Option<&str> {
+        self.refused.as_deref()
     }
 }
 
 /// One menu item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Item {
-    /// The card's main seat, through `/open`'s proof.
-    Open,
+    /// Resume the stopped session through the picker's own launch path.
+    Start,
     /// The Stop question.
     Stop,
 }
@@ -110,14 +106,14 @@ impl Item {
     /// The verb a refusal line names.
     pub(super) fn word(self) -> &'static str {
         match self {
-            Self::Open => "Open",
+            Self::Start => "Start",
             Self::Stop => "Stop",
         }
     }
 
     fn label(self, icons: bool) -> &'static str {
         match (self, icons) {
-            (Self::Open, _) => "o  Open",
+            (Self::Start, _) => "s  Start",
             (Self::Stop, true) => "s  Stop…",
             (Self::Stop, false) => "s  Stop...",
         }
@@ -154,17 +150,18 @@ impl Menu {
     fn input(&mut self, key: &Key, byte: u8) -> Step {
         let items = self.card.items();
         let by = match (key, byte) {
-            (Key::Text(_), b'o') => return Step::Act(Item::Open),
-            (Key::Text(_), b's') if items.len() > 1 => return Step::Act(Item::Stop),
+            (Key::Text(_), b's') => {
+                return items.first().map_or(Step::Kept, |&item| Step::Act(item));
+            }
             (Key::Text(_), b'm' | b'q') => return Step::Close,
             (Key::Text(_), b'j') | (Key::Down | Key::Tab, _) => 1,
-            (Key::Text(_), b'k') | (Key::Up, _) => items.len() - 1,
+            (Key::Text(_), b'k') | (Key::Up, _) => items.len().saturating_sub(1),
             (Key::Enter, _) => {
                 return (items.get(self.focus)).map_or(Step::Kept, |&item| Step::Act(item));
             }
             _ => return Step::Kept,
         };
-        let to = (self.focus + by) % items.len();
+        let to = (self.focus + by) % items.len().max(1);
         refocus(&mut self.focus, to)
     }
 }
@@ -350,8 +347,8 @@ fn paint_menu(
         ));
     };
     let items = card.items();
-    // Open's refusal is every one the card has: one dim line says it.
-    let why = card.refusal(Item::Open).map(terminal_text);
+    // A refusal is every one the card has: one dim line says it.
+    let why = card.refusal().map(terminal_text);
     let labels = items.iter().map(|item| item.label(icons));
     let want = (labels.clone().chain(why.as_deref()))
         .map(width)
@@ -379,11 +376,11 @@ fn paint_menu(
         paint,
     );
     layout.overlay(buf, rect, Hit::Modal);
-    for (place, (item, label)) in items.iter().zip(labels).enumerate() {
+    for (place, label) in labels.enumerate() {
         let row = y + 1 + cells(place);
         let style = if place == menu.focus {
             paint.selected()
-        } else if card.refusal(*item).is_some() {
+        } else if card.refusal().is_some() {
             paint.fg(|p| p.dim)
         } else {
             paint.fg(|p| p.text)

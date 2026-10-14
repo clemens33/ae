@@ -848,12 +848,12 @@ fn guard_header_heading_rule_keys_and_settings_never_scroll_underlying_sidebar()
     assert_eq!(rig.cards(&same), cards);
     assert_eq!(body(&same), rows);
     rig.home_holds(&same, false);
-    rig.literal(&pane, "s");
+    rig.literal(&pane, ",");
     rig.wait(&pane, FRAME, "GUARD Settings owns screen", |s| {
         s.contains("Settings") && s.contains("Quota") && s.contains("About")
     });
     rig.report(&pane, 65, (2, 6), 20);
-    rig.literal(&pane, "s");
+    rig.literal(&pane, ",");
     let closed = rig.wait(&pane, FRAME, "GUARD closed Settings", |s| {
         s.contains("▣ 13 ") && s.contains("Enter writes")
     });

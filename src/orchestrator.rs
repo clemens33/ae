@@ -1453,11 +1453,17 @@ fn stopped_item(
 /// ordinary launch owner runs, so this command carries identity, never
 /// authority: nothing here decides anything on its own.
 fn resume_command(row: &PickerStopped, resume: &PickerResume<'_>) -> String {
+    crate::tmux::menu_run_shell_command(&resume_argv(&row.name, resume))
+}
+
+/// The re-exec argv that resumes `name` for the captured clicker: the picker's
+/// row and `ae app`'s Start run this same line.
+pub(crate) fn resume_argv(name: &str, resume: &PickerResume<'_>) -> Vec<String> {
     let mut argv: Vec<String> = resume.launcher.to_vec();
     argv.extend([
         "orchestrator".to_owned(),
         PICKER_RESUME_FLAG.to_owned(),
-        row.name.clone(),
+        name.to_owned(),
         "--client".to_owned(),
         resume.client.to_owned(),
         "--client-pid".to_owned(),
@@ -1469,7 +1475,7 @@ fn resume_command(row: &PickerStopped, resume: &PickerResume<'_>) -> String {
         "--deadline".to_owned(),
         resume.deadline.to_string(),
     ]);
-    crate::tmux::menu_run_shell_command(&argv)
+    argv
 }
 
 /// One agent row, sharing the session row's two-phase pane-membership guard.

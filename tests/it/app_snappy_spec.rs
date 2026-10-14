@@ -398,7 +398,7 @@ fn settings_repaints_during_a_held_refresh() {
     rig.ready(&pane, 1);
     let hold = rig.hold("@world");
     rig.held(&hold, "@world", "periodic world refresh");
-    rig.keys(&pane, "s");
+    rig.keys(&pane, ",");
     rig.wait(
         &pane,
         FRAME,
@@ -604,7 +604,7 @@ fn a_close_outcome_paints_without_waiting_for_a_held_journal_read() {
     let pane = rig.open_owner();
     rig.ready(&pane, 1);
     rig.wait(&pane, WAIT, "the fixture app owns its composer", |screen| {
-        screen.contains(&format!("to {} › lead", rig.home))
+        screen.contains(&format!("to {}", rig.home))
     });
     rig.keys(&pane, "i");
     rig.wait(&pane, WAIT, "writing starts", writing);
@@ -616,7 +616,7 @@ fn a_close_outcome_paints_without_waiting_for_a_held_journal_read() {
         |screen| {
             let rows: Vec<&str> = screen.lines().collect();
             rows.iter()
-                .rposition(|row| row.contains(&format!("to {} › lead", rig.home)))
+                .rposition(|row| row.contains(&format!("to {}", rig.home)))
                 .and_then(|address| rows.get(address + 1))
                 .is_some_and(|row| row.contains("/close"))
         },

@@ -260,7 +260,7 @@ impl Rig {
     }
 
     fn settings(&self, pane: &str) -> String {
-        self.keys(pane, "s");
+        self.keys(pane, ",");
         self.wait(pane, WAIT, "settings opened", is_settings)
     }
 

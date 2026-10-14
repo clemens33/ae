@@ -1500,6 +1500,13 @@ pub fn switch_client(server: &ServerId, client: &str, session: &str) -> bool {
     addressable(server) && run(PROGRAM, &tmux::switch_client_args(server, client, session)).0
 }
 
+/// Run `argv` as one background tmux `run-shell` job on `server`, as a picker
+/// row does; whether tmux took it, not whether the job later succeeds.
+#[must_use]
+pub fn run_shell_background(server: &ServerId, argv: &[String]) -> bool {
+    addressable(server) && run(PROGRAM, &tmux::run_shell_background_args(server, argv)).0
+}
+
 /// What a focus that never ran reports — `127`, the shell's command-not-found.
 pub const FOCUS_FAILED: u8 = 127;
 

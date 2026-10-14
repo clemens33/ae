@@ -57,7 +57,6 @@ pub enum Composer<'a> {
     /// The selected session, writable: typing reaches its lead pair.
     Home {
         home: &'a str,
-        speaker: &'a str,
         /// `Some` while composing.
         view: Option<&'a View>,
         draft: &'a str,
@@ -562,8 +561,8 @@ pub(crate) fn composer_pane(area: Rect) -> usize {
 }
 
 /// The address a draft to `target` is drawn under.
-pub(crate) fn address(target: &str, speaker: &str) -> String {
-    format!("to {target} › {speaker}")
+pub(crate) fn address(target: &str) -> String {
+    format!("to {target}")
 }
 
 // ---------------------------------------------------------------------------
@@ -907,17 +906,11 @@ fn summary_line(ctx: &Ctx<'_, '_>, fleet: &Fleet, room: u16, tone: Style) -> Lin
         Span::styled(format!("{work} {}{more}", sum.working), busy),
         Span::styled(format!("{need} {}", sum.needy), tone),
     ];
-    let ladder: [(&[usize], &str); 5] = [
-        (&[0, 1, 2, 3], "  "),
-        (&[0, 1, 2, 3], " "),
-        (&[0, 2, 3], " "),
-        (&[0, 3], " "),
-        (&[3], " "),
-    ];
-    for (keep, gap) in ladder {
+    let ladder: [&[usize]; 4] = [&[0, 1, 2, 3], &[0, 2, 3], &[0, 3], &[3]];
+    for keep in ladder {
         let mut spans = Vec::new();
         for &at in keep {
-            spans.extend((!spans.is_empty()).then(|| Span::raw(gap)));
+            spans.extend((!spans.is_empty()).then(|| Span::raw(" ")));
             spans.push(tokens[at].clone());
         }
         let line = Line::from(spans);
@@ -1482,13 +1475,8 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
     let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
     let quiet = |words: String| Line::from(Span::styled(words, dim));
     match ctx.screen.composer {
-        Composer::Home {
-            home,
-            speaker,
-            view,
-            draft,
-        } => {
-            let address = address(home, speaker);
+        Composer::Home { home, view, draft } => {
+            let address = address(home);
             let address = Line::from(Span::styled(address, paint.fg(|p| p.title)));
             if view.is_some() {
                 return (address, Line::default(), String::new());
@@ -1529,12 +1517,13 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 15] = [
+const BROWSE_KEYS: [(&str, &str); 16] = [
     ("1-9", "select that session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
     ("oo", "open seat; twice in 2 s"),
     ("m", "session menu; right-click a card too"),
+    ("s", "start / stop the selected session"),
     ("v", "peek at the seat's screen"),
     ("n/p", "next / previous seat"),
     ("PgUp/PgDn", "scroll the chat"),
@@ -1542,7 +1531,7 @@ const BROWSE_KEYS: [(&str, &str); 15] = [
     ("y", "copy the marked turn"),
     ("Enter i", "write; a paste writes too"),
     ("Esc", "select the home session"),
-    ("s", "settings"),
+    (",", "settings"),
     ("?", "this help"),
     ("qq", "quit: twice within 2 s"),
 ];
@@ -2061,7 +2050,7 @@ const SETTINGS_KEYS: [(&str, &str); 10] = [
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
     ("?", "show these keys"),
-    ("Esc q s", "close"),
+    ("Esc q ,", "close"),
     ("^C", "quit"),
     ("click tab", "show that tab"),
     ("click gear", "or Esc close label: closes it"),
@@ -2085,7 +2074,7 @@ fn keys_body(paint: Paint) -> Vec<(String, Style)> {
         ("Write (Enter or a paste starts it)", &WRITE_KEYS[..]),
         ("Held (writing was refused)", &HELD_KEYS[..]),
         ("Peek (v on a highlighted seat)", &PEEK_KEYS[..]),
-        ("Settings (the gear, or s)", &SETTINGS_KEYS[..]),
+        ("Settings (the gear, or ,)", &SETTINGS_KEYS[..]),
         ("Mouse (outside Settings)", &MOUSE_KEYS[..]),
     ];
     for (title, keys) in sections {
@@ -2431,7 +2420,6 @@ mod tests {
         };
         let compose = Composer::Home {
             home: "s1",
-            speaker: "lead",
             view: Some(&draft),
             draft: "",
         };
@@ -3100,7 +3088,6 @@ mod tests {
         };
         let composing = Composer::Home {
             home: "api",
-            speaker: "lead",
             view: Some(&draft),
             draft: "a short draft",
         };
@@ -3220,7 +3207,6 @@ mod tests {
     fn writing<'a>(view: &'a View, draft: &'a str) -> Composer<'a> {
         Composer::Home {
             home: "api",
-            speaker: "lead",
             view: Some(view),
             draft,
         }
@@ -3230,7 +3216,6 @@ mod tests {
     fn browsing(draft: &str) -> Composer<'_> {
         Composer::Home {
             home: "api",
-            speaker: "lead",
             view: None,
             draft,
         }
@@ -3255,13 +3240,9 @@ mod tests {
         for (width, height) in [(100, 30), (60, 20)] {
             let size = format!("{width}x{height}");
             let (buf, layout) = shot.laid(width, height, writing(&draft, "first words second"));
-            let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+            let (ay, ax) = spot(&buf, "to api").expect("the address");
             assert_eq!(ay, height - 4, "{size}: over two draft rows and the hint");
-            assert_eq!(
-                row_from(&buf, ay, ax),
-                "to api › lead",
-                "{size}: alone on its row"
-            );
+            assert_eq!(row_from(&buf, ay, ax), "to api", "{size}: alone on its row");
             assert_eq!(spot(&buf, "first words"), Some((ay + 1, ax)), "{size}");
             assert_eq!(spot(&buf, "second"), Some((ay + 2, ax)), "{size}");
             assert_eq!(
@@ -3285,9 +3266,9 @@ mod tests {
             ("", "Enter writes"),
         ] {
             let (buf, layout) = shot.laid(100, 30, browsing(draft));
-            let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+            let (ay, ax) = spot(&buf, "to api").expect("the address");
             assert_eq!(ay, 27, "{draft:?}");
-            assert_eq!(row_from(&buf, ay, ax), "to api › lead", "{draft:?}");
+            assert_eq!(row_from(&buf, ay, ax), "to api", "{draft:?}");
             assert_eq!(
                 row_from(&buf, ay + 1, ax),
                 draft,
@@ -3349,7 +3330,7 @@ mod tests {
         let mut shot = Shot::new();
         let draft = drafted(&["hello"]);
         let (buf, _) = shot.laid(100, 30, writing(&draft, "hello"));
-        let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+        let (ay, ax) = spot(&buf, "to api").expect("the address");
         assert_eq!(ay, 27);
         assert!(
             row_from(&buf, 29, ax).starts_with("Enter sends"),
@@ -3398,7 +3379,7 @@ mod tests {
         let shot = Shot::new();
         let draft = drafted(&["one", "two"]);
         let (buf, layout) = shot.laid(100, 30, writing(&draft, "one two"));
-        let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+        let (ay, ax) = spot(&buf, "to api").expect("the address");
         let compose = |row| {
             let click = Mouse {
                 kind: MouseKind::Click,
@@ -3423,7 +3404,7 @@ mod tests {
         shot.lane = turns(150);
         shot.model.wheel(true, 10, 100);
         let (buf, _) = shot.laid(40, 8, browsing(""));
-        assert_eq!(spot(&buf, "to api › lead"), Some((5, 2)));
+        assert_eq!(spot(&buf, "to api"), Some((5, 2)));
         assert_eq!(spot(&buf, "Enter writes"), Some((7, 2)));
         // The sidebar warning rides the header rule's left; the rule stands
         // past it, and the composer's own rule stands over the address.
@@ -3458,7 +3439,7 @@ mod tests {
         );
         let draft = drafted(&["row"; 8]);
         let (buf, layout) = shot.laid(60, 20, writing(&draft, "row"));
-        let (ay, ax) = spot(&buf, "to api › lead").expect("the address");
+        let (ay, ax) = spot(&buf, "to api").expect("the address");
         assert_eq!(ay, 10);
         assert_eq!(buf[(column(ax), 9)].symbol(), "─", "the rule");
         assert_eq!(layout.page_rows, 6);
@@ -3493,7 +3474,6 @@ mod tests {
         for home in ["api", long.as_str()] {
             let composer = Composer::Home {
                 home,
-                speaker: "lead",
                 view: Some(&draft),
                 draft: &full,
             };
@@ -4384,8 +4364,8 @@ mod tests {
             stopped_secs: None,
         };
         for (icons, expected) in [
-            (true, "▣ 9  ◈ 22+?  ● 12+?  ⚠ 3"),
-            (false, "# 9  @ 22+?  * 12+?  ! 3"),
+            (true, "▣ 9 ◈ 22+? ● 12+? ⚠ 3"),
+            (false, "# 9 @ 22+? * 12+? ! 3"),
         ] {
             let (buf, layout) = declutter_frame(&shot, 100, icons);
             assert_eq!(declutter_line(&buf, &layout, 0).trim(), expected);
@@ -4402,8 +4382,8 @@ mod tests {
         shot.fleet.rows.truncate(1);
         shot.model = Model::new(&shot.fleet);
         for (counts, expected) in [
-            (Counts::Marks(Vec::new()), "# 1  @ 0  * 0  ! 0"),
-            (Counts::Unknown, "# 1  @ 0+?  * 0+?  ! 0"),
+            (Counts::Marks(Vec::new()), "# 1 @ 0 * 0 ! 0"),
+            (Counts::Unknown, "# 1 @ 0+? * 0+? ! 0"),
         ] {
             shot.fleet.rows[0].counts = counts;
             let (buf, layout) = declutter_frame(&shot, 100, false);

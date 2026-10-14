@@ -137,7 +137,6 @@ fn drawn_chat_equals_the_full_reference_at_bottom_middle_and_top() {
                 lane: &lane,
                 composer: Composer::Home {
                     home: "api",
-                    speaker: "lead",
                     view: None,
                     draft: "",
                 },

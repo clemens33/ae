@@ -319,12 +319,12 @@ impl Rig {
         self.tmux(host, &["send-keys", "-t", pane, "-l", "--", text]);
     }
 
-    fn address(&self, target: &Target, home: bool, speaker: &str) -> String {
+    fn address(&self, target: &Target, home: bool) -> String {
         assert!(
             !home || target.name == self.s.name,
             "only S is this app's home"
         );
-        format!("to {} › {speaker}", target.name)
+        format!("to {}", target.name)
     }
 
     fn select(&self, pane: &str, target: &Target) -> String {
@@ -342,7 +342,7 @@ impl Rig {
     }
 
     fn enter(&self, pane: &str, target: &Target, home: bool) -> String {
-        let address = self.address(target, home, "lead");
+        let address = self.address(target, home);
         let screen = self.wait(&self.s, pane, "B2 selected target is eligible", |s| {
             s.contains(&address) && s.contains("Enter writes")
         });
@@ -647,7 +647,7 @@ fn home_control_preserves_the_original_address_journal_and_terminal_cursor() {
     let rig = Rig::new("bscontrol", false);
     let (pane, _) = rig.app("home-control", true);
     let frame = rig.wait(&rig.s, &pane, "home control address", |s| {
-        s.contains(&rig.address(&rig.s, true, "lead")) && s.contains("Enter writes")
+        s.contains(&rig.address(&rig.s, true)) && s.contains("Enter writes")
     });
     assert!(!frame.contains("(not home)"));
     rig.raw(&rig.s, &pane, "i");
@@ -672,7 +672,7 @@ fn non_home_same_server_writes_only_selected_journal_and_real_target() {
     rig.select(&pane, &rig.s);
     let frame = rig.frame(&rig.s, &pane);
     assert!(
-        frame.contains(&rig.address(&rig.s, true, "lead")),
+        frame.contains(&rig.address(&rig.s, true)),
         "home address unchanged"
     );
     assert!(
@@ -700,7 +700,7 @@ fn outside_tmux_without_home_writes_the_selected_running_session() {
     let rig = Rig::new("bsoutside", false);
     let (pane, _) = rig.app("no-home", false);
     let frame = rig.wait(&rig.s, &pane, "B2 no-home first selected address", |s| {
-        s.contains(&rig.address(&rig.s, false, "lead")) && s.contains("Enter writes")
+        s.contains(&rig.address(&rig.s, false)) && s.contains("Enter writes")
     });
     assert!(
         frame
@@ -714,7 +714,7 @@ fn outside_tmux_without_home_writes_the_selected_running_session() {
 }
 
 #[test]
-fn card_switch_releases_old_target_before_new_entry_and_keeps_both_drafts_and_speakers() {
+fn card_switch_releases_old_target_before_new_entry_and_keeps_both_drafts() {
     let rig = Rig::new("bspark", false);
     let peer_command = format!(
         "exec perl {} {} {} 400 codex 0 '' {}",
@@ -750,8 +750,8 @@ fn card_switch_releases_old_target_before_new_entry_and_keeps_both_drafts_and_sp
     rig.wait(
         &rig.s,
         &pane,
-        "GUARD S addressed ask selects its speaker",
-        |s| s.contains("› colead") && s.contains("sent") && Rig::event_count(&rig.s, "ask") == 1,
+        "GUARD S addressed ask reaches its seat",
+        |s| s.contains("sent") && Rig::event_count(&rig.s, "ask") == 1,
     );
     assert_eq!(rig.asks(&rig.s)[0].target.as_deref(), Some("colead"));
     assert_eq!(
@@ -776,19 +776,19 @@ fn card_switch_releases_old_target_before_new_entry_and_keeps_both_drafts_and_sp
     let s = rig.select(&pane, &rig.s);
     free(&rig.t.dir);
     assert!(
-        s.contains(&rig.address(&rig.s, true, "colead")) && s.contains("s-private-prose"),
-        "S parked speaker and draft restored"
+        s.contains(&rig.address(&rig.s, true)) && s.contains("s-private-prose"),
+        "S parked draft restored"
     );
     assert!(!s.contains("t-private-prose"));
     drop(s_witness);
     rig.raw(&rig.s, &pane, "i");
     rig.wait(&rig.s, &pane, "B2 parked S re-entry", |s| {
-        writing(s) && s.contains("› colead") && s.contains("s-private-prose")
+        writing(s) && s.contains(&rig.address(&rig.s, true)) && s.contains("s-private-prose")
     });
     held(&rig.s.dir);
     let t = rig.select(&pane, &rig.t);
     free(&rig.s.dir);
-    assert!(t.contains(&rig.address(&rig.t, false, "lead")) && t.contains("t-private-prose"));
+    assert!(t.contains(&rig.address(&rig.t, false)) && t.contains("t-private-prose"));
     assert_eq!(
         rig.asks(&rig.s).len(),
         1,
@@ -1040,7 +1040,7 @@ fn changed_pair_refuses_retry_and_reentry_and_original_pair_recovers_its_kept_pr
     let restored = rig.wait(&rig.s, &pane, "P1 original pair remains bound", |s| {
         writing(s) && s.contains("parked-original-pair")
     });
-    assert!(restored.contains(&rig.address(&rig.t, false, "lead")));
+    assert!(restored.contains(&rig.address(&rig.t, false)));
     assert!(
         !restored.contains("parked-original-pairq"),
         "held q stayed swallowed"
@@ -1112,7 +1112,7 @@ fn home_and_non_home_uuid_replacement_drop_old_memory_once_after_positive_fleet_
         let other = if home { &rig.t } else { &rig.s };
         rig.select(&pane, other);
         let elsewhere = rig.wait(&rig.s, &pane, "D4 other target lane loaded", |s| {
-            s.contains(&rig.address(other, !home, "lead")) && s.contains("Enter writes")
+            s.contains(&rig.address(other, !home)) && s.contains("Enter writes")
         });
         assert!(
             !elsewhere.contains(&notice),
@@ -1120,7 +1120,7 @@ fn home_and_non_home_uuid_replacement_drop_old_memory_once_after_positive_fleet_
         );
         rig.select(&pane, target);
         let returned = rig.wait(&rig.s, &pane, "D4 target notice returns in its lane", |s| {
-            s.contains(&rig.address(target, home, "lead")) && s.matches(&notice).count() == 1
+            s.contains(&rig.address(target, home)) && s.matches(&notice).count() == 1
         });
         assert_eq!(
             returned.matches(&notice).count(),
@@ -1317,7 +1317,7 @@ fn old_entry_text_and_enter_never_duplicate_a_stream_in_the_selected_target() {
         drop(read);
         drop(keys);
         let acquired = rig.wait(&rig.s, &q, "B2 Q acquires a fresh selected lease", |s| {
-            writing(s) && s.contains(&rig.address(&rig.t, false, "lead"))
+            writing(s) && s.contains(&rig.address(&rig.t, false))
         });
         held(&rig.t.dir);
         assert!(
@@ -1397,7 +1397,7 @@ fn late_proof(another: bool) {
         &rig.s,
         &pane,
         "GUARD switched before fresh entry read",
-        |s| s.contains("Enter writes") && s.contains(&rig.address(target, !another, "lead")),
+        |s| s.contains("Enter writes") && s.contains(&rig.address(target, !another)),
     );
     free(&rig.s.dir);
     // The entry key must be read after the previous lease was released;
@@ -1446,7 +1446,7 @@ fn non_home_address_uses_its_drawn_width_for_whole_draft_and_terminal_cursor() {
     rig.enter(&pane, &rig.t, false);
     // Accepted 160x45 geometry: left=47, room=111. The address has its own
     // row, so the draft keeps every cell of the rows under it.
-    let address = rig.address(&rig.t, false, "lead");
+    let address = rig.address(&rig.t, false);
     let width = 111;
     let raw = format!("{}end", "a".repeat(width * 2));
     rig.raw(&rig.s, &pane, &format!("\x1b[200~{raw}\x1b[201~"));
@@ -1493,7 +1493,7 @@ fn cached_target_outside_this_state_root_refuses_without_recreating_its_director
     let (pane, gates) = rig.app("outside-root", true);
     rig.select(&pane, &rig.t);
     rig.wait(&rig.s, &pane, "GUARD cached T was eligible", |s| {
-        s.contains(&rig.address(&rig.t, false, "lead")) && s.contains("Enter writes")
+        s.contains(&rig.address(&rig.t, false)) && s.contains("Enter writes")
     });
     let world = Hold::new(&gates, "@world");
     world.held();

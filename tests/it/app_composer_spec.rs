@@ -221,7 +221,7 @@ impl Rig {
                     } else {
                         1
                     };
-                    let address = format!("to {} › lead", self.home);
+                    let address = format!("to {}", self.home);
                     f.text.lines().last().is_some_and(|row| {
                         row.chars().count() == width && (writing(&f.text) || row.contains("? keys"))
                     }) && f.text.lines().enumerate().any(|(row, text)| {
@@ -239,7 +239,7 @@ impl Rig {
     }
 
     fn address(&self) -> String {
-        format!("to {} › lead", self.home)
+        format!("to {}", self.home)
     }
 
     fn composer(&self, frame: &Frame) -> (usize, usize, Vec<String>) {
@@ -828,7 +828,7 @@ fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
         "GUARD outside app drew selected session",
         |f| f.text.contains("▣ 1 ") && f.text.contains("Agents"),
     );
-    let address = format!("to {} › lead", rig.home);
+    let address = format!("to {}", rig.home);
     assert!(
         outside.text.contains(&address),
         "B2 selected address outside tmux"

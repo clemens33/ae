@@ -164,7 +164,7 @@ fn until(why: &str, mut met: impl FnMut() -> bool) {
 fn ctrl_v_in_the_app_composer_inserts_the_saved_path_and_refusals_keep_the_draft() {
     let rig = Rig::new("imgapp", true);
     let pane = rig.open();
-    let composer = format!("to {} › lead", rig.name);
+    let composer = format!("to {}", rig.name);
     rig.wait(&pane, WAIT, "the owner composer", |s| s.contains(&composer));
     rig.keys(&pane, &["i"]);
     rig.wait(&pane, WAIT, "writing starts", crate::app_mode::writing);

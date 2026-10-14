@@ -323,7 +323,7 @@ impl Rig {
         let rows: Vec<&str> = screen.lines().collect();
         let address = rows
             .iter()
-            .rposition(|row| row.contains("› lead") && row.contains(&self.home))
+            .rposition(|row| row.contains(&format!("to {}", self.home)))
             .expect("home composer address row");
         rows.get(address + 1).expect("the draft row under it")
     }
@@ -529,7 +529,7 @@ fn old_entry_enter_cannot_submit_a_line_restored_by_that_acquisition() {
 #[test]
 fn old_escape_interrupt_and_browse_tail_are_never_held_by_the_write_gate() {
     for (tag, bytes, quit) in [
-        ("wbstaleesc", "i\x1b\x1bZs", false),
+        ("wbstaleesc", "i\x1b\x1bZ,", false),
         ("wbstalectrlc", "i\x03", true),
         // Two ESCs complete the first as Escape. The unsupported ESC-Z is
         // consumed; the old Tab that follows is now a browse key.

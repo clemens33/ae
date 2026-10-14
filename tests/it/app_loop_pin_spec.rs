@@ -332,7 +332,7 @@ fn an_idle_app_paints_no_frame_until_something_changes() {
             .next()
             .is_some_and(|row| row.contains("Settings"))
     };
-    rig.keys(&pane, "s");
+    rig.keys(&pane, ",");
     rig.wait(&pane, FRAME, "the settings overlay paints", settings);
     // The repaint reached the capture; wait until it has all arrived.
     let until = Instant::now() + FRAME;

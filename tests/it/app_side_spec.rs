@@ -60,7 +60,6 @@ fn frame(width: u16, height: u16, count: usize, entry: &SessionEntry) -> String 
         lane: &lane,
         composer: Composer::Home {
             home: "side01",
-            speaker: "lead",
             view: None,
             draft: "",
         },
@@ -341,7 +340,7 @@ fn keys_repaint_while_the_background_fleet_read_is_held() {
         assert!(Instant::now() < until, "fleet read never attested held");
         std::thread::sleep(Duration::from_millis(25));
     }
-    rig.key(&pane, "s");
+    rig.key(&pane, ",");
     rig.wait(
         &pane,
         WAIT,

@@ -731,17 +731,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // never as whichever attachment tmux last saw. A core or server identity
     // that cannot be captured leaves those rows informational instead of
     // offering an action nothing could prove.
-    let launcher = root.as_ref().and_then(|root| {
-        let core = shape::resolved_exe()?;
-        let config = doors::config_file(shape::current(), root);
-        Some(session_tmux::picker_launcher(
-            shape::current(),
-            &core,
-            root,
-            &config,
-            &server,
-        ))
-    });
+    let launcher = picker_launcher_for(&server);
     let identity = read.identity;
     let resume = match (&launcher, &identity) {
         (Some(launcher), Some(identity)) => Some(orchestrator::PickerResume {
@@ -1481,6 +1471,22 @@ impl inventory::Discovery for PickerStoppedBackend<'_> {
             })
             .collect())
     }
+}
+
+/// The argv prefix that re-executes this core for a picker resume on `server`:
+/// the picker's stopped rows and `ae app`'s Start share it. `None` when this
+/// core or its state root cannot be named.
+pub(crate) fn picker_launcher_for(server: &inventory::ServerId) -> Option<Vec<String>> {
+    let root = doors::state_root(shape::current())?;
+    let core = shape::resolved_exe()?;
+    let config = doors::config_file(shape::current(), &root);
+    Some(session_tmux::picker_launcher(
+        shape::current(),
+        &core,
+        &root,
+        &config,
+        server,
+    ))
 }
 
 /// The stopped sessions the calling server PROVES, as picker rows.

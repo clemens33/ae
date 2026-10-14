@@ -4,8 +4,8 @@
 use super::*;
 use crate::app::menu::{Card, Choice, Item, Menu, Modal, Question, Step};
 
-fn card(name: &str, main: Result<String, String>) -> Card {
-    Card::new(name, ID, Some(ID), Some(Status::Running), None, main)
+fn card(name: &str, status: Status) -> Card {
+    Card::new(name, ID, Some(ID), Some(status), None)
 }
 
 fn expectation(deadline: i64) -> crate::lifecycle::StopExpectation {
@@ -31,48 +31,44 @@ fn every_modal_key_steps_as_the_keys_row_says() {
             assert_eq!(modal.key(&key), want, "{key:?}");
         }
     };
-    let (open, stop) = (Step::Act(Item::Open), Step::Act(Item::Stop));
-    let mut menu = Modal::Menu(Menu::new(card("api", Ok("lead".to_owned()))));
+    let (start, stop) = (Step::Act(Item::Start), Step::Act(Item::Stop));
+    let mut menu = Modal::Menu(Menu::new(card("api", Status::Running)));
     run(
         &mut menu,
         vec![
             (typed(b"x"), Step::Kept),
-            (typed(b"j"), Step::Moved),
+            (typed(b"o"), Step::Kept),
+            (typed(b"j"), Step::Kept),
             (Key::Enter, stop),
-            (typed(b"k"), Step::Moved),
-            (Key::Enter, open),
-            (Key::Down, Step::Moved),
-            (Key::Enter, stop),
-            (Key::Up, Step::Moved),
-            (Key::Enter, open),
-            (Key::Tab, Step::Moved),
-            (Key::Enter, stop),
-            (typed(b"jx"), Step::Moved),
-            (Key::Enter, open),
-            (typed(b"o"), open),
+            (typed(b"k"), Step::Kept),
+            (Key::Down, Step::Kept),
+            (Key::Tab, Step::Kept),
             (typed(b"xs"), stop),
-            (typed(b"os"), open),
+            (typed(b"s"), stop),
             (typed(b"m"), Step::Close),
             (typed(b"q"), Step::Close),
             (Key::Escape, Step::Close),
             (Key::Interrupt, Step::Close),
-            (Key::Pasted(b"o".to_vec()), Step::Kept),
+            (Key::Pasted(b"s".to_vec()), Step::Kept),
         ],
     );
-    let orchestrator = card(
-        crate::orchestrator::ORCHESTRATOR_SESSION,
-        Ok("lead".to_owned()),
+    let mut stopped = Modal::Menu(Menu::new(card("api", Status::Stopped)));
+    run(
+        &mut stopped,
+        vec![(typed(b"s"), start), (Key::Enter, start)],
     );
+    let orchestrator = card(crate::orchestrator::ORCHESTRATOR_SESSION, Status::Running);
+    assert!(orchestrator.items().is_empty());
     let mut lone = Modal::Menu(Menu::new(orchestrator));
     run(
         &mut lone,
         vec![
             (typed(b"s"), Step::Kept),
             (typed(b"j"), Step::Kept),
-            (Key::Enter, open),
+            (Key::Enter, Step::Kept),
         ],
     );
-    let question = Question::new(card("api", Ok("lead".to_owned())), expectation(0));
+    let question = Question::new(card("api", Status::Running), expectation(0));
     let mut question = Modal::Question(question);
     run(
         &mut question,
@@ -103,13 +99,15 @@ fn every_modal_key_steps_as_the_keys_row_says() {
 #[test]
 fn drawn_menu_and_question_text_is_neutralised_first() {
     let name = "api \u{1b}[2J";
-    let why = "lead \u{1b}[2J gone".to_owned();
     for modal in [
-        Modal::Menu(Menu::new(card(name, Err(why)))),
-        Modal::Question(Question::new(
-            card(name, Ok("lead".to_owned())),
-            expectation(0),
-        )),
+        Modal::Menu(Menu::new(Card::new(
+            name,
+            ID,
+            None,
+            Some(Status::Running),
+            None,
+        ))),
+        Modal::Question(Question::new(card(name, Status::Running), expectation(0))),
     ] {
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
         let mut layout = crate::app::draw::Layout::default();
@@ -124,7 +122,7 @@ fn drawn_menu_and_question_text_is_neutralised_first() {
         let screen = text(&buf);
         assert!(screen.contains("api \u{FFFD}[2J"), "{screen}");
         if matches!(modal, Modal::Menu(_)) {
-            assert!(screen.contains("lead \u{FFFD}[2J gone"), "{screen}");
+            assert!(screen.contains("record names no single"), "{screen}");
         }
     }
 }
@@ -137,7 +135,7 @@ fn a_question_takes_only_fresh_input_and_refuses_once_expired() {
     let typed = |bytes: &[u8]| vec![(Key::Text(bytes.to_vec()), Instant::now())];
     assert!(take_keys(&mut app, typed(b"m")).is_some());
     // Input made before the menu was on screen: a flash, never a notice.
-    assert!(take_keys(&mut app, typed(b"o")).is_some());
+    assert!(take_keys(&mut app, typed(b"j")).is_some());
     let flash = app.flash.as_ref().map(|(line, _)| line.as_str());
     assert!(
         flash.is_some_and(|line| line.contains("press again")),
@@ -145,7 +143,7 @@ fn a_question_takes_only_fresh_input_and_refuses_once_expired() {
     );
     assert!(app.notices.is_empty());
     let Some(Modal::Menu(menu)) = app.modal.take() else {
-        unreachable!("an unseen o leaves the menu open")
+        unreachable!("an unseen j leaves the menu open")
     };
     let expired = expectation(Timestamp::now().epoch() - 1);
     let question = Question::new(menu.card, expired.clone());

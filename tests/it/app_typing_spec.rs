@@ -245,7 +245,11 @@ fn quick_key_by_key_keeps_ck_as_the_draft() {
         |s| {
             let rows: Vec<&str> = s.lines().collect();
             rows.iter()
-                .rposition(|line| line.contains("› lead"))
+                .rposition(|line| {
+                    line.rsplit('│')
+                        .next()
+                        .is_some_and(|cell| cell.trim_start().starts_with("to "))
+                })
                 .and_then(|address| rows.get(address + 1))
                 .is_some_and(|line| line.trim_end().ends_with("ck"))
         },
@@ -443,6 +447,7 @@ fn question_opens_one_read_only_keys_overlay_with_every_existing_key() {
         "Esc",
         "Enter",
         "s",
+        ",",
         "?",
         "^C",
         "Left",
@@ -462,7 +467,7 @@ fn question_opens_one_read_only_keys_overlay_with_every_existing_key() {
     ] {
         assert!(text.contains(key), "R4(d) help omits {key}: {text}");
     }
-    rig.literal(&pane, "q s QUICK-OVERLAY");
+    rig.literal(&pane, "q , QUICK-OVERLAY");
     assert_eq!(journal(&rig), before, "help does not submit an ask");
     rig.keys(&pane, "Escape");
     rig.wait(&pane, FRAME, "R4(d) Esc closes help", |s| {
@@ -573,7 +578,7 @@ fn kept_draft_banner_names_target_open_keys_without_host_prefix_h() {
     });
     rig.keys(&pane, "2");
     rig.wait(&pane, WAIT, "GUARD foreign input selection", |s| {
-        s.contains("to zzzforeign ›") && s.contains("Enter writes")
+        s.contains("to zzzforeign") && s.contains("Enter writes")
     });
     rig.keys(&pane, "Enter");
     let shown = rig.wait(&pane, FRAME, "GUARD existing draft restored", |s| {

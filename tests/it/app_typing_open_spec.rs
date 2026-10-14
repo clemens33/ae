@@ -46,9 +46,9 @@ fn hello_and_open_never_move_the_viewer_or_send_an_ask() {
         let path = rig.scratch.join("sessions").join(HOME).join("events.jsonl");
         let journal = std::fs::read(&path).expect("fixture journal");
         rig.raw(&app, word);
-        // s produces a later visible frame, proving the complete word was
+        // , produces a later visible frame, proving the complete word was
         // processed without requiring any new implementation accessor.
-        rig.raw(&app, "s");
+        rig.raw(&app, ",");
         rig.wait_screen(&app, "P2 full word processed before Settings", |s| {
             s.lines().next().is_some_and(|row| row.contains("Settings"))
         });

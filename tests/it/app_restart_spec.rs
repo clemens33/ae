@@ -243,7 +243,7 @@ fn failed_exec_keeps_interaction_and_terminal_and_does_not_retry_same_version() 
         "app stays alive in parent shell"
     );
     assert_eq!(hand.option("alternate_on"), "1");
-    hand.keys("s");
+    hand.keys(",");
     hand.wait("settings works after exec failure", |s| {
         s.contains("Config") && s.contains("Instructions")
     });

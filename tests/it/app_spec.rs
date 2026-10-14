@@ -1070,7 +1070,6 @@ fn app_draw_home_160x43() {
         lane: &lane,
         composer: Composer::Home {
             home: "api",
-            speaker: "lead",
             view: None,
             draft: "check the scopes",
         },
@@ -1170,7 +1169,7 @@ fn app_draw_home_160x43() {
         assert_eq!(cell_at(&buf, x, 39).symbol(), "─", "composer rule {x}");
     }
     assert_eq!(cell_at(&buf, 47, 40).symbol(), "t");
-    assert_eq!(chat_text(&buf, 40, 44).trim_start(), "to api › lead");
+    assert_eq!(chat_text(&buf, 40, 44).trim_start(), "to api");
     assert_eq!(cell_at(&buf, 47, 41).symbol(), "c");
     assert_eq!(chat_text(&buf, 41, 44).trim_start(), "check the scopes");
     assert!(
@@ -1230,7 +1229,6 @@ fn app_draw_non_home_address_names_the_selected_target() {
         lane: &lane,
         composer: Composer::Home {
             home: "infra",
-            speaker: "lead",
             view: None,
             draft: "",
         },
@@ -1244,7 +1242,7 @@ fn app_draw_non_home_address_names_the_selected_target() {
     assert!(head.contains("infra"), "the target is named");
     assert_eq!(
         chat_text(&buf, 40, 44).trim_start(),
-        "to infra › lead",
+        "to infra",
         "the drawn address names the non-home target"
     );
     let text = all_text(&buf);
@@ -1279,7 +1277,6 @@ fn app_draw_no_home_names_the_selected_target() {
         lane: &lane,
         composer: Composer::Home {
             home: "docs",
-            speaker: "lead",
             view: None,
             draft: "",
         },
@@ -1291,7 +1288,7 @@ fn app_draw_no_home_names_the_selected_target() {
     draw(&screen, &mut buf);
     assert!(row_text(&buf, 0).contains("docs"));
     assert!(!row_text(&buf, 0).contains("viewed from"));
-    assert_eq!(chat_text(&buf, 40, 44).trim_start(), "to docs › lead");
+    assert_eq!(chat_text(&buf, 40, 44).trim_start(), "to docs");
     assert!(all_text(&buf).contains("Enter writes"));
 }
 
@@ -1316,7 +1313,6 @@ fn app_draw_theme_off_is_plain() {
         lane: &lane,
         composer: Composer::Home {
             home: "api",
-            speaker: "lead",
             view: None,
             draft: "",
         },
@@ -1359,7 +1355,6 @@ fn app_draw_narrow_100x28() {
         lane: &lane,
         composer: Composer::Home {
             home: "api",
-            speaker: "lead",
             view: None,
             draft: "",
         },
@@ -1409,7 +1404,6 @@ fn app_draw_small_falls_back() {
         lane: &lane,
         composer: Composer::Home {
             home: "api",
-            speaker: "lead",
             view: None,
             draft: "",
         },
@@ -1465,7 +1459,6 @@ fn app_draw_agents_tab_and_gaps() {
             lane,
             composer: Composer::Home {
                 home: "api",
-                speaker: "lead",
                 view: None,
                 draft: "",
             },
@@ -1586,7 +1579,6 @@ fn app_draw_next_need_scrolls_into_view() {
         lane: &lane,
         composer: Composer::Home {
             home: "s1",
-            speaker: "lead",
             view: None,
             draft: "",
         },
@@ -1614,7 +1606,6 @@ fn app_draw_next_need_scrolls_into_view() {
         lane: &lane,
         composer: Composer::Home {
             home: "s1",
-            speaker: "lead",
             view: None,
             draft: "",
         },
@@ -1648,7 +1639,6 @@ fn app_draw_zone_shifts_lane_clock() {
         lane: &lane,
         composer: Composer::Home {
             home: "api",
-            speaker: "lead",
             view: None,
             draft: "",
         },

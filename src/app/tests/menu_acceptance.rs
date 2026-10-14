@@ -19,10 +19,8 @@ fn noticed(app: &App, word: &str) -> bool {
 }
 
 fn menu(text: &str) -> bool {
-    text.lines().any(|line| line.contains("Open"))
-        && text
-            .lines()
-            .any(|line| line.contains("Stop...") || line.contains("Stop…"))
+    text.lines()
+        .any(|line| line.contains("s  Stop") || line.contains("s  Start"))
 }
 
 fn right(app: &mut App, name: &str, at: Instant) {
@@ -95,7 +93,7 @@ fn unseen_menu_input_is_consumed_before_compose_settings_copy_or_open() {
     assert!(app.queued.is_empty());
     assert!(
         app.notices.is_empty(),
-        "unseen Open/Stop must never reach an owner"
+        "an unseen start or stop must never reach an owner"
     );
 }
 
@@ -105,11 +103,11 @@ fn first_visible_frame_is_strict_and_repaint_does_not_renew_it() {
     keyed(&mut app, b"m", Instant::now());
     let first = Instant::now();
     assert!(menu(&shown(&mut app, first)));
-    keyed(&mut app, b"o", first);
+    keyed(&mut app, b"s", first);
     assert!(app.notices.is_empty(), "equal-origin input is not fresh");
     let fresh = first + Duration::from_millis(1);
     let _ = shown(&mut app, first + Duration::from_millis(2));
-    keyed(&mut app, b"o", fresh);
+    keyed(&mut app, b"s", fresh);
     assert_eq!(
         app.notices.len(),
         1,
@@ -127,7 +125,6 @@ fn menu_dismissal_does_not_leak_enter_into_a_suspended_draft() {
     app.compose(Key::Left, Instant::now()).expect("cursor left");
     let before = framed(&mut app);
     let draft = drafted(&app);
-    let speaker = app.speaker().to_owned();
     let cursor = app.layout.cursor;
     right(&mut app, "api", Instant::now());
     assert!(menu(&shown(&mut app, Instant::now())));
@@ -135,7 +132,6 @@ fn menu_dismissal_does_not_leak_enter_into_a_suspended_draft() {
     assert!(take_keys(&mut app, vec![(Key::Escape, batch), (Key::Enter, batch)]).is_some());
     let after = framed(&mut app);
     assert_eq!(drafted(&app), draft);
-    assert_eq!(app.speaker(), speaker);
     assert_eq!(app.layout.cursor, cursor);
     assert!(app.composing(), "suspended mode must be restored");
     assert!(
@@ -247,18 +243,18 @@ fn raw_ambiguous_identity_painted_then_repaired_never_acquires_authority() {
         screen.contains("session_id"),
         "painted identity refusal disappeared: {screen}"
     );
-    keyed(&mut app, b"o", Instant::now());
+    keyed(&mut app, b"s", Instant::now());
     assert!(noticed(&app, "session_id"));
     assert!(
         !noticed(&app, "not running inside tmux"),
-        "ambiguous painted identity reached Open"
+        "ambiguous painted identity reached Stop"
     );
     assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
     refold(&mut app, &reader, &root, &[("api", Status::Running)]);
     framed(&mut app);
     keyed(&mut app, b"m", Instant::now());
     let _ = shown(&mut app, Instant::now());
-    keyed(&mut app, b"o", Instant::now());
+    keyed(&mut app, b"s", Instant::now());
     assert!(
         noticed(&app, "not running inside tmux"),
         "a newly painted sole identity must pass the menu guard"
@@ -305,7 +301,7 @@ fn historical_right_press_never_freezes_current_replacement_uuid() {
     assert_eq!(events.len(), 1);
     assert!(take_keys(&mut app, events).is_some());
     let _ = shown(&mut app, Instant::now());
-    keyed(&mut app, b"o", Instant::now());
+    keyed(&mut app, b"s", Instant::now());
     assert!(
         app.notices.iter().any(
             |(_, item)| ["changed", "replaced", "identity", "session_id"]
@@ -320,7 +316,7 @@ fn historical_right_press_never_freezes_current_replacement_uuid() {
     );
     assert!(
         !noticed(&app, "not running inside tmux"),
-        "replacement reached Open with a freshly acquired UUID"
+        "replacement reached Stop with a freshly acquired UUID"
     );
 }
 
@@ -360,7 +356,7 @@ fn historical_right_press_on_discarded_frame_refuses() {
 }
 
 #[test]
-fn orchestrator_has_open_only_and_other_row_refusals_never_reach_an_owner() {
+fn orchestrator_has_no_menu_and_row_refusals_never_reach_an_owner() {
     let (root, mut app, reader) = fixture("menu-row-states");
     let name = crate::orchestrator::ORCHESTRATOR_SESSION;
     session(&root, name, "meta_agent=true\n");
@@ -368,37 +364,52 @@ fn orchestrator_has_open_only_and_other_row_refusals_never_reach_an_owner() {
     framed(&mut app);
     right(&mut app, name, Instant::now());
     let screen = shown(&mut app, Instant::now());
-    assert!(screen.contains("Open") && !screen.contains("Stop...") && !screen.contains("Stop…"));
-    assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
+    assert!(!menu(&screen), "the orchestrator offers nothing: {screen}");
+    assert!(screen.contains("nothing to start or stop"), "{screen}");
     for (status, fact, reason) in [
-        (Status::Stopped, fleet::Facts::NotPublished, "stopped"),
         (Status::Unknown, fleet::Facts::NotPublished, "unknown"),
         (Status::Running, fleet::Facts::OtherServer, "server"),
     ] {
         refold(&mut app, &reader, &root, &[("api", status)]);
         app.facts.insert("api".to_owned(), fact);
         framed(&mut app);
-        for action in *b"os" {
-            right(&mut app, "api", Instant::now());
-            let screen = shown(&mut app, Instant::now());
-            assert!(
-                menu(&screen) && screen.contains(reason),
-                "{reason}: {screen}"
-            );
-            let count = app.noticed;
-            keyed(&mut app, &[action], Instant::now());
-            assert!(app.noticed > count, "activation must add a fresh refusal");
-            let (target, item) = app.notices.last().expect("new row refusal");
-            assert_eq!(target, "api");
-            assert!(item.body.contains(reason));
-            assert!(!noticed(&app, "not running inside tmux"));
-            assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
-        }
+        right(&mut app, "api", Instant::now());
+        let screen = shown(&mut app, Instant::now());
+        assert!(
+            menu(&screen) && screen.contains(reason),
+            "{reason}: {screen}"
+        );
+        let count = app.noticed;
+        keyed(&mut app, b"s", Instant::now());
+        assert!(app.noticed > count, "activation must add a fresh refusal");
+        let (target, item) = app.notices.last().expect("new row refusal");
+        assert_eq!(target, "api");
+        assert!(item.body.contains(reason));
+        assert!(!noticed(&app, "not running inside tmux"));
+        assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
     }
 }
 
 #[test]
-fn fresh_left_press_on_open_and_keys_help_use_the_same_action() {
+fn a_stopped_session_offers_start_not_stop() {
+    let (root, mut app, reader) = fixture("menu-stopped");
+    refold(&mut app, &reader, &root, &[("api", Status::Stopped)]);
+    app.facts
+        .insert("api".to_owned(), fleet::Facts::NotPublished);
+    framed(&mut app);
+    right(&mut app, "api", Instant::now());
+    let screen = shown(&mut app, Instant::now());
+    assert!(screen.contains("s  Start"), "{screen}");
+    assert!(!screen.contains("Stop…") && !screen.contains("Stop..."));
+    keyed(&mut app, b"s", Instant::now());
+    assert!(
+        noticed(&app, "not running inside tmux"),
+        "Start rides the same proofs as Stop"
+    );
+}
+
+#[test]
+fn fresh_left_press_on_stop_and_keys_help_use_the_same_action() {
     let (_root, mut app, _reader) = fixture("menu-item-mouse");
     keyed(&mut app, b"m", Instant::now());
     let screen = shown(&mut app, Instant::now());
@@ -406,10 +417,10 @@ fn fresh_left_press_on_open_and_keys_help_use_the_same_action() {
         .lines()
         .enumerate()
         .find_map(|(row, line)| {
-            line.find("Open")
+            line.find("s  Stop")
                 .map(|byte| (row, line[..byte].chars().count()))
         })
-        .expect("drawn Open item");
+        .expect("drawn Stop item");
     let click = Mouse {
         kind: MouseKind::Click,
         column: u16::try_from(column).expect("painted column"),
@@ -518,7 +529,6 @@ fn unfit_modal_closes_without_leaking_already_read_confirm_into_the_draft() {
             .expect("draft");
         app.compose(Key::Left, Instant::now()).expect("cursor");
         let draft = drafted(&app);
-        let speaker = app.speaker().to_owned();
         let size = crate::console::input::Size {
             width: 120,
             height: 3,
@@ -543,7 +553,6 @@ fn unfit_modal_closes_without_leaking_already_read_confirm_into_the_draft() {
         let mut decoder = crate::console::input::Keys::app();
         assert!(super::super::drain(&mut app, &mut decoder, &wakes, &mut first).is_some());
         assert_eq!(drafted(&app), draft);
-        assert_eq!(app.speaker(), speaker);
         assert_eq!(app.shown_input().expect("input").bare_view(size), cursor);
         assert!(app.composing() && app.queued.is_empty());
         keyed(&mut app, b"z", Instant::now());

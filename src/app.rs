@@ -63,6 +63,7 @@ pub mod model;
 mod order_spec;
 pub mod overview;
 pub mod peek;
+mod route;
 pub mod select;
 #[cfg(test)]
 mod select_spec;
@@ -186,6 +187,8 @@ struct Queued {
     seat: String,
     body: String,
     about: String,
+    /// The quiet lane note for a line routed away from the lead.
+    note: Option<String>,
 }
 
 /// An ask's outcome word, shown until the lane holds the ask itself.
@@ -365,6 +368,8 @@ struct App {
     settings_bodies: settings::SettingsBodies,
     /// When an own-generation answer last replaced the quota body: a kept body's age.
     quota_at: Option<i64>,
+    /// The last refresh failed and the held body is kept: its line says so.
+    quota_failed: bool,
     /// The generation the next open mints; answers pin to the open one.
     settings_generation: u64,
     /// The open peek panel's captures, and the generation the next open mints.
@@ -489,6 +494,7 @@ impl App {
             deferred: Vec::new(),
             settings_bodies: settings::SettingsBodies::default(),
             quota_at: None,
+            quota_failed: false,
             settings_generation: 0,
             peek: PeekPane::default(),
             peek_generation: 0,
@@ -748,9 +754,18 @@ impl App {
         if !self.model.settings_generation(generation) {
             return;
         }
-        self.settings_bodies.quota = Some(quota);
-        self.settings_bodies.quota_kept = None;
-        self.quota_at = Some(Timestamp::now().epoch());
+        // A refresh that failed outright keeps the body already held, marked.
+        let held = (self.settings_bodies.quota.as_ref())
+            .is_some_and(|held| *held != crate::quota::view::unavailable());
+        if quota == crate::quota::view::unavailable() && held && self.quota_at.is_some() {
+            self.settings_bodies.quota_kept = Some(String::new());
+            self.quota_failed = true;
+        } else {
+            self.settings_bodies.quota = Some(quota);
+            self.settings_bodies.quota_kept = None;
+            self.quota_at = Some(Timestamp::now().epoch());
+            self.quota_failed = false;
+        }
         if let Some(config) = config {
             self.settings_bodies.config = config;
         }
@@ -779,6 +794,7 @@ impl App {
             quota,
             ..settings::SettingsBodies::default()
         };
+        self.quota_failed = false;
         if let Some(ask) = &self.ask {
             let _ = ask.send(Request::Settings {
                 open: true,
@@ -791,7 +807,11 @@ impl App {
     fn spell_kept(&mut self) {
         if let (Some(kept), Some(at)) = (&mut self.settings_bodies.quota_kept, self.quota_at) {
             let age = crate::quota::age_label(Timestamp::now().epoch().saturating_sub(at));
-            *kept = format!("last updated {age} — refreshing");
+            *kept = if self.quota_failed {
+                format!("refresh failed · showing values from {age} ago")
+            } else {
+                format!("last updated {age} — refreshing")
+            };
         }
     }
 
@@ -1162,12 +1182,35 @@ impl App {
         self.inputs.get(&key)
     }
 
-    /// Who the composer speaks to: its input's speaker, else the pair's main.
-    fn speaker(&self) -> &str {
-        self.shown_input().map_or_else(
-            || self.pair.first().map_or("", String::as_str),
-            Input::speaker,
-        )
+    /// Where a plain line goes: the lead unless it cannot take the line
+    /// ([`route`]). A line that names a seat with `@` goes to that seat alone;
+    /// the next plain line routes again.
+    fn routed(
+        &self,
+        session: &str,
+        raw: &[u8],
+        seat: String,
+        body: String,
+    ) -> (String, String, Option<String>) {
+        if raw.starts_with(b"@") {
+            return (seat, body, None);
+        }
+        let agents = self.entry(session).map(|entry| entry.agents.as_slice());
+        let takes: Vec<_> = (self.pair.iter())
+            .map(|name| {
+                let agent = agents.and_then(|agents| agents.iter().find(|a| a.name == *name));
+                (name.as_str(), route::take(agent))
+            })
+            .collect();
+        let route = route::decide(&takes, route::thread_seat(&self.lane.items));
+        if route.seat.is_empty() {
+            return (seat, body, None);
+        }
+        let body = match route.prefix {
+            Some(prefix) => format!("{prefix}\n{body}"),
+            None => body,
+        };
+        (route.seat, body, route.note)
     }
 
     /// Whether this app writes home: it holds the lease.
@@ -2051,6 +2094,7 @@ impl App {
                         self.notice(&about, "refused: not writing".to_owned());
                         continue;
                     };
+                    let (seat, body, note) = self.routed(&about, &raw, seat, body);
                     self.queued.push(Queued {
                         key,
                         entry,
@@ -2058,6 +2102,7 @@ impl App {
                         seat,
                         body,
                         about,
+                        note,
                     });
                     continue;
                 }
@@ -2152,7 +2197,11 @@ impl App {
             let live = (self.writer.as_ref()).is_some_and(|writer| writer.entry == q.entry);
             let told = if live {
                 match self.ask(&q.raw, &q.seat, q.body) {
-                    Ok((id, outcome)) => self.settle(id, &q.seat, &q.about, outcome),
+                    Ok((id, outcome)) => {
+                        let mut lines = self.settle(id, &q.seat, &q.about, outcome);
+                        lines.splice(0..0, q.note);
+                        lines
+                    }
                     Err(refused) => {
                         // A writer the refusal ended got its line back from `unproven`; the
                         // one still writing gets it here. A newer writer is not touched: the
@@ -2434,7 +2483,6 @@ impl App {
             }
             (Some(name), None) => draw::Composer::Home {
                 home: name,
-                speaker: self.speaker(),
                 view: self.composing().then_some(&self.draft_view),
                 draft: &self.draft,
             },
@@ -2578,19 +2626,12 @@ impl App {
 
     /// The card `name` shows as the app reads it now: what a frame freezes.
     fn card(&self, name: &str) -> menu::Card {
-        let main = match self.pairs.get(name) {
-            Some(Ok(pair)) => (pair.first().map(|seat| seat.name.clone()))
-                .ok_or_else(|| format!("{name}'s record names no main seat")),
-            Some(Err(why)) => Err(why.clone()),
-            None => Err(format!("{name}'s lead pair was not read")),
-        };
         menu::Card::new(
             name,
             self.ids.get(name).map_or("", String::as_str),
             self.sole.get(name).map(String::as_str),
             self.entry(name).map(|entry| entry.status),
             self.facts.get(name),
-            main,
         )
     }
 
@@ -2621,9 +2662,30 @@ impl App {
             self.flash = Some((line, Instant::now()));
             return true;
         };
+        if card.items().is_empty() {
+            let line = format!(
+                "menu not opened: {} has nothing to start or stop",
+                card.name
+            );
+            self.flash = Some((line, Instant::now()));
+            return true;
+        }
         self.unselect();
         self.modal = Some(menu::Modal::Menu(menu::Menu::new(card)));
         true
+    }
+
+    /// `s` on the selection: the menu's one item on the card the frame drew —
+    /// Start a stopped session, or ask the Stop question of a running one.
+    fn toggle(&mut self, origin: Instant) -> bool {
+        let card = (self.model.selected()).and_then(|name| self.layout.cards.get(name));
+        let opened = self.open_menu(card.cloned(), origin);
+        if let Some(menu::Modal::Menu(menu)) = &self.modal
+            && let Some(&item) = menu.card.items().first()
+        {
+            self.act(item);
+        }
+        opened
     }
 
     /// A right press: the menu on the card the frame on screen at `origin`
@@ -2711,20 +2773,21 @@ impl App {
         true
     }
 
-    /// `item` of the open menu: its card's refusal, else Open or the Stop
+    /// `item` of the open menu: its card's refusal, else Start or the Stop
     /// question. The menu closes either way.
     fn act(&mut self, item: menu::Item) {
         let Some(menu::Modal::Menu(menu)) = self.modal.take() else {
             return;
         };
         let (name, card) = (menu.card.name.clone(), menu.card);
-        if let Some(why) = card.refusal(item) {
+        if let Some(why) = card.refusal() {
             let line = format!("refused: {} {name}: {why}; nothing done", item.word());
             return self.tell(&name, line);
         }
         match item {
-            menu::Item::Open => {
-                let line = self.open_card(&card);
+            menu::Item::Start => {
+                let line = (self.start(&card))
+                    .unwrap_or_else(|why| format!("refused: Start {name}: {why}; nothing started"));
                 self.tell(&name, line);
             }
             menu::Item::Stop => match self.question(card) {
@@ -2741,24 +2804,39 @@ impl App {
         self.show();
     }
 
-    /// Open `card`'s main seat: its record must still name the incarnation
-    /// the card was drawn from, then `/open`'s own proof.
-    fn open_card(&self, card: &menu::Card) -> String {
+    /// What a Start or the Stop question freezes about the asking client and
+    /// its server: the record must still name the card's incarnation, tmux must
+    /// be reachable, the session recorded on this very server, and one client
+    /// view this app.
+    fn asker(&self, card: &menu::Card) -> Result<Asker, String> {
         let name = &card.name;
-        let sole = self.dirs.get(name).and_then(|dir| loader::sole_uuid(dir));
-        if sole.as_deref() != Some(card.uuid.as_str()) {
-            return format!("refused: Open {name}: {REPLACED}; nothing selected");
+        let dir = (self.dirs.get(name)).ok_or("ae read no record directory for it")?;
+        if loader::sole_uuid(dir).as_deref() != Some(card.uuid.as_str()) {
+            return Err(REPLACED.to_owned());
         }
-        match &card.main {
-            Ok(main) => {
-                let seat = SeatRef {
-                    slot: "main".to_owned(),
-                    name: main.clone(),
-                };
-                self.open(name, &card.uuid, Ok(&seat), main)
-            }
-            Err(why) => format!("refused: Open {name}: {why}; nothing selected"),
+        let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
+            return Err(Refusal::NoTmux.why());
+        };
+        let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+        let recorded = crate::session_launch::recorded_server_resolved(dir);
+        if !recorded.is_some_and(|recorded| sockets.proven_same(server, &recorded)) {
+            return Err(Refusal::Elsewhere(name.clone()).why());
         }
+        let clients = transport::observe_clients(server)
+            .ok_or_else(|| Refusal::Unread("the tmux clients".to_owned()).why())?;
+        let client = open::copy_client(&clients, pane).map_err(|why| why.why())?;
+        let menu = transport::observe_menu_client(server, &client)
+            .ok_or("the asking client did not answer")?;
+        let identity =
+            transport::observe_server_identity(server).ok_or("the tmux server did not answer")?;
+        Ok(Asker {
+            server: server.clone(),
+            client,
+            client_pid: menu.pid,
+            session: menu.session_name,
+            server_pid: identity.pid,
+            server_start: identity.start,
+        })
     }
 
     /// The Stop question for `card`: every fact its answer is proven against
@@ -2767,46 +2845,49 @@ impl App {
     fn question(&self, mut card: menu::Card) -> Result<menu::Question, String> {
         let name = card.name.clone();
         let refuse = |why: &str| format!("refused: Stop {name}: {why}; nothing stopped");
-        let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
-            return Err(refuse(&Refusal::NoTmux.why()));
-        };
-        let dir =
-            (self.dirs.get(&name)).ok_or_else(|| refuse("ae read no record directory for it"))?;
-        if loader::sole_uuid(dir).as_deref() != Some(card.uuid.as_str()) {
-            return Err(refuse(REPLACED));
-        }
-        let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
-        let recorded = crate::session_launch::recorded_server_resolved(dir);
-        if !recorded.is_some_and(|recorded| sockets.proven_same(server, &recorded)) {
-            return Err(refuse(&Refusal::Elsewhere(name.clone()).why()));
-        }
-        let id = crate::lifecycle::live_id(server, &name)
+        let asker = self.asker(&card).map_err(|why| refuse(&why))?;
+        let id = crate::lifecycle::live_id(&asker.server, &name)
             .ok_or_else(|| refuse("tmux does not list it on this server"))?;
         if card.id.as_ref().is_some_and(|painted| *painted != id) {
             return Err(refuse(
                 "its tmux session was replaced since the menu was drawn",
             ));
         }
-        let clients = transport::observe_clients(server)
-            .ok_or_else(|| refuse(&Refusal::Unread("the tmux clients".to_owned()).why()))?;
-        let client = open::copy_client(&clients, pane).map_err(|why| refuse(&why.why()))?;
-        let asker = transport::observe_menu_client(server, &client)
-            .ok_or_else(|| refuse("the asking client did not answer"))?;
-        let identity = transport::observe_server_identity(server)
-            .ok_or_else(|| refuse("the tmux server did not answer"))?;
-        card.home = asker.session_name == name;
+        card.home = asker.session == name;
         let expect = crate::lifecycle::StopExpectation {
             session_id: id,
             uuid: card.uuid.clone(),
-            server_pid: identity.pid,
-            server_start: identity.start,
+            server_pid: asker.server_pid,
+            server_start: asker.server_start,
             deadline: Timestamp::now().epoch() + crate::session_menu::CONFIRM_WINDOW_SECS,
-            client,
-            client_pid: asker.pid,
-            server: server.clone(),
+            client: asker.client,
+            client_pid: asker.client_pid,
+            server: asker.server,
             require_meta_agent: false,
         };
         Ok(menu::Question::new(card, expect))
+    }
+
+    /// Start `card`'s stopped session: the picker row's own resume job — the
+    /// ordinary launch owner behind its captured-client proofs — run in the
+    /// background by tmux. Its last step moves this client to the session.
+    fn start(&self, card: &menu::Card) -> Result<String, String> {
+        let asker = self.asker(card)?;
+        let launcher =
+            crate::picker_launcher_for(&asker.server).ok_or("ae cannot name its own executable")?;
+        let resume = crate::orchestrator::PickerResume {
+            client: &asker.client,
+            client_pid: &asker.client_pid,
+            server_pid: &asker.server_pid,
+            server_start: &asker.server_start,
+            deadline: Timestamp::now().epoch() + crate::session_menu::CONFIRM_WINDOW_SECS,
+            launcher: &launcher,
+        };
+        let argv = crate::orchestrator::resume_argv(&card.name, &resume);
+        if !transport::run_shell_background(&asker.server, &argv) {
+            return Err("tmux refused the start job".to_owned());
+        }
+        Ok(format!("Starting '{}'.", card.name))
     }
 
     /// The question answered Stop: its deadline, the record and the asking
@@ -2880,6 +2961,17 @@ impl App {
 }
 
 /// Why a menu action refuses an incarnation its record no longer names.
+/// What a Start or the Stop question freezes of the asking client and server.
+struct Asker {
+    server: ServerId,
+    client: String,
+    client_pid: String,
+    /// The session the asking client is in.
+    session: String,
+    server_pid: String,
+    server_start: String,
+}
+
 const REPLACED: &str =
     "its record no longer names the session_id the menu was drawn from - replaced or changed";
 
@@ -3440,9 +3532,9 @@ fn paste(app: &mut App, bytes: &[u8], origin: Instant) {
     let _ = app.compose(Key::Pasted(bytes.to_vec()), origin);
 }
 
-/// One Text byte while browsing: `q` and `o` press their armed key, `s`
-/// opens the settings and `?` its keys, `m` the menu on the
-/// selection's card, anything else decodes as it always has and ends the
+/// One Text byte while browsing: `q` and `o` press their armed key, `,`
+/// opens the settings and `?` its keys, `m` the menu on the selection's card,
+/// `s` starts or stops the selection, anything else decodes as it always has and ends the
 /// armed press. A byte of a read the menu spent does nothing. Browsing on
 /// entry; the caller routes the modes.
 fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
@@ -3452,10 +3544,11 @@ fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
     let disarmed = !matches!(byte, b'q' | b'o') && app.armed.take().is_some();
     match byte {
         b'q' => return app.press(Arm::Quit, origin).is_none().then_some(true),
-        b's' => {
+        b',' => {
             app.open_settings();
             return Some(true);
         }
+        b's' => return Some(app.toggle(origin)),
         b'?' => {
             app.open_settings();
             app.model.show_settings_tab(model::SettingsTab::Keys);
@@ -3553,11 +3646,11 @@ fn peek_keys(app: &mut App, keys: Vec<model::Key>) -> bool {
     redraw
 }
 
-/// One Text byte with the overlay open: `s` closes with its request, the
+/// One Text byte with the overlay open: `,` closes with its request, the
 /// rest decodes modal. The overlay is open on entry; the caller resumes the
 /// actual mode after a close.
 fn settings_byte(app: &mut App, byte: u8) -> bool {
-    if byte == b's' {
+    if byte == b',' {
         app.close_settings();
         return true;
     }
@@ -4539,7 +4632,7 @@ mod tests {
         app.show();
         let text = framed(&mut app);
         assert!(text.contains("read-only · api is stopped"), "{text}");
-        assert!(!text.contains("to api ›"), "{text}");
+        assert!(!text.contains("to api"), "{text}");
         app.world = World::new(Timestamp::now(), vec![entry("api", Status::Running, None)]);
         let unreadable = Err("the meta names no single main seat".to_owned());
         let read = app.pairs.insert("api".to_owned(), unreadable);
@@ -4566,7 +4659,7 @@ mod tests {
         refold(&mut app, &reader, &root, &fleet(Status::Running));
         let _ = app.model.select_name(&app.fleet, "web", 0);
         app.show();
-        assert!(framed(&mut app).contains("to web › lead   "));
+        assert!(framed(&mut app).contains("to web"));
         assert!(!framed(&mut app).contains("(not home)"));
         let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b"w".to_vec()), at), Some(()));
@@ -5509,12 +5602,48 @@ mod tests {
         assert!(app.shown.contains_key("api"), "home keeps its lane");
     }
 
+    /// Routing in the app: a plain line takes the colead and its first body
+    /// line when the lead's `ae list` verdict is down; `@lead` is that line
+    /// only and the next plain line routes again.
+    #[test]
+    fn a_plain_line_routes_to_the_colead_while_the_lead_is_down() {
+        let mut app = app(Some("api"));
+        app.pair = vec!["lead".to_owned(), "colead".to_owned()];
+        let mut entry = SessionEntry::new("api", Status::Running);
+        let seat = |name: &str, alive| crate::digest::AgentEntry {
+            name: name.to_owned(),
+            alive: Some(alive),
+            ..crate::digest::AgentEntry::default()
+        };
+        entry.agents = vec![seat("lead", false), seat("colead", true)];
+        app.world = World::new(Timestamp::now(), vec![entry]);
+        let route = |app: &App, raw: &[u8]| {
+            let line = String::from_utf8_lossy(raw).into_owned();
+            app.routed("api", raw, "lead".to_owned(), line)
+        };
+        assert_eq!(
+            route(&app, b"hello"),
+            (
+                "colead".to_owned(),
+                "(routed to you: lead not running)\nhello".to_owned(),
+                Some("sent to colead (lead not running)".to_owned()),
+            )
+        );
+        assert_eq!(
+            route(&app, b"@lead hi"),
+            ("lead".to_owned(), "@lead hi".to_owned(), None),
+            "an explicit seat is that line only"
+        );
+    }
+
     /// The lanes kept are the reader's kept order: a session past KEEP takes
     /// its lane with it.
     #[test]
     fn a_lane_past_the_kept_order_is_dropped() {
         let mut app = app(None);
-        let names: Vec<String> = (0..20).map(|at| format!("s{at:02}")).collect();
+        let names: Vec<String> = (0..loader::KEEP + 4)
+            .map(|at| format!("s{at:03}"))
+            .collect();
         app.fleet = Fleet {
             rows: names
                 .iter()
@@ -5528,12 +5657,17 @@ mod tests {
             app.ids.insert(name.clone(), ID.to_owned());
         }
         app.model = Model::new(&app.fleet);
-        for name in ["s00", "s15", "s19"] {
+        let (first, last, beyond) = (
+            "s000".to_owned(),
+            format!("s{:03}", loader::KEEP - 1),
+            format!("s{:03}", loader::KEEP + 3),
+        );
+        for name in [&first, &last, &beyond] {
             app.answer(view(name, ID, 1, name));
         }
         app.evict();
-        assert!(app.shown.contains_key("s00") && app.shown.contains_key("s15"));
-        assert!(!app.shown.contains_key("s19"), "beyond KEEP");
+        assert!(app.shown.contains_key(&first) && app.shown.contains_key(&last));
+        assert!(!app.shown.contains_key(&beyond), "beyond KEEP");
     }
 
     /// Ruling 5: a write through the home composer asks the reader to read
@@ -5967,7 +6101,7 @@ mod tests {
         assert!(settings_key(&mut app, &Key::Text(b"q".to_vec()), at).expect("q closes"));
         assert!(!app.model.settings_open());
         app.open_settings();
-        assert!(settings_key(&mut app, &Key::Text(b"s!".to_vec()), at).expect("s closes"));
+        assert!(settings_key(&mut app, &Key::Text(b",!".to_vec()), at).expect(", closes"));
         assert!(!app.model.settings_open());
         app.open_settings();
         assert!(
@@ -6149,15 +6283,23 @@ mod tests {
         assert_eq!(row("auto_trust").source, settings::ConfigSource::Default);
     }
 
-    /// No home session: one honest row, never guessed defaults.
+    /// No session at all: the tab is the current global alone, each row from
+    /// that file or its default, never a refusal.
     #[test]
-    fn resolve_config_without_home_is_honest() {
+    fn resolve_config_without_a_session_is_the_global_alone() {
         let root = Root::new("settings-nohome");
         let current = root.0.join("config");
-        assert!(matches!(
-            settings::resolve_config(None, &current),
-            settings::ConfigView::Unreadable(_)
-        ));
+        std::fs::write(&current, "[workspace]\nicons = off\n").expect("global config");
+        let settings::ConfigView::Rows { header, rows } = settings::resolve_config(None, &current)
+        else {
+            panic!("rows expected");
+        };
+        assert_eq!(header.global, current.display().to_string());
+        assert!(header.session.is_none());
+        let row = |key: &str| rows.iter().find(|row| row.key == key).expect(key);
+        assert_eq!(row("icons").value, "off");
+        assert_eq!(row("icons").source, settings::ConfigSource::Global);
+        assert_eq!(row("chat").source, settings::ConfigSource::Default);
     }
 
     /// A home session whose meta cannot be read names the meta file.
@@ -6204,7 +6346,7 @@ mod tests {
         let (ask, asks) = std::sync::mpsc::channel();
         let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
         app.fleet = two();
-        assert!(browse(&mut app, &Key::Text(b"2s".to_vec()), Instant::now()).is_some());
+        assert!(browse(&mut app, &Key::Text(b"2,".to_vec()), Instant::now()).is_some());
         assert_eq!(app.model.selected(), Some("web"));
         assert!(app.model.settings_open());
         assert_eq!(settings_requests(&asks), [(true, 1)]);
@@ -6212,7 +6354,7 @@ mod tests {
         let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
         app.fleet = two();
         assert!(
-            browse(&mut app, &Key::Text(b"qqs".to_vec()), Instant::now()).is_none(),
+            browse(&mut app, &Key::Text(b"qq,".to_vec()), Instant::now()).is_none(),
             "quits"
         );
         assert!(!app.model.settings_open());
@@ -6220,7 +6362,7 @@ mod tests {
         let (ask, asks) = std::sync::mpsc::channel();
         let mut app = App::new(Some("api".to_owned()), None, None, Some(ask));
         app.fleet = two();
-        assert!(browse(&mut app, &Key::Text(b"sq".to_vec()), Instant::now()).is_some());
+        assert!(browse(&mut app, &Key::Text(b",q".to_vec()), Instant::now()).is_some());
         assert!(!app.model.settings_open());
         assert_eq!(settings_requests(&asks), [(true, 1), (false, 1)]);
     }
@@ -6412,7 +6554,7 @@ mod tests {
             home: Some("api".to_owned()),
         };
         assert_eq!(
-            take_keys(&mut app, vec![(Key::Text(b"sx".to_vec()), Instant::now())]),
+            take_keys(&mut app, vec![(Key::Text(b",x".to_vec()), Instant::now())]),
             Some(true),
             "open redraw survives the swallowed byte"
         );
@@ -8075,6 +8217,7 @@ mod tests {
             seat: "lead".to_owned(),
             body: "hi".to_owned(),
             about: "api".to_owned(),
+            note: None,
         });
         assert!(app.owed(), "an ask ran and a read landed");
         assert!(app.queued.is_empty() && app.parked.is_empty());
@@ -8344,6 +8487,7 @@ mod tests {
                     seat: "lead".to_owned(),
                     body: "hi".to_owned(),
                     about: "api".to_owned(),
+                    note: None,
                 });
             }
             assert_eq!(app.owed(), copy || ask, "copy {copy}, ask {ask}");
@@ -8798,5 +8942,41 @@ mod tests {
         assert!(shown.contains(line), "{shown}");
         assert!(!shown.contains("qrow-closed"), "{shown}");
         assert_eq!(app.quota_at, Some(past), "the epoch is the original");
+    }
+
+    /// A read that fails outright keeps the held values under a line saying so,
+    /// aged from the original epoch; the next real answer replaces them whole.
+    /// With nothing held the failure is the body, as before.
+    #[test]
+    fn a_failed_quota_refresh_keeps_the_held_values_and_says_so() {
+        let answer = |app: &mut App, generation, quota| {
+            app.answer(Answer::Settings {
+                generation,
+                quota,
+                config: None,
+                about: None,
+                instructions: None,
+            });
+        };
+        let mut cold = app(Some("api"));
+        let mut app = quotacache_reopened();
+        let past = Timestamp::now().epoch() - 185;
+        app.quota_at = Some(past);
+        answer(&mut app, 2, crate::quota::view::unavailable());
+        let failed = framed(&mut app);
+        assert!(failed.contains("qrow-retained"), "values kept:\n{failed}");
+        let line = "refresh failed · showing values from 3m ago";
+        assert!(failed.contains(line), "{failed}");
+        assert!(!failed.contains("quota: unavailable"), "{failed}");
+        assert_eq!(app.quota_at, Some(past), "a failure moves no epoch");
+        answer(&mut app, 2, vec![quotacache_scope("qrow-fresh")]);
+        let fresh = framed(&mut app);
+        assert!(fresh.contains("qrow-fresh"), "{fresh}");
+        assert!(!fresh.contains("qrow-retained") && !fresh.contains("refresh failed"));
+        cold.open_settings();
+        answer(&mut cold, 1, crate::quota::view::unavailable());
+        let shown = framed(&mut cold);
+        assert!(shown.contains("quota: unavailable"), "{shown}");
+        assert!(!shown.contains("refresh failed"), "{shown}");
     }
 }

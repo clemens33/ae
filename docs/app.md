@@ -103,7 +103,7 @@ A background reader does every read — the fleet, each session's lane, the
 looks, whether the session being written is still proven — so no key waits on one. It reads the
 fleet first, then a lane the composer just wrote into, the selected session,
 the fleet again every 5 seconds, home, the sessions one and then two rows from
-the selection, and the rest in sidebar order, keeping at most 16 lanes; the
+the selection, and the rest in sidebar order, keeping at most 64 lanes; the
 selected session and home are read again every 5 seconds. Until the first
 fleet read the list says `loading`, and a key read until then is not lost: `q` and
 `^C` act at once, the digits, `!`, `j`, `k`, the arrows, the page keys and
@@ -156,7 +156,8 @@ Browsing:
 | Click composer | write the selected session, when no other app writes it |
 | `Esc` | back to home |
 | `Enter` or `i` | write the selected session, when no other app writes it |
-| `s` | open Settings |
+| `s` | start the selected session if it is stopped, else ask to stop it ([Session menu](#session-menu)) |
+| `,` | open Settings |
 | `?` | open Settings on its Keys tab, the list of every key |
 | Click the gear at the hint row's right end | open Settings, also while writing |
 | Click a Settings tab title | show that tab, like `Tab` and `1`-`5` |
@@ -194,8 +195,8 @@ your own `Enter`. On a read-only session or with the composer held it takes
 nothing, and the hint row says why for a few seconds (`paste not taken: …`);
 the Settings overlay swallows a paste silently.
 
-Writing: the draft is the chat's own input — a line asks the speaker,
-`@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
+Writing: the draft is the chat's own input — a plain line asks the session's lead, or its colead when [routing](#routing-a-line) says the lead cannot take it,
+`@<seat> text` either lead-pair seat for that line only, `/close` withdraws your newest open ask,
 five asks open at most; see [Input](chat.md#input). `Alt+Enter` and `^J` put a line break in the draft, `Enter` sends, and Shift+Enter is `Enter` (tmux hands the app a plain CR for it). A refusal such as the cap keeps the line in the composer. Writing stays on after a send. The composer shows the
 whole draft as the chat does — the same wrap, each pasted line break its own
 row, all of it under the address row from the column's left edge, and past its rows the window
@@ -292,17 +293,22 @@ rows drawn.
 
 While browsing, `m` opens a menu on the selected session's card; a right press
 opens it on the card under the pointer, also while writing or held; the draft
-or the held reason is still there when it closes. It offers `Open` and `Stop…`
-(`Stop...` with `icons = off`), and on the orchestrator `Open` only. `o`, `s` or
-a click acts, `↑` / `↓` and `Enter` choose, and `Esc`, `^C`, `m`, a right press
-or a press outside close it. Opening it selects nothing.
+or the held reason is still there when it closes. It offers `Start` on a stopped
+session and `Stop…` (`Stop...` with `icons = off`) on a running one, and nothing
+on the orchestrator. `s` or a click acts, `Enter` chooses, and `Esc`, `^C`, `m`,
+a right press or a press outside close it. Opening it selects nothing. Browsing,
+`s` does the menu's one item at once on the selected session: it starts a stopped
+session, and on a running one asks the Stop question below.
 
-The menu acts on the card as that frame drew it. A card that is stopped, in an
+The menu acts on the card as that frame drew it. A card in an
 unknown state, on another tmux server, or whose record names no single
-`session_id` shows why in the menu, and both items refuse with that reason. A
+`session_id` shows why in the menu, and its item refuses with that reason. A
 record that no longer names the session the menu was drawn from refuses too.
 
-`Open` is `oo` on the session's main seat. `Stop…` asks first. The question
+`Start` is the fleet picker's own stopped-row job — the ordinary launch owner
+behind the same captured-client proofs, run in the background by tmux — so it
+resumes the session and then moves this client to it. A stopped session recorded
+on another tmux server refuses. `Stop…` asks first. The question
 says what a stop does and, on the app's own session, that this app closes;
 `Cancel` is focused. `s` / `c`, `←` / `→` or `Tab` move the focus, `Enter`
 presses it, `y` stops and `n`, `q` or `Esc` cancels. The answer is proven again
@@ -456,9 +462,9 @@ only after the frame that shows it.
 
 ## Settings
 
-`s` opens the read-only Settings overlay over the whole pane, as does the
+`,` opens the read-only Settings overlay over the whole pane, as does the
 gear (`*` with `icons = off`) at the hint row's right end — the gear also
-while writing, where `s` stays draft text; `Esc`, `q` or `s` closes it, `^C`
+while writing, where `,` stays draft text; `Esc`, `q` or `,` closes it, `^C`
 quits. While open the overlay owns every key and click: `Tab`, `1`-`5` and a
 click on a tab title switch tabs, a click on the drawn `Esc close` label or on
 the gear closes it like `Esc`, `j` / `k` and `↓` / `↑` scroll a line, the
@@ -473,7 +479,8 @@ header, a head per scope, then per window a name, an 8-cell bar, `USED`, `COUNTS
 laid out at the pane's width: `SEEN` and then the bar
 drop first on a narrow pane, `#`/`.` replace the bar glyphs with icons off, and a pane
 narrower than the table's floor clips each row at its edge; Config shows every
-`[workspace]` key the home session runs
+`[workspace]` key the SELECTED session (else home) runs, or the current global
+alone when neither exists,
 with and where each came from — `launch` (pinned in its meta), `session` (its
 origin overlay), `global` (the meta-recorded file, the current global only
 when that row is empty) or `default` — with `global only` on the keys that
@@ -491,10 +498,21 @@ roster seat, `name · slot · lead` or `worker`, naming the rules it receives.
 Everything wraps to the pane. A session, config file or seat ae cannot render
 from shows a named `gap` instead of a guess: no records, an unreadable meta or
 config (the whole tab), an unknown slot.
-Quota reads again every refresh while open; config, about and instructions read
+Quota shows the last values it read at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replaces them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. It reads again every refresh while open; config, about and instructions read
 once per open. A torn config shows one honest row naming the file. The
 Instructions head states the residual below: this is today's render, not what
 a running seat was handed.
+
+## Routing a line
+
+A plain line goes to the session's lead. When the lead cannot take it — the same
+verdict `ae list` shows: not running, out of quota, blocked, in error, or busy on a
+turn that is not your open ask — it goes to the colead instead, and the lane gets
+one quiet note (`sent to colead (lead busy)`); the colead's ask opens with one
+line, `(routed to you: lead busy)`, only when it was rerouted. An open ask of yours
+keeps its follow-ups with its seat even while that seat is busy on it. Both seats
+busy: the line waits for the lead (`queued for lead (both busy)`). A leading
+`@lead` or `@colead` picks the seat for that line only. Replies are unchanged.
 
 ## Ownership
 
@@ -502,8 +520,8 @@ An app writes the selected session only while it holds that session's
 **writer lease**, the lock file `.console-writer.lock`: one app at a time per
 session, in any pane or outside tmux, and at most one lease per app. No key or
 wheel notch moves the selection while writing; a click on a session row leaves
-writing first. The composer names its target on its own row: `to <session> › <speaker>`,
-at home or anywhere else. A stopped session,
+writing first. The composer names its target on its own row: `to <session>`,
+at home or anywhere else (the seat is chosen per line, [Routing a line](#routing-a-line)). A stopped session,
 one with no recorded `session_id`, one whose lead pair cannot be read and one
 not recorded in this state root are read-only and say why.
 
@@ -536,8 +554,8 @@ composer reads `read-only · <why>` until a read proves the
 session again; `<why>` names only what works for that reason, so a stopped
 session reads `<name> is stopped; ae <name> resumes it`.
 
-Each session keeps its own draft and speaker in memory, per incarnation, so
-moving between sessions keeps both. Its lead pair is fixed the first time this
+Each session keeps its own draft in memory, per incarnation, so
+moving between sessions keeps it. Its lead pair is fixed the first time this
 run of the app writes it: a different pair refuses as above, and the original
 pair coming back writes again with the kept draft. A fleet read that proves a
 session replaced under its name (a new `session_id`) or gone drops its draft
