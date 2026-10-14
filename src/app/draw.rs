@@ -1300,12 +1300,21 @@ fn hint_row(
     };
     let mut at = put(buf, left, y, first, end - left, style);
     let keys = mode_hint(&ctx.screen.composer);
-    let rest = match (first.is_empty(), keys.is_empty()) {
+    let rest_of = |keys: &str| match (first.is_empty(), keys.is_empty()) {
         (_, true) => String::new(),
         (true, false) => keys.to_owned(),
         (false, false) => format!(" · {keys}"),
     };
-    if cells(Span::raw(rest.as_str()).width()) <= end.saturating_sub(at) {
+    let fits = |rest: &str| cells(Span::raw(rest).width()) <= end.saturating_sub(at);
+    // The clear key is named only over text, and only where it fits whole.
+    let text = matches!(&ctx.screen.composer, Composer::Home { view: Some(_), draft, .. } if !draft.is_empty());
+    let long = rest_of(&format!("{keys} · ^C clears"));
+    let rest = if text && fits(&long) {
+        long
+    } else {
+        rest_of(keys)
+    };
+    if fits(&rest) {
         at = put(buf, at, y, &rest, end - at, paint.fg(|p| p.dim));
     }
     // A panel's footer is its own row: no second gear under it.
@@ -2003,20 +2012,19 @@ fn settings_body(
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
-const WRITE_KEYS: [(&str, &str); 17] = [
+const WRITE_KEYS: [(&str, &str); 16] = [
     ("Enter", "send the line"),
     ("Alt+Enter ^J", "new line in the draft"),
     ("^V", "insert a clipboard PNG path"),
     ("Esc", "keep the draft, browse"),
-    ("^C", "empty draft quits at once"),
-    ("^C", "with a draft: arms; again in 2 s quits"),
-    ("other key", "disarms an armed ^C"),
+    ("^C", "clear a draft; an empty one quits at once"),
     ("Left Right", "move the cursor"),
     ("Home End", "start / end of line"),
     ("^A ^E", "start / end of line"),
     ("Backspace", "erase before the cursor"),
     ("Delete", "erase at the cursor"),
-    ("^U", "clear the line"),
+    ("^U", "clear the whole draft, every line"),
+    ("^Y", "put the cleared draft back, once"),
     ("paste", "literal text, never Enter; CR becomes LF"),
     ("@seat text", "ask that seat"),
     ("/close [id]", "withdraw your open ask"),
@@ -2025,7 +2033,7 @@ const WRITE_KEYS: [(&str, &str); 17] = [
 const HELD_KEYS: [(&str, &str); 4] = [
     ("Enter", "try to write again"),
     ("Esc", "browse"),
-    ("^C", "quit"),
+    ("^C", "quit; a kept draft clears first"),
     ("any other", "swallowed; a paste too"),
 ];
 const MOUSE_KEYS: [(&str, &str); 4] = [
@@ -2041,7 +2049,7 @@ const PEEK_KEYS: [(&str, &str); 6] = [
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
     ("Esc q v", "back to chat; click the session too"),
-    ("^C", "quit"),
+    ("^C", "quit; a draft clears first"),
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; nothing reaches the pane"),
 ];
@@ -2051,7 +2059,7 @@ const SETTINGS_KEYS: [(&str, &str); 10] = [
     ("PgUp/PgDn", "scroll a page"),
     ("?", "show these keys"),
     ("Esc q ,", "close"),
-    ("^C", "quit"),
+    ("^C", "quit; a draft clears first"),
     ("click tab", "show that tab"),
     ("click gear", "or Esc close label: closes it"),
     ("wheel", "scroll 3 rows per notch"),
@@ -2068,7 +2076,10 @@ fn keys_body(paint: Paint) -> Vec<(String, Style)> {
             .iter()
             .map(|(keys, does)| (format!("{keys:<12}{does}"), text)),
     );
-    rows.push((format!("{:<12}quit at once", "^C"), text));
+    rows.push((
+        format!("{:<12}quit at once; a kept draft clears first", "^C"),
+        text,
+    ));
     rows.push(("Any other key cancels qq / oo.".to_owned(), text));
     let sections = [
         ("Write (Enter or a paste starts it)", &WRITE_KEYS[..]),
@@ -3102,6 +3113,49 @@ mod tests {
         );
     }
 
+    /// The hint row names `^C clears` over typed text and never over an empty
+    /// composer, nor over a draft Esc kept (its hint is `Enter writes`); at a width that cannot hold it whole it drops.
+    #[test]
+    fn the_hint_row_names_the_clear_key_only_over_text() {
+        let shot = Shot::new();
+        let (full, empty) = (drafted(&["hello"]), drafted(&[""]));
+        for (composer, named, words) in [
+            (writing(&full, "hello"), true, "typed text"),
+            (writing(&empty, ""), false, "an empty composer"),
+            (
+                browsing("kept"),
+                false,
+                "a kept draft in browse (Enter writes)",
+            ),
+            (browsing(""), false, "no draft"),
+        ] {
+            let buf = shot.draw(160, 43, composer);
+            let keys = line(&buf, 42).concat();
+            assert_eq!(keys.contains("^C clears"), named, "{words}: {keys:?}");
+        }
+        let narrow = shot.draw(60, 43, writing(&full, "hello"));
+        let keys = line(&narrow, 42).concat();
+        assert!(!keys.contains("^C clears"), "dropped, not cut: {keys:?}");
+    }
+
+    /// The sidebar's summary row keeps one space between its counts at every
+    /// width that draws a sidebar (from 90 columns): tight, never a wide gap
+    /// after the session count.
+    #[test]
+    fn the_summary_row_has_one_space_between_counts_at_any_width() {
+        let mut shot = sessions(9);
+        for row in &mut shot.fleet.rows {
+            row.counts = Counts::Marks(vec![(Mark::Working, false, 2)]);
+        }
+        shot.model = Model::new(&shot.fleet);
+        for width in [90, 120, 200] {
+            let (buf, layout) = declutter_frame(&shot, width, true);
+            let row = declutter_line(&buf, &layout, 0);
+            assert_eq!(row.trim(), "▣ 9 ◈ 18 ● 18 ⚠ 0", "{width} cols: {row:?}");
+            assert!(!row.trim().contains("  "), "{width} cols: {row:?}");
+        }
+    }
+
     /// The closed hint row carries the composer's hint, the mode's keys and
     /// the version/gear; held has no hint and no keys. A panel's footer
     /// keeps its mode word and its one hint.
@@ -3134,7 +3188,7 @@ mod tests {
             (READ_ONLY, "? keys"),
             (
                 writing(&draft, "a draft"),
-                "Enter sends · Alt+Enter ^J newline · Esc browses",
+                "Enter sends · Alt+Enter ^J newline · Esc browses · ^C clears",
             ),
             (refused, ""),
         ];
@@ -4277,9 +4331,9 @@ mod tests {
             assert!(found, "{title} has no row with {words:?}: {body:?}");
         };
         has("Browse", &["^C", "quit at once"]);
-        has("Write", &["^C", "empty", "quits at once"]);
-        has("Write", &["^C", "draft", "2 s"]);
-        has("Write", &["other key", "disarms"]);
+        has("Write", &["^C", "clear a draft", "empty", "quits at once"]);
+        has("Write", &["^U", "whole draft"]);
+        has("Write", &["^Y", "cleared draft", "once"]);
         has("Settings", &["gear", "Esc close", "closes"]);
         has("Settings", &["wheel", "3 rows"]);
         has("Mouse", &["click", "session", "tab"]);

@@ -231,7 +231,7 @@ typed or pasted text goes in at it byte for byte, even where it completes a
 character with the bytes after it; the next arrow or erase key then acts from
 the end of that character. A cursor before a line break at the end of a full
 row is drawn on that row's last cell. `^U` clears the whole draft, wherever the
-cursor is. Up, Down, Insert, PgUp, PgDn and modified navigation keys are
+cursor is, and `^Y` puts the cleared draft back at the cursor, once (a send ends it). Up, Down, Insert, PgUp, PgDn and modified navigation keys are
 consumed and do nothing; `^V` reads a clipboard image; any other plain control byte is a literal draft byte.
 `^V` in the owner chat inserts an absolute PNG path at the cursor, with spaces
 where needed; Enter sends it. Images live at 0600 under the session's `messages/`.

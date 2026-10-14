@@ -163,7 +163,7 @@ Browsing:
 | Click a Settings tab title | show that tab, like `Tab` and `1`-`5` |
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `qq` | quit: the first `q` only arms (`q again to quit`), the second within 2 seconds quits |
-| `^C` | quit, at once |
+| `^C` | quit, at once; over a draft Esc kept it clears the draft first |
 | `^V` while writing | save a clipboard PNG and insert its path; Enter sends |
 
 No single printable key quits or moves your client: an armed `q` or `o` is
@@ -205,7 +205,7 @@ around the cursor with `… +N lines above` and `… +N lines below` among them
 character goes. The cursor shows only while writing with the composer drawn:
 browsing, a held composer and Settings hide it. The address row, every draft row
 and the note row under them are one click target. `Enter` sends, `Esc` goes back to browsing and keeps
-the draft. `^C` over a non-empty draft only arms (`^C again to quit - the draft is lost`): a second within 2 seconds quits and any other key disarms; over an empty composer it quits at once. `/open <seat>` opens that seat of the selected session
+the draft. `^C` over any text in the composer — typed, or kept by `Esc`, also under an open Settings or peek — clears it whole and never quits (`draft cleared · ^Y brings it back` on the hint row); over an empty composer it quits at once, so a second `^C` quits. `^U` clears the whole draft the same way, every line, and `^Y` puts the last cleared draft back at the cursor, once: a send ends it, a newer clear replaces it, and a draft with no room for it keeps it waiting. While there is text the hint row also reads `^C clears`. `/open <seat>` opens that seat of the selected session
 ([Opening a seat](#opening-a-seat)). While an ask is being delivered the hint row reads `sending to <seat>…`
 and nothing behind it acts until it ends. Each outcome shows once, as an `ae`
 line in the lane of the session it is about (an unconfirmed or undelivered ask

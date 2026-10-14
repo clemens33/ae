@@ -65,6 +65,8 @@ pub enum Key {
     Home,
     End,
     ClearLine,
+    /// `^Y`: the draft `^U` or `^C` last cleared, put back at the cursor once.
+    Yank,
     Enter,
     /// `^J` or Alt+Enter: a line break in the draft, never a send.
     Newline,
@@ -235,6 +237,7 @@ impl Keys {
                     0x01 => Key::Home,
                     0x05 => Key::End,
                     0x15 => Key::ClearLine,
+                    0x19 => Key::Yank,
                     0x16 => Key::ImagePaste,
                     b'\r' => Key::Enter,
                     b'\n' => Key::Newline,
@@ -368,12 +371,15 @@ pub enum Entered {
 
 /// One composed line: literal bytes up to [`CAP`], and the byte offset the
 /// cursor is at, where text goes in and an erase takes out. Past the cap it is
-/// over — later bytes are dropped and Enter refuses — until ^U clears it.
+/// over — later bytes are dropped and Enter refuses — until ^U clears it. The
+/// draft a clear last took waits in `cleared` until ^Y puts it back or a send
+/// ends the draft.
 #[derive(Debug, Default)]
 pub struct Composer {
     bytes: Vec<u8>,
     cursor: usize,
     over: bool,
+    cleared: Vec<u8>,
 }
 
 impl Composer {
@@ -410,11 +416,28 @@ impl Composer {
             Key::Right if !self.over => self.cursor = self.unit(true),
             Key::Home if !self.over => self.cursor = 0,
             Key::End if !self.over => self.cursor = self.bytes.len(),
-            Key::ClearLine => *self = Self::default(),
+            Key::ClearLine => {
+                let kept = std::mem::take(&mut self.bytes);
+                let cleared = if kept.is_empty() {
+                    std::mem::take(&mut self.cleared)
+                } else {
+                    kept
+                };
+                *self = Self {
+                    cleared,
+                    ..Self::default()
+                };
+            }
+            Key::Yank if !self.over && self.bytes.len() + self.cleared.len() <= CAP => {
+                let back = std::mem::take(&mut self.cleared);
+                self.bytes
+                    .splice(self.cursor..self.cursor, back.iter().copied());
+                self.cursor += back.len();
+            }
             Key::Enter if self.over => return Some(Entered::Over),
             Key::Enter if self.bytes.is_empty() => return Some(Entered::Empty),
             Key::Enter => {
-                self.cursor = 0;
+                (self.cursor, self.cleared) = (0, Vec::new());
                 return Some(Entered::Line(std::mem::take(&mut self.bytes)));
             }
             Key::Text(_)
@@ -424,6 +447,7 @@ impl Composer {
             | Key::Right
             | Key::Home
             | Key::End
+            | Key::Yank
             | Key::Up
             | Key::Down
             | Key::PageUp
@@ -1076,6 +1100,14 @@ impl Input {
         self.composer.put_back(raw);
     }
 
+    /// ^C over a draft: the whole draft cleared, kept for [`Key::Yank`]. `false`
+    /// when the composer held nothing.
+    pub fn clear(&mut self) -> bool {
+        let had = !self.draft().is_empty();
+        let _ = self.composer.key(Key::ClearLine);
+        had
+    }
+
     /// `/open name`: the seat of that name in the last settled roster, or why not.
     fn open(&self, name: &str) -> Effect {
         let seat = self
@@ -1525,6 +1557,69 @@ mod tests {
         input.put_back(b"first ");
         assert_eq!(input.line().as_deref(), Some("to lead> first later"));
         assert_eq!(asks(&input.chunk(b"\r", at(base, 2))), ["first later"]);
+    }
+
+    #[test]
+    fn ctrl_u_clears_every_line_and_ctrl_y_puts_it_back_once_at_the_cursor() {
+        let draft = b"one\ntwo\nthree";
+        assert_eq!(edited(draft, b"\x15z"), b"z", "every line goes, not one");
+        assert_eq!(edited(draft, b"\x15\x19"), draft, "^Y restores it whole");
+        assert_eq!(edited(draft, b"\x15\x19\x19"), draft, "only once");
+        assert_eq!(
+            edited(draft, b"\x15\x15\x19"),
+            draft,
+            "^U on empty keeps it"
+        );
+        assert_eq!(
+            edited(b"a", b"\x15b\x15\x19"),
+            b"b",
+            "the newest clear wins"
+        );
+        assert_eq!(edited(b"ab", b"\x15xy\x1b[D\x19"), b"xaby", "at the cursor");
+        assert_eq!(edited(b"hi", b"\x19"), b"hi", "nothing cleared: no change");
+        let mut composer = drafted(b"a");
+        let _ = (
+            composer.key(Key::ClearLine),
+            composer.key(Key::Text(b"b".to_vec())),
+        );
+        assert_eq!(composer.key(Key::Enter), Some(Entered::Line(b"b".to_vec())));
+        let _ = composer.key(Key::Yank);
+        assert_eq!(
+            composer.key(Key::Enter),
+            Some(Entered::Empty),
+            "a send ends it"
+        );
+    }
+
+    #[test]
+    fn ctrl_y_never_pushes_a_draft_past_the_cap_and_keeps_what_it_could_not_put_back() {
+        let mut composer = drafted(&vec![b'a'; CAP]);
+        let _ = (
+            composer.key(Key::ClearLine),
+            composer.key(Key::Text(b"b".to_vec())),
+        );
+        let _ = composer.key(Key::Yank);
+        assert_eq!(composer.line(""), "b", "refused: no room, not over");
+        let _ = (composer.key(Key::Backspace), composer.key(Key::Yank));
+        assert_eq!(
+            composer.key(Key::Enter),
+            Some(Entered::Line(vec![b'a'; CAP]))
+        );
+    }
+
+    #[test]
+    fn both_decoders_spell_ctrl_y_as_yank_and_the_input_clear_reports_what_it_took() {
+        let base = Instant::now();
+        for mut keys in [Keys::default(), Keys::app()] {
+            assert_eq!(keys.feed(b"\x19", base), [(Key::Yank, base)]);
+        }
+        let mut input = owner(base);
+        let _ = input.chunk(b"x", at(base, 1));
+        assert!(input.clear(), "text was cleared");
+        assert_eq!(input.line().as_deref(), Some("to lead> "));
+        assert!(!input.clear(), "an empty composer clears nothing");
+        let _ = input.chunk(b"\x19", at(base, 2));
+        assert_eq!(input.line().as_deref(), Some("to lead> x"));
     }
 
     #[test]

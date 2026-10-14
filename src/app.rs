@@ -161,8 +161,6 @@ struct Armed {
 #[derive(Debug, Clone)]
 enum Arm {
     Quit,
-    /// ^C over a draft that would be lost.
-    Interrupt,
     /// `o` on the frame it saw: the second press opens that frame's seat.
     Open(Drawn),
 }
@@ -172,7 +170,6 @@ impl Arm {
     fn line(&self) -> String {
         match self {
             Self::Quit => "q again to quit".to_owned(),
-            Self::Interrupt => "^C again to quit - the draft is lost".to_owned(),
             Self::Open(d) => format!("o again to open {}", d.focused.as_deref().unwrap_or("")),
         }
     }
@@ -1307,7 +1304,8 @@ impl App {
         self.read_only.is_empty() && self.model.selected().is_some() && !self.model.peek_open()
     }
 
-    /// One key while composing: Esc keeps the draft and browses, ^C quits,
+    /// One key while composing: Esc keeps the draft and browses, ^C over an
+    /// empty composer quits (over text it clears, see [`App::clear_draft`]),
     /// one read before the lease was taken is dropped, and anything else is
     /// the chat's own input. `None` quits.
     fn compose(&mut self, key: Key, origin: Instant) -> Option<()> {
@@ -1318,9 +1316,7 @@ impl App {
         };
         match key {
             Key::Escape => self.write(false),
-            Key::Interrupt if self.protects() => {
-                return self.press(Arm::Interrupt, origin).is_none().then_some(());
-            }
+            Key::Interrupt if self.clear_draft() => {}
             Key::Interrupt => return None,
             _ if self.lease.as_ref().is_some_and(|lease| origin < lease.at) => {
                 if let Some(lease) = self.lease.as_mut().filter(|lease| !lease.named) {
@@ -1330,6 +1326,9 @@ impl App {
                 }
             }
             key => {
+                if key == Key::ClearLine && self.protects() {
+                    self.cleared_note();
+                }
                 let input = self.writer.as_ref().map(Binding::key);
                 let effects = input
                     .and_then(|input| self.inputs.get_mut(&input))
@@ -1355,6 +1354,39 @@ impl App {
             _ => return Some(false),
         }
         Some(true)
+    }
+
+    /// ^C over text in the composer on show — the writer's draft, or the one
+    /// Esc kept — clears it whole and keeps it for `^Y`; the app never quits
+    /// over text. Whether it cleared.
+    fn clear_draft(&mut self) -> bool {
+        let Some(name) = self.model.selected().map(str::to_owned) else {
+            return false;
+        };
+        let writer = self.writer.as_ref().map(Binding::key);
+        let key = writer.unwrap_or_else(|| (name.clone(), self.id(&name)));
+        let cleared = self.inputs.get_mut(&key).is_some_and(Input::clear);
+        if cleared {
+            self.cleared_note();
+        }
+        cleared
+    }
+
+    /// The hint row's word after a clear: how the text comes back.
+    fn cleared_note(&mut self) {
+        let how = if self.composing() {
+            "^Y"
+        } else {
+            "Enter, then ^Y"
+        };
+        let line = format!("draft cleared · {how} brings it back");
+        self.flash = Some((line, Instant::now()));
+    }
+
+    /// Whether the composer on show holds text a ^C would clear.
+    fn has_text(&self) -> bool {
+        self.shown_input()
+            .is_some_and(|input| !input.draft().is_empty())
     }
 
     /// Whether a ^C here would lose a draft only this process holds.
@@ -3383,7 +3415,7 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
             app.deferred.push((key, origin));
             app.deferred.extend(keyed);
             let held = app.deferred.iter().any(|(key, _)| *key == Key::Interrupt);
-            let quit = held && app.queued.is_empty() && !app.protects();
+            let quit = held && app.queued.is_empty() && !app.has_text();
             return (!quit).then_some(true);
         }
         // A read spent on a modal changes nothing more; an open modal takes
@@ -3414,7 +3446,9 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         } else {
             // A key or a paste ends a drag first, then acts as it always has.
             let ended = app.model.let_go();
-            let acted = if app.model.settings_open() {
+            let acted = if key == Key::Interrupt && app.clear_draft() {
+                true
+            } else if app.model.settings_open() {
                 settings_key(app, &key, origin)?
             } else if app.model.peek_open() {
                 peek_key(app, &key, origin)?
@@ -4857,25 +4891,68 @@ mod tests {
         assert!(said.starts_with("paste not taken: read-only"), "{said}");
     }
 
-    /// P1/C2: `^C` over a draft arms and asks twice, an edit disarms it, and
-    /// an empty composer quits at once.
+    /// P1/C2: `^C` over text clears it whole and keeps it for `^Y`; only an
+    /// empty composer quits, so no `^C` over text ever ends the app.
     #[test]
-    fn interrupt_over_a_draft_arms_and_an_empty_composer_quits() {
+    fn interrupt_over_text_clears_it_and_only_an_empty_composer_quits() {
         let root = Root::new("c2");
         let (mut app, _reader) = housed(&root);
         let at = writing(&mut app);
+        let draft = |app: &App| app.shown_input().map(Input::draft).unwrap_or_default();
         assert_eq!(app.compose(Key::Interrupt, at), None, "empty quits at once");
-        assert_eq!(app.compose(Key::Text(b"keep".to_vec()), at), Some(()));
+        assert_eq!(app.compose(Key::Text(b"keep\nme".to_vec()), at), Some(()));
         assert_eq!(take_keys(&mut app, vec![(Key::Interrupt, at)]), Some(true));
-        let line = "^C again to quit - the draft is lost";
+        assert_eq!(draft(&app), "", "every line is gone");
+        let line = "draft cleared · ^Y brings it back";
         assert_eq!(app.note().as_deref(), Some(line));
+        assert!(app.composing() && app.armed.is_none(), "still writing");
+        assert_eq!(take_keys(&mut app, vec![(Key::Yank, at)]), Some(true));
+        assert_eq!(draft(&app), "keep me", "^Y brings it back");
+        assert_eq!(take_keys(&mut app, vec![(Key::Yank, at)]), Some(true));
+        assert_eq!(draft(&app), "keep me", "and only once");
+        assert_eq!(take_keys(&mut app, vec![(Key::ClearLine, at)]), Some(true));
+        assert_eq!(draft(&app), "", "^U clears the same way");
+        assert_eq!(app.note().as_deref(), Some(line));
+        let twice = vec![(Key::Yank, at), (Key::Interrupt, at), (Key::Interrupt, at)];
         assert_eq!(
-            take_keys(&mut app, vec![(Key::Text(b"!".to_vec()), at)]),
-            Some(true)
+            take_keys(&mut app, twice),
+            None,
+            "the second, empty one quits"
         );
-        assert!(app.armed.is_none(), "an edit disarms");
-        let twice = vec![(Key::Interrupt, at), (Key::Interrupt, at)];
-        assert_eq!(take_keys(&mut app, twice), None, "the second quits");
+    }
+
+    /// `^C` clears text wherever the composer shows it: the draft Esc kept in
+    /// browse, and one under an open overlay. Neither quits.
+    #[test]
+    fn interrupt_clears_a_kept_draft_and_one_under_the_settings_overlay() {
+        let root = Root::new("c2-kept");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        assert_eq!(app.compose(Key::Text(b"keep".to_vec()), at), Some(()));
+        assert_eq!(take_keys(&mut app, vec![(Key::Escape, at)]), Some(true));
+        assert!(!app.composing() && app.has_text(), "Esc kept the draft");
+        assert_eq!(take_keys(&mut app, vec![(Key::Interrupt, at)]), Some(true));
+        assert!(!app.has_text(), "browse: cleared, not quit");
+        assert!(app.note().is_some_and(|n| n.contains("Enter, then ^Y")));
+        assert_eq!(
+            take_keys(&mut app, vec![(Key::Interrupt, at)]),
+            None,
+            "empty quits"
+        );
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        assert_eq!(app.compose(Key::Text(b"keep".to_vec()), at), Some(()));
+        app.open_settings();
+        assert_eq!(take_keys(&mut app, vec![(Key::Interrupt, at)]), Some(true));
+        assert!(
+            app.model.settings_open() && !app.has_text(),
+            "cleared under it"
+        );
+        assert_eq!(
+            take_keys(&mut app, vec![(Key::Interrupt, at)]),
+            None,
+            "empty quits"
+        );
     }
 
     /// P2/O1: the first `o` arms on the frame it saw and moves nothing; the
@@ -5125,7 +5202,8 @@ mod tests {
 
     /// R4(f)/I5: Enter queues its ask behind the frame that names it; a key
     /// behind it waits in order, an answer behind it waits in the channel,
-    /// and a `^C` behind it quits only after the ask ran.
+    /// and a `^C` behind it acts only after the ask ran: over the draft the
+    /// refusal gave back it clears, and only a second quits.
     #[test]
     fn an_entered_ask_is_delivered_before_anything_behind_it_acts() {
         let root = Root::new("queued");
@@ -5149,6 +5227,12 @@ mod tests {
         assert!(app.deliver() && app.queued.is_empty());
         let notice = &app.notices.last().expect("said").1.body;
         assert_eq!(notice, "refused: the session was replaced or renamed");
+        assert!(app.has_text(), "the refused line is back in the draft");
+        let drained = super::drain(&mut app, &mut keys, &wakes, &mut None);
+        assert_eq!(drained, Some(true), "the held ^C clears it, not quits");
+        assert!(!app.has_text());
+        wake.send(super::Wake::Keys(at, b"\x03".to_vec()))
+            .expect("sent");
         assert_eq!(super::drain(&mut app, &mut keys, &wakes, &mut None), None);
     }
 

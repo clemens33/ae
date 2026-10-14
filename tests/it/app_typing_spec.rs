@@ -293,34 +293,34 @@ fn hello_on_a_stopped_selection_keeps_app_and_seats_untouched() {
 }
 
 #[test]
-fn nonempty_draft_interrupt_arms_and_an_edit_disarms_it() {
+fn nonempty_draft_interrupt_clears_it_and_ctrl_y_brings_it_back() {
     let (rig, pane) = open("typectrlc");
     rig.keys(&pane, "Enter");
     rig.wait(&pane, FRAME, "GUARD writing before draft", writing);
     rig.literal(&pane, "DRAFT-KEPT");
-    rig.wait(&pane, FRAME, "GUARD draft drawn before interrupt", |s| {
-        s.contains("DRAFT-KEPT")
+    rig.wait(&pane, FRAME, "GUARD draft drawn, clear key named", |s| {
+        s.contains("DRAFT-KEPT") && s.contains("^C clears")
+    });
+    rig.keys(&pane, "C-c");
+    rig.wait(&pane, FRAME, "C1 first interrupt clears the draft", |s| {
+        s.contains("draft cleared") && !s.contains("DRAFT-KEPT") && !s.contains("^C clears")
+    });
+    alive(&rig, &pane);
+    rig.keys(&pane, "C-y");
+    rig.wait(&pane, FRAME, "C1 ^Y brings the draft back", |s| {
+        s.contains("DRAFT-KEPT") && s.contains("^C clears")
+    });
+    rig.keys(&pane, "C-u");
+    rig.wait(&pane, FRAME, "C1 ^U clears it as well", |s| {
+        s.contains("draft cleared") && !s.contains("DRAFT-KEPT")
     });
     rig.keys(&pane, "C-c");
     rig.wait(
         &pane,
         FRAME,
-        "P1 first interrupt protects nonempty draft",
-        |s| s.contains("^C again to quit") && s.contains("DRAFT-KEPT"),
+        "C1 interrupt over an empty composer quits",
+        |s| s.contains("ae app closed"),
     );
-    alive(&rig, &pane);
-    rig.literal(&pane, "-EDIT");
-    rig.wait(&pane, FRAME, "P1 edit disarms and preserves draft", |s| {
-        s.contains("DRAFT-KEPT-EDIT") && !s.contains("^C again to quit")
-    });
-    rig.keys(&pane, "C-c");
-    rig.wait(&pane, FRAME, "P1 fresh interrupt only arms", |s| {
-        s.contains("^C again to quit")
-    });
-    rig.keys(&pane, "C-c");
-    rig.wait(&pane, FRAME, "P1 second interrupt quits", |s| {
-        s.contains("ae app closed")
-    });
 }
 
 #[test]
@@ -457,6 +457,7 @@ fn question_opens_one_read_only_keys_overlay_with_every_existing_key() {
         "^A",
         "^E",
         "^U",
+        "^Y",
         "Backspace",
         "Delete",
         "@",
