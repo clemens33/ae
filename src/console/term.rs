@@ -96,9 +96,13 @@ pub(crate) fn pair_of(mut seats: Vec<Seat>) -> Result<Vec<Seat>, String> {
     Ok(seats)
 }
 
-/// Whether `pair`, slots and names, is still the session's lead pair.
+/// Whether `pair`, slots and names, is still the session's lead pair. A
+/// seat's profile is how it runs, not where an ask goes, so a reseat of
+/// either seat leaves the pair what it was; this is the one comparer.
 pub(crate) fn still(pair: &[Seat], seats: Result<Vec<Seat>, String>) -> Result<(), String> {
-    if pair_of(seats?)? == pair {
+    let now = pair_of(seats?)?;
+    let same = |(was, is): (&Seat, &Seat)| was.slot == is.slot && was.name == is.name;
+    if now.len() == pair.len() && pair.iter().zip(&now).all(same) {
         return Ok(());
     }
     Err("the lead pair changed since this chat opened - restart this chat".to_owned())
@@ -451,7 +455,7 @@ impl Term {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effect, Got, Input, Reading, Reads, Screen, Seat, Term, pair_of, reader};
+    use super::{Effect, Got, Input, Reading, Reads, Screen, Seat, Term, pair_of, reader, still};
     use crate::console::tests::{ID, Rig};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     use std::time::{Duration, Instant};
@@ -714,6 +718,94 @@ mod tests {
             "a quiet terminal says nothing"
         );
         assert!(Instant::now() >= deadline, "and says it at its deadline");
+    }
+
+    #[test]
+    fn only_slots_and_names_make_it_the_same_lead_pair() {
+        let seat = |slot: &str, name: &str, profile: Option<&str>| Seat {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: profile.map(str::to_owned),
+        };
+        let opened = [
+            seat("main", "lead", Some("fable5")),
+            seat("worker.0", "colead", Some("sol61x")),
+        ];
+        let now = |seats: Vec<Seat>| still(&opened, Ok(seats));
+        let reseated = vec![
+            seat("main", "lead", Some("opus55x")),
+            seat("worker.0", "colead", None),
+        ];
+        assert_eq!(now(reseated), Ok(()), "a profile is not routing identity");
+        let changed =
+            Err("the lead pair changed since this chat opened - restart this chat".to_owned());
+        let (lead, colead) = (opened[0].clone(), opened[1].clone());
+        let renamed_main = vec![
+            seat("main", "other", lead.profile.as_deref()),
+            colead.clone(),
+        ];
+        let renamed_worker = vec![
+            lead.clone(),
+            seat("worker.0", "other", colead.profile.as_deref()),
+        ];
+        let swapped = vec![
+            seat("main", "colead", lead.profile.as_deref()),
+            seat("worker.0", "lead", colead.profile.as_deref()),
+        ];
+        let added = vec![
+            lead.clone(),
+            colead.clone(),
+            seat("worker.1", "third", None),
+        ];
+        for (what, seats) in [
+            ("a renamed main seat", renamed_main),
+            ("a renamed colead", renamed_worker),
+            ("names swapped between slots", swapped),
+            ("a seat removed", vec![lead.clone()]),
+            ("a seat added", added),
+        ] {
+            assert_eq!(now(seats), changed, "{what}");
+        }
+    }
+
+    #[test]
+    fn an_ask_after_a_reseat_clears_the_pair_check_and_stops_only_at_ownership() {
+        let (rig, head) = (
+            Rig::new("term-reseat"),
+            format!("session_id={ID}\nlayout=lead-pair"),
+        );
+        let meta = |m: &str, c: &str| {
+            format!(
+                "{head}\nseat.main=lead\nprofile.main={m}\nseat.worker.0=colead\nprofile.worker.0={c}\n"
+            )
+        };
+        std::fs::write(rig.0.join("s/meta"), meta("fable5", "sol61x")).unwrap();
+        let mut console = rig.console();
+        let pair = console.seats().and_then(pair_of).unwrap();
+        assert_eq!(
+            pair[0].profile.as_deref(),
+            Some("fable5"),
+            "profile rows parse"
+        );
+        let mut term = Term {
+            input: Input::default(),
+            pair,
+            reads: Reads(None),
+            clipboard: None,
+            server: None,
+            me: None,
+            screen: Screen::default(),
+        };
+        for (main, colead) in [
+            ("opus55x", "sol61x"),
+            ("fable5", "luna6m"),
+            ("opus55x", "luna6m"),
+        ] {
+            std::fs::write(rig.0.join("s/meta"), meta(main, colead)).unwrap();
+            let said = term.ask(&mut console, b"hi", "lead", "hi".to_owned());
+            let stops = "refused: tmux did not answer who owns the input";
+            assert_eq!(said, Effect::Print(stops.to_owned()), "{main} {colead}");
+        }
     }
 
     #[test]

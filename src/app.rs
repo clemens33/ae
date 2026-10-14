@@ -4832,6 +4832,49 @@ mod tests {
         assert_eq!(app.close(None), "refused: not writing");
     }
 
+    /// A reseat changes a seat's profile and nothing the lead pair routes by:
+    /// the writing it ended keeps its admission and the next entry is not
+    /// refused, while a rename still is.
+    #[test]
+    fn a_reseat_keeps_the_writing_and_the_next_entry_but_a_rename_does_not() {
+        let root = Root::new("reseat");
+        let (mut app, reader) = housed(&root);
+        let dir = root.0.join("sessions").join("api");
+        let profiled = |main: &str, peer: &str| {
+            let rows = format!("layout=lead-pair\nseat.main=lead\nprofile.main={main}\n");
+            let rows = format!("{rows}seat.worker.0={peer}\nprofile.worker.0=sol61x\n");
+            std::fs::write(
+                dir.join("meta"),
+                format!("schema=2\nsession_id={ID}\n{rows}"),
+            )
+            .expect("meta");
+        };
+        profiled("fable5", "colead");
+        refold(&mut app, &reader, &root, &[("api", Status::Running)]);
+        let typed = writing(&mut app);
+        profiled("opus55x", "colead");
+        let close = |app: &mut App| {
+            for key in [Key::Text(b"/close".to_vec()), Key::Enter] {
+                assert_eq!(app.compose(key, typed), Some(()));
+            }
+            app.notices
+                .last()
+                .map_or_else(String::new, |said| said.1.body.clone())
+        };
+        assert_eq!(close(&mut app), "refused: no open ask to close");
+        assert!(app.composing(), "a reseat does not end the writing");
+        refold(&mut app, &reader, &root, &[("api", Status::Running)]);
+        app.write(false);
+        app.write(true);
+        assert!(app.composing() && app.held.is_none(), "{:?}", app.held);
+        profiled("opus55x", "other");
+        refold(&mut app, &reader, &root, &[("api", Status::Running)]);
+        app.write(false);
+        app.write(true);
+        let changed = "the lead pair changed since this chat opened - restart this chat";
+        assert_eq!(app.held.as_deref(), Some(changed), "a rename still refuses");
+    }
+
     /// #36: seat facts come from the session's own picker row.
     #[test]
     fn seat_facts_come_from_the_sessions_own_picker_row() {
