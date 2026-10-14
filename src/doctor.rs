@@ -253,8 +253,9 @@ pub struct Facts {
     pub config: PathBuf,
     /// Why the config could not be read as identity v2, when it could not.
     pub config_error: Option<String>,
-    /// The project override the config reader layers over the global one: the
-    /// named `--local`, else `<cwd>/.ae/config`.
+    /// The project override the config reader layered over the global one — the
+    /// named `--local`, else `<cwd>/.ae/config` — and only when the read
+    /// succeeded; a refused read leaves `None` and a `config` failure.
     pub local_config: Option<PathBuf>,
     /// The instant the quota readings below were judged at, epoch seconds.
     pub now: i64,
@@ -832,6 +833,9 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
     let roots = crate::inventory::Roots::under(root);
     let config = global.map_or_else(|| root.join("config"), Path::to_path_buf);
     let read = crate::config::read_identity(Some(&config), local);
+    // Only a read that succeeded read the file: a refused one is the `config`
+    // row's failure to name, and its keys decided nothing.
+    let local_read = read.as_ref().ok().and(local);
     let (mut config_error, identity) = match read {
         Ok(identity) => (None, identity),
         Err(why) => (
@@ -920,7 +924,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         git: resolve_on_path("git"),
         config,
         config_error,
-        local_config: local.map(Path::to_path_buf),
+        local_config: local_read.map(Path::to_path_buf),
         now,
         quota,
         main: identity.main.filter(|value| !value.is_empty()),

@@ -108,6 +108,24 @@ impl Rig {
     fn doctor(&self) -> (Option<i32>, String) {
         self.doctor_in(&self.0.join("plain"))
     }
+
+    /// `ae doctor --local <local>`: the override is NAMED, whatever it holds.
+    fn doctor_local(&self, local: &Path) -> (Option<i32>, String) {
+        let output = self
+            .command()
+            .current_dir(self.0.join("plain"))
+            .arg(ae::cli::DOCTOR)
+            .arg("--global")
+            .arg(self.0.join("config"))
+            .arg("--local")
+            .arg(local)
+            .output()
+            .expect("doctor child");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    }
 }
 
 /// `(level, label, detail)` of every report row, in order.
@@ -232,4 +250,46 @@ fn a_work_dir_with_no_override_adds_no_config_row() {
             .all(|(_, label, _)| label != "local-config"),
         "no extra file, no row: {report}"
     );
+}
+
+/// A file the reader could not read is not a file it read: the `config` row
+/// already fails naming it, and no `local-config` row claims its keys win.
+#[test]
+fn an_explicit_override_the_reader_could_not_read_is_failed_never_claimed_as_read() {
+    let rig = Rig::new("unread", "base = claude");
+    let missing = rig.0.join("does-not-exist");
+    // A directory is selected but not readable as a file.
+    let unreadable = rig.0.join("plain");
+    for (case, local) in [("missing", missing), ("unreadable", unreadable)] {
+        let (code, report) = rig.doctor_local(&local);
+        let all = rows(&report);
+        assert!(
+            all.iter().all(|(_, label, _)| label != "local-config"),
+            "{case}: a file that was not read is not claimed as read: {report}"
+        );
+        let config = all
+            .iter()
+            .find(|(_, label, _)| label == "config")
+            .unwrap_or_else(|| panic!("{case}: a config row: {report}"));
+        assert_eq!(config.0, "FAIL", "{case}: {report}");
+        assert!(
+            config.2.contains(&local.display().to_string()),
+            "{case}: the failure names the file: {report}"
+        );
+        assert_eq!(code, Some(1), "{case}: a failed read still exits one");
+    }
+}
+
+/// The reader's own success is the proof: a readable `--local` is claimed.
+#[test]
+fn an_explicit_override_the_reader_read_is_named_by_path() {
+    let rig = Rig::new("named", "base = claude");
+    let file = rig.0.join("overridden/.ae/config");
+    let (_, report) = rig.doctor_local(&file);
+    let found: Vec<_> = rows(&report)
+        .into_iter()
+        .filter(|(_, label, _)| label == "local-config")
+        .collect();
+    assert_eq!(found.len(), 1, "{report}");
+    assert!(found[0].2.contains(&file.display().to_string()), "{report}");
 }

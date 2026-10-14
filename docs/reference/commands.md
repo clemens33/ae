@@ -957,7 +957,8 @@ newest reading is absent or more than an hour old: auto reseat's headroom trigge
 reading, so that scope's seats move only after they hit a limit. The row names the fix, the
 statusline pipe in [Feed Claude quota from your statusline](#feed-claude-quota-from-your-statusline).
 A `local-config` row appears when `--local`, or a `.ae/config` in the directory `ae doctor` runs
-from, layers a second file over the global config; it carries that file's path. No such file, no row.
+from, layers a second file over the global config; it carries that file's path. No such file, no row,
+and a file the reader could not read is the `config` row's failure, never a `local-config` claim.
 
 It also prints the REBOOT EVIDENCE: a `boot` row with the host's boot time, and a
 `last-live:<name>` row per session saying when that session last did something only a
