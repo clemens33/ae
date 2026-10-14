@@ -65,7 +65,15 @@ pub enum Key {
     Home,
     End,
     ClearLine,
-    /// `^Y`: the draft `^U` or `^C` last cleared, put back at the cursor once.
+    /// `^W`: the word before the cursor, up to whitespace.
+    KillBigWord,
+    /// `Opt+Backspace` (`ESC DEL`): the word before the cursor, up to any
+    /// character that is not a letter or digit.
+    KillWord,
+    /// `^K`: the rest of the cursor's line, or its break when nothing is left.
+    KillToEnd,
+    /// `^Y`: the text `^U`, `^C`, `^W`, `Opt+Backspace` or `^K` last took, put back
+    /// at the cursor once.
     Yank,
     Enter,
     /// `^J` or Alt+Enter: a line break in the draft, never a send.
@@ -237,6 +245,8 @@ impl Keys {
                     0x01 => Key::Home,
                     0x05 => Key::End,
                     0x15 => Key::ClearLine,
+                    0x17 => Key::KillBigWord,
+                    0x0b => Key::KillToEnd,
                     0x19 => Key::Yank,
                     0x16 => Key::ImagePaste,
                     b'\r' => Key::Enter,
@@ -352,6 +362,7 @@ fn moving(seq: &[u8]) -> Option<Key> {
 fn editing(seq: &[u8]) -> Option<Key> {
     Some(match seq {
         b"\x1b\r" | b"\x1b\n" => Key::Newline,
+        b"\x1b\x7f" | b"\x1b\x08" => Key::KillWord,
         b"\x1b[D" | b"\x1bOD" => Key::Left,
         b"\x1b[C" | b"\x1bOC" => Key::Right,
         b"\x1b[H" | b"\x1bOH" | b"\x1b[1~" | b"\x1b[7~" => Key::Home,
@@ -372,8 +383,8 @@ pub enum Entered {
 /// One composed line: literal bytes up to [`CAP`], and the byte offset the
 /// cursor is at, where text goes in and an erase takes out. Past the cap it is
 /// over — later bytes are dropped and Enter refuses — until ^U clears it. The
-/// draft a clear last took waits in `cleared` until ^Y puts it back or a send
-/// ends the draft.
+/// text a clear or a kill last took waits in `cleared` until ^Y puts it back or a
+/// send ends the draft.
 #[derive(Debug, Default)]
 pub struct Composer {
     bytes: Vec<u8>,
@@ -428,6 +439,17 @@ impl Composer {
                     ..Self::default()
                 };
             }
+            Key::KillBigWord if !self.over => self.kill(self.word_start(true), self.cursor),
+            Key::KillWord if !self.over => self.kill(self.word_start(false), self.cursor),
+            Key::KillToEnd if !self.over => {
+                let rest = &self.bytes[self.cursor..];
+                let to = match rest.iter().position(|&byte| byte == b'\n') {
+                    Some(0) => 1,
+                    Some(len) => len,
+                    None => rest.len(),
+                };
+                self.kill(self.cursor, self.cursor + to);
+            }
             Key::Yank if !self.over && self.bytes.len() + self.cleared.len() <= CAP => {
                 let back = std::mem::take(&mut self.cleared);
                 self.bytes
@@ -448,6 +470,9 @@ impl Composer {
             | Key::Home
             | Key::End
             | Key::Yank
+            | Key::KillBigWord
+            | Key::KillWord
+            | Key::KillToEnd
             | Key::Up
             | Key::Down
             | Key::PageUp
@@ -512,6 +537,32 @@ impl Composer {
 
     fn snap(&mut self) {
         self.cursor = self.snapped();
+    }
+
+    /// Where the word before the cursor begins: blanks skipped, then its bytes.
+    /// A big word is any run without whitespace; the other is letters, digits
+    /// and non-ASCII characters. Both stop at an ASCII byte, so on a boundary.
+    fn word_start(&self, big: bool) -> usize {
+        let word = |byte: &u8| {
+            if big {
+                !byte.is_ascii_whitespace()
+            } else {
+                byte.is_ascii_alphanumeric() || !byte.is_ascii()
+            }
+        };
+        let head = &self.bytes[..self.cursor];
+        let blanks = head.iter().rev().take_while(|byte| !word(byte)).count();
+        let kept = &head[..head.len() - blanks];
+        kept.len() - kept.iter().rev().take_while(|byte| word(byte)).count()
+    }
+
+    /// Take `from..to` out, the cursor at `from`, and keep it for ^Y; taking
+    /// nothing leaves what ^Y holds.
+    fn kill(&mut self, from: usize, to: usize) {
+        if from < to {
+            self.cleared = self.bytes.drain(from..to).collect();
+            self.cursor = from;
+        }
     }
 
     /// The offset one unit from the cursor, the cursor itself at either end.
@@ -1622,6 +1673,149 @@ mod tests {
         assert_eq!(input.line().as_deref(), Some("to lead> x"));
     }
 
+    /// `draft` typed, `stream` read by the chat's decoder and by the app's alike,
+    /// then what Enter sends: both must come to the same bytes.
+    fn killed(draft: &[u8], stream: &[u8]) -> Vec<u8> {
+        let [chat, app] = [Keys::default(), Keys::app()].map(|mut keys| {
+            let mut composer = drafted(draft);
+            for (key, _) in keys.feed(stream, Instant::now()) {
+                drop(composer.key(key));
+            }
+            match composer.key(Key::Enter) {
+                Some(Entered::Line(bytes)) => bytes,
+                _ => Vec::new(),
+            }
+        });
+        assert_eq!(chat, app, "the two decoders agree on {stream:?}");
+        chat
+    }
+
+    #[test]
+    fn ctrl_w_takes_the_word_before_the_cursor_up_to_whitespace() {
+        assert_eq!(
+            killed(b"one two/three  ", b"\x17"),
+            b"one ",
+            "blanks, then word"
+        );
+        assert_eq!(killed(b"ab cd", b"\x1b[D\x17"), b"ab d", "from the cursor");
+        assert_eq!(killed(b"abc", b"\x01\x17"), b"abc", "nothing before it");
+        assert_eq!(
+            killed("a \u{e9}\u{4e2d}".as_bytes(), b"\x17"),
+            b"a ",
+            "multibyte"
+        );
+        assert_eq!(
+            killed(b"x one\ntwo", b"\x17\x17"),
+            b"x ",
+            "a break is a blank"
+        );
+    }
+
+    #[test]
+    fn alt_backspace_takes_the_alphanumeric_word_before_the_cursor() {
+        assert_eq!(killed(b"one two/three", b"\x1b\x7f"), b"one two/");
+        assert_eq!(killed(b"x foo-bar", b"\x1b\x7f"), b"x foo-");
+        assert_eq!(
+            killed(b"x foo-bar", b"\x1b\x7f\x1b\x7f"),
+            b"x ",
+            "punctuation, then word"
+        );
+        assert_eq!(
+            killed("a \u{e9}\u{4e2d} b".as_bytes(), b"\x1b\x7f"),
+            "a \u{e9}\u{4e2d} ".as_bytes()
+        );
+        assert_eq!(
+            killed("a \u{e9}\u{4e2d}".as_bytes(), b"\x1b\x7f"),
+            b"a ",
+            "letters, not bytes"
+        );
+        assert_eq!(
+            killed(b"ab cd", b"\x1b[D\x1b\x7f"),
+            b"ab d",
+            "from the cursor"
+        );
+        assert_eq!(
+            killed(b"x foo-bar", b"\x1b\x08"),
+            b"x foo-",
+            "ESC ^H is the same key"
+        );
+    }
+
+    #[test]
+    fn ctrl_k_takes_the_rest_of_the_line_and_the_break_only_from_its_end() {
+        // Home, then `n` Rights, then ^K.
+        let after = |n: usize| [b"\x01".to_vec(), b"\x1b[C".repeat(n), b"\x0b".to_vec()].concat();
+        assert_eq!(killed(b"one two", &after(3)), b"one");
+        assert_eq!(
+            killed(b"one\ntwo\nthree", &after(5)),
+            b"one\nt\nthree",
+            "this line only"
+        );
+        assert_eq!(
+            killed(b"one\ntwo", &after(3)),
+            b"onetwo",
+            "at its end: the break"
+        );
+        assert_eq!(killed(b"one", b"\x0b"), b"one", "nothing after it");
+        assert_eq!(killed(b"a\n\nb", &after(2)), b"a\nb", "an empty line goes");
+    }
+
+    #[test]
+    fn every_kill_fills_the_one_slot_ctrl_y_restores_at_the_cursor_once() {
+        let all = b"one two three";
+        assert_eq!(killed(all, b"\x17\x19"), all);
+        assert_eq!(killed(all, b"\x1b\x7f\x19"), all);
+        assert_eq!(killed(all, b"\x01\x1b[C\x1b[C\x1b[C\x0b\x19"), all);
+        assert_eq!(killed(all, b"\x17\x19\x19"), all, "only once");
+        assert_eq!(
+            killed(b"a b c", b"\x17\x17\x19"),
+            b"a b ",
+            "the newest kill wins"
+        );
+        assert_eq!(killed(b"ab cd", b"\x17\x01\x19"), b"cdab ", "at the cursor");
+        assert_eq!(
+            killed(b"a b", b"\x17\x0b\x19"),
+            b"a b",
+            "a kill of nothing keeps it"
+        );
+        assert_eq!(
+            killed(b"a b", b"\x15\x17\x19"),
+            b"a b",
+            "^W over ^U's clear keeps it"
+        );
+        assert_eq!(
+            killed(b"a b", b"\x17\x15\x19"),
+            b"a ",
+            "^U after a kill is the newest"
+        );
+        assert_eq!(
+            killed(b"", b"\x1b[200~a\x17b\x0b\x1b[201~"),
+            b"a\x17b\x0b",
+            "a paste is text"
+        );
+    }
+
+    #[test]
+    fn an_owned_composer_takes_the_kill_keys_and_ctrl_y_brings_the_text_back() {
+        let base = Instant::now();
+        let mut input = owner(base);
+        let mut line = |bytes: &[u8], ms: u64| {
+            let _ = input.chunk(bytes, at(base, ms));
+            input.line()
+        };
+        assert_eq!(
+            line(b"say hello big/world", 1).as_deref(),
+            Some("to lead> say hello big/world")
+        );
+        assert_eq!(line(b"\x17", 2).as_deref(), Some("to lead> say hello "));
+        assert_eq!(line(b"\x1b\x7f", 3).as_deref(), Some("to lead> say "));
+        assert_eq!(
+            line(b"\x01\x1b[C\x1b[C\x1b[C\x0b", 4).as_deref(),
+            Some("to lead> say")
+        );
+        assert_eq!(line(b"\x19", 5).as_deref(), Some("to lead> say "));
+    }
+
     #[test]
     fn a_paste_is_one_literal_run_however_its_markers_are_split() {
         let stream = b"x\x1b[200~a\rb\x15\x7f\n\x1b[D\x1b[201~y\r";
@@ -1667,7 +1861,7 @@ mod tests {
 
     #[test]
     fn every_spelling_of_an_editing_key_is_that_key_however_the_reads_split_it() {
-        let keys: [(&[u8], Option<Key>); 22] = [
+        let keys: [(&[u8], Option<Key>); 26] = [
             (b"\x1b[D", Some(Key::Left)),
             (b"\x1bOD", Some(Key::Left)),
             (b"\x1b[C", Some(Key::Right)),
@@ -1683,6 +1877,10 @@ mod tests {
             (b"\x1b[8~", Some(Key::End)),
             (b"\x05", Some(Key::End)),
             (b"\x1b[3~", Some(Key::Delete)),
+            (b"\x17", Some(Key::KillBigWord)),
+            (b"\x1b\x7f", Some(Key::KillWord)),
+            (b"\x1b\x08", Some(Key::KillWord)),
+            (b"\x0b", Some(Key::KillToEnd)),
             (b"\x1b[1;5D", None),
             (b"\x1b[A", None),
             (b"\x1bOB", None),

@@ -2012,7 +2012,7 @@ fn settings_body(
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
-const WRITE_KEYS: [(&str, &str); 17] = [
+const WRITE_KEYS: [(&str, &str); 20] = [
     ("Enter", "send the line"),
     ("Alt+Enter ^J", "new line in the draft"),
     ("^V", "insert a clipboard PNG path"),
@@ -2024,8 +2024,11 @@ const WRITE_KEYS: [(&str, &str); 17] = [
     ("^A ^E", "start / end of line"),
     ("Backspace", "erase before the cursor"),
     ("Delete", "erase at the cursor"),
+    ("^W", "erase the word before the cursor"),
+    ("Alt+Bksp", "same, stopping at punctuation (Option as Meta)"),
+    ("^K", "erase to the end of the line"),
     ("^U", "clear the whole draft, every line"),
-    ("^Y", "put the cleared draft back, once"),
+    ("^Y", "put the cleared draft / last erase back, once"),
     ("paste", "literal text, never Enter; CR becomes LF"),
     ("@seat text", "ask that seat"),
     ("/close [id]", "withdraw your open ask"),
@@ -4335,6 +4338,9 @@ mod tests {
         has("Write", &["^C", "clear a draft", "empty", "quits at once"]);
         has("Write", &["^C", "after a clear", "arms"]);
         has("Write", &["^U", "whole draft"]);
+        has("Write", &["^W", "word before"]);
+        has("Write", &["Alt+Bksp", "punctuation", "Option as Meta"]);
+        has("Write", &["^K", "end of the line"]);
         has("Write", &["^Y", "cleared draft", "once"]);
         has("Settings", &["gear", "Esc close", "closes"]);
         has("Settings", &["wheel", "3 rows"]);

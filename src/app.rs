@@ -1335,14 +1335,19 @@ impl App {
                 }
             }
             key => {
-                if key == Key::ClearLine && self.protects() {
-                    self.cleared_note(origin);
-                }
+                let had_text = self.protects();
+                let deleting = matches!(
+                    key,
+                    Key::ClearLine | Key::KillBigWord | Key::KillWord | Key::KillToEnd
+                );
                 let input = self.writer.as_ref().map(Binding::key);
                 let effects = input
                     .and_then(|input| self.inputs.get_mut(&input))
                     .map(|input| input.keyed(vec![(key, origin)]))
                     .unwrap_or_default();
+                if deleting && had_text && !self.protects() {
+                    self.cleared_note(origin);
+                }
                 if !effects.is_empty() {
                     self.effects(effects);
                     self.reread();
@@ -4993,6 +4998,48 @@ mod tests {
         let (mut app, _reader) = housed(&root);
         let at = writing(&mut app);
         assert_eq!(take_keys(&mut app, vec![(Key::Interrupt, at)]), None);
+    }
+
+    /// `^W`, `Opt+Backspace` and `^K` delete in the composer the app is writing
+    /// and fill the `^Y` slot; one that leaves it empty guards the quit like `^U`,
+    /// one that leaves text does not.
+    #[test]
+    fn a_word_or_line_kill_feeds_ctrl_y_and_guards_the_quit_only_when_it_empties_the_draft() {
+        let root = Root::new("c2-kill");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        let draft = |app: &App| app.shown_input().map(Input::draft).unwrap_or_default();
+        let press = |app: &mut App, at: Instant, bytes: &[u8]| {
+            take_keys(app, crate::console::input::Keys::app().feed(bytes, at))
+        };
+        let armed = "^C again to quit";
+        assert_eq!(app.compose(Key::Text(b"keep me".to_vec()), at), Some(()));
+        assert_eq!(press(&mut app, at, b"\x17"), Some(true));
+        assert_eq!(draft(&app), "keep ", "^W took the last word");
+        assert!(app.cleared_at.is_none(), "text is left: no guard");
+        assert_eq!(press(&mut app, at, b"\x1b\x7f"), Some(true));
+        assert_eq!(draft(&app), "", "Opt+Backspace took the other");
+        assert_eq!(
+            app.note().as_deref(),
+            Some("draft cleared · ^Y brings it back"),
+            "the draft is gone, so the clear's note"
+        );
+        assert_eq!(press(&mut app, at, b"\x03"), Some(true));
+        assert!(
+            app.note().is_some_and(|n| n.starts_with(armed)),
+            "armed, not quit"
+        );
+        assert_eq!(press(&mut app, at, b"\x19"), Some(true));
+        assert_eq!(draft(&app), "keep ", "^Y brings back the newest kill");
+        let root = Root::new("c2-kill-1");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        assert_eq!(app.compose(Key::Text(b"keep me".to_vec()), at), Some(()));
+        assert_eq!(press(&mut app, at, b"\x01\x0b"), Some(true));
+        assert_eq!(draft(&app), "", "^K from the start takes the line");
+        assert_eq!(press(&mut app, at, b"\x03"), Some(true), "guarded");
+        assert_eq!(press(&mut app, at, b"\x19"), Some(true));
+        assert_eq!(draft(&app), "keep me");
     }
 
     /// `^C` clears text wherever the composer shows it: the draft Esc kept in
