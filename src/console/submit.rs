@@ -147,8 +147,34 @@ pub(crate) fn submit_held(
     owns: impl FnOnce() -> Result<(), String>,
     deliver: impl FnOnce() -> String,
 ) -> Result<Outcome, String> {
+    let admitted = admit(held, dir, session, raw, owns)?;
+    Ok(admitted.finish(held, id, deliver))
+}
+
+/// A submit past its admission: the console admission lock is held, the
+/// ownership proven, the draft kept and the open-ask cap passed. Dropping it
+/// lets the lock go; only [`Admitted::finish`] carries the ask.
+pub(crate) struct Admitted {
+    store: store::SessionStore,
+    dir: std::path::PathBuf,
+    _lock: std::fs::File,
+}
+
+/// Everything a submit proves before anything is delivered: the admission
+/// lock, `owns`, the kept draft and the open-ask cap, in that order.
+///
+/// # Errors
+///
+/// Why nothing may be delivered.
+pub(crate) fn admit(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    raw: &[u8],
+    owns: impl FnOnce() -> Result<(), String>,
+) -> Result<Admitted, String> {
     let store = store::open(dir);
-    let _admitted = admission(dir)?;
+    let lock = admission(dir)?;
     owns()?;
     store
         .publish_console_draft(raw)
@@ -161,17 +187,34 @@ pub(crate) fn submit_held(
             "{count} requests open; /close withdraws the newest"
         ));
     }
-    let said = deliver();
-    let outcome = match super::snapshot_in(held, dir) {
-        Ok(events) => read_back(&events, id, &said),
-        Err(why) => Outcome::Unknown(id.to_owned(), why),
-    };
-    let Outcome::Sent(id, None) = outcome else {
-        return Ok(outcome);
-    };
-    let kept = store.clear_console_draft().err();
-    let kept = kept.map(|why| format!("the draft is kept ({why})"));
-    Ok(Outcome::Sent(id, kept))
+    Ok(Admitted {
+        store,
+        dir: dir.to_owned(),
+        _lock: lock,
+    })
+}
+
+impl Admitted {
+    /// Deliver the ask `id` and read back what became of it, under the lock
+    /// taken at the admission; only [`Outcome::Sent`] clears the kept draft.
+    pub(crate) fn finish(
+        self,
+        held: &mut crate::events::Held,
+        id: &str,
+        deliver: impl FnOnce() -> String,
+    ) -> Outcome {
+        let said = deliver();
+        let outcome = match super::snapshot_in(held, &self.dir) {
+            Ok(events) => read_back(&events, id, &said),
+            Err(why) => Outcome::Unknown(id.to_owned(), why),
+        };
+        let Outcome::Sent(id, None) = outcome else {
+            return outcome;
+        };
+        let kept = self.store.clear_console_draft().err();
+        let kept = kept.map(|why| format!("the draft is kept ({why})"));
+        Outcome::Sent(id, kept)
+    }
 }
 
 /// `/close [id]` under the same admission and ownership as a submit.

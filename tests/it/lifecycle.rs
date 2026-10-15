@@ -3347,6 +3347,107 @@ fn a_matching_confirmation_reaches_the_existing_stop_and_preserves_the_state() {
     assert!(exists(&rig.dir.join("meta")), "a stop preserves its state");
 }
 
+/// `ae app` outside tmux confirms in its own modal and has no tmux client to
+/// name: an expectation whose client and client pid are both empty is that
+/// answer. Everything else it carries is proven under the lock as before.
+fn unattended(rig: &Rig, deadline: i64) -> Vec<String> {
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(rig, deadline, ("", "")));
+    argv
+}
+
+#[test]
+fn an_unattended_confirmation_stops_the_session_it_proved_and_keeps_the_state() {
+    let rig = Rig::new("unattendedok");
+    let argv = unattended(&rig, now() + 60);
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, out, err) = rig.run(&borrowed);
+    assert_eq!(code, Some(0), "stdout={out} stderr={err}");
+    assert!(!rig.session_is_live(), "the confirmed session is gone");
+    assert!(exists(&rig.dir.join("meta")), "a stop preserves its state");
+    let events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+    assert!(
+        events.contains("no tmux client"),
+        "the record says nobody was attached to answer: {events}"
+    );
+}
+
+/// No client does not mean no proof: a stale, substituted or elsewhere-recorded
+/// target is refused unattended exactly as it is with a client, and untouched.
+#[test]
+fn an_unattended_confirmation_proves_every_other_identity_under_the_lock() {
+    for (tag, flag, value, reason) in [
+        ("expired", "--expect-deadline", "1", "expired"),
+        (
+            "otherid",
+            "--expect-session-id",
+            "$999",
+            "different tmux session",
+        ),
+        (
+            "otheruuid",
+            "--expect-uuid",
+            "44444444-4444-4444-4444-444444444444",
+            "state directory",
+        ),
+        (
+            "otherpid",
+            "--expect-server-pid",
+            "1",
+            "server was replaced",
+        ),
+        (
+            "otherstart",
+            "--expect-server-start",
+            "1",
+            "server was replaced",
+        ),
+        (
+            "otherrecord",
+            "--expect-server",
+            "/nonexistent/other.sock",
+            "different tmux server",
+        ),
+    ] {
+        let rig = Rig::new(&format!("unattended{tag}"));
+        let mut argv = unattended(&rig, now() + 60);
+        let at = argv
+            .iter()
+            .position(|word| word == flag)
+            .expect("the flag is in the expectation");
+        argv[at + 1] = value.to_owned();
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (code, out, err) = rig.run(&borrowed);
+        assert_ne!(code, Some(0), "{tag}: stdout={out} stderr={err}");
+        assert!(err.contains(reason), "{tag}: {err}");
+        assert!(rig.session_is_live(), "{tag}: stopped anyway");
+    }
+}
+
+/// Unattended is both fields empty or neither: half a client is no weaker
+/// proof, it is a usage error that stops nothing.
+#[test]
+fn half_a_client_is_a_usage_error_not_an_unattended_confirmation() {
+    for (tag, client, pid) in [("pidonly", "", "999999"), ("nameonly", "/dev/ttys999", "")] {
+        let rig = Rig::new(&format!("unattended{tag}"));
+        let mut argv = vec![
+            "_stop".to_owned(),
+            "--supervise".to_owned(),
+            rig.name.clone(),
+        ];
+        argv.extend(expectation(&rig, now() + 60, (client, pid)));
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (code, out, err) = rig.run(&borrowed);
+        assert_eq!(code, Some(2), "{tag}: stdout={out} stderr={err}");
+        assert!(err.contains("travel together"), "{tag}: {err}");
+        assert!(rig.session_is_live(), "{tag}: stopped anyway");
+    }
+}
+
 /// Applying one confirmation twice must not stop a session a second time: the
 /// second run finds the target already gone and says so.
 #[test]

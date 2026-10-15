@@ -876,7 +876,7 @@ impl SessionStore {
     /// # Errors
     ///
     /// The cut or the write.
-    pub fn console_writer_note(lease: &mut File, record: &[u8]) -> io::Result<()> {
+    pub fn console_writer_note(mut lease: &File, record: &[u8]) -> io::Result<()> {
         lease.set_len(0)?;
         lease.write_all(record)
     }

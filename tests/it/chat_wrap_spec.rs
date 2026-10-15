@@ -491,7 +491,7 @@ fn chat_wrap_outcomes_and_open_cap_refusal_keep_words_without_request_ids() {
         (Outcome::NotDelivered(ID.to_owned()), "not delivered"),
         (
             Outcome::Unknown(ID.to_owned(), "read failed".to_owned()),
-            "no record of it; it may have been delivered - check lead pane (prefix H)",
+            "no record of it (read failed); it may have been delivered - check lead pane (prefix H)",
         ),
     ];
     for (outcome, expected) in cases {

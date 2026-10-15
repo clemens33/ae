@@ -508,3 +508,39 @@ fn an_ordinary_launch_preflights_the_proposed_server_where_its_namesake_lives() 
         "the live namesake is the refusal: {err}"
     );
 }
+
+/// What `ae app` outside tmux starts a stopped session with is `<core> <name>
+/// --no-attach` in a detached child: no terminal, no `TMUX`, nothing attached.
+/// Run so (`output()` hands the child no terminal), a real launched session
+/// that was stopped comes back on its recorded server and the child leaves.
+#[test]
+fn a_detached_resume_with_no_terminal_brings_a_stopped_session_back_unattached() {
+    let split = Split::new("detached-resume");
+    let launched = split.run(&split.recorded, &["--local", "saved", "--no-attach"]);
+    assert!(launched.status.success(), "{launched:?}");
+    assert!(
+        split
+            .tmux(&split.recorded, &["kill-session", "-t", "=saved"])
+            .0,
+        "the session stops"
+    );
+    assert!(
+        !split
+            .tmux(&split.recorded, &["has-session", "-t", "=saved"])
+            .0,
+        "stopped"
+    );
+    let resumed = split.run(&split.recorded, &["saved", "--no-attach"]);
+    let out = String::from_utf8_lossy(&resumed.stdout);
+    let err = String::from_utf8_lossy(&resumed.stderr);
+    assert!(resumed.status.success(), "stdout: {out}\nstderr: {err}");
+    assert!(out.contains("Resuming session saved"), "{out}");
+    assert!(
+        split
+            .tmux(&split.recorded, &["has-session", "-t", "=saved"])
+            .0,
+        "resumed: {out}\n{err}"
+    );
+    let (_, clients) = split.tmux(&split.recorded, &["list-clients", "-F", "#{client_name}"]);
+    assert!(clients.trim().is_empty(), "nothing attached: {clients}");
+}

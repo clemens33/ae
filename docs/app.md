@@ -223,8 +223,13 @@ character goes. The cursor shows only while writing with the composer drawn:
 browsing, a held composer and Settings hide it. The address row, every draft row
 and the note row under them are one click target. `Enter` sends, `Esc` goes back to browsing and keeps
 the draft. `^C` over any text in the composer — typed, or kept by `Esc`, also under an open Settings or peek — clears it whole and never quits (`draft cleared · ^Y brings it back` on the hint row); over an empty composer it quits at once — except within 2 seconds of a clear (by `^C` or `^U`), where the first `^C` only arms (`^C again to quit · ^Y brings draft back`) and a further one quits, so a `^C` meant for the text never ends the app; any other key disarms. `^U` clears the whole draft the same way, every line. `^W` erases the word before the cursor (back to whitespace), `Opt+Backspace` (`ESC DEL`; the terminal must send Option as Meta) the one before it up to a non-letter, non-digit, and `^K` the rest of the cursor's line, or its line break when nothing is left on it. `^Y` puts the last cleared draft or erased text back at the cursor, once: a send ends it, a newer clear or erase replaces it (an erase of nothing does not), and a draft with no room for it keeps it waiting; an erase that empties the draft guards the quit like `^U`. While there is text the hint row also reads `^C clears`. `/open <seat>` opens that seat of the selected session
-([Opening a seat](#opening-a-seat)). While an ask is being delivered the hint row reads `sending to <seat>…`
-and nothing behind it acts until it ends. Each outcome shows once, as an `ae`
+([Opening a seat](#opening-a-seat)). While an ask is being delivered the hint row reads `sending to <seat>…`;
+delivery waits on a busy seat, so it runs off the app's loop, which keeps
+drawing and taking keys. One ask flies at a time: a second `Enter` meanwhile is
+refused (`not sent to <seat>: an ask to <seat> is still being delivered; the line
+is back in the draft`), `/close` waits (`refused: the ask to <seat> is still being
+delivered; /close waits for it`), and a quit waits for the delivery, at most four
+minutes, saying `finishing the delivery to <seat> (^C stops it)`. Each outcome shows once, as an `ae`
 line in the lane of the session it is about (an unconfirmed or undelivered ask
 as its own lane line, with the hint row saying the same until the lane has it); a line about a session no longer recorded shows in
 whichever lane is selected.
@@ -324,8 +329,14 @@ record that no longer names the session the menu was drawn from refuses too.
 
 `Start` is the fleet picker's own stopped-row job — the ordinary launch owner
 behind the same captured-client proofs, run in the background by tmux — so it
-resumes the session and then moves this client to it. A stopped session recorded
-on another tmux server refuses. `Stop…` asks first. The question
+resumes the session and then moves this client to it. Outside tmux there is no
+client to move: `Start` resumes the session the same way with nothing attached
+(`Starting '<session>'.`), after proving the record is still the incarnation the
+card drew. A stopped session recorded on another tmux server refuses. `Stop…`
+asks first; outside tmux it asks about the session on its recorded server (a
+record naming no tmux server refuses, `its record names no tmux server`), and the
+answer re-proves that server, the session's id and the deadline under the stop's
+own lock. The question
 says what a stop does and, on the app's own session, that this app closes;
 `Cancel` is focused. `s` / `c`, `←` / `→` or `Tab` move the focus, `Enter`
 presses it, `y` stops and `n`, `q` or `Esc` cancels. The answer is proven again
@@ -564,7 +575,8 @@ not recorded in this state root are read-only and say why.
 
 Every way out of writing releases the lease — `Esc`, `^C`, a crash, a click on
 a session row, opening a seat view, and a read that finds the session no longer
-proven — and Settings keeps it while open. The view keeps the draft it
+proven — and Settings keeps it while open. An ask still being delivered keeps
+the lease until its delivery ends, so no other writer is admitted beside it. The view keeps the draft it
 interrupted: `Esc` returns to the chat and `Enter` retakes the lease to
 continue it. Each ask and `/close` goes through the chat's
 admission, which re-proves the lease and re-reads the meta's `session_id` and

@@ -20,6 +20,7 @@ use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::io::{IsTerminal as _, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -197,6 +198,30 @@ struct Queued {
     note: Option<String>,
 }
 
+/// The one ask on its way to its seat, carried off the loop's thread.
+struct Flight {
+    id: String,
+    seat: String,
+    /// The session the ask went to.
+    about: String,
+    /// The quiet lane note for a line routed away from the lead.
+    note: Option<String>,
+    /// Its outcome, once the delivery has ended.
+    done: Receiver<submit::Outcome>,
+    /// The session name and recorded `session_id` the ask went out under.
+    key: (String, String),
+    /// The writer lease of that very incarnation: held until the delivery
+    /// ends, whatever happens to the writing, so no other writer is admitted
+    /// beside it.
+    lease: Arc<LeaseFile>,
+}
+
+/// How long a quit waits for an ask in flight before it leaves it: the helpers'
+/// own delivery gives up by itself well inside it (the send lock waits two
+/// minutes, the quiet gate [`crate::deliver::DEFAULT_DEFER`], the submit
+/// proof seconds more).
+const FLIGHT_QUIT_BOUND: Duration = Duration::from_mins(4);
+
 /// An ask's outcome word, shown until the lane holds the ask itself.
 struct Settling {
     at: Instant,
@@ -277,21 +302,28 @@ impl PeekPane {
     }
 }
 
-/// The writer lease this app holds while it writes.
-struct Lease {
+/// The writer lease's file, shared by the writing and by an ask in flight: it
+/// is released when the last of them lets go.
+struct LeaseFile {
     /// Held open: dropping it releases the lease.
     file: File,
+}
+
+impl Drop for LeaseFile {
+    /// Empty the holder record before the lock goes (a crash skips this).
+    fn drop(&mut self) {
+        let _ = crate::store::SessionStore::console_writer_note(&self.file, b"");
+    }
+}
+
+/// The writer lease this app holds while it writes.
+struct Lease {
+    /// Stopping the writing drops this hold; an ask in flight keeps its own.
+    held: Arc<LeaseFile>,
     /// When it was taken: no key read before it is draft.
     at: Instant,
     /// The keys dropped for that have been named.
     named: bool,
-}
-
-impl Drop for Lease {
-    /// Empty the holder record before the lock goes (a crash skips this).
-    fn drop(&mut self) {
-        let _ = crate::store::SessionStore::console_writer_note(&mut self.file, b"");
-    }
 }
 
 /// A view an earlier app handed over, waiting for the fleet read that settles
@@ -409,6 +441,8 @@ struct App {
     admitted: Option<Instant>,
     /// Asks waiting for the loop to deliver them.
     queued: Vec<Queued>,
+    /// The ask being carried to its seat, until its outcome lands.
+    flight: Option<Flight>,
     /// The outcome word of the last ask, until the lane shows it.
     settling: Option<Settling>,
     /// The long turns this app shows whole, by [`App::fold_key`]. Memory only.
@@ -453,7 +487,18 @@ struct App {
     root: Option<PathBuf>,
     /// When each session was last shown selected: the unread cue's memory.
     cue: cue::Cue,
+    /// How an admitted ask is carried to its seat: the helpers' tracked path.
+    carry: Carry,
+    /// How a process that must outlive this app is started: Stop's supervisor
+    /// and a Start outside tmux.
+    detach: Detach,
 }
+
+/// The delivery of one admitted ask, which says what the path wrote.
+type Carry = Arc<dyn Fn(term::Carry) -> String + Send + Sync>;
+
+/// Whether a detached argv started.
+type Detach = Box<dyn Fn(&crate::lifecycle::DetachedArgv) -> bool>;
 
 impl App {
     /// An app that has read nothing yet: home is selected. Where it runs
@@ -523,6 +568,7 @@ impl App {
             keyed: None,
             admitted: None,
             queued: Vec::new(),
+            flight: None,
             settling: None,
             expanded: BTreeSet::new(),
             sent: BTreeSet::new(),
@@ -544,6 +590,8 @@ impl App {
             cut: None,
             root: None,
             cue: cue::Cue::default(),
+            carry: Arc::new(term::Carry::run),
+            detach: Box::new(transport::run_detached),
         }
     }
 
@@ -1181,13 +1229,21 @@ impl App {
             Some(bound) => term::still(bound, Ok(pair)).map(|()| bound.clone())?,
             None => pair,
         };
-        let mut file = term::lease(&console)?;
+        // An ask still in flight to this very incarnation holds its lease: the
+        // writing takes that hold back rather than being refused by itself. A
+        // replacement under the same name is another lease, locked afresh.
+        let held = match self.flight.as_ref().filter(|flight| flight.key == key) {
+            Some(flight) => Arc::clone(&flight.lease),
+            None => Arc::new(LeaseFile {
+                file: term::lease(&console)?,
+            }),
+        };
         // Stamped before the tmux call: keys read while it runs still count.
         let at = Instant::now();
-        self.note_holder(&mut file);
+        self.note_holder(&held.file);
         let draft = submit::restore(console.dir());
         self.lease = Some(Lease {
-            file,
+            held,
             at,
             named: false,
         });
@@ -1213,7 +1269,7 @@ impl App {
 
     /// Record where this app's pane sits in the lease just taken; outside
     /// tmux, or when tmux or the grammar refuses, the record stays empty.
-    fn note_holder(&self, lease: &mut File) {
+    fn note_holder(&self, lease: &File) {
         let place = (self.server.as_ref().zip(self.pane.as_deref()))
             .and_then(|(server, pane)| transport::observe_pane_place(server, pane));
         let record = place.and_then(|(session, window)| console::holder::encode(&session, &window));
@@ -1680,10 +1736,9 @@ impl App {
     /// key, a refused paste, an outcome the lane has not caught up with,
     /// another installed core.
     fn note(&self) -> Option<String> {
-        let sending = self
-            .queued
-            .first()
-            .map(|ask| format!("sending to {}…", ask.seat));
+        let queued = self.queued.first().map(|ask| ask.seat.as_str());
+        let flying = self.flight.as_ref().map(|flight| flight.seat.as_str());
+        let sending = queued.or(flying).map(|seat| format!("sending to {seat}…"));
         sending
             .or_else(|| self.armed.as_ref().map(|armed| armed.what.line()))
             .or_else(|| self.flash.as_ref().map(|(line, _)| line.clone()))
@@ -1705,7 +1760,7 @@ impl App {
     fn blocker(&self, now: Instant) -> Option<upgrade::Blocker> {
         upgrade::restart_blocker(
             self.inputs.values().any(|input| !input.draft().is_empty()),
-            !self.queued.is_empty(),
+            !self.queued.is_empty() || self.flight.is_some(),
             !self.deferred.is_empty(),
             self.composing(),
             self.held.is_some(),
@@ -2164,7 +2219,7 @@ impl App {
     /// that waited for it. Neither skips the other; whether a frame is due.
     fn owed(&mut self) -> bool {
         self.inputs.values_mut().for_each(crate::clipboard::sweep);
-        self.shipped() | self.deliver() | self.unpark() | self.image_ready()
+        self.shipped() | self.deliver() | self.land() | self.unpark() | self.image_ready()
     }
 
     fn image_ready(&mut self) -> bool {
@@ -2296,18 +2351,21 @@ impl App {
         }
     }
 
-    /// One ask of `seat`, through the chat's own admission and tracked path.
-    /// A session whose recorded server that path cannot name is no longer
-    /// proven: refused in its words before anything is written.
-    fn ask(
+    /// One ask of `seat`, admitted here through the chat's own admission and
+    /// carried on a thread of its own through the tracked path: its request id
+    /// and the channel its outcome arrives on. A session whose recorded server
+    /// that path cannot name is no longer proven: refused in its words before
+    /// anything is written.
+    fn begin(
         &mut self,
         raw: &[u8],
         seat: &str,
         body: String,
-    ) -> Result<(String, submit::Outcome), String> {
-        let Some(writer) = &self.writer else {
+    ) -> Result<(String, Receiver<submit::Outcome>, Arc<LeaseFile>), String> {
+        let (Some(writer), Some(lease)) = (&self.writer, &self.lease) else {
             return Err("refused: not writing".to_owned());
         };
+        let held = Arc::clone(&lease.held);
         let (console, lost) = (&writer.console, Cell::default());
         let owns = || {
             self.owns(&lost)?;
@@ -2316,25 +2374,104 @@ impl App {
             let routed = routed.map(drop).map_err(|why| why.message());
             routed.inspect_err(|why| lost.set(Some(why.clone())))
         };
-        let told = term::submit_ask(console, owns, raw, seat, body);
+        let admitted = term::admit_ask(console, owns, raw, seat, body);
         self.unproven(lost, raw);
-        told.map_err(|why| format!("refused: {why}"))
+        let (ask, admitted) = admitted.map_err(|why| format!("refused: {why}"))?;
+        let id = ask.id().to_owned();
+        let (send, done) = mpsc::channel();
+        let (carry, named) = (Arc::clone(&self.carry), id.clone());
+        let thread = std::thread::Builder::new().name("ae-app-ask".to_owned());
+        // The admission lock goes with the ask: it is held until the delivery
+        // ends, and a thread that dies lets it go.
+        thread
+            .spawn(move || {
+                let outcome =
+                    admitted.finish(&mut crate::events::Held::default(), &named, || carry(ask));
+                let _ = send.send(outcome);
+            })
+            .map_err(|why| format!("refused: could not start the delivery ({why})"))?;
+        Ok((id, done, held))
+    }
+
+    /// An ask whose delivery ended: its outcome, said as an ask's outcome is.
+    /// Whether one landed.
+    fn land(&mut self) -> bool {
+        let Some(flight) = &self.flight else {
+            return false;
+        };
+        let outcome = match flight.done.try_recv() {
+            Ok(outcome) => outcome,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let why = "the delivery ended without an answer";
+                submit::Outcome::Unknown(flight.id.clone(), why.to_owned())
+            }
+        };
+        let Some(flight) = self.flight.take() else {
+            return false;
+        };
+        let mut lines = self.settle(flight.id, &flight.seat, &flight.about, outcome);
+        lines.splice(0..0, flight.note);
+        for line in lines {
+            self.notice(&flight.about, line);
+        }
+        self.reread();
+        self.show();
+        true
+    }
+
+    /// End the loop's wait on an ask in flight, so a quit never cuts a
+    /// delivery off half way: the terminal is already back, the human is told
+    /// what is awaited, and the wait is [`FLIGHT_QUIT_BOUND`] at most.
+    fn finish_flight(&mut self, err: &mut impl Write, bound: Duration) -> std::io::Result<()> {
+        let Some(flight) = self.flight.take() else {
+            return Ok(());
+        };
+        let seat = terminal_text(&flight.seat);
+        writeln!(
+            err,
+            "ae app: finishing the delivery to {seat} (^C stops it)"
+        )?;
+        if flight.done.recv_timeout(bound) == Err(RecvTimeoutError::Timeout) {
+            let secs = bound.as_secs_f32();
+            writeln!(
+                err,
+                "ae app: the delivery to {seat} was not over in {secs}s"
+            )?;
+        }
+        Ok(())
     }
 
     /// Deliver the queued asks, after the frame that named their target. Each
     /// is re-proven first: a writer that ended since asks nothing and its
-    /// line goes back to the draft in memory. Whether any ran.
+    /// line goes back to the draft in memory. An admitted ask is carried on a
+    /// thread of its own and lands in [`App::land`]; one at a time, so an ask
+    /// behind it is refused where the human sees it. Whether any ran.
     fn deliver(&mut self) -> bool {
         let queued = std::mem::take(&mut self.queued);
         let ran = !queued.is_empty();
         for q in queued {
             let live = (self.writer.as_ref()).is_some_and(|writer| writer.entry == q.entry);
             let told = if live {
-                match self.ask(&q.raw, &q.seat, q.body) {
-                    Ok((id, outcome)) => {
-                        let mut lines = self.settle(id, &q.seat, &q.about, outcome);
-                        lines.splice(0..0, q.note);
-                        lines
+                let begun = match &self.flight {
+                    Some(flight) => Err(format!(
+                        "not sent to {}: an ask to {} is still being delivered; the line is back in the draft",
+                        q.seat, flight.seat
+                    )),
+                    None => self.begin(&q.raw, &q.seat, q.body),
+                };
+                match begun {
+                    Ok((id, done, lease)) => {
+                        self.flight = Some(Flight {
+                            id,
+                            seat: q.seat,
+                            about: q.about.clone(),
+                            note: q.note,
+                            done,
+                            key: q.key.clone(),
+                            lease,
+                        });
+                        Vec::new()
                     }
                     Err(refused) => {
                         // A writer the refusal ended got its line back from `unproven`; the
@@ -2393,10 +2530,8 @@ impl App {
                 });
                 return kept.into_iter().collect();
             }
-            submit::Outcome::Unknown(..) => {
-                return vec![format!(
-                    "no record of it; it may have been delivered - {check}"
-                )];
+            submit::Outcome::Unknown(_, said) => {
+                return vec![crate::console::input::unrecorded_line(&said, &check)];
             }
             submit::Outcome::Uncertain(_) => format!("uncertain: {check}"),
             submit::Outcome::NotDelivered(_) => "not delivered".to_owned(),
@@ -2416,6 +2551,13 @@ impl App {
         let Some(writer) = &self.writer else {
             return "refused: not writing".to_owned();
         };
+        // The ask in flight holds the admission lock a close needs.
+        if let Some(flight) = &self.flight {
+            return format!(
+                "refused: the ask to {} is still being delivered; /close waits for it",
+                flight.seat
+            );
+        }
         let (console, lost) = (&writer.console, Cell::default());
         let owns = || self.owns(&lost);
         let line = match console.close_owned(id, owns) {
@@ -2979,6 +3121,9 @@ impl App {
     fn question(&self, mut card: menu::Card) -> Result<menu::Question, String> {
         let name = card.name.clone();
         let refuse = |why: &str| format!("refused: Stop {name}: {why}; nothing stopped");
+        if !self.attended() {
+            return self.unattended_question(card).map_err(|why| refuse(&why));
+        }
         let asker = self.asker(&card).map_err(|why| refuse(&why))?;
         let id = crate::lifecycle::live_id(&asker.server, &name)
             .ok_or_else(|| refuse("tmux does not list it on this server"))?;
@@ -3002,10 +3147,82 @@ impl App {
         Ok(menu::Question::new(card, expect))
     }
 
+    /// Whether this app runs inside a tmux client: a Start or Stop then rides
+    /// that client's proofs. Outside tmux there is none to name.
+    fn attended(&self) -> bool {
+        self.server.is_some() && self.pane.is_some()
+    }
+
+    /// The tmux server `name`'s record names, proven to be the one the card
+    /// was drawn from: its record directory still holds the card's
+    /// incarnation, and the server it records is a positive selector.
+    fn recorded(&self, card_name: &str, uuid: &str) -> Result<(PathBuf, ServerId), String> {
+        let dir = (self.dirs.get(card_name)).ok_or("ae read no record directory for it")?;
+        if loader::sole_uuid(dir).as_deref() != Some(uuid) {
+            return Err(REPLACED.to_owned());
+        }
+        match crate::session_launch::recorded_server_resolved(dir) {
+            Some(server @ ServerId::Selected(_)) => Ok((dir.clone(), server)),
+            _ => Err("its record names no tmux server".to_owned()),
+        }
+    }
+
+    /// The Stop question outside tmux: nobody is attached to answer, so the
+    /// app's own modal is the confirmation, and what tmux and the record say
+    /// of the session is frozen in it from the server the record names — its
+    /// process, its start, the session id — for the supervisor to prove again
+    /// under the lock.
+    fn unattended_question(&self, mut card: menu::Card) -> Result<menu::Question, String> {
+        let name = card.name.clone();
+        let (_, server) = self.recorded(&name, &card.uuid)?;
+        let identity = transport::observe_server_identity(&server)
+            .ok_or("the tmux server its record names did not answer")?;
+        let id = crate::lifecycle::live_id(&server, &name)
+            .ok_or("tmux does not list it on the server its record names")?;
+        if card.id.as_ref().is_some_and(|painted| *painted != id) {
+            return Err("its tmux session was replaced since the menu was drawn".to_owned());
+        }
+        card.home = false;
+        let deadline = Timestamp::now().epoch() + crate::session_menu::CONFIRM_WINDOW_SECS;
+        let expect = crate::lifecycle::StopExpectation::unattended(
+            id,
+            card.uuid.clone(),
+            identity,
+            deadline,
+            server,
+        );
+        Ok(menu::Question::new(card, expect))
+    }
+
+    /// Start `card`'s stopped session outside tmux: the session resumed by name
+    /// with nothing attached, detached from this app, once its record still
+    /// names the incarnation the card was drawn from. No client moves.
+    fn start_unattended(&self, card: &menu::Card) -> Result<String, String> {
+        let name = &card.name;
+        let dir = (self.dirs.get(name)).ok_or("ae read no record directory for it")?;
+        if loader::sole_uuid(dir).as_deref() != Some(card.uuid.as_str()) {
+            return Err(REPLACED.to_owned());
+        }
+        let named = crate::session_launch::name::is_session_name(name)
+            && !crate::entry::name_is_routed_verb(name);
+        if !named {
+            return Err("ae cannot resume a session of that name from here".to_owned());
+        }
+        let argv =
+            crate::lifecycle::resume_argv(name).ok_or("ae cannot name its own executable")?;
+        if !(self.detach)(&argv) {
+            return Err("ae could not start the resume job".to_owned());
+        }
+        Ok(format!("Starting '{name}'."))
+    }
+
     /// Start `card`'s stopped session: the picker row's own resume job — the
     /// ordinary launch owner behind its captured-client proofs — run in the
     /// background by tmux. Its last step moves this client to the session.
     fn start(&self, card: &menu::Card) -> Result<String, String> {
+        if !self.attended() {
+            return self.start_unattended(card);
+        }
         let asker = self.asker(card)?;
         let launcher =
             crate::picker_launcher_for(&asker.server).ok_or("ae cannot name its own executable")?;
@@ -3047,6 +3264,9 @@ impl App {
         if loader::sole_uuid(dir).as_deref() != Some(expect.uuid.as_str()) {
             return Err(REPLACED.to_owned());
         }
+        if !expect.is_attended() {
+            return self.stop_unattended(question);
+        }
         let (Some(pane), Some(root)) = (&self.pane, &self.root) else {
             return Err(Refusal::NoTmux.why());
         };
@@ -3059,6 +3279,27 @@ impl App {
         }
         let (mut out, mut err) = (Vec::new(), Vec::new());
         crate::lifecycle::stop_confirmed(root, expect, name, &mut out, &mut err)
+            .map_err(|why| why.to_string())?;
+        out.extend(err);
+        Ok(String::from_utf8_lossy(&out).trim().to_owned())
+    }
+
+    /// [`App::stop`] for a question asked outside tmux: the record must still
+    /// name the incarnation and the very server the question froze, then the
+    /// supervisor is handed the frozen identity to prove under the lock.
+    fn stop_unattended(&self, question: &menu::Question) -> Result<String, String> {
+        let (expect, name) = (&question.expect, &question.card.name);
+        let root = self
+            .root
+            .as_ref()
+            .ok_or("ae app has no state root to stop under")?;
+        let (_, server) = self.recorded(name, &expect.uuid)?;
+        if server != expect.server {
+            return Err("it is recorded on a different tmux server than the one the question was asked about".to_owned());
+        }
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let detach = |argv: &crate::lifecycle::DetachedArgv| (self.detach)(argv);
+        crate::lifecycle::stop_confirmed_via(root, expect, name, detach, &mut out, &mut err)
             .map_err(|why| why.to_string())?;
         out.extend(err);
         Ok(String::from_utf8_lossy(&out).trim().to_owned())
@@ -3401,12 +3642,13 @@ fn operands(tail: &[String]) -> Option<(Option<String>, Option<String>)> {
 /// how to start it again.
 fn end(
     tty: tty::Tty,
-    app: App,
+    mut app: App,
     code: u8,
     restart: Option<(String, toggle::Restart)>,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     drop(tty);
+    app.finish_flight(err, FLIGHT_QUIT_BOUND)?;
     let in_tmux = app.server.is_some();
     if let Some((version, restart)) = restart {
         app.publish_view(&restart, &version);
@@ -3901,6 +4143,7 @@ mod tests {
     use crate::theme::Mark;
     use crate::time::Timestamp;
     use crate::tmux;
+    mod flight;
     mod menu_acceptance;
     mod menu_units;
 
@@ -4406,8 +4649,8 @@ mod tests {
         let dir = root.0.join("sessions").join("api");
         let (mut app, _reader) = housed(&root);
         app.take(Reading::Owner, Instant::now());
-        let refused = app.ask(b"x", "lead", "x".to_owned());
-        assert_eq!(refused, Err("refused: not writing".to_owned()));
+        let refused = app.begin(b"x", "lead", "x".to_owned());
+        assert_eq!(refused.err(), Some("refused: not writing".to_owned()));
         let typed = writing(&mut app);
         meta(&root, &ID.replace("1234", "bbbb"), "colead");
         for key in [Key::Text(b"check the scopes".to_vec()), Key::Enter] {

@@ -347,23 +347,85 @@ pub(crate) fn submit_ask(
     seat: &str,
     body: String,
 ) -> Result<(String, submit::Outcome), String> {
-    let (now, entropy) = (time::Timestamp::now(), crate::entropy());
-    let id = tracked::request_id(tracked::Kind::Ask.id_prefix(), now, entropy);
-    let sender = tracked::Sender {
-        display: tracked::CONSOLE_SINK.to_owned(),
-        slot: String::new(),
-        session: console.name.clone(),
-    };
-    let deliver = || {
-        let (tail, mut said) = ([seat.to_owned(), body], Vec::new());
-        let run = tracked::run(
-            tracked::Kind::Ask,
-            &console.dir,
-            &tail,
-            Some(&sender),
-            &crate::own_session(&console.dir),
+    let (ask, admitted) = admit_ask(console, owns, raw, seat, body)?;
+    let id = ask.id().to_owned();
+    let outcome = admitted.finish(&mut console.held.borrow_mut(), &id, || ask.run());
+    Ok((id, outcome))
+}
+
+/// The admission of one ask of `seat`: the console admission lock, `owns`,
+/// the kept draft and the open-ask cap, all proven now, and the ask ready to
+/// carry. The lock is held for as long as the [`submit::Admitted`] lives.
+///
+/// # Errors
+///
+/// Why nothing may be delivered.
+pub(crate) fn admit_ask(
+    console: &Console,
+    owns: impl FnOnce() -> Result<(), String>,
+    raw: &[u8],
+    seat: &str,
+    body: String,
+) -> Result<(Carry, submit::Admitted), String> {
+    let admitted = submit::admit(
+        &mut console.held.borrow_mut(),
+        &console.dir,
+        &console.name,
+        raw,
+        owns,
+    )?;
+    Ok((Carry::of(console, seat, body), admitted))
+}
+
+/// One ask of a seat, owned whole and ready to be carried: everything the
+/// helpers' tracked path takes, so it can run on another thread.
+pub(crate) struct Carry {
+    dir: std::path::PathBuf,
+    session: String,
+    seat: String,
+    body: String,
+    id: String,
+    now: time::Timestamp,
+    entropy: u64,
+}
+
+impl Carry {
+    /// The ask of `seat` from `console`, under a request id minted now.
+    pub(crate) fn of(console: &Console, seat: &str, body: String) -> Self {
+        let (now, entropy) = (time::Timestamp::now(), crate::entropy());
+        Self {
+            dir: console.dir.clone(),
+            session: console.name.clone(),
+            seat: seat.to_owned(),
+            body,
+            id: tracked::request_id(tracked::Kind::Ask.id_prefix(), now, entropy),
             now,
             entropy,
+        }
+    }
+
+    /// The request id this ask is recorded under.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Carry the ask through the helpers' own tracked path, as the console,
+    /// and say what the path wrote to its error stream.
+    pub(crate) fn run(self) -> String {
+        let sender = tracked::Sender {
+            display: tracked::CONSOLE_SINK.to_owned(),
+            slot: String::new(),
+            session: self.session,
+        };
+        let (tail, mut said) = ([self.seat, self.body], Vec::new());
+        let run = tracked::run(
+            tracked::Kind::Ask,
+            &self.dir,
+            &tail,
+            Some(&sender),
+            &crate::own_session(&self.dir),
+            self.now,
+            self.entropy,
             crate::send_defer(),
             &mut std::io::sink(),
             &mut said,
@@ -372,17 +434,7 @@ pub(crate) fn submit_ask(
             said.extend(why.to_string().bytes());
         }
         String::from_utf8_lossy(&said).into_owned()
-    };
-    let outcome = submit::submit_held(
-        &mut console.held.borrow_mut(),
-        &console.dir,
-        &console.name,
-        raw,
-        &id,
-        owns,
-        deliver,
-    )?;
-    Ok((id, outcome))
+    }
 }
 
 /// A console that takes input from its terminal.

@@ -113,7 +113,7 @@ fn first_visible_frame_is_strict_and_repaint_does_not_renew_it() {
         1,
         "repaint must not starve a fresh press"
     );
-    assert!(app.notices[0].1.body.contains("not running inside tmux"));
+    assert!(app.notices[0].1.body.contains("names no tmux server"));
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn raw_ambiguous_identity_painted_then_repaired_never_acquires_authority() {
     keyed(&mut app, b"s", Instant::now());
     assert!(noticed(&app, "session_id"));
     assert!(
-        !noticed(&app, "not running inside tmux"),
+        !noticed(&app, "names no tmux server"),
         "ambiguous painted identity reached Stop"
     );
     assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
@@ -256,7 +256,7 @@ fn raw_ambiguous_identity_painted_then_repaired_never_acquires_authority() {
     let _ = shown(&mut app, Instant::now());
     keyed(&mut app, b"s", Instant::now());
     assert!(
-        noticed(&app, "not running inside tmux"),
+        noticed(&app, "names no tmux server"),
         "a newly painted sole identity must pass the menu guard"
     );
 }
@@ -315,7 +315,7 @@ fn historical_right_press_never_freezes_current_replacement_uuid() {
             .collect::<Vec<_>>()
     );
     assert!(
-        !noticed(&app, "not running inside tmux"),
+        !noticed(&app, "names no tmux server"),
         "replacement reached Stop with a freshly acquired UUID"
     );
 }
@@ -385,7 +385,7 @@ fn orchestrator_has_no_menu_and_row_refusals_never_reach_an_owner() {
         let (target, item) = app.notices.last().expect("new row refusal");
         assert_eq!(target, "api");
         assert!(item.body.contains(reason));
-        assert!(!noticed(&app, "not running inside tmux"));
+        assert!(!noticed(&app, "names no tmux server"));
         assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
     }
 }
@@ -401,11 +401,14 @@ fn a_stopped_session_offers_start_not_stop() {
     let screen = shown(&mut app, Instant::now());
     assert!(screen.contains("s  Start"), "{screen}");
     assert!(!screen.contains("Stop…") && !screen.contains("Stop..."));
+    let started = detached(&mut app);
     keyed(&mut app, b"s", Instant::now());
     assert!(
-        noticed(&app, "not running inside tmux"),
-        "Start rides the same proofs as Stop"
+        noticed(&app, "Starting 'api'."),
+        "Start works outside tmux: {:?}",
+        app.notices
     );
+    assert_eq!(started.borrow().len(), 1);
 }
 
 #[test]
@@ -427,7 +430,7 @@ fn fresh_left_press_on_stop_and_keys_help_use_the_same_action() {
         row: u16::try_from(row).expect("painted row"),
     };
     assert!(take_keys(&mut app, vec![(Key::Mouse(click), Instant::now())]).is_some());
-    assert!(noticed(&app, "not running inside tmux"));
+    assert!(noticed(&app, "names no tmux server"), "{:?}", app.notices);
     app.open_settings();
     app.model.show_settings_tab(SettingsTab::Keys);
     assert!(framed(&mut app).lines().any(|line| {
@@ -512,7 +515,7 @@ fn affirm_does_not_refresh_an_expired_question_deadline() {
             .iter()
             .any(|(_, item)| { item.body.contains("expired") || item.body.contains("stale") })
     );
-    assert!(!noticed(&app, "not running inside tmux"));
+    assert!(!noticed(&app, "names no tmux server"));
     assert!(app.queued.is_empty());
 }
 
@@ -557,5 +560,191 @@ fn unfit_modal_closes_without_leaking_already_read_confirm_into_the_draft() {
         assert!(app.composing() && app.queued.is_empty());
         keyed(&mut app, b"z", Instant::now());
         assert!(drafted(&app).contains('z'), "fresh read remained poisoned");
+    }
+}
+
+// ---- Stop and Start outside tmux: no client, so the app's own modal is the
+// confirmation and the session's recorded server is the proof -----------------
+
+use std::cell::RefCell;
+
+/// Every argv the app detached, in order; the argv never starts a process.
+fn detached(app: &mut App) -> Rc<RefCell<Vec<Vec<String>>>> {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let keep = Rc::clone(&seen);
+    app.detach = Box::new(move |argv| {
+        keep.borrow_mut().push(argv.as_args().to_vec());
+        true
+    });
+    seen
+}
+
+/// `root`'s home `api` recorded on tmux server `server`, as a launch records it.
+fn recorded_on(root: &Root, server: &str) {
+    let path = root.0.join("sessions/api/meta");
+    let bytes = crate::meta::read_bytes(&root.0.join("sessions/api")).expect("record");
+    let meta = String::from_utf8(bytes).expect("UTF-8 fixture meta");
+    let mut kept = String::new();
+    for line in meta.lines().filter(|line| !line.starts_with("tmux_server")) {
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    let rows = if server.is_empty() {
+        String::new()
+    } else {
+        format!("tmux_server_kind=name\ntmux_server={server}\n")
+    };
+    std::fs::write(&path, format!("{kept}{rows}")).expect("record");
+}
+
+/// The Stop question as `ae app` outside tmux freezes it: nobody attached to
+/// answer, so the client and its pid are empty and the rest is the record's.
+fn unattended_question(app: &mut App, deadline: i64) {
+    use crate::app::menu::{Choice, Modal, Question};
+    keyed(app, b"m", Instant::now());
+    let card = match app.modal.take().expect("actual painted menu") {
+        Modal::Menu(menu) => menu.card,
+        Modal::Question(_) => panic!("m unexpectedly constructed a question"),
+    };
+    let expect = crate::lifecycle::StopExpectation {
+        session_id: "$7".to_owned(),
+        uuid: ID.to_owned(),
+        server_pid: "401".to_owned(),
+        server_start: "1759500000".to_owned(),
+        deadline,
+        client: String::new(),
+        client_pid: String::new(),
+        server: crate::inventory::ServerId::from_typed_flags("name", "fixture")
+            .expect("captured server"),
+        require_meta_agent: false,
+    };
+    app.modal = Some(Modal::Question(Question {
+        card,
+        expect,
+        focus: Choice::Cancel,
+        shown_at: None,
+    }));
+}
+
+fn affirmed(app: &mut App) {
+    shown(app, Instant::now());
+    keyed(app, b"y", Instant::now());
+}
+
+#[test]
+fn start_outside_tmux_resumes_the_proven_incarnation_without_attaching() {
+    let (root, mut app, reader) = fixture("start-unattended");
+    refold(&mut app, &reader, &root, &[("api", Status::Stopped)]);
+    app.facts
+        .insert("api".to_owned(), fleet::Facts::NotPublished);
+    framed(&mut app);
+    let started = detached(&mut app);
+    right(&mut app, "api", Instant::now());
+    shown(&mut app, Instant::now());
+    keyed(&mut app, b"s", Instant::now());
+    assert!(
+        !noticed(&app, "not running inside tmux"),
+        "{:?}",
+        app.notices
+    );
+    assert!(noticed(&app, "Starting 'api'."), "{:?}", app.notices);
+    // Spelled out, not asked of the minter for the session: exactly the
+    // executable (the one `lifecycle`'s own test pins), the session as ONE
+    // element and `--no-attach`, so nothing attaches and nothing else rides.
+    let own = crate::lifecycle::resume_argv("any").expect("own executable");
+    let want = vec![
+        own.as_args()[0].clone(),
+        "api".to_owned(),
+        "--no-attach".to_owned(),
+    ];
+    assert_eq!(*started.borrow(), vec![want]);
+}
+
+#[test]
+fn start_outside_tmux_refuses_an_incarnation_that_replaced_the_drawn_one() {
+    let (root, mut app, reader) = fixture("start-replaced");
+    refold(&mut app, &reader, &root, &[("api", Status::Stopped)]);
+    app.facts
+        .insert("api".to_owned(), fleet::Facts::NotPublished);
+    framed(&mut app);
+    let started = detached(&mut app);
+    right(&mut app, "api", Instant::now());
+    shown(&mut app, Instant::now());
+    meta(&root, &ID.replace("1234", "bbbb"), "colead");
+    keyed(&mut app, b"s", Instant::now());
+    assert!(noticed(&app, "replaced or changed"), "{:?}", app.notices);
+    assert!(noticed(&app, "nothing started"), "{:?}", app.notices);
+    assert!(
+        started.borrow().is_empty(),
+        "a replaced session was started"
+    );
+}
+
+#[test]
+fn stop_outside_tmux_names_the_missing_record_not_a_missing_tmux() {
+    let (_root, mut app, _reader) = fixture("stop-unrecorded");
+    let started = detached(&mut app);
+    keyed(&mut app, b"m", Instant::now());
+    shown(&mut app, Instant::now());
+    keyed(&mut app, b"s", Instant::now());
+    assert!(
+        !noticed(&app, "not running inside tmux"),
+        "{:?}",
+        app.notices
+    );
+    assert!(noticed(&app, "names no tmux server"), "{:?}", app.notices);
+    assert!(noticed(&app, "nothing stopped"), "{:?}", app.notices);
+    assert!(started.borrow().is_empty());
+    assert!(app.modal.is_none(), "no question was asked");
+}
+
+#[test]
+fn affirming_an_unattended_stop_hands_the_supervisor_the_identity_it_froze() {
+    let (root, mut app, _reader) = fixture("stop-unattended");
+    app.root = Some(root.0.clone());
+    recorded_on(&root, "fixture");
+    let started = detached(&mut app);
+    unattended_question(&mut app, Timestamp::now().epoch() + 120);
+    affirmed(&mut app);
+    assert!(noticed(&app, "Stopping 'api'."), "{:?}", app.notices);
+    assert!(!noticed(&app, "not running inside tmux"));
+    let argv = started.borrow();
+    assert_eq!(argv.len(), 1, "one supervisor");
+    let words = &argv[0];
+    let after = |flag: &str| {
+        let at = words.iter().position(|word| word == flag).expect(flag);
+        words[at + 1].clone()
+    };
+    assert_eq!(&words[1..4], ["_stop", "--supervise", "api"]);
+    assert_eq!(after("--expect-client"), "");
+    assert_eq!(after("--expect-client-pid"), "");
+    assert_eq!(after("--expect-server-kind"), "name");
+    assert_eq!(after("--expect-server"), "fixture");
+    assert_eq!(after("--expect-uuid"), ID);
+}
+
+#[test]
+fn an_unattended_stop_is_refused_when_what_it_froze_no_longer_holds() {
+    for (tag, deadline, why) in [
+        ("elsewhere", 120, "different tmux server"),
+        ("replaced", 120, "no longer names the session_id"),
+        ("expired", -1, "expired"),
+        ("unrecorded", 120, "names no tmux server"),
+    ] {
+        let (root, mut app, _reader) = fixture(&format!("stop-unattended-{tag}"));
+        app.root = Some(root.0.clone());
+        recorded_on(&root, "fixture");
+        let started = detached(&mut app);
+        unattended_question(&mut app, Timestamp::now().epoch() + deadline);
+        match tag {
+            "elsewhere" => recorded_on(&root, "other"),
+            "replaced" => meta(&root, &ID.replace("1234", "bbbb"), "colead"),
+            "unrecorded" => recorded_on(&root, ""),
+            _ => {}
+        }
+        affirmed(&mut app);
+        assert!(noticed(&app, why), "{tag}: {:?}", app.notices);
+        assert!(noticed(&app, "nothing stopped"), "{tag}: {:?}", app.notices);
+        assert!(started.borrow().is_empty(), "{tag}: a supervisor started");
     }
 }

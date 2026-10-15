@@ -435,6 +435,35 @@ pub(crate) struct StopExpectation {
 }
 
 impl StopExpectation {
+    /// The expectation of a confirmation nobody attached to tmux answered:
+    /// `ae app` outside tmux asks in its own modal, so there is no client to
+    /// name or to tell. Both client fields are empty; every other identity is
+    /// proven under the lock as for a client's.
+    pub(crate) fn unattended(
+        session_id: String,
+        uuid: String,
+        identity: crate::tmux::ServerIdentity,
+        deadline: i64,
+        server: ServerId,
+    ) -> Self {
+        Self {
+            session_id,
+            uuid,
+            server_pid: identity.pid,
+            server_start: identity.start,
+            deadline,
+            client: String::new(),
+            client_pid: String::new(),
+            server,
+            require_meta_agent: false,
+        }
+    }
+
+    /// Whether a tmux client answered; not when both its fields are empty.
+    pub(crate) fn is_attended(&self) -> bool {
+        !self.client.is_empty()
+    }
+
     /// The `--expect-*` words a supervisor argv carries.
     fn argv_words(&self) -> Vec<String> {
         vec![
@@ -479,7 +508,9 @@ impl StopExpectation {
     /// re-proven here. Nothing falls back to another client, and nothing is
     /// said at all when the human who asked is no longer there to hear it.
     fn tell_clicker(&self, text: &str) {
-        if self.server_survives() && self.clicker_survives() {
+        // No client answered: nobody here to hear it, and an empty name would
+        // address whichever client tmux calls current.
+        if self.is_attended() && self.server_survives() && self.clicker_survives() {
             let _ = transport::display_client_message(&self.server, &self.client, text);
         }
     }
@@ -540,7 +571,7 @@ impl StopExpectation {
         }
         // THE HUMAN WHO ANSWERED must still be there to be told what happened,
         // and must be the same attachment: a tty path outlives its client.
-        if !self.clicker_survives() {
+        if self.is_attended() && !self.clicker_survives() {
             return ExpectCheck::Refused(format!(
                 "the client that confirmed '{name}' is gone, so ae will not apply its answer"
             ));
@@ -606,6 +637,24 @@ pub(crate) fn stop_confirmed(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    stop_confirmed_via(root, expect, name, detach, out, err)
+}
+
+/// The existing detached door: what [`stop_confirmed`] starts a supervisor with.
+fn detach(argv: &DetachedArgv) -> bool {
+    crate::transport::run_detached(argv)
+}
+
+/// [`stop_confirmed`] with the detached start in the caller's hands: whether
+/// `detach` started the supervisor.
+pub(crate) fn stop_confirmed_via(
+    root: &Path,
+    expect: &StopExpectation,
+    name: &str,
+    detach: impl FnOnce(&DetachedArgv) -> bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
     if !name_is_usable(root, name) {
         writeln!(err, "ae: '{name}' is not a usable session name.")?;
         return Ok(EXIT_FAILED);
@@ -617,7 +666,7 @@ pub(crate) fn stop_confirmed(
         )?;
         return Ok(EXIT_FAILED);
     };
-    if !crate::transport::run_detached(&argv) {
+    if !detach(&argv) {
         writeln!(
             err,
             "Error: could not start the supervisor for '{name}' — nothing was stopped."
@@ -734,8 +783,21 @@ pub(crate) const STOP_RESULT_ACTION: &str = "stop-result";
 pub(crate) const STOPPED_SUMMARY: &str = "stopped: verified gone on its recorded server";
 pub(crate) const ALREADY_STOPPED_SUMMARY: &str = "already stopped";
 
-/// A `nohup` argv minted ONLY by [`supervisor_argv`].
+/// A `nohup` argv minted ONLY by [`supervisor_argv_expecting`] and
+/// [`resume_argv`].
 pub(crate) struct DetachedArgv(Vec<String>);
+
+/// `nohup <this binary> <name> --no-attach` — a stopped session resumed with
+/// nothing attached, the session name its own argv element (no shell, so
+/// nothing to inject). What `ae app` outside tmux starts a session with.
+pub(crate) fn resume_argv(name: &str) -> Option<DetachedArgv> {
+    let own = crate::shape::resolved_exe()?;
+    Some(DetachedArgv(vec![
+        own.to_string_lossy().into_owned(),
+        name.to_owned(),
+        "--no-attach".to_owned(),
+    ]))
+}
 
 impl DetachedArgv {
     /// The argv for the transport door to spawn.
@@ -1330,9 +1392,17 @@ fn split_expectation(
     if uuid.is_empty() {
         return Err("--expect-uuid is not a session uuid.".to_owned());
     }
+    // No client answered when both its fields are empty; half of one is none.
+    if client.is_empty() != client_pid.is_empty() {
+        return Err(
+            "--expect-client and --expect-client-pid travel together: both empty (no tmux client) or both set."
+                .to_owned(),
+        );
+    }
+    let client_pid_ok = client_pid.is_empty() || crate::tmux::is_decimal(&client_pid);
     if !crate::tmux::is_decimal(&server_pid)
         || !crate::tmux::is_decimal(&server_start)
-        || !crate::tmux::is_decimal(&client_pid)
+        || !client_pid_ok
     {
         return Err(
             "--expect-server-pid, --expect-server-start and --expect-client-pid are decimals."
@@ -1690,11 +1760,16 @@ fn stop_one(
             ExpectCheck::Proven { server, id } => {
                 // The human's answer, recorded with its provenance, now that
                 // the directory has proven it is the one that was confirmed.
+                let by = if expect.is_attended() {
+                    format!("client {}", expect.client)
+                } else {
+                    "ae app with no tmux client".to_owned()
+                };
                 emit_stop_event(
                     &dir,
                     name,
                     STOP_REQUEST_ACTION,
-                    &format!("stop confirmed by client {} ({id})", expect.client),
+                    &format!("stop confirmed by {by} ({id})"),
                 );
                 Some((server, id))
             }
@@ -1798,8 +1873,22 @@ fn kill_under_lock(
 
 #[cfg(test)]
 mod tests {
-    use super::{name_is_valid, sessions_dir, stop_prompt, worktrees_dir};
+    use super::{name_is_valid, resume_argv, sessions_dir, stop_prompt, worktrees_dir};
     use std::path::Path;
+
+    #[test]
+    fn a_resume_argv_is_exactly_this_binary_the_session_and_no_attach() {
+        let own = crate::shape::resolved_exe().expect("own executable");
+        let own = own.to_string_lossy().into_owned();
+        for name in ["api", "a b; rm -rf ~", "--stop"] {
+            let argv = resume_argv(name).expect("own executable");
+            assert_eq!(
+                argv.as_args(),
+                [own.as_str(), name, "--no-attach"],
+                "one element per word: the name is never split or joined"
+            );
+        }
+    }
 
     #[test]
     fn the_session_name_grammar_is_the_frozen_one() {

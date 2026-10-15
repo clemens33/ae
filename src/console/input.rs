@@ -1691,7 +1691,23 @@ pub fn outcome_line(outcome: &Outcome, seat: &str) -> String {
         Outcome::Sent(_, Some(kept)) => format!("sent; {kept}"),
         Outcome::Uncertain(_) => format!("uncertain: {check}"),
         Outcome::NotDelivered(_) => "not delivered".to_owned(),
-        Outcome::Unknown(..) => format!("no record of it; it may have been delivered - {check}"),
+        Outcome::Unknown(_, said) => unrecorded_line(said, &check),
+    }
+}
+
+/// The cells of what a delivery said that the line for an unrecorded ask keeps.
+const SAID_CELLS: usize = 120;
+
+/// The line for an ask no record shows: what its delivery said, flattened to
+/// one clipped printable line, then the doubt.
+#[must_use]
+pub fn unrecorded_line(said: &str, check: &str) -> String {
+    let flat = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = crate::event_text::display_cell(&flat, SAID_CELLS);
+    if said.is_empty() {
+        format!("no record of it; it may have been delivered - {check}")
+    } else {
+        format!("no record of it ({said}); it may have been delivered - {check}")
     }
 }
 
@@ -3090,11 +3106,32 @@ mod tests {
             (Outcome::NotDelivered(id()), "not delivered".to_owned()),
             (
                 Outcome::Unknown(id(), "said".to_owned()),
+                format!("no record of it (said); it may have been delivered - {check}"),
+            ),
+            (
+                Outcome::Unknown(id(), String::new()),
                 format!("no record of it; it may have been delivered - {check}"),
+            ),
+            (
+                Outcome::Unknown(
+                    id(),
+                    "notice UNCONFIRMED\n\x1b[31mre-send\x07 \u{202e}".to_owned(),
+                ),
+                format!(
+                    "no record of it (notice UNCONFIRMED ?re-send? ?); it may have been delivered - {check}"
+                ),
             ),
         ] {
             assert_eq!(outcome_line(&outcome, "lead"), line);
         }
+    }
+
+    #[test]
+    fn a_long_said_is_clipped_to_one_line() {
+        let said = "x".repeat(500);
+        let line = outcome_line(&Outcome::Unknown("ae-1".to_owned(), said), "lead");
+        assert!(line.chars().count() < 260, "{}", line.chars().count());
+        assert!(!line.contains('\n') && line.starts_with("no record of it (xxx"));
     }
 
     /// A dressed screen's 24-bit foreground escape for a palette colour.
