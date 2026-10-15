@@ -251,6 +251,14 @@ fn ctrl_v_in_the_owner_chat_inserts_and_only_enter_sends() {
             .any(|(_, p)| fs::read_to_string(p).is_ok_and(|t| t.contains(&body)))
     });
 
+    // `deliver::store_body` publishes by link-then-unlink, so the body's `.txt`
+    // shows while its temp name is still there. The ask helper journals only
+    // after delivery returned, so the record is the completion signal: the
+    // snapshot below is of a settled `messages/`, not a filtered one.
+    until("the ask is journaled", || {
+        rig.tool.events().contains("\"action\":\"ask\"")
+    });
+
     // A refusal prints its why, keeps the typed draft, and writes nothing.
     let kept = rig.entries();
     rig.keys(&pane, &["-l", "keep"]);
