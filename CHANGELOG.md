@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.81] - 2026-10-15
+- Ae app: work in a seat from outside tmux
+- App composer spec: wait on the ask's own completion signals, and give a frame wait a minimum of frames under load
+
 ## [v2026.10.80] - 2026-10-15
 - Imgpaste spec: snapshot messages/ only after the ask is journaled
 - Chatperf test: prove the body identity moved before asserting the re-read
