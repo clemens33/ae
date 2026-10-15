@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.73] - 2026-10-15
+- Settings > Quota paints the held answer at once and asks agy off-thread
+
 ## [v2026.10.72] - 2026-10-14
 - A codex turn held for its startup reads as submitted, not left in the box
 
