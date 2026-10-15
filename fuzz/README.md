@@ -91,6 +91,8 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 
 `console_command` also takes `/more <digits>` lines as one `Effect::More`, every other `/more` shape refused, and `@seat /more n` an ask; the `more-*` seeds carry both.
 
+`console_command` also checks the editing keys against an independent copy of their rules: ^W, Opt+Backspace (`ESC DEL`) and ^K take a word or the rest of the line into the slot ^U fills, ^Y puts it back once and Enter empties it, and ^V asks for an image (`Effect::ImagePaste`) and types nothing. The `kills-and-yank`, `opt-backspace`, `kill-to-end`, `clear-and-yank` and `image-key*` seeds carry them.
+
 `console_command` also feeds the same terminal stream to `Keys::app`, including
 SGR mouse reports and legacy X10 payloads. Whole and split reads must yield the
 same keys and origin stamps after adjacent literal runs are joined and idle

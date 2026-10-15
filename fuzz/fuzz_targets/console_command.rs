@@ -130,16 +130,36 @@ fn unit_ends(bytes: &[u8]) -> Vec<usize> {
     ends
 }
 
+/// Where the word before the cursor begins in `head`: blanks skipped, then its
+/// bytes. A big word (^W) is any run without whitespace; the other
+/// (Opt+Backspace) is letters, digits and non-ASCII bytes.
+fn word_start(head: &[u8], big: bool) -> usize {
+    let word = |byte: &u8| {
+        if big {
+            !byte.is_ascii_whitespace()
+        } else {
+            byte.is_ascii_alphanumeric() || !byte.is_ascii()
+        }
+    };
+    let blanks = head.iter().rev().take_while(|byte| !word(byte)).count();
+    let kept = &head[..head.len() - blanks];
+    kept.len() - kept.iter().rev().take_while(|byte| word(byte)).count()
+}
+
 /// The lines Enter enters when an owning console that restored `kept` is sent
 /// `stream`, written out here from the key table and the editing rules without
 /// `Keys` or `Composer`: text goes in at the cursor, which the arrows, Home,
-/// End, Delete, Backspace and ^U move or erase; a paste is literal to its end
+/// End, Delete, Backspace and ^U move or erase; ^W, Opt+Backspace (`ESC DEL`)
+/// and ^K take a word or the rest of the line into the slot ^U fills too,
+/// which ^Y puts back once and Enter empties; ^V asks for a clipboard image
+/// and types nothing; a paste is literal to its end
 /// with CR and CRLF folded to LF; ^J and Alt+Enter (`ESC CR`/`ESC LF`) insert
 /// a newline like text, and only a typed CR enters. A refused line goes back
 /// to the draft, like the put-back, and may enter again on a later CR.
 fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
     const CLOSE: &[u8] = b"\x1b[201~";
     let (mut draft, mut cursor) = (kept.to_vec(), kept.len());
+    let mut slot: Vec<u8> = Vec::new();
     let (mut lines, mut pasting, mut at) = (Vec::new(), false, 0);
     let mut skip = false;
     while at < stream.len() {
@@ -181,6 +201,7 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
                     continue;
                 }
                 b"\x1b\r" | b"\x1b\n" => b"\n",
+                b"\x1b\x7f" | b"\x1b\x08" => b"\x1b\x7f",
                 seq @ (b"\x1b[D" | b"\x1bOD" | b"\x1b[C" | b"\x1bOC" | b"\x1b[3~") => seq,
                 b"\x1b[H" | b"\x1bOH" | b"\x1b[1~" | b"\x1b[7~" => b"\x01",
                 b"\x1b[F" | b"\x1bOF" | b"\x1b[4~" | b"\x1b[8~" => b"\x05",
@@ -189,6 +210,10 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
         } else {
             &rest[..1]
         };
+        // ^V reaches no composer: it asks for an image and moves nothing.
+        if key == b"\x16" {
+            continue;
+        }
         // Text goes in at the byte offset, whatever it completes; any other key
         // first moves the cursor on to the end of the character it sits inside.
         let at_text = cursor;
@@ -213,9 +238,41 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
             }
             b"\x01" => cursor = 0,
             b"\x05" => cursor = draft.len(),
-            b"\x15" => (draft, cursor) = (Vec::new(), 0),
+            b"\x15" => {
+                let cleared = std::mem::take(&mut draft);
+                if !cleared.is_empty() {
+                    slot = cleared;
+                }
+                cursor = 0;
+            }
+            b"\x17" | b"\x1b\x7f" => {
+                let from = word_start(&draft[..cursor], key == b"\x17");
+                if from < cursor {
+                    slot = draft.drain(from..cursor).collect();
+                    cursor = from;
+                }
+            }
+            b"\x0b" => {
+                let rest = &draft[cursor..];
+                let len = match rest.iter().position(|&byte| byte == b'\n') {
+                    Some(0) => 1,
+                    Some(len) => len,
+                    None => rest.len(),
+                };
+                if len > 0 {
+                    slot = draft.drain(cursor..cursor + len).collect();
+                }
+            }
+            b"\x19" => {
+                if draft.len() + slot.len() <= input::CAP {
+                    let back = std::mem::take(&mut slot);
+                    draft.splice(cursor..cursor, back.iter().copied());
+                    cursor += back.len();
+                }
+            }
             b"\r" if !draft.is_empty() => {
                 let line = std::mem::take(&mut draft);
+                slot.clear();
                 lines.push(line.clone());
                 if refused_line(&line) {
                     cursor = line.len();
@@ -334,6 +391,7 @@ fuzz_target!(|data: &[u8]| {
                 !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()),
                 "a fold number is digits: {number:?}"
             ),
+            Effect::ImagePaste => assert!(stream.contains(&0x16), "only ^V asks for an image"),
             Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => {}
         }
     }
@@ -360,9 +418,11 @@ fuzz_target!(|data: &[u8]| {
     if kept.len() + full.len() <= input::CAP {
         let (all, _, _) = effects(kept, &full, chunk, at, size);
         let lines = entered(kept, &full);
-        let after = &all[usize::from(!kept.is_empty())..];
+        let after: Vec<_> = (all.iter().skip(usize::from(!kept.is_empty())))
+            .filter(|effect| !matches!(effect, Effect::ImagePaste))
+            .collect();
         assert_eq!(after.len(), lines.len(), "one effect per entered line");
-        for (effect, line) in after.iter().zip(&lines) {
+        for (effect, line) in after.into_iter().zip(&lines) {
             if let Effect::Ask { raw, .. } = effect {
                 assert_eq!(raw, line);
             }
