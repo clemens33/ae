@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.83] - 2026-10-15
+- Ae app: deliver an ask off the loop, stop and start a session outside tmux, say what an unrecorded ask said
+- Pin that a delivery the helpers journal as abandoned reads back as not delivered
+- A plain line weighs lead against colead quota when both seats can take it
+
 ## [v2026.10.82] - 2026-10-15
 - Read claude's /rate-limit-options menu as a usage limit
 - Wait for a staged notice pointer to be proven, and journal a notice that was never proven as not delivered
