@@ -138,6 +138,39 @@ const CODEX_ERROR: Banner = Banner {
     phrases: CODEX_TRANSIENT,
 };
 
+/// How a tool draws its usage-limit MENU — a dialog drawn INSTEAD of its input
+/// box, not a row in its transcript — data only; the one reader is
+/// [`limit_menu`]. The dialog sits under a full-width rule of `─` on its
+/// `title` row, one option is the limit's own (`stop`), one option row starts
+/// with the `selected` glyph, and the `hint` row is the capture's last
+/// non-blank row. The other options are the account's (credits, an upgrade)
+/// and are neither required nor matched. A tool without a measured menu has
+/// no `Menu` and books nothing of this shape.
+struct Menu {
+    title: &'static str,
+    stop: &'static str,
+    selected: char,
+    hint: &'static str,
+    /// Rows up from the last non-blank row the whole dialog must sit inside.
+    window: usize,
+    /// Whether a row above the dialog's rule draws a running turn.
+    turn: fn(&str) -> bool,
+}
+
+/// Claude's `/rate-limit-options` dialog, measured on a live seat at its
+/// weekly limit (`tests/fixtures/claude-limit-menu/`): the box is replaced by
+/// a rule, the title, three numbered options and the hint, eight rows at 39
+/// columns and one fewer where option 2 does not wrap; 16 leaves room for a
+/// narrower wrap and the rows above.
+const CLAUDE_LIMIT_MENU: Menu = Menu {
+    title: "What do you want to do?",
+    stop: "Stop and wait for limit to reset",
+    selected: '❯',
+    hint: "Enter to confirm · Esc to cancel",
+    window: 16,
+    turn: crate::harness_state::claude_spinner,
+};
+
 /// The widest a notice is quoted in a journal summary or a Notify line.
 const NOTICE_CELLS: usize = 160;
 
@@ -339,7 +372,13 @@ fn reported(question: crate::tool::Question, row: &str) -> String {
 /// The rows ABOVE the rule do not count: a watchdog capture joins a wrapped
 /// launch line into one row wider than the pane.
 fn titled(window: &[&str], question: usize, title: &str) -> bool {
-    (1..question).any(|at| {
+    title_at(window, question, title).is_some()
+}
+
+/// The index of the first row [`titled`] accepts as the title, so the rule is
+/// the row above it.
+fn title_at(window: &[&str], question: usize, title: &str) -> Option<usize> {
+    (1..question).find(|&at| {
         let rule = window[at - 1];
         let width = rule.chars().count();
         window[at].trim_start().starts_with(title)
@@ -410,9 +449,15 @@ fn newest_row<'a>(buf: &'a str, banner: &Banner) -> Option<(Vec<&'a str>, usize,
 /// bottom window decides, and the notice is that row's text plus the rows its
 /// cell continues on up to the first blank row, joined and projected through
 /// the one menu-text cutter: the part a human needs is when it resets, and
-/// codex wraps that onto the next row.
+/// codex wraps that onto the next row. A tool that draws its limit as a MENU
+/// instead ([`limit_menu`]) has no such row: its notice is the menu's options,
+/// quoted the same way, and a drawn row always outranks it.
 #[must_use]
 pub fn limit_notice(buf: &str, agent_bin: &str) -> Option<String> {
+    row_notice(buf, agent_bin).or_else(|| menu_notice(buf, agent_bin))
+}
+
+fn row_notice(buf: &str, agent_bin: &str) -> Option<String> {
     let (window, at, text) = newest_row(buf, banner_for(agent_bin)?)?;
     let cell = std::iter::once(text.trim())
         .chain(
@@ -427,17 +472,113 @@ pub fn limit_notice(buf: &str, agent_bin: &str) -> Option<String> {
 }
 
 /// The drawn rows of the cell [`limit_notice`] reads — the notice row and its
-/// continuation up to the first blank row — or `None` when it reads none.
+/// continuation up to the first blank row, or a limit menu's title and option
+/// rows — or `None` when it reads none.
 #[must_use]
 pub fn limit_rows<'a>(buf: &'a str, agent_bin: &str) -> Option<Vec<&'a str>> {
-    let (window, at, _) = newest_row(buf, banner_for(agent_bin)?)?;
-    Some(
-        window[at..]
+    banner_for(agent_bin)
+        .and_then(|banner| newest_row(buf, banner))
+        .map(|(window, at, _)| {
+            window[at..]
+                .iter()
+                .copied()
+                .take_while(|row| !row.trim().is_empty())
+                .collect()
+        })
+        .or_else(|| {
+            let dialog = limit_menu(buf, menu_for(agent_bin)?)?;
+            Some(dialog.rows[dialog.title..dialog.hint].to_vec())
+        })
+}
+
+/// The measured usage-limit menu of the tool whose binary is `agent_bin`.
+fn menu_for(agent_bin: &str) -> Option<&'static Menu> {
+    match agent_bin {
+        "claude" => Some(&CLAUDE_LIMIT_MENU),
+        _ => None,
+    }
+}
+
+/// A usage-limit menu as the live bottom of a capture draws it.
+struct Dialog<'a> {
+    /// The capture's bottom window, ending at the hint row.
+    rows: Vec<&'a str>,
+    /// The title row's index; the rule is the row above it.
+    title: usize,
+    /// The hint row's index: the window's last.
+    hint: usize,
+}
+
+/// The `menu` the BOTTOM of `buf` draws, or `None`. The hint row must be the
+/// capture's last non-blank row and the title must sit under the dialog's own
+/// full-width rule, as in [`human_prompt_class`], so a transcript quoting the
+/// words — indented under the tool's furniture, or above a drawn input box —
+/// never matches; between them the limit's own option must be drawn and one
+/// option selected. A menu the human dismissed is gone from the capture, and
+/// the limit shows as its row again or not at all.
+fn limit_menu<'a>(buf: &'a str, menu: &Menu) -> Option<Dialog<'a>> {
+    let rows = bottom_window(buf, menu.window)?;
+    let hint = rows.len().checked_sub(1)?;
+    if rows[hint].trim() != menu.hint {
+        return None;
+    }
+    let title = title_at(&rows, hint, menu.title)?;
+    let options = &rows[title + 1..hint];
+    let stops = options
+        .iter()
+        .any(|row| option_text(row, menu.selected).starts_with(menu.stop));
+    let chosen = options
+        .iter()
+        .any(|row| row.trim_start().starts_with(menu.selected));
+    (stops && chosen).then_some(Dialog { rows, title, hint })
+}
+
+/// An option row's text past its selection glyph and its `N. ` number.
+fn option_text(row: &str, selected: char) -> &str {
+    let row = row.trim();
+    let row = row.strip_prefix(selected).unwrap_or(row).trim_start();
+    let numbered = row.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    if numbered.len() < row.len() {
+        numbered.strip_prefix(". ").unwrap_or(row)
+    } else {
+        row
+    }
+}
+
+/// The usage-limit notice a limit MENU is: its options, selection glyph
+/// dropped so the quote does not move with the cursor, joined and projected
+/// through the one menu-text cutter — the reset time option 2 carries is the
+/// part a human needs.
+fn menu_notice(buf: &str, agent_bin: &str) -> Option<String> {
+    let menu = menu_for(agent_bin)?;
+    let dialog = limit_menu(buf, menu)?;
+    let cell = dialog.rows[dialog.title + 1..dialog.hint]
+        .iter()
+        .map(|row| {
+            let row = row.trim();
+            row.strip_prefix(menu.selected).unwrap_or(row).trim_start()
+        })
+        .filter(|row| !row.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(crate::event_text::display_column(&cell, NOTICE_CELLS))
+}
+
+/// Whether `buf` shows the tool's usage-limit MENU with no running turn drawn
+/// above it — what a stop may treat as the limit over an empty box, since a
+/// dialog replaces the box: nothing a human typed sits in it, and a turn's
+/// own row would be the row above the dialog's rule. `false` for a menu with
+/// a turn row there, a tool with no measured menu, and every other frame.
+#[must_use]
+pub fn limit_menu_idle(buf: &str, agent_bin: &str) -> bool {
+    let Some(menu) = menu_for(agent_bin) else {
+        return false;
+    };
+    limit_menu(buf, menu).is_some_and(|dialog| {
+        !dialog.rows[..dialog.title.saturating_sub(1)]
             .iter()
-            .copied()
-            .take_while(|row| !row.trim().is_empty())
-            .collect(),
-    )
+            .any(|row| (menu.turn)(row.trim()))
+    })
 }
 
 /// Which class of upstream trouble `buf` shows for `agent_bin`, if any — the
@@ -3178,6 +3319,194 @@ mod tests {
                  Subscription quota exhausted. Your usage window resets at 2026-09-14T22:56:52Z. …"
             )
         );
+    }
+
+    /// What the measured menu quotes: its options in drawing order, selection
+    /// glyph dropped, joined with one space — written out from the frame, not
+    /// computed by the reader.
+    const LIMIT_MENU_NOTICE: &str = "1. Stop and wait for limit to reset 2. Wait here, then \
+        continue automatically at Oct 18 at 2am 3. Switch to usage credits";
+
+    /// The measured claude limit menu is the seat on its usage limit: the
+    /// reader books it as a limit notice and quotes the options, the reset
+    /// time included, whichever option is selected, however the pane wraps it,
+    /// and whichever of the account's other options it draws.
+    #[test]
+    fn a_claude_limit_menu_reads_as_a_usage_limit() {
+        let frame = claude_frame("claude-limit-menu/claude-limit-menu-39col.txt");
+        assert_eq!(
+            limit_notice(&frame, "claude").as_deref(),
+            Some(LIMIT_MENU_NOTICE)
+        );
+        assert_eq!(
+            throttle_class(&frame, "claude"),
+            Some(Throttle::LimitReached)
+        );
+        let rows = super::limit_rows(&frame, "claude").unwrap_or_default();
+        assert_eq!(
+            rows.iter().map(|row| row.trim()).collect::<Vec<_>>(),
+            [
+                "What do you want to do?",
+                "❯ 1. Stop and wait for limit to reset",
+                "2. Wait here, then continue",
+                "automatically at Oct 18 at 2am",
+                "3. Switch to usage credits",
+            ]
+        );
+        assert!(super::limit_menu_idle(&frame, "claude"));
+
+        // The human arrowed to option 2: the selection moves, the quote does not.
+        let moved = frame
+            .replace("  ❯ 1. Stop", "    1. Stop")
+            .replace("    2. Wait here", "  ❯ 2. Wait here");
+        assert_eq!(
+            limit_notice(&moved, "claude").as_deref(),
+            Some(LIMIT_MENU_NOTICE)
+        );
+        // A wide pane draws option 2 on one row under a wider rule.
+        let rule = "─".repeat(80);
+        let wide = format!(
+            "❯ /rate-limit-options\n{rule}\n  What do you want to do?\n  ❯ 1. Stop and wait for \
+             limit to reset\n    2. Wait here, then continue automatically at Oct 18 at 2am\n    \
+             3. Switch to usage credits\n  Enter to confirm · Esc to cancel\n"
+        );
+        assert_eq!(
+            limit_notice(&wide, "claude").as_deref(),
+            Some(LIMIT_MENU_NOTICE)
+        );
+        // An account without credits draws fewer options: the stop option alone is required.
+        let fewer: String = frame
+            .lines()
+            .filter(|row| !row.contains("Switch to usage credits"))
+            .fold(String::new(), |mut text, row| {
+                text.push_str(row);
+                text.push('\n');
+                text
+            });
+        assert_eq!(
+            limit_notice(&fewer, "claude").as_deref(),
+            Some(
+                "1. Stop and wait for limit to reset 2. Wait here, then continue automatically \
+                 at Oct 18 at 2am"
+            )
+        );
+        // Trailing blank rows move nothing: the window is measured from the ink.
+        assert!(limit_notice(&format!("{frame}\n\n\n"), "claude").is_some());
+    }
+
+    /// The menu counts only as the live bottom of the tool's own frame:
+    /// anything that quotes it, draws it under another frame, or is another
+    /// menu books nothing.
+    #[test]
+    fn a_limit_menu_books_only_as_the_live_bottom_of_a_claude_capture() {
+        let frame = claude_frame("claude-limit-menu/claude-limit-menu-39col.txt");
+        let none = |text: &str, why: &str| {
+            assert_eq!(limit_notice(text, "claude"), None, "{why}");
+            assert_eq!(throttle_class(text, "claude"), None, "{why}");
+            assert!(!super::limit_menu_idle(text, "claude"), "{why}");
+        };
+        // The same words quoted in the transcript above a live composer: the
+        // hint row is no longer the last row.
+        none(&format!("{frame}\n{CLAUDE_CHROME}\n"), "above a composer");
+        none(
+            &format!("{frame}\n  ⏵⏵ accept edits on\n"),
+            "a row below it",
+        );
+        // Without the dialog's own rule the words are prose, however they are indented.
+        let no_rule: String = frame
+            .lines()
+            .map(|row| if row.starts_with('─') { "" } else { row })
+            .collect::<Vec<_>>()
+            .join("\n");
+        none(&no_rule, "no rule");
+        let quoted: String = frame
+            .lines()
+            .enumerate()
+            .map(|(at, row)| {
+                if at >= 3 {
+                    format!("⏺ {row}")
+                } else {
+                    row.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        none(&quoted, "quoted under the response marker");
+        // A rule narrower than the widest row, or not drawn in `─`, is not the dialog's frame.
+        none(
+            &frame.replace(&"─".repeat(39), &"─".repeat(30)),
+            "a short rule",
+        );
+        none(
+            &frame.replace(&"─".repeat(39), &"-".repeat(39)),
+            "an ASCII rule",
+        );
+        // A live dialog has one selected option.
+        none(&frame.replace("  ❯ 1. Stop", "    1. Stop"), "no selection");
+        // Another menu with the same title and hint is not the limit's.
+        let other = frame
+            .replace(
+                "1. Stop and wait for limit to reset",
+                "1. Resume the session",
+            )
+            .replace("3. Switch to usage credits", "3. Start over");
+        none(&other, "another menu");
+        none(
+            &frame.replace("What do you want to do?", "Which model should answer?"),
+            "another title",
+        );
+        none(
+            &frame.replace("Enter to confirm · Esc to cancel", "Esc to cancel"),
+            "another hint",
+        );
+        // The folder-trust modal is claude's other dialog and no limit.
+        none(
+            &claude_frame("claude-trust/claude-trust-modal-80x24.txt"),
+            "the trust modal",
+        );
+        // Only a tool with a measured menu reads one.
+        for bin in ["codex", "muse", "opencode", "agy", "gemini", "grok", "x"] {
+            assert_eq!(limit_notice(&frame, bin), None, "{bin}");
+            assert_eq!(throttle_class(&frame, bin), None, "{bin}");
+            assert!(!super::limit_menu_idle(&frame, bin), "{bin}");
+        }
+    }
+
+    /// A drawn vendor row outranks the menu for the quote, and a turn drawn
+    /// above the dialog is a limit still but no stop proof.
+    #[test]
+    fn a_limit_menu_yields_to_a_drawn_row_and_is_no_stop_proof_over_a_running_turn() {
+        let frame = claude_frame("claude-limit-menu/claude-limit-menu-39col.txt");
+        let with_row = format!("  ⎿  You've hit your session limit\n\n{frame}");
+        assert_eq!(
+            limit_notice(&with_row, "claude").as_deref(),
+            Some("You've hit your session limit")
+        );
+        assert!(super::limit_menu_idle(&with_row, "claude"));
+
+        let busy = claude_frame("harness-state/claude-busy-167x40.txt");
+        let spinner = busy
+            .lines()
+            .find(|row| row.starts_with("✻ Enchanting"))
+            .unwrap_or_default();
+        assert!(!spinner.is_empty(), "the measured busy row");
+        let running = frame.replace("✻ Sautéed for 6s · done Tuesday 3:03 PM", spinner);
+        assert_eq!(
+            limit_notice(&running, "claude").as_deref(),
+            Some(LIMIT_MENU_NOTICE),
+            "the limit is booked either way"
+        );
+        assert!(!super::limit_menu_idle(&running, "claude"), "{spinner}");
+    }
+
+    /// The menu is no prompt the watchdog names to the human, and none ae
+    /// answers: the detector reads it as nothing, so a limit move is never
+    /// held as `human-prompt`, and the delivery gate keeps refusing it as an
+    /// occupied composer.
+    #[test]
+    fn the_limit_menu_is_not_a_human_prompt() {
+        let frame = claude_frame("claude-limit-menu/claude-limit-menu-39col.txt");
+        assert_eq!(claude(&frame), None);
     }
 
     /// Claude Code 2.1.281's bottom chrome, measured on a live pane

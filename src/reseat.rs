@@ -709,7 +709,14 @@ fn stop_timeout_advice(probe: Option<&ObservedPaneProbe>) -> (String, &'static s
 /// The row must be CURRENT: an unknown verdict proves the limit only when the
 /// nearest row above the box is that cell, never a limit left in the transcript,
 /// or claude 2.1.296's own row for a limit wait the human cancelled (measured).
+///
+/// A tool that draws its limit as a MENU in place of the box has no box to
+/// read: the menu as the capture's live bottom, with no turn drawn above it
+/// (`watchdog::limit_menu_idle`), is the proof, and nothing is answered in it.
 fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
+    if crate::watchdog::limit_menu_idle(capture, agent_bin) {
+        return true;
+    }
     let (Some(rows), Some(frame)) = (
         crate::watchdog::limit_rows(capture, agent_bin),
         crate::harness_state::read_frame(capture, tool),
@@ -2403,6 +2410,59 @@ mod tests {
             !super::may_stop(active, current, super::StopPolicy::Proven),
             "second read cannot repair the first"
         );
+    }
+
+    /// Claude's `/rate-limit-options` menu replaces the box, so the frame
+    /// grammar reads nothing there: the menu as the live bottom, with no turn
+    /// drawn above its rule, is the limit proof on both reads, and a menu
+    /// that is only quoted above a drawn box, or sits under a running turn,
+    /// proves nothing.
+    #[test]
+    fn a_claude_limit_menu_is_a_limit_proof_only_as_the_live_bottom_with_no_turn_above() {
+        const MENU: &str =
+            include_str!("../tests/fixtures/claude-limit-menu/claude-limit-menu-39col.txt");
+        let claude = super::ToolKind::Claude;
+        assert_eq!(
+            crate::harness_state::read_frame(MENU, claude),
+            None,
+            "the menu draws no box: only the menu reading can prove this frame"
+        );
+        let read = (
+            crate::harness_state::classify(MENU, claude),
+            super::limit_proven(MENU, "claude", claude),
+        );
+        assert_eq!(read, (super::HarnessState::Unknown, true));
+        assert!(
+            super::may_stop(read, read, super::StopPolicy::Proven),
+            "the measured menu is a finished limit on both reads"
+        );
+
+        let busy = include_str!("../tests/fixtures/harness-state/claude-busy-167x40.txt")
+            .lines()
+            .find(|row| row.starts_with("✻ Enchanting"))
+            .unwrap_or_default();
+        assert!(!busy.is_empty(), "the measured busy row");
+        let running = MENU.replace("✻ Sautéed for 6s · done Tuesday 3:03 PM", busy);
+        assert!(
+            crate::watchdog::limit_notice(&running, "claude").is_some(),
+            "still the limit"
+        );
+        assert!(
+            !super::limit_proven(&running, "claude", claude),
+            "a turn above the dialog's rule is no proof"
+        );
+        let quoted = format!(
+            "{MENU}\n────────────────────────────────────────\n❯\u{a0}\n\
+             ────────────────────────────────────────\n  🧠 Opus 5.5 (xhigh)\n  ⏵⏵ accept edits on\n"
+        );
+        assert!(
+            !super::limit_proven(&quoted, "claude", claude),
+            "a menu quoted above a drawn box is no proof"
+        );
+        for bin in ["codex", "muse", "opencode"] {
+            let tool = super::ToolKind::from_binary_name(bin);
+            assert!(!super::limit_proven(MENU, bin, tool), "{bin}");
+        }
     }
 
     fn limitstop_shell_probe(

@@ -1107,7 +1107,7 @@ while (1) {
             close($frame);
         }
         open(my $drawn, '>', "__DRAWN__.$$") or die;
-        print $drawn $state eq 'limit' ? "Usage limit reached" : "done (0s)";
+        print $drawn $state eq 'limit' ? "__MARK__" : "done (0s)";
         close($drawn);
         $last = $state;
     }
@@ -1130,8 +1130,16 @@ fn limitstop_playback(rig: &Rig, tool: &str, frame: &str) -> String {
 fn limitstop_playback_as(rig: &Rig, tool: &str, frame: &str, agent: &str) -> String {
     let frame_path = rig.scratch.join("limitstop-frame.txt");
     assert!(std::fs::write(&frame_path, frame).is_ok(), "playback frame");
+    // The marker is a string the drawn frame contains: the product's own words
+    // where the frame has them, else the menu's title.
+    let mark = if frame.contains("Usage limit reached") {
+        "Usage limit reached"
+    } else {
+        "What do you want to do?"
+    };
     let body = LIMITSTOP_PLAYBACK
         .replace("__FRAME__", &frame_path.display().to_string())
+        .replace("__MARK__", mark)
         .replace(
             "__CLEAR__",
             &rig.scratch.join("limitstop-clear").display().to_string(),
@@ -1185,6 +1193,79 @@ fn limitstop_the_real_limit_frame_is_stopped_by_the_limit_leg() {
     assert_eq!(
         one_outcome(&rig, DONE_ACTION).reference.as_deref(),
         Some("fake-claude")
+    );
+}
+
+/// Claude's `/rate-limit-options` dialog, measured on a live seat at its
+/// weekly limit: the box is replaced by the menu, and no `⎿` row is drawn.
+const LIMIT_MENU_FRAME: &str =
+    include_str!("../fixtures/claude-limit-menu/claude-limit-menu-39col.txt");
+
+/// The menu is the limit over a dialog instead of a box: the leg's stop reads
+/// it as the proof, on the real stop path.
+#[test]
+fn limitmenu_the_measured_menu_is_stopped_by_the_limit_leg() {
+    let (rig, pane) = limitstop_attempt("limitmenustop", LIMIT_MENU_FRAME);
+    let pid = rig.tool_pid(&pane, "claude").expect("the limited tool");
+    assert_eq!(
+        ae::harness_state::classify(&rig.capture(&pane), ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the dialog draws no box the frame grammar reads"
+    );
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(code, Some(0), "the menu must move: out={out} err={err}");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "claude").is_none(), "old tool stopped");
+    assert_ne!(rig.tool_pid(&pane, "opencode"), Some(pid));
+    assert_eq!(
+        one_outcome(&rig, DONE_ACTION).reference.as_deref(),
+        Some("fake-claude")
+    );
+}
+
+/// A running turn drawn above the dialog is a limit still, but no stop proof:
+/// the leg refuses and the seat stays.
+#[test]
+fn limitmenu_a_running_turn_above_the_menu_cannot_be_stopped() {
+    let busy = include_str!("../fixtures/harness-state/claude-busy-167x40.txt")
+        .lines()
+        .find(|row| row.starts_with("✻ Enchanting"))
+        .expect("measured busy row");
+    let frame = LIMIT_MENU_FRAME.replace("✻ Sautéed for 6s · done Tuesday 3:03 PM", busy);
+    let (rig, pane) = limitstop_attempt("limitmenubusy", &frame);
+    assert!(
+        ae::watchdog::limit_notice(&rig.capture(&pane), "claude").is_some(),
+        "the menu is still the limit"
+    );
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(code, Some(1), "no proof, no stop: out={out} err={err}");
+    one_outcome(&rig, REFUSED_ACTION);
+    untouched(&rig, &pane);
+}
+
+/// THE PATH END TO END on the menu: the watchdog books the limit from the
+/// capture ONCE, and the leg moves the seat, with no `⎿` row ever drawn.
+#[test]
+fn a_seat_on_the_limit_menu_is_booked_once_and_moved_by_the_watchdog() {
+    let rig = Rig::new("automenu");
+    configure(&rig, ON_NOW, "fake-opencode");
+    let pane = limitstop_playback(&rig, "claude", LIMIT_MENU_FRAME);
+
+    let moved = watch_until(&rig, || booked(&rig, DONE_ACTION) == 1);
+
+    assert!(moved, "no move: {}\n{}", rig.events(), daemon_err(&rig));
+    assert_eq!(booked(&rig, "limit"), 1, "{}", rig.events());
+    assert_eq!(booked(&rig, ATTEMPT_ACTION), 1, "one attempt");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "opencode").is_some(), "moved in place");
+    let limit = seat_records(&rig)
+        .into_iter()
+        .find(|event| event.action == "limit")
+        .and_then(|event| event.summary)
+        .unwrap_or_default();
+    assert!(
+        limit.contains("1. Stop and wait for limit to reset 2. Wait here"),
+        "the record quotes the menu: {limit}"
     );
 }
 

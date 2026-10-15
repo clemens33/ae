@@ -455,7 +455,9 @@ fn claude_input_frame(lines: &[Cow<'_, str>], prompt_index: usize) -> bool {
         && after.iter().any(|line| line.starts_with('⏵'))
 }
 
-fn claude_spinner(line: &str) -> bool {
+/// Whether `line` is claude's running-turn row — read by the usage-limit
+/// menu's stop proof (`watchdog::limit_menu_idle`) as well as the frame grammar.
+pub(crate) fn claude_spinner(line: &str) -> bool {
     let mut chars = line.chars();
     matches!(chars.next(), Some('✻' | '✽' | '✶' | '✳' | '✢' | '·'))
         && chars.as_str().contains("… (")
