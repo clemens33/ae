@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.75] - 2026-10-15
+- ^C over text clears the composer, ^U keeps what it cleared and ^Y puts it back once, hint row names the clear key over text
+- A ^C just after a clear only arms the quit, so a ^C meant for the text never ends the app
+- ^W, Opt+Backspace and ^K erase a word or the rest of the line into the ^Y slot
+- A held ^C is judged by the time it was pressed, so waiting behind an ask or a wheel notch never expires its quit guard
+
 ## [v2026.10.74] - 2026-10-15
 - Start/stop menu and s toggle, settings on comma, session-addressed composer with lead/colead routing, cached quota, config without a home, longer lane cache, tighter summary row
 
