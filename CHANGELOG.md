@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.82] - 2026-10-15
+- Read claude's /rate-limit-options menu as a usage limit
+- Wait for a staged notice pointer to be proven, and journal a notice that was never proven as not delivered
+- Ae app sidebar: header bands, worded summary, selection instead of the needy bar
+
 ## [v2026.10.81] - 2026-10-15
 - Ae app: work in a seat from outside tmux
 - App composer spec: wait on the ask's own completion signals, and give a frame wait a minimum of frames under load
