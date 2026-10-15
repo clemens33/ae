@@ -478,6 +478,65 @@ pub(in crate::console) mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// What the delivery helpers journal themselves for an ask that never
+    /// landed — a deferral abandoned, a notice never proven on screen — reads
+    /// back as NOT delivered with the draft kept: the writer's action is the
+    /// reader's, and neither is spelled here.
+    #[test]
+    fn what_the_helpers_journal_for_an_undelivered_ask_reads_back_as_not_delivered() {
+        use crate::deliver::{DeferHeld, Failure};
+        let failures = [
+            Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            },
+            Failure::Unconfirmed {
+                body_file: "/m/notice.txt".to_owned(),
+                framed: "framed".to_owned(),
+                notice: true,
+            },
+        ];
+        for failure in failures {
+            let dir = session("undelivered", 0);
+            let got = run(&dir, b"kept", || {
+                let fields = crate::tracked::EventFields {
+                    ts: crate::time::Timestamp::parse("2026-09-30T06:05:00Z").unwrap(),
+                    actor: crate::tracked::CONSOLE_SINK,
+                    action: "ask",
+                    target: "lead",
+                    reference: NEW,
+                    actor_slot: "",
+                    actor_session: "s",
+                    target_slot: "main",
+                    target_session: "s",
+                    actor_session_id: "",
+                    target_session_id: "",
+                    target_server: "/t",
+                    target_pane: "%1",
+                    target_session_uuid: U,
+                    caller_server: "",
+                    caller_pane: "",
+                    caller_session_uuid: "",
+                    identity_gap: "",
+                    summary: "q",
+                    body_file: "",
+                };
+                let mut said = Vec::new();
+                crate::tracked::record_tracked_delivery(
+                    &dir,
+                    &fields,
+                    Err(failure),
+                    None,
+                    &mut said,
+                )
+                .unwrap();
+                String::from_utf8(said).unwrap()
+            });
+            assert_eq!(got, Ok(Outcome::NotDelivered(NEW.to_owned())));
+            assert_eq!(draft(&dir), SourceRead::Ready(b"kept".to_vec()));
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn a_submit_holds_admission_through_delivery_and_clears_the_draft_only_when_sent() {
         let dir = session("guard", 4);
