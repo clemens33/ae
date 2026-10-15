@@ -373,6 +373,28 @@ pub(crate) fn own_scope(
     Some(scope)
 }
 
+/// How pressed the seat's OWN account is: the worst judged percentage among
+/// [`own_scope`]'s usable windows proven at least a day long, the same windows
+/// [`own_room`] weighs; a reached spend cap is the account's and reads full.
+/// `None` when nothing is decided: no proven identity, no observation, or no
+/// such window.
+pub(crate) fn own_pressure(
+    quota: Option<&crate::quota::Observation>,
+    entry: &crate::meta::RosterEntry,
+    pin: Option<&str>,
+    now: i64,
+) -> Option<f64> {
+    let scope = own_scope(quota, entry, pin, now)?;
+    if scope.spend_capped {
+        return Some(FULL);
+    }
+    let windows: Vec<super::Window> = scope.windows.into_iter().map(|(_, w)| w).collect();
+    super::worst_long(&windows).map(|window| window.judged)
+}
+
+/// What a reached spend cap judges every window of its account at.
+const FULL: f64 = 100.0;
+
 /// The seat's OWN account against the threshold `at`: [`own_scope`]'s windows.
 pub(crate) fn own_room(
     quota: Option<&crate::quota::Observation>,
@@ -421,6 +443,30 @@ fn read_quota_at(
         now: now.epoch(),
     };
     read_quota(dir, &inputs)
+}
+
+/// How pressed each lead-pair seat of the session at `dir` is, by seat name in
+/// roster order: ONE quota read, then each seat's [`own_pressure`], its model
+/// pin resolved as a reseat resolves it. `None` per seat when nothing is
+/// decided, every seat when the session is not quota-aware; empty when the
+/// meta cannot be read.
+pub(crate) fn pair_pressure(root: &Path, dir: &Path, now: Timestamp) -> Vec<(String, Option<f64>)> {
+    let Ok(bytes) = crate::meta::read_bytes(dir) else {
+        return Vec::new();
+    };
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let lead_pair = crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair";
+    let observed = read_quota_at(root, dir, &meta, now);
+    (meta.roster().iter())
+        .filter(|entry| crate::watchdog_daemon::in_lead_pair(&entry.slot, lead_pair))
+        .map(|entry| {
+            let pin = (entry.profile.as_deref())
+                .and_then(|profile| crate::reseat::resolved(dir, profile))
+                .and_then(|found| found.pin);
+            let used = own_pressure(observed.as_ref(), entry, pin.as_deref(), now.epoch());
+            (entry.name.clone(), used)
+        })
+        .collect()
 }
 
 /// Why a candidate was passed over, as a record says it.
@@ -1388,6 +1434,131 @@ mod effort_scope_spec {
         let actual = super::own_scope(Some(&observed), &seat(), Some("opus"), NOW);
         assert!(actual.is_some());
         assert!(!actual.expect("asserted own scope").spend_capped);
+    }
+
+    /// The routing pressure oracle: the seat's own account, effective (never
+    /// raw) judged percentage, worst usable window proven at least a day long.
+    fn weekly(qualifier: Option<&str>, percent: &str) -> Group {
+        group(
+            "/effort-spec-account/.claude.json",
+            qualifier,
+            percent,
+            Policy::default(),
+        )
+    }
+
+    #[test]
+    fn pressure_is_the_worst_usable_day_long_window_of_the_seats_own_account() {
+        let mut short = weekly(None, "99");
+        short.rows[0].window_minutes = Some(300);
+        let mut stale = weekly(None, "70");
+        stale.rows[0].observed_at = Some(NOW - 1000);
+        let mut passed = weekly(None, "97");
+        passed.rows[0].resets_at = Some(NOW);
+        let mut unstated = weekly(None, "98");
+        unstated.rows[0].window_minutes = None;
+        let observed = observation(vec![
+            short,
+            stale,
+            weekly(None, "62"),
+            passed,
+            unstated,
+            group(
+                "/effort-spec-other/.claude.json",
+                None,
+                "100",
+                Policy::default(),
+            ),
+        ]);
+        let actual = super::own_pressure(Some(&observed), &seat(), None, NOW);
+        assert_eq!(
+            actual.map(f64::to_bits),
+            Some(70.0_f64.to_bits()),
+            "a stale reading stands; a short, passed-reset, unstated-length or foreign window never counts"
+        );
+    }
+
+    #[test]
+    fn pressure_is_the_effective_percentage_never_the_raw_one() {
+        let one_reset = Policy::for_tests(Some(1), Account::default());
+        let observed = observation(vec![group(
+            "/effort-spec-account/.claude.json",
+            None,
+            "95",
+            one_reset,
+        )]);
+        let actual = super::own_pressure(Some(&observed), &seat(), None, NOW);
+        assert_eq!(actual.map(f64::to_bits), Some(47.5_f64.to_bits()));
+    }
+
+    #[test]
+    fn pressure_skips_a_window_scoped_to_another_model_family() {
+        let observed = observation(vec![
+            weekly(Some("opus"), "40"),
+            weekly(Some("sonnet"), "99"),
+        ]);
+        let actual = super::own_pressure(Some(&observed), &seat(), Some("opus"), NOW);
+        assert_eq!(actual.map(f64::to_bits), Some(40.0_f64.to_bits()));
+    }
+
+    /// Without a model pin no window is proven to bind another family, so the
+    /// worst of them reads: the seat is asked, not excused.
+    #[test]
+    fn pressure_without_a_pin_counts_every_family() {
+        let observed = observation(vec![
+            weekly(Some("opus"), "40"),
+            weekly(Some("sonnet"), "99"),
+        ]);
+        let actual = super::own_pressure(Some(&observed), &seat(), None, NOW);
+        assert_eq!(actual.map(f64::to_bits), Some(99.0_f64.to_bits()));
+    }
+
+    /// A reached spend cap is the account's, not one window's: the account
+    /// reads full whatever lengths and families its rows are.
+    #[test]
+    fn pressure_of_a_spend_capped_account_is_full_even_when_only_a_short_window_reads() {
+        let capped = Policy::for_tests(
+            None,
+            Account {
+                spend_control_reached: Some(true),
+                spend_observed_at: Some(NOW),
+                ..Account::default()
+            },
+        );
+        let mut short = group("/effort-spec-account/.claude.json", None, "3", capped);
+        short.rows[0].window_minutes = Some(300);
+        let observed = observation(vec![short]);
+        let actual = super::own_pressure(Some(&observed), &seat(), None, NOW);
+        assert_eq!(actual.map(f64::to_bits), Some(100.0_f64.to_bits()));
+    }
+
+    #[test]
+    fn pressure_is_unknown_without_a_proven_identity_an_observation_or_a_long_window() {
+        let observed = observation(vec![weekly(None, "95")]);
+        let mut entry = seat();
+        entry.config_home = RecordedConfigHome::Missing;
+        assert_eq!(
+            super::own_pressure(Some(&observed), &entry, None, NOW),
+            None
+        );
+        assert_eq!(super::own_pressure(None, &seat(), None, NOW), None);
+        let mut short = weekly(None, "95");
+        short.rows[0].window_minutes = Some(300);
+        let observed = observation(vec![short]);
+        assert_eq!(
+            super::own_pressure(Some(&observed), &seat(), None, NOW),
+            None
+        );
+        let observed = observation(vec![group(
+            "/effort-spec-other/.claude.json",
+            None,
+            "95",
+            Policy::default(),
+        )]);
+        assert_eq!(
+            super::own_pressure(Some(&observed), &seat(), None, NOW),
+            None
+        );
     }
 
     #[test]

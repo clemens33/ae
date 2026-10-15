@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::handover::{self, View};
 use super::journals::Journals;
@@ -133,7 +133,18 @@ pub(super) enum Answer {
         at: Instant,
         body: Body,
     },
+    /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
+    /// by seat name: its own account's judged quota, `None` when unknown.
+    Pressure {
+        name: String,
+        id: String,
+        pressure: Pressure,
+    },
 }
+
+/// How pressed each lead-pair seat of a session is, by seat name: its own
+/// account's judged quota, `None` when unknown.
+pub(super) type Pressure = Vec<(String, Option<f64>)>;
 
 /// One read of the fleet.
 pub(super) struct FleetRead {
@@ -281,7 +292,13 @@ pub(super) struct Reader {
     /// Sessions whose last stage read was answered: one still staging is due
     /// again at once, one whose read failed waits its tier.
     answered: BTreeSet<String>,
+    /// Each session's lead-pair quota pressure as last read, with when.
+    pressure: BTreeMap<String, (Instant, Pressure)>,
 }
+
+/// How long a session's seat pressure stands before its quota files are read
+/// again: the vendor's numbers move slowly and the read is bounded, not free.
+const PRESSURE_TTL: Duration = Duration::from_mins(1);
 
 /// An agy ask running off the reader: the home and epoch it was asked for, and where its
 /// answer and completion epoch arrive.
@@ -344,6 +361,7 @@ impl Reader {
             flight: None,
             journals: Journals::default(),
             answered: BTreeSet::new(),
+            pressure: BTreeMap::new(),
         }
     }
 
@@ -388,7 +406,7 @@ impl Reader {
             let answers = match job {
                 Job::Fleet => self.fleet(),
                 Job::Look(name) => vec![self.look(&name)],
-                Job::View(name) => self.stage(&name).into_iter().collect(),
+                Job::View(name) => self.view_answers(&name),
                 Job::Settings => vec![self.settings()],
                 Job::Peek(ask) => vec![self.peek(&ask)],
                 Job::Wait(until) => {
@@ -800,6 +818,47 @@ impl Reader {
         if self.home.as_deref() == Some(name) {
             self.home_drawn = drawn;
         }
+    }
+
+    /// One staged read of session `name`, and, for the selection or home, how
+    /// pressed its lead pair is beside it.
+    fn view_answers(&mut self, name: &str) -> Vec<Answer> {
+        let mut answers: Vec<Answer> = self.stage(name).into_iter().collect();
+        let hot = self.selected.as_deref() == Some(name) || self.home.as_deref() == Some(name);
+        let id = match answers.first() {
+            Some(Answer::View(view)) if hot => Some(view.id.clone()),
+            _ => None,
+        };
+        if let Some(id) = id {
+            let pressure = self.pressure_at(name, Instant::now());
+            answers.push(Answer::Pressure {
+                name: name.to_owned(),
+                id,
+                pressure,
+            });
+        }
+        answers
+    }
+
+    /// How pressed each lead-pair seat of session `name` is, by seat name: its
+    /// own account's judged quota. The quota files are read at most once per
+    /// [`PRESSURE_TTL`] per session; a session the reader does not know has
+    /// none. Starts no process: [`crate::quota::observe`] reads files only.
+    fn pressure_at(&mut self, name: &str, now: Instant) -> Pressure {
+        if let Some((read_at, kept)) = self.pressure.get(name)
+            && now.saturating_duration_since(*read_at) < PRESSURE_TTL
+        {
+            return kept.clone();
+        }
+        let Some(dir) = self.dirs.get(name) else {
+            return Vec::new();
+        };
+        let read = crate::autoreseat::leg::pair_pressure(&self.root, dir, Timestamp::now());
+        // An empty read found no seat to judge: not an answer to keep.
+        if !read.is_empty() {
+            self.pressure.insert(name.to_owned(), (now, read.clone()));
+        }
+        read
     }
 
     /// Whether the writer may still write, read now.
@@ -1871,6 +1930,157 @@ mod tests {
 
     /// A quota fixture root plus its reader: `home/` with an optional claude
     /// cache, `config` global, and the reader pointed at both.
+    /// A claude account directory whose usage cache reads `percent` on its
+    /// weekly window, fetched now; the canonical directory.
+    fn account(dir: &Path, percent: u32) -> PathBuf {
+        std::fs::create_dir_all(dir).expect("account dir");
+        let fetched = Timestamp::now().epoch().saturating_mul(1000);
+        let cache = format!(
+            "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{fetched},\"utilization\":{{\"limits\":[{{\"kind\":\"weekly_all\",\"percent\":{percent},\"resets_at\":\"2099-01-01T00:00:00Z\"}}]}}}}}}"
+        );
+        std::fs::write(dir.join(".claude.json"), cache).expect("usage cache");
+        std::fs::canonicalize(dir).expect("canonical account")
+    }
+
+    /// A state root whose `api` session runs two claude seats on accounts
+    /// reading `lead` and `colead` percent (`None`: no cache for that account),
+    /// under a global config declaring both and `workspace` as extra lines.
+    fn pressure_setup(
+        tag: &str,
+        (lead, colead): (Option<u32>, Option<u32>),
+        workspace: &str,
+    ) -> (Root, Reader, [PathBuf; 2]) {
+        let root = Root::new(tag);
+        let homes = [("lead", lead), ("colead", colead)].map(|(seat, percent)| {
+            let dir = root.0.join("accounts").join(seat);
+            if let Some(percent) = percent {
+                return account(&dir, percent);
+            }
+            std::fs::create_dir_all(&dir).expect("account dir");
+            std::fs::canonicalize(&dir).expect("canonical account")
+        });
+        let config = format!(
+            "[clients]\nla = claude config_home={}\nlb = claude config_home={}\n[profiles]\na = la\nb = lb\n{workspace}",
+            homes[0].display(),
+            homes[1].display()
+        );
+        std::fs::write(root.0.join("config"), config).expect("global config");
+        let tail = format!(
+            "agent_bin.main=claude\nagent_bin.worker.0=claude\nconfig_home.main={}\nconfig_home.worker.0={}\nprofile.main=a\nprofile.worker.0=b\n",
+            homes[0].display(),
+            homes[1].display()
+        );
+        let dir = session(&root, "api", &tail);
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        reader.dirs.insert("api".to_owned(), dir);
+        (root, reader, homes)
+    }
+
+    fn seats(read: &[(String, Option<f64>)]) -> Vec<(&str, Option<f64>)> {
+        read.iter()
+            .map(|(name, used)| (name.as_str(), *used))
+            .collect()
+    }
+
+    /// The pressure of each lead-pair seat is its own account's judged
+    /// percentage by seat name, in roster order.
+    #[test]
+    fn each_lead_pair_seat_reads_its_own_accounts_pressure() {
+        let (_root, mut reader, _homes) = pressure_setup("pressure-own", (Some(86), Some(40)), "");
+        let read = reader.pressure_at("api", Instant::now());
+        assert_eq!(seats(&read), [("lead", Some(86.0)), ("colead", Some(40.0))]);
+    }
+
+    #[test]
+    fn a_seat_whose_account_ae_cannot_read_is_unknown_not_zero() {
+        let (_root, mut reader, _homes) = pressure_setup("pressure-gap", (Some(86), None), "");
+        let read = reader.pressure_at("api", Instant::now());
+        assert_eq!(seats(&read), [("lead", Some(86.0)), ("colead", None)]);
+    }
+
+    #[test]
+    fn quota_off_reads_every_seat_unknown() {
+        let (_root, mut reader, _homes) = pressure_setup(
+            "pressure-off",
+            (Some(90), Some(10)),
+            "[workspace]\nquota = off\n",
+        );
+        let read = reader.pressure_at("api", Instant::now());
+        assert_eq!(seats(&read), [("lead", None), ("colead", None)]);
+    }
+
+    /// The selection's and home's view reads carry their lead pair's pressure
+    /// beside the view, bound to the incarnation read; a neighbour's carries
+    /// none.
+    #[test]
+    fn the_selection_and_home_read_their_pressure_beside_the_view() {
+        let (_root, mut reader, _homes) = pressure_setup("pressure-view", (Some(86), Some(40)), "");
+        let pressure = |answers: Vec<Answer>| {
+            assert!(
+                matches!(answers.first(), Some(Answer::View(_))),
+                "the view comes first"
+            );
+            answers.into_iter().find_map(|answer| match answer {
+                Answer::Pressure { name, id, pressure } => Some((name, id, pressure)),
+                _ => None,
+            })
+        };
+        assert!(
+            pressure(reader.view_answers("api")).is_none(),
+            "a neighbour"
+        );
+        reader.selected = Some("api".to_owned());
+        let (name, id, read) = pressure(reader.view_answers("api")).expect("the selection");
+        assert_eq!((name.as_str(), id.as_str()), ("api", ID));
+        assert_eq!(seats(&read), [("lead", Some(86.0)), ("colead", Some(40.0))]);
+        reader.selected = None;
+        reader.home = Some("api".to_owned());
+        assert!(pressure(reader.view_answers("api")).is_some(), "home");
+    }
+
+    /// A read that found nothing to judge by is no answer to keep: the next
+    /// read, inside the minute, looks again.
+    #[test]
+    fn an_unreadable_meta_is_not_kept_as_an_answer() {
+        let (root, mut reader, _homes) = pressure_setup("pressure-meta", (Some(86), Some(40)), "");
+        let meta = root.0.join("sessions/api/meta");
+        let away = meta.with_extension("away");
+        std::fs::rename(&meta, &away).expect("meta gone");
+        let start = Instant::now();
+        assert!(reader.pressure_at("api", start).is_empty());
+        std::fs::rename(&away, &meta).expect("meta back");
+        let again = reader.pressure_at("api", start + Duration::from_secs(1));
+        assert_eq!(
+            seats(&again),
+            [("lead", Some(86.0)), ("colead", Some(40.0))]
+        );
+    }
+
+    #[test]
+    fn a_session_the_reader_does_not_know_has_no_pressure() {
+        let (_root, mut reader, _homes) = pressure_setup("pressure-none", (Some(90), Some(10)), "");
+        assert!(reader.pressure_at("ghost", Instant::now()).is_empty());
+    }
+
+    /// The quota files are read at most once a minute per session: a read
+    /// inside the minute is the kept answer, one past it reads again.
+    #[test]
+    fn the_pressure_stands_for_a_minute_then_is_read_again() {
+        let (_root, mut reader, homes) = pressure_setup("pressure-ttl", (Some(86), Some(40)), "");
+        let start = Instant::now();
+        let first = reader.pressure_at("api", start);
+        assert_eq!(seats(&first)[1], ("colead", Some(40.0)));
+        account(&homes[1], 10);
+        let within = reader.pressure_at("api", start + Duration::from_secs(59));
+        assert_eq!(within, first, "the kept answer inside the minute");
+        let past = reader.pressure_at("api", start + Duration::from_mins(1));
+        assert_eq!(
+            seats(&past)[1],
+            ("colead", Some(10.0)),
+            "read again at the minute"
+        );
+    }
+
     fn quotacache_setup(tag: &str, config: &str, claude: bool) -> (Root, Reader, PathBuf) {
         let root = Root::new(tag);
         let (home, global) = (root.0.join("home"), root.0.join("config"));

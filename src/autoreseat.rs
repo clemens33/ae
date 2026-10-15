@@ -1384,15 +1384,21 @@ pub enum Room {
     Relieved(Window),
 }
 
+/// The worst usable window proven at least a day long: the one window that
+/// decides how pressed a seat's own account is.
+#[must_use]
+pub fn worst_long(windows: &[Window]) -> Option<&Window> {
+    windows
+        .iter()
+        .filter(|window| window.long && usable(window))
+        .max_by(|left, right| left.judged.total_cmp(&right.judged))
+}
+
 /// Judge the seat's own `windows` against the threshold `at`.
 #[must_use]
 pub fn room(windows: &[Window], at: u8) -> Room {
-    let worst = windows
-        .iter()
-        .filter(|window| window.long && usable(window))
-        .max_by(|left, right| left.judged.total_cmp(&right.judged));
     let at = f64::from(at);
-    match worst {
+    match worst_long(windows) {
         None => Room::Unread,
         Some(window) if window.judged >= at => Room::Crossed(window.clone()),
         Some(window) if window.judged < at - REARM_GAP => Room::Relieved(window.clone()),

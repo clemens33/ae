@@ -353,6 +353,9 @@ struct App {
     pairs: BTreeMap<String, Result<Vec<Seat>, String>>,
     /// Each session's last read lane, by name: what a selection shows at once.
     shown: BTreeMap<String, Shown>,
+    /// Each read session's lead-pair quota pressure by seat name, with the
+    /// `session_id` it was read for.
+    pressures: BTreeMap<String, (String, loader::Pressure)>,
     /// Each session's drawn look and the viewer's zone, by name.
     looks: BTreeMap<String, (Option<theme::Look>, Option<String>)>,
     lane: Rc<Lane>,
@@ -525,6 +528,7 @@ impl App {
             needs: BTreeMap::new(),
             pairs: BTreeMap::new(),
             shown: BTreeMap::new(),
+            pressures: BTreeMap::new(),
             looks: BTreeMap::new(),
             lane: Rc::default(),
             merged: None,
@@ -639,6 +643,9 @@ impl App {
                 at,
                 body,
             } => self.peeked(generation, at, body),
+            Answer::Pressure { name, id, pressure } => {
+                self.pressures.insert(name, (id, pressure));
+            }
         }
     }
 
@@ -957,6 +964,7 @@ impl App {
             home.as_ref() == Some(name) || read.ids.get(name).is_some_and(|now| now == id)
         };
         self.shown.retain(|name, shown| kept(name, &shown.id));
+        self.pressures.retain(|name, (id, _)| kept(name, id));
         let old = std::mem::take(&mut self.ids);
         self.looks.retain(|name, _| match old.get(name) {
             Some(id) => kept(name, id),
@@ -1332,7 +1340,20 @@ impl App {
                 (name.as_str(), route::take(agent))
             })
             .collect();
-        let route = route::decide(&takes, route::thread_seat(&self.lane.items));
+        // Each seat's judged quota, matched to the pair by name; a reading of
+        // another incarnation of the session weighs nothing.
+        let read = (self.pressures.get(session))
+            .filter(|(id, _)| *id == self.id(session))
+            .map(|(_, seats)| seats.as_slice())
+            .unwrap_or_default();
+        let quota: Vec<Option<f64>> = (self.pair.iter())
+            .map(|name| {
+                read.iter()
+                    .find(|(seat, _)| seat == name)
+                    .and_then(|(_, used)| *used)
+            })
+            .collect();
+        let route = route::decide(&takes, &quota, route::thread_seat(&self.lane.items));
         if route.seat.is_empty() {
             return (seat, body, None);
         }
@@ -6251,6 +6272,57 @@ mod tests {
             route(&app, b"@lead hi"),
             ("lead".to_owned(), "@lead hi".to_owned(), None),
             "an explicit seat is that line only"
+        );
+    }
+
+    /// Routing weighs quota: with both seats free a plain line leaves a lead
+    /// pressed to 80% for a colead 20 points lower, the readings matched to
+    /// the pair by seat name; `@lead` is that line only, and a reading of
+    /// another incarnation weighs nothing.
+    #[test]
+    fn a_plain_line_routes_by_quota_while_both_seats_are_free() {
+        let mut app = app(Some("api"));
+        app.pair = vec!["lead".to_owned(), "colead".to_owned()];
+        let mut entry = SessionEntry::new("api", Status::Running);
+        let seat = |name: &str| crate::digest::AgentEntry {
+            name: name.to_owned(),
+            alive: Some(true),
+            ..crate::digest::AgentEntry::default()
+        };
+        entry.agents = vec![seat("lead"), seat("colead")];
+        app.world = World::new(Timestamp::now(), vec![entry]);
+        app.ids.insert("api".to_owned(), ID.to_owned());
+        let read = |id: &str, seats: [(&str, Option<f64>); 2]| Answer::Pressure {
+            name: "api".to_owned(),
+            id: id.to_owned(),
+            pressure: seats.map(|(seat, used)| (seat.to_owned(), used)).to_vec(),
+        };
+        let route = |app: &App, raw: &[u8]| {
+            let line = String::from_utf8_lossy(raw).into_owned();
+            app.routed("api", raw, "lead".to_owned(), line)
+        };
+        app.answer(read(ID, [("colead", Some(40.0)), ("lead", Some(86.0))]));
+        assert_eq!(
+            route(&app, b"hello"),
+            (
+                "colead".to_owned(),
+                "(routed to you: lead quota 86%)\nhello".to_owned(),
+                Some("sent to colead (lead quota 86%)".to_owned()),
+            )
+        );
+        assert_eq!(
+            route(&app, b"@lead hi"),
+            ("lead".to_owned(), "@lead hi".to_owned(), None),
+            "an explicit seat outranks the quota"
+        );
+        app.answer(read(
+            "another",
+            [("lead", Some(95.0)), ("colead", Some(0.0))],
+        ));
+        assert_eq!(
+            route(&app, b"hello").0,
+            "lead",
+            "another incarnation's reading"
         );
     }
 
