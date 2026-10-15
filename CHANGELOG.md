@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.74] - 2026-10-15
+- Start/stop menu and s toggle, settings on comma, session-addressed composer with lead/colead routing, cached quota, config without a home, longer lane cache, tighter summary row
+
 ## [v2026.10.73] - 2026-10-15
 - Settings > Quota paints the held answer at once and asks agy off-thread
 
