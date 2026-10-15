@@ -233,8 +233,9 @@ pub enum Failure {
         /// notice arm, the pointer is the payload pasted on screen; this is
         /// the original framed body preserved by the recovery record.
         framed: String,
-        /// Whether the failure was the notice's on-screen proof — the arm that
-        /// records a `delivery-failed` event.
+        /// Whether the failure was the notice's on-screen proof: nothing was
+        /// submitted. The tracked and send recorders journal it as a
+        /// `delivery-abandoned` diagnostic, an interrupt as `delivery-failed`.
         notice: bool,
     },
 }
@@ -1514,18 +1515,24 @@ fn submit(
             }));
         }
     }
-    if let notice::Mode::Notice(pointer) = mode
-        && !prove_notice(server, pane, model, pointer, &buffer)
-    {
-        writeln!(
-            err,
-            "ae: notice UNCONFIRMED to pane {pane} ({diagnostic}) — recovery body preserved at {body_file}. Nothing was submitted; re-send."
-        )?;
-        return Ok(Err(Failure::Unconfirmed {
-            body_file: body_file.to_owned(),
-            framed: framed.to_owned(),
-            notice: true,
-        }));
+    if let notice::Mode::Notice(pointer) = mode {
+        let budget = notice_budget(request.defer);
+        if let Err(unproven) = prove_notice(server, pane, model, pointer, budget) {
+            writeln!(
+                err,
+                "ae: notice UNCONFIRMED to pane {pane} ({diagnostic}) — recovery body preserved at {body_file}. Nothing was submitted; re-send."
+            )?;
+            writeln!(
+                err,
+                "{}",
+                unproven_line(request.logged_target, pane, unproven, budget)
+            )?;
+            return Ok(Err(Failure::Unconfirmed {
+                body_file: body_file.to_owned(),
+                framed: framed.to_owned(),
+                notice: true,
+            }));
+        }
     }
     match submit_staged(server, pane, model) {
         SubmitState::Submitted => return Ok(Ok(DeliveryVerification::Verified)),
@@ -1934,42 +1941,94 @@ fn pane_settled(before: Option<&str>, after: Option<&str>) -> bool {
     )
 }
 
-/// Prove the staged notice on screen before any Enter.
+/// The least a notice proof waits for its pointer to be drawn.
+const NOTICE_FLOOR: Duration = Duration::from_secs(2);
+
+/// How long the notice proof waits for its pointer: the send deferral
+/// (`AE_SEND_DEFER_SEC`), which already says how long a send waits for a target
+/// that is not ready. A tool busy elsewhere (a compacting claude) reads its
+/// queued input late but in order, so waiting loses nothing.
+fn notice_budget(defer: Duration) -> Duration {
+    defer.max(NOTICE_FLOOR)
+}
+
+/// Why a staged notice was not proven, from the last capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unproven {
+    /// The box holds text that is not exactly the pointer.
+    Other,
+    /// The box reads empty: the pointer may not be drawn yet.
+    Empty,
+    /// No capture, or no readable box.
+    Unreadable,
+}
+
+/// What ONE capture says about a staged notice: `Ok` only when the box holds
+/// exactly the pointer, byte for byte ([`notice::prove`]).
+fn judge_notice(capture: Option<&str>, model: InputModel, pointer: &str) -> Result<(), Unproven> {
+    let Some(region) = capture.filter(|region| !region.is_empty()) else {
+        return Err(Unproven::Unreadable);
+    };
+    if notice::prove(model, region, pointer) {
+        return Ok(());
+    }
+    Err(match region::occupancy(region, model) {
+        Occupancy::Occupied => Unproven::Other,
+        Occupancy::Idle => Unproven::Empty,
+        Occupancy::Unreadable => Unproven::Unreadable,
+    })
+}
+
+/// Prove the staged notice on screen before any Enter, polling until `budget`.
+///
+/// An empty or unreadable box keeps the wait going: the tool may not have read
+/// the paste yet. Text that is not the pointer and has stopped changing between
+/// two polls will not become it, so that ends the wait at once. Nothing is ever
+/// typed into the pane here — no clear, no second paste — because the box may
+/// hold a human's words beside the pointer.
 fn prove_notice(
     server: &ServerId,
     pane: &str,
     model: InputModel,
     pointer: &str,
-    buffer: &str,
-) -> bool {
-    for attempt in 0..2 {
+    budget: Duration,
+) -> Result<(), Unproven> {
+    let started = Instant::now();
+    let mut stable: Option<String> = None;
+    loop {
         std::thread::sleep(NOTICE_POLL);
-        let region = transport::capture_screen(server, pane, Styling::Escapes).unwrap_or_default();
-        if notice::prove(model, &region, pointer) {
-            return true;
+        let capture = transport::capture_screen(server, pane, Styling::Escapes);
+        let Err(seen) = judge_notice(capture.as_deref(), model, pointer) else {
+            return Ok(());
+        };
+        if seen == Unproven::Other {
+            if stable.is_some() && stable == capture {
+                return Err(seen);
+            }
+            stable = capture;
+        } else {
+            stable = None;
         }
-        if attempt != 0 {
-            return false;
-        }
-        if !clear_is_measurable(server, pane, model) {
-            return false;
-        }
-        if stage_and_paste(server, buffer, pointer.as_bytes(), pane).is_err() {
-            return false;
+        if started.elapsed() >= budget {
+            return Err(seen);
         }
     }
-    false
 }
 
-/// Did C-u demonstrably empty the input box — `_notice_clear_measurable`?
-fn clear_is_measurable(server: &ServerId, pane: &str, model: InputModel) -> bool {
-    if !transport::send_key(server, pane, Key::ClearLine) {
-        return false;
-    }
-    std::thread::sleep(NOTICE_POLL);
-    match transport::capture_screen(server, pane, Styling::Escapes) {
-        Some(region) if !region.is_empty() => region::occupancy(&region, model) == Occupancy::Idle,
-        _ => false,
+/// The operator's line for a notice that was not proven: the seat, what the
+/// last capture showed, and what to do about the composer.
+fn unproven_line(target: &str, pane: &str, unproven: Unproven, budget: Duration) -> String {
+    let waited = budget.as_secs();
+    match unproven {
+        Unproven::Other => format!(
+            "ae: the {target} pane ({pane}) holds text ae cannot prove is exactly its pointer; left untouched. Check it: press Enter there to send what it holds, or clear it (Ctrl-U), before re-sending."
+        ),
+        Unproven::Empty => format!(
+            "ae: the {target} pane ({pane}) showed no pointer within {waited}s, but it may still land: press Enter there to send it once it appears, or clear it (Ctrl-U), before re-sending."
+        ),
+        Unproven::Unreadable => format!(
+            "ae: the {target} pane ({pane}) could not be read, so its composer may hold the pointer or the pointer may still land: press Enter there to send it, or clear it (Ctrl-U), before re-sending."
+        ),
     }
 }
 
@@ -2099,10 +2158,11 @@ pub(crate) fn lock_target(dir: &Path, pane: &str, wait: Duration) -> Option<std:
 mod tests {
     use super::{
         DeferHeld, Failure, LivenessRefusal, Occupancy, PaneLiveness, Request, Shape, Snapshot,
-        SubmitState, TargetInput, UNVERIFIED, Unverifiable, VERIFY_POLL, Verified, buffer_name,
-        choose_input, frame, freshest_view, instant_alive, is_name_safe, observed_liveness,
-        pane_settled, refuses_as_dead, settle, settle_for, staged_after_settle, staged_verdict,
-        store_body, under_lock_refusal, unmodelled_ready, verified,
+        SubmitState, TargetInput, UNVERIFIED, Unproven, Unverifiable, VERIFY_POLL, Verified,
+        buffer_name, choose_input, frame, freshest_view, instant_alive, is_name_safe, judge_notice,
+        notice_budget, observed_liveness, pane_settled, refuses_as_dead, settle, settle_for,
+        staged_after_settle, staged_verdict, store_body, under_lock_refusal, unmodelled_ready,
+        unproven_line, verified,
     };
     use crate::deliver::region::Reading;
     use crate::inventory::ServerId;
@@ -2987,5 +3047,94 @@ mod tests {
                 line
             );
         }
+    }
+
+    const POINTER: &str = "⟦ae:msg from lead⟧[ae-1] LONG BODY 9000 B in your session dir: messages/ae-1.ask.abc.txt — read it first ⟧ae-1⟧";
+
+    /// A claude frame whose box holds `rows`: the first after the ornament,
+    /// the rest as indented wrap rows.
+    fn claude_box(rows: &[&str]) -> String {
+        let rule = "─".repeat(60);
+        let body: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .map(|(at, row)| {
+                if at == 0 {
+                    format!("❯\u{a0}{row}")
+                } else {
+                    format!("  {row}")
+                }
+            })
+            .collect();
+        format!(
+            "transcript\n{rule}\n{}\n{rule}\n  footer\n",
+            body.join("\n")
+        )
+    }
+
+    fn judged(rows: &[&str]) -> Result<(), Unproven> {
+        judge_notice(
+            Some(&claude_box(rows)),
+            InputModel::BorderDelimited,
+            POINTER,
+        )
+    }
+
+    #[test]
+    fn only_a_box_holding_exactly_the_pointer_is_proven() {
+        assert_eq!(judged(&[POINTER]), Ok(()));
+        let (head, tail) = POINTER.split_at(60);
+        assert_eq!(judged(&[head, tail]), Ok(()), "a wrap is rejoined");
+    }
+
+    #[test]
+    fn a_box_holding_anything_else_is_other_text() {
+        let human = format!("{POINTER} and more");
+        assert_eq!(judged(&[human.as_str()]), Err(Unproven::Other));
+        let widened = POINTER.replacen(" LONG", "  LONG", 1);
+        assert_eq!(judged(&[widened.as_str()]), Err(Unproven::Other));
+        assert_eq!(judged(&[&POINTER[..80]]), Err(Unproven::Other));
+        assert_eq!(judged(&["something a human typed"]), Err(Unproven::Other));
+    }
+
+    #[test]
+    fn an_empty_box_waits_and_a_missing_capture_is_unreadable() {
+        assert_eq!(judged(&[""]), Err(Unproven::Empty));
+        assert_eq!(
+            judge_notice(None, InputModel::BorderDelimited, POINTER),
+            Err(Unproven::Unreadable)
+        );
+        assert_eq!(
+            judge_notice(Some(""), InputModel::BorderDelimited, POINTER),
+            Err(Unproven::Unreadable)
+        );
+    }
+
+    #[test]
+    fn the_proof_waits_for_the_send_deferral_but_never_less_than_the_floor() {
+        let secs = Duration::from_secs;
+        assert_eq!(notice_budget(secs(30)), secs(30));
+        assert_eq!(notice_budget(secs(1)), secs(2));
+        assert_eq!(notice_budget(Duration::ZERO), secs(2));
+    }
+
+    #[test]
+    fn every_unproven_line_names_the_seat_and_the_next_step() {
+        for unproven in [Unproven::Other, Unproven::Empty, Unproven::Unreadable] {
+            let line = unproven_line("lead", "%7", unproven, Duration::from_secs(30));
+            assert!(
+                line.contains("the lead pane (%7)")
+                    && line.contains("press Enter there")
+                    && line.contains("Ctrl-U"),
+                "{unproven:?}: {line}"
+            );
+        }
+        let other = unproven_line("lead", "%7", Unproven::Other, Duration::from_secs(30));
+        assert!(other.contains("left untouched"), "{other}");
+        let empty = unproven_line("lead", "%7", Unproven::Empty, Duration::from_secs(30));
+        assert!(
+            empty.contains("may still land") && empty.contains("within 30s"),
+            "{empty}"
+        );
     }
 }

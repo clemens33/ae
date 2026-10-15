@@ -481,8 +481,8 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
         // would be a claim it cannot honour. The callers that decide whether a
         // paste may proceed short-circuit unmodelled BEFORE this
         // (`input_busy`, `still_staged`), and the one caller left
-        // (`clear_is_measurable`, notice proof only) fails closed on the
-        // unreadable verdict.
+        // (`prove_notice`'s occupancy read) fails closed on the unreadable
+        // verdict.
         InputModel::Unmodelled => None,
     }
 }

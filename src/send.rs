@@ -34,7 +34,8 @@
 //! deferral, submit verification — which prints every loud line itself. An
 //! abandonment, the one pre-paste refusal with a deferral behind it, records
 //! a diagnostic [`crate::tracked::ABANDONED_ACTION`] event naming which half
-//! held; every other pre-paste refusal records nothing. A confirmed delivery
+//! held, and so does a notice whose pointer was pasted but never proven on
+//! screen; every other pre-paste refusal records nothing. A confirmed delivery
 //! is followed by the ONE event under
 //! [`crate::store::SessionStore::append_event`]'s locked, synced transaction;
 //! an unconfirmed delivery records the same event with its uncertainty marked.
@@ -454,8 +455,9 @@ fn refused_before_paste(action: &str, failure: &deliver::Failure) -> Option<&'st
 }
 
 /// Record a send after its body was delivered or its submit was left
-/// unconfirmed. A notice proof failure is deliberately not this path: it is
-/// not an ambiguous submit and must remain a failed, unrecorded delivery.
+/// unconfirmed. A notice proof failure is not an ambiguous submit — nothing
+/// was submitted — so it is a failed delivery with a `delivery-abandoned`
+/// diagnostic, never the success action and never the pending shape.
 fn record_send_delivery(
     dir: &Path,
     event: &EventFields<'_>,
@@ -487,6 +489,9 @@ fn record_send_delivery(
             // The one pre-paste refusal with a deferral behind it: it records
             // the diagnostic, naming which half held.
             return tracked::record_abandoned_delivery(dir, event, held, err);
+        }
+        Err(deliver::Failure::Unconfirmed { notice: true, .. }) => {
+            return tracked::record_unproven_notice(dir, event, err);
         }
         Err(failure) => {
             // Every other refused delivery has already said what happened and
@@ -1046,7 +1051,7 @@ mod tests {
         clippy::disallowed_methods,
         reason = "the test writes and reads its isolated event ledger"
     )]
-    fn a_notice_send_remains_failed_and_unrecorded() {
+    fn a_notice_send_stays_failed_and_is_journaled_as_not_delivered() {
         let dir = std::env::temp_dir().join(format!("ae-send-notice-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("the isolated state directory");
@@ -1087,8 +1092,22 @@ mod tests {
         )
         .expect("the refusal is handled");
         assert_eq!(code, crate::state::EXIT_FAILED);
-        assert!(!dir.join("events.jsonl").exists());
         assert!(err.is_empty());
+        // Requirement: a notice nobody could prove on screen was never
+        // submitted; the journal says so with the diagnostic action, not the
+        // success one and not the pending `[unconfirmed]` shape.
+        let journal =
+            std::fs::read_to_string(dir.join("events.jsonl")).expect("the refusal is journaled");
+        assert!(
+            journal.contains("\"action\":\"delivery-abandoned\"")
+                && !journal.contains("\"action\":\"send\"")
+                && !journal.contains("[unconfirmed]"),
+            "{journal}"
+        );
+        assert!(
+            journal.contains("refused: notice not proven on screen, nothing submitted (pointer may remain staged in the pane); hello"),
+            "{journal}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1863,6 +1863,11 @@ pub(crate) fn record_tracked_delivery(
             // the diagnostic, naming which half held.
             return record_abandoned_delivery(dir, fields, held, err);
         }
+        Err(crate::deliver::Failure::Unconfirmed { notice: true, .. }) => {
+            // A pointer ae pasted but could not prove on screen was never
+            // submitted: durably NOT delivered, never a pending request.
+            return record_unproven_notice(dir, fields, err);
+        }
         Err(_) => {
             // Every other refused delivery has already said what happened and
             // where the body is; nothing is recorded for one.
@@ -1919,7 +1924,33 @@ pub(crate) fn record_abandoned_delivery(
     held: crate::deliver::DeferHeld,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let summary = format!("refused: {}; {}", held.describe(), fields.summary);
+    record_refusal(dir, fields, &held.describe(), err)
+}
+
+/// The clause of a notice whose pointer was pasted but never proven on screen.
+/// Nothing was submitted, and the pointer may still sit in the composer.
+const NOTICE_UNPROVEN: &str =
+    "notice not proven on screen, nothing submitted (pointer may remain staged in the pane)";
+
+/// Record the diagnostic refusal for a notice that was not proven: the same
+/// writer, the same action, so a read-back sees NOT delivered.
+pub(crate) fn record_unproven_notice(
+    dir: &Path,
+    fields: &EventFields<'_>,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    record_refusal(dir, fields, NOTICE_UNPROVEN, err)
+}
+
+/// The one body of both refusals: `refused: <clause>; <summary>`, the summary
+/// kept verbatim after the clause.
+fn record_refusal(
+    dir: &Path,
+    fields: &EventFields<'_>,
+    clause: &str,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let summary = format!("refused: {clause}; {}", fields.summary);
     let line = event_line(&EventFields {
         action: ABANDONED_ACTION,
         summary: &summary,
@@ -2380,7 +2411,7 @@ mod tests {
         clippy::disallowed_methods,
         reason = "the test writes and reads its isolated event ledger"
     )]
-    fn a_notice_unconfirmed_delivery_remains_unrecorded() {
+    fn a_notice_unconfirmed_delivery_is_journaled_as_not_delivered_and_opens_no_request() {
         let dir = std::env::temp_dir().join(format!(
             "ae-tracked-notice-unconfirmed-{}",
             std::process::id()
@@ -2426,8 +2457,104 @@ mod tests {
         )
         .expect("the notice failure is handled");
         assert_eq!(code, crate::state::EXIT_FAILED);
-        assert!(!dir.join("events.jsonl").exists());
         assert!(err.is_empty());
+        // Requirement: nothing was submitted, so the request is NOT delivered
+        // and must read so durably (a console ask reads its outcome back by
+        // this record), while opening no request — the diagnostic action.
+        let journal =
+            std::fs::read_to_string(dir.join("events.jsonl")).expect("the refusal is journaled");
+        assert_eq!(journal.lines().count(), 1, "{journal}");
+        assert!(
+            journal.contains(r#""action":"delivery-abandoned""#)
+                && !journal.contains(r#""action":"ask""#),
+            "a distinct action, never the success one: {journal}"
+        );
+        assert!(
+            journal.contains(r#""ref":"ae-20260827T071112Z-00000002""#)
+                && journal.contains(r#""actor":"lead""#),
+            "the attempt's own reference and actor, so a read-back finds it: {journal}"
+        );
+        assert!(
+            journal.contains("refused: notice not proven on screen, nothing submitted (pointer may remain staged in the pane); the question"),
+            "the reason, then the body summary: {journal}"
+        );
+        assert!(
+            crate::requests::states(journal.as_bytes()).is_empty(),
+            "the diagnostic opens and closes no request (reply shares this writer): {journal}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
+    fn a_notice_unconfirmed_reply_leaves_its_request_pending() {
+        let dir =
+            std::env::temp_dir().join(format!("ae-tracked-notice-reply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        let id = "ae-20260827T071112Z-00000004";
+        let fields =
+            |action: &'static str, actor: &'static str, target: &'static str| EventFields {
+                ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
+                actor,
+                action,
+                target,
+                reference: id,
+                actor_slot: "main",
+                actor_session: "session",
+                target_slot: "worker.0",
+                target_session: "session",
+                actor_session_id: "",
+                target_session_id: "",
+                target_server: "",
+                target_pane: "",
+                target_session_uuid: "",
+                caller_server: "",
+                caller_pane: "",
+                caller_session_uuid: "",
+                identity_gap: "",
+                summary: "the answer",
+                body_file: "",
+            };
+        crate::store::open(&dir)
+            .append_event(&event_line(&fields("ask", "lead", "worker")))
+            .expect("the open ask");
+        let mut err = Vec::new();
+        let code = record_tracked_delivery(
+            &dir,
+            &fields("reply", "worker", "lead"),
+            Err(crate::deliver::Failure::Unconfirmed {
+                body_file: "/m/notice.txt".to_owned(),
+                framed: "framed".to_owned(),
+                notice: true,
+            }),
+            None,
+            &mut err,
+        )
+        .expect("the notice failure is handled");
+        assert_eq!(code, crate::state::EXIT_FAILED);
+        let journal =
+            std::fs::read_to_string(dir.join("events.jsonl")).expect("the refusal is journaled");
+        assert!(
+            journal.contains("\"action\":\"delivery-abandoned\"")
+                && !journal.contains("\"action\":\"reply\""),
+            "the diagnostic, never the closing action: {journal}"
+        );
+        let states = crate::requests::states(journal.as_bytes());
+        assert_eq!(
+            states.len(),
+            1,
+            "the ask is still the one open request: {journal}"
+        );
+        assert_eq!(
+            states[0].status,
+            crate::requests::Status::Pending,
+            "{journal}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

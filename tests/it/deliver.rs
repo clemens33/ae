@@ -116,7 +116,14 @@ sub draw {
     return draw_claude($content) if $mode eq 'compact';
     print "\e[H\e[2J";
     print "fake tui transcript\r\n";
-    print "\e[1m$ornament\e[0m$nbsp$content\r\n";
+    if ($mode eq 'unwrapped' && length($content) > 90) {
+        # A wrap the notice proof cannot rejoin: the continuation row carries
+        # no two-space indent, so the strict proof fails while every cell of
+        # the pointer is still in the box.
+        print "\e[1m$ornament\e[0m$nbsp" . substr($content, 0, 90) . "\r\n" . substr($content, 90) . "\r\n";
+    } else {
+        print "\e[1m$ornament\e[0m$nbsp$content\r\n";
+    }
     if ($kind eq 'codex') { print "\r\n"; } else { print "$border\r\n"; }
     print "  fake-model  ~/x\r\n";
 }
@@ -129,6 +136,8 @@ sub draw_queued {
 }
 my $buf = ($mode =~ /^staged/) ? "[Pasted Content 42 chars]" : "";
 my $pasting = 0;
+my $stalled = 0;
+my $human_done = 0;
 $marker_secs > 0 ? markers() : draw($buf);
 system('tmux', 'wait-for', '-S', "$control.ready") if $mode eq 'frame';
 my $ch;
@@ -162,14 +171,32 @@ while (1) {
     vec($ready, fileno(STDIN), 1) = 1;
     next unless select($ready, undef, undef, 0.05) > 0;
     last unless sysread(STDIN, $ch, 1);
+    if ($mode =~ /^stall(\d+)$/ && !$stalled) {
+        # A busy event loop (a compacting claude): the first byte of input finds
+        # the TUI mid-work, so it reads and draws nothing for N ms, then catches
+        # up on everything the pty queued meanwhile, in order.
+        $stalled = 1;
+        select(undef, undef, undef, $1 / 1000);
+    }
     record_wire($ch);
     transition_frame('onescape') if !$pasting && $ch eq "\e";
+    if (!$pasting && $ch eq "\x15") {   # C-u clears the line, and is counted
+        open(my $cu, '>>', "$enters.cu") or die;
+        print $cu "cu\n";
+        close($cu);
+        $buf = '';
+        draw($buf);
+        next;
+    }
     $buf .= $ch;
     if ($buf =~ s/\e\[200~\z//) { $pasting = 1; next; }
     if ($buf =~ s/\e\[201~\z//) {
         $pasting = 0;
         transition_frame('onpaste');
         exit 0 if $mode eq 'vanish';
+        $buf .= ' HUMAN-DRAFT' if $mode eq 'humanafter' && !$human_done++;   # a human typed beside the FIRST paste
+        if ($mode eq 'wsedit' && !$human_done++) { $buf =~ s/ LONG BODY/  LONG BODY/; }   # a human widened one space inside the pointer
+        if ($mode eq 'partial' && !$human_done++) { $buf = substr($buf, 0, 120); }   # a human cut the pointer short
         draw($buf) if $marker_secs == 0;
         next;
     }
@@ -3233,4 +3260,148 @@ fn human_uncovered_bare_interrupt_keeps_unknown_command_unmodelled() {
         ae::requests::Status::Pending
     );
     assert!(lock_is_free(&rig.send_lock_path()));
+}
+
+// ---- the oversize notice against a TUI that is busy -------------------------------
+
+/// The pane's current text.
+fn notice_screen(rig: &Rig) -> String {
+    rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]).1
+}
+
+/// The oversize body the notice tests send.
+fn notice_body() -> String {
+    "y".repeat(9000)
+}
+
+/// How many `C-u` the TUI has received.
+fn clear_count(rig: &Rig) -> usize {
+    std::fs::read_to_string(format!("{}.cu", rig.enters.display()))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+/// A claude that is busy for 600 ms when the pointer arrives (a compacting
+/// seat catching up on its queued input) still gets it proven and submitted:
+/// the proof waits for the echo instead of giving up after a fraction of a
+/// second.
+#[test]
+fn a_notice_to_a_tui_that_catches_up_late_is_proven_and_submitted() {
+    let rig = Rig::with_mode("noticelate", "claude", 0, "stall600");
+    let (code, stderr) = rig.run(ae::cli::SEND, &["tui", &notice_body()], &[]);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
+    let submitted = rig.submitted();
+    assert!(
+        submitted
+            .starts_with("⟦ae:msg from tui⟧[-] LONG BODY 9022 B in your session dir: messages/")
+            && submitted.ends_with(" — read it first ⟧-⟧"),
+        "{submitted}"
+    );
+    assert_eq!(rig.enter_count(), 1, "one Enter, after the proof");
+    assert_eq!(clear_count(&rig), 0, "and no clear: nothing was wrong");
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"send\"")
+            && !events.contains("[unconfirmed]")
+            && !events.contains("delivery-abandoned"),
+        "a plain delivered send: {events}"
+    );
+}
+
+/// A pointer that cannot be proven inside the bound is NOT delivered, and the
+/// journal says so: no Enter, no clear, the diagnostic action (never the
+/// success one), and the operator line names what to do with a pointer that
+/// may still land.
+#[test]
+fn a_notice_that_cannot_be_proven_in_time_is_journaled_as_not_delivered() {
+    let rig = Rig::with_mode("noticestall", "claude", 0, "stall6000");
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", &notice_body()],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("Nothing was submitted"), "{stderr}");
+    assert!(
+        stderr.contains("the tui pane")
+            && stderr.contains("may still land")
+            && stderr.contains("press Enter there")
+            && stderr.contains("Ctrl-U"),
+        "name the seat, the leftover pointer and the next step: {stderr}"
+    );
+    assert_eq!(rig.enter_count(), 0, "no Enter without the proof");
+    assert_eq!(clear_count(&rig), 0, "no clear of a box ae cannot read");
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"delivery-abandoned\"")
+            && !events.contains("\"action\":\"send\"")
+            && events.contains(
+                "refused: notice not proven on screen, nothing submitted (pointer may remain staged in the pane)"
+            ),
+        "durable NOT delivered: {events}"
+    );
+}
+
+/// A box whose content ae cannot prove, byte for byte, to be exactly its own
+/// pointer is somebody's text as far as ae can tell: no Enter, no clear, no
+/// restage over it. The delivery is NOT delivered, the line says the box was
+/// left untouched, and the journal agrees. Each `mode` is a different way the
+/// box can differ from the pointer ae pasted.
+fn untouched_case(tag: &str, mode: &str, survivor: &str) {
+    let rig = Rig::with_mode(tag, "claude", 0, mode);
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", &notice_body()],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{mode}: {stderr}");
+    assert!(stderr.contains("Nothing was submitted"), "{mode}: {stderr}");
+    assert!(stderr.contains("untouched"), "{mode}: {stderr}");
+    assert!(
+        stderr.contains("the tui pane")
+            && stderr.contains("press Enter there")
+            && stderr.contains("Ctrl-U"),
+        "{mode}: name the seat and the next step: {stderr}"
+    );
+    assert_eq!(rig.enter_count(), 0, "{mode}: no Enter");
+    assert_eq!(clear_count(&rig), 0, "{mode}: no clear, no restage");
+    let screen = notice_screen(&rig);
+    assert!(
+        screen.contains(survivor) && screen.contains("LONG BODY"),
+        "{mode}: nothing of the box was cleared: {screen}"
+    );
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"delivery-abandoned\"") && !events.contains("[unconfirmed]"),
+        "{mode}: {events}"
+    );
+}
+
+/// A human typed beside the pasted pointer while ae waited for the proof.
+#[test]
+fn a_failed_proof_never_clears_text_a_human_typed_beside_the_pointer() {
+    untouched_case("noticehuman", "humanafter", "HUMAN-DRAFT");
+}
+
+/// A human widened one space INSIDE the pointer: every non-blank cell is still
+/// ae's, which is exactly why a blank-insensitive comparison must not
+/// authorise a clear.
+#[test]
+fn a_failed_proof_leaves_a_pointer_with_an_edited_space_untouched() {
+    untouched_case("noticewsedit", "wsedit", "  LONG BODY");
+}
+
+/// A human cut the pointer short.
+#[test]
+fn a_failed_proof_leaves_a_partial_pointer_untouched() {
+    untouched_case("noticepartial", "partial", "⟦ae:msg from tui⟧");
+}
+
+/// The wrap the strict proof cannot rejoin (a continuation row with no
+/// indent): ae cannot prove the box byte for byte, so it leaves it alone
+/// rather than loosening the proof into a licence to clear.
+#[test]
+fn a_failed_proof_leaves_a_wrap_it_cannot_rejoin_untouched() {
+    untouched_case("noticewrap", "unwrapped", "LONG BODY");
 }
