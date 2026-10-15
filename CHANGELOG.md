@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.77] - 2026-10-15
+- Name a Claude quota scope nothing feeds and any config file read beyond the global one
+- Claim a local config file as read only when the reader read it
+
 ## [v2026.10.76] - 2026-10-15
 - Auto reseat: every outcome record leads with a cause class so a clip keeps the cause
 - The auto reseat notice leads with its cause class and reserves its next step
