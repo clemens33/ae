@@ -1390,13 +1390,18 @@ impl App {
     /// instead of making it, so a ^C meant for the text never ends the app.
     /// Whether it only armed.
     fn guard_quit(&mut self, origin: Instant) -> bool {
-        let near = |at: Instant| origin.saturating_duration_since(at) <= QUIT_GUARD;
-        if !self.cleared_at.is_some_and(near) {
+        if !self.guarded(origin) {
             return false;
         }
         let armed = self.press(Arm::Interrupt, origin).is_none();
         self.cleared_at = self.cleared_at.filter(|_| armed);
         armed
+    }
+
+    /// Whether a ^C pressed at `origin` falls inside [`QUIT_GUARD`] of the last
+    /// clear: the press's own time, never the clock when it is looked at.
+    fn guarded(&self, origin: Instant) -> bool {
+        (self.cleared_at).is_some_and(|at| origin.saturating_duration_since(at) <= QUIT_GUARD)
     }
 
     /// The hint row's word after a clear: how the text comes back.
@@ -3442,11 +3447,9 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         if !app.deferred.is_empty() || !app.queued.is_empty() || app.unbounded(&key) {
             app.deferred.push((key, origin));
             app.deferred.extend(keyed);
-            let held = app.deferred.iter().any(|(key, _)| *key == Key::Interrupt);
-            let quit = held
-                && app.queued.is_empty()
-                && !app.has_text()
-                && app.cleared_at.is_none_or(|at| at.elapsed() > QUIT_GUARD);
+            let unguarded = (app.deferred.iter())
+                .any(|(key, origin)| *key == Key::Interrupt && !app.guarded(*origin));
+            let quit = unguarded && app.queued.is_empty() && !app.has_text();
             return (!quit).then_some(true);
         }
         // A read spent on a modal changes nothing more; an open modal takes
@@ -5131,6 +5134,35 @@ mod tests {
         assert_eq!(app.compose(Key::Text(b"keep".to_vec()), at), Some(()));
         assert_eq!(behind(&mut app), Some(true), "a draft is not lost");
         assert_eq!(app.deferred.len(), 2, "the ^C waits behind the key");
+    }
+
+    /// I5: a held `^C` keeps the guard of its own press: one made inside
+    /// [`QUIT_GUARD`] of a clear waits however long the clock runs meanwhile and
+    /// arms when it replays; one made past it quits at once.
+    #[test]
+    fn a_held_interrupt_keeps_the_guard_of_its_own_press() {
+        let root = Root::new("held-guard");
+        let (mut app, _reader) = housed(&root);
+        let at = writing(&mut app);
+        let cleared = (at.checked_sub(Duration::from_secs(3))).expect("a clock 3 s past boot");
+        let behind = |app: &mut App, pressed: Instant| {
+            app.cleared_at = Some(cleared);
+            app.deferred = vec![(Key::Left, cleared)];
+            take_keys(app, vec![(Key::Interrupt, pressed)])
+        };
+        let inside = cleared + Duration::from_secs(1);
+        let kept = behind(&mut app, inside);
+        assert_eq!(kept, Some(true), "pressed inside the guard it waits");
+        assert_eq!(app.deferred.len(), 2, "the ^C waits behind the key");
+        let held = std::mem::take(&mut app.deferred);
+        assert_eq!(take_keys(&mut app, held), Some(true));
+        let armed = app.note();
+        assert!(
+            armed.is_some_and(|said| said.starts_with("^C again to quit")),
+            "replayed, it arms instead of quitting"
+        );
+        let past = cleared + super::QUIT_GUARD + Duration::from_millis(1);
+        assert_eq!(behind(&mut app, past), None, "past the guard it quits");
     }
 
     /// O1: a press after the window passed arms the seat the CURRENT frame
