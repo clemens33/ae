@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.78] - 2026-10-15
+- Auto reseat: retry a refused or failed limit move after a cooldown, give up after three closings
+- Auto reseat: the give-up hold and notice lead with their cause class
+
 ## [v2026.10.77] - 2026-10-15
 - Name a Claude quota scope nothing feeds and any config file read beyond the global one
 - Claim a local config file as read only when the reader read it
