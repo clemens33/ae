@@ -15,7 +15,13 @@ use std::time::{Duration, Instant};
 
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);
-const FRAME: Duration = Duration::from_secs(5);
+const FRAME: Duration = Duration::from_secs(15);
+/// Frames `wait` takes before its limit may end it: a stall inside one capture
+/// can spend the whole limit, and two equal frames need at least this many.
+const MIN_FRAMES: usize = 4;
+/// Upper bound for a completion signal the app leaves behind (see `until`):
+/// spent only when the signal never comes.
+const SETTLE: Duration = Duration::from_mins(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Frame {
@@ -165,16 +171,49 @@ impl Rig {
 
     /// Cell output and cursor escapes stream independently. Two equal real
     /// terminal snapshots after a named input witness avoid a partial repaint.
+    /// Under load one capture can take seconds, so `limit` ends the wait only
+    /// after `MIN_FRAMES` frames; four times `limit` ends it whatever happened.
     fn wait(&self, pane: &str, limit: Duration, why: &str, met: impl Fn(&Frame) -> bool) -> Frame {
-        let until = Instant::now() + limit;
+        let started = Instant::now();
         let mut previous = None;
+        let mut frames = 0_usize;
         loop {
             let frame = self.frame(pane);
+            frames += 1;
             if met(&frame) && previous.as_ref() == Some(&frame) {
                 return frame;
             }
-            assert!(Instant::now() < until, "{why}; terminal: {frame:?}");
+            let spent = started.elapsed();
+            assert!(
+                spent < limit || (frames < MIN_FRAMES && spent < limit * 4),
+                "{why}; {frames} frames in {spent:?}; terminal: {frame:?}"
+            );
             previous = Some(frame);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Wait on what the app leaves behind (a journal record, the bytes a tool
+    /// received, one capture) instead of on two equal frames: once an ask
+    /// lands, the header's `active Ns` ticks every second, and under load one
+    /// two-call frame costs about as long, so two equal frames stop coming.
+    fn until<T>(
+        &self,
+        pane: &str,
+        limit: Duration,
+        why: &str,
+        mut probe: impl FnMut() -> Option<T>,
+    ) -> T {
+        let until = Instant::now() + limit;
+        loop {
+            if let Some(found) = probe() {
+                return found;
+            }
+            assert!(
+                Instant::now() < until,
+                "{why}; terminal: {:?}",
+                self.frame(pane)
+            );
             std::thread::sleep(Duration::from_millis(25));
         }
     }
@@ -326,26 +365,30 @@ fn last_space_wrap_keeps_both_rows_and_display_wrap_does_not_change_submission()
     let frame = rig.paste(&pane, &raw, "xyzQ");
     rig.holds(&frame, &[prefix, "xyzQ".to_owned()], 1, 4);
     rig.send(&pane, "\r");
-    rig.wait(&pane, FRAME, "literal ask submitted", |f| {
-        f.text.contains("sent")
+    let ask = rig.until(&pane, SETTLE, "console ask journaled", || {
+        let journal = fs::read_to_string(rig.tool.dir.join("events.jsonl")).unwrap_or_default();
+        journal
+            .lines()
+            .filter_map(|row| ae::events::Event::parse_line(row).ok())
+            .find(|record| record.action == "ask" && record.actor == "console:local")
     });
-    let journal = fs::read_to_string(rig.tool.dir.join("events.jsonl")).expect("ask journal");
-    let records = journal
-        .lines()
-        .map(|row| ae::events::Event::parse_line(row).expect("fixture event"))
-        .collect::<Vec<_>>();
-    let ask = records
-        .iter()
-        .find(|record| record.action == "ask" && record.actor == "console:local")
-        .expect("console ask");
+    let received = rig.until(&pane, SETTLE, "real receiver got a submission", || {
+        let seen = rig.tool.submitted();
+        (!seen.is_empty()).then_some(seen)
+    });
+    rig.until(&pane, SETTLE, "literal ask drawn as sent", || {
+        rig.tmux(&["capture-pane", "-p", "-t", &pane])
+            .contains("sent")
+            .then_some(())
+    });
     assert_eq!(
         ask.summary.as_deref(),
         Some(raw.as_str()),
         "only display wrapped; submitted prose retains its space"
     );
     assert!(
-        rig.tool.submitted().contains(&raw),
-        "real receiver got the unwrapped draft"
+        received.contains(&raw),
+        "real receiver got the unwrapped draft: {received:?}"
     );
 }
 
