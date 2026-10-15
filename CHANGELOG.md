@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.79] - 2026-10-15
+- A reseat does not change the lead pair, only slots and names do
+
 ## [v2026.10.78] - 2026-10-15
 - Auto reseat: retry a refused or failed limit move after a cooldown, give up after three closings
 - Auto reseat: the give-up hold and notice lead with their cause class
