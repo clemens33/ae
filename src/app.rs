@@ -62,6 +62,9 @@ pub mod model;
 #[cfg(test)]
 mod order_spec;
 pub mod overview;
+mod paneview;
+#[cfg(test)]
+mod paneview_spec;
 pub mod peek;
 mod route;
 pub mod select;
@@ -367,6 +370,11 @@ struct App {
     /// Keys held, in order, behind a wheel notch the last frame could not
     /// bound: the next frame produces more of the lane, then they replay.
     deferred: Vec<(Key, Instant)>,
+    /// A seat the human asked to see interactive, outside tmux: the loop
+    /// hands the terminal over once this frame is out.
+    pane_view: Option<paneview::Ask>,
+    /// When a pane view gave the terminal back: reads from before are dropped.
+    resumed_at: Option<Instant>,
     /// The settings overlay's bodies, cold until its answers land.
     settings_bodies: settings::SettingsBodies,
     /// When an own-generation answer last replaced the quota body: a kept body's age.
@@ -497,6 +505,8 @@ impl App {
             ask,
             focused: None,
             deferred: Vec::new(),
+            pane_view: None,
+            resumed_at: None,
             settings_bodies: settings::SettingsBodies::default(),
             quota_at: None,
             quota_failed: false,
@@ -665,6 +675,62 @@ impl App {
                 self.flash = Some((line, Instant::now()));
             }
         }
+    }
+
+    /// A click on a seat: inside tmux the peek panel; outside tmux the seat's
+    /// own pane, interactive, through [`App::ask_pane_view`].
+    fn open_seat(&mut self) {
+        if self.server.is_some() {
+            self.open_peek();
+            return;
+        }
+        let Some(session) = self.model.selected().map(str::to_owned) else {
+            let line = "refused: view: no session is selected".to_owned();
+            self.flash = Some((line, Instant::now()));
+            return;
+        };
+        let drawn = self.drawn.clone().filter(|drawn| drawn.session == session);
+        let label = (drawn.as_ref())
+            .and_then(|drawn| drawn.focused.clone())
+            .unwrap_or_else(|| session.clone());
+        self.ask_pane_view(session, drawn.as_ref(), label);
+    }
+
+    /// Ask the loop to hand the terminal to the drawn seat's pane, or say why
+    /// not on the hint row.
+    fn ask_pane_view(&mut self, session: String, drawn: Option<&Drawn>, label: String) {
+        let refuse = |why: String| (format!("refused: view {label}: {why}"), Instant::now());
+        if (self.entry(&session)).is_some_and(|entry| entry.status == Status::Stopped) {
+            self.flash = Some(refuse(Refusal::Stopped(session).why()));
+            return;
+        }
+        let Some(dir) = self.dirs.get(&session).cloned() else {
+            self.flash = Some(refuse(format!(
+                "{session} has no record directory ae can read"
+            )));
+            return;
+        };
+        let Some(drawn) = drawn else {
+            self.flash = Some(refuse("the view changed".to_owned()));
+            return;
+        };
+        let seat = match drawn.seat() {
+            Ok(seat) => seat.clone(),
+            Err(why) => {
+                self.flash = Some(refuse(why.why()));
+                return;
+            }
+        };
+        if self.composing() {
+            self.write(false);
+        }
+        self.pane_view = Some(paneview::Ask {
+            session,
+            uuid: drawn.uuid.clone(),
+            dir,
+            seat,
+            label,
+        });
     }
 
     /// What `session`'s drawn seat asks the reader to capture, or why the
@@ -1877,7 +1943,7 @@ impl App {
                     return true;
                 }
                 self.focus_seat(Some(name));
-                self.open_peek();
+                self.open_seat();
                 return true;
             }
             draw::Hit::Settings => {
@@ -3144,7 +3210,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         writeln!(err, "{}", crate::board::terminal_text(&line))?;
         return Ok(crate::EXIT_UNAVAILABLE);
     }
-    let Some(reads) = console::term::stdin_reads() else {
+    let Some((reads, pause)) = console::term::stdin_reads_pausable() else {
         write!(err, "{NO_TERMINAL}")?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
@@ -3214,6 +3280,16 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         app.focus();
         if reader.is_finished() {
             break 1;
+        }
+        if let Some(ask) = app.pane_view.take() {
+            app.deferred.clear();
+            let line = paneview::run(&tty, &pause, &ask);
+            app.flash = Some((line, Instant::now()));
+            app.resumed_at = Some(Instant::now());
+            // A key half decoded before the hand-over is the pane's, not ours.
+            keys = Keys::app();
+            terminal.clear()?;
+            dirty = true;
         }
         match step(&mut app, &tty, &mut terminal, &typed, err)? {
             Step::Stay(redraw) => dirty |= redraw,
@@ -3390,13 +3466,24 @@ fn drain(
     wakes: &mpsc::Receiver<Wake>,
     first: &mut Option<Wake>,
 ) -> Option<bool> {
-    let held = std::mem::take(&mut app.deferred);
+    let mut held = std::mem::take(&mut app.deferred);
+    // A key held from before a pane view was typed for the seat, not here.
+    if let Some(resumed) = app.resumed_at {
+        held.retain(|(_, origin)| paneview::keep_key(*origin, resumed));
+    }
     let (mut redraw, mut fed) = (take_keys(app, held)?, false);
     while app.queued.is_empty()
+        && app.pane_view.is_none()
         && let Some(wake) = first.take().or_else(|| wakes.try_recv().ok())
     {
         let keyed = match wake {
             Wake::Keys(stamp, bytes) => {
+                if app
+                    .resumed_at
+                    .is_some_and(|resumed| !paneview::keep_key(stamp, resumed))
+                {
+                    continue;
+                }
                 crate::read_gate("@app-keys");
                 fed = true;
                 app.last_input = Some(stamp);
@@ -3416,7 +3503,7 @@ fn drain(
         };
         redraw |= take_keys(app, keyed)?;
     }
-    if !fed {
+    if !fed && app.pane_view.is_none() {
         redraw |= take_keys(app, keys.idle(Instant::now()))?;
     }
     app.forget(keys.begun());
@@ -3436,6 +3523,12 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
     let mut redraw = false;
     let mut keyed = keyed.into_iter();
     while let Some((mut key, origin)) = keyed.next() {
+        // A pane view a key just asked for takes the terminal next: every key
+        // after it, held ones included, was typed for the seat, never here.
+        if app.pane_view.is_some() {
+            app.deferred.clear();
+            return Some(true);
+        }
         // Only a draft takes a line break; everywhere else ^J is Enter.
         if key == Key::Newline && !app.composing() {
             key = Key::Enter;

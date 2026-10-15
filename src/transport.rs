@@ -1494,6 +1494,64 @@ pub fn attach(server: &ServerId) -> u8 {
     }
 }
 
+/// Hand this terminal to a tmux client attached to `pane` of the proven
+/// `session_id`, marked as the view `token` owns, and report what tmux exited
+/// with once the human returns: `None` when it did not run, or a signal
+/// ended it.
+#[must_use]
+pub fn view_pane(server: &ServerId, session_id: &str, pane: &str, token: &str) -> Option<i32> {
+    if !addressable(server) {
+        return None;
+    }
+    let args = tmux::view_attach_args(server, session_id, pane, token);
+    spawn(PROGRAM, &args, &[], Streams::Terminal, None)?
+        .status
+        .code()
+}
+
+/// Assert the pane view's return keys on `server`; whether tmux took both.
+/// An ambient server is the user's own tmux, whose root table ae never
+/// writes: refused, nothing run.
+#[must_use]
+pub fn bind_view_return(server: &ServerId) -> bool {
+    !matches!(server, ServerId::Ambient)
+        && tmux::VIEW_RETURN_KEYS
+            .iter()
+            .all(|key| write_run(server, &tmux::view_return_bind_args(server, key)))
+}
+
+/// Run one view `command` against `session_id`; whether tmux took it.
+#[must_use]
+pub fn run_view_command(server: &ServerId, session_id: &str, command: &str) -> bool {
+    write_run(
+        server,
+        &tmux::view_command_args(server, session_id, command),
+    )
+}
+
+/// `session_id`'s view marker and current window, or `None`.
+#[must_use]
+pub fn observe_view_marker(
+    server: &ServerId,
+    session_id: &str,
+) -> Option<(String, String, String)> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::view_marker_args(server, session_id));
+    tmux::interpret_view_marker(succeeded, &stdout)
+}
+
+/// The window and active pane `target` resolves to, or `None`.
+#[must_use]
+pub fn observe_view_place(server: &ServerId, target: &str) -> Option<(String, String)> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::view_place_args(server, target));
+    tmux::interpret_view_place(succeeded, &stdout)
+}
+
 /// Move one exact client to one exact session, or report tmux's refusal.
 #[must_use]
 pub fn switch_client(server: &ServerId, client: &str, session: &str) -> bool {

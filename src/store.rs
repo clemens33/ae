@@ -48,6 +48,9 @@ const CONSOLE_ADMISSION: &str = ".console-admission.lock";
 
 /// The lease an `ae app` holds while it writes to the session.
 const CONSOLE_WRITER: &str = ".console-writer.lock";
+/// The pane-view lock: held by the one `ae app` showing this session's pane
+/// for as long as its terminal is handed to that pane.
+const PANE_VIEW: &str = ".pane-view.lock";
 
 /// The goal setters' lock, beside the meta's and the journal's.
 const GOAL_SETTER: &str = ".goal-setter.lock";
@@ -855,6 +858,16 @@ impl SessionStore {
     /// [`lock`]'s: `WouldBlock` while another writer holds it.
     pub fn console_writer(&self) -> io::Result<File> {
         lock(&self.dir.join(CONSOLE_WRITER), Duration::ZERO)
+    }
+
+    /// The pane-view lock, taken without waiting and held across one pane
+    /// view, so a second view of this session is refused before it attaches.
+    ///
+    /// # Errors
+    ///
+    /// [`lock`]'s: `WouldBlock` while another view holds it.
+    pub fn pane_view(&self) -> io::Result<File> {
+        lock(&self.dir.join(PANE_VIEW), Duration::ZERO)
     }
 
     /// Replace what the held lease says of its holder with `record` (empty

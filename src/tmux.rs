@@ -2169,6 +2169,178 @@ fn guarded_select(session_id: &str, pane: &str) -> String {
     )
 }
 
+/// The keys that take an `ae app` pane view back to the app. Neither is a key
+/// a harness reads as an interrupt; `C-c` always reaches the pane.
+pub const VIEW_RETURN_KEYS: [&str; 2] = ["F12", "C-]"];
+
+/// What the pane view's client shows on its status line when it opens.
+pub const VIEW_HINT: &str = "ae: F12 or C-] back to ae app (or prefix d)";
+
+/// The session option naming the one client an `ae app` pane view attached.
+pub const VIEW_CLIENT_OPTION: &str = "@ae_view_client";
+
+/// The session option carrying the token of the app that owns that view.
+pub const VIEW_TOKEN_OPTION: &str = "@ae_view_token";
+
+/// The format [`view_marker_args`] reads: the view client, its owner token
+/// and the session's current window.
+const VIEW_MARKER_FORMAT: &str = "#{@ae_view_client} | #{@ae_view_token} | #{window_id}";
+
+/// `bind-key -n <key>`: detach the client the session's view marker names,
+/// and hand the same key to the pane for every other client.
+#[must_use]
+pub fn view_return_bind_args(server: &ServerId, key: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["bind-key", "-n", key, "if-shell", "-F"].map(ToOwned::to_owned));
+    args.push(format!(
+        "#{{&&:#{{{VIEW_CLIENT_OPTION}}},#{{==:#{{client_name}},#{{{VIEW_CLIENT_OPTION}}}}}}}"
+    ));
+    args.push("detach-client".to_owned());
+    args.push(format!("send-keys {key}"));
+    args
+}
+
+/// Attach this terminal to the proven `session_id`, mark the attaching client
+/// as the view `token` owns, then — after the session's focus hook — land on
+/// `pane` only while it is still a member of that session, else detach.
+#[must_use]
+pub fn view_attach_args(
+    server: &ServerId,
+    session_id: &str,
+    pane: &str,
+    token: &str,
+) -> Vec<String> {
+    let scope = format!("{session_id}:");
+    let mut args = server_args(server);
+    args.extend(
+        [
+            "attach-session",
+            "-t",
+            session_id,
+            ";",
+            "set-option",
+            "-F",
+            "-t",
+            &scope,
+            VIEW_CLIENT_OPTION,
+            "#{client_name}",
+            ";",
+            "set-option",
+            "-t",
+            &scope,
+            VIEW_TOKEN_OPTION,
+            token,
+            ";",
+            "run-shell",
+            "-C",
+        ]
+        .map(ToOwned::to_owned),
+    );
+    args.push(format!(
+        "{} 'detach-client'",
+        guarded_select(session_id, pane)
+    ));
+    args.extend([";", "display-message", "-d", "4000", VIEW_HINT].map(ToOwned::to_owned));
+    args
+}
+
+/// Unset both view options of `session_id` only while `token` still owns them.
+fn view_clear_when(session_id: &str, token: &str) -> String {
+    format!(
+        "if-shell -F -t {session_id}: '#{{==:#{{{VIEW_TOKEN_OPTION}}},{token}}}' \
+         'set -u -t {session_id}: {VIEW_CLIENT_OPTION} ; set -u -t {session_id}: {VIEW_TOKEN_OPTION}'"
+    )
+}
+
+/// The command a returning view runs: its own marker removed, never another's.
+#[must_use]
+pub fn view_release_command(session_id: &str, token: &str) -> String {
+    view_clear_when(session_id, token)
+}
+
+/// The command clearing a marker whose client is gone, only while it still
+/// carries the `seen` token it was judged stale by.
+#[must_use]
+pub fn view_stale_clear_command(session_id: &str, seen: &str) -> String {
+    view_clear_when(session_id, seen)
+}
+
+/// The command putting `session_id` back on `prev_window` and `window`'s
+/// active pane back on `prev_pane` — only while the incarnation is `uuid` and
+/// the session still shows the view's `window` and `pane`. Each target is
+/// scoped to the session and window, so tmux refuses one that moved.
+#[must_use]
+pub fn view_restore_command(
+    session_id: &str,
+    uuid: &str,
+    window: &str,
+    pane: &str,
+    prev_window: &str,
+    prev_pane: &str,
+) -> String {
+    format!(
+        "if-shell -F -t {session_id}: \
+         '#{{&&:#{{==:#{{@ae_session_uuid}},{uuid}}},#{{&&:#{{==:#{{window_id}},{window}}},#{{==:#{{pane_id}},{pane}}}}}}}' \
+         'select-pane -t {session_id}:{window}.{prev_pane} ; select-window -t {session_id}:{prev_window}'"
+    )
+}
+
+/// Run one tmux `command` string on `server`, its formats expanded against
+/// `session_id` first.
+#[must_use]
+pub fn view_command_args(server: &ServerId, session_id: &str, command: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["run-shell", "-C", "-t"].map(ToOwned::to_owned));
+    args.push(format!("{session_id}:"));
+    args.push(command.to_owned());
+    args
+}
+
+/// `display-message`: `session_id`'s view marker and current window.
+#[must_use]
+pub fn view_marker_args(server: &ServerId, session_id: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "-t"].map(ToOwned::to_owned));
+    args.push(format!("{session_id}:"));
+    args.push(VIEW_MARKER_FORMAT.to_owned());
+    args
+}
+
+/// What [`view_marker_args`] printed: the view client, the token and the
+/// current window, or `None` when tmux did not answer in that shape.
+#[must_use]
+pub fn interpret_view_marker(succeeded: bool, stdout: &str) -> Option<(String, String, String)> {
+    if !succeeded {
+        return None;
+    }
+    let line = stdout.lines().next()?;
+    let mut fields = line.rsplitn(3, FIELD_SEPARATOR);
+    let window = fields.next()?.trim().to_owned();
+    let token = fields.next()?.to_owned();
+    let client = fields.next()?.to_owned();
+    window.starts_with('@').then_some((client, token, window))
+}
+
+/// `display-message -p -t <target> '#{window_id} | #{pane_id}'`.
+#[must_use]
+pub fn view_place_args(server: &ServerId, target: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    let format = "#{window_id} | #{pane_id}";
+    args.extend(["display-message", "-p", "-t", target, format].map(ToOwned::to_owned));
+    args
+}
+
+/// The window and pane [`view_place_args`] printed, or `None`.
+#[must_use]
+pub fn interpret_view_place(succeeded: bool, stdout: &str) -> Option<(String, String)> {
+    if !succeeded {
+        return None;
+    }
+    let (window, pane) = stdout.lines().next()?.split_once(FIELD_SEPARATOR)?;
+    (window.starts_with('@') && pane.starts_with('%'))
+        .then(|| (window.to_owned(), pane.trim().to_owned()))
+}
+
 /// Hand the calling client to a captured tmux `$<n>` session id.
 #[must_use]
 pub fn switch_id_command(session_id: &str) -> String {

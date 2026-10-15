@@ -2245,6 +2245,7 @@ mod tests {
         let server =
             crate::inventory::ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
         let launcher = vec!["/opt/ae".to_owned()];
+        let root = "root".to_owned();
         for menu_mouse in [true, false] {
             let mut tables: Vec<(String, Vec<KeyBinding>)> = vec![
                 ("root".to_owned(), Vec::new()),
@@ -2257,7 +2258,13 @@ mod tests {
                 let Some(at) = words.iter().position(|word| word == "bind-key") else {
                     continue;
                 };
-                let (Some(table), Some(key)) = (words.get(at + 2), words.get(at + 3)) else {
+                // `-n KEY` is tmux's spelling of `-T root KEY`.
+                let (table, key, tail) = if words.get(at + 1).is_some_and(|flag| flag == "-n") {
+                    (Some(&root), words.get(at + 2), at + 3)
+                } else {
+                    (words.get(at + 2), words.get(at + 3), at + 4)
+                };
+                let (Some(table), Some(key)) = (table, key) else {
                     continue;
                 };
                 tables
@@ -2267,7 +2274,7 @@ mod tests {
                     .1
                     .push(KeyBinding {
                         key: key.clone(),
-                        command: words[(at + 4)..].join(" "),
+                        command: words[tail..].join(" "),
                     });
             }
             let expected = expected_status_bindings(menu_mouse);

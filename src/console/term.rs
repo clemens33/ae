@@ -4,7 +4,8 @@
 use std::io::{IsTerminal as _, Read as _};
 use std::os::fd::AsFd as _;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use super::input::{self, Effect, Input, Reading, Screen, Seen, Size};
 use super::lane::Seat;
@@ -44,18 +45,164 @@ impl Reads {
     }
 }
 
+/// A read `Ok(0)` that came back at least this late is the raw mode's read
+/// timeout, never an end: `ae app`'s raw mode returns an empty read after
+/// 100 ms without input, while a hung-up terminal answers at once.
+const TICK_FLOOR: Duration = Duration::from_millis(50);
+
+/// Fast empty reads, each a [`TICK_FLOOR`] apart, must go on this long with
+/// no input between them before they end the input. One alone is no end: a
+/// raw read's timeout can come back early (one ~33 ms read measured on macOS
+/// under tmux), and no termios call tells a hung-up terminal from a live one
+/// there, while a hung-up terminal answers empty at once, every read.
+const HANGUP_AFTER: Duration = Duration::from_secs(1);
+
+/// What an empty read means to a reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyRead {
+    /// The terminal waits for a byte (`ae chat`): empty is the end.
+    Ends,
+    /// The terminal's read times out (`ae app`): empty is usually a tick.
+    MayTimeOut,
+}
+
+/// What an empty read meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZeroRead {
+    /// The read timeout: nothing was typed; read again.
+    Tick,
+    /// Too fast for a timeout: wait a [`TICK_FLOOR`], then read again.
+    Wait,
+    /// The input ended.
+    Ended,
+}
+
+/// The run of fast empty reads a reader has seen: since when, if one runs.
+#[derive(Debug, Default)]
+pub(crate) struct Zeros {
+    fast_since: Option<Instant>,
+}
+
+impl Zeros {
+    /// What an empty read that took `elapsed` and returned at `now` meant.
+    #[must_use]
+    pub(crate) fn empty(&mut self, elapsed: Duration, now: Instant) -> ZeroRead {
+        if elapsed >= TICK_FLOOR {
+            self.fast_since = None;
+            return ZeroRead::Tick;
+        }
+        let since = *self.fast_since.get_or_insert(now);
+        if now.saturating_duration_since(since) >= HANGUP_AFTER {
+            ZeroRead::Ended
+        } else {
+            ZeroRead::Wait
+        }
+    }
+
+    /// A read returned bytes, or the reader was parked: whatever ran before
+    /// is no evidence of an end.
+    pub(crate) fn reset(&mut self) {
+        self.fast_since = None;
+    }
+}
+
+/// The handle that parks stdin's reader while another program owns the
+/// terminal, so no key that program is sent is read here.
+#[derive(Clone, Default)]
+pub(crate) struct Pause(Arc<(Mutex<Parked>, Condvar)>);
+
+/// Whether the reader is asked to park, and whether it has.
+#[derive(Default)]
+struct Parked {
+    asked: bool,
+    parked: bool,
+}
+
+impl Pause {
+    fn state(&self) -> MutexGuard<'_, Parked> {
+        self.0.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Ask the reader to park and wait up to `within` for it to say it has.
+    /// `false` takes the ask back: the reader is still reading.
+    pub(crate) fn hold(&self, within: Duration) -> bool {
+        let mut state = self.state();
+        state.asked = true;
+        self.0.1.notify_all();
+        let deadline = Instant::now() + within;
+        while !state.parked {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                state.asked = false;
+                self.0.1.notify_all();
+                return false;
+            }
+            state = match self.0.1.wait_timeout(state, left) {
+                Ok((state, _)) => state,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+        true
+    }
+
+    /// Let the reader read again.
+    pub(crate) fn release(&self) {
+        let mut state = self.state();
+        state.asked = false;
+        self.0.1.notify_all();
+    }
+
+    /// The reader's side, between two reads: park while asked; whether it
+    /// parked.
+    fn checkpoint(&self) -> bool {
+        let mut state = self.state();
+        if !state.asked {
+            return false;
+        }
+        state.parked = true;
+        self.0.1.notify_all();
+        while state.asked {
+            state = self.0.1.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+        state.parked = false;
+        true
+    }
+}
+
 /// Read `stdin` unbuffered, stamping each read when it completes and before the
 /// send that may block on a full channel: a stamp is when the read returned,
 /// never when the send got through, and never how long the kernel held input.
-fn reader(mut stdin: std::fs::File, reads: &SyncSender<(Instant, Vec<u8>)>) {
+/// Between two reads it parks while `pause` asks it to.
+fn reader(
+    mut stdin: std::fs::File,
+    reads: &SyncSender<(Instant, Vec<u8>)>,
+    pause: &Pause,
+    empty: EmptyRead,
+) {
     let mut buffer = [0; 4096];
+    let mut zeros = Zeros::default();
     loop {
+        if pause.checkpoint() {
+            zeros.reset();
+        }
+        let started = Instant::now();
         let read = stdin.read(&mut buffer);
+        if matches!(read, Ok(0)) && empty == EmptyRead::MayTimeOut {
+            match zeros.empty(started.elapsed(), Instant::now()) {
+                ZeroRead::Tick => continue,
+                ZeroRead::Wait => {
+                    std::thread::sleep(TICK_FLOOR);
+                    continue;
+                }
+                ZeroRead::Ended => return,
+            }
+        }
         let stamp = Instant::now();
         crate::read_gate("@app-read");
         match read {
             Ok(0) => return,
             Ok(n) => {
+                zeros.reset();
                 if reads.send((stamp, buffer[..n].to_vec())).is_err() {
                     return;
                 }
@@ -66,9 +213,24 @@ fn reader(mut stdin: std::fs::File, reads: &SyncSender<(Instant, Vec<u8>)>) {
     }
 }
 
+/// What the reader thread sends: each read's bytes and when it returned.
+type StampedReads = Receiver<(Instant, Vec<u8>)>;
+
 /// Stdin's raw reads, stamped, from a reader thread; `None` when stdin is
-/// not a terminal ae can hold.
+/// not a terminal ae can hold. The terminal waits for a byte, so an empty
+/// read ends them.
 pub(crate) fn stdin_reads() -> Option<Receiver<(Instant, Vec<u8>)>> {
+    spawn_reader(EmptyRead::Ends).map(|(reads, _)| reads)
+}
+
+/// [`stdin_reads`] from a terminal whose reads time out, and the [`Pause`]
+/// that parks its reader.
+pub(crate) fn stdin_reads_pausable() -> Option<(StampedReads, Pause)> {
+    spawn_reader(EmptyRead::MayTimeOut)
+}
+
+/// The reader thread over stdin, reading empty reads as `empty` says.
+fn spawn_reader(empty: EmptyRead) -> Option<(StampedReads, Pause)> {
     let stdin = std::io::stdin();
     let owned = stdin
         .is_terminal()
@@ -76,8 +238,10 @@ pub(crate) fn stdin_reads() -> Option<Receiver<(Instant, Vec<u8>)>> {
         .ok()?;
     let (send, reads) = sync_channel(8);
     let file = std::fs::File::from(owned);
-    std::thread::spawn(move || reader(file, &send));
-    Some(reads)
+    let pause = Pause::default();
+    let parked = pause.clone();
+    std::thread::spawn(move || reader(file, &send, &parked, empty));
+    Some((reads, pause))
 }
 
 /// The lead pair a console asks, main seat first: exactly one seat in slot
@@ -457,10 +621,55 @@ impl Term {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effect, Got, Input, Reading, Reads, Screen, Seat, Term, pair_of, reader, still};
+    use super::{
+        Effect, Got, Input, Reading, Reads, Screen, Seat, Term, ZeroRead, Zeros, pair_of, reader,
+        still,
+    };
     use crate::console::tests::{ID, Rig};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn only_a_second_of_nothing_but_fast_empty_reads_ends_the_input() {
+        let (slow, quick) = (Duration::from_millis(100), Duration::ZERO);
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut zeros = Zeros::default();
+        // The measured transient: one early empty read, then ticks again.
+        assert_eq!(
+            zeros.empty(Duration::from_millis(33), at(0)),
+            ZeroRead::Wait
+        );
+        assert_eq!(zeros.empty(slow, at(150)), ZeroRead::Tick);
+        // A hung-up terminal: empty at once, every read, for a second.
+        assert_eq!(zeros.empty(quick, at(200)), ZeroRead::Wait);
+        assert_eq!(zeros.empty(quick, at(1199)), ZeroRead::Wait);
+        assert_eq!(zeros.empty(quick, at(1200)), ZeroRead::Ended);
+    }
+
+    #[test]
+    fn a_park_between_two_fast_empty_reads_is_no_evidence_of_an_end() {
+        let start = Instant::now();
+        let mut zeros = Zeros::default();
+        assert_eq!(zeros.empty(Duration::ZERO, start), ZeroRead::Wait);
+        // The reader parked for a pane view that lasted two seconds.
+        zeros.reset();
+        let back = start + Duration::from_secs(2);
+        assert_eq!(zeros.empty(Duration::ZERO, back), ZeroRead::Wait);
+    }
+
+    #[test]
+    fn the_reader_learns_whether_it_parked() {
+        let pause = super::Pause::default();
+        assert!(!pause.checkpoint(), "not asked: no park");
+        // Asked before the reader runs, so it parks whatever the scheduling.
+        pause.state().asked = true;
+        let parked = pause.clone();
+        let reader = std::thread::spawn(move || parked.checkpoint());
+        assert!(pause.hold(Duration::from_secs(5)), "the reader parks");
+        pause.release();
+        assert!(reader.join().unwrap(), "a park is reported");
+    }
 
     #[test]
     fn an_ended_input_is_said_once_and_every_later_wait_sleeps_to_its_deadline() {
@@ -486,7 +695,8 @@ mod tests {
             .open(std::env::temp_dir())
             .unwrap();
         let (send, reads) = sync_channel(1);
-        std::thread::spawn(move || reader(dir, &send));
+        let pause = super::Pause::default();
+        std::thread::spawn(move || reader(dir, &send, &pause, super::EmptyRead::Ends));
         let ended = reads.recv_timeout(Duration::from_secs(5));
         assert_eq!(ended, Err(RecvTimeoutError::Disconnected));
     }

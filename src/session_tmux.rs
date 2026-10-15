@@ -853,9 +853,17 @@ pub(crate) fn status_bindings_argv(
                 let shell = hotkey_console_shell(launcher, jump);
                 bindings.push(argv(server, &Op::BindConsoleHotkey { key, shell: &shell }));
             }
+            bindings.extend(view_return_bindings(server));
             bindings
         }
     }
+}
+
+/// The `ae app` pane view's return keys: root-table binds gated on the
+/// session's view marker, every other client keeping the key.
+fn view_return_bindings(server: &ServerId) -> [TmuxArgv; 2] {
+    crate::tmux::VIEW_RETURN_KEYS
+        .map(|key| TmuxArgv(crate::tmux::view_return_bind_args(server, key)))
 }
 
 /// One key-table entry `ae doctor` expects on an ae-owned server.
@@ -932,16 +940,20 @@ type KeyPairs = Vec<(String, String)>;
 fn key_entries(argv: &[TmuxArgv]) -> (Vec<ExpectedBinding>, KeyPairs) {
     let mut bound = Vec::new();
     let mut unbound = Vec::new();
+    let root = "root".to_owned();
     for words in argv.iter().map(TmuxArgv::as_args) {
         for (at, window) in words.windows(4).enumerate() {
             let [verb, flag, table, key] = [&window[0], &window[1], &window[2], &window[3]];
-            if flag != "-T" {
-                continue;
-            }
+            // `-n KEY` is tmux's spelling of `-T root KEY`.
+            let (table, key, tail) = match flag.as_str() {
+                "-T" => (table, key, at + 4),
+                "-n" => (&root, table, at + 3),
+                _ => continue,
+            };
             if verb == "bind-key" {
                 let command = words
                     .iter()
-                    .skip(at + 4)
+                    .skip(tail)
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(" ");
@@ -1311,9 +1323,15 @@ mod tests {
         let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], true);
         assert_eq!(
             bindings.len(),
-            17,
-            "mouse-aware servers assert Down bindings, remove every stock right-click menu, and carry the wheel map plus the reader and console hotkeys"
+            19,
+            "mouse-aware servers assert Down bindings, remove every stock right-click menu, and carry the wheel map, the reader and console hotkeys and the pane view's return keys"
         );
+        for (bound, key) in bindings[17..].iter().zip(crate::tmux::VIEW_RETURN_KEYS) {
+            assert_eq!(
+                bound.as_args(),
+                crate::tmux::view_return_bind_args(&server, key)
+            );
+        }
         assert_eq!(
             bindings[0].as_args(),
             [
@@ -1446,8 +1464,8 @@ mod tests {
         let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
         assert_eq!(
             keyboard.len(),
-            17,
-            "keyboard-driven servers bind release, remove every stock right-click menu, and carry the wheel map plus the reader and console hotkeys"
+            19,
+            "keyboard-driven servers bind release, remove every stock right-click menu, and carry the wheel map, the reader and console hotkeys and the pane view's return keys"
         );
         assert_eq!(
             keyboard[0].as_args(),
@@ -1827,6 +1845,8 @@ mod tests {
                 entry("prefix", "v", false, true),
                 entry("prefix", "h", false, true),
                 entry("prefix", "H", false, true),
+                entry("root", "F12", false, false),
+                entry("root", "C-]", false, false),
                 entry("root", "MouseUp1Status", true, false),
                 entry("root", "MouseUp3Status", true, false),
             ]
@@ -1846,6 +1866,8 @@ mod tests {
                 entry("prefix", "v", false, true),
                 entry("prefix", "h", false, true),
                 entry("prefix", "H", false, true),
+                entry("root", "F12", false, false),
+                entry("root", "C-]", false, false),
             ]
         );
     }

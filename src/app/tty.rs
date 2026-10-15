@@ -14,7 +14,9 @@ use std::fs::File;
 use std::io::Write as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 
-use rustix::termios::{self, OptionalActions, OutputModes, Termios};
+use rustix::termios::{
+    self, OptionalActions, OutputModes, QueueSelector, SpecialCodeIndex, Termios,
+};
 
 /// Into the app's screen: cursor hidden, bracketed paste and SGR button-event
 /// mouse on — press, release, wheel and motion only while a button is held.
@@ -60,6 +62,10 @@ impl Tty {
         raw.make_raw();
         // Raw input, cooked output: a newline still returns the carriage.
         raw.output_modes.insert(OutputModes::OPOST);
+        // A read returns after 100 ms without input, so the reader can park
+        // between two reads while another program owns the terminal.
+        raw.special_codes[SpecialCodeIndex::VMIN] = 0;
+        raw.special_codes[SpecialCodeIndex::VTIME] = 1;
         termios::tcsetattr(&fd, OptionalActions::Now, &raw)
             .map_err(|err| format!("raw mode refused ({err})"))?;
         // The hook stays installed past `Drop`: the app exits right after, and a
@@ -96,6 +102,31 @@ impl Tty {
             .map_err(|err| format!("raw mode refused ({err})"))?;
         let _ = (&self.screen).write_all(ENTER.as_bytes());
         Ok(())
+    }
+
+    /// The app's screen left for a program that draws its own, the terminal
+    /// KEPT raw: a `^C` typed there stays a byte for that program and is never
+    /// a signal to this one. Input already queued — a click's release, keys
+    /// typed on the way out — is dropped, so it reaches neither.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "THE terminal door: input dropped at a hand-over (clippy.toml)"
+    )]
+    pub(crate) fn hand_over(&self) {
+        let _ = (&self.screen).write_all(LEAVE.as_bytes());
+        let _ = termios::tcflush(&self.fd, QueueSelector::IFlush);
+    }
+
+    /// The app's raw mode and screen again after [`Tty::hand_over`], whatever
+    /// mode the other program left; input it left unread is dropped. `Err`
+    /// names why the terminal refused.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "THE terminal door: raw mode taken back from a pane view (clippy.toml)"
+    )]
+    pub(crate) fn take_back(&self) -> Result<(), String> {
+        let _ = termios::tcflush(&self.fd, QueueSelector::IFlush);
+        self.resume()
     }
 
     /// The window size, columns then rows; `None` when the terminal will not say.

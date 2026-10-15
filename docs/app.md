@@ -141,7 +141,7 @@ Browsing:
 | `!` | the next session that needs you |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
-| Click a seat, or `v` on the highlighted seat | watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)) |
+| Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
 | `n` / `p` | highlight the next / previous seat the body shows |
 | `PgUp` / `PgDn` | scroll the chat a page |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
@@ -334,6 +334,26 @@ over, not that it finished.
 A menu or question takes only input made after a frame showing it was written:
 a key typed before then is dropped and the hint row says to press again. One
 that does not fit the window closes, and the hint row says so.
+
+## Working in a seat
+
+Outside tmux, a click on a seat hands the app's terminal to that seat's pane:
+the app steps aside and tmux attaches this terminal to the seat's session with
+the seat's pane selected, so you type into the seat, colours and resize
+included, and `^C` reaches the seat's tool. The status line names the way
+back: `F12` or `C-]` returns to `ae app` (`prefix d` works too), and the app
+redraws where it was. `v` outside tmux still refuses (`refused: peek …`);
+inside tmux a click keeps opening the read-only peek below.
+
+The seat is proved as `oo` proves it, and only one app views a session at a
+time: a second one is refused before it attaches (`refused: view <seat>:
+another ae app is viewing <session>`). The return keys act only for the
+terminal the app handed over; anyone else's `F12` or `C-]` reaches their pane
+as before. If the seat's pane cannot be selected once attached, the terminal
+detaches straight back. On return the session's window and pane are put back
+as they were, but only when nobody moved them meanwhile. A refusal says why on
+the hint row (`refused: view <seat>: <why>`), and the return says
+`back from <seat>`.
 
 ## Peeking at an agent
 
