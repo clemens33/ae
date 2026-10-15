@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.76] - 2026-10-15
+- Auto reseat: every outcome record leads with a cause class so a clip keeps the cause
+- The auto reseat notice leads with its cause class and reserves its next step
+- An auto reseat notice step that cannot fit is replaced whole, never clipped
+
 ## [v2026.10.75] - 2026-10-15
 - ^C over text clears the composer, ^U keeps what it cleared and ^Y puts it back once, hint row names the clear key over text
 - A ^C just after a clear only arms the quit, so a ^C meant for the text never ends the app
