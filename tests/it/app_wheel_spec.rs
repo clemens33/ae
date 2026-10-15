@@ -193,26 +193,26 @@ impl Rig {
             .lines()
             .position(|line| line.starts_with("──"))
             .expect("drawn list border");
-        assert_eq!(edge, 24, "GUARD new undragged list border");
+        assert_eq!(edge, 25, "GUARD new undragged list border");
         assert_eq!(self.cards(&first).len(), 10, "GUARD new undragged cards");
         // This suite judges wheel behavior at its original viewport. The
         // appside spec independently pins the changed undragged default.
         self.literal(
             pane,
-            &format!("\x1b[<0;2;{}M\x1b[<32;2;21M\x1b[<0;2;21m", edge + 1),
+            &format!("\x1b[<0;2;{}M\x1b[<32;2;22M\x1b[<0;2;22m", edge + 1),
         );
         let pinned = self.wait(
             pane,
             WAIT,
             "GUARD divider drag restored wheel fixture",
             |s| {
-                s.lines().position(|line| line.starts_with("──")) == Some(20)
+                s.lines().position(|line| line.starts_with("──")) == Some(21)
                     && self.cards(s).len() == 8
             },
         );
         assert_eq!(
             pinned.lines().position(|line| line.starts_with("──")),
-            Some(20)
+            Some(21)
         );
         assert_eq!(self.cards(&pinned).len(), 8);
         self.wait(pane, WAIT, "GUARD home, overflow and seats ready", |s| {
@@ -357,7 +357,7 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
     let rig = Rig::new("wloracle");
     let pane = rig.open();
     let first = rig.ready(&pane);
-    assert_eq!(body_rows(&first).len(), 21, "GUARD original body rectangle");
+    assert_eq!(body_rows(&first).len(), 20, "GUARD original body rectangle");
     rig.tmux(&["resize-window", "-t", &pane, "-x", "160", "-y", "100"]);
     let complete = rig.wait(&pane, FRAME, "GUARD all Agents content fits", |s| {
         s.lines().count() == 100 && s.contains("seat19") && !s.contains("more rows")
@@ -386,7 +386,7 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
             "GUARD facts row"
         );
     }
-    let visible = if first.contains("more rows") { 20 } else { 21 };
+    let visible = if first.contains("more rows") { 19 } else { 20 };
     assert_eq!(
         nonempty(&first),
         seats[..visible],
@@ -450,13 +450,14 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
     let pane = rig.open();
     let first = rig.ready(&pane);
     // Contract fixture: twenty seats of two rows = 40 text rows. The drawn
-    // 21-row body gives one row to the marker, leaving 20 content rows.
-    let marked = rig.wait(&pane, FRAME, "A-BODY-MARKER top hides 20 of 40 rows", |s| {
+    // The 20-row body (the band's second row took one) gives one row to the
+    // marker, leaving 19 content rows.
+    let marked = rig.wait(&pane, FRAME, "A-BODY-MARKER top hides 21 of 40 rows", |s| {
         body_rows(s)
             .last()
-            .is_some_and(|row| row.trim() == "↓ 20 more rows")
+            .is_some_and(|row| row.trim() == "↓ 21 more rows")
     });
-    assert_eq!(body(&marked).len(), 20);
+    assert_eq!(body(&marked).len(), 19);
     let point = sidebar_cell(&marked, "more rows");
     rig.report(&pane, 0, point, 1);
     std::thread::sleep(Duration::from_millis(150));
@@ -475,7 +476,7 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
         |s| {
             body_rows(s)
                 .last()
-                .is_some_and(|row| row.trim() == "↑ 3 · ↓ 17 more rows")
+                .is_some_and(|row| row.trim() == "↑ 3 · ↓ 18 more rows")
         },
     );
     assert_eq!(body(&down).first(), body(&first).get(3));
@@ -487,7 +488,7 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
         |s| {
             body_rows(s)
                 .last()
-                .is_some_and(|row| row.trim() == "↑ 20 more rows")
+                .is_some_and(|row| row.trim() == "↑ 21 more rows")
                 && body(s).last().is_some_and(|row| row.contains("Sonnet 5.5"))
         },
     );
@@ -652,7 +653,7 @@ fn agents_wheel_moves_three_text_rows_including_half_a_seat_and_clamps() {
     rig.home_holds(&down, false);
     assert_eq!(
         body_rows(&down).last().expect("marker").trim(),
-        "↑ 3 · ↓ 17 more rows",
+        "↑ 3 · ↓ 18 more rows",
         "Agents counts text rows"
     );
     rig.report(&pane, 65, point, 40);
@@ -669,7 +670,7 @@ fn agents_wheel_moves_three_text_rows_including_half_a_seat_and_clamps() {
     );
     assert_eq!(
         body_rows(&bottom).last().expect("marker").trim(),
-        "↑ 20 more rows",
+        "↑ 21 more rows",
         "Agents bound reserves marker row"
     );
     rig.report(&pane, 65, point, 40);

@@ -27,16 +27,20 @@ recorded config first.
 
 ## Layout
 
-- **Sidebar** (44 cells from 140 wide, 34 from 90x20): a summary row of icon
-  counts — sessions `▣`, agents `◈`, working `●`, needing you `⚠` (`+?` where a
-  running session's seats are unknown) — then, on the next row with no blank between, one card per session: its mark,
-  its number, its name (`this window` on home), and under it the seat counts,
-  then the question that needs you or `seat down`. `↑` / `↓` at the summary
-  row's right end show needy rows outside the list, and `!` reaches the next one. Running sessions come in
+- **Sidebar** (44 cells from 140 wide, 34 from 90x20): a two-row summary band
+  on the panel ground — `▣ 27 sessions · ◈ 69 agents`, then `● 12 working · ⚠ 2
+  need you` (`+?` where a running session's seats are unknown; a count of one
+  reads `1 session`, `1 needs you`) — a narrow band drops the words before it
+  cuts a count, and `icons = off` draws `# @ * !`. Then, on the next row with
+  no blank between, one card per session: its mark, its number, its name (`this
+  window` on home), and under it the seat counts, then the question that needs
+  you or `seat down`. `↑` / `↓` at the band's first row's right end show needy
+  rows outside the list, and `!` reaches the next one. The `Agents N` heading
+  under the list is a band of the same ground. Running sessions come in
   this order: the orchestrator, then the sessions your `[workspace]
   fleet_order` names (the pins), then the rest by their newest AI answer to
   you, newest first, and a session with none after them in creation order;
-  stopped ones come last. Your own input never reorders the list. A needy row carries a `│` edge and `!` reaches it. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
+  stopped ones come last. Your own input never reorders the list. A needy row says so by its `⚠` mark and its question, with no edge, and `!` reaches it. The selected session wears what the focused seat wears: a `▸` (`>` with `icons = off`) in the first cell of its first row and the selected ground over both its lines; with `theme = off` the two lines are reversed. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
 - **Agents** under the list: every seat of the selected session with its

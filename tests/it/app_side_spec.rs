@@ -114,11 +114,11 @@ fn undragged_tall_frames_show_more_of_twenty_four_sessions() {
     let entry = SessionEntry::new("side01", Status::Running);
     // Exact observable pins from R1; no copy of the implementation formula.
     for (height, shown, rule) in [
-        (30, 6, 16),
-        (40, 9, 22),
-        (43, 10, 24),
-        (45, 11, 26),
-        (62, 16, 36),
+        (30, 6, 17),
+        (40, 9, 23),
+        (43, 10, 25),
+        (45, 11, 27),
+        (62, 16, 37),
     ] {
         let screen = frame(160, height, 24, &entry);
         let cards = sidebar(&screen)
@@ -141,12 +141,12 @@ fn undragged_tall_frames_show_more_of_twenty_four_sessions() {
 fn minimum_frame_keeps_the_capped_list_and_chat_usable() {
     let entry = SessionEntry::new("side01", Status::Running);
     let screen = frame(90, 20, 24, &entry);
-    assert_eq!(border(&screen), Some(12), "R1 capped-small-frame rule");
+    assert_eq!(border(&screen), Some(13), "R1 capped-small-frame rule");
     let side = sidebar(&screen);
-    assert!(side[1].contains("side01"));
-    assert!(side[7].contains("side04"));
-    assert!(side[9].contains("20 more"));
-    assert!(side[11].contains("Agents") && !side[11].contains("Overview"));
+    assert!(side[2].contains("side01"));
+    assert!(side[8].contains("side04"));
+    assert!(side[10].contains("20 more"));
+    assert!(side[12].contains("Agents") && !side[12].contains("Overview"));
     assert!(
         screen.contains("Enter writes"),
         "composer survives: {screen}"
@@ -164,8 +164,8 @@ fn one_session_keeps_its_content_sized_list_at_both_required_frames() {
     let entry = SessionEntry::new("side01", Status::Running);
     for (width, height) in [(90, 20), (160, 45)] {
         let screen = frame(width, height, 1, &entry);
-        assert_eq!(border(&screen), Some(5), "{width}x{height}");
-        assert!(sidebar(&screen)[1].contains("side01"));
+        assert_eq!(border(&screen), Some(6), "{width}x{height}");
+        assert!(sidebar(&screen)[2].contains("side01"));
         assert!(screen.contains("Enter writes"));
     }
 }

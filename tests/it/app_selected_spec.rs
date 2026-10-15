@@ -548,7 +548,7 @@ fn card(screen: &str, name: &str) -> (usize, usize) {
 fn card_position(screen: &str, name: &str) -> Option<(usize, usize)> {
     screen.lines().enumerate().find_map(|(y, row)| {
         let side = row.chars().take(44).collect::<String>();
-        let mut words = side.trim_start().trim_start_matches('│').split_whitespace();
+        let mut words = side.trim_start().trim_start_matches('▸').split_whitespace();
         words.next()?; // Status mark.
         let index = words.next()?.parse::<u8>().ok()?;
         if !(1..=9).contains(&index) || words.next()? != name {
@@ -631,12 +631,12 @@ fn selecting_a_needy_card_ignores_its_attention_summary() {
     rig.select(&pane, &rig.t);
     fs::write(rig.s.dir.join("events.jsonl"), format!("{{\"ts\":\"{}\",\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"waiting-user\",\"summary\":\"review required\"}}\n", ae::time::Timestamp::now())).expect("fixture attention");
     rig.wait(&rig.s, &pane, "GUARD home attention summary", |s| {
-        s.lines().next().is_some_and(|row| {
+        s.lines().nth(1).is_some_and(|row| {
             row.chars()
                 .take(44)
                 .collect::<String>()
                 .trim_end()
-                .ends_with("⚠ 1")
+                .ends_with("⚠ 1 needs you")
         })
     });
     rig.select(&pane, &rig.s);

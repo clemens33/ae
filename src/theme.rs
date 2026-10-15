@@ -1582,9 +1582,22 @@ mod tests {
                 });
             }
         }
+        // The app sidebar's header bands draw their words in the text ink and
+        // the working and needs-you accents on the panel ground, nothing else:
+        // no dim words, which darcula's panel would not clear.
+        for mark in [Mark::Working, Mark::NeedsYou] {
+            pairs.push(ContrastPair {
+                label: format!("{mark:?} on panel"),
+                fg: palette.accent(mark).to_owned(),
+                bg: palette.panel.to_owned(),
+                bar: 3.0,
+            });
+        }
         for (label, fg, bg, bar) in [
             ("text on base", palette.text, palette.base, 4.5),
             ("text on panel", palette.text, palette.panel, 4.5),
+            // A selected session's and a focused seat's name.
+            ("text on selected", palette.text, palette.selected, 4.5),
             (
                 "selected_ink on selected",
                 palette.selected_ink,
