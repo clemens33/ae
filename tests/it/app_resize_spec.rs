@@ -449,7 +449,7 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     let pane = rig.open_app();
     assert_eq!(
         horizontal_rule(&rig.ready(&pane)),
-        Some(8),
+        Some(5),
         "unchanged one-row default"
     );
     rig.grab_horizontal(&pane, 20);
@@ -458,9 +458,9 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     assert_eq!(tab, 19);
     assert!(cell_of(&screen, "No seat facts").is_some_and(|(_, row)| row > 20));
     rig.motion(&pane, 1, 44);
-    rig.horizontal(&pane, 38); // list drag budget stays; body gains reclaimed rows.
+    rig.horizontal(&pane, 35); // list drag budget stays; body gains reclaimed rows.
     rig.motion(&pane, 1, 0);
-    rig.horizontal(&pane, 8); // one session needs two list rows, no more row.
+    rig.horizontal(&pane, 5); // one session needs two list rows, no more row.
     rig.release(&pane, 1, 0);
 }
 
@@ -471,21 +471,21 @@ fn live_horizontal_minimum_keeps_one_session_and_more_row() {
     let screen = rig.ready(&pane);
     assert_eq!(
         horizontal_rule(&screen),
-        Some(29),
+        Some(26),
         "larger undragged windowed default"
     );
     rig.grab_horizontal(&pane, 0);
-    let screen = rig.horizontal(&pane, 9);
+    let screen = rig.horizontal(&pane, 6);
     assert!(
         screen
             .lines()
-            .nth(4)
+            .nth(1)
             .is_some_and(|row| row.contains(&rig.name))
     );
     assert!(
         screen
             .lines()
-            .nth(6)
+            .nth(3)
             .is_some_and(|row| row.contains("more"))
     );
     assert!(screen.contains("No seat facts"), "the body remains usable");
@@ -536,7 +536,7 @@ fn live_chosen_sizes_survive_shrink_hidden_sidebar_and_growth() {
     // Resize is not input: active drag continues, display clamps only.
     rig.resize(&pane, 90, 20);
     let screen = rig.vertical(&pane, 49);
-    assert_eq!(horizontal_rule(&screen), Some(13));
+    assert_eq!(horizontal_rule(&screen), Some(10));
     rig.resize(&pane, 160, 45);
     let screen = rig.vertical(&pane, 66);
     assert_eq!(horizontal_rule(&screen), Some(30));

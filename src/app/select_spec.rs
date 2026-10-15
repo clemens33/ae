@@ -57,7 +57,7 @@ fn frame(app: &mut App) -> Buffer {
     buf
 }
 fn at(buf: &Buffer, needle: &str) -> (u16, u16) {
-    (3..buf.area.height)
+    (1..buf.area.height)
         .find_map(|y| {
             let row = (0..buf.area.width)
                 .map(|x| buf[(x, y)].symbol())

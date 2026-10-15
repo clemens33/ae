@@ -29,10 +29,10 @@ recorded config first.
 
 - **Sidebar** (44 cells from 140 wide, 34 from 90x20): a summary row of icon
   counts — sessions `▣`, agents `◈`, working `●`, needing you `⚠` (`+?` where a
-  running session's seats are unknown) — then one row per session: its mark,
+  running session's seats are unknown) — then, on the next row with no blank between, one card per session: its mark,
   its number, its name (`this window` on home), and under it the seat counts,
-  then the question that needs you or `seat down`. `↑` / `↓` show needy
-  rows outside the list, and `!` reaches the next one. Running sessions come in
+  then the question that needs you or `seat down`. `↑` / `↓` at the summary
+  row's right end show needy rows outside the list, and `!` reaches the next one. Running sessions come in
   this order: the orchestrator, then the sessions your `[workspace]
   fleet_order` names (the pins), then the rest by their newest AI answer to
   you, newest first, and a session with none after them in creation order;

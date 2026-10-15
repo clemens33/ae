@@ -78,9 +78,8 @@ fn attention_draw_keeps_session_count_and_next_need_cell_in_both_looks() {
         );
         let glyph = if mode == "on" { "▣" } else { "#" };
         assert!(row(&buf, 0).starts_with(&format!("  {glyph} 10 ")));
-        assert_eq!(row(&buf, 2).chars().take(40).collect::<String>().trim(), "");
-        assert_eq!(buf[(40, 2)].symbol(), " ", "lone key marker removed");
-        assert_eq!(buf[(41, 2)].symbol(), " ");
+        assert_eq!(buf[(40, 0)].symbol(), " ", "lone key marker removed");
+        assert_eq!(buf[(41, 0)].symbol(), " ");
     }
 }
 
@@ -89,16 +88,8 @@ fn attention_draw_hides_a_single_long_name_beside_next_need() {
     let mut fleet = fleet(&[0]);
     fleet.rows[0].name = "n".repeat(80);
     let buf = painted(&fleet, &Look::read("on", "", "off", "off"));
-    assert!(
-        row(&buf, 2)
-            .chars()
-            .take(40)
-            .collect::<String>()
-            .trim()
-            .is_empty()
-    );
-    assert_eq!(buf[(40, 2)].symbol(), " ");
-    assert_eq!(buf[(41, 2)].symbol(), " ");
+    assert_eq!(buf[(40, 0)].symbol(), " ");
+    assert_eq!(buf[(41, 0)].symbol(), " ");
 }
 
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";

@@ -85,7 +85,7 @@ impl Rig {
             ("@ae_motion", "off"),
             ("@ae_attn_rank", "0"),
             ("@ae_main_pane", rig.tool.pane.as_str()),
-            ("default-size", "160x45"),
+            ("default-size", "160x42"),
         ] {
             rig.tmux(&["set-option", "-t", &rig.home, option, value]);
         }
@@ -193,26 +193,26 @@ impl Rig {
             .lines()
             .position(|line| line.starts_with("──"))
             .expect("drawn list border");
-        assert_eq!(edge, 29, "GUARD new undragged list border");
-        assert_eq!(self.cards(&first).len(), 11, "GUARD new undragged cards");
+        assert_eq!(edge, 24, "GUARD new undragged list border");
+        assert_eq!(self.cards(&first).len(), 10, "GUARD new undragged cards");
         // This suite judges wheel behavior at its original viewport. The
         // appside spec independently pins the changed undragged default.
         self.literal(
             pane,
-            &format!("\x1b[<0;2;{}M\x1b[<32;2;24M\x1b[<0;2;24m", edge + 1),
+            &format!("\x1b[<0;2;{}M\x1b[<32;2;21M\x1b[<0;2;21m", edge + 1),
         );
         let pinned = self.wait(
             pane,
             WAIT,
             "GUARD divider drag restored wheel fixture",
             |s| {
-                s.lines().position(|line| line.starts_with("──")) == Some(23)
+                s.lines().position(|line| line.starts_with("──")) == Some(20)
                     && self.cards(s).len() == 8
             },
         );
         assert_eq!(
             pinned.lines().position(|line| line.starts_with("──")),
-            Some(23)
+            Some(20)
         );
         assert_eq!(self.cards(&pinned).len(), 8);
         self.wait(pane, WAIT, "GUARD home, overflow and seats ready", |s| {
@@ -835,7 +835,6 @@ fn guard_header_heading_rule_keys_and_settings_never_scroll_underlying_sidebar()
     let tab = cell(&first, "Agents 20");
     for point in [
         (2, 0),
-        (2, 2),
         tab,
         (2, tab.1 + 1),
         (rule(&first), 5),

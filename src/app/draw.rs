@@ -77,11 +77,12 @@ pub enum Composer<'a> {
 const MIN: (u16, u16) = (40, 8);
 /// The smallest pane that keeps the sidebar.
 const SIDEBAR_MIN: (u16, u16) = (90, 20);
-/// The first row of the session list.
-const LIST_TOP: u16 = 4;
-/// The row the frame gave back at the top: the list keeps the share it had,
-/// and the tab body takes the row.
-const TOP_GIVEN: u16 = 1;
+/// The first row of the session list: the row under the summary row.
+const LIST_TOP: u16 = 1;
+/// The rows the frame gave back at the top, the blank rows once left between
+/// the summary and the list included: the list keeps the share it had, and the
+/// tab body takes the rows.
+const TOP_GIVEN: u16 = 4;
 /// The sidebar's first content column.
 const LEFT: u16 = 2;
 /// Where a session row's name starts.
@@ -730,22 +731,22 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
     } else {
         paint.fg(|p| p.dim)
     };
-    put_line(buf, LEFT, 0, &summary_line(ctx, fleet, room, tone), room);
-    if needy {
-        // An arrow for each side of the list that hides a needy row.
-        let hides = |rows: Range<usize>| fleet.rows[rows].iter().any(|row| row.needy);
-        let mut arrows = String::new();
-        arrows.extend(hides(0..list.visible.start).then_some('↑'));
-        arrows.extend(hides(list.visible.end..count).then_some('↓'));
-        put(
-            buf,
-            end - 2 - cells(arrows.chars().count()),
-            2,
-            &arrows,
-            2,
-            tone,
-        );
-    }
+    // An arrow for each side of the list that hides a needy row, at the
+    // summary row's right end; the counts keep clear of it.
+    let hides = |rows: Range<usize>| fleet.rows[rows].iter().any(|row| row.needy);
+    let mut arrows = String::new();
+    arrows.extend(hides(0..list.visible.start).then_some('↑'));
+    arrows.extend(hides(list.visible.end..count).then_some('↓'));
+    let wide = cells(arrows.chars().count());
+    let counts = room.saturating_sub(wide + u16::from(wide > 0));
+    put_line(
+        buf,
+        LEFT,
+        0,
+        &summary_line(ctx, fleet, counts, tone),
+        counts,
+    );
+    put(buf, end - wide, 0, &arrows, wide, tone);
     if count == 0 {
         let empty = if ctx.wait.fleet {
             "loading"
@@ -3045,21 +3046,21 @@ mod tests {
     fn a_cut_body_names_its_hidden_rows_in_the_dim_hue() {
         let mut shot = Shot::new();
         shot.agents = Some(sweep_seats());
-        let buf = shot.draw(100, 24, READ_ONLY);
+        let buf = shot.draw(100, 21, READ_ONLY);
         assert_eq!(
             spot(&buf, "↓ 4 more rows"),
-            Some((23, 2)),
+            Some((20, 2)),
             "the body's last row"
         );
         let dim = super::colour(crate::theme::Palette::DARCULA.dim);
-        assert_eq!(buf[(2, 23)].fg, dim);
+        assert_eq!(buf[(2, 20)].fg, dim);
         let tall = shot.draw(100, 40, READ_ONLY);
         assert_eq!(spot(&tall, "more rows"), None, "a body that fits");
         shot.fleet = frame_fleet();
-        // The smallest sidebar frame gives the body four rows, the last of
+        // The smallest sidebar frame gives the body seven rows, the last of
         // them the line naming what it hides.
         let smallest = shot.draw(100, 20, READ_ONLY);
-        assert_eq!(spot(&smallest, "↓ 15 more rows").map(|at| at.0), Some(19));
+        assert_eq!(spot(&smallest, "↓ 12 more rows").map(|at| at.0), Some(19));
     }
 
     /// docs/app.md: below 40x8 the app only says how large it needs to be;
@@ -3157,6 +3158,24 @@ mod tests {
             let row = declutter_line(&buf, &layout, 0);
             assert_eq!(row.trim(), "▣ 9 ◈ 18 ● 18 ⚠ 0", "{width} cols: {row:?}");
             assert!(!row.trim().contains("  "), "{width} cols: {row:?}");
+        }
+    }
+
+    /// The session list starts on the row under the summary row: no blank
+    /// sidebar row between them at any session count or size that draws a
+    /// sidebar, and the list's hit and selection rectangles start there too.
+    #[test]
+    fn the_session_list_starts_on_the_row_under_the_summary() {
+        for count in [0, 1, 4, 30] {
+            for (width, height) in [(90, 20), (120, 30), (220, 60)] {
+                let (buf, layout) = sessions(count).laid(width, height, READ_ONLY);
+                let left = |y| line(&buf, y)[..usize::from(layout.list.width)].concat();
+                let frame = format!("{count} sessions at {width}x{height}");
+                assert!(left(0).trim_start().starts_with(['▣', '#']), "{frame}");
+                let first = if count == 0 { "No sessions." } else { "s00" };
+                assert!(left(1).contains(first), "{frame}: row 1 is {:?}", left(1));
+                assert_eq!(layout.list.y, 1, "{frame}");
+            }
         }
     }
 
@@ -3709,8 +3728,11 @@ mod tests {
             .collect();
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        let attention = line(&buf, 2).concat();
-        assert!(attention[..40].trim().is_empty(), "{attention:?}");
+        let attention = line(&buf, 0).concat();
+        assert!(
+            !attention.contains("infra"),
+            "no attention prose: {attention:?}"
+        );
         let mut shot = Shot::new();
         shot.fleet.rows = vec![
             row("a", 1, false),
@@ -3719,12 +3741,12 @@ mod tests {
         ];
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        assert_eq!(buf[(41, 2)].symbol(), " ", "no key marker at end-1");
+        assert_eq!(buf[(41, 0)].symbol(), " ", "no key marker at end-1");
         assert_eq!(
-            buf[(40, 2)].symbol(),
+            buf[(40, 0)].symbol(),
             " ",
             "a blank before it: {:?}",
-            line(&buf, 2).concat()
+            line(&buf, 0).concat()
         );
         // (c) several long names still leave the end cells blank.
         let mut shot = Shot::new();
@@ -3737,10 +3759,10 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
         assert_eq!(
-            buf[(40, 2)].symbol(),
+            buf[(40, 0)].symbol(),
             " ",
             "the end cells stay blank: {:?}",
-            line(&buf, 2).concat()
+            line(&buf, 0).concat()
         );
         // (d) only needy rows outside the view contribute to the suffix.
         let mut shot = Shot::new();
@@ -3761,8 +3783,8 @@ mod tests {
             .collect();
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        assert_eq!(buf[(39, 2)].symbol(), "↓", "off-screen attention below");
-        assert_eq!(buf[(41, 2)].symbol(), " ", "no key marker");
+        assert_eq!(buf[(41, 0)].symbol(), "↓", "off-screen attention below");
+        assert_eq!(buf[(42, 0)].symbol(), " ", "no key marker");
     }
 
     /// Frame agents r20-r35: a seat's state is right-aligned at the
@@ -3796,7 +3818,7 @@ mod tests {
     }
 
     /// Frame many 160: a needy session's bar fills its own two rows and no
-    /// other (r8-r9 infra, r14-r15 billing, r18-r19 ops).
+    /// other (r5-r6 infra, r11-r12 billing, r15-r16 ops).
     #[test]
     fn a_needy_bar_covers_its_own_two_rows() {
         let mut shot = Shot::new();
@@ -3804,7 +3826,7 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
         let barred: Vec<u16> = (0..43).filter(|y| buf[(0, *y)].symbol() == "│").collect();
-        assert_eq!(barred, [8, 9, 14, 15, 18, 19]);
+        assert_eq!(barred, [5, 6, 11, 12, 15, 16]);
     }
 
     /// A long name uses its first line; counts remain below inside the rule.
@@ -3814,9 +3836,9 @@ mod tests {
         shot.fleet.rows = vec![row(&"n".repeat(60), 1, false)];
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        assert_eq!(line(&buf, 4)[6..42].concat(), "n".repeat(36));
-        assert!(line(&buf, 5)[6..42].concat().starts_with("●3 ✓B12"));
-        assert_eq!(buf[(44, 4)].symbol(), "│");
+        assert_eq!(line(&buf, 1)[6..42].concat(), "n".repeat(36));
+        assert!(line(&buf, 2)[6..42].concat().starts_with("●3 ✓B12"));
+        assert_eq!(buf[(44, 1)].symbol(), "│");
     }
 
     /// The home tag follows the name after two blanks, on that row alone;
@@ -3831,17 +3853,17 @@ mod tests {
         let tagged: Vec<u16> = (0..43)
             .filter(|y| sidebar(&buf, *y).contains("this window"))
             .collect();
-        assert_eq!(tagged, [4], "the home row alone");
+        assert_eq!(tagged, [1], "the home row alone");
         assert!(
-            sidebar(&buf, 4).starts_with("  ● 1 api  this window"),
+            sidebar(&buf, 1).starts_with("  ● 1 api  this window"),
             "{:?}",
-            sidebar(&buf, 4)
+            sidebar(&buf, 1)
         );
         for (cells, shown) in [(22, true), (23, false)] {
             let mut shot = Shot::new();
             shot.fleet.rows = vec![row(&"n".repeat(cells), 1, false)];
             shot.model = Model::new(&shot.fleet);
-            let first = sidebar(&shot.draw(160, 43, READ_ONLY), 4);
+            let first = sidebar(&shot.draw(160, 43, READ_ONLY), 1);
             assert_eq!(
                 first.contains("this window"),
                 shown,
@@ -3857,7 +3879,7 @@ mod tests {
         shot.fleet = frame_fleet();
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        for y in [5, 9] {
+        for y in [2, 6] {
             let cells = line(&buf, y);
             assert!(cells[6..42].concat().contains("a question"));
             assert_eq!(cells[42..44].concat(), "  ");
@@ -3942,21 +3964,21 @@ mod tests {
         }
     }
 
-    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 15
-    /// (two-row steps, four shown, the more row, tabs on 14). A press there
+    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 12
+    /// (two-row steps, four shown, the more row, tabs on 11). A press there
     /// moved nowhere keeps it; dragged up and back down past it, it stops on
-    /// 15, never 16.
+    /// 12, never 13.
     #[test]
     fn a_short_pane_keeps_its_undragged_list_rule_reachable() {
         let mut shot = sessions(13);
         let first = shot.draw(100, 20, READ_ONLY);
-        assert_eq!(horizontal(&first), Some(15), "the undragged rule");
-        let still = drag(&mut shot, &first, Edge::List, 15);
-        assert_eq!(horizontal(&still), Some(15), "a press moved nowhere");
-        let up = drag(&mut shot, &still, Edge::List, 12);
-        assert_eq!(horizontal(&up), Some(12));
-        let down = drag(&mut shot, &up, Edge::List, 19);
-        assert_eq!(horizontal(&down), Some(15), "never past the undragged rule");
+        assert_eq!(horizontal(&first), Some(12), "the undragged rule");
+        let still = drag(&mut shot, &first, Edge::List, 12);
+        assert_eq!(horizontal(&still), Some(12), "a press moved nowhere");
+        let up = drag(&mut shot, &still, Edge::List, 9);
+        assert_eq!(horizontal(&up), Some(9));
+        let down = drag(&mut shot, &up, Edge::List, 16);
+        assert_eq!(horizontal(&down), Some(12), "never past the undragged rule");
     }
 
     /// Ruling 5a: the list keeps one session's rows — two alone, two and the
@@ -3964,14 +3986,14 @@ mod tests {
     /// budget it had, the body taking the rows the frame gave back.
     #[test]
     fn a_dragged_list_keeps_one_session_and_its_row_budget() {
-        for (count, least) in [(1, 8), (2, 9), (13, 9)] {
+        for (count, least) in [(1, 5), (2, 6), (13, 6)] {
             let mut shot = sessions(count);
             let first = shot.draw(160, 45, READ_ONLY);
             let top = drag(&mut shot, &first, Edge::List, 0);
             assert_eq!(horizontal(&top), Some(least), "{count} sessions");
             let bottom = drag(&mut shot, &top, Edge::List, 44);
-            // Border 38: body rows 39 to 44, the pane's last.
-            assert_eq!(horizontal(&bottom), Some(38), "{count} sessions");
+            // Border 35: body rows 36 to 44, the pane's last.
+            assert_eq!(horizontal(&bottom), Some(35), "{count} sessions");
         }
     }
 
@@ -4054,12 +4076,12 @@ mod tests {
             })
         };
         for column in [43, 44, 45] {
-            assert_eq!(at(column, 1), Some((Edge::Sidebar, 44)), "column {column}");
+            assert_eq!(at(column, 0), Some((Edge::Sidebar, 44)), "column {column}");
         }
-        assert_eq!(at(46, 1), None);
-        assert_eq!(at(42, 1), None);
-        assert_eq!(at(43, 5), None, "a session row is a target");
-        assert_eq!(at(44, 5), Some((Edge::Sidebar, 44)));
+        assert_eq!(at(46, 0), None);
+        assert_eq!(at(42, 0), None);
+        assert_eq!(at(43, 2), None, "a session row is a target");
+        assert_eq!(at(44, 2), Some((Edge::Sidebar, 44)));
         for row in [rule - 1, rule, rule + 1] {
             assert_eq!(at(30, row), Some((Edge::List, rule)), "row {row}");
         }
@@ -4176,7 +4198,7 @@ mod tests {
         assert_eq!(marked(&buf, ">"), [first]);
         // Scrolled so the focused seat's name is gone, its first DRAWN row
         // takes the glyph.
-        let names: Vec<String> = (0..20).map(|n| format!("s{n:02}")).collect();
+        let names: Vec<String> = (0..24).map(|n| format!("s{n:02}")).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         shot.agents = Some(seat_facts(&names));
         shot.model.set_focus(None);
@@ -4379,14 +4401,14 @@ mod tests {
                 shot.fleet.home = Some("界api".to_owned());
                 shot.model = Model::new(&shot.fleet);
                 let (buf, layout) = declutter_frame(&shot, width, icons);
-                let name = declutter_line(&buf, &layout, 4);
-                let below = declutter_line(&buf, &layout, 5);
+                let name = declutter_line(&buf, &layout, 1);
+                let below = declutter_line(&buf, &layout, 2);
                 let counts = if icons { "●3 ✓B12" } else { "*3 +B12" };
                 assert!(name.contains("界 api") && name.contains("this window"));
                 assert!(!name.contains(counts), "counts belong below: {name:?}");
                 assert!(below.contains(counts), "{width}/{icons}: {below:?}");
                 assert!(!below.contains("goal"), "{below:?}");
-                for y in [4, 5] {
+                for y in [1, 2] {
                     for column in [0, super::NAME, layout.list.width - 1] {
                         assert!(
                             matches!(layout.hit(Mouse { kind: MouseKind::Click, column, row: y }), Some(super::Hit::Session(name)) if name == "界api")
@@ -4396,11 +4418,11 @@ mod tests {
                 }
                 shot.fleet.rows[0].line2 = Line2::NoGoal;
                 let (buf, layout) = declutter_frame(&shot, width, icons);
-                let below = declutter_line(&buf, &layout, 5);
+                let below = declutter_line(&buf, &layout, 2);
                 assert!(below.contains(counts) && !below.contains("goal"));
                 shot.fleet.rows[0].counts = Counts::Unknown;
                 let (buf, layout) = declutter_frame(&shot, width, icons);
-                assert!(declutter_line(&buf, &layout, 5).contains("agents ?"));
+                assert!(declutter_line(&buf, &layout, 2).contains("agents ?"));
             }
         }
     }
@@ -4430,15 +4452,20 @@ mod tests {
             (false, "# 9 @ 22+? * 12+? ! 3"),
         ] {
             let (buf, layout) = declutter_frame(&shot, 100, icons);
-            assert_eq!(declutter_line(&buf, &layout, 0).trim(), expected);
-            let cue = declutter_line(&buf, &layout, 2);
-            assert_eq!(cue.trim(), "↓");
+            let top = declutter_line(&buf, &layout, 0);
+            assert_eq!(
+                top.trim().strip_suffix('↓').map(str::trim_end),
+                Some(expected)
+            );
             shot.key(crate::app::model::Key::NextNeed);
             assert_eq!(shot.model.selected(), Some("s02"));
             shot.key(crate::app::model::Key::NextNeed);
             let (buf, layout) = declutter_frame(&shot, 100, icons);
-            let cue = declutter_line(&buf, &layout, 2);
-            assert_eq!(cue.trim(), "↑↓");
+            let top = declutter_line(&buf, &layout, 0);
+            assert_eq!(
+                top.trim().strip_suffix("↑↓").map(str::trim_end),
+                Some(expected)
+            );
             shot.key(crate::app::model::Key::Esc);
         }
         shot.fleet.rows.truncate(1);
@@ -4450,9 +4477,8 @@ mod tests {
             shot.fleet.rows[0].counts = counts;
             let (buf, layout) = declutter_frame(&shot, 100, false);
             assert_eq!(declutter_line(&buf, &layout, 0).trim(), expected);
-            assert!(declutter_line(&buf, &layout, 2).trim().is_empty());
             if matches!(shot.fleet.rows[0].counts, Counts::Marks(_)) {
-                assert!(declutter_line(&buf, &layout, 5).contains("no agents"));
+                assert!(declutter_line(&buf, &layout, 2).contains("no agents"));
             }
         }
     }
@@ -4486,8 +4512,11 @@ mod tests {
         shot.fleet.rows[1].counts = Counts::Unknown;
         let (buf, layout) = declutter_frame(&shot, 90, false);
         assert_eq!(
-            declutter_line(&buf, &layout, 0).trim(),
-            "# 130 @ 1150+? * 1000+? ! 100"
+            declutter_line(&buf, &layout, 0)
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            ["#", "130", "*", "1000+?", "!", "100", "↓"],
+            "the arrow takes two cells, so the agents count yields"
         );
     }
 
@@ -4512,7 +4541,7 @@ mod tests {
         ] {
             shot.fleet.rows[0].line2 = status;
             let (buf, layout) = declutter_frame(&shot, 90, true);
-            let below = declutter_line(&buf, &layout, 5);
+            let below = declutter_line(&buf, &layout, 2);
             assert!(below.contains(cue) && below.contains("✖12"), "{below:?}");
             assert!(
                 !below.contains("✓12") && !below.contains("·12"),
@@ -4546,9 +4575,9 @@ mod tests {
                 };
                 let (buf, layout) = declutter_frame(&shot, 90, icons);
                 assert_eq!(layout.list.width, 34, "the rendered cell budget");
-                assert_eq!(buf[(34, 5)].symbol(), "│");
+                assert_eq!(buf[(34, 2)].symbol(), "│");
                 assert_eq!(
-                    line(&buf, 5)[start..32].concat().trim_end(),
+                    line(&buf, 2)[start..32].concat().trim_end(),
                     expected.trim_end(),
                     "{icons}/{text}: cell/grapheme/whole-age budget"
                 );
@@ -4750,7 +4779,7 @@ mod tests {
             ]);
             let (buf, layout) = shot.laid(160, 43, READ_ONLY);
             assert_eq!(layout.list.width, 44, "36 cells for counts below the name");
-            assert_eq!(line(&buf, 5)[..45].concat(), format!("      {expected}  │"));
+            assert_eq!(line(&buf, 2)[..45].concat(), format!("      {expected}  │"));
         }
     }
 
@@ -4782,9 +4811,9 @@ mod tests {
             } else {
                 format!("  ● 1 {}  │", "n".repeat(36))
             };
-            assert_eq!(line(&buf, 4)[..45].concat(), expected, "stopped={stopped}");
-            assert_eq!(line(&buf, 4)[42..44].concat(), "  ");
-            assert_eq!(buf[(44, 5)].symbol(), "│");
+            assert_eq!(line(&buf, 1)[..45].concat(), expected, "stopped={stopped}");
+            assert_eq!(line(&buf, 1)[42..44].concat(), "  ");
+            assert_eq!(buf[(44, 2)].symbol(), "│");
         }
     }
 
@@ -4824,7 +4853,7 @@ mod tests {
         let layout =
             super::draw_with_layout(&shot.screen(READ_ONLY), super::Wait::default(), &mut buf);
         assert_eq!(layout.list.width, 32_775);
-        assert_eq!(line(&buf, 4)[32_763..32_776].concat(), "stopped 1m  │");
+        assert_eq!(line(&buf, 1)[32_763..32_776].concat(), "stopped 1m  │");
     }
 
     /// Clipping preserves original grapheme barriers, then appends one ellipsis.
@@ -4865,9 +4894,9 @@ mod tests {
                 };
                 let (buf, layout) = declutter_frame(&shot, 90, icons);
                 assert_eq!(layout.list.width, 34);
-                assert_eq!(buf[(34, 5)].symbol(), "│");
-                assert_eq!(line(&buf, 5)[10..32].concat(), expected, "{icons}/{text}");
-                assert_eq!(buf[(31, 5)].symbol(), "…");
+                assert_eq!(buf[(34, 2)].symbol(), "│");
+                assert_eq!(line(&buf, 2)[10..32].concat(), expected, "{icons}/{text}");
+                assert_eq!(buf[(31, 2)].symbol(), "…");
             }
         }
     }

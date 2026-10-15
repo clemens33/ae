@@ -781,7 +781,7 @@ fn session_card_click_leaves_write_mode_and_release() {
     let y = screen
         .lines()
         .enumerate()
-        .find_map(|(y, row)| (y >= 4 && row.split_whitespace().any(|w| w == rig.home)).then_some(y))
+        .find_map(|(y, row)| (y >= 1 && row.split_whitespace().any(|w| w == rig.home)).then_some(y))
         .expect("drawn home card");
     rig.raw(&pane, &format!("\x1b[<0;3;{}M", y + 1));
     rig.wait(&pane, "R-B5 clicked card leaves writing", |s| {

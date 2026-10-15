@@ -55,9 +55,12 @@ fn needy_arrows_survive_without_the_lone_key_marker() {
     app.fleet.home = Some("s0".into());
     app.model = model::Model::new(&app.fleet);
     let buf = frame(&mut app, 160, 43);
-    let attention: String = (0..44).map(|x| buf[(x, 2)].symbol()).collect();
+    let attention: String = (0..44).map(|x| buf[(x, 0)].symbol()).collect();
     assert!(attention.contains('↓'), "hidden needy row keeps its arrow");
-    assert!(!attention.contains('!'), "lone key marker removed");
+    assert!(
+        attention.trim_end().ends_with('↓'),
+        "lone key marker removed: nothing follows the arrow"
+    );
 }
 
 #[test]

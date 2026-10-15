@@ -1088,42 +1088,45 @@ fn app_draw_home_160x43() {
     // Fleet summary; the lone `!` key marker is gone.
     assert!(row_text(&buf, 0).contains("▣ 3 "), "counts sessions");
     assert_eq!(cell_at(&buf, 2, 0).fg, hex(palette.text));
-    assert!(side_text(&buf, 2, 40).is_empty(), "attention prose removed");
-    assert_eq!(cell_at(&buf, 41, 2).symbol(), " ");
-    // The selected home row: title name, dim window tag, counts below.
-    assert_eq!(cell_at(&buf, 2, 4).symbol(), Mark::Working.glyph(true));
-    assert_eq!(cell_at(&buf, 2, 4).fg, hex(palette.working));
-    assert_eq!(cell_at(&buf, 6, 4).symbol(), "a");
-    assert_eq!(cell_at(&buf, 7, 4).symbol(), "p");
-    assert_eq!(cell_at(&buf, 8, 4).symbol(), "i");
-    assert_eq!(cell_at(&buf, 6, 4).fg, hex(palette.title));
-    assert!(row_text(&buf, 4).contains("this window"));
-    assert!(side_text(&buf, 5, 44).ends_with("●3 ◔1 ✓2"), "counts below");
-    assert!(!row_text(&buf, 5).contains("Ship the v2 auth endpoints"));
-    assert_eq!(cell_at(&buf, 2, 7).symbol(), Mark::Working.glyph(true));
     assert!(
-        cell_at(&buf, 6, 7).modifier.contains(Modifier::BOLD),
+        !side_text(&buf, 0, 44).contains("Approve"),
+        "attention prose removed"
+    );
+    assert_eq!(cell_at(&buf, 41, 0).symbol(), " ");
+    // The selected home row: title name, dim window tag, counts below.
+    assert_eq!(cell_at(&buf, 2, 1).symbol(), Mark::Working.glyph(true));
+    assert_eq!(cell_at(&buf, 2, 1).fg, hex(palette.working));
+    assert_eq!(cell_at(&buf, 6, 1).symbol(), "a");
+    assert_eq!(cell_at(&buf, 7, 1).symbol(), "p");
+    assert_eq!(cell_at(&buf, 8, 1).symbol(), "i");
+    assert_eq!(cell_at(&buf, 6, 1).fg, hex(palette.title));
+    assert!(row_text(&buf, 1).contains("this window"));
+    assert!(side_text(&buf, 2, 44).ends_with("●3 ◔1 ✓2"), "counts below");
+    assert!(!row_text(&buf, 2).contains("Ship the v2 auth endpoints"));
+    assert_eq!(cell_at(&buf, 2, 4).symbol(), Mark::Working.glyph(true));
+    assert!(
+        cell_at(&buf, 6, 4).modifier.contains(Modifier::BOLD),
         "a calm name stays bold text"
     );
     // The needy row lights its edge and its mark, nothing else.
-    for y in [10, 11] {
+    for y in [7, 8] {
         assert_eq!(cell_at(&buf, 0, y).symbol(), "│", "edge row {y}");
         assert_eq!(cell_at(&buf, 0, y).fg, hex(palette.needs_you));
     }
-    assert_eq!(cell_at(&buf, 2, 10).symbol(), "⚠");
-    assert_eq!(cell_at(&buf, 2, 10).fg, hex(palette.needs_you));
-    assert!(row_text(&buf, 11).contains("Approve runner cost"));
+    assert_eq!(cell_at(&buf, 2, 7).symbol(), "⚠");
+    assert_eq!(cell_at(&buf, 2, 7).fg, hex(palette.needs_you));
+    assert!(row_text(&buf, 8).contains("Approve runner cost"));
     // The heading, rule, and the Agents body in order.
-    assert!(row_text(&buf, 13).contains("Agents 6"));
-    assert!(!row_text(&buf, 13).contains("Overview"));
-    assert!(cell_at(&buf, 2, 13).modifier.contains(Modifier::BOLD));
-    assert!(!side_text(&buf, 13, 44).ends_with("Tab"));
+    assert!(row_text(&buf, 10).contains("Agents 6"));
+    assert!(!row_text(&buf, 10).contains("Overview"));
+    assert!(cell_at(&buf, 2, 10).modifier.contains(Modifier::BOLD));
+    assert!(!side_text(&buf, 10, 44).ends_with("Tab"));
     assert_eq!(
-        side_text(&buf, 14, 44),
+        side_text(&buf, 11, 44),
         "─".repeat(44),
         "the heading rule spans the sidebar"
     );
-    let body: Vec<String> = (15..29).map(|y| row_text(&buf, y)).collect();
+    let body: Vec<String> = (12..26).map(|y| row_text(&buf, y)).collect();
     let at = |needle: &str| {
         body.iter()
             .position(|row| row.contains(needle))
@@ -1326,12 +1329,12 @@ fn app_draw_theme_off_is_plain() {
         assert_eq!(cell.fg, Color::Reset, "no foreground anywhere");
         assert_eq!(cell.bg, Color::Reset, "no ground anywhere");
     }
-    let name = cell_at(&buf, 6, 4);
+    let name = cell_at(&buf, 6, 1);
     assert!(name.modifier.contains(Modifier::BOLD));
     assert!(name.modifier.contains(Modifier::REVERSED));
     assert!(cell_at(&buf, 47, 0).modifier.contains(Modifier::BOLD));
-    assert_eq!(cell_at(&buf, 0, 10).symbol(), "│");
-    assert_eq!(cell_at(&buf, 2, 10).symbol(), "⚠");
+    assert_eq!(cell_at(&buf, 0, 7).symbol(), "│");
+    assert_eq!(cell_at(&buf, 2, 7).symbol(), "⚠");
 }
 
 /// The 100x28 shape: a 34-wide sidebar, one line per item,
@@ -1587,12 +1590,15 @@ fn app_draw_next_need_scrolls_into_view() {
         now: now(),
     };
     let list_holds =
-        |buf: &Buffer, name: &str| (4..15).any(|y| side_text(buf, y, 44).contains(name));
+        |buf: &Buffer, name: &str| (1..12).any(|y| side_text(buf, y, 44).contains(name));
     {
         let mut buf = Buffer::empty(Rect::new(0, 0, 160, 30));
         draw(&screen, &mut buf);
         assert!(!list_holds(&buf, "s7"), "below the fold at first");
-        assert_eq!(side_text(&buf, 2, 44).trim(), "↓", "off-screen cue");
+        assert!(
+            side_text(&buf, 0, 44).trim_end().ends_with('↓'),
+            "off-screen cue"
+        );
     }
     let _ = model.key(AppKey::NextNeed, &fleet, true);
     assert_eq!(model.selected(), Some("s7"));

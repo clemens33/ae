@@ -4213,7 +4213,7 @@ mod tests {
         let cards = |shown: &str| -> Vec<(usize, u8)> {
             let name = |w: &str| w.strip_prefix('n')?.parse().ok();
             let card = |(y, l): (usize, &str)| Some((y, l.split_whitespace().find_map(name)?));
-            shown.lines().enumerate().skip(4).filter_map(card).collect()
+            shown.lines().enumerate().skip(1).filter_map(card).collect()
         };
         let first = cards(&framed(&mut app));
         let row = u16::try_from(first.last().expect("drawn cards").0).expect("row");
