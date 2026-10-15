@@ -491,7 +491,7 @@ the same grace, frame and hold rules, one seat a cycle: the trigger journals
 trigger writes with no attempt before it (nothing usable) counts as a closing
 too. Three closings in all (`MAX_ROUNDS`, so at most six attempts per key) end
 the path: the daemon journals `auto-reseat-held` (`ref` the key) with
-`held: gave up after repeated refused or failed moves` once, tells the lead pair
+`other: held: gave up after repeated refused or failed moves` once, tells the lead pair
 and the spawner as it tells every ending, and a restarted daemon reads the hold
 back and says nothing more. An `auto-reseat-done` is final whenever it lands, and
 an `alert-cleared` or a `spawn` still starts a new episode with a fresh count.
@@ -581,7 +581,8 @@ node of the wrong kind, or a place ae could not archive into),
 `carry-unreadable` (any other carry refusal), `busy` (a running turn, a draft, a
 prompt, human input), `unknown-frame` (ae cannot prove the frame idle), `lock`
 (another writer holds the lifecycle or send lock), `no-candidate`, `ineligible`
-(the operator's rules say this seat does not move) and `other`. `busy` and
+(the operator's rules say this seat does not move) and `other` (the rest, and the
+give-up hold of a spent limit episode). `busy` and
 `lock` are the transient classes: their record is a hold, every other class a
 refusal. `ae reseat` itself prints its messages unchanged.
 

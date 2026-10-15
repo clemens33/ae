@@ -88,7 +88,7 @@ pub enum CauseClass {
     NoCandidate,
     /// The seat may not be moved by auto reseat at all.
     Ineligible,
-    /// Every other refusal, and every failure.
+    /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
 
@@ -149,7 +149,7 @@ pub const RETRY_COOLDOWN_SECS: i64 = 1800;
 pub const MAX_ROUNDS: u8 = 3;
 /// The hold the daemon journals, once, when the last round was refused or
 /// failed: no further attempt, and the seat is told.
-pub const GAVE_UP_SUMMARY: &str = "held: gave up after repeated refused or failed moves";
+pub const GAVE_UP_SUMMARY: &str = "other: held: gave up after repeated refused or failed moves";
 /// How long an attempt may run before its failure is booked without it.
 pub const IN_FLIGHT_SECS: i64 = 180;
 /// The grace a limit is given before the seat is moved.
@@ -1513,6 +1513,18 @@ pub enum Ending<'a> {
     GaveUp,
 }
 
+impl Ending<'_> {
+    /// The cause class that leads the notice; a move has none.
+    const fn class(&self) -> Option<CauseClass> {
+        match self {
+            Self::Moved(_) => None,
+            Self::Held(class, _) | Self::Refused(class, _) | Self::Failed(class, _) => Some(*class),
+            Self::Unmapped(_) => Some(CauseClass::NoCandidate),
+            Self::GaveUp => Some(CauseClass::Other),
+        }
+    }
+}
+
 /// What a move changed, as its notice names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Move<'a> {
@@ -1562,13 +1574,7 @@ fn gave_up_line(agent: &str, hand: &str) -> String {
 pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
     // The class of a hold, refusal or failure leads the notice, ahead of the
     // agent and session names, so no cut of what follows can take it.
-    let class = match ending {
-        Ending::Moved(_) | Ending::GaveUp => None,
-        Ending::Held(class, _) | Ending::Refused(class, _) | Ending::Failed(class, _) => {
-            Some(*class)
-        }
-        Ending::Unmapped(_) => Some(CauseClass::NoCandidate),
-    };
+    let class = ending.class();
     let hand = format!("move it by hand (ae reseat {session} {agent} --using <profile>)");
     let line = match ending {
         Ending::Moved(moved) => format!(
@@ -3866,7 +3872,10 @@ mod tests {
     #[test]
     fn the_give_up_notice_names_the_step_the_human_takes() {
         let line = notice(SESSION, AGENT, &Ending::GaveUp);
-        assert!(line.starts_with("auto reseat: builder not moved"), "{line}");
+        assert!(
+            line.starts_with("auto reseat: other: builder not moved"),
+            "{line}"
+        );
         assert!(line.contains("gave up"), "{line}");
         assert!(
             line.ends_with(
@@ -3875,5 +3884,19 @@ mod tests {
             "{line}"
         );
         assert!(line.chars().count() <= NOTICE_CHARS, "{line}");
+    }
+
+    /// The hold the daemon journals for the give-up leads with its cause class
+    /// like every other hold, so a clip of the notice that quotes it keeps the cause.
+    #[test]
+    fn the_give_up_hold_leads_with_its_cause_class() {
+        assert_eq!(
+            GAVE_UP_SUMMARY,
+            "other: held: gave up after repeated refused or failed moves"
+        );
+        assert_eq!(
+            CauseClass::Other.details(GAVE_UP_SUMMARY),
+            "held: gave up after repeated refused or failed moves"
+        );
     }
 }
