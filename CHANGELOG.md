@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.80] - 2026-10-15
+- Imgpaste spec: snapshot messages/ only after the ask is journaled
+- Chatperf test: prove the body identity moved before asserting the re-read
+- The session list starts on the row under the summary; the needy arrows move onto the summary row, the freed rows go to the tab body
+- Console_command builds again and models ^V, ^W, ^K, ^Y and Opt+Backspace
+- Chat and app composer: pasted images and files become [Image #N] and [File: name] tokens
+- Declare the imgtoken spec module before the test module
+
 ## [v2026.10.79] - 2026-10-15
 - A reseat does not change the lead pair, only slots and names do
 
