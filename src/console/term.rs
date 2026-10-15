@@ -278,6 +278,7 @@ impl Term {
     fn take(&mut self, console: &Console, reading: Reading) -> Vec<Effect> {
         let was = self.input.taking();
         let mut effects = self.input.tick(reading, Instant::now());
+        crate::clipboard::sweep(&mut self.input);
         if !was && self.input.taking() {
             effects.extend(self.input.restore(submit::restore(&console.dir)));
         }
@@ -310,6 +311,7 @@ impl Term {
             Got::Ended => self.input.closed(),
             Got::Due => return None,
         };
+        crate::clipboard::sweep(&mut self.input);
         let act = |effect| match effect {
             Effect::ImagePaste => {
                 if self.owned(console).is_ok()

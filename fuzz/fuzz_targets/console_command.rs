@@ -62,6 +62,25 @@ fn effects(kept: &[u8], stream: &[u8], chunk: usize, at: Instant, size: Size) ->
     (taken, line, view)
 }
 
+/// [`effects`] through the app's decoder: the keys it decodes are handed to the
+/// input as they come, so a paste arrives as one fragment per read.
+fn app_effects(kept: &[u8], stream: &[u8], chunk: usize, at: Instant, size: Size) -> Taken {
+    let mut input = Input::new(vec!["lead".to_owned(), "colead".to_owned()]);
+    let _ = input.tick(Reading::Owner, at);
+    let draft = if kept.is_empty() {
+        Draft::Nothing
+    } else {
+        Draft::Kept(kept.to_vec())
+    };
+    let mut taken = input.restore(draft);
+    let mut decoder = input::Keys::app();
+    for read in stream.chunks(chunk) {
+        taken.extend(input.keyed(decoder.feed(read, at)));
+    }
+    taken.extend(input.keyed(decoder.idle(at + input::ESC_IDLE)));
+    (taken, input.line(), input.view(size))
+}
+
 /// Panics unless `out` is printable text, line breaks and the few sequences
 /// the composer draws with: autowrap and bracketed paste switches, relative
 /// moves up or down, clear, and the cursor save and restore.
@@ -107,13 +126,27 @@ fn assert_view(view: &View, size: Size) {
     assert!(view.rows[view.cursor_row].starts_with(&view.before));
 }
 
-/// Where each unit of `bytes` ends, 0 first: a character, or one byte that is
-/// not UTF-8.
+/// The byte that begins an attachment atom in the model's draft: `0xFF` and
+/// then `0x80 + n`, an index into the model's table of wire texts. No outside
+/// byte is ever `0xFF` (it enters as U+FFFD), so the pair is never forged.
+const ATOM: u8 = 0xFF;
+
+/// Where each unit of `bytes` ends, 0 first: a character, one byte that is
+/// not UTF-8, or one whole attachment atom.
 fn unit_ends(bytes: &[u8]) -> Vec<usize> {
     let (mut ends, mut from) = (vec![0], 0);
     while from < bytes.len() {
-        let (upto, bad) = match std::str::from_utf8(&bytes[from..]) {
-            Ok(_) => (bytes.len(), false),
+        if bytes[from] == ATOM {
+            from += 2;
+            ends.push(from);
+            continue;
+        }
+        let stop = bytes[from..]
+            .iter()
+            .position(|&byte| byte == ATOM)
+            .map_or(bytes.len(), |at| from + at);
+        let (upto, bad) = match std::str::from_utf8(&bytes[from..stop]) {
+            Ok(_) => (stop, false),
             Err(why) => (from + why.valid_up_to(), true),
         };
         let valid = std::str::from_utf8(&bytes[from..upto]).unwrap_or_default();
@@ -130,6 +163,84 @@ fn unit_ends(bytes: &[u8]) -> Vec<usize> {
     ends
 }
 
+/// `bytes` from outside the draft: the byte that begins an atom becomes U+FFFD.
+fn safe(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for &byte in bytes {
+        if byte == ATOM {
+            out.extend_from_slice("\u{fffd}".as_bytes());
+        } else {
+            out.push(byte);
+        }
+    }
+    out
+}
+
+/// The length of the attachment token `text` begins with, written out from
+/// the grammar: `[Image #N: "<path>"]` with N 1..=999999 and no leading zero,
+/// or `[File: "<path>"]`, the path absolute, at most 4096 bytes, with no `"`
+/// and no control character.
+fn token_len(text: &str) -> Option<usize> {
+    let rest = text.strip_prefix('[')?;
+    let body = if let Some(number) = rest.strip_prefix("Image #") {
+        let digits = number.bytes().take_while(u8::is_ascii_digit).count();
+        if !(1..=6).contains(&digits) || number.starts_with('0') {
+            return None;
+        }
+        number[digits..].strip_prefix(": \"")?
+    } else {
+        rest.strip_prefix("File: \"")?
+    };
+    let end = body.find('"')?;
+    let path = &body[..end];
+    let after = body[end + 1..].strip_prefix(']')?;
+    let fits = path.starts_with('/') && path.len() <= 4096 && !path.chars().any(char::is_control);
+    fits.then(|| text.len() - after.len())
+}
+
+/// A draft's bytes with each well-formed token in `line` turned into one atom,
+/// its wire text pushed on `table`; past 32 held it stays text. `line` is
+/// outside text, so the atom byte is made safe first.
+fn atomize(line: &[u8], table: &mut Vec<Vec<u8>>) -> Vec<u8> {
+    let line = safe(line);
+    let mut out = Vec::with_capacity(line.len());
+    for chunk in line.utf8_chunks() {
+        let valid = chunk.valid();
+        let mut at = 0;
+        while at < valid.len() {
+            let len = token_len(&valid[at..]).filter(|_| table.len() < 32);
+            if let Some(len) = len {
+                let index = u8::try_from(table.len()).unwrap_or(0);
+                out.extend_from_slice(&[ATOM, 0x80 + index]);
+                table.push(valid.as_bytes()[at..at + len].to_vec());
+                at += len;
+            } else {
+                let ch = valid[at..].chars().next().map_or(1, char::len_utf8);
+                out.extend_from_slice(&valid.as_bytes()[at..at + ch]);
+                at += ch;
+            }
+        }
+        out.extend_from_slice(chunk.invalid());
+    }
+    out
+}
+
+/// The line a draft is sent as: every atom as its wire text.
+fn resolve(draft: &[u8], table: &[Vec<u8>]) -> Vec<u8> {
+    let mut line = Vec::with_capacity(draft.len());
+    let mut at = 0;
+    while at < draft.len() {
+        if draft[at] == ATOM {
+            line.extend_from_slice(&table[usize::from(draft[at + 1] - 0x80)]);
+            at += 2;
+        } else {
+            line.push(draft[at]);
+            at += 1;
+        }
+    }
+    line
+}
+
 /// Where the word before the cursor begins in `head`: blanks skipped, then its
 /// bytes. A big word (^W) is any run without whitespace; the other
 /// (Opt+Backspace) is letters, digits and non-ASCII bytes.
@@ -143,7 +254,16 @@ fn word_start(head: &[u8], big: bool) -> usize {
     };
     let blanks = head.iter().rev().take_while(|byte| !word(byte)).count();
     let kept = &head[..head.len() - blanks];
-    kept.len() - kept.iter().rev().take_while(|byte| word(byte)).count()
+    // An attachment atom is a word of its own, and no word runs through one.
+    let atom_ends = |end: usize| end >= 2 && kept[end - 2] == ATOM;
+    if atom_ends(kept.len()) {
+        return kept.len() - 2;
+    }
+    let mut start = kept.len();
+    while start > 0 && word(&kept[start - 1]) && !atom_ends(start) {
+        start -= 1;
+    }
+    start
 }
 
 /// The lines Enter enters when an owning console that restored `kept` is sent
@@ -158,7 +278,9 @@ fn word_start(head: &[u8], big: bool) -> usize {
 /// to the draft, like the put-back, and may enter again on a later CR.
 fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
     const CLOSE: &[u8] = b"\x1b[201~";
-    let (mut draft, mut cursor) = (kept.to_vec(), kept.len());
+    let mut table = Vec::new();
+    let mut draft = atomize(kept, &mut table);
+    let mut cursor = draft.len();
     let mut slot: Vec<u8> = Vec::new();
     let (mut lines, mut pasting, mut at) = (Vec::new(), false, 0);
     let mut skip = false;
@@ -178,6 +300,7 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
                     folded.push(if byte == b'\r' { b'\n' } else { byte });
                 }
             }
+            let folded = safe(&folded);
             draft.splice(cursor..cursor, folded.iter().copied());
             cursor += folded.len();
             let Some(n) = close else { break };
@@ -271,18 +394,20 @@ fn entered(kept: &[u8], stream: &[u8]) -> Vec<Vec<u8>> {
                 }
             }
             b"\r" if !draft.is_empty() => {
-                let line = std::mem::take(&mut draft);
-                slot.clear();
+                let line = resolve(&std::mem::take(&mut draft), &table);
+                (slot, table) = (Vec::new(), Vec::new());
                 lines.push(line.clone());
                 if refused_line(&line) {
-                    cursor = line.len();
-                    draft = line;
+                    // The put-back reads the line as a kept draft would be.
+                    draft = atomize(&line, &mut table);
+                    cursor = draft.len();
                 } else {
                     cursor = 0;
                 }
             }
             b"\r" => {}
             text => {
+                let text = safe(text);
                 draft.splice(at_text..at_text, text.iter().copied());
                 cursor = at_text + text.len();
             }
@@ -350,6 +475,12 @@ fuzz_target!(|data: &[u8]| {
         effects(kept, stream, chunk, at, size),
         (whole.clone(), line.clone(), view.clone())
     );
+    // The app's decoder hands the input a paste in as many fragments as the
+    // terminal read it in; the draft it leaves must be the same for any split.
+    assert_eq!(
+        app_effects(kept, stream, chunk, at, size),
+        app_effects(kept, stream, stream.len().max(1), at, size)
+    );
     let pair = ["lead".to_owned(), "colead".to_owned()];
     let mut speaker = "lead".to_owned();
     for effect in &whole {
@@ -415,7 +546,8 @@ fuzz_target!(|data: &[u8]| {
     // The same stream, closed with a paste end and Enter, enters exactly the lines
     // an independent copy of the key table and editor says, one effect each.
     let full = [stream, b"\x1b[201~\r"].concat();
-    if kept.len() + full.len() <= input::CAP {
+    // A stray 0xFF grows to three bytes, so the model is held well inside the cap.
+    if (kept.len() + full.len()) * 3 <= input::CAP {
         let (all, _, _) = effects(kept, &full, chunk, at, size);
         let lines = entered(kept, &full);
         let after: Vec<_> = (all.iter().skip(usize::from(!kept.is_empty())))

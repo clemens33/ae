@@ -2016,7 +2016,7 @@ fn settings_body(
 const WRITE_KEYS: [(&str, &str); 20] = [
     ("Enter", "send the line"),
     ("Alt+Enter ^J", "new line in the draft"),
-    ("^V", "insert a clipboard PNG path"),
+    ("^V", "attach a clipboard PNG"),
     ("Esc", "keep the draft, browse"),
     ("^C", "clear a draft; an empty one quits at once"),
     ("^C", "just after a clear: arms; again in 2 s quits"),

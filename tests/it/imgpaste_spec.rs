@@ -1,5 +1,5 @@
 //! Frozen imgpaste acceptance (#228): Ctrl+V saves the clipboard image into
-//! the written session's `messages/` and inserts its path at the cursor; sent never.
+//! the written session's `messages/` and inserts an atomic token; Enter sends its reference.
 //! Fake clipboard: `AE_TEST_CLIPBOARD_TOOL` names a symlink to the rig script;
 //! a mode file picks the outcome, removing the target is the missing tool.
 #![allow(
@@ -161,7 +161,7 @@ fn until(why: &str, mut met: impl FnMut() -> bool) {
 }
 
 #[test]
-fn ctrl_v_in_the_app_composer_inserts_the_saved_path_and_refusals_keep_the_draft() {
+fn ctrl_v_in_the_app_composer_inserts_a_token_and_refusals_keep_the_draft() {
     let rig = Rig::new("imgapp", true);
     let pane = rig.open();
     let composer = format!("to {}", rig.name);
@@ -174,9 +174,9 @@ fn ctrl_v_in_the_app_composer_inserts_the_saved_path_and_refusals_keep_the_draft
     rig.keys(&pane, &["Left"]);
     rig.keys(&pane, &["C-v"]);
     let (first, path) = rig.image(1);
-    let screen = rig.wait(&pane, WAIT, "path shown", |s| s.contains(&first));
+    let screen = rig.wait(&pane, WAIT, "token shown", |s| s.contains("[Image #1]"));
     assert!(
-        screen.contains(&format!("a {} b", path.display())),
+        screen.contains("a [Image #1] b") && !screen.contains(&path.display().to_string()),
         "spaced: {screen}"
     );
     assert!(
@@ -205,7 +205,7 @@ fn ctrl_v_in_the_app_composer_inserts_the_saved_path_and_refusals_keep_the_draft
     assert_eq!(rig.entries(), kept, "a missing tool writes nothing");
     rig.write_clip();
     rig.wait(&pane, WAIT, "refusals keep the draft", |s| {
-        s.contains(&first)
+        s.contains("[Image #1]")
     });
 
     // A hung tool never freezes the UI: a typed char is drawn while the
@@ -214,7 +214,7 @@ fn ctrl_v_in_the_app_composer_inserts_the_saved_path_and_refusals_keep_the_draft
     rig.keys(&pane, &["C-v"]);
     rig.keys(&pane, &["-l", "Z"]);
     let timed = "paste not taken: clipboard read timed out";
-    let typed = format!("{first} Zb");
+    let typed = "[Image #1] Zb".to_owned();
     let screen = rig.wait(&pane, WAIT, "typing drawn mid-read", |s| s.contains(&typed));
     assert!(
         !screen.contains(timed),
@@ -236,15 +236,17 @@ fn ctrl_v_in_the_owner_chat_inserts_and_only_enter_sends() {
     rig.keys(&pane, &["-l", "look"]);
     fs::write(rig.root.join("clip-mode"), "png").expect("clipboard mode");
     rig.keys(&pane, &["C-v"]);
-    let (name, path) = rig.image(1);
-    rig.wait(&pane, WAIT, "path shown", |s| s.contains(&name));
+    let (_, path) = rig.image(1);
+    rig.wait(&pane, WAIT, "token shown", |s| {
+        s.contains("look [Image #1]")
+    });
     assert!(
         !rig.tool.events().contains("\"ask\""),
         "Ctrl+V sends nothing"
     );
 
     rig.keys(&pane, &["Enter"]);
-    let body = path.display().to_string();
+    let body = format!("[Image #1: \"{}\"]", path.display());
     until("the ask body carries the path", || {
         rig.entries()
             .into_iter()
@@ -271,4 +273,59 @@ fn ctrl_v_in_the_owner_chat_inserts_and_only_enter_sends() {
         "the draft is kept: {screen}"
     );
     assert_eq!(rig.entries(), kept, "a refusal writes nothing");
+}
+
+#[test]
+fn imgtoken_app_and_chat_release_deleted_images_keep_undo_and_transfer_on_send() {
+    for (tag, app) in [("tokreleaseapp", true), ("tokreleasechat", false)] {
+        let rig = Rig::new(tag, app);
+        let pane = rig.open();
+        if app {
+            let composer = format!("to {}", rig.name);
+            rig.wait(&pane, WAIT, "composer", |s| s.contains(&composer));
+            rig.keys(&pane, &["i"]);
+            rig.wait(&pane, WAIT, "writing", crate::app_mode::writing);
+        } else {
+            rig.wait(&pane, WAIT, "owner prompt", |s| s.contains("to lead>"));
+        }
+        fs::write(rig.root.join("clip-mode"), "png").expect("clipboard mode");
+        rig.keys(&pane, &["C-v"]);
+        let (_, first) = rig.image(1);
+        rig.wait(&pane, WAIT, "first token", |s| s.contains("[Image #1]"));
+        rig.keys(&pane, &["C-u"]);
+        // ^Y proves the clear was processed, not just that the file survived
+        // while terminal input was still queued.
+        rig.keys(&pane, &["C-y"]);
+        rig.wait(&pane, WAIT, "restored token", |s| s.contains("[Image #1]"));
+        assert!(first.exists(), "undo retains the referenced file");
+        rig.keys(&pane, &["BSpace"]);
+        until(
+            "deleting the restored token releases its owned file",
+            || !first.exists(),
+        );
+        rig.keys(&pane, &["C-v"]);
+        let (_, second) = rig.image(1);
+        rig.wait(&pane, WAIT, "second token", |s| s.contains("[Image #1]"));
+        rig.keys(&pane, &["C-u"]);
+        rig.keys(&pane, &["-l", "replacement"]);
+        rig.keys(&pane, &["C-u"]);
+        until("replacing the undo slot releases its old image", || {
+            !second.exists()
+        });
+        rig.keys(&pane, &["C-v"]);
+        let (_, third) = rig.image(1);
+        rig.wait(&pane, WAIT, "third token", |s| s.contains("[Image #1]"));
+        rig.keys(&pane, &["Enter"]);
+        let wire = format!("[Image #1: \"{}\"]", third.display());
+        until("stored body preserves resolved path", || {
+            rig.entries().into_iter().any(|(_, path)| {
+                path != third && fs::read_to_string(path).is_ok_and(|body| body.contains(&wire))
+            })
+        });
+        assert!(
+            third.exists(),
+            "Enter transfers the file to message history"
+        );
+        rig.wait(&pane, WAIT, "history marker", |s| s.contains("[Image #1]"));
+    }
 }

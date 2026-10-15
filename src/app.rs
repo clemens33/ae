@@ -872,7 +872,7 @@ impl App {
         let dropped: Vec<_> = (self.inputs.extract_if(.., |key, _| gone(key).is_some()))
             .filter_map(|(key, input)| Some((gone(&key)?, key, input)))
             .collect();
-        for (why, key, input) in dropped {
+        for (why, key, mut input) in dropped {
             if self.writer.as_ref().is_some_and(|w| w.key() == key) {
                 self.write(false);
                 self.held = Some(why.to_owned());
@@ -881,6 +881,8 @@ impl App {
             if !input.draft().is_empty() {
                 self.notice(&key.0, format!("draft for {} dropped: {why}", key.0));
             }
+            input.vacate();
+            crate::clipboard::sweep(&mut input);
         }
         self.settle_keep(read.scanned);
         if self.model.selected().is_none() {
@@ -2095,6 +2097,7 @@ impl App {
     /// A frame's debts, settled together: the copy it shipped and the asks
     /// that waited for it. Neither skips the other; whether a frame is due.
     fn owed(&mut self) -> bool {
+        self.inputs.values_mut().for_each(crate::clipboard::sweep);
         self.shipped() | self.deliver() | self.unpark() | self.image_ready()
     }
 
@@ -3945,7 +3948,7 @@ mod tests {
                 );
                 assert!(app.clipboard.is_none());
                 if success {
-                    assert_eq!(drafted(&app), format!("kept {}", path.display()));
+                    assert_eq!(drafted(&app), "kept [Image #1]");
                     assert!(app.flash.is_none());
                 } else {
                     assert_eq!(drafted(&app), "kept");
@@ -3956,7 +3959,7 @@ mod tests {
                 }
                 let frame = framed(&mut app);
                 assert!(frame.contains(if success {
-                    "img-pin.png"
+                    "[Image #1]"
                 } else {
                     "paste not taken: clipboard tool failed"
                 }));
@@ -9257,5 +9260,59 @@ mod tests {
         let shown = framed(&mut cold);
         assert!(shown.contains("quota: unavailable"), "{shown}");
         assert!(!shown.contains("refresh failed"), "{shown}");
+    }
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test inspects its own fixture files"
+    )]
+    fn imgtoken_fleet_discard_releases_owned_images_but_kept_drafts_and_user_files_survive() {
+        use std::fs;
+
+        for replaced in [false, true] {
+            let root = Root::new("imgtoken-discard");
+            let (mut app, _reader) = housed(&root);
+            writing(&mut app);
+            let owned = root.0.join("owned.png");
+            let user = root.0.join("user.pdf");
+            fs::write(&owned, b"owned fixture").unwrap();
+            fs::write(&user, b"pre-existing user file").unwrap();
+            let key = app.writer.as_ref().unwrap().key();
+            let input = app.inputs.get_mut(&key).unwrap();
+            input.image_path(owned.to_str().unwrap()).unwrap();
+            input.restore(crate::console::submit::Draft::Kept(
+                format!(" [File: \"{}\"]", user.display()).into_bytes(),
+            ));
+            app.write(false);
+            assert!(owned.exists(), "Esc keeps its draft and image");
+            assert!(app.inputs.contains_key(&key));
+            assert!(app.inputs.get(&key).unwrap().draft().contains("[Image #1]"));
+            let mut unread = read_of(&app, &[]);
+            unread.scanned = false;
+            app.answer(Answer::Fleet(unread));
+            assert!(app.inputs.contains_key(&key), "incomplete read keeps draft");
+            assert!(app.inputs.get(&key).unwrap().draft().contains("[Image #1]"));
+            assert!(owned.exists(), "uncertain incarnation keeps owned image");
+            let ids = if replaced {
+                vec![("api", "replacement-id")]
+            } else {
+                Vec::new()
+            };
+            let complete = read_of(&app, &ids);
+            app.answer(Answer::Fleet(complete));
+            assert!(
+                !app.inputs.contains_key(&key),
+                "complete proof discards draft"
+            );
+            assert!(
+                !owned.exists(),
+                "discarded owned image released: replaced={replaced}"
+            );
+            assert_eq!(
+                fs::read(&user).unwrap(),
+                b"pre-existing user file",
+                "unowned file untouched"
+            );
+        }
     }
 }

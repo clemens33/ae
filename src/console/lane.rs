@@ -303,6 +303,9 @@ fn console_items(
                             gap = adopt(body(event), &mut text, &what, gaps, over);
                         }
                     }
+                    // The stored body keeps each attachment's path; the row
+                    // shows its label.
+                    text = crate::token::collapse(&text);
                     Kind::Asked {
                         to,
                         id,

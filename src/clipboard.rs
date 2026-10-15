@@ -41,6 +41,14 @@ pub(crate) fn finish(
     inserted
 }
 
+/// Remove the images a draft saved and no longer holds a token of. A send
+/// transfers an image to the history instead, and a missing file is no error.
+pub(crate) fn sweep(input: &mut crate::console::input::Input) {
+    for path in input.take_released() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn fetch(dir: &Path) -> Answer {
     let bytes = crate::transport::run_clipboard_image()?;
     if bytes.is_empty() {

@@ -2,12 +2,14 @@
 //! line to a command, and the step machine that says what each act does. The
 //! reads, the tmux readings and the writes live in `console::term`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use super::needs::SeatRef;
 use super::submit::{Draft, Outcome};
 use super::view::{Style, Styled};
 use crate::board::terminal_text;
+use crate::token::{self, Kind};
 
 /// The most bytes one composed line holds: the draft file's own cap.
 pub const CAP: usize = 65_536;
@@ -385,17 +387,141 @@ pub enum Entered {
 /// over — later bytes are dropped and Enter refuses — until ^U clears it. The
 /// text a clear or a kill last took waits in `cleared` until ^Y puts it back or a
 /// send ends the draft.
+///
+/// An attachment is an atom in the bytes: [`token::RESERVED`] and then
+/// `0x80 + slot`, two bytes the cursor never splits and one erase takes whole.
+/// No outside byte is ever the reserved one (it enters as U+FFFD), so no read
+/// split or erase can forge an atom. `refs` says what each slot stands for;
+/// the line length the cap judges counts an atom as the wire text it sends as.
 #[derive(Debug, Default)]
 pub struct Composer {
     bytes: Vec<u8>,
     cursor: usize,
     over: bool,
     cleared: Vec<u8>,
+    refs: BTreeMap<u8, Attachment>,
+    /// Paths of owned attachments whose last atom left the draft, until taken.
+    released: Vec<String>,
+    /// The bracketed paste being read, while nothing else has touched the draft.
+    paste: Option<PasteRun>,
+}
+
+/// A bracketed paste read fragment by fragment. Each fragment judges the
+/// WHOLE paste again, so the draft is the same however the reads split it;
+/// any other change to the draft ends the run, and a fragment after that
+/// starts a new one.
+#[derive(Debug)]
+struct PasteRun {
+    origin: Instant,
+    /// Where the run's shown bytes begin in the draft, and how many there are.
+    start: usize,
+    shown: usize,
+    /// Every byte of the paste so far.
+    raw: Vec<u8>,
+    /// What is shown is attachment tokens rather than the paste's own text.
+    tokens: bool,
+    /// Past the size a list of paths can be: the paste stays text.
+    plain: bool,
+}
+
+/// What one attachment slot stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Attachment {
+    kind: Kind,
+    path: String,
+    /// Minted here from a file ae saved: released when its last atom is gone.
+    owned: bool,
+}
+
+/// The slot an atom at `bytes[at..]` names.
+fn atom_at(bytes: &[u8], at: usize) -> Option<u8> {
+    let (first, second) = (*bytes.get(at)?, *bytes.get(at + 1)?);
+    let slot = second.checked_sub(0x80)?;
+    (first == token::RESERVED && usize::from(slot) < token::SLOTS).then_some(slot)
+}
+
+/// `bytes` as runs of text and single atoms: start, end, and the slot of an atom.
+fn parts(bytes: &[u8]) -> Vec<(usize, usize, Option<u8>)> {
+    let mut parts = Vec::new();
+    let (mut from, mut at) = (0, 0);
+    while at < bytes.len() {
+        let Some(slot) = atom_at(bytes, at) else {
+            at += 1;
+            continue;
+        };
+        if from < at {
+            parts.push((from, at, None));
+        }
+        parts.push((at, at + 2, Some(slot)));
+        (from, at) = (at + 2, at + 2);
+    }
+    if from < bytes.len() {
+        parts.push((from, bytes.len(), None));
+    }
+    parts
+}
+
+/// The lowest slot no attachment in `refs` holds.
+fn open_slot(refs: &BTreeMap<u8, Attachment>) -> Option<u8> {
+    (0..)
+        .take(token::SLOTS)
+        .find(|slot| !refs.contains_key(slot))
+}
+
+/// The highest image number in `refs`, 0 when it holds none.
+fn top_image(refs: &BTreeMap<u8, Attachment>) -> u32 {
+    (refs.values())
+        .filter_map(|held| match held.kind {
+            Kind::Image(n) => Some(n),
+            Kind::File => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The two bytes of the atom for `slot`.
+fn atom(slot: u8) -> [u8; 2] {
+    [token::RESERVED, 0x80 + slot]
+}
+
+/// Whether an atom ends exactly at `end` in `bytes`. The reserved byte only
+/// ever begins an atom, so it two bytes back says so.
+fn atom_before(bytes: &[u8], end: usize) -> bool {
+    end >= 2 && atom_at(bytes, end - 2).is_some()
+}
+
+/// The slots `bytes` holds an atom of.
+fn slots(bytes: &[u8]) -> BTreeSet<u8> {
+    parts(bytes)
+        .into_iter()
+        .filter_map(|(_, _, slot)| slot)
+        .collect()
+}
+
+/// `bytes` from outside the composer, made safe to splice: the reserved byte
+/// is never valid UTF-8, so an outside one becomes U+FFFD.
+fn external(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for &byte in bytes {
+        if byte == token::RESERVED {
+            out.extend_from_slice("\u{fffd}".as_bytes());
+        } else {
+            out.push(byte);
+        }
+    }
+    out
 }
 
 impl Composer {
     /// Take one key; `Some` for Enter alone.
     pub fn key(&mut self, key: Key) -> Option<Entered> {
+        self.paste = None;
+        let entered = self.step(key);
+        self.prune();
+        entered
+    }
+
+    fn step(&mut self, key: Key) -> Option<Entered> {
         // A line break goes in like typed text: no snap, the cap rules alike.
         let key = if key == Key::Newline {
             Key::Text(b"\n".to_vec())
@@ -406,15 +532,7 @@ impl Composer {
             self.snap();
         }
         match key {
-            Key::Text(text) | Key::Pasted(text) if !self.over => {
-                if self.bytes.len() + text.len() > CAP {
-                    self.over = true;
-                } else {
-                    self.bytes
-                        .splice(self.cursor..self.cursor, text.iter().copied());
-                    self.cursor += text.len();
-                }
-            }
+            Key::Text(text) | Key::Pasted(text) if !self.over => self.insert(&text),
             Key::Backspace if !self.over => {
                 let from = self.unit(false);
                 self.bytes.drain(from..self.cursor);
@@ -436,6 +554,8 @@ impl Composer {
                 };
                 *self = Self {
                     cleared,
+                    refs: std::mem::take(&mut self.refs),
+                    released: std::mem::take(&mut self.released),
                     ..Self::default()
                 };
             }
@@ -450,7 +570,9 @@ impl Composer {
                 };
                 self.kill(self.cursor, self.cursor + to);
             }
-            Key::Yank if !self.over && self.bytes.len() + self.cleared.len() <= CAP => {
+            Key::Yank
+                if !self.over && self.weight(&self.bytes) + self.weight(&self.cleared) <= CAP =>
+            {
                 let back = std::mem::take(&mut self.cleared);
                 self.bytes
                     .splice(self.cursor..self.cursor, back.iter().copied());
@@ -459,8 +581,14 @@ impl Composer {
             Key::Enter if self.over => return Some(Entered::Over),
             Key::Enter if self.bytes.is_empty() => return Some(Entered::Empty),
             Key::Enter => {
+                // A send transfers what the line holds to the history: those
+                // files are no longer the draft's to delete.
+                let line = self.resolved();
+                let sent = slots(&self.bytes);
+                self.refs.retain(|slot, _| !sent.contains(slot));
+                self.bytes.clear();
                 (self.cursor, self.cleared) = (0, Vec::new());
-                return Some(Entered::Line(std::mem::take(&mut self.bytes)));
+                return Some(Entered::Line(line));
             }
             Key::Text(_)
             | Key::Backspace
@@ -492,37 +620,267 @@ impl Composer {
     /// at its end: what was typed meanwhile follows in the order it was typed.
     fn put_back(&mut self, bytes: &[u8]) {
         let _ = self.key(Key::Home);
-        let _ = self.key(Key::Text(bytes.to_vec()));
+        self.restore(bytes);
         let _ = self.key(Key::End);
     }
 
+    /// `bytes` a kept or refused line gave back, at the cursor: a token in the
+    /// line's own wire form is an attachment again, in a free slot and not
+    /// owned (the file is not this draft's to delete); anything else is
+    /// outside text. Typed or pasted lookalikes never come through here.
+    fn restore(&mut self, bytes: &[u8]) {
+        self.paste = None;
+        if self.over {
+            return;
+        }
+        let raw = external(bytes);
+        if self.weight(&self.bytes) + raw.len() > CAP {
+            self.over = true;
+            return;
+        }
+        let mut put = Vec::with_capacity(raw.len());
+        for chunk in raw.utf8_chunks() {
+            for piece in token::parse(chunk.valid()) {
+                match piece {
+                    token::Piece::Text(run) => put.extend_from_slice(run.as_bytes()),
+                    token::Piece::Token { kind, path } => {
+                        let wire = token::wire(kind, path).unwrap_or_default();
+                        match open_slot(&self.refs) {
+                            Some(slot) if !wire.is_empty() => {
+                                let owned = false;
+                                let path = path.to_owned();
+                                self.refs.insert(slot, Attachment { kind, path, owned });
+                                put.extend_from_slice(&atom(slot));
+                            }
+                            _ => put.extend_from_slice(wire.as_bytes()),
+                        }
+                    }
+                }
+            }
+            put.extend_from_slice(chunk.invalid());
+        }
+        self.bytes
+            .splice(self.cursor..self.cursor, put.iter().copied());
+        self.cursor += put.len();
+        self.prune();
+    }
+
+    /// Typed or pasted `text` at the cursor, past the cap the draft is over.
+    fn insert(&mut self, text: &[u8]) {
+        let text = external(text);
+        if self.weight(&self.bytes) + text.len() > CAP {
+            self.over = true;
+        } else {
+            self.bytes
+                .splice(self.cursor..self.cursor, text.iter().copied());
+            self.cursor += text.len();
+        }
+    }
+
+    /// A clipboard image the caller saved, as an owned token at the cursor.
     fn image_path(&mut self, path: &str) -> Result<(), String> {
+        self.attach(Kind::Image(0), path, true)
+    }
+
+    /// An attachment token at the cursor, spaced from its neighbours; an
+    /// image takes the next free number. Refused, the draft is untouched.
+    fn attach(&mut self, kind: Kind, path: &str, owned: bool) -> Result<(), String> {
+        self.paste = None;
+        self.place(&[(kind, path.to_owned())], owned).map(|_| ())
+    }
+
+    /// `found` as tokens at the cursor, one space between them and one from
+    /// each neighbour that is not blank; images are numbered on from the
+    /// highest this draft holds. All of them or none. The bytes put in.
+    fn place(&mut self, found: &[(Kind, String)], owned: bool) -> Result<usize, String> {
         let cursor = self.snapped();
         let gap = |byte: Option<&u8>| byte.is_some_and(|b| !matches!(b, b' ' | b'\n'));
         let left = gap(cursor.checked_sub(1).and_then(|i| self.bytes.get(i)));
         let right = gap(self.bytes.get(cursor));
-        let text = format!(
-            "{}{}{}",
-            if left { " " } else { "" },
-            path,
-            if right { " " } else { "" }
-        );
-        if self.over || self.bytes.len() + text.len() > CAP {
+        if self.over {
             return Err("draft has no room for the clipboard image".to_owned());
         }
+        let mut refs = self.refs.clone();
+        let mut top = top_image(&refs);
+        let mut put = Vec::with_capacity(4 * found.len() + 2);
+        put.extend(left.then_some(b' '));
+        let mut weight = usize::from(left) + usize::from(right);
+        for (index, (kind, path)) in found.iter().enumerate() {
+            let Some(slot) = open_slot(&refs) else {
+                return Err(format!("draft already holds {} attachments", token::SLOTS));
+            };
+            let kind = match kind {
+                Kind::Image(_) if top >= token::MAX_N => {
+                    return Err(
+                        "image numbering is exhausted for this draft - send or clear it".to_owned(),
+                    );
+                }
+                Kind::Image(_) => {
+                    top += 1;
+                    Kind::Image(top)
+                }
+                Kind::File => Kind::File,
+            };
+            let Some(wire) = token::wire(kind, path) else {
+                return Err("that path cannot be sent in a message".to_owned());
+            };
+            if index > 0 {
+                put.push(b' ');
+                weight += 1;
+            }
+            weight += wire.len();
+            put.extend_from_slice(&atom(slot));
+            let path = path.clone();
+            refs.insert(slot, Attachment { kind, path, owned });
+        }
+        put.extend(right.then_some(b' '));
+        if self.weight(&self.bytes) + weight > CAP {
+            return Err("draft has no room for the clipboard image".to_owned());
+        }
+        self.refs = refs;
         self.cursor = cursor;
-        let _ = self.key(Key::Text(text.into_bytes()));
-        Ok(())
+        self.bytes.splice(cursor..cursor, put.iter().copied());
+        self.cursor += put.len();
+        self.prune();
+        Ok(put.len())
     }
 
-    /// Where each unit of the draft ends, 0 first: a character, or a byte that
-    /// is not UTF-8.
+    /// One fragment of a bracketed paste, `origin` the paste's own stamp. A
+    /// paste that is nothing but file paths shows as tokens; the whole paste
+    /// is judged again with each fragment, so the draft is the same however
+    /// the reads split it.
+    fn paste(&mut self, fragment: &[u8], origin: Instant) {
+        if self.over {
+            self.paste = None;
+            return;
+        }
+        let mut run = match self.paste.take() {
+            Some(run) if run.origin == origin => run,
+            _ => PasteRun {
+                origin,
+                start: self.cursor,
+                shown: 0,
+                raw: Vec::new(),
+                tokens: false,
+                plain: false,
+            },
+        };
+        run.raw.extend_from_slice(fragment);
+        run.plain |= run.raw.len() > token::PASTE_MAX;
+        let found = (!run.plain)
+            .then(|| token::classify_paste(&run.raw))
+            .flatten();
+        if found.is_none() && !run.tokens {
+            self.insert(fragment);
+            run.shown += external(fragment).len();
+        } else {
+            let end = (run.start + run.shown).min(self.bytes.len());
+            self.bytes.drain(run.start.min(end)..end);
+            self.cursor = run.start.min(end);
+            self.prune();
+            let placed = found.map(|found| self.place(&found, false));
+            if let Some(Ok(len)) = placed {
+                (run.shown, run.tokens) = (len, true);
+            } else {
+                self.insert(&run.raw);
+                (run.shown, run.tokens) = (external(&run.raw).len(), false);
+            }
+        }
+        if !self.over {
+            self.paste = Some(run);
+        }
+    }
+
+    /// The attachment references the draft no longer holds an atom of: an owned
+    /// one's file is the caller's to remove, through [`Composer::take_released`].
+    fn prune(&mut self) {
+        let mut live = slots(&self.bytes);
+        live.extend(slots(&self.cleared));
+        let gone: Vec<u8> = (self.refs.keys())
+            .filter(|slot| !live.contains(slot))
+            .copied()
+            .collect();
+        for slot in gone {
+            if let Some(held) = self.refs.remove(&slot)
+                && held.owned
+            {
+                self.released.push(held.path);
+            }
+        }
+    }
+
+    /// The owned files that left the draft since the last call.
+    pub fn take_released(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.released)
+    }
+
+    /// An empty composer for a draft dropped whole: it owes the caller the
+    /// files already released and every owned one the draft still held, in
+    /// the line or in the undo slot, since nothing is left to send or restore them.
+    fn vacated(&mut self) -> Self {
+        let mut released = std::mem::take(&mut self.released);
+        released.extend(
+            std::mem::take(&mut self.refs)
+                .into_values()
+                .filter(|held| held.owned)
+                .map(|held| held.path),
+        );
+        Self {
+            released,
+            ..Self::default()
+        }
+    }
+
+    /// What `bytes` weighs against [`CAP`]: an atom counts as the wire text it
+    /// sends as.
+    fn weight(&self, bytes: &[u8]) -> usize {
+        let wire = |slot: &u8| {
+            let held = self.refs.get(slot);
+            held.and_then(|held| token::wire(held.kind, &held.path))
+                .map_or(2, |text| text.len())
+        };
+        (parts(bytes).into_iter())
+            .map(|(start, end, slot)| slot.as_ref().map_or(end - start, wire))
+            .sum()
+    }
+
+    /// The line as it is sent: every atom as its wire text.
+    fn resolved(&self) -> Vec<u8> {
+        let mut line = Vec::with_capacity(self.bytes.len());
+        for (start, end, slot) in parts(&self.bytes) {
+            let wire = slot
+                .and_then(|slot| self.refs.get(&slot))
+                .and_then(|held| token::wire(held.kind, &held.path));
+            match wire {
+                Some(text) => line.extend_from_slice(text.as_bytes()),
+                None => line.extend_from_slice(&self.bytes[start..end]),
+            }
+        }
+        line
+    }
+
+    /// What an atom shows in the draft.
+    fn label(&self, slot: u8) -> String {
+        (self.refs.get(&slot)).map_or_else(
+            || "\u{fffd}".to_owned(),
+            |held| token::label(held.kind, &held.path),
+        )
+    }
+
+    /// Where each unit of the draft ends, 0 first: a character, a byte that
+    /// is not UTF-8, or a whole attachment atom.
     fn ends(&self) -> Vec<usize> {
         let mut ends = vec![0];
-        for chunk in self.bytes.utf8_chunks() {
-            let valid = chunk.valid().chars().map(char::len_utf8);
-            for len in valid.chain(chunk.invalid().iter().map(|_| 1)) {
-                ends.push(ends[ends.len() - 1] + len);
+        for (start, end, slot) in parts(&self.bytes) {
+            if slot.is_some() {
+                ends.push(end);
+                continue;
+            }
+            for chunk in self.bytes[start..end].utf8_chunks() {
+                let valid = chunk.valid().chars().map(char::len_utf8);
+                for len in valid.chain(chunk.invalid().iter().map(|_| 1)) {
+                    ends.push(ends[ends.len() - 1] + len);
+                }
             }
         }
         ends
@@ -542,6 +900,7 @@ impl Composer {
     /// Where the word before the cursor begins: blanks skipped, then its bytes.
     /// A big word is any run without whitespace; the other is letters, digits
     /// and non-ASCII characters. Both stop at an ASCII byte, so on a boundary.
+    /// An attachment atom is a word of its own, whichever kill asks.
     fn word_start(&self, big: bool) -> usize {
         let word = |byte: &u8| {
             if big {
@@ -553,7 +912,14 @@ impl Composer {
         let head = &self.bytes[..self.cursor];
         let blanks = head.iter().rev().take_while(|byte| !word(byte)).count();
         let kept = &head[..head.len() - blanks];
-        kept.len() - kept.iter().rev().take_while(|byte| word(byte)).count()
+        if atom_before(kept, kept.len()) {
+            return kept.len() - 2;
+        }
+        let mut start = kept.len();
+        while start > 0 && word(&kept[start - 1]) && !atom_before(kept, start) {
+            start -= 1;
+        }
+        start
     }
 
     /// Take `from..to` out, the cursor at `from`, and keep it for ^Y; taking
@@ -590,7 +956,15 @@ impl Composer {
         if self.over {
             return format!("{prompt}{}", over_notice());
         }
-        let draft = String::from_utf8_lossy(&self.bytes).replace(['\n', '\r', '\t'], " ");
+        let mut draft = String::new();
+        for (start, end, slot) in parts(&self.bytes) {
+            if let Some(slot) = slot {
+                draft.push_str(&self.label(slot));
+            } else {
+                let text = String::from_utf8_lossy(&self.bytes[start..end]);
+                draft.push_str(&text.replace(['\n', '\r', '\t'], " "));
+            }
+        }
         format!("{prompt}{}", terminal_text(&draft))
     }
 
@@ -636,20 +1010,28 @@ impl Composer {
 
     /// The draft in rows of at most `area` cells, the row the cursor is on and
     /// that row up to it. A break is `\n` or a `\r` not followed by `\n`; a
-    /// byte that is not UTF-8 is its own unit, drawn as U+FFFD.
+    /// byte that is not UTF-8 is its own unit, drawn as U+FFFD, and an
+    /// attachment is its label, never broken across rows (one wider than the
+    /// area is cut to it).
     fn wrapped(&self, area: usize) -> (Vec<String>, usize, String) {
         let mut rows = Rows::new(area, self.snapped());
-        let mut at = 0;
-        for chunk in self.bytes.utf8_chunks() {
-            let valid = chunk.valid();
-            let clean = terminal_text(valid);
-            for ((offset, orig), shown) in valid.char_indices().zip(clean.chars()) {
-                rows.unit(at + offset, orig, shown);
+        for (start, end, slot) in parts(&self.bytes) {
+            if let Some(slot) = slot {
+                rows.atom(start, &self.label(slot));
+                continue;
             }
-            at += valid.len();
-            for _ in chunk.invalid() {
-                rows.unit(at, '\u{fffd}', '\u{fffd}');
-                at += 1;
+            let mut at = start;
+            for chunk in self.bytes[start..end].utf8_chunks() {
+                let valid = chunk.valid();
+                let clean = terminal_text(valid);
+                for ((offset, orig), shown) in valid.char_indices().zip(clean.chars()) {
+                    rows.unit(at + offset, orig, shown);
+                }
+                at += valid.len();
+                for _ in chunk.invalid() {
+                    rows.unit(at, '\u{fffd}', '\u{fffd}');
+                    at += 1;
+                }
             }
         }
         rows.finish(self.bytes.len())
@@ -677,6 +1059,15 @@ fn clip(text: &str, cells_max: usize) -> String {
     text.chars().take_while(fits).collect()
 }
 
+/// How a shown unit sits in a row break: an ordinary character, or the first
+/// or a later character of an attachment label, which a row never breaks inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Glue {
+    Plain,
+    Head,
+    Tail,
+}
+
 /// A draft being laid out in rows of at most `area` cells.
 #[derive(Default)]
 struct Rows {
@@ -685,7 +1076,7 @@ struct Rows {
     line: String,
     used: usize,
     /// Shown units of the current hard-break segment, with draft byte offsets.
-    pending: Vec<(usize, char)>,
+    pending: Vec<(usize, char, Glue)>,
     /// The byte offset the cursor is at.
     cursor: usize,
     /// The row and text before the cursor, once its offset is reached.
@@ -715,7 +1106,9 @@ impl Rows {
     }
 
     /// Finalize rows before locating the cursor: an overflowing prefix ends
-    /// at its last space, otherwise at its last fitting character.
+    /// at its last space, otherwise at its last fitting character; a label
+    /// is never split, so a break lands before it, or cuts one that is wider
+    /// than a row to the row.
     fn flush(&mut self) {
         let units = std::mem::take(&mut self.pending);
         let mut start = 0;
@@ -723,29 +1116,52 @@ impl Rows {
             let (mut end, mut used, mut space) = (start, 0, None);
             while end < units.len() && used + cells(units[end].1) <= self.area {
                 used += cells(units[end].1);
-                if units[end].1 == ' ' {
+                if units[end].1 == ' ' && units[end].2 == Glue::Plain {
                     space = Some(end + 1);
                 }
                 end += 1;
             }
+            let mut next = end;
             if end < units.len() {
                 end = space.unwrap_or(end);
+                next = end;
+                if units[end].2 == Glue::Tail {
+                    match (start..end).rev().find(|&i| units[i].2 == Glue::Head) {
+                        Some(head) if head > start => (end, next) = (head, head),
+                        _ => {
+                            let rest = (end..units.len()).find(|&i| units[i].2 != Glue::Tail);
+                            next = rest.unwrap_or(units.len());
+                        }
+                    }
+                }
             }
-            for &(at, shown) in &units[start..end] {
+            for &(at, shown, _) in &units[start..end] {
                 self.mark(at);
                 self.line.push(shown);
                 self.used += cells(shown);
             }
-            start = end;
+            start = next;
             if start < units.len() {
                 self.end_row();
             }
         }
     }
 
+    /// The label of an attachment atom at byte `at`: one unit run, whole.
+    fn atom(&mut self, at: usize, label: &str) {
+        for (index, shown) in terminal_text(label).chars().enumerate() {
+            let glue = if index == 0 { Glue::Head } else { Glue::Tail };
+            self.put(at, shown, shown, glue);
+        }
+    }
+
     /// The unit at byte `at`: `orig` as typed, `shown` as drawn. A two-cell one
     /// in a one-cell area is drawn as `?`: no row is wider than its area.
-    fn unit(&mut self, at: usize, orig: char, mut shown: char) {
+    fn unit(&mut self, at: usize, orig: char, shown: char) {
+        self.put(at, orig, shown, Glue::Plain);
+    }
+
+    fn put(&mut self, at: usize, orig: char, mut shown: char, glue: Glue) {
         if std::mem::take(&mut self.cr) && orig != '\n' {
             self.end_row();
         }
@@ -767,7 +1183,7 @@ impl Rows {
                 if cells(shown) > self.area {
                     shown = '?';
                 }
-                self.pending.push((at, shown));
+                self.pending.push((at, shown, glue));
             }
         }
     }
@@ -1033,7 +1449,7 @@ impl Input {
         match reading {
             Reading::Owner if self.since.is_none() => {
                 (self.since, self.reading) = (Some(now), None);
-                self.composer = Composer::default();
+                self.composer = self.composer.vacated();
                 let mut effects = vec![Effect::Paste(true)];
                 if self.read_only.take().is_some() {
                     effects.push(Effect::Print("accepting input".to_owned()));
@@ -1042,7 +1458,7 @@ impl Input {
             }
             Reading::NotOwner(why) if self.read_only.as_ref() != Some(&why) => {
                 (self.since, self.reading) = (None, Some(now));
-                self.composer = Composer::default();
+                self.composer = self.composer.vacated();
                 let line = format!("read-only: {why} - prefix h opens it");
                 self.read_only = Some(why);
                 vec![Effect::Paste(false), Effect::Print(line)]
@@ -1067,7 +1483,7 @@ impl Input {
         let said = match draft {
             Draft::Nothing => return Vec::new(),
             Draft::Kept(bytes) => {
-                let _ = self.composer.key(Key::Text(bytes));
+                self.composer.restore(&bytes);
                 let seats = self.pair.join(", ");
                 format!("Kept line, maybe already sent: check {seats} panes {how} before Enter")
             }
@@ -1100,7 +1516,14 @@ impl Input {
                 }
                 continue;
             }
-            let effect = match self.composer.key(key) {
+            let entered = match key {
+                Key::Pasted(fragment) => {
+                    self.composer.paste(&fragment, origin);
+                    None
+                }
+                key => self.composer.key(key),
+            };
+            let effect = match entered {
                 None | Some(Entered::Empty) => continue,
                 Some(Entered::Over) => Effect::Print(format!(
                     "refused: the draft is over {CAP} bytes - ^U clears it"
@@ -1159,6 +1582,12 @@ impl Input {
         had
     }
 
+    /// The draft dropped whole, for an input about to be discarded: its owned
+    /// images wait in [`Input::take_released`] for the caller to remove.
+    pub fn vacate(&mut self) {
+        self.composer = self.composer.vacated();
+    }
+
     /// `/open name`: the seat of that name in the last settled roster, or why not.
     fn open(&self, name: &str) -> Effect {
         let seat = self
@@ -1177,7 +1606,7 @@ impl Input {
     /// The end of the terminal's input: paste off, the draft dropped, and no
     /// key taken again.
     pub fn closed(&mut self) -> Vec<Effect> {
-        (self.keys, self.composer) = (Keys::default(), Composer::default());
+        (self.keys, self.composer) = (Keys::default(), self.composer.vacated());
         (self.since, self.reading, self.closed) = (None, None, true);
         let line = "input closed; this chat only reads now".to_owned();
         vec![Effect::Paste(false), Effect::Print(line)]
@@ -1199,8 +1628,14 @@ impl Input {
         self.since
     }
 
+    /// A saved clipboard image as an owned token at the cursor.
     pub(crate) fn image_path(&mut self, path: &str) -> Result<(), String> {
         self.composer.image_path(path)
+    }
+
+    /// The owned files the draft let go of since the last call: the caller removes them.
+    pub fn take_released(&mut self) -> Vec<String> {
+        self.composer.take_released()
     }
 
     /// Whether a composer is shown: always for the owner, while a draft is
@@ -1466,19 +1901,28 @@ mod tests {
     #[test]
     fn image_paths_space_neighbours_keep_the_cursor_and_refuse_without_wedging() {
         for (draft, cursor, expected, after) in [
-            ("", 0, "/img.png", 8),
-            ("ab", 1, "a /img.png b", 11),
-            ("a b", 2, "a /img.png b", 11),
-            ("a\nb", 2, "a\n/img.png b", 11),
-            ("a\nb", 1, "a /img.png\nb", 10),
-            ("a", 1, "a /img.png", 10),
-            ("a", 0, "/img.png a", 9),
+            ("", 0, "[Image #1]", "[Image #1]!"),
+            ("ab", 1, "a [Image #1] b", "a [Image #1] !b"),
+            ("a b", 2, "a [Image #1] b", "a [Image #1] !b"),
+            ("a\nb", 2, "a [Image #1] b", "a [Image #1] !b"),
+            ("a\nb", 1, "a [Image #1] b", "a [Image #1]! b"),
+            ("a", 1, "a [Image #1]", "a [Image #1]!"),
+            ("a", 0, "[Image #1] a", "[Image #1] !a"),
         ] {
             let mut c = drafted(draft.as_bytes());
             c.cursor = cursor;
             c.image_path("/img.png").unwrap();
-            assert_eq!(c.bytes, expected.as_bytes());
-            assert_eq!(c.cursor, after);
+            assert_eq!(c.line(""), expected);
+            c.key(Key::Text(b"!".to_vec()));
+            assert_eq!(c.line(""), after, "draft {draft:?}, cursor {cursor}");
+            let Some(super::Entered::Line(raw)) = c.key(Key::Enter) else {
+                panic!("image line must resolve");
+            };
+            assert!(
+                String::from_utf8(raw)
+                    .unwrap()
+                    .contains("[Image #1: \"/img.png\"]")
+            );
         }
         let mut c = drafted(&vec![b'x'; CAP - 1]);
         let saved = (c.bytes.clone(), c.cursor);
@@ -1514,7 +1958,7 @@ mod tests {
         assert_eq!(input.chunk(b"\x16", at), [Effect::ImagePaste]);
         input.chunk(b"typed", at);
         input.image_path("/img.png").unwrap();
-        assert_eq!(input.draft(), "typed /img.png");
+        assert_eq!(input.draft(), "typed [Image #1]");
     }
 
     /// The write of `view` on a fresh terminal, the screen it leaves behind.
@@ -2332,7 +2776,7 @@ mod tests {
         let refused = [Effect::Print(format!("refused: {why}"))];
         assert_eq!(input.restore(Draft::Refused(why.to_owned())), refused);
         assert_eq!(input.line().as_deref(), Some("to lead> "));
-        let _ = input.restore(kept(b"\xff"));
+        let _ = input.restore(kept(b"\xc3"));
         let not_utf8 = [Effect::Print("refused: the line is not UTF-8".to_owned())];
         assert_eq!(input.chunk(b"\r", base), not_utf8);
         let _ = input.chunk(b"\x15", base);
@@ -2814,3 +3258,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod imgtoken_spec;

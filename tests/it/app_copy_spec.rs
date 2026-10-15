@@ -629,3 +629,52 @@ fn copy_empty_body_refuses_with_hint() {
     });
     assert_eq!(rig.buffer(), None, "D1: empty turn loads no tmux buffer");
 }
+
+#[test]
+fn imgtoken_copy_history_row_uses_collapsed_labels_and_keeps_stored_path() {
+    let rig = Rig::new("imgtoken-copy", &[]);
+    let id = "ae-20261015T100000Z-00000001";
+    let wire = "look [Image #1: \"/tmp/image.png\"] and [File: \"/tmp/report.pdf\"]";
+    let messages = rig.tool.dir.join("messages");
+    fs::create_dir_all(&messages).expect("messages dir");
+    let name = format!("{id}.ask.abcdef.txt");
+    let stored = messages.join(&name);
+    let composed = ae::tracked::compose(
+        ae::tracked::Kind::Ask,
+        id,
+        "console:local",
+        wire,
+        "fixture reply",
+    );
+    let envelope = format!("⟦ae:msg from console:local⟧\n{composed}");
+    fs::write(&stored, &envelope).expect("stored ask envelope");
+    let row = format!(
+        r#"{{"ts":"2026-10-15T10:00:00Z","actor":"console:local","action":"ask","ref":"{id}","target":"lead","summary":"copy marker fixture","body_file":"messages/{name}"}}"#
+    );
+    fs::write(rig.tool.dir.join("events.jsonl"), format!("{row}\n")).expect("console ask event");
+    let app = rig.open();
+    let _viewer = rig.attach(&app);
+    let expected = "look [Image #1] and [File: report.pdf]";
+    rig.wait_screen(&app, "collapsed history body", |screen| {
+        screen.contains(expected)
+    });
+    rig.raw(&app, "[");
+    rig.wait_screen(&app, "history row selected", |screen| {
+        has_marked_body(screen, expected)
+    });
+    rig.clear_buffer();
+    rig.raw(&app, "y");
+    Rig::wait_for("selected history row copied", || {
+        rig.buffer().as_deref() == Some(expected)
+    });
+    assert_eq!(rig.buffer().as_deref(), Some(expected));
+    assert_eq!(
+        fs::read_to_string(&stored).expect("stored ask remains readable"),
+        envelope
+    );
+    assert!(
+        fs::read_to_string(stored)
+            .expect("stored body")
+            .contains("/tmp/image.png")
+    );
+}

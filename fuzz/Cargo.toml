@@ -264,3 +264,10 @@ path = "fuzz_targets/effort_fold.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "token_parse"
+path = "fuzz_targets/token_parse.rs"
+test = false
+doc = false
+bench = false

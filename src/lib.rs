@@ -98,6 +98,7 @@ pub mod theme;
 pub mod time;
 pub mod tmux;
 pub mod tmux_floor;
+pub mod token;
 pub mod tool;
 pub mod tracked;
 pub mod transport;

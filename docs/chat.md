@@ -233,8 +233,20 @@ the end of that character. A cursor before a line break at the end of a full
 row is drawn on that row's last cell. `^U` clears the whole draft, wherever the
 cursor is, `^W` erases the word before the cursor (back to whitespace), `Alt+Backspace` (`ESC DEL`, Option as Meta) the one before it up to a non-letter, non-digit, and `^K` the rest of the cursor's line (its line break when nothing is left on it); `^Y` puts what `^U`, `^W`, `Alt+Backspace` or `^K` last took back at the cursor, once (the newest erase wins; a send ends it). Up, Down, Insert, PgUp, PgDn and modified navigation keys are
 consumed and do nothing; `^V` reads a clipboard image; any other plain control byte is a literal draft byte.
-`^V` in the owner chat inserts an absolute PNG path at the cursor, with spaces
-where needed; Enter sends it. Images live at 0600 under the session's `messages/`.
+`^V` in the owner chat inserts the clipboard image as an attachment token at the
+cursor, with spaces where needed. The draft shows it as `[Image #N]` (N counts on
+from the highest image the draft holds); it is one unit: the cursor never sits
+inside it, one Left, Right, Delete or Backspace passes or erases it whole, and
+`^U`, `^W`, `Alt+Backspace` and `^K` take it with their text and `^Y` brings it
+back. Enter sends it as `[Image #N: "/abs/path"]`, so the seat gets the absolute
+path to read; the stored ask keeps that path, and the chat's history
+shows the label `[Image #N]` only. Typing `[Image #1]` yourself is plain text, and
+so is a pasted or typed path. A byte `0xFF` from outside the draft becomes U+FFFD.
+Images live at 0600 under the session's `messages/`; one erased from the draft
+before a send is removed with it (`^U` then `^Y` keeps it), and a sent one stays.
+A draft holds at most 32 attachments and the resolved line stays within the cap.
+The chat does not turn a pasted file path into a token (the app does, see
+[app](app.md)); it stays literal text.
 macOS uses osascript; Linux needs wl-paste on Wayland or xclip otherwise.
 Only PNG up to 20 MiB is accepted. A failed or eight-second read prints its
 refusal and keeps the draft. Typing continues during a read; another `^V` is ignored.

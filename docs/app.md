@@ -164,7 +164,7 @@ Browsing:
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `qq` | quit: the first `q` only arms (`q again to quit`), the second within 2 seconds quits |
 | `^C` | quit, at once; over a draft Esc kept it clears the draft first |
-| `^V` while writing | save a clipboard PNG and insert its path; Enter sends |
+| `^V` while writing | save a clipboard PNG and insert it as an `[Image #N]` token; Enter sends its path |
 
 No single printable key quits or moves your client: an armed `q` or `o` is
 disarmed by any other key or when its 2 seconds pass, so typing a word
@@ -186,7 +186,20 @@ then the gear.
 `^V` does nothing while browsing. While writing it reads an image without
 blocking typing; another `^V` is ignored until the read finishes. It accepts
 PNG up to 20 MiB, saved at 0600 under the written session's `messages/`.
-Refusals keep the draft. See [chat image paste](chat.md#input) for tools and client support.
+Refusals keep the draft. The composer shows the image as one `[Image #N]` unit
+(the chat's token, see [chat image paste](chat.md#input) for editing, the sent
+`[Image #N: "/abs/path"]` form, tools and client support). A copy of the history
+takes the label as drawn; the stored ask keeps the path.
+
+A bracketed paste that is nothing but absolute file paths (separated by line
+breaks or spaces, a `\ ` or one level of quotes around a name read back) with a
+known extension (png, jpg, jpeg, gif, webp, heic, bmp, tiff become `[Image #N]`;
+pdf, docx, xlsx, pptx, csv become `[File: name]`) shows as those tokens, and Enter
+sends `[File: "/abs/path"]` for a file. ae reads nothing of the file: a path that
+does not exist is sent all the same, and the file is never deleted by ae. Any
+other paste stays text, and so does one over 16 KiB. The whole paste is judged
+again with each fragment, so the draft is the same however the terminal splits
+it; anything else you do to the draft in between ends that paste's run.
 
 A paste while browsing is never read as keys. On a writable session it starts
 writing with the paste as the draft, every fragment of it kept and nothing in
