@@ -12,7 +12,9 @@ use crate::{provenance, tracked};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 const REWRITTEN: &str = "-- journal rewritten";
 pub(super) const CARD: &str = r#"{"ts":"2026-09-30T06:00:00Z","actor":"lead","action":"state","ref":"waiting-user","summary":"ship it?"}"#;
@@ -310,6 +312,34 @@ fn shows(console: &mut Console, words: &str) -> (bool, u64) {
     )
 }
 
+fn ctime_of(file: &Path) -> (i64, i64) {
+    let meta = fs::metadata(file).expect("ctime");
+    (meta.ctime(), meta.ctime_nsec())
+}
+
+/// Set `file`'s mtime to `stamp` until its ctime differs from `before`. Linux
+/// stamps ctime from a coarse clock (1 ms ticks, measured in the gate's
+/// container), so a rewrite within the tick of the write before it leaves ctime
+/// unchanged and the identity truly unchanged; re-touching waits out the tick.
+fn restamp_until_ctime_moves(file: &Path, stamp: SystemTime, before: (i64, i64)) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        OpenOptions::new()
+            .write(true)
+            .open(file)
+            .and_then(|body| body.set_modified(stamp))
+            .expect("the same mtime");
+        if ctime_of(file) != before {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ctime never moved off {before:?}: the identity did not change"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
 /// The memo key is the store's file identity (dev, ino, len, mtime and ctime
 /// to the nanosecond, mode): any write moves ctime, so any change reads again.
 #[test]
@@ -335,12 +365,9 @@ fn a_body_is_read_once_while_its_file_identity_holds_and_again_on_any_change() {
         (true, 0),
         "an unchanged body is not read again"
     );
+    let before = ctime_of(&file);
     fs::write(&file, envelope("other words")).expect("same length, same inode");
-    OpenOptions::new()
-        .write(true)
-        .open(&file)
-        .and_then(|body| body.set_modified(stamp))
-        .expect("the same mtime");
+    restamp_until_ctime_moves(&file, stamp, before);
     assert_eq!(
         shows(&mut console, "other words"),
         (true, 1),
