@@ -8,9 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
-use super::inbound::{self, Accepted, Chat, Deliver, Delivered, Inbox, Policy, Refusal};
-use super::routing::{RunningSession, Verb, World};
-use super::{Api, Outbound, Settings};
+use super::inbound::{self, Accepted, Chat, Inbox, Origin, Policy, Refusal, Submit, Submitted};
+use super::routing::{RunningSession, Target, World};
+use super::{Api, Echoes, Outbound, Settings, Watch};
+use crate::console::submit::Outcome;
 use crate::inventory::{self, Roots, ServerId};
 use crate::meta::{self, Meta};
 use crate::transport;
@@ -22,6 +23,14 @@ const IDLE_FLOOR: Duration = Duration::from_millis(200);
 /// How often the outbound pump re-scans for sessions and forwards what it
 /// finds, when nothing else wakes it.
 const OUTBOUND_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How far before its start a bridge still acts on a message and forwards a
+/// chat row: anything older is kept where it is and never relayed.
+const GRACE: Duration = Duration::from_mins(10);
+
+/// The bridge's own record of what its cutoff stepped over: counts, never
+/// text, never read back.
+pub const BACKLOG_FILE: &str = "backlog.log";
 
 /// The paths the bridge works between.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +80,9 @@ pub struct Knobs {
     pub outbound_interval: Duration,
     /// Run exactly one pass of each half and return.
     pub once: bool,
+    /// How far before its start this bridge still relays; `None` relays
+    /// everything.
+    pub grace: Option<Duration>,
 }
 
 impl Default for Knobs {
@@ -79,6 +91,7 @@ impl Default for Knobs {
             inbound: inbound::Knobs::default(),
             outbound_interval: OUTBOUND_INTERVAL,
             once: false,
+            grace: Some(GRACE),
         }
     }
 }
@@ -118,59 +131,48 @@ impl Chat for Outgoing {
     }
 }
 
-/// The [`Deliver`] the inbound loop routes through: the session's OWN `send`
-/// helper, and nothing else.
-#[derive(Debug, Clone, Copy)]
-pub struct Helper;
-
-impl Deliver for Helper {
-    fn deliver(
-        &self,
-        verb: Verb,
-        session: &str,
-        dir: &Path,
-        agent: &str,
-        text: &str,
-        from_id: &str,
-    ) -> Delivered {
-        // An inbound message acts under the EXTERNAL actor identity, so
-        // the event ledger records that a chat sent it and not that ae did.
-        let sender = format!("telegram:{from_id}");
-        let delivery = transport::deliver(
-            &dir.join(verb.helper()),
-            agent,
-            text,
-            false,
-            &[("AE_SENDER_OVERRIDE", sender.as_str())],
-        );
-        if delivery.code == Some(0) {
-            return Delivered::Yes;
-        }
-        Delivered::No(classify(session, dir, agent))
-    }
+/// The [`Submit`] the inbound loop routes through: the session's shared chat,
+/// by the console's own admission, as the app's asks go.
+#[derive(Debug, Clone)]
+pub struct SharedChat {
+    /// The state root the fleet and quota are read under.
+    pub root: PathBuf,
+    /// The asks carried, so the outbound pump does not echo them.
+    pub echoes: Echoes,
 }
 
-/// Which give-up bound a refusal earns.
-fn classify(session: &str, dir: &Path, agent: &str) -> Refusal {
-    let Ok(bytes) = meta::read_bytes(dir) else {
-        return Refusal::Transient;
-    };
-    let selector = Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector();
-    let Some(selector) = selector.entitles() else {
-        return Refusal::Transient;
-    };
-    let Some(panes) =
-        transport::observe_watch_panes(&ServerId::Selected(selector.clone()), session)
-    else {
-        return Refusal::Transient;
-    };
-    if panes
-        .iter()
-        .any(|pane| pane.agent.as_deref() == Some(agent))
-    {
-        Refusal::Transient
-    } else {
-        Refusal::Hard
+impl Submit for SharedChat {
+    fn submit(&self, target: &Target, text: &str, origin: &Origin) -> Submitted {
+        // Remembered BEFORE the ask can reach the journal, so no pass of the
+        // pump sees it first.
+        if let Ok(mut carried) = self.echoes.lock() {
+            carried.insert(origin.request_id());
+        }
+        let ask = crate::console::term::External {
+            dir: &target.dir,
+            session: &target.session,
+            session_id: &target.session_id,
+            pair: &target.pair,
+            seat: target.seat.as_deref(),
+            body: text.to_owned(),
+            minted: origin.minted(),
+        };
+        let Ok(carried) = crate::console::term::submit_external(&self.root, ask) else {
+            return Submitted::No(Refusal::Transient);
+        };
+        let (id, seat) = (carried.id, carried.seat);
+        if carried.replayed {
+            return Submitted::Replayed { id, seat };
+        }
+        match carried.outcome {
+            Outcome::Sent(..) => Submitted::Sent {
+                id,
+                seat,
+                note: carried.note,
+            },
+            Outcome::Uncertain(_) | Outcome::Unknown(..) => Submitted::Unconfirmed { id, seat },
+            Outcome::NotDelivered(_) => Submitted::No(Refusal::Transient),
+        }
     }
 }
 
@@ -239,8 +241,19 @@ fn session_facts(name: &str, dir: &Path, bytes: &[u8], last_active: Option<i64>)
             .iter()
             .map(crate::meta::RosterEntry::reference)
             .collect(),
+        pair: lead_pair(bytes, &meta),
         last_active,
     }
+}
+
+/// The lead pair's seat names, main first, as the shared chat asks them.
+fn lead_pair(bytes: &[u8], meta: &Meta) -> Vec<String> {
+    let lead_pair = crate::lifecycle::meta_value(bytes, "layout") == "lead-pair";
+    let mut seats: Vec<_> = (meta.roster().iter())
+        .filter(|entry| crate::watchdog_daemon::in_lead_pair(&entry.slot, lead_pair))
+        .collect();
+    seats.sort_by_key(|entry| entry.slot != "main");
+    seats.iter().map(|entry| entry.name.clone()).collect()
 }
 
 /// Run the bridge until the process is stopped.
@@ -276,6 +289,14 @@ pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::Result<u
     } = settings;
     let policy = Policy::new(credentials.chat_id(), allowed_user_ids);
     let api = Arc::new(Api::production(credentials));
+    let start = crate::time::Timestamp::now().epoch();
+    let since = knobs.grace.map_or(i64::MIN, |grace| {
+        start.saturating_sub(i64::try_from(grace.as_secs()).unwrap_or(i64::MAX))
+    });
+    let relay = Relay {
+        since,
+        echoes: Echoes::default(),
+    };
     let (words, inbox_words) = std::sync::mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
 
@@ -298,6 +319,7 @@ pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::Result<u
             policy,
             paths,
             knobs,
+            &relay,
             words,
             Arc::clone(&stop),
         ))
@@ -310,7 +332,7 @@ pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::Result<u
     };
 
     let listening = poller.is_some().then_some(&inbox_words);
-    let outcome = pump(&api, paths, knobs, listening, &stop, err);
+    let outcome = pump(&api, paths, knobs, &relay, listening, &stop, err);
     stop.store(true, Ordering::Relaxed);
     // THE ORDER IS LOAD-BEARING: this drop must happen BEFORE the join, and
     // moving it below — or letting it fall to the end of the scope — hangs the
@@ -324,17 +346,34 @@ pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::Result<u
     outcome
 }
 
+/// What both halves share: the cutoff this bridge started with and the asks
+/// it carried.
+#[derive(Debug, Clone)]
+struct Relay {
+    since: i64,
+    echoes: Echoes,
+}
+
 /// Spawn the inbound long poll.
 fn spawn_inbound(
     api: Arc<Api>,
     policy: Policy,
     paths: &Paths,
     knobs: Knobs,
+    relay: &Relay,
     words: Sender<Word>,
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
-    let mut inbox = Inbox::new(paths.state(), knobs.inbound);
+    let inbound = inbound::Knobs {
+        stale_before: relay.since,
+        ..knobs.inbound
+    };
+    let mut inbox = Inbox::new(paths.state(), inbound);
     let machine = Machine::under(paths.roots());
+    let chat_submit = SharedChat {
+        root: paths.ae_home.clone(),
+        echoes: Arc::clone(&relay.echoes),
+    };
     std::thread::spawn(move || {
         let chat = Outgoing(words);
         loop {
@@ -345,7 +384,7 @@ fn spawn_inbound(
                 &api,
                 &policy,
                 &machine,
-                &Helper,
+                &chat_submit,
                 &chat,
                 crate::time::Timestamp::now().epoch(),
             );
@@ -375,6 +414,7 @@ fn pump(
     api: &Api,
     paths: &Paths,
     knobs: Knobs,
+    relay: &Relay,
     words: Option<&Receiver<Word>>,
     stop: &AtomicBool,
     err: &mut impl Write,
@@ -382,6 +422,8 @@ fn pump(
     // Keyed by state directory, so each session's cursor and scan position
     // survive between passes.
     let mut bridges: BTreeMap<PathBuf, Outbound> = BTreeMap::new();
+    let machine = Machine::under(paths.roots());
+    let mut told = false;
     loop {
         if stop.load(Ordering::Relaxed) {
             return Ok(0);
@@ -393,7 +435,16 @@ fn pump(
             // The inbound thread is gone and cannot come back.
             return Ok(0);
         }
-        forward(api, paths, &mut bridges, err)?;
+        let stale = forward(api, &machine, relay, &paths.state(), &mut bridges, err)?;
+        if stale > 0 && !told {
+            told = true;
+            let line = format!(
+                "ae bridge started: {stale} chat messages from before {} were not relayed; \
+                 they stay in each session's chat.",
+                crate::time::Timestamp::from_epoch(relay.since)
+            );
+            say(api, Word::Say(line), err)?;
+        }
         if knobs.once {
             return Ok(0);
         }
@@ -481,26 +532,54 @@ fn say(api: &Api, word: Word, err: &mut impl Write) -> crate::Result<()> {
     Ok(())
 }
 
-/// One outbound pass across every session on the machine.
+/// One outbound pass across every RUNNING session on the machine: a stopped
+/// session relays nothing, a new one joins on the next pass. Returns how many
+/// records the cutoff stepped over, each step also kept in [`BACKLOG_FILE`].
 fn forward(
     api: &Api,
-    paths: &Paths,
+    world: &dyn World,
+    relay: &Relay,
+    state: &Path,
     bridges: &mut BTreeMap<PathBuf, Outbound>,
     err: &mut impl Write,
-) -> crate::Result<()> {
-    let scan = inventory::durable_records(&paths.roots());
-    // A session that is no longer recorded takes its bridge with it.
-    bridges.retain(|path, _| scan.records.iter().any(|record| record.path == *path));
-    for record in &scan.records {
-        let bridge = bridges
-            .entry(record.path.clone())
-            .or_insert_with(|| Outbound::new(&record.path, record.name.clone()));
-        let pass = bridge.pump(api);
+) -> crate::Result<usize> {
+    // A session with no lead pair has no shared chat to relay.
+    let running: Vec<_> = (world.running().into_iter())
+        .filter(|session| !session.pair.is_empty())
+        .collect();
+    // A session that stopped keeps its bridge, unpumped: what it sent stays
+    // remembered when a resume replaces its ledger with a new inode.
+    let mut held_back = 0;
+    for session in &running {
+        let outbound = bridges.entry(session.dir.clone()).or_insert_with(|| {
+            let watch = Watch {
+                pair: session.pair.clone(),
+                since: relay.since,
+                echoes: Arc::clone(&relay.echoes),
+            };
+            Outbound::watching(&session.dir, session.name.clone(), watch)
+        });
+        // The pair as this pass reads it: a reseat or a resume may change it.
+        outbound.watch.pair.clone_from(&session.pair);
+        let pass = outbound.pump(api);
         if let Some(failure) = pass.failure {
-            writeln!(err, "ae: telegram: {}: {failure}", record.name)?;
+            writeln!(err, "ae: telegram: {}: {failure}", session.name)?;
+        }
+        if pass.stale > 0 {
+            held_back += pass.stale;
+            let line = format!(
+                "{} {} stale={} before={}\n",
+                crate::time::Timestamp::now(),
+                session.name,
+                pass.stale,
+                crate::time::Timestamp::from_epoch(relay.since)
+            );
+            if let Err(why) = super::append_private(&state.join(BACKLOG_FILE), &line) {
+                writeln!(err, "ae: telegram: {BACKLOG_FILE}: {why}")?;
+            }
         }
     }
-    Ok(())
+    Ok(held_back)
 }
 
 /// Sleep, in slices, so a stop flag is noticed sooner than the whole delay.
@@ -525,13 +604,20 @@ mod tests {
                   code may reach"
     )]
 
-    use super::{Accepted, Delivered, Helper, Knobs, Paths, Refusal, Word, classify};
-    use crate::telegram::inbound::{Chat as _, Deliver as _};
-    use crate::telegram::routing::Verb;
+    use super::{Accepted, Knobs, Paths, Refusal, Word};
+    use crate::telegram::inbound::Chat as _;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
+
+    /// A bridge relay with no cutoff and no carried asks.
+    fn relay() -> super::Relay {
+        super::Relay {
+            since: i64::MIN,
+            echoes: super::Echoes::default(),
+        }
+    }
 
     #[test]
     fn the_conventional_layout_derives_the_config_and_the_home_from_ae_home() {
@@ -550,58 +636,146 @@ mod tests {
     }
 
     #[test]
-    fn the_delivery_helper_path_is_the_session_directory_plus_a_literal() {
-        // The security property is that this is a JOIN of a literal, never a
-        // value from meta, config or a chat message.
-        assert!(
-            matches!(
-                Helper.deliver(
-                    Verb::Send,
-                    "nowhere",
-                    std::path::Path::new("/definitely/not/a/session"),
-                    "cl:x",
-                    "hello",
-                    "42"
-                ),
-                Delivered::No(_)
-            ),
-            "a missing helper must report failure rather than success"
+    fn a_shared_chat_submit_the_console_cannot_bind_is_transient_and_never_an_ack() {
+        // THE FAIL-SAFE DIRECTION: a session the console cannot open is owed
+        // and retried, never acknowledged; the id is still remembered so a
+        // later carry cannot echo.
+        use crate::telegram::inbound::{Origin, Submit as _, Submitted};
+        let root = std::env::temp_dir().join(format!("ae-tg-shared-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let chat = super::SharedChat {
+            root: root.clone(),
+            echoes: super::Echoes::default(),
+        };
+        let target = crate::telegram::routing::Target {
+            session: "nowhere".to_owned(),
+            dir: PathBuf::from("/definitely/not/a/session"),
+            session_id: "abc123".to_owned(),
+            pair: vec!["lead".to_owned()],
+            seat: None,
+        };
+        let origin = Origin {
+            update_id: 77,
+            date: 1_792_141_200,
+            from_id: "42".to_owned(),
+        };
+        assert_eq!(
+            chat.submit(&target, "hello", &origin),
+            Submitted::No(Refusal::Transient)
         );
+        assert!(chat.echoes.lock().unwrap().contains(&origin.request_id()));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn a_refusal_this_daemon_could_not_probe_is_transient_and_never_hard() {
-        // THE FAIL-SAFE DIRECTION, and the reason the classifier is written as
-        // a chain of `else { Transient }`.
+    fn forward_relays_only_running_sessions_with_a_lead_pair_and_follows_the_pair() {
+        // Production's gate, through `forward` itself: every running session
+        // with a lead pair relays under its own label, one that starts later
+        // joins on the next pass; a live session whose roster names no lead
+        // pair has no shared chat, so a worker's `say` there never reaches the
+        // phone; the pair is re-read each pass; and a session that stopped
+        // relays nothing until it resumes. A stop plus journal retention must
+        // preserve accepted-line memory: retained accepted rows stay silent,
+        // while fresh rows written during the stop and after resume still send.
+        use crate::telegram::routing::RunningSession;
+        use crate::telegram::tests::{Fake, Reply};
+        let root = std::env::temp_dir().join(format!("ae-tg-forward-{}", std::process::id()));
+        for name in ["work", "home", "solo"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let say = |session: &str, actor: &str, text: &str| {
+            let line = format!(
+                r#"{{"ts":"2026-10-16T09:00:00Z","actor":"{actor}","action":"chat","summary":"{text}"}}"#
+            );
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(root.join(session).join(crate::store::EVENTS))
+                .unwrap();
+            std::io::Write::write_all(&mut file, format!("{line}\n").as_bytes()).unwrap();
+        };
+        let session = |name: &str, pair: &[&str]| RunningSession {
+            name: name.to_owned(),
+            dir: root.join(name),
+            session_id: "abc123".to_owned(),
+            meta_agent: false,
+            main: Some("lead".to_owned()),
+            agents: vec!["lead".to_owned(), "dev".to_owned()],
+            pair: pair.iter().map(|&seat| seat.to_owned()).collect(),
+            last_active: None,
+        };
+        let fake = Fake::start(vec![Reply::ok()]);
+        let api = fake.api();
+        let mut bridges = std::collections::BTreeMap::new();
+        let mut err = Vec::new();
+        let mut pass = |world: Vec<RunningSession>,
+                        bridges: &mut std::collections::BTreeMap<
+            PathBuf,
+            crate::telegram::Outbound,
+        >| {
+            super::forward(&api, &world, &relay(), &root, bridges, &mut err).unwrap()
+        };
+        let sent = || {
+            let mut texts: Vec<String> = (fake.requests().iter())
+                .map(|seen| crate::json::parse(&seen.body).unwrap())
+                .map(|value| value.get_str("text").unwrap_or_default().to_owned())
+                .collect();
+            texts.sort();
+            texts
+        };
+
+        say("work", "dev", "WORKER_SAY");
+        say("solo", "dev", "SOLO_WORKER_SAY");
+        pass(
+            vec![session("work", &["colead"]), session("solo", &[])],
+            &mut bridges,
+        );
+        assert!(sent().is_empty(), "{:?}", sent());
         assert_eq!(
-            classify("nowhere", std::path::Path::new("/no/such/session"), "cl:x"),
-            Refusal::Transient,
-            "unreadable meta says nothing about a pane"
+            bridges.len(),
+            1,
+            "a session with no lead pair is not watched"
         );
 
-        let dir = std::env::temp_dir().join(format!("ae-tg-classify-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // A meta that names no server at all: Missing, not entitling.
-        std::fs::write(dir.join("meta"), "mode=local\n").unwrap();
-        assert_eq!(
-            classify("nowhere", &dir, "cl:x"),
-            Refusal::Transient,
-            "a record that does not name exactly one server is not addressable, \
-             and a target this daemon cannot address is not a target it may call dead"
+        say("work", "lead", "WORK_LEAD_SAY");
+        say("home", "lead", "HOME_LEAD_SAY");
+        let world = vec![
+            session("work", &["lead"]),
+            session("home", &["lead"]),
+            session("solo", &[]),
+        ];
+        pass(world, &mut bridges);
+        let texts = sent();
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert!(texts[0].starts_with("[home] ") && texts[0].contains("HOME_LEAD_SAY"));
+        assert!(texts[1].starts_with("[work] ") && texts[1].contains("WORK_LEAD_SAY"));
+
+        pass(vec![session("home", &["lead"])], &mut bridges);
+        say("work", "lead", "AFTER_STOP");
+        pass(vec![session("home", &["lead"])], &mut bridges);
+        assert_eq!(sent().len(), 2, "a stopped session relayed: {:?}", sent());
+        // Retention replaces the inode while work is stopped. Keep the old
+        // file as evidence and write its bytes to a new file at the log path.
+        let log = root.join("work").join(crate::store::EVENTS);
+        let retained = std::fs::read(&log).unwrap();
+        std::fs::rename(&log, root.join("work").join("retained-evidence.jsonl")).unwrap();
+        std::fs::write(&log, retained).unwrap();
+        say("work", "lead", "FRESH_AFTER_RESUME");
+        pass(
+            vec![session("home", &["lead"]), session("work", &["lead"])],
+            &mut bridges,
         );
-        // A server that names a socket nothing is listening on: the run fails,
-        // and a failed enumeration is `None` rather than an empty roster.
-        std::fs::write(
-            dir.join("meta"),
-            "mode=local\nserver_socket=/no/such/socket\n",
-        )
-        .unwrap();
         assert_eq!(
-            classify("nowhere", &dir, "cl:x"),
-            Refusal::Transient,
-            "a tmux run that did not answer is not an answer of 'no panes'"
+            sent(),
+            vec![
+                "[home] lead\nHOME_LEAD_SAY".to_owned(),
+                "[work] lead\nAFTER_STOP".to_owned(),
+                "[work] lead\nFRESH_AFTER_RESUME".to_owned(),
+                "[work] lead\nWORK_LEAD_SAY".to_owned(),
+            ],
+            "stop/resume with a new inode must retain accepted rows without losing fresh ones"
         );
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -920,6 +1094,7 @@ mod tests {
             crate::telegram::inbound::Policy::new(CHAT, vec!["42".to_owned()]),
             &paths,
             Knobs::default(),
+            &relay(),
             words,
             Arc::clone(&stop),
         );
@@ -928,7 +1103,7 @@ mod tests {
         // and the operator is told so — which is still a ROUTED update.
         let word = inbox.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(
-            matches!(&word, Word::Say(text) if text.contains("No orchestrator running")),
+            matches!(&word, Word::Say(text) if text.contains("No session selected")),
             "{word:?}"
         );
 
@@ -962,7 +1137,15 @@ mod tests {
         std::thread::scope(|scope| {
             let pumping = scope.spawn(|| {
                 let mut err = Vec::new();
-                let outcome = super::pump(&api, &paths, Knobs::default(), None, &stop, &mut err);
+                let outcome = super::pump(
+                    &api,
+                    &paths,
+                    Knobs::default(),
+                    &relay(),
+                    None,
+                    &stop,
+                    &mut err,
+                );
                 returned.store(true, Ordering::Relaxed);
                 outcome
             });

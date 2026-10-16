@@ -124,7 +124,7 @@ Additive facts that prove a pane's session across servers and tmux incarnations.
 | `reply` | `reply` helper | Reply to an `ask` / `review`. Same `ref`. |
 | `state` | `state` helper | Agent declares its work state — `working` / `waiting-user` / `waiting-agent` / `blocked` / `done` (in `ref`). The watchdog honors quiet states; a `waiting-agent` past its ceiling reads as `blocked`. |
 | `done` | `mark-done` helper | Completion / pause signal. `mark-done` is an alias for `state done`; both are read as `done`. |
-| `chat` | `say` helper | Agent's free-text line to the human, forwarded by the Telegram bridge. Text in `summary`. |
+| `chat` | `say` helper | Agent's free-text line to the human, forwarded by the Telegram bridge when a lead-pair seat (or the watchdog) wrote it. Text in `summary`. |
 | `memo` | `memo add` helper | Append to shared session memory. |
 | `spawn` | ae internal | A new agent joined the workspace. |
 | `retire` | ae internal | A spawned agent was removed. |

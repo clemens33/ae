@@ -13,7 +13,7 @@ use crate::harness_state::HarnessState;
 
 /// What one seat can take now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Take {
+pub(crate) enum Take {
     Yes,
     /// Inside a turn: it takes the line once the turn ends.
     Busy,
@@ -23,7 +23,7 @@ pub(super) enum Take {
 
 /// A seat's [`Take`] from its entry; a seat the digest does not know is not
 /// second-guessed.
-pub(super) fn take(agent: Option<&AgentEntry>) -> Take {
+pub(crate) fn take(agent: Option<&AgentEntry>) -> Take {
     let Some(agent) = agent else {
         return Take::Yes;
     };
@@ -39,7 +39,7 @@ pub(super) fn take(agent: Option<&AgentEntry>) -> Take {
 
 /// The seat holding the human's newest open ask, from the lane as drawn: an
 /// ask neither answered, closed nor given up on.
-pub(super) fn thread_seat(items: &[Item]) -> Option<&str> {
+pub(crate) fn thread_seat(items: &[Item]) -> Option<&str> {
     let mut open: Vec<(&str, &str)> = Vec::new();
     for item in items {
         match &item.kind {
@@ -55,13 +55,13 @@ pub(super) fn thread_seat(items: &[Item]) -> Option<&str> {
 
 /// Where a plain line goes and what is said about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Route {
-    pub(super) seat: String,
+pub(crate) struct Route {
+    pub(crate) seat: String,
     /// The quiet lane note after the send.
-    pub(super) note: Option<String>,
+    pub(crate) note: Option<String>,
     /// The first line of the ask when it was rerouted to a seat that did not
     /// expect it.
-    pub(super) prefix: Option<String>,
+    pub(crate) prefix: Option<String>,
 }
 
 fn because(name: &str, take: Take) -> String {
@@ -87,7 +87,7 @@ const HEADROOM_GAP: f64 = 20.0;
 /// (both busy) the lead, which waits for a free composer. With both free the
 /// lead keeps the line unless its quota is pressed and the colead's is clearly
 /// lower.
-pub(super) fn decide(pair: &[(&str, Take)], quota: &[Option<f64>], thread: Option<&str>) -> Route {
+pub(crate) fn decide(pair: &[(&str, Take)], quota: &[Option<f64>], thread: Option<&str>) -> Route {
     let route = |seat: &str, note: Option<String>, prefix: Option<String>| Route {
         seat: seat.to_owned(),
         note,

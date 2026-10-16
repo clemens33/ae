@@ -671,6 +671,15 @@ fn body_for(dir: &Path, event: &Event) -> lane::Body {
     }
 }
 
+/// The whole stored body of an ask or reply `event` of the session at `dir`,
+/// read by the chat's own rule, or `None` where it shows the summary instead.
+pub(crate) fn stored_body(dir: &Path, event: &Event) -> Option<String> {
+    match body_for(dir, event) {
+        lane::Body::Whole(text) => Some(text),
+        _ => None,
+    }
+}
+
 /// The body files [`body_for`] reads are counted by tests alone.
 #[cfg(not(test))]
 const fn count_body_read() {}

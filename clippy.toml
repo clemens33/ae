@@ -104,7 +104,8 @@ disallowed-methods = [
   # and archive path guards, the watchdog's orchestrator heartbeat, and the
   # strict worker-dir/root classifier, which lstats the optional origin `.ae`
   # first so a dangling link refuses as present-invalid rather than reading as
-  # absent), so the entry exists to keep each of them a line in a review rather
+  # absent, and the Telegram bridge's private logs, a link refused before the
+  # append), so the entry exists to keep each of them a line in a review rather
   # than to discourage it.
   "std::fs::symlink_metadata",
   "std::fs::File::open",

@@ -182,7 +182,7 @@ send <agent> <message>         # message another agent
 ask <agent> <question>         # tracked request with a request id + exact reply command
 review <agent> <request>       # critical review, findings-first reply contract
 state <value> [reason]         # declare work state: working|waiting-user|blocked|done
-say <text>                     # push a line to the human's Telegram chat (reply routes back)
+say <text>                     # a lead-pair seat's line to the human's Telegram chat (reply routes back)
 memo add [--topic t] <text>    # durable shared session memory (survives restarts)
 spawn <name> --using <profile> [prompt]   # add an agent · retire <agent> removes one
 peek <agent> [lines]           # view an agent's recent output (inspection only)
@@ -257,7 +257,7 @@ Everything else is **optional**, never required for core commands:
 
 | Feature | What | Needs |
 |---|---|---|
-| `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | a configured ae core (no extra CLI deps) |
+| `ae telegram` | machine-global bridge: each running session's shared chat to your Telegram chat, labelled by session; a phone message is asked in the selected session's shared chat (`/use <session>`, `@session`, or a reply) | a configured ae core (no extra CLI deps) |
 | the orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) | a dedicated single-seat local session named `orchestrator`: receives watchdog-rendered changed fleet overviews and relays only explicit human instructions through an audited bare-text helper | an agent CLI; ae seeds its config |
 
 Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The watchdog renders the orchestrator's overview from core fleet facts, persists its last delivered hash, and wakes the seat only for changed text; the seat never scans the fleet on a timer. It was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set global `auto_upgrade = off` to disable automatic releases; set `AE_NO_AUTOSTART=1` to suppress all three.

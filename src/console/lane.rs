@@ -364,6 +364,14 @@ fn console_items(
     items
 }
 
+/// The console's thread rows of `events` alone — its asks, the answers, closes
+/// and give-ups — with no body read: what a writer with no lane of its own
+/// hands the plain-line router.
+#[must_use]
+pub(crate) fn thread_items(events: &[Event]) -> Vec<Item> {
+    console_items(&[], events, &|_| Body::OldCore, &mut Vec::new())
+}
+
 /// Whether `/close` may withdraw console request `id`: the console's own ask
 /// in this journal, not answered by an admitted reply and not closed — read
 /// from the same fold that draws the thread.

@@ -28,7 +28,9 @@ the window on demand. See [Keys](#keys).
   calls and thinking never show.
 - **Chat-bridge asks and replies** (`telegram:` / `discord:`), every thread
   with its target named. A reply is the journal's 600-character summary,
-  tagged `preview (600-char summary)`.
+  tagged `preview (600-char summary)`. The Telegram bridge writes these no
+  more: a phone message is a chat ask, below, admitted and routed exactly as
+  one typed here.
 - **Chat asks** as `you → <seat>`, each ask and each answer whole from its
   stored body (at most 65536 bytes, read only from the session's own
   `messages/`; an ask's file is the delivered message, and its text is what
@@ -302,3 +304,26 @@ in one short line, short lines, numbered lines for choices, no tables or bold
 markers — and a chat ask's footer repeats the guidance in one line.
 `human:chat` is display only: the journal still records the ask as
 `console:local`, and older records show that spelling for the same route.
+
+## Telegram
+
+The Telegram bridge (`ae telegram`) is one more writer of this chat. A phone
+message to a selected session (`/use <session>`, `@session`, or a reply to a
+forwarded line) becomes a chat ask exactly as one typed here: the same
+admission, the same lead-pair router and the same cap of five open asks. It
+never takes an `ae app`'s writer lease. Back to the phone go each running
+session's human-facing chat rows, labelled `[session]`: asks typed here, the
+answers, and a lead-pair seat's or the watchdog's `say`. Worker traffic, states
+and tool output stay local, and a phone message is not echoed back.
+
+Each bridge start fixes a cutoff ten minutes before it started. An older row is
+not sent, even behind a valid cursor: it stays in the session journal and its
+count goes to `~/.ae/telegram/backlog.log`. An older phone message is not acted
+on: it is kept in `~/.ae/telegram/stale-inbound.jsonl`. The chat hears one notice
+per direction, two at most. A phone message
+replayed after a crash finds its recorded ask by its update's id and is not
+asked again. Delivery is at least once, never exactly once. Three windows can
+repeat one message: a crash before the first outbound checkpoint can echo a
+phone message back; a send Telegram accepted before its cursor was written is
+sent again after a restart; and a turn pasted into a seat before its ask was
+journaled is asked again.

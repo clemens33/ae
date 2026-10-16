@@ -157,6 +157,8 @@ pub(crate) fn submit_held(
 pub(crate) struct Admitted {
     store: store::SessionStore,
     dir: std::path::PathBuf,
+    /// Whether this admission kept a draft, so a sent ask clears it.
+    drafted: bool,
     _lock: std::fs::File,
 }
 
@@ -190,13 +192,64 @@ pub(crate) fn admit(
     Ok(Admitted {
         store,
         dir: dir.to_owned(),
+        drafted: true,
         _lock: lock,
     })
 }
 
+/// What an external writer's admission found: the ask still to carry, or the
+/// one this journal already records under the same request id.
+pub(crate) enum Admission {
+    Fresh(Admitted),
+    Recorded(Outcome),
+}
+
+/// The admission of an external writer's ask `id` — one with no composer and
+/// so no draft: the admission lock and `owns` as [`admit`] proves them, then
+/// an ask this journal already records under `id` is answered from that record
+/// BEFORE the open-ask cap, so a replay of the same ask never carries it twice.
+/// A record that is only `delivery-abandoned` is carried again.
+///
+/// # Errors
+///
+/// Why nothing may be delivered.
+pub(crate) fn admit_external(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    id: &str,
+    owns: impl FnOnce() -> Result<(), String>,
+) -> Result<Admission, String> {
+    let lock = admission(dir)?;
+    owns()?;
+    let events = super::snapshot_in(held, dir)?;
+    let recorded = events.iter().any(|event| {
+        event.actor == tracked::CONSOLE_SINK
+            && event.action == tracked::Kind::Ask.action()
+            && event.reference.as_deref() == Some(id)
+    });
+    if recorded {
+        return Ok(Admission::Recorded(read_back(&events, id, "")));
+    }
+    let open = lane::open_asks(&events, session);
+    if open.len() >= OPEN_CAP {
+        let count = open.len();
+        return Err(format!(
+            "{count} requests open; /close withdraws the newest"
+        ));
+    }
+    Ok(Admission::Fresh(Admitted {
+        store: store::open(dir),
+        dir: dir.to_owned(),
+        drafted: false,
+        _lock: lock,
+    }))
+}
+
 impl Admitted {
     /// Deliver the ask `id` and read back what became of it, under the lock
-    /// taken at the admission; only [`Outcome::Sent`] clears the kept draft.
+    /// taken at the admission; only [`Outcome::Sent`] clears the kept draft,
+    /// and only a draft this admission kept.
     pub(crate) fn finish(
         self,
         held: &mut crate::events::Held,
@@ -211,6 +264,9 @@ impl Admitted {
         let Outcome::Sent(id, None) = outcome else {
             return outcome;
         };
+        if !self.drafted {
+            return Outcome::Sent(id, None);
+        }
         let kept = self.store.clear_console_draft().err();
         let kept = kept.map(|why| format!("the draft is kept ({why})"));
         Outcome::Sent(id, kept)
@@ -639,5 +695,73 @@ pub(in crate::console) mod tests {
         );
         assert!(b_seen.try_recv().is_err(), "the second never delivered");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // Frozen independent acceptance: tgchat-nav, OpenAI GPT-6.1-Sol.
+    // Install byte-identically inside src/console/submit.rs::tests.
+    #[test]
+    fn nav_external_shared_admission_preserves_interactive_draft_even_after_sent() {
+        let dir = session("nav-external-draft", 0);
+        let kept = b"unfinished app composer text";
+        store::open(&dir).publish_console_draft(kept).unwrap();
+        let mut held = crate::events::Held::default();
+        let admitted = super::admit_external(&mut held, &dir, "s", NEW, || Ok(())).unwrap();
+        assert_eq!(draft(&dir), SourceRead::Ready(kept.to_vec()));
+        let super::Admission::Fresh(admitted) = admitted else {
+            panic!("new external ask was treated as replay");
+        };
+        let outcome = admitted.finish(&mut held, NEW, || {
+            append(&dir, &ask(NEW, "phone question"));
+            String::new()
+        });
+        assert!(matches!(outcome, Outcome::Sent(ref id, _) if id == NEW));
+        assert_eq!(
+            draft(&dir),
+            SourceRead::Ready(kept.to_vec()),
+            "external success cleared another composer draft"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn nav_recorded_external_ask_replays_without_new_admission_even_at_open_cap() {
+        let dir = session(
+            "nav-external-replay-cap",
+            u32::try_from(super::OPEN_CAP).unwrap(),
+        );
+        let before = journal(&dir);
+        let mut held = crate::events::Held::default();
+        let replay = super::admit_external(&mut held, &dir, "s", &id(1), || Ok(())).unwrap();
+        assert!(
+            matches!(replay, super::Admission::Recorded(_)),
+            "recorded ask was admitted for a second delivery"
+        );
+        assert_eq!(journal(&dir), before, "replay changed shared chat journal");
+        let fresh = super::admit_external(&mut held, &dir, "s", NEW, || Ok(()));
+        assert!(
+            fresh.is_err(),
+            "fresh external ask bypassed shared open-ask cap"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn nav_external_replay_still_requires_current_ownership_and_preserves_draft() {
+        let dir = session("nav-external-refused-owner", 1);
+        store::open(&dir)
+            .publish_console_draft(b"kept draft")
+            .unwrap();
+        let before = journal(&dir);
+        let mut held = crate::events::Held::default();
+        let refused = super::admit_external(&mut held, &dir, "s", &id(1), || {
+            Err("session replaced".to_owned())
+        });
+        assert!(
+            matches!(refused, Err(ref why) if why == "session replaced"),
+            "recorded request bypassed current ownership"
+        );
+        assert_eq!(journal(&dir), before);
+        assert_eq!(draft(&dir), SourceRead::Ready(b"kept draft".to_vec()));
+        fs::remove_dir_all(dir).unwrap();
     }
 }

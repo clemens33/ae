@@ -5,8 +5,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::routing::{self, Inbound, Route, RunningSession, Verb, World};
-use super::{Api, ApiFailure, NotRegular, backoff_delay, durable_write, read_regular_file};
+use super::routing::{self, Inbound, Route, RunningSession, Target, World};
+use super::{
+    Api, ApiFailure, NotRegular, append_private, backoff_delay, durable_write, read_regular_file,
+};
 use crate::json::Value;
 
 /// The machine-global directory the bridge keeps its state in, under `AE_HOME`.
@@ -14,6 +16,9 @@ pub const STATE_DIR: &str = "telegram";
 
 /// The file the durable update offset lives in.
 pub const OFFSET_FILE: &str = "tg_offset";
+
+/// The file messages older than the cutoff are kept in, never read back.
+pub const STALE_FILE: &str = "stale-inbound.jsonl";
 
 /// How many updates one poll may ask for.
 const UPDATES_LIMIT: u32 = 10;
@@ -29,6 +34,9 @@ pub struct Knobs {
     pub retry_max: u32,
     /// The bound for a HARD refusal — a target whose pane is provably gone.
     pub hard_retry_max: u32,
+    /// The cutoff, epoch seconds: a message sent before it is kept, not acted
+    /// on. `i64::MIN` acts on every message.
+    pub stale_before: i64,
 }
 
 impl Default for Knobs {
@@ -38,6 +46,7 @@ impl Default for Knobs {
             long_poll: Duration::from_secs(10),
             retry_max: crate::watchdog::SweepKnobs::default().retry_max,
             hard_retry_max: 2,
+            stale_before: i64::MIN,
         }
     }
 }
@@ -144,6 +153,8 @@ pub struct Message {
     pub text: String,
     /// `reply_to_message.text`, when this is a reply.
     pub reply_to: Option<String>,
+    /// `date`, epoch seconds, or `0` when it is absent or not a number.
+    pub date: i64,
 }
 
 impl Update {
@@ -188,6 +199,10 @@ impl Message {
                 .get("reply_to_message")
                 .and_then(|replied| replied.get_str("text"))
                 .map(ToOwned::to_owned),
+            date: match value.get("date") {
+                Some(Value::Num(date)) => *date,
+                _ => 0,
+            },
         })
     }
 }
@@ -239,25 +254,53 @@ impl Policy {
 
 // ─── the effects, behind seams ───────────────────────────────────────────
 
-/// Deliver a message into an agent's pane.
-pub trait Deliver {
-    /// Run `dir`'s send helper for `agent`.
-    fn deliver(
-        &self,
-        verb: Verb,
-        session: &str,
-        dir: &Path,
-        agent: &str,
-        text: &str,
-        from_id: &str,
-    ) -> Delivered;
+/// Which Telegram message an ask came from: what its request id is minted
+/// from, so a replay of the same update names the same ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    /// Its `update_id`.
+    pub update_id: i64,
+    /// Its `date`, epoch seconds.
+    pub date: i64,
+    /// Its sender.
+    pub from_id: String,
 }
 
-/// What one delivery attempt produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delivered {
-    /// The helper took it and logged it.
-    Yes,
+impl Origin {
+    /// The request id the ask this message becomes is recorded under.
+    #[must_use]
+    pub fn request_id(&self) -> String {
+        let (now, entropy) = self.minted();
+        crate::tracked::request_id(crate::tracked::Kind::Ask.id_prefix(), now, entropy)
+    }
+
+    /// What [`Origin::request_id`] is minted from.
+    #[must_use]
+    pub fn minted(&self) -> (crate::time::Timestamp, u64) {
+        let entropy = u64::from_ne_bytes(self.update_id.to_ne_bytes());
+        (crate::time::Timestamp::from_epoch(self.date), entropy)
+    }
+}
+
+/// Ask a session's shared chat.
+pub trait Submit {
+    /// Submit `text` to `target`'s chat as the ask `origin` mints.
+    fn submit(&self, target: &Target, text: &str, origin: &Origin) -> Submitted;
+}
+
+/// What one submission produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Submitted {
+    /// Delivered, under this request id, to this seat.
+    Sent {
+        id: String,
+        seat: String,
+        note: Option<String>,
+    },
+    /// Pasted, its submit not confirmed: never carried again.
+    Unconfirmed { id: String, seat: String },
+    /// The chat already records this ask: nothing was carried again.
+    Replayed { id: String, seat: String },
     /// It did not land, and this is why.
     No(Refusal),
 }
@@ -341,6 +384,8 @@ enum Handled {
     Routed,
     /// Dropped by policy, or carrying nothing to route.
     Dropped,
+    /// Sent before the cutoff: kept, not acted on.
+    Stale,
     /// The update is still owed.
     Owed(Owing),
 }
@@ -371,6 +416,8 @@ pub struct Inbox {
     knobs: Knobs,
     failures: u32,
     attempts: Option<Attempts>,
+    /// Whether the chat was told that messages before the cutoff are kept.
+    stale_told: bool,
 }
 
 impl Inbox {
@@ -382,6 +429,7 @@ impl Inbox {
             knobs,
             failures: 0,
             attempts: None,
+            stale_told: false,
         }
     }
 
@@ -403,7 +451,7 @@ impl Inbox {
         api: &Api,
         policy: &Policy,
         world: &dyn World,
-        send: &dyn Deliver,
+        send: &dyn Submit,
         chat: &dyn Chat,
         now: i64,
     ) -> Cycle {
@@ -476,6 +524,13 @@ impl Inbox {
             match handled {
                 Handled::Routed => cycle.routed += 1,
                 Handled::Dropped => cycle.dropped += 1,
+                Handled::Stale => {
+                    cycle.dropped += 1;
+                    if !self.stale_told {
+                        self.stale_told = true;
+                        chat.say(STALE_NOTICE);
+                    }
+                }
                 // Reachable ONLY past the give-up bound: an owed update inside
                 // its bound returned above with the offset untouched.
                 Handled::Owed(_) => {
@@ -495,7 +550,7 @@ impl Inbox {
         update: &Update,
         policy: &Policy,
         world: &dyn World,
-        send: &dyn Deliver,
+        send: &dyn Submit,
         chat: &dyn Chat,
         now: i64,
     ) -> Handled {
@@ -506,6 +561,19 @@ impl Inbox {
         };
         if !policy.admits(message) || message.text.trim().is_empty() {
             return Handled::Dropped;
+        }
+        // Sent before the cutoff: kept where nothing reads it back, never
+        // acted on.
+        if message.date < self.knobs.stale_before {
+            let kept = keep_stale(&self.state.join(STALE_FILE), update.id, message);
+            return match kept {
+                Ok(()) => Handled::Stale,
+                Err(_) => Handled::Owed(Owing {
+                    target: "the stale-message log (it could not be written)".to_owned(),
+                    text: message.text.clone(),
+                    refusal: Refusal::Transient,
+                }),
+            };
         }
         let sessions = world.running();
         let sticky = routing::read_sticky(&self.sticky_path());
@@ -518,11 +586,22 @@ impl Inbox {
             &sticky,
             now,
         );
-        self.execute(route, &message.from_id, send, chat)
+        let origin = Origin {
+            update_id: update.id,
+            date: message.date,
+            from_id: message.from_id.clone(),
+        };
+        self.execute(route, &origin, send, chat)
     }
 
     /// Perform one decided route.
-    fn execute(&self, route: Route, from_id: &str, send: &dyn Deliver, chat: &dyn Chat) -> Handled {
+    fn execute(
+        &self,
+        route: Route,
+        origin: &Origin,
+        send: &dyn Submit,
+        chat: &dyn Chat,
+    ) -> Handled {
         match route {
             Route::Answer(text) => {
                 chat.say(&text);
@@ -542,9 +621,13 @@ impl Inbox {
                         refusal: Refusal::Transient,
                     });
                 }
+                let seat = if agent == routing::ANY_SEAT {
+                    String::new()
+                } else {
+                    format!(", seat {agent}")
+                };
                 chat.say(&format!(
-                    "Override set: {session} → {agent}. Plain messages go here until /use clear \
-                     (then back to the orchestrator)."
+                    "Selected: {session}{seat}. Plain messages ask its chat until /use clear."
                 ));
                 Handled::Routed
             }
@@ -556,28 +639,33 @@ impl Inbox {
                         refusal: Refusal::Transient,
                     });
                 }
-                chat.say("Override cleared — plain messages go to the orchestrator again.");
+                chat.say("Selection cleared — plain messages are not sent until /use <session>.");
                 Handled::Routed
             }
-            Route::Deliver {
-                verb,
-                session,
-                dir,
-                agent,
-                text,
-            } => {
-                match send.deliver(verb, &session, &dir, &agent, &text, from_id) {
-                    Delivered::Yes => {
-                        chat.say(&format!("→ {} to {agent} in {session}", verb.past()));
-                        Handled::Routed
+            Route::Chat { target, text, .. } => {
+                let session = target.session.clone();
+                let said = match send.submit(&target, &text, origin) {
+                    Submitted::Sent { id, seat, note } => {
+                        let note = note.map(|note| format!(" — {note}")).unwrap_or_default();
+                        format!("→ asked {seat} in {session} ({id}){note}")
+                    }
+                    Submitted::Unconfirmed { id, seat } => {
+                        format!("→ pasted to {seat} in {session} ({id}), submit not confirmed")
+                    }
+                    Submitted::Replayed { id, seat } => {
+                        format!("→ already asked {seat} in {session} ({id})")
                     }
                     // Owed, and retried on the short cadence until the bound.
-                    Delivered::No(refusal) => Handled::Owed(Owing {
-                        target: format!("{agent} in {session}"),
-                        text,
-                        refusal,
-                    }),
-                }
+                    Submitted::No(refusal) => {
+                        return Handled::Owed(Owing {
+                            target: format!("the chat of {session}"),
+                            text,
+                            refusal,
+                        });
+                    }
+                };
+                chat.say(&said);
+                Handled::Routed
             }
         }
     }
@@ -627,6 +715,22 @@ impl Inbox {
     }
 }
 
+/// What the chat is told, once, of messages sent before the cutoff.
+const STALE_NOTICE: &str = "Messages sent while the bridge was down were not acted on; \
+     resend what you still want.";
+
+/// Keep message `id` sent before the cutoff, one JSON line, where nothing
+/// reads it back.
+fn keep_stale(path: &Path, id: i64, message: &Message) -> io::Result<()> {
+    let kept = Value::obj([
+        ("update_id", Value::Num(id)),
+        ("date", Value::Num(message.date)),
+        ("from_id", Value::str(message.from_id.clone())),
+        ("text", Value::str(message.text.clone())),
+    ]);
+    append_private(path, &format!("{}\n", kept.render()))
+}
+
 /// The ONE notice a give-up sends.
 fn give_up_notice(owing: &Owing, attempts: u32) -> String {
     let why = match owing.refusal {
@@ -666,13 +770,13 @@ mod tests {
     )]
 
     use super::{
-        Accepted, Chat, Cycle, CycleFailure, Deliver, Delivered, Inbox, Knobs, Message, Policy,
-        Refusal, Update, durable_write, load_offset, parse_offset, store_offset,
+        Accepted, Chat, Cycle, CycleFailure, Inbox, Knobs, Message, Origin, Policy, Refusal,
+        Submit, Submitted, Update, durable_write, load_offset, parse_offset, store_offset,
     };
     use crate::json::{self, Value};
-    use crate::telegram::routing::{self, RunningSession, Verb};
+    use crate::telegram::routing::{self, RunningSession, Target};
     use crate::telegram::tests::{CHAT, Fake, Reply, with_unwritable_dir};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::Mutex;
 
     const NOW: i64 = 1_800_000_000;
@@ -689,6 +793,8 @@ mod tests {
             std::thread::current().id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
+        // Plain text asks only a selected session.
+        durable_write(&dir.join(routing::TARGET_FILE), "work\t*\n").unwrap();
         dir
     }
 
@@ -703,13 +809,14 @@ mod tests {
             chat_type: "private".to_owned(),
             text: text.to_owned(),
             reply_to: None,
+            date: NOW,
         }
     }
 
     struct Recorder {
+        /// Each ask: the chat's directory, the seat named (empty for the
+        /// chat's router), the text and the request id.
         delivered: Mutex<Vec<(PathBuf, String, String, String)>>,
-        /// The verb each delivery ran under, so a downgraded `ask` is visible.
-        verbs: Mutex<Vec<Verb>>,
         said: Mutex<Vec<String>>,
         /// `None` delivers; `Some(refusal)` refuses with that classification.
         refuse: Option<Refusal>,
@@ -725,7 +832,6 @@ mod tests {
         fn default() -> Self {
             Self {
                 delivered: Mutex::default(),
-                verbs: Mutex::default(),
                 said: Mutex::default(),
                 refuse: None,
                 confirm: Accepted::Yes,
@@ -750,26 +856,22 @@ mod tests {
         }
     }
 
-    impl Deliver for Recorder {
-        fn deliver(
-            &self,
-            verb: Verb,
-            _session: &str,
-            dir: &Path,
-            agent: &str,
-            text: &str,
-            from_id: &str,
-        ) -> Delivered {
-            self.verbs.lock().unwrap().push(verb);
+    impl Submit for Recorder {
+        fn submit(&self, target: &Target, text: &str, origin: &Origin) -> Submitted {
+            let id = origin.request_id();
             self.delivered.lock().unwrap().push((
-                dir.to_owned(),
-                agent.to_owned(),
+                target.dir.clone(),
+                target.seat.clone().unwrap_or_default(),
                 text.to_owned(),
-                from_id.to_owned(),
+                id.clone(),
             ));
             match self.refuse {
-                Some(refusal) => Delivered::No(refusal),
-                None => Delivered::Yes,
+                Some(refusal) => Submitted::No(refusal),
+                None => Submitted::Sent {
+                    id,
+                    seat: target.seat.clone().unwrap_or_else(|| "lead".to_owned()),
+                    note: None,
+                },
             }
         }
     }
@@ -793,6 +895,7 @@ mod tests {
             meta_agent: true,
             main: Some("claude:lead".to_owned()),
             agents: vec!["claude:lead".to_owned(), "codex:dev".to_owned()],
+            pair: vec!["lead".to_owned()],
             last_active: Some(NOW),
         }]
     }
@@ -825,6 +928,55 @@ mod tests {
     }
 
     #[test]
+    fn a_message_sent_before_the_cutoff_is_kept_and_told_once_while_a_fresh_one_is_asked() {
+        // The reconnect rule: a phone message older than the bridge's cutoff
+        // is never acted on, is kept where nothing reads it back, and the chat
+        // hears ONE notice; a fresh message in the same poll still lands.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dated = |id: i64, text: &str, date: i64| {
+            format!(
+                r#"{{"update_id":{id},"message":{{"text":{},"date":{date},"from":{{"id":{SENDER}}},
+                   "chat":{{"id":{CHAT},"type":"private"}}}}}}"#,
+                Value::str(text).render()
+            )
+        };
+        let dir = temp("cycle-stale");
+        let fake = Fake::start(vec![Reply::json(
+            200,
+            &result(&[
+                dated(5, "OLD_PHONE_A", NOW - 3600),
+                dated(6, "OLD_PHONE_B", NOW - 601),
+                dated(7, "FRESH_PHONE", NOW),
+            ]),
+        )]);
+        let recorder = Recorder::default();
+        let knobs = Knobs {
+            stale_before: NOW - 600,
+            ..Knobs::default()
+        };
+        let mut inbox = Inbox::new(&dir, knobs);
+        let polled = cycle(&mut inbox, &fake.api(), &recorder);
+        assert!(polled.failure.is_none(), "{polled:?}");
+        let delivered = recorder.delivered.lock().unwrap().clone();
+        let texts: Vec<&str> = delivered.iter().map(|ask| ask.2.as_str()).collect();
+        assert_eq!(texts, ["FRESH_PHONE"]);
+        let said = recorder.said.lock().unwrap().clone();
+        let notices = said
+            .iter()
+            .filter(|line| line.contains("not acted on"))
+            .count();
+        assert_eq!(notices, 1, "{said:?}");
+        let kept_path = dir.join(super::STALE_FILE);
+        let kept = std::fs::read_to_string(&kept_path).unwrap();
+        assert_eq!(kept.lines().count(), 2, "{kept}");
+        assert!(kept.contains("OLD_PHONE_A") && kept.contains("OLD_PHONE_B"));
+        let mode = std::fs::metadata(&kept_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(load_offset(&inbox.offset_path()).unwrap(), 7);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_routed_update_advances_the_offset_and_a_restart_re_delivers_nothing() {
         let dir = temp("cycle-normal");
         let fake = Fake::start(vec![
@@ -840,8 +992,8 @@ mod tests {
         assert!(first.failure.is_none(), "{first:?}");
         assert_eq!(
             recorder.delivered.lock().unwrap().first().unwrap().1,
-            "claude:lead",
-            "a plain message must reach the orchestrator's main agent"
+            "",
+            "a plain message asks the selected session's chat, naming no seat"
         );
         assert_eq!(
             load_offset(&inbox.offset_path()).unwrap(),
@@ -1014,7 +1166,7 @@ mod tests {
         let said = recorder.said.lock().unwrap().clone();
         assert_eq!(said.len(), 1, "exactly ONE notice, at the bound: {said:?}");
         assert!(
-            said[0].contains("claude:lead") && said[0].contains("work"),
+            said[0].contains("chat of work"),
             "the notice must NAME the target that would not take it: {said:?}"
         );
         assert!(
@@ -1126,7 +1278,7 @@ mod tests {
             .collect();
         script.push(Reply::json(
             200,
-            &result(&[from(4, "/use work codex:dev", SENDER)]),
+            &result(&[from(4, "/use work claude:lead", SENDER)]),
         ));
         let fake = Fake::start(script);
         let api = fake.api();
@@ -1137,11 +1289,12 @@ mod tests {
         for _ in 0..bound {
             cycle(&mut inbox, &api, &recorder);
         }
-        assert!(
-            matches!(
-                routing::read_sticky(&inbox.sticky_path()),
-                routing::Sticky::Unset
-            ),
+        assert_eq!(
+            routing::read_sticky(&inbox.sticky_path()),
+            routing::Sticky::Set {
+                session: "work".to_owned(),
+                agent: routing::ANY_SEAT.to_owned(),
+            },
             "nothing has redirected anything yet"
         );
 
@@ -1176,7 +1329,7 @@ mod tests {
             routing::read_sticky(&inbox.sticky_path()),
             routing::Sticky::Set {
                 session: "work".to_owned(),
-                agent: "codex:dev".to_owned(),
+                agent: "lead".to_owned(),
             },
             "the /use behind the stuck update must be reachable once the bound released it"
         );
@@ -1702,27 +1855,33 @@ mod tests {
 
     fn update(text: &str) -> String {
         format!(
-            r#"{{"update_id":1,"message":{{"text":{},"from":{{"id":42}},
+            r#"{{"update_id":1,"message":{{"text":{},"date":{NOW},"from":{{"id":42}},
                "chat":{{"id":-1001234567890,"type":"private"}}}}}}"#,
             Value::str(text).render()
         )
     }
 
     #[test]
-    fn an_authorized_plain_message_reaches_the_orchestrator_through_the_send_helper() {
+    fn an_authorized_plain_message_asks_the_selected_sessions_shared_chat() {
         let dir = temp("route");
         let mut inbox = Inbox::new(&dir, Knobs::default());
         let recorder = Recorder::default();
         let handled = run(&mut inbox, &[&update("do the thing")], &recorder);
         assert!(matches!(handled[0], super::Handled::Routed));
+        let id = Origin {
+            update_id: 1,
+            date: NOW,
+            from_id: SENDER.to_owned(),
+        }
+        .request_id();
         let delivered = recorder.delivered.lock().unwrap().clone();
         assert_eq!(
             delivered,
             vec![(
                 PathBuf::from("/sessions/work"),
-                "claude:lead".to_owned(),
+                String::new(),
                 "do the thing".to_owned(),
-                SENDER.to_owned(),
+                id,
             )]
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -1749,38 +1908,28 @@ mod tests {
     }
 
     #[test]
-    fn the_ask_verb_reaches_the_tracked_helper_and_is_never_downgraded_to_send() {
-        // `/session <ref> ask <agent> <msg>` promises a TRACKED REQUEST: a
-        // request id, an `ask` event, and a reply command embedded in the
-        // message — which is the route the agent's answer takes back to the
-        // chat. An earlier version validated the verb and then ran `send`
-        // anyway, so the request was never opened and the documented reply
-        // route could not happen. The operator was told it worked.
+    fn both_session_verbs_ask_the_named_lead_pair_seat_in_the_shared_chat() {
+        // `/session <ref> send|ask <seat> <msg>` keeps its spelling, and both
+        // are one tracked chat ask: the answer is the route back to the chat.
         let dir = temp("verb");
         let mut inbox = Inbox::new(&dir, Knobs::default());
         let recorder = Recorder::default();
         let handled = run(
             &mut inbox,
             &[
-                &update("/session work ask codex:dev please review"),
-                &update("/session work send codex:dev just telling you"),
+                &update("/session work ask lead please review"),
+                &update("/session work send claude:lead just telling you"),
             ],
             &recorder,
         );
         assert!(matches!(handled[0], super::Handled::Routed));
-        assert_eq!(
-            *recorder.verbs.lock().unwrap(),
-            vec![Verb::Ask, Verb::Send],
-            "the verb the operator typed must be the verb that ran"
-        );
-        // And the two verbs must not merely differ in a field — they must
-        // select DIFFERENT HELPERS, which is what makes one tracked.
-        assert_eq!(Verb::Ask.helper(), "ask");
-        assert_eq!(Verb::Send.helper(), "send");
+        let delivered = recorder.delivered.lock().unwrap().clone();
+        let seats: Vec<&str> = delivered.iter().map(|ask| ask.1.as_str()).collect();
+        assert_eq!(seats, ["lead", "lead"]);
         let said = recorder.said.lock().unwrap().clone();
         assert!(
-            said[0].contains("ask opened"),
-            "the acknowledgement must not call an ask a send: {said:?}"
+            said[0].contains("asked lead in work"),
+            "the acknowledgement names the seat and the session: {said:?}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1811,25 +1960,29 @@ mod tests {
         let dir = temp("use");
         let mut inbox = Inbox::new(&dir, Knobs::default());
         let recorder = Recorder::default();
-        run(&mut inbox, &[&update("/use work dev")], &recorder);
+        run(&mut inbox, &[&update("/use work claude:lead")], &recorder);
         assert_eq!(
             std::fs::read_to_string(inbox.sticky_path()).unwrap(),
-            "work\tcodex:dev\n",
-            "the override must record the CANONICAL agent"
+            "work\tlead\n",
+            "the override must record the seat's bare name"
         );
         // And it takes effect.
         run(&mut inbox, &[&update("ping")], &recorder);
         let delivered = recorder.delivered.lock().unwrap().clone();
-        assert_eq!(delivered.last().unwrap().1, "codex:dev");
+        assert_eq!(delivered.last().unwrap().1, "lead");
 
         run(&mut inbox, &[&update("/use clear")], &recorder);
         assert!(!inbox.sticky_path().is_file());
         run(&mut inbox, &[&update("ping again")], &recorder);
-        let delivered = recorder.delivered.lock().unwrap().clone();
         assert_eq!(
-            delivered.last().unwrap().1,
-            "claude:lead",
-            "clear must restore orchestrator routing"
+            recorder.delivered.lock().unwrap().len(),
+            1,
+            "with nothing selected a plain message asks no chat"
+        );
+        let said = recorder.said.lock().unwrap().clone();
+        assert!(
+            said.last().unwrap().contains("No session selected"),
+            "{said:?}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

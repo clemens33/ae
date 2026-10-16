@@ -377,6 +377,167 @@ pub(crate) fn admit_ask(
     Ok((Carry::of(console, seat, body), admitted))
 }
 
+/// One ask a writer with no composer of its own carries into the shared chat
+/// of session `session` (a chat bridge): the incarnation and lead pair it
+/// resolved, the seat it named if any, and the request id it mints.
+pub(crate) struct External<'a> {
+    pub(crate) dir: &'a std::path::Path,
+    pub(crate) session: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) pair: &'a [String],
+    pub(crate) seat: Option<&'a str>,
+    pub(crate) body: String,
+    pub(crate) minted: (time::Timestamp, u64),
+}
+
+/// What the plain-line router weighs, per pair seat in the pair's order: the
+/// verdict `ae list` shows and the judged quota.
+pub(crate) struct Standing {
+    pub(crate) takes: Vec<crate::app::route::Take>,
+    pub(crate) quota: Vec<Option<f64>>,
+}
+
+/// One external ask, carried or found already carried.
+#[derive(Debug)]
+pub(crate) struct Carried {
+    pub(crate) id: String,
+    pub(crate) seat: String,
+    /// What the router said of its choice, when it said anything.
+    pub(crate) note: Option<String>,
+    pub(crate) outcome: submit::Outcome,
+    /// The journal already recorded this ask: nothing was carried again.
+    pub(crate) replayed: bool,
+}
+
+/// [`submit_external_with`] on the world as it stands: the fleet's verdicts,
+/// the pair's quota and the helpers' tracked path.
+///
+/// # Errors
+///
+/// Why nothing was carried.
+pub(crate) fn submit_external(
+    root: &std::path::Path,
+    ask: External<'_>,
+) -> Result<Carried, String> {
+    let (dir, session, pair) = (ask.dir, ask.session, ask.pair);
+    submit_external_with(ask, || read_standing(root, dir, session, pair), Carry::run)
+}
+
+/// The fleet's verdict and the judged quota of each `pair` seat of `session`.
+fn read_standing(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    session: &str,
+    pair: &[String],
+) -> Standing {
+    let (_, world) = crate::current_world(root);
+    let entry = world.sessions.iter().find(|entry| entry.name == session);
+    let agents = entry.map(|entry| entry.agents.as_slice());
+    let takes = pair
+        .iter()
+        .map(|name| {
+            let agent = agents.and_then(|agents| agents.iter().find(|a| a.name == *name));
+            crate::app::route::take(agent)
+        })
+        .collect();
+    let read = crate::autoreseat::leg::pair_pressure(root, dir, time::Timestamp::now());
+    let quota = pair
+        .iter()
+        .map(|name| {
+            read.iter()
+                .find(|(seat, _)| seat == name)
+                .and_then(|(_, used)| *used)
+        })
+        .collect();
+    Standing { takes, quota }
+}
+
+/// Carry `ask` into its session's shared chat through the console's own
+/// admission and the helpers' tracked path, as the console: the seat it names,
+/// else the one the plain-line router picks from `standing` and the chat's
+/// open thread, as the app picks it. Under the admission lock the incarnation
+/// and the lead pair are proven to be the ones `ask` resolved, and an ask the
+/// journal already records under the same request id is answered from that
+/// record and never carried again.
+///
+/// # Errors
+///
+/// Why nothing was carried.
+pub(crate) fn submit_external_with(
+    ask: External<'_>,
+    standing: impl FnOnce() -> Standing,
+    carry: impl FnOnce(Carry) -> String,
+) -> Result<Carried, String> {
+    let uuid = archive::canonical_uuid(ask.session_id);
+    if uuid.is_empty() {
+        return Err("the session records no usable session id".to_owned());
+    }
+    let console = Console::bound(ask.session.to_owned(), ask.dir.to_owned(), uuid);
+    let Some(main) = ask.pair.first() else {
+        return Err("the session has no lead pair".to_owned());
+    };
+    let (seat, body, note) = match ask.seat {
+        Some(seat) if ask.pair.iter().any(|name| name == seat) => (seat.to_owned(), ask.body, None),
+        Some(seat) => return Err(format!("{seat} is not a lead-pair seat of {}", ask.session)),
+        None => {
+            let events = super::snapshot_in(&mut console.held.borrow_mut(), ask.dir)?;
+            let items = super::lane::thread_items(&events);
+            let Standing { takes, quota } = standing();
+            let weighed: Vec<_> = ask
+                .pair
+                .iter()
+                .zip(takes)
+                .map(|(name, take)| (name.as_str(), take))
+                .collect();
+            let route =
+                crate::app::route::decide(&weighed, &quota, crate::app::route::thread_seat(&items));
+            let seat = if route.seat.is_empty() {
+                main.clone()
+            } else {
+                route.seat
+            };
+            let body = match route.prefix {
+                Some(prefix) => format!("{prefix}\n{}", ask.body),
+                None => ask.body,
+            };
+            (seat, body, route.note)
+        }
+    };
+    let ask_carry = Carry::minted(&console, &seat, body, ask.minted);
+    let id = ask_carry.id().to_owned();
+    let owns = || {
+        let now = pair_of(console.seats()?)?;
+        let names = now.iter().map(|seat| seat.name.as_str());
+        if !names.eq(ask.pair.iter().map(String::as_str)) {
+            return Err("the lead pair changed since the message was routed".to_owned());
+        }
+        let name = console.name();
+        let routed = tracked::named_server(console.dir(), name, name);
+        routed.map(drop).map_err(|why| why.message())
+    };
+    let admitted = submit::admit_external(
+        &mut console.held.borrow_mut(),
+        ask.dir,
+        ask.session,
+        &id,
+        owns,
+    )?;
+    let (outcome, replayed) = match admitted {
+        submit::Admission::Recorded(outcome) => (outcome, true),
+        submit::Admission::Fresh(admitted) => {
+            let outcome = admitted.finish(&mut console.held.borrow_mut(), &id, || carry(ask_carry));
+            (outcome, false)
+        }
+    };
+    Ok(Carried {
+        id,
+        seat,
+        note,
+        outcome,
+        replayed,
+    })
+}
+
 /// One ask of a seat, owned whole and ready to be carried: everything the
 /// helpers' tracked path takes, so it can run on another thread.
 pub(crate) struct Carry {
@@ -392,7 +553,21 @@ pub(crate) struct Carry {
 impl Carry {
     /// The ask of `seat` from `console`, under a request id minted now.
     pub(crate) fn of(console: &Console, seat: &str, body: String) -> Self {
-        let (now, entropy) = (time::Timestamp::now(), crate::entropy());
+        Self::minted(
+            console,
+            seat,
+            body,
+            (time::Timestamp::now(), crate::entropy()),
+        )
+    }
+
+    /// The ask of `seat` from `console`, under the request id `minted` names.
+    fn minted(
+        console: &Console,
+        seat: &str,
+        body: String,
+        (now, entropy): (time::Timestamp, u64),
+    ) -> Self {
         Self {
             dir: console.dir.clone(),
             session: console.name.clone(),
@@ -407,6 +582,18 @@ impl Carry {
     /// The request id this ask is recorded under.
     pub(crate) fn id(&self) -> &str {
         &self.id
+    }
+
+    /// The seat this ask goes to.
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the ingress tests"))]
+    pub(crate) fn seat(&self) -> &str {
+        &self.seat
+    }
+
+    /// The text this ask carries.
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the ingress tests"))]
+    pub(crate) fn body(&self) -> &str {
+        &self.body
     }
 
     /// Carry the ask through the helpers' own tracked path, as the console,
@@ -1126,5 +1313,102 @@ mod tests {
         note(&mut held, &[b'x'; 161]);
         assert_eq!(refused(&console), unknown);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Frozen independent acceptance: tgchat-nav, OpenAI GPT-6.1-Sol.
+    // Install byte-identically inside src/console/term.rs::tests.
+    fn nav_external_rig(tag: &str) -> Rig {
+        let rig = Rig::new(tag);
+        std::fs::write(
+                rig.0.join("s/meta"),
+                format!("schema=2\nsession_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\ntmux_server_kind=socket\ntmux_server=/tmp/ae-nav-never-opened.sock\n"),
+            ).unwrap();
+        rig
+    }
+
+    #[test]
+    fn nav_production_external_submit_uses_normal_colead_route_and_replays_recorded_update() {
+        let rig = nav_external_rig("nav-external-co-route");
+        let dir = rig.0.join("s");
+        let pair = vec!["lead".to_owned(), "colead".to_owned()];
+        let store = crate::store::open(&dir);
+        let _interactive_writer = store.console_writer().unwrap();
+        store.publish_console_draft(b"app draft remains").unwrap();
+        let external = || super::External {
+            dir: &dir,
+            session: "s",
+            session_id: ID,
+            pair: &pair,
+            seat: None,
+            body: "phone question".to_owned(),
+            minted: (crate::time::Timestamp::from_epoch(1_792_141_200), 77),
+        };
+        let standing = || super::Standing {
+            takes: vec![crate::app::route::Take::Yes, crate::app::route::Take::Yes],
+            quota: vec![Some(86.0), Some(60.0)],
+        };
+        let first = super::submit_external_with(external(), standing, |carry| {
+                assert_eq!(carry.seat(), "colead", "external path bypassed normal pair chooser");
+                assert_eq!(carry.body(), "(routed to you: lead quota 86%)\nphone question");
+                assert_eq!(carry.id(), "ae-20261016T090000Z-0000004d");
+                let id = carry.id();
+                let recorded = format!(
+                    r#"{{"ts":"2026-10-16T09:00:00Z","actor":"console:local","action":"ask","target":"colead","ref":"{id}","target_slot":"worker.0","target_session":"s","target_server":"/tmp/ae-nav-never-opened.sock","target_pane":"%2","target_session_uuid":"{ID}","summary":"phone question"}}"#,
+                );
+                store.append_event(&(recorded + "\n")).unwrap();
+                String::new()
+            }).unwrap();
+        assert!(!first.replayed);
+        assert_eq!(first.seat, "colead");
+        assert!(matches!(
+            first.outcome,
+            crate::console::submit::Outcome::Sent(_, _)
+        ));
+        assert_eq!(
+            store.console_draft().unwrap(),
+            crate::store::SourceRead::Ready(b"app draft remains".to_vec())
+        );
+        let before = store.container();
+        let replay = super::submit_external_with(external(), standing, |_| {
+            panic!("checkpoint-loss replay carried a second ask")
+        })
+        .unwrap();
+        assert!(
+            replay.replayed,
+            "recorded Telegram update not recognized after fresh Console construction"
+        );
+        assert_eq!(replay.id, first.id);
+        assert_eq!(store.container(), before);
+    }
+
+    #[test]
+    fn nav_production_external_submit_refuses_replaced_session_or_pair_before_carry() {
+        let rig = nav_external_rig("nav-external-refused-identity");
+        let dir = rig.0.join("s");
+        let actual = vec!["lead".to_owned(), "colead".to_owned()];
+        let replaced = vec!["lead".to_owned(), "other".to_owned()];
+        for (session_id, pair) in [
+            ("0199c0de-bbbb-4890-abcd-ef0123456789", &actual),
+            (ID, &replaced),
+        ] {
+            let result = super::submit_external_with(
+                super::External {
+                    dir: &dir,
+                    session: "s",
+                    session_id,
+                    pair,
+                    seat: None,
+                    body: "must not paste".to_owned(),
+                    minted: (crate::time::Timestamp::from_epoch(1_792_141_200), 78),
+                },
+                || super::Standing {
+                    takes: vec![crate::app::route::Take::Yes; 2],
+                    quota: vec![None; 2],
+                },
+                |_| panic!("stale session identity reached final delivery"),
+            );
+            assert!(result.is_err(), "replaced session/pair was accepted");
+        }
+        assert!(crate::store::open(&dir).container().is_empty());
     }
 }

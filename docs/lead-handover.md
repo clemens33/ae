@@ -114,7 +114,7 @@ knowledge: what to trust, what to distrust, where to look first.
 | Symptom | First looks |
 |---|---|
 | Watchdog behaving oddly | The session's `events.jsonl`; the watchdog pane log. *(The `=uv` aewatch daemon log is gone — the selection is retired at P4.3; the bash per-session watchdog is the one watchdog.)* |
-| Telegram double/missing sends | The single `ae-telegram` tmux session (there is no bridge-owner marker and no second backend to hand off to since P4.3); the durable inbound state in `~/.ae/telegram/tg_offset` and the sticky target in `~/.ae/telegram/current_target`; the per-session outbound cursor at `<meta>/telegram-outbound.cursor` |
+| Telegram double/missing sends | The single `ae-telegram` tmux session (there is no bridge-owner marker and no second backend to hand off to since P4.3); the durable inbound state in `~/.ae/telegram/tg_offset` and the sticky target in `~/.ae/telegram/current_target`; the per-session outbound cursor at `<meta>/telegram-outbound.cursor`; what a bridge start held back as older than its cutoff (start minus 10 min) in `~/.ae/telegram/stale-inbound.jsonl` and `~/.ae/telegram/backlog.log` |
 | Requests/replies bouncing | Meta `agent.*` entries vs live `@ae_agent`/`@ae_slot` pane options; post-fix, slots are the routing truth |
 | Agent seems dead/wrong-model | Read the TUI footer (model + effort) against the config alias — harnesses fall back silently under credit/usage limits; the orchestrator's eyeball is the current detector until watchdog-v2 lands |
 | Suite red only in full runs | Contention (see fragile list); serial rerun on a quiet box |

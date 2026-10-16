@@ -1572,10 +1572,8 @@ neither the watchdog nor the Telegram bridge. It is never persisted, so a later
 launch without it starts what the settings ask for.
 
 To talk to the orchestrator from your phone, run the [Telegram bridge](telegram.md):
-plain messages route to the running orchestrator automatically (no `/use` setup), and
-`/use <session> <agent>` redirects to another session when you want (`/use clear`
-returns to the orchestrator) — see
-[Orchestrator-centric routing](telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions).
+`/use orchestrator` selects it, and plain messages are then asked in its chat — see
+[Talking to the orchestrator](telegram.md#talking-to-the-orchestrator).
 
 ## `ae telegram`
 
@@ -1586,7 +1584,7 @@ ae telegram stop        # kill daemon, persist enabled=false
 ae telegram status      # report intent + runtime + core + token validation
 ```
 
-Machine-global daemon that bridges every ae session on this host to one Telegram chat. Single instance per machine (one `ae-telegram` tmux session). Outbound forwards filtered events to chat. Inbound (when `allowed_user_ids` is set) offers three ways to reach an agent: **reply** to a forwarded event (routes to that agent), the compact **`@session:agent <msg>`** prefix, and a sticky **`/use <session> <agent>`** default for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <agent> <msg>`. All paths share the same session/agent revalidation. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
+Machine-global daemon that bridges the shared chat of every running ae session on this host to one Telegram chat. Single instance per machine (one `ae-telegram` tmux session). Outbound forwards each running session's human-facing chat rows. Inbound (when `allowed_user_ids` is set) asks a message in one session's shared chat, chosen by a **reply** to a forwarded message, the compact **`@session[:seat] <msg>`** prefix, or the **`/use <session> [seat]`** selection for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <seat> <msg>`; with nothing selected, plain text goes nowhere. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
 
 `setup`, `start`, `stop` and `status` are core operations, and the daemon is the ae core
 binary running `_telegram-run` — no `jq`, no `curl`, no extra CLI dependency. What the core

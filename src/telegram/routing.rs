@@ -15,12 +15,6 @@ use std::path::{Path, PathBuf};
 /// telegram state directory.
 pub const TARGET_FILE: &str = "current_target";
 
-/// The canonical orchestrator session name.
-const ORCHESTRATOR: &str = "orchestrator";
-
-/// The deprecated alias, still accepted.
-const HUB: &str = "hub";
-
 /// One RUNNING ae session, as routing sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningSession {
@@ -36,6 +30,9 @@ pub struct RunningSession {
     pub main: Option<String>,
     /// Every roster agent as a canonical `alias:name`.
     pub agents: Vec<String>,
+    /// Its lead pair's seat names, main first: where its shared chat asks.
+    /// Empty when it has none, and then it takes no ask.
+    pub pair: Vec<String>,
     /// Its newest event's epoch, for `/list`'s age column.
     pub last_active: Option<i64>,
 }
@@ -79,45 +76,10 @@ pub fn resolve_session<'a>(
     }
 }
 
-/// Resolve a chat-supplied agent reference INSIDE one session, and canonicalise
-/// it.
-#[must_use]
-pub fn resolve_agent(session: &RunningSession, want: &str) -> Resolved<String> {
-    if want.is_empty() {
-        return Resolved::Missing;
-    }
-    if let Some(exact) = session.agents.iter().find(|agent| *agent == want) {
-        return Resolved::One(exact.clone());
-    }
-    let mut bare = session
-        .agents
-        .iter()
-        .filter(|agent| agent.split_once(':').is_some_and(|(_, name)| name == want));
-    match (bare.next(), bare.next()) {
-        (Some(one), None) => Resolved::One(one.clone()),
-        (Some(_), Some(_)) => Resolved::Ambiguous,
-        _ => Resolved::Missing,
-    }
-}
-
-/// The running orchestrator plain text defaults to, or `None`.
-#[must_use]
-pub fn find_orchestrator(sessions: &[RunningSession]) -> Option<&RunningSession> {
-    let eligible = || {
-        sessions
-            .iter()
-            .filter(|session| session.meta_agent && session.main.is_some())
-    };
-    eligible()
-        .find(|session| session.name == ORCHESTRATOR)
-        .or_else(|| eligible().find(|session| session.name == HUB))
-        .or_else(|| eligible().next())
-}
-
 /// The sticky `/use` override, as it stands on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sticky {
-    /// No override: plain text goes to the orchestrator.
+    /// Nothing selected: plain text is answered, never delivered.
     Unset,
     /// An override the operator set.
     Set {
@@ -169,70 +131,64 @@ pub struct Inbound<'a> {
     pub reply_to: Option<&'a str>,
 }
 
-/// Which helper a delivery runs — the operator's verb, carried, not collapsed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verb {
-    /// Deliver the message and record a `send`.
-    Send,
-    /// Open a TRACKED REQUEST: a request id, an `ask` event, and a reply
-    /// command embedded in the message so the agent can answer back through the
-    /// chat.
-    Ask,
+/// Where a shared-chat ask goes: one running session's chat, as the session
+/// was resolved when the message was routed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// The session's name.
+    pub session: String,
+    /// Its state directory.
+    pub dir: PathBuf,
+    /// The `session_id` it was resolved under; the submit proves it again.
+    pub session_id: String,
+    /// Its lead pair, main first; the submit proves it again.
+    pub pair: Vec<String>,
+    /// The seat the human named, or `None` for the chat's own router.
+    pub seat: Option<String>,
 }
 
-impl Verb {
-    /// The helper this verb runs, as a LITERAL.
-    #[must_use]
-    pub const fn helper(self) -> &'static str {
-        match self {
-            Self::Send => "send",
-            Self::Ask => "ask",
-        }
-    }
-
-    /// How an acknowledgement names what it did.
-    #[must_use]
-    pub const fn past(self) -> &'static str {
-        match self {
-            Self::Send => "send delivered",
-            Self::Ask => "ask opened",
-        }
-    }
+/// How the session was chosen, for the acknowledgement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chosen {
+    /// `@session`, or `/session`.
+    Explicit,
+    /// The `/use` selection.
+    Sticky,
+    /// The session the replied-to message came from.
+    Reply,
 }
 
 /// What one authorized message should cause.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
-    /// Deliver `text` to `agent` in the session at `dir`, through that
-    /// session's own `send` helper.
-    Deliver {
-        /// Which helper runs — the verb the operator actually typed, carried
-        /// through rather than collapsed (a `/session … ask` that ran `send`
-        /// would silently drop the tracked request the operator asked for).
-        verb: Verb,
-        /// The resolved session's name, for the acknowledgement.
-        session: String,
-        /// Its state directory — where the helper lives.
-        dir: PathBuf,
-        /// The canonical `alias:name`, as the roster spells it.
-        agent: String,
+    /// Ask `target`'s shared chat, through the chat's own submission.
+    Chat {
+        /// Where the ask goes.
+        target: Target,
         /// The message body.
         text: String,
+        /// How the session was chosen.
+        chosen: Chosen,
     },
-    /// Set the sticky override to a target that has just been revalidated.
+    /// Select a session (and optionally a seat) for plain messages; revalidated
+    /// on every use.
     Use {
         /// The resolved session's name.
         session: String,
-        /// The canonical agent reference.
+        /// The seat, or [`ANY_SEAT`] for the chat's own router.
         agent: String,
     },
-    /// Clear the sticky override (`/use clear`).
+    /// Clear the selection (`/use clear`).
     Unuse,
     /// Answer the chat and change nothing else.
     Answer(String),
 }
 
-/// Decide where a message goes.
+/// The stored seat of a `/use` that named none: the chat's own router picks.
+pub const ANY_SEAT: &str = "*";
+
+/// Decide where a message goes. Nothing is guessed: plain text with no
+/// selection, no reply and no named session is answered, never delivered.
 #[must_use]
 pub fn decide(
     message: Inbound<'_>,
@@ -268,185 +224,189 @@ pub fn decide(
         other if other.starts_with('/') => {
             Route::Answer(format!("Unknown command: {other} — try /help"))
         }
-        // Plain text: the sticky override if one is set, else the orchestrator.
+        // Plain text: the selected session, never a guess.
         _ => sticky_route(text, sessions, sticky),
     }
 }
 
 /// The `/help` body.
-const HELP: &str = "ae telegram:\n\
-     • Plain text → your orchestrator (auto-default; just talk to it).\n\
-     • Reply to any forwarded message → answers that agent (no command).\n\
-     • @session:agent <msg> → send to an agent directly.\n\
-     • /use <session> <agent> → redirect plain messages elsewhere; /use clear → back to the \
-     orchestrator.\n\
+const HELP: &str = "ae telegram — each message is asked in a session's shared chat:\n\
+     • /use <session> → select a session; plain messages go to its chat. /use clear unselects.\n\
+     • @session <msg> (or @session:seat <msg>) → ask that session's chat once.\n\
+     • Reply to any forwarded message → asks the chat it came from.\n\
      /list\n\
-     /session <name|id-prefix> send|ask <agent> <msg>";
+     /session <name|id-prefix> ask <seat> <msg>";
 
-/// A plain message sent as a REPLY to a forwarded event: route it to the agent
-/// that event came from.
+/// What a plain message with nowhere to go is answered.
+const CHOOSE: &str = "No session selected — nothing was sent. /use <session> selects one, \
+     @session <msg> asks one once, or reply to a forwarded message. (/list)";
+
+/// A plain message sent as a REPLY to a forwarded row: ask the chat that row
+/// came from, and the seat that spoke it when it is a lead-pair seat.
 fn reply_route(quoted: &str, text: &str, sessions: &[RunningSession]) -> Route {
     let Some((session, actor)) = parse_reply_target(quoted) else {
         return Route::Answer(
-            "Couldn't tell which agent that was a reply to — use /session <name> send <agent> \
-             <msg>"
-                .to_owned(),
+            "Couldn't tell which session that was a reply to — use @session <msg>".to_owned(),
         );
     };
-    deliver_route(Verb::Send, &session, &actor, text, sessions)
+    let seat = match resolve_session(sessions, &session) {
+        Resolved::One(found) => seat_named(found, &actor).ok().flatten(),
+        _ => None,
+    };
+    chat_route(&session, seat.as_deref(), text, sessions, Chosen::Reply)
 }
 
-/// `@session:agent <msg>` — the compact prefix.
+/// `@session <msg>` or `@session:seat <msg>` — the compact prefix.
 fn at_route(rest: &str, sessions: &[RunningSession]) -> Route {
     let (token, message) = split_word(rest);
-    let Some((session, agent)) = token.split_once(':') else {
-        return Route::Answer(
-            "Usage: @session:agent <msg>  (e.g. @mdk:claude:lead do X)".to_owned(),
-        );
+    let (session, seat) = match token.split_once(':') {
+        Some((session, seat)) => (session, Some(seat)),
+        None => (token, None),
     };
-    if message.is_empty() {
-        return Route::Answer("Nothing to send — @session:agent <msg>".to_owned());
+    if session.is_empty() {
+        return Route::Answer("Usage: @session <msg>  (or @session:seat <msg>)".to_owned());
     }
-    deliver_route(Verb::Send, session, agent, message, sessions)
+    if message.is_empty() {
+        return Route::Answer("Nothing to send — @session <msg>".to_owned());
+    }
+    chat_route(session, seat, message, sessions, Chosen::Explicit)
 }
 
-/// `/session <ref> <send|ask> <agent> <msg…>`.
+/// `/session <ref> <send|ask> <seat> <msg…>`: both verbs ask the chat.
 fn session_route(args: &str, sessions: &[RunningSession]) -> Route {
     let (reference, rest) = split_word(args);
     let (verb, rest) = split_word(rest);
-    let (agent, message) = split_word(rest);
+    let (seat, message) = split_word(rest);
     // THE MESSAGE IS THE ONLY PART THAT CAN DECIDE, and testing the other three
     // would be testing nothing.
     if message.is_empty() {
-        return Route::Answer(
-            "Usage: /session <name|id-prefix> <send|ask> <agent> <msg>".to_owned(),
-        );
+        return Route::Answer("Usage: /session <name|id-prefix> ask <seat> <msg>".to_owned());
     }
-    let verb = match verb {
-        "send" => Verb::Send,
-        "ask" => Verb::Ask,
-        other => return Route::Answer(format!("Unknown verb '{other}' (use send or ask)")),
-    };
-    deliver_route(verb, reference, agent, message, sessions)
+    if !matches!(verb, "send" | "ask") {
+        return Route::Answer(format!("Unknown verb '{verb}' (use ask)"));
+    }
+    chat_route(reference, Some(seat), message, sessions, Chosen::Explicit)
 }
 
-/// `/use`, `/use clear`, `/use <session> <agent>`.
+/// `/use`, `/use clear`, `/use <session> [seat]`.
 fn use_route(args: &str, sessions: &[RunningSession], sticky: &Sticky) -> Route {
     let (reference, rest) = split_word(args);
     if reference.is_empty() {
-        return Route::Answer(describe_sticky(sessions, sticky));
+        return Route::Answer(describe_sticky(sticky));
     }
     if matches!(reference, "clear" | "off" | "none") {
         return Route::Unuse;
     }
-    let (agent, _) = split_word(rest);
-    if agent.is_empty() {
-        return Route::Answer("Usage: /use <session> <agent>   (or /use clear)".to_owned());
-    }
-    match revalidate(reference, agent, sessions) {
-        Ok((session, canonical)) => Route::Use {
-            session: session.name.clone(),
-            agent: canonical,
+    let (seat, _) = split_word(rest);
+    let seat = Some(seat).filter(|seat| !seat.is_empty());
+    match revalidate(reference, seat, sessions) {
+        Ok(target) => Route::Use {
+            session: target.session,
+            agent: target.seat.unwrap_or_else(|| ANY_SEAT.to_owned()),
         },
         Err(refusal) => Route::Answer(refusal),
     }
 }
 
 /// What `/use` with no arguments reports.
-fn describe_sticky(sessions: &[RunningSession], sticky: &Sticky) -> String {
+fn describe_sticky(sticky: &Sticky) -> String {
     match sticky {
+        Sticky::Set { session, agent } if agent == ANY_SEAT => {
+            format!("Selected: {session} (plain messages ask its chat; /use clear unselects)")
+        }
         Sticky::Set { session, agent } => format!(
-            "Current target: {session} → {agent}  (plain messages go here; /use clear to fall \
-             back to the orchestrator)"
+            "Selected: {session}, seat {agent} (plain messages ask its chat; /use clear \
+             unselects)"
         ),
-        Sticky::Corrupt => "Current target is unset/corrupt — /use <session> <agent>".to_owned(),
-        Sticky::Unset => match find_orchestrator(sessions) {
-            Some(session) => format!(
-                "No override set — plain messages go to the orchestrator ({} → {}). /use \
-                 <session> <agent> to redirect.",
-                session.name,
-                session.main.as_deref().unwrap_or_default()
-            ),
-            None => "No override set and no orchestrator running. Start one with 'ae \
-                     orchestrator', or /use <session> <agent>."
-                .to_owned(),
-        },
+        Sticky::Corrupt => "The selection is unreadable — /use <session>".to_owned(),
+        Sticky::Unset => "No session selected — /use <session>. (/list)".to_owned(),
     }
 }
 
-/// Plain text with no reply: the sticky override, else the orchestrator
-/// .
+/// Plain text with no reply: the selected session, REVALIDATED every time.
 fn sticky_route(text: &str, sessions: &[RunningSession], sticky: &Sticky) -> Route {
     match sticky {
-        // REVALIDATED, every time.
-        Sticky::Set { session, agent } => deliver_route(Verb::Send, session, agent, text, sessions),
-        Sticky::Corrupt => {
-            Route::Answer("Current target is unset/corrupt — /use <session> <agent>".to_owned())
+        Sticky::Set { session, agent } => {
+            let seat = Some(agent.as_str()).filter(|agent| *agent != ANY_SEAT);
+            chat_route(session, seat, text, sessions, Chosen::Sticky)
         }
-        Sticky::Unset => match find_orchestrator(sessions) {
-            Some(session) => deliver_route(
-                Verb::Send,
-                &session.name,
-                session.main.as_deref().unwrap_or_default(),
-                text,
-                sessions,
-            ),
-            None => Route::Answer(
-                "No orchestrator running and no /use target set. Start one with 'ae \
-                 orchestrator' (then just talk to it), reply to a message, use @session:agent \
-                 <msg>, or /use <session> <agent>. (/help)"
-                    .to_owned(),
-            ),
-        },
+        Sticky::Corrupt => Route::Answer(
+            "The selection is unreadable — nothing was sent. /use <session>".to_owned(),
+        ),
+        Sticky::Unset => Route::Answer(CHOOSE.to_owned()),
     }
 }
 
-/// Resolve a session+agent pair and build the delivery, or the refusal that
-/// explains which half did not resolve.
-fn deliver_route(
-    verb: Verb,
+/// Resolve a session (and a seat, when one is named) and build the ask, or
+/// the refusal that explains which half did not resolve.
+fn chat_route(
     reference: &str,
-    agent: &str,
+    seat: Option<&str>,
     text: &str,
     sessions: &[RunningSession],
+    chosen: Chosen,
 ) -> Route {
-    match revalidate(reference, agent, sessions) {
-        Ok((session, canonical)) => Route::Deliver {
-            verb,
-            session: session.name.clone(),
-            dir: session.dir.clone(),
-            agent: canonical,
+    match revalidate(reference, seat, sessions) {
+        Ok(target) => Route::Chat {
+            target,
             text: text.to_owned(),
+            chosen,
         },
         Err(refusal) => Route::Answer(refusal),
     }
 }
 
-/// **THE ONE REVALIDATION** every route passes through.
-fn revalidate<'a>(
+/// **THE ONE REVALIDATION** every route passes through: one running session
+/// with a lead pair, and the named seat one of that pair.
+fn revalidate(
     reference: &str,
-    agent: &str,
-    sessions: &'a [RunningSession],
-) -> Result<(&'a RunningSession, String), String> {
+    seat: Option<&str>,
+    sessions: &[RunningSession],
+) -> Result<Target, String> {
     let session = match resolve_session(sessions, reference) {
         Resolved::One(session) => session,
         Resolved::Ambiguous => {
             return Err(format!(
-                "Ambiguous session '{reference}' — be more specific"
+                "Ambiguous session '{reference}' — be more specific; nothing was sent"
             ));
         }
         Resolved::Missing => {
-            return Err(format!("No running session matching '{reference}'"));
+            return Err(format!(
+                "No running session matching '{reference}' — nothing was sent"
+            ));
         }
     };
-    match resolve_agent(session, agent) {
-        Resolved::One(canonical) => Ok((session, canonical)),
-        Resolved::Ambiguous => Err(format!(
-            "Ambiguous agent '{agent}' in {} — use alias:name",
-            session.name
-        )),
-        Resolved::Missing => Err(format!("No agent '{agent}' in session {}", session.name)),
+    if session.pair.is_empty() {
+        return Err(format!("{} has no lead pair to ask", session.name));
     }
+    let seat = match seat {
+        Some(want) => seat_named(session, want)?,
+        None => None,
+    };
+    Ok(Target {
+        session: session.name.clone(),
+        dir: session.dir.clone(),
+        session_id: session.session_id.clone(),
+        pair: session.pair.clone(),
+        seat,
+    })
+}
+
+/// The lead-pair seat `want` names in `session` — by its name, or as the
+/// roster's `alias:name` — or `None` for [`ANY_SEAT`].
+fn seat_named(session: &RunningSession, want: &str) -> Result<Option<String>, String> {
+    if want.is_empty() || want == ANY_SEAT {
+        return Ok(None);
+    }
+    let name = want.rsplit_once(':').map_or(want, |(_, name)| name);
+    if session.pair.iter().any(|seat| seat == name) {
+        return Ok(Some(name.to_owned()));
+    }
+    Err(format!(
+        "'{want}' is not a lead-pair seat of {} ({}) — nothing was sent",
+        session.name,
+        session.pair.join(", ")
+    ))
 }
 
 /// Read the header line of a message THIS bridge forwarded, and recover the
@@ -518,9 +478,8 @@ fn split_word(text: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Inbound, ORCHESTRATOR, Resolved, Route, RunningSession, Sticky, Verb, decide,
-        find_orchestrator, parse_reply_target, parse_sticky, render_sticky, resolve_agent,
-        resolve_session, split_word,
+        ANY_SEAT, Chosen, Inbound, Resolved, Route, RunningSession, Sticky, Target, decide,
+        parse_reply_target, parse_sticky, render_sticky, resolve_session, split_word,
     };
     use std::path::PathBuf;
 
@@ -534,14 +493,18 @@ mod tests {
             meta_agent: false,
             main: agents.first().map(|agent| (*agent).to_owned()),
             agents: agents.iter().map(|agent| (*agent).to_owned()).collect(),
+            pair: agents
+                .iter()
+                .take(2)
+                .map(|agent| {
+                    agent
+                        .rsplit_once(':')
+                        .map_or(*agent, |(_, name)| name)
+                        .to_owned()
+                })
+                .collect(),
             last_active: Some(NOW),
         }
-    }
-
-    fn orchestrator(name: &str) -> RunningSession {
-        let mut session = session(name, &["claude:lead"]);
-        session.meta_agent = true;
-        session
     }
 
     fn plain(text: &str) -> Inbound<'_> {
@@ -551,79 +514,148 @@ mod tests {
         }
     }
 
+    fn target(name: &str, pair: &[&str], seat: Option<&str>) -> Target {
+        Target {
+            session: name.to_owned(),
+            dir: PathBuf::from("/sessions").join(name),
+            session_id: format!("{name}-0123456789abcdef"),
+            pair: pair.iter().map(|seat| (*seat).to_owned()).collect(),
+            seat: seat.map(ToOwned::to_owned),
+        }
+    }
+
     #[test]
-    fn plain_text_with_no_override_goes_to_the_running_orchestrator() {
-        // Delivery to the orchestrator.
-        let world = vec![session("work", &["codex:dev"]), orchestrator(ORCHESTRATOR)];
-        let route = decide(plain("status please"), &world, &Sticky::Unset, NOW);
+    fn plain_text_with_nothing_selected_is_answered_and_never_delivered() {
+        let world = vec![session("work", &["claude:lead", "codex:colead"])];
+        let Route::Answer(text) = decide(plain("status please"), &world, &Sticky::Unset, NOW)
+        else {
+            panic!("plain text with no selection must not reach a chat");
+        };
+        assert!(text.contains("/use <session>"), "{text}");
+        let Route::Answer(text) = decide(plain("status please"), &world, &Sticky::Corrupt, NOW)
+        else {
+            panic!("a corrupt selection must not reach a chat");
+        };
+        assert!(text.contains("nothing was sent"), "{text}");
+    }
+
+    #[test]
+    fn use_selects_a_session_for_the_router_or_a_named_pair_seat_and_clear_unselects() {
+        let world = vec![session(
+            "work",
+            &["claude:lead", "codex:colead", "codex:dev"],
+        )];
         assert_eq!(
-            route,
-            Route::Deliver {
-                verb: Verb::Send,
-                session: ORCHESTRATOR.to_owned(),
-                dir: PathBuf::from("/sessions/orchestrator"),
-                agent: "claude:lead".to_owned(),
-                text: "status please".to_owned(),
+            decide(plain("/use work"), &world, &Sticky::Unset, NOW),
+            Route::Use {
+                session: "work".to_owned(),
+                agent: ANY_SEAT.to_owned(),
             }
         );
-    }
-
-    #[test]
-    fn plain_text_with_no_orchestrator_is_start_guidance_rather_than_silence() {
-        // Second half: the absence has to SAY something.
-        let world = vec![session("work", &["codex:dev"])];
-        let Route::Answer(text) = decide(plain("hello"), &world, &Sticky::Unset, NOW) else {
-            panic!("a message with nowhere to go must be answered, not delivered");
+        assert_eq!(
+            decide(plain("/use work codex:colead"), &world, &Sticky::Unset, NOW),
+            Route::Use {
+                session: "work".to_owned(),
+                agent: "colead".to_owned(),
+            }
+        );
+        let Route::Answer(text) = decide(plain("/use work dev"), &world, &Sticky::Unset, NOW)
+        else {
+            panic!("a worker is not a chat seat");
         };
-        assert!(text.contains("No orchestrator running"), "{text}");
-        assert!(text.contains("ae orchestrator"), "{text}");
+        assert!(text.contains("not a lead-pair seat"), "{text}");
+        assert_eq!(
+            decide(plain("/use clear"), &world, &Sticky::Unset, NOW),
+            Route::Unuse
+        );
+        let any = Sticky::Set {
+            session: "work".to_owned(),
+            agent: ANY_SEAT.to_owned(),
+        };
+        assert_eq!(
+            decide(plain("hello"), &world, &any, NOW),
+            Route::Chat {
+                target: target("work", &["lead", "colead"], None),
+                text: "hello".to_owned(),
+                chosen: Chosen::Sticky,
+            }
+        );
+        let Route::Answer(selected) = decide(plain("/use"), &world, &any, NOW) else {
+            panic!("/use answers");
+        };
+        assert!(selected.contains("Selected: work"), "{selected}");
     }
 
     #[test]
-    fn the_canonical_orchestrator_beats_the_deprecated_hub_and_hub_beats_nothing() {
-        // `hub` still WORKS, and `orchestrator` still WINS.
-        let both = vec![orchestrator("hub"), orchestrator(ORCHESTRATOR)];
-        assert_eq!(
-            find_orchestrator(&both).map(|session| session.name.clone()),
-            Some(ORCHESTRATOR.to_owned())
-        );
-        let legacy = vec![session("work", &["codex:dev"]), orchestrator("hub")];
-        assert_eq!(
-            find_orchestrator(&legacy).map(|session| session.name.clone()),
-            Some("hub".to_owned()),
-            "the deprecated alias must still be addressable"
-        );
-        // And a meta-agent session under any other name is the last resort,
-        // so an operator who renamed theirs is not locked out.
-        let other = vec![orchestrator("brain")];
-        assert_eq!(
-            find_orchestrator(&other).map(|session| session.name.clone()),
-            Some("brain".to_owned())
-        );
-    }
-
-    #[test]
-    fn the_deprecated_hub_outranks_any_other_meta_agent_session() {
-        // MIDDLE rung, which the last-resort fallback hides: with a
-        // `hub` and some other meta-agent session both running, `hub` must win
-        // — otherwise "the alias is still accepted" degrades into "whichever
-        // session the scan happened to list first".
-        let world = vec![orchestrator("brain"), orchestrator("hub")];
-        assert_eq!(
-            find_orchestrator(&world).map(|session| session.name.clone()),
-            Some("hub".to_owned()),
-            "the deprecated alias must outrank an unnamed meta-agent session"
-        );
-        // And the canonical name still beats both.
-        let all = vec![
-            orchestrator("brain"),
-            orchestrator("hub"),
-            orchestrator(ORCHESTRATOR),
+    fn a_reply_asks_the_chat_it_came_from_and_keeps_a_pair_seat_that_spoke_it() {
+        let world = vec![
+            session("work", &["claude:lead", "codex:colead"]),
+            session("other", &["claude:lead"]),
         ];
+        let reply = |quoted| Inbound {
+            text: "yes, go ahead",
+            reply_to: Some(quoted),
+        };
+        let other = Sticky::Set {
+            session: "other".to_owned(),
+            agent: ANY_SEAT.to_owned(),
+        };
         assert_eq!(
-            find_orchestrator(&all).map(|session| session.name.clone()),
-            Some(ORCHESTRATOR.to_owned())
+            decide(reply("[work] colead\nready?"), &world, &other, NOW),
+            Route::Chat {
+                target: target("work", &["lead", "colead"], Some("colead")),
+                text: "yes, go ahead".to_owned(),
+                chosen: Chosen::Reply,
+            }
         );
+        assert_eq!(
+            decide(reply("[work] dev\nworker said"), &world, &other, NOW),
+            Route::Chat {
+                target: target("work", &["lead", "colead"], None),
+                text: "yes, go ahead".to_owned(),
+                chosen: Chosen::Reply,
+            },
+            "a row a non-pair actor spoke goes to the chat's own router"
+        );
+        let Route::Answer(text) = decide(reply("not this bridge's"), &world, &other, NOW) else {
+            panic!("an unreadable header must not fall through to a delivery");
+        };
+        assert!(text.contains("Couldn't tell which session"), "{text}");
+    }
+
+    #[test]
+    fn the_at_prefix_asks_one_session_once_and_a_named_seat_must_be_of_its_pair() {
+        let world = vec![session(
+            "work",
+            &["claude:lead", "codex:colead", "codex:dev"],
+        )];
+        assert_eq!(
+            decide(plain("@work:claude:lead do X"), &world, &Sticky::Unset, NOW),
+            Route::Chat {
+                target: target("work", &["lead", "colead"], Some("lead")),
+                text: "do X".to_owned(),
+                chosen: Chosen::Explicit,
+            }
+        );
+        for refused in ["@work:dev do X", "@work", "@nowhere do X"] {
+            assert!(
+                matches!(
+                    decide(plain(refused), &world, &Sticky::Unset, NOW),
+                    Route::Answer(_)
+                ),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_with_no_lead_pair_takes_no_ask() {
+        let mut bare = session("bare", &[]);
+        bare.pair.clear();
+        let Route::Answer(text) = decide(plain("@bare hi"), &[bare], &Sticky::Unset, NOW) else {
+            panic!("no pair, no ask");
+        };
+        assert!(text.contains("no lead pair"), "{text}");
     }
 
     #[test]
@@ -645,41 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn use_with_no_arguments_reports_where_plain_messages_are_going() {
-        // All three states, because each is a different answer to the same
-        // question and an empty string would be a plausible-looking bug.
-        let world = vec![session("work", &["codex:dev"]), orchestrator(ORCHESTRATOR)];
-        let set = Sticky::Set {
-            session: "work".to_owned(),
-            agent: "codex:dev".to_owned(),
-        };
-        let Route::Answer(current) = decide(plain("/use"), &world, &set, NOW) else {
-            panic!("/use answers");
-        };
-        assert!(
-            current.contains("Current target: work → codex:dev"),
-            "{current}"
-        );
-        assert!(current.contains("/use clear"), "{current}");
-
-        let Route::Answer(default) = decide(plain("/use"), &world, &Sticky::Unset, NOW) else {
-            panic!("/use answers");
-        };
-        assert!(default.contains("No override set"), "{default}");
-        assert!(default.contains("orchestrator → claude:lead"), "{default}");
-
-        let Route::Answer(none) = decide(plain("/use"), &[], &Sticky::Unset, NOW) else {
-            panic!("/use answers");
-        };
-        assert!(none.contains("no orchestrator running"), "{none}");
-
-        let Route::Answer(broken) = decide(plain("/use"), &world, &Sticky::Corrupt, NOW) else {
-            panic!("/use answers");
-        };
-        assert!(broken.contains("unset/corrupt"), "{broken}");
-    }
-
-    #[test]
     fn every_age_band_has_its_own_wording_and_its_own_boundary() {
         // The bands are what `/list` is FOR, and an off-by-one at a boundary
         // reads as a plausible age rather than as a bug.
@@ -695,67 +692,6 @@ mod tests {
         assert_eq!(relative_age(NOW, Some(NOW - 604_800)), "7d ago");
         // A clock that went backwards is still under the first bound.
         assert_eq!(relative_age(NOW, Some(NOW + 60)), "just now");
-    }
-
-    #[test]
-    fn an_orchestrator_with_no_main_agent_is_not_a_destination() {
-        let mut headless = orchestrator(ORCHESTRATOR);
-        headless.main = None;
-        headless.agents.clear();
-        assert!(find_orchestrator(&[headless]).is_none());
-    }
-
-    #[test]
-    fn use_sets_an_override_and_clear_restores_orchestrator_routing() {
-        // Both halves.
-        let world = vec![session("work", &["codex:dev"]), orchestrator(ORCHESTRATOR)];
-        assert_eq!(
-            decide(plain("/use work dev"), &world, &Sticky::Unset, NOW),
-            Route::Use {
-                session: "work".to_owned(),
-                agent: "codex:dev".to_owned(),
-            },
-            "the override must store the CANONICAL agent, not what was typed"
-        );
-        for spelling in ["/use clear", "/use off", "/use none"] {
-            assert_eq!(
-                decide(plain(spelling), &world, &Sticky::Unset, NOW),
-                Route::Unuse,
-                "{spelling}"
-            );
-        }
-    }
-
-    #[test]
-    fn an_override_redirects_plain_text_away_from_the_orchestrator() {
-        let world = vec![session("work", &["codex:dev"]), orchestrator(ORCHESTRATOR)];
-        let sticky = Sticky::Set {
-            session: "work".to_owned(),
-            agent: "codex:dev".to_owned(),
-        };
-        let Route::Deliver { session, agent, .. } = decide(plain("ping"), &world, &sticky, NOW)
-        else {
-            panic!("an override must route");
-        };
-        assert_eq!((session.as_str(), agent.as_str()), ("work", "codex:dev"));
-    }
-
-    #[test]
-    fn an_override_naming_a_session_that_has_stopped_is_refused_not_followed() {
-        // The override is revalidated on every use — it is a note about the
-        // past, and the past is where a stopped session lives.
-        let world = vec![orchestrator(ORCHESTRATOR)];
-        let sticky = Sticky::Set {
-            session: "gone".to_owned(),
-            agent: "codex:dev".to_owned(),
-        };
-        let Route::Answer(text) = decide(plain("ping"), &world, &sticky, NOW) else {
-            panic!("a stale override must not deliver");
-        };
-        assert!(
-            text.contains("No running session matching 'gone'"),
-            "{text}"
-        );
     }
 
     #[test]
@@ -778,31 +714,6 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_reply_goes_to_the_agent_the_quoted_event_came_from() {
-        let world = vec![session("work", &["codex:dev"]), orchestrator(ORCHESTRATOR)];
-        let route = decide(
-            Inbound {
-                text: "yes, go ahead",
-                reply_to: Some("[work] codex:dev\nready?"),
-            },
-            &world,
-            &Sticky::Unset,
-            NOW,
-        );
-        assert_eq!(
-            route,
-            Route::Deliver {
-                verb: Verb::Send,
-                session: "work".to_owned(),
-                dir: PathBuf::from("/sessions/work"),
-                agent: "codex:dev".to_owned(),
-                text: "yes, go ahead".to_owned(),
-            },
-            "a reply must beat the orchestrator default"
-        );
-    }
-
-    #[test]
     fn the_reply_header_is_read_in_both_the_rust_and_the_frozen_bash_shapes() {
         // The renderer emits `[session] actor`; a header shaped
         // `[session] action  actor → target` is still read, so older messages
@@ -819,65 +730,6 @@ mod tests {
         for junk in ["", "no bracket", "[unterminated", "[work] ", "[] actor"] {
             assert_eq!(parse_reply_target(junk), None, "{junk:?}");
         }
-    }
-
-    #[test]
-    fn an_unreadable_reply_header_is_answered_rather_than_guessed_at() {
-        let world = vec![session("work", &["codex:dev"]), orchestrator(ORCHESTRATOR)];
-        let Route::Answer(text) = decide(
-            Inbound {
-                text: "thanks",
-                reply_to: Some("a message this bridge did not write"),
-            },
-            &world,
-            &Sticky::Unset,
-            NOW,
-        ) else {
-            panic!("an unreadable header must not fall through to a delivery");
-        };
-        assert!(text.contains("Couldn't tell which agent"), "{text}");
-    }
-
-    #[test]
-    fn an_agent_reference_can_never_escape_the_session_it_was_resolved_in() {
-        // Every one of these is a legal target for the session
-        // helpers' own grammar, and none of them may resolve here.
-        let world = vec![session("work", &["codex:dev"]), session("other", &["cl:x"])];
-        for escape in [
-            "%3",
-            "@other:cl:x",
-            "telegram:123",
-            "cl:x",
-            "../other/send",
-            "",
-        ] {
-            let route = decide(
-                plain(&format!("@work:{escape} do it")),
-                &world,
-                &Sticky::Unset,
-                NOW,
-            );
-            assert!(
-                matches!(route, Route::Answer(_)),
-                "{escape} resolved to a delivery: {route:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_bare_agent_name_resolves_only_while_it_is_unique() {
-        let one = session("work", &["codex:dev", "claude:lead"]);
-        assert_eq!(
-            resolve_agent(&one, "dev"),
-            Resolved::One("codex:dev".to_owned())
-        );
-        let two = session("work", &["codex:dev", "claude:dev"]);
-        assert_eq!(resolve_agent(&two, "dev"), Resolved::Ambiguous);
-        assert_eq!(
-            resolve_agent(&two, "codex:dev"),
-            Resolved::One("codex:dev".to_owned())
-        );
-        assert_eq!(resolve_agent(&two, "nobody"), Resolved::Missing);
     }
 
     #[test]
@@ -923,67 +775,21 @@ mod tests {
     }
 
     #[test]
-    fn the_session_command_validates_its_verb_and_its_shape() {
-        let world = vec![session("work", &["codex:dev"])];
-        let Route::Answer(bad_verb) = decide(
-            plain("/session work poke dev hi"),
-            &world,
-            &Sticky::Unset,
-            NOW,
-        ) else {
-            panic!("an unknown verb must not deliver");
-        };
-        assert!(bad_verb.contains("Unknown verb 'poke'"), "{bad_verb}");
-        let Route::Answer(usage) = decide(plain("/session work send"), &world, &Sticky::Unset, NOW)
-        else {
-            panic!("a short command must not deliver");
-        };
-        assert!(usage.starts_with("Usage: /session"), "{usage}");
-        assert!(matches!(
-            decide(
-                plain("/session work send dev hello"),
-                &world,
-                &Sticky::Unset,
-                NOW
-            ),
-            Route::Deliver { .. }
-        ));
-    }
-
-    #[test]
     fn an_unknown_slash_command_is_named_back_rather_than_routed_as_text() {
-        let world = vec![orchestrator(ORCHESTRATOR)];
+        let world = vec![session("work", &["claude:lead"])];
         let Route::Answer(text) = decide(plain("/frobnicate"), &world, &Sticky::Unset, NOW) else {
-            panic!("an unknown command must not become a message to the orchestrator");
+            panic!("an unknown command must not become a message to a chat");
         };
         assert!(text.contains("Unknown command: /frobnicate"), "{text}");
     }
 
     #[test]
     fn a_command_addressed_to_the_bot_by_name_is_still_that_command() {
-        let world = vec![orchestrator(ORCHESTRATOR)];
+        let world = vec![session("work", &["claude:lead"])];
         let Route::Answer(text) = decide(plain("/list@ae_bot"), &world, &Sticky::Unset, NOW) else {
             panic!("/list@bot must be /list");
         };
         assert!(text.starts_with("Running sessions:"), "{text}");
-    }
-
-    #[test]
-    fn the_help_text_teaches_orchestrator_and_never_hub() {
-        // The alias is accepted, not taught.
-        let Route::Answer(help) = decide(plain("/help"), &[], &Sticky::Unset, NOW) else {
-            panic!("/help answers");
-        };
-        assert!(help.contains("orchestrator"), "{help}");
-        assert!(
-            !help.contains("hub"),
-            "the deprecated name is being taught: {help}"
-        );
-        // An empty message is help too.
-        assert!(matches!(
-            decide(plain("   "), &[], &Sticky::Unset, NOW),
-            Route::Answer(_)
-        ));
     }
 
     #[test]
@@ -999,17 +805,6 @@ mod tests {
             panic!("/list answers");
         };
         assert!(empty.contains("(no running sessions)"), "{empty}");
-    }
-
-    #[test]
-    fn a_corrupt_override_is_reported_rather_than_silently_ignored() {
-        // Falling back to the orchestrator here would route a message to
-        // somewhere the operator did not choose.
-        let world = vec![orchestrator(ORCHESTRATOR)];
-        let Route::Answer(text) = decide(plain("hello"), &world, &Sticky::Corrupt, NOW) else {
-            panic!("a corrupt override must not fall through to the orchestrator");
-        };
-        assert!(text.contains("unset/corrupt"), "{text}");
     }
 
     #[test]
@@ -1034,5 +829,197 @@ mod tests {
         assert_eq!(split_word("  one   two three "), ("one", "two three "));
         assert_eq!(split_word("solo"), ("solo", ""));
         assert_eq!(split_word("   "), ("", ""));
+    }
+
+    // Frozen independent acceptance: tgchat-nav, OpenAI GPT-6.1-Sol.
+    // Install byte-identically inside src/telegram/routing.rs::tests.
+    fn nav_session(name: &str, id: &str) -> super::RunningSession {
+        super::RunningSession {
+            name: name.to_owned(),
+            dir: std::path::PathBuf::from("/sessions").join(name),
+            session_id: id.to_owned(),
+            meta_agent: false,
+            main: Some("claude:lead".to_owned()),
+            agents: vec![
+                "claude:lead".to_owned(),
+                "codex:colead".to_owned(),
+                "codex:worker".to_owned(),
+            ],
+            pair: vec!["lead".to_owned(), "colead".to_owned()],
+            last_active: Some(1_792_141_200),
+        }
+    }
+
+    #[test]
+    fn nav_plain_text_never_guesses_even_a_single_orchestrator_session() {
+        let mut only = nav_session("aedev", "abc-first");
+        only.meta_agent = true;
+        let route = super::decide(
+            super::Inbound {
+                text: "phone question",
+                reply_to: None,
+            },
+            &[only],
+            &super::Sticky::Unset,
+            1_792_141_200,
+        );
+        assert!(
+            matches!(route, super::Route::Answer(ref body) if body.contains("/use")),
+            "plain text guessed a session: {route:?}"
+        );
+    }
+
+    #[test]
+    fn nav_explicit_session_wins_and_captures_shared_chat_identity() {
+        let route = super::decide(
+            super::Inbound {
+                text: "@aedev phone question",
+                reply_to: None,
+            },
+            &[
+                nav_session("aedev", "abc-first"),
+                nav_session("assistant", "xyz-second"),
+            ],
+            &super::Sticky::Set {
+                session: "assistant".to_owned(),
+                agent: "colead".to_owned(),
+            },
+            1_792_141_200,
+        );
+        match route {
+            super::Route::Chat { target, text, .. } => {
+                assert_eq!(target.session, "aedev");
+                assert_eq!(target.session_id, "abc-first");
+                assert_eq!(target.pair, vec!["lead", "colead"]);
+                assert_eq!(
+                    target.seat, None,
+                    "unspecified seat must reach normal pair chooser"
+                );
+                assert_eq!(text, "phone question");
+            }
+            other => panic!("explicit session did not enter shared chat: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nav_reply_routes_original_session_over_current_sticky_selection() {
+        let route = super::decide(
+            super::Inbound {
+                text: "follow up",
+                reply_to: Some("[aedev] human:chat\noriginal question"),
+            },
+            &[
+                nav_session("aedev", "abc-first"),
+                nav_session("assistant", "xyz-second"),
+            ],
+            &super::Sticky::Set {
+                session: "assistant".to_owned(),
+                agent: "colead".to_owned(),
+            },
+            1_792_141_200,
+        );
+        match route {
+            super::Route::Chat { target, text, .. } => {
+                assert_eq!(target.session, "aedev");
+                assert_eq!(
+                    target.seat, None,
+                    "human header must use normal pair routing"
+                );
+                assert_eq!(text, "follow up");
+            }
+            other => panic!("reply lost original session: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nav_sticky_routes_selected_session_and_stale_sticky_refuses() {
+        let sticky = super::Sticky::Set {
+            session: "assistant".to_owned(),
+            agent: "colead".to_owned(),
+        };
+        let sessions = vec![
+            nav_session("aedev", "abc-first"),
+            nav_session("assistant", "xyz-second"),
+        ];
+        let selected = super::decide(
+            super::Inbound {
+                text: "selected question",
+                reply_to: None,
+            },
+            &sessions,
+            &sticky,
+            1_792_141_200,
+        );
+        assert!(
+            matches!(selected, super::Route::Chat { ref target, .. } if target.session == "assistant"),
+            "sticky session lost: {selected:?}"
+        );
+        let stale = super::decide(
+            super::Inbound {
+                text: "selected question",
+                reply_to: None,
+            },
+            &sessions[..1],
+            &sticky,
+            1_792_141_200,
+        );
+        assert!(
+            matches!(stale, super::Route::Answer(_)),
+            "stale sticky fell back to another session: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn nav_ambiguous_session_corrupt_sticky_and_worker_dm_are_refused() {
+        let sessions = vec![
+            nav_session("aedev", "abc-first"),
+            nav_session("assistant", "abc-second"),
+        ];
+        for (text, sticky) in [
+            ("@abc phone question", super::Sticky::Unset),
+            ("phone question", super::Sticky::Corrupt),
+            (
+                "/session aedev ask worker phone question",
+                super::Sticky::Unset,
+            ),
+        ] {
+            let route = super::decide(
+                super::Inbound {
+                    text,
+                    reply_to: None,
+                },
+                &sessions,
+                &sticky,
+                1_792_141_200,
+            );
+            assert!(
+                matches!(route, super::Route::Answer(_)),
+                "unsafe route admitted: {text}: {route:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nav_existing_session_command_still_routes_shared_chat_and_beats_reply() {
+        let route = super::decide(
+            super::Inbound {
+                text: "/session assistant ask colead command question",
+                reply_to: Some("[aedev] lead\nold answer"),
+            },
+            &[
+                nav_session("aedev", "abc-first"),
+                nav_session("assistant", "xyz-second"),
+            ],
+            &super::Sticky::Unset,
+            1_792_141_200,
+        );
+        match route {
+            super::Route::Chat { target, text, .. } => {
+                assert_eq!(target.session, "assistant");
+                assert_eq!(target.seat.as_deref(), Some("colead"));
+                assert_eq!(text, "command question");
+            }
+            other => panic!("existing command lost or reply stole it: {other:?}"),
+        }
     }
 }

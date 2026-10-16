@@ -67,7 +67,7 @@ mod paneview;
 #[cfg(test)]
 mod paneview_spec;
 pub mod peek;
-mod route;
+pub(crate) mod route;
 pub mod select;
 #[cfg(test)]
 mod select_spec;

@@ -513,8 +513,7 @@ fn tg_scratch(tag: &str) -> std::path::PathBuf {
     super::cli::OwnedScratch::root("tg", tag).keep()
 }
 
-/// Plant a session dir whose meta points at `socket`, and NO `send` helper — so
-/// delivery through it always refuses and the classifier is what is measured.
+/// Plant a session dir whose meta points at `socket`.
 fn plant_session(root: &std::path::Path, socket: &std::path::Path) -> std::path::PathBuf {
     let dir = root.join("sessions").join("work");
     let planted = std::fs::create_dir_all(&dir).and_then(|()| {
@@ -531,56 +530,23 @@ fn plant_session(root: &std::path::Path, socket: &std::path::Path) -> std::path:
 }
 
 #[test]
-fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
-    use ae::telegram::bridge::Helper;
-    use ae::telegram::inbound::{Deliver as _, Delivered, Refusal};
-    use ae::telegram::routing::Verb;
+fn a_session_is_routable_only_while_its_own_server_holds_it() {
     use ae::telegram::routing::World as _;
 
-    let scratch = tg_scratch("hard");
+    let scratch = tg_scratch("world");
     assert!(
         super::phase2::tmux_present(&scratch),
-        "tmux is not runnable here, so the hard/transient split cannot be proven; \
+        "tmux is not runnable here, so liveness cannot be proven; \
          install tmux or run this suite where one exists"
     );
     let socket = scratch.join("s.sock");
     let dir = plant_session(&scratch, &socket);
-
-    // ARM 1 — no server at all.
-    let refusal = Helper.deliver(Verb::Send, "work", &dir, "lead", "hello", "42");
-    assert!(
-        matches!(refusal, Delivered::No(Refusal::Transient)),
-        "an unreachable server must not shorten the bound: {refusal:?}"
-    );
-
-    // ARM 2 — a real server, really answering, with a pane that is NOT the
-    // target.
     let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(socket.clone()));
     let mut create = ae::tmux::server_args(&server);
     create.extend(["new-session", "-d", "-s", "work"].map(ToOwned::to_owned));
     let (created, _) = super::phase2::run_tmux(&create, &scratch);
     assert!(created, "the fixture server must start");
 
-    let refusal = Helper.deliver(Verb::Send, "work", &dir, "lead", "hello", "42");
-    assert!(
-        matches!(refusal, Delivered::No(Refusal::Hard)),
-        "a server that answered and does not hold the target is the hard case: {refusal:?}"
-    );
-
-    // ARM 3 — the same server, now holding a pane stamped as the target.
-    let mut stamp = ae::tmux::server_args(&server);
-    stamp.extend(["set-option", "-p", "-t", "work", "@ae_agent", "lead"].map(ToOwned::to_owned));
-    let (stamped, _) = super::phase2::run_tmux(&stamp, &scratch);
-    assert!(stamped, "stamping the pane must succeed");
-
-    let refusal = Helper.deliver(Verb::Send, "work", &dir, "lead", "hello", "42");
-    assert!(
-        matches!(refusal, Delivered::No(Refusal::Transient)),
-        "a pane that is present cannot be dead, whatever the send helper did: {refusal:?}"
-    );
-
-    // ARM 4 — the same real server, seen through the World the router resolves
-    // against.
     let machine = ae::telegram::bridge::Machine::under(ae::inventory::Roots::under(&scratch));
     let running = machine.running();
     assert_eq!(
@@ -593,6 +559,11 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
     );
     assert_eq!(running[0].dir, dir);
     assert_eq!(running[0].main.as_deref(), Some("lead"));
+    assert_eq!(
+        running[0].pair,
+        ["lead"],
+        "the chat's lead pair, main first"
+    );
 
     let mut kill = ae::tmux::server_args(&server);
     kill.push("kill-server".to_owned());

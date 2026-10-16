@@ -13,7 +13,7 @@
 - **One command.** `ae` starts a session, `ae` reattaches. That's the whole workflow.
 - **Agents talk to each other.** Each agent gets workspace context through its harness's supported launch channel — starting with which agent it is. They send messages by name, spawn new agents, and coordinate without manual wiring.
 - **Everything survives reboots.** Sessions, spawned agents, conversation history. Pick up exactly where you left off.
-- **One window to your whole fleet.** The optional [orchestrator seat](reference/commands.md#ae-orchestrator) (`ae orchestrator`) reads the fleet and relays for you — talk to *it* from your phone over [Telegram](reference/telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions) instead of juggling ten panes.
+- **One window to your whole fleet.** The optional [orchestrator seat](reference/commands.md#ae-orchestrator) (`ae orchestrator`) reads the fleet and relays for you — talk to *it* from your phone over [Telegram](reference/telegram.md#talking-to-the-orchestrator) instead of juggling ten panes.
 - **Nothing touches your repo.** Session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Small versioned runtime.** `~/.local/bin/ae` points directly to its matched Rust core in one immutable version directory.
 
@@ -52,7 +52,7 @@ Two agents in own tmux windows, talking to each other through helpers linked to 
 - [Message board](board.md)
 - [Chat](chat.md)
 - [App](app.md)
-- [Telegram bridge + orchestrator-centric routing](reference/telegram.md)
+- [Telegram bridge](reference/telegram.md)
 
 ### Doctrine
 

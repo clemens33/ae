@@ -51,12 +51,13 @@
 //! with `{"ok":false,"description":"chat not found"}`, and a bridge that reads
 //! only the status code marks that event delivered forever.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::json::{self, Value};
@@ -995,6 +996,36 @@ pub(crate) fn durable_write(path: &Path, contents: &str) -> io::Result<()> {
 
 // ─── the pump ────────────────────────────────────────────────────────────
 
+/// Append `line` to the private log at `path`, created `0600`: a record ae
+/// keeps for the human and never reads back. A link or any other node wearing
+/// the name is refused rather than followed.
+pub(crate) fn append_private(path: &Path, line: &str) -> io::Result<()> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the private log is classified, a link included, before the \
+                  append opens it — see clippy.toml"
+    )]
+    let probed = fs::symlink_metadata(path);
+    match probed {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the log is not a regular file",
+            ));
+        }
+        Ok(_) => {}
+        Err(why) if why.kind() == io::ErrorKind::NotFound => {}
+        Err(why) => return Err(why),
+    }
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(line.as_bytes())?;
+    file.sync_all()
+}
+
 /// The file name the cursor is stored under, inside a session's meta directory.
 pub const CURSOR_FILE: &str = "telegram-outbound.cursor";
 
@@ -1003,6 +1034,20 @@ const CHAT_ACTION: &str = "chat";
 
 /// The most bytes of log one pass will read.
 const MAX_PASS_BYTES: u64 = 1024 * 1024;
+
+/// The most windows one pump reads back to back.
+const MAX_WINDOWS: usize = 64;
+
+/// How many accepted lines a pump remembers across a ledger replacement.
+const SENT_MEMORY: usize = 4096;
+
+/// One ledger line's identity: its bytes, hashed.
+fn line_hash(line: &[u8]) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    line.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Retry schedule after a failed delivery: doubling, and capped.
 const BACKOFF_BASE: Duration = Duration::from_secs(1);
@@ -1035,8 +1080,10 @@ pub fn backoff_delay(failures: u32) -> Duration {
 pub struct Pass {
     /// Chat events Telegram accepted, and whose cursor advance is durable.
     pub delivered: usize,
-    /// Events skipped because they are not `say`'s chat events.
+    /// Events skipped because they are not human-facing chat rows.
     pub skipped: usize,
+    /// Records older than the cutoff: kept in the ledger, never forwarded.
+    pub stale: usize,
     /// The failure that ended the pass, if one did.
     pub failure: Option<PassFailure>,
     /// How long to wait before the next pass, given the failure streak so far.
@@ -1064,6 +1111,24 @@ impl fmt::Display for PassFailure {
     }
 }
 
+/// The request ids of the asks this bridge carried into a shared chat itself,
+/// so the outbound pump does not echo the human's own phone turn back.
+pub type Echoes = Arc<Mutex<BTreeSet<String>>>;
+
+/// What one session's pump forwards: the shared chat's human-facing rows of a
+/// session whose lead pair is `pair`, written at or after `since`.
+#[derive(Debug, Clone)]
+pub struct Watch {
+    /// The lead pair's seat names, as an event's `actor` spells them; empty
+    /// passes every `say`, so the bridge never watches a session without one.
+    pub pair: Vec<String>,
+    /// The cutoff, epoch seconds: an older record is kept in the ledger and
+    /// counted, never forwarded — whatever the cursor says.
+    pub since: i64,
+    /// The asks this bridge carried itself.
+    pub echoes: Echoes,
+}
+
 /// The outbound bridge for ONE session's event log.
 #[derive(Debug)]
 pub struct Outbound {
@@ -1072,18 +1137,40 @@ pub struct Outbound {
     label: String,
     scanned: Option<Cursor>,
     failures: u32,
+    watch: Watch,
+    /// The hashes of the last [`SENT_MEMORY`] lines Telegram accepted from
+    /// this pump: a ledger replaced under a running pump (resume retention
+    /// keeps its tail under a new inode) is not sent again line for line.
+    sent: std::collections::VecDeque<u64>,
+    /// Whether the last pass stopped at its window with more to read.
+    behind: bool,
 }
 
 impl Outbound {
     /// Bind a bridge to a session's meta directory.
     #[must_use]
     pub fn new(meta: &Path, label: impl Into<String>) -> Self {
+        let watch = Watch {
+            pair: Vec::new(),
+            since: i64::MIN,
+            echoes: Echoes::default(),
+        };
+        Self::watching(meta, label, watch)
+    }
+
+    /// Bind a bridge to a session's meta directory, forwarding what `watch`
+    /// passes.
+    #[must_use]
+    pub fn watching(meta: &Path, label: impl Into<String>, watch: Watch) -> Self {
         Self {
             log: meta.join(crate::store::EVENTS),
             cursor_path: meta.join(CURSOR_FILE),
             label: label.into(),
             scanned: None,
             failures: 0,
+            watch,
+            sent: std::collections::VecDeque::new(),
+            behind: false,
         }
     }
 
@@ -1098,19 +1185,42 @@ impl Outbound {
 
     /// Forward every chat event after the cursor, stopping at the first that is
     /// not accepted.
+    ///
+    /// A pass that stopped at its window with more to read runs again at once,
+    /// up to [`MAX_WINDOWS`] windows, so an old backlog the cutoff steps over
+    /// cannot hold a fresh record back for a pass interval per megabyte.
     pub fn pump(&mut self, api: &Api) -> Pass {
-        match self.pass(api) {
-            Ok(pass) => pass,
-            Err(failure) => {
-                self.failures = self.failures.saturating_add(1);
-                Pass {
-                    delivered: 0,
-                    skipped: 0,
-                    failure: Some(failure),
-                    retry_after: backoff_delay(self.failures),
+        let mut total = Pass {
+            delivered: 0,
+            skipped: 0,
+            stale: 0,
+            failure: None,
+            retry_after: Duration::ZERO,
+        };
+        for _ in 0..MAX_WINDOWS {
+            let pass = match self.pass(api) {
+                Ok(pass) => pass,
+                Err(failure) => {
+                    self.failures = self.failures.saturating_add(1);
+                    Pass {
+                        delivered: 0,
+                        skipped: 0,
+                        stale: 0,
+                        failure: Some(failure),
+                        retry_after: backoff_delay(self.failures),
+                    }
                 }
+            };
+            total.delivered += pass.delivered;
+            total.skipped += pass.skipped;
+            total.stale += pass.stale;
+            total.retry_after = pass.retry_after;
+            total.failure = pass.failure;
+            if total.failure.is_some() || !self.behind {
+                break;
             }
         }
+        total
     }
 
     /// The body of a pass.
@@ -1139,6 +1249,7 @@ impl Outbound {
             .cursor()
             .map_err(|why| PassFailure::Cursor(why.to_string()))?;
         let mut position = self.start(durable, inode, length);
+        let mut durable_at = durable;
 
         let from = position.offset;
         let window = read_window(&mut file, from, length)
@@ -1147,9 +1258,11 @@ impl Outbound {
         let mut pass = Pass {
             delivered: 0,
             skipped: 0,
+            stale: 0,
             failure: None,
             retry_after: Duration::ZERO,
         };
+        self.behind = false;
         // A FULL WINDOW WITH NO COMPLETE LINE IN IT is a record longer than the
         // pass can hold, and it would otherwise wedge the bridge in SILENCE:
         // every later pass reads the same prefix, finds no line, advances
@@ -1167,12 +1280,26 @@ impl Outbound {
         }
         for line in complete_lines(&window) {
             let width = as_bytes_count(line.len());
-            match self.forward(api, line) {
-                Forwarded::Skipped => {
+            let text = match self.wanted(line) {
+                Wanted::Skip => {
                     pass.skipped += 1;
                     position.offset += width;
+                    continue;
                 }
-                Forwarded::Delivered => {
+                Wanted::Stale => {
+                    pass.stale += 1;
+                    position.offset += width;
+                    continue;
+                }
+                Wanted::Send(text) => text,
+            };
+            if let Err(failure) = self.durable_before_send(position, &mut durable_at) {
+                pass.failure = Some(failure);
+                break;
+            }
+            match api.send_message(&text) {
+                Ok(()) => {
+                    self.remember(line);
                     // THE ADVANCE IS THE CHECKPOINT, and neither happens
                     // without the other.
                     let advanced = Cursor {
@@ -1186,9 +1313,10 @@ impl Outbound {
                         break;
                     }
                     position = advanced;
+                    durable_at = Some(advanced);
                     pass.delivered += 1;
                 }
-                Forwarded::Failed(failure) => {
+                Err(failure) => {
                     // Cursor untouched: this event is still owed.
                     pass.failure = Some(PassFailure::Send(failure));
                     break;
@@ -1196,6 +1324,16 @@ impl Outbound {
             }
         }
 
+        // A clean pass makes its whole scan durable — the rows it skipped,
+        // stepped over or recognised as its own echo — so a restart, which has
+        // lost the echo set and the scan, does not read them again.
+        if pass.failure.is_none()
+            && durable_at != Some(position)
+            && let Err(why) = store_cursor(&self.cursor_path, &position)
+        {
+            pass.failure = Some(PassFailure::Cursor(why.to_string()));
+        }
+        self.behind = pass.failure.is_none() && position.offset < length;
         self.scanned = Some(position);
         if pass.failure.is_some() {
             self.failures = self.failures.saturating_add(1);
@@ -1206,12 +1344,31 @@ impl Outbound {
         Ok(pass)
     }
 
+    /// Make `position` durable before a row past it is sent. NOTHING IS SENT
+    /// PAST A SCAN THAT IS NOT DURABLE: a row already sent is skipped from
+    /// memory, so without this a checkpoint that keeps failing would let the
+    /// scan run on and send every later row, each owed again after a restart.
+    fn durable_before_send(
+        &self,
+        position: Cursor,
+        durable: &mut Option<Cursor>,
+    ) -> Result<(), PassFailure> {
+        if position.offset > 0 && *durable != Some(position) {
+            store_cursor(&self.cursor_path, &position)
+                .map_err(|why| PassFailure::Cursor(why.to_string()))?;
+            *durable = Some(position);
+        }
+        Ok(())
+    }
+
     /// A pass that did nothing because there was nothing to do.
     fn quiet_pass(&mut self) -> Pass {
         self.failures = 0;
+        self.behind = false;
         Pass {
             delivered: 0,
             skipped: 0,
+            stale: 0,
             failure: None,
             retry_after: Duration::ZERO,
         }
@@ -1265,45 +1422,98 @@ impl Outbound {
         }
     }
 
-    /// Forward one raw log line, if it is a chat event.
-    fn forward(&self, api: &Api, line: &[u8]) -> Forwarded {
+    /// What one raw log line asks of the pass: the message a human-facing
+    /// chat row this bridge has not sent becomes.
+    fn wanted(&self, line: &[u8]) -> Wanted {
         // A line that is not UTF-8 is not an event this reader can frame.
         let Ok(text) = std::str::from_utf8(line) else {
-            return Forwarded::Skipped;
+            return Wanted::Skip;
         };
         let Ok(event) = crate::events::Event::parse_line(text.trim_end_matches('\n')) else {
             // A line this reader cannot parse is not a chat event it can
             // forward. tolerance applies to KEYS, not to a line that
             // is not an event at all.
-            return Forwarded::Skipped;
+            return Wanted::Skip;
         };
-        if event.action != CHAT_ACTION {
-            return Forwarded::Skipped;
+        if event.ts.epoch() < self.watch.since {
+            return Wanted::Stale;
         }
-        match api.send_message(&self.render(&event)) {
-            Ok(()) => Forwarded::Delivered,
-            Err(failure) => Forwarded::Failed(failure),
+        if self.sent.contains(&line_hash(line)) {
+            return Wanted::Skip;
         }
+        let dir = self.log.parent().unwrap_or_else(|| Path::new("."));
+        let Some((speaker, body)) = human_facing(&event, &self.watch, dir) else {
+            return Wanted::Skip;
+        };
+        Wanted::Send(self.render(speaker, &body))
     }
 
-    /// The message body one chat event becomes.
-    fn render(&self, event: &crate::events::Event) -> String {
-        let head = format!("[{}] {}", self.label, event.actor);
-        match event.summary.as_deref() {
-            Some(text) if !text.is_empty() => format!("{head}\n{text}"),
-            _ => head,
+    /// Remember `line` as accepted, forgetting the oldest past [`SENT_MEMORY`].
+    fn remember(&mut self, line: &[u8]) {
+        if self.sent.len() >= SENT_MEMORY {
+            self.sent.pop_front();
+        }
+        self.sent.push_back(line_hash(line));
+    }
+
+    /// The message body one chat row becomes: the session label and the
+    /// speaker on the first line, the header a reply is routed back by.
+    fn render(&self, speaker: &str, body: &str) -> String {
+        let head = format!("[{}] {speaker}", self.label);
+        if body.is_empty() {
+            head
+        } else {
+            format!("{head}\n{body}")
         }
     }
 }
 
-/// What happened to one line.
-enum Forwarded {
-    /// Not a chat event; nothing was sent.
-    Skipped,
-    /// Telegram accepted it.
-    Delivered,
-    /// Telegram did not.
-    Failed(SendFailure),
+/// Whether `event` is a row the human reads in the shared chat, and as what:
+/// a lead-pair seat's or ae's own `say`, a chat ask this bridge did not carry
+/// itself, or an answer to the chat or to a bridge. Every other record — a
+/// seat's talk with another, a worker's `say`, a state, a tool or a transcript
+/// row — is none.
+fn human_facing<'a>(
+    event: &'a crate::events::Event,
+    watch: &Watch,
+    dir: &Path,
+) -> Option<(&'a str, String)> {
+    let summary = || event.summary.clone().unwrap_or_default();
+    let target = event.target.as_deref().unwrap_or("");
+    let action = event.action.as_str();
+    if action == CHAT_ACTION {
+        let seat = watch.pair.is_empty() || watch.pair.contains(&event.actor);
+        let own = event.actor == "watchdog" || event.actor.starts_with("ae:");
+        return (seat || own).then(|| (event.actor.as_str(), summary()));
+    }
+    if action == crate::tracked::Kind::Ask.action() && event.actor == crate::tracked::CONSOLE_SINK {
+        let id = event.reference.as_deref().unwrap_or("");
+        let echoed = watch
+            .echoes
+            .lock()
+            .map_or(true, |carried| carried.contains(id));
+        if echoed {
+            return None;
+        }
+        let body = crate::console::stored_body(dir, event).unwrap_or_else(summary);
+        return Some((crate::tracked::display_sender(&event.actor), body));
+    }
+    let answers = target == crate::tracked::CONSOLE_SINK || target.starts_with("telegram:");
+    if action == crate::reply::ACTION && answers {
+        let body = crate::console::stored_body(dir, event).unwrap_or_else(summary);
+        return Some((event.actor.as_str(), body));
+    }
+    None
+}
+
+/// What one line asks of the pass.
+enum Wanted {
+    /// Not a human-facing chat row, or one this bridge already sent.
+    Skip,
+    /// Older than the cutoff: kept in the ledger, never sent.
+    Stale,
+    /// This message.
+    Send(String),
 }
 
 /// Read at most [`MAX_PASS_BYTES`] of the log, starting at `from`.
@@ -2179,11 +2389,12 @@ mod tests {
             );
             assert_eq!(outbound.cursor().unwrap(), None, "nothing was checkpointed");
 
-            // Three more passes while the disk stays unwritable.
+            // Three more passes while the disk stays unwritable: the sent
+            // row is remembered, and nothing past it goes out un-checkpointed.
             let mut retry_after = first.retry_after;
             for _ in 0..3 {
                 let again = outbound.pump(&fake.api());
-                assert_eq!(again.delivered, 1);
+                assert_eq!(again.delivered, 0);
                 assert!(matches!(again.failure, Some(PassFailure::Cursor(_))));
                 retry_after = again.retry_after;
             }
@@ -2195,23 +2406,32 @@ mod tests {
             sent.iter().all(|text| text.ends_with("one")),
             "the scan ran past the un-checkpointed event: {sent:?}"
         );
-        assert_eq!(sent.len(), 4, "one re-send per pass, no more: {sent:?}");
+        assert_eq!(
+            sent.len(),
+            1,
+            "no re-send while the bridge remembers it: {sent:?}"
+        );
 
         // And the re-attempts are THROTTLED by the existing failure streak
-        // rather than stopped by a threshold: a persistent checkpoint failure
-        // degrades to rate-capped at-least-once re-delivery of that one event.
+        // rather than stopped by a threshold; only a restart, which forgets,
+        // can send that one event again.
         assert_eq!(
             retry_after,
             Duration::from_secs(8),
             "four failures should be 8s"
         );
 
-        // Writable again: the owed event lands, is checkpointed, and the rest
-        // follows.
+        // Writable again: the scan is checkpointed past the sent event, and
+        // the rest follows.
         let recovered = outbound.pump(&fake.api());
-        assert_eq!(recovered.delivered, 3);
+        assert_eq!(recovered.delivered, 2);
         assert_eq!(recovered.failure, None);
         let sent = texts(&fake);
+        assert_eq!(
+            sent.iter().filter(|text| text.ends_with("one")).count(),
+            1,
+            "event one was sent more than once: {sent:?}"
+        );
         assert_eq!(
             sent.iter().filter(|text| text.ends_with("two")).count(),
             1,
@@ -2993,5 +3213,342 @@ mod tests {
             1
         );
         assert_eq!(texts(&fake), vec!["[s] a".to_owned()]);
+    }
+
+    // Frozen independent acceptance: tgchat-nav, OpenAI GPT-6.1-Sol.
+    // Install byte-identically inside src/telegram.rs::tests.
+    fn nav_watch(since: i64) -> super::Watch {
+        super::Watch {
+            pair: vec!["lead".to_owned(), "colead".to_owned()],
+            since,
+            echoes: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+        }
+    }
+
+    fn nav_shared_event(actor: &str, action: &str, target: &str, id: &str, text: &str) -> String {
+        format!(
+            r#"{{"ts":"2026-10-16T09:00:00Z","actor":"{actor}","action":"{action}","target":"{target}","ref":"{id}","actor_slot":"main","actor_session":"s","caller_server":"/t","caller_pane":"%1","caller_session_uuid":"11111111-1111-4111-8111-111111111111","summary":"{text}"}}"#
+        )
+    }
+
+    #[test]
+    fn nav_shared_chat_turn_and_answer_reach_real_http_with_session_label() {
+        let temp = Temp::new("nav-shared-positive");
+        append(
+            temp.path(),
+            &[
+                nav_shared_event("console:local", "ask", "lead", "app-1", "human question"),
+                nav_shared_event("lead", "reply", "console:local", "app-1", "human answer"),
+                chat_event("lead", "explicit human say"),
+            ],
+        );
+        let fake = Fake::one(Reply::ok());
+        let mut outbound = Outbound::watching(temp.path(), "aedev", nav_watch(i64::MIN));
+        let pass = outbound.pump(&fake.api());
+        assert_eq!(pass.failure, None);
+        let sent = texts(&fake);
+        assert_eq!(sent.len(), 3, "human ask/reply/say must all reach HTTP");
+        for body in ["human question", "human answer", "explicit human say"] {
+            assert!(
+                sent.iter()
+                    .any(|text| text.starts_with("[aedev]") && text.contains(body)),
+                "missing labelled human turn: {body}; got {sent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nav_worker_tool_and_status_events_cannot_masquerade_as_human_chat() {
+        let temp = Temp::new("nav-shared-negative");
+        append(
+            temp.path(),
+            &[
+                nav_shared_event("lead", "ask", "worker", "worker-1", "WORKER_ASK_SECRET"),
+                nav_shared_event("worker", "reply", "lead", "worker-1", "WORKER_REPLY_SECRET"),
+                nav_shared_event("worker", "send", "lead", "", "WORKER_SEND_SECRET"),
+                nav_shared_event(
+                    "worker",
+                    "review",
+                    "lead",
+                    "worker-2",
+                    "WORKER_REVIEW_SECRET",
+                ),
+                chat_event("worker", "WORKER_SAY_SECRET"),
+                nav_shared_event("lead", "state", "console:local", "", "STATUS_SECRET"),
+                nav_shared_event("lead", "tool", "console:local", "", "TOOL_SECRET"),
+                nav_shared_event(
+                    "lead",
+                    "transcript",
+                    "console:local",
+                    "",
+                    "TRANSCRIPT_SECRET",
+                ),
+                nav_shared_event(
+                    "lead",
+                    "reply",
+                    "console:local",
+                    "app-2",
+                    "visible control answer",
+                ),
+            ],
+        );
+        let fake = Fake::one(Reply::ok());
+        let mut outbound = Outbound::watching(temp.path(), "assistant", nav_watch(i64::MIN));
+        let pass = outbound.pump(&fake.api());
+        assert_eq!(pass.failure, None);
+        let sent = texts(&fake);
+        assert_eq!(
+            sent.len(),
+            1,
+            "only human reply should reach HTTP: {sent:?}"
+        );
+        assert!(sent[0].starts_with("[assistant]"));
+        assert!(sent[0].contains("visible control answer"));
+        assert!(!sent[0].contains("SECRET"));
+    }
+
+    #[test]
+    fn nav_shared_answer_send_failure_retries_then_restart_does_not_duplicate() {
+        let temp = Temp::new("nav-shared-retry");
+        append(
+            temp.path(),
+            &[nav_shared_event(
+                "lead",
+                "reply",
+                "console:local",
+                "app-3",
+                "recover this answer",
+            )],
+        );
+        let fake = Fake::one(Reply::json(503, r#"{"ok":false}"#));
+        let mut outbound = Outbound::watching(temp.path(), "aedev", nav_watch(i64::MIN));
+        let first = outbound.pump(&fake.api());
+        assert!(
+            first.failure.is_some(),
+            "failed platform send must be visible"
+        );
+        assert_eq!(texts(&fake).len(), 1, "failed send must reach real HTTP");
+        fake.script(vec![Reply::ok()]);
+        let second = outbound.pump(&fake.api());
+        assert_eq!(second.failure, None);
+        assert_eq!(texts(&fake).len(), 2, "failed human answer was discarded");
+        assert!(
+            texts(&fake)
+                .iter()
+                .all(|text| text.contains("recover this answer"))
+        );
+        drop(outbound);
+        let mut restarted = Outbound::watching(temp.path(), "aedev", nav_watch(i64::MIN));
+        assert_eq!(restarted.pump(&fake.api()).failure, None);
+        assert_eq!(
+            texts(&fake).len(),
+            2,
+            "accepted answer replayed after restart"
+        );
+    }
+
+    #[test]
+    fn nav_restart_cutoff_preserves_old_owed_event_locally_and_sends_fresh_answer() {
+        let temp = Temp::new("nav-cutoff-valid-cursor");
+        append(temp.path(), &[chat_event("lead", "OLD_OWED_ANSWER")]);
+        let inode = std::os::unix::fs::MetadataExt::ino(
+            &std::fs::metadata(temp.path().join("events.jsonl")).unwrap(),
+        );
+        store_cursor(
+            &temp.path().join(super::CURSOR_FILE),
+            &Cursor { inode, offset: 0 },
+        )
+        .unwrap();
+        append(
+            temp.path(),
+            &[nav_shared_event(
+                "lead",
+                "reply",
+                "console:local",
+                "app-fresh",
+                "fresh answer after cutoff",
+            )],
+        );
+        let fake = Fake::one(Reply::ok());
+        let mut outbound = Outbound::watching(temp.path(), "aedev", nav_watch(1_792_141_200));
+        let pass = outbound.pump(&fake.api());
+        assert_eq!(pass.failure, None);
+        let sent = texts(&fake);
+        assert_eq!(
+            sent.len(),
+            1,
+            "old valid cursor caused stale flood: {sent:?}"
+        );
+        assert!(sent[0].contains("fresh answer after cutoff"));
+        assert!(
+            std::fs::read_to_string(temp.path().join("events.jsonl"))
+                .unwrap()
+                .contains("OLD_OWED_ANSWER"),
+            "cutover destroyed preserved history"
+        );
+        assert_eq!(outbound.pump(&fake.api()).failure, None);
+        assert_eq!(
+            texts(&fake).len(),
+            1,
+            "fresh answer duplicated after cutover"
+        );
+    }
+
+    #[test]
+    fn nav_telegram_origin_ask_does_not_echo_but_app_ask_still_forwards() {
+        let temp = Temp::new("nav-no-echo");
+        append(
+            temp.path(),
+            &[
+                nav_shared_event(
+                    "console:local",
+                    "ask",
+                    "lead",
+                    "tg-inbound-1",
+                    "PHONE_ECHO_SECRET",
+                ),
+                nav_shared_event(
+                    "console:local",
+                    "ask",
+                    "lead",
+                    "app-independent-1",
+                    "visible app turn",
+                ),
+                nav_shared_event(
+                    "lead",
+                    "reply",
+                    "console:local",
+                    "tg-inbound-1",
+                    "visible phone answer",
+                ),
+            ],
+        );
+        let watch = nav_watch(i64::MIN);
+        watch
+            .echoes
+            .lock()
+            .unwrap()
+            .insert("tg-inbound-1".to_owned());
+        let fake = Fake::one(Reply::ok());
+        let mut outbound = Outbound::watching(temp.path(), "assistant", watch);
+        assert_eq!(outbound.pump(&fake.api()).failure, None);
+        let sent = texts(&fake);
+        assert_eq!(
+            sent.len(),
+            2,
+            "echo filtering dropped a real turn or emitted the phone echo: {sent:?}"
+        );
+        assert!(sent.iter().any(|text| text.contains("visible app turn")));
+        assert!(
+            sent.iter()
+                .any(|text| text.contains("visible phone answer"))
+        );
+        assert!(sent.iter().all(|text| !text.contains("PHONE_ECHO_SECRET")));
+    }
+
+    // Frozen independent acceptance: tgchat-nav, OpenAI GPT-6.1-Sol.
+    // Install byte-identically inside src/telegram.rs::tests, after other nav fixtures.
+    #[test]
+    fn nav_retention_replacement_keeps_failed_and_new_same_second_answers_without_replay() {
+        for failed in [false, true] {
+            let tag = if failed {
+                "nav-retain-failed"
+            } else {
+                "nav-retain-fresh"
+            };
+            let temp = Temp::new(tag);
+            let original = nav_shared_event(
+                "lead",
+                "reply",
+                "console:local",
+                "app-original",
+                "original answer",
+            );
+            append(temp.path(), std::slice::from_ref(&original));
+            let fake = Fake::one(if failed {
+                Reply::json(503, r#"{"ok":false}"#)
+            } else {
+                Reply::ok()
+            });
+            let mut outbound = Outbound::watching(temp.path(), "aedev", nav_watch(i64::MIN));
+            assert_eq!(outbound.pump(&fake.api()).failure.is_some(), failed);
+            assert_eq!(texts(&fake).len(), 1);
+            std::fs::rename(
+                temp.path().join("events.jsonl"),
+                temp.path().join("retained-evidence.jsonl"),
+            )
+            .unwrap();
+            let fresh = nav_shared_event(
+                "lead",
+                "reply",
+                "console:local",
+                "app-fresh-same-second",
+                "fresh same second",
+            );
+            append(temp.path(), &[original, fresh]);
+            fake.script(vec![Reply::ok()]);
+            assert_eq!(outbound.pump(&fake.api()).failure, None);
+            let sent = texts(&fake);
+            let expected = if failed { 3 } else { 2 };
+            assert_eq!(
+                sent.len(),
+                expected,
+                "retention discarded failed/fresh work or replayed accepted work (failed={failed}): {sent:?}"
+            );
+            assert!(sent.last().unwrap().contains("fresh same second"));
+            let original_attempts = sent
+                .iter()
+                .filter(|text| text.contains("original answer"))
+                .count();
+            assert_eq!(original_attempts, if failed { 2 } else { 1 });
+        }
+    }
+
+    // Frozen independent acceptance: tgchat-nav, OpenAI GPT-6.1-Sol.
+    // Install byte-identically inside src/telegram.rs::tests, after other nav fixtures.
+    #[test]
+    fn nav_echo_only_clean_pass_is_durable_before_bridge_restart_loses_memory() {
+        let temp = Temp::new("nav-echo-only-restart");
+        append(
+            temp.path(),
+            &[nav_shared_event(
+                "console:local",
+                "ask",
+                "lead",
+                "tg-echo-only",
+                "PHONE_ECHO_SECRET",
+            )],
+        );
+        let fake = Fake::one(Reply::ok());
+        let watch = nav_watch(i64::MIN);
+        watch
+            .echoes
+            .lock()
+            .unwrap()
+            .insert("tg-echo-only".to_owned());
+        let mut outbound = Outbound::watching(temp.path(), "aedev", watch);
+        assert_eq!(outbound.pump(&fake.api()).failure, None);
+        assert!(texts(&fake).is_empty());
+        drop(outbound);
+        let mut restarted = Outbound::watching(temp.path(), "aedev", nav_watch(i64::MIN));
+        assert_eq!(restarted.pump(&fake.api()).failure, None);
+        assert!(
+            texts(&fake).is_empty(),
+            "restart replayed a phone turn after its echo was already consumed"
+        );
+        append(
+            temp.path(),
+            &[nav_shared_event(
+                "console:local",
+                "ask",
+                "lead",
+                "app-after-restart",
+                "fresh app turn",
+            )],
+        );
+        assert_eq!(restarted.pump(&fake.api()).failure, None);
+        let sent = texts(&fake);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].contains("fresh app turn"));
     }
 }
