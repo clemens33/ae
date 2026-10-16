@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.86] - 2026-10-16
+- Draw every sidebar session and seat on one row
+- Draw fake TUI pastes only after their terminator
+
 ## [v2026.10.85] - 2026-10-16
 - Ask phone messages in a session's shared chat and relay only its human-facing rows
 
