@@ -22,7 +22,8 @@ use crate::transport;
 use super::{
     ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, claims, confirm_on_client,
     dir_exists, emit_lifecycle_event, handoff_clients_before_kill, kill_verified, lock, meta_value,
-    name_is_usable, path_exists, recorded_server, server_of, sessions_dir, worktrees_dir,
+    name_is_usable, path_exists, recorded_server, server_of, sessions_dir, views_gone,
+    worktrees_dir,
 };
 
 /// The usage line.
@@ -1346,6 +1347,17 @@ fn end_one(
             err,
             "  Nothing was stopped and nothing was deleted. Re-run 'ae end {name}' to see the current plan."
         )?;
+        return Ok(false);
+    }
+
+    // A session already gone may still have a pane view running its agents;
+    // ending it would archive and delete the state they run under.
+    if session_id.is_none()
+        && matches!(seen, Some(TmuxSight::Absent))
+        && let Some(server) = server.as_ref()
+        && !views_gone(server, &dir, name, "end", err)?
+    {
+        writeln!(err, "  Nothing was stopped and nothing was deleted.")?;
         return Ok(false);
     }
 

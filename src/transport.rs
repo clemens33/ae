@@ -233,7 +233,40 @@ pub fn observe_viewer(server: &ServerId, pane: &str) -> Option<tmux::ObservedVie
         return None;
     }
     let (succeeded, stdout) = run(PROGRAM, &tmux::viewer_args(server, pane));
+    let viewer = tmux::interpret_viewer(succeeded, &stdout)?;
+    let Some(view) = viewer
+        .session
+        .as_deref()
+        .filter(|name| tmux::is_view_session(name))
+    else {
+        return Some(viewer);
+    };
+    let home = home_of(server, view, pane)?;
+    let (succeeded, stdout) = run(PROGRAM, &tmux::viewer_args(server, &home.target));
     tmux::interpret_viewer(succeeded, &stdout)
+        .filter(|viewer| viewer.session.as_deref() == Some(home.name.as_str()))
+}
+
+/// The real session a native view stands in for, proven for one pane.
+struct Home {
+    /// The `$<n>` id the view recorded.
+    id: String,
+    /// That session's name, from the same read that listed the pane in it.
+    name: String,
+    /// The pane pinned inside it, `$<n>:.%<m>`.
+    target: String,
+}
+
+/// The real session the native view `view` recorded, when `pane` is one of
+/// its panes; `None` on any gap — never the view. tmux answers a pinned read
+/// for a pane outside the session too, so membership is read, not assumed.
+fn home_of(server: &ServerId, view: &str, pane: &str) -> Option<Home> {
+    let (succeeded, stdout) = run(PROGRAM, &tmux::view_of_args(server, view));
+    let id = succeeded.then(|| tmux::view_of_value(&stdout)).flatten()?;
+    let target = tmux::pinned_pane_target(&id, pane)?;
+    let (succeeded, stdout) = run(PROGRAM, &tmux::view_membership_args(server, &id));
+    let name = tmux::view_member_name(succeeded, &stdout, &id, pane)?;
+    Some(Home { id, name, target })
 }
 
 /// Whether `server` is something this transport may put on the wire.
@@ -936,7 +969,13 @@ pub fn observe_pane_place(server: &ServerId, pane: &str) -> Option<(String, Stri
         return None;
     }
     let (succeeded, stdout) = run(PROGRAM, &tmux::pane_place_args(server, pane));
-    tmux::interpret_pane_place(succeeded, &stdout)
+    let place = tmux::interpret_pane_place(succeeded, &stdout)?;
+    if !tmux::is_view_session(&place.0) {
+        return Some(place);
+    }
+    let home = home_of(server, &place.0, pane)?;
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_place_args(server, &home.target));
+    tmux::interpret_pane_place(succeeded, &stdout).filter(|(session, _)| *session == home.name)
 }
 
 /// The id tmux holds for the session named exactly `name` on `server`.
@@ -1029,7 +1068,20 @@ pub fn observe_pane_session_identity(
         return None;
     }
     let (succeeded, stdout) = run(PROGRAM, &tmux::pane_session_identity_args(server, pane));
-    tmux::interpret_pane_session_identity(succeeded, &stdout)
+    let identity = tmux::interpret_pane_session_identity(succeeded, &stdout)?;
+    // The format carries no name, so the session it answered for is named
+    // by its own id before it is believed.
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_name_of_args(server, &identity.id));
+    let session = tmux::interpret_session_option(succeeded, &stdout)?;
+    if !tmux::is_view_session(&session) {
+        return Some(identity);
+    }
+    let home = home_of(server, &session, pane)?;
+    let (succeeded, stdout) = run(
+        PROGRAM,
+        &tmux::pane_session_identity_args(server, &home.target),
+    );
+    tmux::interpret_pane_session_identity(succeeded, &stdout).filter(|seen| seen.id == home.id)
 }
 
 /// Publish several option values in one tmux process.
@@ -1168,7 +1220,14 @@ pub fn observe_current_session(server: &ServerId) -> Option<String> {
         return None;
     }
     let (succeeded, stdout) = run(PROGRAM, &tmux::current_session_args(server));
-    tmux::interpret_session_option(succeeded, &stdout)
+    let name = tmux::interpret_session_option(succeeded, &stdout)?;
+    if !tmux::is_view_session(&name) {
+        return Some(name);
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::view_of_args(server, &name));
+    let id = succeeded.then(|| tmux::view_of_value(&stdout)).flatten()?;
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_name_of_args(server, &id));
+    tmux::interpret_session_option(succeeded, &stdout).filter(|name| !tmux::is_view_session(name))
 }
 
 /// The socket path `server` names for itself, or `None` when it did not answer.
@@ -1494,16 +1553,22 @@ pub fn attach(server: &ServerId) -> u8 {
     }
 }
 
-/// Hand this terminal to a tmux client attached to `pane` of the proven
-/// `session_id`, marked as the view `token` owns, and report what tmux exited
-/// with once the human returns: `None` when it did not run, or a signal
-/// ended it.
+/// Hand this terminal to a tmux client attached to the view session `view`
+/// on `pane` of the proven `session_id`, marked as the view `token` owns, and
+/// report what tmux exited with once the human returns: `None` when it did
+/// not run, or a signal ended it.
 #[must_use]
-pub fn view_pane(server: &ServerId, session_id: &str, pane: &str, token: &str) -> Option<i32> {
+pub fn view_pane(
+    server: &ServerId,
+    session_id: &str,
+    view: &str,
+    pane: &str,
+    token: &str,
+) -> Option<i32> {
     if !addressable(server) {
         return None;
     }
-    let args = tmux::view_attach_args(server, session_id, pane, token);
+    let args = tmux::view_attach_args(server, session_id, view, pane, token);
     spawn(PROGRAM, &args, &[], Streams::Terminal, None)?
         .status
         .code()
@@ -1518,6 +1583,228 @@ pub fn bind_view_return(server: &ServerId) -> bool {
         && tmux::VIEW_RETURN_KEYS
             .iter()
             .all(|key| write_run(server, &tmux::view_return_bind_args(server, key)))
+}
+
+/// Create the view session `view` in `session_id`'s group; whether tmux took it.
+#[must_use]
+pub fn make_view(
+    server: &ServerId,
+    session_id: &str,
+    view: &str,
+    session: &str,
+    label: &str,
+    uuid: &str,
+) -> bool {
+    let line = crate::theme::view_status_format(tmux::VIEW_HINT);
+    let group = tmux::view_group_args(server, session_id, view, session, label, &line);
+    tmux::with_view_uuid(group, view, uuid).is_some_and(|args| write_run(server, &args))
+}
+
+/// Move the proven viewer `client` into the view session — the inside-tmux
+/// view; whether tmux took the whole chain.
+#[must_use]
+pub fn switch_view(
+    server: &ServerId,
+    session_id: &str,
+    view: &str,
+    pane: &str,
+    client: &str,
+    token: &str,
+    ret: &str,
+) -> bool {
+    write_run(
+        server,
+        &tmux::view_switch_args(server, session_id, view, pane, client, token, ret),
+    )
+}
+
+/// The session, window and pane one `client` shows, or `None`.
+#[must_use]
+pub fn observe_client_place(server: &ServerId, client: &str) -> Option<(String, String, String)> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::view_client_place_args(server, client));
+    tmux::interpret_view_client_place(succeeded, &stdout)
+}
+
+/// Destroy exactly the view session `view`; whether tmux took it.
+#[must_use]
+pub fn destroy_view(server: &ServerId, view: &str) -> bool {
+    write_run(server, &tmux::view_destroy_args(server, view))
+}
+
+/// What a stop found about the pane views of the session it stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopViews {
+    /// No view holds the session's windows.
+    Clear,
+    /// These view sessions still do, after every kill ae tried.
+    Held(Vec<String>),
+    /// tmux did not answer in a shape ae can judge.
+    Unreadable,
+}
+
+/// How long a kill waits before re-asking a verify that landed mid-exit —
+/// one scheduling breath, long enough for an exiting server to settle into
+/// an answer the strict proof can read.
+pub const KILL_VERIFY_SETTLE: Duration = Duration::from_millis(100);
+
+/// What one listing a stop reads said.
+enum ViewRead<T> {
+    Rows(T),
+    /// The listing failed with the clean-exit diagnostic — the strict proof's
+    /// own evidence that the server, and with it every session, is gone.
+    Gone,
+    Unreadable,
+}
+
+/// Run one listing a stop reads and judge it. A failure is judged by its own
+/// diagnostic, exactly as [`verify_session_absent`] judges one: a missing
+/// socket proves nothing. A failure that proves nothing is asked again ONCE
+/// past [`KILL_VERIFY_SETTLE`], because a read landing while the last kill's
+/// server is mid-exit answers `server exited unexpectedly`.
+fn read_views<T>(args: &[String], interpret: impl Fn(bool, &str) -> Option<T>) -> ViewRead<T> {
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(KILL_VERIFY_SETTLE);
+        }
+        let (succeeded, stdout, stderr) = run_captured(PROGRAM, args);
+        if let Some(rows) = interpret(succeeded, &stdout) {
+            return ViewRead::Rows(rows);
+        }
+        if succeeded {
+            return ViewRead::Unreadable;
+        }
+        if tmux::read_failure(&stderr) == tmux::Absence::Proven {
+            return ViewRead::Gone;
+        }
+    }
+    ViewRead::Unreadable
+}
+
+/// A view listing's rows: `None` when tmux did not answer in a shape ae can
+/// judge, and no rows when the server is proven gone — the last session's
+/// kill ends the server, and with it every view.
+fn view_rows<T>(
+    args: &[String],
+    interpret: impl Fn(bool, &str) -> Option<Vec<T>>,
+) -> Option<Vec<T>> {
+    match read_views(args, interpret) {
+        ViewRead::Rows(rows) => Some(rows),
+        ViewRead::Gone => Some(Vec::new()),
+        ViewRead::Unreadable => None,
+    }
+}
+
+/// Kill the views among `holders`, then read again with `holding`: the views
+/// still holding, or `None` when a read failed.
+fn sweep_views(
+    server: &ServerId,
+    holders: Vec<String>,
+    holding: impl Fn() -> Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    if holders.is_empty() {
+        return Some(holders);
+    }
+    for view in &holders {
+        let _ = run(PROGRAM, &tmux::kill_session_args(server, view));
+    }
+    holding()
+}
+
+/// Stop the real session `session_id` so that no pane view outlives it
+/// holding its windows: views holding a window of it, or recorded as views of
+/// it, die BEFORE it, the real kill is today's exact kill, and views that
+/// appeared meanwhile die after it. A snapshot or listing ae cannot read
+/// kills nothing; a view that survives the first sweep keeps the real session
+/// alive too.
+#[must_use]
+pub fn stop_views(server: &ServerId, session_id: &str) -> StopViews {
+    /// How many times a view still holding the dead session's windows is
+    /// killed again before the stop reports it.
+    const ROUNDS: usize = 3;
+    if !addressable(server) {
+        return StopViews::Unreadable;
+    }
+    let windows = match read_views(
+        &tmux::view_window_snapshot_args(server, session_id),
+        tmux::interpret_window_snapshot,
+    ) {
+        ViewRead::Rows(windows) => windows,
+        // No server, no session and no view: nothing is left to stop.
+        ViewRead::Gone => return StopViews::Clear,
+        ViewRead::Unreadable => return StopViews::Unreadable,
+    };
+    let holding = || {
+        let rows = view_rows(
+            &tmux::view_holder_listing_args(server),
+            tmux::interpret_view_holders,
+        )?;
+        Some(tmux::views_holding(&windows, session_id, &rows))
+    };
+    let Some(before) = holding() else {
+        return StopViews::Unreadable;
+    };
+    match sweep_views(server, before, holding) {
+        Some(left) if left.is_empty() => {}
+        Some(left) => return StopViews::Held(left),
+        None => return StopViews::Unreadable,
+    }
+    let _ = run(PROGRAM, &tmux::kill_session_args(server, session_id));
+    let Some(mut left) = holding() else {
+        return StopViews::Unreadable;
+    };
+    for _ in 0..ROUNDS {
+        if left.is_empty() {
+            return StopViews::Clear;
+        }
+        left = match sweep_views(server, left, holding) {
+            Some(left) => left,
+            None => return StopViews::Unreadable,
+        };
+    }
+    if left.is_empty() {
+        StopViews::Clear
+    } else {
+        StopViews::Held(left)
+    }
+}
+
+/// Kill the pane views recorded as views of the ae session `uuid` and say
+/// whether any is left — for a stop that found the real session already gone,
+/// whose windows only such a view can still hold.
+#[must_use]
+pub fn orphan_views(server: &ServerId, uuid: &str) -> StopViews {
+    if !addressable(server) {
+        return StopViews::Unreadable;
+    }
+    let holding = || {
+        let rows = view_rows(
+            &tmux::view_uuid_listing_args(server),
+            tmux::interpret_view_uuids,
+        )?;
+        Some(tmux::orphan_view_ids(uuid, &rows))
+    };
+    let Some(before) = holding() else {
+        return StopViews::Unreadable;
+    };
+    match sweep_views(server, before, holding) {
+        Some(left) if left.is_empty() => StopViews::Clear,
+        Some(left) => StopViews::Held(left),
+        None => StopViews::Unreadable,
+    }
+}
+
+/// Every session's id, attachment and name, or `None` when tmux did not
+/// answer in that shape.
+#[must_use]
+pub fn observe_view_census(server: &ServerId) -> Option<Vec<tmux::ViewCensusRow>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::view_census_args(server));
+    tmux::interpret_view_census(succeeded, &stdout)
 }
 
 /// Run one view `command` against `session_id`; whether tmux took it.

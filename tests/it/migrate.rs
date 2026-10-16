@@ -1894,7 +1894,7 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
                     )
                     && !right.contains(ae::theme::VERSION_OPTION)
                     && !right.contains(ae::theme::ORCHESTRATOR_STRIP_OPTION)
-                    && stamp.trim() == "21:darcula:on:on"
+                    && stamp.trim() == "22:darcula:on:on"
             })
     };
     while Instant::now() < deadline {
@@ -1927,7 +1927,7 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
     );
     assert_eq!(
         stamp.trim(),
-        "21:darcula:on:on",
+        "22:darcula:on:on",
         "the new format stamp did not land"
     );
     assert_ae_status_bindings(&socket, &scratch);

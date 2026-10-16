@@ -103,11 +103,6 @@ pub(crate) fn live_id(server: &ServerId, name: &str) -> Option<String> {
     transport::observe_session_id(server, name)
 }
 
-/// How long a kill waits before re-asking a verify that landed mid-exit —
-/// one scheduling breath, long enough for an exiting server to settle into
-/// an answer the strict proof can read.
-const KILL_VERIFY_SETTLE: Duration = Duration::from_millis(100);
-
 /// Kill an exactly-identified session on its recorded server and VERIFY it
 /// died — the ONE answer to "is it gone" that `stop`, `end` and `compact`
 /// share so the three cannot drift into
@@ -119,7 +114,7 @@ pub(crate) fn kill_verified(
     session_id: &str,
     err: &mut impl Write,
 ) -> io::Result<bool> {
-    let _ = transport::kill_session(server, session_id);
+    let views = transport::stop_views(server, session_id);
     let mut probe = transport::verify_session_absent(server, name);
     if probe == StopProbe::Unknown {
         // The kill may have removed the last session, so the server can be
@@ -128,11 +123,11 @@ pub(crate) fn kill_verified(
         // which proves nothing. Re-ask ONCE past a breath: the re-read
         // crosses the same strict proof, so a still-unreachable server
         // refuses exactly as before.
-        std::thread::sleep(KILL_VERIFY_SETTLE);
+        std::thread::sleep(transport::KILL_VERIFY_SETTLE);
         probe = transport::verify_session_absent(server, name);
     }
     match probe {
-        StopProbe::Absent => Ok(true),
+        StopProbe::Absent => views_refusal(name, verb, &views, err),
         StopProbe::Present => {
             writeln!(
                 err,
@@ -148,6 +143,48 @@ pub(crate) fn kill_verified(
             Ok(false)
         }
     }
+}
+
+/// Whether a session whose tmux session is gone left no pane view holding its
+/// windows — a view of it would keep its harnesses running — saying on `err`
+/// why not. State is preserved either way.
+fn views_refusal(
+    name: &str,
+    verb: &str,
+    views: &transport::StopViews,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    match views {
+        transport::StopViews::Clear => Ok(true),
+        transport::StopViews::Held(held) => {
+            writeln!(
+                err,
+                "Error: session '{name}' is gone, but pane view session(s) {} still hold its windows, so its agents still run — state preserved. Retry 'ae {verb} {name}'.",
+                held.join(", ")
+            )?;
+            Ok(false)
+        }
+        transport::StopViews::Unreadable => {
+            writeln!(
+                err,
+                "Error: cannot verify that no pane view of '{name}' still holds its windows — state preserved. Retry 'ae {verb} {name}'."
+            )?;
+            Ok(false)
+        }
+    }
+}
+
+/// For a session whose tmux session is already gone: kill the pane views
+/// recorded as views of it on its recorded server, and whether none is left.
+pub(crate) fn views_gone(
+    server: &ServerId,
+    dir: &Path,
+    name: &str,
+    verb: &str,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let views = transport::orphan_views(server, &meta::session_id_in(dir));
+    views_refusal(name, verb, &views, err)
 }
 
 /// Every ae session the state root knows about, live or stopped — the union
@@ -374,7 +411,13 @@ pub(crate) fn run_stop(
             // the fleet form's job is that nothing is left running, and one
             // already down satisfies it.
             match stop_recorded(root, &name, None, out, err)? {
-                StopOutcome::Stopped | StopOutcome::AlreadyStopped => {}
+                StopOutcome::Stopped => {}
+                // Down, but a pane view of it may still run its agents.
+                StopOutcome::AlreadyStopped => {
+                    if !orphans_gone(root, &name, err)? {
+                        failures += 1;
+                    }
+                }
                 // `Refused` belongs to a confirmed stop, which the fleet form
                 // never is; it is counted as a failure rather than ignored.
                 StopOutcome::Failed | StopOutcome::Refused(_) => failures += 1,
@@ -399,6 +442,20 @@ pub(crate) fn run_stop(
             Ok(EXIT_FAILED)
         }
     }
+}
+
+/// `stop all`'s check on a session it found already down: no pane view of it
+/// is left on its recorded server. A session with no positive record had no
+/// server a view could be made on.
+fn orphans_gone(root: &Path, name: &str, err: &mut impl Write) -> io::Result<bool> {
+    let dir = sessions_dir(root).join(name);
+    let Ok(bytes) = meta::read_bytes(&dir) else {
+        return Ok(true);
+    };
+    let ServerSelector::Positive(selector) = server_of(&bytes) else {
+        return Ok(true);
+    };
+    views_gone(&ServerId::Selected(selector), &dir, name, "stop", err)
 }
 
 /// What a CONFIRMED stop expects to find when it finally runs.

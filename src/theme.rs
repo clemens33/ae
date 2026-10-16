@@ -672,7 +672,7 @@ pub const SETTINGS_OPEN_OPTION: &str = "@ae_settings_open";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "21";
+pub const FORMAT_VERSION: &str = "22";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -792,6 +792,21 @@ pub const MONITOR_WINDOW: &str = "ae-monitor";
 /// say something the reader cannot reconstruct, and the path is the one fact
 /// their own shell prompt already carries.
 const NARROW: u16 = 100;
+
+/// SESSION — the one label a transient pane-view session draws: the viewed
+/// session and seat, `#` already doubled by its writer.
+pub const VIEW_LABEL_OPTION: &str = "@ae_view_label";
+
+/// The transient pane-view session's whole status style: reverse video, so
+/// the one line reads as a bar on any terminal palette and under `theme = off`.
+pub const VIEW_STATUS_STYLE: &str = "reverse";
+
+/// `status-format[0]` of a transient pane-view session: its label on the
+/// left, how to get back on the right — no window list, no fleet strip.
+#[must_use]
+pub fn view_status_format(hint: &str) -> String {
+    format!("#[align=left] #[bold]#{{{VIEW_LABEL_OPTION}}}#[nobold]#[align=right]{hint} ")
+}
 
 /// `status-format[0]`: this session's windows and the right-hand facts.
 ///
@@ -2667,7 +2682,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "21");
+        assert_eq!(super::FORMAT_VERSION, "22");
         assert_eq!(
             options
                 .iter()

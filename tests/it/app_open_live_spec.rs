@@ -315,7 +315,7 @@ impl Rig {
         let until = Instant::now() + WAIT;
         loop {
             let actual = self.viewed(client);
-            if actual == (session.to_owned(), pane.to_owned()) {
+            if actual.1 == pane && self.session_or_its_view(&actual.0, session) {
                 return;
             }
             assert!(
@@ -325,6 +325,26 @@ impl Rig {
             );
             std::thread::sleep(Duration::from_millis(25));
         }
+    }
+
+    /// The named session or a pane-view session grouped with it, exactly.
+    fn session_or_its_view(&self, actual: &str, session: &str) -> bool {
+        if actual == session {
+            return true;
+        }
+        if !ae::tmux::is_view_session(actual) {
+            return false;
+        }
+        let id = self
+            .tmux(&["display-message", "-p", "-t", session, "#{session_id}"])
+            .trim()
+            .to_owned();
+        let of = format!("#{{{}}}", ae::tmux::VIEW_OF_OPTION);
+        let mapped = self
+            .tmux(&["display-message", "-p", "-t", actual, of.as_str()])
+            .trim()
+            .to_owned();
+        !id.is_empty() && mapped == id
     }
 
     fn screen(&self, pane: &str) -> String {
@@ -501,7 +521,8 @@ fn home_composer_opens_spawned_seat_without_sending_an_ask() {
         .expect("journal before");
     rig.submit_open(&app, "scout");
     rig.opened(&client, HOME, &rig.scout);
-    rig.notice(&app, "opened scout - prefix h returns");
+    rig.notice(&app, "viewing scout");
+    rig.notice(&app, "F12 or C-] back to ae app");
     assert_eq!(
         fs::read(rig.scratch.join("sessions").join(HOME).join("events.jsonl"))
             .expect("journal after"),
@@ -521,11 +542,13 @@ fn foreign_composer_moves_one_app_viewer_and_keeps_return_session() {
     rig.wait_screen(&app, "GUARD foreign input target drawn", |s| {
         s.contains(&format!("to {FOREIGN}"))
     });
+    let target_before = rig.viewed(&target_viewer);
     rig.compose_open(&app, "scout");
     rig.opened(&viewer, FOREIGN, &scout);
-    rig.opened(&target_viewer, FOREIGN, &scout); // D3: target-session viewers follow.
-    rig.notice(&app, &format!("opened scout in {FOREIGN}"));
-    rig.notice(&app, "prefix L goes back");
+    // View contract: only the pressing client moves; witnesses never follow.
+    rig.unchanged(&[(&target_viewer, target_before)]);
+    rig.notice(&app, "viewing scout");
+    rig.notice(&app, "F12 or C-] back to ae app");
     let name = rig
         .tmux(&["list-clients", "-F", "#{client_pid}|#{client_name}"])
         .lines()
@@ -536,6 +559,11 @@ fn foreign_composer_moves_one_app_viewer_and_keeps_return_session() {
         .expect("exact viewer name");
     rig.tmux(&["switch-client", "-c", &name, "-l"]);
     rig.opened(&viewer, HOME, &app);
+    let sessions = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        !sessions.lines().any(ae::tmux::is_view_session),
+        "prefix L leaves the view and the alias is reaped"
+    );
 }
 
 #[test]
@@ -629,13 +657,18 @@ fn terminal_without_tmux_identity_refuses_by_name_and_moves_nothing() {
 }
 
 #[test]
-fn home_open_allows_multiple_viewers_even_when_their_activity_ties() {
+fn home_open_refuses_tied_app_viewers_without_moving_any_client() {
     let rig = Rig::new("here");
     let app = rig.app(&rig.socket);
     let (first, second) = rig.tied();
+    let first_before = rig.viewed(&first);
+    let second_before = rig.viewed(&second);
     rig.compose_open(&app, "scout");
-    rig.opened(&first, HOME, &rig.scout);
-    rig.opened(&second, HOME, &rig.scout);
+    rig.notice(
+        &app,
+        "two clients showing this app were active in the same second",
+    );
+    rig.unchanged(&[(&first, first_before), (&second, second_before)]);
 }
 
 #[test]

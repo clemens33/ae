@@ -55,38 +55,6 @@ fn return_bindings_detach_only_the_view_client_and_pass_the_same_key_elsewhere()
 }
 
 #[test]
-fn attach_uses_the_proven_session_and_defers_a_guarded_landing_after_the_focus_hook() {
-    let args = tmux::view_attach_args(&server(), "$7", "%12", "view-token");
-    assert_eq!(&args[..2], ["-S", "/tmp/paneview-spec.sock"]);
-    let attach = args
-        .iter()
-        .position(|word| word == "attach-session")
-        .expect("interactive attach");
-    assert_eq!(args.get(attach + 1).map(String::as_str), Some("-t"));
-    assert!(matches!(
-        args.get(attach + 2).map(String::as_str),
-        Some("$7" | "$7:")
-    ));
-    let words = args.join(" ");
-    let deferred = words
-        .find("run-shell -C")
-        .expect("landing follows the focus hook");
-    let tail = &words[deferred..];
-    assert!(tail.contains("session_id") && tail.contains("$7") && tail.contains("%12"));
-    let guard = tail
-        .find("if-shell")
-        .or_else(|| tail.find("if -F"))
-        .expect("membership rechecked");
-    let select = tail.find("select-pane").expect("seat selected");
-    let detach = tail
-        .find("detach-client")
-        .expect("failed landing returns instead of opening chat");
-    assert!(guard < select && select < detach);
-    assert!(words.contains("@ae_view_client") && words.contains("@ae_view_token"));
-    assert!(words.contains("view-token"));
-}
-
-#[test]
 fn release_and_stale_cleanup_are_conditional_on_the_observed_owner_token() {
     for command in [
         tmux::view_release_command("$7", "owner-token"),
@@ -107,14 +75,13 @@ fn release_and_stale_cleanup_are_conditional_on_the_observed_owner_token() {
 
 #[test]
 fn restoration_is_guarded_and_previous_targets_are_scoped_to_the_original_session() {
-    let command = tmux::view_restore_command("$7", "uuid-seven", "@9", "%12", "@8", "%13");
+    let command = tmux::view_restore_command("$7", "uuid-seven", "@9", "%12", "%13");
     assert!(command.contains("@ae_session_uuid") && command.contains("uuid-seven"));
-    assert!(command.contains("window_id") && command.contains("pane_id"));
+    assert!(command.contains("$7:@9") && command.contains("pane_id"));
     assert!(command.contains("@9") && command.contains("%12"));
     assert!(command.contains("select-pane -t $7:@9.%13"));
-    assert!(command.contains("select-window -t $7:@8"));
+    assert!(!command.contains("select-window"));
     assert!(!command.contains("select-pane -t %13"));
-    assert!(!command.contains("select-window -t @8"));
     let gate = command
         .find("if-shell")
         .or_else(|| command.find("if -F"))

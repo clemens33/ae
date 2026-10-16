@@ -2669,8 +2669,8 @@ impl App {
     }
 
     /// Open `seat` of `session`, bound to the incarnation `uuid`: the chat's
-    /// proof, then ONE guarded command handing the one client showing this
-    /// app to its pane. The line to tell, refused or opened.
+    /// proof, then the one client that pressed the key handed to a clean view
+    /// of the seat's pane. The line to tell, refused or opened.
     fn open(
         &self,
         session: &str,
@@ -2700,31 +2700,21 @@ impl App {
             Ok(step) => step,
             Err(why) => return why.line(label),
         };
-        let client = match &step {
-            Move::Client(client) => Some(client.as_str()),
-            Move::Here => None,
+        // Only the one client that pressed the key moves, into a clean view
+        // of the seat; F12 or C-] takes it back to this app. A tie names no
+        // client and moves nothing, in the app's own session as in another.
+        let client = match step {
+            Move::Client(client) => client,
+            Move::Here => match open::copy_client(&clients, pane) {
+                Ok(client) => client,
+                Err(why) => return why.line(label),
+            },
         };
-        let Some((ran, stdout)) = transport::open_seat_via(server, &target, client) else {
-            return format!("refused: /open {label}: a fact failed its grammar; nothing selected");
+        let viewer = paneview::Viewer {
+            client: &client,
+            app_pane: pane,
         };
-        if open::took(ran, &stdout) {
-            let _ = match client {
-                Some(client) => transport::display_client_message(
-                    server,
-                    client,
-                    &format!("ae: {label} - prefix h = chat, prefix L = back"),
-                ),
-                None => transport::display_message(
-                    server,
-                    &target.pane,
-                    &format!("ae: {label} - prefix h returns"),
-                ),
-            };
-        }
-        match client {
-            Some(_) => open::outcome_moved(ran, &stdout, label, session),
-            None => open::outcome(ran, &stdout, label),
-        }
+        paneview::open_inside(server, dir, &target, &viewer, session, label, uuid)
     }
 
     /// `n` / `p`: the seat cursor steps to the next or previous seat the last

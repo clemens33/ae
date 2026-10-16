@@ -263,9 +263,9 @@ then acts as it always does.
 
 `o` takes your tmux client to the highlighted seat's pane, in any session you
 selected, home or not; `/open <seat>` in the composer does the same for a named
-seat of the selected session. It is the proof and the guarded select `ae chat`'s
-`/open` makes, plus one tmux client: nothing is typed into the seat and no
-record is written.
+seat of the selected session. It makes the proof `ae chat`'s `/open` makes,
+then moves one tmux client into a view of the seat: nothing is typed into the
+seat and no record is written.
 
 The highlight is the seat cursor: one `▹` (`-` with `icons = off`) in the first
 column of the seat's row, never a state colour. No seat carries it at first;
@@ -284,24 +284,28 @@ the session refuses; so does a selection that changed since that frame
 (`the view changed`). Nothing is selected on any refusal.
 
 Which client moves. Only a tmux client whose ACTIVE pane is the app's own pane
-can have pressed the key.
+can have pressed the key, and only that one client moves: every other client
+keeps its session, its window and its status line, the seat's session included.
 
-- The seat is in the app's own session: tmux moves the session, so everyone
-  viewing it follows and no client is chosen. At least one client must show the
-  app.
-- The seat is in another session: that one client is switched to the seat's
-  session, then its window and pane are selected. With several clients on the
-  app, the one with the newest input wins; two last active in the same second
-  refuse (`two clients showing this app were active in the same second`) and
-  move nothing. A control-mode client never records input, so two of them always
-  tie. Entering a session runs its own focus hook, which puts any client
-  arriving there on the session's chat (else its lead). The select waits until
-  that hook has run, so the client ends on the seat, and it proves the seat
-  again first: a seat that changed or died in that instant leaves the client
-  where the hook put it, and the lane says `moved to <session>, but <seat>'s
-  pane changed after the read; the seat was not selected - prefix L goes back`.
+- The client is handed to a clean view of the seat: a session of its own
+  (`_aeview-…`) grouped with the seat's session, so it shares that session's
+  windows and none of its options. It shows the seat's pane under one status
+  line naming the session and the seat and the way back, with no window list
+  and no ae bar; what you type reaches the seat's tool. `ae list`, the fleet
+  strip, the picker and the session inventory never show the view.
+- With several clients on the app, the one with the newest input is the one
+  that pressed the key; two last active in the same second refuse (`two clients
+  showing this app were active in the same second`) and move nothing, whether
+  the seat is in the app's own session or another. A control-mode client never
+  records input, so two of them always tie.
 - No client shows the app (`no tmux client is showing this app`), or the app
   runs outside tmux (`ae app is not running inside tmux`): refused.
+- One app views a session at a time (`another ae app is viewing <session>`),
+  and a session on your own tmux rather than an ae-owned server is refused
+  (`pane view needs an ae-owned tmux server; <session> runs on your own tmux`).
+- When tmux refuses the view part-way, the client is taken back to the app and
+  the view destroyed; the terminal is never detached (`refused: /open <seat>:
+  tmux refused the view`).
 
 A stopped session refuses and names `ae <session>`, which resumes it; the app
 never resumes one. A session recorded on another tmux server than the one this
@@ -309,17 +313,22 @@ app's pane lives on, or whose server ae cannot prove, refuses the same way
 (`run ae <session>`). The server is the app's own (`$TMUX`), never the one a
 launch would use.
 
-Getting back. The `ae` line in the session's lane says how: `opened <seat> in
-<session> - prefix h opens its chat, prefix L goes back` (`prefix h returns` in
-the app's own session), and the moved client is shown a short reminder on its
-status line for a moment. `prefix L` is tmux's own last-session key; `prefix h` is
-ae's. No binding is added.
+Getting back. `F12` or `C-]` takes the viewing client back to the app: to the
+app's pane while it is still the pane of the app's window, else to the app's
+session with nothing selected; the view is destroyed with it. The lane says
+`viewing <seat> · F12 or C-] back to ae app`, and the view's status line says
+the same. For every other client both keys reach the pane unchanged.
+`prefix d`, `prefix L` or any other switch also leaves the view, which is
+destroyed once no client shows it; that client's `F12` or `C-]` in the seat's
+session still goes back to the app, and the next open does not wait on it. A
+seat's session that ends while viewed takes the client back to the app within
+about a second.
 
-Named limits. Other clients already attached to the target session follow its
-window selection (tmux session state, as the fleet picker does). The client
-list is read last, right before the move; a client that detaches in that
-instant makes the move fail with `uncertain`. The cursor steps only through the
-rows drawn.
+Named limits. The client list is read last, right before the move; a client
+that detaches in that instant refuses the open. If the app dies while a client
+views a seat, `F12` and `C-]` still go back, but nothing takes the client back
+when the seat's session ends meanwhile. The cursor steps only through the rows
+drawn.
 
 ## Session menu
 
