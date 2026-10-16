@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.89] - 2026-10-16
+- Bound renametell notice waits by daemon cycles, not a 12 s wall clock
+- Drop the false bash 4 requirement, state the tmux 3.4 floor, lead README with the product
+- Trim the README to the product and its reference, apply the VISION patch, drop the undeployed docs site_url
+
 ## [v2026.10.88] - 2026-10-16
 - Show native seats in a clean view with an explicit return
 
