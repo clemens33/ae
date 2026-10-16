@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.84] - 2026-10-16
+- A codex launch token proves ownership only in a developer message
+
 ## [v2026.10.83] - 2026-10-15
 - Ae app: deliver an ask off the loop, stop and start a session outside tmux, say what an unrecorded ask said
 - Pin that a delivery the helpers journal as abandoned reads back as not delivered
