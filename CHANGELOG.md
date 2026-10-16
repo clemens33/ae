@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.87] - 2026-10-16
+- Leave a conversation file in place when another session names its id
+
 ## [v2026.10.86] - 2026-10-16
 - Draw every sidebar session and seat on one row
 - Draw fake TUI pastes only after their terminator
