@@ -239,7 +239,13 @@ while (1) {
         $mode eq 'queued' ? draw_queued() : draw("") if $marker_secs == 0;
         next;
     }
-    draw($buf) if $marker_secs == 0;
+    # Hold delimiter prefixes too: drawing ESC[200 before the final '~'
+    # emits an unfinished terminal escape and corrupts the idle frame.
+    my $paste_prefix = $buf =~ /\e(?:\[|\[2|\[20|\[200)?\z/;
+    # Publish a bracketed paste after its terminator and the mode's edits.
+    # Per-byte redraws expose an exact pointer just before partial/wsedit
+    # changes it, so a sender can prove that transient pre-edit frame.
+    draw($buf) if $marker_secs == 0 && !$pasting && !$paste_prefix;
 }
 "#;
 
