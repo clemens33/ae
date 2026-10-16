@@ -69,6 +69,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `picker_agents` | `tmux::parse_picker_agents` | one watchdog-owned `@ae_agents` value at a fixed clock |
 | `launch_stamp` | `store::parse_launch_attempt` | one `.launch-attempt` stamp's bytes |
 | `last_live_epochs` | `inventory::launch_epochs` | one session meta, read for its launch moments |
+| `codex_developer_record` | `session_launch::developer_record_carries` | one Codex rollout line, as the transcript holds it (tool outputs and compaction replays included), tested against a fixed launch marker: a line may prove ownership only when the real JSON parser sees a `response_item` message with role `developer` whose content text carries the marker, and an empty marker proves nothing. Seeds pin the proving record in real, spaced and reordered spellings and every look-alike that must not prove: an `event_msg` quote, a compaction replay, a user turn, a tool-output kind, a marker in an id or another key, an escaped copy inside a string, truncated or garbage-trailed JSON, a content text that is not a list, a nesting bomb and an empty line |
 | `sanitize_field` | `sanitize::sanitize` (both `Field`s) | one record field's raw bytes |
 | `request_id_select` | `tracked::is_request_id` + `sanitize::select_ids` | whole input as one candidate id, plus newline-split as positioned refs |
 | `events_parse` | `events::Event::parse_line` + `from_json` | one `events.jsonl` line; `from_json` is driven with a value the real JSON parser produced, never a hand-built tree |

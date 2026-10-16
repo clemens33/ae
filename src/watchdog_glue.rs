@@ -1058,7 +1058,7 @@ mod tests {
             logs.join("rollout-current.jsonl"),
             format!(
                 "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"bbbb2222-cccc-4ddd-8eee-ffffffffffff\",\"cwd\":\"{}\"}}}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID=current-token\"}}\n",
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID=current-token\"}}]}}}}\n",
                 project.display()
             ),
         )

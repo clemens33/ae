@@ -7402,7 +7402,7 @@ fn a_codex_launch_captures_the_session_id_it_registers() {
             logs.join(format!("rollout-{id}.jsonl")),
             format!(
                 "{{\"timestamp\":\"{started}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}\n",
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}]}}}}\n",
                 rig.project.display()
             )
         )
@@ -7486,7 +7486,7 @@ fn a_fresh_codex_rollout_born_before_the_post_exec_stamp_is_captured() {
             &rollout,
             format!(
                 "{{\"timestamp\":\"{}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}\n",
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}]}}}}\n",
                 ae::time::Timestamp::from_epoch(floor),
                 rig.project.display()
             )
@@ -7543,7 +7543,7 @@ fn an_exact_codex_resume_keeps_the_original_capture_floor() {
             &rollout,
             format!(
                 "{{\"timestamp\":\"{}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}\n",
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}]}}}}\n",
                 ae::time::Timestamp::from_epoch(floor),
                 rig.project.display()
             )

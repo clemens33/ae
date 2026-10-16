@@ -1068,6 +1068,8 @@ pub(crate) const HUMAN_BRIDGE_ACTORS: [&str; 2] = ["telegram:", "discord:"];
 /// - the watchdog's own records never end one: it is neither the seat nor the
 ///   human, and its challenge footprints are judged by the `looked_past_*`
 ///   flags instead;
+/// - a `session-id-replaced` record never ends one: it audits a bookkeeping
+///   move of the seat's conversation id, not work, a message or the human;
 /// - the seat's own newer declaration always does;
 /// - a human through a chat bridge always does;
 /// - the human through the console does by an `ask` it recorded to the seat,
@@ -1080,7 +1082,9 @@ pub(crate) const HUMAN_BRIDGE_ACTORS: [&str; 2] = ["telegram:", "discord:"];
 /// - `done`, and every state that quiets nothing, end on any other record.
 #[must_use]
 pub fn ends_quiet(state: &str, event: &Event, is_own: bool, own_requests: &[&str]) -> bool {
-    if event.actor == WATCHDOG_ACTOR {
+    if event.actor == WATCHDOG_ACTOR
+        || event.action == crate::session_launch::capture::SESSION_ID_REPLACED_ACTION
+    {
         return false;
     }
     if is_own && event.declared_state().is_some() {

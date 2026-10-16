@@ -224,6 +224,8 @@ pub struct Captured {
     /// The candidate's immutable birth (milliseconds), opencode only: the
     /// commit recheck compares it against the siblings' floors.
     born_ms: Option<i64>,
+    /// The `harness_session` value the scan's own meta snapshot recorded.
+    observed: Option<String>,
 }
 
 impl Captured {
@@ -236,6 +238,15 @@ impl Captured {
             work_dir: facts.work_dir.clone(),
             provenance: facts.provenance,
             born_ms: None,
+            observed: None,
+        }
+    }
+
+    /// Bind this capture to the `harness_session` value its scan saw.
+    fn observing(self, recorded: &str) -> Self {
+        Self {
+            observed: Some(recorded.to_owned()),
+            ..self
         }
     }
 
@@ -489,7 +500,7 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
     if captured.id.is_empty() || captured.id.chars().any(char::is_control) {
         return false;
     }
-    let Ok(_held) = crate::meta::lock(dir) else {
+    let Ok(held) = crate::meta::lock(dir) else {
         return false;
     };
     let Ok(bytes) = crate::meta::read_bytes(dir) else {
@@ -515,6 +526,14 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
     if entry.name != captured.agent
         || current_tool != captured.tool
         || (!may_replace && !is_pending(entry.harness_session.as_deref()))
+    {
+        return false;
+    }
+    // A replacement answers the id its own scan saw. Another scan that landed
+    // first changed the row, and this older snapshot may not undo it.
+    if may_replace
+        && let Some(seen) = captured.observed.as_deref()
+        && entry.harness_session.as_deref().unwrap_or_default() != seen
     {
         return false;
     }
@@ -560,6 +579,8 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
         &format!("harness_session.{slot}"),
         Some(&captured.id),
     );
+    let replaced =
+        (may_replace && old != captured.id && !is_pending(Some(old))).then(|| old.to_owned());
     let published = match crate::meta::publish_locked(dir, &next) {
         Ok(()) | Err(crate::meta::RewriteError::Unknown(_)) => true,
         Err(crate::meta::RewriteError::NotWritten(_)) => false,
@@ -567,7 +588,49 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
     if published && captured.tool.adapter().launch.initial_turn == InitialTurn::RegisterSessionId {
         let _ = std::fs::remove_file(sid_file(dir, slot));
     }
+    drop(held);
+    if published && let Some(old) = replaced {
+        note_replaced(dir, slot, captured, &old);
+    }
     published
+}
+
+/// The `session-id-replaced` action: an authoritative capture put a different
+/// conversation id where a live one was recorded. The journal keeps the old
+/// and the new id, because the meta keeps only the predecessor list.
+pub(crate) const SESSION_ID_REPLACED_ACTION: &str = "session-id-replaced";
+
+/// Journal one live-id replacement. Best effort and after the meta lock: the
+/// record explains a move that already happened and gates nothing.
+fn note_replaced(dir: &Path, slot: &str, captured: &Captured, old: &str) {
+    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
+        &crate::tracked::EventFields {
+            ts: Timestamp::now(),
+            actor: "ae",
+            action: SESSION_ID_REPLACED_ACTION,
+            target: &captured.agent,
+            reference: "",
+            actor_slot: "",
+            actor_session: "",
+            target_slot: slot,
+            target_session: "",
+            actor_session_id: "",
+            target_session_id: "",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary: &format!(
+                "{slot}: recorded {old} replaced by {}; the new rollout's developer record \
+                 proves this launch token, the recorded one does not",
+                captured.id
+            ),
+            body_file: "",
+        },
+    ));
 }
 
 /// The opencode attribution rechecked under the meta lock: the scan's snapshot
@@ -614,7 +677,12 @@ pub fn register_sid(
         writeln!(err, "{REGISTER_SID_USAGE}")?;
         return Ok(crate::state::EXIT_USAGE);
     }
-    let Some(facts) = facts(dir, slot)
+    // One snapshot feeds the facts, the recorded id the scan must respect and
+    // the id the commit later insists is still there.
+    let snapshot = crate::meta::read_bytes(dir).ok();
+    let Some(facts) = snapshot
+        .as_deref()
+        .and_then(|bytes| facts_from(bytes, slot))
         .filter(|facts| facts.tool.adapter().launch.initial_turn == InitialTurn::RegisterSessionId)
     else {
         writeln!(
@@ -637,10 +705,17 @@ pub fn register_sid(
     } else {
         None
     };
+    let recorded = snapshot
+        .as_deref()
+        .map(|bytes| recorded_session(bytes, slot))
+        .unwrap_or_default();
     let ambient_home = home_dir();
     let Some(found) = codex_config_home(&facts, ambient_home.as_deref())
         .as_deref()
-        .and_then(|config_home| scan_codex(config_home, &facts))
+        .and_then(|config_home| {
+            keep_recorded(config_home, &facts, &recorded)
+                .or_else(|| scan_codex(config_home, &facts))
+        })
         .filter(|found| given.is_none_or(|given| found == given))
     else {
         writeln!(err, "No codex session matched seat '{slot}' yet.")?;
@@ -651,7 +726,7 @@ pub fn register_sid(
         writeln!(err, "Error: could not write {} ({why})", file.display())?;
         return Ok(crate::state::EXIT_FAILED);
     }
-    let captured = Captured::new(&facts, found);
+    let captured = Captured::new(&facts, found).observing(&recorded);
     let committed = if captured.launch_id.is_empty() {
         commit(dir, slot, &captured)
     } else {
@@ -668,6 +743,30 @@ pub fn register_sid(
     }
     writeln!(out, "Registered session id for '{slot}'.")?;
     Ok(0)
+}
+
+/// The `harness_session` value the roster records for `slot`, as a commit
+/// compares it: empty when the row has none.
+fn recorded_session(bytes: &[u8], slot: &str) -> String {
+    crate::meta::Meta::parse(&String::from_utf8_lossy(bytes))
+        .roster()
+        .iter()
+        .find(|entry| entry.slot == slot)
+        .and_then(|entry| entry.harness_session.clone())
+        .unwrap_or_default()
+}
+
+/// The conversation the seat already records, when its own rollout still
+/// proves this launch's token. A window scan can only look at the days it is
+/// given and at whichever rollout is newest, so it never overrules an id that
+/// proves itself.
+fn keep_recorded(config_home: &Path, facts: &Facts, recorded: &str) -> Option<String> {
+    if facts.launch_id.is_empty() || is_pending(Some(recorded)) {
+        return None;
+    }
+    let prefix = facts.launch_marker?;
+    let marker = format!("AE_{prefix}_LAUNCH_ID={}", facts.launch_id);
+    recorded_proves(config_home, recorded, &marker).then(|| recorded.to_owned())
 }
 
 /// The refusal `_register-sid` prints for a missing seat.
@@ -803,11 +902,80 @@ fn find_codex_by_launch_id_in_days(
 ) -> Option<String> {
     let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}");
     newest(codex_logs(config_home, days), capture_floor, |text| {
-        if !codex_started_since_floor(text, capture_floor) || !text.contains(&marker) {
+        if !codex_started_since_floor(text, capture_floor) || !rollout_proves(text, &marker) {
             return None;
         }
         first_hex_field(text.lines().next().unwrap_or_default(), "id")
     })
+}
+
+/// Whether a rollout's text carries the launch's own developer record.
+fn rollout_proves(text: &str, marker: &str) -> bool {
+    text.lines()
+        .any(|line| developer_record_carries(line, marker))
+}
+
+/// Whether one rollout line is a developer message whose content text carries
+/// `marker`. Codex writes the launch context it was started with as exactly
+/// that record, before any turn. The same bytes also appear in a tool output
+/// that printed another seat's context, in a compaction that replays it, and
+/// in a pasted user turn, and none of those say whose rollout this is — so the
+/// line is read as JSON and the shape decides, never the substring.
+#[must_use]
+pub fn developer_record_carries(line: &str, marker: &str) -> bool {
+    if marker.is_empty() || !line.contains(marker) {
+        return false;
+    }
+    let Ok(record) = crate::json::parse(line) else {
+        return false;
+    };
+    if record.get_str("type") != Some("response_item") {
+        return false;
+    }
+    let Some(payload) = record.get("payload") else {
+        return false;
+    };
+    payload.get_str("type") == Some("message")
+        && payload.get_str("role") == Some("developer")
+        && matches!(
+            payload.get("content"),
+            Some(crate::json::Value::Arr(items))
+                if items
+                    .iter()
+                    .any(|item| item.get_str("text").is_some_and(|text| text.contains(marker)))
+        )
+}
+
+/// Every rollout under `root` whose file name carries `id`, within `depth`
+/// levels — Codex's `YYYY/MM/DD/rollout-<time>-<id>.jsonl` store. No calendar
+/// window: a conversation is found by what it is called, not by when it ran.
+fn rollouts_named(root: &Path, id: &str, depth: usize) -> Vec<PathBuf> {
+    if depth == 0 {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for path in entries(root) {
+        let named = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains(id));
+        if named && path.extension().is_some_and(|ext| ext == "jsonl") {
+            found.push(path);
+        } else if depth > 1 {
+            found.extend(rollouts_named(&path, id, depth - 1));
+        }
+    }
+    found
+}
+
+/// Whether the conversation this seat already records still proves its launch:
+/// its own rollout, found by id, carries the launch's developer record. An id
+/// that is not a lowercase UUID, or has no rollout, proves nothing.
+fn recorded_proves(config_home: &Path, recorded: &str, marker: &str) -> bool {
+    is_lowercase_uuid(recorded)
+        && rollouts_named(&config_home.join("sessions"), recorded, 4)
+            .iter()
+            .any(|path| read_text(path).is_some_and(|text| rollout_proves(&text, marker)))
 }
 
 /// The newest codex session whose recorded `cwd` is this working directory.
@@ -1754,6 +1922,368 @@ mod tests {
         std::fs::write(path, body).expect("a fixture file");
     }
 
+    // Acceptance fixtures use actual Codex record envelopes. The launch token
+    // in developer context proves ownership; text quoted by other roles does not.
+    const CODEXTOK_OWN: &str = "11111111-1111-4111-8111-111111111111";
+    const CODEXTOK_OTHER: &str = "22222222-2222-4222-8222-222222222222";
+    const CODEXTOK_DEVELOPER: &str = r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"AE_CODEX_LAUNCH_ID=acceptance-token"}]}}"#;
+    const CODEXTOK_QUOTE: &str = r#"{"type":"event_msg","payload":{"type":"item_completed","text":"diagnostic output: AE_CODEX_LAUNCH_ID=acceptance-token"}}"#;
+
+    fn codextok_seat(tag: &str, recorded: &str) -> (PathBuf, PathBuf) {
+        let dir = scratch(tag);
+        let home = dir.join("codex-account");
+        write(
+            &dir.join("meta"),
+            &format!(
+                "schema=2\nsession=acceptance\nwork_dir={}\nseat.main=lead\nagent_bin.main=codex\n\
+                 harness_session.main={recorded}\nconfig_home.main={}\n\
+                 launch_id.main=acceptance-token\ncapture_floor.main=0\nwork_dir.main={}\n",
+                dir.display(),
+                home.display(),
+                dir.display()
+            ),
+        );
+        (dir, home)
+    }
+
+    fn codextok_rollout(home: &Path, id: &str, age_days: i64, records: &str, modified: u64) {
+        let day = day_dirs(Timestamp::from_epoch(
+            Timestamp::now()
+                .epoch()
+                .saturating_sub(age_days * SECONDS_PER_DAY),
+        ))
+        .into_iter()
+        .next()
+        .expect("a UTC partition");
+        let path = home
+            .join("sessions")
+            .join(day)
+            .join(format!("rollout-{id}.jsonl"));
+        write(
+            &path,
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n{records}\n",
+                home.display()
+            ),
+        );
+        std::fs::File::open(path)
+            .expect("the rollout")
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(modified))
+            .expect("deterministic mtime");
+    }
+
+    fn codextok_register(dir: &Path) -> u8 {
+        register_sid(dir, "main", None, &mut Vec::new(), &mut Vec::new()).expect("register")
+    }
+
+    #[test]
+    fn codextok_red1_developer_ownership_beats_a_newer_foreign_tool_quote() {
+        let (dir, home) = codextok_seat("codextok-red1", "pending");
+        // CRLF is still one developer record; resumes may put it after earlier turns.
+        codextok_rollout(
+            &home,
+            CODEXTOK_OWN,
+            0,
+            &format!("{CODEXTOK_QUOTE}\r\n{CODEXTOK_DEVELOPER}\r"),
+            1000,
+        );
+        codextok_rollout(&home, CODEXTOK_OTHER, 0, CODEXTOK_QUOTE, 2000);
+        assert_eq!(codextok_register(&dir), 0);
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert!(
+            meta.contains(&format!("harness_session.main={CODEXTOK_OWN}\n")),
+            "only the developer message proves ownership: {meta}"
+        );
+    }
+
+    #[test]
+    fn codextok_foreign_only_token_quote_leaves_the_seat_pending() {
+        let (dir, home) = codextok_seat("codextok-foreign-only", "pending");
+        codextok_rollout(&home, CODEXTOK_OTHER, 0, CODEXTOK_QUOTE, 2000);
+        let before = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert_eq!(codextok_register(&dir), 1, "a quoted token is a miss");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("meta")).expect("meta"),
+            before
+        );
+        assert!(!sid_file(&dir, "main").exists());
+    }
+
+    #[test]
+    fn codextok_compacted_replay_of_developer_context_never_proves_ownership() {
+        let (dir, home) = codextok_seat("codextok-compacted", "pending");
+        let replay = format!(
+            r#"{{"type":"compacted","payload":{{"initial_context":[{CODEXTOK_DEVELOPER}]}}}}"#
+        );
+        codextok_rollout(&home, CODEXTOK_OTHER, 0, &replay, 2000);
+        assert_eq!(
+            codextok_register(&dir),
+            1,
+            "a replay is not this rollout's developer record"
+        );
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert!(meta.contains("harness_session.main=pending\n"), "{meta}");
+    }
+
+    #[test]
+    fn codextok_red2_recorded_rollout_survives_the_unknown_floor_aging_cliff() {
+        let (dir, home) = codextok_seat("codextok-red2", CODEXTOK_OWN);
+        codextok_rollout(&home, CODEXTOK_OWN, 40, CODEXTOK_DEVELOPER, 1000);
+        codextok_rollout(&home, CODEXTOK_OTHER, 0, CODEXTOK_QUOTE, 2000);
+        let before = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert_eq!(
+            codextok_register(&dir),
+            0,
+            "a recorded proven id has no calendar expiry"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("meta")).expect("meta"),
+            before,
+            "a retained conversation must not acquire a predecessor"
+        );
+    }
+
+    #[test]
+    fn codextok_a_proven_recorded_id_wins_even_over_a_newer_developer_match() {
+        let (dir, home) = codextok_seat("codextok-recorded-wins", CODEXTOK_OWN);
+        codextok_rollout(&home, CODEXTOK_OWN, 40, CODEXTOK_DEVELOPER, 1000);
+        codextok_rollout(&home, CODEXTOK_OTHER, 0, CODEXTOK_DEVELOPER, 2000);
+        let before = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert_eq!(codextok_register(&dir), 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("meta")).expect("meta"),
+            before,
+            "newer evidence must not discard an already proven recorded identity"
+        );
+    }
+
+    #[test]
+    fn codextok_a_live_id_replacement_is_journaled_once_with_its_reason() {
+        let (dir, home) = codextok_seat("codextok-journal", CODEXTOK_OTHER);
+        // Legacy flat text is not ownership proof for the old id.
+        codextok_rollout(
+            &home,
+            CODEXTOK_OTHER,
+            40,
+            "AE_CODEX_LAUNCH_ID=acceptance-token",
+            1000,
+        );
+        codextok_rollout(&home, CODEXTOK_OWN, 0, CODEXTOK_DEVELOPER, 2000);
+        assert_eq!(codextok_register(&dir), 0);
+        let events = std::fs::read_to_string(dir.join("events.jsonl"))
+            .expect("replacement audit must exist");
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert!(
+            meta.contains(&format!("harness_session.main={CODEXTOK_OWN}\n")),
+            "{meta}"
+        );
+        assert!(
+            meta.contains(&format!(
+                "harness_session_prior.main=codex:{CODEXTOK_OTHER}\n"
+            )),
+            "a replacement keeps its predecessor: {meta}"
+        );
+        let replaced: Vec<_> = events
+            .lines()
+            .map(crate::events::Event::parse_line)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("valid journal")
+            .into_iter()
+            .filter(|event| event.action == "session-id-replaced")
+            .collect();
+        assert_eq!(replaced.len(), 1);
+        let event = &replaced[0];
+        let details = format!(
+            "{} {} {}",
+            event.target.as_deref().unwrap_or_default(),
+            event.reference.as_deref().unwrap_or_default(),
+            event.summary.as_deref().unwrap_or_default()
+        );
+        assert!(
+            details.contains(CODEXTOK_OWN) && details.contains(CODEXTOK_OTHER),
+            "old and new ids: {details}"
+        );
+        assert!(
+            details.contains("main") || details.contains("lead"),
+            "seat: {details}"
+        );
+        assert!(
+            event
+                .summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("token")
+                    || summary.contains("proof")
+                    || summary.contains("proven")
+                    || summary.contains("developer")),
+            "audit explains provenance: {event:?}"
+        );
+        assert_eq!(
+            event.alert_meaning(),
+            crate::events::AlertMeaning::Undefined
+        );
+        for state in ["done", "waiting-user", "waiting-agent", "blocked"] {
+            assert!(
+                !crate::watchdog::ends_quiet(state, event, true, &[]),
+                "replacement audit is neutral to {state}"
+            );
+        }
+        assert_eq!(codextok_register(&dir), 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("events.jsonl")).expect("journal"),
+            events,
+            "registering the same id is not another replacement"
+        );
+    }
+
+    #[test]
+    fn codextok_user_messages_never_prove_developer_ownership() {
+        let (dir, home) = codextok_seat("codextok-user-quote", "pending");
+        let user = CODEXTOK_DEVELOPER.replace("\"developer\"", "\"user\"");
+        codextok_rollout(&home, CODEXTOK_OTHER, 0, &user, 2000);
+        assert_eq!(
+            codextok_register(&dir),
+            1,
+            "pasting another launch context cannot claim it"
+        );
+    }
+
+    #[test]
+    fn codextok_tool_output_response_items_never_prove_developer_ownership() {
+        for kind in ["function_call_output", "custom_tool_call_output"] {
+            let (dir, home) = codextok_seat("codextok-response-output", "pending");
+            let output = CODEXTOK_DEVELOPER.replace("\"message\"", &format!("\"{kind}\""));
+            codextok_rollout(&home, CODEXTOK_OTHER, 0, &output, 2000);
+            assert_eq!(
+                codextok_register(&dir),
+                1,
+                "{kind} is not a developer message"
+            );
+        }
+    }
+
+    #[test]
+    fn codextok_a_marker_outside_content_text_is_not_ownership_proof() {
+        for record in [
+            r#"{"type":"response_item","payload":{"type":"message","role":"developer","id":"AE_CODEX_LAUNCH_ID=acceptance-token","content":[{"type":"input_text","text":"unrelated"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","other":"AE_CODEX_LAUNCH_ID=acceptance-token"}]}}"#,
+        ] {
+            let (dir, home) = codextok_seat("codextok-wrong-field", "pending");
+            codextok_rollout(&home, CODEXTOK_OTHER, 0, record, 2000);
+            assert_eq!(
+                codextok_register(&dir),
+                1,
+                "only content text carries launch context: {record}"
+            );
+        }
+    }
+
+    #[test]
+    fn codextok_json_spacing_and_field_order_do_not_erase_developer_proof() {
+        let (dir, home) = codextok_seat("codextok-json-spacing", "pending");
+        let padded = format!(
+            r#"{{ "timestamp" : "2026-10-16T00:00:00Z", "ordinal" : 7, "padding" : "{}", "payload" : {{ "content" : [{{ "text" : "AE_CODEX_LAUNCH_ID=acceptance-token", "type" : "input_text" }}], "role" : "developer", "type" : "message" }}, "type" : "response_item" }}"#,
+            "x".repeat(200)
+        );
+        codextok_rollout(&home, CODEXTOK_OWN, 0, &padded, 2000);
+        assert_eq!(codextok_register(&dir), 0);
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert!(
+            meta.contains(&format!("harness_session.main={CODEXTOK_OWN}\n")),
+            "{meta}"
+        );
+    }
+
+    #[test]
+    fn codextok_invalid_or_truncated_json_never_proves_ownership() {
+        for record in [
+            &CODEXTOK_DEVELOPER[..CODEXTOK_DEVELOPER.len() - 1],
+            &format!("{CODEXTOK_DEVELOPER} garbage"),
+        ] {
+            let (dir, home) = codextok_seat("codextok-invalid-json", "pending");
+            codextok_rollout(&home, CODEXTOK_OTHER, 0, record, 2000);
+            assert_eq!(
+                codextok_register(&dir),
+                1,
+                "damaged transcript text is not proof"
+            );
+        }
+    }
+
+    #[test]
+    fn codextok_a_stale_authoritative_capture_cannot_replace_a_newly_proven_id() {
+        let (dir, home) = codextok_seat("codextok-capture-race", "pending");
+        codextok_rollout(&home, CODEXTOK_OWN, 0, CODEXTOK_DEVELOPER, 1000);
+        let first_facts = facts(&dir, "main").expect("first scan snapshot");
+        let first = Captured::new(
+            &first_facts,
+            scan_codex(&home, &first_facts).expect("first rollout proves the token"),
+        )
+        .observing("pending");
+        // A second scan sees another real candidate, while the recorded id is
+        // still pending. Its publication arrives after the first one's.
+        codextok_rollout(&home, CODEXTOK_OTHER, 0, CODEXTOK_DEVELOPER, 2000);
+        let second_facts = facts(&dir, "main").expect("second scan snapshot");
+        let second = Captured::new(
+            &second_facts,
+            scan_codex(&home, &second_facts).expect("second rollout proves the token"),
+        )
+        .observing("pending");
+        assert_eq!(first.id(), CODEXTOK_OWN);
+        assert_eq!(second.id(), CODEXTOK_OTHER);
+        assert!(commit_authoritative(&dir, "main", &first));
+        let before = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert!(
+            !commit_authoritative(&dir, "main", &second),
+            "a changed current id invalidates the older scan snapshot"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("meta")).expect("meta"),
+            before
+        );
+        assert!(!before.contains("harness_session_prior.main="));
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+        assert!(
+            !events.contains("session-id-replaced"),
+            "neither initial capture nor refused replacement is a live-id replacement"
+        );
+    }
+
+    #[test]
+    fn codextok_a_replacement_reason_survives_the_journal_cap_for_long_agent_names() {
+        let (dir, home) = codextok_seat("codextok-long-audit", CODEXTOK_OTHER);
+        let long_agent = "a".repeat(64);
+        assert!(crate::config::is_agent_name(&long_agent));
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        write(
+            &dir.join("meta"),
+            &crate::meta::rewritten(&meta, "seat.main", Some(&long_agent)),
+        );
+        codextok_rollout(&home, CODEXTOK_OTHER, 40, CODEXTOK_QUOTE, 1000);
+        codextok_rollout(&home, CODEXTOK_OWN, 0, CODEXTOK_DEVELOPER, 2000);
+        assert_eq!(codextok_register(&dir), 0);
+        let journal = std::fs::read_to_string(dir.join("events.jsonl")).expect("replacement audit");
+        let event = journal
+            .lines()
+            .map(crate::events::Event::parse_line)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("valid journal")
+            .into_iter()
+            .find(|event| event.action == "session-id-replaced")
+            .expect("replacement record");
+        assert_eq!(event.target.as_deref(), Some(long_agent.as_str()));
+        let summary = event.summary.expect("replacement details");
+        assert!(
+            summary.contains(CODEXTOK_OWN) && summary.contains(CODEXTOK_OTHER),
+            "both identities survive: {summary}"
+        );
+        assert!(summary.contains("main"), "seat survives: {summary}");
+        assert!(
+            summary.contains("token")
+                && (summary.contains("unproven") || summary.contains("does not")),
+            "reason must explain why the old identity lost to the new proof: {summary}"
+        );
+    }
+
     /// One roster row, spelled the way a v2 meta writes it.
     fn seat(slot: &str, name: &str, binary: &str, id: Option<&str>) -> crate::meta::RosterEntry {
         crate::meta::RosterEntry {
@@ -1908,7 +2438,7 @@ mod tests {
                     .join(format!("rollout-{name}.jsonl")),
                 &format!(
                     "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\"}}}}\n\
-                     {{\"text\":\"AE_CODEX_LAUNCH_ID={token}\"}}\n"
+                     {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID={token}\"}}]}}}}\n"
                 ),
             );
         }
@@ -2637,7 +3167,7 @@ mod tests {
             &day.join("rollout-1.jsonl"),
             &format!(
                 "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"c0de-01\",\"cwd\":\"{}\"}}}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-1\"}}\n",
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID=tok-1\"}}]}}}}\n",
                 work.display()
             ),
         );
@@ -2697,7 +3227,7 @@ mod tests {
                 .join("rollout-retired.jsonl"),
             &format!(
                 "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"cwd\":\"{}\"}}}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID=retired-token\"}}\n",
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID=retired-token\"}}]}}}}\n",
                 work.display()
             ),
         );
@@ -2732,7 +3262,7 @@ mod tests {
                 .join("rollout-retired.jsonl"),
             &format!(
                 "{{\"timestamp\":\"2026-09-10T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/work\"}}}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID=reused-token\"}}\n"
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID=reused-token\"}}]}}}}\n"
             ),
         );
         let launched = Timestamp::parse("2026-09-10T10:01:00Z")
@@ -2769,6 +3299,7 @@ mod tests {
             work_dir: String::new(),
             provenance: crate::meta::SeatProvenance::Inherited,
             born_ms: None,
+            observed: None,
         };
 
         assert!(
@@ -2789,6 +3320,7 @@ mod tests {
             work_dir: String::new(),
             provenance: crate::meta::SeatProvenance::Inherited,
             born_ms: None,
+            observed: None,
         };
         assert!(
             !commit(&dir, "spawned.0", &current),
@@ -2822,7 +3354,7 @@ mod tests {
                 .join(format!("rollout-{id}.jsonl")),
             &format!(
                 "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-recorded\"}}\n",
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID=tok-recorded\"}}]}}}}\n",
                 work.display()
             ),
         );
@@ -3091,7 +3623,7 @@ mod tests {
         let root = scratch("codex-exp-miss");
         let config_home = root.join("home").join(".codex");
         let seat = root.join("seat").display().to_string();
-        let token = "{\"text\":\"AE_CODEX_LAUNCH_ID=other-token\"}";
+        let token = r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"AE_CODEX_LAUNCH_ID=other-token"}]}}"#;
         rollout(&config_home, "c0de-0e", &seat, "", token);
         let facts = Facts {
             agent: "lead".to_owned(),

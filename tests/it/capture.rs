@@ -515,7 +515,7 @@ fn plant_rollout(rig: &Rig, id: &str) {
             .join(format!("rollout-{id}.jsonl")),
         &format!(
             "{{\"timestamp\":\"{started}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
-             {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-1\"}}\n",
+             {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID=tok-1\"}}]}}}}\n",
             rig.project.display()
         ),
     );

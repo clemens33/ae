@@ -25,6 +25,8 @@ pub(crate) mod assets;
 pub(crate) mod capture;
 pub(crate) mod name;
 
+pub use capture::developer_record_carries;
+
 /// The usage line for the core entry.
 pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--solo] [--from <uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <name>] <session-name>";
 

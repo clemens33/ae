@@ -1934,7 +1934,7 @@ fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
             logs.join("rollout-mine.jsonl"),
             format!(
                 "{{\"timestamp\":\"{started}\",\"id\":\"0191aaaa-bbbb-cccc\",\"cwd\":\"{}\"}}\n\
-                 {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-recover\"}}\n",
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID=tok-recover\"}}]}}}}\n",
                 project.display()
             ),
         )

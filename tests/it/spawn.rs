@@ -495,7 +495,7 @@ impl Rig {
                 logs.join(format!("rollout-{id}.jsonl")),
                 format!(
                     "{{\"timestamp\":\"{started}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
-                     {{\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}\n",
+                     {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"developer\",\"content\":[{{\"type\":\"input_text\",\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}]}}}}\n",
                     self.scratch.display()
                 )
             )

@@ -271,3 +271,10 @@ path = "fuzz_targets/token_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "codex_developer_record"
+path = "fuzz_targets/codex_developer_record.rs"
+test = false
+doc = false
+bench = false
