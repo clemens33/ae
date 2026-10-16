@@ -16,7 +16,7 @@ install             — the bootstrap (download, verify, extract, `ae-core _inst
                       product's only bash file, 83 lines
 Cargo.toml          — Rust package (bin + lib, both `ae`)
 src/                — Rust core sources
-README.md           — short user-facing intro
+README.md           — user-facing intro
 AGENTS.md           — project-level rules for agents working in this repo
 CLAUDE.md           — symlink to AGENTS.md for Claude Code
 docs/               — this site (MkDocs Material)

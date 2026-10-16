@@ -6,9 +6,10 @@ not only a binary swap, and the reasoning behind that is here rather than in
 
 ## The shape row
 
-Every session meta carries `meta_version=<N>`, written at launch. Today N is 2 and the chain
-holds no steps, so it is the version check and the refusals. The first real shape change is a
-step with a fixture beside it, not a rewrite of every reader.
+Every session meta carries `meta_version=<N>`, written at launch. The current N is
+`src/migrate.rs::CURRENT`; the chain steps a meta from N to N+1, and also holds the version
+check and the refusals. Each shape change is a step with a fixture beside it, not a rewrite
+of every reader.
 
 The row is younger than the sessions. On the machine this was written for, 28 of 28 live
 sessions had none — what they had was `schema=2`, which is the same statement about the same

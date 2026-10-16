@@ -1,4 +1,4 @@
-//! `ae` — agent environment: a tmux-backed multi-agent session multiplexer.
+//! `ae` — fleet coordination for AI coding agents: a thin layer over tmux.
 //!
 //! Module layout is 2018-edition style: `cli.rs` beside a future `cli/`, never
 //! a `mod.rs`.

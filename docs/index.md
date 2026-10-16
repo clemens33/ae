@@ -6,7 +6,6 @@
 
 [![Release: 2026.10.88](https://img.shields.io/badge/release-2026.10.88-blue.svg)](https://github.com/clemens33/ae/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/clemens33/ae/blob/main/LICENSE)
-[![Bash](https://img.shields.io/badge/bash-%3E%3D4.0-green.svg)](https://www.gnu.org/software/bash/)
 
 ## Why ae
 
@@ -26,9 +25,11 @@
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - [Codex](https://github.com/openai/codex)
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- Antigravity (`agy`)
 - [Grok Build](https://github.com/xai-org/grok-build)
+- Muse Code
 - [OpenCode](https://github.com/opencode-ai/opencode)
-- Any CLI agent — point ae at the binary and it works
+- Any CLI agent — point ae at the binary and it runs; resume is best-effort
 
 ## What it looks like
 
@@ -37,7 +38,7 @@
 │ > /ultrareview               │ ✓ ran tests                   │
 │                              │ 17 passed                     │
 │ launching multi-agent...     │                               │
-│                              │ /home/ckriech/.ae/sessions/   │
+│                              │ ~/.ae/sessions/               │
 └──────────────────────────────┴──ae-mysession/send "claude...─┘
 ```
 

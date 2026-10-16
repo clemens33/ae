@@ -217,10 +217,10 @@ that used to reach for them is Rust. `flock` and `timeout` are likewise no longe
 dependencies — the core locks with its own `flock(2)` and times out in its own code — so
 `ae doctor` no longer reports rows for them.
 
-One macOS requirement stands for installation: the `install` bootstrap needs a modern Bash,
-because macOS ships 3.2. Install one with Homebrew and put brew's bin directory ahead of
-`/bin` on `PATH`. `ae` itself is the Rust core and needs only tmux and git; session helpers
-are symlinks to that same binary and do not invoke Bash.
+The `install` bootstrap runs under macOS's stock Bash 3.2; it needs `curl`, `tar` and
+`sha256sum` or `shasum`, which macOS ships. `ae` itself is the Rust core and needs only tmux
+(3.4 or newer) and git; session helpers are symlinks to that same binary and do not invoke
+Bash.
 
 Resume / session-id capture for external CLIs still depends on each tool's local
 storage format, which differs across platforms.

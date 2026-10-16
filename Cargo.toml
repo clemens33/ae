@@ -15,9 +15,19 @@ name = "ae"
 version = "2026.10.88"
 edition = "2024"
 rust-version = "1.97.1"
-description = "Agent environment: tmux-backed multi-agent session multiplexer"
+description = "Fleet coordination for AI coding agents: a thin layer over tmux where agents message each other by name, declare when they need a human, and resume after a reboot"
+keywords = [
+  "tmux",
+  "ai-agents",
+  "multi-agent",
+  "agent-orchestration",
+  "claude-code",
+]
+categories = ["command-line-utilities", "development-tools"]
 license = "MIT"
 repository = "https://github.com/clemens33/ae"
+homepage = "https://github.com/clemens33/ae"
+readme = "README.md"
 publish = false
 
 [lib]

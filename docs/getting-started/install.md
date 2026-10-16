@@ -5,10 +5,10 @@ versioned Rust core binary. There is no wrapper in between.
 
 ## Requirements
 
-- [tmux](https://github.com/tmux/tmux)
+- [tmux](https://github.com/tmux/tmux) 3.4 or newer (Ubuntu 24.04 and Homebrew both package one that clears the floor)
 - [git](https://git-scm.com/)
-- bash ≥ 4.0
-- At least one AI coding agent CLI on `PATH` (Claude Code, Codex, Gemini, Grok Build, Muse Code, OpenCode, or any other)
+- `curl`, `tar` and `sha256sum` or `shasum`, for the installer; any bash runs it, including macOS's stock 3.2
+- At least one AI coding agent CLI on `PATH` (Claude Code, Codex, Gemini, Antigravity (`agy`), Grok Build, Muse Code, OpenCode, or any other)
 
 ## One-line release install
 
@@ -66,7 +66,7 @@ ae upgrade
 
 `ae upgrade` downloads the latest release (or an `AE_VERSION` pin), verifies checksums before extraction, publishes a new immutable version read-only under `~/.ae/versions/<V>/`, then atomically repoints `~/.local/bin/ae` directly at that version's `ae-core`. The whole of that is the core's own code — it needs nothing on the machine but `tar`, and works on an installed generation that is otherwise too broken to run.
 
-Stopped sessions consume the current version only on their next resume. Running sessions are reported by name and deferred until stop and resume; an upgrade never hot-rewrites their loaded helpers or daemon bodies.
+Sessions, running or stopped, are migrated and relinked in the same publish (see [upgrade](../upgrade.md)): their helper links re-render, and the watchdog and Telegram bridge restart on the new core. A stopped session the migration chain cannot place is reported and skipped untouched. Agent panes are never touched.
 
 ## Uninstall
 

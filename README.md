@@ -1,27 +1,26 @@
-# ae - agentic engineering
+# ae — agentic engineering
 
 [![Release: 2026.10.88](https://img.shields.io/badge/release-2026.10.88-blue.svg)](https://github.com/clemens33/ae/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Bash](https://img.shields.io/badge/bash-%3E%3D4.0-green.svg)](https://www.gnu.org/software/bash/)
-[![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
+[![tmux](https://img.shields.io/badge/requires-tmux%20%3E%3D%203.4-1BB91F.svg)](https://github.com/tmux/tmux)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Linux%20x86__64-lightgrey.svg)](#install)
 [![Install: curl | bash](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
 
-**ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One public command — a symlink straight to a versioned Rust core, nothing between them.
+**A fleet of AI coding agents in tmux. They message each other by name, flag when they need you, and survive reboots.**
 
-Works with any CLI-based agentic harness.
+**ae** is a thin coordination layer over [tmux](https://github.com/tmux/tmux) for multi-agent work. Run Claude Code, Codex, Gemini CLI and other agent CLIs side by side, and ae makes them a fleet instead of a pile of tabs: each agent knows who it is and who else is in the workspace, agents reach each other by name, and the session shows you who is waiting for a human.
+
+Works out of the box with Claude Code, Codex, Gemini CLI, Antigravity (`agy`), Grok Build, Muse Code and OpenCode. Any other CLI agent runs too; resume is best-effort there.
 
 ## Why ae
 
-- **One command** -- `ae <name>` starts or reattaches a session; bare `ae` attaches to the
-  fleet server's most recently used session.
-- **Agents talk to each other** -- each agent gets workspace context through its harness's supported launch channel. They send messages by name, spawn new agents, and coordinate without manual wiring.
-- **Everything survives reboots** -- sessions, spawned agents, conversation history. Pick up exactly where you left off.
-- **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
-- **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
-- **A status bar that answers "who needs me"** -- inside its sessions ae draws the tmux footer: this session, its windows and mark-first agents (`●lead ✓colead ◌builder ⚠grok`), its branch and goal on line one; every ae session on the server, in your own `[workspace] fleet_order` when you set one and in creation order otherwise, each one clickable, on line two. Verdicts, never claims, and `[workspace] theme = off` gives your own status line back.
-- **A fleet overview in one pane** -- the watchdog pastes a changed `NEEDS YOU` / `WORKING` / `QUIET` overview into the optional orchestrator seat; explicit instructions relay as if you typed them in the target pane, and named sessions can be started or created with explicit `--local`, `--copy`, or `--worktree` modes, then stopped or ended with history kept by default under its charter.
-- **Session creation follows explicit facts** -- when the human names the session and a directory that exists at the spelled path (including `~` or relative paths expanded), the orchestrator runs immediately in default local mode; confirm only when a fact is inferred or missing (directory missing or nonexistent, resolution lands elsewhere such as a symlink, or mode unclear), then propose `name=<n> dir=<canonical path> mode=local|copy|worktree` and wait for `yes` or an edit before using exactly one mode command.
-- **Small public surface** -- one command, and an optional orchestrator seat in `contrib/` that is never required.
+- **A team, not a pile of tabs.** Every agent is told its name and the workspace roster. Agents `send` messages, `ask` tracked questions (request id plus an exact reply command) and `review` each other's work, across sessions too.
+- **You see who needs you.** Agents declare `working`, `waiting-user`, `waiting-agent`, `blocked` or `done`. The tmux status bar, `ae list --needs-attn`, `ae next` and the `ae app` terminal UI show who is waiting for a human; Telegram reaches you away from the desk.
+- **Pick up where you left off.** Sessions, spawned agents, conversation history and shared `memo` notes survive stops and reboots. `ae reboot` hands a context-heavy session to a fresh one from an archive.
+- **Mix vendors.** Pair one model's work with another's review; lead on the strongest model and send bounded chores to cheaper spawned workers ([delegation](docs/reference/delegation.md)).
+- **Small and out of the way.** tmux keeps panes, scrollback and attach. Session state lives in `~/.ae/`, never in your repo. One checksum-verified Rust binary; no runtime or service to keep alive.
+
+<!-- TODO(human): screenshot or GIF of `ae app` plus the status bar goes here (not in the repo yet) -->
 
 ## Install
 
@@ -105,6 +104,10 @@ ae my-feature                  # every agent resumes with its conversation histo
 
 **Check on agents without attaching:**
 ```bash
+ae app [session]               # the fleet as a terminal UI beside the selected chat
+ae chat [session] [--follow]
+                               # the human lane: lead-pair turns, bridge asks, say lines, cards,
+                               # every seat that needs you; /open <seat> shows its pane
 ae list                        # running sessions: goal, git branch, per-agent state + attn marker
 ae list --needs-attn           # only sessions needing attention (alias: --attn)
 ae list --all                  # include stopped sessions
@@ -112,10 +115,6 @@ ae list --json                 # machine-readable digest (for scripts/agents)
 ae next                        # name the top session needing attention (--attach jumps to it)
 ae brief [name] [--all]        # why a session needs you: goal, latest note per memo topic,
                                # each agent's declared state, and every unanswered ask
-ae chat [session] [--follow]
-                               # the human lane: lead-pair turns, bridge asks, say lines, cards,
-                               # every seat that needs you; /open <seat> shows its pane
-ae app [session]               # the fleet as a terminal UI beside the selected chat
 ae orchestrator                # start or reattach the local orchestrator seat
 ae orchestrator --popup --client <name>
                                # status button / prefix a bindings supply the client name
@@ -181,7 +180,7 @@ Inside a session, agents and humans share a set of helpers in `~/.ae/sessions/<n
 send <agent> <message>         # message another agent
 ask <agent> <question>         # tracked request with a request id + exact reply command
 review <agent> <request>       # critical review, findings-first reply contract
-state <value> [reason]         # declare work state: working|waiting-user|blocked|done
+state <value> [reason]         # declare work state: working|waiting-user|waiting-agent|blocked|done
 say <text>                     # a lead-pair seat's line to the human's Telegram chat (reply routes back)
 memo add [--topic t] <text>    # durable shared session memory (survives restarts)
 spawn <name> --using <profile> [prompt]   # add an agent · retire <agent> removes one
@@ -211,7 +210,7 @@ claude = "claude --permission-mode bypassPermissions --model opus"
 codex = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=high"
 gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 grok = "grok --always-approve -m grok-4.6 --effort high"
-agy = "agy --dangerously-skip-permissions"   # any CLI works — agy has no special ae integration
+agy = "agy --dangerously-skip-permissions"   # Antigravity CLI; any other CLI can be a profile too
 muse = "muse"
 
 [roster]
@@ -282,10 +281,10 @@ for manual and automatic upgrades. See [docs/upgrade.md](docs/upgrade.md).
 
 ## Requirements
 
-- **bash >= 4.0** (only to run `install`; macOS ships 3.2 — `brew install bash` and put brew's bin dir ahead of `/bin` on `PATH`)
-- [tmux](https://github.com/tmux/tmux) and [git](https://git-scm.com/) for the core runtime
-- [just](https://github.com/casey/just) only to build from source (`just install`)
-- At least one AI coding agent CLI (see *Works with*, above)
+- [tmux](https://github.com/tmux/tmux) **3.4 or newer** and [git](https://git-scm.com/). Ubuntu 24.04 and Homebrew both package a tmux that clears the floor.
+- `curl`, `tar` and `sha256sum` or `shasum`, for the installer. Any bash runs it, including macOS's stock 3.2.
+- At least one AI coding agent CLI on `PATH` (the list at the top).
+- [just](https://github.com/casey/just) and [rustup](https://rustup.rs) only to build from source (`just install`).
 
 Linux (GNU userland) and macOS (BSD userland) are both first-class, and no GNU
 *coreutils* package is required. The divergent coreutils are simply not called
