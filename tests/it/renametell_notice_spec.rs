@@ -5,10 +5,22 @@
     reason = "acceptance fixtures read their own scratch state"
 )]
 use super::cli::OwnedChild;
-use super::renametell_routing_spec::{A, B, Rig};
+use super::renametell_routing_spec::{A, B, CEILING, Rig};
 use ae::time::Timestamp;
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::time::{Duration, Instant, SystemTime};
+
+// A watchdog cycle runs every seat's notice leg inside it and touches its beat as it begins, and
+// a healthy daemon tells a due seat within two cycles: a product wait fails once this many further
+// cycles began with its condition still false. A loaded machine stretches a cycle (about 35
+// tmux/ps spawns, 14-22 s at +0.35 s per spawn) but not the cycles the daemon needs, which is why
+// a fixed 12 s wall deadline flaked. `CEILING` bounds what the beats cannot: a fixture wait, a
+// dead daemon, a 60 s interval, and a cycle slow enough to outrun the count.
+const CYCLES: usize = 6;
+// The caller of a rename must not wait out a send's deferral on a seat it cannot reach.
+const RENAME_BOUND: Duration = ae::deliver::DEFAULT_DEFER.saturating_sub(Duration::from_secs(1));
 
 // Only the external fake agent changes its frame. Delivery and reconciliation are real.
 const AGENT: &str = r#"#!/usr/bin/perl
@@ -142,13 +154,71 @@ impl NoticeRig {
     fn capture(&self, pane: &str) -> String {
         self.rig.tmux(&["capture-pane", "-p", "-t", pane])
     }
+    fn beats(&self) -> BTreeMap<String, SystemTime> {
+        self.sessions()
+            .into_iter()
+            .filter_map(|name| {
+                let beat = fs::metadata(ae::watchdog_glue::beat_path(&self.rig.dir(&name)));
+                Some((name, beat.and_then(|m| m.modified()).ok()?))
+            })
+            .collect()
+    }
+    fn sessions(&self) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(self.rig.root.join("sessions"))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| !name.starts_with('.'))
+            .collect();
+        names.sort();
+        names
+    }
+    // What the daemon did while a wait ran: its beats and every notice record it journaled, so
+    // a late notice reads differently from a lost one (a failure, a give-up, nothing at all).
+    fn digest(&self, started: Instant, cycles: usize) -> String {
+        let mut text = format!("elapsed={:?} cycles_seen={cycles}", started.elapsed());
+        for name in self.sessions() {
+            let _ = write!(text, "\n  journal[{name}]:");
+            for event in self.events(&name).iter().filter(|event| {
+                event.action.starts_with("session-notice")
+                    || matches!(event.action.as_str(), "rename" | "goal")
+            }) {
+                let _ = write!(
+                    text,
+                    "\n    {} {} {} {}",
+                    event.ts,
+                    event.action,
+                    event.target.as_deref().unwrap_or("-"),
+                    event.summary.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        text
+    }
+    // Waits on the fixture (a frame, a pidfile, a pane) are bounded by the wall clock alone.
     fn until(&self, test: impl Fn() -> bool, why: &str) {
-        let deadline = Instant::now() + Duration::from_secs(12);
+        self.wait(test, why, usize::MAX);
+    }
+    // Waits on the product are bounded by the daemon's own progress as well: see `CYCLES`.
+    fn within_cycles(&self, test: impl Fn() -> bool, why: &str) {
+        self.wait(test, why, CYCLES);
+    }
+    fn wait(&self, test: impl Fn() -> bool, why: &str, cycles: usize) {
+        let started = Instant::now();
+        let mut last = self.beats();
+        let mut seen = 0;
         while !test() {
+            let now = self.beats();
+            seen += now
+                .iter()
+                .filter(|(name, beat)| last.get(*name).is_some_and(|before| before != *beat))
+                .count();
+            last = now;
             assert!(
-                Instant::now() < deadline,
-                "{why}; daemon={}",
-                fs::read_to_string(self.rig.scratch.join("daemon-err")).unwrap_or_default()
+                seen < cycles && started.elapsed() < CEILING,
+                "{why}; daemon={}\n{}",
+                fs::read_to_string(self.rig.scratch.join("daemon-err")).unwrap_or_default(),
+                self.digest(started, seen)
             );
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -228,7 +298,7 @@ impl NoticeRig {
             .collect()
     }
     fn told(&self, seat: &str) {
-        self.until(
+        self.within_cycles(
             || !self.notices(seat).is_empty(),
             "due seat received no ctx notice",
         );
@@ -256,7 +326,7 @@ impl NoticeRig {
         let result = self.rig.run(&["rename", old, new], None);
         assert_eq!(result.0, Some(0), "rename operation: {result:?}");
         assert!(
-            started.elapsed() < Duration::from_secs(15),
+            started.elapsed() < RENAME_BOUND,
             "caller blocked on seat delivery"
         );
         (result.1, result.2)
@@ -394,7 +464,7 @@ fn live_rename_tells_every_seat_once_with_current_paths_goal_and_workspace() {
             "daemon pasted before new manifest publication"
         );
     }
-    n.until(
+    n.within_cycles(
         || n.count("new", "session-notice") == 3,
         "successful notices lack terminal records",
     );
@@ -445,7 +515,7 @@ fn changed_goal_tells_only_the_other_standing_seat_and_clear_is_a_notice() {
     assert!(n.notices("colead")[0].contains("goal-one"));
     let cleared = n.rig.helper("old", "goal", &["--clear"], Some(&n.panes[0]));
     assert_eq!(cleared.0, Some(0), "goal clear: {cleared:?}");
-    n.until(
+    n.within_cycles(
         || n.notices("colead").len() == 2,
         "clear did not re-arm notice",
     );
@@ -629,7 +699,7 @@ fn an_expired_unfinished_attempt_is_retried_after_watchdog_restart() {
     let _watch = n.watch("old");
     n.told("lead");
     assert!(n.notices("lead")[0].contains("crash-current"));
-    n.until(
+    n.within_cycles(
         || {
             n.events("old").iter().any(|event| {
                 event.action == "session-notice" && event.target.as_deref() == Some("lead")
@@ -680,7 +750,7 @@ fn three_delivery_failures_give_up_visibly_and_newer_source_rearms() {
     let blocked = n.rig.dir("old").join("messages");
     fs::write(&blocked, "controlled body-store failure").expect("unwritable message directory");
     let _watch = n.watch("old");
-    n.until(
+    n.within_cycles(
         || n.count("old", "session-notice-gave-up") == 1,
         "failure ceiling was not journaled",
     );

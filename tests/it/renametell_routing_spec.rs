@@ -44,6 +44,10 @@ while (sysread(STDIN, my $ch, 1)) {
 }
 "#;
 
+// The wall-clock bound of a wait: a loaded machine stretches every spawn (the slowest healthy
+// wait measured 26 s at +0.35 s per tmux/ps spawn), so it is generous and only a hang reaches it.
+pub(super) const CEILING: Duration = Duration::from_secs(90);
+
 pub(super) struct Rig {
     pub(super) scratch: OwnedScratch,
     pub(super) root: PathBuf,
@@ -141,7 +145,7 @@ impl Rig {
             std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_ae"), dir.join(helper.name))
                 .expect("core helper link");
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + CEILING;
         for pane in [&main, &peer] {
             while !self
                 .tmux(&["capture-pane", "-p", "-t", pane])
