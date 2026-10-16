@@ -8784,10 +8784,10 @@ fn cell_clipping_runs_through_the_one_cutter() {
         "a second clipper appeared"
     );
     assert_eq!(defs, 1, "the cutter is defined more than once");
-    // The prose projector over the same cutter: one definition, five callers —
-    // the nudge body, app rows and menu/question labels, `requests` excerpts, and the
+    // The prose projector over the same cutter: one definition, four callers —
+    // the nudge body, menu/question labels, `requests` excerpts, and the
     // quota view's scope heads and elided names, which clip through it rather
-    // than beside it.
+    // than beside it. App rows draw no reason prose any more.
     let head_needle = ["clip", "_head("].concat();
     let head_def = ["fn clip", "_head"].concat();
     let (mut head_holders, mut head_defs) = (Vec::new(), 0);
@@ -8809,7 +8809,6 @@ fn cell_clipping_runs_through_the_one_cutter() {
     assert_eq!(
         head_holders,
         [
-            "draw.rs".to_owned(),
             "event_text.rs".to_owned(),
             "menu.rs".to_owned(),
             "requests.rs".to_owned(),

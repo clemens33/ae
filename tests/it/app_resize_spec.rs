@@ -427,7 +427,11 @@ fn live_vertical_drag_moves_chat_and_release_ends_it() {
 
 #[test]
 fn live_vertical_drag_clamps_both_ends_and_keeps_rows_legible() {
-    let rig = Rig::new("arclamp", 0, STOPPED);
+    // 25 one-row sessions overflow the 45-high list (23 rows), so the more
+    // row exists for the narrowest sidebar to keep.
+    let many: Vec<String> = (0..24).map(|n| format!("zstop{n:02}")).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    let rig = Rig::new("arclamp", 0, &many);
     let pane = rig.open_app();
     rig.ready(&pane);
     rig.grab_vertical(&pane, 159);
@@ -449,8 +453,8 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     let pane = rig.open_app();
     assert_eq!(
         horizontal_rule(&rig.ready(&pane)),
-        Some(6),
-        "unchanged one-row default"
+        Some(5),
+        "one one-row session: list border at 2 + 1 + 2"
     );
     rig.grab_horizontal(&pane, 20);
     let screen = rig.horizontal(&pane, 20);
@@ -460,7 +464,7 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     rig.motion(&pane, 1, 44);
     rig.horizontal(&pane, 36); // list drag budget stays; body gains reclaimed rows.
     rig.motion(&pane, 1, 0);
-    rig.horizontal(&pane, 6); // one session needs two list rows, no more row.
+    rig.horizontal(&pane, 5); // one session needs one list row, no more row.
     rig.release(&pane, 1, 0);
 }
 
@@ -471,11 +475,13 @@ fn live_horizontal_minimum_keeps_one_session_and_more_row() {
     let screen = rig.ready(&pane);
     assert_eq!(
         horizontal_rule(&screen),
-        Some(27),
-        "larger undragged windowed default"
+        Some(17),
+        "undragged default lists all 13 one-row sessions: border at 2 + 13 + 2"
     );
     rig.grab_horizontal(&pane, 0);
-    let screen = rig.horizontal(&pane, 7);
+    // Two list rows is the least with several sessions: one session and the
+    // more row, so the border stands at 2 + 2 + 2.
+    let screen = rig.horizontal(&pane, 6);
     assert!(
         screen
             .lines()
@@ -485,7 +491,7 @@ fn live_horizontal_minimum_keeps_one_session_and_more_row() {
     assert!(
         screen
             .lines()
-            .nth(4)
+            .nth(3)
             .is_some_and(|row| row.contains("more"))
     );
     assert!(screen.contains("No seat facts"), "the body remains usable");

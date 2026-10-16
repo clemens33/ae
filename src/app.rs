@@ -1333,6 +1333,20 @@ impl App {
         if raw.starts_with(b"@") {
             return (seat, body, None);
         }
+        let Some(route) = self.route_of(session) else {
+            return (seat, body, None);
+        };
+        let body = match route.prefix {
+            Some(prefix) => format!("{prefix}\n{body}"),
+            None => body,
+        };
+        (route.seat, body, route.note)
+    }
+
+    /// The route a plain line to `session` takes now, or `None` when the
+    /// router names no seat. The one reading both the send and the composer's
+    /// address ask, so the address cannot say a seat the line will not reach.
+    fn route_of(&self, session: &str) -> Option<route::Route> {
         let agents = self.entry(session).map(|entry| entry.agents.as_slice());
         let takes: Vec<_> = (self.pair.iter())
             .map(|name| {
@@ -1354,14 +1368,22 @@ impl App {
             })
             .collect();
         let route = route::decide(&takes, &quota, route::thread_seat(&self.lane.items));
-        if route.seat.is_empty() {
-            return (seat, body, None);
+        (!route.seat.is_empty()).then_some(route)
+    }
+
+    /// The seat the draft would reach and whether the draft named it with
+    /// `@`, for the composer's address: `None` for a slash command, a refused
+    /// line or a pair the router names no seat in.
+    fn destination(&self, session: &str) -> Option<(String, bool)> {
+        let draft = self.draft.as_bytes();
+        match draft.first() {
+            Some(b'/') => None,
+            Some(b'@') => match crate::console::input::command(draft, &self.pair) {
+                crate::console::input::Command::Ask { seat, .. } => Some((seat, true)),
+                _ => None,
+            },
+            _ => self.route_of(session).map(|route| (route.seat, false)),
         }
-        let body = match route.prefix {
-            Some(prefix) => format!("{prefix}\n{body}"),
-            None => body,
-        };
-        (route.seat, body, route.note)
     }
 
     /// Whether this app writes home: it holds the lease.
@@ -2517,7 +2539,7 @@ impl App {
             }
             self.reread();
         }
-        // A held drag keeps the screen as drawn: re-aging the Agents body under it
+        // A held drag keeps the screen as drawn: re-aging the open asks under it
         // would change the cells it lit.
         if ran || !self.holds_lane() {
             self.show();
@@ -2705,8 +2727,9 @@ impl App {
         }
     }
 
-    /// `n` / `p`: the highlight steps to the next or previous seat the last
-    /// frame drew, wrapping; whether it moved.
+    /// `n` / `p`: the seat cursor steps to the next or previous seat the last
+    /// frame drew, wrapping; with no cursor yet, `n` lands on the first seat
+    /// and `p` on the last. Whether it moved.
     fn move_focus(&mut self, forward: bool) -> bool {
         let selected = self.model.selected();
         let Some(drawn) = self
@@ -2717,13 +2740,16 @@ impl App {
             return false;
         };
         let count = drawn.rows.len();
-        let at = (drawn.focused.as_ref())
-            .and_then(|name| drawn.rows.iter().position(|(row, _)| row == name))
-            .unwrap_or(0);
-        let to = if forward {
-            (at + 1) % count.max(1)
-        } else {
-            (at + count.max(1) - 1) % count.max(1)
+        if count == 0 {
+            return false;
+        }
+        let at = (self.model.focus())
+            .and_then(|name| drawn.rows.iter().position(|(row, _)| row == name));
+        let to = match (at, forward) {
+            (None, true) => 0,
+            (None, false) => count - 1,
+            (Some(at), true) => (at + 1) % count,
+            (Some(at), false) => (at + count - 1) % count,
         };
         let Some(name) = drawn.rows.get(to).map(|(name, _)| name.clone()) else {
             return false;
@@ -2838,6 +2864,7 @@ impl App {
             zone,
             now: Timestamp::now(),
         };
+        let dest = name.and_then(|name| self.destination(name));
         let wait = draw::Wait {
             fleet: !self.fleeted,
             lane: self.loading,
@@ -2845,6 +2872,7 @@ impl App {
             folds: &folds,
             open: &open,
             sent: &sent,
+            dest: dest.as_ref().map(draw::Dest::of),
         };
         let mut drawn = draw::draw_with_layout(&screen, wait, buf);
         let cards = drawn
@@ -4742,9 +4770,10 @@ mod tests {
         }
     }
 
-    /// `n` / `p` step the rows the LAST frame drew, wrapping both ways and
-    /// from the cursor a key before it moved; a frame of another session
-    /// moves nothing, and a name the frame did not draw is only a preference.
+    /// `n` / `p` step the rows the LAST frame drew, wrapping both ways. With
+    /// no cursor yet `n` lands on the first row and `p` on the last; a frame
+    /// of another session moves nothing, and a name the frame did not draw is
+    /// only a preference.
     #[test]
     fn the_seat_cursor_steps_the_drawn_rows_and_wraps() {
         let root = Root::new("cursor");
@@ -4752,6 +4781,13 @@ mod tests {
         let cursor = |app: &App| app.drawn.as_ref().and_then(|d| d.focused.clone());
         let names = ["lead", "colead", "scout"];
         app.drawn = Some(drawn_rows(&names, "lead"));
+        assert_eq!(app.model.focus(), None, "no cursor until a key asks");
+        assert!(app.move_focus(true));
+        assert_eq!(
+            app.model.focus(),
+            Some("lead"),
+            "the first n is the first row"
+        );
         assert!(app.move_focus(true) && app.move_focus(true));
         assert_eq!(cursor(&app).as_deref(), Some("scout"));
         assert_eq!(app.model.focus(), Some("scout"));
@@ -4762,6 +4798,11 @@ mod tests {
         app.focus_seat(Some("ghost".to_owned()));
         assert_eq!(cursor(&app).as_deref(), Some("scout"), "not a drawn row");
         assert_eq!(app.model.focus(), Some("ghost"), "the preference is kept");
+        assert!(app.move_focus(true), "an undrawn cursor starts again");
+        assert_eq!(app.model.focus(), Some("lead"));
+        app.model.set_focus(None);
+        assert!(app.move_focus(false), "the first p is the last row");
+        assert_eq!(app.model.focus(), Some("scout"));
         app.drawn = Some(super::Drawn {
             session: "web".to_owned(),
             ..drawn_rows(&names, "lead")
@@ -6273,6 +6314,40 @@ mod tests {
             ("lead".to_owned(), "@lead hi".to_owned(), None),
             "an explicit seat is that line only"
         );
+    }
+
+    /// The composer's address reads the route the send takes: a plain line
+    /// names the seat the router picks, a draft that starts `@seat` names
+    /// that seat, and a slash command or a refused `@` line names none.
+    #[test]
+    fn the_destination_is_the_route_the_send_takes() {
+        let mut app = app(Some("api"));
+        app.pair = vec!["lead".to_owned(), "colead".to_owned()];
+        let mut entry = SessionEntry::new("api", Status::Running);
+        let seat = |name: &str, alive| crate::digest::AgentEntry {
+            name: name.to_owned(),
+            alive: Some(alive),
+            ..crate::digest::AgentEntry::default()
+        };
+        entry.agents = vec![seat("lead", false), seat("colead", true)];
+        app.world = World::new(Timestamp::now(), vec![entry]);
+        let dest = |app: &mut App, draft: &str| {
+            app.draft = draft.to_owned();
+            app.destination("api")
+        };
+        let to = |seat: &str, named| Some((seat.to_owned(), named));
+        assert_eq!(dest(&mut app, ""), to("colead", false), "the lead is down");
+        assert_eq!(dest(&mut app, "hello"), to("colead", false));
+        assert_eq!(dest(&mut app, "@lead hi"), to("lead", true));
+        assert_eq!(dest(&mut app, "@ghost hi"), None, "a refused line");
+        assert_eq!(dest(&mut app, "/close"), None, "a command");
+        let routed = app.routed("api", b"hello", "lead".to_owned(), "hello".to_owned());
+        assert_eq!(
+            Some(routed.0),
+            dest(&mut app, "hello").map(|(seat, _)| seat)
+        );
+        app.pair = Vec::new();
+        assert_eq!(dest(&mut app, "hello"), None, "no pair, no seat");
     }
 
     /// Routing weighs quota: with both seats free a plain line leaves a lead
@@ -8931,11 +9006,12 @@ mod tests {
         assert!(app.restart_due(quiet).is_some(), "released and copied");
     }
 
-    /// The Agents body's ages are judged at the press while the button is
-    /// down: a second turning under a drag does not change the cells it lit.
+    /// The open asks' ages are judged at the press while the button is down:
+    /// a second turning under a drag does not re-read them (the header they
+    /// show in is no selection, so the read itself is what is pinned).
     #[test]
-    fn the_agents_ages_wait_for_a_held_drag() {
-        let mut app = turned(&[]);
+    fn the_open_asks_ages_wait_for_a_held_drag() {
+        let mut app = turned(&["alpha beta gamma"]);
         let entry = crate::digest::SessionEntry::new("api", crate::digest::Status::Running);
         app.world.sessions = vec![entry];
         app.dirs
@@ -8956,17 +9032,23 @@ mod tests {
                 }],
             },
         );
-        // The row a press lands on stays as drawn: its seat is focused already.
-        app.focus_seat(Some("lead".to_owned()));
         app.show();
-        let (_, x, y) = shown(&mut app, "BODYWORD");
+        let aged = |app: &App| app.overview.open.first().and_then(|ask| ask.age_secs);
+        let at_press = aged(&app);
+        assert!(at_press.is_some(), "an open ask is read");
+        app.lane = Rc::new(Lane {
+            items: vec![said("alpha beta gamma", 0)],
+            coverage: Vec::new(),
+        });
+        let (_, x, y) = shown(&mut app, "alpha");
         app.mouse(at(MouseKind::Click, x, y));
         app.mouse(at(MouseKind::Drag, x + 3, y));
         std::thread::sleep(Duration::from_millis(1100));
         let _ = app.owed();
+        assert_eq!(aged(&app), at_press, "the age waits for the held drag");
         app.mouse(at(MouseKind::Release, x + 3, y));
-        let _ = shown(&mut app, "BODYWORD");
-        assert_eq!(staged(&app), Some("BODY"), "the cells seen at the press");
+        let _ = shown(&mut app, "alpha");
+        assert_eq!(staged(&app), Some("alph"), "the cells seen at the press");
     }
 
     /// The drag paints the cells it covers, the release asks for a copy of

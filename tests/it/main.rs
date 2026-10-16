@@ -108,6 +108,11 @@ mod seat_relaunch;
 mod session_launch;
 mod shape;
 mod shorthelper;
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "the frozen spec passes its frame by value and its bytes stay as nav froze them"
+)]
+mod sidecompact_spec;
 mod spawn;
 mod teardown;
 mod telegram;

@@ -32,23 +32,31 @@ recorded config first.
   need you` (`+?` where a running session's seats are unknown; a count of one
   reads `1 session`, `1 needs you`) — a narrow band drops the words before it
   cuts a count, and `icons = off` draws `# @ * !`. Then, on the next row with
-  no blank between, one card per session: its mark, its number, its name (`this
-  window` on home), and under it the seat counts, then the question that needs
-  you or `seat down`. `↑` / `↓` at the band's first row's right end show needy
+  no blank between, one row per session, the selected one too: its mark, its
+  name, `◂` (`<` with `icons = off`) after the name of the window's own
+  session, and at the right end its seat tally (`●3 ◔1 ✓2`; a stopped session
+  says `stopped <age>`, a running one with no seats `no agents`, one whose
+  seats are unknown `?`). No row number is drawn; `1`-`9` still select the Nth
+  session of the list. What a session or seat waits on is told in the chat
+  header, never under a row. A narrow row gives up the glyph first, then the
+  tally down to its most urgent count, then the name's tail. `↑` / `↓` at the band's first row's right end show needy
   rows outside the list, and `!` reaches the next one. The `Agents N` heading
   under the list is a band of the same ground. Running sessions come in
   this order: the orchestrator, then the sessions your `[workspace]
   fleet_order` names (the pins), then the rest by their newest AI answer to
   you, newest first, and a session with none after them in creation order;
-  stopped ones come last. Your own input never reorders the list. A needy row says so by its `⚠` mark and its question, with no edge, and `!` reaches it. The selected session wears what the focused seat wears: a `▸` (`>` with `icons = off`) in the first cell of its first row and the selected ground over both its lines; with `theme = off` the two lines are reversed. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
+  stopped ones come last. Your own input never reorders the list. A needy row says so by its `⚠` mark, with no edge, and `!` reaches it. One row is lifted: the one the chat column shows, the selected session while its shared chat is and a seat only while that seat's screen is. It wears a `▸` (`>` with `icons = off`) in its first cell and the selected ground over its one row; with `theme = off` the row is reversed. While a seat's screen is shown its session is a context row: no lift, its name keeps the title ink. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
-- **Agents** under the list: every seat of the selected session with its
-  state, and under it its client, the model its own frame drew and the effort
-  that frame drew, each only when known, never the profile name (from the
-  watchdog's published roster). A seat that waits on the human carries its
-  reason and age on a third row; a reason from a seat the roster lacks is drawn
-  as an entry of its own after the roster, so no ask is lost. A session on
+- **Agents** under the list: every seat of the selected session, one row each:
+  its mark, its name, the model its own frame drew (the client when none was)
+  and the effort that frame drew, each only when known, never the profile name,
+  and its state at the right end (from the watchdog's published roster). Short
+  of room the effort goes first, then the model, then the name's tail, last the
+  state. A seat that waits on the human is told in the chat header (`⚠ <seat>:
+  <reason> · <age>`: the viewed seat's ask, else the cursor seat's, else
+  the first); a reason from a seat the roster lacks is drawn as a row of its
+  own after the roster, so no ask is lost. A session on
   another tmux server, or one whose watchdog publishes nothing, names that gap
   instead of seats. The body that does not fit gives its last row to the rows
   it hides, `↑ a · ↓ b more rows`, and the wheel moves it three rows a notch;
@@ -65,8 +73,8 @@ recorded config first.
 The session list takes two thirds of the rows it shares with the Agents body,
 and never fewer than the 11 rows (18 from 40 high) it once had, though never
 more than the rows it shares (10 at 90x20, which leaves the body one row);
-it is sized to its sessions when they need fewer, so 24 sessions show 11 at
-160x45 where they showed 8. The chat header names the selected session's
+it is sized to its sessions when they need fewer, so 24 one-row sessions show
+22 and a more row at 160x45, where two-row cards showed 11. The chat header names the selected session's
 recorded working dir beside its name, your `$HOME` as `~`, cut from the left
 with `…` when the row is short so the leaf stays; it comes from the same
 listing the sidebar row comes from, not from a second read of the session's
@@ -140,13 +148,13 @@ Browsing:
 
 | Key | Does |
 |---|---|
-| `1`-`9` | select that session |
+| `1`-`9` | select the Nth session of the list, counted by position (no number is drawn) |
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
-| `n` / `p` | highlight the next / previous seat the body shows |
+| `n` / `p` | step the seat cursor (`▹`, `-` with `icons = off`) to the next / previous seat the body shows; with no cursor `n` lands on the first seat and `p` on the last, and both wrap |
 | `PgUp` / `PgDn` | scroll the chat a page |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
 | `y` | copy the marked turn ([Copying a turn](#copying-a-turn)) |
@@ -158,7 +166,7 @@ Browsing:
 | Wheel over the session list | scroll one session per notch, also while writing |
 | Drag a border | resize the sidebar or the session list, also while writing |
 | Click composer | write the selected session, when no other app writes it |
-| `Esc` | back to home |
+| `Esc` | clear the seat cursor, else back to home |
 | `Enter` or `i` | write the selected session, when no other app writes it |
 | `s` | start the selected session if it is stopped, else ask to stop it ([Session menu](#session-menu)) |
 | `,` | open Settings |
@@ -259,12 +267,14 @@ seat of the selected session. It is the proof and the guarded select `ae chat`'s
 `/open` makes, plus one tmux client: nothing is typed into the seat and no
 record is written.
 
-The highlight is one `▸` (`>` with `icons = off`) in the first column of the
-seat's first drawn row, and the selected ground (reverse video with `theme =
-off`) across all of the seat's rows, never a state colour. It starts on the
-first seat drawn, `n` / `p` step it through the drawn seats and wrap, a click
-on a seat row puts it there, and changing session resets it. Rows scrolled out of the body are not
-stepped to; wheel first. `Enter` still writes.
+The highlight is the seat cursor: one `▹` (`-` with `icons = off`) in the first
+column of the seat's row, never a state colour. No seat carries it at first;
+`n` lands on the first seat drawn and `p` on the last, then they step through
+the drawn seats and wrap, and changing session resets it. `Esc` clears it
+before it goes home, and `o` / `v` with no cursor act on the first seat drawn.
+A click on a seat row, or `v`, shows that seat's screen instead, and the
+lifted `▸` marks the seat shown. Rows scrolled out of the body are not stepped
+to; wheel first. `Enter` still writes.
 
 A key acts on the seats the last frame drew, as it drew them: the seat's slot
 and name, and the session incarnation they were read from. A roster that moved
@@ -503,7 +513,7 @@ goes, copying nothing, when what you selected changes before the copy leaves:
 another session, Settings or a seat view, a resize, or the cells under
 it. While the button is down and until the copy is out, a new read of the chat,
 the session list or the looks waits (a seat capture, in its column), the
-Agents body's ages stand still and a restart into a new core waits; they land just
+header's ask age stands still and a restart into a new core waits; they land just
 after the copy, so the copy is the cells you saw. A drag with no mouse input for
 10 s is cleared (`selection cleared: no mouse input for 10 s`). A copy leaves
 only after the frame that shows it.
@@ -580,8 +590,10 @@ An app writes the selected session only while it holds that session's
 **writer lease**, the lock file `.console-writer.lock`: one app at a time per
 session, in any pane or outside tmux, and at most one lease per app. No key or
 wheel notch moves the selection while writing; a click on a session row leaves
-writing first. The composer names its target on its own row: `to <session>`,
-at home or anywhere else (the seat is chosen per line, [Routing a line](#routing-a-line)). A stopped session,
+writing first. The composer names its target on its own row: `to <session> ·
+<seat> (auto)`, or `(named)` once the draft names a seat with `@`, the seat a
+line written now would reach, at home or anywhere else (the seat is chosen per
+line, [Routing a line](#routing-a-line)). A stopped session,
 one with no recorded `session_id`, one whose lead pair cannot be read and one
 not recorded in this state root are read-only and say why.
 

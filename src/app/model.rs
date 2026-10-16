@@ -232,6 +232,8 @@ impl Model {
                 self.select(fleet, target)
             }
             Key::Compose if can_compose && self.selected.is_some() => Act::Compose,
+            // The seat cursor goes first; the next Esc is the way home.
+            Key::Esc if self.focus.take().is_some() => Act::Redraw,
             Key::Esc => {
                 let home = fleet
                     .home
@@ -1049,6 +1051,33 @@ mod tests {
         for key in [Key::Open, Key::SeatNext, Key::SeatPrev] {
             assert_eq!(model.key(key, &both, true), Act::None, "{key:?}");
         }
+    }
+
+    /// Esc steps out one layer at a time: the seat cursor first, the
+    /// selection staying where it is, then the way home. With the peek open
+    /// it closes the peek and touches nothing else.
+    #[test]
+    fn esc_clears_the_seat_cursor_before_it_goes_home() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        let _ = model.key(Key::Digit(2), &both, false);
+        model.set_focus(Some("scout".to_owned()));
+        let epoch = model.epoch();
+        assert_eq!(model.key(Key::Esc, &both, false), Act::Redraw);
+        assert_eq!((model.focus(), model.selected()), (None, Some("web")));
+        assert_eq!(model.epoch(), epoch, "a cursor clear moves no view");
+        let _ = model.key(Key::Esc, &both, false);
+        assert_eq!(model.selected(), Some("api"), "the second Esc goes home");
+        assert_eq!(
+            model.key(Key::Esc, &both, false),
+            Act::None,
+            "home, no cursor"
+        );
+        model.set_focus(Some("scout".to_owned()));
+        model.open_peek(7);
+        let _ = model.key(Key::Esc, &both, true);
+        assert!(!model.peek_open(), "the peek closed");
+        assert_eq!(model.focus(), Some("scout"), "the cursor outlives the peek");
     }
 
     /// `v` asks to peek in browse mode; the settings overlay swallows it.

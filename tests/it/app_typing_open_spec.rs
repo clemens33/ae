@@ -9,6 +9,8 @@ fn one_o_arms_without_moving_and_other_key_disarms() {
     let app = rig.app(&rig.socket);
     let viewer = rig.attach(HOME);
     rig.agents(&app);
+    // No seat carries the cursor until a step key: `n` lands on the first.
+    rig.raw(&app, "n");
     rig.focused(&app, "lead");
     let before = rig.viewed(&viewer);
     rig.raw(&app, "o");
@@ -41,6 +43,8 @@ fn hello_and_open_never_move_the_viewer_or_send_an_ask() {
         let app = rig.app(&rig.socket);
         let viewer = rig.attach(HOME);
         rig.agents(&app);
+        // No seat carries the cursor until a step key: `n` lands on the first.
+        rig.raw(&app, "n");
         rig.focused(&app, "lead");
         let before = rig.viewed(&viewer);
         let path = rig.scratch.join("sessions").join(HOME).join("events.jsonl");
@@ -70,6 +74,8 @@ fn armed_open_does_not_turn_a_later_q_into_quit() {
     rig.tmux(&["set-option", "-w", "-t", &app, "remain-on-exit", "on"]);
     let viewer = rig.attach(HOME);
     rig.agents(&app);
+    // No seat carries the cursor until a step key: `n` lands on the first.
+    rig.raw(&app, "n");
     rig.focused(&app, "lead");
     let before = rig.viewed(&viewer);
     rig.raw(&app, "oq");

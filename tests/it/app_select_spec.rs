@@ -483,16 +483,25 @@ fn live_drag_copies_exact_cells_cancel_leaves_buffer_and_peek_resumes() {
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(rig.buffer(), CANCEL, "R4 plain click never ships selection");
     rig.wait("Agents body", |s| {
-        s.lines()
-            .any(|row| row.starts_with('▸') || row.starts_with('>'))
-    });
-    rig.raw("n");
-    rig.wait("colead focused", |s| {
         s.lines().any(|row| {
             let left = row.split('│').next().unwrap_or_default();
-            (left.starts_with('▸') || left.starts_with('>')) && left.contains("colead")
+            left.split_whitespace().any(|word| word == "colead")
         })
     });
+    // No seat carries the cursor until a step key: the first `n` lands on the
+    // first seat, the second on colead.
+    let cursor = |s: &str, seat: &str| {
+        s.lines().any(|row| {
+            row.split_once('│').is_some_and(|(left, _)| {
+                (left.starts_with('▹') || left.starts_with('-'))
+                    && left.split_whitespace().any(|word| word == seat)
+            })
+        })
+    };
+    rig.raw("n");
+    rig.wait("lead focused", |s| cursor(s, "lead"));
+    rig.raw("n");
+    rig.wait("colead focused", |s| cursor(s, "colead"));
     rig.raw("v");
     rig.wait("peek opened", |s| s.contains(PEEK));
     let end = rig.drag(PEEK);

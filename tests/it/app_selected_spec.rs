@@ -544,14 +544,14 @@ fn card(screen: &str, name: &str) -> (usize, usize) {
     card_position(screen, name).expect("drawn target card")
 }
 
-/// A numbered card, excluding the attention summary that also names a session.
+/// A session card: its status mark, then its name. The lifted card has a `▸`
+/// before the mark; no row number is drawn.
 fn card_position(screen: &str, name: &str) -> Option<(usize, usize)> {
     screen.lines().enumerate().find_map(|(y, row)| {
         let side = row.chars().take(44).collect::<String>();
         let mut words = side.trim_start().trim_start_matches('▸').split_whitespace();
         words.next()?; // Status mark.
-        let index = words.next()?.parse::<u8>().ok()?;
-        if !(1..=9).contains(&index) || words.next()? != name {
+        if words.next()? != name {
             return None;
         }
         side.find(name)
@@ -1467,8 +1467,10 @@ fn non_home_address_uses_its_drawn_width_for_whole_draft_and_terminal_cursor() {
                     .is_some_and(|r| r.trim_end().ends_with("end"))
         },
     );
+    // The composer's address names the target, then the seat a line written
+    // now would reach, here the router's pick.
     for (row, text) in [
-        (40, address.clone()),
+        (40, format!("{address} · lead (auto)")),
         (41, "a".repeat(width)),
         (42, "a".repeat(width)),
         (43, "end".to_owned()),

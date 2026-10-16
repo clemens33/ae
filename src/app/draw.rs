@@ -26,7 +26,7 @@ use crate::console::lane::Lane;
 use crate::console::view;
 use crate::console::wrap::wrap;
 use crate::digest::{SessionEntry, Status};
-use crate::event_text::{clip_head, clip_tail};
+use crate::event_text::clip_tail;
 use crate::quota::view::Tone;
 use crate::theme::{Look, Mark, Palette};
 use crate::time::Timestamp;
@@ -85,8 +85,8 @@ const LIST_TOP: u16 = 2;
 const TOP_GIVEN: u16 = 3;
 /// The sidebar's first content column.
 const LEFT: u16 = 2;
-/// Where a session row's name starts.
-const NAME: u16 = 6;
+/// Where a session row's name starts: one blank after its mark.
+const NAME: u16 = 4;
 /// The narrowest a drag leaves the sidebar: the tab row still keeps a gap
 /// between the `Agents NN` heading and its rule, and a name beside its counts.
 const SIDEBAR_FLOOR: u16 = 30;
@@ -458,6 +458,27 @@ pub(crate) struct Wait<'a> {
     pub(crate) open: &'a [bool],
     /// Which of them are asks that went through.
     pub(crate) sent: &'a [bool],
+    /// The seat a line written now would reach, for the composer's address.
+    pub(crate) dest: Option<Dest<'a>>,
+}
+
+/// Where the composer's line would land: the seat the router picked, or the
+/// one the draft named with `@`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Dest<'a> {
+    pub(crate) seat: &'a str,
+    /// Whether the draft named it, rather than the router picking it.
+    pub(crate) named: bool,
+}
+
+impl<'a> Dest<'a> {
+    /// The destination a `(seat, named)` pair names.
+    pub(crate) fn of((seat, named): &'a (String, bool)) -> Self {
+        Self {
+            seat,
+            named: *named,
+        }
+    }
 }
 
 /// Draw `screen` into `buf`, whose area starts at the origin — the app hands
@@ -622,9 +643,8 @@ fn list_rows(area: Rect, split: Split, count: usize) -> (u16, bool) {
 /// list stands undragged, so a drag can always put it back.
 fn list_clamp(asked: u16, area: Rect, count: usize) -> u16 {
     let least = match count {
-        0 => 1,
-        1 => 2,
-        _ => 3,
+        0 | 1 => 1,
+        _ => 2,
     };
     let (default, _) = list_rows(area, Split::default(), count);
     let undragged = List::of(count, None, default, false, None).end - LIST_TOP;
@@ -670,8 +690,6 @@ fn dragged(model: &Model, edge: Edge) -> bool {
 /// Which sessions the list shows and where it ends.
 struct List {
     visible: Range<usize>,
-    /// Rows per session: two lines and a gap, or two lines.
-    step: u16,
     /// The `↑ / ↓ N more` row, when sessions are out of view.
     more: Option<u16>,
     /// The first row past the list.
@@ -679,9 +697,10 @@ struct List {
 }
 
 impl List {
-    /// The list for `count` sessions in `budget` rows: three rows each while
-    /// they fit, then two, then a window from `top`, else with `selected` kept
-    /// in view. A `pinned` list ends at its budget, else where its rows do.
+    /// The list for `count` sessions in `budget` rows, one row each: all of
+    /// them while they fit, else a window from `top`, or with `selected` kept
+    /// in view, under a `more` row. A `pinned` list ends at its budget, else
+    /// where its rows do.
     fn of(
         count: usize,
         selected: Option<usize>,
@@ -690,18 +709,16 @@ impl List {
         top: Option<usize>,
     ) -> Self {
         let budget = usize::from(budget);
-        let (step, shown) = if count * 3 <= budget + 1 {
-            (3, count)
-        } else if count * 2 <= budget {
-            (2, count)
+        let shown = if count <= budget {
+            count
         } else {
-            (2, budget.saturating_sub(1) / 2)
+            budget.saturating_sub(1)
         };
         let at = selected.unwrap_or(0);
         let start = top
             .unwrap_or_else(|| (at + 1).saturating_sub(shown))
             .min(count - shown);
-        let used = cells(shown) * step - u16::from(step == 3 && shown > 0);
+        let used = cells(shown);
         let more = (shown < count).then_some(LIST_TOP + used);
         let end = if pinned {
             LIST_TOP + cells(budget)
@@ -710,7 +727,6 @@ impl List {
         };
         Self {
             visible: start..start + shown,
-            step,
             more,
             end,
         }
@@ -755,12 +771,21 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
         };
         put(buf, LEFT, LIST_TOP, empty, room, paint.fg(|p| p.dim));
     }
+    // The one lifted row is what the chat column shows: the session while its
+    // shared chat is, a seat only while that seat's screen is. A session whose
+    // seat is shown stays a context, never lifted.
+    let viewing = matches!(ctx.screen.composer, Composer::Viewing { .. });
     for (step, at) in list.visible.clone().enumerate() {
-        let y = LIST_TOP + cells(step) * list.step;
-        session(ctx, buf, &fleet.rows[at], y, end, Some(at) == selected);
+        let y = LIST_TOP + cells(step);
+        let place = match (Some(at) == selected, viewing) {
+            (true, false) => Place::Lifted,
+            (true, true) => Place::Context,
+            (false, _) => Place::Plain,
+        };
+        session(ctx, buf, &fleet.rows[at], y, end, place);
         layout.record(
             buf,
-            Rect::new(0, y, rule, 2),
+            Rect::new(0, y, rule, 1),
             Hit::Session(fleet.rows[at].name.clone()),
         );
     }
@@ -859,11 +884,18 @@ fn tab_body(
         .find(|seat| Some(seat.as_str()) == asked))
     .or(layout.seats.first())
     .cloned();
-    let mut before = None;
+    // A seat is lifted only while its screen is what the chat column shows. A
+    // seat the human stepped to with `n` / `p` carries the cursor instead, a
+    // gutter glyph and no ground: it is where the seat keys act, not a view.
+    let viewed = match ctx.screen.composer {
+        Composer::Viewing { seat } => Some(seat),
+        _ => None,
+    };
     for (step, row) in drawn.enumerate() {
         let y = top + cells(step);
         let seat = row.seat.as_deref();
-        let focused = seat.is_some() && layout.focused.as_deref() == seat;
+        let lifted = seat.is_some() && seat == viewed;
+        let cursor = !lifted && seat.is_some() && seat == asked;
         if let Some(seat) = seat {
             layout.record(
                 buf,
@@ -871,13 +903,14 @@ fn tab_body(
                 Hit::Seat(seat.to_owned()),
             );
         }
-        // One glyph, on the seat's first drawn row; its rows share the ground.
-        if focused && before != seat {
+        if lifted {
             let glyph = if ctx.icons { "▸" } else { ">" };
             let ink = paint.fg(|p| p.selected_ink).add_modifier(Modifier::BOLD);
             put(buf, 0, y, glyph, 1, ink);
+        } else if cursor {
+            let glyph = if ctx.icons { "▹" } else { "-" };
+            put(buf, 0, y, glyph, 1, paint.fg(|p| p.text));
         }
-        before = seat;
         let used = put_line(buf, LEFT, y, &row.left, room);
         if let Some(right) = &row.right {
             let width = cells(right.width());
@@ -885,7 +918,7 @@ fn tab_body(
                 put_line(buf, end - width, y, right, width);
             }
         }
-        if focused {
+        if lifted {
             paint.lift(buf, Rect::new(0, y, end, 1));
         }
     }
@@ -1011,15 +1044,32 @@ fn summary_band(
     [Line::default(), Line::default()]
 }
 
-/// One session's two lines at row `y`.
-fn session(ctx: &Ctx<'_, '_>, buf: &mut Buffer, row: &Row, y: u16, end: u16, selected: bool) {
+/// How a session row stands against the view the chat column shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// Its shared chat is shown: the one lifted row.
+    Lifted,
+    /// It is the selected session, but a seat's screen is shown: its name
+    /// keeps the title ink so the seats under it read as its own.
+    Context,
+    /// Any other session.
+    Plain,
+}
+
+/// The fewest cells a session name is cut to beside its tally.
+const NAME_MIN: u16 = 4;
+
+/// One session's row at `y`: its mark, its name, `◂` when it is the window's
+/// own session, and its seat tally at the right end (a stopped session says
+/// so instead). The tally and the glyph give way before the name does.
+fn session(ctx: &Ctx<'_, '_>, buf: &mut Buffer, row: &Row, y: u16, end: u16, place: Place) {
     let paint = ctx.paint;
     let dim = paint.fg(|p| p.dim);
     let stopped = matches!(row.counts, Counts::Stopped);
-    // The selected session wears the selection a seat does: one `▸` on its
-    // first row, then the selected ground over both lines. A session that needs
-    // you says so by its mark and its question, never by an edge.
-    if selected {
+    // The lifted session wears the selection a seat does: one `▸` on its row,
+    // then the selected ground. A session that needs you says so by its mark,
+    // never by an edge.
+    if place == Place::Lifted {
         let glyph = if ctx.icons { "▸" } else { ">" };
         put(
             buf,
@@ -1033,93 +1083,143 @@ fn session(ctx: &Ctx<'_, '_>, buf: &mut Buffer, row: &Row, y: u16, end: u16, sel
     let mark = if stopped { dim } else { paint.mark(row.mark) };
     put(buf, LEFT, y, row.mark.glyph(ctx.icons), 1, mark);
     // The unread cue rides the blank gutter cell, so no column moves.
-    if !selected && ctx.screen.model.is_unread(&row.name) {
+    if place == Place::Plain && ctx.screen.model.is_unread(&row.name) {
         let cue = if ctx.icons { "\u{25b8}" } else { ">" };
         let style = paint.fg(|p| p.title).add_modifier(Modifier::BOLD);
         put(buf, 1, y, cue, 1, style);
     }
-    if row.index <= 9 {
-        put(buf, LEFT + 2, y, &row.index.to_string(), 1, dim);
-    }
-    // Only a stopped row has anything right of its name: its age.
-    let mut edge = end;
-    if stopped {
-        let since = match row.line2 {
-            Line2::NotRunning { stopped_secs, .. } => stopped_secs,
-            _ => None,
-        };
-        let text = format!("stopped {}", age(since));
-        edge = end.saturating_sub(cells(text.chars().count()));
-        put(buf, edge, y, &text, end - edge, dim);
-    }
-    let name = if stopped {
-        dim
-    } else {
-        paint.fg(|p| p.text).add_modifier(Modifier::BOLD)
+    let name = match (stopped, place) {
+        (true, _) => dim,
+        (false, Place::Context) => paint
+            .fg(|p| p.title)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        (false, _) => paint.fg(|p| p.text).add_modifier(Modifier::BOLD),
     };
-    let room = edge.saturating_sub(NAME + u16::from(stopped));
-    let after = put(buf, NAME, y, &row.name, room, name);
-    let tag = "this window";
-    if row.home && after + 2 + cells(tag.len()) < edge {
-        put(buf, after + 2, y, tag, cells(tag.len()), dim);
+    let fitted = session_fit(
+        &row.name,
+        row.home,
+        &tally_choices(ctx, row),
+        end.saturating_sub(NAME),
+    );
+    let after = put(buf, NAME, y, &fitted.name, end.saturating_sub(NAME), name);
+    if fitted.home {
+        let glyph = if ctx.icons { "◂" } else { "<" };
+        put(buf, after + 1, y, glyph, 1, dim);
     }
-    second_line(ctx, buf, row, y + 1, end);
-    if selected {
-        paint.lift(buf, Rect::new(0, y, end, 2));
+    let width: u16 = cells(spans_width(&fitted.right));
+    let mut x = end.saturating_sub(width);
+    for (at, (text, style)) in fitted.right.iter().enumerate() {
+        x += u16::from(at > 0);
+        x = put(buf, x, y, text, end.saturating_sub(x), *style);
+    }
+    if place == Place::Lifted {
+        paint.lift(buf, Rect::new(0, y, end, 1));
     }
 }
 
-/// Cells a status keeps at least; the counts yield whole spans for them.
-const STATUS_MIN: u16 = 10;
+/// A session row's right-aligned spans: text and style, left to right.
+type Spans = Vec<(String, Style)>;
 
-/// A running session's counts, then its question or seat-down status. Counts
-/// that do not fit drop from the lowest urgency and close on `…`; a stopped
-/// session says how many seats.
-fn second_line(ctx: &Ctx<'_, '_>, buf: &mut Buffer, row: &Row, y: u16, end: u16) {
-    let (paint, room) = (ctx.paint, end - NAME);
-    let dim = paint.fg(|p| p.dim);
-    let cols = |text: &str| cells(Line::from(text).width());
-    let status = match &row.line2 {
-        Line2::NotRunning { seats, .. } => {
-            let text = format!("{} not running", seats_word(*seats));
-            put(buf, NAME, y, &text, room, dim);
-            return;
+/// The right side of `row`, richest first: a stopped session's age, then its
+/// word alone; a running one's whole tally, then each shorter one closed on
+/// `…` down to its most urgent count.
+fn tally_choices(ctx: &Ctx<'_, '_>, row: &Row) -> Vec<Spans> {
+    let (paint, dim) = (ctx.paint, ctx.paint.fg(|p| p.dim));
+    match &row.counts {
+        Counts::Stopped => {
+            let since = match row.line2 {
+                Line2::NotRunning { stopped_secs, .. } => stopped_secs,
+                _ => None,
+            };
+            vec![
+                vec![(format!("stopped {}", age(since)), dim)],
+                vec![("stopped".to_owned(), dim)],
+            ]
         }
-        Line2::Question { text, .. } => Some(text.as_str()),
-        Line2::SeatDown => Some("seat down"),
-        Line2::Goal { .. } | Line2::NoGoal => None,
-    };
-    let budget = room.saturating_sub(status.map_or(0, |text| drawn_cols(text).min(STATUS_MIN) + 2));
-    let parts: Vec<(String, Style)> = match &row.counts {
-        Counts::Marks(tallied) if !tallied.is_empty() => tallied
-            .iter()
-            .map(|(mark, blocked, count)| {
-                let letter = if *blocked { "B" } else { "" };
-                let text = format!("{}{letter}{count}", mark.glyph(ctx.icons));
-                (text, paint.mark(*mark))
-            })
-            .collect(),
-        Counts::Marks(_) => vec![("no agents".to_owned(), dim)],
-        Counts::Unknown | Counts::Stopped => vec![("agents ?".to_owned(), dim)],
-    };
-    let mut x = NAME;
-    for (at, (text, style)) in parts.iter().enumerate() {
-        x += u16::from(at > 0);
-        let tail = if at + 1 < parts.len() { 2 } else { 0 };
-        if x + cols(text) + tail > NAME + budget {
-            x = put(buf, x, y, "…", 1, dim);
-            break;
+        Counts::Marks(tallied) if !tallied.is_empty() => {
+            let parts: Spans = tallied
+                .iter()
+                .map(|(mark, blocked, count)| {
+                    let letter = if *blocked { "B" } else { "" };
+                    let text = format!("{}{letter}{count}", mark.glyph(ctx.icons));
+                    (text, paint.mark(*mark))
+                })
+                .collect();
+            (1..=parts.len())
+                .rev()
+                .map(|kept| {
+                    let mut spans = parts[..kept].to_vec();
+                    if kept < parts.len() {
+                        spans.push(("…".to_owned(), dim));
+                    }
+                    spans
+                })
+                .collect()
         }
-        x = put(buf, x, y, text, budget, *style);
+        Counts::Marks(_) => vec![vec![("no agents".to_owned(), dim)]],
+        Counts::Unknown => vec![vec![("?".to_owned(), dim)]],
     }
-    let Some(text) = status else { return };
-    let (at, text_style) = (x + 2, paint.fg(|p| p.text));
-    let avail = end.saturating_sub(at);
-    let tail = match &row.line2 {
-        Line2::Question { age_secs, .. } => format!(" · {}", age(*age_secs)),
-        _ => String::new(),
+}
+
+/// The cells `spans` spend, one blank between neighbours.
+fn spans_width(spans: &[(String, Style)]) -> usize {
+    let words: usize = spans
+        .iter()
+        .map(|(text, _)| usize::from(drawn_cols(text)))
+        .sum();
+    words + spans.len().saturating_sub(1)
+}
+
+/// What a session row draws in its `room` cells right of the mark.
+#[derive(Debug, PartialEq)]
+struct Fitted {
+    name: String,
+    /// Whether `◂` follows the name.
+    home: bool,
+    right: Spans,
+}
+
+/// Fit a session's `name`, its home glyph and its right-side `choices` (richest
+/// first) into `room` cells, giving up in this order: the glyph, the richer
+/// choices down to the poorest, then the name's tail down to [`NAME_MIN`]
+/// cells beside that choice, then the right side whole. A name is cut last.
+fn session_fit(name: &str, home: bool, choices: &[Spans], room: u16) -> Fitted {
+    let name_cols = drawn_cols(name);
+    let glyph = if home { 2 } else { 0 };
+    let fits = |glyph: u16, right: &Spans| {
+        let gap = u16::from(!right.is_empty());
+        name_cols + glyph + gap + cells(spans_width(right)) <= room
     };
-    put(buf, at, y, &fit(text, &tail, avail), avail, text_style);
+    let first = choices.first().filter(|right| fits(glyph, right));
+    if let Some(right) = first {
+        return Fitted {
+            name: name.to_owned(),
+            home,
+            right: right.clone(),
+        };
+    }
+    if let Some(right) = choices.iter().find(|right| fits(0, right)) {
+        return Fitted {
+            name: name.to_owned(),
+            home: false,
+            right: right.clone(),
+        };
+    }
+    if let Some(poorest) = choices.last() {
+        let kept = room.saturating_sub(1 + cells(spans_width(poorest)));
+        if kept >= NAME_MIN {
+            return Fitted {
+                name: fit(name, "", kept),
+                home: false,
+                right: poorest.clone(),
+            };
+        }
+    }
+    Fitted {
+        name: fit(name, "", room),
+        home: false,
+        right: Vec::new(),
+    }
 }
 
 /// Where each grapheme of `text` that the buffer draws ends in `text`, with the
@@ -1163,13 +1263,6 @@ fn fit(text: &str, tail: &str, room: u16) -> String {
     format!("{}…", &text[..end])
 }
 
-fn seats_word(seats: usize) -> String {
-    match seats {
-        1 => "1 seat,".to_owned(),
-        n => format!("{n} seats,"),
-    }
-}
-
 /// The heading over the body: `Agents` and the seat count, a band like the
 /// summary's so both sections open alike.
 fn agents_heading(ctx: &Ctx<'_, '_>, buf: &mut Buffer, y: u16, rule: u16) {
@@ -1198,30 +1291,18 @@ impl Cells {
             seat: None,
         }
     }
-
-    /// This row as one of `seat`'s.
-    fn of_seat(mut self, seat: &str) -> Self {
-        self.seat = Some(seat.to_owned());
-        self
-    }
 }
 
-/// The Agents body: each seat with its state, then its client, the model its
-/// frame drew and the effort, each only when known and never the profile, then
-/// the reason it waits on the human. An ask from a seat the roster lacks is an
-/// entry of its own after the roster; a session ae has no seat facts for says why.
+/// The Agents body: one row per seat, never more. Its mark, name, the model
+/// its frame drew (the client when none was) and the effort, each only when
+/// known and never the profile, and its state word at the right end. What
+/// waits on the human is told in the chat header, not under the seat. An ask
+/// from a seat the roster lacks is a row of its own after the roster; a
+/// session ae has no seat facts for says why.
 fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> {
-    let paint = ctx.paint;
-    let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
+    let dim = ctx.paint.fg(|p| p.dim);
     let gap = |words: &str| vec![Cells::of(vec![Span::styled(words.to_owned(), dim)])];
     let open = &ctx.screen.overview.open;
-    let reason = |ask: &Open| {
-        let words = format!(
-            "  {}",
-            aged(&ask.text, ask.age_secs, room.saturating_sub(2))
-        );
-        Cells::of(vec![Span::styled(words, text)]).of_seat(&ask.seat)
-    };
     let (mut rows, agents) = match ctx.screen.agents {
         _ if entry.status == Status::Stopped => (gap("Not running: no seat facts."), &[][..]),
         Some(Facts::Seats { agents, .. }) => (Vec::new(), agents.as_slice()),
@@ -1230,46 +1311,89 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
             (gap("No seat facts: watchdog publishes none."), &[][..])
         }
     };
+    // The roster's names share one column, so the models line up under it.
+    let column = agents
+        .iter()
+        .map(|agent| drawn_cols(&agent.name))
+        .max()
+        .unwrap_or(0);
     for agent in agents {
-        let mark = agent.mark();
-        rows.push(Cells {
-            left: Line::from(vec![
-                Span::styled(mark.glyph(ctx.icons), paint.mark(mark)),
-                Span::raw(" "),
-                Span::styled(agent.name.clone(), text),
-            ]),
-            right: Some(Line::from(Span::styled(
-                agent.state.clone(),
-                paint.mark(mark),
-            ))),
-            seat: Some(agent.name.clone()),
-        });
-        let facts: Vec<&str> = [&agent.client, &agent.model, &agent.effort]
-            .into_iter()
-            .map(String::as_str)
-            .filter(|fact| !fact.is_empty())
-            .collect();
-        rows.push(
-            Cells::of(vec![Span::styled(format!("  {}", facts.join(" · ")), dim)])
-                .of_seat(&agent.name),
-        );
-        rows.extend(open.iter().filter(|ask| ask.seat == agent.name).map(reason));
+        let model = if agent.model.is_empty() {
+            agent.client.as_str()
+        } else {
+            agent.model.as_str()
+        };
+        let seat = Seat {
+            name: &agent.name,
+            mark: agent.mark(),
+            state: &agent.state,
+            meta: [model, agent.effort.as_str()],
+        };
+        rows.push(seat_row(ctx, &seat, column, room));
     }
     let listed = |ask: &&Open| agents.iter().any(|agent| agent.name == ask.seat);
     for ask in open.iter().filter(|ask| !listed(ask)) {
-        let mark = Mark::NeedsYou;
-        rows.push(Cells {
-            left: Line::from(vec![
-                Span::styled(mark.glyph(ctx.icons), paint.mark(mark)),
-                Span::raw(" "),
-                Span::styled(ask.seat.clone(), text),
-            ]),
-            right: Some(Line::from(Span::styled("needs you", paint.mark(mark)))),
-            seat: Some(ask.seat.clone()),
-        });
-        rows.push(reason(ask));
+        let seat = Seat {
+            name: &ask.seat,
+            mark: Mark::NeedsYou,
+            state: "needs you",
+            meta: ["", ""],
+        };
+        rows.push(seat_row(ctx, &seat, 0, room));
     }
     rows
+}
+
+/// What one seat row says.
+struct Seat<'a> {
+    name: &'a str,
+    mark: Mark,
+    /// The state word, drawn at the right end.
+    state: &'a str,
+    /// The model (or client) and the effort; empty when unknown.
+    meta: [&'a str; 2],
+}
+
+/// `seat`'s one row in `room` cells: its mark, its name, its meta aligned at
+/// `column` and its state word at the right end. Short of room the effort goes
+/// first, then the model, then the name's tail down to [`NAME_MIN`] cells, and
+/// last the state word.
+fn seat_row(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Cells {
+    let (paint, mark) = (ctx.paint, seat.mark);
+    let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
+    // The mark and its blank.
+    let lead = 2;
+    let name_cols = drawn_cols(seat.name);
+    let state_cols = drawn_cols(seat.state);
+    let state = lead + name_cols.min(NAME_MIN) + 1 + state_cols <= room;
+    let tail = if state { 1 + state_cols } else { 0 };
+    let name = fit(seat.name, "", room.saturating_sub(lead + tail));
+    let named = drawn_cols(&name);
+    let start = lead + column.max(named) + 2;
+    let free = room.saturating_sub(start + tail);
+    let [model, effort] = seat.meta;
+    let both = [model, effort]
+        .into_iter()
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let meta = [both, model.to_owned()]
+        .into_iter()
+        .find(|words| !words.is_empty() && drawn_cols(words) <= free);
+    let mut spans = vec![
+        Span::styled(mark.glyph(ctx.icons), paint.mark(mark)),
+        Span::raw(" "),
+        Span::styled(name, text),
+    ];
+    if let Some(words) = meta {
+        let pad = usize::from(start - lead - named);
+        spans.push(Span::styled(format!("{}{words}", " ".repeat(pad)), dim));
+    }
+    Cells {
+        left: Line::from(spans),
+        right: state.then(|| Line::from(Span::styled(seat.state.to_owned(), paint.mark(mark)))),
+        seat: Some(seat.name.to_owned()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1576,8 +1700,50 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
         end - width(right) - 2
     });
     let room = stop.saturating_sub(from);
+    // What waits on the human comes before the directory: the seat's ask and
+    // its age, cut to what the room leaves. It needs a dozen cells to read.
+    let reason = reason_words(ctx, room);
+    let dir_from = reason.as_ref().map_or(from, |words| {
+        let ink = paint.mark(Mark::NeedsYou);
+        let used = put(buf, from, 0, words, room, ink);
+        used + 3
+    });
+    let room = stop.saturating_sub(dir_from);
+    if reason.is_some() && room < REASON_MIN {
+        return;
+    }
     let shown = clip_tail(dir, usize::from(room));
-    put(buf, from, 0, &shown, room, paint.fg(|p| p.dim));
+    put(buf, dir_from, 0, &shown, room, paint.fg(|p| p.dim));
+}
+
+/// The fewest cells the header's reason segment, or a directory beside it, is
+/// worth drawing in.
+const REASON_MIN: u16 = 12;
+
+/// The open ask the header names, as `⚠ <seat>: <words> · <age>` in `room`
+/// cells: the seat the chat column views, else the one the cursor stands on,
+/// else the first that waits. `None` when nothing waits or the room is under
+/// [`REASON_MIN`].
+fn reason_words(ctx: &Ctx<'_, '_>, room: u16) -> Option<String> {
+    let screen = ctx.screen;
+    let viewed = match screen.composer {
+        Composer::Viewing { seat } => Some(seat),
+        _ => None,
+    };
+    let open = &screen.overview.open;
+    let ask = [viewed, screen.model.focus()]
+        .into_iter()
+        .flatten()
+        .find_map(|seat| open.iter().find(|ask| ask.seat == seat))
+        .or(open.first())?;
+    let glyph = Mark::NeedsYou.glyph(ctx.icons);
+    let lead = format!("{glyph} ");
+    let room = room.checked_sub(cells(lead.chars().count()))?;
+    if room < REASON_MIN {
+        return None;
+    }
+    let words = format!("{}: {}", ask.seat, ask.text);
+    Some(format!("{lead}{}", aged(&words, ask.age_secs, room)))
 }
 
 /// The composer's address row, the input row under it and the hint under that.
@@ -1587,8 +1753,13 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
     let quiet = |words: String| Line::from(Span::styled(words, dim));
     match ctx.screen.composer {
         Composer::Home { home, view, draft } => {
-            let address = address(home);
-            let address = Line::from(Span::styled(address, paint.fg(|p| p.title)));
+            let mut address = vec![Span::styled(address(home), paint.fg(|p| p.title))];
+            if let Some(dest) = ctx.wait.dest {
+                let how = if dest.named { "named" } else { "auto" };
+                let seat = crate::board::terminal_text(dest.seat);
+                address.push(Span::styled(format!(" · {seat} ({how})"), dim));
+            }
+            let address = Line::from(address);
             if view.is_some() {
                 return (address, Line::default(), String::new());
             }
@@ -1628,20 +1799,21 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 16] = [
-    ("1-9", "select that session"),
+const BROWSE_KEYS: [(&str, &str); 17] = [
+    ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
     ("oo", "open seat; twice in 2 s"),
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("v", "peek at the seat's screen"),
-    ("n/p", "next / previous seat"),
+    ("n/p", "step the seat cursor (▹ or -)"),
     ("PgUp/PgDn", "scroll the chat"),
     ("[ ]", "mark older / newer turn"),
     ("y", "copy the marked turn"),
     ("Enter i", "write; a paste writes too"),
-    ("Esc", "select the home session"),
+    ("Esc", "clear the cursor, then go home"),
+    ("◂ or <", "marks the home session"),
     (",", "settings"),
     ("?", "this help"),
     ("qq", "quit: twice within 2 s"),
@@ -2306,20 +2478,19 @@ fn instructions_body(view: &InstructionsView, width: u16, paint: Paint) -> Vec<(
 
 /// `text · <age>` in `room` cells: a clipped text keeps its age.
 fn aged(text: &str, since: Option<i64>, room: u16) -> String {
-    let room = usize::from(room);
     let tail = format!(" · {}", age(since));
-    let (text_cells, tail_cells) = (text.chars().count(), tail.chars().count());
-    if text_cells + tail_cells <= room {
+    let (whole, tail_cells) = (drawn_cols(text), cells(tail.chars().count()));
+    if whole + tail_cells <= room {
         return format!("{text}{tail}");
     }
     // A whole text beats its age; a text clipped anyway keeps its age (F7),
-    // while one character and its ellipsis still fit beside it.
-    if text_cells <= room {
+    // while one cell and its ellipsis still fit beside it.
+    if whole <= room {
         return text.to_owned();
     }
     match room.checked_sub(tail_cells) {
-        Some(left) if left >= 2 => format!("{}{tail}", clip_head(text, left)),
-        _ => clip_head(text, room),
+        Some(left) if left >= 2 => format!("{}{tail}", fit(text, "", left)),
+        _ => fit(text, "", room),
     }
 }
 
@@ -2800,11 +2971,10 @@ mod tests {
             .find(|x| buf[(*x, 1)].symbol() == "─")
     }
 
-    /// Frame many r17-r18: a stopped session's first line says how long it
-    /// has been stopped (`stopped 2d`), its second counts its seats,
-    /// `3 seats, not running` at column 6, and one seat reads singular.
+    /// A stopped session is one row: `stopped 2d` at the right end, and no
+    /// second line counting its seats.
     #[test]
-    fn a_stopped_row_counts_its_seats_as_the_frame_does() {
+    fn a_stopped_row_says_how_long_it_has_been_stopped_on_its_one_row() {
         let mut shot = Shot::new();
         for (at, seats) in [(1, 3), (2, 1)] {
             let mut stopped = row(&format!("s{at}"), at, false);
@@ -2821,7 +2991,7 @@ mod tests {
         }
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        let first = spot(&buf, "1 s1").expect("the first stopped row").0;
+        let first = spot(&buf, " s1").expect("the first stopped row").0;
         assert!(
             line(&buf, first)[..44]
                 .concat()
@@ -2830,8 +3000,8 @@ mod tests {
             "{:?}",
             line(&buf, first).concat()
         );
-        assert_eq!(spot(&buf, "3 seats, not running").map(|at| at.1), Some(6));
-        assert_eq!(spot(&buf, "1 seat, not running").map(|at| at.1), Some(6));
+        assert_eq!(spot(&buf, " s2").map(|at| at.0), Some(first + 1));
+        assert_eq!(spot(&buf, "not running"), None, "no second line");
     }
 
     /// Frames calm r18 (160x45) and needs-you r17 (100x30): the row the tab
@@ -2859,11 +3029,10 @@ mod tests {
         }
     }
 
-    /// At 100x30 the sidebar is narrow: an ask's reason row keeps its age
-    /// inside the column, ending one cell before the two blank cells the `│`
-    /// stands after (frame needs-you r17 geometry: content stops at end-1 = 31).
+    /// At 100x30 the chat column is narrow: the header's reason keeps its age
+    /// and stays inside the column, cut with an ellipsis before the age.
     #[test]
-    fn a_narrow_reason_row_keeps_its_age_inside_the_column() {
+    fn a_narrow_header_reason_keeps_its_age_inside_the_column() {
         let mut shot = Shot::new();
         shot.overview.open = vec![Open {
             seat: "ghost".to_owned(),
@@ -2871,11 +3040,12 @@ mod tests {
             age_secs: Some(360),
         }];
         let buf = shot.draw(100, 30, READ_ONLY);
-        let (y, x) = spot(&buf, "resume").expect("the reason row");
-        assert_eq!(x, 4);
-        let text: String = line(&buf, y)[..34].concat();
-        assert!(text.trim_end().ends_with("6m"), "the age is kept: {text:?}");
-        assert_eq!(last_ink(&buf, y, 34), Some(31), "{text:?}");
+        let header = line(&buf, 0).concat();
+        assert!(header.contains("⚠ ghost: resume at sc"), "{header:?}");
+        let end = rule_end(&buf).expect("the chat column's rule");
+        let (_, x) = spot(&buf, "· 6m").expect("the age is kept");
+        assert!(x + 4 <= usize::from(end), "inside the column: {header:?}");
+        assert!(header.contains("… · 6m"), "{header:?}");
     }
 
     /// The chat wrap contract: a long turn wraps inside the chat column and
@@ -3146,10 +3316,14 @@ mod tests {
     #[test]
     fn a_cut_body_names_its_hidden_rows_in_the_dim_hue() {
         let mut shot = Shot::new();
-        shot.agents = Some(sweep_seats());
+        let Facts::Seats { id, agents } = sweep_seats() else {
+            panic!("the sweep's seats");
+        };
+        let agents = agents.into_iter().cycle().take(20).collect();
+        shot.agents = Some(Facts::Seats { id, agents });
         let buf = shot.draw(100, 21, READ_ONLY);
         assert_eq!(
-            spot(&buf, "↓ 5 more rows"),
+            spot(&buf, "↓ 6 more rows"),
             Some((20, 2)),
             "the body's last row"
         );
@@ -3161,7 +3335,7 @@ mod tests {
         // The smallest sidebar frame gives the body six rows, the last of
         // them the line naming what it hides.
         let smallest = shot.draw(100, 20, READ_ONLY);
-        assert_eq!(spot(&smallest, "↓ 13 more rows").map(|at| at.0), Some(19));
+        assert_eq!(spot(&smallest, "↓ 15 more rows").map(|at| at.0), Some(19));
     }
 
     /// docs/app.md: below 40x8 the app only says how large it needs to be;
@@ -3831,10 +4005,10 @@ mod tests {
         }
     }
 
-    /// Frame needs-you 100x30: four sessions sit three rows apart (two lines
-    /// and a gap), measured from the first.
+    /// Frame needs-you 100x30: four sessions sit one row apart, each a single
+    /// line, measured from the first.
     #[test]
-    fn four_sessions_keep_three_rows_each_at_100x28() {
+    fn four_sessions_keep_one_row_each_at_100x28() {
         let mut shot = Shot::new();
         shot.fleet.rows = (1..=4)
             .map(|at| row(&format!("s{at}"), at, false))
@@ -3842,19 +4016,19 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(100, 28, READ_ONLY);
         let ys: Vec<u16> = (1..=4)
-            .map(|at| spot(&buf, &format!("{at} s{at}")).expect("a session row").0)
+            .map(|at| spot(&buf, &format!(" s{at} ")).expect("a session row").0)
             .collect();
-        assert_eq!(ys, [ys[0], ys[0] + 3, ys[0] + 6, ys[0] + 9], "{ys:?}");
+        assert_eq!(ys, [ys[0], ys[0] + 1, ys[0] + 2, ys[0] + 3], "{ys:?}");
     }
 
-    /// The window a long fleet shows. Frame many 100x30: nine sessions show
-    /// 1-5 and `↓ 4 more`. At 160x43 the list is 22 rows (two thirds of the
-    /// rows it shares with the tab body, two a session) with the more row
-    /// inside it, so fourteen sessions show 10 and the more row.
+    /// The window a long fleet shows. A 100x28 pane's list is 12 rows (two
+    /// thirds of the rows it shares with the tab body, never fewer than 11),
+    /// one per session with the more row inside it, so sixteen sessions show
+    /// 11 and `↓ 5 more`; at 160x43 it is 22, so thirty show 21 and `↓ 9 more`.
     #[test]
     fn a_long_fleet_shows_the_window_the_frames_do() {
         for (width, height, count, shown, more) in
-            [(100, 28, 9, 5, "↓ 4 more"), (160, 43, 14, 10, "↓ 4 more")]
+            [(100, 28, 16, 11, "↓ 5 more"), (160, 43, 30, 21, "↓ 9 more")]
         {
             let mut shot = Shot::new();
             shot.fleet.rows = (1..=count)
@@ -3881,8 +4055,8 @@ mod tests {
                 .0;
             assert_eq!(
                 y,
-                last + 2,
-                "{size}: the more row follows the last session's two lines"
+                last + 1,
+                "{size}: the more row follows the last session's row"
             );
             let tabs = spot(&buf, "Agents").expect("the heading").0;
             assert_eq!(tabs, y + 2, "{size}: one blank row, then the heading");
@@ -3897,24 +4071,25 @@ mod tests {
             Some(none + 2),
             "one blank row, then the heading"
         );
-        // (e)/(f) frame many 100x30 r14: the more row counts the needy rows it hides.
-        for (select, more) in [
-            (None, "↓ 4 more, ⚠ 2"),
-            (Some(9), "↑ 4 more, ⚠ 1"),
-            (Some(6), "↑ 1 · ↓ 3 more, ⚠ 1"),
+        // The more row counts the needy rows it hides, above and below.
+        for (presses, more) in [
+            (0, "↓ 5 more, ⚠ 2"),
+            (15, "↑ 5 more, ⚠ 1"),
+            (12, "↑ 2 · ↓ 3 more, ⚠ 3"),
         ] {
             let mut shot = Shot::new();
-            shot.fleet = frame_fleet();
+            shot.fleet.rows = (1..=16)
+                .map(|at| row(&format!("s{at}"), at, matches!(at, 2 | 14 | 15)))
+                .collect();
+            shot.fleet.home = Some("s1".to_owned());
             shot.model = Model::new(&shot.fleet);
-            if let Some(digit) = select {
-                let _ = shot
-                    .model
-                    .key(crate::app::model::Key::Digit(digit), &shot.fleet, false);
+            for _ in 0..presses {
+                shot.key(crate::app::model::Key::Down);
             }
             let buf = shot.draw(100, 28, READ_ONLY);
             let (y, _) = spot(&buf, "more").expect("the more row");
             let drawn = line(&buf, y)[..34].concat();
-            assert_eq!(drawn.trim(), more, "select {select:?}");
+            assert_eq!(drawn.trim(), more, "{presses} presses down");
         }
     }
 
@@ -3996,16 +4171,16 @@ mod tests {
         );
         // (d) only needy rows outside the view contribute to the suffix.
         let mut shot = Shot::new();
-        shot.fleet.rows = (1..=14)
+        shot.fleet.rows = (1..=30)
             .map(|at| {
                 let name = match at {
                     3 => "infra".to_owned(),
-                    13 => "billing".to_owned(),
-                    14 => "ops".to_owned(),
+                    29 => "billing".to_owned(),
+                    30 => "ops".to_owned(),
                     _ => format!("s{at}"),
                 };
-                let mut row = row(&name, at, matches!(at, 3 | 13 | 14));
-                if at == 14 {
+                let mut row = row(&name, at, matches!(at, 3 | 29 | 30));
+                if at == 30 {
                     row.mark = Mark::Dead;
                 }
                 row
@@ -4017,14 +4192,14 @@ mod tests {
         assert_eq!(buf[(42, 0)].symbol(), " ", "no key marker");
     }
 
-    /// Frame agents r20-r35: a seat's state is right-aligned at the
-    /// sidebar's end with blanks before it, never against the name. A state
-    /// that would touch the name is dropped; one blank between is enough.
-    /// At 160 the end is col 42: `● ` plus a 30-cell name ends at col 33,
-    /// `working` takes cols 35-41.
+    /// Frame agents r20-r35: a seat's state is right-aligned at the sidebar's
+    /// end with a blank before it, never against the name. The state word is
+    /// the last thing to go: a name too long for the room is cut with an
+    /// ellipsis instead. At 160 the end is col 42: `● ` plus a 30-cell name
+    /// ends at col 33, `working` takes cols 35-41.
     #[test]
-    fn an_agent_state_never_touches_its_name() {
-        for (cells, shown) in [(30, true), (31, false)] {
+    fn an_agent_state_keeps_the_right_edge_and_the_name_gives_way() {
+        for (cells, cut) in [(30, false), (31, true), (60, true)] {
             let mut shot = Shot::new();
             let Facts::Seats { id, agents } = sweep_seats() else {
                 panic!("the sweep's seats");
@@ -4037,23 +4212,23 @@ mod tests {
                 agents: vec![seat],
             });
             let buf = shot.draw(160, 43, READ_ONLY);
-            let (y, _) = spot(&buf, &"n".repeat(cells)).expect("the seat row");
+            let (y, _) = spot(&buf, "nnnn").expect("the seat row");
             let row = line(&buf, y)[..44].concat();
-            assert_eq!(
-                row.contains("working"),
-                shown,
-                "a {cells}-cell name: {row:?}"
-            );
+            assert!(row.trim_end().ends_with(" working"), "{row:?}");
+            assert_eq!(row.contains('…'), cut, "a {cells}-cell name: {row:?}");
+            let name = row.find('n').expect("the name");
+            let state = row.find("working").expect("the state");
+            assert!(name < state, "{row:?}");
         }
     }
 
-    /// Frame many 160: a session that needs you keeps its ⚠ mark and its
-    /// question, and draws no left edge. The edge is gone (brief): column 0
-    /// holds the selection's `▸` and nothing else, on the selected session's
-    /// first row alone. Rows are one lower than the frame's for the band's
-    /// second row (infra r6-r7, billing r12-r13, ops r16-r17).
+    /// Frame many 160: a session that needs you keeps its ⚠ mark and draws no
+    /// left edge and no question line. Column 0 holds the selection's `▸` and
+    /// nothing else, on the selected session's one row. Rows are one lower
+    /// than the frame's for the band's second row (infra r4, billing r7, ops
+    /// r9).
     #[test]
-    fn a_needy_session_draws_no_bar_and_keeps_its_mark_and_question() {
+    fn a_needy_session_draws_no_bar_and_keeps_its_mark_without_a_question_row() {
         let mut shot = Shot::new();
         shot.fleet = frame_fleet();
         shot.model = Model::new(&shot.fleet);
@@ -4074,21 +4249,24 @@ mod tests {
             .filter(|y| buf[(0, *y)].symbol() == "▸")
             .map(usize::from)
             .collect();
-        assert_eq!(drawn, [2 + at * 3], "the selection's glyph, one row");
-        for (name, y) in [("infra", 6), ("billing", 12), ("ops", 16)] {
+        assert_eq!(drawn, [2 + at], "the selection's glyph, one row");
+        for (name, y) in [("infra", 4), ("billing", 7), ("ops", 9)] {
             let first = line(&buf, y)[..44].concat();
             assert!(first.contains(name), "{name}: {first:?}");
         }
-        let infra = line(&buf, 6)[..44].concat();
+        let infra = line(&buf, 4)[..44].concat();
         assert!(infra.contains('⚠'), "its mark: {infra:?}");
-        assert!(
-            line(&buf, 7)[..44].concat().contains("a question"),
-            "its question"
-        );
+        for y in 0..43 {
+            let sidebar = line(&buf, y)[..44].concat();
+            assert!(
+                !sidebar.contains("a question"),
+                "no question row: {sidebar:?}"
+            );
+        }
     }
 
-    /// The selected session wears what the focused seat wears: the selected
-    /// ground over both its lines out to the body's end, the glyph in the
+    /// The selected session wears what the viewed seat wears: the selected
+    /// ground over its one row out to the body's end, the glyph in the
     /// selected ink, in every palette; the next session keeps the sidebar's
     /// ground and a needy one is no different from a quiet one. On the
     /// ground only the selected ink and the marks' accents are drawn, so the
@@ -4116,21 +4294,19 @@ mod tests {
                 (glyph.fg, glyph.modifier.contains(Modifier::BOLD)),
                 (ink, true)
             );
-            for y in [2, 3] {
-                for x in 0..rule - 2 {
-                    assert_eq!(buf[(x, y)].bg, ground, "{name} ({x},{y})");
-                }
-                for x in 0..rule - 2 {
-                    let cell = &buf[(x, y)];
-                    if cell.symbol() == " " {
-                        continue;
-                    }
-                    let accents = Mark::BY_URGENCY.map(|mark| super::colour(palette.accent(mark)));
-                    let ok = cell.fg == ink || accents.contains(&cell.fg);
-                    assert!(ok, "{name}: {:?} {:?}", cell.symbol(), cell.fg);
-                }
+            for x in 0..rule - 2 {
+                assert_eq!(buf[(x, 2)].bg, ground, "{name} ({x},2)");
             }
-            for y in [4, 5, 6, 7, 8] {
+            for x in 0..rule - 2 {
+                let cell = &buf[(x, 2)];
+                if cell.symbol() == " " {
+                    continue;
+                }
+                let accents = Mark::BY_URGENCY.map(|mark| super::colour(palette.accent(mark)));
+                let ok = cell.fg == ink || accents.contains(&cell.fg);
+                assert!(ok, "{name}: {:?} {:?}", cell.symbol(), cell.fg);
+            }
+            for y in [3, 4, 5, 6, 7, 8] {
                 for x in 0..rule - 2 {
                     assert_ne!(buf[(x, y)].bg, ground, "{name}: row {y} col {x}");
                 }
@@ -4138,31 +4314,33 @@ mod tests {
         }
     }
 
-    /// No colour: the selected session is reversed over its two lines, as a
+    /// No colour: the selected session is reversed over its one row, as a
     /// seat is, and no other session row is.
     #[test]
     fn the_selected_session_is_reversed_with_no_colour() {
         let shot = sessions(3);
         let (buf, _) = framed(&shot, 160, None);
         let reversed = |y| buf[(8, y)].modifier.contains(Modifier::REVERSED);
-        assert!(reversed(2) && reversed(3), "the selected session");
-        assert!(!reversed(5) && !reversed(6), "the next session");
+        assert!(reversed(2), "the selected session");
+        assert!(!reversed(3) && !reversed(4), "the next session");
     }
 
-    /// A long name uses its first line; counts remain below inside the rule.
+    /// A long name is cut with an ellipsis beside the shortest tally, so the
+    /// row stays one line inside the rule.
     #[test]
-    fn a_long_session_name_keeps_its_counts_on_the_second_line() {
+    fn a_long_session_name_is_cut_beside_its_shortest_tally() {
         let mut shot = Shot::new();
         shot.fleet.rows = vec![row(&"n".repeat(60), 1, false)];
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        assert_eq!(line(&buf, 2)[6..42].concat(), "n".repeat(36));
-        assert!(line(&buf, 3)[6..42].concat().starts_with("●3 ✓B12"));
+        let expected = "n".repeat(32) + "… ●3 …";
+        assert_eq!(line(&buf, 2)[4..42].concat(), expected);
+        assert!(!line(&buf, 3)[..42].concat().contains("✓B12"), "one row");
         assert_eq!(buf[(44, 2)].symbol(), "│");
     }
 
-    /// The home tag follows the name after two blanks, on that row alone;
-    /// a 22-cell name leaves one blank before the edge, a 23-cell one drops it.
+    /// The home glyph follows the name after one blank, on that row alone; a
+    /// 28-cell name keeps it beside the tally, a 29-cell one drops it first.
     #[test]
     fn this_window_marks_the_home_row_alone_inside_the_name_line() {
         let mut shot = Shot::new();
@@ -4171,37 +4349,39 @@ mod tests {
         let buf = shot.draw(160, 43, READ_ONLY);
         let sidebar = |buf: &Buffer, y: u16| line(buf, y)[..44].concat();
         let tagged: Vec<u16> = (0..43)
-            .filter(|y| sidebar(&buf, *y).contains("this window"))
+            .filter(|y| sidebar(&buf, *y).contains('◂'))
             .collect();
         assert_eq!(tagged, [2], "the home row alone");
         assert!(
-            sidebar(&buf, 2).starts_with("▸ ● 1 api  this window"),
+            sidebar(&buf, 2).starts_with("▸ ● api ◂"),
             "{:?}",
             sidebar(&buf, 2)
         );
-        for (cells, shown) in [(22, true), (23, false)] {
+        assert!(
+            !sidebar(&buf, 2).contains("this window"),
+            "a glyph, no words"
+        );
+        for (cells, shown) in [(28, true), (29, false)] {
             let mut shot = Shot::new();
             shot.fleet.rows = vec![row(&"n".repeat(cells), 1, false)];
             shot.model = Model::new(&shot.fleet);
             let first = sidebar(&shot.draw(160, 43, READ_ONLY), 2);
-            assert_eq!(
-                first.contains("this window"),
-                shown,
-                "a {cells}-cell name: {first:?}"
-            );
+            assert_eq!(first.contains('◂'), shown, "a {cells}-cell name: {first:?}");
+            assert!(first.contains("✓B12"), "the tally stays: {first:?}");
         }
     }
 
-    /// A crowded status uses its cells for the actionable question prefix.
+    /// A crowded status draws no second line: the questions a session holds
+    /// are told in the chat header, never under its row.
     #[test]
-    fn a_sessions_second_line_keeps_its_question_prefix() {
+    fn a_session_draws_no_question_line() {
         let mut shot = Shot::new();
         shot.fleet = frame_fleet();
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
-        for y in [3, 7] {
+        for y in 2..11 {
             let cells = line(&buf, y);
-            assert!(cells[6..42].concat().contains("a question"));
+            assert!(!cells[..44].concat().contains("a question"), "row {y}");
             assert_eq!(cells[42..44].concat(), "  ");
         }
     }
@@ -4284,29 +4464,29 @@ mod tests {
         }
     }
 
-    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 13
-    /// (two-row steps, four shown, the more row, tabs on 12). A press there
+    /// Ruling 5b: a 100x20 pane of 13 sessions draws its list rule on row 14
+    /// (one row each, nine shown, the more row, tabs on 13). A press there
     /// moved nowhere keeps it; dragged up and back down past it, it stops on
-    /// 13, never 14.
+    /// 14, never 15.
     #[test]
     fn a_short_pane_keeps_its_undragged_list_rule_reachable() {
         let mut shot = sessions(13);
         let first = shot.draw(100, 20, READ_ONLY);
-        assert_eq!(horizontal(&first), Some(13), "the undragged rule");
-        let still = drag(&mut shot, &first, Edge::List, 13);
-        assert_eq!(horizontal(&still), Some(13), "a press moved nowhere");
+        assert_eq!(horizontal(&first), Some(14), "the undragged rule");
+        let still = drag(&mut shot, &first, Edge::List, 14);
+        assert_eq!(horizontal(&still), Some(14), "a press moved nowhere");
         let up = drag(&mut shot, &still, Edge::List, 9);
         assert_eq!(horizontal(&up), Some(9));
         let down = drag(&mut shot, &up, Edge::List, 16);
-        assert_eq!(horizontal(&down), Some(13), "never past the undragged rule");
+        assert_eq!(horizontal(&down), Some(14), "never past the undragged rule");
     }
 
-    /// Ruling 5a: the list keeps one session's rows — two alone, two and the
+    /// Ruling 5a: the list keeps one session's row — one alone, a row and the
     /// more row among several — and its dragged-down stop keeps the row
     /// budget it had, the body taking the rows the frame gave back.
     #[test]
     fn a_dragged_list_keeps_one_session_and_its_row_budget() {
-        for (count, least) in [(1, 6), (2, 7), (13, 7)] {
+        for (count, least) in [(1, 5), (2, 6), (13, 6)] {
             let mut shot = sessions(count);
             let first = shot.draw(160, 45, READ_ONLY);
             let top = drag(&mut shot, &first, Edge::List, 0);
@@ -4438,6 +4618,16 @@ mod tests {
 
     /// One frame of `shot` at `width` x 45 in `look`.
     fn framed(shot: &Shot, width: u16, look: Option<&Look>) -> (Buffer, super::Layout) {
+        framed_as(shot, width, look, READ_ONLY)
+    }
+
+    /// [`framed`] under `composer`.
+    fn framed_as(
+        shot: &Shot,
+        width: u16,
+        look: Option<&Look>,
+        composer: Composer<'_>,
+    ) -> (Buffer, super::Layout) {
         let screen = Screen {
             fleet: &shot.fleet,
             model: &shot.model,
@@ -4446,7 +4636,7 @@ mod tests {
             pair: &shot.pair,
             agents: shot.agents.as_ref(),
             lane: &shot.lane,
-            composer: READ_ONLY,
+            composer,
             look: look.copied(),
             zone: None,
             now: Timestamp::from_epoch(PIN_NOW),
@@ -4465,28 +4655,27 @@ mod tests {
             .collect()
     }
 
-    /// R4/R5: the focused seat's rows carry the marker in column 0, the first
-    /// seat drawn is focused until the model names a drawn one, a seat row is
-    /// a click target that ends at the body, and the keys row names no seat
-    /// key.
+    /// The seat the keys act on and the seat the chat column shows are marked
+    /// apart. Nothing is marked until the human steps with `n` / `p` (`▹`, no
+    /// ground) or views a seat (`▸` and the selected ground); the first seat
+    /// drawn is still the keys' target, a seat row is a click target that
+    /// ends at the body, and the keys row names no seat key.
     #[test]
-    fn the_focused_seats_rows_are_marked() {
+    fn the_seat_cursor_and_the_viewed_seat_are_marked_apart() {
         let mut shot = Shot::new();
         shot.agents = Some(seat_facts(&["lead", "colead"]));
         let (buf, layout) = framed(&shot, 160, None);
         assert_eq!(layout.seats, ["lead", "colead"]);
-        assert_eq!(layout.focused.as_deref(), Some("lead"));
-        let first = *marked(&buf, "▸").first().expect("a marked row");
-        assert_eq!(marked(&buf, "▸"), [first], "one glyph, on the first row");
-        let reversed = |y| buf[(8, y)].modifier.contains(Modifier::REVERSED);
-        assert!(reversed(first) && reversed(first + 1), "no colour: reverse");
-        assert!(
-            !reversed(first + 2) && !reversed(first + 3),
-            "the other seat"
-        );
-        let seat = |buf: &Buffer, y| line(buf, y).concat();
-        assert!(seat(&buf, first).contains("lead"), "its first row");
-        assert!(seat(&buf, first + 2).contains("colead"), "the next seat");
+        assert_eq!(layout.focused.as_deref(), Some("lead"), "the keys' target");
+        assert!(marked(&buf, "▸").is_empty() && marked(&buf, "▹").is_empty());
+        let rule = horizontal(&buf).expect("the Agents rule");
+        let seat_row = |buf: &Buffer, name: &str| {
+            (rule + 1..45)
+                .find(|y| line(buf, *y).concat().contains(name))
+                .expect(name)
+        };
+        let (first, second) = (seat_row(&buf, "lead"), seat_row(&buf, "colead"));
+        assert_eq!(second, first + 1, "one row a seat");
         let keys: String = line(&buf, 44).concat();
         assert!(
             keys.contains("? keys") && !keys.contains("oo open seat") && !keys.contains("n/p"),
@@ -4495,10 +4684,10 @@ mod tests {
         let at = Mouse {
             kind: MouseKind::Click,
             column: 8,
-            row: first + 2,
+            row: second,
         };
         assert!(matches!(layout.hit(at), Some(super::Hit::Seat(name)) if name == "colead"));
-        let rule = (0..160)
+        let rule_x = (0..160)
             .find(|x| buf[(*x, at.row)].symbol() == "│")
             .expect("the rule");
         let seat = |column| {
@@ -4507,45 +4696,254 @@ mod tests {
                 Some(super::Hit::Seat(_))
             )
         };
-        assert!(seat(rule - 3) && !seat(rule - 2), "a seat ends at the body");
+        assert!(
+            seat(rule_x - 3) && !seat(rule_x - 2),
+            "a seat ends at the body"
+        );
+        // The cursor: a gutter glyph on the seat, no ground, no reverse.
         shot.model.set_focus(Some("colead".to_owned()));
         let (buf, layout) = framed(&shot, 160, None);
-        assert_eq!(marked(&buf, "▸"), [first + 2]);
+        assert_eq!(marked(&buf, "▹"), [second]);
+        assert!(marked(&buf, "▸").is_empty(), "a cursor is not a view");
+        assert!(!buf[(8, second)].modifier.contains(Modifier::REVERSED));
         assert_eq!(layout.focused.as_deref(), Some("colead"));
         shot.model.set_focus(Some("ghost".to_owned()));
-        let (_, layout) = framed(&shot, 160, None);
+        let (buf, layout) = framed(&shot, 160, None);
         assert_eq!(layout.focused.as_deref(), Some("lead"), "an undrawn name");
+        assert!(marked(&buf, "▹").is_empty(), "an undrawn name draws none");
+        shot.model.set_focus(Some("colead".to_owned()));
         let ascii = Look::read("off", "darcula", "on", "on");
         let (buf, _) = framed(&shot, 160, Some(&ascii));
-        assert_eq!(marked(&buf, ">"), [first]);
-        // Scrolled so the focused seat's name is gone, its first DRAWN row
-        // takes the glyph.
-        let names: Vec<String> = (0..24).map(|n| format!("s{n:02}")).collect();
+        assert_eq!(marked(&buf, "-"), [second]);
+        // The viewed seat is lifted, and the cursor yields to it.
+        let viewing = Composer::Viewing { seat: "colead" };
+        let (buf, _) = framed_as(&shot, 160, None, viewing);
+        assert_eq!(marked(&buf, "▸"), [second]);
+        assert!(marked(&buf, "▹").is_empty(), "the lift replaces the cursor");
+        assert!(buf[(8, second)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(8, first)].modifier.contains(Modifier::REVERSED));
+        let (buf, _) = framed_as(&shot, 160, Some(&ascii), viewing);
+        assert_eq!(marked(&buf, ">"), [second]);
+        // Scrolled so the cursor's seat is gone, no row carries the glyph and
+        // the first drawn seat is the keys' target.
+        let names: Vec<String> = (0..60).map(|n| format!("s{n:02}")).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         shot.agents = Some(seat_facts(&names));
         shot.model.set_focus(None);
         assert!(shot.model.wheel_body(false, 9));
         let (buf, layout) = framed(&shot, 160, None);
-        assert_eq!(layout.focused.as_deref(), Some("s01"));
-        assert_eq!(marked(&buf, "▸"), [first], "its first drawn row");
-        assert!(
-            line(&buf, first).concat().contains("claude"),
-            "not its name"
-        );
+        assert_eq!(layout.focused.as_deref(), Some("s03"));
+        assert!(marked(&buf, "▹").is_empty() && marked(&buf, "▸").is_empty());
     }
 
-    /// R3: with a look, the focused seat's rows share the selected ground out
-    /// to the body's end and the glyph is the selected ink, never the title
-    /// or a state hue; the next seat keeps the sidebar's ground. On the
-    /// ground only the selected ink and the marks' accents are drawn, so the
-    /// pairs are the ones `theme`'s contrast bar already measures.
+    /// The cursor stays where `n` / `p` left it when another seat is viewed;
+    /// the viewed seat is the one lifted row, and its session becomes the
+    /// context, titled but not lifted, instead of a second lifted row.
     #[test]
-    fn the_focused_seat_sits_on_the_selected_ground_in_every_palette() {
+    fn the_cursor_stays_while_another_seat_is_viewed_and_the_session_is_a_context() {
+        let mut shot = Shot::new();
+        shot.agents = Some(seat_facts(&["lead", "colead"]));
+        shot.model.set_focus(Some("lead".to_owned()));
+        let viewing = Composer::Viewing { seat: "colead" };
+        let (buf, _) = framed_as(&shot, 160, None, viewing);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        let (first, second) = (rule + 1, rule + 2);
+        assert_eq!(marked(&buf, "▸"), [second], "the viewed seat is lifted");
+        assert_eq!(marked(&buf, "▹"), [first], "the cursor stays");
+        assert_eq!(buf[(0, 2)].symbol(), " ", "the session is not lifted");
+        let name = &buf[(4, 2)];
+        assert!(
+            name.modifier
+                .contains(Modifier::BOLD | Modifier::UNDERLINED)
+        );
+        assert!(!name.modifier.contains(Modifier::REVERSED));
+        // The shared chat shows the session: it is the lifted row.
+        let (buf, _) = framed(&shot, 160, None);
+        assert_eq!(buf[(0, 2)].symbol(), "▸");
+        assert!(buf[(4, 2)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(4, 2)].modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(marked(&buf, "▹"), [first], "the cursor is no view");
+    }
+
+    /// The composer's address names the seat a plain line reaches now and how
+    /// it was picked; only the home composer says so.
+    #[test]
+    fn the_composer_address_names_the_seat_the_line_would_reach() {
+        let shot = Shot::new();
+        // The chat column below the header: the address and hint rows live here.
+        let chat = |dest, composer| {
+            let screen = shot.screen(composer);
+            let wait = super::Wait {
+                dest,
+                ..super::Wait::default()
+            };
+            let mut buf = Buffer::empty(Rect::new(0, 0, 160, 45));
+            let _ = super::draw_with_layout(&screen, wait, &mut buf);
+            (1..45)
+                .map(|y| line(&buf, y)[45..].concat())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let auto = Some(super::Dest {
+            seat: "colead",
+            named: false,
+        });
+        let named = Some(super::Dest {
+            seat: "lead",
+            named: true,
+        });
+        assert!(chat(auto, browsing("")).contains("to api · colead (auto)"));
+        assert!(chat(named, browsing("")).contains("to api · lead (named)"));
+        let none = chat(None, browsing(""));
+        assert!(none.contains("to api") && !none.contains("to api ·") && !none.contains("(auto)"));
+        let held = Composer::Held { why: "owned" };
+        assert!(!chat(auto, held).contains("colead"), "not home: no seat");
+        let viewing = Composer::Viewing { seat: "scout" };
+        assert!(!chat(auto, viewing).contains("(auto)"));
+        assert!(chat(auto, viewing).contains("viewing scout"));
+        assert!(!chat(auto, READ_ONLY).contains("(auto)"));
+    }
+
+    /// The header names the open ask of the seat viewed, else of the seat
+    /// under the cursor, else the first that waits.
+    #[test]
+    fn the_header_names_the_viewed_seats_ask_then_the_cursors_then_the_first() {
+        let mut shot = Shot::new();
+        shot.agents = Some(seat_facts(&["lead", "colead"]));
+        shot.overview.open = vec![
+            Open {
+                seat: "lead".to_owned(),
+                text: "first ask".to_owned(),
+                age_secs: Some(60),
+            },
+            Open {
+                seat: "colead".to_owned(),
+                text: "second ask".to_owned(),
+                age_secs: Some(120),
+            },
+        ];
+        let header =
+            |shot: &Shot, composer| line(&framed_as(shot, 160, None, composer).0, 0).concat();
+        assert!(header(&shot, READ_ONLY).contains("⚠ lead: first ask · 1m"));
+        shot.model.set_focus(Some("colead".to_owned()));
+        let at_cursor = header(&shot, READ_ONLY);
+        assert!(
+            at_cursor.contains("⚠ colead: second ask · 2m"),
+            "{at_cursor}"
+        );
+        assert!(!at_cursor.contains("first ask"), "one ask at a time");
+        shot.model.set_focus(Some("lead".to_owned()));
+        let viewing = Composer::Viewing { seat: "colead" };
+        assert!(header(&shot, viewing).contains("⚠ colead: second ask"));
+        shot.model.set_focus(Some("scout".to_owned()));
+        let quiet = Composer::Viewing { seat: "scout" };
+        assert!(
+            header(&shot, quiet).contains("⚠ lead: first ask"),
+            "falls to the first"
+        );
+        let ascii = Look::read("off", "darcula", "on", "on");
+        let (buf, _) = framed_as(&shot, 160, Some(&ascii), READ_ONLY);
+        assert!(line(&buf, 0).concat().contains("! lead: first ask · 1m"));
+    }
+
+    /// The reason comes before the directory: both when the room allows, and
+    /// when it does not the directory goes whole rather than the reason; a
+    /// reason needs 12 cells to be drawn at all.
+    #[test]
+    fn the_header_reason_comes_before_the_directory() {
+        let mut shot = Shot::new();
+        shot.overview.dir = Some("~/projects/clemens33/ae".to_owned());
+        shot.overview.open = vec![Open {
+            seat: "lead".to_owned(),
+            text: "approve the plan".to_owned(),
+            age_secs: Some(60),
+        }];
+        let wide = line(&framed(&shot, 160, None).0, 0).concat();
+        let (reason, dir) = (wide.find('⚠'), wide.find("~/projects"));
+        assert!(reason.is_some() && dir.is_some() && reason < dir, "{wide}");
+        shot.overview.open[0].text = "approve the plan ".repeat(8);
+        let narrow = line(&shot.draw(100, 30, READ_ONLY), 0).concat();
+        assert!(
+            narrow.contains('⚠') && narrow.contains("… · 1m"),
+            "{narrow}"
+        );
+        assert!(!narrow.contains("~/"), "no directory fragment: {narrow}");
+        let screen = shot.screen(READ_ONLY);
+        let ctx = super::Ctx {
+            screen: &screen,
+            paint: Paint::of(screen.look.as_ref()),
+            icons: true,
+            wait: super::Wait::default(),
+        };
+        assert_eq!(
+            super::reason_words(&ctx, 13),
+            None,
+            "under 12 beside the mark"
+        );
+        let words = super::reason_words(&ctx, 14).expect("12 cells and the mark");
+        assert!(super::drawn_cols(&words) <= 14, "{words:?}");
+    }
+
+    /// The Keys tab teaches the new glyphs and the positional digits.
+    #[test]
+    fn the_keys_tab_names_the_home_glyph_the_cursor_and_the_nth_session() {
+        let rows: Vec<String> = keys_body(Paint::of(None))
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        let row = |start: &str, words: &[&str]| {
+            assert!(
+                rows.iter()
+                    .any(|r| r.starts_with(start) && words.iter().all(|w| r.contains(w))),
+                "{start}: {words:?} in {rows:?}"
+            );
+        };
+        row("1-9", &["Nth session"]);
+        row("n/p", &["cursor", "▹"]);
+        row("Esc", &["cursor", "home"]);
+        row("◂ or <", &["home session"]);
+        assert!(!rows.iter().any(|r| r.contains("this window")));
+    }
+
+    /// At the narrowest sidebar (30 columns) a tall fleet still draws one
+    /// session a row, each ending inside the rule's two blank cells.
+    #[test]
+    fn a_floor_sidebar_keeps_each_session_on_one_row() {
+        let mut shot = sessions(28);
+        let first = shot.draw(100, 30, READ_ONLY);
+        let buf = drag(&mut shot, &first, Edge::Sidebar, 30);
+        assert_eq!(vertical(&buf), Some(30), "the floor width");
+        let ys: Vec<u16> = (2..30)
+            .filter(|y| line(&buf, *y)[4..5].concat() == "s")
+            .collect();
+        assert!(ys.len() >= 5, "{ys:?}");
+        assert_eq!(
+            ys,
+            (2..2 + u16::try_from(ys.len()).unwrap_or(0)).collect::<Vec<_>>()
+        );
+        for y in ys {
+            let cells = line(&buf, y);
+            assert_eq!(cells[28..30].concat(), "  ", "row {y}");
+            assert!(
+                cells[4..28].concat().trim_end().chars().count() >= 4,
+                "row {y}"
+            );
+        }
+    }
+
+    /// R3: the viewed seat's row shares the selected ground out to the body's
+    /// end and the glyph is the selected ink, never the title or a state hue;
+    /// the next seat keeps the sidebar's ground. On the ground only the
+    /// selected ink and the marks' accents are drawn, so the pairs are the
+    /// ones `theme`'s contrast bar already measures.
+    #[test]
+    fn the_viewed_seat_sits_on_the_selected_ground_in_every_palette() {
         let mut shot = Shot::new();
         shot.agents = Some(seat_facts(&["lead", "colead"]));
         for name in ["darcula", "a", "b"] {
             let look = Look::read("on", name, "on", "on");
-            let (buf, _) = framed(&shot, 160, Some(&look));
+            let viewing = Composer::Viewing { seat: "lead" };
+            let (buf, _) = framed_as(&shot, 160, Some(&look), viewing);
             let palette = look.palette;
             let first = *marked(&buf, "▸").first().expect("a marked row");
             let rule = (0..160)
@@ -4558,32 +4956,29 @@ mod tests {
                 (glyph.fg, glyph.modifier.contains(Modifier::BOLD)),
                 (ink, true)
             );
-            for y in [first, first + 1] {
-                for x in 0..rule - 2 {
-                    assert_eq!(buf[(x, y)].bg, ground, "{name} ({x},{y})");
-                }
-                let mark = super::colour(palette.accent(Mark::WaitingAgent));
-                let drawn: Vec<_> = (0..rule - 2)
-                    .map(|x| &buf[(x, y)])
-                    .filter(|cell| cell.symbol() != " ")
-                    .collect();
-                assert!(!drawn.is_empty(), "{name} row {y}");
-                for cell in drawn {
-                    let ok = cell.fg == ink || cell.fg == mark;
-                    assert!(ok, "{name}: {:?} {:?}", cell.symbol(), cell.fg);
-                }
+            for x in 0..rule - 2 {
+                assert_eq!(buf[(x, first)].bg, ground, "{name} ({x},{first})");
+            }
+            let mark = super::colour(palette.accent(Mark::WaitingAgent));
+            let drawn: Vec<_> = (0..rule - 2)
+                .map(|x| &buf[(x, first)])
+                .filter(|cell| cell.symbol() != " ")
+                .collect();
+            assert!(!drawn.is_empty(), "{name} row {first}");
+            for cell in drawn {
+                let ok = cell.fg == ink || cell.fg == mark;
+                assert!(ok, "{name}: {:?} {:?}", cell.symbol(), cell.fg);
             }
             let sidebar = super::colour(palette.base);
-            for y in [first + 2, first + 3] {
-                assert_eq!(buf[(5, y)].bg, sidebar, "{name}: the next seat");
-            }
+            assert_eq!(buf[(5, first + 1)].bg, sidebar, "{name}: the next seat");
         }
     }
 
-    /// R1/R4: a seat's second row is its client, the model its frame drew and
-    /// the effort, each only when known, and never its profile name.
+    /// R1/R4: a seat's one row carries its model, the client when its frame
+    /// drew none, and the effort, each only when known and never its profile
+    /// name.
     #[test]
-    fn the_agents_second_row_is_client_model_and_effort_never_the_profile() {
+    fn the_agents_row_is_model_and_effort_never_the_profile() {
         let mut shot = Shot::new();
         let seat = |name: &str, model: &str, effort: &str| PickerAgent {
             name: name.to_owned(),
@@ -4608,23 +5003,33 @@ mod tests {
             ],
         });
         let (buf, _) = framed(&shot, 160, None);
-        let below = |name: &str| {
-            let y = spot(&buf, name).expect(name).0 + 1;
-            line(&buf, y)[..34].concat().trim().to_owned()
+        let between = |name: &str| {
+            let y = spot(&buf, name).expect(name).0;
+            let row = line(&buf, y)[..44].concat();
+            let (from, to) = (
+                row.find(name).expect(name) + name.len(),
+                row.find("working"),
+            );
+            row[from..to.expect("its state")].trim().to_owned()
         };
-        assert_eq!(below("seat-a"), "claude · Sonnet 5.5 · xhigh");
-        assert_eq!(below("seat-b"), "claude", "no placeholder");
-        assert_eq!(below("seat-c"), "claude · max");
-        assert_eq!(below("seat-d"), "", "the row stays: the geometry is stable");
+        assert_eq!(between("seat-a"), "Sonnet 5.5 xhigh");
+        assert_eq!(between("seat-b"), "claude", "no placeholder");
+        assert_eq!(between("seat-c"), "claude max");
+        assert_eq!(
+            between("seat-d"),
+            "",
+            "the row stays: the geometry is stable"
+        );
         let frame: String = (0..45).map(|y| line(&buf, y).concat()).collect();
         assert!(!frame.contains("sonnet55x"), "the profile is not drawn");
     }
 
-    /// R7: a seat that waits on the human keeps its reason on its own rows;
-    /// an ask from a seat the roster lacks is its own entry after the roster,
-    /// so none is lost; and no Overview or Tab word is left in the frame.
+    /// R7: a seat that waits on the human is told in the chat header, never
+    /// under its row: its Agents row stays one line; an ask from a seat the
+    /// roster lacks is a row of its own after the roster, so none is lost;
+    /// and no Overview or Tab word is left in the frame.
     #[test]
-    fn a_seat_waiting_on_the_human_keeps_its_reason_on_its_agents_rows() {
+    fn a_seat_waiting_on_the_human_is_told_in_the_header_not_under_its_row() {
         let mut shot = Shot::new();
         shot.agents = Some(seat_facts(&["seat-a", "seat-b"]));
         shot.overview.open = vec![
@@ -4641,14 +5046,27 @@ mod tests {
         ];
         let look = Look::read("on", "darcula", "on", "on");
         let (buf, layout) = framed(&shot, 160, Some(&look));
-        let at = |name: &str| spot(&buf, name).expect(name).0;
-        let sidebar = |y| line(&buf, y)[..40].concat().trim().to_owned();
-        assert_eq!(at("seat-b"), at("seat-a") + 2, "seat-a asks nothing");
-        assert_eq!(sidebar(at("seat-b") + 2), "Approve X? · 4m");
+        let sidebar = |y| line(&buf, y)[..42].concat().trim().to_owned();
+        let at = |name: &str| (2..45).find(|y| sidebar(*y).contains(name)).expect(name);
+        assert_eq!(at("seat-b"), at("seat-a") + 1, "seat-a asks nothing");
         assert_eq!(layout.seats, ["seat-a", "seat-b", "ghost"]);
-        assert!(at("ghost") > at("seat-b") + 2, "after the roster");
-        assert!(sidebar(at("ghost")).starts_with("⚠ ghost"), "its own entry");
-        assert_eq!(sidebar(at("ghost") + 1), "registry down · 1h");
+        assert_eq!(at("ghost"), at("seat-b") + 1, "after the roster, one row");
+        let ghost = sidebar(at("ghost"));
+        assert!(
+            ghost.starts_with("⚠ ghost") && ghost.ends_with("needs you"),
+            "{ghost}"
+        );
+        let side: String = (0..45).map(|y| line(&buf, y)[..42].concat()).collect();
+        assert!(
+            !side.contains("Approve X?") && !side.contains("registry down"),
+            "no reason under a row: {side}"
+        );
+        let header = line(&buf, 0).concat();
+        assert!(header.contains("⚠ seat-b: Approve X? · 4m"), "{header}");
+        let viewing = Composer::Viewing { seat: "ghost" };
+        let (buf, _) = framed_as(&shot, 160, Some(&look), viewing);
+        let header = line(&buf, 0).concat();
+        assert!(header.contains("⚠ ghost: registry down · 1h"), "{header}");
         let frame: String = (0..45).map(|y| line(&buf, y).concat()).collect();
         assert!(
             !frame.contains("Overview") && !frame.contains("Tab"),
@@ -4694,6 +5112,15 @@ mod tests {
     }
     // Independent S1 acceptance: frozen by appdeclutter-nav; install unchanged.
     fn declutter_frame(shot: &Shot, width: u16, icons: bool) -> (Buffer, super::Layout) {
+        declutter_frame_at(shot, width, 28, icons)
+    }
+
+    fn declutter_frame_at(
+        shot: &Shot,
+        width: u16,
+        height: u16,
+        icons: bool,
+    ) -> (Buffer, super::Layout) {
         let mut screen = shot.screen(READ_ONLY);
         screen.look = Some(Look::read(
             if icons { "on" } else { "off" },
@@ -4701,7 +5128,7 @@ mod tests {
             "on",
             "on",
         ));
-        let mut buf = Buffer::empty(Rect::new(0, 0, width, 28));
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         let layout = super::draw_with_layout(&screen, super::Wait::default(), &mut buf);
         (buf, layout)
     }
@@ -4711,7 +5138,7 @@ mod tests {
     }
 
     #[test]
-    fn declutter_counts_below_name_hide_goals_and_keep_home_hits_and_cells() {
+    fn declutter_counts_ride_the_name_row_hide_goals_and_keep_home_hits_and_cells() {
         for width in [90, 100, 160] {
             for icons in [false, true] {
                 let mut shot = Shot::new();
@@ -4724,27 +5151,40 @@ mod tests {
                 shot.model = Model::new(&shot.fleet);
                 let (buf, layout) = declutter_frame(&shot, width, icons);
                 let name = declutter_line(&buf, &layout, 2);
-                let below = declutter_line(&buf, &layout, 3);
                 let counts = if icons { "●3 ✓B12" } else { "*3 +B12" };
-                assert!(name.contains("界 api") && name.contains("this window"));
-                assert!(!name.contains(counts), "counts belong below: {name:?}");
-                assert!(below.contains(counts), "{width}/{icons}: {below:?}");
-                assert!(!below.contains("goal"), "{below:?}");
-                for y in [2, 3] {
-                    for column in [0, super::NAME, layout.list.width - 1] {
-                        assert!(
-                            matches!(layout.hit(Mouse { kind: MouseKind::Click, column, row: y }), Some(super::Hit::Session(name)) if name == "界api")
-                        );
-                    }
-                    assert_eq!(buf[(layout.list.width, y)].symbol(), "│");
+                let home = if icons { "◂" } else { "<" };
+                assert!(name.contains("界 api") && name.contains(home), "{name:?}");
+                assert!(name.contains(counts), "{width}/{icons}: {name:?}");
+                assert!(!name.contains("goal"), "{name:?}");
+                let below = declutter_line(&buf, &layout, 3);
+                assert!(
+                    !below.contains(counts) && !below.contains("goal"),
+                    "{below:?}"
+                );
+                for column in [0, super::NAME, layout.list.width - 1] {
+                    assert!(
+                        matches!(layout.hit(Mouse { kind: MouseKind::Click, column, row: 2 }), Some(super::Hit::Session(name)) if name == "界api")
+                    );
                 }
+                assert!(
+                    !matches!(
+                        layout.hit(Mouse {
+                            kind: MouseKind::Click,
+                            column: 0,
+                            row: 3
+                        }),
+                        Some(super::Hit::Session(_))
+                    ),
+                    "a session is one row to click"
+                );
+                assert_eq!(buf[(layout.list.width, 2)].symbol(), "│");
                 shot.fleet.rows[0].line2 = Line2::NoGoal;
                 let (buf, layout) = declutter_frame(&shot, width, icons);
-                let below = declutter_line(&buf, &layout, 3);
-                assert!(below.contains(counts) && !below.contains("goal"));
+                let name = declutter_line(&buf, &layout, 2);
+                assert!(name.contains(counts) && !name.contains("goal"));
                 shot.fleet.rows[0].counts = Counts::Unknown;
                 let (buf, layout) = declutter_frame(&shot, width, icons);
-                assert!(declutter_line(&buf, &layout, 3).contains("agents ?"));
+                assert!(declutter_line(&buf, &layout, 2).trim_end().ends_with(" ?"));
             }
         }
     }
@@ -4772,6 +5212,15 @@ mod tests {
         // One arrow leaves the first row 28 cells, which hold its words; the
         // second takes one more, and the words give way to the bare counts —
         // the same numbers either way.
+        // A dragged list of five rows shows four sessions and the more row, so
+        // the needy tail is hidden.
+        shot.model.grab(Drag {
+            edge: Edge::List,
+            from: 0,
+            at: 0,
+        });
+        let _ = shot.model.drag_to(5);
+        let _ = shot.model.let_go();
         for (icons, words, bare) in [
             (
                 true,
@@ -4826,7 +5275,7 @@ mod tests {
             let rows = [0, 1].map(|y| declutter_line(&buf, &layout, y));
             assert_eq!(rows.each_ref().map(|row| row.trim()), expected);
             if matches!(shot.fleet.rows[0].counts, Counts::Marks(_)) {
-                assert!(declutter_line(&buf, &layout, 3).contains("no agents"));
+                assert!(declutter_line(&buf, &layout, 2).contains("no agents"));
             }
         }
     }
@@ -4882,7 +5331,7 @@ mod tests {
     }
 
     #[test]
-    fn declutter_crowded_counts_preserve_actionable_question_and_seat_down_cues() {
+    fn declutter_crowded_counts_keep_the_urgent_ones_and_close_on_an_ellipsis() {
         let mut shot = Shot::new();
         shot.fleet.rows[0].counts = Counts::Marks(
             Mark::BY_URGENCY
@@ -4890,59 +5339,43 @@ mod tests {
                 .map(|mark| (mark, false, 12))
                 .collect(),
         );
-        for (status, cue) in [
-            (
-                Line2::Question {
-                    text: "approve deploy now".to_owned(),
-                    age_secs: Some(60),
-                },
-                "approve",
-            ),
-            (Line2::SeatDown, "down"),
+        for status in [
+            Line2::Question {
+                text: "approve deploy now".to_owned(),
+                age_secs: Some(60),
+            },
+            Line2::SeatDown,
         ] {
             shot.fleet.rows[0].line2 = status;
             let (buf, layout) = declutter_frame(&shot, 90, true);
-            let below = declutter_line(&buf, &layout, 3);
-            assert!(below.contains(cue) && below.contains("✖12"), "{below:?}");
+            let name = declutter_line(&buf, &layout, 2);
             assert!(
-                !below.contains("✓12") && !below.contains("·12"),
-                "low urgency counts yield: {below:?}"
+                name.contains("✖12") && name.trim_end().ends_with('…'),
+                "{name:?}"
+            );
+            assert!(
+                !name.contains("✓12") && !name.contains("·12"),
+                "low urgency counts yield: {name:?}"
+            );
+            assert!(
+                !name.contains("approve") && !name.contains("down"),
+                "no status words in a session row: {name:?}"
             );
         }
     }
 
     #[test]
-    fn declutter_questions_clip_cells_and_keep_whole_graphemes_and_age() {
-        for icons in [false, true] {
-            for (text, count, start, expected) in [
-                ("界".repeat(10), 12, 15, "界 ".repeat(8) + "…"),
-                ("e\u{301}".repeat(23), 1, 10, "e\u{301}".repeat(21) + "…"),
-                ("界".repeat(9), 1, 10, "界 ".repeat(9)),
-                ("界".repeat(8), 1, 10, "界 ".repeat(8) + " · 4m"),
-                ("界".repeat(8) + "x", 1, 10, "界 ".repeat(8) + "x · 4m"),
-                ("界".repeat(11), 1, 10, "界 ".repeat(11)),
-                ("ｶﾞ".repeat(12), 1, 10, "ｶﾞ ".repeat(10) + "…"),
-                ("ｶﾞ".repeat(4), 12_345_678, 19, "ｶﾞ ".repeat(4) + " · 4m"),
-            ] {
-                let mut shot = Shot::new();
-                shot.fleet.rows[0].counts = Counts::Marks(if count == 1 {
-                    vec![(Mark::NeedsYou, false, count)]
-                } else {
-                    vec![(Mark::Dead, false, count), (Mark::NeedsYou, false, count)]
-                });
-                shot.fleet.rows[0].line2 = Line2::Question {
-                    text: text.clone(),
-                    age_secs: Some(240),
-                };
-                let (buf, layout) = declutter_frame(&shot, 90, icons);
-                assert_eq!(layout.list.width, 34, "the rendered cell budget");
-                assert_eq!(buf[(34, 3)].symbol(), "│");
-                assert_eq!(
-                    line(&buf, 3)[start..32].concat().trim_end(),
-                    expected.trim_end(),
-                    "{icons}/{text}: cell/grapheme/whole-age budget"
-                );
-            }
+    fn declutter_reason_clips_cells_and_keeps_whole_graphemes_and_age() {
+        for (text, room, expected) in [
+            ("界".repeat(10), 20, "界".repeat(10)),
+            ("界".repeat(11), 20, "界".repeat(7) + "… · 4m"),
+            ("界".repeat(8), 22, "界".repeat(8) + " · 4m"),
+            ("e\u{301}".repeat(23), 29, "e\u{301}".repeat(23) + " · 4m"),
+            ("e\u{301}".repeat(30), 29, "e\u{301}".repeat(23) + "… · 4m"),
+        ] {
+            let words = super::aged(&text, Some(240), room);
+            assert_eq!(words, expected, "{text}/{room}");
+            assert!(super::drawn_cols(&words) <= room, "{text}/{room}");
         }
     }
 
@@ -5123,11 +5556,13 @@ mod tests {
     #[test]
     fn declutter_count_tail_fills_the_last_cell_without_losing_a_whole_span() {
         for (last, expected) in [
-            (12, "✖B123 ⚠B123 ◌B12 ●B12 ◔123 ✓123 ·12 "),
+            (12, "✖B123 ⚠B123 ◌B12 ●B12 ◔123 ✓123 ·12"),
             (123, "✖B123 ⚠B123 ◌B12 ●B12 ◔123 ✓123 ·123"),
-            (1234, "✖B123 ⚠B123 ◌B12 ●B12 ◔123 ✓123 …   "),
+            (1234, "✖B123 ⚠B123 ◌B12 ●B12 ◔123 ✓123 …"),
         ] {
             let mut shot = Shot::new();
+            shot.fleet.rows[0].home = false;
+            shot.fleet.rows[0].name = "a".to_owned();
             shot.fleet.rows[0].line2 = Line2::NoGoal;
             shot.fleet.rows[0].counts = Counts::Marks(vec![
                 (Mark::Dead, true, 123),
@@ -5139,17 +5574,20 @@ mod tests {
                 (Mark::Idle, false, last),
             ]);
             let (buf, layout) = shot.laid(160, 43, READ_ONLY);
-            assert_eq!(layout.list.width, 44, "36 cells for counts below the name");
-            assert_eq!(line(&buf, 3)[..45].concat(), format!("      {expected}  │"));
+            assert_eq!(layout.list.width, 44, "40 cells right of the mark");
+            let row = line(&buf, 2)[..45].concat();
+            assert!(row.ends_with(&format!("{expected}  │")), "{row:?}");
         }
     }
 
-    /// Long names preserve the gap, stopped age and two cells before the rule.
+    /// A name that fits keeps its stopped age; a name too long for it is cut
+    /// beside the shortest tally. Either way the gap and two cells before the
+    /// rule stay.
     #[test]
     fn declutter_long_names_leave_the_stopped_age_and_right_edge_intact() {
-        for stopped in [false, true] {
+        for (stopped, long) in [(false, 60), (true, 60), (true, 25)] {
             let mut shot = Shot::new();
-            shot.fleet.rows = vec![row(&"n".repeat(60), 1, false)];
+            shot.fleet.rows = vec![row(&"n".repeat(long), 1, false)];
             shot.fleet.rows[0].home = false;
             shot.fleet.rows[0].counts = if stopped {
                 Counts::Stopped
@@ -5167,12 +5605,16 @@ mod tests {
             shot.model = Model::new(&shot.fleet);
             let (buf, layout) = shot.laid(160, 43, READ_ONLY);
             assert_eq!(layout.list.width, 44);
-            let expected = if stopped {
-                format!("  ● 1 {} stopped 3m  │", "n".repeat(25))
-            } else {
-                format!("  ● 1 {}  │", "n".repeat(36))
+            let expected = match (stopped, long) {
+                (false, _) => format!("  ● {}… no agents  │", "n".repeat(27)),
+                (true, 60) => format!("  ● {}… stopped  │", "n".repeat(29)),
+                _ => format!("  ● {}   stopped 3m  │", "n".repeat(25)),
             };
-            assert_eq!(line(&buf, 2)[..45].concat(), expected, "stopped={stopped}");
+            assert_eq!(
+                line(&buf, 2)[..45].concat(),
+                expected,
+                "stopped={stopped}/{long}"
+            );
             assert_eq!(line(&buf, 2)[42..44].concat(), "  ");
             assert_eq!(buf[(44, 3)].symbol(), "│");
         }
@@ -5219,46 +5661,28 @@ mod tests {
 
     /// Clipping preserves original grapheme barriers, then appends one ellipsis.
     #[test]
-    fn declutter_clipped_questions_keep_source_graphemes_separated() {
-        for icons in [false, true] {
-            for (text, expected) in [
-                (
-                    format!("🇦\u{200b}🇧{}", "x".repeat(22)),
-                    "🇦🇧".to_owned() + &"x".repeat(19) + "…",
-                ),
-                (
-                    format!("🇦\t🇧{}", "x".repeat(22)),
-                    "🇦🇧".to_owned() + &"x".repeat(19) + "…",
-                ),
-                (
-                    format!("ᄀ\u{200b}가{}", "x".repeat(22)),
-                    "ᄀ 가 ".to_owned() + &"x".repeat(17) + "…",
-                ),
-                (
-                    format!("ᄀ\t가{}", "x".repeat(22)),
-                    "ᄀ 가 ".to_owned() + &"x".repeat(17) + "…",
-                ),
-                (
-                    format!("ᄀ\u{200b}ᅡ{}", "x".repeat(22)),
-                    "ᄀ ".to_owned() + &"x".repeat(19) + "…",
-                ),
-                (
-                    format!("a\u{200b}b{}", "x".repeat(22)),
-                    "ab".to_owned() + &"x".repeat(19) + "…",
-                ),
-            ] {
-                let mut shot = Shot::new();
-                shot.fleet.rows[0].counts = Counts::Marks(vec![(Mark::NeedsYou, false, 1)]);
-                shot.fleet.rows[0].line2 = Line2::Question {
-                    text: text.clone(),
-                    age_secs: Some(240),
-                };
-                let (buf, layout) = declutter_frame(&shot, 90, icons);
-                assert_eq!(layout.list.width, 34);
-                assert_eq!(buf[(34, 3)].symbol(), "│");
-                assert_eq!(line(&buf, 3)[10..32].concat(), expected, "{icons}/{text}");
-                assert_eq!(buf[(31, 3)].symbol(), "…");
-            }
+    fn declutter_clipped_reasons_keep_source_graphemes_separated() {
+        for (text, expected) in [
+            (format!("🇦\u{200b}🇧{}", "x".repeat(40)), "🇦🇧"),
+            (format!("🇦\t🇧{}", "x".repeat(40)), "🇦🇧"),
+            (format!("a\u{200b}b{}", "x".repeat(40)), "ab"),
+        ] {
+            let words = super::aged(&text, Some(240), 20);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+            super::put(
+                &mut buf,
+                0,
+                0,
+                &words,
+                20,
+                ratatui_core::style::Style::default(),
+            );
+            let cells = line(&buf, 0).concat();
+            assert_eq!(
+                cells,
+                format!("{expected}{}… · 4m", "x".repeat(12)),
+                "{text}"
+            );
         }
     }
 
@@ -5288,7 +5712,7 @@ mod tests {
     /// `name`'s row: its y and the cue cell at col 1.
     fn cue_cell(buf: &Buffer, name: &str) -> (u16, String) {
         for y in 0..buf.area.height {
-            if line(buf, y)[6..6 + name.len()].concat() == name {
+            if line(buf, y)[4..4 + name.len()].concat() == name {
                 return (y, buf[(1, y)].symbol().to_owned());
             }
         }
@@ -5310,8 +5734,12 @@ mod tests {
             let blank = cue_cell(&buf, "api").1;
             assert_eq!(blank, " ", "{icons}/{palette}: control");
             let (y, _) = cue_cell(&buf, "beta");
-            assert_eq!(buf[(4, y)].symbol(), "2", "index col");
-            assert_eq!(line(&buf, y)[6..10].concat(), "beta", "name col");
+            assert_eq!(
+                buf[(2, y)].symbol(),
+                Mark::Working.glyph(icons == "on"),
+                "mark col"
+            );
+            assert_eq!(line(&buf, y)[4..8].concat(), "beta", "name col");
         }
     }
 
@@ -5374,5 +5802,90 @@ mod tests {
         bodies.quota_kept = None;
         let fresh = super::settings_body(SettingsTab::Quota, &bodies, paint, 80, true);
         assert_eq!(fresh[..], kept[1..], "no marker, no line");
+    }
+
+    /// Hangul jamo/syllable widths and the zero-width barrier, cut whole:
+    /// jamo U+1100 is 2 cells, ZWSP 0, jungseong U+1161 combining 0, syllable
+    /// U+AC00 2 cells. The ZWSP/tab breaks L+V conjoining; kept zero-width
+    /// bytes stay in the cut.
+    #[test]
+    fn unicode_barrier_rows_clip_whole_graphemes_and_age() {
+        // (text, room, expected); content + … + tail must fit `room`.
+        for (text, room, expected) in [
+            (
+                "ᄀ\u{200b}가".to_owned() + &"x".repeat(40),
+                20,
+                "ᄀ\u{200b}가".to_owned() + &"x".repeat(10) + "… · 4m",
+            ),
+            (
+                "ᄀ\u{200b}ᅡ".to_owned() + &"x".repeat(40),
+                20,
+                "ᄀ\u{200b}ᅡ".to_owned() + &"x".repeat(12) + "… · 4m",
+            ),
+            (
+                "ᄀ\t가".to_owned() + &"x".repeat(40),
+                20,
+                "ᄀ\t가".to_owned() + &"x".repeat(10) + "… · 4m",
+            ),
+            // A combining jungseong kept whole: 14 + 0 + … + tail.
+            (
+                "x".repeat(14) + "ᅡ" + &"x".repeat(40),
+                20,
+                "x".repeat(14) + "ᅡ… · 4m",
+            ),
+            // A wide syllable never split: 13 cells used, needs 2 of 1 left.
+            (
+                "x".repeat(13) + "가" + &"x".repeat(40),
+                20,
+                "x".repeat(13) + "… · 4m",
+            ),
+            // A halfwidth cluster (halfwidth ka + voicing mark) is one 2-cell
+            // grapheme (mark compensated per ratatui-core cell_width).
+            (
+                "x".repeat(12) + "ｶﾞ" + &"x".repeat(40),
+                20,
+                "x".repeat(12) + "ｶﾞ… · 4m",
+            ),
+            // A tab is filtered from the stream (0 cells); neighbours never glue.
+            (
+                "a\tb".to_owned() + &"x".repeat(40),
+                20,
+                "a\tb".to_owned() + &"x".repeat(12) + "… · 4m",
+            ),
+        ] {
+            let words = super::aged(&text, Some(240), room);
+            assert_eq!(words, expected, "{text:?}/{room}");
+            assert!(super::drawn_cols(&words) <= room, "{text:?}/{room}");
+        }
+    }
+
+    /// Control graphemes never reach cells and zero-width ones take none:
+    /// aZWSPbTABc draws abc, a wide jamo itself plus its reset continuation,
+    /// a halfwidth cluster whole from its first cell. Pure `aged()` cannot prove
+    /// it keeps the raw bytes.
+    #[test]
+    fn zero_width_source_cells_stand_as_blanks_without_conjoining() {
+        use ratatui_core::buffer::Buffer;
+        use ratatui_core::layout::Rect;
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
+        super::put_line(
+            &mut buf,
+            0,
+            0,
+            &ratatui_core::text::Line::from("a\u{200b}b\tc"),
+            10,
+        );
+        assert_eq!(line(&buf, 0)[..5].concat(), "abc  ");
+        super::put_line(
+            &mut buf,
+            0,
+            1,
+            &ratatui_core::text::Line::from("ᄀ\u{200b}ᅡ"),
+            10,
+        );
+        assert_eq!(line(&buf, 1)[..3].concat(), "ᄀ  ");
+        super::put_line(&mut buf, 0, 2, &ratatui_core::text::Line::from("ｶﾞ"), 10);
+        assert_eq!(line(&buf, 2)[..1].concat(), "ｶﾞ");
     }
 }

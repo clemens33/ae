@@ -85,7 +85,7 @@ impl Rig {
             ("@ae_motion", "off"),
             ("@ae_attn_rank", "0"),
             ("@ae_main_pane", rig.tool.pane.as_str()),
-            ("default-size", "160x42"),
+            ("default-size", "160x34"),
         ] {
             rig.tmux(&["set-option", "-t", &rig.home, option, value]);
         }
@@ -103,7 +103,7 @@ impl Rig {
 
     fn agents(&self) {
         let mut raw = format!("v2;{};300", ae::time::Timestamp::now().epoch());
-        for at in 0..20 {
+        for at in 0..40 {
             write!(
                 raw,
                 ";seat{at:02}:sonnet55x:working::claude:Sonnet 5.5:xhigh:"
@@ -114,7 +114,7 @@ impl Rig {
             ae::tmux::parse_picker_agents(&raw, ae::time::Timestamp::now().epoch())
                 .expect("valid roster")
                 .len(),
-            20
+            40
         );
         self.tmux(&["set-option", "-t", &self.home, "@ae_agents", &raw]);
     }
@@ -187,32 +187,36 @@ impl Rig {
 
     fn ready(&self, pane: &str) -> String {
         let first = self.wait(pane, WAIT, "GUARD undragged app frame", |s| {
-            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("Agents 20")
+            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("Agents 40")
         });
         let edge = first
             .lines()
             .position(|line| line.starts_with("──"))
             .expect("drawn list border");
-        assert_eq!(edge, 25, "GUARD new undragged list border");
-        assert_eq!(self.cards(&first).len(), 10, "GUARD new undragged cards");
-        // This suite judges wheel behavior at its original viewport. The
-        // appside spec independently pins the changed undragged default.
+        // Thirteen one-row sessions all fit the undragged list: it ends at
+        // row 2 + 13, and its border stands two rows lower.
+        assert_eq!(edge, 17, "GUARD new undragged list border");
+        assert_eq!(self.cards(&first).len(), 13, "GUARD new undragged cards");
+        // This suite judges wheel behavior with a windowed list: eight
+        // sessions under a more row (nine list rows, border at 2 + 9 + 2 =
+        // 13) above a 20-row Agents body. The appside spec independently
+        // pins the undragged default.
         self.literal(
             pane,
-            &format!("\x1b[<0;2;{}M\x1b[<32;2;22M\x1b[<0;2;22m", edge + 1),
+            &format!("\x1b[<0;2;{}M\x1b[<32;2;14M\x1b[<0;2;14m", edge + 1),
         );
         let pinned = self.wait(
             pane,
             WAIT,
             "GUARD divider drag restored wheel fixture",
             |s| {
-                s.lines().position(|line| line.starts_with("──")) == Some(21)
+                s.lines().position(|line| line.starts_with("──")) == Some(13)
                     && self.cards(s).len() == 8
             },
         );
         assert_eq!(
             pinned.lines().position(|line| line.starts_with("──")),
-            Some(21)
+            Some(13)
         );
         assert_eq!(self.cards(&pinned).len(), 8);
         self.wait(pane, WAIT, "GUARD home, overflow and seats ready", |s| {
@@ -360,7 +364,7 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
     assert_eq!(body_rows(&first).len(), 20, "GUARD original body rectangle");
     rig.tmux(&["resize-window", "-t", &pane, "-x", "160", "-y", "100"]);
     let complete = rig.wait(&pane, FRAME, "GUARD all Agents content fits", |s| {
-        s.lines().count() == 100 && s.contains("seat19") && !s.contains("more rows")
+        s.lines().count() == 100 && s.contains("seat39") && !s.contains("more rows")
     });
     let nonempty = |s: &str| {
         body(s)
@@ -370,20 +374,17 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
             .collect::<Vec<_>>()
     };
     let seats = nonempty(&complete);
-    assert_eq!(seats.len(), 40, "GUARD twenty two-row seats");
-    for at in 0..20 {
+    assert_eq!(seats.len(), 40, "GUARD forty one-row seats");
+    for (at, row) in seats.iter().enumerate() {
         let name = format!("seat{at:02}");
         assert_eq!(
-            seats[2 * at]
-                .split_whitespace()
-                .find(|word| word.starts_with("seat")),
+            row.split_whitespace().find(|word| word.starts_with("seat")),
             Some(name.as_str()),
             "GUARD seat row order"
         );
-        assert_eq!(
-            seats[2 * at + 1],
-            "claude · Sonnet 5.5 · xhigh",
-            "GUARD facts row"
+        assert!(
+            row.contains("Sonnet 5.5 xhigh"),
+            "GUARD the seat's model and effort share its one row: {row}"
         );
     }
     let visible = if first.contains("more rows") { 19 } else { 20 };
@@ -392,7 +393,7 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
         seats[..visible],
         "GUARD original rows match complete content"
     );
-    rig.report(&pane, 65, (2, cell(&complete, "Agents 20").1 + 2), 40);
+    rig.report(&pane, 65, (2, cell(&complete, "Agents 40").1 + 2), 40);
     std::thread::sleep(Duration::from_millis(150));
     assert_eq!(
         nonempty(&rig.screen(&pane)),
@@ -403,7 +404,7 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
     let narrow = rig.wait(&pane, FRAME, "GUARD complete narrow seats fit", |s| {
         s.lines().count() == 80
             && drawn_rule(s) == Some(34)
-            && s.contains("seat19")
+            && s.contains("seat39")
             && !s.contains("more rows")
     });
     assert_eq!(nonempty(&narrow).len(), 40, "GUARD narrow layout rows");
@@ -425,7 +426,7 @@ fn click_pins_the_drawn_window_even_when_keys_were_following_selection() {
         },
     );
     let point = sidebar_cell(&bottom, "ws04");
-    rig.report(&pane, 0, (point.0, point.1 + 1), 1);
+    rig.report(&pane, 0, point, 1);
     let clicked = rig.wait(&pane, FRAME, "GUARD click selects first drawn card", |s| {
         s.lines().next().is_some_and(|line| line.contains("ws04"))
     });
@@ -449,9 +450,8 @@ fn body_cut_marker_counts_hidden_text_rows_and_owns_wheel_but_no_click() {
     let rig = Rig::new("wlmarker");
     let pane = rig.open();
     let first = rig.ready(&pane);
-    // Contract fixture: twenty seats of two rows = 40 text rows. The drawn
-    // The 20-row body (the band's second row took one) gives one row to the
-    // marker, leaving 19 content rows.
+    // Contract fixture: forty seats of one row = 40 text rows. The 20-row
+    // body gives one row to the marker, leaving 19 content rows.
     let marked = rig.wait(&pane, FRAME, "A-BODY-MARKER top hides 21 of 40 rows", |s| {
         body_rows(s)
             .last()
@@ -553,11 +553,11 @@ fn clicked_revealed_card_keeps_window_and_same_selection_key_reveals_it() {
     );
     let target = "ws09";
     let point = sidebar_cell(&down, target);
-    rig.report(&pane, 0, (point.0, point.1 + 1), 1);
+    rig.report(&pane, 0, point, 1);
     let selected = rig.wait(
         &pane,
         FRAME,
-        "A-CLICK-SECOND-LINE selects drawn card",
+        "A-CLICK selects drawn card (its one row)",
         |s| {
             s.lines().next().is_some_and(|line| line.contains(target))
                 && s.contains("ws09 is stopped")
@@ -593,7 +593,7 @@ fn selecting_another_session_resets_the_wheeled_body() {
     let pane = rig.open();
     let first = rig.ready(&pane);
     let rows = body(&first);
-    let point = (2, cell(&first, "Agents 20").1 + 2);
+    let point = (2, cell(&first, "Agents 40").1 + 2);
     let foreign = |s: &str| {
         s.lines().next().is_some_and(|line| line.contains("ws00"))
             && s.contains("Not running: no seat facts.")
@@ -633,21 +633,21 @@ fn selecting_another_session_resets_the_wheeled_body() {
 }
 
 #[test]
-fn agents_wheel_moves_three_text_rows_including_half_a_seat_and_clamps() {
+fn agents_wheel_moves_three_one_row_seats_and_clamps() {
     let rig = Rig::new("wlagent");
     let pane = rig.open();
     let first = rig.ready(&pane);
     let rows = body(&first);
     assert!(
-        rows[0].contains("seat00") && rows[3].contains("Sonnet 5.5") && !rows[3].contains("seat01"),
-        "GUARD fourth row is seat facts"
+        rows[0].contains("seat00") && rows[3].contains("seat03") && rows[3].contains("Sonnet 5.5"),
+        "GUARD fourth row is the fourth seat, facts on its own row"
     );
-    let point = (2, cell(&first, "Agents 20").1 + 2);
+    let point = (2, cell(&first, "Agents 40").1 + 2);
     rig.report(&pane, 65, point, 1);
     let down = rig.wait(
         &pane,
         FRAME,
-        "A-AGENTS-UNIT three text rows, not three seats",
+        "A-AGENTS-UNIT three text rows, which are three seats",
         |s| body(s).first() == rows.get(3),
     );
     rig.home_holds(&down, false);
@@ -657,17 +657,12 @@ fn agents_wheel_moves_three_text_rows_including_half_a_seat_and_clamps() {
         "Agents counts text rows"
     );
     rig.report(&pane, 65, point, 40);
-    let bottom = rig.wait(
-        &pane,
-        FRAME,
-        "A-AGENTS-BOTTOM final seat facts reachable",
-        |s| {
-            let rows = body(s);
-            rows.len() > 1
-                && rows[rows.len() - 2].contains("seat19")
-                && rows[rows.len() - 1].contains("Sonnet 5.5")
-        },
-    );
+    let bottom = rig.wait(&pane, FRAME, "A-AGENTS-BOTTOM final seat reachable", |s| {
+        let rows = body(s);
+        rows.len() > 1
+            && rows[rows.len() - 2].contains("seat38")
+            && rows[rows.len() - 1].contains("seat39")
+    });
     assert_eq!(
         body_rows(&bottom).last().expect("marker").trim(),
         "↑ 21 more rows",
@@ -708,7 +703,7 @@ fn list_and_body_wheel_while_writing_keep_exact_draft_mode_selection_and_journal
     rig.home_holds(&list, true);
     assert!(list.contains("WHEEL-draft-123"));
     let rows = body(&list);
-    rig.report(&pane, 65, (2, cell(&list, "Agents 20").1 + 2), 1);
+    rig.report(&pane, 65, (2, cell(&list, "Agents 40").1 + 2), 1);
     let down = rig.wait(&pane, FRAME, "A-WRITE-BODY scrolls without editing", |s| {
         body(s).first() == rows.get(3)
     });
@@ -735,7 +730,7 @@ fn refresh_clamps_shrunk_list_and_body_before_drawing() {
     let down = rig.wait(&pane, FRAME, "A-REFRESH-PRECOND list at bottom", |s| {
         rig.cards(s) == rig.names[5..13]
     });
-    rig.report(&pane, 65, (2, cell(&down, "Agents 20").1 + 2), 40);
+    rig.report(&pane, 65, (2, cell(&down, "Agents 40").1 + 2), 40);
     rig.wait(&pane, FRAME, "A-REFRESH-BODY-PRECOND final seat", |s| {
         body(s).last().is_some_and(|row| row.contains("Sonnet 5.5"))
     });
@@ -762,15 +757,17 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
     let rig = Rig::new("wlresize");
     let pane = rig.open();
     let first = rig.ready(&pane);
-    rig.report(&pane, 65, (2, cell(&first, "Agents 20").1 + 2), 40);
+    rig.report(&pane, 65, (2, cell(&first, "Agents 40").1 + 2), 40);
     rig.wait(&pane, FRAME, "A-RESIZE-PRECOND body at bottom", |s| {
         body(s).last().is_some_and(|row| row.contains("Sonnet 5.5"))
     });
+    // The dragged list keeps its nine rows (the clamp's most, 15 at 28 high,
+    // is above them): eight one-row sessions and the more row.
     rig.tmux(&["resize-window", "-t", &pane, "-x", "100", "-y", "28"]);
     let narrow = rig.wait(&pane, FRAME, "A-RESIZE-NARROW body drawn", |s| {
-        s.lines().count() == 28 && s.contains("seat") && rig.cards(s).len() == 7
+        s.lines().count() == 28 && s.contains("seat") && rig.cards(s).len() == 8
     });
-    rig.report(&pane, 65, (2, cell(&narrow, "Agents 20").1 + 2), 40);
+    rig.report(&pane, 65, (2, cell(&narrow, "Agents 40").1 + 2), 40);
     rig.wait(&pane, FRAME, "A-RESIZE-NARROW-BOTTOM final seat", |s| {
         body(s).last().is_some_and(|row| row.contains("Sonnet 5.5"))
     });
@@ -782,7 +779,7 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
         |s| {
             s.lines().count() == 100
                 && body(s).first().is_some_and(|row| row.contains("seat00"))
-                && s.contains("seat19")
+                && s.contains("seat39")
         },
     );
     rig.tmux(&["resize-window", "-t", &pane, "-x", "80", "-y", "24"]);
@@ -833,7 +830,7 @@ fn guard_header_heading_rule_keys_and_settings_never_scroll_underlying_sidebar()
     let first = rig.ready(&pane);
     let rows = body(&first);
     let cards = rig.cards(&first);
-    let tab = cell(&first, "Agents 20");
+    let tab = cell(&first, "Agents 40");
     for point in [
         (2, 0),
         tab,

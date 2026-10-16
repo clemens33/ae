@@ -423,17 +423,23 @@ impl Rig {
         });
     }
 
+    /// The seat is visibly identified in the sidebar: the cursor `▹` (`-`
+    /// without icons) a step key puts on it, or the lifted `▸` (`>`) of the
+    /// seat whose screen is shown. No seat carries either before a step key.
     fn focused(&self, app: &str, seat: &str) {
         self.wait_screen(app, "R4 focused seat visibly identified", |s| {
-            let marked = |row: &str| row.starts_with('>') || row.starts_with('▸');
-            let named = |row: &str| {
-                row.split('│')
-                    .next()
-                    .unwrap_or_default()
-                    .split_whitespace()
-                    .any(|word| word == seat)
+            // Only a sidebar row counts: the cell left of the rule.
+            let marked = |left: &str| {
+                left.starts_with('▹')
+                    || left.starts_with('-')
+                    || left.starts_with('▸')
+                    || left.starts_with('>')
             };
-            s.lines().any(|row| marked(row) && named(row))
+            let named = |left: &str| left.split_whitespace().any(|word| word == seat);
+            s.lines().any(|row| {
+                row.split_once('│')
+                    .is_some_and(|(left, _)| marked(left) && named(left))
+            })
         });
     }
 
@@ -538,6 +544,9 @@ fn agents_next_previous_and_mouse_focus_open_the_drawn_seat() {
     let app = rig.app(&rig.socket);
     let viewer = rig.attach(HOME);
     rig.agents(&app);
+    // No seat carries the cursor until a step key: the first `n` lands on
+    // the first seat.
+    rig.raw(&app, "n");
     rig.focused(&app, "lead");
     rig.raw(&app, "n");
     rig.focused(&app, "colead");
@@ -571,9 +580,11 @@ fn agents_need_for_spawned_seat_has_the_same_open_action() {
     .expect("blocked spawned seat needs a human");
     let app = rig.app(&rig.socket);
     let viewer = rig.attach(HOME);
-    rig.wait_screen(&app, "GUARD the seat's reason is drawn on its rows", |s| {
-        s.contains("SCOUT-DEPENDENCY-BLOCK") && s.contains("scout")
-    });
+    rig.wait_screen(
+        &app,
+        "GUARD the seat's reason is drawn in the header",
+        |s| s.contains("SCOUT-DEPENDENCY-BLOCK") && s.contains("scout"),
+    );
     rig.click(&app, "scout", true);
     rig.focused(&app, "scout");
     // The click opens scout's seat view (livepeek R1); `oo` is swallowed

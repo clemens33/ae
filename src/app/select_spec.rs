@@ -130,8 +130,6 @@ fn list_and_body_ship_their_cells_and_list_clamps_before_lane() {
                 agents,
             },
         );
-        // The row a press lands on stays as drawn: the seat is focused already.
-        app.focus_seat(Some("BODYSEAT".to_owned()));
         let mut end = drag(&mut app, if mode == 1 { "BODYSEAT" } else { "one" });
         if mode == 2 {
             end.0 = 150;
@@ -147,10 +145,17 @@ fn list_and_body_ship_their_cells_and_list_clamps_before_lane() {
             super::select::Panel::List
         };
         assert_eq!(held.sel.panel(), panel, "R3 origin panel");
-        let wanted = if mode == 1 { "BOD" } else { "one" };
+        // A session row is one line: dragged to the list's edge, the cells
+        // from its name carry its tally too.
+        let ready = |text: &str| match mode {
+            0 => text == "one",
+            1 => text == "BOD",
+            _ => text.starts_with("one") && text.ends_with("no agents"),
+        };
         assert!(
-            matches!(&held.stage, Stage::Ready(text) if text == wanted),
-            "R3 panel bytes"
+            matches!(&held.stage, Stage::Ready(text) if ready(text)),
+            "R3 panel bytes: {:?}",
+            held.stage
         );
     }
 }

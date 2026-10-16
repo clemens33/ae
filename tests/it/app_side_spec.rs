@@ -112,13 +112,19 @@ fn body(screen: &str) -> Vec<String> {
 #[test]
 fn undragged_tall_frames_show_more_of_twenty_four_sessions() {
     let entry = SessionEntry::new("side01", Status::Running);
-    // Exact observable pins from R1; no copy of the implementation formula.
+    // Exact observable pins, derived by hand from the one-row list. The rows
+    // the frame gives list and tab body (height - 10) go two thirds to the
+    // list, never under 11 rows (18 from 40 high). Heights 30, 40, 43, 45, 62
+    // give that budget b = 13, 20, 22, 23, 34. Twenty-four sessions overflow
+    // b below 24, so the list draws b - 1 sessions and a more row, then a
+    // blank row, the tab row and the rule: the border stands at b + 4. At
+    // b = 34 all 24 fit and the border stands at 2 + 24 + 2.
     for (height, shown, rule) in [
-        (30, 6, 17),
-        (40, 9, 23),
-        (43, 10, 25),
-        (45, 11, 27),
-        (62, 16, 37),
+        (30, 12, 17),
+        (40, 19, 24),
+        (43, 21, 26),
+        (45, 22, 27),
+        (62, 24, 28),
     ] {
         let screen = frame(160, height, 24, &entry);
         let cards = sidebar(&screen)
@@ -141,12 +147,14 @@ fn undragged_tall_frames_show_more_of_twenty_four_sessions() {
 fn minimum_frame_keeps_the_capped_list_and_chat_usable() {
     let entry = SessionEntry::new("side01", Status::Running);
     let screen = frame(90, 20, 24, &entry);
-    assert_eq!(border(&screen), Some(13), "R1 capped-small-frame rule");
+    // 20 rows high: the list keeps 10 rows, nine one-row sessions and the
+    // more row, then a blank row, the tab row and the rule (row 14).
+    assert_eq!(border(&screen), Some(14), "R1 capped-small-frame rule");
     let side = sidebar(&screen);
     assert!(side[2].contains("side01"));
-    assert!(side[8].contains("side04"));
-    assert!(side[10].contains("20 more"));
-    assert!(side[12].contains("Agents") && !side[12].contains("Overview"));
+    assert!(side[10].contains("side09"));
+    assert!(side[11].contains("15 more"));
+    assert!(side[13].contains("Agents") && !side[13].contains("Overview"));
     assert!(
         screen.contains("Enter writes"),
         "composer survives: {screen}"
@@ -164,7 +172,7 @@ fn one_session_keeps_its_content_sized_list_at_both_required_frames() {
     let entry = SessionEntry::new("side01", Status::Running);
     for (width, height) in [(90, 20), (160, 45)] {
         let screen = frame(width, height, 1, &entry);
-        assert_eq!(border(&screen), Some(6), "{width}x{height}");
+        assert_eq!(border(&screen), Some(5), "{width}x{height}");
         assert!(sidebar(&screen)[2].contains("side01"));
         assert!(screen.contains("Enter writes"));
     }

@@ -559,12 +559,23 @@ fn test_s1_live_private_tmux_peek_lifecycle() {
     wait_screen(Duration::from_secs(5), "Agents tab drawn", &|sc| {
         sc.contains("colead")
     });
+    // No seat carries the cursor until a step key: the first `n` lands on the
+    // first seat, the second on colead.
+    let cursor = |sc: &str, seat: &str| {
+        sc.lines().any(|row| {
+            row.split_once('│').is_some_and(|(left, _)| {
+                (left.starts_with('▹') || left.starts_with('-'))
+                    && left.split_whitespace().any(|word| word == seat)
+            })
+        })
+    };
+    tmux_at(&["send-keys", "-t", &app_pane, "n"]);
+    wait_screen(Duration::from_secs(5), "lead highlighted", &|sc| {
+        cursor(sc, "lead")
+    });
     tmux_at(&["send-keys", "-t", &app_pane, "n"]);
     wait_screen(Duration::from_secs(5), "colead highlighted", &|sc| {
-        sc.lines().any(|row| {
-            let left = row.split('│').next().unwrap_or_default();
-            (left.contains('>') || left.contains('▸')) && left.contains("colead")
-        })
+        cursor(sc, "colead")
     });
     tmux_at(&["send-keys", "-t", &app_pane, "v"]);
 

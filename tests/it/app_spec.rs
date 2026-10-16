@@ -1105,59 +1105,71 @@ fn app_draw_home_160x43() {
         "attention prose removed"
     );
     assert_eq!(cell_at(&buf, 41, 0).symbol(), " ");
-    // The selected home row wears the selection a seat wears: the `▸`, the
-    // selected ground over both lines, a text-ink bold name, the window tag,
-    // counts below.
+    // Every session is one row. The selected home row wears the selection a
+    // seat wears: the `▸`, the selected ground over its one row, a text-ink
+    // bold name, `◂` for the window's own session, counts at the right end.
     assert_eq!(cell_at(&buf, 0, 2).symbol(), "▸");
     assert_eq!(cell_at(&buf, 0, 2).fg, hex(palette.selected_ink));
-    for y in [2, 3] {
-        for x in [1, 20, 41] {
-            assert_eq!(
-                cell_at(&buf, x, y).bg,
-                hex(palette.selected),
-                "ground ({x},{y})"
-            );
-        }
+    for x in [1, 20, 41] {
+        assert_eq!(
+            cell_at(&buf, x, 2).bg,
+            hex(palette.selected),
+            "ground ({x},2)"
+        );
+        assert_ne!(
+            cell_at(&buf, x, 3).bg,
+            hex(palette.selected),
+            "the next session is not lifted ({x},3)"
+        );
     }
     assert_eq!(cell_at(&buf, 2, 2).symbol(), Mark::Working.glyph(true));
     assert_eq!(cell_at(&buf, 2, 2).fg, hex(palette.working));
-    assert_eq!(cell_at(&buf, 6, 2).symbol(), "a");
-    assert_eq!(cell_at(&buf, 7, 2).symbol(), "p");
-    assert_eq!(cell_at(&buf, 8, 2).symbol(), "i");
-    assert_eq!(cell_at(&buf, 6, 2).fg, hex(palette.text));
-    assert!(row_text(&buf, 2).contains("this window"));
-    assert!(side_text(&buf, 3, 44).ends_with("●3 ◔1 ✓2"), "counts below");
-    assert!(!row_text(&buf, 3).contains("Ship the v2 auth endpoints"));
-    // The next session keeps the sidebar ground and a bold text name.
-    assert_eq!(cell_at(&buf, 2, 5).symbol(), Mark::Working.glyph(true));
-    assert_ne!(cell_at(&buf, 6, 5).bg, hex(palette.selected));
+    assert_eq!(cell_at(&buf, 4, 2).symbol(), "a");
+    assert_eq!(cell_at(&buf, 5, 2).symbol(), "p");
+    assert_eq!(cell_at(&buf, 6, 2).symbol(), "i");
+    assert_eq!(cell_at(&buf, 4, 2).fg, hex(palette.text));
+    assert_eq!(
+        cell_at(&buf, 8, 2).symbol(),
+        "◂",
+        "the window's own session"
+    );
+    assert!(!row_text(&buf, 2).contains("this window"));
     assert!(
-        cell_at(&buf, 6, 5).modifier.contains(Modifier::BOLD),
+        side_text(&buf, 2, 44).ends_with("●3 ◔1 ✓2"),
+        "counts at the end"
+    );
+    assert!(!all_text(&buf).contains("Ship the v2 auth endpoints"));
+    // The next session keeps the sidebar ground and a bold text name.
+    assert_eq!(cell_at(&buf, 2, 3).symbol(), Mark::Working.glyph(true));
+    assert_ne!(cell_at(&buf, 4, 3).bg, hex(palette.selected));
+    assert!(
+        cell_at(&buf, 4, 3).modifier.contains(Modifier::BOLD),
         "a calm name stays bold text"
     );
-    // The needy row draws no edge: its mark and its question say what it needs.
-    for y in [8, 9] {
-        assert_ne!(cell_at(&buf, 0, y).symbol(), "│", "no edge row {y}");
-    }
-    assert_eq!(cell_at(&buf, 2, 8).symbol(), "⚠");
-    assert_eq!(cell_at(&buf, 2, 8).fg, hex(palette.needs_you));
-    assert!(row_text(&buf, 9).contains("Approve runner cost"));
-    // The heading, rule, and the Agents body in order.
-    assert!(row_text(&buf, 11).contains("Agents 6"));
-    assert!(!row_text(&buf, 11).contains("Overview"));
-    assert!(cell_at(&buf, 2, 11).modifier.contains(Modifier::BOLD));
+    // The needy row draws no edge: its mark says what it needs, and its
+    // question is told in the chat header, never under the name.
+    assert_ne!(cell_at(&buf, 0, 4).symbol(), "│", "no edge row 4");
+    assert_eq!(cell_at(&buf, 2, 4).symbol(), "⚠");
+    assert_eq!(cell_at(&buf, 2, 4).fg, hex(palette.needs_you));
+    assert!(!side_text(&buf, 4, 44).contains("Approve runner cost"));
+    assert!(!side_text(&buf, 5, 44).contains("Approve runner cost"));
+    // The heading, rule, and the Agents body in order: three one-row
+    // sessions end the list at row 5, a blank row, the heading, its rule.
+    assert!(row_text(&buf, 6).contains("Agents 6"));
+    assert!(!row_text(&buf, 6).contains("Overview"));
+    assert!(cell_at(&buf, 2, 6).modifier.contains(Modifier::BOLD));
     assert_eq!(
-        cell_at(&buf, 1, 11).bg,
+        cell_at(&buf, 1, 6).bg,
         hex(palette.panel),
         "a band like the summary"
     );
-    assert!(!side_text(&buf, 11, 44).ends_with("Tab"));
+    assert!(!side_text(&buf, 6, 44).ends_with("Tab"));
     assert_eq!(
-        side_text(&buf, 12, 44),
+        side_text(&buf, 7, 44),
         "─".repeat(44),
         "the heading rule spans the sidebar"
     );
-    let body: Vec<String> = (13..27).map(|y| row_text(&buf, y)).collect();
+    let body: Vec<String> = (8..22).map(|y| row_text(&buf, y)).collect();
     let at = |needle: &str| {
         body.iter()
             .position(|row| row.contains(needle))
@@ -1167,9 +1179,14 @@ fn app_draw_home_160x43() {
             })
     };
     assert!(at("lead") < at("builder"), "seats in roster order");
+    assert_eq!(
+        at("builder"),
+        at("lead") + 1,
+        "one row per seat, nothing under the lead's row"
+    );
     assert!(
-        body[at("lead") + 2].contains("Approve runner cost"),
-        "the lead's reason sits under its seat rows"
+        !body.join("\n").contains("Approve runner cost"),
+        "the lead's reason is not a seat row"
     );
     assert!(!body.join("\n").contains("asked by"), "no asked-by row");
     // The chat column: header, rule, bottom-anchored turns, composer, keys.
@@ -1179,6 +1196,10 @@ fn app_draw_home_160x43() {
     assert_eq!(cell_at(&buf, 49, 0).symbol(), "i");
     assert_eq!(cell_at(&buf, 47, 0).fg, hex(palette.title));
     assert!(head.contains("lead + colead"));
+    assert!(
+        head.contains("⚠ lead: Approve runner cost"),
+        "the ask is told in the header: {head:?}"
+    );
     let age = ae::brief::age(Some(60));
     let right = format!("feat/auth-v2  ·  active {age}");
     assert!(head.ends_with(&right), "branch and activity: {head:?}");
@@ -1360,12 +1381,13 @@ fn app_draw_theme_off_is_plain() {
         assert_eq!(cell.fg, Color::Reset, "no foreground anywhere");
         assert_eq!(cell.bg, Color::Reset, "no ground anywhere");
     }
-    let name = cell_at(&buf, 6, 2);
+    let name = cell_at(&buf, 4, 2);
     assert!(name.modifier.contains(Modifier::BOLD));
     assert!(name.modifier.contains(Modifier::REVERSED));
     assert!(cell_at(&buf, 47, 0).modifier.contains(Modifier::BOLD));
-    assert_ne!(cell_at(&buf, 0, 8).symbol(), "│", "a needy row has no edge");
-    assert_eq!(cell_at(&buf, 2, 8).symbol(), "⚠");
+    // The needy session is the third one-row session: row 4.
+    assert_ne!(cell_at(&buf, 0, 4).symbol(), "│", "a needy row has no edge");
+    assert_eq!(cell_at(&buf, 2, 4).symbol(), "⚠");
 }
 
 /// The 100x28 shape: a 34-wide sidebar, one line per item,
@@ -1466,8 +1488,8 @@ fn app_draw_small_falls_back() {
     }
 }
 
-/// The Agents body lists seat, state and client · model · effort; a session
-/// with no seat facts names its gap, and a stopped session its rest.
+/// The Agents body is one row per seat: mark, name, model and effort, state; a
+/// session with no seat facts names its gap, and a stopped session its rest.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1523,11 +1545,18 @@ fn app_draw_agents_tab_and_gaps() {
     );
     let text = all_text(&buf);
     assert!(text.contains("builder"), "seats list");
-    assert!(text.contains("claude · Sonnet 5.5 · xhigh"), "facts list");
+    assert!(
+        !text.contains("claude · Sonnet 5.5 · xhigh"),
+        "no facts row under a seat"
+    );
     let state_row = (0..buf.area.height)
         .map(|y| side_text(&buf, y, 44))
         .find(|row| row.contains("builder"))
         .expect("the builder row");
+    assert!(
+        state_row.contains("Sonnet 5.5 xhigh"),
+        "model and effort on the seat's one row: {state_row:?}"
+    );
     assert!(state_row.ends_with("working"), "state right: {state_row:?}");
     assert!(
         !text.contains("Enter opens that pane"),
@@ -1575,15 +1604,15 @@ fn app_draw_agents_tab_and_gaps() {
     );
 }
 
-/// `!` scrolls its row into view: seven sessions at 160x30 show five, the
-/// needy seventh appears only after the key.
+/// `!` scrolls its row into view: fifteen one-row sessions at 160x30 show
+/// twelve under a more row, the needy fifteenth appears only after the key.
 #[test]
 fn app_draw_next_need_scrolls_into_view() {
-    let mut rows: Vec<Row> = (1..=6)
+    let mut rows: Vec<Row> = (1..=14)
         .map(|index| calm(&format!("s{index}"), index))
         .collect();
     rows[0].home = true;
-    rows.push(needy("s7", 7, Mark::NeedsYou));
+    rows.push(needy("s15", 15, Mark::NeedsYou));
     let fleet = Fleet {
         rows,
         home: Some("s1".to_owned()),
@@ -1620,19 +1649,20 @@ fn app_draw_next_need_scrolls_into_view() {
         zone: None,
         now: now(),
     };
+    // The list's twelve rows, 2..14, sit above its more row.
     let list_holds =
-        |buf: &Buffer, name: &str| (2..13).any(|y| side_text(buf, y, 44).contains(name));
+        |buf: &Buffer, name: &str| (2..14).any(|y| side_text(buf, y, 44).contains(name));
     {
         let mut buf = Buffer::empty(Rect::new(0, 0, 160, 30));
         draw(&screen, &mut buf);
-        assert!(!list_holds(&buf, "s7"), "below the fold at first");
+        assert!(!list_holds(&buf, "s15"), "below the fold at first");
         assert!(
             side_text(&buf, 0, 44).trim_end().ends_with('↓'),
             "off-screen cue"
         );
     }
     let _ = model.key(AppKey::NextNeed, &fleet, true);
-    assert_eq!(model.selected(), Some("s7"));
+    assert_eq!(model.selected(), Some("s15"));
     let screen = Screen {
         fleet: &fleet,
         model: &model,
@@ -1652,7 +1682,7 @@ fn app_draw_next_need_scrolls_into_view() {
     };
     let mut buf = Buffer::empty(Rect::new(0, 0, 160, 30));
     draw(&screen, &mut buf);
-    assert!(list_holds(&buf, "s7"), "scrolled into view");
+    assert!(list_holds(&buf, "s15"), "scrolled into view");
 }
 
 /// A drawn look with a viewer zone shifts the lane clock: the 08:48:20Z turn

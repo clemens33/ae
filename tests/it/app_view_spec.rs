@@ -421,15 +421,37 @@ fn selected(screen: &str, name: &str) -> bool {
     })
 }
 
+/// Whether the sidebar row (the cell left of the rule) naming `seat` carries
+/// the seat cursor: `-` in the first cell (this rig draws plain ASCII), never
+/// the idle mark two cells in.
 fn focused(screen: &str, seat: &str) -> bool {
     screen.lines().any(|row| {
+        row.split_once('│').is_some_and(|(left, _)| {
+            left.starts_with('-') && left.split_whitespace().any(|word| word == seat)
+        })
+    })
+}
+
+/// Whether the sidebar draws a row naming `seat`.
+fn seat_drawn(screen: &str, seat: &str) -> bool {
+    screen.lines().any(|row| {
+        row.split_once('│')
+            .is_some_and(|(left, _)| left.split_whitespace().any(|word| word == seat))
+    })
+}
+
+/// Whether the session list draws a row for `name`: a mark, then the name
+/// (a lifted row has `>` before the mark). No row number is drawn.
+fn card_drawn(screen: &str, name: &str) -> bool {
+    screen.lines().any(|row| {
         let left = row.split('│').next().unwrap_or_default();
-        left.trim_start().starts_with('>') && left.contains(seat)
+        let mut words = left.trim_start().trim_start_matches('>').split_whitespace();
+        words.next().is_some() && words.next() == Some(name)
     })
 }
 
 fn fleet_drawn(screen: &str, home: &str) -> bool {
-    screen.contains(&format!("1 {home}")) && screen.contains("2 web")
+    card_drawn(screen, home) && card_drawn(screen, "web")
 }
 
 #[test]
@@ -443,7 +465,13 @@ fn installed_restart_carries_nonhome_agents_and_focus_then_consumes_the_option()
     rig.tmux(&["send-keys", "-t", &pane, "2"]);
     rig.wait(&pane, "GUARD web selected", |s| selected(s, "web"));
     rig.tmux(&["send-keys", "-t", &pane, "Tab"]);
-    rig.wait(&pane, "GUARD Agents drawn", |s| focused(s, "lead"));
+    rig.wait(&pane, "GUARD Agents drawn", |s| {
+        seat_drawn(s, "lead") && !focused(s, "lead")
+    });
+    // No seat carries the cursor until a step key: the first `n` lands on the
+    // first seat, the second on colead.
+    rig.tmux(&["send-keys", "-t", &pane, "n"]);
+    rig.wait(&pane, "GUARD lead focused", |s| focused(s, "lead"));
     rig.tmux(&["send-keys", "-t", &pane, "n"]);
     rig.wait(&pane, "GUARD colead focused", |s| focused(s, "colead"));
     rig.bridge();

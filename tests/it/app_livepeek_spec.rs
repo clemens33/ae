@@ -191,8 +191,10 @@ fn livepeek_agent_click_replaces_only_chat_and_keeps_drawn_sidebar_targets() {
     let (before, generation, left) = opened(&mut app, &rx);
     capture(&mut app, generation, &["VIEW-colead"]);
     let after = frame(&mut app, 160, 45);
+    // The lift is the one thing that moves: from the session to the viewed
+    // seat, in column 0. Every other sidebar cell stays as drawn.
     for y in 0..44 {
-        for x in 0..left.saturating_sub(1) {
+        for x in 1..left.saturating_sub(1) {
             assert_eq!(
                 before[(x, y)].symbol(),
                 after[(x, y)].symbol(),
@@ -200,6 +202,15 @@ fn livepeek_agent_click_replaces_only_chat_and_keeps_drawn_sidebar_targets() {
             );
         }
     }
+    let lifted =
+        |buf: &Buffer| -> Vec<u16> { (0..44).filter(|y| buf[(0, *y)].symbol() == "▸").collect() };
+    assert_eq!(lifted(&before).len(), 1, "the session is lifted");
+    assert_eq!(lifted(&after).len(), 1, "the viewed seat alone is lifted");
+    assert_ne!(
+        lifted(&before),
+        lifted(&after),
+        "the lift moved to the seat"
+    );
     assert!(text(&after).contains("VIEW-colead") && !text(&after).contains("CHAT-api"));
     let region = app
         .layout
