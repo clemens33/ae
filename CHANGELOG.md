@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.88] - 2026-10-16
+- Show native seats in a clean view with an explicit return
+
 ## [v2026.10.87] - 2026-10-16
 - Leave a conversation file in place when another session names its id
 
