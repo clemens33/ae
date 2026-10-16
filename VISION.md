@@ -14,10 +14,10 @@ nothing else:
 | **Identity** | every agent is told which agent it is (`alias:name`, slot) and who else is in the workspace |
 | **Messaging** | agents reach each other by name — `send`, `interrupt`, cross-session `@session:agent` |
 | **Requests** | `ask` / `review` carry a request id and an exact reply command, so a question has a findable answer |
-| **State** | each agent declares `working` / `waiting-user` / `blocked` / `done`; the session surfaces who needs a human |
+| **State** | each agent declares `working` / `waiting-user` / `waiting-agent` / `blocked` / `done`; the session surfaces who needs a human |
 | **Memory** | `memo`, the event log, and the archive — shared, durable, restart-surviving |
 | **Lifecycle** | start, stop, resume, transfer, end, archive, reboot; lineage is explicit (`--from <uuid>`), never inferred |
-| **Human bridge** | Telegram out and back in — the human is a participant, not a spectator |
+| **Human surface** | the status bar, `ae list` / `ae next` / `ae brief`, the `ae chat` lane and the `ae app` terminal UI, and Telegram out and back in — the human is a participant, not a spectator |
 
 Panes, splits, scrollback and attach are tmux's job and stay there. What ae is *not* is
 listed in AGENTS.md and has not changed.
@@ -28,8 +28,8 @@ listed in AGENTS.md and has not changed.
 - **Daily productivity over feature completeness.** If it does not save time on every use,
   it does not belong. Resisting features is the work.
 - **One command to install after prerequisites.** A checksum-verified three-member bundle
-  needs no Rust runtime, run-time package manager, or service to keep alive. Bash >= 4,
-  tmux, and git remain required and are not bundled.
+  needs no Rust runtime, run-time package manager, or service to keep alive. tmux (3.4 or
+  newer) and git remain required and are not bundled.
 - **Your repo stays clean.** Session state lives in `~/.ae/sessions/`, archives in
   `~/.ae/archive/`. Working directories are never touched.
 - **Optional stays optional.** Companions (telegram, orchestrator, monitor) may declare their
@@ -61,7 +61,7 @@ that decided it is recorded under "Revisit triggers" in docs/history.md.
 their panes run it directly through a link named for the job. There is no Python in the
 product and no sidecar process: `contrib/` holds configuration and charter templates only.
 
-**Install preserves the user-level contract.** After Bash >= 4, tmux, and git are present,
+**Install preserves the user-level contract.** After tmux (3.4 or newer) and git are present,
 one command installs a checksum-verified three-member bundle (`ae-core`, `install`,
 `SHA256SUMS`), publishes it read-only under `~/.ae/versions/<V>/`, and points
 `~/.local/bin/ae` straight at that version's `ae-core` — the public command is the
@@ -76,11 +76,13 @@ current machine.
   pane-side block retires as soon as the core can own it outright. What still binds the
   installer and the ad-hoc shell is the GNU/BSD table in AGENTS.md plus the export-expansion
   rule beside it; the full hazards checklist is docs/history.md §14.
-- **Upgrading carries running sessions across.** `ae upgrade` already installs a release and
-  repoints `~/.local/bin/ae` at the new `ae-core`, but a running session is only reported and
-  left pinned until someone stops and resumes it by hand. The next step is doing that part
-  too: inventory what is running, switch, and bring exactly that set back — without ending or
-  archiving anything.
+- **Upgrading carries running sessions across — shipped.** `ae upgrade` installs a release,
+  then migrates, repoints and relinks every placeable session before it moves
+  `~/.local/bin/ae` to the new `ae-core`: helper links re-render, and the watchdog and the
+  Telegram bridge restart on the new core. A stopped session it cannot place is reported and
+  skipped, unreferenced versions are pruned, and a running `ae app` follows the link itself
+  once idle. Agent panes are never restarted — they run the agent tool, not ae — and nothing
+  is ended or archived.
 - **Ownership grain is the mutation domain, never the file.** One logical operation — one
   command, one transaction — is owned wholly by one side. Per-file single-writer is not
   enough: it still permits a split transaction across events, meta, requests, claims and

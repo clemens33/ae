@@ -1,6 +1,5 @@
 site_name: ae — agentic engineering
 site_description: Run AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots.
-site_url: https://clemens33.github.io/ae/
 repo_url: https://github.com/clemens33/ae
 repo_name: clemens33/ae
 edit_uri: edit/main/docs/

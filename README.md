@@ -8,9 +8,9 @@
 
 **A fleet of AI coding agents in tmux. They message each other by name, flag when they need you, and survive reboots.**
 
-**ae** is a thin coordination layer over [tmux](https://github.com/tmux/tmux) for multi-agent work. Run Claude Code, Codex, Gemini CLI and other agent CLIs side by side, and ae makes them a fleet instead of a pile of tabs: each agent knows who it is and who else is in the workspace, agents reach each other by name, and the session shows you who is waiting for a human.
+**ae** is a thin coordination layer over [tmux](https://github.com/tmux/tmux) for multi-agent work. Run Claude Code, Codex, OpenCode and other agent CLIs side by side, and ae makes them a fleet instead of a pile of tabs: each agent knows who it is and who else is in the workspace, agents reach each other by name, and the session shows you who is waiting for a human.
 
-Works out of the box with Claude Code, Codex, Gemini CLI, Antigravity (`agy`), Grok Build, Muse Code and OpenCode. Any other CLI agent runs too; resume is best-effort there.
+Works with Claude Code, Codex, OpenCode and other agent CLIs ([supported list](#requirements)). Any CLI agent runs; resume is best-effort for the ones ae has not modelled.
 
 ## Why ae
 
@@ -20,35 +20,15 @@ Works out of the box with Claude Code, Codex, Gemini CLI, Antigravity (`agy`), G
 - **Mix vendors.** Pair one model's work with another's review; lead on the strongest model and send bounded chores to cheaper spawned workers ([delegation](docs/reference/delegation.md)).
 - **Small and out of the way.** tmux keeps panes, scrollback and attach. Session state lives in `~/.ae/`, never in your repo. One checksum-verified Rust binary; no runtime or service to keep alive.
 
-<!-- TODO(human): screenshot or GIF of `ae app` plus the status bar goes here (not in the repo yet) -->
-
 ## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clemens33/ae/main/install | bash
 ```
 
-The installer downloads the platform bundle (`ae-core`, `install`, `SHA256SUMS`) and
-verifies it against the manifest before extraction, then publishes it read-only under
-`~/.ae/versions/<V>/` and points `~/.local/bin/ae` straight at that version's `ae-core` —
-one symlink, no separate wrapper or pointer file to keep in sync. Switching versions later
-is one atomic rename of that symlink. Make sure `~/.local/bin` is on your `PATH`, then run
-`ae init` to discover installed agent CLIs and write the starting config. Set
-`AE_VERSION=2026.8.2` to pin a release.
+The installer verifies the platform bundle (`ae-core`, `install`, `SHA256SUMS`) against the release manifest before extraction, publishes it read-only under `~/.ae/versions/<V>/` and points `~/.local/bin/ae` straight at that version's `ae-core` — one symlink, no wrapper. Make sure `~/.local/bin` is on your `PATH`, then run `ae init`. Set `AE_VERSION=2026.8.2` to pin a release. Installed ae checks for newer releases quietly; global `[workspace] auto_upgrade = off` disables that ([upgrade](docs/upgrade.md)).
 
-Installed ae checks for strictly newer releases during ordinary use and applies
-them quietly in a detached process. Set global `[workspace] auto_upgrade = off`
-to disable this machine-wide; absence means `on`. Project-local config cannot
-override software-update policy. `ae version` and `ae doctor` show the policy
-and last result without starting a check.
-
-| Platform | Bundle | Status |
-|---|---|---|
-| macOS Apple Silicon | `darwin-arm64` | supported |
-| Linux x86_64 (including WSL2) | `linux-x86_64-musl` | supported |
-| macOS Intel | `darwin-x86_64` | rejected |
-| Linux ARM | `linux-arm64` | rejected |
-| Windows / MSYS | — | rejected |
+Supported: macOS Apple Silicon (`darwin-arm64`) and Linux x86_64 including WSL2 (`linux-x86_64-musl`). Intel macOS, Linux ARM and Windows/MSYS are rejected.
 
 ### Build from source
 
@@ -68,39 +48,20 @@ ae init
 ae my-app
 ```
 
-`ae init` discovers supported harnesses on `PATH` without running them, then proposes the lead,
-colead and orchestrator profiles. Use `ae init --yes` in a non-interactive shell. A session launch
-still creates the broad default config when init has not been run.
-Session names are explicit; a directory never silently decides one. Detach with `Ctrl+b d` --
-agents keep running in the background.
+`ae init` discovers supported harnesses on `PATH` without running them, then proposes the lead, colead and orchestrator profiles (`ae init --yes` in a non-interactive shell). Session names are explicit; a directory never silently decides one. Detach with `Ctrl+b d` -- agents keep running in the background.
 
 ## What you can do
 
-**Start a session and let agents collaborate:**
+**Start, reattach, come back after a reboot:**
 ```bash
-ae my-feature                  # start or reattach a named session
+ae my-feature                  # start or reattach a named session; after a reboot every agent resumes with its history
 ae my-feature --solo           # lead only, no colead
 ae                             # attach to the fleet server's most recent session
 ```
 
-Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held, then attaches;
-`restore = off` in the global config disables that (`ae --no-attach` prints the attach command).
+Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held, then attaches ([details](docs/reference/commands.md#tmux-server)).
 
-Inside the fleet's tmux server, bare `ae` shows `ae list` instead of switching. From another
-tmux server it prints this line (or the declared `tmux -S <path> attach` form):
-
-```text
-ae: the ae fleet is on another tmux server. Attach with: tmux -L ae attach
-```
-
-**Ask your agent to bring in help:**
-
-Just tell it what you need -- it knows how to spawn others and coordinate. *"Get a second agent to review the changes in src/"* or *"Spin up a pair programmer to help refactor auth."* Agents pick descriptive names, show up in their own tmux windows, and talk to each other directly.
-
-**Come back after a reboot:**
-```bash
-ae my-feature                  # every agent resumes with its conversation history
-```
+**Ask your agent to bring in help:** just tell it what you need -- it knows how to spawn others and coordinate. *"Get a second agent to review the changes in src/"* or *"Spin up a pair programmer to help refactor auth."* Agents pick descriptive names, show up in their own tmux windows, and talk to each other directly.
 
 **Check on agents without attaching:**
 ```bash
@@ -109,72 +70,34 @@ ae chat [session] [--follow]
                                # the human lane: lead-pair turns, bridge asks, say lines, cards,
                                # every seat that needs you; /open <seat> shows its pane
 ae list                        # running sessions: goal, git branch, per-agent state + attn marker
-ae list --needs-attn           # only sessions needing attention (alias: --attn)
-ae list --all                  # include stopped sessions
-ae list --json                 # machine-readable digest (for scripts/agents)
+                               # (--needs-attn, --all, --json; `watch -n 10 'ae list'` for a live board)
 ae next                        # name the top session needing attention (--attach jumps to it)
 ae brief [name] [--all]        # why a session needs you: goal, latest note per memo topic,
                                # each agent's declared state, and every unanswered ask
 ae orchestrator                # start or reattach the local orchestrator seat
-ae orchestrator --popup --client <name>
-                               # status button / prefix a bindings supply the client name
-watch -n 10 'ae list'          # live dashboard
 ```
 
-The bare `ae orchestrator` command starts one overview seat using
-`~/.ae/orchestrator.config`, independent of the current directory's
-`.ae/config`. Bind its profile globally with `orchestrator = <profile>` under
-`[roster]`; ae seeds the dedicated config on first run and refuses before
-writing when the row is missing. Use `--no-attach` to build the seat without
-attaching. Existing dedicated configs that still carry `[profiles]`/`[roster]`
-remain compatible, with `[profiles]`/`[roster]` ignored for identity;
-`[workspace]`/`[prompt]` still overlay. The seeded 120-second minimum spacing
-delivers a changed `NEEDS YOU` / `WORKING` / `QUIET` view to that pane. An idle
-seat only declares `done` and stays done between changes; a human instruction
-already in progress finishes before the overview is acknowledged.
-Its privileged `relay <session[:agent]> <text…>` helper delivers only explicit
-human instructions as bare text and audits them in the orchestrator session.
-It never stops or ends its own session (the seat named `orchestrator`) and never all sessions: on such a request it runs nothing and answers that the seat cannot stop or end itself; the human does that from a terminal.
+The orchestrator is one optional overview seat for the whole fleet: the watchdog pastes a changed `NEEDS YOU` / `WORKING` / `QUIET` view into it, and it relays only explicit human instructions ([details](docs/reference/commands.md#ae-orchestrator)). On an ae-owned server, `prefix a` opens the fleet picker.
 
-On an ae-owned server, `prefix a` opens the picker; `switch-client -l`
-(`prefix L`) is the way back. ae needs tmux 3.4+.
-
-`ae status` was retired. `ae list` answers the same question from one implementation, and
-inside a session the `peek` helper shows one agent's recent output.
-
-**Finish up:**
+**Finish up, and continue where a finished session left off:**
 ```bash
 ae stop my-feature             # pause, keep state — resume later with 'ae my-feature'
-ae end my-feature              # commit + push to ae/my-feature, archive the session's
-                               #   memory to ~/.ae/archive/<uuid>/, remove ae state
-                               #   (keeps conversation files; --purge-history deletes them
-                               #    and writes no archive)
-```
-
-**Continue where a finished session left off:**
-```bash
+ae end my-feature              # commit + push to ae/my-feature, archive the session's memory to
+                               #   ~/.ae/archive/<uuid>/, remove ae state (keeps conversation
+                               #   files; --purge-history deletes them and writes no archive)
 ae archive preview my-feature  # what an end would keep (read-only, writes nothing)
 ae my-feature-2 --from <uuid>  # a NEW session that explicitly continues an archived one
 ae reboot my-feature           # archive it and start fresh under the SAME name, continuing
                                #   from that archive (local mode; --digest-only skips the ask)
 ```
 
-Ending a session used to be the moment everything it knew stopped existing. An archive is
-that memory kept — goal, memo, event log, request payloads — as an inert, immutable,
-UUID-keyed snapshot with no executable file in it. `--from` is the only way to inherit
-one: lineage is explicit, never inferred from a name that happens to match.
-
-`ae reboot` is the move you actually want when an agent runs out of context: it asks the
-main agent for a handover, archives, ends, and relaunches the same name from that archive
-— one command instead of three, the middle one of which is you transcribing a UUID after
-the session is already gone. (`ae compact` is the in-place seat compaction: it checkpoints
-each fixed seat's durable state, then pastes its compaction command.)
+An archive is a session's memory kept — goal, memo, event log, request payloads — as an inert, immutable, UUID-keyed snapshot. `--from` is the only way to inherit one: lineage is explicit, never inferred from a name. `ae reboot` is the move for an agent that runs out of context: handover, archive, end and relaunch under the same name in one command. (`ae compact` is the in-place seat compaction.)
 
 Full command reference: **[docs/reference/commands.md](docs/reference/commands.md)**.
 
 ## Session helpers
 
-Inside a session, agents and humans share a set of helpers in `~/.ae/sessions/<name>/` -- the wiring agents use to collaborate. Each is a symlink to the ae core binary. Call one by its full path, or by the short form `ae @<session> <helper> …` when the session's name fits the current grammar (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`); a session retained from before that grammar stays path-only. They are deliberately not on `PATH`, and invoked by bare name they refuse:
+Inside a session, agents and humans share helpers in `~/.ae/sessions/<name>/` -- the wiring agents use to collaborate. Each is a symlink to the ae core binary. Call one by its full path or by the short form `ae @<session> <helper> …`; they are deliberately not on `PATH`, and a bare name refuses ([the two spellings](docs/reference/helpers.md#two-spellings-one-helper)):
 
 ```bash
 send <agent> <message>         # message another agent
@@ -187,14 +110,7 @@ spawn <name> --using <profile> [prompt]   # add an agent · retire <agent> remov
 peek <agent> [lines]           # view an agent's recent output (inspection only)
 ```
 
-Agent names resolve exactly -- `reviewer` (the name), `%42` (pane id) -- and `session:agent` or `@session:agent` reaches across sessions:
-
-```bash
-send @other-feature:lead "check my API changes"
-agents --all                   # discover agents across every ae session
-```
-
-Agents call these automatically when you ask them to collaborate. Full helper catalog: **[docs/reference/helpers.md](docs/reference/helpers.md)**.
+Agent names resolve exactly -- `reviewer` (the name), `%42` (pane id) -- and `session:agent` or `@session:agent` reaches across sessions (`send @other-feature:lead "check my API changes"`; `agents --all` discovers agents across every ae session). Agents call these automatically when you ask them to collaborate. Full helper catalog: **[docs/reference/helpers.md](docs/reference/helpers.md)**.
 
 ## Config
 
@@ -208,15 +124,12 @@ codex = codex
 [profiles]
 claude = "claude --permission-mode bypassPermissions --model opus"
 codex = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=high"
-gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
-grok = "grok --always-approve -m grok-4.6 --effort high"
 agy = "agy --dangerously-skip-permissions"   # Antigravity CLI; any other CLI can be a profile too
-muse = "muse"
 
 [roster]
 lead = claude
 reviewer = codex
-orchestrator = gpt56luna
+orchestrator = codex
 
 [workspace]
 main = lead
@@ -228,13 +141,7 @@ fleet_order = aedev, thinking, infra
 instructions = "Always write tests. Prefer TypeScript."
 ```
 
-The NAME in `[roster]` is the agent's identity -- it's what you address in `send`/`spawn` and what shows in pane titles and `ae list`; the profile is just metadata (`ae list` shows it alongside the name). `[clients]` names executable/config-home instances, so `cc-mic = claude config_home=$HOME/.claude-mic` gives profiles a second login and conversation store ([recipe and Claude default-state caveat](docs/getting-started/config.md#multiple-identities-of-one-cli)); `[profiles]` adds launch flags, `[roster]` binds names to profiles, `[workspace]` sets the layout, and `[prompt]` injects custom instructions. The default ae writes on first run -- mirrored in the repo as [`config.sample`](config.sample) -- is a documented lead-pair setup. Choose how agents see your code with a working-directory mode:
-
-| Mode | Flag | What it does |
-|------|------|------|
-| `local` | *(default)* | Agents work directly in your project directory. Simple and fast. |
-| `full` | `--copy` | Full copy of the project — an isolated workspace for complex features. |
-| `worktree` | `--worktree` | Git worktree — lightweight branch isolation backed by git. |
+The NAME in `[roster]` is the agent's identity -- it's what you address in `send`/`spawn` and what shows in pane titles and `ae list`; the profile is just metadata. `[clients]` names executable/config-home instances, so `cc-mic = claude config_home=$HOME/.claude-mic` gives profiles a second login and conversation store ([recipe](docs/getting-started/config.md#multiple-identities-of-one-cli)); `[profiles]` adds launch flags, `[roster]` binds names to profiles, `[workspace]` sets the layout, and `[prompt]` injects custom instructions. The default ae writes on first run is mirrored as [`config.sample`](config.sample). Choose how agents see your code with a working-directory mode: `local` (default, agents work directly in your project directory), `--copy` (a full copy, an isolated workspace for complex features) or `--worktree` (a git worktree, lightweight branch isolation).
 
 Full lineup, role guidance, and every key: **[docs/getting-started/config.md](docs/getting-started/config.md)**.
 
@@ -242,80 +149,37 @@ Full lineup, role guidance, and every key: **[docs/getting-started/config.md](do
 
 Each agent gets workspace context through its harness's supported launch channel (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`, Gemini's `-i`, and the positional prompt for Grok Build and Muse Code). That context tells it **which agent it is** (`You are agent <name> (slot <slot>)`), who the other agents are, how to reach them by name, and how to spawn or retire agents. The communication itself happens through helpers (`send`, `peek`, `spawn`, …) that ae publishes in `~/.ae/sessions/<name>/` -- each one a link to the ae binary, dispatched by the name it is called by -- and agents call them like any other CLI tool.
 
-No custom protocols, no frameworks. Just harness-native context and commands agents already know how to run.
+No custom protocols, no frameworks. Just harness-native context and commands agents already know how to run. `ae` IS the versioned Rust core: `~/.local/bin/ae` is a symlink straight to `~/.ae/versions/<V>/ae-core`, with no wrapper between them. See **[VISION.md](VISION.md)**.
 
-## One public command, typed core
+Everything else is **optional**, never required for core commands. `ae telegram` is a machine-global bridge from each running session's shared chat to your Telegram chat, labelled by session; a phone message is asked in the selected session's shared chat (`/use <session>`, `@session`, or a reply), and it needs no extra CLI deps. The orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) is a dedicated single-seat local session named `orchestrator` that receives watchdog-rendered changed fleet overviews and relays only explicit human instructions through an audited bare-text helper; it needs an agent CLI, and ae seeds its config.
 
-`ae` IS the versioned Rust core: `~/.local/bin/ae` is a symlink straight to
-`~/.ae/versions/<V>/ae-core`, published read-only. There is no wrapper between them —
-the core tells INSTALLED from CHECKOUT by where its own binary resolves to, not by a
-second file agreeing with it. `--copy` and `--worktree` give agents isolated workspaces
-when you want them.
-
-Everything else is **optional**, never required for core commands:
-
-| Feature | What | Needs |
-|---|---|---|
-| `ae telegram` | machine-global bridge: each running session's shared chat to your Telegram chat, labelled by session; a phone message is asked in the selected session's shared chat (`/use <session>`, `@session`, or a reply) | a configured ae core (no extra CLI deps) |
-| the orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) | a dedicated single-seat local session named `orchestrator`: receives watchdog-rendered changed fleet overviews and relays only explicit human instructions through an audited bare-text helper | an agent CLI; ae seeds its config |
-
-Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The watchdog renders the orchestrator's overview from core fleet facts, persists its last delivered hash, and wakes the seat only for changed text; the seat never scans the fleet on a timer. It was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set global `auto_upgrade = off` to disable automatic releases; set `AE_NO_AUTOSTART=1` to suppress all three.
-
-There is no coreless mode to fall back to: the public `ae` command is the core binary
-itself, so there is nothing separate to bind. See **[VISION.md](VISION.md)**.
+Autostart is per component: `watchdog = false` in workspace config disables the workspace watchdog, `enabled = false` in Telegram config disables Telegram, global `auto_upgrade = off` disables automatic releases, and `AE_NO_AUTOSTART=1` suppresses all three.
 
 ### Upgrade
 
-```bash
-ae upgrade
-```
-
-`ae upgrade` downloads the latest release (or an `AE_VERSION` pin), verifies the checksum
-before extraction, then hands publication to the downloaded core. It publishes the new
-version read-only under `~/.ae/versions/<V>/`; migrates and repoints every placeable
-session's core record and helpers; reports and skips stopped unplaceable sessions; updates
-running watchdogs and Telegram bridges; and only then atomically moves `~/.local/bin/ae` to
-the new core. Existing agent harnesses are never restarted.
-Partial migration/relink failures are diagnosed with the same journal and recovery path
-for manual and automatic upgrades. See [docs/upgrade.md](docs/upgrade.md).
+`ae upgrade` downloads the latest release (or an `AE_VERSION` pin), verifies the checksum before extraction, then hands publication to the downloaded core. It publishes the new version read-only under `~/.ae/versions/<V>/`; migrates and repoints every placeable session's core record and helpers; reports and skips stopped unplaceable sessions; updates running watchdogs and Telegram bridges; and only then atomically moves `~/.local/bin/ae` to the new core. Existing agent harnesses are never restarted. See [docs/upgrade.md](docs/upgrade.md).
 
 ## Requirements
 
 - [tmux](https://github.com/tmux/tmux) **3.4 or newer** and [git](https://git-scm.com/). Ubuntu 24.04 and Homebrew both package a tmux that clears the floor.
 - `curl`, `tar` and `sha256sum` or `shasum`, for the installer. Any bash runs it, including macOS's stock 3.2.
-- At least one AI coding agent CLI on `PATH` (the list at the top).
+- At least one AI coding agent CLI on `PATH`. Supported first-class: Claude Code, Codex, OpenCode, Gemini CLI, Antigravity (`agy`), Grok Build and Muse Code. Any other CLI runs as a profile too.
 - [just](https://github.com/casey/just) and [rustup](https://rustup.rs) only to build from source (`just install`).
 
-Linux (GNU userland) and macOS (BSD userland) are both first-class, and no GNU
-*coreutils* package is required. The divergent coreutils are simply not called
-any more: the readers that needed them are Rust, and the core locks and times
-out with its own code rather than shelling out to `flock` or `timeout`.
-
-`ae doctor` reports the userland it detected along with the rest of the
-environment.
-
-Your interactive shell can be anything (fish, zsh, …). Run **`ae doctor`** after installing ae or upgrading any agent CLI -- it checks tmux/git, your config, and whether configured agents are on `PATH`. Resume/session capture for external CLIs is best-effort and depends on each tool's upstream behavior; `ae doctor` is your first stop when something looks off. More: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
+Linux and macOS are both first-class, and no GNU *coreutils* package is required ([why](docs/troubleshooting.md)). Your interactive shell can be anything (fish, zsh, …). Run **`ae doctor`** after installing ae or upgrading any agent CLI -- it checks tmux/git, your config, the userland it detected, and whether configured agents are on `PATH`. Resume/session capture for external CLIs is best-effort and depends on each tool's upstream behavior; `ae doctor` is your first stop when something looks off. More: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 
 ## Development
 
-Requires [just](https://github.com/casey/just):
-
-```bash
-just check            # lint (shellcheck) + format check (shfmt) for the installer
-just test             # Rust format, lint, and tests
-just release          # check → test → CalVer bump → changelog → tag → gh release
-```
-
-The Rust test gate is the whole test surface. Prerequisites are honest: [rustup](https://rustup.rs) and just, nothing else.
+Requires [just](https://github.com/casey/just) and [rustup](https://rustup.rs), nothing else:
 
 ```bash
 just rust-setup       # pinned toolchain + dev tools (idempotent; installs nothing on a second run)
-just rust-check       # fmt check + clippy (-D warnings) + nextest + doctests
-just rust-deny        # supply chain: advisories, licenses, bans, sources
-just rust-mutants     # do the tests discriminate, or do they merely pass?
+just test             # the gate: Rust format, lint, and tests (= just rust-check)
+just check            # lint (shellcheck) + format check (shfmt) for the installer
+just release          # check → test → CalVer bump → changelog → tag → gh release
 ```
 
-Conventions, test layout, and the release pipeline: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#toolchain-pins)**.
+Other lanes (`just rust-deny` supply chain, `just rust-mutants` do the tests discriminate) and the conventions: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#toolchain-pins)**.
 
 ## License
 
