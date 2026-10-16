@@ -18,6 +18,7 @@
 //!    archive fails the end with the whole session still on disk;
 //! 5. only then is the live state removed.
 
+pub(crate) mod claims;
 pub(crate) mod compaction;
 pub(crate) mod end;
 

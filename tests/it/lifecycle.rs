@@ -27,6 +27,8 @@ use std::time::Duration;
 use super::cli::{OwnedScratch, ae, bounded};
 use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
 use super::phase2::run_tmux;
+#[path = "lifecycle_purgeguard_spec.rs"]
+mod purgeguard_spec;
 #[path = "lifecycle_stop_sole_uuid_spec.rs"]
 mod stop_sole_uuid;
 

@@ -27,6 +27,10 @@ fuzz_target!(|data: &[u8]| {
         }
         let _ = std::hint::black_box(ae::meta::priors_tagged(&raw, &text));
     }
+    // The conversation rows are read RAW too, for the purge's guard against
+    // another session naming an id: an orphan slot, a doubled key and an element
+    // in any case or tag reach it straight from the hostile document.
+    let _ = std::hint::black_box(ae::meta::named_conversations(data));
     // The seat-dir row is judged from RAW bytes before any parse trusts it:
     // presence, duplication, bareness and UTF-8 are byte-level verdicts the
     // resume enlistment refuses on. Same fixed slots as the roster reads.

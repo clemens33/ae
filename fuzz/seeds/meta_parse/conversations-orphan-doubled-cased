@@ -1,0 +1,10 @@
+mode=local
+seat.main=lead
+harness_session.main=0199c0de-1234-4890-abcd-ef0123456789
+harness_session.main=0199C0DE-1234-4890-ABCD-EF0123456789
+harness_session.spawned.9=claude:0199c0de-1234-4890-abcd-ef0123456789
+harness_session_prior.worker.3=claude:0199c0de-5678-4890-abcd-ef0123456789,0199C0DE-5678-4890-ABCD-EF0123456789,codex:0199C0DE-5678-4890-ABCD-EF0123456789,,junk,claude:
+harness_session_prior.orphan.7=0199c0de-9999-4890-abcd-ef0123456789
+goal=0199c0de-1234-4890-abcd-ef0123456789
+harness_session.nonutf8=ÿþ
+harness_session_prior

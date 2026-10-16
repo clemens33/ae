@@ -46,7 +46,7 @@ const PROFILE_PREFIX: &str = "profile.";
 /// launch honored a `profile@client` selection. Absent means no override was
 /// recorded — never a derived value.
 const CLIENT_PREFIX: &str = "client.";
-const HARNESS_SESSION_PREFIX: &str = "harness_session.";
+pub(crate) const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 /// The durable PREDECESSOR row: the harness conversation ids this seat has
 /// ABANDONED, oldest first — both writers leave the id they replace here.
 pub const HARNESS_SESSION_PRIOR_PREFIX: &str = "harness_session_prior.";
@@ -1764,6 +1764,65 @@ pub fn raw_seat_work_dir(bytes: &[u8], slot: &str) -> Result<Option<String>, Str
         // `parse` judges a PRESENT value; only absence is Missing.
         RecordedWorkDir::Missing => Err(seat_work_dir_refusal(slot, SEAT_WORK_DIR_EMPTY)),
     }
+}
+
+/// Every conversation a session meta NAMES, as `(slot, id)` with the id
+/// lowercased: one per id in a `harness_session.<slot>` row and one per element
+/// of a `harness_session_prior.<slot>` row, in file order.
+///
+/// RAW on purpose, because the question is whether ANOTHER session claims a
+/// conversation, and the parse answers a narrower one: it drops a repeated
+/// key and reaches a predecessor row only through a roster slot, so an orphan
+/// row or a doubled one would name nothing. Any row of those two families
+/// names its ids here, whatever else is wrong with the file. An element is
+/// lowercased and then split by [`prior_parts`], tagged or bare, so a hand edit
+/// in any case still names its id; anything else names nothing.
+///
+/// ```
+/// use ae::meta::named_conversations;
+///
+/// let meta = b"harness_session.main=0199c0de-1234-4890-abcd-ef0123456789\r\n\
+///              harness_session_prior.worker.3=claude:0199c0de-5678-4890-abcd-ef0123456789,junk\n\
+///              goal=0199c0de-9999-4890-abcd-ef0123456789\n";
+/// assert_eq!(
+///     named_conversations(meta),
+///     [
+///         ("main".to_owned(), "0199c0de-1234-4890-abcd-ef0123456789".to_owned()),
+///         ("worker.3".to_owned(), "0199c0de-5678-4890-abcd-ef0123456789".to_owned()),
+///     ]
+/// );
+/// ```
+#[must_use]
+pub fn named_conversations(bytes: &[u8]) -> Vec<(String, String)> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut named = Vec::new();
+    for row in text.split('\n') {
+        let row = row.strip_suffix('\r').unwrap_or(row);
+        let Some((key, value)) = row.split_once('=') else {
+            continue;
+        };
+        if let Some(slot) = key.strip_prefix(HARNESS_SESSION_PREFIX) {
+            named.extend(named_id(value).map(|id| (slot.to_owned(), id)));
+        } else if let Some(slot) = key.strip_prefix(HARNESS_SESSION_PRIOR_PREFIX) {
+            named.extend(
+                value
+                    .split(',')
+                    .filter_map(named_id)
+                    .map(|id| (slot.to_owned(), id)),
+            );
+        }
+    }
+    named
+}
+
+/// The conversation id one row element spells, lowercase, if it spells one.
+///
+/// The element is lowercased BEFORE the split, so a tag or a UUID typed in any
+/// case names the same conversation: this answers who might still claim a
+/// file, and a hand edit that [`prior_parts`] would refuse is not a release.
+fn named_id(element: &str) -> Option<String> {
+    let lowered = element.to_ascii_lowercase();
+    prior_parts(&lowered).map(|parts| parts.id.to_owned())
 }
 
 /// Effective directory + provenance from raw bytes.
@@ -5313,6 +5372,68 @@ agent_bin.main=claude
                     .to_owned()
             )
         );
+    }
+
+    #[test]
+    fn named_conversations_reads_both_families_raw_in_file_order() {
+        use super::named_conversations;
+        const A: &str = "0199c0de-1234-4890-abcd-ef0123456789";
+        const B: &str = "0199c0de-5678-4890-abcd-ef0123456789";
+        let pair = |slot: &str, id: &str| (slot.to_owned(), id.to_owned());
+        // Orphan slots, a doubled key, CRLF and a comma list: the parse would
+        // drop or never reach each of them.
+        let text = format!(
+            "harness_session.spawned.9={A}\r\nharness_session.spawned.9={B}\n\
+             harness_session_prior.worker.3=claude:{A},{B},codex:{A}\n"
+        );
+        assert_eq!(
+            named_conversations(text.as_bytes()),
+            [
+                pair("spawned.9", A),
+                pair("spawned.9", B),
+                pair("worker.3", A),
+                pair("worker.3", B),
+                pair("worker.3", A),
+            ]
+        );
+        // A hand edit in any case still names the lowercase id: bare, tagged,
+        // and with the tag itself in capitals.
+        let upper = A.to_ascii_uppercase();
+        for element in [
+            upper.clone(),
+            format!("claude:{upper}"),
+            format!("CLAUDE:{A}"),
+            format!("Codex:{upper}"),
+        ] {
+            assert_eq!(
+                named_conversations(format!("harness_session_prior.main={element}\n").as_bytes()),
+                [pair("main", A)],
+                "{element}"
+            );
+        }
+        assert_eq!(
+            named_conversations(format!("harness_session.main={upper}").as_bytes()),
+            [pair("main", A)]
+        );
+    }
+
+    #[test]
+    fn named_conversations_ignores_every_other_row_and_every_unusable_element() {
+        use super::named_conversations;
+        const A: &str = "0199c0de-1234-4890-abcd-ef0123456789";
+        for text in [
+            format!("goal={A}\nsession_id={A}\nwork_dir=/w/{A}\nseat.main={A}\n"),
+            format!("harness_session_x.main={A}\nharness_session {A}\nharness_session.main\n"),
+            "harness_session.main=pending\nharness_session_prior.main=,,junk,claude:\n".to_owned(),
+            format!("harness_session.main={A},{A}\n"),
+            String::new(),
+        ] {
+            assert_eq!(named_conversations(text.as_bytes()), [], "{text:?}");
+        }
+        // Bytes the parse would refuse outright still name what they spell.
+        let mut bytes = format!("harness_session.main={A}\n").into_bytes();
+        bytes.extend([0xff, b'\n']);
+        assert_eq!(named_conversations(&bytes).len(), 1);
     }
 
     #[test]

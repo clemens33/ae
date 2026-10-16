@@ -20,8 +20,8 @@ use crate::tool::ToolKind;
 use crate::transport;
 
 use super::{
-    ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, confirm_on_client, dir_exists,
-    emit_lifecycle_event, handoff_clients_before_kill, kill_verified, lock, meta_value,
+    ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, claims, confirm_on_client,
+    dir_exists, emit_lifecycle_event, handoff_clients_before_kill, kill_verified, lock, meta_value,
     name_is_usable, path_exists, recorded_server, server_of, sessions_dir, worktrees_dir,
 };
 
@@ -1646,7 +1646,7 @@ fn cleanup(
 
     // Read meta BEFORE the removal below.
     if plan.purge {
-        purge_conversation_files(root, bytes, out, err)?;
+        purge_conversation_files(root, name, bytes, out, err)?;
     } else {
         writeln!(
             out,
@@ -1736,9 +1736,12 @@ fn remove_legacy(root: &Path, name: &str, origin: &str) {
 }
 
 /// Delete the agent CLI conversation files this session's captured harness ids
-/// name.
+/// name, except any id another session under `root` also names or might name
+/// (`claims`). `name` is the session being ended and never counts against
+/// itself.
 fn purge_conversation_files(
     root: &Path,
+    name: &str,
     bytes: &[u8],
     out: &mut impl Write,
     err: &mut impl Write,
@@ -1770,6 +1773,14 @@ fn purge_conversation_files(
                 }),
         );
     }
+    if conversations.is_empty() {
+        return Ok(());
+    }
+    // An id is a NAME this session recorded, not proof that it owns the file:
+    // a foreign or hand-edited row would otherwise delete the conversation a
+    // different session still resumes. One read of the other sessions' metas
+    // answers every id below, for every tool.
+    let others = claims::Others::scan(root, name);
     for (entry, recorded, tagged) in conversations {
         // A NAME, NEVER A PATH. `harness_session.<slot>` is metadata — a
         // hand-editable file, and `set-harness-session` screens only for control
@@ -1793,6 +1804,9 @@ fn purge_conversation_files(
             continue;
         }
         let uuid = uuid.as_str();
+        if others.verdict(uuid).keeps(&entry.slot, err)? {
+            continue;
+        }
         let current = entry.binary.as_deref().unwrap_or_default();
         let tool = tagged.unwrap_or(current);
         // The CONFIG HOME below is the slot's current one, so a predecessor
@@ -2476,7 +2490,8 @@ mod tests {
         );
         let mut out = Vec::new();
         let mut err = Vec::new();
-        purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err).expect("purge");
+        purge_conversation_files(&root, "ended", meta.as_bytes(), &mut out, &mut err)
+            .expect("purge");
         assert!(!path_exists(&claude_file), "recorded Claude root");
         assert!(!path_exists(&codex_file), "recorded Codex root");
         assert!(!path_exists(&legacy_file), "legacy default root");
@@ -2522,7 +2537,8 @@ mod tests {
         );
         let mut out = Vec::new();
         let mut err = Vec::new();
-        purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err).expect("purge");
+        purge_conversation_files(&root, "ended", meta.as_bytes(), &mut out, &mut err)
+            .expect("purge");
         assert!(path_exists(&claude_file) && path_exists(&codex_file));
         let warning = String::from_utf8_lossy(&err);
         assert!(warning.contains("symbolic link skipped"), "{warning}");
@@ -2563,7 +2579,8 @@ mod tests {
         );
         let mut out = Vec::new();
         let mut err = Vec::new();
-        purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err).expect("purge");
+        purge_conversation_files(&root, "ended", meta.as_bytes(), &mut out, &mut err)
+            .expect("purge");
         assert!(!path_exists(&first_file), "recorded target is purged");
         assert!(
             path_exists(&second_file),
@@ -2599,7 +2616,8 @@ mod tests {
             );
             let mut out = Vec::new();
             let mut err = Vec::new();
-            purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err).expect("purge");
+            purge_conversation_files(&root, "ended", meta.as_bytes(), &mut out, &mut err)
+                .expect("purge");
             assert!(path_exists(&file), "{row:?}");
             assert!(out.is_empty(), "{row:?}");
             assert!(
@@ -2643,7 +2661,7 @@ mod tests {
         );
         let mut out = Vec::new();
         let mut err = Vec::new();
-        purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err)
+        purge_conversation_files(&root, "ended", meta.as_bytes(), &mut out, &mut err)
             .expect("the purge writes its report");
         let said = String::from_utf8_lossy(&out).into_owned();
 
@@ -2712,7 +2730,7 @@ mod tests {
             );
             let mut out = Vec::new();
             let mut err = Vec::new();
-            purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err)
+            purge_conversation_files(&root, "ended", meta.as_bytes(), &mut out, &mut err)
                 .expect("the purge reports rather than fails");
             let said = String::from_utf8_lossy(&out).into_owned();
             let noted = String::from_utf8_lossy(&err).into_owned();
