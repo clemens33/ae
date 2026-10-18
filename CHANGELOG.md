@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.91] - 2026-10-18
+- Allow startup headroom in agy timeout witnesses
+- Freeze anywin compose-from-any-window contract
+- Refine anywin stale-refusal and busy-notice pins
+- Serve the replacement session in the replaced-flight fixture
+- Migrate draftclaim pins for windows that compose without the lease
+- Migrate composing-holds-the-lease pins to compose without it
+- Leave composing through a session-row click in the lease witness
+- Compose and send from any ae app window
+
 ## [v2026.10.90] - 2026-10-18
 - Freeze per-window draft recovery contract
 - Validate draft record names before discovery
