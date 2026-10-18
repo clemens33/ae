@@ -284,6 +284,7 @@ fn a_replaced_session_is_never_entered_through_the_old_flights_lease() {
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::create_dir_all(&dir).unwrap();
     meta(&root, &new_id, "colead");
+    served(&root);
     app.ids.insert("api".to_owned(), new_id);
     let rival = crate::store::open(&dir)
         .console_writer()
