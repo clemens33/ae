@@ -701,7 +701,20 @@ fn leaving_composing_never_unlocks_another_windows_lease() {
         rig.raw(&pane, "i");
         rig.wait(&pane, "S2 another lease never refuses entry", writing);
         if action == "click" {
-            rig.click(&pane, "Agents");
+            // Only a drawn session row ends composing; the Agents heading
+            // ended HELD in the old contract but is inert while composing.
+            let screen = rig.screen(&pane);
+            let (y, x) = screen
+                .lines()
+                .enumerate()
+                .find_map(|(y, row)| {
+                    let sidebar: String = row.chars().take(44).collect();
+                    sidebar
+                        .find(&rig.home)
+                        .map(|at| (y, sidebar[..at].chars().count()))
+                })
+                .expect("drawn home session row in the sidebar");
+            rig.raw(&pane, &format!("\x1b[<0;{};{}M", x + 1, y + 1));
         } else {
             rig.key(&pane, action);
         }
