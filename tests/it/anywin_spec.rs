@@ -57,8 +57,7 @@ fn compose(rig: &Rig, pane: &str) {
     assert!(writing(&screen), "S2 every window may compose: {screen}");
 }
 
-fn prompt(rig: &Rig, pane: &str, why: &str, met: impl Fn(&str) -> bool) -> String {
-    let began = Instant::now();
+fn prompt(rig: &Rig, pane: &str, began: Instant, why: &str, met: impl Fn(&str) -> bool) -> String {
     loop {
         let screen = rig.screen(pane);
         if met(&screen) {
@@ -71,12 +70,22 @@ fn prompt(rig: &Rig, pane: &str, why: &str, met: impl Fn(&str) -> bool) -> Strin
 }
 
 fn refused(rig: &Rig, pane: &str, draft: &str) {
-    let screen = prompt(rig, pane, "S2 Enter refuses without LOCK_WAIT", |s| {
-        s.contains(&format!("another window is sending to {}", rig.home))
-            && s.contains("Enter retries")
-            && writing(s)
-            && rig.draft_row(s).contains(draft)
-    });
+    let message = format!("another window is sending to {}", rig.home);
+    let before = rig.screen(pane).matches(&message).count();
+    let began = Instant::now();
+    rig.key(pane, "Enter");
+    let screen = prompt(
+        rig,
+        pane,
+        began,
+        "S2 Enter refuses without LOCK_WAIT",
+        |s| {
+            s.matches(&message).count() > before
+                && s.contains("Enter retries")
+                && writing(s)
+                && rig.draft_row(s).contains(draft)
+        },
+    );
     assert!(writing(&screen), "contention keeps the composer usable");
 }
 
@@ -201,7 +210,6 @@ fn b_composes_during_a_flight_refuses_at_once_keeps_text_and_enter_retries() {
     let held = flight(&rig, &a, "aw-flight-A");
     compose(&rig, &b);
     rig.typed(&b, "aw-flight-B");
-    rig.key(&b, "Enter");
     refused(&rig, &b, "aw-flight-B");
     assert!(rig.asks().is_empty(), "contended Enter was not admitted");
     // Contention never enters the old HELD mode that swallowed later keys.
@@ -232,7 +240,6 @@ fn send_and_close_never_wait_for_either_lock_and_keep_the_refused_command() {
         }
         compose(&rig, &b);
         rig.typed(&b, "aw-busy-send");
-        rig.key(&b, "Enter");
         refused(&rig, &b, "aw-busy-send");
         if name == WRITER {
             assert!(
@@ -248,7 +255,6 @@ fn send_and_close_never_wait_for_either_lock_and_keep_the_refused_command() {
         assert_no_kept_draft(&rig.tool.dir);
         rig.key(&b, "C-u");
         rig.typed(&b, "/close");
-        rig.key(&b, "Enter");
         refused(&rig, &b, "/close");
         assert!(cancel_events(&rig).is_empty());
         assert!(rig.asks().is_empty() && rig.tool.submitted().is_empty());
@@ -281,10 +287,12 @@ fn owner_chat_refuses_send_and_close_during_an_app_flight_then_sends() {
         rig.wait(&chat, "GUARD owner chat command composed", |s| {
             s.contains(&format!("to lead> {command}"))
         });
+        let began = Instant::now();
         rig.key(&chat, "Enter");
         prompt(
             &rig,
             &chat,
+            began,
             "owner chat probes lease before admission",
             |s| s.contains("an ae app is writing to"),
         );
@@ -389,19 +397,29 @@ fn every_window_reproves_its_original_incarnation_pair_and_recorded_server_at_su
         b_read.held();
         let meta_path = rig.tool.dir.join("meta");
         let meta = fs::read_to_string(&meta_path).expect("fixture meta");
-        let changed = match replacement {
-            "id" => meta.replace("0199c0de-cccc", "0199c0de-bbbb"),
-            "pair" => meta.replace("seat.worker.0=colead", "seat.worker.0=replacement"),
-            _ => meta.replace(
-                &rig.socket.display().to_string(),
-                &rig.root.join("gone-sock").display().to_string(),
+        let (changed, reason) = match replacement {
+            "id" => (
+                meta.replace("0199c0de-cccc", "0199c0de-bbbb"),
+                "the session was replaced or renamed",
+            ),
+            "pair" => (
+                meta.replace("seat.worker.0=colead", "seat.worker.0=replacement"),
+                "the lead pair changed since this chat opened",
+            ),
+            _ => (
+                meta.lines()
+                    .filter(|row| !row.starts_with("tmux_server"))
+                    .map(|row| format!("{row}\n"))
+                    .collect(),
+                "records no usable tmux server",
             ),
         };
+        assert_ne!(changed, meta, "GUARD routing fact was actually replaced");
         fs::write(meta_path, changed).expect("replace live routing facts");
         for pane in [&a, &b] {
             rig.key(pane, "Enter");
             rig.wait(pane, "stale window refuses before writing", |s| {
-                s.contains("refused")
+                s.contains("refused") && s.contains(reason)
             });
         }
         assert!(rig.asks().is_empty() && rig.tool.submitted().is_empty());
