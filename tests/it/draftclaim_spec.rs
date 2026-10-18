@@ -328,6 +328,27 @@ impl Rig {
         }
     }
 
+    /// Poll until no kept draft record holds `body`. A Sent outcome's
+    /// last act is clearing the record its own admission kept, after the
+    /// journal already holds the ask — so once the journal is proven,
+    /// absence proves the finish ran. The screen's "sent" word proves
+    /// neither: it is a substring of a body like `dc-b-sent`, drawn
+    /// before the finish clears anything.
+    fn wait_body_gone(&self, body: &[u8]) {
+        let until = Instant::now() + WAIT;
+        loop {
+            if !draft_bodies(&self.tool.dir).iter().any(|kept| kept == body) {
+                return;
+            }
+            assert!(
+                Instant::now() < until,
+                "the sent ask's own record was never cleared: {:?}",
+                draft_bodies(&self.tool.dir)
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     fn raw(&self, pane: &str, text: &str) {
         self.tmux(&["send-keys", "-t", pane, "-l", "--", text]);
     }
@@ -457,6 +478,9 @@ impl Rig {
             self.tool.submitted().contains(text),
             "real harness submitted the body"
         );
+        // Only now may a caller judge the on-disk records: this ask's
+        // own finish has run, so whatever records remain are final.
+        self.wait_body_gone(text.as_bytes());
     }
 
     fn lease(&self) -> File {
