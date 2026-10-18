@@ -778,23 +778,23 @@ fn leaving_writing_compacts_kept_draft_and_discards_the_old_grown_hit_target() {
 }
 
 #[test]
-fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
+fn browse_invalid_pair_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
     let rig = Rig::new("cwquiet", 0);
     let stopped = rig.root.join("sessions").join("zzstop");
     fs::create_dir(&stopped).expect("stopped sibling");
     fs::write(stopped.join("meta"), format!("session=zzstop\nmode=local\nsession_id=0199c0de-bbbb-4890-abcd-ef0123456789\nlayout=lead-pair\nseat.main=lead\ntmux_server_kind=socket\ntmux_server={}\n", rig.socket.display())).expect("stopped meta");
     let pane = rig.open();
     assert_eq!(rig.frame(&pane).cursor.0, 0, "browse hides cursor");
-    let lease = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(rig.tool.dir.join(".console-writer.lock"))
-        .expect("independent lease node");
-    lease.try_lock().expect("kernel lease held by fixture");
+    let meta_path = rig.tool.dir.join("meta");
+    let meta = fs::read_to_string(&meta_path).expect("original lead pair");
+    fs::write(
+        &meta_path,
+        meta.replace("seat.worker.0=colead", "seat.worker.0=bad.name"),
+    )
+    .expect("invalid pair refuses entry independently of the writer lease");
     rig.send(&pane, "i");
-    let held = rig.wait(&pane, FRAME, "GUARD busy app held", |f| {
-        f.text.contains("not writing:")
+    let held = rig.wait(&pane, FRAME, "GUARD invalid pair app held", |f| {
+        f.text.contains("not writing:") && f.text.contains("worker.0 seat is not an agent name")
     });
     assert_eq!(held.cursor.0, 0);
     assert_eq!(cell(&held.text, "not writing:").1, 42, "Held stays compact");
@@ -809,7 +809,7 @@ fn browse_busy_held_stopped_and_revoked_read_only_keep_the_cursor_hidden() {
     });
     assert_eq!(foreign.cursor.0, 0);
     assert_eq!(cell(&foreign.text, "zzstop is stopped").1, 42);
-    drop(lease);
+    fs::write(meta_path, meta).expect("restore the original valid pair");
     let (home_x, home_y) = foreign
         .text
         .lines()

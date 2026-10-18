@@ -356,10 +356,10 @@ impl Rig {
             "target header"
         );
         self.raw(&self.s, pane, "i");
-        let screen = self.wait(&self.s, pane, "B2 selected write lease acquired", |s| {
+        let screen = self.wait(&self.s, pane, "B2 selected composing entry", |s| {
             writing(s) && s.contains(&address)
         });
-        held(&target.dir);
+        free(&target.dir);
         assert_eq!(cursor(self, &self.s, pane).0, 1, "C1 writing cursor shown");
         screen
     }
@@ -411,12 +411,7 @@ impl Rig {
     fn send(&self, pane: &str, target: &Target, text: &str, count: usize) -> String {
         self.typed(pane, text);
         self.raw(&self.s, pane, "\r");
-        self.wait(
-            &self.s,
-            pane,
-            "B2 literal ask submitted in selected journal",
-            |s| s.contains("sent") && Self::event_count(target, "ask") == count,
-        );
+        self.finished(pane, target, text, count);
         let asks = self.asks(target);
         let ask = asks.last().expect("new target ask");
         assert_eq!(ask.actor, "console:local");
@@ -429,15 +424,53 @@ impl Rig {
             body.contains(&format!("from human:chat: {text}\n\nREQUIRED:")),
             "literal human body"
         );
-        let until = Instant::now() + WAIT;
-        while !target.tool.submitted().contains(text) {
-            assert!(
-                Instant::now() < until,
-                "actual target fake received and submitted: {text}"
-            );
-            std::thread::sleep(Duration::from_millis(25));
-        }
         id
+    }
+
+    fn finished(&self, pane: &str, target: &Target, text: &str, count: usize) {
+        self.wait(
+            &self.s,
+            pane,
+            "B2 exact ask delivered, draft cleared and submit locks released",
+            |s| {
+                Self::event_count(target, "ask") == count
+                    && target.tool.submitted().contains(text)
+                    && !composer_has(s, text)
+                    && unlocked(&target.dir, WRITER)
+                    && unlocked(&target.dir, ".console-admission.lock")
+                    && self
+                        .asks(target)
+                        .last()
+                        .is_some_and(|ask| ask.summary.as_deref() == Some(text))
+            },
+        );
+    }
+
+    /// Hold only the fixture target's send lock: the app still performs its
+    /// real admission and delivery, which stays in Flight until this drops.
+    fn flight(&self, pane: &str, target: &Target, text: &str) -> File {
+        let locks = self.root.join("sessions/.locks");
+        fs::create_dir_all(&locks).expect("private target locks");
+        let pane_id: String = target
+            .pane
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect();
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(locks.join(format!("send-lock-{pane_id}")))
+            .expect("private target send lock");
+        file.try_lock().expect("fixture stalls target delivery");
+        self.typed(pane, text);
+        self.raw(&self.s, pane, "\r");
+        self.wait(&self.s, pane, "GUARD actual selected-target Flight", |s| {
+            s.contains("sending to lead")
+                && !unlocked(&target.dir, WRITER)
+                && !unlocked(&target.dir, ".console-admission.lock")
+        });
+        assert!(!target.tool.submitted().contains(text));
+        file
     }
 
     fn command(&self, pane: &str, command: &str, witness: &str, finished: impl Fn(&str) -> bool) {
@@ -598,17 +631,6 @@ fn cursor(rig: &Rig, host: &Target, pane: &str) -> (usize, usize, usize) {
     (fields[0], fields[1], fields[2])
 }
 
-fn held(dir: &Path) {
-    let file = OpenOptions::new()
-        .append(true)
-        .open(dir.join(WRITER))
-        .expect("writer created regular lease node");
-    assert!(
-        matches!(file.try_lock(), Err(TryLockError::WouldBlock)),
-        "actual target lease held"
-    );
-}
-
 fn lease(dir: &Path) -> File {
     let file = OpenOptions::new()
         .append(true)
@@ -621,6 +643,19 @@ fn lease(dir: &Path) -> File {
 
 fn free(dir: &Path) {
     drop(lease(dir));
+}
+
+fn unlocked(dir: &Path, name: &str) -> bool {
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(dir.join(name))
+        .expect("independent kernel lock witness");
+    match file.try_lock() {
+        Ok(()) => true,
+        Err(TryLockError::WouldBlock) => false,
+        Err(why) => panic!("kernel lock witness failed: {why}"),
+    }
 }
 
 #[test]
@@ -650,8 +685,8 @@ fn home_control_preserves_the_original_address_journal_and_terminal_cursor() {
     });
     assert!(!frame.contains("(not home)"));
     rig.raw(&rig.s, &pane, "i");
-    rig.wait(&rig.s, &pane, "home control lease", writing);
-    held(&rig.s.dir);
+    rig.wait(&rig.s, &pane, "home control entry", writing);
+    free(&rig.s.dir);
     rig.send(&pane, &rig.s, "unchanged-home-control", 1);
     rig.no_writes(&rig.t);
     rig.escape(&pane, &rig.s);
@@ -713,7 +748,7 @@ fn outside_tmux_without_home_writes_the_selected_running_session() {
 }
 
 #[test]
-fn card_switch_releases_old_target_before_new_entry_and_keeps_both_drafts() {
+fn card_switch_keeps_both_drafts_and_both_targets_unlocked() {
     let rig = Rig::new("bspark", false);
     let peer_command = format!(
         "exec perl {} {} {} 400 codex 0 '' {}",
@@ -750,7 +785,13 @@ fn card_switch_releases_old_target_before_new_entry_and_keeps_both_drafts() {
         &rig.s,
         &pane,
         "GUARD S addressed ask reaches its seat",
-        |s| s.contains("sent") && Rig::event_count(&rig.s, "ask") == 1,
+        |s| {
+            s.contains("sent")
+                && Rig::event_count(&rig.s, "ask") == 1
+                && !composer_has(s, "choose-speaker")
+                && unlocked(&rig.s.dir, WRITER)
+                && unlocked(&rig.s.dir, ".console-admission.lock")
+        },
     );
     assert_eq!(rig.asks(&rig.s)[0].target.as_deref(), Some("colead"));
     assert_eq!(
@@ -784,7 +825,7 @@ fn card_switch_releases_old_target_before_new_entry_and_keeps_both_drafts() {
     rig.wait(&rig.s, &pane, "B2 parked S re-entry", |s| {
         writing(s) && s.contains(&rig.address(&rig.s, true)) && s.contains("s-private-prose")
     });
-    held(&rig.s.dir);
+    free(&rig.s.dir);
     let t = rig.select(&pane, &rig.t);
     free(&rig.s.dir);
     assert!(t.contains(&rig.address(&rig.t, false)) && t.contains("t-private-prose"));
@@ -818,7 +859,7 @@ fn writing_keys_and_list_wheel_cannot_readdress_a_target() {
             .is_some_and(|row| row.contains(&rig.t.name))
     );
     assert!(frame.contains("j!1-q-after-wheel") && writing(&frame));
-    held(&rig.t.dir);
+    free(&rig.t.dir);
     free(&rig.s.dir);
     rig.no_writes(&rig.s);
     rig.no_writes(&rig.t);
@@ -837,7 +878,7 @@ fn acquisition_restores_each_targets_own_disk_only_into_its_empty_memory() {
     fs::write(rig.t.dir.join("console.draft"), "t-on-disk").expect("T legacy disk");
     let (pane, _) = rig.app("restore", true);
     // An offering entry, without `enter`'s plain-writing frame proof:
-    // eligibility, the acquire key, the offer, the kernel lease.
+    // eligibility, the entry key, the offer, the free kernel lease.
     let offer_enter = |pane: &str, target: &Target, home: bool| -> String {
         let address = rig.address(target, home);
         rig.wait(&rig.s, pane, "B2 selected target is eligible", |s| {
@@ -845,7 +886,7 @@ fn acquisition_restores_each_targets_own_disk_only_into_its_empty_memory() {
         });
         rig.raw(&rig.s, pane, "i");
         let frame = rig.wait(&rig.s, pane, "S1 target orphan is offered", offer_shown);
-        held(&target.dir);
+        free(&target.dir);
         frame
     };
     rig.select(&pane, &rig.t);
@@ -886,26 +927,19 @@ fn acquisition_restores_each_targets_own_disk_only_into_its_empty_memory() {
         "S1 fresh empty acquisition restores T's OWN record before any orphan"
     );
     rig.raw(&rig.s, &pane, "\r");
-    rig.wait(&rig.s, &pane, "GUARD own line sent", |s| {
-        s.contains("sent") && Rig::event_count(&rig.t, "ask") == 1
-    });
+    rig.finished(&pane, &rig.t, "t-on-disk", 1);
     assert_kept_drafts(&rig.t.dir, &[b"new-t-disk"]);
     rig.escape(&pane, &rig.t);
     // The newer orphan's turn: this process already carries offer
     // notices, so the fill (not the fragments) is the proof.
     rig.raw(&rig.s, &pane, "i");
-    let until = Instant::now() + WAIT;
-    loop {
-        let file = OpenOptions::new()
-            .append(true)
-            .open(rig.t.dir.join(WRITER))
-            .expect("lease exists");
-        if matches!(file.try_lock(), Err(TryLockError::WouldBlock)) {
-            break;
-        }
-        assert!(Instant::now() < until, "reacquisition never held the lease");
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    rig.wait(
+        &rig.s,
+        &pane,
+        "S1 newer orphan is offered in a fresh entry",
+        |s| writing(s) && offer_shown(s) && !composer_has(s, "t-on-disk"),
+    );
+    free(&rig.t.dir);
     rig.raw(&rig.s, &pane, "\r");
     rig.wait(&rig.s, &pane, "S1 newer orphan fills on its Enter", |s| {
         composer_has(s, "new-t-disk")
@@ -981,7 +1015,7 @@ fn per_target_five_open_cap_and_both_close_forms_touch_only_that_journal() {
 }
 
 #[test]
-fn apps_on_distinct_targets_hold_distinct_leases_and_only_target_chat_is_excluded() {
+fn apps_on_distinct_targets_compose_freely_and_only_sending_target_chat_is_excluded() {
     let rig = Rig::new("bsparallel", false);
     let s_chat = rig.chat(&rig.s);
     let t_chat = rig.chat(&rig.t);
@@ -989,6 +1023,10 @@ fn apps_on_distinct_targets_hold_distinct_leases_and_only_target_chat_is_exclude
     let (q, _) = rig.app("app-t", true);
     rig.select(&q, &rig.t);
     rig.enter(&q, &rig.t, false);
+    rig.enter(&p, &rig.s, true);
+    free(&rig.s.dir);
+    free(&rig.t.dir);
+    let t_flight = rig.flight(&q, &rig.t, "t-app");
     rig.raw(&rig.t, &t_chat, "t-chat-busy\r");
     rig.wait(
         &rig.t,
@@ -997,28 +1035,20 @@ fn apps_on_distinct_targets_hold_distinct_leases_and_only_target_chat_is_exclude
         |s| s.contains("an ae app is writing to"),
     );
     assert!(rig.asks(&rig.t).is_empty());
-    // S1 migration: the busy chat published no instance record (inv. 1).
-    assert_no_kept_draft(&rig.t.dir);
+    // Only the sending app's record exists; refused chat publishes none.
+    assert_kept_drafts(&rig.t.dir, &[b"t-app"]);
     rig.raw(&rig.s, &s_chat, "s-chat-free\r");
-    rig.wait(&rig.s, &s_chat, "B2 unrelated S chat still submits", |s| {
-        s.contains("sent") && Rig::event_count(&rig.s, "ask") == 1
+    rig.wait(&rig.s, &s_chat, "B2 unrelated S chat still submits", |_| {
+        Rig::event_count(&rig.s, "ask") == 1
+            && rig.s.tool.submitted().contains("s-chat-free")
+            && unlocked(&rig.s.dir, ".console-admission.lock")
     });
     assert!(rig.s.tool.submitted().contains("s-chat-free"));
-    rig.enter(&p, &rig.s, true);
-    held(&rig.s.dir);
-    held(&rig.t.dir);
-    rig.send(&p, &rig.s, "s-app", 2);
-    rig.send(&q, &rig.t, "t-app", 1);
-    assert_eq!(
-        rig.asks(&rig.s)
-            .iter()
-            .map(|e| e.summary.as_deref().expect("summary"))
-            .collect::<Vec<_>>(),
-        ["s-chat-free", "s-app"]
-    );
+    drop(t_flight);
+    rig.finished(&q, &rig.t, "t-app", 1);
     assert_eq!(rig.asks(&rig.t)[0].summary.as_deref(), Some("t-app"));
-    rig.escape(&q, &rig.t);
-    held(&rig.s.dir);
+    let s_flight = rig.flight(&p, &rig.s, "s-app");
+    free(&rig.t.dir);
     rig.raw(&rig.s, &s_chat, "s-chat-busy\r");
     rig.wait(
         &rig.s,
@@ -1026,14 +1056,25 @@ fn apps_on_distinct_targets_hold_distinct_leases_and_only_target_chat_is_exclude
         "B2 S owner chat refuses while T is free",
         |s| s.contains("an ae app is writing to"),
     );
-    assert_eq!(rig.asks(&rig.s).len(), 2, "busy S chat adds no ask");
-    // S1 migration: the busy chat published no instance record (inv. 1).
-    assert_no_kept_draft(&rig.s.dir);
+    assert_eq!(rig.asks(&rig.s).len(), 1, "busy S chat adds no ask");
+    assert_kept_drafts(&rig.s.dir, &[b"s-app"]);
     rig.raw(&rig.t, &t_chat, "\x15/close\r");
-    rig.wait(&rig.t, &t_chat, "T chat closes after T app releases", |s| {
-        s.contains("closed ")
-    });
+    rig.wait(
+        &rig.t,
+        &t_chat,
+        "T chat closes while unrelated S sends",
+        |s| s.contains("closed ") && Rig::event_count(&rig.t, "cancel") == 1,
+    );
     assert!(rig.events(&rig.s).iter().all(|e| e.action != "cancel"));
+    drop(s_flight);
+    rig.finished(&p, &rig.s, "s-app", 2);
+    assert_eq!(
+        rig.asks(&rig.s)
+            .iter()
+            .map(|e| e.summary.as_deref().expect("summary"))
+            .collect::<Vec<_>>(),
+        ["s-chat-free", "s-app"]
+    );
 }
 
 #[test]
@@ -1341,7 +1382,7 @@ fn unresolvable_recorded_server_refuses_delivery_without_rerouting_to_home() {
     drop(world);
 }
 
-/// Every byte read by Q precedes its fresh T lease, even when the reader
+/// Every byte read by Q precedes its fresh T entry, even when the reader
 /// splits i/X/Enter. P submits the copied stream and releases T first.
 #[test]
 fn old_entry_text_and_enter_never_duplicate_a_stream_in_the_selected_target() {
@@ -1364,16 +1405,14 @@ fn old_entry_text_and_enter_never_duplicate_a_stream_in_the_selected_target() {
             read
         });
         rig.raw(&rig.s, &p, "\r");
-        rig.wait(&rig.s, &p, "GUARD P submits before releasing T", |s| {
-            s.contains("sent") && Rig::event_count(&rig.t, "ask") == 1
-        });
+        rig.finished(&p, &rig.t, "X", 1);
         rig.escape(&p, &rig.t);
         drop(read);
         drop(keys);
-        let acquired = rig.wait(&rig.s, &q, "B2 Q acquires a fresh selected lease", |s| {
+        let acquired = rig.wait(&rig.s, &q, "B2 Q begins a fresh selected entry", |s| {
             writing(s) && s.contains(&rig.address(&rig.t, false))
         });
-        held(&rig.t.dir);
+        free(&rig.t.dir);
         assert!(
             !composer_has(&acquired, "X"),
             "split={split}: old body never enters the fresh T draft"
@@ -1454,13 +1493,13 @@ fn late_proof(another: bool) {
         |s| s.contains("Enter writes") && s.contains(&rig.address(target, !another)),
     );
     free(&rig.s.dir);
-    // The entry key must be read after the previous lease was released;
-    // an i in the exit chunk is correctly refused by B1's release cut.
+    // The entry key must be read after the previous entry ended;
+    // an i in the exit chunk is correctly refused by B1's exit cut.
     rig.raw(&rig.s, &pane, "i");
     rig.wait(&rig.s, &pane, "GUARD new writer before late S proof", |s| {
         writing(s) && s.lines().next().is_some_and(|r| r.contains(&target.name))
     });
-    held(&target.dir);
+    free(&target.dir);
     rig.typed(&pane, "-new-entry");
     let delivered = Hold::new(&gates, &target.name);
     drop(late_world);
@@ -1483,7 +1522,7 @@ fn late_proof(another: bool) {
             "s-parked-new-entry-after-old-proof"
         ));
     }
-    held(&target.dir);
+    free(&target.dir);
     if another {
         free(&rig.s.dir);
     }

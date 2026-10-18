@@ -265,15 +265,14 @@ impl Rig {
         })
     }
 
-    fn writer_held(&self) {
+    fn writer_free(&self) {
         let file = fs::OpenOptions::new()
             .append(true)
+            .create(true)
             .open(self.tool.dir.join(".console-writer.lock"))
-            .expect("writer lease exists");
-        assert!(
-            matches!(file.try_lock(), Err(fs::TryLockError::WouldBlock)),
-            "Settings keeps the actual writing lease (R-B5)"
-        );
+            .expect("independent writer lease witness");
+        file.try_lock()
+            .expect("S2 Settings preserves composing without a writer lease");
     }
 
     /// A later visible wheel effect proves earlier presses were processed.
@@ -373,16 +372,16 @@ fn settings_guard_keys_wheel_gear_and_writer_work_on_the_base() {
     rig.keys(&pane, "Enter");
     rig.literal(&pane, "guard-draft");
     rig.wait(&pane, WAIT, "writing ready on base", |s| {
-        s.contains("guard-draft")
+        s.contains("guard-draft") && crate::app_mode::writing(s)
     });
     rig.gear(&pane);
     rig.wait(&pane, WAIT, "gear opens on base", is_settings);
-    rig.writer_held();
+    rig.writer_free();
     rig.keys(&pane, "Escape");
     rig.wait(&pane, WAIT, "Esc resumes draft on base", |s| {
-        !is_settings(s) && s.contains("guard-draft")
+        !is_settings(s) && s.contains("guard-draft") && crate::app_mode::writing(s)
     });
-    rig.writer_held();
+    rig.writer_free();
 }
 
 #[test]
@@ -476,10 +475,10 @@ fn settings_mouse_tabs_and_close_preserve_the_writing_draft() {
     });
     rig.gear(&pane);
     rig.wait(&pane, WAIT, "gear opens during writing", is_settings);
-    rig.writer_held();
+    rig.writer_free();
     rig.tab(&pane, "About", "tmux");
     rig.tab(&pane, "Config", "session:");
-    rig.writer_held();
+    rig.writer_free();
     rig.literal(&pane, "hidden-text");
     // Click the rule and a tab's following blank: neither is an affordance.
     let screen = rig.screen(&pane);
@@ -490,7 +489,7 @@ fn settings_mouse_tabs_and_close_preserve_the_writing_draft() {
     rig.wait(&pane, WAIT, "close resumes writing", |s| {
         !is_settings(s) && s.contains("draft-before") && crate::app_mode::writing(s)
     });
-    rig.writer_held();
+    rig.writer_free();
     rig.literal(&pane, "-after");
     let screen = rig.wait(&pane, WAIT, "same composer continues", |s| {
         s.contains("draft-before-after")

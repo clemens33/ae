@@ -2,7 +2,7 @@
 //! and DESIGN-r3 S2. Real app processes, kernel locks, admission, delivery
 //! and journal-derived lanes on a private tmux server. No submit-path mock.
 //!
-//! S1 recovery stays pinned by draftclaim_spec (only the obsolete
+//! S1 recovery stays pinned by `draftclaim_spec` (only the obsolete
 //! composing-held witnesses migrate). Existing flight bound and restart
 //! tests remain behavioral gates; the production quit constant is pinned
 //! here too, so changing the default cannot silently weaken that gate.
@@ -409,8 +409,9 @@ fn every_window_reproves_its_original_incarnation_pair_and_recorded_server_at_su
             _ => (
                 meta.lines()
                     .filter(|row| !row.starts_with("tmux_server"))
-                    .map(|row| format!("{row}\n"))
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n",
                 "records no usable tmux server",
             ),
         };

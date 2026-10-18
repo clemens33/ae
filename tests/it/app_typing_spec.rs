@@ -116,7 +116,7 @@ fn read_only_paste_names_the_refusal_and_never_writes() {
 }
 
 #[test]
-fn paste_refused_by_a_live_writer_lease_has_one_visible_reason() {
+fn paste_composes_under_a_live_writer_lease_and_only_submit_is_refused() {
     let (rig, pane) = open("typepastebusy");
     let witness = fs::OpenOptions::new()
         .create(true)
@@ -128,12 +128,29 @@ fn paste_refused_by_a_live_writer_lease_has_one_visible_reason() {
         .lock()
         .expect("GUARD another app owns the writer lease");
     rig.literal(&pane, "\x1b[200~BUSY-PASTE\x1b[201~");
-    let shown = rig.wait(&pane, FRAME, "R1 writer-lease refusal is visible", |s| {
-        s.contains("paste not taken") && s.contains("writing to")
+    let shown = rig.wait(&pane, FRAME, "S2 held writer lease permits paste", |s| {
+        writing(s) && s.contains("BUSY-PASTE")
     });
-    assert_eq!(shown.matches("paste not taken").count(), 1);
-    assert!(!writing(&shown));
+    assert!(!shown.contains("paste not taken"));
+    assert!(journal(&rig).is_empty(), "paste alone never submits");
+    let began = Instant::now();
+    rig.keys(&pane, "Enter");
+    let shown = rig.wait(&pane, FRAME, "S2 only submit refuses the held lease", |s| {
+        writing(s)
+            && s.contains("BUSY-PASTE")
+            && s.contains("another window is sending to")
+            && s.contains("Enter retries")
+    });
+    assert!(began.elapsed() < FRAME, "submit never waits LOCK_WAIT");
+    assert_eq!(shown.matches("another window is sending to").count(), 1);
     assert!(journal(&rig).is_empty());
+    rig.literal(&pane, "-KEPT");
+    rig.wait(
+        &pane,
+        FRAME,
+        "contention keeps the pasted composer editable",
+        |s| writing(s) && s.contains("BUSY-PASTE-KEPT"),
+    );
     alive(&rig, &pane);
 }
 
