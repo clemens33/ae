@@ -964,6 +964,16 @@ impl SessionStore {
         lock(&self.dir.join(CONSOLE_ADMISSION), LOCK_WAIT)
     }
 
+    /// [`Self::console_admission`] taken without waiting: an `ae app`'s
+    /// submit on its loop's thread, which refuses rather than stall a frame.
+    ///
+    /// # Errors
+    ///
+    /// [`lock`]'s: `WouldBlock` while another act holds it.
+    pub fn console_admission_now(&self) -> io::Result<File> {
+        lock(&self.dir.join(CONSOLE_ADMISSION), Duration::ZERO)
+    }
+
     /// The lock a goal setter holds from its unchanged check through its
     /// record, taken BEFORE the meta's and the journal's, never inside them.
     ///
@@ -974,8 +984,9 @@ impl SessionStore {
         lock(&self.dir.join(GOAL_SETTER), LOCK_WAIT)
     }
 
-    /// The writer lease, taken without waiting: held by one `ae app` for as
-    /// long as it writes, and tried and dropped by the owner chat's admission.
+    /// The writer lease, taken without waiting: held by one `ae app` from its
+    /// submit through that ask's delivery, and tried and dropped by the owner
+    /// chat's admission.
     ///
     /// # Errors
     ///

@@ -238,6 +238,7 @@ pub(crate) fn admit(
     raw: &[u8],
     owns: impl FnOnce() -> Result<(), String>,
 ) -> Result<Admitted, String> {
+    let lock = admission(dir)?;
     admit_kept(
         held,
         dir,
@@ -245,6 +246,7 @@ pub(crate) fn admit(
         raw,
         owns,
         Kept::Legacy(store::open(dir)),
+        lock,
     )
 }
 
@@ -256,7 +258,22 @@ pub(crate) fn admit_record(
     owns: impl FnOnce() -> Result<(), String>,
     record: Arc<store::DraftRecord>,
 ) -> Result<Admitted, String> {
-    admit_kept(held, dir, session, raw, owns, Kept::Instance(record))
+    let lock = admission(dir)?;
+    admit_kept(held, dir, session, raw, owns, Kept::Instance(record), lock)
+}
+
+/// [`admit_record`] under an admission lock the caller already holds: an
+/// `ae app` takes it without waiting before it proves anything here.
+pub(crate) fn admit_record_locked(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    raw: &[u8],
+    owns: impl FnOnce() -> Result<(), String>,
+    record: Arc<store::DraftRecord>,
+    lock: std::fs::File,
+) -> Result<Admitted, String> {
+    admit_kept(held, dir, session, raw, owns, Kept::Instance(record), lock)
 }
 
 fn admit_kept(
@@ -266,8 +283,8 @@ fn admit_kept(
     raw: &[u8],
     owns: impl FnOnce() -> Result<(), String>,
     draft: Kept,
+    lock: std::fs::File,
 ) -> Result<Admitted, String> {
-    let lock = admission(dir)?;
     owns()?;
     draft
         .publish(raw)
@@ -389,7 +406,19 @@ pub(crate) fn close_owned_held(
     which: Option<&str>,
     owns: impl FnOnce() -> Result<(), String>,
 ) -> Result<super::Closed, String> {
-    let _admitted = admission(dir)?;
+    let lock = admission(dir)?;
+    close_owned_locked(held, dir, session, which, owns, lock)
+}
+
+/// [`close_owned_held`] under an admission lock the caller already holds.
+pub(crate) fn close_owned_locked(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    which: Option<&str>,
+    owns: impl FnOnce() -> Result<(), String>,
+    _lock: std::fs::File,
+) -> Result<super::Closed, String> {
     owns()?;
     super::close_held(held, dir, session, which)
 }

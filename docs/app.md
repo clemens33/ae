@@ -242,21 +242,29 @@ line in the lane of the session it is about (an unconfirmed or undelivered ask
 as its own lane line, with the hint row saying the same until the lane has it); a line about a session no longer recorded shows in
 whichever lane is selected.
 
-Writing starts the moment this app takes the session's writer lease. An
-earlier window's [kept-line offer](chat.md#input) is accepted only on a
-fresh Enter, which fills the composer; the next Enter sends. Esc discards that
+Writing starts the moment `Enter`, `i` or a paste enters the composer; it takes
+no writer or admission lock, so any number of `ae app` windows write the same
+session at once, each with its own draft. An earlier window's
+[kept-line offer](chat.md#input) is accepted only on a fresh Enter, which
+fills the composer; the next Enter sends. Esc discards that
 offered line. Browsing keeps an undecided offer and its exclusive claim until
 this app exits. Each window's own kept lines stay private while it lives.
 
 Keys read before writing starts — the rest of the read that started writing included — are
 dropped, and one `ae` line says `dropped the keys typed before writing
-started`; `Esc` and `^C` are never dropped. While another app writes, or when
-the lease's lock file is not a regular file, writing does not start: the
-composer reads `not writing: an ae app is writing to <session> (held at <holder session>:<window>) · Esc browses`, or `(holder unknown)` in place of the place when the app left no record that reads (or
-`not writing: the writer lease is not a regular file · Esc browses`) and every
-key is swallowed until `Esc` browses, `^C` quits, a click acts or `Enter` tries
-again; while the session is not proven, `Enter` stays held. The other app letting go
-does not start writing by itself.
+started`; `Esc` and `^C` are never dropped. A send or `/close` while another
+window is sending to the same session is refused at once, never waited for:
+one `ae` line in the lane says `refused: another window is sending to <session>
+(held at <holder session>:<window>) — Enter retries`, `(holder unknown)` in place
+of the place when the holder left no record that reads, or without the place
+while only the chat's admission is busy (the owner `ae chat` or a chat bridge
+delivering). The line or the `/close` stays in the composer, writing stays on,
+and the next `Enter` tries again; nothing retries by itself. A lease lock file
+that is not a regular file refuses the same way, `refused: the writer lease is
+not a regular file`. A start the session's own facts refuse holds the composer
+as `not writing: <why> · Esc browses`: every key is swallowed until `Esc`
+browses, `^C` quits, a click acts or `Enter` tries again; while the session is
+not proven, `Enter` stays held.
 
 While writing, clicking a session row returns to browsing and keeps the
 draft, then selects the row (a turn: marks it). Blank rows and the "more" row do nothing.
@@ -600,9 +608,15 @@ once a minute per session, and starts no process.
 
 ## Ownership
 
-An app writes the selected session only while it holds that session's
-**writer lease**, the lock file `.console-writer.lock`: one app at a time per
-session, in any pane or outside tmux, and at most one lease per app. No key or
+Every `ae app` window writes the selected session on its own, in any pane or
+outside tmux, holding no writer or admission lock while it composes: each window
+keeps its own draft and its own binding to the session. Only a send or
+`/close` takes the session's **writer lease**, the lock file `.console-writer.lock`, and then the
+chat's admission lock, both without waiting; the lease stays with an ask until
+its delivery ends, so one window's ask is admitted and delivered at a time per
+session, in no promised order, and the five-open cap counts every window's
+asks. The holding app writes `1 <session> <window index>` into the lease while
+it holds it, which is what a refusal names. No key or
 wheel notch moves the selection while writing; a click on a session row leaves
 writing first. The composer names its target on its own row: `to <session> ·
 <seat> (auto)`, or `(named)` once the draft names a seat with `@`, the seat a
@@ -611,19 +625,19 @@ line, [Routing a line](#routing-a-line)). A stopped session,
 one with no recorded `session_id`, one whose lead pair cannot be read and one
 not recorded in this state root are read-only and say why.
 
-Every way out of writing releases the lease — `Esc`, `^C`, a crash, a click on
-a session row, opening a seat view, and a read that finds the session no longer
-proven — and Settings keeps it while open. An ask still being delivered keeps
-the lease until its delivery ends, so no other writer is admitted beside it. The view keeps the draft it
-interrupted: `Esc` returns to the chat and `Enter` retakes the lease to
+Every way out of writing ends this window's entry and keeps its draft — `Esc`,
+`^C`, a click on a session row, opening a seat view, and a read that finds the
+session no longer proven — and Settings keeps it while open. An ask still being
+delivered keeps the lease whatever happens to the writing. The view keeps the draft it
+interrupted: `Esc` returns to the chat and `Enter` writes again to
 continue it. Each ask and `/close` goes through the chat's
-admission, which re-proves the lease and re-reads the meta's `session_id` and
-lead pair against those the entry proved, then asks as `console:local` in that
+admission, which re-reads the meta's `session_id` and
+lead pair against those this window's entry proved, then asks as `console:local` in that
 session under the same five-open cap; the ask reaches the session's own recorded
 tmux server, and one whose recorded server cannot be named is refused in the
 delivery's own words. A session replaced under its name, a changed lead pair, a
 meta that is gone or a server that cannot be named refuses the ask and ends the
-writing: the lease is released and the composer is held as
+writing: the locks are released and the composer is held as
 `not writing: <why> · Esc browses`, the refused line back in the draft (a
 `/close` as `/close` or `/close <id>`), kept in memory only, and every key
 swallowed as above. Without a key, the read every 5 seconds re-proves the
@@ -652,8 +666,11 @@ writing starts into an empty composer, under the `Kept line, maybe already
 sent` banner, which names a way to check the target pair from the app (the
 Agents: `n` / `p`, `oo` opens a seat), never `prefix H`, which jumps the
 host's own pair; a draft kept in memory wins, never merged. The owner `ae chat`
-tries the lease inside its own admission: while an app writes its session, it
-refuses its sends and `/close`.
+tries the lease inside its own admission: while an app is sending to its
+session, it refuses its sends and `/close`. A window's `/close` withdraws the
+session's newest open ask whichever window or bridge sent it, and every
+window's lane shows the close as `you  <time>  closed an ask to <seat>` over
+`<id>: <the ask's first words>`.
 
 ## Leaving
 

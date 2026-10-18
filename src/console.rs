@@ -212,17 +212,21 @@ impl Console {
         &self.uuid
     }
 
+    /// `/close [which]` under the admission lock `lock` the caller already
+    /// holds and the ownership `owns` proves.
     pub(crate) fn close_owned(
         &self,
         which: Option<&str>,
         owns: impl FnOnce() -> Result<(), String>,
+        lock: std::fs::File,
     ) -> Result<Closed, String> {
-        submit::close_owned_held(
+        submit::close_owned_locked(
             &mut self.held.borrow_mut(),
             &self.dir,
             &self.name,
             which,
             owns,
+            lock,
         )
     }
 
@@ -761,17 +765,26 @@ impl Closed {
     /// of its words, made inert; the id alone when it recorded none.
     #[must_use]
     pub fn line(&self) -> String {
-        let said = self
-            .summary
-            .strip_prefix(tracked::UNCONFIRMED_SUMMARY_PREFIX);
-        let said = terminal_text(said.unwrap_or(&self.summary)).replace(['\n', '\t'], " ");
-        let head: String = said.chars().take(CLOSED_CHARS).collect();
-        if head.trim().is_empty() {
+        let head = excerpt(&self.summary);
+        if head.is_empty() {
             return format!("closed {}", self.id);
         }
-        let more = said.chars().nth(CLOSED_CHARS).is_some();
-        format!("closed {}: {head}{}", self.id, if more { "…" } else { "" })
+        format!("closed {}: {head}", self.id)
     }
+}
+
+/// The first [`CLOSED_CHARS`] characters of an ask's words, made inert and
+/// on one line, `…` when cut; empty when it said nothing. What a close
+/// quotes of the ask it withdrew, in its notice and in every app's lane.
+pub(crate) fn excerpt(said: &str) -> String {
+    let bare = said.strip_prefix(tracked::UNCONFIRMED_SUMMARY_PREFIX);
+    let said = terminal_text(bare.unwrap_or(said)).replace(['\n', '\t'], " ");
+    let head: String = said.chars().take(CLOSED_CHARS).collect();
+    if head.trim().is_empty() {
+        return String::new();
+    }
+    let more = said.chars().nth(CLOSED_CHARS).is_some();
+    format!("{head}{}", if more { "…" } else { "" })
 }
 
 /// The most characters of an ask's words a close notice quotes.

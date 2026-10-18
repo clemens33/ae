@@ -106,11 +106,19 @@ pub(super) fn tail_with(
             rows.push(Line::default());
         }
         let sent = show.sent.get(at).copied().unwrap_or(false);
-        rows.push(header(item, show.clock, show.main, paint, sent));
+        let closed = closing(&lane.items, at);
+        rows.push(header(
+            item,
+            closed.as_ref(),
+            show.clock,
+            show.main,
+            paint,
+            sent,
+        ));
         if let Some(visited) = visited.as_deref_mut() {
             visited.push(at);
         }
-        let body = body_rows(item, width, paint);
+        let body = body_rows(item, closed.as_ref(), width, paint);
         let foldable = show.open.is_some() && fold::foldable(body.len(), 1);
         let open = show.open.is_none_or(|open| open.get(at) == Some(&true));
         let (body, hidden) = fold::folded(body, open, 1);
@@ -159,9 +167,50 @@ pub(super) fn tail_with(
     }
 }
 
+/// What a closed ask's row names, whichever window or bridge closed it: the
+/// ask's id, and its recipient and words from the ask's own row before it in
+/// the lane.
+struct Closing {
+    id: String,
+    /// The recipient and the words' excerpt; `None` when the lane no longer
+    /// holds the ask.
+    ask: Option<(String, String)>,
+}
+
+/// The [`Closing`] of `items[at]`, read back from the lane itself.
+fn closing(items: &[Item], at: usize) -> Option<Closing> {
+    let Kind::Closed { id } = &items.get(at)?.kind else {
+        return None;
+    };
+    let asked = items
+        .get(..at)?
+        .iter()
+        .rev()
+        .find_map(|item| match &item.kind {
+            Kind::Asked { to, id: asked, .. } if asked == id => {
+                Some((to.clone(), crate::console::excerpt(&item.body)))
+            }
+            _ => None,
+        });
+    Some(Closing {
+        id: id.clone(),
+        ask: asked,
+    })
+}
+
 /// A turn's header row: its speaker, minute and qualifier.
-fn header(item: &Item, clock: &view::Style, main: &str, paint: Paint, sent: bool) -> Line<'static> {
-    let (speaker, qualifier, voice) = head(&item.kind, main, sent);
+fn header(
+    item: &Item,
+    closed: Option<&Closing>,
+    clock: &view::Style,
+    main: &str,
+    paint: Paint,
+    sent: bool,
+) -> Line<'static> {
+    let (speaker, mut qualifier, voice) = head(&item.kind, main, sent);
+    if let Some((to, _)) = closed.and_then(|closed| closed.ask.as_ref()) {
+        let _ = write!(qualifier, " to {to}");
+    }
     let (_, time) = clock_text(clock.shift(item.micros));
     let minute: String = time.chars().take(5).collect();
     Line::from(vec![
@@ -171,10 +220,24 @@ fn header(item: &Item, clock: &view::Style, main: &str, paint: Paint, sent: bool
     ])
 }
 
-/// A turn's body rows, wrapped to `width`.
-fn body_rows(item: &Item, width: usize, paint: Paint) -> Vec<Line<'static>> {
-    let lines = view::body_lines(item).into_iter();
+/// A turn's body rows, wrapped to `width`. A close shows the id it closed
+/// and the words of that ask, the same `closed <id>: <words>` its closer was told.
+fn body_rows(
+    item: &Item,
+    closed: Option<&Closing>,
+    width: usize,
+    paint: Paint,
+) -> Vec<Line<'static>> {
+    let said = closed.map(|closed| match &closed.ask {
+        Some((_, words)) if !words.is_empty() => format!("{}: {words}", closed.id),
+        _ => closed.id.clone(),
+    });
+    let lines = match &said {
+        Some(said) => vec![said.as_str()],
+        None => view::body_lines(item),
+    };
     lines
+        .into_iter()
         .flat_map(|line| wrap(&terminal_text(line), width, 2))
         .map(|(gap, piece)| {
             Line::from(vec![
@@ -205,12 +268,13 @@ pub(super) fn rows(
             Line::from(Span::styled(text, paint.fg(|p| p.dim)))
         })
         .collect();
-    for item in &lane.items {
+    for (at, item) in lane.items.iter().enumerate() {
         if !rows.is_empty() {
             rows.push(Line::default());
         }
-        rows.push(header(item, clock, main, paint, false));
-        rows.extend(body_rows(item, width, paint));
+        let closed = closing(&lane.items, at);
+        rows.push(header(item, closed.as_ref(), clock, main, paint, false));
+        rows.extend(body_rows(item, closed.as_ref(), width, paint));
     }
     rows
 }

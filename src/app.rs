@@ -8,8 +8,9 @@
 //! owners; this file draws what it last answered, so no key waits on a read.
 //! The ONE write is the composer's ask or close into the selected session,
 //! through the chat's own admission path (`term::submit_ask`,
-//! `submit::close_owned`), under that session's writer lease, held while
-//! this app writes it. Clipboard workers publish inert images for the draft. Opening a
+//! `submit::close_owned`), under that session's writer lease, taken by the
+//! submit and held through its delivery; composing holds none, so every window
+//! writes at once. Clipboard workers publish inert images for the draft. Opening a
 //! seat writes nothing either: it hands one tmux client to the seat's pane,
 //! through the chat's own proof (`term::prove_open`).
 
@@ -208,11 +209,9 @@ struct Flight {
     note: Option<String>,
     /// Its outcome, once the delivery has ended.
     done: Receiver<submit::Outcome>,
-    /// The session name and recorded `session_id` the ask went out under.
-    key: (String, String),
-    /// The writer lease of that very incarnation: held until the delivery
-    /// ends, whatever happens to the writing, so no other writer is admitted
-    /// beside it.
+    /// The writer lease its submit took on that very incarnation: held until
+    /// the delivery ends, whatever happens to the writing, so no other window
+    /// is admitted beside it.
     lease: Arc<LeaseFile>,
 }
 
@@ -302,8 +301,8 @@ impl PeekPane {
     }
 }
 
-/// The writer lease's file, shared by the writing and by an ask in flight: it
-/// is released when the last of them lets go.
+/// The writer lease's file, taken by a submit and kept by its ask in flight: it
+/// is released when the last holder lets go.
 struct LeaseFile {
     /// Held open: dropping it releases the lease.
     file: File,
@@ -316,11 +315,10 @@ impl Drop for LeaseFile {
     }
 }
 
-/// The writer lease this app holds while it writes.
-struct Lease {
-    /// Stopping the writing drops this hold; an ask in flight keeps its own.
-    held: Arc<LeaseFile>,
-    /// When it was taken: no key read before it is draft.
+/// This window's entry into writing: per window, with no writer or admission
+/// lock held.
+struct Entry {
+    /// When it began: no key read before it is draft.
     at: Instant,
     /// The keys dropped for that have been named.
     named: bool,
@@ -376,9 +374,9 @@ struct App {
     bound: BTreeMap<(String, String), Vec<Seat>>,
     /// Why the selection's composer only reads.
     read_only: String,
-    /// The writer lease, held exactly while this app writes.
-    lease: Option<Lease>,
-    /// The entry writing now, bound to what it proved; with the lease.
+    /// The entry this window writes under, exactly while it writes.
+    entered: Option<Entry>,
+    /// The entry writing now, bound to what it proved; with `entered`.
     writer: Option<Binding>,
     clipboard: crate::clipboard::Job<((String, String), u64)>,
     /// Entries counted, so a late proof of an older one changes nothing.
@@ -441,7 +439,7 @@ struct App {
     /// The lane the turn fingerprints were built from, with them.
     keyed: Option<(Rc<Lane>, Rc<[u64]>)>,
     /// The read of the browse paste that started this entry: its later
-    /// fragments keep their text, nothing else read before the lease does.
+    /// fragments keep their text, nothing else read before the entry does.
     admitted: Option<Instant>,
     /// Asks waiting for the loop to deliver them.
     queued: Vec<Queued>,
@@ -506,7 +504,7 @@ type Detach = Box<dyn Fn(&crate::lifecycle::DetachedArgv) -> bool>;
 
 impl App {
     /// An app that has read nothing yet: home is selected. Where it runs
-    /// decides nothing: the writer lease does.
+    /// decides nothing: each window writes under its own entry.
     fn new(
         home: Option<String>,
         server: Option<ServerId>,
@@ -541,7 +539,7 @@ impl App {
             recovery: submit::Recovery::default(),
             bound: BTreeMap::new(),
             read_only: "the fleet is not read yet".to_owned(),
-            lease: None,
+            entered: None,
             writer: None,
             clipboard: None,
             entries: 0,
@@ -1199,11 +1197,11 @@ impl App {
         }
     }
 
-    /// Start or stop writing the selection: the one writer of the lease. A
+    /// Start or stop writing the selection: the one writer of the entry. A
     /// refused start is HELD. Each is a new entry, and the reader is told
     /// which writer it re-proves.
     fn write(&mut self, on: bool) {
-        (self.lease, self.held, self.writer) = (None, None, None);
+        (self.entered, self.held, self.writer) = (None, None, None);
         self.admitted = None;
         self.entries = self.entries.wrapping_add(1);
         if let Some(name) = self.model.selected().filter(|_| on).map(str::to_owned)
@@ -1225,11 +1223,12 @@ impl App {
         }
     }
 
-    /// Enter writing session `name`, bound to the incarnation and lead pair
-    /// it proves now — the pair its input was first written with wins — under
-    /// its lease, taken without waiting: the instant it is held gates every
-    /// key after, and an empty composer gets the kept line back. Nothing is
-    /// written before the lease.
+    /// Enter writing session `name` in this window, bound to the incarnation
+    /// and lead pair it proves now — the pair its input was first written
+    /// with wins. No writer or admission lock is taken: any number of windows
+    /// write one session at once, and only a submit takes the lease. The
+    /// entry's instant gates every key after, and an empty composer gets the
+    /// kept line back.
     fn enter(&mut self, name: &str) -> Result<(), String> {
         let dir = self.writable(name)?;
         let console = Console::bound(name.to_owned(), dir, self.id(name));
@@ -1239,24 +1238,10 @@ impl App {
             Some(bound) => term::still(bound, Ok(pair)).map(|()| bound.clone())?,
             None => pair,
         };
-        // An ask still in flight to this very incarnation holds its lease: the
-        // writing takes that hold back rather than being refused by itself. A
-        // replacement under the same name is another lease, locked afresh.
-        let held = match self.flight.as_ref().filter(|flight| flight.key == key) {
-            Some(flight) => Arc::clone(&flight.lease),
-            None => Arc::new(LeaseFile {
-                file: term::lease(&console)?,
-            }),
-        };
-        // Stamped before the tmux call: keys read while it runs still count.
+        // Stamped before the recovery work: keys read while it runs still count.
         let at = Instant::now();
-        self.note_holder(&held.file);
         let record = self.recovery.record(console.dir())?;
-        self.lease = Some(Lease {
-            held,
-            at,
-            named: false,
-        });
+        self.entered = Some(Entry { at, named: false });
         let input = self.inputs.entry(key.clone()).or_insert_with(|| {
             self.bound.insert(key, seats.clone());
             let mut input = Input::new(names(&seats));
@@ -1280,8 +1265,8 @@ impl App {
         Ok(())
     }
 
-    /// Record where this app's pane sits in the lease just taken; outside
-    /// tmux, or when tmux or the grammar refuses, the record stays empty.
+    /// Record where this app's pane sits in the lease a submit just took;
+    /// outside tmux, or when tmux or the grammar refuses, the record stays empty.
     fn note_holder(&self, lease: &File) {
         let place = (self.server.as_ref().zip(self.pane.as_deref()))
             .and_then(|(server, pane)| transport::observe_pane_place(server, pane));
@@ -1391,9 +1376,9 @@ impl App {
         }
     }
 
-    /// Whether this app writes home: it holds the lease.
+    /// Whether this window writes: it entered, holding no lock for it.
     fn composing(&self) -> bool {
-        self.lease.is_some()
+        self.entered.is_some()
     }
 
     /// Show the selected session from what was answered: its last read lane,
@@ -1487,12 +1472,12 @@ impl App {
 
     /// One key while composing: Esc keeps the draft and browses, ^C over an
     /// empty composer quits (over text it clears, see [`App::clear_draft`]),
-    /// one read before the lease was taken is dropped, and anything else is
+    /// one read before the entry began is dropped, and anything else is
     /// the chat's own input. `None` quits.
     fn compose(&mut self, key: Key, origin: Instant) -> Option<()> {
         // The browse paste that started this entry keeps every fragment.
-        let origin = match (&key, &self.lease) {
-            (Key::Pasted(_), Some(lease)) if self.admitted == Some(origin) => lease.at,
+        let origin = match (&key, &self.entered) {
+            (Key::Pasted(_), Some(entry)) if self.admitted == Some(origin) => entry.at,
             _ => origin,
         };
         match key {
@@ -1507,9 +1492,9 @@ impl App {
             }
             Key::Interrupt if self.clear_draft(origin) => {}
             Key::Interrupt => return None,
-            _ if self.lease.as_ref().is_some_and(|lease| origin < lease.at) => {
-                if let Some(lease) = self.lease.as_mut().filter(|lease| !lease.named) {
-                    lease.named = true;
+            _ if self.entered.as_ref().is_some_and(|entry| origin < entry.at) => {
+                if let Some(entry) = self.entered.as_mut().filter(|entry| !entry.named) {
+                    entry.named = true;
                     let line = "dropped the keys typed before writing started";
                     self.effects(vec![Effect::Print(line.to_owned())]);
                 }
@@ -1537,7 +1522,7 @@ impl App {
         Some(())
     }
 
-    /// One key while HELD: Esc browses, ^C quits, Enter tries the lease
+    /// One key while HELD: Esc browses, ^C quits, Enter tries the entry
     /// again, and anything else is swallowed. `None` quits.
     fn retry(&mut self, key: &Key) -> Option<bool> {
         match key {
@@ -2406,11 +2391,10 @@ impl App {
         }
     }
 
-    /// What the admission re-proves: this app holds the lease, and the
-    /// incarnation and lead pair its entry proved are the session's now. A
-    /// session no longer proven is kept in `lost`.
+    /// What the admission re-proves: this window writes, and the incarnation
+    /// and lead pair its entry proved are the session's now. A session no
+    /// longer proven is kept in `lost`.
     fn owns(&self, lost: &Cell<Option<String>>) -> Result<(), String> {
-        self.lease.as_ref().ok_or("not writing")?;
         let writer = self.writer.as_ref().ok_or("not writing")?;
         let seats = writer.console.seats();
         term::still(&writer.seats, seats).inspect_err(|why| lost.set(Some(why.clone())))
@@ -2430,22 +2414,26 @@ impl App {
     }
 
     /// One ask of `seat`, admitted here through the chat's own admission and
-    /// carried on a thread of its own through the tracked path: its request id
-    /// and the channel its outcome arrives on. A session whose recorded server
-    /// that path cannot name is no longer proven: refused in its words before
-    /// anything is written.
+    /// carried on a thread of its own through the tracked path: its request id,
+    /// the channel its outcome arrives on and the writer lease it holds. The
+    /// lease and the admission lock are taken without waiting, so a session
+    /// another window is sending to refuses at once. A session whose recorded
+    /// server that path cannot name is no longer proven: refused in its words
+    /// before anything is written.
     fn begin(
         &mut self,
         raw: &[u8],
         seat: &str,
         body: String,
     ) -> Result<(String, Receiver<submit::Outcome>, Arc<LeaseFile>), String> {
-        let (Some(writer), Some(lease)) = (&self.writer, &self.lease) else {
+        let Some(writer) = &self.writer else {
             return Err("refused: not writing".to_owned());
         };
-        let held = Arc::clone(&lease.held);
         let (console, lost) = (&writer.console, Cell::default());
         let record = self.recovery.record(console.dir())?;
+        let (lease, lock) = term::send_locks(console).map_err(|why| format!("refused: {why}"))?;
+        let held = Arc::new(LeaseFile { file: lease });
+        self.note_holder(&held.file);
         let owns = || {
             self.owns(&lost)?;
             let name = console.name();
@@ -2453,7 +2441,7 @@ impl App {
             let routed = routed.map(drop).map_err(|why| why.message());
             routed.inspect_err(|why| lost.set(Some(why.clone())))
         };
-        let admitted = term::admit_ask(console, record, owns, raw, seat, body);
+        let admitted = term::admit_ask_locked(console, record, lock, owns, raw, seat, body);
         self.unproven(lost, raw);
         let (ask, admitted) = admitted.map_err(|why| format!("refused: {why}"))?;
         let id = ask.id().to_owned();
@@ -2489,6 +2477,8 @@ impl App {
         let Some(flight) = self.flight.take() else {
             return false;
         };
+        // The delivery is over: its lease goes, so another window may send.
+        drop(flight.lease);
         let mut lines = self.settle(flight.id, &flight.seat, &flight.about, outcome);
         lines.splice(0..0, flight.note);
         for line in lines {
@@ -2547,7 +2537,6 @@ impl App {
                             about: q.about.clone(),
                             note: q.note,
                             done,
-                            key: q.key.clone(),
                             lease,
                         });
                         Vec::new()
@@ -2625,7 +2614,9 @@ impl App {
         Vec::new()
     }
 
-    /// `/close`: this app's own open ask, through the chat's admission.
+    /// `/close`: the session's newest open console ask, or the one named,
+    /// through the chat's admission under the same zero-wait locks as a send.
+    /// Locks another window holds refuse at once and put the command back.
     fn close(&mut self, id: Option<&str>) -> String {
         let Some(writer) = &self.writer else {
             return "refused: not writing".to_owned();
@@ -2637,13 +2628,26 @@ impl App {
                 flight.seat
             );
         }
+        let entry = id.map_or_else(|| "/close".to_owned(), |id| format!("/close {id}"));
         let (console, lost) = (&writer.console, Cell::default());
+        let (lease, lock) = match term::send_locks(console) {
+            Ok(locks) => locks,
+            Err(why) => {
+                let key = writer.key();
+                if let Some(input) = self.inputs.get_mut(&key) {
+                    input.put_back(entry.as_bytes());
+                }
+                return format!("refused: {why}");
+            }
+        };
+        let held = LeaseFile { file: lease };
+        self.note_holder(&held.file);
         let owns = || self.owns(&lost);
-        let line = match console.close_owned(id, owns) {
+        let line = match console.close_owned(id, owns, lock) {
             Ok(closed) => closed.line(),
             Err(why) => format!("refused: {why}"),
         };
-        let entry = id.map_or_else(|| "/close".to_owned(), |id| format!("/close {id}"));
+        drop(held);
         self.unproven(lost, entry.as_bytes());
         line
     }
@@ -4408,12 +4412,12 @@ mod tests {
         std::fs::write(dir.join("meta"), format!("schema=2\n{meta}")).expect("meta");
     }
 
-    /// [`housed`]'s `app` writing home under its lease: the instant after
-    /// it was taken.
+    /// [`housed`]'s `app` writing home under its own entry: the instant
+    /// after it began.
     fn writing(app: &mut App) -> Instant {
         app.take(Reading::Owner, Instant::now());
         app.write(true);
-        assert!(app.composing(), "the lease is taken");
+        assert!(app.composing(), "writing started");
         Instant::now()
     }
 
@@ -4952,8 +4956,8 @@ mod tests {
     }
 
     /// R-B6: only an acquisition restores the kept line, and only into an
-    /// empty composer, with no merge; a demotion ends the writing and frees
-    /// its lease, and a refused entry is HELD, naming the writer.
+    /// empty composer, with no merge; a demotion ends the writing, and
+    /// another window's lease never refuses the next entry (S2).
     #[test]
     fn only_an_acquisition_into_an_empty_composer_restores_the_kept_line() {
         let root = Root::new("take");
@@ -4972,13 +4976,11 @@ mod tests {
         writing(&mut app);
         assert_eq!(drafted(&app), "kept edited", "restored once, no merge");
         app.take(Reading::NotOwner("gone".to_owned()), Instant::now());
-        let _other = store.console_writer().expect("a demotion frees the lease");
+        assert!(!app.composing(), "a demotion ends the writing");
+        let _other = store.console_writer().expect("composing holds no lease");
         app.take(Reading::Owner, Instant::now());
         app.write(true);
-        assert_eq!(
-            app.held.as_deref(),
-            Some("an ae app is writing to api (holder unknown)")
-        );
+        assert!(app.composing() && app.held.is_none(), "{:?}", app.held);
     }
 
     /// ^J is a line break in the draft and Enter everywhere else: it starts
@@ -5002,34 +5004,34 @@ mod tests {
         assert!(app.queued.is_empty(), "nothing is sent");
     }
 
-    /// R-B2/R-B3: the lease's own instant gates the keys: one read before it
+    /// R-B2/R-B3: the entry's own instant gates the keys: one read before it
     /// is dropped and named once, one read at that instant is draft.
     #[test]
-    fn keys_read_before_the_lease_are_dropped_and_named_once() {
+    fn keys_read_before_the_entry_are_dropped_and_named_once() {
         let root = Root::new("late");
         let (mut app, _reader) = housed(&root);
         let before = Instant::now();
         writing(&mut app);
-        let taken = app.lease.as_ref().map(|lease| lease.at).expect("held");
+        let taken = app.entered.as_ref().map(|entry| entry.at).expect("entered");
         for key in [Key::Text(b"early".to_vec()), Key::Enter] {
             assert_eq!(app.compose(key, before), Some(()));
         }
         assert_eq!(app.compose(Key::Text(b"late".to_vec()), taken), Some(()));
         let draft = drafted(&app);
-        assert_eq!(draft, "late", "only keys after the lease: {draft}");
+        assert_eq!(draft, "late", "only keys after the entry: {draft}");
         let named = |item: &Item| item.body.contains("keys typed before writing started");
         assert_eq!(app.notices.iter().filter(|(_, i)| named(i)).count(), 1);
     }
 
     /// Ruling appuse-b R-B2: only keys read before writing started are
     /// dropped. A press on the composer while writing starts nothing new: the
-    /// same lease stands, and a key read after it was taken is drafted.
+    /// same entry stands, and a key read after it began is drafted.
     #[test]
-    fn a_composer_press_while_writing_keeps_its_lease() {
+    fn a_composer_press_while_writing_keeps_its_entry() {
         let root = Root::new("composer-press");
         let (mut app, _reader) = strip_app(&root);
         let typed = writing(&mut app);
-        let taken = app.lease.as_ref().map(|it| it.at);
+        let taken = app.entered.as_ref().map(|it| it.at);
         let _ = framed(&mut app);
         let press = (0..45)
             .flat_map(|row| (0..160).map(move |column| (column, row)))
@@ -5041,7 +5043,7 @@ mod tests {
             .find(|press| matches!(app.layout.hit(*press), Some(super::draw::Hit::Compose)))
             .expect("drawn composer");
         let _ = app.click(press);
-        assert_eq!(app.lease.as_ref().map(|it| it.at), taken, "same lease");
+        assert_eq!(app.entered.as_ref().map(|it| it.at), taken, "same entry");
         assert!(take_keys(&mut app, vec![(Key::Text(b"k".to_vec()), typed)]).is_some());
         assert_eq!(drafted(&app), "k");
     }
@@ -5068,14 +5070,14 @@ mod tests {
             column: 70,
             row,
         };
-        let taken = app.lease.as_ref().map(|lease| lease.at);
+        let taken = app.entered.as_ref().map(|entry| entry.at);
         for row in 40..=44 {
             assert!(
                 matches!(app.layout.hit(press(row)), Some(super::draw::Hit::Compose)),
                 "address, grown row or note {row}"
             );
             let _ = app.click(press(row));
-            assert_eq!(app.lease.as_ref().map(|lease| lease.at), taken);
+            assert_eq!(app.entered.as_ref().map(|entry| entry.at), taken);
             assert_eq!(
                 app.inputs.values().next().expect("input").draft(),
                 "first second third"
@@ -5152,10 +5154,11 @@ mod tests {
         assert_eq!(why(&app), "the fleet is not read yet");
     }
 
-    /// B2: a session that is not home is written under its own lease and
-    /// input, under its own bare address; only a read proving its stop ends it.
+    /// B2: a session that is not home is written under its own entry and
+    /// input, under its own bare address, holding no lease (S2); only a read
+    /// proving its stop ends it.
     #[test]
-    fn a_selection_that_is_not_home_is_written_under_its_own_lease() {
+    fn a_selection_that_is_not_home_is_written_under_its_own_entry() {
         let root = Root::new("selected");
         let (mut app, reader) = housed(&root);
         let web = session(&root, "web", "");
@@ -5168,7 +5171,7 @@ mod tests {
         assert!(!framed(&mut app).contains("(not home)"));
         let at = writing(&mut app);
         assert_eq!(app.compose(Key::Text(b"w".to_vec()), at), Some(()));
-        assert!(crate::store::open(&web).console_writer().is_err());
+        drop(crate::store::open(&web).console_writer().expect("web free"));
         drop(crate::store::open(&api).console_writer().expect("api free"));
         let keys: Vec<_> = app.inputs.keys().collect();
         assert_eq!(keys, [&("web".to_owned(), ID.to_owned())]);
@@ -5177,7 +5180,7 @@ mod tests {
         app.answer(Answer::Fleet(read));
         let typed = vec![(Key::Text(b"q".to_vec()), at)];
         assert_eq!(take_keys(&mut app, typed), Some(true), "never Quit");
-        assert!(app.composing(), "an incomplete read keeps the lease");
+        assert!(app.composing(), "an incomplete read keeps the writing");
         refold(&mut app, &reader, &root, &fleet(Status::Unknown));
         assert!(app.composing(), "an Unknown read revokes nothing");
         refold(&mut app, &reader, &root, &fleet(Status::Stopped));
@@ -5217,12 +5220,13 @@ mod tests {
     fn a_refused_entry_is_held_with_the_reason_each_read_gives() {
         let root = Root::new("held-read");
         let (mut app, reader) = housed(&root);
-        let dir = root.0.join("sessions").join("api");
-        let busy = crate::store::open(&dir).console_writer();
+        // S2: another window's lease refuses no entry; a pair the meta does
+        // not name refuses it instead.
+        meta(&root, ID, "bad.name");
         app.write(true);
         assert_eq!(
             app.held.as_deref(),
-            Some("an ae app is writing to api (holder unknown)")
+            Some("the worker.0 seat is not an agent name")
         );
         refold(&mut app, &reader, &root, &[("api", Status::Stopped)]);
         assert_eq!(app.held.as_deref(), Some("api is stopped"));
@@ -5230,10 +5234,9 @@ mod tests {
         refold(&mut app, &reader, &root, &[("api", Status::Running)]);
         assert_eq!(app.held.as_deref(), Some("the session was replaced"));
         assert!(
-            app.lease.is_none() && app.writer.is_none(),
+            app.entered.is_none() && app.writer.is_none(),
             "never acquires"
         );
-        drop(busy);
         writing(&mut app);
         meta(&root, &ID.replace("1234", "cccc"), "colead");
         refold(&mut app, &reader, &root, &[("api", Status::Running)]);
@@ -7782,9 +7785,8 @@ mod tests {
         let dir = root.0.join("sessions").join("api");
         let (mut app, _reader) = housed(&root);
         app.take(Reading::Owner, Instant::now());
-        let _busy = crate::store::open(&dir)
-            .console_writer()
-            .expect("other writer");
+        // S2: a busy lease refuses no entry; a pair the meta cannot name does.
+        meta(&root, ID, "bad.name");
         app.write(true);
         assert!(app.held.is_some(), "GUARD refused entry is HELD");
         std::fs::remove_file(dir.join("meta")).expect("home becomes unproven");

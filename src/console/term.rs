@@ -279,17 +279,60 @@ pub(crate) fn lease(console: &Console) -> Result<std::fs::File, String> {
     let store = crate::store::open(&console.dir);
     store.console_writer().map_err(|why| match why.kind() {
         std::io::ErrorKind::WouldBlock => {
-            let record = store.console_writer_holder();
-            let held = record.and_then(|body| holder::parse(&body));
-            let at = held.map_or_else(
-                || "holder unknown".to_owned(),
-                |(session, window)| format!("held at {session}:{window}"),
-            );
+            let at = holder_place(console);
             format!("an ae app is writing to {} ({at})", console.name)
         }
+        kind => lease_unusable(kind),
+    })
+}
+
+/// Where `console`'s writer lease record says its holder is: `held at
+/// <session>:<window>`, or `holder unknown` for a record that does not parse.
+fn holder_place(console: &Console) -> String {
+    let record = crate::store::open(&console.dir).console_writer_holder();
+    let held = record.and_then(|body| holder::parse(&body));
+    held.map_or_else(
+        || "holder unknown".to_owned(),
+        |(session, window)| format!("held at {session}:{window}"),
+    )
+}
+
+/// Why the writer lease could not be taken, for any kind but another holder.
+fn lease_unusable(kind: std::io::ErrorKind) -> String {
+    match kind {
         std::io::ErrorKind::InvalidInput => "the writer lease is not a regular file".to_owned(),
         kind => format!("the writer lease could not be taken ({kind})"),
-    })
+    }
+}
+
+/// What an `ae app`'s submit holds from its admission through that ask's
+/// delivery: the writer lease, then the admission lock, each taken without
+/// waiting so the loop's thread never stalls on either. Another holder of
+/// either refuses at once, naming the lease's recorded holder when it is the
+/// lease; an admission refused lets the lease go with it.
+///
+/// # Errors
+///
+/// Why the submit may not start now.
+pub(crate) fn send_locks(console: &Console) -> Result<(std::fs::File, std::fs::File), String> {
+    let store = crate::store::open(&console.dir);
+    let busy = |at: String| {
+        format!(
+            "another window is sending to {}{at} — Enter retries",
+            console.name
+        )
+    };
+    let lease = store.console_writer().map_err(|why| match why.kind() {
+        std::io::ErrorKind::WouldBlock => busy(format!(" ({})", holder_place(console))),
+        kind => lease_unusable(kind),
+    })?;
+    let admission = store
+        .console_admission_now()
+        .map_err(|why| match why.kind() {
+            std::io::ErrorKind::WouldBlock => busy(String::new()),
+            _ => format!("the chat admission lock is not free ({why})"),
+        })?;
+    Ok((lease, admission))
 }
 
 /// Whether `console`'s pane `me` owns its session's input on `server`:
@@ -376,6 +419,32 @@ pub(crate) fn admit_ask(
         raw,
         owns,
         record,
+    )?;
+    Ok((Carry::of(console, seat, body), admitted))
+}
+
+/// [`admit_ask`] under the admission lock `lock` the caller already holds.
+///
+/// # Errors
+///
+/// Why nothing may be delivered.
+pub(crate) fn admit_ask_locked(
+    console: &Console,
+    record: Arc<crate::store::DraftRecord>,
+    lock: std::fs::File,
+    owns: impl FnOnce() -> Result<(), String>,
+    raw: &[u8],
+    seat: &str,
+    body: String,
+) -> Result<(Carry, submit::Admitted), String> {
+    let admitted = submit::admit_record_locked(
+        &mut console.held.borrow_mut(),
+        &console.dir,
+        &console.name,
+        raw,
+        owns,
+        record,
+        lock,
     )?;
     Ok((Carry::of(console, seat, body), admitted))
 }
@@ -765,19 +834,22 @@ impl Term {
             }
             Effect::Ask { raw, seat, body } => self.ask(console, &raw, &seat, body),
             Effect::Close(id) => {
+                // An app sending holds the admission through its delivery:
+                // its lease refuses at once rather than after that wait.
                 let owns = || self.owned(console);
-                Effect::Print(
-                    match submit::close_owned_held(
+                let closed = self.owned(console).and_then(|()| {
+                    submit::close_owned_held(
                         &mut console.held.borrow_mut(),
                         &console.dir,
                         &console.name,
                         id.as_deref(),
                         owns,
-                    ) {
-                        Ok(closed) => closed.line(),
-                        Err(why) => format!("refused: {why}"),
-                    },
-                )
+                    )
+                });
+                Effect::Print(match closed {
+                    Ok(closed) => closed.line(),
+                    Err(why) => format!("refused: {why}"),
+                })
             }
             Effect::Open(seat) => Effect::Print(self.open(console, &seat)),
             Effect::More(handle) => match console.printed.more_last(&handle) {
