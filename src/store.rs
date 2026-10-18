@@ -43,6 +43,19 @@ pub const CONSOLE_DRAFT: &str = "console.draft";
 /// The most a console draft may be.
 pub const CONSOLE_DRAFT_CAP: u64 = 65_536;
 
+/// The instance in a recovery record's name: one canonical lowercase UUID,
+/// with no suffix, path component or lock spelling accepted. Legacy records
+/// have no instance and are handled separately by their exact name.
+///
+/// This pure grammar is the hostile-state boundary exercised by the
+/// `console_draft_name` fuzz target before any consumer discovers these files.
+#[must_use]
+pub fn console_draft_instance(name: &str) -> Option<&str> {
+    let instance = name.strip_prefix(CONSOLE_DRAFT)?.strip_prefix('.')?;
+    (instance.len() == 36 && crate::archive::canonical_uuid(instance) == instance)
+        .then_some(instance)
+}
+
 /// The console's admission lock, beside the journal's and never it.
 const CONSOLE_ADMISSION: &str = ".console-admission.lock";
 

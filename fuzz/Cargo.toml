@@ -21,6 +21,13 @@ libfuzzer-sys = "=0.4.13"
 path = ".."
 
 [[bin]]
+name = "console_draft_name"
+path = "fuzz_targets/console_draft_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "config_parse"
 path = "fuzz_targets/config_parse.rs"
 test = false
