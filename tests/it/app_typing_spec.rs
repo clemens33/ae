@@ -3,6 +3,7 @@
 //! help. Reuses the private Settings rig; no new process or environment door.
 
 use crate::app_mode::writing;
+use crate::draftclaim_spec::{assert_no_kept_draft, draft_bodies, offer_shown};
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -82,20 +83,18 @@ fn a_split_paste_preserves_every_fragment_and_the_submitted_literal_bytes() {
     });
     assert!(journal(&rig).is_empty(), "no action before explicit Enter");
     rig.keys(&pane, "Enter");
-    let path = rig.tool.dir.join("console.draft");
+    // S1 migration: admission persists into the writer's OWN record,
+    // discovered beside any legacy name (invariants 1, 6).
+    let want = b"PASTE-FIRST\nPASTE-MIDDLE\nPASTE-LAST";
     let until = Instant::now() + FRAME;
-    while !path.is_file() {
+    while !draft_bodies(&rig.tool.dir).iter().any(|body| body == want) {
         assert!(
             Instant::now() < until,
-            "GUARD submit persisted literal draft"
+            "GUARD submit persisted literal draft in the writer's own record; \
+             B1 display and submit preserve the whole paste"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
-    assert_eq!(
-        fs::read(path).expect("submitted bytes"),
-        b"PASTE-FIRST\nPASTE-MIDDLE\nPASTE-LAST",
-        "B1 display and submit preserve the whole paste"
-    );
 }
 
 #[test]
@@ -111,7 +110,8 @@ fn read_only_paste_names_the_refusal_and_never_writes() {
     assert_eq!(shown.matches("paste not taken").count(), 1);
     assert!(!shown.contains("PASTE-REFUSED") && !writing(&shown));
     assert_eq!(journal(&rig), home);
-    assert!(!stopped.join("console.draft").exists());
+    // S1 migration: no instance kept a draft for the stopped target (inv. 1).
+    assert_no_kept_draft(&stopped);
     alive(&rig, &pane);
 }
 
@@ -279,7 +279,8 @@ fn word_on_a_stopped_selection(word: &str) {
     alive(&rig, &pane);
     assert_eq!(journal(&rig), before);
     assert_eq!(rig.screen(&rig.tool.pane), seat);
-    assert!(!rig.root.join("sessions/zzzstopped/console.draft").exists());
+    // S1 migration: no instance kept a draft for the stopped target (inv. 1).
+    assert_no_kept_draft(&rig.root.join("sessions/zzzstopped"));
 }
 
 #[test]
@@ -587,9 +588,20 @@ fn kept_draft_banner_names_target_open_keys_without_host_prefix_h() {
         s.contains("to zzzforeign") && s.contains("Enter writes")
     });
     rig.keys(&pane, "Enter");
-    let shown = rig.wait(&pane, FRAME, "GUARD existing draft restored", |s| {
-        s.contains("Kept line, maybe already sent") && s.contains("KEPT-FOREIGN-DRAFT")
-    });
+    // S1 migration: the planted plain file is a legacy orphan — offered
+    // first (invariants 3, 5), filled by the next fresh Enter only.
+    let offered = rig.wait(&pane, FRAME, "S1 foreign kept line is offered", offer_shown);
+    assert!(
+        !offered.contains("KEPT-FOREIGN-DRAFT"),
+        "S1 the offer never fills the composer"
+    );
+    rig.keys(&pane, "Enter");
+    let shown = rig.wait(
+        &pane,
+        FRAME,
+        "S1 accepted offer restores with banner",
+        |s| s.contains("Kept line, maybe already sent") && s.contains("KEPT-FOREIGN-DRAFT"),
+    );
     assert!(
         !shown.contains("prefix H"),
         "R4(b) host pair shortcut is false for foreign selection"

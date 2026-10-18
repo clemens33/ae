@@ -20,6 +20,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::draftclaim_spec::{assert_kept_drafts, draft_bodies};
+
 use ae::events::{Event, RoutingMember};
 
 const UUID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
@@ -495,7 +497,8 @@ fn unsupported_routes_and_commands_refuse_before_any_journal_or_draft_write() {
             refusal_names(text, named)
         });
         assert_eq!(rig.tool.events(), before, "{line}");
-        assert!(!rig.tool.dir.join("console.draft").exists(), "{line}");
+        // S1 migration: refused before any instance record is kept (inv. 1).
+        assert!(draft_bodies(&rig.tool.dir).is_empty(), "{line}");
         rig.tmux(&["send-keys", "-t", &pane, "C-u"]);
     }
 }
@@ -572,10 +575,8 @@ fn a_sixth_open_request_refuses_and_names_all_five_without_appending() {
         text.contains("5 requests open") && OPEN_IDS.iter().all(|id| !text.contains(id))
     });
     assert_eq!(rig.tool.events(), before);
-    assert_eq!(
-        fs::read(rig.tool.dir.join("console.draft")).expect("refused draft retained"),
-        b"sixth independent request"
-    );
+    // S1 migration: the cap refusal retains the chat's OWN record (inv. 1, 6).
+    assert_kept_drafts(&rig.tool.dir, &[b"sixth independent request"]);
 }
 
 #[test]

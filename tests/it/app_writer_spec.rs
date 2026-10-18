@@ -10,6 +10,7 @@
 )]
 
 use crate::app_mode::writing;
+use crate::draftclaim_spec::{assert_kept_drafts, assert_no_kept_draft, draft_bodies, offer_shown};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -425,7 +426,9 @@ impl Rig {
     }
 
     fn kept(&self, bytes: &str) {
-        fs::write(self.tool.dir.join("console.draft"), bytes).expect("shared kept file");
+        // S1 migration: a planted plain file is the legacy orphan (inv. 5),
+        // no longer a shared record every consumer restores.
+        fs::write(self.tool.dir.join("console.draft"), bytes).expect("legacy kept file");
     }
 
     fn swallow_submit(&self) {
@@ -675,10 +678,16 @@ fn nonregular_lease_has_its_own_held_refusal_and_reads_no_kept_draft() {
         !screen.contains("disk-secret"),
         "R-B6 failed entry never restores"
     );
+    assert!(
+        !offer_shown(&screen),
+        "S1 a failed entry neither offers nor claims the legacy orphan"
+    );
     rig.raw(&pane, "q\tTAIL");
     rig.wait(&pane, "nonregular HELD mode swallows keys", |s| {
         s.contains("not writing") && s.contains("Agents")
     });
+    // S1 migration: unchanged bytes at the legacy name also prove the
+    // failed entry never claimed (renamed) the orphan (invariant 4).
     assert_eq!(
         fs::read_to_string(rig.tool.dir.join("console.draft")).expect("kept file"),
         "disk-secret"
@@ -854,52 +863,86 @@ fn replacement_pair_change_and_unusable_home_release_without_a_submit() {
     }
 }
 
+/// S1 migration of the R-B6 shared-file restore test: the planted plain
+/// file is now a legacy orphan. It is OFFERED at the first acquisition
+/// (invariants 3, 5), becomes this instance's OWN record on the fill
+/// (so later empty reacquisitions restore it with the warning and no
+/// offer, invariant 1), precedes a newer legacy plant until it is sent
+/// (Sent clears the own record only), and nonempty memory still wins
+/// over every disk record.
 #[test]
-fn acquisition_restores_only_empty_drafts_and_reloads_the_shared_kept_file() {
+fn acquisition_offers_the_legacy_line_once_then_restores_it_as_its_own() {
     let rig = Rig::new("wbrestore");
     rig.kept("disk-first");
     let (pane, _) = rig.outside("restore");
     let before = rig.screen(&pane);
     assert!(
-        !before.contains("disk-first"),
-        "R-B6 browsing has no lease and must not restore"
+        !before.contains("disk-first") && !offer_shown(&before),
+        "R-B6 browsing has no lease and must neither restore nor offer"
     );
-    rig.enter(&pane);
+    rig.raw(&pane, "i");
+    let offered = rig.wait(
+        &pane,
+        "S1 acquisition offers the legacy orphan",
+        offer_shown,
+    );
+    assert!(
+        !rig.draft_row(&offered).contains("disk-first"),
+        "S1 the offer fills nothing"
+    );
+    rig.held();
+    rig.key(&pane, "Enter");
     rig.wait(
         &pane,
-        "R-B6 acquisition restores kept bytes and banner",
-        |s| s.contains("disk-first") && s.contains("Kept line, maybe already sent"),
+        "S1 the accepting Enter fills kept bytes behind the banner",
+        |s| rig.draft_row(s).contains("disk-first") && s.contains("Kept line, maybe already sent"),
     );
+    assert!(rig.asks().is_empty(), "the accepting Enter never submits");
     rig.key(&pane, "C-u");
     rig.wait(&pane, "GUARD composer emptied without deleting disk", |s| {
         !rig.draft_row(s).contains("disk-first")
     });
-    assert_eq!(
-        fs::read_to_string(rig.tool.dir.join("console.draft")).expect("shared file"),
-        "disk-first"
-    );
+    assert_kept_drafts(&rig.tool.dir, &[b"disk-first"]);
     rig.escape(&pane);
     rig.enter(&pane);
     rig.wait(
         &pane,
-        "R-B6 empty reacquisition restores after clear",
+        "S1 empty reacquisition restores the claimed line as its own",
         |s| rig.draft_row(s).contains("disk-first"),
     );
     rig.key(&pane, "C-u");
     rig.escape(&pane);
-    {
-        let _other = rig.lease();
-        rig.kept("disk-latest");
-    }
+    rig.kept("disk-latest");
     rig.enter(&pane);
-    rig.wait(&pane, "R-B6 next writer reads disk now", |s| {
+    rig.wait(&pane, "S1 the own record precedes the newer orphan", |s| {
+        rig.draft_row(s).contains("disk-first")
+    });
+    rig.submit(&pane, "disk-first", 1);
+    assert_kept_drafts(&rig.tool.dir, &[b"disk-latest"]);
+    rig.escape(&pane);
+    rig.raw(&pane, "i");
+    // Acquisition proof independent of the offered frame: the kernel
+    // lease is held. This process already carries the first offer's
+    // notice, so the second offer is proven by the filling Enter.
+    let until = Instant::now() + WAIT;
+    loop {
+        let file = OpenOptions::new()
+            .append(true)
+            .open(rig.tool.dir.join(WRITER))
+            .expect("lease exists");
+        if matches!(file.try_lock(), Err(TryLockError::WouldBlock)) {
+            break;
+        }
+        assert!(Instant::now() < until, "reacquisition never held the lease");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    rig.key(&pane, "Enter");
+    rig.wait(&pane, "S1 the next orphan fills on its Enter", |s| {
         rig.draft_row(s).contains("disk-latest")
     });
+    assert_eq!(rig.asks().len(), 1, "the second fill sent nothing");
     rig.escape(&pane);
-    {
-        let _other = rig.lease();
-        rig.kept("disk-newer");
-    }
+    rig.kept("disk-newer");
     rig.enter(&pane);
     let screen = rig.screen(&pane);
     assert!(
@@ -908,7 +951,7 @@ fn acquisition_restores_only_empty_drafts_and_reloads_the_shared_kept_file() {
     );
     assert!(
         !rig.draft_row(&screen).contains("disk-newer"),
-        "shared file is not merged"
+        "no disk record is merged into memory"
     );
 }
 
@@ -962,10 +1005,8 @@ fn owner_chat_submit_and_close_refuse_busy_without_waiting_or_writing_disk() {
         "chat never waits for writer lease"
     );
     assert_eq!(rig.asks().len(), 1, "busy chat records no second ask");
-    assert!(
-        !rig.tool.dir.join("console.draft").exists(),
-        "busy chat must not replace kept draft"
-    );
+    // S1 migration: busy chat kept no record of any instance (inv. 1).
+    assert_no_kept_draft(&rig.tool.dir);
     rig.key(&chat, "C-u");
     rig.raw(&chat, "/close");
     let previous = rig.screen(&chat).matches("an ae app is writing to").count();
@@ -1011,7 +1052,8 @@ fn owner_chat_names_a_nonregular_lease_without_publishing_or_delivering() {
         s.contains("refused") && (s.contains("regular") || s.contains("directory"))
     });
     assert!(rig.asks().is_empty());
-    assert!(!rig.tool.dir.join("console.draft").exists());
+    // S1 migration: no instance record was published (invariant 1).
+    assert_no_kept_draft(&rig.tool.dir);
     assert!(rig.tool.submitted().is_empty());
 }
 
@@ -1038,9 +1080,14 @@ fn failed_send(rig: &Rig, pane: &str, uncertain: bool) {
             "no record of it"
         })
     });
-    assert_eq!(
-        fs::read_to_string(rig.tool.dir.join("console.draft")).expect("kept failed draft"),
-        "failed-kept"
+    // S1 migration: the failed line is kept in the WRITER's own record
+    // (invariants 1, 6), whichever instance file that is.
+    assert!(
+        draft_bodies(&rig.tool.dir)
+            .iter()
+            .any(|body| body == b"failed-kept"),
+        "kept failed draft: {:?}",
+        draft_bodies(&rig.tool.dir)
     );
     assert_eq!(
         rig.asks().len(),

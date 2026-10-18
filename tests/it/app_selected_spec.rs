@@ -9,6 +9,7 @@
 )]
 
 use crate::app_mode::writing;
+use crate::draftclaim_spec::{assert_kept_drafts, assert_no_kept_draft, offer_shown};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -529,10 +530,8 @@ impl Rig {
 
     fn no_writes(&self, target: &Target) {
         assert!(self.asks(target).is_empty(), "no target ask");
-        assert!(
-            !target.dir.join("console.draft").exists(),
-            "no disk draft published"
-        );
+        // S1 migration: no instance record published for the target (inv. 1).
+        assert_no_kept_draft(&target.dir);
         assert!(
             !target.dir.join("messages").exists(),
             "no body directory written"
@@ -825,24 +824,52 @@ fn writing_keys_and_list_wheel_cannot_readdress_a_target() {
     rig.no_writes(&rig.t);
 }
 
+/// S1 migration: each target's planted plain file is THAT target's
+/// legacy orphan. Acquisition offers only the selected target's orphan
+/// (invariants 3, 5, 7); the fill claims it as this instance's own
+/// record for that target, memory still wins over disk, an external
+/// newer legacy plant waits behind the own record until the own line
+/// is sent, and only then is it offered — per target throughout.
 #[test]
 fn acquisition_restores_each_targets_own_disk_only_into_its_empty_memory() {
     let rig = Rig::new("bsrestore", false);
-    fs::write(rig.s.dir.join("console.draft"), "s-on-disk").expect("S kept disk");
-    fs::write(rig.t.dir.join("console.draft"), "t-on-disk").expect("T kept disk");
+    fs::write(rig.s.dir.join("console.draft"), "s-on-disk").expect("S legacy disk");
+    fs::write(rig.t.dir.join("console.draft"), "t-on-disk").expect("T legacy disk");
     let (pane, _) = rig.app("restore", true);
+    // An offering entry, without `enter`'s plain-writing frame proof:
+    // eligibility, the acquire key, the offer, the kernel lease.
+    let offer_enter = |pane: &str, target: &Target, home: bool| -> String {
+        let address = rig.address(target, home);
+        rig.wait(&rig.s, pane, "B2 selected target is eligible", |s| {
+            s.contains(&address) && s.contains("Enter writes")
+        });
+        rig.raw(&rig.s, pane, "i");
+        let frame = rig.wait(&rig.s, pane, "S1 target orphan is offered", offer_shown);
+        held(&target.dir);
+        frame
+    };
     rig.select(&pane, &rig.t);
-    let frame = rig.enter(&pane, &rig.t, false);
-    assert!(frame.contains("t-on-disk") && !frame.contains("s-on-disk"));
-    assert!(frame.contains("Kept line, maybe already sent"));
+    let frame = offer_enter(&pane, &rig.t, false);
+    assert!(!composer_has(&frame, "t-on-disk") && !frame.contains("s-on-disk"));
+    rig.raw(&rig.s, &pane, "\r");
+    let frame = rig.wait(&rig.s, &pane, "S1 T offer fills behind the banner", |s| {
+        composer_has(s, "t-on-disk") && s.contains("Kept line, maybe already sent")
+    });
+    assert!(!frame.contains("s-on-disk"), "only T's own disk restores");
+    assert!(rig.asks(&rig.s).is_empty() && rig.asks(&rig.t).is_empty());
     rig.typed(&pane, "-in-memory");
     rig.select(&pane, &rig.s);
     free(&rig.t.dir);
-    let frame = rig.enter(&pane, &rig.s, true);
-    assert!(frame.contains("s-on-disk") && !frame.contains("t-on-disk"));
+    let frame = offer_enter(&pane, &rig.s, true);
+    assert!(!composer_has(&frame, "s-on-disk"));
+    rig.raw(&rig.s, &pane, "\r");
+    let frame = rig.wait(&rig.s, &pane, "S1 S offer fills", |s| {
+        composer_has(s, "s-on-disk")
+    });
+    assert!(!frame.contains("t-on-disk"), "only S's own disk restores");
     rig.select(&pane, &rig.t);
     free(&rig.s.dir);
-    fs::write(rig.t.dir.join("console.draft"), "new-t-disk").expect("new external disk bytes");
+    fs::write(rig.t.dir.join("console.draft"), "new-t-disk").expect("new external legacy bytes");
     let frame = rig.enter(&pane, &rig.t, false);
     assert!(
         frame.contains("t-on-disk-in-memory") && !frame.contains("new-t-disk"),
@@ -855,10 +882,35 @@ fn acquisition_restores_each_targets_own_disk_only_into_its_empty_memory() {
     rig.escape(&pane, &rig.t);
     let frame = rig.enter(&pane, &rig.t, false);
     assert!(
-        frame.contains("new-t-disk"),
-        "fresh empty acquisition restores T only"
+        composer_has(&frame, "t-on-disk") && !composer_has(&frame, "new-t-disk"),
+        "S1 fresh empty acquisition restores T's OWN record before any orphan"
     );
-    assert!(rig.asks(&rig.s).is_empty() && rig.asks(&rig.t).is_empty());
+    rig.raw(&rig.s, &pane, "\r");
+    rig.wait(&rig.s, &pane, "GUARD own line sent", |s| {
+        s.contains("sent") && Rig::event_count(&rig.t, "ask") == 1
+    });
+    assert_kept_drafts(&rig.t.dir, &[b"new-t-disk"]);
+    rig.escape(&pane, &rig.t);
+    // The newer orphan's turn: this process already carries offer
+    // notices, so the fill (not the fragments) is the proof.
+    rig.raw(&rig.s, &pane, "i");
+    let until = Instant::now() + WAIT;
+    loop {
+        let file = OpenOptions::new()
+            .append(true)
+            .open(rig.t.dir.join(WRITER))
+            .expect("lease exists");
+        if matches!(file.try_lock(), Err(TryLockError::WouldBlock)) {
+            break;
+        }
+        assert!(Instant::now() < until, "reacquisition never held the lease");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    rig.raw(&rig.s, &pane, "\r");
+    rig.wait(&rig.s, &pane, "S1 newer orphan fills on its Enter", |s| {
+        composer_has(s, "new-t-disk")
+    });
+    assert!(rig.asks(&rig.s).is_empty() && rig.asks(&rig.t).len() == 1);
 }
 
 #[test]
@@ -945,7 +997,8 @@ fn apps_on_distinct_targets_hold_distinct_leases_and_only_target_chat_is_exclude
         |s| s.contains("an ae app is writing to"),
     );
     assert!(rig.asks(&rig.t).is_empty());
-    assert!(!rig.t.dir.join("console.draft").exists());
+    // S1 migration: the busy chat published no instance record (inv. 1).
+    assert_no_kept_draft(&rig.t.dir);
     rig.raw(&rig.s, &s_chat, "s-chat-free\r");
     rig.wait(&rig.s, &s_chat, "B2 unrelated S chat still submits", |s| {
         s.contains("sent") && Rig::event_count(&rig.s, "ask") == 1
@@ -974,7 +1027,8 @@ fn apps_on_distinct_targets_hold_distinct_leases_and_only_target_chat_is_exclude
         |s| s.contains("an ae app is writing to"),
     );
     assert_eq!(rig.asks(&rig.s).len(), 2, "busy S chat adds no ask");
-    assert!(!rig.s.dir.join("console.draft").exists());
+    // S1 migration: the busy chat published no instance record (inv. 1).
+    assert_no_kept_draft(&rig.s.dir);
     rig.raw(&rig.t, &t_chat, "\x15/close\r");
     rig.wait(&rig.t, &t_chat, "T chat closes after T app releases", |s| {
         s.contains("closed ")
@@ -1533,7 +1587,8 @@ fn cached_target_outside_this_state_root_refuses_without_recreating_its_director
         fs::read_to_string(outside.join("events.jsonl")).expect("outside journal"),
         ""
     );
-    assert!(!outside.join("console.draft").exists());
+    // S1 migration: no instance record in the out-of-root dir (inv. 1).
+    assert_no_kept_draft(&outside);
     assert!(!outside.join("messages").exists());
     assert!(
         !outside.join(WRITER).exists(),
@@ -1564,7 +1619,8 @@ fn a_positive_absent_name_drops_its_draft_once_and_a_new_incarnation_never_inher
         fs::read_to_string(outside.join("events.jsonl")).expect("old journal"),
         ""
     );
-    assert!(!outside.join("console.draft").exists());
+    // S1 migration: the dropped memory draft never became a record (inv. 1).
+    assert_no_kept_draft(&outside);
     assert!(!outside.join("messages").exists());
     fs::rename(&outside, &rig.t.dir).expect("same name returns with a new identity");
     rig.meta(&rig.t, NEW_ID, "colead");
@@ -1610,7 +1666,8 @@ fn no_home_and_no_selected_session_remain_read_only_with_a_hidden_cursor() {
             fs::read_to_string(dir.join("events.jsonl")).expect("outside journal"),
             ""
         );
-        assert!(!dir.join("console.draft").exists());
+        // S1 migration: no instance record outside the state root (inv. 1).
+        assert_no_kept_draft(&dir);
         assert!(!dir.join("messages").exists());
         assert!(!dir.join(WRITER).exists());
     }

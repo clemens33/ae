@@ -956,6 +956,24 @@ fn open_look_composer(tool: &super::deliver::Rig, drawn: bool, body: &str) -> St
         "12x60",
         "narrow fixture"
     );
+    // S1 migration: the planted plain file is a legacy orphan, so the
+    // chat OFFERS it first (invariants 3, 5, 7); one fresh Enter fills
+    // the composer whose look this fixture measures. The narrow pane
+    // wraps the offer, so its fragments are judged whitespace-flat.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let screen = tmux(&["capture-pane", "-p", "-t", &pane]);
+        let flat = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.contains("Enter restores") && flat.contains("Esc discards") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "S1 orphan offer before the look snapshot: {screen}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    tmux(&["send-keys", "-t", &pane, "Enter"]);
     pane
 }
 

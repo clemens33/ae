@@ -67,6 +67,7 @@ mod deliver;
 mod doctor;
 mod doctor_feeds_spec;
 mod doors;
+mod draftclaim_spec;
 mod effort_resume_spec;
 mod effort_spec;
 mod entry;

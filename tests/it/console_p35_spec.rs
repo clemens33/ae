@@ -18,6 +18,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::draftclaim_spec::{assert_kept_drafts, assert_no_kept_draft};
+
 use ae::console::input::{Effect, Input, Reading};
 use ae::events::{Event, RoutingMember};
 
@@ -281,7 +283,8 @@ impl Rig {
     }
 
     fn draft(&self, bytes: &[u8]) {
-        fs::write(self.tool.dir.join("console.draft"), bytes).expect("independent kept draft");
+        // S1 migration: a planted plain file is the legacy orphan (inv. 5).
+        fs::write(self.tool.dir.join("console.draft"), bytes).expect("legacy kept draft");
     }
 
     fn colead(&self) -> PathBuf {
@@ -353,6 +356,17 @@ fn ready(output: &mut Output) {
     output.wait("owner prompt", |text| text.contains("to lead>"));
 }
 
+/// The S1 orphan offer in streamed chat output. The chat wraps lines at
+/// the pane's width, so the four frozen fragments are judged on
+/// whitespace-collapsed text, never on one physical row.
+fn offered(text: &str) -> bool {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    flat.contains("kept line from an earlier window")
+        && flat.contains("may already have been sent")
+        && flat.contains("Enter restores")
+        && flat.contains("Esc discards")
+}
+
 fn banner(text: &str) -> bool {
     text.split(['\r', '\n']).any(|line| {
         line.contains("already")
@@ -366,8 +380,12 @@ fn banner(text: &str) -> bool {
     })
 }
 
+/// S1 migration: the planted kept draft is a legacy orphan, so the
+/// owner chat OFFERS it at promotion (invariants 3, 5, 7) and only the
+/// next fresh Enter fills it — literally, behind the same all-seats
+/// banner — and the Enter after that sends it.
 #[test]
-fn a_kept_draft_is_restored_literally_with_an_all_seats_uncertainty_banner() {
+fn a_kept_draft_is_offered_then_restored_literally_with_an_all_seats_uncertainty_banner() {
     let rig = Rig::new("p35literal");
     let receipt = rig.colead();
     let raw = b"@colead /close x";
@@ -375,6 +393,13 @@ fn a_kept_draft_is_restored_literally_with_an_all_seats_uncertainty_banner() {
     let pane = rig.open();
     let mut out = Output::attach(&rig, &pane, "observe");
     ready(&mut out);
+    out.wait("S1 orphan offered at promotion", offered);
+    assert!(
+        !out.text().contains("to lead> @colead /close x"),
+        "S1 the offer never fills the prompt"
+    );
+    assert!(rig.asks().is_empty(), "an offer never submits");
+    rig.enter(&pane, "");
     out.wait("complete restored literal line", |text| {
         text.contains("to lead> @colead /close x")
     });
@@ -387,11 +412,8 @@ fn a_kept_draft_is_restored_literally_with_an_all_seats_uncertainty_banner() {
         banner(&text),
         "both seats + uncertainty + check before Enter: {text}"
     );
-    assert!(rig.asks().is_empty(), "restore never submits");
-    assert_eq!(
-        fs::read(rig.tool.dir.join("console.draft")).expect("draft stays"),
-        raw
-    );
+    assert!(rig.asks().is_empty(), "the filling Enter never submits");
+    assert_kept_drafts(&rig.tool.dir, &[raw.as_slice()]);
     assert!(
         !rig.tool.events().contains("\"action\":\"cancel\""),
         "restore never closes"
@@ -410,12 +432,14 @@ fn a_kept_draft_is_restored_literally_with_an_all_seats_uncertainty_banner() {
         !rig.tool.events().contains("\"action\":\"cancel\""),
         "a prefixed close stays a literal ask after Enter"
     );
-    assert!(
-        !rig.tool.dir.join("console.draft").exists(),
-        "confirmed submit clears the restored draft"
-    );
+    // S1 migration: the confirmed submit clears the claimant's record
+    // entirely, legacy name included (invariant 6).
+    assert_no_kept_draft(&rig.tool.dir);
 }
 
+/// S1 migration: read-only consoles are offered nothing either; the
+/// promotion OFFERS the legacy orphan (invariants 3, 5, 7) and a fresh
+/// Enter fills it behind the banner.
 #[test]
 fn a_read_only_console_restores_only_when_it_becomes_the_owner() {
     let rig = Rig::new("p35promote");
@@ -432,8 +456,19 @@ fn a_read_only_console_restores_only_when_it_becomes_the_owner() {
         !out.text().contains("saved before promotion"),
         "read-only never restores"
     );
+    assert!(
+        !offered(&out.text()),
+        "S1 read-only is never offered the orphan"
+    );
     rig.tmux(&["kill-pane", "-t", &first]);
     ready(&mut out);
+    out.wait("S1 promotion offers the orphan", offered);
+    assert!(
+        !out.text().contains("to lead> saved before promotion"),
+        "S1 the offer never fills the prompt"
+    );
+    assert!(rig.asks().is_empty(), "an offer never submits");
+    rig.enter(&second, "");
     out.wait("complete restored line after promotion", |text| {
         text.contains("to lead> saved before promotion")
     });
@@ -465,6 +500,10 @@ fn an_oversized_kept_draft_is_refused_by_name_and_never_truncated_into_input() {
         "named oversized refusal: {text}"
     );
     assert!(!text.contains("to lead> x"), "never truncate draft");
+    assert!(
+        !offered(&text),
+        "S1 a refused legacy record is not offered either"
+    );
     assert!(rig.asks().is_empty());
 }
 
@@ -483,6 +522,10 @@ fn a_fifo_kept_draft_is_refused_by_name_without_opening_or_blocking() {
             && (line.contains("FIFO") || line.contains("fifo") || line.contains("regular file"))
             && (line.contains("refused") || line.contains("not restored"))),
         "named FIFO refusal: {text}"
+    );
+    assert!(
+        !offered(&text),
+        "S1 a refused legacy record is not offered either"
     );
     assert!(rig.asks().is_empty());
 }
