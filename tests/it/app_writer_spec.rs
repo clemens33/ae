@@ -1,4 +1,5 @@
 //! Frozen appuse B1 acceptance, from R-B1..R-B7 and the R-B2b cut.
+//! S2 migration: composing is per-window; leases guard submit + Flight only.
 //! Real apps/chat, kernel locks, admission and delivery on private tmux.
 //! Read gates attest real READ stamps before holding dispatch; no synthetic
 //! acquisition time, ownership mock, or replacement of the submit path.
@@ -24,7 +25,7 @@ const WAIT: Duration = Duration::from_secs(20);
 const WRITER: &str = ".console-writer.lock";
 
 /// A stalled fixture releases on unwind and independently after 45 seconds.
-struct Hold {
+pub(crate) struct Hold {
     path: PathBuf,
     trace: PathBuf,
     before: usize,
@@ -33,7 +34,7 @@ struct Hold {
 }
 
 impl Hold {
-    fn new(dir: &std::path::Path, key: &str) -> Self {
+    pub(crate) fn new(dir: &std::path::Path, key: &str) -> Self {
         let path = dir.join(key);
         let trace = dir.join("trace");
         let before = fs::read_to_string(&trace)
@@ -56,7 +57,7 @@ impl Hold {
         }
     }
 
-    fn held(&self) {
+    pub(crate) fn held(&self) {
         let until = Instant::now() + WAIT;
         let key = self.path.file_name().expect("gate key").to_string_lossy();
         loop {
@@ -90,15 +91,15 @@ impl Drop for Hold {
     }
 }
 
-struct Rig {
-    tool: super::deliver::Rig,
-    root: PathBuf,
-    socket: PathBuf,
-    home: String,
+pub(crate) struct Rig {
+    pub(crate) tool: super::deliver::Rig,
+    pub(crate) root: PathBuf,
+    pub(crate) socket: PathBuf,
+    pub(crate) home: String,
 }
 
 impl Rig {
-    fn new(tag: &str) -> Self {
+    pub(crate) fn new(tag: &str) -> Self {
         let tool = super::deliver::Rig::new(tag, "codex", 0);
         let root = tool
             .dir
@@ -150,14 +151,14 @@ impl Rig {
         rig
     }
 
-    fn meta(&self, uuid: &str, peer: &str) {
+    pub(crate) fn meta(&self, uuid: &str, peer: &str) {
         fs::write(self.tool.dir.join("meta"), format!(
             "session={}\nmode=local\nsession_id={uuid}\nlayout=lead-pair\ntmux_server_kind=socket\ntmux_server={}\nseat.main=lead\nagent_bin.main=codex\nlaunch_id.main=tok-rig\nseat.worker.0={peer}\nagent_bin.worker.0=codex\nlaunch_id.worker.0=tok-peer\n",
             self.home, self.socket.display()
         )).expect("private lead pair");
     }
 
-    fn tmux(&self, tail: &[&str]) -> String {
+    pub(crate) fn tmux(&self, tail: &[&str]) -> String {
         let mut args = vec!["-S".to_owned(), self.socket.display().to_string()];
         args.extend(tail.iter().map(|arg| (*arg).to_owned()));
         let (ok, out) = super::phase2::run_tmux(&args, &self.root);
@@ -165,7 +166,7 @@ impl Rig {
         out
     }
 
-    fn console(&self, chat: bool) -> String {
+    pub(crate) fn console(&self, chat: bool) -> String {
         let gates = self.root.join("gates-owner");
         fs::create_dir(&gates).expect("owner read gates");
         for (key, value) in [
@@ -231,7 +232,7 @@ impl Rig {
 
     /// A real terminal, with both caller tmux variables explicitly removed.
     /// tmux supplies only the fixture PTY; ae resolves the recorded server.
-    fn outside(&self, name: &str) -> (String, PathBuf) {
+    pub(crate) fn outside(&self, name: &str) -> (String, PathBuf) {
         let gates = self.root.join(format!("gates-{name}"));
         fs::create_dir(&gates).expect("private gates");
         let args = vec![
@@ -272,11 +273,11 @@ impl Rig {
         (pane, gates)
     }
 
-    fn screen(&self, pane: &str) -> String {
+    pub(crate) fn screen(&self, pane: &str) -> String {
         self.tmux(&["capture-pane", "-p", "-t", pane])
     }
 
-    fn wait(&self, pane: &str, why: &str, met: impl Fn(&str) -> bool) -> String {
+    pub(crate) fn wait(&self, pane: &str, why: &str, met: impl Fn(&str) -> bool) -> String {
         let until = Instant::now() + WAIT;
         loop {
             let screen = self.screen(pane);
@@ -288,7 +289,7 @@ impl Rig {
         }
     }
 
-    fn raw(&self, pane: &str, text: &str) {
+    pub(crate) fn raw(&self, pane: &str, text: &str) {
         self.tmux(&["send-keys", "-t", pane, "-l", "--", text]);
     }
 
@@ -301,14 +302,14 @@ impl Rig {
         drop(keys);
     }
 
-    fn key(&self, pane: &str, key: &str) {
+    pub(crate) fn key(&self, pane: &str, key: &str) {
         self.tmux(&["send-keys", "-t", pane, key]);
     }
 
     fn enter(&self, pane: &str) {
         self.raw(pane, "i");
         self.wait(pane, "R-B1 home app can acquire write mode", writing);
-        self.held();
+        self.free();
     }
 
     fn escape(&self, pane: &str) {
@@ -320,23 +321,24 @@ impl Rig {
     }
 
     /// The row under the home composer's address row: where its draft shows.
-    fn draft_row<'a>(&self, screen: &'a str) -> &'a str {
+    pub(crate) fn draft_row<'a>(&self, screen: &'a str) -> &'a str {
         let rows: Vec<&str> = screen.lines().collect();
         let address = rows
             .iter()
             .rposition(|row| row.contains(&format!("to {}", self.home)))
             .expect("home composer address row");
-        rows.get(address + 1).expect("the draft row under it")
+        let row = *rows.get(address + 1).expect("the draft row under it");
+        row.split_once('│').map_or(row, |(_, draft)| draft)
     }
 
-    fn typed(&self, pane: &str, text: &str) {
+    pub(crate) fn typed(&self, pane: &str, text: &str) {
         self.raw(pane, text);
         self.wait(pane, "GUARD fresh draft bytes drawn", |s| {
             self.draft_row(s).contains(text)
         });
     }
 
-    fn asks(&self) -> Vec<Event> {
+    pub(crate) fn asks(&self) -> Vec<Event> {
         self.tool
             .events()
             .lines()
@@ -345,11 +347,15 @@ impl Rig {
             .collect()
     }
 
-    fn submit(&self, pane: &str, text: &str, count: usize) {
+    pub(crate) fn submit(&self, pane: &str, text: &str, count: usize) {
         self.key(pane, "Enter");
         self.wait(pane, "one literal ask confirmed", |s| {
-            s.contains("sent") && self.asks().len() == count
+            s.contains("sent")
+                && self.asks().len() == count
+                && self.draft_row(s).trim().is_empty()
+                && self.tool.submitted().contains(text)
         });
+        self.free();
         let asks = self.asks();
         let ask = asks.last().expect("new ask");
         assert_eq!(ask.summary.as_deref(), Some(text), "literal journal body");
@@ -366,7 +372,7 @@ impl Rig {
         );
     }
 
-    fn lease(&self) -> File {
+    pub(crate) fn lease(&self) -> File {
         let file = OpenOptions::new()
             .append(true)
             .create(true)
@@ -384,7 +390,7 @@ impl Rig {
         );
     }
 
-    fn held(&self) {
+    pub(crate) fn held(&self) {
         let file = OpenOptions::new()
             .append(true)
             .open(self.tool.dir.join(WRITER))
@@ -395,11 +401,12 @@ impl Rig {
         );
     }
 
-    fn free(&self) {
+    pub(crate) fn free(&self) {
         let until = Instant::now() + WAIT;
         loop {
             let file = OpenOptions::new()
                 .append(true)
+                .create(true)
                 .open(self.tool.dir.join(WRITER))
                 .expect("lease exists");
             match file.try_lock() {
@@ -476,7 +483,7 @@ fn outside_tmux_app_writes_home_as_console_local_and_keeps_the_five_open_cap() {
         s.contains("5 requests open")
     });
     assert_eq!(rig.asks().len(), 5);
-    rig.held();
+    rig.free();
     rig.key(&pane, "C-u");
     rig.typed(&pane, "/close");
     rig.key(&pane, "Enter");
@@ -504,7 +511,7 @@ fn successful_entry_drops_its_old_chunk_tail_and_names_that_drop() {
     assert!(screen.contains("dropped"));
     assert!(!rig.draft_row(&screen).contains("TAIL"));
     assert!(rig.asks().is_empty(), "old Enter submits nothing");
-    rig.held();
+    rig.free();
     rig.typed(&pane, "fresh-after-entry");
     rig.submit(&pane, "fresh-after-entry", 1);
 }
@@ -530,7 +537,7 @@ fn old_entry_enter_cannot_accept_or_submit_a_line_offered_by_that_acquisition() 
         rig.asks().is_empty(),
         "old Enter cannot send the offered line"
     );
-    rig.held();
+    rig.free();
     rig.key(&pane, "Enter");
     rig.wait(&pane, "S1 fresh Enter fills the offered line", |s| {
         rig.draft_row(s).contains("kept-before-entry")
@@ -617,7 +624,7 @@ fn processing_lag_cannot_submit_a_copied_stream_at_any_byte_boundary() {
             "R-B2 delayed old entry acquires with a new real instant",
             writing,
         );
-        rig.held();
+        rig.free();
         assert!(
             !rig.draft_row(&screen).contains('X'),
             "split={split}: old bytes never enter the draft"
@@ -638,75 +645,51 @@ fn processing_lag_cannot_submit_a_copied_stream_at_any_byte_boundary() {
 }
 
 #[test]
-fn busy_entry_is_held_across_reads_and_retry_drops_its_own_old_tail() {
+fn a_busy_writer_lease_does_not_hold_entry_or_swallow_composer_keys() {
     let rig = Rig::new("wbheld");
     let pane = rig.console(false);
     let witness = rig.lease();
     rig.raw(&pane, "i");
-    let busy = format!("not writing: an ae app is writing to {}", rig.home);
-    rig.wait(&pane, "R-B4 busy entry names writer and stays held", |s| {
-        s.contains(&busy) && s.contains("Esc browses")
+    rig.wait(&pane, "S2 busy lease does not gate composing", writing);
+    rig.typed(&pane, "fresh-with-held-lease");
+    rig.key(&pane, "Enter");
+    let started = Instant::now();
+    rig.wait(&pane, "S2 busy submit refuses and keeps writing", |s| {
+        writing(s) && s.contains("another window is sending to") && s.contains("Enter retries")
     });
-    for text in ["j", "\t", "q", "n", "TAIL"] {
-        rig.raw(&pane, text);
-        rig.wait(&pane, "held stream cannot become browse commands", |s| {
-            s.contains(&busy) && s.contains("Agents")
-        });
-    }
-    drop(witness);
-    // Release alone does not promote a HELD attempt; retry is explicit.
-    rig.raw(&pane, "q");
-    rig.wait(&pane, "released lease does not end held mode", |s| {
-        s.contains(&busy)
-    });
-    rig.old_chunk(&pane, "\rRETRY\r");
-    let screen = rig.wait(
-        &pane,
-        "fresh Enter retry acquires and drops old retry tail",
-        |s| writing(s) && s.contains("keys typed before writing started"),
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(
+        rig.draft_row(&rig.screen(&pane))
+            .contains("fresh-with-held-lease")
     );
-    assert!(screen.contains("Agents"), "held keys never left the frame");
-    assert!(!rig.draft_row(&screen).contains("RETRY"));
+    rig.typed(&pane, "-edited");
     assert!(rig.asks().is_empty());
-    rig.held();
-    rig.typed(&pane, "retry-fresh");
-    rig.submit(&pane, "retry-fresh", 1);
+    drop(witness);
+    rig.submit(&pane, "fresh-with-held-lease-edited", 1);
+    rig.free();
 }
 
 #[test]
-fn nonregular_lease_has_its_own_held_refusal_and_reads_no_kept_draft() {
+fn a_nonregular_lease_refuses_only_submit_and_keeps_the_draft() {
     let rig = Rig::new("wbnode");
-    rig.kept("disk-secret");
     fs::remove_file(rig.tool.dir.join(WRITER)).expect("replace fixture lease node");
     fs::create_dir(rig.tool.dir.join(WRITER)).expect("directory lease node");
     let pane = rig.console(false);
     rig.raw(&pane, "i");
-    let screen = rig.wait(&pane, "R-B4 nonregular refusal distinct from busy", |s| {
-        s.contains("not writing") && (s.contains("regular") || s.contains("directory"))
+    rig.wait(&pane, "S2 lease shape does not gate composing", writing);
+    rig.typed(&pane, "nonregular-kept");
+    rig.key(&pane, "Enter");
+    let screen = rig.wait(&pane, "nonregular submit names its own refusal", |s| {
+        s.contains("refused") && (s.contains("regular") || s.contains("directory"))
     });
-    assert!(!screen.contains("an ae app is writing"));
-    assert!(
-        !screen.contains("disk-secret"),
-        "R-B6 failed entry never restores"
-    );
-    assert!(
-        !offer_shown(&screen),
-        "S1 a failed entry neither offers nor claims the legacy orphan"
-    );
-    rig.raw(&pane, "q\tTAIL");
-    rig.wait(&pane, "nonregular HELD mode swallows keys", |s| {
-        s.contains("not writing") && s.contains("Agents")
-    });
-    // S1 migration: unchanged bytes at the legacy name also prove the
-    // failed entry never claimed (renamed) the orphan (invariant 4).
-    assert_eq!(
-        fs::read_to_string(rig.tool.dir.join("console.draft")).expect("kept file"),
-        "disk-secret"
-    );
+    assert!(writing(&screen));
+    assert!(rig.draft_row(&screen).contains("nonregular-kept"));
+    assert_no_kept_draft(&rig.tool.dir);
+    assert!(rig.asks().is_empty() && rig.tool.submitted().is_empty());
 }
 
 #[test]
-fn held_entry_ends_only_on_escape_interrupt_or_a_click() {
+fn leaving_composing_never_unlocks_another_windows_lease() {
     for (tag, action) in [
         ("wbheldesc", "Escape"),
         ("wbheldstop", "C-c"),
@@ -716,9 +699,7 @@ fn held_entry_ends_only_on_escape_interrupt_or_a_click() {
         let pane = rig.console(false);
         let witness = rig.lease();
         rig.raw(&pane, "i");
-        rig.wait(&pane, "R-B4 refused entry remains held", |s| {
-            s.contains("not writing: an ae app is writing to")
-        });
+        rig.wait(&pane, "S2 another lease never refuses entry", writing);
         if action == "click" {
             rig.click(&pane, "Agents");
         } else {
@@ -733,22 +714,16 @@ fn held_entry_ends_only_on_escape_interrupt_or_a_click() {
             {
                 assert!(
                     Instant::now() < until,
-                    "R-B4 fresh Interrupt quits HELD mode"
+                    "fresh Interrupt quits empty composing"
                 );
                 std::thread::sleep(Duration::from_millis(25));
             }
         } else {
-            rig.wait(
-                &pane,
-                "R-B4 escape/click returns HELD mode to browsing",
-                |s| {
-                    s.contains("Enter writes")
-                        && !s.contains("not writing: an ae app is writing to")
-                },
-            );
+            rig.wait(&pane, "escape/click returns to browsing", |s| {
+                s.contains("Enter writes")
+            });
         }
         assert!(rig.asks().is_empty());
-        // Ending a failed attempt cannot unlock the other writer's handle.
         rig.held();
         drop(witness);
         rig.free();
@@ -811,7 +786,7 @@ fn session_card_click_leaves_write_mode_and_release() {
 }
 
 #[test]
-fn settings_suspends_writing_with_the_lease_and_draft_then_resumes() {
+fn settings_suspends_the_per_window_binding_and_draft_then_resumes() {
     let rig = Rig::new("wbsettings");
     let pane = rig.console(false);
     rig.enter(&pane);
@@ -820,14 +795,14 @@ fn settings_suspends_writing_with_the_lease_and_draft_then_resumes() {
     rig.wait(&pane, "GUARD Settings overlay", |s| {
         s.contains("Quota") && s.contains("About")
     });
-    rig.held();
+    rig.free();
     rig.key(&pane, "Escape");
     rig.wait(
         &pane,
         "R-B5 closing Settings resumes the same writing draft",
         |s| writing(s) && s.contains("settings-draft"),
     );
-    rig.held();
+    rig.free();
     rig.escape(&pane);
 }
 
@@ -901,7 +876,7 @@ fn acquisition_offers_the_legacy_line_once_then_restores_it_as_its_own() {
         !rig.draft_row(&offered).contains("disk-first"),
         "S1 the offer fills nothing"
     );
-    rig.held();
+    rig.free();
     rig.key(&pane, "Enter");
     rig.wait(
         &pane,
@@ -932,21 +907,13 @@ fn acquisition_offers_the_legacy_line_once_then_restores_it_as_its_own() {
     assert_kept_drafts(&rig.tool.dir, &[b"disk-latest"]);
     rig.escape(&pane);
     rig.raw(&pane, "i");
-    // Acquisition proof independent of the offered frame: the kernel
-    // lease is held. This process already carries the first offer's
-    // notice, so the second offer is proven by the filling Enter.
-    let until = Instant::now() + WAIT;
-    loop {
-        let file = OpenOptions::new()
-            .append(true)
-            .open(rig.tool.dir.join(WRITER))
-            .expect("lease exists");
-        if matches!(file.try_lock(), Err(TryLockError::WouldBlock)) {
-            break;
-        }
-        assert!(Instant::now() < until, "reacquisition never held the lease");
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    // S2: composing holds no lease. Wait for actual writing after Esc,
+    // not the previous offer's lane prose, before accepting the next offer.
+    rig.wait(
+        &pane,
+        "S1 next orphan is offered in the new writing entry",
+        |s| writing(s) && offer_shown(s) && rig.draft_row(s).trim().is_empty(),
+    );
     rig.key(&pane, "Enter");
     rig.wait(&pane, "S1 the next orphan fills on its Enter", |s| {
         rig.draft_row(s).contains("disk-latest")
@@ -1000,8 +967,7 @@ fn owner_chat_submit_and_close_refuse_busy_without_waiting_or_writing_disk() {
         |s| s.contains("sent") && rig.asks().len() == 1,
     );
     rig.regular();
-    let (app, _) = rig.outside("app");
-    rig.enter(&app);
+    let witness = rig.lease(); // older core still holds its compose lease
     rig.raw(&chat, "chat-while-app-writes");
     rig.wait(&chat, "GUARD chat literal draft", |s| {
         s.contains("chat-while-app-writes")
@@ -1034,7 +1000,7 @@ fn owner_chat_submit_and_close_refuse_busy_without_waiting_or_writing_disk() {
         "busy close changed no open request"
     );
     rig.held();
-    rig.escape(&app);
+    drop(witness);
     rig.key(&chat, "C-u");
     rig.raw(&chat, "/close");
     rig.key(&chat, "Enter");
@@ -1187,36 +1153,33 @@ fn refresh_releases_an_identity_pair_or_home_that_is_no_longer_proven() {
 /// second attempt names it; after release, a non-recording holder reads
 /// unknown. Both refusals keep `Esc browses` on the row (I2 clip check).
 #[test]
-fn refusal_names_the_recording_holders_place_then_unknown_after_release() {
+fn submit_names_an_older_cores_recorded_holder_then_unknown() {
     let rig = Rig::new("wbcue");
-    let owner = rig.console(false);
-    rig.raw(&owner, "i");
-    rig.wait(&owner, "owner holds the kernel lease", writing);
-    let at = rig.tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        &owner,
-        "#{session_name} | #{window_index}",
-    ]);
-    let place = at.trim().replace(" | ", ":");
-    let want = format!("an ae app is writing to {} (held at {place})", rig.home);
     let (second, _) = rig.outside("second");
-    rig.raw(&second, "i");
-    rig.wait(&second, "refusal names the owner's recorded place", |s| {
-        s.contains(&want) && s.contains("Esc browses")
-    });
-    rig.key(&owner, "Escape");
-    rig.free();
     let witness = rig.lease();
-    rig.key(&second, "Escape");
-    rig.wait(&second, "held mode ends on escape", |s| {
-        s.contains("Enter writes")
-    });
+    fs::write(rig.tool.dir.join(WRITER), "1 work 0\n").expect("older core holder record");
     rig.raw(&second, "i");
-    let unknown = format!("an ae app is writing to {} (holder unknown)", rig.home);
+    rig.wait(&second, "S2 entry ignores another core's lease", writing);
+    rig.typed(&second, "mixed-core-draft");
+    rig.key(&second, "Enter");
+    rig.wait(
+        &second,
+        "submit names the older core's recorded place",
+        |s| {
+            s.contains("another window is sending to")
+                && s.contains("held at work:0")
+                && s.contains("Enter retries")
+        },
+    );
+    assert!(
+        rig.draft_row(&rig.screen(&second))
+            .contains("mixed-core-draft")
+    );
+    fs::write(rig.tool.dir.join(WRITER), "").expect("non-recording holder");
+    rig.key(&second, "Enter");
     rig.wait(&second, "non-recording holder reads unknown", |s| {
-        s.contains(&unknown) && s.contains("Esc browses")
+        s.contains("holder unknown") && s.contains("Enter retries")
     });
+    assert!(rig.asks().is_empty());
     drop(witness);
 }

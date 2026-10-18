@@ -264,8 +264,8 @@ fn a_released_lease_stays_held_by_the_flight_and_both_locks_are_held_until_it_la
 
 /// The lease a flight keeps is its own incarnation's. A session replaced under
 /// the same name while the ask is in flight has a lease of its own, and the
-/// writing locks that one: a competitor already holding it still refuses the
-/// app, and the app's hold, once it has it, is not the flight's old file.
+/// new window may compose despite its held lease; submissions use that new
+/// lease after the old Flight ends, never its old unlinked file.
 #[test]
 fn a_replaced_session_is_never_entered_through_the_old_flights_lease() {
     let root = Root::new("flight-replaced");
@@ -277,6 +277,7 @@ fn a_replaced_session_is_never_entered_through_the_old_flights_lease() {
     entered(&mut app, "one", at);
     assert!(app.deliver());
     gate.entered.recv_timeout(PROMPT).expect("the first began");
+    let old_lease = Arc::clone(&app.flight.as_ref().unwrap().lease);
     app.write(false);
     // Another incarnation under the same name: a new directory, a new id.
     let new_id = ID.replace("1234", "bbbb");
@@ -289,22 +290,38 @@ fn a_replaced_session_is_never_entered_through_the_old_flights_lease() {
         .expect("the replacement's lease is its own: the old flight holds an unlinked file");
     app.take(Reading::Owner, Instant::now());
     app.write(true);
-    assert!(!app.composing(), "entered through the old flight's lease");
-    assert!(app.held.is_some(), "the refusal is shown");
-    drop(rival);
-    app.write(true);
-    assert!(app.composing(), "{:?}", app.held);
-    let (mine, flight) = (app.lease.as_ref().unwrap(), app.flight.as_ref().unwrap());
-    assert!(
-        !Arc::ptr_eq(&mine.held, &flight.lease),
-        "the replacement is written under the old flight's lease"
-    );
-    assert!(!lease_free(&root), "the replacement's lease is held");
+    assert!(app.composing(), "S2 rival lease never refuses composing");
+    assert!(app.held.is_none());
+    entered(&mut app, "two", Instant::now());
+    assert!(app.deliver());
+    assert!(said(&app, "still being delivered"), "one Flight per app");
+    assert_eq!(drafted(&app), "two");
     gate.release.send(()).unwrap();
     assert!(
         pump(&mut app, |app| app.flight.is_none()),
         "the flight ended"
     );
+    assert_eq!(app.compose(Key::Enter, Instant::now()), Some(()));
+    assert!(app.deliver());
+    assert!(said(&app, "another window is sending to api"));
+    assert_eq!(drafted(&app), "two", "new lease contention keeps the draft");
+    assert!(gate.entered.try_recv().is_err());
+    drop(rival);
+    assert_eq!(app.compose(Key::Enter, Instant::now()), Some(()));
+    assert!(app.deliver());
+    gate.entered
+        .recv_timeout(PROMPT)
+        .expect("replacement delivery began");
+    assert!(
+        !Arc::ptr_eq(&old_lease, &app.flight.as_ref().unwrap().lease),
+        "the replacement submits under its own lease"
+    );
+    assert!(
+        !lease_free(&root),
+        "new Flight holds the replacement's lease"
+    );
+    gate.release.send(()).unwrap();
+    assert!(pump(&mut app, |app| app.flight.is_none()));
 }
 
 /// `/close` needs the admission an ask in flight holds: refused by name, then
