@@ -342,12 +342,13 @@ pub(crate) fn prove_open(
 /// became of it, or why it was refused before anything was sent.
 pub(crate) fn submit_ask(
     console: &Console,
+    record: Arc<crate::store::DraftRecord>,
     owns: impl FnOnce() -> Result<(), String>,
     raw: &[u8],
     seat: &str,
     body: String,
 ) -> Result<(String, submit::Outcome), String> {
-    let (ask, admitted) = admit_ask(console, owns, raw, seat, body)?;
+    let (ask, admitted) = admit_ask(console, record, owns, raw, seat, body)?;
     let id = ask.id().to_owned();
     let outcome = admitted.finish(&mut console.held.borrow_mut(), &id, || ask.run());
     Ok((id, outcome))
@@ -362,17 +363,19 @@ pub(crate) fn submit_ask(
 /// Why nothing may be delivered.
 pub(crate) fn admit_ask(
     console: &Console,
+    record: Arc<crate::store::DraftRecord>,
     owns: impl FnOnce() -> Result<(), String>,
     raw: &[u8],
     seat: &str,
     body: String,
 ) -> Result<(Carry, submit::Admitted), String> {
-    let admitted = submit::admit(
+    let admitted = submit::admit_record(
         &mut console.held.borrow_mut(),
         &console.dir,
         &console.name,
         raw,
         owns,
+        record,
     )?;
     Ok((Carry::of(console, seat, body), admitted))
 }
@@ -627,6 +630,7 @@ impl Carry {
 /// A console that takes input from its terminal.
 pub(super) struct Term {
     input: Input,
+    recovery: submit::Recovery,
     clipboard: crate::clipboard::Job<Instant>,
     pair: Vec<Seat>,
     reads: Reads,
@@ -649,6 +653,7 @@ impl Term {
         let declared = doors::declared_server(crate::shape::current());
         Ok(Self {
             input: Input::new(pair.iter().map(|seat| seat.name.clone()).collect()),
+            recovery: crate::console::submit::Recovery::default(),
             clipboard: None,
             pair,
             reads: Reads(Some(reads)),
@@ -683,7 +688,15 @@ impl Term {
         let mut effects = self.input.tick(reading, Instant::now());
         crate::clipboard::sweep(&mut self.input);
         if !was && self.input.taking() {
-            effects.extend(self.input.restore(submit::restore(&console.dir)));
+            if self.input.offering() {
+                effects.extend(self.input.reoffer());
+            } else if self.input.draft().is_empty() {
+                let draft = self
+                    .recovery
+                    .record(&console.dir)
+                    .map_or_else(submit::Draft::Refused, |record| submit::recover(&record));
+                effects.extend(self.input.restore(draft));
+            }
         }
         effects
     }
@@ -709,13 +722,39 @@ impl Term {
         } else {
             deadline
         };
+        let deadline = if self.input.offering() {
+            deadline.min(Instant::now() + input::ESC_IDLE)
+        } else {
+            deadline
+        };
         let effects = match self.reads.wait(deadline) {
             Got::Read(stamp, bytes) => self.input.chunk(&bytes, stamp),
             Got::Ended => self.input.closed(),
-            Got::Due => return None,
+            Got::Due => {
+                let effects = self.input.idle(Instant::now());
+                if effects.is_empty() {
+                    return None;
+                }
+                effects
+            }
         };
         crate::clipboard::sweep(&mut self.input);
         let act = |effect| match effect {
+            Effect::DiscardDraft => {
+                let result = self.owned(console).and_then(|()| {
+                    self.recovery
+                        .record(&console.dir)?
+                        .clear()
+                        .map_err(|why| why.to_string())
+                });
+                match result {
+                    Ok(()) => {
+                        self.input.discarded();
+                        Effect::Print("kept line discarded".to_owned())
+                    }
+                    Err(why) => Effect::Print(format!("refused: {why}")),
+                }
+            }
             Effect::ImagePaste => {
                 if self.owned(console).is_ok()
                     && let Some(epoch) = self.input.writer_epoch()
@@ -828,8 +867,19 @@ impl Term {
 
     /// Carry one ask through the helpers' own tracked path, as the console.
     fn ask(&mut self, console: &mut Console, raw: &[u8], seat: &str, body: String) -> Effect {
+        // Refuse ownership before opening even this process's lifetime record.
+        let record = still(&self.pair, console.seats())
+            .and_then(|()| self.owned(console))
+            .and_then(|()| self.recovery.record(&console.dir));
+        let record = match record {
+            Ok(record) => record,
+            Err(why) => {
+                self.input.put_back(raw);
+                return Effect::Print(format!("refused: {why}"));
+            }
+        };
         let owns = || still(&self.pair, console.seats()).and_then(|()| self.owned(console));
-        let (id, outcome) = match submit_ask(console, owns, raw, seat, body) {
+        let (id, outcome) = match submit_ask(console, record, owns, raw, seat, body) {
             Ok(submitted) => submitted,
             Err(why) => {
                 self.input.put_back(raw);
@@ -974,6 +1024,7 @@ mod tests {
         let pair = console.seats().and_then(pair_of).unwrap();
         let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
         let mut term = Term {
+            recovery: crate::console::submit::Recovery::default(),
             input,
             pair,
             reads: Reads(None),
@@ -993,12 +1044,16 @@ mod tests {
             format!("session_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n");
         std::fs::write(rig.0.join("s/meta"), meta).unwrap();
         let console = rig.console();
-        crate::store::open(&console.dir)
-            .publish_console_draft(b"kept")
+        let mut recovery = crate::console::submit::Recovery::default();
+        recovery
+            .record(&console.dir)
+            .unwrap()
+            .publish(b"kept")
             .unwrap();
         let pair = console.seats().and_then(pair_of).unwrap();
         let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
         let mut term = Term {
+            recovery,
             input,
             pair,
             reads: Reads(None),
@@ -1043,6 +1098,7 @@ mod tests {
         let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
         let (reads, screen) = (Reads(None), Screen::default());
         let term = Term {
+            recovery: crate::console::submit::Recovery::default(),
             input,
             pair,
             reads,
@@ -1132,6 +1188,7 @@ mod tests {
         let (input, reads, server, me) = (Input::default(), Reads(None), None, None);
         let screen = Screen::default();
         let mut term = Term {
+            recovery: crate::console::submit::Recovery::default(),
             input,
             pair,
             reads,
@@ -1239,6 +1296,7 @@ mod tests {
             "profile rows parse"
         );
         let mut term = Term {
+            recovery: crate::console::submit::Recovery::default(),
             input: Input::default(),
             pair,
             reads: Reads(None),

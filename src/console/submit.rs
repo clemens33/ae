@@ -3,6 +3,7 @@
 //! journal's, from its ownership read through its read-back.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use super::lane;
 use crate::events::Event;
@@ -94,6 +95,8 @@ pub fn read_back(events: &[Event], id: &str, said: &str) -> Outcome {
 pub enum Draft {
     Nothing,
     Kept(Vec<u8>),
+    /// Exclusively claimed from an earlier instance; consent fills only.
+    Offer(Vec<u8>),
     /// Why the kept draft is not put back.
     Refused(String),
 }
@@ -102,14 +105,54 @@ pub enum Draft {
 /// lock, so a submit still in flight can leave a line that is already sent.
 #[must_use]
 pub fn restore(dir: &Path) -> Draft {
+    restored(store::open(dir).console_draft(), false)
+}
+
+pub(crate) fn recover(record: &store::DraftRecord) -> Draft {
+    let (read, offered) = record.recover();
+    restored(read, offered)
+}
+
+fn restored(read: Result<SourceRead, Oversized>, offered: bool) -> Draft {
     let no = |what: String| Draft::Refused(format!("the kept draft {what} and was not restored"));
-    match store::open(dir).console_draft() {
+    match read {
         Ok(SourceRead::Absent) => Draft::Nothing,
         Ok(SourceRead::Ready(bytes)) if bytes.is_empty() => Draft::Nothing,
+        Ok(SourceRead::Ready(bytes)) if offered => Draft::Offer(bytes),
         Ok(SourceRead::Ready(bytes)) => Draft::Kept(bytes),
         Ok(SourceRead::Invalid(what)) => no(format!("is not a regular file ({what})")),
         Ok(SourceRead::Unreadable(why)) => no(format!("could not be read ({why})")),
         Err(Oversized) => no(format!("is over {} bytes", store::CONSOLE_DRAFT_CAP)),
+    }
+}
+
+/// One process identity, with one lifetime hold per touched session. Browsing
+/// never drops these holds. An exec/restart mints a new identity, so the old
+/// process's durable records become orphans subject to the normal offer.
+pub(crate) struct Recovery {
+    instance: String,
+    records: std::collections::BTreeMap<std::path::PathBuf, Arc<store::DraftRecord>>,
+}
+
+impl Default for Recovery {
+    fn default() -> Self {
+        Self {
+            instance: crate::launch::generate_uuid(),
+            records: std::collections::BTreeMap::default(),
+        }
+    }
+}
+
+impl Recovery {
+    pub(crate) fn record(&mut self, dir: &Path) -> Result<Arc<store::DraftRecord>, String> {
+        if let Some(record) = self.records.get(dir) {
+            return Ok(Arc::clone(record));
+        }
+        let record = store::DraftRecord::open(dir, &self.instance)
+            .map_err(|why| format!("the draft lifetime lock is not free ({why})"))?;
+        let record = Arc::new(record);
+        self.records.insert(dir.to_owned(), Arc::clone(&record));
+        Ok(record)
     }
 }
 
@@ -155,11 +198,31 @@ pub(crate) fn submit_held(
 /// ownership proven, the draft kept and the open-ask cap passed. Dropping it
 /// lets the lock go; only [`Admitted::finish`] carries the ask.
 pub(crate) struct Admitted {
-    store: store::SessionStore,
     dir: std::path::PathBuf,
-    /// Whether this admission kept a draft, so a sent ask clears it.
-    drafted: bool,
+    /// The exact record this admission kept; its lifetime travels with Flight.
+    draft: Option<Kept>,
     _lock: std::fs::File,
+}
+
+enum Kept {
+    Legacy(store::SessionStore),
+    Instance(Arc<store::DraftRecord>),
+}
+
+impl Kept {
+    fn publish(&self, raw: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::Legacy(store) => store.publish_console_draft(raw),
+            Self::Instance(record) => record.publish(raw),
+        }
+    }
+
+    fn clear(&self) -> std::io::Result<()> {
+        match self {
+            Self::Legacy(store) => store.clear_console_draft(),
+            Self::Instance(record) => record.clear(),
+        }
+    }
 }
 
 /// Everything a submit proves before anything is delivered: the admission
@@ -175,11 +238,39 @@ pub(crate) fn admit(
     raw: &[u8],
     owns: impl FnOnce() -> Result<(), String>,
 ) -> Result<Admitted, String> {
-    let store = store::open(dir);
+    admit_kept(
+        held,
+        dir,
+        session,
+        raw,
+        owns,
+        Kept::Legacy(store::open(dir)),
+    )
+}
+
+pub(crate) fn admit_record(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    raw: &[u8],
+    owns: impl FnOnce() -> Result<(), String>,
+    record: Arc<store::DraftRecord>,
+) -> Result<Admitted, String> {
+    admit_kept(held, dir, session, raw, owns, Kept::Instance(record))
+}
+
+fn admit_kept(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    raw: &[u8],
+    owns: impl FnOnce() -> Result<(), String>,
+    draft: Kept,
+) -> Result<Admitted, String> {
     let lock = admission(dir)?;
     owns()?;
-    store
-        .publish_console_draft(raw)
+    draft
+        .publish(raw)
         .map_err(|why| format!("the draft could not be kept ({why})"))?;
     let events = super::snapshot_in(held, dir)?;
     let open = lane::open_asks(&events, session);
@@ -190,9 +281,8 @@ pub(crate) fn admit(
         ));
     }
     Ok(Admitted {
-        store,
         dir: dir.to_owned(),
-        drafted: true,
+        draft: Some(draft),
         _lock: lock,
     })
 }
@@ -239,9 +329,8 @@ pub(crate) fn admit_external(
         ));
     }
     Ok(Admission::Fresh(Admitted {
-        store: store::open(dir),
         dir: dir.to_owned(),
-        drafted: false,
+        draft: None,
         _lock: lock,
     }))
 }
@@ -264,10 +353,10 @@ impl Admitted {
         let Outcome::Sent(id, None) = outcome else {
             return outcome;
         };
-        if !self.drafted {
+        let Some(draft) = self.draft else {
             return Outcome::Sent(id, None);
-        }
-        let kept = self.store.clear_console_draft().err();
+        };
+        let kept = draft.clear().err();
         let kept = kept.map(|why| format!("the draft is kept ({why})"));
         Outcome::Sent(id, kept)
     }

@@ -263,8 +263,20 @@ Residuals: an Esc and an Enter that arrive in one terminal read are read as Alt+
 and a chat window started by an older core has Enter and `^J` as the same byte until
 `prefix h` reopens it (the window sets `-icrnl`, so Enter reads as CR and `^J` as LF).
 
-When a chat becomes the owner it puts a kept draft back in the composer
-literally — a line kept before a crash or an unconfirmed ask — under `Kept line,
+Each writing process keeps its own recovery record, protected by a lifetime
+lock even while it browses. A live window's kept line stays in that window.
+When writing starts, a line from an earlier process is offered only if its
+lifetime lock proves that process gone. Unknown liveness skips the record.
+The offer says `kept line from an earlier window; may already have been sent`,
+with `Enter restores` and `Esc discards`. Enter fills the composer only; a
+second fresh Enter sends. Other keys leave the offer standing. The offer
+exclusively claims one line: another window cannot recover it while the
+claimant lives, and quitting or crashing leaves it recoverable. Old unstamped
+recovery files follow the same offer flow. A restart, including an installed
+app following an upgrade, starts a new process identity.
+
+When a chat becomes the owner it puts its own kept draft back in the composer
+literally — a line kept after a refusal or an unconfirmed ask — under `Kept line,
 maybe already sent: check <every lead-pair seat> panes (prefix H) before Enter`.
 Nothing in it is read as a command until you press Enter; the file stays until an
 ask is confirmed (`^U` clears the composer, not the file, so a later promotion

@@ -242,8 +242,13 @@ line in the lane of the session it is about (an unconfirmed or undelivered ask
 as its own lane line, with the hint row saying the same until the lane has it); a line about a session no longer recorded shows in
 whichever lane is selected.
 
-Writing starts the moment this app takes the session's writer lease. Keys read
-before that moment — the rest of the read that started writing included — are
+Writing starts the moment this app takes the session's writer lease. An
+earlier window's [kept-line offer](chat.md#input) is accepted only on a
+fresh Enter, which fills the composer; the next Enter sends. Esc discards that
+offered line. Browsing keeps an undecided offer and its exclusive claim until
+this app exits. Each window's own kept lines stay private while it lives.
+
+Keys read before writing starts — the rest of the read that started writing included — are
 dropped, and one `ae` line says `dropped the keys typed before writing
 started`; `Esc` and `^C` are never dropped. While another app writes, or when
 the lease's lock file is not a regular file, writing does not start: the

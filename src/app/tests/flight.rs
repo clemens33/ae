@@ -114,7 +114,7 @@ fn an_ask_in_flight_does_not_stop_the_loop_and_its_outcome_lands_when_it_ends() 
     assert_eq!(app.note().as_deref(), Some("sending to lead…"));
     assert!(!sent(&app), "nothing is said before the delivery ends");
     assert_eq!(
-        crate::console::submit::restore(&dir),
+        crate::console::submit::recover(&app.recovery.record(&dir).unwrap()),
         crate::console::submit::Draft::Kept(b"hello".to_vec()),
         "the line is kept while it is in flight"
     );
@@ -125,7 +125,7 @@ fn an_ask_in_flight_does_not_stop_the_loop_and_its_outcome_lands_when_it_ends() 
     gate.release.send(()).unwrap();
     assert!(pump(&mut app, sent), "the outcome landed: {id}");
     assert_eq!(
-        crate::console::submit::restore(&dir),
+        crate::console::submit::recover(&app.recovery.record(&dir).unwrap()),
         crate::console::submit::Draft::Nothing,
         "a sent ask clears the kept draft"
     );
@@ -194,7 +194,7 @@ fn an_unrecorded_delivery_keeps_the_draft_and_says_so_when_it_ends() {
         app.notices
     );
     assert_eq!(
-        crate::console::submit::restore(&dir),
+        crate::console::submit::recover(&app.recovery.record(&dir).unwrap()),
         crate::console::submit::Draft::Kept(b"lost".to_vec()),
         "an ask nothing recorded keeps its draft"
     );
@@ -409,7 +409,7 @@ fn a_delivery_that_dies_lands_as_unrecorded_and_frees_the_lock() {
     assert!(!sent(&app));
     assert!(admission_free(&root), "a dead thread let the lock go");
     assert_eq!(
-        crate::console::submit::restore(&dir),
+        crate::console::submit::recover(&app.recovery.record(&dir).unwrap()),
         crate::console::submit::Draft::Kept(b"doomed".to_vec()),
         "an ask nothing recorded keeps its draft"
     );

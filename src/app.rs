@@ -370,6 +370,7 @@ struct App {
     /// Each incarnation's input, by `(name, session_id)`: its draft and
     /// speaker outlive a writer, until a fleet read proves it gone.
     inputs: BTreeMap<(String, String), Input>,
+    recovery: submit::Recovery,
     /// The lead pair each incarnation was first written with: a changed pair
     /// refuses rather than sending elsewhere.
     bound: BTreeMap<(String, String), Vec<Seat>>,
@@ -537,6 +538,7 @@ impl App {
             overview: overview::Overview::default(),
             pair: Vec::new(),
             inputs: BTreeMap::new(),
+            recovery: submit::Recovery::default(),
             bound: BTreeMap::new(),
             read_only: "the fleet is not read yet".to_owned(),
             lease: None,
@@ -1249,7 +1251,7 @@ impl App {
         // Stamped before the tmux call: keys read while it runs still count.
         let at = Instant::now();
         self.note_holder(&held.file);
-        let draft = submit::restore(console.dir());
+        let record = self.recovery.record(console.dir())?;
         self.lease = Some(Lease {
             held,
             at,
@@ -1262,16 +1264,19 @@ impl App {
             input
         });
         let how = "(Agents: n/p, oo opens a seat)";
-        let restored = input
-            .draft()
-            .is_empty()
-            .then(|| input.restore_for(draft, how));
+        let restored = if input.offering() {
+            input.reoffer()
+        } else if input.draft().is_empty() {
+            input.restore_for(submit::recover(&record), how)
+        } else {
+            Vec::new()
+        };
         self.writer = Some(Binding {
             entry: self.entries,
             console,
             seats,
         });
-        self.effects(restored.unwrap_or_default());
+        self.effects(restored);
         Ok(())
     }
 
@@ -1491,7 +1496,15 @@ impl App {
             _ => origin,
         };
         match key {
-            Key::Escape => self.write(false),
+            Key::Escape
+                if !self
+                    .writer
+                    .as_ref()
+                    .and_then(|w| self.inputs.get(&w.key()))
+                    .is_some_and(Input::offering) =>
+            {
+                self.write(false);
+            }
             Key::Interrupt if self.clear_draft(origin) => {}
             Key::Interrupt => return None,
             _ if self.lease.as_ref().is_some_and(|lease| origin < lease.at) => {
@@ -2307,6 +2320,28 @@ impl App {
             let about = self.model.selected().or(self.home.as_deref());
             let about = about.unwrap_or_default().to_owned();
             let line = match effect {
+                Effect::DiscardDraft => {
+                    let result = self.owns(&Cell::default()).and_then(|()| {
+                        let writer = self.writer.as_ref().ok_or("not writing")?;
+                        self.recovery
+                            .record(writer.console.dir())?
+                            .clear()
+                            .map_err(|why| why.to_string())
+                    });
+                    match result {
+                        Ok(()) => {
+                            if let Some(input) = self
+                                .writer
+                                .as_ref()
+                                .and_then(|w| self.inputs.get_mut(&w.key()))
+                            {
+                                input.discarded();
+                            }
+                            "kept line discarded".to_owned()
+                        }
+                        Err(why) => format!("refused: {why}"),
+                    }
+                }
                 Effect::ImagePaste => {
                     if self.owns(&Cell::default()).is_ok()
                         && let Some(w) = &self.writer
@@ -2410,6 +2445,7 @@ impl App {
         };
         let held = Arc::clone(&lease.held);
         let (console, lost) = (&writer.console, Cell::default());
+        let record = self.recovery.record(console.dir())?;
         let owns = || {
             self.owns(&lost)?;
             let name = console.name();
@@ -2417,7 +2453,7 @@ impl App {
             let routed = routed.map(drop).map_err(|why| why.message());
             routed.inspect_err(|why| lost.set(Some(why.clone())))
         };
-        let admitted = term::admit_ask(console, owns, raw, seat, body);
+        let admitted = term::admit_ask(console, record, owns, raw, seat, body);
         self.unproven(lost, raw);
         let (ask, admitted) = admitted.map_err(|why| format!("refused: {why}"))?;
         let id = ask.id().to_owned();
@@ -4704,6 +4740,11 @@ mod tests {
             "no record"
         );
         assert_eq!(super::submit::restore(&dir), super::submit::Draft::Nothing);
+        assert_eq!(
+            super::submit::recover(&app.recovery.record(&dir).expect("own lifetime")),
+            super::submit::Draft::Nothing,
+            "no own recovery bytes were published"
+        );
         let body = std::fs::remove_dir(dir.join("messages")).map_err(|why| why.kind());
         assert_eq!(body, Err(std::io::ErrorKind::NotFound), "no body written");
         assert!(!app.composing(), "and no writing");
@@ -4917,8 +4958,12 @@ mod tests {
     fn only_an_acquisition_into_an_empty_composer_restores_the_kept_line() {
         let root = Root::new("take");
         let store = crate::store::open(&root.0.join("sessions").join("api"));
-        store.publish_console_draft(b"kept").expect("a kept draft");
         let (mut app, _reader) = housed(&root);
+        app.recovery
+            .record(store.dir())
+            .expect("own lifetime")
+            .publish(b"kept")
+            .expect("a kept draft");
         app.take(Reading::Owner, Instant::now());
         assert_eq!(drafted(&app), "", "a promotion restores nothing");
         let at = writing(&mut app);
@@ -7815,6 +7860,11 @@ mod tests {
         let q = vec![(Key::Text(b"q".to_vec()), Instant::now())];
         assert_eq!(take_keys(&mut app, q), Some(false), "q stays swallowed");
         assert_eq!(super::submit::restore(&dir), super::submit::Draft::Nothing);
+        assert_eq!(
+            super::submit::recover(&app.recovery.record(&dir).expect("own lifetime")),
+            super::submit::Draft::Nothing,
+            "no own recovery bytes were published"
+        );
         assert!(matches!(
             crate::store::open(&dir).events_source(),
             crate::store::SourceRead::Absent

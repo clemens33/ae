@@ -144,7 +144,11 @@ impl Keys {
     /// `ESC` past [`ESC_IDLE`] is [`Key::Escape`], any other sequence stalled
     /// that long is dropped, and nothing inside a paste ever expires.
     pub fn idle(&mut self, now: Instant) -> Vec<(Key, Instant)> {
-        let Some(begun) = self.begun.filter(|_| self.app && self.paste.is_none()) else {
+        self.expired(now, self.app)
+    }
+
+    fn expired(&mut self, now: Instant, escape: bool) -> Vec<(Key, Instant)> {
+        let Some(begun) = self.begun.filter(|_| escape && self.paste.is_none()) else {
             return Vec::new();
         };
         if now.saturating_duration_since(begun) < ESC_IDLE {
@@ -1378,6 +1382,8 @@ pub enum Reading {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     ImagePaste,
+    /// Remove the claimed record; the offer stays pending until acknowledged.
+    DiscardDraft,
     /// Bracketed paste on or off, written before the line that announces it.
     Paste(bool),
     Print(String),
@@ -1422,7 +1428,20 @@ pub struct Input {
     seats: Option<Vec<SeatRef>>,
     /// The terminal's input has ended.
     closed: bool,
+    offer: Option<Offer>,
+    /// No key from the read that accepted/discarded an offer may submit.
+    spent: Option<Instant>,
 }
+
+#[derive(Debug)]
+struct Offer {
+    bytes: Vec<u8>,
+    how: String,
+    at: Instant,
+}
+
+const OFFER: &str =
+    "kept line from an earlier window; may already have been sent · Enter restores · Esc discards";
 
 impl Input {
     /// A read-only input for a lead pair, main seat first.
@@ -1482,6 +1501,14 @@ impl Input {
         }
         let said = match draft {
             Draft::Nothing => return Vec::new(),
+            Draft::Offer(bytes) => {
+                self.offer = Some(Offer {
+                    bytes,
+                    how: how.to_owned(),
+                    at: Instant::now(),
+                });
+                OFFER.to_owned()
+            }
             Draft::Kept(bytes) => {
                 self.composer.restore(&bytes);
                 let seats = self.pair.join(", ");
@@ -1492,9 +1519,33 @@ impl Input {
         vec![Effect::Print(said)]
     }
 
+    /// Re-entry presents the same claim, never discovering a second orphan.
+    pub(crate) fn reoffer(&mut self) -> Vec<Effect> {
+        let Some(offer) = &mut self.offer else {
+            return Vec::new();
+        };
+        offer.at = Instant::now();
+        vec![Effect::Print(OFFER.to_owned())]
+    }
+
+    pub(crate) fn offering(&self) -> bool {
+        self.offer.is_some()
+    }
+
+    pub(crate) fn discarded(&mut self) {
+        self.offer = None;
+    }
+
     /// One terminal read, stamped when the read returned.
     pub fn chunk(&mut self, bytes: &[u8], stamp: Instant) -> Vec<Effect> {
         let keys = self.keys.feed(bytes, stamp);
+        self.keyed(keys)
+    }
+
+    /// The chat normally consumes Esc sequences without a standalone Esc
+    /// action. Only a pending offer needs the same lone-Esc timeout as the app.
+    pub(crate) fn idle(&mut self, now: Instant) -> Vec<Effect> {
+        let keys = self.keys.expired(now, self.offering());
         self.keyed(keys)
     }
 
@@ -1507,7 +1558,28 @@ impl Input {
         };
         let mut effects = Vec::new();
         for (key, origin) in keys {
-            if origin < since {
+            if origin < since || self.spent.is_some_and(|spent| origin <= spent) {
+                continue;
+            }
+            if let Some(offer) = &self.offer
+                && self.since.is_some()
+            {
+                if origin < offer.at {
+                    continue;
+                }
+                match key {
+                    Key::Enter => {
+                        if let Some(offer) = self.offer.take() {
+                            effects.extend(self.restore_for(Draft::Kept(offer.bytes), &offer.how));
+                        }
+                        self.spent = Some(origin);
+                    }
+                    Key::Escape => {
+                        effects.push(Effect::DiscardDraft);
+                        self.spent = Some(origin);
+                    }
+                    _ => {}
+                }
                 continue;
             }
             if key == Key::ImagePaste {
@@ -1876,6 +1948,7 @@ pub fn paint(
             }
             // The console acts on these before it paints; nothing is drawn.
             Effect::Ask { .. }
+            | Effect::DiscardDraft
             | Effect::Close(_)
             | Effect::Open(_)
             | Effect::More(_)
@@ -1906,6 +1979,62 @@ mod tests {
     use std::time::{Duration, Instant};
 
     const WHY: &str = "input owned by window @2";
+
+    #[test]
+    fn a_pending_offer_cannot_be_accepted_at_a_read_only_chat() {
+        let mut input = Input::new(vec!["lead".to_owned()]);
+        let _ = input.tick(Reading::Owner, Instant::now());
+        let _ = input.restore(Draft::Offer(b"kept".to_vec()));
+        let _ = input.tick(Reading::NotOwner(WHY.to_owned()), Instant::now());
+        assert!(input.keyed(vec![(Key::Escape, Instant::now())]).is_empty());
+        assert!(input.chunk(b"\r", Instant::now()).is_empty());
+        assert_eq!(
+            input.chunk(b"/more 1\r", Instant::now()),
+            [Effect::More("1".to_owned())]
+        );
+        assert!(input.offering(), "read-only Enter cannot waive consent");
+        let _ = input.tick(Reading::Owner, Instant::now());
+        assert!(!input.reoffer().is_empty());
+        assert!(input.draft().is_empty());
+        let filled = input.chunk(b"\r", Instant::now());
+        assert!(
+            matches!(filled.as_slice(), [Effect::Print(line)] if line.contains("maybe already sent"))
+        );
+        assert_eq!(input.draft(), "kept");
+    }
+
+    #[test]
+    fn offer_acceptance_spends_its_entire_read_and_discard_waits_for_ack() {
+        let mut input = Input::new(vec!["lead".to_owned()]);
+        let _ = input.tick(Reading::Owner, Instant::now());
+        let acquiring = Instant::now();
+        let _ = input.restore(Draft::Offer(b"kept".to_vec()));
+        assert!(input.chunk(b"\r", acquiring).is_empty());
+        let filled = input.chunk(b"\r\rmore\r", Instant::now());
+        assert!(matches!(filled.as_slice(), [Effect::Print(_)]));
+        assert_eq!(
+            input.draft(),
+            "kept",
+            "the rest of that read neither edits nor sends"
+        );
+        assert!(matches!(
+            input.chunk(b"\r", Instant::now()).as_slice(),
+            [Effect::Ask { .. }]
+        ));
+        let _ = input.restore(Draft::Offer(b"another".to_vec()));
+        assert_eq!(
+            input.keyed(vec![(Key::Escape, Instant::now())]),
+            [Effect::DiscardDraft]
+        );
+        assert!(
+            input.offering(),
+            "failed storage acknowledgement keeps the offer"
+        );
+        assert!(!input.reoffer().is_empty());
+        input.discarded();
+        assert!(!input.offering());
+        assert!(input.draft().is_empty());
+    }
 
     fn size(width: usize, height: usize) -> Size {
         Size { width, height }

@@ -510,6 +510,117 @@ pub fn open(dir: &Path) -> SessionStore {
     }
 }
 
+/// One writing process's recovery record in a session. The lifetime hold is
+/// opened before any publication and outlives browse mode and delivery threads.
+/// Lock files stay in place: unlinking one would split a lifetime into two locks.
+#[derive(Debug)]
+pub(crate) struct DraftRecord {
+    path: PathBuf,
+    _lifetime: File,
+}
+
+impl DraftRecord {
+    /// Open this instance's lifetime hold, without waiting or publishing bytes.
+    pub(crate) fn open(dir: &Path, instance: &str) -> io::Result<Self> {
+        let name = format!("{CONSOLE_DRAFT}.{instance}");
+        if console_draft_instance(&name).is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid draft instance",
+            ));
+        }
+        let path = dir.join(name);
+        let lifetime = lock(&lock_path(&path), Duration::ZERO)?;
+        Ok(Self {
+            path,
+            _lifetime: lifetime,
+        })
+    }
+
+    pub(crate) fn publish(&self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() as u64 > CONSOLE_DRAFT_CAP {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("a draft over {CONSOLE_DRAFT_CAP} bytes"),
+            ));
+        }
+        publish_private(&self.path, bytes)
+    }
+
+    pub(crate) fn clear(&self) -> io::Result<()> {
+        match std::fs::remove_file(&self.path) {
+            Err(why) if why.kind() == io::ErrorKind::NotFound => Ok(()),
+            done => done,
+        }
+    }
+
+    /// Own bytes take precedence. Otherwise claim at most one orphan by
+    /// renaming it under this lifetime hold; the bytes remain on disk until a
+    /// confirmed send or an explicit discard. The boolean distinguishes an
+    /// orphan offer from an own-instance restore.
+    pub(crate) fn recover(&self) -> (Result<SourceRead, Oversized>, bool) {
+        let own = read_capped(&self.path, CONSOLE_DRAFT_CAP);
+        match &own {
+            Ok(SourceRead::Absent) => {}
+            Ok(SourceRead::Ready(bytes)) if bytes.is_empty() => {}
+            _ => return (own, false),
+        }
+        let Some(dir) = self.path.parent() else {
+            return (own, false);
+        };
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: discovers recovery records by non-lossy file name, before bounded reads and lifetime proof"
+        )]
+        let entries = std::fs::read_dir(dir);
+        let Ok(entries) = entries else {
+            return (own, false);
+        };
+        let mut names: Vec<_> = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name == CONSOLE_DRAFT || console_draft_instance(name).is_some())
+            .collect();
+        names.sort();
+        for name in names {
+            let source = dir.join(&name);
+            if source == self.path {
+                continue;
+            }
+            // Legacy has no lifetime stamp: rename itself chooses its one
+            // winner. A foreign instance is eligible only after a positive,
+            // zero-wait hold; every lock error means unknown or live, so skip.
+            let _source_hold = if name == CONSOLE_DRAFT {
+                None
+            } else {
+                match lock(&lock_path(&source), Duration::ZERO) {
+                    Ok(held) => Some(held),
+                    Err(_) => continue,
+                }
+            };
+            // Read AFTER taking the source hold. Another claimant may have
+            // moved the record between discovery and that successful take.
+            let read = read_capped(&source, CONSOLE_DRAFT_CAP);
+            match &read {
+                Ok(SourceRead::Ready(bytes)) if !bytes.is_empty() => {}
+                Ok(SourceRead::Absent | SourceRead::Ready(_)) => continue,
+                _ if name == CONSOLE_DRAFT => return (read, false),
+                _ => continue,
+            }
+            match std::fs::rename(&source, &self.path) {
+                Ok(()) => return (read_capped(&self.path, CONSOLE_DRAFT_CAP), true),
+                // The other legacy claimant won. Never rescan or manufacture
+                // a new record from the stale read; this acquisition is done.
+                Err(why) if why.kind() == io::ErrorKind::NotFound => {
+                    return (read_capped(&self.path, CONSOLE_DRAFT_CAP), false);
+                }
+                Err(why) => return (Ok(SourceRead::Unreadable(why.to_string())), false),
+            }
+        }
+        (own, false)
+    }
+}
+
 impl SessionStore {
     /// The meta directory this store was opened on.
     #[must_use]
