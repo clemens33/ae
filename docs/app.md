@@ -27,12 +27,13 @@ recorded config first.
 
 ## Layout
 
-- **Sidebar** (44 cells from 140 wide, 34 from 90x20): a two-row summary band
-  on the panel ground — `▣ 27 sessions · ◈ 69 agents`, then `● 12 working · ⚠ 2
+- **Sidebar** (44 cells from 140 wide, 34 from 90x20): a two-row summary
+  on the sidebar ground, regular counts with dim labels and separators —
+  `▣ 27 sessions · ◈ 69 agents`, then `● 12 working · ⚠ 2
   need you` (`+?` where a running session's seats are unknown; a count of one
   reads `1 session`, `1 needs you`) — a narrow band drops the words before it
-  cuts a count, and `icons = off` draws `# @ * !`. Then, on the next row with
-  no blank between, one row per session, the selected one too: its mark, its
+  cuts a count, and `icons = off` draws `# @ * !`. One blank row separates it
+  from the list: one row per session, the selected one too, with its mark, its
   name, `◂` (`<` with `icons = off`) after the name of the window's own
   session, and at the right end its seat tally (`●3 ◔1 ✓2`; a stopped session
   says `stopped <age>`, a running one with no seats `no agents`, one whose
@@ -41,7 +42,7 @@ recorded config first.
   header, never under a row. A narrow row gives up the glyph first, then the
   tally down to its most urgent count, then the name's tail. `↑` / `↓` at the band's first row's right end show needy
   rows outside the list, and `!` reaches the next one. The `Agents N` heading
-  under the list is a band of the same ground. Running sessions come in
+  under the list keeps its raised panel band. Running sessions come in
   this order: the orchestrator, then the sessions your `[workspace]
   fleet_order` names (the pins), then the rest by their newest AI answer to
   you, newest first, and a session with none after them in creation order;

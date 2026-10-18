@@ -219,7 +219,8 @@ fn lines_with<'a>(lines: &'a [String], token: &str) -> Vec<&'a String> {
 // RED: single-line rows (A1)
 // ---------------------------------------------------------------------------
 
-/// RED A1: three sessions take rows 2,3,4; the Agents heading sits at row 6;
+/// RED A1: three sessions take rows 3,4,5 after the summary spacer;
+/// the Agents heading sits at row 7;
 /// no session row carries a second line (no tally `·`, no reason text).
 #[test]
 fn session_rows_are_single_line_with_heading_right_below() {
@@ -241,15 +242,16 @@ fn session_rows_are_single_line_with_heading_right_below() {
         look: icons_on(),
     });
     let side = sidebar(&shot);
-    assert!(side[2].contains("platform"), "row 2:\n{}", side[2]);
-    assert!(side[3].contains("571"), "row 3:\n{}", side[3]);
-    assert!(side[4].contains("demo"), "row 4:\n{}", side[4]);
+    assert!(side[2].is_empty(), "summary spacer:\n{}", side[2]);
+    assert!(side[3].contains("platform"), "row 3:\n{}", side[3]);
+    assert!(side[4].contains("571"), "row 4:\n{}", side[4]);
+    assert!(side[5].contains("demo"), "row 5:\n{}", side[5]);
     assert!(
-        side[6].trim_start().starts_with("Agents"),
-        "heading at row 6:\n{}",
-        side[6]
+        side[7].trim_start().starts_with("Agents"),
+        "heading at row 7:\n{}",
+        side[7]
     );
-    for (y, line) in side.iter().enumerate().take(5).skip(2) {
+    for (y, line) in side.iter().enumerate().take(6).skip(3) {
         assert!(
             !line.contains('·'),
             "row {y} has no second-line text:\n{line}"

@@ -76,10 +76,14 @@ fn frame(width: u16, height: u16, count: usize, entry: &SessionEntry) -> String 
 }
 
 fn sidebar(screen: &str) -> Vec<String> {
-    let Some(width) = screen.lines().next().and_then(|line| line.find('│')) else {
+    let Some(width) = screen
+        .lines()
+        .next()
+        .and_then(|line| line.chars().position(|cell| cell == '│'))
+    else {
         return Vec::new();
     };
-    // The prefix before the first rule is ASCII, so bytes and cells agree.
+    // Summary glyphs occupy one cell each, though their UTF-8 bytes do not.
     screen
         .lines()
         .map(|line| line.chars().take(width).collect())
@@ -117,14 +121,15 @@ fn undragged_tall_frames_show_more_of_twenty_four_sessions() {
     // list, never under 11 rows (18 from 40 high). Heights 30, 40, 43, 45, 62
     // give that budget b = 13, 20, 22, 23, 34. Twenty-four sessions overflow
     // b below 24, so the list draws b - 1 sessions and a more row, then a
-    // blank row, the tab row and the rule: the border stands at b + 4. At
-    // b = 34 all 24 fit and the border stands at 2 + 24 + 2.
+    // blank row, the tab row and the rule: the border stands at b + 5. At
+    // b = 34 all 24 fit and the border stands at 3 + 24 + 2. Row 2 is the
+    // spacer between the summary and list.
     for (height, shown, rule) in [
-        (30, 12, 17),
-        (40, 19, 24),
-        (43, 21, 26),
-        (45, 22, 27),
-        (62, 24, 28),
+        (30, 12, 18),
+        (40, 19, 25),
+        (43, 21, 27),
+        (45, 22, 28),
+        (62, 24, 29),
     ] {
         let screen = frame(160, height, 24, &entry);
         let cards = sidebar(&screen)
@@ -148,13 +153,14 @@ fn minimum_frame_keeps_the_capped_list_and_chat_usable() {
     let entry = SessionEntry::new("side01", Status::Running);
     let screen = frame(90, 20, 24, &entry);
     // 20 rows high: the list keeps 10 rows, nine one-row sessions and the
-    // more row, then a blank row, the tab row and the rule (row 14).
-    assert_eq!(border(&screen), Some(14), "R1 capped-small-frame rule");
+    // more row, then a blank row, the tab row and the rule (row 15).
+    assert_eq!(border(&screen), Some(15), "R1 capped-small-frame rule");
     let side = sidebar(&screen);
-    assert!(side[2].contains("side01"));
-    assert!(side[10].contains("side09"));
-    assert!(side[11].contains("15 more"));
-    assert!(side[13].contains("Agents") && !side[13].contains("Overview"));
+    assert!(side[2].trim().is_empty(), "summary/list spacer");
+    assert!(side[3].contains("side01"));
+    assert!(side[11].contains("side09"));
+    assert!(side[12].contains("15 more"));
+    assert!(side[14].contains("Agents") && !side[14].contains("Overview"));
     assert!(
         screen.contains("Enter writes"),
         "composer survives: {screen}"
@@ -172,8 +178,8 @@ fn one_session_keeps_its_content_sized_list_at_both_required_frames() {
     let entry = SessionEntry::new("side01", Status::Running);
     for (width, height) in [(90, 20), (160, 45)] {
         let screen = frame(width, height, 1, &entry);
-        assert_eq!(border(&screen), Some(5), "{width}x{height}");
-        assert!(sidebar(&screen)[2].contains("side01"));
+        assert_eq!(border(&screen), Some(6), "{width}x{height}");
+        assert!(sidebar(&screen)[3].contains("side01"));
         assert!(screen.contains("Enter writes"));
     }
 }
