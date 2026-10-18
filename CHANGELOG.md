@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.90] - 2026-10-18
+- Freeze per-window draft recovery contract
+- Validate draft record names before discovery
+- Finish draft recovery fixture migration
+- Isolate recovery drafts per writing process
+- Wait for a sent ask to clear its own draft record before judging records
+
 ## [v2026.10.89] - 2026-10-16
 - Bound renametell notice waits by daemon cycles, not a 12 s wall clock
 - Drop the false bash 4 requirement, state the tmux 3.4 floor, lead README with the product

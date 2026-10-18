@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ae"
-version = "2026.10.89"
+version = "2026.10.90"
 dependencies = [
  "ratatui-core",
  "ring",
