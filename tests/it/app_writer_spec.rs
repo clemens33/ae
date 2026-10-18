@@ -509,23 +509,34 @@ fn successful_entry_drops_its_old_chunk_tail_and_names_that_drop() {
     rig.submit(&pane, "fresh-after-entry", 1);
 }
 
+/// S1 migration r2: the planted plain file is offered at acquisition;
+/// the stale read's Enter must neither accept that offer nor submit it.
 #[test]
-fn old_entry_enter_cannot_submit_a_line_restored_by_that_acquisition() {
+fn old_entry_enter_cannot_accept_or_submit_a_line_offered_by_that_acquisition() {
     let rig = Rig::new("wbrestoretail");
     rig.kept("kept-before-entry");
     let pane = rig.console(false);
     rig.old_chunk(&pane, "i\r");
     let screen = rig.wait(
         &pane,
-        "R-B2/R-B6 restored line waits for a fresh Enter",
-        |s| s.contains("keys typed before writing started") && writing(s),
+        "R-B2/R-B6 offered line waits for a fresh Enter",
+        |s| s.contains("keys typed before writing started") && writing(s) && offer_shown(s),
     );
-    assert!(rig.draft_row(&screen).contains("kept-before-entry"));
+    assert!(
+        !rig.draft_row(&screen).contains("kept-before-entry"),
+        "old Enter cannot accept the offered line"
+    );
     assert!(
         rig.asks().is_empty(),
-        "old Enter cannot send the restored line"
+        "old Enter cannot send the offered line"
     );
     rig.held();
+    rig.key(&pane, "Enter");
+    rig.wait(&pane, "S1 fresh Enter fills the offered line", |s| {
+        rig.draft_row(s).contains("kept-before-entry")
+            && s.contains("Kept line, maybe already sent")
+    });
+    assert!(rig.asks().is_empty(), "accepting the offer never submits");
     rig.submit(&pane, "kept-before-entry", 1);
 }
 

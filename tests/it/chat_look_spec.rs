@@ -956,15 +956,17 @@ fn open_look_composer(tool: &super::deliver::Rig, drawn: bool, body: &str) -> St
         "12x60",
         "narrow fixture"
     );
-    // S1 migration: the planted plain file is a legacy orphan, so the
-    // chat OFFERS it first (invariants 3, 5, 7); one fresh Enter fills
-    // the composer whose look this fixture measures. The narrow pane
-    // wraps the offer, so its fragments are judged whitespace-flat.
+    // S1 migration r2: the planted plain file is a legacy orphan, so
+    // the chat OFFERS it first (invariants 3, 5, 7); one fresh Enter
+    // fills the composer whose look this fixture measures. At 12
+    // columns the terminal wraps inside words too (`res`/`tores`), so
+    // this readiness check removes whitespace entirely; the exact
+    // offer wording stays pinned by the wider draftclaim specs.
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         let screen = tmux(&["capture-pane", "-p", "-t", &pane]);
-        let flat = screen.split_whitespace().collect::<Vec<_>>().join(" ");
-        if flat.contains("Enter restores") && flat.contains("Esc discards") {
+        let compact: String = screen.chars().filter(|ch| !ch.is_whitespace()).collect();
+        if compact.contains("Enterrestores") && compact.contains("Escdiscards") {
             break;
         }
         assert!(
