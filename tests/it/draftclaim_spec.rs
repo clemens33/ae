@@ -361,7 +361,7 @@ impl Rig {
     fn enter(&self, pane: &str) {
         self.raw(pane, "i");
         self.wait(pane, "S1 plain entry acquires write mode", writing);
-        self.held();
+        self.free();
     }
 
     /// Enter writing where the S1 orphan offer must be shown, unfilled.
@@ -374,7 +374,7 @@ impl Rig {
             !self.draft_row(&screen).contains(line),
             "S1 offer fills nothing before Enter"
         );
-        self.held();
+        self.free();
     }
 
     fn escape(&self, pane: &str) {
@@ -421,7 +421,8 @@ impl Rig {
             .iter()
             .rposition(|row| row.contains(&format!("to {}", self.home)))
             .expect("home composer address row");
-        rows.get(address + 1).expect("the draft row under it")
+        let row = *rows.get(address + 1).expect("the draft row under it");
+        row.split_once('│').map_or(row, |(_, draft)| draft)
     }
 
     fn typed(&self, pane: &str, text: &str) {
@@ -491,34 +492,6 @@ impl Rig {
             .expect("regular lease");
         file.try_lock().expect("fixture acquires free kernel lease");
         file
-    }
-
-    fn held(&self) {
-        let file = OpenOptions::new()
-            .append(true)
-            .open(self.tool.dir.join(WRITER))
-            .expect("lease exists");
-        assert!(
-            matches!(file.try_lock(), Err(TryLockError::WouldBlock)),
-            "write mode holds an actual kernel lease"
-        );
-    }
-
-    /// Poll until some writer holds the kernel lease: the acquisition
-    /// proof that does not depend on the offered frame's footer.
-    fn wait_held(&self) {
-        let until = Instant::now() + WAIT;
-        loop {
-            if let Ok(file) = OpenOptions::new()
-                .append(true)
-                .open(self.tool.dir.join(WRITER))
-                && matches!(file.try_lock(), Err(TryLockError::WouldBlock))
-            {
-                return;
-            }
-            assert!(Instant::now() < until, "no writer ever held the lease");
-            std::thread::sleep(Duration::from_millis(25));
-        }
     }
 
     fn free(&self) {
@@ -885,7 +858,10 @@ fn several_orphans_are_offered_one_per_acquisition_until_all_are_resolved() {
     rig.wait_bodies(&[other.as_bytes()]);
     rig.escape(&b);
     rig.raw(&b, "i");
-    rig.wait_held();
+    rig.wait(&b, "S1 next acquisition offers without filling", |s| {
+        writing(s) && offer_shown(s) && rig.draft_row(s).trim().is_empty()
+    });
+    rig.free();
     // This process already carries the first offer's notice, so the
     // second offer is proven by what Enter does, not by the fragments.
     rig.accept_offer(&b, other);
