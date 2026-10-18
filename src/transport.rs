@@ -2073,6 +2073,9 @@ mod tests {
     }
 
     const SHORT: [Duration; 2] = [Duration::from_millis(400), Duration::from_millis(600)];
+    // A hang must leave its argv/pid witness even when process startup is slow.
+    // Still well below the fake's 30 s sleep, so a missed kill fails the bound.
+    const HANG_DEADLINE: Duration = Duration::from_secs(3);
     // These calls assert answers, not deadlines: leave room for a loaded host.
     const GENEROUS: [Duration; 2] = [Duration::from_secs(20), Duration::from_secs(20)];
     const VERSION_OK: &str = "printf '%s\\n' 1.2.14";
@@ -2110,13 +2113,27 @@ mod tests {
 
     #[test]
     fn a_version_gate_that_proves_nothing_never_sends_the_quota_prompt() {
-        for (tag, version) in [
-            ("old", "printf '%s\\n' 1.1.9"),
-            ("fails", "printf '%s\\n' 1.2.14; exit 3"),
-            ("hangs", "exec /bin/sleep 30"),
+        // Only the hanging version judges a deadline; the others must answer
+        // before we can prove they refused the quota prompt on their merits.
+        for (tag, version, version_deadline) in [
+            ("old", "printf '%s\\n' 1.1.9", GENEROUS[0]),
+            ("fails", "printf '%s\\n' 1.2.14; exit 3", GENEROUS[0]),
+            ("hangs", "exec /bin/sleep 30", HANG_DEADLINE),
         ] {
             let fake = FakeAgy::new(tag, version, "exit 96");
-            assert_eq!(fake.run(SHORT), AgyRun::TooOld, "{tag}");
+            let started = std::time::Instant::now();
+            assert_eq!(
+                fake.run([version_deadline, GENEROUS[1]]),
+                AgyRun::TooOld,
+                "{tag}"
+            );
+            let took = started.elapsed();
+            if tag == "hangs" {
+                assert!(
+                    took >= version_deadline && took < Duration::from_secs(10),
+                    "{tag}: {took:?}"
+                );
+            }
             assert_eq!(fake.read("argv"), "--version\n", "{tag}: the prompt ran");
         }
     }
@@ -2128,11 +2145,15 @@ mod tests {
             VERSION_OK,
             "printf '%s' \"$$\" > \"${0%/*}/pid\"; exec /bin/sleep 30",
         );
+        // The version must answer before the quota deadline can be judged.
+        let deadlines = [GENEROUS[0], HANG_DEADLINE];
         let started = std::time::Instant::now();
-        assert_eq!(fake.run(SHORT), AgyRun::TimedOut);
+        assert_eq!(fake.run(deadlines), AgyRun::TimedOut);
         let took = started.elapsed();
+        // Also bound end-to-end progress: VERSION_OK prints immediately, and
+        // its generous deadline only allows for a loaded host's startup.
         assert!(
-            took >= SHORT[1] && took < Duration::from_secs(10),
+            took >= deadlines[1] && took < Duration::from_secs(10),
             "{took:?}"
         );
         let pid: u32 = fake.read("pid").parse().expect("its pid");
