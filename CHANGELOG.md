@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.92] - 2026-10-19
+- Lighten app sidebar summary and separate the session list
+
 ## [v2026.10.91] - 2026-10-18
 - Allow startup headroom in agy timeout witnesses
 - Freeze anywin compose-from-any-window contract
