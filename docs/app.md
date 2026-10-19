@@ -49,12 +49,17 @@ recorded config first.
   stopped ones come last. Your own input never reorders the list. A needy row says so by its `⚠` mark, with no edge, and `!` reaches it. One row is lifted: the one the chat column shows, the selected session while its shared chat is and a seat only while that seat's screen is. It wears a `▸` (`>` with `icons = off`) in its first cell and the selected ground over its one row; with `theme = off` the row is reversed. While a seat's screen is shown its session is a context row: no lift, its name keeps the title ink. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
-- **Agents** under the list: every seat of the selected session, one row each:
-  its mark, its name, the model its own frame drew (the client when none was)
-  and the effort that frame drew, each only when known, never the profile name,
-  and its state at the right end (from the watchdog's published roster). Short
-  of room the effort goes first, then the model, then the name's tail, last the
-  state. A seat that waits on the human is told in the chat header (`⚠ <seat>:
+- **Agents** under the list: every seat of the selected session: its mark, its
+  name, the model its own frame drew (the client when none was) and the effort
+  that frame drew, each only when known, never the profile name, and its state
+  at the right end (from the watchdog's published roster). A seat takes one row
+  when its whole label fits beside its name and state, with the labels of the
+  one-row seats lined up in one column; otherwise a second row carries the label
+  under the name. That row drops the effort only when it cannot hold both, and
+  cuts the model on `…` only when the model alone is longer than the row (24
+  cells at the narrowest sidebar). A click on either row is a click on that
+  seat; `n` / `p` step seat by seat and the wheel scrolls rows. Short of room the name's tail
+  goes, last the state. A seat that waits on the human is told in the chat header (`⚠ <seat>:
   <reason> · <age>`: the viewed seat's ask, else the cursor seat's, else
   the first); a reason from a seat the roster lacks is drawn as a row of its
   own after the roster, so no ask is lost. A session on

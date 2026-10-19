@@ -9847,4 +9847,89 @@ mod tests {
             );
         }
     }
+
+    // agentwrap frozen behavioral acceptance — r2 fragment for src/app.rs
+    // INSERT: immediately before the closing brace of the integration tests module
+    // of src/app.rs that contains bound_app / framed / seat_cell (the module holding
+    // a_delayed_seat_click_after_removal_refuses_by_name_and_opens_nothing, app.rs:8634).
+    // Supersedes frozen/r1/app-agentwrap-tests.rs (kept immutable). Oracle r2 fix:
+    // B4 shown.roster holds SeatRef{slot, name} — no model/effort fields — so the
+    // label mutation touches ONLY app.facts (the Screen's Facts::Seats source);
+    // the r1 block that mutated shown.roster is gone.
+    //
+    // Derived geometry (binding): bound_app seats carry state "working" (7 cells,
+    // app.rs:8579). Sidebar pinned to 44 -> room 40; names aa/bb -> column 2 ->
+    // start 6 -> free = 40 - 6 - 8 = 26. The label is 29 cells > 26, so it must
+    // wrap; row-2 capacity 38 >= 29, so row two carries it whole.
+
+    /// R13/R14 + I4: navigation stays logical across a wrapped seat, proven
+    /// against a REALLY wrapped buffer: the precondition demands the label as its
+    /// own painted line and exactly one logical drawn entry, so a missing second
+    /// row fails the test before navigation can pass falsely.
+    #[test]
+    fn navigation_steps_over_a_wrapped_seat_in_one_logical_step() {
+        const LABEL: &str = "m1234567890123456789012345678";
+        let (_root, mut app, _asks) = bound_app(
+            "agentwrap-nav-logical",
+            &["api"],
+            &[("main", "aa"), ("worker.0", "bb")],
+        );
+        app.model.grab(super::model::Drag {
+            edge: super::model::Edge::Sidebar,
+            from: 0,
+            at: 0,
+        });
+        let _ = app.model.drag_to(44);
+        let _ = app.model.let_go();
+        if let Some(fleet::Facts::Seats { agents, .. }) = app.facts.get_mut("api") {
+            for agent in agents.iter_mut().filter(|agent| agent.name == "aa") {
+                agent.model = LABEL.to_owned();
+                agent.effort = String::new();
+            }
+        }
+        let text = framed(&mut app);
+        // Precondition: the seat really wrapped — the label paints as its own line
+        // and the seat is still ONE logical drawn entry.
+        assert_eq!(
+            text.lines().filter(|l| l.contains(LABEL)).count(),
+            1,
+            "precondition: the label has its own painted row"
+        );
+        assert_eq!(
+            app.drawn.as_ref().map(|drawn| drawn
+                .rows
+                .iter()
+                .filter(|(name, _)| name == "aa")
+                .count()),
+            Some(1),
+            "precondition: one logical seat, deduped"
+        );
+        // The continuation row hits its seat like the head row does.
+        let row = text
+            .lines()
+            .enumerate()
+            .find_map(|(row, l)| l.contains(LABEL).then_some(row))
+            .expect("the label row");
+        let hit = app.layout.hit(super::Mouse {
+            kind: super::MouseKind::Click,
+            column: 8,
+            row: u16::try_from(row).expect("frame row"),
+        });
+        assert!(
+            matches!(hit, Some(super::draw::Hit::Seat(name)) if name == "aa"),
+            "the continuation row hits its seat"
+        );
+        // n steps from the wrapped seat to the NEXT seat, not to its own row two;
+        // p steps back; n from the last seat wraps to the first.
+        app.model.set_focus(Some("aa".to_owned()));
+        let _ = framed(&mut app);
+        assert!(app.move_focus(true), "n moves");
+        assert_eq!(app.model.focus(), Some("bb"), "one logical step to bb");
+        assert!(app.move_focus(false), "p moves");
+        assert_eq!(app.model.focus(), Some("aa"), "back to the wrapped seat");
+        app.model.set_focus(Some("bb".to_owned()));
+        let _ = framed(&mut app);
+        assert!(app.move_focus(true), "n moves from the last seat");
+        assert_eq!(app.model.focus(), Some("aa"), "it wraps to the first seat");
+    }
 }

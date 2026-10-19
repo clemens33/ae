@@ -904,11 +904,14 @@ fn tab_body(
                 Hit::Seat(seat.to_owned()),
             );
         }
-        if lifted {
+        // A seat's glyph sits on its head row, or on its continuation when
+        // that is the first row the body shows.
+        let marked = !row.continued || step == 0;
+        if lifted && marked {
             let glyph = if ctx.icons { "▸" } else { ">" };
             let ink = paint.fg(|p| p.selected_ink).add_modifier(Modifier::BOLD);
             put(buf, 0, y, glyph, 1, ink);
-        } else if cursor {
+        } else if cursor && marked {
             let glyph = if ctx.icons { "▹" } else { "-" };
             put(buf, 0, y, glyph, 1, paint.fg(|p| p.text));
         }
@@ -1273,6 +1276,9 @@ struct Cells {
     right: Option<Line<'static>>,
     /// The seat this row belongs to, when it is one of a seat's rows.
     seat: Option<String>,
+    /// A seat's second row: its label, under the name, when the head row
+    /// could not hold it.
+    continued: bool,
 }
 
 impl Cells {
@@ -1281,13 +1287,15 @@ impl Cells {
             left: Line::from(spans),
             right: None,
             seat: None,
+            continued: false,
         }
     }
 }
 
-/// The Agents body: one row per seat, never more. Its mark, name, the model
-/// its frame drew (the client when none was) and the effort, each only when
-/// known and never the profile, and its state word at the right end. What
+/// The Agents body: one row per seat, two when its label does not fit beside
+/// its name and state. Its mark, name, the model its frame drew (the client
+/// when none was) and the effort, each only when known and never the profile,
+/// and its state word at the right end. What
 /// waits on the human is told in the chat header, not under the seat. An ask
 /// from a seat the roster lacks is a row of its own after the roster; a
 /// session ae has no seat facts for says why.
@@ -1321,7 +1329,7 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
             state: &agent.state,
             meta: [model, agent.effort.as_str()],
         };
-        rows.push(seat_row(ctx, &seat, column, room));
+        rows.extend(seat_rows(ctx, &seat, column, room));
     }
     let listed = |ask: &&Open| agents.iter().any(|agent| agent.name == ask.seat);
     for ask in open.iter().filter(|ask| !listed(ask)) {
@@ -1331,7 +1339,7 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
             state: "needs you",
             meta: ["", ""],
         };
-        rows.push(seat_row(ctx, &seat, 0, room));
+        rows.extend(seat_rows(ctx, &seat, 0, room));
     }
     rows
 }
@@ -1346,11 +1354,13 @@ struct Seat<'a> {
     meta: [&'a str; 2],
 }
 
-/// `seat`'s one row in `room` cells: its mark, its name, its meta aligned at
-/// `column` and its state word at the right end. Short of room the effort goes
-/// first, then the model, then the name's tail down to [`NAME_MIN`] cells, and
-/// last the state word.
-fn seat_row(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Cells {
+/// `seat`'s rows in `room` cells: its mark, its name and its state word at the
+/// right end, and its whole label (model and effort) aligned at `column` when
+/// it fits there; else a second row carries the label under the name, the
+/// effort left off only when that row cannot hold both and the model cut on
+/// `…` only past it. Short of room the name's tail goes down to [`NAME_MIN`]
+/// cells, and last the state word.
+fn seat_rows(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Vec<Cells> {
     let (paint, mark) = (ctx.paint, seat.mark);
     let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
     // The mark and its blank.
@@ -1369,23 +1379,42 @@ fn seat_row(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Cells
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    let meta = [both, model.to_owned()]
-        .into_iter()
-        .find(|words| !words.is_empty() && drawn_cols(words) <= free);
+    let inline = !both.is_empty() && drawn_cols(&both) <= free;
     let mut spans = vec![
         Span::styled(mark.glyph(ctx.icons), paint.mark(mark)),
         Span::raw(" "),
         Span::styled(name, text),
     ];
-    if let Some(words) = meta {
+    if inline {
         let pad = usize::from(start - lead - named);
-        spans.push(Span::styled(format!("{}{words}", " ".repeat(pad)), dim));
+        spans.push(Span::styled(format!("{}{both}", " ".repeat(pad)), dim));
     }
-    Cells {
+    let mut rows = vec![Cells {
         left: Line::from(spans),
         right: state.then(|| Line::from(Span::styled(seat.state.to_owned(), paint.mark(mark)))),
         seat: Some(seat.name.to_owned()),
+        continued: false,
+    }];
+    if !both.is_empty() && !inline {
+        let width = room.saturating_sub(lead);
+        let words = if drawn_cols(&both) <= width {
+            both
+        } else if model.is_empty() {
+            fit(&both, "", width)
+        } else {
+            fit(model, "", width)
+        };
+        rows.push(Cells {
+            left: Line::from(vec![
+                Span::raw(" ".repeat(usize::from(lead))),
+                Span::styled(words, dim),
+            ]),
+            right: None,
+            seat: Some(seat.name.to_owned()),
+            continued: true,
+        });
     }
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -3316,19 +3345,23 @@ mod tests {
         shot.agents = Some(Facts::Seats { id, agents });
         let buf = shot.draw(100, 21, READ_ONLY);
         assert_eq!(
-            spot(&buf, "↓ 7 more rows"),
+            spot(&buf, "↓ 27 more rows"),
             Some((20, 2)),
             "the body's last row"
         );
         let dim = super::colour(crate::theme::Palette::DARCULA.dim);
         assert_eq!(buf[(2, 20)].fg, dim);
         let tall = shot.draw(100, 40, READ_ONLY);
-        assert_eq!(spot(&tall, "more rows"), None, "a body that fits");
+        assert_eq!(
+            spot(&tall, "↓ 8 more rows"),
+            Some((39, 2)),
+            "the wrapped body no longer fits"
+        );
         shot.fleet = frame_fleet();
         // The smallest sidebar frame gives the body five rows, the last of
         // them the line naming what it hides.
         let smallest = shot.draw(100, 20, READ_ONLY);
-        assert_eq!(spot(&smallest, "↓ 16 more rows").map(|at| at.0), Some(19));
+        assert_eq!(spot(&smallest, "↓ 36 more rows").map(|at| at.0), Some(19));
     }
 
     /// docs/app.md: below 40x8 the app only says how large it needs to be;
@@ -5896,5 +5929,811 @@ mod tests {
         assert_eq!(line(&buf, 1)[..3].concat(), "ᄀ  ");
         super::put_line(&mut buf, 0, 2, &ratatui_core::text::Line::from("ｶﾞ"), 10);
         assert_eq!(line(&buf, 2)[..1].concat(), "ｶﾞ");
+    }
+
+    // agentwrap frozen behavioral acceptance — r5 fragment for src/app/draw.rs
+    // INSERT: immediately before the closing brace of `mod tests` in src/app/draw.rs
+    // (the module containing a_cut_body_names_its_hidden_rows_in_the_dim_hue,
+    // draw.rs:3311 after the driver rebase onto 54f96696).
+    // Supersedes frozen/r4/draw-agentwrap-tests.rs (kept immutable). Folds colead
+    // gate review-20261019T081224Z-16d86b15 + oracle-spec-r5-delta eeb164845370:
+    // B1 the fitting wide model is SEVEN glyphs / 14 cells (r4 mislabelled it
+    //     5/10): joined 14+1+5 = 20 = free — the wide exact-fit case; separator
+    //     x 22, effort x 23..27 (the wrap case's 22/23..27 was already right);
+    // B2 the floor literals were 25/26 chars, now 24/25: capacity-24 whole fit,
+    //     25 closes at 23 cells + …;
+    // I1 casts are checked (u16::try_from, the codebase's own test idiom);
+    // I2 no unused bindings (the I4 test's rule binding removed);
+    // I3 doc comments carry no bare identifiers or shouty prose for doc_markdown;
+    // I4 region guards compare FULL Cells (symbol + style) and now include the
+    //     right gap columns 42..44 beside the gutter and the border/chat columns.
+    //
+    // Derived geometry (binding, verified): LEFT = 2 (draw.rs:88); room = rule - 4
+    // (draw.rs:740-741); rule = sidebar_width(area, split), split.sidebar pinned
+    // via grab/drag_to/let_go (model.rs:546-565); clamp-to-30 and area-fallback
+    // semantics owner-anchored (provenance-addendum.md). seat_row inline:
+    // mark@0, blank@1, name@2, meta start = 2 + column + 2, state tail =
+    // 1 + state_cols. aa/bb/cc (S=44): column 2, start 6, free 20, capacity 38,
+    // meta x 8, name x 4. sNN (S=44): column 3, free 19. Sweep at draw(100, 21):
+    // room 30, free 0, name clipped to 13 chars + ellipsis, every seat wraps
+    // post-fix, shown 13, more-line (20, 2). shot.draw(.., None) frames: mono
+    // render, icons on; Look::read("off", "darcula", "on", "on") frames: colour
+    // darcula palette, icons off; the palette lift sets the selected background
+    // and repaints dim words in the selected ink, never the reverse modifier
+    // (draw.rs:399-406).
+
+    /// Seats with controlled label fields: (name, model, effort, client).
+    fn label_facts(specs: &[(&str, &str, &str, &str)]) -> Facts {
+        let Facts::Seats { id, agents } = sweep_seats() else {
+            unreachable!("the sweep draws seats");
+        };
+        let base = agents[0].clone();
+        Facts::Seats {
+            id,
+            agents: specs
+                .iter()
+                .map(|(name, model, effort, client)| PickerAgent {
+                    name: (*name).to_owned(),
+                    model: (*model).to_owned(),
+                    effort: (*effort).to_owned(),
+                    client: (*client).to_owned(),
+                    ..base.clone()
+                })
+                .collect(),
+        }
+    }
+
+    /// Pin the sidebar's width: grab the edge, drag it to `size`, let go.
+    fn with_sidebar(shot: &mut Shot, size: u16) {
+        shot.model.grab(Drag {
+            edge: Edge::Sidebar,
+            from: 0,
+            at: 0,
+        });
+        let _ = shot.model.drag_to(size);
+        let _ = shot.model.let_go();
+    }
+
+    /// R2/R6: the joined label filling `free` exactly stays on one line.
+    #[test]
+    fn exact_fit_stays_one_line_with_the_full_label() {
+        let mut shot = Shot::new();
+        // free = 20; 14 + 1 + 5 = 20.
+        shot.agents = Some(label_facts(&[
+            ("aa", "m-model-fourte", "e1234", "claude"),
+            ("bb", "", "", "claude"),
+            ("cc", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, layout) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert_eq!(layout.seats, ["aa", "bb", "cc"]);
+        let one = line(&buf, rule + 1).concat();
+        assert!(one.contains("m-model-fourte e1234"), "{one}");
+        assert!(one.contains("waiting-agent"), "{one}");
+        assert_eq!(buf[(8, rule + 1)].symbol(), "m", "the meta column");
+        assert_eq!(buf[(29, rule + 1)].symbol(), "w", "the state word starts");
+        assert_eq!(buf[(41, rule + 1)].symbol(), "t", "the state word ends");
+        assert!(
+            line(&buf, rule + 2).concat().contains("bb"),
+            "one row a seat"
+        );
+    }
+
+    /// R1/R3/R6: one cell over `free` moves the COMPLETE label to row two —
+    /// today the effort half is silently lost on row one (RED: effort-missing).
+    #[test]
+    fn one_cell_deficit_moves_the_complete_label_to_row_two() {
+        let mut shot = Shot::new();
+        // free = 20; 15 + 1 + 5 = 21 = free + 1.
+        shot.agents = Some(label_facts(&[
+            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("bb", "", "", "claude"),
+            ("cc", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, layout) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        let head = line(&buf, rule + 1).concat();
+        assert!(
+            !head.contains("m-model-fifteen"),
+            "no meta on row one: {head}"
+        );
+        let tail = line(&buf, rule + 2).concat();
+        assert!(
+            tail.contains("m-model-fifteen e1234"),
+            "full label on row two: {tail}"
+        );
+        assert_eq!(
+            buf[(2, rule + 2)].symbol(),
+            " ",
+            "no mark on the continuation"
+        );
+        assert_eq!(buf[(3, rule + 2)].symbol(), " ", "blank under the blank");
+        assert_eq!(buf[(4, rule + 2)].symbol(), "m", "the continuation x is 4");
+        let click = Mouse {
+            kind: MouseKind::Click,
+            column: 8,
+            row: rule + 2,
+        };
+        assert!(matches!(layout.hit(click), Some(super::Hit::Seat(name)) if name == "aa"));
+        assert_eq!(layout.seats, ["aa", "bb", "cc"], "logical seats, deduped");
+        assert!(
+            line(&buf, rule + 3).concat().contains("bb"),
+            "mixed geometry"
+        );
+    }
+
+    /// R1/R3/R4: the model alone over `free` wraps instead of dropping the whole
+    /// label (today: meta = None, nothing drawn — RED: model-missing).
+    #[test]
+    fn model_only_overflow_wraps_instead_of_dropping() {
+        let mut shot = Shot::new();
+        // model 21 cells > free 20; effort empty.
+        shot.agents = Some(label_facts(&[
+            ("aa", "m12345678901234567890", "", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            !line(&buf, rule + 1)
+                .concat()
+                .contains("m12345678901234567890"),
+            "no label on row one"
+        );
+        assert!(
+            line(&buf, rule + 2)
+                .concat()
+                .contains("m12345678901234567890"),
+            "the full model on row two"
+        );
+    }
+
+    /// R7 case (c): the joined label exceeds row-2 capacity while the model alone
+    /// fits it: row two keeps the FULL model and deliberately omits the effort,
+    /// which appears nowhere (today: both dropped — RED).
+    #[test]
+    fn row_two_capacity_keeps_the_full_model_and_omits_the_effort() {
+        let mut shot = Shot::new();
+        // model 12, effort 30 -> joined 43 > 38 = row-2 capacity; model 12 <= 38.
+        shot.agents = Some(label_facts(&[
+            (
+                "aa",
+                "m12cellwords",
+                "e12345678901234567890123456789",
+                "claude",
+            ),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            line(&buf, rule + 2).concat().contains("m12cellwords"),
+            "the full model on row two"
+        );
+        assert!(
+            !line(&buf, rule + 1).concat().contains("e1234567890")
+                && !line(&buf, rule + 2).concat().contains("e1234567890"),
+            "the effort is deliberately omitted, nowhere drawn"
+        );
+    }
+
+    /// R7 case (d): the model alone exceeds row-2 capacity: row two fits it at a
+    /// grapheme and closes on an ellipsis — never blank, never lossless (RED).
+    /// The cut reserves one cell for the ellipsis: 37 cells of text + … = 38.
+    #[test]
+    fn model_past_row_two_capacity_closes_on_an_ellipsis() {
+        let mut shot = Shot::new();
+        // model 41 cells > 38.
+        let model = "m1234567890123456789012345678901234567890";
+        shot.agents = Some(label_facts(&[
+            ("aa", model, "", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        let tail = line(&buf, rule + 2).concat();
+        let fitted = format!("{}…", &model[..37]);
+        assert!(
+            tail.contains(&fitted),
+            "the 37-cell prefix closed on …: {tail}"
+        );
+        assert!(!tail.contains(model), "the full model does not fit");
+        assert!(tail.trim().len() > 1, "never blank");
+    }
+
+    /// R4 (colead pin): an effort-only seat over `free` wraps and keeps a
+    /// truthful nonblank FITTED label (today: silently dropped — RED).
+    #[test]
+    fn effort_only_overflow_keeps_a_fitted_nonblank_label() {
+        let mut shot = Shot::new();
+        // effort 21 cells > free 20; model and client empty.
+        shot.agents = Some(label_facts(&[
+            ("aa", "", "e12345678901234567890", ""),
+            ("bb", "", "", ""),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        let tail = line(&buf, rule + 2).concat();
+        assert!(
+            tail.contains("e12345678901234567890"),
+            "the full effort: {tail}"
+        );
+        assert!(tail.trim().len() > 1, "never blank");
+    }
+
+    /// R4/R7: an effort-only seat past row-2 capacity is fitted, not blanked.
+    #[test]
+    fn effort_only_past_row_two_capacity_is_fitted_not_blanked() {
+        let mut shot = Shot::new();
+        // effort 50 cells > 38; fitted = 37 cells + ….
+        let effort = "e1234567890123456789012345678901234567890123456789";
+        shot.agents = Some(label_facts(&[("aa", "", effort, ""), ("bb", "", "", "")]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        let tail = line(&buf, rule + 2).concat();
+        assert!(
+            tail.contains(&format!("{}…", &effort[..37])),
+            "fitted: {tail}"
+        );
+        assert!(!tail.contains(effort), "the full effort does not fit");
+        assert!(tail.trim().len() > 1, "never blank");
+    }
+
+    /// R4: the client fallback is the label source too: it fits on row one, and
+    /// over `free` it wraps whole (today the overflow drops it — RED).
+    #[test]
+    fn client_fallback_label_wraps_instead_of_dropping() {
+        let mut shot = Shot::new();
+        // client 21 cells > free 20; model and effort empty.
+        shot.agents = Some(label_facts(&[
+            ("aa", "", "", "c12345678901234567890"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            !line(&buf, rule + 1)
+                .concat()
+                .contains("c12345678901234567890"),
+            "no label on row one"
+        );
+        assert!(
+            line(&buf, rule + 2)
+                .concat()
+                .contains("c12345678901234567890"),
+            "the full client label on row two"
+        );
+        // The fitting fallback stays on row one (today's contract, unchanged).
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[("aa", "", "", "claude")]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(line(&buf, rule + 1).concat().contains("claude"));
+    }
+
+    /// R9 (colead I2): a wide label is measured in display cells and EVERY painted
+    /// cell is asserted: each wide glyph at its even column, a blank trailing cell
+    /// after each, then the separator and the effort. A wide glyph's trailing cell
+    /// is blank, so no contiguous run ever appears in a line concat.
+    #[test]
+    fn wide_labels_are_measured_in_display_cells() {
+        let mut shot = Shot::new();
+        // Wrap half: 9 wide chars = 18 cells; 18 + 1 + 5 = 24 > 20.
+        let model = "モデルモデルモデル";
+        shot.agents = Some(label_facts(&[
+            ("aa", model, "e1234", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            !line(&buf, rule + 1).concat().contains('モ'),
+            "no wide label on row one"
+        );
+        for (at, ch) in model.chars().enumerate() {
+            let at = u16::try_from(at).expect("small index");
+            assert_eq!(
+                buf[(4 + 2 * at, rule + 2)].symbol(),
+                ch.to_string(),
+                "glyph {at}"
+            );
+            assert_eq!(
+                buf[(5 + 2 * at, rule + 2)].symbol(),
+                " ",
+                "trailing cell {at}"
+            );
+        }
+        assert_eq!(buf[(22, rule + 2)].symbol(), " ", "the separator");
+        for (at, ch) in "e1234".chars().enumerate() {
+            let at = u16::try_from(at).expect("small index");
+            assert_eq!(
+                buf[(23 + at, rule + 2)].symbol(),
+                ch.to_string(),
+                "effort glyph {at}"
+            );
+        }
+        // Fit half: SEVEN wide chars = 14 cells; 14 + 1 + 5 = 20 = free: the wide
+        // exact-fit case, separator x 22, effort x 23..27.
+        let mut shot = Shot::new();
+        let model = "モデルモデルモ";
+        shot.agents = Some(label_facts(&[("aa", model, "e1234", "claude")]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        for (at, ch) in model.chars().enumerate() {
+            let at = u16::try_from(at).expect("small index");
+            assert_eq!(
+                buf[(8 + 2 * at, rule + 1)].symbol(),
+                ch.to_string(),
+                "glyph {at}"
+            );
+            assert_eq!(
+                buf[(9 + 2 * at, rule + 1)].symbol(),
+                " ",
+                "trailing cell {at}"
+            );
+        }
+        assert_eq!(buf[(22, rule + 1)].symbol(), " ", "the separator");
+        for (at, ch) in "e1234".chars().enumerate() {
+            let at = u16::try_from(at).expect("small index");
+            assert_eq!(
+                buf[(23 + at, rule + 1)].symbol(),
+                ch.to_string(),
+                "effort glyph {at}"
+            );
+        }
+    }
+
+    /// R9: combining marks cost no cells: a label of 12 cells carrying a
+    /// combining mark at the exact-fit boundary stays on one line.
+    #[test]
+    fn combining_marks_cost_no_cells_at_the_exact_fit_boundary() {
+        let mut shot = Shot::new();
+        // "e" + U+0301 = 1 cell, plus 11 digits = 12 cells; 12 + 1 + 7 = 20 = free.
+        shot.agents = Some(label_facts(&[
+            ("aa", "e\u{301}23456789012", "e123456", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            line(&buf, rule + 1)
+                .concat()
+                .contains("e\u{301}23456789012 e123456")
+        );
+        assert!(line(&buf, rule + 2).concat().contains("bb"), "one row");
+    }
+
+    /// R5/D1 + N1: every name keeps the roster column (abs x 4) and the
+    /// continuation text begins at the owner-pinned abs x 4 under the name.
+    #[test]
+    fn names_stay_aligned_and_the_continuation_starts_at_abs_x_four() {
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[
+            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("bb", "", "", "claude"),
+            ("cc", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        for y in [rule + 1, rule + 3, rule + 4] {
+            assert_eq!(buf[(3, y)].symbol(), " ", "blank before the name");
+            assert!(buf[(4, y)].symbol() != " ", "the name at x 4");
+        }
+        assert_eq!(buf[(3, rule + 2)].symbol(), " ", "blank before the label");
+        assert_eq!(buf[(4, rule + 2)].symbol(), "m", "the label at x 4");
+    }
+
+    /// R10: the cursor glyph rides the head row only; the viewed seat's lift
+    /// covers BOTH rows. The plain frame (no look) is the mono render: icons on,
+    /// reverse-video ground. The `Look::read` frame is the colour darcula palette
+    /// with icons off: the palette lift sets the selected background and repaints
+    /// dim words in the selected ink; it never sets the reverse modifier
+    /// (draw.rs:399-406).
+    #[test]
+    fn cursor_and_lift_cover_the_wrapped_seat() {
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[
+            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 44);
+        shot.model.set_focus(Some("aa".to_owned()));
+        // The mono frame: icons on, reverse-video ground.
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert_eq!(marked(&buf, "▹"), [rule + 1], "the cursor on the head row");
+        let viewing = Composer::Viewing { seat: "aa" };
+        let (buf, _) = framed_as(&shot, 160, None, viewing);
+        assert_eq!(marked(&buf, "▸"), [rule + 1], "the lift glyph");
+        assert!(buf[(8, rule + 1)].modifier.contains(Modifier::REVERSED));
+        assert!(
+            buf[(8, rule + 2)].modifier.contains(Modifier::REVERSED),
+            "mono reverses both rows"
+        );
+        // The colour frame: ASCII glyphs, no reverse modifier.
+        let look = Look::read("off", "darcula", "on", "on");
+        let (buf, _) = framed(&shot, 160, Some(&look));
+        assert_eq!(marked(&buf, "-"), [rule + 1], "the ASCII cursor");
+        let (buf, _) = framed_as(&shot, 160, Some(&look), viewing);
+        assert_eq!(marked(&buf, ">"), [rule + 1], "the ASCII lift glyph");
+        assert_eq!(
+            buf[(8, rule + 1)].bg,
+            super::colour(crate::theme::Palette::DARCULA.selected),
+            "the selected ground on the head row"
+        );
+        assert_eq!(
+            buf[(8, rule + 2)].bg,
+            super::colour(crate::theme::Palette::DARCULA.selected),
+            "the selected ground on the continuation"
+        );
+        assert_eq!(
+            buf[(4, rule + 2)].fg,
+            super::colour(crate::theme::Palette::DARCULA.selected_ink),
+            "dim words lift into the selected ink"
+        );
+        assert!(
+            !buf[(8, rule + 2)].modifier.contains(Modifier::REVERSED),
+            "colour never reverses"
+        );
+    }
+
+    /// R8/D3 + R12: the viewport may open on a continuation: that row keeps the
+    /// cursor glyph and the seat's hit (precondition: the body really wrapped and
+    /// cut, so a false green cannot hide a missing second row). Wrapper labels
+    /// are 23 cells over the three-letter seat names' free 19.
+    #[test]
+    fn the_viewport_may_open_on_a_continuation_keeping_glyph_and_hit() {
+        const WRAP: &str = "m1234567890123456789012";
+        let mut shot = Shot::new();
+        let specs: Vec<(&str, &str, &str, &str)> = (0..40)
+            .map(|at| {
+                let name: &'static str = match at {
+                    0 => "aa",
+                    39 => "zz",
+                    _ => Box::leak(format!("s{at:02}").into_boxed_str()),
+                };
+                let model = if at == 0 || at == 39 { WRAP } else { "" };
+                (name, model, "", "claude")
+            })
+            .collect();
+        shot.agents = Some(label_facts(&specs));
+        with_sidebar(&mut shot, 44);
+        shot.model.set_focus(Some("aa".to_owned()));
+        // aa occupies body rows 0-1; its continuation is body row 1.
+        shot.model.settle(None, Some(1));
+        let (buf, layout) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            layout.body_max >= 1,
+            "precondition: the body wrapped and cut"
+        );
+        assert_eq!(
+            buf[(4, rule + 1)].symbol(),
+            "m",
+            "the first visible row is the continuation, not the head"
+        );
+        assert!(
+            line(&buf, rule + 1).concat().contains(WRAP),
+            "the label is drawn"
+        );
+        assert_eq!(
+            marked(&buf, "▹"),
+            [rule + 1],
+            "the glyph rides the continuation"
+        );
+        let click = Mouse {
+            kind: MouseKind::Click,
+            column: 8,
+            row: rule + 1,
+        };
+        assert!(matches!(layout.hit(click), Some(super::Hit::Seat(name)) if name == "aa"));
+    }
+
+    /// R8/D3 + R14: the body scrolls to its last row: the more-line then names
+    /// only rows above, and the LAST agent's continuation (the last agent wraps)
+    /// is fully visible above the more-line.
+    #[test]
+    fn the_body_reaches_its_last_row_and_names_nothing_below() {
+        const WRAP: &str = "m1234567890123456789012";
+        let mut shot = Shot::new();
+        let specs: Vec<(&str, &str, &str, &str)> = (0..40)
+            .map(|at| {
+                let name: &'static str = match at {
+                    0 => "aa",
+                    39 => "zz",
+                    _ => Box::leak(format!("s{at:02}").into_boxed_str()),
+                };
+                let model = if at == 0 || at == 39 { WRAP } else { "" };
+                (name, model, "", "claude")
+            })
+            .collect();
+        shot.agents = Some(label_facts(&specs));
+        with_sidebar(&mut shot, 44);
+        let (_, layout) = framed(&shot, 160, None);
+        let top = layout.body_max;
+        assert!(top >= 1, "precondition: the body wrapped and cut");
+        shot.model.settle(None, Some(top));
+        let (buf, layout) = framed(&shot, 160, None);
+        assert_eq!(layout.body_top, Some(top), "the last row is reachable");
+        let more = line(&buf, 44).concat();
+        assert!(
+            more.contains('↑') && !more.contains('↓'),
+            "nothing hides below: {more}"
+        );
+        let last = line(&buf, 43).concat();
+        assert!(last.contains(WRAP), "zz's continuation visible: {last}");
+        assert_eq!(buf[(4, 43)].symbol(), "m", "the continuation at x 4");
+    }
+
+    /// R8/D3 + R14 (colead I4): the viewport may END on a head row whose one
+    /// continuation is hidden: settling to one under the frame's last-row bound
+    /// makes the LAST agent's head the final drawn row for EVERY shown, so
+    /// exactly one row hides below.
+    #[test]
+    fn a_head_row_may_end_the_viewport_with_its_continuation_hidden() {
+        const WRAP: &str = "m1234567890123456789012";
+        let mut shot = Shot::new();
+        let specs: Vec<(&str, &str, &str, &str)> = (0..40)
+            .map(|at| {
+                let name: &'static str = match at {
+                    0 => "aa",
+                    39 => "zz",
+                    _ => Box::leak(format!("s{at:02}").into_boxed_str()),
+                };
+                let model = if at == 0 || at == 39 { WRAP } else { "" };
+                (name, model, "", "claude")
+            })
+            .collect();
+        shot.agents = Some(label_facts(&specs));
+        with_sidebar(&mut shot, 44);
+        let (_, layout) = framed(&shot, 160, None);
+        let top = layout.body_max;
+        assert!(top >= 2, "precondition: the body wrapped and cut");
+        shot.model.settle(None, Some(top - 1));
+        let (buf, layout) = framed(&shot, 160, None);
+        let last = line(&buf, 43).concat();
+        assert!(
+            last.contains("zz"),
+            "the head row is the last drawn row: {last}"
+        );
+        assert!(
+            !last.contains(WRAP),
+            "the continuation is not drawn: {last}"
+        );
+        let more = line(&buf, 44).concat();
+        assert!(
+            more.contains("↓ 1 more rows"),
+            "exactly one row hides below: {more}"
+        );
+        let click = Mouse {
+            kind: MouseKind::Click,
+            column: 8,
+            row: 43,
+        };
+        assert!(matches!(layout.hit(click), Some(super::Hit::Seat(name)) if name == "zz"));
+    }
+
+    /// R14 (oracle r2 B2 + r3 B1): at the default draw(100, 21) geometry room is
+    /// 30, so the sweep's 30-cell names clip to 13 chars + ellipsis (budget 14)
+    /// and the 16-cell label misses `free` (saturating to 0): POST-FIX every one
+    /// of the 20 seats wraps and the body doubles: 2 x 20 - 13 shown = 27 hidden.
+    /// The head is addressed by the rule, never by the full name.
+    #[test]
+    fn the_more_row_line_counts_rows_not_seats() {
+        let mut shot = Shot::new();
+        let Facts::Seats { id, agents } = sweep_seats() else {
+            unreachable!("the sweep draws seats");
+        };
+        let agents: Vec<PickerAgent> = agents.into_iter().cycle().take(20).collect();
+        shot.agents = Some(Facts::Seats { id, agents });
+        let wrapped = shot.draw(100, 21, READ_ONLY);
+        let rule = horizontal(&wrapped).expect("the Agents rule");
+        assert!(
+            line(&wrapped, rule + 1).concat().contains("a-seat-name-l…"),
+            "precondition: the clipped head row"
+        );
+        assert!(
+            line(&wrapped, rule + 2).concat().contains("Sonnet 5.5"),
+            "precondition: the first seat wrapped"
+        );
+        assert_eq!(
+            spot(&wrapped, "↓ 27 more rows"),
+            Some((20, 2)),
+            "2 x 20 - 13"
+        );
+    }
+
+    /// R15/N2: the session rows above the Agents rule are untouched by wrapping:
+    /// every FULL CELL from the top row through the rule, across the whole width,
+    /// is identical between a wrapping frame and a fitting frame (colead I4/I6).
+    #[test]
+    fn session_rows_are_untouched_by_wrapping() {
+        let mut wrapped = Shot::new();
+        wrapped.fleet = frame_fleet();
+        wrapped.agents = Some(label_facts(&[
+            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut wrapped, 44);
+        let (wbuf, _) = framed(&wrapped, 160, None);
+        let above = horizontal(&wbuf).expect("the Agents rule");
+        let mut fitting = Shot::new();
+        fitting.fleet = frame_fleet();
+        fitting.agents = Some(label_facts(&[
+            ("aa", "m-model-fourte", "e1234", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut fitting, 44);
+        let (buf, _) = framed(&fitting, 160, None);
+        for y in 0..=above {
+            for x in 0..buf.area.width {
+                assert_eq!(
+                    buf[(x, y)],
+                    wbuf[(x, y)],
+                    "the full cell is unchanged by wrapping at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    /// R11 (colead I4/I6): nothing the sidebar writes lands outside its own
+    /// cells: the gutter columns 0..2, the right gap 42..44 and every cell from
+    /// the border column 44 rightward of the two label rows are FULL-CELL
+    /// identical between the wrapping frame and a no-meta frame — whatever the
+    /// chat draws there.
+    #[test]
+    fn wrapped_cells_stay_inside_the_body() {
+        let mut wrapped = Shot::new();
+        wrapped.agents = Some(label_facts(&[
+            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut wrapped, 44);
+        let (wbuf, _) = framed(&wrapped, 160, None);
+        let rule = horizontal(&wbuf).expect("the Agents rule");
+        let mut bare = Shot::new();
+        bare.agents = Some(label_facts(&[
+            ("aa", "", "", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut bare, 44);
+        let (bbuf, _) = framed(&bare, 160, None);
+        for y in [rule + 1, rule + 2] {
+            for x in 0..2 {
+                assert_eq!(
+                    wbuf[(x, y)],
+                    bbuf[(x, y)],
+                    "the gutter is untouched at ({x}, {y})"
+                );
+            }
+            for x in 42..wbuf.area.width {
+                assert_eq!(
+                    wbuf[(x, y)],
+                    bbuf[(x, y)],
+                    "the right gap, border and chat are untouched at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    /// R4 (colead I5): a seat with NOTHING known — model, client and effort all
+    /// empty — draws ONE row, invents no placeholder, and leaves the meta column
+    /// and every later row where they were.
+    #[test]
+    fn fully_unknown_labels_draw_one_row_and_invent_nothing() {
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[
+            ("aa", "", "", ""),
+            ("bb", "", "", ""),
+            ("cc", "", "", ""),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, layout) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert_eq!(layout.seats, ["aa", "bb", "cc"], "one logical seat each");
+        assert_eq!(buf[(8, rule + 1)].symbol(), " ", "no meta for aa");
+        assert!(
+            line(&buf, rule + 2).concat().contains("bb"),
+            "bb follows directly"
+        );
+        assert_eq!(buf[(8, rule + 2)].symbol(), " ", "no meta for bb");
+        assert!(
+            line(&buf, rule + 3).concat().contains("cc"),
+            "cc follows directly"
+        );
+        for y in [rule + 1, rule + 2, rule + 3] {
+            assert!(
+                !line(&buf, y).concat().contains('…'),
+                "no ellipsis is invented at ({y})"
+            );
+        }
+    }
+
+    /// R7 (colead I3): the S = 30 sidebar floor pins the row-2 capacity boundary
+    /// executably: room 26, capacity 24, free 6. A 24-cell model is drawn WHOLE;
+    /// a 25-cell model closes on the ellipsis at 23 cells + …; a 6-cell joined
+    /// label still fits row one at the floor; an UNDERSIZED request clamps to the
+    /// floor instead of refusing, and the boundary holds there too.
+    #[test]
+    fn the_sidebar_floor_pins_the_row_two_capacity_boundary() {
+        let full = "m12345678901234567890123";
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[
+            ("aa", full, "", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 30);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            line(&buf, rule + 2).concat().contains(full),
+            "24 cells fit row two whole at the floor"
+        );
+        assert!(
+            !line(&buf, rule + 2).concat().contains('…'),
+            "no ellipsis at 24"
+        );
+        let over = "m123456789012345678901234";
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[
+            ("aa", over, "", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 30);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            line(&buf, rule + 2)
+                .concat()
+                .contains(&format!("{}…", &over[..23])),
+            "25 cells close on the ellipsis at 23 + …"
+        );
+        assert!(
+            !line(&buf, rule + 2).concat().contains(over),
+            "the whole does not fit"
+        );
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[
+            ("aa", "m12345", "", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 30);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            line(&buf, rule + 1).concat().contains("m12345"),
+            "the 6-cell joined label fits row one at the floor"
+        );
+        assert!(
+            line(&buf, rule + 2).concat().contains("bb"),
+            "one row at the floor"
+        );
+        // The undersized request clamps to the 30 floor (owner anchor): the
+        // capacity-24 whole fit still holds after requesting 20.
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[
+            ("aa", full, "", "claude"),
+            ("bb", "", "", "claude"),
+        ]));
+        with_sidebar(&mut shot, 20);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            line(&buf, rule + 2).concat().contains(full),
+            "the request clamped to the floor: 24 cells still fit whole"
+        );
     }
 }

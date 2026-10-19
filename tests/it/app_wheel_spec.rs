@@ -400,14 +400,40 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
         seats,
         "fitting Agents wheel is a no-op"
     );
-    rig.tmux(&["resize-window", "-t", &pane, "-x", "100", "-y", "80"]);
+    rig.tmux(&["resize-window", "-t", &pane, "-x", "100", "-y", "100"]);
     let narrow = rig.wait(&pane, FRAME, "GUARD complete narrow seats fit", |s| {
-        s.lines().count() == 80
+        s.lines().count() == 100
             && drawn_rule(s) == Some(34)
             && s.contains("seat39")
             && !s.contains("more rows")
     });
-    assert_eq!(nonempty(&narrow).len(), 40, "GUARD narrow layout rows");
+    let pairs = nonempty(&narrow);
+    assert_eq!(pairs.len(), 80, "GUARD forty two-row seats");
+    for (at, pair) in pairs.chunks(2).enumerate() {
+        let name = format!("seat{at:02}");
+        let head = &pair[0];
+        let label = &pair[1];
+        assert_eq!(
+            head.split_whitespace()
+                .find(|word| word.starts_with("seat")),
+            Some(name.as_str()),
+            "GUARD seat head order"
+        );
+        assert!(
+            !head.contains("Sonnet 5.5"),
+            "GUARD the head row carries no meta: {head}"
+        );
+        assert_eq!(
+            label.trim(),
+            "Sonnet 5.5 xhigh",
+            "GUARD the complete label alone on its row: {label}"
+        );
+    }
+    assert_eq!(
+        pairs.last().map(|row| row.contains("Sonnet 5.5")),
+        Some(true),
+        "GUARD the last seat's label row is reachable"
+    );
 }
 
 #[test]
