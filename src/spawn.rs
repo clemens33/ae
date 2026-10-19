@@ -2261,6 +2261,35 @@ mod tests {
         fn meta(&self) -> String {
             std::fs::read_to_string(self.dir.join("meta")).expect("meta")
         }
+
+        fn pane_cwd(&self, pane: &str) -> String {
+            use std::time::{Duration, Instant};
+
+            // Opening a window does not prove tmux can already observe its
+            // shell's cwd. Wait for the witness, never for the expected path:
+            // the caller must still reject a wrong, non-empty cwd immediately.
+            let server = self.server();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(cwd) = crate::transport::observe_pane_current_path(&server, pane) {
+                    return cwd;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    let probe = crate::transport::observe_pane_probe(&server, pane);
+                    let pid = probe.as_ref().and_then(|probe| probe.pid);
+                    let command = probe.as_ref().map(|probe| probe.command.as_str());
+                    let dead = crate::transport::observe_pane_dead(&server, pane);
+                    panic!(
+                        "pane cwd unavailable after 3s: pane={pane} path=None \
+                         pane_probe_observed={} pane_pid={pid:?} pane_dead={dead:?} \
+                         pane_current_command={command:?}",
+                        probe.is_some()
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(20).min(remaining));
+            }
+        }
     }
 
     impl Drop for TmuxRig {
@@ -2354,9 +2383,8 @@ mod tests {
             .expect("pane")
             .pane
             .clone();
-        // The pane's cwd, read directly; unobserved hard-fails.
-        let cwd = crate::transport::observe_pane_current_path(&rig.server(), &pane)
-            .expect("a cwd reading");
+        // The pane's cwd, read directly; unobserved after 3s hard-fails.
+        let cwd = rig.pane_cwd(&pane);
         assert_eq!(cwd, canon.to_str().unwrap());
     }
 
@@ -3066,8 +3094,7 @@ mod tests {
         let (rig, staged, held, pane) = b2a_branch_rig("t5c", "ae-tmux-t5c", Some(&target), &state);
         assert_eq!(held.canonical, row_canon, "held is the row canon");
         assert_eq!(held.provenance, crate::meta::SeatProvenance::Explicit);
-        let cwd =
-            crate::transport::observe_pane_current_path(&rig.server(), &pane).expect("pane cwd");
+        let cwd = rig.pane_cwd(&pane);
         assert_eq!(
             std::fs::canonicalize(&cwd).expect("cwd canon"),
             row_canon,
@@ -3483,8 +3510,7 @@ mod tests {
         assert_eq!(held.canonical, real_canon, "held is the real canon");
         assert_eq!(held.provenance, crate::meta::SeatProvenance::Inherited);
         assert_eq!(spelling, staged.session.work_dir, "B returns its spelling");
-        let cwd =
-            crate::transport::observe_pane_current_path(&rig.server(), &pane).expect("pane cwd");
+        let cwd = rig.pane_cwd(&pane);
         assert_eq!(cwd, real_canon.display().to_string(), "cwd physical");
         let after = crate::transport::observe_panes(&rig.server(), &rig.session).expect("panes");
         assert_eq!((before.len(), after.len()), (1, 2), "exactly one window");
