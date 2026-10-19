@@ -353,6 +353,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on; absent → named server `ae` | CHECKOUT only |
 | `AE_NO_AUTOSTART` | start no companion: neither the watchdog nor the Telegram bridge | both |
 | `CLAUDE_CONFIG_DIR` | which Claude account a statusline feed belongs to — read by `ae _quota-feed` ALONE, as the caller has it (set but empty or relative records nothing; unset means the default account under `HOME`), joined to the same canonical `.claude.json` key the configured scope carries; its payload is the stdin pipe, drained to EOF on every path. Every other reader judges a seat's recorded command, never this variable | both |
+| `AE_TEST_GO_USAGE_URL` | the OpenCode Go usage endpoint `src/go_usage.rs` asks instead of `https://opencode.ai/zen/go/v1/usage`; only a loopback `http://` URL skips TLS. The integration suite pins it to a refused loopback port so no test reaches the network; test seam, unset in production | CHECKOUT only |
 | `AE_TEST_BOOT_TIME` | the host boot time the absence proof compares against | CHECKOUT only |
 | `AE_TEST_QUOTA_TRACE` | when set to a path, each quota pass appends one attestation line there (`skipped`, or `observed max=<pct> booked=<n>`) — a due cadence pass and the limit-release recovery pass alike; test seam, unset in production | CHECKOUT only |
 | `AE_TEST_RENAME_CRASH_AT` | when set to exactly one of `after-intent`, `after-work-move`, `after-state-move`, `after-meta`, `after-assets`, `after-result`, a stopped rename attests `rename-crash-boundary: <value>` on stderr past the named facts, then parks at most 60s and exits `1` with `rename-crash-timeout: <value>`; test seam, unset in production | CHECKOUT only |
@@ -481,6 +482,7 @@ auto_upgrade = on        # installed ae checks quietly; global config only
 fleet_order = a, b, c      # fleet-strip order, named first; global config only
 restore = on              # bare ae resumes a crashed server's sessions; global config only
 auto_trust = on           # answer a seat's own measured folder-trust modal once per tool start; global only
+opencode_go_key_file = ~/.config/opencode/go-usage.key  # 0600 key file; ae quota shows opencode-go/* windows; global only
 palette = darcula          # darcula (default), a = neutral dark, b = warmer
 icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*

@@ -3,6 +3,7 @@
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::digest::Status;
@@ -821,6 +822,9 @@ struct QuotaInputs<'a> {
     /// This cycle's journal, for the checkpoint asks' receipts.
     events: &'a [Event],
 }
+
+/// Whether this daemon's `OpenCode` Go usage refresh is in flight.
+static GO_USAGE_FLYING: AtomicBool = AtomicBool::new(false);
 
 fn quota_sweep_count(knobs: &Knobs) -> Option<u64> {
     (knobs.quota_every_secs > 0).then(|| {
@@ -4862,11 +4866,9 @@ impl Cycle<'_> {
         Ok(())
     }
 
-    /// The same session-relative quota inputs as the generated `quota` helper.
-    fn quota_observation(
-        &self,
-        now: i64,
-    ) -> Result<crate::quota::Observation, crate::config::ConfigError> {
+    /// The state root, the global config and the home the session-relative
+    /// quota inputs are read from.
+    fn quota_paths(&self) -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
         let root = crate::state_root().or_else(|| {
             self.meta_dir
                 .parent()
@@ -4876,7 +4878,15 @@ impl Cycle<'_> {
         let global = root
             .as_deref()
             .map(|root| crate::doors::config_file(crate::shape::current(), root));
-        let home = crate::doors::home();
+        (root, global, crate::doors::home())
+    }
+
+    /// The same session-relative quota inputs as the generated `quota` helper.
+    fn quota_observation(
+        &self,
+        now: i64,
+    ) -> Result<crate::quota::Observation, crate::config::ConfigError> {
+        let (root, global, home) = self.quota_paths();
         let roots = root.as_deref().map(crate::inventory::Roots::under);
         crate::quota::observe(&crate::quota::Inputs {
             home: home.as_deref(),
@@ -5358,6 +5368,7 @@ impl Cycle<'_> {
         err: &mut impl Write,
     ) -> crate::Result<()> {
         if quota_observation_due(carry, &self.knobs) {
+            self.spawn_go_usage(now);
             if self.knobs.quota_aware {
                 self.refresh_quota(carry, inputs, now, err)?;
             } else {
@@ -5365,6 +5376,41 @@ impl Cycle<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Refresh the shared `OpenCode` Go usage cache on a detached thread, at
+    /// most one in flight. The thread's answer reaches every reader through
+    /// that cache alone; this pass observes whatever the cache held before it.
+    fn spawn_go_usage(&self, now: i64) {
+        let (Some(root), global, home) = self.quota_paths() else {
+            return;
+        };
+        let local = self.local_config.as_deref();
+        let roots = crate::inventory::Roots::under(&root);
+        let key = crate::quota::go_key(&crate::quota::Inputs {
+            home: home.as_deref(),
+            global: global.as_deref(),
+            local,
+            sessions: Some(roots.sessions()),
+            now,
+        });
+        let due = crate::go_usage::watchdog_due(
+            crate::quota::configured_quota_on(global.as_deref(), local),
+            self.knobs.quota_aware,
+            key.is_some(),
+            GO_USAGE_FLYING.load(Ordering::SeqCst),
+        );
+        let Some(key) = key.filter(|_| due) else {
+            return;
+        };
+        let flying = crate::go_usage::Flying::arm(&GO_USAGE_FLYING);
+        // A refused spawn drops the closure, and with it the guard.
+        let _ = std::thread::Builder::new()
+            .name("ae-go-usage".to_owned())
+            .spawn(move || {
+                let _flying = flying;
+                let _ = crate::go_usage::refresh(&root, &key, now);
+            });
     }
 
     /// Append one attestation line to the test-only quota trace named by

@@ -1757,6 +1757,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         "src/quota/pace.rs",
         "src/quota/grok.rs",
         "src/quota/view.rs",
+        "src/quota/go.rs",
         "src/watchdog_daemon.rs",
         "tests/it/quota.rs",
     ] {
@@ -1772,7 +1773,9 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     // level; `agy.rs` the fifth, a pure bytes-to-rows parser that builds no
     // level either; `view.rs` the sixth, a pure facts-to-lines renderer that
     // takes a level it never builds or reads and takes no pace; `feed.rs` the
-    // seventh, a statusline/record parser that builds no level). Two
+    // seventh, a statusline/record parser that builds no level; `go.rs` the
+    // eighth, a pure parser of the OpenCode Go usage answer and of ae's own
+    // cache record of it, which builds no level). Two
     // descendants it cannot see: a module written INLINE inside
     // `src/quota.rs`, because the owner file is skipped whole, and a
     // `#[path]`-attributed module whose file lives outside this directory, which is scanned with the Outside needles and
@@ -1782,7 +1785,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         seen.iter()
             .filter(|name| name.starts_with("src/quota/"))
             .count(),
-        7,
+        8,
         "the quota directory gained or lost a file, and each one needs the \
          child scan: {seen:?}"
     );

@@ -260,11 +260,11 @@ impl ModelFlagError {
 }
 
 /// One model flag occurrence in a lexed command.
-struct ModelFlag {
+struct ModelFlag<'n> {
     /// The flag word's index in [`SimpleCommand::words`].
     index: usize,
     /// The flag's own spelling, as written.
-    name: &'static str,
+    name: &'n str,
     /// The value's index for the split form (`--model value`), absent for the
     /// joined form or a missing value.
     value_index: Option<usize>,
@@ -273,12 +273,33 @@ struct ModelFlag {
 }
 
 /// Find the ONE model flag of `tool` in a lexed command.
-fn sole_model_flag(command: &SimpleCommand, tool: ToolKind) -> Result<ModelFlag, ModelFlagError> {
+fn sole_model_flag(
+    command: &SimpleCommand,
+    tool: ToolKind,
+) -> Result<ModelFlag<'static>, ModelFlagError> {
     let names = model_flag_names(tool);
     if names.is_empty() {
         return Err(ModelFlagError::Unsupported);
     }
-    let mut found: Option<ModelFlag> = None;
+    sole_flag(command, names)
+}
+
+/// The value of the ONE `flags` word `cmd` carries, by the rule the model
+/// flag uses: absent, written twice, missing its value, or a command the
+/// lexer refuses is `None`. It reads the names it is given, never an
+/// adapter's, so asking it changes no tool's model behaviour.
+#[must_use]
+pub fn sole_flag_value(cmd: &str, flags: &[&str]) -> Option<String> {
+    let command = lex_simple_command(cmd).ok()?;
+    sole_flag(&command, flags).ok().map(|flag| flag.value)
+}
+
+/// Find the ONE word among `names` in a lexed command.
+fn sole_flag<'n>(
+    command: &SimpleCommand,
+    names: &[&'n str],
+) -> Result<ModelFlag<'n>, ModelFlagError> {
+    let mut found: Option<ModelFlag<'n>> = None;
     for (index, word) in command.word_values.iter().enumerate() {
         for name in names {
             let joined = word

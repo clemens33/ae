@@ -36,6 +36,7 @@ pub mod events;
 pub mod events_tail;
 pub mod filters;
 pub mod git;
+pub mod go_usage;
 pub mod goal;
 pub mod harness_state;
 pub mod identity;

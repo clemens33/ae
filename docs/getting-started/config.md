@@ -194,6 +194,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `auto_reseat_sessions` | Comma-separated sessions auto reseat acts in; absent means every session. An entry that is not a session name, or is named twice, is ignored with a note | every session |
 | `auto_reseat_grace_secs` | Whole seconds a usage-limit or headroom episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
 | `auto_reseat_at` | The judged percentage of a seat's OWN account at which auto reseat moves it before any limit (`50`-`100`, or `off`). Only a usable window proven at least one day long counts, the weekly one, never the 5-hour session window, judged as `ae quota`'s `EFFECTIVE` column. An unusable value means `95`, with one note the watchdog journals once per start. Global config only | `95` |
+| `opencode_go_key_file` | Path of a file holding your OpenCode Go API key (`~/`, `$HOME/` or absolute), which lets `ae quota` show the Go subscription's windows. Absent means ae reads no Go quota; see [OpenCode Go quota](#opencode-go-quota). Global config only | none |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
@@ -250,6 +251,49 @@ automatic upgrades disabled until corrected. Checkout builds never
 auto-upgrade, and `AE_NO_AUTOSTART=1` suppresses scheduling along with the other
 companions. `ae version` and `ae doctor` report policy plus last check/result;
 they never trigger a check.
+
+### OpenCode Go quota
+
+OpenCode stores no quota where ae can read it, so Go quota is opt-in. Put the key in a file
+only you can read, and name it in the GLOBAL config (`~/`, `$HOME/`, `${HOME}/` or an absolute
+path; a project `.ae/config` entry is ignored):
+
+```toml
+[workspace]
+opencode_go_key_file = ~/.config/opencode/go-usage.key
+```
+
+```sh
+chmod 600 ~/.config/opencode/go-usage.key
+```
+
+ae never reads opencode's own `auth.json` or database, never an environment variable for the
+key, and never writes the key anywhere: not to argv, a journal, a log line, an error or the
+cache. A key file that is not a regular file, is readable by group or others, is empty, holds
+non-printable bytes or is longer than 4 KiB is refused with a note naming the file, never its
+contents.
+
+Only profiles whose model is `opencode-go/<model>` (`--model` or `-m`) get Go windows. Every
+other OpenCode profile, OpenRouter included, stays `unsupported`. `ae quota` shows three
+windows: `rolling` (5 hours), `weekly` (7 days) and `monthly`, whose `WINDOW` cell is `-`
+because a month has no fixed length; `EFFECTIVE` and `PACE` come from the same derivation as
+every other scope. A window the vendor marks `rate-limited` reads at least 100%.
+
+ae asks `GET https://opencode.ai/zen/go/v1/usage` at most once per 300 s across the whole fleet:
+the answer goes into a shared `0600` cache under the state root (`quota/opencode-go.json`), and
+every reader — `ae quota`, the watchdog, the settings dialog — reads that cache. `ae quota` may
+refresh it inline; the watchdog refreshes it on a background thread, one at a time, only for a
+quota-aware session. With `[workspace] quota = off` nothing asks the network at all; a cache
+already there is still shown. Rotating the key file makes the next refresh due at once, and
+answers kept for the old key are dropped. A failed refresh keeps the last good answer and adds
+one note: a 401 names the key file, a 403 says the key has no Go subscription, a 429 says the
+vendor throttled the call, and a timeout, a redirect, an oversized or unreadable answer are
+each named.
+
+The endpoint is undocumented: if OpenCode changes its shape, the windows go away with a note
+rather than showing a wrong number. Named gap: an OpenCode seat's quota scope is not joined to
+the seat (`quota::recorded_identity` reads none for opencode), so the per-seat checkpoint ask
+and throttle line do not cover it; the lead-pair advisories still fire.
 
 ### Restoring after a tmux crash
 

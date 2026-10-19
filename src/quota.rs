@@ -9,6 +9,7 @@ pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod feed;
+pub mod go;
 pub mod grok;
 mod pace;
 pub mod view;
@@ -697,6 +698,8 @@ pub struct Inputs<'a> {
     /// Selected project-local ae config.
     pub local: Option<&'a Path>,
     /// Canonical ae sessions directory whose durable metas name Codex rollouts.
+    /// Its parent is the state root whose shared `OpenCode` Go usage cache is
+    /// read and, for `ae quota`, refreshed: see [`Inputs::state_root`].
     pub sessions: Option<&'a Path>,
     /// Observation instant.
     pub now: i64,
@@ -726,6 +729,9 @@ struct Scope {
     notes: Vec<String>,
     /// An agy command that keeps the caller's HOME: [`run`] may ask agy itself.
     leg: bool,
+    /// An opencode profile on the `OpenCode` Go plan: its windows come from the
+    /// shared usage cache for the key file in `source`.
+    go: bool,
 }
 
 /// What one `[clients]` row declared about its own extra headroom.
@@ -1656,10 +1662,17 @@ pub(crate) fn observe_full(
     inputs: &Inputs<'_>,
 ) -> Result<(Observation, pace::SeriesSet), crate::config::ConfigError> {
     let cfg = crate::config::read_identity(inputs.global, inputs.local)?;
-    Ok(observe_scopes(inputs, configured_scopes(&cfg, inputs.home)))
+    Ok(observe_scopes(
+        inputs,
+        configured_scopes_with(&cfg, inputs.home, &GoKeyConfig::of(inputs)),
+    ))
 }
 
 /// [`observe_full`] over scopes already read from the config.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per quota source over one scope table; each arm is the whole of its source's read"
+)]
 fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, pace::SeriesSet) {
     let mut groups = Vec::new();
     let mut rendered = Vec::new();
@@ -1668,6 +1681,12 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
     let fleet = fleet_rollouts(inputs.sessions, &mut budget);
     add_recorded_codex_scopes(&mut scopes, &fleet);
     for scope in &scopes {
+        if scope.go {
+            let group = go_group(scope, inputs, &mut series);
+            rendered.push(group.clone());
+            groups.push(group);
+            continue;
+        }
         let quota = scope.tool.adapter().quota;
         match quota.source {
             QuotaSource::ClaudeCache => {
@@ -1760,6 +1779,135 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
         },
         series,
     )
+}
+
+/// One `OpenCode` Go scope's group, its windows' history added to `series`.
+fn go_group(scope: &Scope, inputs: &Inputs<'_>, series: &mut pace::SeriesSet) -> Group {
+    let (observed, notes) = go_observed(scope, inputs);
+    if let Some(source) = &scope.source_key {
+        for held in observed.series {
+            series.add(source, held);
+        }
+    }
+    Group {
+        profiles: scope.profiles.clone(),
+        tool: scope.tool,
+        home: scope.home.clone(),
+        source: scope.source_key.clone(),
+        clients: scope.clients.clone(),
+        rollout: None,
+        owner: None,
+        rows: observed.rows,
+        hint: scope.hint.clone(),
+        summary: None,
+        policy: Policy::new(scope.manual_resets, observed.account),
+        notes: scope.notes.iter().cloned().chain(notes).collect(),
+    }
+}
+
+/// What an `OpenCode` Go scope says before its first fetch landed.
+const GO_NOT_YET: &str = "opencode go: no usage fetched yet for this key";
+
+/// One `OpenCode` Go scope's windows, read from the shared usage cache ONLY:
+/// [`observe`] never reaches the network, whoever calls it.
+fn go_observed(scope: &Scope, inputs: &Inputs<'_>) -> (Observed, Vec<String>) {
+    let unknown = |notes: Vec<String>| {
+        (
+            Observed {
+                rows: vec![placeholder(Status::Unknown)],
+                account: Account::default(),
+                series: Vec::new(),
+            },
+            notes,
+        )
+    };
+    let (Some(key), Some(root)) = (scope.source.as_deref(), inputs.state_root()) else {
+        return unknown(Vec::new());
+    };
+    let cached = match crate::go_usage::read(root, key) {
+        crate::go_usage::Read::Custody(failure, mode) => {
+            return unknown(failure.key_note(key, mode).into_iter().collect());
+        }
+        crate::go_usage::Read::Missing => return unknown(vec![GO_NOT_YET.to_owned()]),
+        crate::go_usage::Read::Cached(cached) => cached,
+    };
+    let mut notes = Vec::new();
+    if cached.outcome != "ok" {
+        notes.push(go_failure_note(
+            &cached.outcome,
+            inputs.now.saturating_sub(cached.attempt_at),
+        ));
+    }
+    let Some(newest) = cached.samples.last() else {
+        notes.push(GO_NOT_YET.to_owned());
+        return unknown(notes);
+    };
+    let parsed = go::parse(newest.body.as_bytes(), newest.at, inputs.now);
+    notes.extend(parsed.notes);
+    let series = go_series(&cached.samples, &parsed.rows, inputs.now);
+    (
+        Observed {
+            rows: parsed.rows,
+            account: Account::default(),
+            series,
+        },
+        notes,
+    )
+}
+
+/// The note a failed last attempt leaves beside the rows still shown.
+fn go_failure_note(outcome: &str, age: i64) -> String {
+    let class = match outcome {
+        "unauthorized" => "key rejected (401): check opencode_go_key_file".to_owned(),
+        "not-entitled" => "no Go subscription (403)".to_owned(),
+        "throttled" => "the vendor throttled the usage call (429)".to_owned(),
+        "timeout" => "the usage call hit its timeout".to_owned(),
+        "transport" => "the usage call could not connect".to_owned(),
+        "too-large" => "the answer passed its size cap".to_owned(),
+        "malformed" => "the answer had no readable window".to_owned(),
+        "redirected" => "the answer was a redirect, which is never followed".to_owned(),
+        other => other.strip_prefix("status-").map_or_else(
+            || "unknown outcome".to_owned(),
+            |code| format!("HTTP {code}"),
+        ),
+    };
+    format!(
+        "opencode go: last refresh {} ago failed — {class}",
+        age_label(age.max(0))
+    )
+}
+
+/// Each stated-length window's history, replayed from every kept answer
+/// through the same parser, oldest first.
+fn go_series(samples: &[go::Sample], newest: &[Row], now: i64) -> Vec<pace::Series> {
+    newest
+        .iter()
+        .filter_map(|row| {
+            let window_minutes = row.window_minutes?;
+            let points = samples
+                .iter()
+                .filter_map(|sample| {
+                    go::parse(sample.body.as_bytes(), sample.at, now)
+                        .rows
+                        .into_iter()
+                        .find(|held| held.bucket == row.bucket)
+                        .and_then(|held| {
+                            Some(pace::Point {
+                                observed_at: sample.at,
+                                used: row_percent(&held)?,
+                                resets_at: held.resets_at?,
+                            })
+                        })
+                })
+                .collect();
+            Some(pace::Series {
+                bucket: row.bucket.clone(),
+                qualifier: row.qualifier.clone(),
+                window_minutes,
+                points,
+            })
+        })
+        .collect()
 }
 
 /// Read the bounded local sources and return the quota view facts.
@@ -1892,7 +2040,7 @@ pub(crate) fn view_cached(inputs: &Inputs<'_>, cache: &mut AgyCache) -> Vec<view
     let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
         return view::unavailable();
     };
-    let scopes = configured_scopes(&cfg, inputs.home);
+    let scopes = configured_scopes_with(&cfg, inputs.home, &GoKeyConfig::of(inputs));
     let legs = agy_legs(&scopes);
     let shown = inputs.home.filter(|_| !legs.is_empty()).map(|home| {
         let (answer, done_at) = cache.answer(home, inputs.now);
@@ -1913,7 +2061,7 @@ pub(crate) fn view_held(
     let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
         return (view::unavailable(), None);
     };
-    let scopes = configured_scopes(&cfg, inputs.home);
+    let scopes = configured_scopes_with(&cfg, inputs.home, &GoKeyConfig::of(inputs));
     let legs = agy_legs(&scopes);
     let home = inputs.home.filter(|_| !legs.is_empty());
     let due = home.filter(|home| !flying && cache.due(home, inputs.now));
@@ -1992,7 +2140,7 @@ fn run_with(
 ) -> crate::Result<u8> {
     // ONE config read: the scopes the leg was judged on are the scopes folded.
     let scopes = match crate::config::read_identity(inputs.global, inputs.local) {
-        Ok(cfg) => configured_scopes(&cfg, inputs.home),
+        Ok(cfg) => configured_scopes_with(&cfg, inputs.home, &GoKeyConfig::of(inputs)),
         Err(error) => {
             writeln!(err, "{error}")?;
             return Ok(1);
@@ -2000,10 +2148,13 @@ fn run_with(
     };
     let legs = agy_legs(&scopes);
     let started = Instant::now();
+    let go = go_refresh(inputs, &scopes);
     let answer = inputs.home.filter(|_| !legs.is_empty()).map(leg);
-    let now = match answer {
-        Some(_) => completed(inputs.now, started.elapsed()),
-        None => inputs.now,
+    let fetched = go.as_ref().is_some_and(|(_, refreshed)| refreshed.fetched);
+    let now = if answer.is_some() || fetched {
+        completed(inputs.now, started.elapsed())
+    } else {
+        inputs.now
     };
     let (mut observation, series) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
     if let Some(answer) = answer
@@ -2011,6 +2162,10 @@ fn run_with(
     {
         replace_agy(&mut observation.groups, &legs, rows.clone(), hint);
         replace_agy(&mut observation.rendered, &legs, rows, hint);
+    }
+    if let Some((key, refreshed)) = &go {
+        note_go_key(&mut observation.groups, key, *refreshed);
+        note_go_key(&mut observation.rendered, key, *refreshed);
     }
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
     write!(
@@ -2024,6 +2179,74 @@ fn run_with(
         )
     )?;
     Ok(0)
+}
+
+/// `ae quota`'s one inline `OpenCode` Go refresh, and the key it was made for:
+/// only with quota on, a state root to keep the shared cache in, and a
+/// Go-scoped profile whose key the global config names. The fleet bound is
+/// the cache's, so this asks the vendor only when no process did lately.
+fn go_refresh(
+    inputs: &Inputs<'_>,
+    scopes: &[Scope],
+) -> Option<(PathBuf, crate::go_usage::Refreshed)> {
+    let root = inputs.state_root()?;
+    if !configured_quota_on(inputs.global, inputs.local) {
+        return None;
+    }
+    let key = go_key_of(scopes)?;
+    let refreshed = crate::go_usage::refresh(root, &key, inputs.now);
+    Some((key, refreshed))
+}
+
+/// A key failure only the read of the key itself finds — its metadata was
+/// fine, so the cache read named nothing — told on every Go scope.
+fn note_go_key(groups: &mut [Group], key: &Path, refreshed: crate::go_usage::Refreshed) {
+    let Some(note) = refreshed
+        .outcome
+        .and_then(|failure| failure.key_note(key, None))
+    else {
+        return;
+    };
+    for group in groups
+        .iter_mut()
+        .filter(|group| group.tool == ToolKind::OpenCode && group.source.is_some())
+    {
+        if !group
+            .notes
+            .iter()
+            .any(|held| held.starts_with("opencode go: key file"))
+        {
+            group.notes.push(note.clone());
+        }
+    }
+}
+
+/// The key file of the first Go-scoped profile, when the opt-in named one.
+fn go_key_of(scopes: &[Scope]) -> Option<PathBuf> {
+    scopes
+        .iter()
+        .find(|scope| scope.go)
+        .and_then(|scope| scope.source.clone())
+}
+
+/// The key file a watchdog pass may refresh the shared Go cache for: the
+/// global opt-in AND at least one Go-scoped profile, or `None`.
+pub(crate) fn go_key(inputs: &Inputs<'_>) -> Option<PathBuf> {
+    let cfg = crate::config::read_identity(inputs.global, inputs.local).ok()?;
+    go_key_of(&configured_scopes_with(
+        &cfg,
+        inputs.home,
+        &GoKeyConfig::of(inputs),
+    ))
+}
+
+/// Whether the configured `[workspace] quota` lets ae act on vendor quota.
+pub(crate) fn configured_quota_on(global: Option<&Path>, local: Option<&Path>) -> bool {
+    let configured = crate::config::read_workspace_keys(global, local, &["quota"])
+        .into_iter()
+        .next()
+        .flatten();
+    crate::config::resolve_quota_aware(None, configured.as_deref())
 }
 
 /// `now` plus `elapsed` rounded UP to whole seconds: no row is judged before agy returned.
@@ -2088,7 +2311,76 @@ fn replace_agy(groups: &mut Vec<Group>, legs: &[Leg], rows: Vec<Row>, hint: Opti
     }
 }
 
-/// Every quota scope the config declares.
+/// [`configured_scopes_with`] with no `OpenCode` Go opt-in.
+#[cfg(test)]
+fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -> Vec<Scope> {
+    configured_scopes_with(cfg, home, &GoKeyConfig::Off)
+}
+
+/// What the GLOBAL config says about the `OpenCode` Go key file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GoKeyConfig {
+    /// No opt-in: every opencode profile is the unsupported scope it was.
+    Off,
+    /// The expanded key path.
+    Key(PathBuf),
+    /// An opt-in ae cannot use, and why.
+    Unusable(String),
+}
+
+impl Inputs<'_> {
+    /// The state root these inputs name, as `<root>/sessions`'s parent —
+    /// never the process's own state root, so a reader handed a scratch tree
+    /// reads that tree's cache and nothing else.
+    fn state_root(&self) -> Option<&Path> {
+        self.sessions.and_then(Path::parent)
+    }
+}
+
+impl GoKeyConfig {
+    fn of(inputs: &Inputs<'_>) -> Self {
+        match crate::go_usage::configured_key(inputs.global, inputs.home) {
+            Ok(None) => Self::Off,
+            Ok(Some(path)) => Self::Key(path),
+            Err(why) => Self::Unusable(why),
+        }
+    }
+}
+
+/// A Go scope's source, correlation key and hint. ONE Go key is one Go
+/// account, so its canonical path is the identity every Go profile shares,
+/// whatever client label or opencode home it names. Every other opencode
+/// profile keeps no source, as before.
+fn go_identity(go_key: &GoKeyConfig) -> (Option<PathBuf>, Option<PathBuf>, Option<String>) {
+    match go_key {
+        GoKeyConfig::Key(path) => (
+            Some(path.clone()),
+            Some(canonical_source(path.clone()).unwrap_or_else(|_| path.clone())),
+            None,
+        ),
+        GoKeyConfig::Unusable(why) => (
+            None,
+            None,
+            Some(format!("{}: {why}", crate::go_usage::KEY_SETTING)),
+        ),
+        GoKeyConfig::Off => (None, None, None),
+    }
+}
+
+/// The model flags an opencode profile names its route with.
+const OPENCODE_MODEL_FLAGS: [&str; 2] = ["--model", "-m"];
+
+/// Whether `command` pins an `opencode-go/<model>`: the Go plan's route.
+fn go_model(command: &str) -> bool {
+    crate::launch_cmd::sole_flag_value(command, &OPENCODE_MODEL_FLAGS).is_some_and(|model| {
+        model
+            .strip_prefix("opencode-go/")
+            .is_some_and(|rest| !rest.is_empty())
+    })
+}
+
+/// Every quota scope the config declares, with the `OpenCode` Go opt-in the
+/// global config makes.
 ///
 /// TWO discoveries, one scope table. Profiles come first, because a named
 /// profile is what the operator usually reads a row by. Then every `[clients]`
@@ -2104,12 +2396,23 @@ fn replace_agy(groups: &mut Vec<Group>, legs: &[Leg], rows: Vec<Row>, hint: Opti
 /// is the honest rendering, and collapsing them would assert what we do not
 /// know. The declaration that made a false merge tempting is counted at the
 /// DECLARATION instead, by [`count_declarations`].
-fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -> Vec<Scope> {
+fn configured_scopes_with(
+    cfg: &crate::config::IdentityConfig,
+    home: Option<&Path>,
+    go: &GoKeyConfig,
+) -> Vec<Scope> {
     let mut scopes: Vec<Scope> = Vec::new();
     for (profile, raw) in &cfg.profiles {
         match cfg.command(profile, home) {
             Ok(Some(resolved)) => {
-                absorb_resolved(&mut scopes, cfg, home, Some(profile.as_str()), &resolved);
+                absorb_resolved(
+                    &mut scopes,
+                    cfg,
+                    home,
+                    go,
+                    Some(profile.as_str()),
+                    &resolved,
+                );
             }
             Ok(None) => scopes.push(unresolved_scope(cfg, profile, raw, None)),
             Err(error) => scopes.push(unresolved_scope(cfg, profile, raw, Some(&error))),
@@ -2120,7 +2423,7 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
     let mut owned: Vec<(&str, usize)> = Vec::new();
     for (label, _) in &cfg.clients {
         let index = match cfg.client_command(label, home) {
-            Ok(Some(resolved)) => absorb_resolved(&mut scopes, cfg, home, None, &resolved),
+            Ok(Some(resolved)) => absorb_resolved(&mut scopes, cfg, home, go, None, &resolved),
             // The label came from `cfg.clients`, so it always resolves to a row.
             Ok(None) => continue,
             Err(error) => {
@@ -2231,10 +2534,15 @@ fn push_note(scope: &mut Scope, note: Option<String>) {
 /// `owner` is the profile that resolved it, or `None` for a bare `[clients]`
 /// row. A `None` owner contributes no profile name to the scope: it carries
 /// the account, not a way to launch it.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered derivation of a scope's identity; each override reads best beside the facts it replaces"
+)]
 fn absorb_resolved(
     scopes: &mut Vec<Scope>,
     cfg: &crate::config::IdentityConfig,
     home: Option<&Path>,
+    go_key: &GoKeyConfig,
     owner: Option<&str>,
     resolved: &crate::config::ResolvedCommand,
 ) -> usize {
@@ -2293,6 +2601,13 @@ fn absorb_resolved(
         hint,
     } = paths;
     let leg = leg && config_home.is_some();
+    let go =
+        tool == ToolKind::OpenCode && *go_key != GoKeyConfig::Off && go_model(resolved.as_str());
+    let (source, source_key, hint) = if go {
+        go_identity(go_key)
+    } else {
+        (source, source_key, hint)
+    };
     // A PROVEN source is the whole of the correlation. `source_key: None` means
     // this discovery resolved none, not that it has no distinguishing identity,
     // and matching two of those would join accounts on the absence of evidence
@@ -2321,6 +2636,7 @@ fn absorb_resolved(
             manual_resets: None,
             notes: Vec::new(),
             leg,
+            go,
         });
         return scopes.len() - 1;
     };
@@ -2707,6 +3023,7 @@ fn unknown_scope(
         manual_resets: None,
         notes: Vec::new(),
         leg: false,
+        go: false,
     }
 }
 
@@ -2935,6 +3252,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         manual_resets: None,
                         notes: Vec::new(),
                         leg: false,
+                        go: false,
                     });
                 }
             }
@@ -2958,6 +3276,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                     manual_resets: None,
                     notes: Vec::new(),
                     leg: false,
+                    go: false,
                 });
             }
         }
@@ -4253,6 +4572,7 @@ mod tests {
             manual_resets: None,
             notes: Vec::new(),
             leg: false,
+            go: false,
         }
     }
 
@@ -4276,6 +4596,7 @@ mod tests {
             manual_resets: None,
             notes: Vec::new(),
             leg: false,
+            go: false,
         };
         let default = scope(&["solx"], &["codex"]);
         let mic = scope(&[], &["codex-mic"]);
@@ -4512,6 +4833,7 @@ mod tests {
             manual_resets: None,
             notes: Vec::new(),
             leg: false,
+            go: false,
         };
 
         let project = |groups: super::CodexGroups| {
@@ -4658,6 +4980,7 @@ mod tests {
                 manual_resets: None,
                 notes: Vec::new(),
                 leg: false,
+                go: false,
             };
             match read_claude(&scope, 1_001, &mut Budget::new()) {
                 ReadRows::Rows(observed) => observed
@@ -5655,6 +5978,7 @@ mod tests {
                 manual_resets: first,
                 notes: Vec::new(),
                 leg: false,
+                go: false,
             };
             merge_declaration(
                 &mut scope,

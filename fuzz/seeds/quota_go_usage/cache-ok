@@ -1,0 +1,1 @@
+{"v":1,"key":{"path":"/tmp/go-usage.key","dev":1,"ino":2,"len":16,"mtime_ns":0},"attempt_at":1792416000,"outcome":"ok","samples":[{"at":1792416000,"body":"{\"usage\":{\"rolling\":{\"status\":\"ok\",\"percent\":12,\"resetsAt\":\"2026-10-19T17:00:00Z\"}}}"}]}

@@ -1773,6 +1773,10 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // a directory, fail-closed, under one allow site).
             "src/doors.rs".to_owned(),
             "src/events.rs".to_owned(),
+            // OpenCode Go usage door: key-file custody, the shared cache and
+            // lock, and the HTTPS GET. quota.rs stays credential-free and
+            // calls through this module.
+            "src/go_usage.rs".to_owned(),
             // `ae init` classifies the selected config with lstat and reads a
             // regular existing file before writing an exclusive proposal,
             // backup, or atomic replacement. PATH discovery stays behind

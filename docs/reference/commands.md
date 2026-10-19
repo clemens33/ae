@@ -1196,19 +1196,26 @@ a note that a full window may not block work. A symlinked or non-regular log is 
 watchdog advisory reaches the lead pair as for any other client, but a Grok seat gets no
 checkpoint ask and no throttle line, because its config home is not recorded.
 
-Antigravity, Muse Code, OpenCode, and Gemini CLI, and a Grok with no readable window, have no
-verified reusable local subscription quota source. They render `unsupported` with an operator hint
+Antigravity, Muse Code, OpenCode (except OpenCode Go, below), and Gemini CLI, and a Grok with no
+readable window, have no verified reusable local subscription quota source. They render `unsupported` with an operator hint
 rather than treating token or cost history as quota. For an agy profile whose command keeps the
 caller's HOME, it asks agy once per run under that HOME: `agy --version` (3 s), then on 1.1.11+ `agy
 -p /quota --output-format json` (8 s). One answer fills every such profile, every row is judged when
 it returns, and a refusal reads `unsupported`, `truncated` or `read-error`, never vendor bytes.
-Beyond that call it makes no network request, reads no credentials, invokes neither tmux nor another
-vendor process, and writes no state; the watchdog never makes it, so agy raises no advisory
+Beyond that call and the opt-in OpenCode Go call below it makes no network request, reads no
+credentials, invokes neither tmux nor another vendor process, and writes no state; the watchdog never makes it, so agy raises no advisory
 (a known gap). The settings quota dialog, tmux and `ae app` alike, makes the same call when it
 opens: `ae app` holds the answer for 300 s, so its 5 s refresh does not ask again, while the tmux
 dialog asks on every open. Either waits for the call (about 7 s measured; up to 11 s, and in the app
 the reader that also refreshes the fleet waits with it), and names a failed answer
 (deadline, agy older than 1.1.11, no usable answer, or agy not on PATH) instead of `unsupported`.
+
+An `opencode-go/<model>` profile shows the Go subscription's `rolling`, `weekly` and `monthly`
+windows once the global `[workspace] opencode_go_key_file` names a `0600` key file
+([Config](../getting-started/config.md#opencode-go-quota)). `ae quota` refreshes the shared cache
+`quota/opencode-go.json` inline at most once per 300 s across the fleet, and never with `quota =
+off`; the watchdog refreshes it on a background thread; every other reader reads the cache only.
+Every other OpenCode profile, OpenRouter included, stays `unsupported`.
 
 ### Advisories
 

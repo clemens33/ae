@@ -85,17 +85,17 @@ fn the_locked_agent_has_exactly_one_construction_site() {
     // Sorted: `read_dir` order is a filesystem fact, not a contract (measured:
     // the two lanes disagree on it).
     sites.sort();
-    // TWO SITES, and the second is deliberate rather than a
-    // second set of defaults: `src/upgrade.rs` builds an agent with the same
-    // lock except for `max_redirects`, because a GitHub release download
-    // answers with a 302 to its object store and there is no token in that URL
-    // to leak to it. What keeps the difference honest is the SHA-256 proof of
-    // the downloaded bundle — a redirect that lands somewhere unexpected is a
-    // checksum refusal, not an install. Both are listed rather than one
-    // exempted: a third agent is a line in a review, not a diff nobody read.
+    // THREE SITES. `src/upgrade.rs` builds an agent with the same lock except
+    // for `max_redirects`, because a GitHub release download answers with a
+    // 302 to its object store and there is no token in that URL to leak to it.
+    // What keeps the difference honest is the SHA-256 proof of the downloaded
+    // bundle — a redirect that lands somewhere unexpected is a checksum
+    // refusal, not an install. `src/go_usage.rs` is the third: same lock as
+    // telegram (https_only, proxy None, max_redirects 0). A fourth agent is a
+    // line in a review, not a diff nobody read.
     assert_eq!(
         sites,
-        vec!["telegram.rs", "upgrade.rs"],
+        vec!["go_usage.rs", "telegram.rs", "upgrade.rs"],
         "the locked ureq Agent is built somewhere this test does not name"
     );
 
