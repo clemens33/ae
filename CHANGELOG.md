@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.94] - 2026-10-19
+- Wait for spawned pane cwd witnesses
+- Retry menu fixture shutdown refusals
+- Wrap an app agent row whose label does not fit beside its name
+
 ## [v2026.10.93] - 2026-10-19
 - Lay out decision card reasons for reading in chat and app
 
