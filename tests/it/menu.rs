@@ -73,6 +73,37 @@ fn tmux(socket: &Path, dir: &Path, words: &[&str]) -> (bool, String) {
     run_tmux(&args, dir)
 }
 
+/// `kill-server` can return while the old server still accepts a client. Only
+/// that client's exact shutdown refusal is retryable; every other setup error
+/// fails immediately, with the tmux diagnostics the ordinary helper discards.
+fn replace_server(socket: &Path, dir: &Path, name: &str) {
+    let _ = tmux(socket, dir, &["kill-server"]);
+    let args = [
+        "-S",
+        &socket.display().to_string(),
+        "new-session",
+        "-d",
+        "-s",
+        name,
+    ]
+    .map(str::to_owned);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let output = super::phase2::capture_tmux(&args, dir);
+        if output.succeeded {
+            return;
+        }
+        assert!(
+            output.stderr.trim() == "server exited unexpectedly" && Instant::now() < deadline,
+            "replacement new-session failed: status={}; stdout={:?}; stderr={:?}",
+            output.status,
+            output.stdout,
+            output.stderr,
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Whether the real server under test supports mouse-driven menus.
 fn menu_mouse(socket: &Path) -> bool {
     ae::transport::observe_tmux_floor(&ServerId::Selected(Selector::Socket(socket.to_path_buf())))
@@ -7627,11 +7658,9 @@ fn a_same_name_replacement_after_the_proof_stays_vacant() {
             if Instant::now() >= deadline {
                 break;
             }
-            let _ = tmux(&socket, &scratch, &["kill-server"]);
-            assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+            replace_server(&socket, &scratch, name);
             let first = live_proven_identity(&server, name);
-            let _ = tmux(&socket, &scratch, &["kill-server"]);
-            assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+            replace_server(&socket, &scratch, name);
             let second = live_proven_identity(&server, name);
             if first.session.id == second.session.id
                 && first.session.created == second.session.created
@@ -8036,8 +8065,7 @@ fn a_pane_capture_describes_the_panes_own_session() {
     );
     // Replace the whole server: ids and pane numbers may collide again, but the
     // server pair cannot.
-    let _ = tmux(&socket, &scratch, &["kill-server"]);
-    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+    replace_server(&socket, &scratch, name);
     if let Some(reused) = ae::session_launch::pane_proven_identity(&server, &pane) {
         assert_ne!(
             reused.server, proven.server,
@@ -8082,8 +8110,7 @@ fn a_legacy_session_replaced_across_a_server_restart_stays_vacant() {
     // Replace the whole server and recreate the name with raw tmux: no
     // ownership pair, and the recorded main pane is made to match the new
     // session's pane, exactly the collision membership alone cannot see.
-    let _ = tmux(&socket, &scratch, &["kill-server"]);
-    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", "legacy"]).0);
+    replace_server(&socket, &scratch, "legacy");
     let reused_pane = tmux(
         &socket,
         &scratch,
@@ -8162,8 +8189,7 @@ fn the_launch_identity_comes_from_the_creating_new_session_command() {
         "the create's session pair is the session it made"
     );
     // Replace the whole server and recreate the name: ids and pane may collide.
-    let _ = tmux(&socket, &scratch, &["kill-server"]);
-    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+    replace_server(&socket, &scratch, name);
     if let Some(later) = ae::session_launch::pane_proven_identity(&server, &created.pane) {
         assert_ne!(
             later.server, created.server,

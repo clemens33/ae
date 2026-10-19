@@ -1015,6 +1015,21 @@ fn criterion_22_phase_2_contacts_only_servers_the_phase_1_facts_named() {
 /// `(succeeded, stdout)`. The client is UTF-8 (`-u`), as ae's own are (#187):
 /// a fixture reading back a glyph must not depend on the host's locale.
 pub(crate) fn run_tmux(args: &[String], scratch: &Path) -> (bool, String) {
+    let output = capture_tmux(args, scratch);
+    (output.succeeded, output.stdout)
+}
+
+/// A tmux refusal keeps all three diagnostics for fixture failures.
+#[derive(Debug)]
+pub(crate) struct TmuxOutput {
+    pub(crate) succeeded: bool,
+    pub(crate) status: String,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+}
+
+/// The same process door as `run_tmux`, retaining the refusal diagnostics.
+pub(crate) fn capture_tmux(args: &[String], scratch: &Path) -> TmuxOutput {
     let mut invocation = Invocation::new("tmux").arg("-u");
     for arg in args {
         invocation = invocation.arg(arg);
@@ -1025,9 +1040,16 @@ pub(crate) fn run_tmux(args: &[String], scratch: &Path) -> (bool, String) {
         Ok(status) => status,
         Err(why) => panic!("tmux must be runnable for this proof: {why}"),
     };
-    let succeeded = matches!(status.outcome(), ExitOutcome::Code(0));
-    let stdout = fs::read_to_string(&out).unwrap_or_default();
-    (succeeded, stdout)
+    let outcome = status.outcome();
+    TmuxOutput {
+        succeeded: matches!(outcome, ExitOutcome::Code(0)),
+        status: match outcome {
+            ExitOutcome::Code(code) => format!("exit code {code}"),
+            ExitOutcome::Signalled => "terminated by signal".to_owned(),
+        },
+        stdout: fs::read_to_string(&out).unwrap_or_default(),
+        stderr: fs::read_to_string(&err).unwrap_or_default(),
+    }
 }
 
 /// Whether a real tmux is available to prove anything against.
