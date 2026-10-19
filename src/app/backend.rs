@@ -2,6 +2,7 @@
 //! `ae app` writes an escape sequence. A cell's symbol is checked before it is
 //! written, so no text a record carries can reach the terminal as a control.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 
 use ratatui_core::backend::{Backend, ClearType, WindowSize};
@@ -9,10 +10,33 @@ use ratatui_core::buffer::Cell;
 use ratatui_core::layout::{Position, Size};
 use ratatui_core::style::{Color, Modifier};
 
+use crate::console::link;
+
+/// A link over `width` cells of row `y` from column `x`: the cells of the
+/// frame the terminal opens `url` on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Run {
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) width: u16,
+    pub(crate) url: String,
+}
+
+/// The links of the frame being drawn: each run with its id, and the run that
+/// owns each cell.
+#[derive(Debug, Default)]
+struct Table {
+    runs: Vec<(Run, usize)>,
+    owner: HashMap<(u16, u16), usize>,
+    /// The cells of the runs, in run order.
+    cells: Vec<(u16, u16)>,
+}
+
 /// Cells to `out`, at the size the terminal last reported.
 pub(crate) struct Ansi<W: Write> {
     out: W,
     size: Size,
+    table: Table,
 }
 
 impl<W: Write> Ansi<W> {
@@ -20,6 +44,7 @@ impl<W: Write> Ansi<W> {
         Self {
             out,
             size: Size::new(size.0, size.1),
+            table: Table::default(),
         }
     }
 
@@ -27,7 +52,64 @@ impl<W: Write> Ansi<W> {
     pub(crate) fn resize(&mut self, size: (u16, u16)) {
         self.size = Size::new(size.0, size.1);
     }
+
+    /// Take `runs` as the links of the next draw, and answer the cells that
+    /// draw must write whatever the diff says: every cell of a run, and every
+    /// cell of the table this replaces, because a cell the terminal holds a
+    /// link on is only freed, moved or retargeted by writing it again. A run
+    /// without width or with a URL that is not [`link::is_safe_url`] is
+    /// dropped, never repaired. A URL's id is its 1-based place among the
+    /// frame's distinct URLs by first run, row by row, so the rows of a link
+    /// a wrap split share one and two links never do.
+    pub(crate) fn links(&mut self, runs: Vec<Run>) -> Vec<Position> {
+        let mut runs: Vec<Run> = runs
+            .into_iter()
+            .filter(|run| run.width > 0 && link::is_safe_url(&run.url))
+            .collect();
+        let mut ids: HashMap<&str, usize> = HashMap::new();
+        let mut order: Vec<usize> = (0..runs.len()).collect();
+        order.sort_by_key(|at| (runs[*at].y, runs[*at].x));
+        let mut placed = vec![0; runs.len()];
+        for at in order {
+            let next = ids.len() + 1;
+            placed[at] = *ids.entry(runs[at].url.as_str()).or_insert(next);
+        }
+        let mut table = Table::default();
+        for (at, run) in runs.drain(..).enumerate() {
+            for column in run.x..run.x.saturating_add(run.width) {
+                table.owner.insert((column, run.y), at);
+                table.cells.push((column, run.y));
+            }
+            table.runs.push((run, placed[at]));
+        }
+        let held: HashSet<(u16, u16)> = table.cells.iter().copied().collect();
+        let stale = (self.table.cells.iter()).filter(|cell| !held.contains(cell));
+        let forced = (table.cells.iter()).chain(stale);
+        let forced = forced.map(|(x, y)| Position::new(*x, *y)).collect();
+        self.table = table;
+        forced
+    }
+
+    /// The OSC 8 open of run `at`, or its close, written when the cell about
+    /// to be drawn belongs to another run than the one open.
+    fn hyperlink(&mut self, open: &mut Option<usize>, owner: Option<usize>) -> io::Result<()> {
+        if *open == owner {
+            return Ok(());
+        }
+        if open.take().is_some() {
+            self.out.write_all(OSC8_CLOSE.as_bytes())?;
+        }
+        let Some((run, id)) = owner.and_then(|at| self.table.runs.get(at)) else {
+            return Ok(());
+        };
+        write!(self.out, "\x1b]8;id={id};{}\x1b\\", run.url)?;
+        *open = owner;
+        Ok(())
+    }
 }
+
+/// The OSC 8 sequence that ends a link: no parameters, no URL.
+const OSC8_CLOSE: &str = "\x1b]8;;\x1b\\";
 
 /// A symbol as the terminal gets it: a blank where it carries a control.
 pub(crate) fn clean(symbol: &str) -> &str {
@@ -101,8 +183,12 @@ impl<W: Write> Backend for Ansi<W> {
     {
         let mut at: Option<(u16, u16)> = None;
         let mut look = String::new();
+        let mut open: Option<usize> = None;
         for (x, y, cell) in content {
             if at != Some((x, y)) {
+                // A link never rides a cursor jump: it closes, and the next
+                // cell of its run opens it again.
+                self.hyperlink(&mut open, None)?;
                 write!(self.out, "\x1b[{};{}H", y + 1, x + 1)?;
             }
             let wanted = sgr(cell);
@@ -110,6 +196,8 @@ impl<W: Write> Backend for Ansi<W> {
                 self.out.write_all(wanted.as_bytes())?;
                 look = wanted;
             }
+            let owner = self.table.owner.get(&(x, y)).copied();
+            self.hyperlink(&mut open, owner)?;
             let symbol = cell.symbol();
             let clean = clean(symbol);
             self.out.write_all(clean.as_bytes())?;
@@ -118,6 +206,7 @@ impl<W: Write> Backend for Ansi<W> {
             let wide = ratatui_core::text::Span::raw(clean).width() != 1;
             at = (!wide).then_some((x + 1, y));
         }
+        self.hyperlink(&mut open, None)?;
         self.out.write_all(b"\x1b[0m")
     }
 

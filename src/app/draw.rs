@@ -178,9 +178,34 @@ pub(crate) struct Layout {
     /// against this frame opens only that session's seat, never a same-named
     /// one of the session selected since.
     pub seats_session: Option<String>,
+    /// The links the frame drew, one run per link per row, clipped to the
+    /// column: the backend wraps exactly these cells in OSC 8.
+    pub(crate) links: Vec<super::backend::Run>,
 }
 
 impl Layout {
+    /// The runs of the visible lane rows `links`, the first on row `y0`, left
+    /// of the column at `left` and `room` cells wide: each link clipped to the
+    /// cells the row actually draws.
+    fn link_runs(&mut self, links: &[super::lane::Links], (left, y0, room): (u16, u16, u16)) {
+        for (step, row) in links.iter().enumerate() {
+            for (offset, width, url) in row {
+                let start = u16::try_from(*offset).unwrap_or(u16::MAX);
+                let wide = u16::try_from(*width).unwrap_or(u16::MAX);
+                let width = wide.min(room.saturating_sub(start));
+                if width == 0 {
+                    continue;
+                }
+                self.links.push(super::backend::Run {
+                    x: left.saturating_add(start),
+                    y: y0.saturating_add(cells(step)),
+                    width,
+                    url: url.clone(),
+                });
+            }
+        }
+    }
+
     fn record(&mut self, buf: &Buffer, area: Rect, target: Hit) {
         self.targets.push((area.intersection(buf.area), target));
     }
@@ -364,6 +389,11 @@ pub(super) struct Paint(Option<Palette>);
 impl Paint {
     pub(super) fn of(look: Option<&Look>) -> Self {
         Self(look.filter(|look| look.drawn).map(|look| look.palette))
+    }
+
+    /// Whether a look is drawn at all: colour and emphasis are worn only then.
+    pub(super) fn drawn(self) -> bool {
+        self.0.is_some()
     }
 
     /// A foreground from the palette, or none.
@@ -1461,9 +1491,11 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         mut rows,
         complete,
         turns,
+        mut links,
     } = lane_tail(ctx, &clock, main, (room, need));
     if ctx.wait.lane {
         rows.push(Line::from(Span::styled("loading", dim)));
+        links.push(Vec::new());
     }
     let (turns, bars, folds) = place_turns(ctx, &turns, &mut rows, layout);
     let last = rows
@@ -1475,6 +1507,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     for (step, line) in rows[first..last].iter().enumerate() {
         put_line(buf, left, y0 + cells(step), line, room);
     }
+    layout.link_runs(links.get(first..last).unwrap_or_default(), (left, y0, room));
     // A fold row is recorded before its turn: the first target to hold a cell wins.
     for (key, row) in folds {
         if (first..last).contains(&row) {
@@ -1594,6 +1627,7 @@ fn lane_tail(
         open: (!ctx.wait.open.is_empty()).then_some(ctx.wait.open),
         sent: ctx.wait.sent,
         icons: ctx.icons,
+        base: &ctx.screen.overview.base,
     };
     let (room, need) = size;
     let lane = ctx.screen.lane;
@@ -2589,6 +2623,7 @@ mod tests {
                 age_secs: Some(5),
             }],
             dir: Some("~/a/launch/directory/long/enough/to/clip".to_owned()),
+            base: crate::console::link::Base::default(),
         };
         let item = Item {
             micros: 1_759_500_000_000_000,

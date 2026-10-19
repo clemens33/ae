@@ -165,7 +165,8 @@ new width. Only a pane narrower than 3 cells can overflow, a row then holding
 the bar and one character.
 
 Colour comes only from ae's own printing: every record byte is neutralised
-before an escape is added, and no escape is written inside a message. When
+before an escape is added, and no escape is written inside a message except
+the link pairs of [Links](#links). When
 stdout is a pipe or a file, the output is exactly the plain text above, in
 UTC, and the chat asks tmux for none of look, zone or pane width; with
 `[workspace] theme = off` on a terminal it reads the look, finds it undrawn, and
@@ -174,6 +175,48 @@ the palette's accents drawn on the terminal's own background, which ae cannot
 see; against the palette's `base` every hue clears 3.0:1, and on Darcula the
 `working`, `stale`, `dim` and `done` hues stay under the 4.5:1 text bar (`dim`
 also on palettes `a` and `b`).
+
+## Links
+
+A web URL (`http://` or `https://`) or a repo-style path in a turn is a real
+terminal hyperlink: Cmd-click (Ctrl-click on Linux) opens it the way the
+terminal opens any link, and the text is underlined while a look is drawn. A
+path is one of
+
+- `src/…`, `docs/…`, `tests/…` or `.local/…`, against the work dir the session's
+  meta records,
+- `~/…`, against your home,
+- an absolute `/…` with at least two segments (`/open` and `/close` are
+  commands, not paths),
+
+with an optional `:line` or `:line:col` that stays in the text and out of the
+link; the terminal opens the file, not the line. A relative path in a session
+whose meta records no work dir stays text. Nothing else links: not a bare word,
+a `memo` topic or a request id. The link is `file://` with an empty host and the
+path percent-encoded; ae does not check that the file exists, does not
+normalise `..`, and never links a path with a space in it.
+
+Only the chat's text is linked, and only on a terminal whose look is drawn.
+Piped, redirected or `theme = off` output is the plain text, byte for byte. The
+visible text, the wrapping and the fold counts are the same with or without a
+link, and a link a wrap cuts is two links with one id, so a terminal that
+lights a link under the mouse lights both rows. Every body is neutralised
+before it is scanned, and a URL is written only as printable ASCII with
+anything else percent-encoded, so no record can end a link early, open a
+second one or smuggle a control into it.
+
+OSC 8 must reach your terminal. Terminal.app has no hyperlinks. Inside tmux
+(3.4 and later, ae's floor) tmux forwards a link only when its
+`terminal-features` say your terminal takes them; for most terminals add
+
+```
+set -as terminal-features ',xterm*:hyperlinks'
+```
+
+to `~/.tmux.conf` (the glob must match your `$TERM`). ae never writes that
+server option. Where the link is not forwarded the text is shown unchanged.
+Following a link inside ae (a reader pane, memos, request threads) is not part
+of this.
 
 ## Keys
 

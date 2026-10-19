@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use crate::console::link::Base;
 use crate::console::needs::{Section, Verdict};
 use crate::digest::SessionEntry;
 use crate::time::Timestamp;
@@ -18,6 +19,10 @@ pub struct Overview {
     /// The recorded working dir, `~`-relative under the viewer's home; `None`
     /// when the record names none, so nothing is guessed.
     pub dir: Option<String>,
+    /// Where a path in the lane resolves: the record's working dir as it is
+    /// written, and the viewer's home. Nothing is guessed: no recorded dir, no
+    /// base dir.
+    pub base: Base,
 }
 
 /// One thing waiting on the human.
@@ -52,5 +57,9 @@ pub fn of(
     let dir = (entry.work_dir.as_deref())
         .filter(|dir| !dir.is_empty())
         .map(|dir| crate::board::terminal_text(&crate::brief::short_path(dir, home)));
-    Overview { open, dir }
+    let base = Base {
+        dir: (entry.work_dir.clone()).filter(|dir| !dir.is_empty()),
+        home: home.and_then(Path::to_str).map(str::to_owned),
+    };
+    Overview { open, dir, base }
 }

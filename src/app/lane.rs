@@ -16,8 +16,7 @@ use super::draw::Paint;
 use crate::board::{clock_text, terminal_text};
 use crate::console::card::{Part, Role};
 use crate::console::lane::{Item, Kind, Lane, OLD_CORE_GAP};
-use crate::console::wrap::wrap;
-use crate::console::{fold, view};
+use crate::console::{fold, link, view};
 use crate::state::CHAT_SUMMARY_CAP;
 
 /// Who speaks a turn, which is all its colour says.
@@ -38,6 +37,20 @@ pub(super) struct Tail {
     pub(super) complete: bool,
     /// Where each produced turn stands in `rows`, oldest first.
     pub(super) turns: Vec<Turn>,
+    /// The links of each of `rows`, parallel to it.
+    pub(super) links: Vec<Links>,
+}
+
+/// The links of one row, left to right: the cell they start at, counted from
+/// the row's left edge, the cells they cover and the URL they open.
+pub(super) type Links = Vec<(usize, usize, String)>;
+
+/// A row and its links.
+type Drawn = (Line<'static>, Links);
+
+/// A row without links.
+fn plain(line: Line<'static>) -> Drawn {
+    (line, Vec::new())
 }
 
 /// A turn's place in [`Tail::rows`]: its item, its header row and its row
@@ -61,6 +74,8 @@ pub(super) struct Show<'a> {
     pub(super) sent: &'a [bool],
     /// Whether the look's icons are on: an option bullet is `•`, else `-`.
     pub(super) icons: bool,
+    /// Where a path in a body resolves.
+    pub(super) base: &'a link::Base,
 }
 
 /// [`tail_with`] for a lane that folds nothing and sent nothing.
@@ -80,6 +95,7 @@ pub(super) fn tail(
         open: None,
         sent: &[],
         icons: true,
+        base: &link::Base::default(),
     };
     tail_with(lane, width, paint, &show, need, visited)
 }
@@ -98,7 +114,7 @@ pub(super) fn tail_with(
 ) -> Tail {
     // Newest first, each turn's item, rows and fold row in order; reversed
     // into place below.
-    let mut turns: Vec<(usize, Vec<Line<'static>>, Option<usize>)> = Vec::new();
+    let mut turns: Vec<(usize, Vec<Drawn>, Option<usize>)> = Vec::new();
     let mut count = 0;
     let mut items = lane.items.iter().enumerate().rev();
     while count < need {
@@ -107,22 +123,28 @@ pub(super) fn tail_with(
         };
         let mut rows = Vec::new();
         if at > 0 || !lane.coverage.is_empty() {
-            rows.push(Line::default());
+            rows.push(plain(Line::default()));
         }
         let sent = show.sent.get(at).copied().unwrap_or(false);
         let closed = closing(&lane.items, at);
-        rows.push(header(
+        rows.push(plain(header(
             item,
             closed.as_ref(),
             show.clock,
             show.main,
             paint,
             sent,
-        ));
+        )));
         if let Some(visited) = visited.as_deref_mut() {
             visited.push(at);
         }
-        let body = body_rows(item, closed.as_ref(), width, paint, bullet(show.icons));
+        let body = body_rows(
+            item,
+            closed.as_ref(),
+            (width, show.base),
+            paint,
+            bullet(show.icons),
+        );
         let foldable = show.open.is_some() && fold::foldable(body.len(), 1);
         let open = show.open.is_none_or(|open| open.get(at) == Some(&true));
         let (body, hidden) = fold::folded(body, open, 1);
@@ -132,10 +154,10 @@ pub(super) fn tail_with(
                 0 => "show fewer lines".to_owned(),
                 hidden => fold::line(hidden),
             };
-            rows.push(Line::from(vec![
+            rows.push(plain(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(words, paint.fg(|p| p.dim)),
-            ]));
+            ])));
             rows.len() - 1
         });
         count += rows.len();
@@ -148,14 +170,14 @@ pub(super) fn tail_with(
             break;
         };
         let text = terminal_text(&format!("coverage incomplete: {gap}"));
-        coverage.push(Line::from(Span::styled(text, paint.fg(|p| p.dim))));
+        coverage.push(plain(Line::from(Span::styled(text, paint.fg(|p| p.dim)))));
         count += 1;
     }
     let mut rows = Vec::with_capacity(count);
     rows.extend(coverage.into_iter().rev());
     let mut placed = Vec::with_capacity(turns.len());
     for (at, turn, fold) in turns.into_iter().rev() {
-        let spacer = usize::from(turn.first().is_some_and(|line| line.spans.is_empty()));
+        let spacer = usize::from(turn.first().is_some_and(|(line, _)| line.spans.is_empty()));
         placed.push(Turn {
             at,
             first: rows.len() + spacer,
@@ -164,10 +186,12 @@ pub(super) fn tail_with(
         });
         rows.extend(turn);
     }
+    let (rows, links) = rows.into_iter().unzip();
     Tail {
         rows,
         complete: items.len() == 0 && gaps.len() == 0,
         turns: placed,
+        links,
     }
 }
 
@@ -229,18 +253,19 @@ fn bullet(icons: bool) -> &'static str {
     if icons { "• " } else { "- " }
 }
 
-/// A turn's body rows, wrapped to `width`. A close shows the id it closed
-/// and the words of that ask, the same `closed <id>: <words>` its closer was told.
-/// A decision card is drawn in its laid-out parts: an option wears its label or
-/// `bullet` and hangs its wrapped rows under its words, evidence dims, a gap is
-/// one empty row.
+/// A turn's body rows, wrapped to `width`, with the links each carries. A
+/// close shows the id it closed and the words of that ask, the same `closed
+/// <id>: <words>` its closer was told. A decision card is drawn in its laid-out
+/// parts: an option wears its label or `bullet` and hangs its wrapped rows
+/// under its words, evidence dims, a gap is one empty row. `base` is where a
+/// path in the words resolves.
 fn body_rows(
     item: &Item,
     closed: Option<&Closing>,
-    width: usize,
+    (width, base): (usize, &link::Base),
     paint: Paint,
     bullet: &str,
-) -> Vec<Line<'static>> {
+) -> Vec<Drawn> {
     let said = closed.map(|closed| match &closed.ask {
         Some((_, words)) if !words.is_empty() => format!("{}: {words}", closed.id),
         _ => closed.id.clone(),
@@ -252,21 +277,37 @@ fn body_rows(
         }],
         None => view::body_parts(item),
     };
-    let row = |gap: usize, piece: String, hue: Style| {
-        Line::from(vec![Span::raw(" ".repeat(gap)), Span::styled(piece, hue)])
+    // A link is underlined where the look is drawn, and nowhere else.
+    let underline = |hue: Style| {
+        if paint.drawn() {
+            hue.add_modifier(Modifier::UNDERLINED)
+        } else {
+            hue
+        }
+    };
+    let row = |gap: usize, lead: &str, piece: &link::Row, hue: Style| {
+        linked_row(
+            gap,
+            lead,
+            (&piece.piece, &piece.links),
+            (hue, underline(hue)),
+        )
     };
     let mut rows = Vec::new();
     for part in parts {
         match part.role {
-            Role::Gap => rows.push(row(2, String::new(), paint.fg(|p| p.text))),
+            Role::Gap => rows.push(plain(Line::from(vec![
+                Span::raw(" ".repeat(2)),
+                Span::styled(String::new(), paint.fg(|p| p.text)),
+            ]))),
             Role::Text | Role::Evidence => {
                 let hue = if part.role == Role::Evidence {
                     paint.fg(|p| p.dim)
                 } else {
                     paint.fg(|p| p.text)
                 };
-                let pieces = wrap(&terminal_text(part.text), width, 2);
-                rows.extend(pieces.into_iter().map(|(gap, piece)| row(gap, piece, hue)));
+                let pieces = link::wrapped(&terminal_text(part.text), width, 2, 1, base);
+                rows.extend(pieces.iter().map(|piece| row(piece.gap, "", piece, hue)));
             }
             Role::Option { label } => {
                 let (mark, words) = match part.text.split_at_checked(label) {
@@ -274,25 +315,66 @@ fn body_rows(
                     _ => (bullet, part.text),
                 };
                 let hang = mark.chars().count();
-                let pieces = wrap(&terminal_text(words), width.saturating_sub(hang), 2);
-                rows.extend(pieces.into_iter().enumerate().map(|(at, (gap, piece))| {
+                let pieces = link::wrapped(
+                    &terminal_text(words),
+                    width.saturating_sub(hang),
+                    2,
+                    1,
+                    base,
+                );
+                rows.extend(pieces.iter().enumerate().map(|(at, piece)| {
                     let mark = if at == 0 {
                         terminal_text(mark)
                     } else {
                         " ".repeat(hang)
                     };
                     // The mark sits at the margin; the words' own indent follows it.
-                    let indent = " ".repeat(gap.saturating_sub(2));
-                    row(
-                        gap.min(2),
-                        format!("{mark}{indent}{piece}"),
-                        paint.fg(|p| p.text),
-                    )
+                    let indent = " ".repeat(piece.gap.saturating_sub(2));
+                    let hue = paint.fg(|p| p.text);
+                    row(piece.gap.min(2), &format!("{mark}{indent}"), piece, hue)
                 }));
             }
         }
     }
     rows
+}
+
+/// One body row: `gap` blank cells, then `lead` and `piece` in `hue`, each of
+/// `links` (byte ranges of `piece`) in `linked` and recorded with the cell it
+/// starts at and the cells it covers. A row without links is the two spans it
+/// always was.
+fn linked_row(
+    gap: usize,
+    lead: &str,
+    (piece, links): (&str, &[link::Link]),
+    (hue, linked): (Style, Style),
+) -> Drawn {
+    let text = format!("{lead}{piece}");
+    let mut spans = vec![Span::raw(" ".repeat(gap))];
+    let (mut runs, mut at) = (Vec::new(), 0);
+    for found in links {
+        let (start, end) = (lead.len() + found.start, lead.len() + found.end);
+        let (Some(before), Some(inside)) = (text.get(at..start), text.get(start..end)) else {
+            continue;
+        };
+        if inside.is_empty() || !link::is_safe_url(&found.url) {
+            continue;
+        }
+        if !before.is_empty() {
+            spans.push(Span::styled(before.to_owned(), hue));
+        }
+        // The cells the frame draws, as ratatui measures them: not the chat's
+        // safe upper bound, which wraps early but would misplace a link.
+        let column = gap + Span::raw(text.get(..start).unwrap_or_default()).width();
+        runs.push((column, Span::raw(inside).width(), found.url.clone()));
+        spans.push(Span::styled(inside.to_owned(), linked));
+        at = end;
+    }
+    let rest = text.get(at..).unwrap_or_default();
+    if !rest.is_empty() || runs.is_empty() {
+        spans.push(Span::styled(rest.to_owned(), hue));
+    }
+    (Line::from(spans), runs)
 }
 
 /// The rows of `lane`, oldest first, `width` cells wide, a blank row between
@@ -321,7 +403,9 @@ pub(super) fn rows(
         }
         let closed = closing(&lane.items, at);
         rows.push(header(item, closed.as_ref(), clock, main, paint, false));
-        rows.extend(body_rows(item, closed.as_ref(), width, paint, bullet(true)));
+        let base = link::Base::default();
+        let body = body_rows(item, closed.as_ref(), (width, &base), paint, bullet(true));
+        rows.extend(body.into_iter().map(|(line, _)| line));
     }
     rows
 }
@@ -1055,6 +1139,7 @@ mod tests {
             open,
             sent: &[sent],
             icons: true,
+            base: &crate::console::link::Base::default(),
         };
         super::tail_with(&lane, 40, Paint::of(None), &show, 100, None)
     }

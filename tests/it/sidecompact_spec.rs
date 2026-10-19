@@ -460,6 +460,7 @@ fn agent_rows_are_single_line_without_client_or_reason_rows() {
             age_secs: Some(60),
         }],
         dir: None,
+        base: ae::console::link::Base::default(),
     };
     let shot = render(Frame {
         width: 150,
@@ -569,6 +570,7 @@ fn open_ask_reaches_the_header_row() {
             age_secs: Some(120),
         }],
         dir: None,
+        base: ae::console::link::Base::default(),
     };
     let shot = render(Frame {
         width: 150,

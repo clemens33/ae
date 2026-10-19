@@ -17,7 +17,8 @@ use std::cell::Cell;
 const TIME: i64 = 1_790_748_060_000_000;
 const ID: &str = "ae-20261003T070000Z-12345678";
 
-/// Accept only ae's SGR escapes; source text may never smuggle a terminal command.
+/// Accept ae's SGR escapes and exactly the OSC 8 link pairs the lane writes;
+/// source text may never smuggle any other terminal command.
 fn unstyled(text: &str) -> String {
     let mut out = String::new();
     let mut chars = text.chars();
@@ -26,16 +27,70 @@ fn unstyled(text: &str) -> String {
             out.push(ch);
             continue;
         }
-        assert_eq!(chars.next(), Some('['));
-        loop {
-            let next = chars.next().expect("terminated SGR");
-            if next == 'm' {
-                break;
+        match chars.next() {
+            Some('[') => loop {
+                let next = chars.next().expect("terminated SGR");
+                if next == 'm' {
+                    break;
+                }
+                assert!(next.is_ascii_digit() || next == ';', "SGR only");
+            },
+            Some(']') => {
+                // An OSC 8 link pair and nothing else: the open carries no
+                // parameters or `id=<digits>`, the URL empty or printable
+                // ASCII, and the sequence ends at ESC \.
+                assert_eq!(chars.next(), Some('8'), "OSC 8 only");
+                assert_eq!(chars.next(), Some(';'), "OSC 8 only");
+                let mut params = String::new();
+                loop {
+                    let next = chars.next().expect("terminated OSC 8");
+                    if next == ';' {
+                        break;
+                    }
+                    params.push(next);
+                }
+                assert!(
+                    params.is_empty()
+                        || params.strip_prefix("id=").is_some_and(|rest| {
+                            !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
+                        }),
+                    "OSC 8 params are empty or id=<digits>: {params:?}"
+                );
+                let mut url = String::new();
+                loop {
+                    let next = chars.next().expect("terminated OSC 8 url");
+                    if next == '\x1b' {
+                        assert_eq!(chars.next(), Some('\\'), "OSC 8 ends at ESC \\");
+                        break;
+                    }
+                    url.push(next);
+                }
+                assert!(
+                    url.bytes().all(|byte| (0x21..=0x7e).contains(&byte)),
+                    "an OSC 8 url is printable ASCII: {url:?}"
+                );
             }
-            assert!(next.is_ascii_digit() || next == ';', "SGR only");
+            _ => panic!("SGR or OSC 8 only"),
         }
     }
     out
+}
+
+/// The admission is exactly the link pairs: any other OSC (an OSC 52
+/// clipboard write, say) is refused.
+#[test]
+#[should_panic(expected = "OSC 8 only")]
+fn unstyled_refuses_any_other_osc() {
+    let _ = unstyled("keep \x1b]52;c;aGVsbG8=\x07 plain");
+}
+
+/// And an OSC 8 whose URL carries a control byte is refused, never accepted:
+/// the emitter's own gate would never write one, so the oracle must not
+/// admit it either.
+#[test]
+#[should_panic(expected = "printable ASCII")]
+fn unstyled_refuses_an_osc8_url_with_a_control_byte() {
+    let _ = unstyled("\x1b]8;id=1;https://exa\x07mple\x1b\\x\x1b]8;;\x1b\\");
 }
 
 /// Requirement oracle, independent of `event_text`'s implementation. The bar is

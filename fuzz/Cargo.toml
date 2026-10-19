@@ -292,3 +292,10 @@ path = "fuzz_targets/codex_developer_record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "link_scan"
+path = "fuzz_targets/link_scan.rs"
+test = false
+doc = false
+bench = false

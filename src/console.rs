@@ -22,6 +22,7 @@ pub(crate) mod fold;
 pub mod holder;
 pub mod input;
 pub mod lane;
+pub mod link;
 pub mod needs;
 pub mod open;
 pub mod submit;
@@ -241,6 +242,21 @@ impl Console {
     /// `Err` says why this console no longer follows the session it opened.
     pub(crate) fn seats(&self) -> Result<Vec<Seat>, String> {
         self.lead_pair().map(|(seats, ..)| seats)
+    }
+
+    /// Where a path in a turn resolves: the work dir the session's meta records
+    /// now, and this console's home. A meta that cannot be read or names no
+    /// work dir leaves the dir out, so relative paths stay text.
+    fn link_base(&self) -> link::Base {
+        let dir = meta::read_bytes(&self.dir)
+            .map(|bytes| lifecycle::meta_value(&bytes, "work_dir"))
+            .ok()
+            .filter(|dir| !dir.is_empty());
+        let home = (self.home.as_deref()).and_then(Path::to_str);
+        link::Base {
+            dir,
+            home: home.map(str::to_owned),
+        }
     }
 
     /// [`Console::seats`], whether any of them records a predecessor, and the
@@ -898,10 +914,10 @@ pub(crate) fn recorded_uuid(dir: &Path) -> String {
 /// How this chat is drawn: plain unless stdout is a terminal and the session's
 /// look is drawn. Only then does it ask tmux — for the session's palette and
 /// icons, and once for the viewer's clock zone.
-fn dress(name: &str, seats: &[Seat]) -> view::Style {
+fn dress(name: &str, seats: &[Seat], base: &link::Base) -> view::Style {
     let tty = stdout_is_terminal();
     let (look, zone) = look_of(name, tty);
-    view::Style::resolve(tty, look, zone.as_deref(), lead_name(seats))
+    view::Style::resolve(tty, look, zone.as_deref(), lead_name(seats)).with_base(base.clone())
 }
 
 /// Whether turns fold: the keys that type `/more` come from a terminal and the
@@ -983,7 +999,8 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     }
     match console.seats() {
         Ok(seats) => {
-            console.printed = view::Printed::styled(dress(&console.name, &seats));
+            console.printed =
+                view::Printed::styled(dress(&console.name, &seats, &console.link_base()));
             write!(out, "{}", console.printed.headline(&console.name, &seats))?;
         }
         Err(why) => {
@@ -1086,6 +1103,10 @@ fn pump(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "console/applink_chat_spec.rs"]
+mod applink_chat_spec;
 
 #[cfg(test)]
 #[path = "../tests/it/longpaste_console_spec.rs"]

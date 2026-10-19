@@ -14,6 +14,7 @@ use super::card::{self, Part, Role};
 use super::fold;
 use super::input::{Effect, Size};
 use super::lane::{Item, Kind, Lane, OLD_CORE_GAP, Seat};
+use super::link;
 use super::needs::{Cause, Row, Section, Source, Verdict};
 use super::wrap::{clip, wrap, wrap_in};
 use crate::board::{clock_text, terminal_text};
@@ -99,6 +100,8 @@ struct Dress {
     bullet: &'static str,
     zone: Option<Zone>,
     main: String,
+    /// Where a path in a body resolves: the base its links are built against.
+    base: link::Base,
 }
 
 /// How a console draws what it prints: [`Style::PLAIN`] is today's bytes, a
@@ -134,7 +137,18 @@ impl Style {
             bullet: if look.icons { "• " } else { "- " },
             zone: zone.and_then(Zone::parse),
             main: main.to_owned(),
+            base: link::Base::default(),
         }))
+    }
+
+    /// This style resolving the relative and home paths of a body against
+    /// `base`. A plain style stays plain: it writes no link.
+    #[must_use]
+    pub fn with_base(mut self, base: link::Base) -> Self {
+        if let Some(dress) = self.0.as_mut() {
+            dress.base = base;
+        }
+        self
     }
 
     /// `micros` on the viewer's clock.
@@ -228,7 +242,7 @@ impl Style {
         let Some(width) = width.filter(|_| self.0.is_some() || fold) else {
             return vec![self.line(kind, text)];
         };
-        self.rows(kind, &terminal_text(text), width, str::to_owned)
+        self.rows(kind, &terminal_text(text), width, true, str::to_owned)
     }
 
     /// The rows of one part of a body: a gap is one empty row behind the
@@ -272,9 +286,15 @@ impl Style {
     /// [`Style::line_rows`] in the dim hue.
     fn dim_rows(&self, kind: &Kind, text: &str, width: Option<usize>, fold: bool) -> Vec<String> {
         let Some(width) = width.filter(|_| self.0.is_some() || fold) else {
-            return vec![format!("{}{}\n", self.margin(kind), self.dim(text))];
+            let body = match &self.0 {
+                Some(dress) => woven(&terminal_text(text), &dress.base, |piece| self.dim(piece)),
+                None => self.dim(text),
+            };
+            return vec![format!("{}{}\n", self.margin(kind), body)];
         };
-        self.rows(kind, &terminal_text(text), width, |piece| self.dim(piece))
+        self.rows(kind, &terminal_text(text), width, true, |piece| {
+            self.dim(piece)
+        })
     }
 
     /// An option's rows: `mark` then its `words`, every wrapped row hanging
@@ -302,10 +322,21 @@ impl Style {
             return lines.map(line).collect();
         };
         let bar = if self.0.is_some() { BAR_CELLS } else { 0 };
-        let rows = wrap_in(&terminal_text(words), width.saturating_sub(hang), 2, bar);
+        let rows = self.wrapped(
+            &terminal_text(words),
+            width.saturating_sub(hang),
+            2,
+            bar,
+            true,
+        );
+        let mut ids = Vec::new();
         rows.into_iter()
             .enumerate()
-            .map(|(at, (gap, piece))| {
+            .map(|(at, row)| {
+                let (gap, piece) = (
+                    row.gap,
+                    weave(&row.piece, &row.links, &mut ids, str::to_owned),
+                );
                 let mark = if at == 0 {
                     terminal_text(mark)
                 } else {
@@ -324,7 +355,7 @@ impl Style {
         let (Some(_), Some(width)) = (&self.0, width) else {
             return self.under(kind, line);
         };
-        let rows = self.rows(kind, &terminal_text(line), width, |piece| {
+        let rows = self.rows(kind, &terminal_text(line), width, false, |piece| {
             self.status_as(line, piece)
         });
         rows.concat()
@@ -337,20 +368,52 @@ impl Style {
         kind: &Kind,
         text: &str,
         width: usize,
+        linked: bool,
         dress: impl Fn(&str) -> String,
     ) -> Vec<String> {
         let bar = if self.0.is_some() { BAR_CELLS } else { 0 };
-        let rows = wrap_in(text, width, 2, bar).into_iter();
-        let row = |(gap, piece): (usize, String)| {
-            format!("{}{}{}\n", self.bar(kind), " ".repeat(gap), dress(&piece))
+        let mut ids = Vec::new();
+        let row = |row: link::Row| {
+            let piece = weave(&row.piece, &row.links, &mut ids, &dress);
+            format!("{}{}{piece}\n", self.bar(kind), " ".repeat(row.gap))
         };
-        rows.map(row).collect()
+        let rows = self.wrapped(text, width, 2, bar, linked);
+        rows.into_iter().map(row).collect()
+    }
+
+    /// `text` wrapped by [`wrap_in`], each row carrying the links in its
+    /// piece when `linked` and this style is dressed, else none.
+    fn wrapped(
+        &self,
+        text: &str,
+        width: usize,
+        first: usize,
+        bar: usize,
+        linked: bool,
+    ) -> Vec<link::Row> {
+        if let Some(dress) = self.0.as_ref().filter(|_| linked) {
+            return link::wrapped(text, width, first, bar, &dress.base);
+        }
+        let bare = |(gap, piece)| link::Row {
+            gap,
+            piece,
+            links: Vec::new(),
+        };
+        wrap_in(text, width, first, bar)
+            .into_iter()
+            .map(bare)
+            .collect()
     }
 
     /// One body line of a row, with its own newline.
     #[must_use]
     pub fn line(&self, kind: &Kind, text: &str) -> String {
-        format!("{}{}\n", self.margin(kind), terminal_text(text))
+        let text = terminal_text(text);
+        let body = match &self.0 {
+            Some(dress) => woven(&text, &dress.base, str::to_owned),
+            None => text,
+        };
+        format!("{}{body}\n", self.margin(kind))
     }
 
     /// A status line printed under its row, with its own newline.
@@ -421,6 +484,60 @@ impl Style {
             rgb[0], rgb[1], rgb[2]
         )
     }
+}
+
+/// OSC 8 sequences, spelled once. The open carries the link's `id`, so the
+/// rows of a link a wrap split highlight together; the close is parameterless.
+fn osc8_open(id: usize, url: &str) -> String {
+    format!("\x1b]8;id={id};{url}\x1b\\")
+}
+
+const OSC8_CLOSE: &str = "\x1b]8;;\x1b\\";
+
+/// `piece` with each of `links` between an OSC 8 open and close and underlined,
+/// `dress` applied to every part around and inside them. `seen` holds the URLs
+/// this text linked so far: a URL's id is its place there, so every part of a
+/// link a wrap split shares one. A link whose range does not cut `piece` at
+/// char boundaries, or whose URL is not [`link::is_safe_url`], is left as the
+/// text it is: nothing unsafe is ever written inside an escape.
+fn weave(
+    piece: &str,
+    links: &[link::Link],
+    seen: &mut Vec<String>,
+    dress: impl Fn(&str) -> String,
+) -> String {
+    let mut out = String::with_capacity(piece.len());
+    let mut at = 0;
+    for link in links {
+        let (Some(before), Some(inside)) =
+            (piece.get(at..link.start), piece.get(link.start..link.end))
+        else {
+            continue;
+        };
+        if inside.is_empty() || !link::is_safe_url(&link.url) {
+            continue;
+        }
+        let id = if let Some(place) = seen.iter().position(|url| *url == link.url) {
+            place + 1
+        } else {
+            seen.push(link.url.clone());
+            seen.len()
+        };
+        out.push_str(&dress(before));
+        out.push_str(&osc8_open(id, &link.url));
+        out.push_str("\x1b[4m");
+        out.push_str(&dress(inside));
+        out.push_str("\x1b[24m");
+        out.push_str(OSC8_CLOSE);
+        at = link.end;
+    }
+    out.push_str(&dress(piece.get(at..).unwrap_or_default()));
+    out
+}
+
+/// `text` scanned for links against `base` and woven, one id space for the line.
+fn woven(text: &str, base: &link::Base, dress: impl Fn(&str) -> String) -> String {
+    weave(text, &link::scan(text, base), &mut Vec::new(), dress)
 }
 
 impl Dress {

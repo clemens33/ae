@@ -1,0 +1,1 @@
+Pick: vertical wins | horizontal waits. details: .local/x.md

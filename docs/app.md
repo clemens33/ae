@@ -546,6 +546,49 @@ after the copy, so the copy is the cells you saw. A drag with no mouse input for
 10 s is cleared (`selection cleared: no mouse input for 10 s`). A copy leaves
 only after the frame that shows it.
 
+## Links
+
+A web URL (`http://` or `https://`) or a repo-style path in a turn is a real
+terminal hyperlink: Cmd-click (Ctrl-click on Linux) opens it the way the
+terminal opens any link, and the text is underlined while a look is drawn. A
+path is one of
+
+- `src/…`, `docs/…`, `tests/…` or `.local/…`, against the work dir the session's
+  meta records,
+- `~/…`, against your home,
+- an absolute `/…` with at least two segments (`/open` and `/close` are
+  commands, not paths),
+
+with an optional `:line` or `:line:col` that stays in the text and out of the
+link; the terminal opens the file, not the line. A relative path in a session
+whose meta records no work dir stays text. Nothing else links: not a bare word,
+a `memo` topic or a request id. The link is `file://` with an empty host and the
+path percent-encoded; ae does not check that the file exists, does not
+normalise `..`, and never links a path with a space in it.
+
+Only the chat column's turns are linked (the Settings About tab's addresses and the
+seat view stay text), and the underline needs a drawn look. The visible text, the wrapping and the fold counts are the same with or without a
+link, and a link a wrap cuts is two links with one id, so a terminal that
+lights a link under the mouse lights both rows. The app writes the pair around exactly the cells
+of the link, closing it before any cursor jump, and redraws a link's cells
+every frame so a moved or dropped link never keeps a stale one on the terminal. Every body is neutralised
+before it is scanned, and a URL is written only as printable ASCII with
+anything else percent-encoded, so no record can end a link early, open a
+second one or smuggle a control into it.
+
+OSC 8 must reach your terminal. Terminal.app has no hyperlinks. Inside tmux
+(3.4 and later, ae's floor) tmux forwards a link only when its
+`terminal-features` say your terminal takes them; for most terminals add
+
+```
+set -as terminal-features ',xterm*:hyperlinks'
+```
+
+to `~/.tmux.conf` (the glob must match your `$TERM`). ae never writes that
+server option. Where the link is not forwarded the text is shown unchanged.
+Following a link inside ae (a reader pane, memos, request threads) is not part
+of this. Dragging over a link selects and copies the visible text, as ever.
+
 ## Settings
 
 `,` opens the read-only Settings overlay over the whole pane, as does the

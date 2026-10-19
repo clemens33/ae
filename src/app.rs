@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use ratatui_core::buffer::Buffer;
+use ratatui_core::buffer::{Buffer, CellDiffOption};
 use ratatui_core::layout::Position;
 use ratatui_core::terminal::Terminal;
 
@@ -44,6 +44,9 @@ use crate::{doors, theme, tmux, transport};
 use loader::{Answer, Binding, PeekAsk, Request, Wake};
 use peek::Body;
 
+#[cfg(test)]
+#[path = "app/applink_spec.rs"]
+mod applink_spec;
 mod backend;
 mod cue;
 pub mod draw;
@@ -3498,6 +3501,32 @@ fn forward(reads: Receiver<(Instant, Vec<u8>)>, wake: Sender<Wake>) -> std::io::
     Ok(())
 }
 
+/// One frame, drawn exactly as `Terminal::draw` draws it — autoresize, the
+/// callback into the current buffer, the buffer diff, the cursor shown or
+/// hidden, the buffers swapped, the backend flushed, in that order — except
+/// that `paint` also answers the links the frame carries. The backend takes
+/// them before the diff, and every cell it must write again — those a link
+/// covers now and those one covered last frame — is marked so the diff cannot
+/// skip it: a cell's symbol and style say nothing of the link the terminal
+/// holds on it. With no runs and none before, no cell is marked and the bytes
+/// are `Terminal::draw`'s.
+fn draw_frame<W: Write>(
+    terminal: &mut Terminal<backend::Ansi<W>>,
+    paint: impl FnOnce(&mut Buffer) -> (Option<Position>, Vec<backend::Run>),
+) -> std::io::Result<()> {
+    terminal.autoresize()?;
+    let (cursor, runs) = paint(terminal.current_buffer_mut());
+    let forced = terminal.backend_mut().links(runs);
+    let buffer = terminal.current_buffer_mut();
+    for at in forced {
+        if let Some(cell) = buffer.cell_mut(at) {
+            cell.set_diff_option(CellDiffOption::AlwaysUpdate);
+        }
+    }
+    terminal.apply_buffer_with_cursor(cursor)?;
+    Ok(())
+}
+
 /// `ae app [session]`.
 ///
 /// # Errors
@@ -3568,11 +3597,9 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             dirty = true;
         }
         if dirty || !app.queued.is_empty() {
-            terminal.draw(|frame| {
-                app.frame(frame.buffer_mut());
-                if let Some(at) = app.layout.cursor {
-                    frame.set_cursor_position(at);
-                }
+            draw_frame(&mut terminal, |buf| {
+                app.frame(buf);
+                (app.layout.cursor, app.layout.links.clone())
             })?;
             app.frame_shown(Instant::now());
         }
@@ -6171,10 +6198,11 @@ mod tests {
         app.show();
         let none = header(&mut app, 160);
         assert!(!none.contains('…') && !none.contains('~'), "{none}");
-        // A selection the world holds no entry for guesses no dir and no ask.
+        // A selection the world holds no entry for guesses no dir and no ask;
+        // the base is the viewer's fact and rides anyway.
         app.world = World::new(Timestamp::now(), Vec::new());
         app.show();
-        assert_eq!(app.overview, crate::app::overview::Overview::default());
+        assert!(app.overview.open.is_empty() && app.overview.dir.is_none());
         let unlisted = header(&mut app, 160);
         assert!(
             !unlisted.contains('~') && !unlisted.contains('/'),
