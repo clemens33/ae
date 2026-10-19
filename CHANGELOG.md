@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.93] - 2026-10-19
+- Lay out decision card reasons for reading in chat and app
+
 ## [v2026.10.92] - 2026-10-19
 - Lighten app sidebar summary and separate the session list
 
