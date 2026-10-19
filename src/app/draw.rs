@@ -17,6 +17,7 @@ use super::fleet::{Counts, Facts, Fleet, Line2, Row, summary};
 use super::model::{Drag, Edge, Model, SettingsTab, Split};
 use super::overview::{Open, Overview};
 use super::peek;
+use super::reader;
 use super::select::{self, Map, Region};
 use super::settings::{AboutFacts, ConfigView, InstructionsView, SettingsBodies};
 use crate::brief::age;
@@ -69,8 +70,19 @@ pub enum Composer<'a> {
     /// A seat's live screen is shown in place of the chat: read-only, and
     /// the row says how the chat comes back.
     Viewing { seat: &'a str },
+    /// A file the marked turn links is read in place of the chat: read-only,
+    /// and the row says how the chat comes back.
+    Reading { path: &'a str },
     /// No session selected.
     NoHome,
+}
+
+impl Composer<'_> {
+    /// Whether something stands in the chat's place: a seat's screen or a
+    /// file read, neither of which the lane's cues or lift apply to.
+    fn in_place(&self) -> bool {
+        matches!(self, Composer::Viewing { .. } | Composer::Reading { .. })
+    }
 }
 
 /// The smallest pane the app draws in at all.
@@ -602,7 +614,7 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
 /// Whether a full-pane panel is open: the footer row is its own, and the
 /// chat's hint row draws no version or gear under it.
 fn overlay_open(model: &Model) -> bool {
-    model.settings_open() || model.peek_open()
+    model.settings_open() || model.peek_open() || model.reader_open()
 }
 
 /// The cells a draft has in the chat column of `area` split as `split`: what
@@ -804,8 +816,9 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
     }
     // The one lifted row is what the chat column shows: the session while its
     // shared chat is, a seat only while that seat's screen is. A session whose
-    // seat is shown stays a context, never lifted.
-    let viewing = matches!(ctx.screen.composer, Composer::Viewing { .. });
+    // seat is shown stays a context, never lifted; so does a session whose
+    // chat a file read stands in for.
+    let viewing = ctx.screen.composer.in_place();
     for (step, at) in list.visible.clone().enumerate() {
         let y = LIST_TOP + cells(step);
         let place = match (Some(at) == selected, viewing) {
@@ -1517,7 +1530,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     }
     turn_targets(buf, layout, &turns, (first..last, left, y0, room));
     layout.lane(buf, (left, top, room, room_rows), &bars, (first..last, y0));
-    let viewing = matches!(screen.composer, Composer::Viewing { .. });
+    let viewing = screen.composer.in_place();
     if room_rows > 0 && scroll > 0 && last < rows.len() && !viewing {
         put(buf, left, bottom, "↓ newer turns below · PgDn", room, dim);
     }
@@ -1845,6 +1858,14 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
             Line::default(),
             "Esc or click the session for its chat".to_owned(),
         ),
+        Composer::Reading { path } => (
+            quiet(format!(
+                "reading {} · read-only · Esc lane",
+                crate::board::terminal_text(path)
+            )),
+            Line::default(),
+            "Esc or click the session for its chat".to_owned(),
+        ),
         Composer::NoHome => (
             quiet("read-only · no home session: ae app <session> picks one".to_owned()),
             Line::default(),
@@ -1855,7 +1876,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 17] = [
+const BROWSE_KEYS: [(&str, &str); 18] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -1863,6 +1884,7 @@ const BROWSE_KEYS: [(&str, &str); 17] = [
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("v", "peek at the seat's screen"),
+    ("r", "read the marked turn's first file link"),
     ("n/p", "step the seat cursor (▹ or -)"),
     ("PgUp/PgDn", "scroll the chat"),
     ("[ ]", "mark older / newer turn"),
@@ -1886,9 +1908,15 @@ fn keys_row(ctx: &Ctx<'_, '_>, buf: &mut Buffer, layout: &mut Layout) {
         buf[(x, y)].reset();
     }
     buf.set_style(Rect::new(0, y, width, 1), paint.ground(|p| p.ink));
-    let peeking = ctx.screen.model.peek_open();
+    let reading = ctx.screen.model.reader_open();
+    let peeking = ctx.screen.model.peek_open() || reading;
     let (word, hint) = if ctx.screen.model.settings_open() {
         ("settings", "Esc close")
+    } else if reading {
+        (
+            "reading",
+            ctx.screen.model.note().unwrap_or("Esc back · g/G ends"),
+        )
     } else {
         // A copy's outcome rides here as well as on the hint row.
         ("viewing", ctx.screen.model.note().unwrap_or("Esc chat"))
@@ -2232,6 +2260,189 @@ pub(crate) fn paint_peek_column(
     Bounds { visible, max_back }
 }
 
+/// Paint the reader into a bare `buf`: the pure draw the acceptance specs
+/// reach. The buffer is the whole panel, header row first.
+#[must_use]
+pub fn draw_reader(view: &reader::View<'_>, look: Option<Look>, buf: &mut Buffer) -> Bounds {
+    let area = buf.area;
+    paint_reader(view, Paint::of(look.as_ref()), buf, area).0
+}
+
+/// Paint the reader into the frame's chat column: its header on the lane's
+/// first row, the numbered file under it. The sidebar and the composer rows
+/// the frame drew stand, and a drag selects in the file text, never the
+/// gutter.
+pub(crate) fn paint_reader_column(
+    view: &reader::View<'_>,
+    look: Option<&Look>,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+) -> Bounds {
+    let Some(lane) = layout.lane_area() else {
+        layout.peek_column(buf, Rect::default());
+        return Bounds::default();
+    };
+    let (bounds, text) = paint_reader(view, Paint::of(look), buf, lane);
+    layout.peek_column(buf, text);
+    bounds
+}
+
+/// The reader's panel in `area` of `buf`: a dim header row, then the body
+/// rows from the view's top, each file line numbered once with its
+/// continuation rows hung under it. The target line's number is bold. A
+/// refusal or `loading` has no gutter. The bounds, and the cells a drag may
+/// select. Every cell of file text and of the path passes the neutraliser.
+fn paint_reader(
+    view: &reader::View<'_>,
+    paint: Paint,
+    buf: &mut Buffer,
+    area: Rect,
+) -> (Bounds, Rect) {
+    let area = area.intersection(buf.area);
+    if area.is_empty() {
+        return (Bounds::default(), Rect::default());
+    }
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            buf[(x, y)].reset();
+        }
+    }
+    buf.set_style(area, paint.ground(|p| p.ink));
+    let dim = paint.fg(|p| p.dim);
+    let visible = usize::from(area.height.saturating_sub(1));
+    let lines = match view.body {
+        Some(reader::Body::Text { lines, .. }) => Some(lines),
+        _ => None,
+    };
+    let gutter = lines.map_or(0, |lines| reader::gutter(lines.len()));
+    // A text body the caller has not wrapped is wrapped here, at the width
+    // the panel leaves it.
+    let own;
+    let flow = match (lines, view.flow) {
+        (Some(_), Some(flow)) => Some(flow),
+        (Some(lines), None) => {
+            own = reader::flow(lines, usize::from(area.width).saturating_sub(gutter));
+            Some(&own)
+        }
+        (None, _) => None,
+    };
+    let status = reader::status(&reader::View { flow, ..*view }, visible);
+    let at = view.line.map(|line| format!(":{line}")).unwrap_or_default();
+    let header = format!(
+        "Read · {}{at} · {status}",
+        crate::board::terminal_text(view.path)
+    );
+    put(buf, area.x, area.y, &header, area.width, dim);
+    let body = Rect::new(
+        area.x,
+        area.y.saturating_add(1),
+        area.width,
+        area.height.saturating_sub(1),
+    );
+    if let (Some(_), Some(flow)) = (lines, flow) {
+        return paint_file_rows(view, flow, gutter, paint, buf, body);
+    }
+    paint_reader_note(view, paint, buf, body)
+}
+
+/// The numbered rows of a read file in `body`, from the view's top, each file
+/// line's number once with its continuation rows hung under it, the target
+/// line's number bold. The bounds, and the cells a drag may select: the text,
+/// the gutter not among them.
+fn paint_file_rows(
+    view: &reader::View<'_>,
+    flow: &reader::Flow,
+    gutter: usize,
+    paint: Paint,
+    buf: &mut Buffer,
+    body: Rect,
+) -> (Bounds, Rect) {
+    let (dim, text) = (paint.fg(|p| p.dim), paint.fg(|p| p.text));
+    let visible = usize::from(body.height);
+    let (start, max_top) = reader::window(flow.rows(), visible, view.top);
+    let digits = gutter.saturating_sub(1);
+    let text_x = body.x.saturating_add(cells(gutter).min(body.width));
+    let room = body.right().saturating_sub(text_x);
+    let number = dim.add_modifier(Modifier::BOLD);
+    for (step, row) in (start..flow.rows()).take(visible).enumerate() {
+        let Some((line, first, gap, piece)) = flow.display(row) else {
+            break;
+        };
+        let y = body.y.saturating_add(cells(step));
+        if first {
+            let style = if view.line == Some(line + 1) {
+                number
+            } else {
+                dim
+            };
+            put(
+                buf,
+                body.x,
+                y,
+                &format!("{:>digits$} ", line + 1),
+                cells(gutter),
+                style,
+            );
+        }
+        put(
+            buf,
+            text_x,
+            y,
+            &format!("{}{piece}", " ".repeat(gap)),
+            room,
+            text,
+        );
+    }
+    (
+        Bounds {
+            visible,
+            max_back: max_top,
+        },
+        Rect::new(text_x, body.y, room, body.height),
+    )
+}
+
+/// The reader's `body` when no file text stands there: the refusal's words,
+/// wrapped, or one dim `loading`. No gutter; the whole body is selectable.
+fn paint_reader_note(
+    view: &reader::View<'_>,
+    paint: Paint,
+    buf: &mut Buffer,
+    body: Rect,
+) -> (Bounds, Rect) {
+    let (dim, text) = (paint.fg(|p| p.dim), paint.fg(|p| p.text));
+    let visible = usize::from(body.height);
+    let rows: Vec<(String, Style)> = match view.body {
+        Some(reader::Body::Gap(why)) => wrap(
+            &crate::board::terminal_text(why),
+            usize::from(body.width) + 1,
+            0,
+        )
+        .into_iter()
+        .map(|(gap, piece)| (format!("{}{piece}", " ".repeat(gap)), text))
+        .collect(),
+        _ => vec![("loading".to_owned(), dim)],
+    };
+    let (start, max_top) = reader::window(rows.len(), visible, view.top);
+    for (step, (row, style)) in rows.iter().skip(start).take(visible).enumerate() {
+        put(
+            buf,
+            body.x,
+            body.y.saturating_add(cells(step)),
+            row,
+            body.width,
+            *style,
+        );
+    }
+    (
+        Bounds {
+            visible,
+            max_back: max_top,
+        },
+        body,
+    )
+}
+
 /// The peek body's rows: each captured line neutralised, then wrapped to
 /// `room` with its continuation rows hanging two cells; before the first
 /// answer one dim `loading`. `wrap` measures from a one-cell bar the
@@ -2387,6 +2598,15 @@ const PEEK_KEYS: [(&str, &str); 6] = [
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; nothing reaches the pane"),
 ];
+const READER_KEYS: [(&str, &str); 7] = [
+    ("j/k Up/Down", "scroll a line"),
+    ("PgUp/PgDn", "scroll a page"),
+    ("g/G", "top / bottom of the file; Home/End too"),
+    ("Esc q r", "back to the lane"),
+    ("^C", "quit; a draft clears first"),
+    ("wheel", "scroll 3 rows per notch"),
+    ("any other", "swallowed; nothing is typed or written"),
+];
 const SETTINGS_KEYS: [(&str, &str); 10] = [
     ("Tab 1-5", "show that tab"),
     ("j/k Up/Down", "scroll a line"),
@@ -2419,6 +2639,7 @@ fn keys_body(paint: Paint) -> Vec<(String, Style)> {
         ("Write (Enter or a paste starts it)", &WRITE_KEYS[..]),
         ("Held (writing was refused)", &HELD_KEYS[..]),
         ("Peek (v on a highlighted seat)", &PEEK_KEYS[..]),
+        ("Reader (r on a marked turn)", &READER_KEYS[..]),
         ("Settings (the gear, or ,)", &SETTINGS_KEYS[..]),
         ("Mouse (outside Settings)", &MOUSE_KEYS[..]),
     ];

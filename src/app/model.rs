@@ -32,6 +32,12 @@ pub enum Key {
     Copy,
     /// `v`: peek at the highlighted seat's screen.
     Peek,
+    /// `r`: read the first file link of the marked turn.
+    Read,
+    /// `g`, Home: the top of what is read.
+    Top,
+    /// `G`, End: the bottom of what is read.
+    Bottom,
 }
 
 /// The browse keys one decoded key spells. A paste is swallowed whole: text
@@ -46,6 +52,8 @@ pub fn browse_keys(key: &input::Key) -> Vec<Key> {
         input::Key::PageUp => Key::PageUp,
         input::Key::PageDown => Key::PageDown,
         input::Key::Tab => Key::Tab,
+        input::Key::Home => Key::Top,
+        input::Key::End => Key::Bottom,
         input::Key::Escape => Key::Esc,
         input::Key::Interrupt => Key::Quit,
         _ => return Vec::new(),
@@ -69,6 +77,9 @@ fn letter(byte: u8) -> Option<Key> {
         b']' => Some(Key::TurnNewer),
         b'y' => Some(Key::Copy),
         b'v' => Some(Key::Peek),
+        b'r' => Some(Key::Read),
+        b'g' => Some(Key::Top),
+        b'G' => Some(Key::Bottom),
         _ => None,
     }
 }
@@ -92,6 +103,8 @@ pub enum Act {
     Copy,
     /// Open the peek panel on the highlighted seat.
     Peek,
+    /// Open the reader on the marked turn's first file link.
+    Read,
     Quit,
 }
 
@@ -158,6 +171,17 @@ pub(crate) struct PeekOverlay {
     pub(crate) generation: u64,
 }
 
+/// The open reader: the first display row shown, the body rows the last frame
+/// drew (what one page key moves) and the generation that pins its loader
+/// answer. The file's text lives in the App, not here: this is browse state
+/// only, like the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReaderOverlay {
+    pub(crate) top: usize,
+    pub(crate) page_rows: usize,
+    pub(crate) generation: u64,
+}
+
 /// The browse state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Model {
@@ -178,6 +202,7 @@ pub struct Model {
     drag: Option<Drag>,
     settings: Option<SettingsOverlay>,
     peek: Option<PeekOverlay>,
+    reader: Option<ReaderOverlay>,
     /// The transient line the hint row shows: the App writes it each frame.
     note: Option<String>,
     /// The sessions the sidebar marks unread; the App writes it each frame.
@@ -211,6 +236,9 @@ impl Model {
         }
         if self.peek.is_some() {
             return self.peek_key(key);
+        }
+        if self.reader.is_some() {
+            return self.reader_key(key);
         }
         let at = self.position(fleet);
         match key {
@@ -259,8 +287,9 @@ impl Model {
             Key::TurnNewer => Act::TurnNewer,
             Key::Copy => Act::Copy,
             Key::Peek => Act::Peek,
+            Key::Read => Act::Read,
             Key::Quit => Act::Quit,
-            Key::Tab | Key::Compose => Act::None,
+            Key::Top | Key::Bottom | Key::Tab | Key::Compose => Act::None,
         }
     }
 
@@ -459,6 +488,7 @@ impl Model {
                 drag: self.drag,
                 settings: self.settings,
                 peek: self.peek,
+                reader: self.reader,
                 epoch: self.epoch.wrapping_add(1),
                 ..Self::new(fleet)
             };
@@ -515,6 +545,7 @@ impl Model {
             drag: self.drag,
             settings: self.settings,
             peek: self.peek,
+            reader: self.reader,
             epoch: self.epoch.wrapping_add(1),
             ..Self::new(fleet)
         };
@@ -602,7 +633,10 @@ impl Model {
             | Key::TurnOlder
             | Key::TurnNewer
             | Key::Copy
-            | Key::Peek => Act::None,
+            | Key::Peek
+            | Key::Read
+            | Key::Top
+            | Key::Bottom => Act::None,
         }
     }
 
@@ -795,6 +829,97 @@ impl Model {
     pub(crate) fn peek_newest(&mut self) {
         if let Some(open) = self.peek.as_mut() {
             open.back = 0;
+        }
+    }
+
+    /// One key with the reader open: a row or a page up or down, the ends, or
+    /// close. Every other key is swallowed. The bottom is a top past any end;
+    /// the frame's [`Model::clamp_reader`] pins it.
+    fn reader_key(&mut self, key: Key) -> Act {
+        let Some(open) = self.reader.as_mut() else {
+            return Act::None;
+        };
+        let page = open.page_rows.max(1);
+        match key {
+            Key::Up => open.top = open.top.saturating_sub(1),
+            Key::Down => open.top = open.top.saturating_add(1),
+            Key::PageUp => open.top = open.top.saturating_sub(page),
+            Key::PageDown => open.top = open.top.saturating_add(page),
+            Key::Top => open.top = 0,
+            Key::Bottom => open.top = usize::MAX,
+            Key::Esc | Key::Quit | Key::Read => {
+                self.reader = None;
+                self.moved();
+            }
+            _ => return Act::None,
+        }
+        Act::Redraw
+    }
+
+    /// Open the reader at the top, pinned to `generation`.
+    pub fn open_reader(&mut self, generation: u64) {
+        self.reader = Some(ReaderOverlay {
+            top: 0,
+            page_rows: 0,
+            generation,
+        });
+        self.moved();
+    }
+
+    /// Close the reader.
+    pub fn close_reader(&mut self) {
+        if self.reader.take().is_some() {
+            self.moved();
+        }
+    }
+
+    /// Whether the reader is open.
+    #[must_use]
+    pub fn reader_open(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    /// The open reader's first display row, `None` when closed.
+    #[must_use]
+    pub fn reader_top(&self) -> Option<usize> {
+        self.reader.map(|open| open.top)
+    }
+
+    /// The open reader's generation: only its own answer paints.
+    #[must_use]
+    pub fn reader_generation(&self) -> Option<u64> {
+        self.reader.map(|open| open.generation)
+    }
+
+    /// The drawn body height one page key moves; the App sets it per frame.
+    pub fn set_reader_page_rows(&mut self, page_rows: usize) {
+        if let Some(open) = self.reader.as_mut() {
+            open.page_rows = page_rows;
+        }
+    }
+
+    /// Bound the top to the `max_top` the frame could go to.
+    pub fn clamp_reader(&mut self, max_top: usize) {
+        if let Some(open) = self.reader.as_mut() {
+            open.top = open.top.min(max_top);
+        }
+    }
+
+    /// One wheel notch, three rows: toward the file's start when `up`.
+    pub fn reader_wheel(&mut self, up: bool) {
+        if let Some(open) = self.reader.as_mut() {
+            open.top = if up {
+                open.top.saturating_sub(WHEEL_ROWS)
+            } else {
+                open.top.saturating_add(WHEEL_ROWS)
+            };
+        }
+    }
+
+    /// Put the first display row shown at `top`.
+    pub fn set_reader_top(&mut self, top: usize) {
+        if let Some(open) = self.reader.as_mut() {
+            open.top = top;
         }
     }
 }

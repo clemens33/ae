@@ -306,3 +306,10 @@ path = "fuzz_targets/link_scan.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "reader_decode"
+path = "fuzz_targets/reader_decode.rs"
+test = false
+doc = false
+bench = false

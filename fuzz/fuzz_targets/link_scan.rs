@@ -12,6 +12,10 @@ use libfuzzer_sys::fuzz_target;
 // that carries the links: it must wrap everything (the non-whitespace
 // characters survive in order) and slice every row's links inside its piece,
 // with each URL's parts, in row order, spelling that URL's scanned text.
+// `files`, the reader's view of the same walk, is exactly the file subset of
+// `scan` (same ranges, same order, never a web link), its absolute path
+// re-encoded by an independent encoder spells that link's URL, and its
+// `:line` / `:col` sit inside the range.
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let scanned = std::hint::black_box(ae::console::link::scan(&text, &Default::default()));
@@ -40,6 +44,39 @@ fuzz_target!(|data: &[u8]| {
             ae::console::link::is_safe_url(&link.url),
             "the url is not a safe URL: {:?}",
             link.url
+        );
+    }
+    let base = ae::console::link::Base {
+        dir: Some("/w".to_owned()),
+        home: Some("/h".to_owned()),
+    };
+    let based = ae::console::link::scan(&text, &base);
+    let files = std::hint::black_box(ae::console::link::files(&text, &base));
+    let file_links: Vec<_> = based
+        .iter()
+        .filter(|link| link.url.starts_with("file://"))
+        .collect();
+    assert_eq!(files.len(), file_links.len(), "files is the file subset");
+    for (file, link) in files.iter().zip(&file_links) {
+        assert_eq!(
+            (file.start, file.end),
+            (link.start, link.end),
+            "files keeps scan's range"
+        );
+        assert!(file.path.starts_with('/'), "a path is absolute: {file:?}");
+        let mut encoded = String::from("file://");
+        for byte in file.path.bytes() {
+            if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
+                encoded.push(char::from(byte));
+            } else {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        assert_eq!(link.url, encoded, "the url spells the path");
+        let visible = &text[file.start..file.end];
+        assert!(
+            (file.line.is_none() && file.col.is_none()) || visible.contains(':'),
+            "a line or column sits inside the range: {visible:?}"
         );
     }
     let rows = std::hint::black_box(ae::console::link::wrapped(

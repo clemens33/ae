@@ -15,9 +15,10 @@ use std::time::{Duration, Instant};
 use super::handover::{self, View};
 use super::journals::Journals;
 use super::peek::{self, Body};
-use super::{REFRESH, facts_of, fleet, proven_pane};
+use super::{REFRESH, facts_of, filedoor, fleet, proven_pane, reader};
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
+use crate::console::link::Base;
 use crate::console::needs::{SeatRef, Section};
 use crate::console::{self, Console, Panes, Reach, term};
 use crate::digest::Status;
@@ -28,6 +29,8 @@ use crate::{theme, tmux, transport};
 
 #[cfg(test)]
 mod peek_spec;
+#[cfg(test)]
+mod read_spec;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -45,6 +48,8 @@ pub(super) enum Request {
     Settings { open: bool, generation: u64 },
     /// The peek panel opened on this seat, or closed (`None`).
     Peek(Option<Box<PeekAsk>>),
+    /// The reader opened on this file, or closed (`None`): read once.
+    Read(Option<Box<ReadAsk>>),
 }
 
 /// What an open peek panel asks the reader to capture, every refresh: the
@@ -62,6 +67,21 @@ pub(super) struct PeekAsk {
     pub(super) seat: SeatRef,
     /// The tmux server the app runs on.
     pub(super) server: ServerId,
+}
+
+/// What an open reader asks the reader thread to read, once: the file as the
+/// link named it, in the session's link base, and the facts the panel's
+/// status needs. The panel's generation rides the answer back.
+#[derive(Clone)]
+pub(super) struct ReadAsk {
+    pub(super) generation: u64,
+    /// The absolute path the link resolved to, as written.
+    pub(super) path: String,
+    pub(super) line: Option<usize>,
+    /// How many file links the turn holds, the first of which this is.
+    pub(super) links: usize,
+    /// Where the path may be read: the session's work dir and the viewer's home.
+    pub(super) base: Base,
 }
 
 /// What a writer proved at its entry, proved again by each fleet read.
@@ -132,6 +152,12 @@ pub(super) enum Answer {
         generation: u64,
         at: Instant,
         body: Body,
+    },
+    /// The file the open reader asked for, decoded, or why it is not shown,
+    /// read for `generation`.
+    Read {
+        generation: u64,
+        body: reader::Body,
     },
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
@@ -228,6 +254,7 @@ enum Job {
     Look(String),
     View(String),
     Settings,
+    Read(Box<ReadAsk>),
     Peek(Box<PeekAsk>),
     Wait(Instant),
 }
@@ -280,6 +307,8 @@ pub(super) struct Reader {
     settings_full: bool,
     /// The open peek panel's ask and when its last capture COMPLETED.
     peek: Option<(Box<PeekAsk>, Option<Instant>)>,
+    /// The open reader's ask while it is unread: one shot, gone once answered.
+    read: Option<Box<ReadAsk>>,
     /// The session the open overlay's instructions tab is for: the selection
     /// when it opened, never retargeted while it stays open.
     settings_session: Option<String>,
@@ -356,6 +385,7 @@ impl Reader {
             settings: None,
             settings_full: false,
             peek: None,
+            read: None,
             settings_session: None,
             agy: crate::quota::AgyCache::default(),
             flight: None,
@@ -408,6 +438,7 @@ impl Reader {
                 Job::Look(name) => vec![self.look(&name)],
                 Job::View(name) => self.view_answers(&name),
                 Job::Settings => vec![self.settings()],
+                Job::Read(ask) => vec![self.read(&ask)],
                 Job::Peek(ask) => vec![self.peek(&ask)],
                 Job::Wait(until) => {
                     match asks.recv_timeout(until.saturating_duration_since(Instant::now())) {
@@ -479,6 +510,7 @@ impl Reader {
                 }
             }
             Request::Peek(ask) => self.peek = ask.map(|ask| (ask, None)),
+            Request::Read(ask) => self.read = ask,
         }
     }
 
@@ -522,6 +554,9 @@ impl Reader {
             if due <= now {
                 return Job::Settings;
             }
+        }
+        if let Some(ask) = &self.read {
+            return Job::Read(ask.clone());
         }
         if let Some((ask, last)) = &self.peek
             && last.is_none_or(|at| at + peek::PEEK_EVERY <= now)
@@ -986,6 +1021,33 @@ impl Reader {
         Answer::Peek {
             generation: ask.generation,
             at,
+            body,
+        }
+    }
+
+    /// The file the open reader asked for, read once: through the one door,
+    /// then decoded. Every refusal, the door's or the decoder's, is the one
+    /// gap `refused: read <path>: <why>`. The read gate holds the whole read
+    /// before anything is touched; the ask is gone once it is answered.
+    pub(super) fn read(&mut self, ask: &ReadAsk) -> Answer {
+        crate::read_gate("reader");
+        let roots = filedoor::Roots {
+            dir: ask.base.dir.as_ref().map(PathBuf::from),
+            home: ask.base.home.as_ref().map(PathBuf::from),
+        };
+        let gap = |why: &str| reader::Body::Gap(format!("refused: read {}: {why}", ask.path));
+        let body = match filedoor::read(Path::new(&ask.path), &roots, reader::MAX_BYTES) {
+            filedoor::Read::Refused(why) => gap(&why),
+            filedoor::Read::Bytes { bytes, size } => match reader::decode(&bytes, size) {
+                reader::Body::Gap(why) => gap(&why),
+                text @ reader::Body::Text { .. } => text,
+            },
+        };
+        if (self.read.as_ref()).is_some_and(|held| held.generation == ask.generation) {
+            self.read = None;
+        }
+        Answer::Read {
+            generation: ask.generation,
             body,
         }
     }

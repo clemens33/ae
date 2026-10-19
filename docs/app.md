@@ -164,6 +164,7 @@ Browsing:
 | `PgUp` / `PgDn` | scroll the chat a page |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
 | `y` | copy the marked turn ([Copying a turn](#copying-a-turn)) |
+| `r` | read the first file link of the marked turn in the chat column ([Reading a linked file](#reading-a-linked-file)) |
 | Click a turn | mark it; clicking the marked turn again unmarks it |
 | Click a fold row, or `Enter` with a marked turn that has one | show that turn whole or fold it again ([Long turns](#long-turns)) |
 | Click session row | select that session |
@@ -459,6 +460,43 @@ cycle; the view only displays, so nothing is moved or typed on that account.
 A capture is plain text: styling and images the seat's tool draws are not
 shown.
 
+## Reading a linked file
+
+`r` on a marked turn (`[` / `]`, or a click) opens the first file link of that
+turn in the chat column, read-only, with the sidebar still live. The turn is
+scanned as `y` would copy it, with the same link grammar as [Links](#links); a
+turn with a web URL first and a path later opens the path, and a turn with no
+file link says `no file link in that turn` on the hint row. With no mark the
+hint row says `no turn marked - click one or press [ ]`, and a mark the lane
+no longer holds is cleared (`that turn changed or left the lane - mark it
+again`). When the turn holds more than one file link the status says
+`first of N links`; only the first opens.
+
+The file is read once, off the UI thread, and only when it is a regular file
+whose real path lies under the session's work dir or your home: a path that
+leaves both by `..` or a symlink, a missing file, a directory, a file over 1 MiB
+or 50,000 lines, and a file with a NUL byte in its first 8192 bytes are not
+shown, and the panel says why (`refused: read <path>: <why>`) where the file
+would be. The terminal's own link still opens such a path. Text is decoded
+lossily; every line is neutralised when painted (a control character or escape
+shows as `�`), a tab expands and a line wraps to the column with its
+continuation rows two cells in. A line over 2000 characters ends in `…`.
+
+The header row reads `Read · <path>[:line] · rows A-B/N`. Lines are numbered in
+a gutter, and the `:line` of the link is jumped to with three rows of context
+above it and its number in bold. `j` / `k`, `↓` / `↑` scroll a row, `PgUp` /
+`PgDn` a page, `g` / `Home` the top and `G` / `End` the bottom, and the wheel
+three rows a notch. `Esc`, `q` or `r` close it and the lane comes back as it
+was, with the mark, the scroll and any kept draft untouched; `^C` clears a kept
+draft first and quits when there is none, as in the lane. A click on the selected session's row closes it too; a click on another
+session or a seat leaves it. Every other key and a paste is swallowed. Nothing
+is typed, written or journaled, and ae never opens a web URL itself. An upgrade
+restart waits while a file is read.
+
+Named limits. The file can change between the check and the open, or after it
+is read; the panel shows the bytes it read. Clicking a link to open it is not
+part of this: use `r` on the marked turn.
+
 ## Long turns
 
 A turn of more than thirty rows, as the app draws them at the chat's width, shows its first
@@ -586,8 +624,8 @@ set -as terminal-features ',xterm*:hyperlinks'
 
 to `~/.tmux.conf` (the glob must match your `$TERM`). ae never writes that
 server option. Where the link is not forwarded the text is shown unchanged.
-Following a link inside ae (a reader pane, memos, request threads) is not part
-of this. Dragging over a link selects and copies the visible text, as ever.
+Following a link inside ae is only [`r`](#reading-a-linked-file) on a marked
+turn (a file link; memos and request threads have none). Dragging over a link selects and copies the visible text, as ever.
 
 ## Settings
 

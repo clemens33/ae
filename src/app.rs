@@ -32,6 +32,7 @@ use ratatui_core::terminal::Terminal;
 use crate::board::terminal_text;
 use crate::console::input::{Effect, Input, Key, Keys, Mouse, MouseKind, Reading, Size, View};
 use crate::console::lane::{Item, Kind, Lane, Seat};
+use crate::console::link;
 use crate::console::needs::{SeatRef, Section};
 use crate::console::open::{self, Move, Refusal};
 use crate::console::{self, Console, submit, term, toggle};
@@ -41,18 +42,22 @@ use crate::listing::World;
 use crate::time::Timestamp;
 use crate::{doors, theme, tmux, transport};
 
-use loader::{Answer, Binding, PeekAsk, Request, Wake};
+use loader::{Answer, Binding, PeekAsk, ReadAsk, Request, Wake};
 use peek::Body;
 
 #[cfg(test)]
 #[path = "app/applink_spec.rs"]
 mod applink_spec;
+#[cfg(test)]
+#[path = "app/appread_spec.rs"]
+mod appread_spec;
 mod backend;
 mod cue;
 pub mod draw;
 #[cfg(test)]
 #[path = "../tests/it/app_early_spec.rs"]
 mod early_spec;
+mod filedoor;
 pub mod fleet;
 #[cfg(test)]
 mod fleet_spec;
@@ -71,6 +76,7 @@ mod paneview;
 #[cfg(test)]
 mod paneview_spec;
 pub mod peek;
+pub mod reader;
 pub(crate) mod route;
 pub mod select;
 #[cfg(test)]
@@ -260,6 +266,24 @@ struct PeekPane {
     painted: Option<u64>,
 }
 
+/// What the open reader holds of its file, pinned to the model's generation:
+/// an answer that landed for another is dropped.
+#[derive(Debug, Default)]
+struct ReaderPane {
+    generation: u64,
+    /// The file as the link named it, and the line it asked for.
+    path: String,
+    line: Option<usize>,
+    /// How many file links the marked turn holds, the first of which is read.
+    links: usize,
+    /// The body on screen; `None` until the answer lands.
+    body: Option<reader::Body>,
+    /// The body's wrap, and the text width it was made for.
+    flow: Option<(usize, reader::Flow)>,
+    /// The `:line` jump waits for the first frame that wraps the body.
+    jump: bool,
+}
+
 /// A drag that began in a selectable region, from its press until its copy is
 /// shipped or it is cleared.
 #[derive(Debug)]
@@ -423,6 +447,9 @@ struct App {
     /// The open peek panel's captures, and the generation the next open mints.
     peek: PeekPane,
     peek_generation: u64,
+    /// The open reader's file, and the generation the next open mints.
+    reader: ReaderPane,
+    reader_generation: u64,
     /// The row order the last fleet read chose, applied when the next frame
     /// is drawn: until then keys and clicks resolve against the order the
     /// human sees.
@@ -565,6 +592,8 @@ impl App {
             settings_generation: 0,
             peek: PeekPane::default(),
             peek_generation: 0,
+            reader: ReaderPane::default(),
+            reader_generation: 0,
             pending: None,
             server,
             pane,
@@ -646,6 +675,7 @@ impl App {
                 at,
                 body,
             } => self.peeked(generation, at, body),
+            Answer::Read { generation, body } => self.read_landed(generation, body),
             Answer::Pressure { name, id, pressure } => {
                 self.pressures.insert(name, (id, pressure));
             }
@@ -717,6 +747,9 @@ impl App {
                 if self.composing() {
                     self.write(false);
                 }
+                if self.model.reader_open() {
+                    self.close_reader();
+                }
                 self.peek_generation = ask.generation;
                 self.model.open_peek(ask.generation);
                 self.peek = PeekPane {
@@ -782,6 +815,9 @@ impl App {
         if self.composing() {
             self.write(false);
         }
+        if self.model.reader_open() {
+            self.close_reader();
+        }
         self.pane_view = Some(paneview::Ask {
             session,
             uuid: drawn.uuid.clone(),
@@ -827,12 +863,84 @@ impl App {
         }
     }
 
+    /// Fold the file the open reader asked for. Only the open reader's own
+    /// generation lands: an answer for a closed or an older open is dropped.
+    fn read_landed(&mut self, generation: u64, body: reader::Body) {
+        if self.model.reader_generation() != Some(generation)
+            || self.reader.generation != generation
+        {
+            return;
+        }
+        self.reader.body = Some(body);
+        self.reader.flow = None;
+        self.reader.jump = true;
+    }
+
+    /// `r`: open the reader on the first file link of the marked turn, read as
+    /// the text `y` copies reads, in the session's link base. A refusal is said
+    /// on the hint row, opens nothing and asks the reader thread nothing.
+    fn open_reader(&mut self) {
+        let item = match self.marked_item() {
+            Ok(item) => item,
+            Err(words) => {
+                self.flash = Some((words, Instant::now()));
+                return;
+            }
+        };
+        let base = self.overview.base.clone();
+        let found = link::files(&terminal_text(&item.body), &base);
+        let Some(first) = found.first() else {
+            self.flash = Some(("no file link in that turn".to_owned(), Instant::now()));
+            return;
+        };
+        let ask = Box::new(ReadAsk {
+            generation: self.reader_generation.wrapping_add(1),
+            path: first.path.clone(),
+            line: first.line,
+            links: found.len(),
+            base,
+        });
+        self.reader_generation = ask.generation;
+        self.model.open_reader(ask.generation);
+        self.reader = ReaderPane {
+            generation: ask.generation,
+            path: ask.path.clone(),
+            line: ask.line,
+            links: ask.links,
+            ..ReaderPane::default()
+        };
+        if let Some(tx) = &self.ask {
+            let _ = tx.send(Request::Read(Some(ask)));
+        }
+    }
+
+    /// Close the reader and tell the reader thread to drop an unread ask. It
+    /// always tells: the model may already hold the close the key caused.
+    fn close_reader(&mut self) {
+        self.model.close_reader();
+        self.reader = ReaderPane::default();
+        if let Some(ask) = &self.ask {
+            let _ = ask.send(Request::Read(None));
+        }
+    }
+
     /// A mouse event with a seat viewed: the sidebar stays live — a press
     /// on the viewed session returns to its chat, one on another session
     /// or seat goes through the ordinary press (which closes or retargets
     /// the view) — the wheel scrolls what it lands on, and a press on the
     /// viewed body begins a selection.
     fn peek_mouse(&mut self, mouse: Mouse, fresh: bool) -> bool {
+        self.panel_mouse(mouse, fresh, false)
+    }
+
+    /// [`App::peek_mouse`] for the reader, which takes the same presses: its
+    /// column has no close label, and the wheel scrolls the file.
+    fn reader_mouse(&mut self, mouse: Mouse, fresh: bool) -> bool {
+        self.panel_mouse(mouse, fresh, true)
+    }
+
+    /// The mouse over a panel in the chat column, the seat view or the reader.
+    fn panel_mouse(&mut self, mouse: Mouse, fresh: bool, reading: bool) -> bool {
         match mouse.kind {
             MouseKind::WheelUp | MouseKind::WheelDown => {
                 let up = mouse.kind == MouseKind::WheelUp;
@@ -842,7 +950,11 @@ impl App {
                 } else if self.layout.in_body(mouse) {
                     self.model.wheel_body(up, self.layout.body_max)
                 } else if self.layout.in_chat_body(mouse) {
-                    self.model.peek_wheel(up);
+                    if reading {
+                        self.model.reader_wheel(up);
+                    } else {
+                        self.model.peek_wheel(up);
+                    }
                     true
                 } else {
                     false
@@ -850,7 +962,11 @@ impl App {
             }
             MouseKind::Click => match self.layout.hit(mouse) {
                 Some(draw::Hit::Session(name)) if self.model.selected() == Some(name.as_str()) => {
-                    self.close_peek();
+                    if reading {
+                        self.close_reader();
+                    } else {
+                        self.close_peek();
+                    }
                     true
                 }
                 Some(draw::Hit::Session(_) | draw::Hit::Seat(_)) => self.clicked(mouse, fresh),
@@ -1470,7 +1586,10 @@ impl App {
     /// Whether Enter may start a line: the selection's last reading proved
     /// it, and no seat's screen stands in the chat's place.
     fn can_compose(&self) -> bool {
-        self.read_only.is_empty() && self.model.selected().is_some() && !self.model.peek_open()
+        self.read_only.is_empty()
+            && self.model.selected().is_some()
+            && !self.model.peek_open()
+            && !self.model.reader_open()
     }
 
     /// One key while composing: Esc keeps the draft and browses, ^C over an
@@ -1718,23 +1837,33 @@ impl App {
         self.flash = Some((line, Instant::now()));
     }
 
-    /// The words for a copy. A refusal before any tmux call is a plain hint;
-    /// only a copy that was tried, or cannot exist, says `copy failed`.
-    fn copied(&mut self) -> String {
+    /// The marked turn, or the words that say why there is none. A mark the
+    /// lane no longer holds is cleared.
+    fn marked_item(&mut self) -> Result<Item, String> {
         let Some(mark) = self.model.turn() else {
-            return "no turn marked - click one or press [ ]".to_owned();
+            return Err("no turn marked - click one or press [ ]".to_owned());
         };
         let keys = self.keys();
         let found = keys.iter().position(|key| *key == mark);
         let Some(item) = found.and_then(|at| self.lane.items.get(at)) else {
             self.model.set_turn(None);
-            return "that turn changed or left the lane - mark it again".to_owned();
+            return Err("that turn changed or left the lane - mark it again".to_owned());
+        };
+        Ok(item.clone())
+    }
+
+    /// The words for a copy. A refusal before any tmux call is a plain hint;
+    /// only a copy that was tried, or cannot exist, says `copy failed`.
+    fn copied(&mut self) -> String {
+        let item = match self.marked_item() {
+            Ok(item) => item,
+            Err(words) => return words,
         };
         let text = terminal_text(&item.body);
         if text.is_empty() {
             return "nothing to copy: that turn has no text".to_owned();
         }
-        let preview = lane::preview_why(item).map(|why| format!(" (preview only: {why})"));
+        let preview = lane::preview_why(&item).map(|why| format!(" (preview only: {why})"));
         let count = format!("{}{}", lines_word(&text), preview.unwrap_or_default());
         self.ship(&text, &count)
     }
@@ -1808,7 +1937,10 @@ impl App {
             !self.deferred.is_empty(),
             self.composing(),
             self.held.is_some(),
-            self.model.settings_open() || self.model.peek_open() || self.modal.is_some(),
+            self.model.settings_open()
+                || self.model.peek_open()
+                || self.model.reader_open()
+                || self.modal.is_some(),
             self.model.turn().is_some(),
             self.armed.is_some(),
             self.last_input,
@@ -1845,7 +1977,7 @@ impl App {
     /// at once: the chat the bounds describe is hidden, so its bound waits
     /// for nothing.
     fn unbounded(&self, key: &Key) -> bool {
-        if self.model.peek_open() {
+        if self.model.peek_open() || self.model.reader_open() {
             return false;
         }
         let Key::Mouse(mouse) = key else {
@@ -1869,7 +2001,11 @@ impl App {
     /// made on a frame the bound dropped is not taken, and the hint row says so.
     /// A right press opens the menu on the card its frame drew there.
     fn mouse_made(&mut self, mouse: Mouse, origin: Instant) -> bool {
-        if mouse.kind == MouseKind::Menu && !self.model.settings_open() && !self.model.peek_open() {
+        if mouse.kind == MouseKind::Menu
+            && !self.model.settings_open()
+            && !self.model.peek_open()
+            && !self.model.reader_open()
+        {
             return self.menu_press(mouse, origin);
         }
         // Every press ends a selection first, a stale or refused one too: no
@@ -1931,6 +2067,9 @@ impl App {
         }
         if self.model.peek_open() {
             return self.peek_mouse(mouse, fresh);
+        }
+        if self.model.reader_open() {
+            return self.reader_mouse(mouse, fresh);
         }
         if mouse.kind == MouseKind::Drag {
             return self.drag(mouse) || self.stretch(mouse);
@@ -2829,6 +2968,11 @@ impl App {
                 .map_or("", |(_, seat)| seat.as_str());
             return draw::Composer::Viewing { seat };
         }
+        if self.model.reader_open() {
+            return draw::Composer::Reading {
+                path: &self.reader.path,
+            };
+        }
         match (self.model.selected(), &self.held) {
             (None, _) => draw::Composer::NoHome,
             (Some(_), Some(why)) => draw::Composer::Held { why },
@@ -2946,13 +3090,22 @@ impl App {
                     .clamp_settings_scroll(self.layout.settings_max_scroll);
             }
         }
-        if self.model.peek_open() {
-            self.paint_peek(look.as_ref(), buf);
-        }
+        self.paint_in_place(look.as_ref(), buf);
         let drawn = self.model.selected().map(|name| self.freeze(name));
         self.drawn = drawn;
         self.paint_modal(look.as_ref(), buf);
         self.settle_selection(buf);
+    }
+
+    /// Paint whichever panel stands in the chat's place: the peek or the
+    /// reader.
+    fn paint_in_place(&mut self, look: Option<&theme::Look>, buf: &mut Buffer) {
+        if self.model.peek_open() {
+            self.paint_peek(look, buf);
+        }
+        if self.model.reader_open() {
+            self.paint_reader(look, buf);
+        }
     }
 
     /// Paint the viewed seat's screen into the frame's chat column: its
@@ -2979,6 +3132,45 @@ impl App {
         self.model.set_peek_page_rows(bounds.visible);
         if self.deferred.is_empty() {
             self.model.clamp_peek(bounds.max_back);
+        }
+    }
+
+    /// Paint the reader's file into the frame's chat column: wrapped to the
+    /// width the panel leaves it, jumped to the line the link named once the
+    /// body is first wrapped, then keep the viewport inside what was drawn.
+    /// The sidebar stands as drawn.
+    fn paint_reader(&mut self, look: Option<&theme::Look>, buf: &mut Buffer) {
+        let lane = self.layout.lane_area().unwrap_or_default();
+        let width = usize::from(lane.width);
+        let visible = usize::from(lane.height.saturating_sub(1));
+        if let Some(reader::Body::Text { lines, .. }) = &self.reader.body {
+            let room = width.saturating_sub(reader::gutter(lines.len()));
+            if (self.reader.flow.as_ref()).is_none_or(|(held, _)| *held != room) {
+                self.reader.flow = Some((room, reader::flow(lines, room)));
+            }
+        }
+        if self.reader.jump
+            && let Some((_, flow)) = &self.reader.flow
+        {
+            self.reader.jump = false;
+            if let Some(line) = self.reader.line {
+                let (_, max_top) = reader::window(flow.rows(), visible, 0);
+                let top = reader::top_for(flow.row_of(line), visible, max_top);
+                self.model.set_reader_top(top);
+            }
+        }
+        let view = reader::View {
+            path: &self.reader.path,
+            line: self.reader.line,
+            body: self.reader.body.as_ref(),
+            flow: self.reader.flow.as_ref().map(|(_, flow)| flow),
+            top: self.model.reader_top().unwrap_or(0),
+            links: self.reader.links,
+        };
+        let bounds = draw::paint_reader_column(&view, look, buf, &mut self.layout);
+        self.model.set_reader_page_rows(bounds.visible);
+        if self.deferred.is_empty() {
+            self.model.clamp_reader(bounds.max_back);
         }
     }
 
@@ -3883,7 +4075,7 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         }
         // An open overlay or seat view owns its keys even before the first
         // fleet read lands; only plain navigation waits for the fleet.
-        let modal = app.model.settings_open() || app.model.peek_open();
+        let modal = app.model.settings_open() || app.model.peek_open() || app.model.reader_open();
         if !app.fleeted && !modal && key != Key::Interrupt {
             redraw |= early(app, &key, origin)?;
             continue;
@@ -3931,6 +4123,8 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
                     settings_key(app, &key, origin)?
                 } else if app.model.peek_open() {
                     peek_key(app, &key, origin)?
+                } else if app.model.reader_open() {
+                    reader_key(app, &key, origin)?
                 } else if app.composing() {
                     app.compose(key, origin).map(|()| true)?
                 } else if app.held.is_some() {
@@ -3994,6 +4188,11 @@ fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
             }
             if app.model.peek_open() {
                 redraw |= peek_keys(app, model::browse_keys(&Key::Text(vec![byte])));
+                rest = tail;
+                continue;
+            }
+            if app.model.reader_open() {
+                redraw |= reader_keys(app, model::browse_keys(&Key::Text(vec![byte])));
                 rest = tail;
                 continue;
             }
@@ -4159,6 +4358,38 @@ fn peek_keys(app: &mut App, keys: Vec<model::Key>) -> bool {
     redraw
 }
 
+/// Take one key with the reader open: `Some(redraw)`, or `None` to quit.
+/// The reader owns every key: it scrolls, it closes, and a paste or any
+/// other key dies. Bytes after a mid-chunk close resume the actual mode.
+fn reader_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
+    if *key == Key::Interrupt {
+        return None;
+    }
+    if matches!(key, Key::Text(_)) {
+        return browse(app, key, origin);
+    }
+    Some(reader_keys(app, model::browse_keys(key)))
+}
+
+/// Feed `keys` to the reader; a close they cause tells the reader thread.
+/// `y` copies no turn here: it only says how copying works in the reader.
+fn reader_keys(app: &mut App, keys: Vec<model::Key>) -> bool {
+    let mut redraw = false;
+    for key in keys {
+        if key == model::Key::Copy {
+            app.flash = Some(("drag to copy text".to_owned(), Instant::now()));
+            redraw = true;
+            continue;
+        }
+        redraw |= app.model.key(key, &app.fleet, false) == model::Act::Redraw;
+    }
+    if !app.model.reader_open() {
+        app.close_reader();
+        redraw = true;
+    }
+    redraw
+}
+
 /// One Text byte with the overlay open: `,` closes with its request, the
 /// rest decodes modal. The overlay is open on entry; the caller resumes the
 /// actual mode after a close.
@@ -4192,6 +4423,9 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             if app.model.peek_open() {
                 app.close_peek();
             }
+            if app.model.reader_open() {
+                app.close_reader();
+            }
             app.show();
             Some(true)
         }
@@ -4214,6 +4448,10 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
         }
         model::Act::Peek => {
             app.open_peek();
+            Some(true)
+        }
+        model::Act::Read => {
+            app.open_reader();
             Some(true)
         }
         model::Act::None => Some(false),
@@ -6523,6 +6761,7 @@ mod tests {
                 loader::Request::Focus(_)
                 | loader::Request::Writing(_)
                 | loader::Request::Peek(_)
+                | loader::Request::Read(_)
                 | loader::Request::Settings { .. } => None,
             })
             .collect();
@@ -6759,6 +6998,7 @@ mod tests {
                     loader::Request::Reread(_)
                     | loader::Request::Writing(_)
                     | loader::Request::Peek(_)
+                    | loader::Request::Read(_)
                     | loader::Request::Settings { .. } => None,
                 })
                 .collect()
@@ -6787,6 +7027,7 @@ mod tests {
                 loader::Request::Focus(_)
                 | loader::Request::Reread(_)
                 | loader::Request::Peek(_)
+                | loader::Request::Read(_)
                 | loader::Request::Writing(_) => None,
             })
             .collect()
@@ -6819,6 +7060,7 @@ mod tests {
                     loader::Request::Settings { open, .. } => format!("settings {open}"),
                     loader::Request::Reread(_)
                     | loader::Request::Peek(_)
+                    | loader::Request::Read(_)
                     | loader::Request::Writing(_) => String::new(),
                 })
                 .collect()

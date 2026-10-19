@@ -67,37 +67,92 @@ fn starts(prev: Option<char>) -> bool {
     prev.is_none_or(|ch| ch.is_whitespace() || OPENERS.contains(ch))
 }
 
+/// A file link in a text, for a reader that opens it: the byte range as
+/// [`Link`] has it (the `:N[:M]` suffix inside `end`), the absolute path the
+/// link resolves to as it is written (not percent-encoded, `..` kept) and the
+/// numbers of that suffix. A number too long to be one is `None`, alone: the
+/// other keeps its value and the suffix stays inside `end`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRef {
+    pub start: usize,
+    pub end: usize,
+    pub path: String,
+    pub line: Option<usize>,
+    pub col: Option<usize>,
+}
+
+/// Where a file link points, before its URL is made.
+struct Target {
+    path: String,
+    line: Option<usize>,
+    col: Option<usize>,
+}
+
 /// Every link in `text`, in order and disjoint. Total: any text scans.
 #[must_use]
 pub fn scan(text: &str, base: &Base) -> Vec<Link> {
-    let mut links = Vec::new();
+    walk(text, base).into_iter().map(|(link, _)| link).collect()
+}
+
+/// The file links of `text`: exactly the file subset of [`scan`], same ranges
+/// and order, each with its decoded target. Web links never appear. Total.
+#[must_use]
+pub fn files(text: &str, base: &Base) -> Vec<FileRef> {
+    walk(text, base)
+        .into_iter()
+        .filter_map(|(link, target)| {
+            let target = target?;
+            Some(FileRef {
+                start: link.start,
+                end: link.end,
+                path: target.path,
+                line: target.line,
+                col: target.col,
+            })
+        })
+        .collect()
+}
+
+/// The one walk both [`scan`] and [`files`] make: each link with the target of
+/// a file link, `None` for a web one.
+fn walk(text: &str, base: &Base) -> Vec<(Link, Option<Target>)> {
+    let mut found = Vec::new();
     let (mut prev, mut at) = (None, 0);
     while let Some(ch) = text.get(at..).and_then(|rest| rest.chars().next()) {
         if starts(prev)
-            && let Some(link) = candidate(text, at, base)
+            && let Some((link, target)) = candidate(text, at, base)
         {
             prev = text
                 .get(..link.end)
                 .and_then(|head| head.chars().next_back());
             at = link.end;
-            links.push(link);
+            found.push((link, target));
             continue;
         }
         prev = Some(ch);
         at += ch.len_utf8();
     }
-    links
+    found
 }
 
-/// The link starting at byte `at` of `text`, if one does.
-fn candidate(text: &str, at: usize, base: &Base) -> Option<Link> {
+/// The link starting at byte `at` of `text`, if one does, and its target when
+/// it is a file link.
+fn candidate(text: &str, at: usize, base: &Base) -> Option<(Link, Option<Target>)> {
     let rest = text.get(at..)?;
-    let (len, url) = web(rest).or_else(|| file(rest, base))?;
-    is_safe_url(&url).then_some(Link {
-        start: at,
-        end: at + len,
-        url,
-    })
+    let (len, url, target) = if let Some((len, url)) = web(rest) {
+        (len, url, None)
+    } else {
+        let (len, url, target) = file(rest, base)?;
+        (len, url, Some(target))
+    };
+    is_safe_url(&url).then_some((
+        Link {
+            start: at,
+            end: at + len,
+            url,
+        },
+        target,
+    ))
 }
 
 /// The web URL `rest` starts with: its byte length and its URL.
@@ -174,8 +229,8 @@ fn has_name(text: &str) -> bool {
 }
 
 /// The path `rest` starts with, its `:line[:col]` kept in the length: its
-/// byte length and its `file://` URL.
-fn file(rest: &str, base: &Base) -> Option<(usize, String)> {
+/// byte length, its `file://` URL and its target.
+fn file(rest: &str, base: &Base) -> Option<(usize, String, Target)> {
     let run = rest.find(|ch: char| !path_char(ch)).unwrap_or(rest.len());
     let path = rest.get(..run)?.trim_end_matches('.');
     let absolute = if let Some(after) = path.strip_prefix("~/") {
@@ -190,26 +245,38 @@ fn file(rest: &str, base: &Base) -> Option<(usize, String)> {
         has_name(path.get(prefix.len()..)?)
             .then(|| format!("{}/{path}", dir.trim_end_matches('/')))?
     };
+    let (suffix, line, col) = line_suffix(rest.get(path.len()..)?);
+    let url = encode_path(&absolute);
     Some((
-        path.len() + line_suffix(rest.get(path.len()..)?),
-        encode_path(&absolute),
+        path.len() + suffix,
+        url,
+        Target {
+            path: absolute,
+            line,
+            col,
+        },
     ))
 }
 
-/// The byte length of the `:N` or `:N:M` (digits) `after` starts with, else 0.
-fn line_suffix(after: &str) -> usize {
+/// The byte length of the `:N` or `:N:M` (digits) `after` starts with, else 0,
+/// and the two numbers: each `None` when absent or too long to be a `usize`.
+fn line_suffix(after: &str) -> (usize, Option<usize>, Option<usize>) {
     let digits = |text: &str| text.bytes().take_while(u8::is_ascii_digit).count();
-    let mut len = 0;
-    for _ in 0..2 {
+    let (mut len, mut numbers) = (0, [None, None]);
+    for number in &mut numbers {
         let Some(rest) = after.get(len..).and_then(|rest| rest.strip_prefix(':')) else {
             break;
         };
         match digits(rest) {
             0 => break,
-            n => len += 1 + n,
+            n => {
+                *number = rest.get(..n).and_then(|held| held.parse().ok());
+                len += 1 + n;
+            }
         }
     }
-    len
+    let [line, col] = numbers;
+    (len, line, col)
 }
 
 /// `path` as the path of a `file://` URL: every byte outside

@@ -1722,6 +1722,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             "src/../tests/it/chatperf_console_spec.rs".to_owned(),
             "src/../tests/it/chatperf_strict_spec.rs".to_owned(),
             "src/app/../../tests/it/chatperf_files_spec.rs".to_owned(),
+            // The in-app reader's ONE file door: a file a lane links, read for
+            // the reader panel from the loader thread only, judged by its
+            // canonical path against the session's work dir and the viewer's
+            // home, its regular-file gate and its one bounded open.
+            "src/app/filedoor.rs".to_owned(),
             // THE terminal door of `ae app`: rustix termios takes raw mode,
             // restores the saved mode and reads the window size, on the
             // terminal the app was started in and nowhere else.

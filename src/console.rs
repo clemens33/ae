@@ -1109,6 +1109,10 @@ fn pump(
 mod applink_chat_spec;
 
 #[cfg(test)]
+#[path = "console/appread_link_spec.rs"]
+mod appread_link_spec;
+
+#[cfg(test)]
 #[path = "../tests/it/longpaste_console_spec.rs"]
 mod longpaste_spec;
 

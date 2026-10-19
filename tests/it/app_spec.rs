@@ -670,8 +670,8 @@ fn app_model_page_and_quit() {
 // ---------------------------------------------------------------------------
 
 /// The BROWSE decode table, every row of it: digits, `!`, `j`/`k`, `i` and
-/// Enter, `q` and ^C, the editing keys; a paste, editing keys and every other
-/// byte are swallowed.
+/// Enter, `q` and ^C, the editing keys, `r` (read), `g`/`G` and Home/End (the
+/// reader's ends); a paste, editing keys and every other byte are swallowed.
 fn app_key_name(key: AppKey) -> String {
     match key {
         AppKey::Digit(n) => format!("Digit({n})"),
@@ -691,6 +691,9 @@ fn app_key_name(key: AppKey) -> String {
         AppKey::TurnNewer => "TurnNewer".to_owned(),
         AppKey::Copy => "Copy".to_owned(),
         AppKey::Peek => "Peek".to_owned(),
+        AppKey::Read => "Read".to_owned(),
+        AppKey::Top => "Top".to_owned(),
+        AppKey::Bottom => "Bottom".to_owned(),
     }
 }
 
@@ -709,6 +712,9 @@ fn app_browse_keys_decode_table() {
         (b'[', "TurnOlder"),
         (b']', "TurnNewer"),
         (b'y', "Copy"),
+        (b'r', "Read"),
+        (b'g', "Top"),
+        (b'G', "Bottom"),
     ] {
         let got: Vec<String> = browse_keys(&text(byte))
             .iter()
@@ -723,6 +729,8 @@ fn app_browse_keys_decode_table() {
         (Key::Down, "Down"),
         (Key::PageUp, "PageUp"),
         (Key::PageDown, "PageDown"),
+        (Key::Home, "Top"),
+        (Key::End, "Bottom"),
         (Key::Tab, "Tab"),
         (Key::Escape, "Esc"),
         (Key::Interrupt, "Quit"),
@@ -742,8 +750,6 @@ fn app_browse_keys_decode_table() {
         Key::Delete,
         Key::Left,
         Key::Right,
-        Key::Home,
-        Key::End,
         Key::ClearLine,
     ] {
         assert!(
