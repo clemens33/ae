@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.96] - 2026-10-19
+- Show OpenCode Go quota windows in ae quota from an opt-in key file
+- Decide the OpenCode Go plan route in the tool adapter row
+
 ## [v2026.10.95] - 2026-10-19
 - Link URLs and repo paths in the chat lane as OSC 8 hyperlinks in ae app and dressed ae chat
 
