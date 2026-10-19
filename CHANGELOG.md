@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.95] - 2026-10-19
+- Link URLs and repo paths in the chat lane as OSC 8 hyperlinks in ae app and dressed ae chat
+
 ## [v2026.10.94] - 2026-10-19
 - Wait for spawned pane cwd witnesses
 - Retry menu fixture shutdown refusals
