@@ -51,8 +51,14 @@ the window on demand. See [Keys](#keys).
   is counted in a coverage row, never shown.
 - **Decision cards**: a lead-pair seat's CURRENT `waiting-user` declaration as
   `DECISION <seat>`, the watchdog's `human-prompt` as `NEEDS YOU <seat>`.
-  In chat and `ae app`, ` | ` separates options onto their own lines; decision
-  headings, recommendations and trailing details pointers stand separately too.
+  In chat and `ae app` a card's reason is laid out for reading, every word kept
+  and in its order: the question on its own lines, each ` | `-separated option
+  on its own line behind its `1 `/`a)` label or a bullet (`•`, `-` when icons
+  are off or on a plain pipe) with wrapped rows hanging under its words, the
+  prose after it one sentence per line, and a trailing evidence pointer
+  (`.local/…`, `details:`, `Evidence:`, `memo <topic>`, a bare `file:line`)
+  last, dim where the look is drawn. One empty row separates those blocks. A
+  reason with no ` | ` is split into sentences the same way.
   `--follow` prints `-- closed: …` when one stops standing.
 - **Coverage rows** for anything it cannot read: a torn or absent transcript,
   an unsupported harness, an unreadable journal, skipped journal lines.

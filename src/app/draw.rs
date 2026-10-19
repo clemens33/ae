@@ -1564,6 +1564,7 @@ fn lane_tail(
         main,
         open: (!ctx.wait.open.is_empty()).then_some(ctx.wait.open),
         sent: ctx.wait.sent,
+        icons: ctx.icons,
     };
     let (room, need) = size;
     let lane = ctx.screen.lane;

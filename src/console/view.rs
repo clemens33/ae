@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use super::card::{self, Part, Role};
 use super::fold;
 use super::input::{Effect, Size};
 use super::lane::{Item, Kind, Lane, OLD_CORE_GAP, Seat};
@@ -30,60 +31,17 @@ fn cells(text: &str) -> usize {
     text.chars().map(cell).sum()
 }
 
-/// Logical display lines of a decision reason; every other body stays raw.
-/// The renderers still neutralise and wrap each line through their usual door.
-pub(crate) fn body_lines(item: &Item) -> Vec<&str> {
-    if !matches!(item.kind, Kind::Card { .. }) {
-        return vec![&item.body];
+/// The lines of `item`'s body: a decision card laid out by [`card::layout`],
+/// every other body raw as ONE text part. Both the chat and the app draw
+/// these, neutralising and wrapping each part through their usual door.
+pub(crate) fn body_parts(item: &Item) -> Vec<Part<'_>> {
+    if matches!(item.kind, Kind::Card { .. }) {
+        return card::layout(&item.body);
     }
-    let mut parts: Vec<_> = item.body.split(" | ").collect();
-    let mut suffix = Vec::new();
-    if let Some(last) = parts.last_mut() {
-        for marker in [" Details ", " details: ", " (recommend "] {
-            if let Some(at) = last.rfind(marker)
-                && if marker == " (recommend " {
-                    last.ends_with(')') || last.ends_with(").")
-                } else {
-                    last[..at].ends_with('.') || last[..at].ends_with(')')
-                }
-            {
-                suffix.push(&last[at + 1..]);
-                *last = &last[..at];
-            }
-        }
-    }
-    let first = parts.first().copied().unwrap_or("");
-    let label = parts.get(1).and_then(|next| match next.get(..2)? {
-        "2 " => Some("1 "),
-        "2." => Some("1."),
-        "2)" => Some("1)"),
-        "b " => Some("a "),
-        "b." => Some("a."),
-        "b)" => Some("a)"),
-        _ => None,
-    });
-    let option = label.and_then(|label| {
-        first.match_indices(label).find_map(|(at, _)| {
-            (at == 0 || first[..at].ends_with(". ") || first[..at].ends_with(": ")).then_some(at)
-        })
-    });
-    let intro = option.map_or(first, |at| &first[..at.saturating_sub(1)]);
-    let mut lines = Vec::new();
-    if !intro.is_empty() || option.is_none() {
-        if let Some(at) = intro.find(": ")
-            && (parts.len() > 1 || option.is_some())
-        {
-            lines.extend([&intro[..=at], &intro[at + 2..]]);
-        } else {
-            lines.push(intro);
-        }
-    }
-    if let Some(at) = option {
-        lines.push(&first[at..]);
-    }
-    lines.extend(parts.into_iter().skip(1));
-    lines.extend(suffix.into_iter().rev());
-    lines
+    vec![Part {
+        role: Role::Text,
+        text: &item.body,
+    }]
 }
 
 /// Lane text a [`Style`] has already neutralised and dressed: the one text a
@@ -137,6 +95,8 @@ impl Zone {
 struct Dress {
     palette: Palette,
     glyph: &'static str,
+    /// What an option of a decision card wears before its words.
+    bullet: &'static str,
     zone: Option<Zone>,
     main: String,
 }
@@ -171,6 +131,7 @@ impl Style {
         Self(Some(Dress {
             palette: look.palette,
             glyph: if look.icons { "▌" } else { "|" },
+            bullet: if look.icons { "• " } else { "- " },
             zone: zone.and_then(Zone::parse),
             main: main.to_owned(),
         }))
@@ -268,6 +229,94 @@ impl Style {
             return vec![self.line(kind, text)];
         };
         self.rows(kind, &terminal_text(text), width, str::to_owned)
+    }
+
+    /// The rows of one part of a body: a gap is one empty row behind the
+    /// margin, evidence dims, an option hangs its wrapped rows under its words,
+    /// and text is drawn line by line as [`Style::line_rows`] draws it.
+    fn part_rows(
+        &self,
+        kind: &Kind,
+        part: Part<'_>,
+        width: Option<usize>,
+        fold: bool,
+    ) -> Vec<String> {
+        match part.role {
+            Role::Gap => self.line_rows(kind, "", width, fold),
+            Role::Text => part
+                .text
+                .split('\n')
+                .flat_map(|line| self.line_rows(kind, line, width, fold))
+                .collect(),
+            Role::Evidence => part
+                .text
+                .split('\n')
+                .flat_map(|line| self.dim_rows(kind, line, width, fold))
+                .collect(),
+            Role::Option { label } => {
+                let (mark, words) = match part.text.split_at_checked(label) {
+                    Some((mark, words)) if label > 0 => (mark, words),
+                    _ => (self.bullet(), part.text),
+                };
+                self.option_rows(kind, mark, words, width, fold)
+            }
+        }
+    }
+
+    /// What an unlabelled option wears: a bullet, ASCII when the look's icons
+    /// are off and on a plain style.
+    fn bullet(&self) -> &'static str {
+        self.0.as_ref().map_or("- ", |dress| dress.bullet)
+    }
+
+    /// [`Style::line_rows`] in the dim hue.
+    fn dim_rows(&self, kind: &Kind, text: &str, width: Option<usize>, fold: bool) -> Vec<String> {
+        let Some(width) = width.filter(|_| self.0.is_some() || fold) else {
+            return vec![format!("{}{}\n", self.margin(kind), self.dim(text))];
+        };
+        self.rows(kind, &terminal_text(text), width, |piece| self.dim(piece))
+    }
+
+    /// An option's rows: `mark` then its `words`, every wrapped row hanging
+    /// under the words rather than under the mark.
+    fn option_rows(
+        &self,
+        kind: &Kind,
+        mark: &str,
+        words: &str,
+        width: Option<usize>,
+        fold: bool,
+    ) -> Vec<String> {
+        // Every mark is narrow: a bullet, or an ASCII label.
+        let hang = mark.chars().count();
+        let Some(width) = width.filter(|_| self.0.is_some() || fold) else {
+            let lines = words.split('\n').enumerate();
+            let line = |(at, line): (usize, &str)| {
+                let mark = if at == 0 {
+                    mark.to_owned()
+                } else {
+                    " ".repeat(hang)
+                };
+                self.line(kind, &format!("{mark}{line}"))
+            };
+            return lines.map(line).collect();
+        };
+        let bar = if self.0.is_some() { BAR_CELLS } else { 0 };
+        let rows = wrap_in(&terminal_text(words), width.saturating_sub(hang), 2, bar);
+        rows.into_iter()
+            .enumerate()
+            .map(|(at, (gap, piece))| {
+                let mark = if at == 0 {
+                    terminal_text(mark)
+                } else {
+                    " ".repeat(hang)
+                };
+                // The mark sits at the margin; the words' own indent follows it.
+                let (margin, indent) = (gap.min(2), gap.saturating_sub(2));
+                let (margin, indent) = (" ".repeat(margin), " ".repeat(indent));
+                format!("{}{margin}{mark}{indent}{piece}\n", self.bar(kind))
+            })
+            .collect()
     }
 
     /// [`Style::under`] for a pane `width` cells wide: every visual row keeps the bar.
@@ -910,10 +959,18 @@ impl Printed {
 
     /// The rows of `item`'s body below its header, one string each.
     fn body_rows(&self, item: &Item) -> Vec<String> {
-        let lines = body_lines(item).into_iter().flat_map(str::lines);
-        let rows = lines.flat_map(|line| {
+        if !matches!(item.kind, Kind::Card { .. }) {
+            let lines = item.body.lines();
+            let rows = lines.flat_map(|line| {
+                self.style
+                    .line_rows(&item.kind, line, self.width, self.fold)
+            });
+            return rows.collect();
+        }
+        let parts = body_parts(item).into_iter();
+        let rows = parts.flat_map(|part| {
             self.style
-                .line_rows(&item.kind, line, self.width, self.fold)
+                .part_rows(&item.kind, part, self.width, self.fold)
         });
         rows.collect()
     }
@@ -1277,9 +1334,11 @@ mod tests {
         let want = [
             "  Next release step:",
             "  dev is live and verified.",
+            "  ",
             "  1 merge A now, then B - recommended",
             "  2 merge A only, B later",
             "  3 owner merges.",
+            "  ",
             "  Details memo rel.",
         ];
         for (body, expected) in [
@@ -1319,15 +1378,24 @@ mod tests {
             ("a)", "b)"),
         ] {
             let body = format!("Context. {one}keep: fast | {two}wait. details: memo rel.");
-            let card = item(card("lead"), T, &body);
-            let want = format!("Context.\n{one}keep: fast\n{two}wait.\ndetails: memo rel.");
-            assert_eq!(super::body_lines(&card).join("\n"), want);
+            let lane = lane(vec![item(card("lead"), T, &body)], &[]);
+            let shown = Printed::default().step(&lane, 0, true);
+            let want = [
+                "  Context.".to_owned(),
+                "  ".to_owned(),
+                format!("  {one}keep: fast"),
+                format!("  {two}wait."),
+                "  ".to_owned(),
+                "  details: memo rel.".to_owned(),
+            ];
+            assert_eq!(
+                shown
+                    .lines()
+                    .filter(|line| line.starts_with("  "))
+                    .collect::<Vec<_>>(),
+                want
+            );
         }
-        let both = item(card("lead"), T, "A | B (recommend A). Details memo x.");
-        assert_eq!(
-            super::body_lines(&both).join("\n"),
-            "A\nB\n(recommend A).\nDetails memo x."
-        );
     }
 
     #[test]
@@ -1351,11 +1419,423 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "Pick:",
-                "vertical panes stay",
-                "readable\u{fffd}[2J",
-                "horizontal context",
-                "stays visible",
+                "",
+                "• vertical panes stay",
+                "  readable\u{fffd}[2J",
+                "• horizontal context",
+                "  stays visible",
             ]
+        );
+    }
+
+    // cardread spec r2: a DECISION card body, rendered plain in chat. The
+    // helper pins the standing promises beside the layout itself — the card
+    // header unchanged, no SGR on a plain style, and the stored reason
+    // itself never rewritten (only its rendering is laid out).
+    fn cardread_plain(body: &str) -> Vec<String> {
+        let lane = lane(vec![item(card("lead"), T, body)], &[]);
+        let shown = Printed::default().step(&lane, 0, true);
+        assert!(
+            shown.contains("DECISION lead · waiting-user"),
+            "header stands: {shown:?}"
+        );
+        assert!(!shown.contains('\x1b'), "plain carries no SGR: {shown:?}");
+        assert_eq!(lane.items[0].body, body, "the stored reason stays raw");
+        shown
+            .lines()
+            .filter(|line| line.starts_with("  "))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    // cardread spec r2, invariant 1: the words a rendered card carries. A
+    // leading bullet token is layout, not a word, and the standalone "|"
+    // option separator is consumed as layout too.
+    fn cardread_words(lines: &[String]) -> Vec<String> {
+        lines
+            .iter()
+            .flat_map(|line| {
+                let line = line.trim_start();
+                let line = line
+                    .strip_prefix("- ")
+                    .or_else(|| line.strip_prefix("• "))
+                    .unwrap_or(line);
+                line.split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|word| word != "|")
+            .collect()
+    }
+
+    fn cardread_reason_words(body: &str) -> Vec<String> {
+        crate::board::terminal_text(body)
+            .split_whitespace()
+            .filter(|word| *word != "|")
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn cardread_brief_examples_render_readably_plain() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "Clemens decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.",
+                &[
+                    "  Clemens decides:",
+                    "  may lead release X (fix, review PASS, tests green) and roll Y only?",
+                    "  ",
+                    "  - Yes lets the retest show why it fails",
+                    "  - no leaves Y broken with unknown cause.",
+                    "  ",
+                    "  Recommend yes.",
+                    "  Asked via say; AGENTS.md:49 needs his go.",
+                    "  ",
+                    "  Memo p2.",
+                ],
+            ),
+            (
+                "Asked Clemens to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.",
+                &[
+                    "  Asked Clemens to dismiss a modal in pane P; request queued.",
+                    "  Last peek at 06:10 confirms modal; prior send ABANDONED after 30s.",
+                    "  Clearing it permits retry.",
+                    "  ",
+                    "  Evidence: .local/x/REPORT.md and memo parking.",
+                ],
+            ),
+            (
+                "Which layout: vertical keeps panes readable | horizontal shows more context (recommend vertical because readability wins; details: .local/layout.md)",
+                &[
+                    "  Which layout:",
+                    "  ",
+                    "  - vertical keeps panes readable",
+                    "  - horizontal shows more context",
+                    "  ",
+                    "  (recommend vertical because readability wins; details: .local/layout.md)",
+                ],
+            ),
+            (
+                "Which layout should we use? Vertical keeps panes readable; horizontal shows more context. Recommend vertical because readability matters; details: .local/layout.md",
+                &[
+                    "  Which layout should we use?",
+                    "  Vertical keeps panes readable; horizontal shows more context.",
+                    "  Recommend vertical because readability matters; details: .local/layout.md",
+                ],
+            ),
+            (
+                "Pick a slot: morning slot frees the day | evening slot risks a clash. details: .local/slots.md",
+                &[
+                    "  Pick a slot:",
+                    "  ",
+                    "  - morning slot frees the day",
+                    "  - evening slot risks a clash.",
+                    "  ",
+                    "  details: .local/slots.md",
+                ],
+            ),
+        ];
+        for (body, want) in cases {
+            let got = cardread_plain(body);
+            assert_eq!(
+                got.iter().map(String::as_str).collect::<Vec<_>>(),
+                *want,
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cardread_shaped_variants_keep_labels_colons_and_parens() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "Context. 1 keep: fast | 2 wait. details: memo rel.",
+                &[
+                    "  Context.",
+                    "  ",
+                    "  1 keep: fast",
+                    "  2 wait.",
+                    "  ",
+                    "  details: memo rel.",
+                ],
+            ),
+            (
+                "Pick: keep: fast | wait: slow",
+                &["  Pick:", "  ", "  - keep: fast", "  - wait: slow"],
+            ),
+            (
+                "Ready to ship? merge now | hold the release",
+                &[
+                    "  Ready to ship?",
+                    "  ",
+                    "  - merge now",
+                    "  - hold the release",
+                ],
+            ),
+            (
+                "A | B (recommend A). Details memo x.",
+                &[
+                    "  - A",
+                    "  - B",
+                    "  ",
+                    "  (recommend A).",
+                    "  ",
+                    "  Details memo x.",
+                ],
+            ),
+            (
+                "Choose: alpha path ships | beta path waits (recommend alpha. It ships today)",
+                &[
+                    "  Choose:",
+                    "  ",
+                    "  - alpha path ships",
+                    "  - beta path waits",
+                    "  ",
+                    "  (recommend alpha. It ships today)",
+                ],
+            ),
+        ];
+        for (body, want) in cases {
+            let got = cardread_plain(body);
+            assert_eq!(
+                got.iter().map(String::as_str).collect::<Vec<_>>(),
+                *want,
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cardread_unshaped_sentences_split_with_guards() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "Ship 2026.10.6 today, e.g. after lunch. The note src/app.rs:12 explains why. Wait... then roll it. Done?",
+                &[
+                    "  Ship 2026.10.6 today, e.g. after lunch.",
+                    "  The note src/app.rs:12 explains why.",
+                    "  Wait... then roll it.",
+                    "  Done?",
+                ],
+            ),
+            (
+                "the modal is still up. clearing it permits the retry. say the word and it goes.",
+                &[
+                    "  the modal is still up.",
+                    "  clearing it permits the retry.",
+                    "  say the word and it goes.",
+                ],
+            ),
+            (
+                "Waiting on colead for the S2 freeze report",
+                &["  Waiting on colead for the S2 freeze report"],
+            ),
+            (
+                "Release v1: approve the tag",
+                &["  Release v1: approve the tag"],
+            ),
+            ("a\n\tb\n  fn c() {}", &["  a", "  \tb", "    fn c() {}"]),
+        ];
+        for (body, want) in cases {
+            let got = cardread_plain(body);
+            assert_eq!(
+                got.iter().map(String::as_str).collect::<Vec<_>>(),
+                *want,
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cardread_wordless_parts_drop_and_empty_bodies_stay_empty() {
+        let cases: &[(&str, &[&str])] = &[
+            ("", &[]),
+            ("A | B", &["  - A", "  - B"]),
+            ("A | ", &["  - A"]),
+            (" | B", &["  - B"]),
+            ("A | | B", &["  - A", "  - B"]),
+        ];
+        for (body, want) in cases {
+            let got = cardread_plain(body);
+            assert_eq!(
+                got.iter().map(String::as_str).collect::<Vec<_>>(),
+                *want,
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cardread_words_survive_every_shape() {
+        let bodies: Vec<String> = [
+            "",
+            " ",
+            "|",
+            " | ",
+            "A |",
+            "| B",
+            "A || B",
+            "A | | B",
+            "Clemens decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.",
+            "Asked Clemens to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.",
+            "Héllo wörld. Nächste Frage? Ja bitte | Nein danke.",
+            "Use e.g. Vertical. Ship i.e. now? yes go | no wait",
+            "No. 5 wins the slot. Ship it today. memo slots",
+            "(recommend A. B forever",
+            "Pick\tone: fast lane | slow lane",
+            "A\x1b[2J bold claim. B safe path | C other path (recommend B)",
+            "Ship 2026.10.6 today, e.g. after lunch. The note src/app.rs:12 explains why. Wait... then roll it. Done?",
+            "details: .local/only.md",
+            "src/render.rs:322.",
+            "Recommend A.",
+        ]
+        .iter()
+        .map(|body| (*body).to_owned())
+        .chain([format!(
+            "{}| {}",
+            "word ".repeat(50),
+            "other ".repeat(50)
+        )])
+        .collect();
+        for body in &bodies {
+            let got = cardread_plain(body);
+            assert_eq!(
+                cardread_words(&got),
+                cardread_reason_words(body),
+                "{body:?}"
+            );
+            if !cardread_reason_words(body).is_empty() {
+                assert_ne!(got.first().map(String::as_str), Some("  "), "{body:?}");
+                assert_ne!(got.last().map(String::as_str), Some("  "), "{body:?}");
+                assert!(
+                    !got.windows(2).any(|pair| pair == ["  ", "  "]),
+                    "no doubled gap: {body:?} -> {got:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cardread_non_cards_and_needs_you_stay_raw() {
+        let body = "Asked Clemens to dismiss a modal in pane P; request queued. Last peek at 06:10 confirms modal; prior send ABANDONED after 30s. Clearing it permits retry. Evidence: .local/x/REPORT.md and memo parking.";
+        for (kind, tag) in [
+            (said("lead"), "said lead"),
+            (
+                Kind::NeedsYou {
+                    seat: "lead".to_owned(),
+                },
+                "NEEDS YOU lead · needs you in its pane",
+            ),
+        ] {
+            let lane = lane(vec![item(kind, T, body)], &[]);
+            let shown = Printed::default().step(&lane, 0, true);
+            assert!(shown.contains(tag), "{shown}");
+            assert!(
+                shown.contains(&format!("  {body}\n")),
+                "raw, one line: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn cardread_dressed_bullets_wrap_and_evidence_dims() {
+        let det = "Pick a slot: morning slot frees the day | evening slot risks a clash. details: .local/slots.md";
+        let mut printed = Printed::styled(dressed("on", ""));
+        printed.set_width(Some(400));
+        let got = printed.step(&lane(vec![item(card("lead"), T, det)], &[]), 0, true);
+        let plain = unstyled(&got);
+        assert_eq!(
+            plain
+                .lines()
+                .skip_while(|line| !line.starts_with("▌  Pick a slot:"))
+                .filter_map(|line| line.strip_prefix("▌  "))
+                .collect::<Vec<_>>(),
+            [
+                "Pick a slot:",
+                "",
+                "• morning slot frees the day",
+                "• evening slot risks a clash.",
+                "",
+                "details: .local/slots.md",
+            ]
+        );
+        let dim = sgr(Palette::DARCULA.dim);
+        assert!(
+            got.contains(&format!("{dim}details: .local/slots.md\x1b[0m")),
+            "evidence dims: {got:?}"
+        );
+        let sg = "Which layout: vertical keeps panes readable | horizontal shows more context (recommend vertical because readability wins; details: .local/layout.md)";
+        let mut printed = Printed::styled(dressed("on", ""));
+        printed.set_width(Some(400));
+        let got = printed.step(&lane(vec![item(card("lead"), T, sg)], &[]), 0, true);
+        assert!(
+            !got.contains(&format!("{dim}(recommend")),
+            "a recommend line never dims as evidence: {got:?}"
+        );
+        assert!(unstyled(&got).contains("(recommend vertical because readability wins"));
+        let mut printed = Printed::styled(dressed("off", ""));
+        printed.set_width(Some(400));
+        let got = printed.step(&lane(vec![item(card("lead"), T, det)], &[]), 0, true);
+        assert_eq!(
+            unstyled(&got)
+                .lines()
+                .skip_while(|line| !line.starts_with("|  Pick a slot:"))
+                .filter_map(|line| line.strip_prefix("|  "))
+                .collect::<Vec<_>>(),
+            [
+                "Pick a slot:",
+                "",
+                "- morning slot frees the day",
+                "- evening slot risks a clash.",
+                "",
+                "details: .local/slots.md",
+            ]
+        );
+        let mut printed = Printed::styled(dressed("on", ""));
+        printed.set_width(Some(25));
+        let narrow = "Pick: vertical panes stay readable\x1b[2J | horizontal context stays visible";
+        let got = printed.step(&lane(vec![item(card("lead"), T, narrow)], &[]), 0, true);
+        assert_eq!(
+            unstyled(&got)
+                .lines()
+                .skip_while(|line| !line.starts_with("▌  Pick:"))
+                .filter_map(|line| line.strip_prefix("▌  "))
+                .collect::<Vec<_>>(),
+            [
+                "Pick:",
+                "",
+                "• vertical panes stay",
+                "  readable\u{fffd}[2J",
+                "• horizontal context",
+                "  stays visible",
+            ]
+        );
+        let mut printed = Printed::styled(dressed("on", ""));
+        printed.set_width(Some(40));
+        let ex1 = "Clemens decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.";
+        let got = printed.step(&lane(vec![item(card("lead"), T, ex1)], &[]), 0, true);
+        let plain = unstyled(&got);
+        assert!(plain.contains("Recommend yes."), "{plain}");
+        assert!(plain.contains("Memo p2."), "the last line shows: {plain}");
+        assert!(!plain.contains("more lines"), "whole, unfolded: {plain}");
+    }
+
+    // cardread spec r3: a logical option line continues under its words even
+    // on a plain pipe, where there is no width-driven wrapping pass.
+    #[test]
+    fn cardread_plain_multiline_option_continues_under_its_words() {
+        let body = "Pick: alpha\ncontinued | beta";
+        let shown = Printed::default().step(&lane(vec![item(card("lead"), T, body)], &[]), 0, true);
+        assert_eq!(
+            shown.lines().skip(2).collect::<Vec<_>>(),
+            [
+                "  Pick:",
+                "  ",
+                "  - alpha",
+                "    continued",
+                "  - beta",
+                ""
+            ],
+            "every logical option line has the body margin and hanging indent"
         );
     }
 

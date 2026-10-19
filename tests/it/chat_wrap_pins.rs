@@ -82,6 +82,7 @@ fn an_option_label_after_a_colon_space_opens_the_options_of_a_decision_card() {
         let want = [
             "  Next:",
             "  pick:",
+            "  ",
             &format!("  {one}keep"),
             &format!("  {two}wait"),
         ];

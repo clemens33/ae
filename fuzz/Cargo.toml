@@ -245,6 +245,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "card_body"
+path = "fuzz_targets/card_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "journal_append"
 path = "fuzz_targets/journal_append.rs"
 test = false

@@ -1,0 +1,1 @@
+Clemens decides: may lead release X (fix, review PASS, tests green) and roll Y only? Yes lets the retest show why it fails | no leaves Y broken with unknown cause. Recommend yes. Asked via say; AGENTS.md:49 needs his go. Memo p2.
