@@ -367,6 +367,30 @@ pub(crate) struct QuotaSpec {
     pub(crate) default_home: Option<&'static str>,
     /// Operator action or reason shown when local quota is unsupported.
     pub(crate) unsupported_hint: Option<&'static str>,
+    /// A subscription plan whose usage ae may ask the vendor for, only once
+    /// the operator opts in, for a profile routed through that plan.
+    pub(crate) plan: Option<PlanRoute>,
+}
+
+/// How a profile names a subscription plan's model route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlanRoute {
+    /// The flags that carry the model.
+    pub(crate) model_flags: &'static [&'static str],
+    /// The model prefix that routes through the plan; a model must follow it.
+    pub(crate) prefix: &'static str,
+}
+
+impl PlanRoute {
+    /// Whether `command` names exactly one model, and that model is routed
+    /// through this plan.
+    pub(crate) fn routes(&self, command: &str) -> bool {
+        crate::launch_cmd::sole_flag_value(command, self.model_flags).is_some_and(|model| {
+            model
+                .strip_prefix(self.prefix)
+                .is_some_and(|rest| !rest.is_empty())
+        })
+    }
 }
 
 /// Which local transcript shape, if any, can provide usage observations.
@@ -727,6 +751,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         config_home_env: Some("CLAUDE_CONFIG_DIR"),
         default_home: Some(".claude"),
         unsupported_hint: None,
+        plan: None,
     },
     usage: UsageSpec {
         source: UsageSource::ClaudeTranscripts,
@@ -783,6 +808,7 @@ const CODEX: ToolAdapter = ToolAdapter {
         config_home_env: Some("CODEX_HOME"),
         default_home: Some(".codex"),
         unsupported_hint: None,
+        plan: None,
     },
     usage: UsageSpec {
         source: UsageSource::CodexRollout,
@@ -833,6 +859,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         config_home_env: None,
         default_home: Some(".gemini"),
         unsupported_hint: Some("no verified local quota source"),
+        plan: None,
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
@@ -921,6 +948,7 @@ const AGY: ToolAdapter = ToolAdapter {
         config_home_env: None,
         default_home: Some(".gemini/antigravity-cli"),
         unsupported_hint: Some("run agy -p \"/quota\""),
+        plan: None,
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
@@ -996,6 +1024,7 @@ const GROK: ToolAdapter = ToolAdapter {
         config_home_env: None,
         default_home: Some(".grok"),
         unsupported_hint: Some("run /usage in grok"),
+        plan: None,
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
@@ -1057,6 +1086,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         config_home_env: None,
         default_home: Some(".config/muse"),
         unsupported_hint: Some("no verified local quota source"),
+        plan: None,
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
@@ -1138,6 +1168,10 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         config_home_env: None,
         default_home: Some(".local/share/opencode"),
         unsupported_hint: Some("local stats are cost history, not quota"),
+        plan: Some(PlanRoute {
+            model_flags: &["--model", "-m"],
+            prefix: "opencode-go/",
+        }),
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
@@ -1186,6 +1220,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         config_home_env: None,
         default_home: None,
         unsupported_hint: Some("no local quota adapter"),
+        plan: None,
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
@@ -1608,6 +1643,7 @@ mod tests {
                         config_home_env: Some("CLAUDE_CONFIG_DIR"),
                         default_home: Some(".claude"),
                         unsupported_hint: None,
+                        plan: None,
                     },
                     usage: UsageSpec {
                         source: UsageSource::ClaudeTranscripts,
@@ -1663,6 +1699,7 @@ mod tests {
                         config_home_env: Some("CODEX_HOME"),
                         default_home: Some(".codex"),
                         unsupported_hint: None,
+                        plan: None,
                     },
                     usage: UsageSpec {
                         source: UsageSource::CodexRollout,
@@ -1712,6 +1749,7 @@ mod tests {
                         config_home_env: None,
                         default_home: Some(".gemini"),
                         unsupported_hint: Some("no verified local quota source"),
+                        plan: None,
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
@@ -1784,6 +1822,7 @@ mod tests {
                         config_home_env: None,
                         default_home: Some(".gemini/antigravity-cli"),
                         unsupported_hint: Some("run agy -p \"/quota\""),
+                        plan: None,
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
@@ -1841,6 +1880,7 @@ mod tests {
                         config_home_env: None,
                         default_home: Some(".grok"),
                         unsupported_hint: Some("run /usage in grok"),
+                        plan: None,
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
@@ -1892,6 +1932,7 @@ mod tests {
                         config_home_env: None,
                         default_home: Some(".config/muse"),
                         unsupported_hint: Some("no verified local quota source"),
+                        plan: None,
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
@@ -1947,6 +1988,10 @@ mod tests {
                         config_home_env: None,
                         default_home: Some(".local/share/opencode"),
                         unsupported_hint: Some("local stats are cost history, not quota"),
+                        plan: Some(PlanRoute {
+                            model_flags: &["--model", "-m"],
+                            prefix: "opencode-go/",
+                        }),
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
@@ -2002,6 +2047,7 @@ mod tests {
                     config_home_env: None,
                     default_home: None,
                     unsupported_hint: Some("no local quota adapter"),
+                    plan: None,
                 },
                 usage: UsageSpec {
                     source: UsageSource::Unsupported,

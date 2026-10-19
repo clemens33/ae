@@ -2209,7 +2209,7 @@ fn note_go_key(groups: &mut [Group], key: &Path, refreshed: crate::go_usage::Ref
     };
     for group in groups
         .iter_mut()
-        .filter(|group| group.tool == ToolKind::OpenCode && group.source.is_some())
+        .filter(|group| group.tool.adapter().quota.plan.is_some() && group.source.is_some())
     {
         if !group
             .notes
@@ -2365,18 +2365,6 @@ fn go_identity(go_key: &GoKeyConfig) -> (Option<PathBuf>, Option<PathBuf>, Optio
         ),
         GoKeyConfig::Off => (None, None, None),
     }
-}
-
-/// The model flags an opencode profile names its route with.
-const OPENCODE_MODEL_FLAGS: [&str; 2] = ["--model", "-m"];
-
-/// Whether `command` pins an `opencode-go/<model>`: the Go plan's route.
-fn go_model(command: &str) -> bool {
-    crate::launch_cmd::sole_flag_value(command, &OPENCODE_MODEL_FLAGS).is_some_and(|model| {
-        model
-            .strip_prefix("opencode-go/")
-            .is_some_and(|rest| !rest.is_empty())
-    })
 }
 
 /// Every quota scope the config declares, with the `OpenCode` Go opt-in the
@@ -2601,8 +2589,12 @@ fn absorb_resolved(
         hint,
     } = paths;
     let leg = leg && config_home.is_some();
-    let go =
-        tool == ToolKind::OpenCode && *go_key != GoKeyConfig::Off && go_model(resolved.as_str());
+    let go = *go_key != GoKeyConfig::Off
+        && tool
+            .adapter()
+            .quota
+            .plan
+            .is_some_and(|plan| plan.routes(resolved.as_str()));
     let (source, source_key, hint) = if go {
         go_identity(go_key)
     } else {
