@@ -104,6 +104,7 @@ mod renametell_routing_spec;
 mod reqfilter_spec;
 mod reseat;
 mod reseat_carry;
+mod reseat_cover_spec;
 mod reseat_headroom_spec;
 mod reseatround_spec;
 mod restore;

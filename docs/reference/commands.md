@@ -966,6 +966,15 @@ Two read-only WARN rows name a silent misconfiguration and never fail the comman
 newest reading is absent or more than an hour old: auto reseat's headroom trigger acts on a
 reading, so that scope's seats move only after they hit a limit. The row names the fix, the
 statusline pipe in [Feed Claude quota from your statusline](#feed-claude-quota-from-your-statusline).
+A `reseat-cover` row reports whether every profile in `[profiles]` has an auto-reseat candidate
+that leaves its own account, because a profile whose declared row and derived family all share
+one account has no exit once that account's window is spent. It reads `OK` when all are covered,
+`skipped (auto_reseat off)` while the switch is off, and otherwise one `WARN` row per account
+scope naming the uncovered profiles and the line to add under `[auto_reseat]`; a profile whose
+account ae cannot prove has a `WARN` row of its own, saying whether its own or a candidate's
+account is the one in doubt. It never fails the command. `ae spawn` and
+[`ae reseat --using`](#ae-reseat-session-agent---using-profile) print the same finding as one
+stderr line for the profile you pick, and carry on.
 A `local-config` row appears when `--local`, or a `.ae/config` in the directory `ae doctor` runs
 from, layers a second file over the global config; it carries that file's path. No such file, no row,
 and a file the reader could not read is the `config` row's failure, never a `local-config` claim.
@@ -1791,6 +1800,13 @@ recoverable by hand. Before the meta is written the seat still records its old p
 has no start marker, so `relaunch` brings it back on the tool it had — whether the stop
 had already happened or not. After the meta is written the pane sits at its shell, which
 is exactly what `relaunch` finishes — the refusal says so by name.
+
+**A profile with no way off its account** gets ONE stderr line before the move starts, naming
+the profile and, where ae can name one, the `[auto_reseat]` line that would give it one: a usage limit on that account
+would leave the seat stuck, and moving it on by hand needs a profile elsewhere. The line changes
+no exit code and stops nothing; it is silent while `auto_reseat` is off, for a watchdog-driven
+move, and for a profile that already has an exit. `ae doctor`'s `reseat-cover` row is the
+fleet-wide view of the same finding.
 
 Every attempt that reaches the pane is recorded as a `reseat` event, naming its caller (a
 seat by its own ref, a plain shell as the human) and both profiles. The MOVE's record also

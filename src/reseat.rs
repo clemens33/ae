@@ -390,6 +390,16 @@ pub(crate) fn identity_config(
     .map_err(|why| why.to_string())
 }
 
+/// The one-line warning for `profile` when it has no auto-reseat exit off its
+/// account, from the same two files a move reads: the session's recorded global
+/// config (its switch and map) and the layered identity (its profiles).
+fn cover_warning(dir: &Path, bytes: &[u8], profile: &str) -> Option<String> {
+    let cfg = identity_config(dir, bytes).ok()?;
+    let global = crate::lifecycle::meta_value(bytes, "config");
+    let settings = crate::autoreseat::settings((!global.is_empty()).then(|| Path::new(&global)));
+    crate::autoreseat::leg::cover_warning(&cfg, &settings, profile, crate::doors::home().as_deref())
+}
+
 /// The new profile resolved to the two facts the meta records.
 ///
 /// The SAME resolution `crate::run::read_seat` makes for a seat that records no
@@ -1145,6 +1155,13 @@ fn run_parsed(
             return Ok(refused);
         }
     };
+    // The moment of a human's choice: say once if the profile chosen has no
+    // exit off its account. The watchdog's own move is no choice of anyone's.
+    if caller.display != crate::watchdog::WATCHDOG_ACTOR
+        && let Some(line) = cover_warning(&dir, &bytes, &parsed.profile)
+    {
+        writeln!(err, "{line}")?;
+    }
     let target = match resolve(&dir, &parsed.agent, &parsed.session) {
         Ok(target) => target,
         Err(line) => {

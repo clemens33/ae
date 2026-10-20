@@ -42,6 +42,7 @@ use crate::events::Event;
 use crate::harness_state::HarnessState;
 use crate::quota::Status;
 use crate::time::Timestamp;
+use crate::tool::ToolKind;
 use crate::watchdog::{WATCHDOG_ACTOR, event_is_addressed_to};
 
 pub(crate) mod leg;
@@ -552,9 +553,34 @@ pub struct Shape {
     pub store: Store,
     /// The resolved command, byte for byte.
     pub raw: String,
+    /// The tool the command launches. [`listed`] never reads it; the cover
+    /// verdict does, because tools without an account variable all read
+    /// `Store::Shared` and only the tool tells their accounts apart.
+    pub tool: ToolKind,
 }
 
 impl Shape {
+    /// Whether `other` runs on a PROVEN different account: another tool, or
+    /// the same tool on another proven store. The same store, or the one
+    /// store a tool without an account variable has, is `Some(false)`.
+    /// Everything ae cannot prove is `None` — an unknown store, a tool it
+    /// cannot name, and a proven store against a shared one (one tool never
+    /// has both) — so no doubt reads as another account.
+    #[must_use]
+    pub fn off_account(&self, other: &Self) -> Option<bool> {
+        if !self.tool.is_known() || !other.tool.is_known() {
+            return None;
+        }
+        if self.tool != other.tool {
+            return Some(true);
+        }
+        match (&self.store, &other.store) {
+            (Store::Proven(one), Store::Proven(two)) => Some(one != two),
+            (Store::Shared, Store::Shared) => Some(false),
+            _ => None,
+        }
+    }
+
     /// The same setup on the same store, PROVEN: an unknown account is never
     /// the same as another, and on a shared store only the same command byte
     /// for byte is, since a respelled flag proves nothing.
@@ -618,6 +644,182 @@ pub fn listed(
         }
     }
     list
+}
+
+/// Whether a profile has a way off its own account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cover {
+    /// The first listed candidate that runs on a PROVEN other account.
+    Exit(String),
+    /// Every listed candidate is proven on the profile's own account, or none
+    /// is listed: its siblings share the allowance a limit exhausts.
+    Bare,
+    /// No exit is proven, and an account is why.
+    Unproven(Doubt),
+}
+
+/// Whose account an unproven [`Cover`] could not name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Doubt {
+    /// The profile's own: its tool or its account ae cannot name, or its
+    /// command does not read at all.
+    Own,
+    /// The profile's own is known, and a listed candidate's is not.
+    Candidate,
+}
+
+/// The cover verdict of one profile over the ONE candidate list [`listed`]
+/// builds: the first candidate on a proven other account is the exit, a
+/// candidate answering to no `profiles` entry is none, and an account ae
+/// cannot prove is never taken for another one.
+///
+/// Siblings are candidates and not exits unless they leave the account: a
+/// model on the same allowance does not outlast it.
+#[must_use]
+pub fn cover(
+    declared: &[String],
+    (profile, seat): (&str, &Shape),
+    profiles: &[(String, Shape)],
+) -> Cover {
+    let mut unproven = false;
+    for (name, _) in listed(declared, (profile, seat), profiles) {
+        let Some((_, shape)) = profiles.iter().find(|(key, _)| *key == name) else {
+            continue;
+        };
+        match seat.off_account(shape) {
+            Some(true) => return Cover::Exit(name),
+            Some(false) => {}
+            None => unproven = true,
+        }
+    }
+    if !seat.tool.is_known() || seat.store == Store::Unknown {
+        Cover::Unproven(Doubt::Own)
+    } else if unproven {
+        Cover::Unproven(Doubt::Candidate)
+    } else {
+        Cover::Bare
+    }
+}
+
+/// At most two profiles to name in the `[auto_reseat]` line that would cover
+/// `profile`: those the declared rows already name, in order of first
+/// appearance, else the `profiles` in config order — each PROVEN off its
+/// account, never the profile itself and never a name `profiles` lacks. The
+/// second prefers another tool than the first.
+#[must_use]
+pub fn suggest(
+    profile: &str,
+    own: &Shape,
+    rows: &[(String, Vec<String>)],
+    profiles: &[(String, Shape)],
+) -> Vec<String> {
+    let eligible = |names: Vec<&str>| -> Vec<(String, ToolKind)> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut found = Vec::new();
+        for name in names {
+            if name == profile || seen.contains(&name) {
+                continue;
+            }
+            seen.push(name);
+            if let Some((_, shape)) = profiles.iter().find(|(key, _)| key == name)
+                && own.off_account(shape) == Some(true)
+            {
+                found.push((name.to_owned(), shape.tool));
+            }
+        }
+        found
+    };
+    let mut found = eligible(
+        rows.iter()
+            .flat_map(|(_, list)| list.iter().map(String::as_str))
+            .collect(),
+    );
+    if found.is_empty() {
+        found = eligible(profiles.iter().map(|(key, _)| key.as_str()).collect());
+    }
+    let Some(first) = found.first() else {
+        return Vec::new();
+    };
+    let second = found
+        .iter()
+        .skip(1)
+        .find(|(_, tool)| *tool != first.1)
+        .or_else(|| found.get(1));
+    std::iter::once(first)
+        .chain(second)
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// The account a profile draws on, as the doctor row groups profiles by it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    /// A tool and the store it keeps its account in.
+    Account { tool: ToolKind, store: Store },
+    /// The profile's command does not read, so it names no account.
+    Unreadable,
+}
+
+impl Scope {
+    /// How a row names the scope: the tool and its account.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Account { tool, store } => {
+                let name = tool.as_str();
+                match store {
+                    Store::Proven(path) => format!("{name} · {}", path.display()),
+                    Store::Shared => format!("{name} · shared"),
+                    Store::Unknown => format!("{name} · account not provable"),
+                }
+            }
+            Self::Unreadable => "? · command not readable".to_owned(),
+        }
+    }
+}
+
+/// One `[profiles]` entry's cover, with the scope it belongs to and the
+/// profiles its `[auto_reseat]` line could name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileCover {
+    pub profile: String,
+    pub scope: Scope,
+    pub cover: Cover,
+    /// Empty for a covered profile, and when no profile leaves its account.
+    pub suggested: Vec<String>,
+}
+
+/// The one stderr line `spawn` and a human's `reseat` print for a profile
+/// without an exit off its account, or `None` when it has one.
+#[must_use]
+pub fn nudge_line(found: &ProfileCover) -> Option<String> {
+    let name = &found.profile;
+    let add = (!found.suggested.is_empty()).then(|| {
+        format!(
+            "add under [auto_reseat]: {name} = {}",
+            found.suggested.join(", ")
+        )
+    });
+    match &found.cover {
+        Cover::Exit(_) => None,
+        Cover::Bare => Some(format!(
+            "ae: warning: profile '{name}' has no auto-reseat exit off its account — a usage \
+             limit would leave the seat stuck; {}",
+            add.unwrap_or_else(|| {
+                "no profile in [profiles] runs on another account, add one first".to_owned()
+            })
+        )),
+        Cover::Unproven(Doubt::Own) => Some(format!(
+            "ae: warning: profile '{name}' cannot prove an auto-reseat exit off its account — \
+             its own account is not provable; a usage limit may leave the seat stuck{}",
+            add.map(|line| format!("; {line}")).unwrap_or_default()
+        )),
+        Cover::Unproven(Doubt::Candidate) => Some(format!(
+            "ae: warning: profile '{name}' cannot prove an auto-reseat exit off its account — a \
+             candidate's account is not provable; a usage limit may leave the seat stuck{}",
+            add.map(|line| format!("; {line}")).unwrap_or_default()
+        )),
+    }
 }
 
 /// What ended an episode's auto path.
@@ -2270,6 +2472,17 @@ mod tests {
             pin: pin.map(ToOwned::to_owned),
             store,
             raw: String::new(),
+            tool: ToolKind::Claude,
+        }
+    }
+
+    /// A shape of `tool`: its executable word differs per tool, as a real
+    /// command's does, so two tools are never one family.
+    fn on(tool: ToolKind, pin: Option<&str>, store: Store) -> Shape {
+        Shape {
+            words: vec![tool.as_str().to_owned(), "--model".to_owned()],
+            tool,
+            ..shape(pin, store)
         }
     }
 
@@ -3904,5 +4117,319 @@ mod tests {
             CauseClass::Other.details(GAVE_UP_SUMMARY),
             "held: gave up after repeated refused or failed moves"
         );
+    }
+
+    fn named(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    /// An account is LEFT only when another one is proven: the tool differs, or
+    /// the same tool names another proven store. Everything unproven is `None`.
+    #[test]
+    fn an_account_is_left_only_when_another_is_proven() {
+        let claude_a = on(ToolKind::Claude, Some("opus"), proven("/a"));
+        let claude_b = on(ToolKind::Claude, Some("opus"), proven("/b"));
+        assert_eq!(claude_a.off_account(&claude_b), Some(true), "two homes");
+        assert_eq!(claude_a.off_account(&claude_a), Some(false), "one home");
+        // Muse and Grok have no account variable, so both are `Shared`: only
+        // the tool tells them apart (the reason `Shape` carries one).
+        let muse = on(ToolKind::Muse, Some("spark"), Store::Shared);
+        let grok = on(ToolKind::Grok, Some("grok"), Store::Shared);
+        assert_eq!(muse.off_account(&grok), Some(true), "two vendors");
+        let wonder = on(ToolKind::Muse, Some("wonder"), Store::Shared);
+        assert_eq!(muse.off_account(&wonder), Some(false), "one allowance");
+        // A different tool proves a different account whatever the store says.
+        let codex_unknown = on(ToolKind::Codex, Some("x"), Store::Unknown);
+        assert_eq!(claude_a.off_account(&codex_unknown), Some(true));
+        // Unproven is never "other", and a tool ae cannot name proves nothing.
+        let unknown_store = on(ToolKind::Claude, Some("opus"), Store::Unknown);
+        assert_eq!(claude_a.off_account(&unknown_store), None);
+        assert_eq!(unknown_store.off_account(&claude_a), None);
+        assert_eq!(unknown_store.off_account(&unknown_store), None);
+        let shared_claude = on(ToolKind::Claude, Some("opus"), Store::Shared);
+        assert_eq!(
+            claude_a.off_account(&shared_claude),
+            None,
+            "one tool never mixes a proven and a shared store: fail closed"
+        );
+        let stranger = on(ToolKind::Unknown, None, Store::Shared);
+        assert_eq!(stranger.off_account(&claude_a), None);
+        assert_eq!(claude_a.off_account(&stranger), None);
+        assert_eq!(stranger.off_account(&stranger), None);
+    }
+
+    /// `Shape.tool` is read by the cover verdict alone: the candidate list the
+    /// seat's family derives is what it was.
+    #[test]
+    fn the_tool_changes_no_list_the_family_derives() {
+        let seat = on(ToolKind::Muse, Some("spark"), Store::Shared);
+        let all = rows(&[
+            ("wonder", on(ToolKind::Muse, Some("wonder"), Store::Shared)),
+            ("grok", on(ToolKind::Grok, Some("grok"), Store::Shared)),
+        ]);
+        assert_eq!(
+            listed(&[], ("spark", &seat), &all),
+            rows(&[("wonder", Provenance::Derived(Kin::Sibling))]),
+            "a Grok profile is no sibling of a Muse one"
+        );
+    }
+
+    #[test]
+    fn the_first_listed_candidate_on_a_proven_other_account_is_the_exit() {
+        let seat = on(ToolKind::Claude, Some("opus"), proven("/a"));
+        let all = rows(&[
+            ("sonnet", on(ToolKind::Claude, Some("sonnet"), proven("/a"))),
+            ("home-b", on(ToolKind::Claude, Some("opus"), proven("/b"))),
+            ("sol", on(ToolKind::Codex, Some("x"), proven("/c"))),
+        ]);
+        assert_eq!(
+            cover(&[], ("src", &seat), &all),
+            Cover::Exit("home-b".to_owned()),
+            "a derived twin on another home is an exit with no declared row"
+        );
+        assert_eq!(
+            cover(&named(&["sonnet", "sol"]), ("src", &seat), &all),
+            Cover::Exit("sol".to_owned()),
+            "declared order; a same-account candidate is passed over, not an exit"
+        );
+    }
+
+    /// The Muse shape: every candidate shares the seat's one allowance.
+    #[test]
+    fn siblings_on_the_seats_own_account_are_candidates_and_no_exit() {
+        let spark = on(ToolKind::Muse, Some("spark"), Store::Shared);
+        let all = rows(&[
+            ("spark", spark.clone()),
+            ("wonder", on(ToolKind::Muse, Some("wonder"), Store::Shared)),
+            ("grk", on(ToolKind::Grok, Some("grok"), Store::Shared)),
+        ]);
+        assert_eq!(
+            listed(&[], ("spark", &spark), &all),
+            rows(&[("wonder", Provenance::Derived(Kin::Sibling))])
+        );
+        assert_eq!(cover(&[], ("spark", &spark), &all), Cover::Bare);
+        assert_eq!(
+            cover(&named(&["grk"]), ("spark", &spark), &all),
+            Cover::Exit("grk".to_owned()),
+            "a declared Grok profile leaves a Muse seat's allowance"
+        );
+        let alone = rows(&[("lonely", on(ToolKind::Grok, None, Store::Shared))]);
+        assert_eq!(
+            cover(
+                &[],
+                ("lonely", &on(ToolKind::Grok, None, Store::Shared)),
+                &alone
+            ),
+            Cover::Bare,
+            "no candidate at all is bare"
+        );
+    }
+
+    #[test]
+    fn a_declared_name_no_profile_answers_to_is_no_exit() {
+        let seat = on(ToolKind::Claude, Some("opus"), proven("/a"));
+        let all = rows(&[("sol", on(ToolKind::Codex, Some("x"), proven("/c")))]);
+        assert_eq!(
+            cover(&named(&["ghost"]), ("src", &seat), &all),
+            Cover::Bare,
+            "a typo is not a way out"
+        );
+        assert_eq!(
+            cover(&named(&["ghost", "sol"]), ("src", &seat), &all),
+            Cover::Exit("sol".to_owned())
+        );
+    }
+
+    /// Unproven names WHICH account: the seat's own, or a candidate's. Neither
+    /// is ever covered, and a proven exit beats both.
+    #[test]
+    fn what_cannot_be_proven_is_never_covered_and_says_whose_account() {
+        let known = on(ToolKind::Claude, Some("opus"), proven("/a"));
+        let fuzzy = rows(&[("fuzzy", on(ToolKind::Claude, Some("opus"), Store::Unknown))]);
+        assert_eq!(
+            cover(&named(&["fuzzy"]), ("src", &known), &fuzzy),
+            Cover::Unproven(Doubt::Candidate),
+            "own account known, a candidate's is not"
+        );
+        let unknown = on(ToolKind::Claude, Some("opus"), Store::Unknown);
+        let homed = rows(&[("home-b", on(ToolKind::Claude, Some("opus"), proven("/b")))]);
+        assert_eq!(
+            cover(&named(&["home-b"]), ("src", &unknown), &homed),
+            Cover::Unproven(Doubt::Own),
+            "own account unknown: nothing about another one proves it is another"
+        );
+        assert_eq!(
+            cover(&[], ("src", &unknown), &[]),
+            Cover::Unproven(Doubt::Own),
+            "an unknown account with no candidate is still unknown"
+        );
+        let codex = rows(&[("sol", on(ToolKind::Codex, Some("x"), proven("/c")))]);
+        assert_eq!(
+            cover(&named(&["sol"]), ("src", &unknown), &codex),
+            Cover::Exit("sol".to_owned()),
+            "another TOOL proves another account even when the own store is unknown"
+        );
+        let stranger = on(ToolKind::Unknown, None, Store::Shared);
+        let claude = rows(&[("c", on(ToolKind::Claude, Some("opus"), proven("/a")))]);
+        assert_eq!(
+            cover(&named(&["c"]), ("sh", &stranger), &claude),
+            Cover::Unproven(Doubt::Own),
+            "a tool ae cannot name has no account ae can name"
+        );
+        let strange = rows(&[("sh", stranger)]);
+        assert_eq!(
+            cover(&named(&["sh"]), ("src", &known), &strange),
+            Cover::Unproven(Doubt::Candidate)
+        );
+        let mixed = rows(&[
+            ("fuzzy", on(ToolKind::Claude, Some("opus"), Store::Unknown)),
+            ("sol", on(ToolKind::Codex, Some("x"), proven("/c"))),
+        ]);
+        assert_eq!(
+            cover(&named(&["fuzzy", "sol"]), ("src", &known), &mixed),
+            Cover::Exit("sol".to_owned()),
+            "a proven exit beats an unproven candidate before it"
+        );
+    }
+
+    #[test]
+    fn the_suggestion_follows_the_declared_rows_and_names_only_a_profile_that_leaves_the_account() {
+        let own = on(ToolKind::Claude, Some("opus"), proven("/a"));
+        let all = rows(&[
+            ("sol", on(ToolKind::Codex, Some("x"), proven("/c"))),
+            ("sol2", on(ToolKind::Codex, Some("y"), proven("/d"))),
+            ("same", on(ToolKind::Claude, Some("sonnet"), proven("/a"))),
+            ("grk", on(ToolKind::Grok, None, Store::Shared)),
+            ("fuzzy", on(ToolKind::Claude, Some("o"), Store::Unknown)),
+        ]);
+        let declared: Vec<(String, Vec<String>)> = vec![
+            (
+                "other".to_owned(),
+                named(&["same", "ghost", "sol", "src", "fuzzy", "sol2"]),
+            ),
+            ("again".to_owned(), named(&["grk"])),
+        ];
+        assert_eq!(
+            suggest("src", &own, &declared, &all),
+            named(&["sol", "grk"]),
+            "declared order; never the seat, a typo, a same-account or an unproven profile; \
+             the second prefers another tool than the first"
+        );
+        let twins: Vec<(String, Vec<String>)> = vec![("other".to_owned(), named(&["sol", "sol2"]))];
+        assert_eq!(
+            suggest("src", &own, &twins, &all),
+            named(&["sol", "sol2"]),
+            "with no other tool declared the second is the next one"
+        );
+        assert_eq!(
+            suggest("src", &own, &[], &all),
+            named(&["sol", "grk"]),
+            "no declared row leaves a candidate: profiles in config order"
+        );
+        let cramped = rows(&[("same", on(ToolKind::Claude, Some("sonnet"), proven("/a")))]);
+        assert!(
+            suggest("src", &own, &[], &cramped).is_empty(),
+            "no profile runs on another account: nothing is invented"
+        );
+    }
+
+    #[test]
+    fn a_scope_is_named_by_its_tool_and_its_account() {
+        let claude = |store| Scope::Account {
+            tool: ToolKind::Claude,
+            store,
+        };
+        assert_eq!(
+            claude(proven("/h/.claude")).label(),
+            "claude · /h/.claude",
+            "two homes of one tool are two scopes"
+        );
+        assert_eq!(
+            claude(proven("/h/.claude-two")).label(),
+            "claude · /h/.claude-two"
+        );
+        assert_eq!(
+            Scope::Account {
+                tool: ToolKind::Muse,
+                store: Store::Shared
+            }
+            .label(),
+            "muse · shared"
+        );
+        assert_eq!(
+            claude(Store::Unknown).label(),
+            "claude · account not provable"
+        );
+        assert_eq!(Scope::Unreadable.label(), "? · command not readable");
+    }
+
+    fn judged(profile: &str, cover: Cover, suggested: &[&str]) -> ProfileCover {
+        ProfileCover {
+            profile: profile.to_owned(),
+            scope: Scope::Account {
+                tool: ToolKind::Muse,
+                store: Store::Shared,
+            },
+            cover,
+            suggested: named(suggested),
+        }
+    }
+
+    #[test]
+    fn the_nudge_is_one_line_naming_the_profile_and_the_line_to_add() {
+        assert_eq!(
+            nudge_line(&judged("spark13m", Cover::Exit("sol61x".to_owned()), &[])),
+            None,
+            "a covered profile says nothing"
+        );
+        assert_eq!(
+            nudge_line(&judged("spark13m", Cover::Bare, &["sol61x", "opus55x"])).as_deref(),
+            Some(
+                "ae: warning: profile 'spark13m' has no auto-reseat exit off its account — \
+                 a usage limit would leave the seat stuck; add under [auto_reseat]: \
+                 spark13m = sol61x, opus55x"
+            )
+        );
+        assert_eq!(
+            nudge_line(&judged("spark13m", Cover::Bare, &[])).as_deref(),
+            Some(
+                "ae: warning: profile 'spark13m' has no auto-reseat exit off its account — \
+                 a usage limit would leave the seat stuck; no profile in [profiles] runs on \
+                 another account, add one first"
+            )
+        );
+        assert_eq!(
+            nudge_line(&judged("p", Cover::Unproven(Doubt::Own), &[])).as_deref(),
+            Some(
+                "ae: warning: profile 'p' cannot prove an auto-reseat exit off its account — \
+                 its own account is not provable; a usage limit may leave the seat stuck"
+            )
+        );
+        assert_eq!(
+            nudge_line(&judged("p", Cover::Unproven(Doubt::Own), &["x"])).as_deref(),
+            Some(
+                "ae: warning: profile 'p' cannot prove an auto-reseat exit off its account — \
+                 its own account is not provable; a usage limit may leave the seat stuck; \
+                 add under [auto_reseat]: p = x"
+            ),
+            "an exit on another tool is provable though the own account is not: say the line"
+        );
+        assert_eq!(
+            nudge_line(&judged("p", Cover::Unproven(Doubt::Candidate), &["x"])).as_deref(),
+            Some(
+                "ae: warning: profile 'p' cannot prove an auto-reseat exit off its account — \
+                 a candidate's account is not provable; a usage limit may leave the seat \
+                 stuck; add under [auto_reseat]: p = x"
+            )
+        );
+        for line in [
+            nudge_line(&judged("p", Cover::Bare, &["x"])),
+            nudge_line(&judged("p", Cover::Unproven(Doubt::Own), &[])),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(!line.contains('\n'), "one line: {line}");
+        }
     }
 }

@@ -356,6 +356,13 @@ fn a_seat_on_its_limit_moves_to_its_declared_candidate_and_the_watchdog_owns_eve
     );
     assert!(rig.tool_pid(&pane, "opencode").is_some(), "moved in place");
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    // The profile moved onto has no row and no family, so a HUMAN choosing it
+    // would be nudged. The watchdog's own move prints no such line: the nudge
+    // is for the moment of a human's choice.
+    assert!(
+        !out.contains("warning") && !err.contains("warning"),
+        "a watchdog-driven reseat is silent about cover: out={out} err={err}"
+    );
     let events = records(&rig);
     let reseats = with_action(&events, "reseat");
     assert_eq!(reseats.len(), 2, "the stop and the move: {}", rig.events());

@@ -1022,6 +1022,83 @@ fn a_spawn_that_cannot_store_its_task_rolls_the_whole_thing_back() {
     );
 }
 
+/// The nudge at the moment of choice. The spawn is made to fail at its one
+/// deterministic terminal step (an unstorable task body), so the whole story
+/// ends in a rollback and no agent is launched; the nudge speaks before it.
+#[test]
+fn a_spawn_onto_a_profile_with_no_off_account_exit_warns_once_and_changes_nothing_else() {
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe4"));
+    if !present {
+        return;
+    }
+    let rig = Rig::new("nudge");
+    assert!(
+        std::fs::write(rig.dir.join("messages"), "not a directory").is_ok(),
+        "the blocker"
+    );
+    let spawn = || {
+        rig.run(
+            ae::cli::SPAWN,
+            &["doomed", "--using", "codexish", "--", "a task"],
+        )
+    };
+    let (off_code, _, off) = spawn();
+    assert_eq!(off_code, Some(1), "{off}");
+    assert!(
+        off.contains("spawn rolled back"),
+        "the rollback releases the name, so the next spawn can reuse it: {off}"
+    );
+    assert!(!off.contains("warning:"), "auto reseat is off: {off}");
+
+    let config = rig.scratch.join("config");
+    let text = std::fs::read_to_string(&config).unwrap_or_default();
+    assert!(
+        std::fs::write(
+            &config,
+            text.replace(
+                "layout = vertical\n",
+                "layout = vertical\nauto_reseat = on\n"
+            )
+        )
+        .is_ok(),
+        "auto reseat on"
+    );
+    let (on_code, _, on) = spawn();
+    let warning = on
+        .lines()
+        .find(|line| line.starts_with("ae: warning: "))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        (warning.starts_with(
+            "ae: warning: profile 'codexish' has no auto-reseat exit off its account"
+        ) || warning.starts_with(
+            "ae: warning: profile 'codexish' cannot prove an auto-reseat exit off its account"
+        )) && warning.contains("codexish = fake"),
+        "the line names the profile and the row to add: {on}"
+    );
+    assert_eq!(
+        on.lines().filter(|line| line.contains("warning")).count(),
+        1,
+        "exactly one line: {on}"
+    );
+    assert!(
+        on.find("ae: warning:") < on.find("spawn rolled back"),
+        "the nudge comes first, and the spawn still ran its course: {on}"
+    );
+    assert_eq!(on_code, off_code, "the exit code is untouched");
+
+    let mut covered = std::fs::read_to_string(&config).unwrap_or_default();
+    covered.push_str("\n[auto_reseat]\ncodexish = fake\n");
+    assert!(std::fs::write(&config, covered).is_ok(), "a covering row");
+    let (code, _, err) = spawn();
+    assert_eq!(code, off_code);
+    assert!(
+        !err.contains("warning:"),
+        "a covered profile is silent: {err}"
+    );
+}
+
 /// A pane tmux would not stamp is findable by no name, so no retire could
 /// take it: the spawn removes the pane it created and names the stamp. When
 /// that kill is refused too, the seat stays and the remedy is by hand. The

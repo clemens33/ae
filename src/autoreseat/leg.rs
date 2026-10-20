@@ -17,8 +17,9 @@ use crate::tracked::EventFields;
 use crate::watchdog::WATCHDOG_ACTOR;
 
 use super::{
-    ATTEMPT_ACTION, Candidate, CauseClass, DONE_ACTION, FAILED_ACTION, HELD_ACTION, Ineligible,
-    Provenance, REFUSED_ACTION, Room, Seat, Shape, Skip, Store, Trigger,
+    ATTEMPT_ACTION, Candidate, CauseClass, Cover, DONE_ACTION, Doubt, FAILED_ACTION, HELD_ACTION,
+    Ineligible, ProfileCover, Provenance, REFUSED_ACTION, Room, Scope, Seat, Settings, Shape, Skip,
+    Store, Switch, Trigger,
 };
 
 /// The usage line.
@@ -187,11 +188,7 @@ pub(crate) fn listed(
                 ) => Store::Proven(path.clone()),
                 (Some(_), _) => Store::Unknown,
             };
-            let profiles: Vec<(String, Shape)> = cfg
-                .profiles
-                .iter()
-                .filter_map(|(name, _)| Some((name.clone(), shape(&cfg, name, home)?)))
-                .collect();
+            let profiles = shapes(&cfg, home);
             let raw = command.as_str().to_owned();
             Some(super::listed(
                 declared,
@@ -202,6 +199,7 @@ pub(crate) fn listed(
                         pin,
                         store,
                         raw,
+                        tool,
                     },
                 ),
                 &profiles,
@@ -247,7 +245,79 @@ fn shape(cfg: &crate::config::IdentityConfig, name: &str, home: Option<&Path>) -
         pin,
         store,
         raw,
+        tool,
     })
+}
+
+/// Every `[profiles]` entry whose command reads, as derivation compares it,
+/// in config order. An entry that does not read is left out here — a
+/// candidate list cannot name it — and [`covers`] judges it apart.
+fn shapes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -> Vec<(String, Shape)> {
+    cfg.profiles
+        .iter()
+        .filter_map(|(name, _)| Some((name.clone(), shape(cfg, name, home)?)))
+        .collect()
+}
+
+/// The cover verdict of EVERY `[profiles]` key in config order, each over the
+/// candidates its `[auto_reseat]` row (none is fine) and its own family give
+/// it, or `None` while auto reseat is off. A profile whose command does not
+/// read is `Unproven`, never left out, and never covered.
+pub(crate) fn covers(
+    cfg: &crate::config::IdentityConfig,
+    settings: &Settings,
+    home: Option<&Path>,
+) -> Option<Vec<ProfileCover>> {
+    if settings.switch == Switch::Off {
+        return None;
+    }
+    let profiles = shapes(cfg, home);
+    Some(
+        cfg.profiles
+            .iter()
+            .map(|(name, _)| {
+                let Some((_, own)) = profiles.iter().find(|(key, _)| key == name) else {
+                    return ProfileCover {
+                        profile: name.clone(),
+                        scope: Scope::Unreadable,
+                        cover: Cover::Unproven(Doubt::Own),
+                        suggested: Vec::new(),
+                    };
+                };
+                let declared = settings.candidates(name).unwrap_or_default();
+                let cover = super::cover(declared, (name, own), &profiles);
+                let suggested = if matches!(cover, Cover::Exit(_)) {
+                    Vec::new()
+                } else {
+                    super::suggest(name, own, &settings.map, &profiles)
+                };
+                ProfileCover {
+                    profile: name.clone(),
+                    scope: Scope::Account {
+                        tool: own.tool,
+                        store: own.store.clone(),
+                    },
+                    cover,
+                    suggested,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The one line `spawn` and a human's `reseat` print to say the profile
+/// chosen has no exit off its account, or `None` when auto reseat is off, the
+/// profile is covered, or it is not a profile of `cfg`.
+pub(crate) fn cover_warning(
+    cfg: &crate::config::IdentityConfig,
+    settings: &Settings,
+    profile: &str,
+    home: Option<&Path>,
+) -> Option<String> {
+    covers(cfg, settings, home)?
+        .iter()
+        .find(|one| one.profile == profile)
+        .and_then(super::nudge_line)
 }
 
 /// The listed candidates as the chooser judges them, joined with `quota`:
@@ -2899,5 +2969,195 @@ mod tests {
             ),
             Plan::Attempt { ref cause, .. } if cause.is_empty()
         ));
+    }
+
+    /// Synthetic profiles only. `spark` and `wonder` share one Muse allowance,
+    /// `fab` and `opu` one Claude account; `sol` and `grk` are other tools.
+    const COVER_CONFIG: &str = "[profiles]\n\
+        fab = claude --model fable\n\
+        opu = claude --model opus\n\
+        sol = codex --model sol\n\
+        spark = muse --model spark\n\
+        wonder = muse --model wonder\n\
+        grk = grok --model grk\n\
+        dark = /bin/sh -c :\n\
+        bad = \"touch m; tail -f /dev/null\"\n\
+        \n[workspace]\nauto_reseat = on\n\
+        \n[auto_reseat]\nspark = grk\nsol = fab\ndark = fab\n";
+
+    const COVER_HOME: &str = "/ae-cover-test-home";
+
+    fn cover_at(text: &str) -> Option<Vec<crate::autoreseat::ProfileCover>> {
+        let cfg = crate::config::parse_identity(text).expect("a synthetic identity config");
+        let settings = crate::autoreseat::settings_in(Path::new("config"), text);
+        covers(&cfg, &settings, Some(Path::new(COVER_HOME)))
+    }
+
+    fn verdicts(found: &[crate::autoreseat::ProfileCover]) -> Vec<(&str, &Cover)> {
+        found
+            .iter()
+            .map(|one| (one.profile.as_str(), &one.cover))
+            .collect()
+    }
+
+    #[test]
+    fn every_profile_key_is_judged_and_an_unreadable_command_is_unproven_never_omitted() {
+        let found = cover_at(COVER_CONFIG).expect("auto reseat is on");
+        assert_eq!(
+            found
+                .iter()
+                .map(|one| one.profile.as_str())
+                .collect::<Vec<_>>(),
+            ["fab", "opu", "sol", "spark", "wonder", "grk", "dark", "bad"],
+            "config order, one verdict per key"
+        );
+        let bad = found.iter().find(|one| one.profile == "bad").expect("bad");
+        assert_eq!(bad.cover, Cover::Unproven(Doubt::Own));
+        assert_eq!(bad.scope, Scope::Unreadable);
+    }
+
+    #[test]
+    fn the_verdicts_follow_the_declared_row_then_the_family_across_tools_and_accounts() {
+        let found = cover_at(COVER_CONFIG).expect("auto reseat is on");
+        let want = [
+            ("fab", Cover::Bare),
+            ("opu", Cover::Bare),
+            ("sol", Cover::Exit("fab".to_owned())),
+            ("spark", Cover::Exit("grk".to_owned())),
+            ("wonder", Cover::Bare),
+            ("grk", Cover::Bare),
+            ("dark", Cover::Unproven(Doubt::Own)),
+            ("bad", Cover::Unproven(Doubt::Own)),
+        ];
+        assert_eq!(
+            verdicts(&found),
+            want.iter()
+                .map(|(name, cover)| (*name, cover))
+                .collect::<Vec<_>>(),
+            "claude siblings share an account; muse spark->grok leaves the allowance; \
+             an unnamed tool and a command that does not lex prove nothing"
+        );
+        let label = |name: &str| {
+            found
+                .iter()
+                .find(|one| one.profile == name)
+                .map(|one| one.scope.label())
+                .unwrap_or_default()
+        };
+        assert_eq!(label("fab"), format!("claude · {COVER_HOME}/.claude"));
+        assert_eq!(label("wonder"), "muse · shared");
+        let suggested = |name: &str| {
+            found
+                .iter()
+                .find(|one| one.profile == name)
+                .map(|one| one.suggested.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            suggested("fab"),
+            ["grk"],
+            "from the declared rows, off its account"
+        );
+        assert_eq!(
+            suggested("wonder"),
+            ["grk", "fab"],
+            "the second is another tool"
+        );
+        assert_eq!(suggested("grk"), ["fab"], "never the profile itself");
+        assert!(
+            suggested("sol").is_empty(),
+            "a covered profile needs no suggestion"
+        );
+    }
+
+    /// `[auto_reseat]` is keyed by profile: a row covers its own key and
+    /// nobody else, even a profile on the same account.
+    #[test]
+    fn one_added_row_covers_that_profile_alone() {
+        let before = cover_at(COVER_CONFIG).expect("auto reseat is on");
+        let after = cover_at(&format!("{COVER_CONFIG}wonder = grk\n")).expect("auto reseat is on");
+        let bare = |found: &[crate::autoreseat::ProfileCover]| {
+            found
+                .iter()
+                .filter(|one| one.cover == Cover::Bare)
+                .map(|one| one.profile.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bare(&before), ["fab", "opu", "wonder", "grk"]);
+        assert_eq!(
+            bare(&after),
+            ["fab", "opu", "grk"],
+            "wonder leaves the list; its neighbours on the same account stay on it"
+        );
+        let wonder = after
+            .iter()
+            .find(|one| one.profile == "wonder")
+            .expect("wonder");
+        assert_eq!(wonder.cover, Cover::Exit("grk".to_owned()));
+    }
+
+    /// A tool ae names whose account it cannot prove has no verdict of its own
+    /// — but a profile on ANOTHER tool leaves any account, so the line that
+    /// would cover it is still provable and still printed.
+    #[test]
+    fn an_unprovable_own_account_still_names_the_cross_tool_exit_that_would_cover_it() {
+        let text = "[profiles]\na = claude --model x\nb = codex --model y\n\
+                    \n[workspace]\nauto_reseat = on\n";
+        let judge = |text: &str| {
+            let cfg = crate::config::parse_identity(text).expect("a synthetic identity config");
+            let settings = crate::autoreseat::settings_in(Path::new("config"), text);
+            covers(&cfg, &settings, None).expect("auto reseat is on")
+        };
+        let found = judge(text);
+        let a = found.iter().find(|one| one.profile == "a").expect("a");
+        assert_eq!(a.cover, Cover::Unproven(Doubt::Own), "no HOME, no store");
+        assert_eq!(a.suggested, ["b"], "another tool is off any account");
+        let after = judge(&format!("{text}\n[auto_reseat]\na = b\n"));
+        let a = after.iter().find(|one| one.profile == "a").expect("a");
+        assert_eq!(
+            a.cover,
+            Cover::Exit("b".to_owned()),
+            "the printed line covers it, as the doctor row and the nudge promise"
+        );
+    }
+
+    #[test]
+    fn nothing_is_judged_while_auto_reseat_is_off() {
+        let off = COVER_CONFIG.replace("auto_reseat = on", "auto_reseat = off");
+        assert_eq!(cover_at(&off), None);
+        let absent = COVER_CONFIG.replace("auto_reseat = on\n", "");
+        assert_eq!(cover_at(&absent), None);
+        let cfg = crate::config::parse_identity(&off).expect("identity");
+        let settings = crate::autoreseat::settings_in(Path::new("config"), &off);
+        assert_eq!(
+            cover_warning(&cfg, &settings, "wonder", Some(Path::new(COVER_HOME))),
+            None
+        );
+    }
+
+    #[test]
+    fn the_nudge_is_for_the_chosen_profile_only() {
+        let cfg = crate::config::parse_identity(COVER_CONFIG).expect("identity");
+        let settings = crate::autoreseat::settings_in(Path::new("config"), COVER_CONFIG);
+        let home = Some(Path::new(COVER_HOME));
+        assert_eq!(
+            cover_warning(&cfg, &settings, "wonder", home).as_deref(),
+            Some(
+                "ae: warning: profile 'wonder' has no auto-reseat exit off its account — \
+                 a usage limit would leave the seat stuck; add under [auto_reseat]: \
+                 wonder = grk, fab"
+            )
+        );
+        assert_eq!(cover_warning(&cfg, &settings, "sol", home), None, "covered");
+        assert_eq!(
+            cover_warning(&cfg, &settings, "ghost", home),
+            None,
+            "no such profile"
+        );
+        assert!(
+            cover_warning(&cfg, &settings, "bad", home)
+                .is_some_and(|line| line.contains("its own account is not provable")),
+            "an unreadable command is named, not skipped"
+        );
     }
 }

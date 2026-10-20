@@ -166,6 +166,10 @@ fn doctor_reads_the_real_state_root_and_reports_a_stopped_session_as_an_orphan()
         stdout.contains("OK    upgrade-check  not read for this binary shape"),
         "doctor reports last-check availability: {stdout}"
     );
+    assert!(
+        stdout.contains("OK    reseat-cover   skipped (auto_reseat off)"),
+        "auto reseat is off in this config, so no profile is judged: {stdout}"
+    );
     // The session is on disk and not running anywhere, which is the one thing
     // no running-scoped sensor can see.
     assert!(stdout.contains("no running session: parked"), "{stdout}");

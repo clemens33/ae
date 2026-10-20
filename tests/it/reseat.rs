@@ -666,6 +666,78 @@ fn a_seat_cannot_reseat_itself() {
     assert!(rig.received().is_empty(), "{:?}", rig.received());
 }
 
+/// The nudge at the moment of choice. The seat asks from its OWN pane, so the
+/// verb refuses at the self-move rule — after the target profile resolved,
+/// which is where the nudge speaks — and nothing is ever stopped or moved.
+#[test]
+fn a_target_with_no_off_account_exit_is_named_on_stderr_and_nothing_else_changes() {
+    let rig = Rig::new("nudge");
+    let pane = rig.seat("worker.1", "w1", "opencode");
+    let ask = || {
+        rig.run_top(
+            &pane,
+            &["reseat", &rig.session, "w1", "--using", "fake-grok"],
+        )
+    };
+    let (off_code, _, off) = ask();
+    assert_eq!(off_code, Some(1), "{off}");
+    assert!(
+        !off.contains("warning"),
+        "auto reseat is off, so the verb is silent about it: {off}"
+    );
+
+    let config = rig.scratch.join("config");
+    let text = std::fs::read_to_string(&config).unwrap_or_default();
+    assert!(
+        std::fs::write(
+            &config,
+            text.replace(
+                "layout = vertical\n",
+                "layout = vertical\nauto_reseat = on\n"
+            )
+        )
+        .is_ok(),
+        "auto reseat on"
+    );
+    let (on_code, _, on) = ask();
+    let warning = on
+        .lines()
+        .find(|line| line.starts_with("ae: warning: "))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        warning.starts_with(
+            "ae: warning: profile 'fake-grok' has no auto-reseat exit off its account"
+        ) && warning.contains("fake-grok = fake-opencode"),
+        "the line names the profile and the row to add: {on}"
+    );
+    assert_eq!(
+        on.lines().filter(|line| line.contains("warning")).count(),
+        1,
+        "exactly one line: {on}"
+    );
+    assert!(
+        on.find("ae: warning:") < on.find("is THIS pane"),
+        "the nudge comes before the verb goes on: {on}"
+    );
+    assert_eq!(on_code, off_code, "the exit code is untouched");
+    assert_eq!(
+        on.replace(&format!("{warning}\n"), ""),
+        off,
+        "nothing but the one line differs"
+    );
+
+    // A row for the target covers it.
+    let mut covered = std::fs::read_to_string(&config).unwrap_or_default();
+    covered.push_str("\n[auto_reseat]\nfake-grok = fake-codex\n");
+    assert!(std::fs::write(&config, covered).is_ok(), "a covering row");
+    let (code, _, err) = ask();
+    assert_eq!(code, off_code);
+    assert_eq!(err, off, "a covered target is silent: {err}");
+    assert_eq!(rig.meta_row("profile.worker.1"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "opencode").is_some(), "never stopped");
+}
+
 #[test]
 fn a_pane_running_another_harness_than_its_records_is_refused_by_name_and_doctor_names_it() {
     // THE FIELD CASE (2026-09-20): the records say codex, Claude runs. Claude's

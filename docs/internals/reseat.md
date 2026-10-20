@@ -517,6 +517,31 @@ hand. A hold is not terminal: a row added later moves the seat next cycle. The d
 and only while it could act — on its limit, at or near its threshold, or inside
 an episode — reading the identity config once for each such seat per cycle.
 
+COVER is the question asked BEFORE a limit: does this profile have a candidate
+that leaves its own account? `autoreseat::cover` answers it over the very list
+`listed` builds, so no second notion of family or account exists. A candidate is
+off the account when its tool differs, or when the same tool's proven store
+differs (`Shape::off_account`); a sibling or twin on the same store is a
+candidate but no exit, which is how a profile whose only candidates share one
+quota bucket — the Muse case, every model one shared allowance — reads as
+uncovered. A tool ae cannot name, or a store it cannot prove, is never proof:
+the verdict is `Unproven`, and says whether the profile's OWN account or a
+CANDIDATE's is the one in doubt. `leg::covers` judges every `[profiles]` key
+(a key whose command does not lex is `Unproven`, scope `?`), and only while the
+switch is on; with `auto_reseat = off` there is no verdict and no nudge. The
+verdict is read in three places and nowhere is it a gate: `ae doctor`'s
+`reseat-cover` row, one WARN row per account scope; and ONE stderr line from
+`ae spawn` and `ae reseat --using` (`leg::cover_warning`) naming the target
+profile, then proceeding with the same exit code. The watchdog's own move
+prints none. The suggestion on a WARN row is built from the declared rows first,
+then `[profiles]` order, off-account only, at most two with the second preferring
+another tool; it never invents a profile. Named residuals: the account is the
+config home ae can prove, not the vendor's live quota buckets, so a sibling
+whose window is model-scoped still reads as no exit; doctor judges the
+invocation's global config and cwd overlay, `spawn` and `reseat` the session's
+recorded config, and a session with no recorded `config=` row gets no nudge; a
+suggestion may name a profile the operator keeps for rare use.
+
 The chooser takes the first usable candidate of the best tier, in listed order —
 and every declared candidate outranks every derived one: a declared candidate on
 a worse tier still wins over a fresh twin, and an operator who wants the family

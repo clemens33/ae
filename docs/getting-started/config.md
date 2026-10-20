@@ -434,6 +434,19 @@ did. The family is read from the seat's RECORDED profile and client, so a model
 the human switched to in the pane does not travel, and a seat launched on
 another client of its profile is never moved back to that profile.
 
+**Is every profile covered?** A profile whose declared row and derived family
+all run on ONE account has no exit when that account's window is spent: its
+seats just sit on the limit. With `auto_reseat` on, `ae doctor` prints one
+`reseat-cover` row — `OK` when every profile has a candidate off its own account,
+otherwise one `WARN` per account naming the uncovered profiles and the exact
+line to add under `[auto_reseat]` (profiles ae cannot place on an account get a
+row of their own, so one account can show two rows). `ae spawn` and `ae reseat --using` print the
+same warning as ONE stderr line when the profile you pick has no such exit, and
+go on. With `auto_reseat = off` the row reads `skipped (auto_reseat off)` and
+nothing warns. A model of the same tool is a sibling but not an exit: it shares
+the account's allowance. A profile ae cannot place on an account is reported as
+unproven, never as covered.
+
 Names show in pane borders and are how agents address each other. Each window
 keeps its first agent's name as its stable tmux routing name; later splits do
 not rename it.

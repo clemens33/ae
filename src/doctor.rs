@@ -285,6 +285,8 @@ pub struct Facts {
     /// The input-map verdict per ae-owned server that answered — empty when
     /// none did, which reads as one neutral row, never a warning.
     pub bindings: Vec<BindingsFacts>,
+    /// Whether every profile has an auto-reseat exit off its own account.
+    pub reseat_cover: ReseatCover,
 }
 
 /// The `workspace.fleet_order` row: the human's chosen strip order, and the ONE
@@ -343,6 +345,7 @@ pub fn report(facts: &Facts) -> Report {
     let mut out = Report::default();
     install_rows(facts, &mut out);
     quota_feed_rows(facts, &mut out);
+    reseat_cover_rows(&facts.reseat_cover, &mut out);
     session_rows(facts, &mut out);
     seat_identity_rows(&facts.seats, &mut out);
     bindings_rows(facts, &mut out);
@@ -552,6 +555,109 @@ fn quota_feed_rows(facts: &Facts, out: &mut Report) {
                 scope.scope
             ),
         );
+    }
+}
+
+/// What `ae doctor` knows about auto reseat's cover: a profile has it when a
+/// candidate leaves its own account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReseatCover {
+    /// `[workspace] auto_reseat` is off, so nothing is judged.
+    Off,
+    /// Every `[profiles]` entry, in config order.
+    Judged(Vec<crate::autoreseat::ProfileCover>),
+}
+
+/// The `reseat-cover` rows. A profile with no exit off its account is a seat
+/// a usage limit strands — nothing else tells the operator, and the cause is
+/// the account running dry, so the WARNs are one row per ACCOUNT, naming every
+/// profile on it and one `[auto_reseat]` line as an example (a row covers the
+/// profile it is keyed by, so each name needs its own). A profile ae cannot
+/// prove an exit for is never counted as covered: it is its own row, saying
+/// whose account could not be named. A WARN never costs the exit code.
+fn reseat_cover_rows(cover: &ReseatCover, out: &mut Report) {
+    use crate::autoreseat::{Cover, Doubt};
+    const LABEL: &str = "reseat-cover";
+    #[derive(PartialEq)]
+    enum Kind {
+        Bare,
+        Own,
+        Candidate,
+    }
+    let found = match cover {
+        ReseatCover::Off => {
+            out.push(Level::Ok, LABEL, "skipped (auto_reseat off)");
+            return;
+        }
+        ReseatCover::Judged(found) if found.is_empty() => {
+            out.push(Level::Ok, LABEL, "no profile to judge");
+            return;
+        }
+        ReseatCover::Judged(found) => found,
+    };
+    let mut groups: Vec<(
+        Kind,
+        &crate::autoreseat::Scope,
+        Vec<&crate::autoreseat::ProfileCover>,
+    )> = Vec::new();
+    for one in found {
+        let kind = match &one.cover {
+            Cover::Exit(_) => continue,
+            Cover::Bare => Kind::Bare,
+            Cover::Unproven(Doubt::Own) => Kind::Own,
+            Cover::Unproven(Doubt::Candidate) => Kind::Candidate,
+        };
+        match groups
+            .iter_mut()
+            .find(|(taken, scope, _)| *taken == kind && **scope == one.scope)
+        {
+            Some((_, _, members)) => members.push(one),
+            None => groups.push((kind, &one.scope, vec![one])),
+        }
+    }
+    if groups.is_empty() {
+        out.push(
+            Level::Ok,
+            LABEL,
+            &format!(
+                "all {} profile(s) have an exit off their own account",
+                found.len()
+            ),
+        );
+        return;
+    }
+    for (kind, scope, members) in groups {
+        let label = scope.label();
+        let count = members.len();
+        let names: Vec<&str> = members.iter().map(|one| one.profile.as_str()).collect();
+        let names = names.join(", ");
+        let first = members[0];
+        let add = (!first.suggested.is_empty()).then(|| {
+            format!(
+                "add under [auto_reseat], e.g. {} = {}",
+                first.profile,
+                first.suggested.join(", ")
+            )
+        });
+        let detail = match kind {
+            Kind::Bare => format!(
+                "{label}: {count} profile(s) have no exit off this account: {names} — {}",
+                add.unwrap_or_else(|| {
+                    "no profile in [profiles] runs on another account, add one first".to_owned()
+                })
+            ),
+            Kind::Own => format!(
+                "{label}: {count} profile(s) cannot prove an exit off this account — their own \
+                 account is not provable: {names}{}",
+                add.map(|line| format!(" — {line}")).unwrap_or_default()
+            ),
+            Kind::Candidate => format!(
+                "{label}: {count} profile(s) cannot prove an exit off this account — a \
+                 candidate's account is not provable: {names}{}",
+                add.map(|line| format!(" — {line}")).unwrap_or_default()
+            ),
+        };
+        out.push(Level::Warn, LABEL, &detail);
     }
 }
 
@@ -827,6 +933,18 @@ fn is_executable_file(path: &Path) -> bool {
     probe.is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
+/// Every `[profiles]` profile's auto-reseat cover. The switch and the map are
+/// the GLOBAL file's, as the watchdog reads them; the profiles are the layered
+/// ones, as a move resolves them.
+fn reseat_cover_facts(
+    identity: &crate::config::IdentityConfig,
+    config: &Path,
+    home: Option<&Path>,
+) -> ReseatCover {
+    crate::autoreseat::leg::covers(identity, &crate::autoreseat::settings(Some(config)), home)
+        .map_or(ReseatCover::Off, ReseatCover::Judged)
+}
+
 /// Read every fact the report needs.
 #[must_use]
 pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts {
@@ -893,6 +1011,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
     let sessions = session_facts(root);
     let seats = seat_facts(root, &sessions);
     let bindings = bindings_facts(&sessions, root, &config, core.as_deref());
+    let reseat_cover = reseat_cover_facts(&identity, &config, home.as_deref());
     let now = crate::time::Timestamp::now().epoch();
     let quota = quota_facts(&crate::quota::Inputs {
         home: home.as_deref(),
@@ -937,6 +1056,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         sessions,
         seats,
         bindings,
+        reseat_cover,
         boot: crate::doors::boot_time(crate::shape::current()),
     }
 }
@@ -1603,6 +1723,7 @@ mod tests {
             sessions: Vec::new(),
             seats: Vec::new(),
             bindings: Vec::new(),
+            reseat_cover: ReseatCover::Off,
         }
     }
 
@@ -2506,5 +2627,187 @@ mod tests {
             !row_named(&input).detail.contains("intact"),
             "never a false intact"
         );
+    }
+
+    fn cover_row(
+        profile: &str,
+        scope: crate::autoreseat::Scope,
+        cover: crate::autoreseat::Cover,
+        suggested: &[&str],
+    ) -> crate::autoreseat::ProfileCover {
+        crate::autoreseat::ProfileCover {
+            profile: profile.to_owned(),
+            scope,
+            cover,
+            suggested: suggested.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    fn account(
+        tool: crate::tool::ToolKind,
+        store: crate::autoreseat::Store,
+    ) -> crate::autoreseat::Scope {
+        crate::autoreseat::Scope::Account { tool, store }
+    }
+
+    fn home(path: &str) -> crate::autoreseat::Store {
+        crate::autoreseat::Store::Proven(PathBuf::from(path))
+    }
+
+    fn cover_facts(rows: Vec<crate::autoreseat::ProfileCover>) -> Facts {
+        let mut input = facts();
+        input.reseat_cover = ReseatCover::Judged(rows);
+        input
+    }
+
+    #[test]
+    fn the_cover_row_reads_skipped_when_auto_reseat_is_off() {
+        let found = rows_labelled(&facts(), "reseat-cover");
+        assert_eq!(
+            found,
+            vec![Row {
+                level: Level::Ok,
+                label: "reseat-cover".to_owned(),
+                detail: "skipped (auto_reseat off)".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_switch_on_with_no_profile_is_one_vacuous_ok_row() {
+        let found = rows_labelled(&cover_facts(Vec::new()), "reseat-cover");
+        assert_eq!(
+            found,
+            vec![Row {
+                level: Level::Ok,
+                label: "reseat-cover".to_owned(),
+                detail: "no profile to judge".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_fully_covered_fleet_is_one_ok_row() {
+        use crate::autoreseat::Cover;
+        use crate::tool::ToolKind;
+        let scope = || account(ToolKind::Claude, home("/h/.claude"));
+        let input = cover_facts(vec![
+            cover_row("a", scope(), Cover::Exit("x".to_owned()), &[]),
+            cover_row("b", scope(), Cover::Exit("x".to_owned()), &[]),
+            cover_row("c", scope(), Cover::Exit("a".to_owned()), &[]),
+        ]);
+        assert_eq!(
+            rows_labelled(&input, "reseat-cover"),
+            vec![Row {
+                level: Level::Ok,
+                label: "reseat-cover".to_owned(),
+                detail: "all 3 profile(s) have an exit off their own account".to_owned(),
+            }]
+        );
+    }
+
+    /// A row on a profile covers THAT profile: the scope's row loses the name
+    /// and its count drops by one, while a neighbour on the same account stays.
+    #[test]
+    fn a_covered_profile_leaves_its_scope_row_and_the_count_drops_by_one() {
+        use crate::autoreseat::{Cover, Store};
+        use crate::tool::ToolKind;
+        let muse = || account(ToolKind::Muse, Store::Shared);
+        let before = cover_facts(vec![
+            cover_row("a", muse(), Cover::Bare, &["sol"]),
+            cover_row("b", muse(), Cover::Bare, &["sol"]),
+        ]);
+        let after = cover_facts(vec![
+            cover_row("a", muse(), Cover::Exit("sol".to_owned()), &[]),
+            cover_row("b", muse(), Cover::Bare, &["sol"]),
+        ]);
+        let details = |input: &Facts| -> Vec<String> {
+            rows_labelled(input, "reseat-cover")
+                .into_iter()
+                .map(|row| row.detail)
+                .collect()
+        };
+        assert_eq!(
+            details(&before),
+            [
+                "muse · shared: 2 profile(s) have no exit off this account: a, b — add under [auto_reseat], e.g. a = sol"
+            ]
+        );
+        assert_eq!(
+            details(&after),
+            [
+                "muse · shared: 1 profile(s) have no exit off this account: b — add under [auto_reseat], e.g. b = sol"
+            ],
+            "a is covered by its own row; b, on the same account, is not"
+        );
+    }
+
+    /// One WARN row per account and per kind of doubt, in the order the
+    /// profiles first name them; every named profile listed; the add-line is
+    /// the first name's, said as an example.
+    #[test]
+    fn uncovered_profiles_are_one_warn_row_per_account_and_kind() {
+        use crate::autoreseat::{Cover, Doubt, Scope, Store};
+        use crate::tool::ToolKind;
+        let muse = || account(ToolKind::Muse, Store::Shared);
+        let claude = || account(ToolKind::Claude, home("/h/.claude"));
+        let input = cover_facts(vec![
+            cover_row("a", muse(), Cover::Bare, &["sol", "opus"]),
+            cover_row("fine", muse(), Cover::Exit("sol".to_owned()), &[]),
+            cover_row("b", muse(), Cover::Bare, &["sol", "opus"]),
+            cover_row("c", claude(), Cover::Bare, &["x"]),
+            cover_row(
+                "d",
+                account(ToolKind::Claude, home("/h/.claude-two")),
+                Cover::Bare,
+                &[],
+            ),
+            cover_row("e", claude(), Cover::Unproven(Doubt::Candidate), &["y"]),
+            cover_row(
+                "f",
+                account(ToolKind::Claude, Store::Unknown),
+                Cover::Unproven(Doubt::Own),
+                &["x"],
+            ),
+            cover_row("g", Scope::Unreadable, Cover::Unproven(Doubt::Own), &[]),
+        ]);
+        let found: Vec<(Level, String)> = rows_labelled(&input, "reseat-cover")
+            .into_iter()
+            .map(|row| (row.level, row.detail))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    Level::Warn,
+                    "muse · shared: 2 profile(s) have no exit off this account: a, b — add under [auto_reseat], e.g. a = sol, opus".to_owned()
+                ),
+                (
+                    Level::Warn,
+                    "claude · /h/.claude: 1 profile(s) have no exit off this account: c — add under [auto_reseat], e.g. c = x".to_owned()
+                ),
+                (
+                    Level::Warn,
+                    "claude · /h/.claude-two: 1 profile(s) have no exit off this account: d — no profile in [profiles] runs on another account, add one first".to_owned()
+                ),
+                (
+                    Level::Warn,
+                    "claude · /h/.claude: 1 profile(s) cannot prove an exit off this account — a candidate's account is not provable: e — add under [auto_reseat], e.g. e = y".to_owned()
+                ),
+                (
+                    Level::Warn,
+                    "claude · account not provable: 1 profile(s) cannot prove an exit off this account — their own account is not provable: f — add under [auto_reseat], e.g. f = x".to_owned()
+                ),
+                (
+                    Level::Warn,
+                    "? · command not readable: 1 profile(s) cannot prove an exit off this account — their own account is not provable: g".to_owned()
+                ),
+            ],
+            "a Bare and an Unproven profile of one account never share a row; two homes of one tool are two rows"
+        );
+        let document = report(&input);
+        assert_eq!(document.failures(), 0, "a WARN never fails the report");
+        assert_eq!(document.exit_code(), 0);
+        assert_eq!(document.warnings(), 6, "{}", document.render());
     }
 }

@@ -235,6 +235,16 @@ impl Facts {
     }
 }
 
+/// The one-line warning for `profile` when it has no auto-reseat exit off its
+/// account, from the session's recorded global config (switch and map) and the
+/// layered identity (profiles). A config the session no longer records, or one
+/// that does not read, says nothing: the spawn has its own refusals for those.
+fn cover_warning(session: &Facts, profile: &str) -> Option<String> {
+    let cfg = session.identity().ok()?;
+    let settings = crate::autoreseat::settings(session.global.as_deref());
+    crate::autoreseat::leg::cover_warning(&cfg, &settings, profile, crate::doors::home().as_deref())
+}
+
 // ---- spawn ----------------------------------------------------------------
 
 /// `_spawn <meta-dir> <name> --using <profile> [--] [prompt]`.
@@ -290,6 +300,11 @@ fn run_spawn_inner(
             return Ok(EXIT_FAILED);
         }
     };
+    // The moment of choice: say once if the profile has no exit off its
+    // account. The spawn goes on either way.
+    if let Some(line) = cover_warning(&staged.session, &staged.argv.profile) {
+        writeln!(err, "{line}")?;
+    }
     let (pane, _spelling, held) = match start_spawned_pane(dir, &staged, caller, now, out, err) {
         Ok(pane) => pane,
         Err(why) => {
