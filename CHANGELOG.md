@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.102] - 2026-10-20
+- Show a muse usage limit with its reset in ae quota instead of read-error exit 1
+
 ## [v2026.10.101] - 2026-10-20
 - Keep dev builds to line-table debuginfo and stop the clippy guards growing per version
 
