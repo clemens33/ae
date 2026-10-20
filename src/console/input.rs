@@ -1299,15 +1299,18 @@ pub enum Command {
     Open(String),
     /// Print the folded turn with this fold number whole.
     More(String),
+    /// Run this line, the human's own command, outside the session.
+    Shell(String),
     Refused(String),
 }
 
 /// Read one entered line. `@<seat> <body>` asks that lead-pair seat, its body
-/// literal whatever it begins with; a bare `/close` withdraws this console's
+/// literal whatever it begins with; `!<command>` runs that one line as the
+/// human's own command; a bare `/close` withdraws this console's
 /// newest open ask, `/close <id>` a named one, `/open <agent>` selects that
 /// seat's pane without a word to it, and any other bare `/word` is
-/// refused, so only a seat prefix carries a slash to a seat; anything else asks
-/// `pair[0]`, the main seat.
+/// refused, so only a seat prefix carries a slash or a `!` to a seat; anything
+/// else asks `pair[0]`, the main seat.
 #[must_use]
 pub fn command(raw: &[u8], pair: &[String]) -> Command {
     command_to(raw, pair, pair.first().map_or("", String::as_str))
@@ -1332,6 +1335,9 @@ pub fn command_to(raw: &[u8], pair: &[String], speaker: &str) -> Command {
         }
         return ask(seat, body);
     }
+    if let Some(rest) = text.strip_prefix('!') {
+        return shell(rest);
+    }
     if text.starts_with('/') {
         let mut words = text.split_whitespace();
         let word = words.next().unwrap_or(text);
@@ -1353,11 +1359,24 @@ pub fn command_to(raw: &[u8], pair: &[String], speaker: &str) -> Command {
             }
             ("/more", _) => Command::Refused("/more takes one fold number".to_owned()),
             _ => Command::Refused(format!(
-                "unknown command {word}; to send it, name a seat: @{speaker} {word}"
+                "unknown command {word}; to send it, name a seat: @{speaker} {word} \
+                 (a line starting with ! the same way)"
             )),
         };
     }
     ask(speaker, text)
+}
+
+/// `!<rest>`: one line to run. A control character refuses BEFORE the trim,
+/// so a line break at either end cannot be trimmed away into a second line.
+fn shell(rest: &str) -> Command {
+    if rest.chars().any(|ch| ch.is_control() && ch != '\t') {
+        return Command::Refused("! runs one line, without control characters".to_owned());
+    }
+    match rest.trim() {
+        "" => Command::Refused("nothing to run after !".to_owned()),
+        line => Command::Shell(line.to_owned()),
+    }
 }
 
 fn ask(seat: &str, body: &str) -> Command {
@@ -1403,6 +1422,11 @@ pub enum Effect {
     Open(SeatRef),
     /// Print the folded turn with this fold number whole.
     More(String),
+    /// Run `line`, entered as `raw`: refused, `raw` goes back to the composer.
+    Shell {
+        raw: Vec<u8>,
+        line: String,
+    },
 }
 
 /// The console's input as a step machine. It composes asks only while it owns
@@ -1629,6 +1653,7 @@ impl Input {
                     Command::Close(id) => Effect::Close(id),
                     Command::Open(name) => self.open(&name),
                     Command::More(number) => Effect::More(number),
+                    Command::Shell(line) => Effect::Shell { raw, line },
                     Command::Refused(why) => {
                         self.composer.put_back(&raw);
                         Effect::Print(format!("refused: {why}"))
@@ -1952,6 +1977,7 @@ pub fn paint(
             | Effect::Close(_)
             | Effect::Open(_)
             | Effect::More(_)
+            | Effect::Shell { .. }
             | Effect::ImagePaste => {}
         }
     }
@@ -2860,7 +2886,7 @@ mod tests {
             ),
             (
                 "/w",
-                "refused: unknown command /w; to send it, name a seat: @colead /w",
+                "refused: unknown command /w; to send it, name a seat: @colead /w (a line starting with ! the same way)",
                 "colead",
             ),
             (" ", "refused: nothing to ask @colead", "colead"),
@@ -3425,5 +3451,124 @@ mod tests {
                 [(Key::Text(b"q".to_vec()), at + super::ESC_IDLE)]
             );
         }
+    }
+
+    #[test]
+    fn bang_command_grammar_and_literal_at_seat_routing() {
+        let seats = pair();
+        for (raw, want) in [
+            ("!ls", Command::Shell("ls".to_owned())),
+            ("! git status ", Command::Shell("git status".to_owned())),
+            ("!a\tb", Command::Shell("a\tb".to_owned())),
+            ("!", Command::Refused("nothing to run after !".to_owned())),
+            ("!   ", Command::Refused("nothing to run after !".to_owned())),
+            ("!\t ", Command::Refused("nothing to run after !".to_owned())),
+            (
+                "!ls\n",
+                Command::Refused("! runs one line, without control characters".to_owned()),
+            ),
+            (
+                "!\nls",
+                Command::Refused("! runs one line, without control characters".to_owned()),
+            ),
+            (
+                "!a\nb",
+                Command::Refused("! runs one line, without control characters".to_owned()),
+            ),
+            (
+                "!a\rb",
+                Command::Refused("! runs one line, without control characters".to_owned()),
+            ),
+            (
+                "!a\x1bb",
+                Command::Refused("! runs one line, without control characters".to_owned()),
+            ),
+            (
+                "!a\0b",
+                Command::Refused("! runs one line, without control characters".to_owned()),
+            ),
+            (
+                "@lead !ls",
+                Command::Ask {
+                    seat: "lead".to_owned(),
+                    body: "!ls".to_owned(),
+                },
+            ),
+            (
+                "@colead ! git status",
+                Command::Ask {
+                    seat: "colead".to_owned(),
+                    body: "! git status".to_owned(),
+                },
+            ),
+            (
+                "/foo",
+                Command::Refused(
+                    "unknown command /foo; to send it, name a seat: @colead /foo (a line starting with ! the same way)"
+                        .to_owned(),
+                ),
+            ),
+        ] {
+            assert_eq!(command_to(raw.as_bytes(), &seats, "colead"), want, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn bang_input_owner_emits_shell_keeps_speaker_and_readonly_refuses_preserving_draft() {
+        let base = Instant::now();
+        let mut input = owner(base);
+        let _ = input.chunk(b"@colead hi\r", at(base, 1));
+        assert_eq!(input.line().as_deref(), Some("to colead> "));
+
+        let effects = input.chunk(b"! git status \r", at(base, 2));
+        assert_eq!(
+            effects,
+            [Effect::Shell {
+                raw: b"! git status ".to_vec(),
+                line: "git status".to_owned(),
+            }]
+        );
+        assert_eq!(
+            input.line().as_deref(),
+            Some("to colead> "),
+            "speaker stays colead"
+        );
+
+        let empty_bang = input.chunk(b"!  \r", at(base, 3));
+        assert_eq!(
+            empty_bang,
+            [Effect::Print("refused: nothing to run after !".to_owned())]
+        );
+        assert_eq!(input.draft(), "!  ", "refused ! line put back");
+        let _ = input.chunk(b"\x15", at(base, 4));
+
+        let multiline = input.chunk(b"!ls\x1b\r\r", at(base, 5));
+        assert_eq!(
+            multiline,
+            [Effect::Print(
+                "refused: ! runs one line, without control characters".to_owned()
+            )]
+        );
+        assert_eq!(
+            input.draft(),
+            "!ls ",
+            "multiline ! line put back (LF rendered as space)"
+        );
+        let _ = input.chunk(b"\x15", at(base, 6));
+
+        let _ = input.tick(Reading::NotOwner("elsewhere".to_owned()), at(base, 7));
+        let ro = input.chunk(b"!ls\r", at(base, 8));
+        assert_eq!(
+            ro,
+            [Effect::Print(
+                "refused: read-only: only /open <agent> works here - prefix h opens the owner chat"
+                    .to_owned()
+            )]
+        );
+        assert_eq!(
+            input.draft(),
+            "!ls",
+            "read-only puts !ls back into the draft"
+        );
     }
 }

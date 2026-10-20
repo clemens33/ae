@@ -427,6 +427,9 @@ fn refused_line(line: &[u8]) -> bool {
         let (seat, body) = cut.unwrap_or((routed, ""));
         return seat.contains(':') || !["lead", "colead"].contains(&seat) || body.trim().is_empty();
     }
+    if let Some(rest) = text.strip_prefix('!') {
+        return rest.chars().any(|ch| ch.is_control() && ch != '\t') || rest.trim().is_empty();
+    }
     if text.starts_with('/') {
         let words: Vec<_> = text.split_whitespace().collect();
         return match words.as_slice() {
@@ -500,12 +503,28 @@ fuzz_target!(|data: &[u8]| {
                         (seat.to_owned(), body.to_owned())
                     }
                     None => {
-                        assert!(!text.starts_with('/'), "a bare slash line is never an ask");
+                        assert!(
+                            !text.starts_with('/') && !text.starts_with('!'),
+                            "a bare slash or bang line is never an ask"
+                        );
                         (speaker.clone(), text.to_owned())
                     }
                 };
                 assert_eq!((seat.clone(), body.clone()), want);
                 assert!(!body.trim().is_empty(), "nothing to ask is never an ask");
+            }
+            Effect::Shell { raw, line } => {
+                assert!(raw.len() <= input::CAP);
+                let text = std::str::from_utf8(raw).expect("a shell line is UTF-8");
+                let rest = text.strip_prefix('!').expect("a shell line starts with !");
+                assert!(!rest.chars().any(|ch| ch.is_control() && ch != '\t'));
+                assert_eq!(line, rest.trim());
+                assert!(!line.is_empty());
+            }
+            Effect::DiscardDraft => {
+                // Only a lone Escape on a pending recovery offer discards it.
+                assert!(stream.contains(&0x1b), "a discard is an Escape action");
+                panic!("no recovery offer was restored, so nothing discards: {stream:?}");
             }
             Effect::Print(said) => {
                 let restored =
@@ -555,7 +574,7 @@ fuzz_target!(|data: &[u8]| {
             .collect();
         assert_eq!(after.len(), lines.len(), "one effect per entered line");
         for (effect, line) in after.into_iter().zip(&lines) {
-            if let Effect::Ask { raw, .. } = effect {
+            if let Effect::Ask { raw, .. } | Effect::Shell { raw, .. } = effect {
                 assert_eq!(raw, line);
             }
         }

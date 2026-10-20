@@ -229,6 +229,7 @@ the Settings overlay swallows a paste silently.
 
 Writing: the draft is the chat's own input — a plain line asks the session's lead, or its colead when [routing](#routing-a-line) says the lead cannot take it,
 `@<seat> text` either lead-pair seat for that line only, `/close` withdraws your newest open ask,
+`!<command>` runs that line as your own command ([Running a command](#running-a-command)),
 five asks open at most; see [Input](chat.md#input). `Alt+Enter` and `^J` put a line break in the draft, `Enter` sends, and Shift+Enter is `Enter` (tmux hands the app a plain CR for it). A refusal such as the cap keeps the line in the composer. Writing stays on after a send. The composer shows the
 whole draft as the chat does — the same wrap, each pasted line break its own
 row, all of it under the address row from the column's left edge, and past its rows the window
@@ -693,6 +694,30 @@ evidence, and the lead keeps the line. Busy, out-of-quota, an open ask and a
 leading `@lead` or `@colead` all outrank it. The read is the app's own, at most
 once a minute per session, and starts no process.
 
+## Running a command
+
+`!<command>` in a window that writes runs that one line as your own command, in
+the selected session's recorded work dir, and writes nothing to the session: no
+journal row, no kept draft, no ask, no seat and no Telegram message — the
+outcome is one `ae` line in this window's lane only. Inside tmux it opens the same
+popup [`ae chat`'s `!`](chat.md#run-a-command) opens, on the client whose active pane is
+this app, and says `! <command> - popup started`. Outside tmux there is no popup:
+ae starts `/bin/sh -c <command>` itself — the program fixed, the line one argument,
+no `$SHELL` read — detached in a process group of its own, with stdin, stdout and
+stderr on `/dev/null`, never waited for, and says `! <command> - started`. Its
+output goes nowhere; redirect it to a file to keep it. Quitting the app leaves it
+running.
+
+The session is proven first, as a send proves it: a session replaced since
+writing started ends the writing and puts the line back as a held draft. Any other
+refusal keeps writing on and the line in the composer: `refused: ! <command>:
+<why>` — the session records no work dir, its work dir is gone, tmux did not
+answer, the tmux clients did not answer, or no client (or two equally recent ones)
+shows this app. The composer's address row names no seat for a `!` line, and
+`@<seat> !text` sends the text to that seat as an ordinary ask. `!` while
+browsing still steps to the next session that needs you; only a draft line that
+starts with it runs.
+
 ## Ownership
 
 Every `ae app` window writes the selected session on its own, in any pane or
@@ -799,6 +824,9 @@ not know the argument.
 
 ## Residuals
 
+- A `!` line runs with ae's own permissions, its command line visible in `ps`
+  while it runs; outside tmux its output is discarded and nothing reports its exit,
+  and inside tmux the popup's caveats are [the chat's](chat.md#run-a-command).
 - Typing in the app counts as activity in the session that hosts it, so that
   session rises while you work in the app. A key typed in the same second a
   session was created leaves it unknown. A stray click counts as activity too.

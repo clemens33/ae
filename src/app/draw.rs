@@ -2581,7 +2581,7 @@ fn settings_body(
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
-const WRITE_KEYS: [(&str, &str); 20] = [
+const WRITE_KEYS: [(&str, &str); 21] = [
     ("Enter", "send the line"),
     ("Alt+Enter ^J", "new line in the draft"),
     ("^V", "attach a clipboard PNG"),
@@ -2602,6 +2602,7 @@ const WRITE_KEYS: [(&str, &str); 20] = [
     ("@seat text", "ask that seat"),
     ("/close [id]", "withdraw your open ask"),
     ("/open seat", "open that seat's pane"),
+    ("!command", "run it: a popup in tmux, else started"),
 ];
 const HELD_KEYS: [(&str, &str); 4] = [
     ("Enter", "try to write again"),

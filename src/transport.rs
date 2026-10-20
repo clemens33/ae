@@ -322,7 +322,11 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     if matches!(streams, Streams::InheritStderr) {
         command.stderr(std::process::Stdio::inherit());
     }
-    if matches!(streams, Streams::Detached) {
+    if matches!(streams, Streams::Detached | Streams::DetachedIn(_)) {
+        if let Streams::DetachedIn(dir) = streams {
+            command.current_dir(dir);
+            std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        }
         command.stdin(std::process::Stdio::null());
         command.stdout(std::process::Stdio::null());
         command.stderr(std::process::Stdio::null());
@@ -575,6 +579,9 @@ enum Streams<'a> {
     Terminal,
     /// Started and NOT waited for.
     Detached,
+    /// [`Streams::Detached`], started in this directory and in a process group
+    /// of its own, so a signal to ae's terminal never reaches it.
+    DetachedIn(&'a Path),
     /// Stdout redirected into this scratch handle — its owner created it
     /// exclusively at 0600 — and read back after the child exits, at most
     /// `cap + 1` bytes. The `opencode` legs need it: `opencode export` exits
@@ -2130,6 +2137,23 @@ pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String
     }
 }
 
+/// The `!` leg's popup: `args` from `console::shell::popup_args`, started
+/// DETACHED because `display-popup` holds its caller until the popup closes.
+/// Whether tmux started; what the popup runs is the human's own line.
+#[must_use]
+pub(crate) fn open_popup(server: &ServerId, args: &[String]) -> bool {
+    addressable(server) && spawn(PROGRAM, args, &[], Streams::Detached, None).is_some()
+}
+
+/// The `!` leg outside tmux: the human's own line, one argument to a FIXED
+/// `/bin/sh -c`, started in `dir` with null streams and never waited for. ae
+/// writes no script text and reads no `$SHELL`. Whether it started.
+#[must_use]
+pub(crate) fn run_shell_line(argv: &crate::console::shell::ShellArgv, dir: &Path) -> bool {
+    let streams = Streams::DetachedIn(dir);
+    spawn("/bin/sh", argv.as_args(), &[], streams, None).is_some()
+}
+
 /// The DETACHED leg of the one process door — the ONLY way product code starts
 /// a child it does not wait for.
 #[must_use]
@@ -2740,5 +2764,58 @@ mod tests {
             "{}",
             cwd.display()
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: reads what its own shell line wrote in its own scratch dir"
+    )]
+    fn bang_run_shell_line_runs_in_dir_detached_with_null_stdin_and_open_popup_refuses_relative() {
+        use crate::console::shell::{ShellArgv, popup_args};
+        let root = std::env::temp_dir().join(format!("ae-bang-transport-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let canonical = root.canonicalize().expect("canonical scratch dir");
+
+        // T7: `run_shell_line` runs `/bin/sh -c` in `dir`, stdin is `/dev/null`
+        // (`cat` exits immediately with 0 bytes), and a background child does not
+        // block `run_shell_line` from returning. `mv` publishes `out_file` only
+        // after both writes complete so `exists()` never races a partial write.
+        let out_file = root.join("shell-out.txt");
+        let cmd = format!(
+            "cat > {0}.stdin && pwd -P > {0}.tmp && mv {0}.tmp {0}; (sleep 3) &",
+            out_file.display()
+        );
+        let argv = ShellArgv::of(&cmd).expect("valid shell line");
+        let started = std::time::Instant::now();
+        assert!(super::run_shell_line(&argv, &root), "shell starts");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "detached leg must not wait for background sleep"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && !out_file.exists() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pwd = std::fs::read_to_string(&out_file).expect("pwd output");
+        assert_eq!(PathBuf::from(pwd.trim()), canonical);
+        let stdin_bytes =
+            std::fs::read(format!("{}.stdin", out_file.display())).expect("stdin file");
+        assert!(stdin_bytes.is_empty(), "stdin must be /dev/null");
+
+        let popup = popup_args(
+            &ServerId::Ambient,
+            "/dev/ttys001",
+            canonical.to_str().expect("utf8 path"),
+            "git status",
+        )
+        .expect("popup args");
+        let relative = ServerId::Selected(Selector::Socket(PathBuf::from("relative/bang.sock")));
+        assert!(
+            !super::open_popup(&relative, &popup),
+            "relative socket refused"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

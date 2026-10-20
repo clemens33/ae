@@ -8848,3 +8848,43 @@ fn cell_clipping_runs_through_the_one_cutter() {
         "the prose projector is defined more than once"
     );
 }
+
+#[test]
+fn bang_popup_args_on_isolated_tmux_server_reports_missing_client_never_bad_flags() {
+    let root = scratch("bang-popup");
+    if !tmux_present(&root) {
+        return;
+    }
+    let socket = root.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: root.clone(),
+    };
+    let dir = root.join("work");
+    fs::create_dir_all(&dir).expect("work dir");
+    replace_server(&socket, &dir, "s");
+    let server = ServerId::Selected(Selector::Socket(socket));
+    let args = ae::console::shell::popup_args(
+        &server,
+        "/dev/nonexistent",
+        dir.to_str().expect("utf8 path"),
+        r"find . -maxdepth 0 -exec printf '%s\n' {} \;",
+    )
+    .expect("popup args");
+    let output = super::phase2::capture_tmux(&args, &dir);
+    let lowered = output.stderr.to_ascii_lowercase();
+    assert!(
+        !output.succeeded,
+        "no client attached -> display-popup exits non-zero"
+    );
+    assert!(
+        lowered.contains("can't find client"),
+        "expected client lookup failure, got stderr: {:?}",
+        output.stderr
+    );
+    assert!(
+        !lowered.contains("unknown") && !lowered.contains("usage"),
+        "display-popup flags rejected by tmux: {:?}",
+        output.stderr
+    );
+}

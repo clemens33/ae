@@ -35,7 +35,7 @@ use crate::console::lane::{Item, Kind, Lane, Seat};
 use crate::console::link;
 use crate::console::needs::{SeatRef, Section};
 use crate::console::open::{self, Move, Refusal};
-use crate::console::{self, Console, submit, term, toggle};
+use crate::console::{self, Console, shell, submit, term, toggle};
 use crate::digest::{SessionEntry, Status};
 use crate::inventory::ServerId;
 use crate::listing::World;
@@ -1481,12 +1481,12 @@ impl App {
     }
 
     /// The seat the draft would reach and whether the draft named it with
-    /// `@`, for the composer's address: `None` for a slash command, a refused
-    /// line or a pair the router names no seat in.
+    /// `@`, for the composer's address: `None` for a slash command, a `!`
+    /// line, a refused line or a pair the router names no seat in.
     fn destination(&self, session: &str) -> Option<(String, bool)> {
         let draft = self.draft.as_bytes();
         match draft.first() {
-            Some(b'/') => None,
+            Some(b'/' | b'!') => None,
             Some(b'@') => match crate::console::input::command(draft, &self.pair) {
                 crate::console::input::Command::Ask { seat, .. } => Some((seat, true)),
                 _ => None,
@@ -2502,6 +2502,16 @@ impl App {
                 }
                 Effect::Close(id) => self.close(id.as_deref()),
                 Effect::Open(seat) => self.open_written(&seat),
+                Effect::Shell { raw, line } => {
+                    let lost = Cell::default();
+                    match self.owns(&lost) {
+                        Ok(()) => self.shell_written(&raw, &line),
+                        Err(why) => {
+                            self.unproven(lost, &raw);
+                            format!("refused: {why}")
+                        }
+                    }
+                }
                 Effect::More(_) => {
                     "refused: /more is the tmux chat's; click or press Enter on the fold line"
                         .to_owned()
@@ -2511,6 +2521,30 @@ impl App {
             self.notice(&about, line);
         }
         self.show();
+    }
+
+    /// `!` in the window that writes: the human's own line, run in the
+    /// session's work dir — a popup on the client showing this app, or a
+    /// detached shell when the app has no tmux pane. A refusal puts the line
+    /// back in the writer's composer; nothing is recorded either way.
+    fn shell_written(&mut self, raw: &[u8], line: &str) -> String {
+        let writer = self.writer.as_ref().ok_or_else(|| "not writing".to_owned());
+        let started = writer.and_then(|writer| {
+            let dir = writer.console.work_dir()?;
+            let place = match (self.pane.as_deref(), self.server.as_ref()) {
+                (None, _) => shell::Place::Outside,
+                (Some(pane), Some(server)) => shell::Place::Tmux { server, pane },
+                (Some(_), None) => return Err("tmux did not answer".to_owned()),
+            };
+            term::shell(place, &dir, line)
+        });
+        started.unwrap_or_else(|why| {
+            let key = self.writer.as_ref().map(Binding::key);
+            if let Some(input) = key.and_then(|key| self.inputs.get_mut(&key)) {
+                input.put_back(raw);
+            }
+            shell::refused(line, &why)
+        })
     }
 
     /// One of ae's own lines about session `name`; each keeps its newest few.
@@ -10202,5 +10236,171 @@ mod tests {
         let _ = framed(&mut app);
         assert!(app.move_focus(true), "n moves from the last seat");
         assert_eq!(app.model.focus(), Some("aa"), "it wraps to the first seat");
+    }
+
+    #[test]
+    fn bang_app_destination_is_none_and_effects_handle_shell_and_write_keys_lists_it() {
+        let root = Root::new("bang-app");
+        let dir = root.0.join("sessions").join("api");
+        let work = root.0.join("work");
+        std::fs::create_dir_all(&work).expect("work dir");
+        let (mut app, _reader) = housed(&root);
+        app.pair = vec!["lead".to_owned(), "colead".to_owned()];
+        app.draft = "!git status".to_owned();
+        assert_eq!(app.destination("api"), None, "a ! line has no seat address");
+
+        app.open_settings();
+        app.model.show_settings_tab(SettingsTab::Keys);
+        app.model.settings_wheel(15);
+        let keys_shown = framed(&mut app);
+        assert!(
+            keys_shown.contains("!command    run it: a popup in tmux, else started"),
+            "{keys_shown}"
+        );
+        app.close_settings();
+
+        // Without a work_dir in meta, ! is refused while writing stays live and
+        // the raw line is put back once into the active writer's composer.
+        let at = writing(&mut app);
+        for key in [Key::Text(b"!  pwd  ".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, at), Some(()));
+        }
+        assert_eq!(
+            app.notices.last().map(|(_, item)| item.body.as_str()),
+            Some("refused: ! pwd: the session records no work dir")
+        );
+        assert!(app.composing(), "a shell refusal keeps the writer live");
+        assert_eq!(drafted(&app), "!  pwd  ", "raw line restored once");
+        let _ = app.compose(Key::ClearLine, at);
+
+        // Missing work_dir on disk is refused before starting `/bin/sh` or `tmux`.
+        let gone = root.0.join("gone-work");
+        let write_work_meta = |path: &std::path::Path| {
+            let text = format!(
+                "schema=2\nsession_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\nwork_dir={}\n",
+                path.display()
+            );
+            std::fs::write(dir.join("meta"), text).expect("meta with work_dir");
+        };
+        write_work_meta(&gone);
+        for key in [Key::Text(b"!pwd".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, at), Some(()));
+        }
+        let expected_gone = format!("refused: ! pwd: its work dir {} is gone", gone.display());
+        assert_eq!(
+            app.notices.last().map(|(_, item)| item.body.as_str()),
+            Some(expected_gone.as_str())
+        );
+        assert_eq!(drafted(&app), "!pwd");
+        let _ = app.compose(Key::ClearLine, at);
+
+        // Inside a tmux pane without a resolved server, or when the server's
+        // clients do not answer, ! is refused by name and restores the draft.
+        write_work_meta(&work);
+        app.pane = Some("%1".to_owned());
+        app.server = None;
+        for key in [Key::Text(b"!pwd".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, at), Some(()));
+        }
+        assert_eq!(
+            app.notices.last().map(|(_, item)| item.body.as_str()),
+            Some("refused: ! pwd: tmux did not answer")
+        );
+        assert_eq!(drafted(&app), "!pwd");
+        let _ = app.compose(Key::ClearLine, at);
+
+        app.server = Some(crate::inventory::ServerId::Selected(
+            crate::meta::Selector::Socket(root.0.join("absent.sock")),
+        ));
+        for key in [Key::Text(b"!pwd".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, at), Some(()));
+        }
+        assert_eq!(
+            app.notices.last().map(|(_, item)| item.body.as_str()),
+            Some("refused: ! pwd: the tmux clients did not answer")
+        );
+        assert_eq!(drafted(&app), "!pwd");
+        let _ = app.compose(Key::ClearLine, at);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test inspects its own fixture files"
+    )]
+    fn bang_app_outside_tmux_runs_in_work_dir_records_nothing_and_unproven_restores_once() {
+        let root = Root::new("bang-app-outside");
+        let dir = root.0.join("sessions").join("api");
+        let work = root.0.join("work");
+        std::fs::create_dir_all(&work).expect("work dir");
+        let (mut app, _reader) = housed(&root);
+        app.pair = vec!["lead".to_owned(), "colead".to_owned()];
+        let at = writing(&mut app);
+        let text = format!(
+            "schema=2\nsession_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\nwork_dir={}\n",
+            work.display()
+        );
+        std::fs::write(dir.join("meta"), text).expect("meta with work_dir");
+        app.pane = None;
+        app.server = None;
+
+        // Outside tmux (`app.pane` is None) with a live work_dir, ! runs via
+        // `/bin/sh -c` in `work_dir` and records nothing in events.jsonl,
+        // messages/, memo.tsv, console.draft, or Telegram (outbound Telegram
+        // reads events.jsonl and has no separate outbox file).
+        let out_file = work.join("app-bang.txt");
+        let cmd = format!(
+            "!printf '%s\\n' \"$(pwd -P)\" > {0}.tmp && mv {0}.tmp {0}",
+            out_file.display()
+        );
+        for key in [Key::Text(cmd.as_bytes().to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, at), Some(()));
+        }
+        let expected_started = format!("! {} - started", &cmd[1..]);
+        assert_eq!(
+            app.notices.last().map(|(_, item)| item.body.as_str()),
+            Some(expected_started.as_str())
+        );
+        assert_eq!(drafted(&app), "", "composer cleared after started shell");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !out_file.exists() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let recorded_pwd = std::fs::read_to_string(&out_file).expect("shell output file");
+        assert_eq!(
+            std::path::PathBuf::from(recorded_pwd.trim()),
+            work.canonicalize().expect("canonical work dir")
+        );
+        let store = crate::store::open(&dir);
+        assert!(matches!(
+            store.events_source(),
+            crate::store::SourceRead::Absent
+        ));
+        assert!(matches!(
+            store.memo_source(),
+            crate::store::SourceRead::Absent
+        ));
+        assert_eq!(super::submit::restore(&dir), super::submit::Draft::Nothing);
+        assert!(
+            !dir.join("messages").exists() && !root.0.join("telegram").exists(),
+            "no message body or Telegram state written"
+        );
+
+        // When home ownership is lost before Enter, `self.owns(&lost)` fails and
+        // `self.unproven(lost, &raw)` ends writing and restores `raw` once (never twice).
+        meta(&root, &ID.replace("1234", "bbbb"), "colead");
+        for key in [Key::Text(b"!echo keep-once".to_vec()), Key::Enter] {
+            assert_eq!(app.compose(key, at), Some(()));
+        }
+        assert!(!app.composing(), "unproven home ends writing");
+        assert_eq!(
+            app.notices.last().map(|(_, item)| item.body.as_str()),
+            Some("refused: the session was replaced or renamed")
+        );
+        assert_eq!(
+            app.inputs.values().next().expect("input").draft(),
+            "!echo keep-once",
+            "unproven restores raw once without a second put_back"
+        );
     }
 }

@@ -1022,4 +1022,31 @@ mod tests {
             other => panic!("existing command lost or reply stole it: {other:?}"),
         }
     }
+
+    #[test]
+    fn bang_telegram_message_starting_with_exclamation_stays_plain_chat_text() {
+        let sessions = vec![nav_session("aedev", "abc-first")];
+        let sticky = super::Sticky::Set {
+            session: "aedev".to_owned(),
+            agent: super::ANY_SEAT.to_owned(),
+        };
+        for raw in ["!git status", "@aedev !git status"] {
+            let route = super::decide(
+                super::Inbound {
+                    text: raw,
+                    reply_to: None,
+                },
+                &sessions,
+                &sticky,
+                1_792_141_200,
+            );
+            match route {
+                super::Route::Chat { target, text, .. } => {
+                    assert_eq!(target.session, "aedev");
+                    assert_eq!(text, "!git status");
+                }
+                other => panic!("Telegram ! message did not route as plain chat text: {other:?}"),
+            }
+        }
+    }
 }

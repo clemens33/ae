@@ -1262,3 +1262,62 @@ fn the_claude_project_key_is_spelled_in_src_carry_alone() {
         );
     }
 }
+
+#[test]
+fn open_popup_and_run_shell_line_have_only_their_named_product_caller_and_pure_shell_module() {
+    let halves = product_halves();
+    for (leg, expected) in [
+        (
+            "open_popup(",
+            &["src/console/term.rs", "src/transport.rs"][..],
+        ),
+        (
+            "run_shell_line(",
+            &["src/console/term.rs", "src/transport.rs"][..],
+        ),
+    ] {
+        let mut callers: Vec<&str> = halves
+            .iter()
+            .filter(|(_, code)| code.contains(leg))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        callers.sort_unstable();
+        assert_eq!(callers, expected, "{leg} product callers");
+    }
+    let shell = halves
+        .iter()
+        .find(|(name, _)| name == "src/console/shell.rs")
+        .map_or_else(
+            || panic!("src/console/shell.rs was not scanned"),
+            |(_, code)| code,
+        );
+    for forbidden in ["transport", "doors", "lifecycle", "std::fs", "std::process"] {
+        assert!(
+            !shell.contains(forbidden),
+            "src/console/shell.rs must stay pure, found {forbidden}"
+        );
+    }
+    let term = halves
+        .iter()
+        .find(|(name, _)| name == "src/console/term.rs")
+        .map_or_else(
+            || panic!("src/console/term.rs was not scanned"),
+            |(_, code)| code,
+        );
+    let shell_fn = &term[body_of(term, "fn shell(")];
+    for writer in [
+        "append_event",
+        "append_memo",
+        "publish_console_draft",
+        "submit_ask",
+        "admit_ask",
+        "Carry",
+        "recovery",
+        "messages",
+    ] {
+        assert!(
+            !shell_fn.contains(writer),
+            "src/console/term.rs::shell must never record or send ! lines, found {writer}"
+        );
+    }
+}

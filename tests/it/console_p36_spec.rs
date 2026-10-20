@@ -666,8 +666,8 @@ fn home_end_and_control_a_e_move_across_the_whole_multiline_draft() {
         (b"\x1b[1~", b"\x1b[4~"),
     ] {
         assert_eq!(
-            edited(&[b"\x1b[200~alpha\nbeta\x1b[201~", home, b"!", end, b"?"]),
-            ask("!alpha\nbeta?")
+            edited(&[b"\x1b[200~alpha\nbeta\x1b[201~", home, b">", end, b"?"]),
+            ask(">alpha\nbeta?")
         );
     }
 }
@@ -744,15 +744,15 @@ fn home_keeps_a_cursor_above_the_tail_visible_and_insertion_edits_that_row() {
         (9, prompt_y),
         "Home terminal cursor at first draft byte"
     );
-    rig.paste("!");
+    rig.paste(">");
     rig.wait("insertion at first row", |screen| {
-        screen.contains("to lead> !edit-row-00")
+        screen.contains("to lead> >edit-row-00")
     });
     rig.key("End");
     rig.wait("end reveals edited draft tail", |screen| {
         screen.contains("lines above") && screen.contains("edit-row-13")
     });
-    rig.submit(&format!("!{body}"));
+    rig.submit(&format!(">{body}"));
 }
 
 #[test]

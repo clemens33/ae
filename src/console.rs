@@ -25,6 +25,7 @@ pub mod lane;
 pub mod link;
 pub mod needs;
 pub mod open;
+pub mod shell;
 pub mod submit;
 pub(crate) mod term;
 pub mod toggle;
@@ -242,6 +243,17 @@ impl Console {
     /// `Err` says why this console no longer follows the session it opened.
     pub(crate) fn seats(&self) -> Result<Vec<Seat>, String> {
         self.lead_pair().map(|(seats, ..)| seats)
+    }
+
+    /// The work dir the session's meta records now: where a `!` line runs.
+    ///
+    /// # Errors
+    ///
+    /// The meta did not answer, or records no absolute work dir.
+    pub(crate) fn work_dir(&self) -> Result<String, String> {
+        let bytes =
+            meta::read_bytes(&self.dir).map_err(|_| "the meta did not answer".to_owned())?;
+        shell::work_dir(&bytes)
     }
 
     /// Where a path in a turn resolves: the work dir the session's meta records

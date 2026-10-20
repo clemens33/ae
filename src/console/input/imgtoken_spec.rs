@@ -403,11 +403,11 @@ fn imgtoken_arrow_cursor_at_narrow_widths_observes_atom_boundaries() {
             } else {
                 assert_eq!(view.before, view.rows[view.cursor_row], "width {width}");
             }
-            key(&mut input, at, Key::Text(b"!".to_vec()));
+            key(&mut input, at, Key::Text(b">".to_vec()));
             let (draft, wire) = if before_token {
-                ("![Image #1]", "![Image #1: \"/tmp/a.png\"]")
+                (">[Image #1]", ">[Image #1: \"/tmp/a.png\"]")
             } else {
-                ("[Image #1]!", "[Image #1: \"/tmp/a.png\"]!")
+                ("[Image #1]>", "[Image #1: \"/tmp/a.png\"]>")
             };
             assert_eq!(input.draft(), draft);
             assert_eq!(sent(&mut input, at).1, wire);

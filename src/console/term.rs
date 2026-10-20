@@ -11,6 +11,7 @@ use super::input::{self, Effect, Input, Reading, Screen, Seen, Size};
 use super::lane::Seat;
 use super::needs::SeatRef;
 use super::open::{self, Refusal};
+use super::shell::{Place, ShellArgv, popup_args, popup_client, refused, said};
 use super::{Console, holder, submit};
 use crate::inventory::ServerId;
 use crate::{archive, doors, lifecycle, meta, theme, time, tmux, tracked, transport};
@@ -346,6 +347,35 @@ pub(crate) fn owns(
     let panes = transport::observe_window_panes(server, &console.name)?;
     let stamp = transport::observe_session_option(server, &console.name, theme::SESSION_ID_OPTION)?;
     Some(submit::owner(&panes, me, &stamp, &console.uuid))
+}
+
+/// Run `line`, the human's own command, in the session's work dir `dir`: a
+/// popup on the tmux client whose active pane is `place`'s, or a detached
+/// `/bin/sh` outside tmux. What to say when it started. The line goes to tmux
+/// or the shell and nowhere else: it is never journaled, drafted or sent.
+///
+/// # Errors
+///
+/// Why nothing started.
+pub(crate) fn shell(place: Place<'_>, dir: &str, line: &str) -> Result<String, String> {
+    if !lifecycle::dir_exists(std::path::Path::new(dir)) {
+        return Err(format!("its work dir {dir} is gone"));
+    }
+    let Place::Tmux { server, pane } = place else {
+        let argv = ShellArgv::of(line).ok_or("a fact failed its grammar")?;
+        if transport::run_shell_line(&argv, std::path::Path::new(dir)) {
+            return Ok(said(line, false));
+        }
+        return Err("/bin/sh did not start".to_owned());
+    };
+    let clients = transport::observe_clients(server).ok_or("the tmux clients did not answer")?;
+    let client = popup_client(&clients, pane)?;
+    let args = popup_args(server, &client, dir, line).ok_or("a fact failed its grammar")?;
+    if transport::open_popup(server, &args) {
+        Ok(said(line, true))
+    } else {
+        Err("tmux did not start".to_owned())
+    }
 }
 
 /// `seat`'s pane in `console`'s session on `server`, proven against the meta
@@ -852,6 +882,7 @@ impl Term {
                 })
             }
             Effect::Open(seat) => Effect::Print(self.open(console, &seat)),
+            Effect::Shell { raw, line } => self.bang(console, &raw, &line),
             Effect::More(handle) => match console.printed.more_last(&handle) {
                 Ok(text) => console.printed.lane(text),
                 Err(why) => Effect::Print(why),
@@ -876,6 +907,26 @@ impl Term {
             }
             Ok(Some((ran, stdout))) => open::outcome(ran, &stdout, name),
         }
+    }
+
+    /// `!`: the human's own line, in a popup on the client showing this owner
+    /// chat. Only the owner runs it, read now; the app's lease is not asked,
+    /// because a `!` line writes nothing to the session. A refusal puts the
+    /// line back.
+    fn bang(&mut self, console: &Console, raw: &[u8], line: &str) -> Effect {
+        let unread = || Err("tmux did not answer who owns the input".to_owned());
+        let started = self.owns(console).unwrap_or_else(unread).and_then(|()| {
+            let (server, pane) = (self.server.as_ref().zip(self.me.as_deref()))
+                .ok_or("this chat is not in a tmux pane")?;
+            shell(Place::Tmux { server, pane }, &console.work_dir()?, line)
+        });
+        started.map_or_else(
+            |why| {
+                self.input.put_back(raw);
+                Effect::Print(refused(line, &why))
+            },
+            Effect::Print,
+        )
     }
 
     /// The write that shows `text` and `effects` above the composer, drawn
@@ -1540,5 +1591,204 @@ mod tests {
             assert!(result.is_err(), "replaced session/pair was accepted");
         }
         assert!(crate::store::open(&dir).container().is_empty());
+    }
+
+    #[test]
+    fn bang_shell_pure_popup_args_client_argv_and_work_dir_contract() {
+        use crate::console::shell::popup_args;
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        use std::path::PathBuf;
+
+        let words = |items: &[&str]| items.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            popup_args(&ServerId::Ambient, "/dev/ttys003", "/w", "git status"),
+            Some(words(&[
+                "display-popup",
+                "-EE",
+                "-c",
+                "/dev/ttys003",
+                "-d",
+                "/w",
+                "--",
+                "git status",
+            ]))
+        );
+        assert_eq!(
+            popup_args(
+                &ServerId::Selected(Selector::Name("ae-x".to_owned())),
+                "/dev/pts/1",
+                "/work/dir",
+                "-x",
+            ),
+            Some(words(&[
+                "-L",
+                "ae-x",
+                "display-popup",
+                "-EE",
+                "-c",
+                "/dev/pts/1",
+                "-d",
+                "/work/dir",
+                "--",
+                "-x",
+            ]))
+        );
+        assert_eq!(
+            popup_args(
+                &ServerId::Selected(Selector::Socket(PathBuf::from("/tmp/s.sock"))),
+                "/dev/ttys001",
+                "/w",
+                r"find . -exec rm {} \;",
+            ),
+            Some(words(&[
+                "-S",
+                "/tmp/s.sock",
+                "display-popup",
+                "-EE",
+                "-c",
+                "/dev/ttys001",
+                "-d",
+                "/w",
+                "--",
+                "find . -exec rm {} \\; ",
+            ]))
+        );
+        assert!(
+            popup_args(&ServerId::Ambient, "/dev/ttys003", "/w", "printf 'a\tb'").is_some(),
+            "tab is permitted in shell line"
+        );
+        for (client, dir, line) in [
+            ("", "/w", "ls"),
+            ("-bad", "/w", "ls"),
+            ("/dev/tty\n1", "/w", "ls"),
+            ("/dev/ttys003", "", "ls"),
+            ("/dev/ttys003", "relative/dir", "ls"),
+            ("/dev/ttys003", "/tmp/semi;", "ls"),
+            ("/dev/ttys003", "/tmp/a\nb", "ls"),
+            ("/dev/ttys003", "/tmp/a\tb", "ls"),
+            ("/dev/ttys003", "/w", ""),
+            ("/dev/ttys003", "/w", "ls\n"),
+            ("/dev/ttys003", "/w", "a\rb"),
+            ("/dev/ttys003", "/w", "a\x1bb"),
+            ("/dev/ttys003", "/w", "a\0b"),
+        ] {
+            assert_eq!(
+                popup_args(&ServerId::Ambient, client, dir, line),
+                None,
+                "must reject ({client:?}, {dir:?}, {line:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn bang_shell_pure_popup_client_shell_argv_and_work_dir_contract() {
+        use crate::console::shell::{ShellArgv, popup_client, work_dir};
+        use crate::tmux::ObservedClient;
+
+        let client = |name: &str, pane: &str, activity: u64| ObservedClient {
+            name: name.to_owned(),
+            session: "s".to_owned(),
+            pane: pane.to_owned(),
+            activity: Some(activity),
+        };
+        assert_eq!(
+            popup_client(&[], "%1"),
+            Err("no tmux client is showing this pane".to_owned())
+        );
+        assert_eq!(
+            popup_client(&[client("/dev/ttys001", "%2", 50)], "%1"),
+            Err("no tmux client is showing this pane".to_owned())
+        );
+        assert_eq!(
+            popup_client(
+                &[
+                    client("/dev/ttys001", "%1", 20),
+                    client("/dev/ttys002", "%1", 20),
+                ],
+                "%1",
+            ),
+            Err("two clients showing this pane were active in the same second".to_owned())
+        );
+        assert_eq!(
+            popup_client(
+                &[
+                    client("/dev/ttys001", "%1", 10),
+                    client("/dev/ttys002", "%1", 25),
+                    client("/dev/ttys003", "%2", 99),
+                ],
+                "%1",
+            ),
+            Ok("/dev/ttys002".to_owned())
+        );
+
+        assert!(ShellArgv::of("git status").is_some());
+        assert!(ShellArgv::of("a\tb").is_some());
+        for bad in ["", "a\nb", "a\rb", "a\x1bb", "a\0b"] {
+            assert!(
+                ShellArgv::of(bad).is_none(),
+                "ShellArgv must reject {bad:?}"
+            );
+        }
+
+        assert_eq!(
+            work_dir(b"session_id=x\nwork_dir=/tmp/w\n"),
+            Ok("/tmp/w".to_owned())
+        );
+        for missing in [&b"session_id=x\n"[..], &b"session_id=x\nwork_dir=\n"[..]] {
+            assert_eq!(
+                work_dir(missing),
+                Err("the session records no work dir".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test inspects its own fixture files"
+    )]
+    fn bang_term_shell_refuses_when_unowned_puts_line_back_and_never_touches_events_or_draft() {
+        let (rig, mut console, mut term) = bare_term("term-bang-never-recorded");
+        let store = crate::store::open(&console.dir);
+        let journal = b"{\"ts\":\"x\"}\n";
+        std::fs::write(rig.0.join("s/events.jsonl"), journal).unwrap();
+        let _ = term.take(&console, Reading::Owner);
+        store.publish_console_draft(b"earlier draft").unwrap();
+        let (send, reads) = sync_channel(1);
+        term.reads = Reads(Some(reads));
+        send.send((Instant::now(), b"!echo secret\r".to_vec()))
+            .unwrap();
+
+        let got = term.wait(&mut console, Instant::now() + Duration::from_secs(1));
+        assert_eq!(
+            got,
+            Some(vec![Effect::Print(
+                "refused: ! echo secret: tmux did not answer who owns the input".to_owned()
+            )])
+        );
+        assert_eq!(
+            term.input.draft(),
+            "!echo secret",
+            "refused ! line put back"
+        );
+        assert_eq!(
+            store.container(),
+            journal.to_vec(),
+            "events.jsonl untouched"
+        );
+        assert!(matches!(
+            store.memo_source(),
+            crate::store::SourceRead::Absent
+        ));
+        assert_eq!(
+            store.console_draft().unwrap(),
+            crate::store::SourceRead::Ready(b"earlier draft".to_vec()),
+            "console.draft untouched"
+        );
+        assert!(
+            !console.dir.join("messages").exists() && !rig.0.join("telegram").exists(),
+            "no message body or Telegram outbox written"
+        );
     }
 }

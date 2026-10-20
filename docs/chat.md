@@ -240,7 +240,9 @@ The window runs `--input` behind a fixed `stty` wrapper, which sets `-icrnl` so 
 (first live stamped pane) asks, another is read-only and takes only `/open` and `/more`. A line asks the
 speaker, `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
 `/close <id>` a named one (ids are not drawn, a script may still name one) and
-prints `closed <id>: <the ask's first words>`, other `/word`s are refused, five asks
+prints `closed <id>: <the ask's first words>`, `!<command>` runs that line as your
+own command ([Run a command](#run-a-command)), other `/word`s are refused (the
+refusal names `@<seat> /word`, which sends one, and a `!` line the same way), five asks
 open at most. A refused line (a cap, a refused command, a read-only chat) stays in the
 composer, ahead of anything typed since. A lead pair changed since
 opening is refused: `C-c`, then `prefix h`, restarts it. No terminal: `input off`.
@@ -367,6 +369,37 @@ in one short line, short lines, numbered lines for choices, no tables or bold
 markers — and a chat ask's footer repeats the guidance in one line.
 `human:chat` is display only: the journal still records the ask as
 `console:local`, and older records show that spelling for the same route.
+
+## Run a command
+
+`!<command>` in the owner chat runs that one line as your own command, in the
+session's recorded work dir. ae opens a tmux popup on the client whose active
+pane is this chat (the most recently active one when several show it) —
+`display-popup -EE -c <client> -d <work dir> -- <command>` — and prints
+`! <command> - popup started`. The popup runs the line in the tmux server's
+default shell and environment, closes when the command succeeds, and stays open
+after a failure until you close it. ae writes no script text of its own: the line
+goes to tmux as one argument, with one space added after a trailing `;`, which
+tmux's own parse would otherwise take as a separator. The work dir is proven a
+directory first, because tmux silently starts a popup whose directory is missing
+in `$HOME`.
+
+Nothing records the line: no journal row, no kept draft, no ask, no seat and no
+Telegram message; the confirmation is printed in this pane only. A read-only chat
+refuses it like any other line. A line holding a line break or another control
+character (a tab is allowed) is refused as `refused: ! runs one line, without
+control characters`, a bare `!` as `refused: nothing to run after !`, and the rest
+as `refused: ! <command>: <why>` — the session records no work dir, its work dir
+is gone, tmux did not answer, or no client (or two equally recent ones) shows this
+pane. Every refusal keeps the line in the composer. To send a line that starts
+with `!` to a seat, name the seat: `@<seat> !text` is an ordinary ask. Over
+Telegram a `!` line is always an ordinary message.
+
+Residuals: a popup or menu already open on that client swallows the new popup
+silently, and `popup started` is printed all the same — as it is when tmux stops
+answering between the client read and the popup; the popup's shell carries the
+tmux server's environment, which may be older than your shell's; and the command
+line is visible in `ps` while it runs.
 
 ## Telegram
 
