@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.98] - 2026-10-20
+- Show the Muse allowance in ae quota from an opt-in, on-demand probe held for 30 minutes
+- Name the muse quota leg's stdout and workspace in the TMPDIR door row
+
 ## [v2026.10.97] - 2026-10-20
 - Read a linked file in the chat column of ae app: r on the marked turn opens its first file link in a read-only reader
 
