@@ -168,12 +168,13 @@ fn a_hand_started_app_never_execs_over_a_kept_draft_or_an_open_composer() {
     rig.keys(&["Escape"]);
     rig.wait("composer closed", |s| !writing(s));
     let entry = rig.scratch.join("entry");
+    let newer = crate::calver::newer();
     rig.next(
-        "2026.10.99",
+        &newer,
         &format!("printf '%s\\n' \"$@\" > '{}'", entry.display()),
     );
-    let busy = "ae 2026.10.99 installed - restarts when idle";
-    rig.wait("busy hint over the kept draft", |s| s.contains(busy));
+    let busy = format!("ae {newer} installed - restarts when idle");
+    rig.wait("busy hint over the kept draft", |s| s.contains(&busy));
     std::thread::sleep(HOLD);
     assert!(!entry.exists(), "a draft kept after Escape holds the exec");
 
@@ -187,7 +188,7 @@ fn a_hand_started_app_never_execs_over_a_kept_draft_or_an_open_composer() {
     });
     std::thread::sleep(HOLD);
     assert!(!entry.exists(), "an open empty composer holds the exec");
-    rig.wait("still the busy hint", |s| s.contains(busy));
+    rig.wait("still the busy hint", |s| s.contains(&busy));
     rig.keys(&["Escape"]);
     let until = Instant::now() + WAIT;
     while !entry.exists() {
@@ -201,7 +202,10 @@ fn a_hand_started_app_never_execs_over_a_kept_draft_or_an_open_composer() {
 
 #[test]
 fn an_empty_fleet_app_hops_once_into_a_core_the_link_does_not_name() {
-    for (tag, to) in [("rxloop", "2026.10.99"), ("rxback", "2026.10.40")] {
+    for (tag, to) in [
+        ("rxloop", crate::calver::newer()),
+        ("rxback", crate::calver::older()),
+    ] {
         let rig = Rig::new(tag, false);
         rig.wait("empty-fleet app paints", |s| s.contains("No sessions."));
         let hops = rig.scratch.join("hops");
@@ -212,7 +216,7 @@ fn an_empty_fleet_app_hops_once_into_a_core_the_link_does_not_name() {
             .join("ae-core");
         let (hops_at, own_at) = (hops.display(), own.display());
         rig.next(
-            to,
+            &to,
             &format!("printf 'hop\\n' >> '{hops_at}'; exec '{own_at}' \"$@\""),
         );
         let until = Instant::now() + WAIT;

@@ -387,7 +387,7 @@ impl Rig {
     }
 
     fn bridge(&self) {
-        let next = self.state.join("versions/2026.10.99");
+        let next = self.state.join("versions").join(crate::calver::newer());
         fs::create_dir_all(&next).expect("successor fixture");
         let path = |name: &str| quote(&self.root.join(name).display().to_string());
         let tmux = format!("tmux -S {}", quote(&self.socket.display().to_string()));
@@ -493,12 +493,13 @@ fn installed_restart_carries_nonhome_agents_and_focus_then_consumes_the_option()
     );
     let raw = fs::read_to_string(rig.root.join("raw")).expect("raw writer carrier");
     let fields: Vec<_> = raw.trim_end().split('|').collect();
+    let newer = crate::calver::newer();
     assert_eq!(
         &fields[..8],
         &[
             "v1",
             pane.as_str(),
-            "2026.10.99",
+            newer.as_str(),
             fields[3],
             "web",
             WEB_ID,
@@ -552,7 +553,9 @@ fn wrong_pane_is_default_and_consumed() {
 }
 #[test]
 fn wrong_version_is_default_and_consumed() {
-    refused("viewversion", |s| s.replacen(ae::VERSION, "2026.10.1", 1));
+    refused("viewversion", |s| {
+        s.replacen(ae::VERSION, &crate::calver::older(), 1)
+    });
 }
 #[test]
 fn stale_is_default_and_consumed() {

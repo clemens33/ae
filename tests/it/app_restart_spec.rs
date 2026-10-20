@@ -164,7 +164,7 @@ impl Hand {
         } else {
             ":".to_owned()
         };
-        self.next("2026.10.99", &format!("printf 'hop\\n' >> {}; for carry do :; done; printf '%s\\n' \"$carry\" > {}; {carry}; exec {} app {} --app-view \"$carry\"", q(&self.path("hops")), q(&self.path("wire")), q(&core), quote(&self.rig.session)), 0o755);
+        self.next(&crate::calver::newer(), &format!("printf 'hop\\n' >> {}; for carry do :; done; printf '%s\\n' \"$carry\" > {}; {carry}; exec {} app {} --app-view \"$carry\"", q(&self.path("hops")), q(&self.path("wire")), q(&core), quote(&self.rig.session)), 0o755);
     }
 }
 
@@ -179,7 +179,8 @@ fn exec_preserves_pid_parent_shell_operands_environment_cwd_and_quit_mode() {
         let pid = hand.pid();
         let shell = hand.receipt("shell");
         let shell: Vec<_> = shell.lines().collect();
-        hand.recorder("2026.10.99");
+        let newer = crate::calver::newer();
+        hand.recorder(&newer);
         let entry = hand.receipt("entry");
         let entry: Vec<_> = entry.lines().collect();
         assert_eq!(
@@ -198,7 +199,7 @@ fn exec_preserves_pid_parent_shell_operands_environment_cwd_and_quit_mode() {
         let view =
             ae::app::handover::parse(entry[offset + 1]).expect("existing hostile-input grammar");
         assert_eq!(view.pane, format!("%{pid}"));
-        assert_eq!(view.version, "2026.10.99");
+        assert_eq!(view.version, newer);
         assert_eq!(view.view.session, hand.rig.session);
         hand.cooked("entry-mode");
         hand.wait("parent shell survives exec", |s| s.contains("BACK rc=0"));
@@ -209,7 +210,7 @@ fn exec_preserves_pid_parent_shell_operands_environment_cwd_and_quit_mode() {
 #[test]
 fn rollback_exec_preserves_shell_and_omits_the_carrier() {
     let hand = Hand::new("rxold", true, true);
-    hand.recorder("2026.10.40");
+    hand.recorder(&crate::calver::older());
     let entry = hand.receipt("entry");
     assert_eq!(
         entry.lines().skip(4).collect::<Vec<_>>(),
@@ -227,9 +228,11 @@ fn failed_exec_keeps_interaction_and_terminal_and_does_not_retry_same_version() 
         &hand.pane,
         &format!("cat > {}", quote(&hand.path("trace").display().to_string())),
     ]);
-    hand.next("2026.10.99", "exit 0", 0o644);
+    let newer = crate::calver::newer();
+    hand.next(&newer, "exit 0", 0o644);
+    let failed = format!("could not restart into ae {newer} -");
     hand.wait("failed exec resumes app with reason", |s| {
-        s.contains("could not restart into ae 2026.10.99 -")
+        s.contains(&failed)
     });
     std::thread::sleep(Duration::from_secs(12));
     let trace = hand.receipt("trace");
@@ -313,8 +316,12 @@ fn a_carrier_that_landed_in_another_core_suppresses_a_restart_loop() {
     let hand = Hand::new("rxguard", true, true);
     hand.bridge(false);
     hand.receipt("hops");
+    let hint = format!(
+        "ae {} installed - restart ae app to use it",
+        crate::calver::newer()
+    );
     hand.wait("wrong-core guard hints and stays usable", |s| {
-        s.contains("ae 2026.10.99 installed - restart ae app to use it")
+        s.contains(&hint)
     });
     std::thread::sleep(Duration::from_secs(12));
     assert_eq!(hand.receipt("hops"), "hop\n", "one exec only");
@@ -336,10 +343,10 @@ fn a_stamped_chat_with_refused_restart_proof_never_falls_back_to_exec() {
         "@ae_session_uuid",
         "different",
     ]);
-    hand.recorder("2026.10.99");
-    hand.wait("refused chat stays hint-only", |s| {
-        s.contains("ae 2026.10.99 installed - restart ae app to use it")
-    });
+    let newer = crate::calver::newer();
+    hand.recorder(&newer);
+    let hint = format!("ae {newer} installed - restart ae app to use it");
+    hand.wait("refused chat stays hint-only", |s| s.contains(&hint));
     std::thread::sleep(Duration::from_secs(12));
     assert!(
         !hand.path("entry").exists(),

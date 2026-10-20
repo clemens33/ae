@@ -44,6 +44,7 @@ mod board_stream_spec;
 mod brief;
 mod brief_retry;
 mod callerident;
+mod calver;
 mod capture;
 mod chat_first_spec;
 mod chat_look_spec;

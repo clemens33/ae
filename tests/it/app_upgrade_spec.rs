@@ -417,7 +417,7 @@ fn installed_app_idle_restarts_into_newer_link_core() {
     let rig = InstalledRig::new("upn", true);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
-    rig.repoint_link("2026.10.99");
+    rig.repoint_link(&crate::calver::newer());
 
     let restarted = rig.wait_restarted(WAIT, "idle app restarts into newer link core");
     assert_eq!(restarted.trim(), format!("app {}", rig.session));
@@ -442,7 +442,7 @@ fn installed_app_idle_restarts_into_older_link_core() {
     // Q-A rollback ruling: older link version also restarts
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
-    rig.repoint_link("2026.10.40");
+    rig.repoint_link(&crate::calver::older());
 
     let restarted = rig.wait_restarted(WAIT, "idle app restarts into older link core");
     assert_eq!(restarted.trim(), format!("app {}", rig.session));
@@ -475,14 +475,16 @@ fn installed_app_busy_with_draft_never_restarts_and_shows_busy_hint() {
     });
 
     // Repoint link to newer version
-    rig.repoint_link("2026.10.99");
+    let newer = crate::calver::newer();
+    rig.repoint_link(&newer);
 
     // Must show busy hint and NOT restart
+    let busy = format!("ae {newer} installed - restarts when idle");
     rig.wait(
         &pane,
         WAIT,
         "shows busy hint while draft is present",
-        |screen| screen.contains("ae 2026.10.99 installed - restarts when idle"),
+        |screen| screen.contains(&busy),
     );
     // Hold >= REFRESH + 5s (10s) after hint appears before asserting no restart
     std::thread::sleep(Duration::from_secs(10));
@@ -524,7 +526,7 @@ fn standalone_app_in_unstamped_pane_restarts_into_the_linked_core() {
         "on",
     ]);
     rig.wait(&unstamped, WAIT, "first paint", |s| s.contains("▣ 1 "));
-    rig.repoint_link("2026.10.99");
+    rig.repoint_link(&crate::calver::newer());
 
     let restarted = rig.wait_restarted(WAIT, "a hand-started idle app must restart");
     assert!(
@@ -538,7 +540,7 @@ fn checkout_shape_never_restarts_and_shows_no_hint() {
     let rig = InstalledRig::new("upc", true);
     let pane = rig.open_checkout_app();
     rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
-    rig.repoint_link("2026.10.99");
+    rig.repoint_link(&crate::calver::newer());
 
     // Hold >= 2*REFRESH (12s) before asserting checkout never hints or restarts
     std::thread::sleep(Duration::from_secs(12));
@@ -555,13 +557,15 @@ fn auto_upgrade_disabled_hints_only() {
     let rig = InstalledRig::new("upd", false); // auto_upgrade = off
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
-    rig.repoint_link("2026.10.99");
+    let newer = crate::calver::newer();
+    rig.repoint_link(&newer);
 
+    let hint = format!("ae {newer} installed - restart ae app to use it");
     rig.wait(
         &pane,
         WAIT,
         "shows hint only when auto_upgrade is disabled",
-        |screen| screen.contains("ae 2026.10.99 installed - restart ae app to use it"),
+        |screen| screen.contains(&hint),
     );
     // Hold >= REFRESH + 5s (10s) after hint appears before asserting no restart
     std::thread::sleep(Duration::from_secs(10));
