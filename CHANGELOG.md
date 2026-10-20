@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.101] - 2026-10-20
+- Keep dev builds to line-table debuginfo and stop the clippy guards growing per version
+
 ## [v2026.10.100] - 2026-10-20
 - Derive the app restart specs' link targets from the running version, not a release literal
 - Warn when a profile has no auto-reseat exit off its own account
