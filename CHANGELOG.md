@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.97] - 2026-10-20
+- Read a linked file in the chat column of ae app: r on the marked turn opens its first file link in a read-only reader
+
 ## [v2026.10.96] - 2026-10-19
 - Show OpenCode Go quota windows in ae quota from an opt-in key file
 - Decide the OpenCode Go plan route in the tool adapter row
