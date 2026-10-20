@@ -43,6 +43,7 @@ fn good_cache(attempt_at: i64) -> Cached {
         home: HOME_ID.to_owned(),
         attempt_at,
         outcome: Outcome::Done,
+        resets_at: None,
         allowance: Some(
             muse::extract(report(NOW, "12.5", "81", "\"Pro\"").as_bytes()).expect("allowance"),
         ),
@@ -799,4 +800,290 @@ fn the_only_paid_muse_caller_is_inside_the_cli_run_path() {
         (run..end).contains(&paid_references[0].1),
         "paid entry escaped CLI quota::run/run_with"
     );
+}
+
+// Frozen musediag acceptance: lead's measured-shape, cache-invariant and
+// limit-row rulings. Every account, request ID and timestamp here is synthetic.
+const MUSEDIAG_ID: &str = "00000000-0000-4000-8000-000000000000";
+const MUSEDIAG_PROFILES: &str =
+    "synthetic_a = muse --model synthetic-a\nsynthetic_b = muse --model synthetic-b\n";
+const MUSEDIAG_RESET: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
+const MUSEDIAG_TIME: &str = "2030-01-01T00:00:00Z";
+const MUSEDIAG_LIMIT: &str = concat!(
+    "{\"record_type\":\"event\",\"payload_type\":\"run.terminal.failed\",",
+    "\"payload\":{\"kind\":\"run_terminal\",\"terminal\":\"failed\",",
+    "\"reason\":\"API error 429 [request_id=00000000-0000-4000-8000-000000000000]: ",
+    "Subscription quota exhausted. Your usage window resets at ",
+    "2030-01-01T00:00:00Z. (rate_limit_error)\",\"text\":\"\"}}\n"
+);
+
+fn musediag_held(outcome: &str, extra: &str) -> String {
+    format!(r#"{{"v":1,"home":"{HOME_ID}","attempt_at":1800000000,"outcome":"{outcome}"{extra}}}"#)
+}
+
+fn musediag_cell(text: &str, column: &str, next: &str) -> String {
+    let mut lines = text.lines();
+    let header = lines.next().expect("quota header");
+    let start = header.find(column).expect("named column");
+    let end = header.find(next).expect("next column");
+    // Header is ASCII; row positions count characters because SCOPE has a dot.
+    lines
+        .next()
+        .expect("one Muse row")
+        .chars()
+        .skip(start)
+        .take(end - start)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+#[test]
+fn measured_muse_limit_survives_transport_shows_reset_and_is_held_without_request_ids() {
+    let rig = Rig::new(
+        "md-limit",
+        Some("on"),
+        MUSEDIAG_PROFILES,
+        "/bin/cat \"$rig_root/payload\"; exit 1",
+    );
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("fixture clock")
+            .as_secs(),
+    )
+    .expect("epoch fits");
+    let reset = now + 3600;
+    let reset_text = ae::time::Timestamp::from_epoch(reset).to_string();
+    let stream = format!(
+        "not-json {NOISE}\n{{\"record_type\":\"status\",\"payload_type\":\"run.usage\",\"payload\":{{\"allowance\":null}}}}\n{}",
+        MUSEDIAG_LIMIT.replace(MUSEDIAG_TIME, &reset_text)
+    );
+    std::fs::write(rig.root.join("payload"), stream).expect("synthetic failed stream");
+    let first = rig.run();
+    assert_eq!(musediag_cell(&first, "BUCKET", "WINDOW"), "limit");
+    assert_eq!(musediag_cell(&first, "WINDOW", "USED"), "-");
+    assert_eq!(musediag_cell(&first, "USED", "EFFECTIVE"), "100%");
+    assert!(
+        musediag_cell(&first, "RESETS", "OBSERVED").starts_with("in "),
+        "reset must occupy RESETS, not merely hint text: {first}"
+    );
+    assert!(
+        words(&first).contains("muse usage limit reached"),
+        "{first}"
+    );
+    assert!(words(&first).contains("limit-derived"), "{first}");
+    for profile in ["synthetic_a", "synthetic_b"] {
+        assert!(
+            first.contains(profile),
+            "limit row lost model correlation: {first}"
+        );
+    }
+    assert_eq!(
+        first.matches("muse ·").count(),
+        1,
+        "one shared account: {first}"
+    );
+    assert!(!first.contains("read-error"), "{first}");
+    let saved = std::fs::read(rig.cache()).expect("held limit");
+    let saved_text = std::str::from_utf8(&saved).expect("UTF-8 normalized cache");
+    let cache = ae::json::parse(saved_text).expect("cache JSON");
+    assert_eq!(cache.get_str("outcome"), Some("limit"));
+    assert_eq!(cache.get("resets_at"), Some(&ae::json::Value::Num(reset)));
+    assert!(cache.get("allowance").is_none());
+    for forbidden in [MUSEDIAG_ID, "request_id", "run.terminal.failed", NOISE] {
+        assert!(
+            !saved_text.contains(forbidden),
+            "cache retained {forbidden}"
+        );
+        assert!(!first.contains(forbidden), "display retained {forbidden}");
+    }
+    assert_eq!(rig.argv(), CALL);
+    rig.fake("exit 7");
+    let second = rig.run();
+    assert_eq!(musediag_cell(&second, "BUCKET", "WINDOW"), "limit");
+    assert_eq!(musediag_cell(&second, "USED", "EFFECTIVE"), "100%");
+    assert_eq!(std::fs::read(rig.cache()).expect("same held bytes"), saved);
+    assert_eq!(rig.argv(), CALL, "a second process paid again inside TTL");
+}
+
+#[test]
+fn other_muse_errors_and_malformed_limit_envelopes_keep_the_original_exit_status() {
+    let wrong = [
+        MUSEDIAG_LIMIT.replace("API error 429", "API error 500"),
+        MUSEDIAG_LIMIT.replace("Subscription quota exhausted.", "Rate limit exceeded."),
+        MUSEDIAG_LIMIT.replace("Subscription quota exhausted.", "Authentication failed."),
+        MUSEDIAG_LIMIT.replace(
+            "Your usage window resets at ",
+            "Your weekly limit resets at ",
+        ),
+        MUSEDIAG_LIMIT.replace(MUSEDIAG_TIME, "2030-02-30T00:00:00Z"),
+        MUSEDIAG_LIMIT.replace(MUSEDIAG_TIME, "2030-01-01T00:00:00.000Z"),
+        MUSEDIAG_LIMIT.replace(MUSEDIAG_TIME, "2030-01-01T00:00:00+00:00"),
+        MUSEDIAG_LIMIT.replace(MUSEDIAG_TIME, ""),
+        MUSEDIAG_LIMIT.replace("\"terminal\":\"failed\"", "\"terminal\":\"completed\""),
+        MUSEDIAG_LIMIT.replace("\"record_type\":\"event\"", "\"record_type\":\"status\""),
+        MUSEDIAG_LIMIT.replace("run.terminal.failed", "task.lifecycle.failed"),
+        MUSEDIAG_LIMIT.replace("API error 429", "untrusted prefix API error 429"),
+        MUSEDIAG_LIMIT.replace("(rate_limit_error)", "(rate_limit_error) extra"),
+        MUSEDIAG_LIMIT.replace("(rate_limit_error)", "(authentication_error)"),
+        MUSEDIAG_LIMIT.replace("\"reason\":", "\"text\":"),
+        MUSEDIAG_LIMIT.replacen('{', "{\"record_type\":\"status\",", 1),
+        MUSEDIAG_LIMIT.replace("\"terminal\":", "\"terminal\":\"completed\",\"terminal\":"),
+        MUSEDIAG_LIMIT.replace("\"reason\":", "\"reason\":\"unrelated\",\"reason\":"),
+        MUSEDIAG_LIMIT.replace("\"payload\":{", "\"payload\":{},\"payload\":{"),
+        MUSEDIAG_LIMIT.replacen('{', "{broken,", 1),
+        format!("plain error, not a JSON event: {MUSEDIAG_TIME}"),
+    ];
+    for (index, payload) in wrong.into_iter().enumerate() {
+        assert_ne!(
+            payload, MUSEDIAG_LIMIT,
+            "fixture mutation must change input"
+        );
+        let code = [1, 7, 255][index % 3];
+        let rig = Rig::new(
+            &format!("md-bad{index}"),
+            Some("on"),
+            PROFILE,
+            &format!("/bin/cat \"$rig_root/payload\"; exit {code}"),
+        );
+        std::fs::write(rig.root.join("payload"), payload).expect("synthetic other error");
+        let text = words(&rig.run());
+        assert!(text.contains("read-error"), "case {index}: {text}");
+        assert!(
+            text.contains(&format!("exited {code}")),
+            "case {index}: {text}"
+        );
+        assert!(
+            !text.contains("100%"),
+            "unmeasured limit invented usage: {text}"
+        );
+        let saved = std::fs::read_to_string(rig.cache()).expect("held exit status");
+        let cache = ae::json::parse(&saved).expect("cache JSON");
+        assert_eq!(
+            cache.get_str("outcome"),
+            Some(format!("exit-{code}").as_str())
+        );
+        assert!(cache.get("resets_at").is_none());
+        assert!(!saved.contains(MUSEDIAG_ID));
+    }
+}
+
+#[test]
+fn non_utf8_nonzero_muse_stdout_preserves_exit_code_and_drops_vendor_bytes() {
+    let rig = Rig::new(
+        "md-binary",
+        Some("on"),
+        PROFILE,
+        "printf '\\377\\376'; exit 7",
+    );
+    let text = words(&rig.run());
+    assert!(
+        text.contains("read-error") && text.contains("exited 7"),
+        "{text}"
+    );
+    let saved = std::fs::read_to_string(rig.cache()).expect("normalized exit record");
+    let cache = ae::json::parse(&saved).expect("cache JSON");
+    assert_eq!(cache.get_str("outcome"), Some("exit-7"));
+    assert!(cache.get("resets_at").is_none());
+}
+
+#[test]
+fn exit_zero_muse_allowance_keeps_its_two_windows_even_beside_failed_event_text() {
+    let rig = Rig::new("md-ok", Some("on"), PROFILE, SUCCESS);
+    let allowance = std::fs::read_to_string(rig.root.join("payload")).expect("allowance");
+    std::fs::write(
+        rig.root.join("payload"),
+        format!("{MUSEDIAG_LIMIT}{allowance}"),
+    )
+    .expect("exit-zero stream");
+    let text = words(&rig.run());
+    for expected in ["window", "weekly", "12.5%", "81%", "Pro"] {
+        assert!(text.contains(expected), "{text}");
+    }
+    let saved = std::fs::read_to_string(rig.cache()).expect("held allowance");
+    let cache = ae::json::parse(&saved).expect("cache JSON");
+    assert_eq!(cache.get_str("outcome"), Some("ok"));
+    assert!(cache.get("allowance").is_some());
+    assert!(cache.get("resets_at").is_none());
+    assert!(!saved.contains(MUSEDIAG_ID));
+    assert!(
+        !text.contains("100%") && !text.contains("limit reached"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_limit_cache_round_trips_only_its_reset_and_uses_the_unchanged_attempt_ttl() {
+    let input = musediag_held("limit", &format!(",\"resets_at\":{MUSEDIAG_RESET}"));
+    let held = muse::parse_cache(input.as_bytes()).expect("limit with a valid reset");
+    let rendered = held.render();
+    let value = ae::json::parse(&rendered).expect("rendered cache");
+    assert_eq!(value.get_str("outcome"), Some("limit"));
+    assert_eq!(
+        value.get("resets_at"),
+        Some(&ae::json::Value::Num(MUSEDIAG_RESET))
+    );
+    assert!(value.get("allowance").is_none());
+    let restored = muse::parse_cache(rendered.as_bytes()).expect("read own limit");
+    assert_eq!(restored, held);
+    for (at, due) in [
+        (NOW - 1, true),
+        (NOW, false),
+        (NOW + 1799, false),
+        (NOW + 1800, true),
+    ] {
+        assert_eq!(restored.due(HOME_ID, at), due, "at {at}");
+    }
+    assert!(restored.due("/synthetic/another-muse-home", NOW));
+    // Old v1 failure and successful allowance records remain readable.
+    assert!(muse::parse_cache(musediag_held("exit-1", "").as_bytes()).is_some());
+    let old_success = good_cache(NOW);
+    assert_eq!(
+        muse::parse_cache(old_success.render().as_bytes()),
+        Some(old_success)
+    );
+}
+
+#[test]
+fn only_a_limit_outcome_may_carry_one_valid_integral_reset_in_the_cache() {
+    for extra in [
+        "",
+        ",\"resets_at\":null",
+        ",\"resets_at\":0",
+        ",\"resets_at\":-1",
+        ",\"resets_at\":253402300800",
+        ",\"resets_at\":1893456000.5",
+        ",\"resets_at\":\"1893456000\"",
+        ",\"resets_at\":true",
+        ",\"resets_at\":99999999999999999999",
+        ",\"resets_at\":1893456000,\"resets_at\":1893456001",
+        ",\"resets_at\":1893456000,\"allowance\":{}",
+    ] {
+        let input = musediag_held("limit", extra);
+        assert!(muse::parse_cache(input.as_bytes()).is_none(), "{input}");
+    }
+    for outcome in [
+        "exit-1",
+        "failed",
+        "timeout",
+        "unparsed",
+        "not-utf8",
+        "too-large",
+    ] {
+        let input = musediag_held(outcome, ",\"resets_at\":1893456000");
+        assert!(muse::parse_cache(input.as_bytes()).is_none(), "{input}");
+    }
+    let success_with_reset =
+        good_cache(NOW)
+            .render()
+            .replacen('{', "{\"resets_at\":1893456000,", 1);
+    assert!(muse::parse_cache(success_with_reset.as_bytes()).is_none());
+    for reset in [1_i64, 253_402_300_799] {
+        let input = musediag_held("limit", &format!(",\"resets_at\":{reset}"));
+        assert!(
+            muse::parse_cache(input.as_bytes()).is_some(),
+            "valid boundary {reset}"
+        );
+    }
 }

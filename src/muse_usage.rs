@@ -176,22 +176,28 @@ pub(crate) fn refresh_with(
     if crate::store::prove_publishable(&dir).is_err() {
         return Refreshed::skipped(Some(Gap::NoStore));
     }
-    let (outcome, allowance) = match ask() {
+    let (outcome, resets_at, allowance) = match ask() {
         MuseRun::Absent => return Refreshed::skipped(Some(Gap::Absent)),
         MuseRun::Done { text } => match muse::extract(text.as_bytes()) {
-            Ok(allowance) => (Outcome::Done, Some(allowance)),
-            Err(_) => (Outcome::Unparsed, None),
+            Ok(allowance) => (Outcome::Done, None, Some(allowance)),
+            Err(_) => (Outcome::Unparsed, None, None),
         },
-        MuseRun::TimedOut => (Outcome::TimedOut, None),
-        MuseRun::TooLarge => (Outcome::TooLarge, None),
-        MuseRun::Exited(code) => (Outcome::Exited(code), None),
-        MuseRun::NotUtf8 => (Outcome::NotUtf8, None),
-        MuseRun::Failed => (Outcome::Failed, None),
+        MuseRun::TimedOut => (Outcome::TimedOut, None, None),
+        MuseRun::TooLarge => (Outcome::TooLarge, None, None),
+        // The exit status is the class; only the measured limit message in
+        // what the failed run wrote upgrades it, and only its reset is kept.
+        MuseRun::Exited { code, text } => match muse::limit(text.as_bytes()) {
+            Some(reset) => (Outcome::Limit, Some(reset), None),
+            None => (Outcome::Exited(code), None, None),
+        },
+        MuseRun::NotUtf8 => (Outcome::NotUtf8, None, None),
+        MuseRun::Failed => (Outcome::Failed, None, None),
     };
     let record = Cached {
         home: home.to_owned(),
         attempt_at: now,
         outcome,
+        resets_at,
         allowance,
     };
     let kept = crate::store::publish_private_in(&dir, CACHE, record.render().as_bytes()).is_ok();
@@ -346,7 +352,13 @@ mod tests {
     #[test]
     fn every_failure_class_is_held_across_a_reload_without_vendor_words() {
         let table = [
-            (MuseRun::Exited(3), Outcome::Exited(3)),
+            (
+                MuseRun::Exited {
+                    code: 3,
+                    text: String::new(),
+                },
+                Outcome::Exited(3),
+            ),
             (MuseRun::NotUtf8, Outcome::NotUtf8),
             (MuseRun::TooLarge, Outcome::TooLarge),
             (MuseRun::TimedOut, Outcome::TimedOut),

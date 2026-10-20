@@ -1250,7 +1250,11 @@ no advisory (a known gap, as for agy). A call that was paid but could not be rec
 once with a note and paid again next time. A failed call names how it ended beside `muse exec gave
 no usable answer`: `exited N`, `output not parsed`, `output not UTF-8` or `output over 256 KiB`
 (a passed deadline reads `muse exec passed its 90 s deadline`); the class, never muse's own
-words, is what the cache keeps.
+words, is what the cache keeps. One failure is read further: an exhausted account fails with a
+429 that states when its usage window resets, and only that measured wording becomes a `limit`
+row (`USED` 100%, the reset in `RESETS`, beside `muse usage limit reached (limit-derived, not a
+measured %)`). The 100% is derived from the message, not measured; the cache keeps the reset
+and never the request id, and any other failure stays `read-error` with its exit status.
 
 ### Advisories
 

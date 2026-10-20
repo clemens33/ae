@@ -842,8 +842,10 @@ pub(crate) enum MuseRun {
     TimedOut,
     /// `muse exec` wrote past the output ceiling and was killed.
     TooLarge,
-    /// `muse exec` exited by itself with this non-zero status.
-    Exited(u8),
+    /// `muse exec` exited by itself with this non-zero status. `text` is its
+    /// stdout when that is UTF-8, else empty: the exit status always wins, and
+    /// a failed run states its reason (a usage limit, with its reset) there.
+    Exited { code: u8, text: String },
     /// `muse exec` exited cleanly and wrote output that is not UTF-8.
     NotUtf8,
     /// `muse exec` was not started, not read back or killed by a signal.
@@ -902,10 +904,14 @@ fn muse_quota_with(home: &Path, envs: &[(&str, &str)], deadline: Duration) -> Mu
         Ran::Exited(exit, out) if exit.success() => {
             String::from_utf8(out).map_or(MuseRun::NotUtf8, |text| MuseRun::Done { text })
         }
-        Ran::Exited(exit, _) => exit
-            .code()
-            .and_then(|code| u8::try_from(code).ok())
-            .map_or(MuseRun::Failed, MuseRun::Exited),
+        Ran::Exited(exit, out) => {
+            exit.code()
+                .and_then(|code| u8::try_from(code).ok())
+                .map_or(MuseRun::Failed, |code| MuseRun::Exited {
+                    code,
+                    text: String::from_utf8(out).unwrap_or_default(),
+                })
+        }
         Ran::TimedOut => MuseRun::TimedOut,
         Ran::Over => MuseRun::TooLarge,
         Ran::Absent => MuseRun::Absent,
@@ -2639,8 +2645,22 @@ mod tests {
                     text: "hello".to_owned(),
                 },
             ),
-            ("exit3", "echo noise >&2; exit 3", MuseRun::Exited(3)),
-            ("exit255", "exit 255", MuseRun::Exited(255)),
+            (
+                "exit3",
+                "echo noise >&2; exit 3",
+                MuseRun::Exited {
+                    code: 3,
+                    text: String::new(),
+                },
+            ),
+            (
+                "exit255",
+                "exit 255",
+                MuseRun::Exited {
+                    code: 255,
+                    text: String::new(),
+                },
+            ),
             ("binary", "printf '\\377\\376'", MuseRun::NotUtf8),
             (
                 "big",

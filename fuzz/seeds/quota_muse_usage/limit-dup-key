@@ -1,0 +1,1 @@
+{"record_type":"event","payload_type":"run.terminal.failed","payload":{"kind":"run_terminal","terminal":"failed","terminal":"completed","reason":"API error 429 [request_id=00000000-0000-4000-8000-000000000000]: Subscription quota exhausted. Your usage window resets at 2030-01-01T00:00:00Z. (rate_limit_error)","text":""}}

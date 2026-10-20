@@ -1932,6 +1932,9 @@ const MUSE_UNASKED: &str = "muse quota not asked yet — run ae quota";
 const MUSE_NO_ALLOWANCE: &str = "muse exec reported no allowance";
 const MUSE_TIMEOUT: &str = "muse exec passed its 90 s deadline";
 const MUSE_FAILED: &str = "muse exec gave no usable answer";
+/// The row beside a held usage limit: the full bar and the reset are what the vendor's
+/// message implies, not a measured percentage, and the words say so.
+const MUSE_LIMIT: &str = "muse usage limit reached (limit-derived, not a measured %)";
 
 /// The agy leg, shared with the worker that asks it off the app's reader.
 pub(crate) type AgyLeg = Arc<dyn Fn(&Path) -> AgyRun + Send + Sync>;
@@ -2149,9 +2152,10 @@ fn muse_failure_words(outcome: muse::Outcome) -> String {
         muse::Outcome::NotUtf8 => format!("{MUSE_FAILED} (output not UTF-8)"),
         muse::Outcome::Unparsed => format!("{MUSE_FAILED} (output not parsed)"),
         muse::Outcome::TooLarge => format!("{MUSE_FAILED} (output over 256 KiB)"),
-        muse::Outcome::Done | muse::Outcome::TimedOut | muse::Outcome::Failed => {
-            MUSE_FAILED.to_owned()
-        }
+        muse::Outcome::Done
+        | muse::Outcome::TimedOut
+        | muse::Outcome::Failed
+        | muse::Outcome::Limit => MUSE_FAILED.to_owned(),
     }
 }
 
@@ -2191,6 +2195,17 @@ fn muse_rows(
                 return (rows, gap.map(|gap| gap.words().to_owned()));
             }
             (Status::Unknown, MUSE_NO_ALLOWANCE.to_owned())
+        }
+        muse::Outcome::Limit => {
+            let rows = record.rows(now);
+            if !rows.is_empty() {
+                let words = gap.map_or_else(
+                    || MUSE_LIMIT.to_owned(),
+                    |gap| format!("{MUSE_LIMIT}; {}", gap.words()),
+                );
+                return (rows, Some(words));
+            }
+            (Status::ReadError, MUSE_FAILED.to_owned())
         }
         muse::Outcome::TimedOut => (Status::Truncated, MUSE_TIMEOUT.to_owned()),
         outcome => (Status::ReadError, muse_failure_words(outcome)),
@@ -6922,6 +6937,7 @@ mod tests {
             attempt_at: 1_792_000_000,
             outcome,
             allowance,
+            resets_at: None,
         };
         let empty = extract(br#"{"record_type":"status","payload_type":"run.usage","payload":{}}"#)
             .expect("a record with no allowance");
@@ -6977,5 +6993,54 @@ mod tests {
                 "no gap, no extra words"
             );
         }
+    }
+
+    #[test]
+    fn measured_limit_rows_use_attempt_age_and_never_infer_a_window_duration() {
+        use super::muse_rows;
+        use crate::muse_usage::Gap;
+        use crate::quota::muse;
+
+        const ATTEMPT: i64 = 1_893_452_400; // Synthetic 2029-12-31T23:00:00Z
+        const RESET: i64 = 1_893_456_000; // Synthetic 2030-01-01T00:00:00Z
+        let input = format!(
+            r#"{{"v":1,"home":"/synthetic/muse-home","attempt_at":{ATTEMPT},"outcome":"limit","resets_at":{RESET}}}"#
+        );
+        let held = muse::parse_cache(input.as_bytes()).expect("normalized limit record");
+        for (now, status) in [
+            (ATTEMPT, Status::Fresh),
+            (ATTEMPT + 900, Status::Fresh),
+            (ATTEMPT + 901, Status::Stale),
+            (ATTEMPT - 300, Status::Unknown),
+            (RESET, Status::Unknown),
+        ] {
+            let (rows, words) = muse_rows(Some(&held), None, now);
+            assert_eq!(
+                rows,
+                vec![Row {
+                    bucket: "limit".to_owned(),
+                    qualifier: None,
+                    window_minutes: None,
+                    used_percent: Some("100".to_owned()),
+                    resets_at: Some(RESET),
+                    observed_at: Some(ATTEMPT),
+                    status,
+                }],
+                "at {now}"
+            );
+            let words = words.expect("limit explanation");
+            assert!(words.contains("muse usage limit reached"), "{words}");
+            assert!(words.contains("limit-derived"), "{words}");
+        }
+        let (plain, _) = muse_rows(Some(&held), None, ATTEMPT);
+        let (unrecorded, words) = muse_rows(Some(&held), Some(Gap::Unrecorded), ATTEMPT);
+        assert_eq!(
+            unrecorded, plain,
+            "publication failure must retain the paid answer"
+        );
+        let words = words.expect("limit and publication explanation");
+        assert!(words.contains("muse usage limit reached"), "{words}");
+        assert!(words.contains("limit-derived"), "{words}");
+        assert!(words.contains(Gap::Unrecorded.words()), "{words}");
     }
 }
