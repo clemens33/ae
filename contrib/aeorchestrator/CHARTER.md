@@ -19,9 +19,10 @@ WORKING
   dotfiles      lead          review dashboard query (1 open ask)
 ```
 
-`NEEDS YOU` is one queue entry per session, containing only its main and named
-`colead` declarations. Worker declarations and unanswered requests stay inside
-the session; open requests appear only as a count on its `WORKING` row. A human
+`NEEDS YOU` is one queue entry per session, containing every seat whose attention
+reason needs the human (`waiting-user`, `blocked`, `limit`, `throttled`, `dead`).
+Stale seats and unanswered requests stay inside the session; open requests appear
+only as a count on its `WORKING` row. A human
 answer for a session goes to that session's lead (or the named seat) via relay.
 
 Every watchdog overview ends with this exact line:

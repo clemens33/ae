@@ -419,7 +419,7 @@ Resume uses a captured UUID for exact conversation restore. Muse starts fresh wh
 {"ts":"2026-05-19T08:00:13Z","actor":"watchdog","action":"nudge","target":"claude:lead","summary":"idle 30m, no recent ae activity"}
 ```
 
-`requests` walks events backward to retain the newest `ask` / `review` per `ref` and match its `reply` or `cancel`; it asks `session::open_requests` whether an otherwise-pending valid ledger record remains open. Its statuses are `pending`, `replied`, `cancelled` and `retired`; the last means either party's seat was retired, so no reply was recorded. The printed table shows every pending row plus the newest 10 closed (`--limit N`, `0` = all). The watchdog reads `events.jsonl` to enforce its "done is invalidated by newer ae event" contract.
+`requests` walks events backward to retain the newest `ask` / `review` per `ref` and match its `reply` or `cancel`; it asks `session::open_requests` whether an otherwise-pending valid ledger record remains open. Its statuses are `pending`, `replied`, `cancelled` and `retired`; the last means either party's seat was retired, so no reply was recorded. A pending row also carries its target's first valid `accept` after the newest opening, judged by the reply's own identity rule, and prints `accepted`; it stays pending. The printed table shows every pending row plus the newest 10 closed (`--limit N`, `0` = all). The watchdog reads `events.jsonl` to enforce its "done is invalidated by newer ae event" contract.
 
 ## Watchdog and monitor window
 

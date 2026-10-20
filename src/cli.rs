@@ -92,6 +92,12 @@ pub const REVIEW: &str = "_review";
 /// The `reply` helper's surface — `_reply <meta-dir> [--as <agent>] <request-id> <message…>`.
 pub const REPLY: &str = "_reply";
 
+/// The `withdraw` helper's surface — `_withdraw <meta-dir> <request-id> <reason…>`.
+pub const WITHDRAW: &str = "_withdraw";
+
+/// The `accept` helper's surface — `_accept <meta-dir> <request-id> <note…>`.
+pub const ACCEPT: &str = "_accept";
+
 /// The `send` helper's surface — `_send <meta-dir> [--cross-session] <target>
 /// <message…>`.
 pub const SEND: &str = "_send";
@@ -391,6 +397,22 @@ pub enum Request {
     /// `_reply <meta-dir> [--as <agent>] <request-id> <message…>` — validated
     /// by [`crate::reply::parse`].
     Reply {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_withdraw <meta-dir> <request-id> <reason…>` — validated by
+    /// [`crate::request_verb::parse`].
+    Withdraw {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_accept <meta-dir> <request-id> <note…>` — validated by
+    /// [`crate::request_verb::parse`].
+    Accept {
         /// The session meta directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
@@ -1004,6 +1026,20 @@ impl Request {
                     tail: rest.to_vec(),
                 },
             },
+            Some(WITHDRAW) => match &args[1..] {
+                [] => Self::MissingOperand(WITHDRAW),
+                [dir, rest @ ..] => Self::Withdraw {
+                    dir: PathBuf::from(dir),
+                    tail: rest.to_vec(),
+                },
+            },
+            Some(ACCEPT) => match &args[1..] {
+                [] => Self::MissingOperand(ACCEPT),
+                [dir, rest @ ..] => Self::Accept {
+                    dir: PathBuf::from(dir),
+                    tail: rest.to_vec(),
+                },
+            },
             Some(SEND) => match &args[1..] {
                 [] => Self::MissingOperand(SEND),
                 [dir, rest @ ..] => Self::Send {
@@ -1493,6 +1529,8 @@ impl Request {
             | Self::Ask { .. }
             | Self::Review { .. }
             | Self::Reply { .. }
+            | Self::Withdraw { .. }
+            | Self::Accept { .. }
             | Self::Send { .. }
             | Self::Relay { .. }
             | Self::Interrupt { .. }
@@ -1553,6 +1591,8 @@ impl Request {
             | Self::Ask { dir, .. }
             | Self::Review { dir, .. }
             | Self::Reply { dir, .. }
+            | Self::Withdraw { dir, .. }
+            | Self::Accept { dir, .. }
             | Self::Send { dir, .. }
             | Self::Relay { dir, .. }
             | Self::Interrupt { dir, .. }

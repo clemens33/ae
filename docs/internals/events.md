@@ -1,6 +1,6 @@
 # Events
 
-`~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Mutating helpers and ae internals write structured events; inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `watchdog status`) read but don't write. The watchdog reads events to enforce its done-invalidation contract; `requests` derives `pending`, `replied`, `cancelled` and `retired` state from them. Append-only, one JSON object per line.
+`~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Mutating helpers and ae internals write structured events; inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `watchdog status`) read but don't write. The watchdog reads events to enforce its done-invalidation contract; `requests` derives `pending` (annotated `accepted` by an `accept`), `replied`, `cancelled` and `retired` state from them. Append-only, one JSON object per line.
 
 ## Producers and consumers
 

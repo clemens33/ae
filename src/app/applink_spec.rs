@@ -920,6 +920,8 @@ fn a_drawn_url_is_one_tight_run_over_its_cells() {
         open: vec![],
         dir: None,
         base: base("/w"),
+        unanswered: None,
+        unanswered_oldest_secs: None,
     };
     let lane = lane_of("see https://example.com/x now");
     let screen = Screen {
@@ -965,6 +967,8 @@ fn two_links_on_one_row_are_two_runs_and_nothing_between_them() {
         open: vec![],
         dir: None,
         base: base("/w"),
+        unanswered: None,
+        unanswered_oldest_secs: None,
     };
     let lane = lane_of("a https://a.dev/x, b /Users/me/y.md and done");
     let screen = Screen {

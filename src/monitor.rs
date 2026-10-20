@@ -477,16 +477,25 @@ fn attention_pass(acc: &mut Acc, session: &Observed, prior: &State, now: i64) {
             Some(entry) => (false, entry.first_seen),
         };
         if report {
+            // Only a reason that needs the human is announced as one; `stale`
+            // stays visible under its own quiet mark.
+            let mark = if why.needs_you() { "⚠" } else { "◌" };
             match was {
                 Some(entry) if !entry.cleared && entry.reason != reason => acc.lines.push(format!(
-                    "⚠ {} · {} now: {} (was {})",
+                    "{mark} {} · {} now: {} (was {})",
                     sanitize(&session.name),
                     sanitize(reference),
                     sanitize(reason),
                     sanitize(&entry.reason)
                 )),
+                _ if why.needs_you() => acc.lines.push(format!(
+                    "{mark} {} · {} needs you: {}",
+                    sanitize(&session.name),
+                    sanitize(reference),
+                    sanitize(reason)
+                )),
                 _ => acc.lines.push(format!(
-                    "⚠ {} · {} needs you: {}",
+                    "{mark} {} · {} {}",
                     sanitize(&session.name),
                     sanitize(reference),
                     sanitize(reason)
@@ -1326,7 +1335,11 @@ mod tests {
             );
             assert_eq!(
                 report,
-                vec![format!("⚠ alpha · lead needs you: {}", why.as_str())],
+                vec![if why == Reason::Stale {
+                    "◌ alpha · lead stale".to_owned()
+                } else {
+                    format!("⚠ alpha · lead needs you: {}", why.as_str())
+                }],
                 "{why:?} must not be silently dropped"
             );
         }

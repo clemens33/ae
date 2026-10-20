@@ -301,6 +301,24 @@ fn wait_cell(agent: &AgentEntry, out: &mut String) {
     let _ = write!(out, "{word} (unconfirmed {c}/{r}{tail})");
 }
 
+/// The row's `attn:` marker and, beside it, its request debt.
+fn push_markers(out: &mut String, session: &SessionEntry) {
+    // The filter may have selected this row on readable partial evidence, but
+    // a table marker names a class and therefore needs the same exactness as
+    // JSON's attention/rank pair.
+    if session.attention_is_exact()
+        && let Some(reason) = session.attention
+    {
+        out.push_str("attn:");
+        out.push_str(reason.as_str());
+        out.push(' ');
+    }
+    // Request debt, named quietly beside the marker and never as one.
+    if let Some(count) = session.unanswered.filter(|count| *count > 0) {
+        let _ = write!(out, "unanswered:{count} ");
+    }
+}
+
 /// The tabular view at the snapshot time that supplied `sessions`.
 #[must_use]
 pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
@@ -309,16 +327,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         // Columns are PADDED, not tab-separated.
         push_padded(&mut out, &session.name, NAME_WIDTH);
         push_padded(&mut out, session.status.as_str(), STATUS_WIDTH);
-        // The filter may have selected this row on readable partial evidence, but
-        // a table marker names a class and therefore needs the same exactness as
-        // JSON's attention/rank pair.
-        if session.attention_is_exact()
-            && let Some(reason) = session.attention
-        {
-            out.push_str("attn:");
-            out.push_str(reason.as_str());
-            out.push(' ');
-        }
+        push_markers(&mut out, session);
         // ORIGIN — where this session came from.
         match session
             .origin
@@ -708,6 +717,7 @@ mod tests {
             agent("lead", Some(true), Some("blocked")),
             agent("coworker", Some(false), None),
         ];
+        live.agents[0].reason = Some(Reason::Blocked);
 
         let mut quiet = SessionEntry::new("quiet", Status::Running);
         quiet.agents = vec![agent("claude:solo", Some(true), Some("working"))];
@@ -2370,7 +2380,7 @@ mod tests {
     }
 
     #[test]
-    fn sc_522_the_stamp_and_the_attention_it_justifies_cannot_describe_two_moments() {
+    fn sc_522_the_stamp_and_unanswered_count_cannot_describe_two_moments() {
         // **THE PRECONDITION, not a convenience.**
         let asked_at = Timestamp::from_epoch(1_780_000_000);
         let fixture = Unanswered::new("sc522", asked_at);
@@ -2394,7 +2404,7 @@ mod tests {
                 "{label}: the document stamps the supplied now"
             );
 
-            // 2.
+            // Unanswered debt follows that same clock, outside human attention.
             let implied = asked_at.seconds_until(stamped) > DEFAULT_UNANSWERED_SECS;
             assert_eq!(
                 implied,
@@ -2403,28 +2413,19 @@ mod tests {
             );
             assert_eq!(
                 needs,
-                Some(&json::Value::Bool(implied)),
-                "{label}: needs_attention follows the stamp"
+                Some(&json::Value::Bool(false)),
+                "{label}: unanswered debt never asks for the human"
             );
 
-            // FLIPPED by colead's ruling (2026-08-24).
+            assert_eq!(attention, Some(&json::Value::Null), "{label}");
+            assert_eq!(rank, Some(&json::Value::Num(0)), "{label}");
+            let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
+                panic!("sessions render as an array");
+            };
             assert_eq!(
-                attention,
-                Some(&if implied {
-                    json::Value::Str("unanswered".to_owned())
-                } else {
-                    json::Value::Null
-                }),
-                "{label}: attention is present either way and follows the stamp"
-            );
-            assert_eq!(
-                rank,
-                Some(&json::Value::Num(if implied {
-                    Reason::Unanswered.rank()
-                } else {
-                    0
-                })),
-                "{label}: attention_rank is present either way and follows the stamp"
+                sessions[0].get("unanswered"),
+                Some(&json::Value::Num(i64::from(implied))),
+                "{label}: the quiet count follows generated_at"
             );
         }
     }

@@ -80,6 +80,9 @@ pub enum Kind {
         id: String,
         why: String,
     },
+    /// The seat console request `id` reached accepted it: the work is taken
+    /// on and the answer still owed. Named by that seat, as [`Kind::Answer`] is.
+    Accepted { seat: String, id: String },
 }
 
 /// What the console could read of an admitted answer's stored body.
@@ -201,7 +204,7 @@ pub fn fold(
     let (mut items, other_say) = journal_items(session, seats, events);
     items.extend(standing_items(session, seats, events));
     let mut body_gaps = Vec::new();
-    let console = console_items(seats, events, body, &mut body_gaps);
+    let console = console_items(session, seats, events, body, &mut body_gaps);
     let prefix = format!("{session}:");
     for row in &observation.rows {
         let name = row.actor.strip_prefix(&prefix);
@@ -253,6 +256,52 @@ struct Thread<'a> {
     replies: usize,
     /// A reseat moved the asked seat after the ask.
     moved: bool,
+    /// Whether an acceptance may still draw its one row.
+    acceptance: AcceptRow,
+}
+
+/// What an acceptance of one console ask may still draw.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AcceptRow {
+    /// Nothing has drawn or barred it yet.
+    Due,
+    /// Its one row is drawn.
+    Drawn,
+    /// A retire closed the ask first.
+    Retired,
+}
+
+impl<'a> Thread<'a> {
+    /// The thread an ask opens: nothing has happened to it yet.
+    const fn opened(ask: &'a Event) -> Self {
+        Self {
+            ask,
+            closed: false,
+            replies: 0,
+            moved: false,
+            acceptance: AcceptRow::Due,
+        }
+    }
+
+    /// The row `accept` draws in this thread, if any: from the seat the ask
+    /// reached, before any answer, close or retire, and only the first.
+    fn accepted(&mut self, accept: &Event, id: String) -> Option<Kind> {
+        let ended = self.closed || self.replies > 0;
+        if ended || self.acceptance != AcceptRow::Due || admission(self.ask, accept).is_err() {
+            return None;
+        }
+        self.acceptance = AcceptRow::Drawn;
+        let seat = self.ask.target.clone().unwrap_or_default();
+        Some(Kind::Accepted { seat, id })
+    }
+
+    /// A retire in `session` that closes this ask bars its acceptance row.
+    fn retire(&mut self, retire: &Event, session: &str) {
+        let key = crate::events::SessionKey::named(session);
+        if crate::session::retired(self.ask, retire, key) {
+            self.acceptance = AcceptRow::Retired;
+        }
+    }
 }
 
 /// The console's own thread: its asks and what became of them, and every
@@ -260,7 +309,13 @@ struct Thread<'a> {
 /// reached, with the stored whole body where it reads, else the summary and a
 /// named gap. Follow-ups, lateness and a reseat are by position, so a re-read
 /// of the same journal draws the same rows.
+///
+/// An acceptance draws ONE row, and only while it means something: from the
+/// seat the ask reached (the reply's own admission), before any answer, close
+/// or retire of `session`'s that ends the ask, and only the first. Any other
+/// accept draws nothing.
 fn console_items(
+    session: &str,
     seats: &[Seat],
     events: &[Event],
     body: &dyn Fn(&Event) -> Body,
@@ -269,6 +324,12 @@ fn console_items(
     let mut threads: BTreeMap<&str, Thread<'_>> = BTreeMap::new();
     let mut items = Vec::new();
     for (record, event) in events.iter().enumerate() {
+        if event.action == "retire" {
+            for thread in threads.values_mut() {
+                thread.retire(event, session);
+            }
+            continue;
+        }
         if event.action == reseat::RESEAT_ACTION
             && event.summary.as_deref().is_some_and(reseat::moved_seat)
         {
@@ -288,14 +349,7 @@ fn console_items(
                     let uncertain = text.starts_with(tracked::UNCONFIRMED_SUMMARY_PREFIX);
                     let mut gap = Some(OLD_CORE_GAP.to_owned());
                     if !key.is_empty() {
-                        let (closed, replies, moved) = (false, 0, false);
-                        let thread = Thread {
-                            ask: event,
-                            closed,
-                            replies,
-                            moved,
-                        };
-                        threads.insert(key, thread);
+                        threads.insert(key, Thread::opened(event));
                         // An ask an older core recorded has no body to read.
                         if event.body_file.is_some() {
                             let what = format!("ask to {to}");
@@ -322,6 +376,12 @@ fn console_items(
                 }
                 _ => continue,
             }
+        } else if event.action == crate::session::ACCEPT && to == tracked::CONSOLE_SINK {
+            let thread = threads.get_mut(key);
+            let Some(kind) = thread.and_then(|thread| thread.accepted(event, id)) else {
+                continue;
+            };
+            kind
         } else if event.action == reply::ACTION && to == tracked::CONSOLE_SINK {
             let from = event.actor.clone();
             let admitted = match threads.get_mut(key) {
@@ -369,7 +429,7 @@ fn console_items(
 /// hands the plain-line router.
 #[must_use]
 pub(crate) fn thread_items(events: &[Event]) -> Vec<Item> {
-    console_items(&[], events, &|_| Body::OldCore, &mut Vec::new())
+    console_items("", &[], events, &|_| Body::OldCore, &mut Vec::new())
 }
 
 /// Whether `/close` may withdraw console request `id`: the console's own ask
@@ -384,7 +444,7 @@ pub fn may_close(events: &[Event], id: &str) -> Result<(), String> {
         return Err("a close needs a request id".to_owned());
     }
     let mut open = None;
-    for item in console_items(&[], events, &|_| Body::OldCore, &mut Vec::new()) {
+    for item in console_items("", &[], events, &|_| Body::OldCore, &mut Vec::new()) {
         let still_open = open == Some(Ok(()));
         match item.kind {
             Kind::Asked { id: asked, .. } if asked == id => open = Some(Ok(())),

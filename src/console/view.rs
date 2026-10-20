@@ -169,38 +169,46 @@ impl Style {
     /// A row's header, with its own newline.
     #[must_use]
     pub fn head(&self, kind: &Kind, time: &str) -> String {
-        self.head_with(kind, time, false)
+        self.head_with(kind, &tag(kind), time, false)
     }
 
-    /// [`Style::head`], its words followed by the dim [`SENT`] when `sent`.
-    fn head_with(&self, kind: &Kind, time: &str, sent: bool) -> String {
+    /// [`Style::head`] with `words` after the time, followed by the dim
+    /// [`SENT`] when `sent`.
+    fn head_with(&self, kind: &Kind, words: &str, time: &str, sent: bool) -> String {
         let suffix = if sent { SENT } else { "" };
         let Some(dress) = &self.0 else {
-            return terminal_text(&format!("## {time} {}{suffix}\n", tag(kind)));
+            return terminal_text(&format!("## {time} {words}{suffix}\n"));
         };
         let voice = dress.voice(kind);
         let bold = matches!(
             kind,
             Kind::Asked { .. } | Kind::NotDelivered { .. } | Kind::Closed { .. }
         );
-        let (stamp, words) = (self.paint(|p| p.dim, false, time), tag(kind));
-        let words = self.paint(|p| Dress::hue(p, voice), bold, &words);
+        let stamp = self.paint(|p| p.dim, false, time);
+        let words = self.paint(|p| Dress::hue(p, voice), bold, words);
         let suffix = self.paint(|p| p.dim, false, suffix);
         format!("{} {stamp} {words}{suffix}\n", self.bar(kind))
     }
 
     /// [`Style::head`] for a pane `width` cells wide: every visual row keeps the bar,
     /// a dressed style wrapping the header like a body row.
-    fn head_in(&self, kind: &Kind, time: &str, width: Option<usize>, sent: bool) -> String {
+    fn head_in(
+        &self,
+        kind: &Kind,
+        words: &str,
+        time: &str,
+        width: Option<usize>,
+        sent: bool,
+    ) -> String {
         let (Some(dress), Some(width)) = (&self.0, width) else {
-            return self.head_with(kind, time, sent);
+            return self.head_with(kind, words, time, sent);
         };
         let (voice, mut stamp) = (dress.voice(kind), time.len());
         let bold = matches!(
             kind,
             Kind::Asked { .. } | Kind::NotDelivered { .. } | Kind::Closed { .. }
         );
-        let text = terminal_text(&format!("{time} {}", tag(kind)));
+        let text = terminal_text(&format!("{time} {words}"));
         let mut out = String::new();
         let mut last = 0;
         for (gap, piece) in wrap(&text, width, 1) {
@@ -590,6 +598,8 @@ impl Dress {
             | Kind::NeedsYou { seat } => self.seat(seat),
             Kind::Reply { from, .. } | Kind::Unadmitted { from, .. } => self.seat(from),
             Kind::Said { who } => self.seat(who),
+            // Progress, not a turn the human must read: drawn dim.
+            Kind::Accepted { .. } => Voice::System,
         }
     }
 }
@@ -602,6 +612,17 @@ pub fn header(session: &str, seats: &[Seat]) -> String {
         "chat: {session} — lead pair {} · preview of existing data: transcript turns are mirrors, chat-bridge replies are 600-character summaries, nothing here answers and only lines typed in the owner chat ask · scope: current conversations plus recorded predecessors, board limits; agent-to-agent turns are not shown\n",
         names.join(", ")
     ))
+}
+
+/// What `item`'s header says after its time: its [`tag`], except that an
+/// acceptance is ONE row, its note riding the header and no body following.
+fn heading(item: &Item) -> String {
+    let words = tag(&item.kind);
+    if !matches!(item.kind, Kind::Accepted { .. }) || item.body.is_empty() {
+        return words;
+    }
+    let note: Vec<&str> = item.body.lines().collect();
+    format!("{words} · {}", note.join(" "))
 }
 
 /// The tag a row wears after its time.
@@ -663,6 +684,7 @@ pub(super) fn tag(kind: &Kind) -> String {
         Kind::Unadmitted { from, why, .. } => {
             format!("{from} reply · not admitted: {why} · preview (600-char summary)")
         }
+        Kind::Accepted { seat, .. } => format!("{seat} accepted"),
     }
 }
 
@@ -1076,6 +1098,10 @@ impl Printed {
 
     /// The rows of `item`'s body below its header, one string each.
     fn body_rows(&self, item: &Item) -> Vec<String> {
+        // An acceptance's note rides its header ([`heading`]).
+        if matches!(item.kind, Kind::Accepted { .. }) {
+            return Vec::new();
+        }
         if !matches!(item.kind, Kind::Card { .. }) {
             let lines = item.body.lines();
             let rows = lines.flat_map(|line| {
@@ -1095,7 +1121,8 @@ impl Printed {
     /// `item`'s header, drawn at this console's width.
     fn header_of(&self, item: &Item, sent: bool) -> String {
         let (_, time) = clock_text(self.style.shift(item.micros));
-        self.style.head_in(&item.kind, &time, self.width, sent)
+        self.style
+            .head_in(&item.kind, &heading(item), &time, self.width, sent)
     }
 
     fn row(&mut self, item: &Item, turn: (u64, usize), out: &mut String) {

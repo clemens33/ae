@@ -1573,7 +1573,7 @@ pub(crate) fn append_delivery_event(
 }
 
 /// One participant's directory under the helper's sessions root.
-fn participant_dir(dir: &Path, session: &str) -> io::Result<std::path::PathBuf> {
+pub(crate) fn participant_dir(dir: &Path, session: &str) -> io::Result<std::path::PathBuf> {
     if !crate::session_launch::name::is_session_name(session) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

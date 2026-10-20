@@ -237,19 +237,21 @@ pub struct AgentLine {
     pub attention: Option<Reason>,
 }
 
-/// One declared state or open-request fact used by brief and overview.
+/// One human-needed seat or open-request fact used by brief and overview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Need {
-    /// An agent declared `waiting-user` or `blocked`.
-    Declared {
-        /// Who declared it.
+    /// A roster seat — any slot — whose attention reason needs the human
+    /// ([`Reason::needs_you`]): `dead`, `waiting-user`, `blocked` (an escalated
+    /// `waiting-agent` included), `limit` or `throttled`.
+    Seat {
+        /// The seat's name.
         owner: String,
-        /// Which of the two states.
-        state: String,
-        /// How long ago.
+        /// The seat's attention reason.
+        reason: Reason,
+        /// How long ago its current declaration was made, when one matches.
         age_secs: Option<i64>,
-        /// The reason it gave, empty when it gave none.
-        reason: String,
+        /// The reason it declared, empty when it gave none.
+        detail: String,
     },
     /// A tracked `ask`/`review` nobody has answered.
     Unanswered {
@@ -269,21 +271,26 @@ pub enum Need {
 }
 
 impl Need {
-    /// Whether this fact is a direct claim on the human's attention.
-    /// `colead` is the one name-based leadership convention.
+    /// Whether this fact is a direct claim on the human's attention: every
+    /// [`Need::Seat`], whatever its slot, and never an open request — request
+    /// debt is counted on the header, not claimed.
     ///
     /// A fresh `waiting-agent` is never a [`Need`] at all (R3: quiet); an
-    /// escalated one arrives here materialized as `blocked` (`needs` owns
-    /// that), so this predicate stays the single gate on what claims the
-    /// human.
+    /// escalated one arrives here as `blocked` through the session's own
+    /// classification, so this predicate stays the single gate on what claims
+    /// the human.
     #[must_use]
-    pub fn claims_human(&self, main_agent: Option<&str>) -> bool {
-        matches!(
-            self,
-            Self::Declared { owner, state, .. }
-                if matches!(state.as_str(), "waiting-user" | "blocked")
-                    && (main_agent == Some(owner.as_str()) || owner == "colead")
-        )
+    pub const fn claims_human(&self) -> bool {
+        matches!(self, Self::Seat { .. })
+    }
+
+    /// The reason this fact claims the human for, when it claims one.
+    #[must_use]
+    pub const fn human_reason(&self) -> Option<Reason> {
+        match self {
+            Self::Seat { reason, .. } => Some(*reason),
+            Self::Unanswered { .. } => None,
+        }
     }
 }
 
@@ -299,6 +306,9 @@ pub struct Card {
     pub main: Option<String>,
     /// The session-level attention rollup, when it is exact enough to show.
     pub attention: Option<Reason>,
+    /// Open requests past the unanswered threshold that their target has not
+    /// accepted — the digest's `unanswered`, `None` when the read was partial.
+    pub unanswered: Option<usize>,
     /// The ae version the session was created under.
     pub ae_version: Option<String>,
     /// Snapshot time used for all three lifecycle ages.
@@ -349,18 +359,18 @@ impl Card {
         }
     }
 
-    /// The severity this card sorts by — higher is more actionable.
+    /// The severity this card sorts by — higher is more actionable: the rank
+    /// of the most actionable reason that needs the human, `0` for none, so a
+    /// `stale` session never sorts ahead of one that needs nobody.
     #[must_use]
     pub fn urgency(&self) -> i64 {
-        self.attention.map_or(0, Reason::rank)
+        Reason::needs_you_rollup(self.needs.iter().filter_map(Need::human_reason))
+            .map_or(0, Reason::rank)
     }
 
-    /// Direct human claims, using explicit main-seat identity.
+    /// Direct human claims: every seat whose reason needs the human.
     pub fn human_needs(&self) -> impl Iterator<Item = &Need> {
-        let main_agent = self.main.as_deref();
-        self.needs
-            .iter()
-            .filter(move |need| need.claims_human(main_agent))
+        self.needs.iter().filter(|need| need.claims_human())
     }
 
     /// Pending intra-session asks and reviews, counted without exposing bodies.
@@ -457,6 +467,11 @@ fn push_header(out: &mut String, card: &Card) {
     if let Some(reason) = card.attention {
         segments.push(format!("attn:{}", reason.as_str()));
     }
+    // Request debt: named, never claimed — the `needs you:` section below
+    // holds only seats.
+    if let Some(count) = card.unanswered.filter(|count| *count > 0) {
+        segments.push(format!("unanswered:{count}"));
+    }
     if let Some(version) = card.ae_version.as_deref().filter(|v| !v.is_empty()) {
         segments.push(format!("ae {version}"));
     }
@@ -484,16 +499,16 @@ fn push_header(out: &mut String, card: &Card) {
 fn push_need(out: &mut String, need: &Need) {
     let mut prefix = " ".repeat(NEED_INDENT);
     let (detail, fallback) = match need {
-        Need::Declared {
+        Need::Seat {
             owner,
-            state,
-            age_secs,
             reason,
+            age_secs,
+            detail,
         } => {
             push_padded(&mut prefix, owner, 14);
-            push_padded(&mut prefix, state, 14);
+            push_padded(&mut prefix, reason.as_str(), 14);
             push_padded(&mut prefix, &age(*age_secs), 6);
-            (reason.as_str(), "no reason given")
+            (detail.as_str(), "no reason given")
         }
         Need::Unanswered {
             kind,
@@ -679,6 +694,7 @@ pub fn card_for(
         // The same exactness rule the table applies: a class marker is not
         // printed off partial evidence.
         attention: entry.attention.filter(|_| entry.attention_is_exact()),
+        unanswered: entry.unanswered,
         ae_version: entry.ae_version.clone(),
         as_of: now,
         created_epoch: entry.created_epoch,
@@ -849,16 +865,16 @@ pub(crate) fn agent_lines(
         .collect()
 }
 
-/// Collect declarations and open requests once. Presentation decides that only
-/// main/`colead` declarations claim the human; requests remain available as a
-/// count for the overview's working line.
+/// Collect the human-needed seats and the open requests once. Every roster
+/// seat whose attention reason [`Reason::needs_you`] claims the human; open
+/// requests remain available as a count for the overview's working line.
 ///
-/// `waiting-agent` is quiet while fresh, so it is NOT a need here; past its
-/// ceiling it escalates to exactly `blocked` (R4), and this consumes the
-/// SESSION's classification (`session::declared_reason` through
-/// `AgentEntry.reason`) rather than recomputing the ceiling: a declaration a
-/// later relevant event superseded carries no `Blocked` contribution, so the
-/// card cannot claim the human for a wait the daemon has already yielded.
+/// The reason is the SESSION's classification (`AgentEntry.reason`, carried on
+/// the agent line only when exact), never the state word: a fresh
+/// `waiting-agent` contributes none (R3: quiet), an escalated one contributes
+/// exactly `blocked` (R4) and a declaration a later relevant event superseded
+/// contributes nothing, so the card cannot claim the human for a wait the
+/// daemon has already yielded.
 fn needs(
     agents: &[AgentLine],
     container: &[u8],
@@ -867,23 +883,14 @@ fn needs(
 ) -> Vec<Need> {
     let mut needs: Vec<Need> = agents
         .iter()
-        .filter(|agent| match agent.state.as_str() {
-            "waiting-user" | "blocked" => true,
-            "waiting-agent" => agent.attention == Some(Reason::Blocked),
-            _ => false,
-        })
-        .map(|agent| Need::Declared {
-            owner: agent.name.clone(),
-            // An escalated `waiting-agent` claims the human as exactly the
-            // state it became; the declaration itself is still on the card's
-            // agent line, unchanged.
-            state: if agent.state == "waiting-agent" {
-                "blocked".to_owned()
-            } else {
-                agent.state.clone()
-            },
-            age_secs: agent.age_secs,
-            reason: agent.reason.clone(),
+        .filter_map(|agent| {
+            let reason = agent.attention.filter(|reason| reason.needs_you())?;
+            Some(Need::Seat {
+                owner: agent.name.clone(),
+                reason,
+                age_secs: agent.age_secs,
+                detail: agent.reason.clone(),
+            })
         })
         .collect();
     for request in requests::states_in(container, session) {
@@ -948,6 +955,7 @@ mod tests {
             status: "running",
             main: Some("lead".to_owned()),
             attention: None,
+            unanswered: None,
             ae_version: Some("2026.9.5".to_owned()),
             as_of: Timestamp::from_epoch(0),
             created_epoch: None,
@@ -1053,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn needs_you_contains_only_main_and_colead_declarations() {
+    fn needs_you_contains_human_reasons_from_every_roster_seat() {
         let mut entry = card("alpha");
         entry.agents = vec![
             AgentLine {
@@ -1082,23 +1090,23 @@ mod tests {
             },
         ];
         entry.needs = vec![
-            Need::Declared {
+            Need::Seat {
                 owner: "lead".to_owned(),
-                state: "waiting-user".to_owned(),
+                reason: Reason::WaitingUser,
                 age_secs: Some(720),
-                reason: "main decision".to_owned(),
+                detail: "main decision".to_owned(),
             },
-            Need::Declared {
+            Need::Seat {
                 owner: "worker".to_owned(),
-                state: "blocked".to_owned(),
+                reason: Reason::Blocked,
                 age_secs: Some(600),
-                reason: "worker blocker".to_owned(),
+                detail: "worker blocker".to_owned(),
             },
-            Need::Declared {
+            Need::Seat {
                 owner: "colead".to_owned(),
-                state: "blocked".to_owned(),
+                reason: Reason::Blocked,
                 age_secs: Some(300),
-                reason: "co-lead gate".to_owned(),
+                detail: "co-lead gate".to_owned(),
             },
             Need::Unanswered {
                 kind: "ask".to_owned(),
@@ -1118,7 +1126,7 @@ mod tests {
         assert!(needs.contains("main decision"), "{rendered}");
         assert!(needs.contains("colead"), "{rendered}");
         assert!(needs.contains("co-lead gate"), "{rendered}");
-        assert!(!needs.contains("worker blocker"), "{rendered}");
+        assert!(needs.contains("worker blocker"), "{rendered}");
         assert!(!needs.contains("lead → colead"), "{rendered}");
         assert!(
             !needs.contains("does the strip pin orchestrator first?"),
@@ -1147,7 +1155,7 @@ mod tests {
             now,
         );
         assert!(fresh.is_empty(), "fresh waiting-agent claims nobody");
-        assert!(!fresh.iter().any(|need| need.claims_human(Some("lead"))));
+        assert!(!fresh.iter().any(super::Need::claims_human));
 
         let escalated = needs(
             &[line(Some(Reason::Blocked))],
@@ -1156,12 +1164,16 @@ mod tests {
             now,
         );
         assert_eq!(escalated.len(), 1);
-        let Need::Declared { state, reason, .. } = &escalated[0] else {
+        let Need::Seat { reason, detail, .. } = &escalated[0] else {
             panic!("a declared need: {escalated:?}");
         };
-        assert_eq!(state, "blocked", "escalated reads as exactly blocked");
-        assert_eq!(reason, "waiting on colead's gate");
-        assert!(escalated[0].claims_human(Some("lead")));
+        assert_eq!(
+            *reason,
+            Reason::Blocked,
+            "escalated reads as exactly blocked"
+        );
+        assert_eq!(detail, "waiting on colead's gate");
+        assert!(escalated[0].claims_human());
     }
 
     /// The card consumes the SESSION's classification instead of recomputing the
@@ -1230,7 +1242,7 @@ mod tests {
             let declared: Vec<&Need> = card
                 .needs
                 .iter()
-                .filter(|need| matches!(need, Need::Declared { .. }))
+                .filter(|need| matches!(need, Need::Seat { .. }))
                 .collect();
             assert_eq!(
                 !declared.is_empty(),
@@ -1238,10 +1250,10 @@ mod tests {
                 "{tag}: declared needs {declared:?}"
             );
             if expected {
-                let Need::Declared { state, .. } = declared[0] else {
+                let Need::Seat { reason, .. } = declared[0] else {
                     unreachable!("filtered above");
                 };
-                assert_eq!(state, "blocked", "{tag}");
+                assert_eq!(*reason, Reason::Blocked, "{tag}");
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -1284,8 +1296,20 @@ mod tests {
     fn cards_order_by_attention_then_by_name() {
         let mut blocked = card("zeta");
         blocked.attention = Some(Reason::Blocked);
+        blocked.needs.push(Need::Seat {
+            owner: "lead".to_owned(),
+            reason: Reason::Blocked,
+            age_secs: None,
+            detail: String::new(),
+        });
         let mut dead = card("mid");
         dead.attention = Some(Reason::Dead);
+        dead.needs.push(Need::Seat {
+            owner: "lead".to_owned(),
+            reason: Reason::Dead,
+            age_secs: None,
+            detail: String::new(),
+        });
         let quiet = card("alpha");
         let order: Vec<String> = ordered(vec![quiet, blocked, dead])
             .into_iter()
@@ -1378,11 +1402,11 @@ mod tests {
         let owner = "o".repeat(64);
         let mut entry = card("alpha");
         entry.main = Some(owner.clone());
-        entry.needs.push(Need::Declared {
+        entry.needs.push(Need::Seat {
             owner,
-            state: "waiting-user".to_owned(),
+            reason: Reason::WaitingUser,
             age_secs: Some(99_999),
-            reason,
+            detail: reason,
         });
         let rendered = render(&[entry]);
         let needs = rendered
@@ -1402,11 +1426,11 @@ mod tests {
     #[test]
     fn hostile_controls_in_a_need_are_cleaned_before_wrapping() {
         let mut entry = card("alpha");
-        entry.needs.push(Need::Declared {
+        entry.needs.push(Need::Seat {
             owner: "lead".to_owned(),
-            state: "blocked".to_owned(),
+            reason: Reason::Blocked,
             age_secs: Some(60),
-            reason: "choose\r\nblue \u{1b}[31mdecision".to_owned(),
+            detail: "choose\r\nblue \u{1b}[31mdecision".to_owned(),
         });
         let rendered = render(&[entry]);
         assert!(rendered.contains("choose blue [31mdecision"), "{rendered}");

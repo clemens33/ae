@@ -172,12 +172,15 @@ pub fn fold(inputs: &Inputs<'_>) -> Result<Section, String> {
                 .is_none()
                 .then_some(Cause::PaneUnproven))
             .or((skipped > 0).then_some(Cause::JournalPartial { skipped }));
+        // Only a reason that needs the human is a row: `stale` stays on the
+        // seat's own line, never in this section.
         let reason = inputs
             .entry
             .agents
             .iter()
             .find(|agent| agent.reference == reference)
-            .and_then(|agent| agent.reason);
+            .and_then(|agent| agent.reason)
+            .filter(|reason| reason.needs_you());
         let (verdict, stale, found) = match (reason, cause) {
             (Some(reason), _) => (
                 Verdict::Reason(reason),
@@ -410,7 +413,7 @@ mod tests {
             let rig = Rig::new(layout, &seats, Vec::new());
             let mut entry = rig.entry();
             for agent in &mut entry.agents {
-                agent.reason = Some(Reason::Unanswered);
+                agent.reason = Some(Reason::Blocked);
             }
             let rows = rig.fold_with(&entry, lead_pair).rows;
             let pair: Vec<bool> = rows.iter().map(|row| row.lead_pair).collect();

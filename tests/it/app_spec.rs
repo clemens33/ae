@@ -125,11 +125,23 @@ fn world() -> WorldParts {
     infra.branch = Some("ci/arm".to_owned());
     infra.last_active_epoch = Some(NOW - 60);
     infra.attention = Some(Reason::WaitingUser);
+    infra.agents.push(AgentEntry {
+        name: "lead".to_owned(),
+        reference: "lead".to_owned(),
+        reason: Some(Reason::WaitingUser),
+        ..AgentEntry::default()
+    });
     let mut deadseat = SessionEntry::new("deadseat", Status::Running);
     deadseat.goal = Some("Keep the lights on".to_owned());
     deadseat.goal_set_epoch = Some(NOW - 60);
     deadseat.last_active_epoch = Some(NOW - 60);
     deadseat.attention = Some(Reason::Dead);
+    deadseat.agents.push(AgentEntry {
+        name: "builder".to_owned(),
+        reference: "builder".to_owned(),
+        reason: Some(Reason::Dead),
+        ..AgentEntry::default()
+    });
     let mut old = SessionEntry::new("old", Status::Stopped);
     old.agents = vec![
         AgentEntry {
@@ -475,6 +487,7 @@ fn calm(name: &str, index: usize) -> Row {
         index,
         mark: Mark::Working,
         needy: false,
+        unanswered: None,
         counts: Counts::Marks(vec![(Mark::Working, false, 1)]),
         line2: Line2::NoGoal,
         home: false,
@@ -487,6 +500,7 @@ fn needy(name: &str, index: usize, mark: Mark) -> Row {
         index,
         mark,
         needy: true,
+        unanswered: None,
         counts: Counts::Marks(vec![(mark, false, 1)]),
         line2: Line2::NoGoal,
         home: false,
@@ -505,6 +519,7 @@ fn model_fleet() -> Fleet {
                 index: 1,
                 mark: Mark::Working,
                 needy: false,
+                unanswered: None,
                 counts: Counts::Marks(vec![(Mark::Working, false, 1)]),
                 line2: Line2::NoGoal,
                 home: true,
@@ -949,6 +964,7 @@ fn draw_fleet() -> Fleet {
                 index: 1,
                 mark: Mark::Working,
                 needy: false,
+                unanswered: None,
                 counts: Counts::Marks(vec![
                     (Mark::Working, false, 3),
                     (Mark::WaitingAgent, false, 1),
@@ -965,6 +981,7 @@ fn draw_fleet() -> Fleet {
                 index: 2,
                 mark: Mark::Working,
                 needy: false,
+                unanswered: None,
                 counts: Counts::Marks(vec![(Mark::Working, false, 1), (Mark::Done, false, 1)]),
                 line2: Line2::Goal {
                     text: "Rewrite the quickstart guide".to_owned(),
@@ -977,6 +994,7 @@ fn draw_fleet() -> Fleet {
                 index: 3,
                 mark: Mark::NeedsYou,
                 needy: true,
+                unanswered: None,
                 counts: Counts::Marks(vec![(Mark::NeedsYou, false, 1), (Mark::Working, false, 2)]),
                 line2: Line2::Question {
                     text: "Approve runner cost: +$40/month?".to_owned(),

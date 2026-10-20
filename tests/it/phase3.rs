@@ -207,6 +207,7 @@ fn entry_of(row: &Planted) -> SessionEntry {
         reference: "lead".to_owned(),
         alias: "cl".to_owned(),
         name: "lead".to_owned(),
+        reason: row.attention.then_some(Reason::Blocked),
         ..AgentEntry::default()
     }];
     entry

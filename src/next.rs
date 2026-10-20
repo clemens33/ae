@@ -120,18 +120,22 @@ impl Choice {
     }
 }
 
-/// The top-ranked running session needing attention, or `None`.
+/// The top-ranked running session needing the HUMAN, or `None`: each session
+/// is ranked by [`SessionEntry::needs_you`], so a `stale` seat is never where
+/// it sends the human.
 ///
 /// ```
 /// use ae::attention::Reason;
-/// use ae::digest::{SessionEntry, Status};
+/// use ae::digest::{AgentEntry, SessionEntry, Status};
 /// use ae::listing::World;
 /// use ae::time::Timestamp;
 ///
 /// let mut hot = SessionEntry::new("hot", Status::Running);
 /// hot.attention = Some(Reason::Dead);
+/// hot.agents = vec![AgentEntry { reason: Some(Reason::Dead), ..AgentEntry::default() }];
 /// let mut mild = SessionEntry::new("mild", Status::Running);
 /// mild.attention = Some(Reason::Blocked);
+/// mild.agents = vec![AgentEntry { reason: Some(Reason::Blocked), ..AgentEntry::default() }];
 /// let world = World::new(Timestamp::from_epoch(0), vec![mild, hot]);
 /// assert_eq!(ae::next::choose(&world).unwrap().name, "hot");
 /// ```
@@ -142,7 +146,7 @@ pub fn choose(world: &World) -> Option<Choice> {
         if session.status != Status::Running {
             continue;
         }
-        let Some(reason) = session.attention else {
+        let Some(reason) = session.needs_you() else {
             continue;
         };
         let replaces = match best {
@@ -201,6 +205,7 @@ mod tests {
     fn needing(name: &str, reason: Reason, epoch: i64) -> SessionEntry {
         let mut entry = SessionEntry::new(name, Status::Running);
         entry.attention = Some(reason);
+        entry.agents = vec![agent("cl:lead", Some(reason))];
         entry.last_active_epoch = Some(epoch);
         entry
     }
@@ -237,10 +242,12 @@ mod tests {
         // is not running cannot appear there at all.
         let mut stopped = SessionEntry::new("gone", Status::Stopped);
         stopped.attention = Some(Reason::Dead);
+        stopped.agents = vec![agent("cl:lead", Some(Reason::Dead))];
         assert_eq!(choose(&world(vec![stopped])), None);
 
         let mut unknown = SessionEntry::new("unsure", Status::Unknown);
         unknown.attention = Some(Reason::Dead);
+        unknown.agents = vec![agent("cl:lead", Some(Reason::Dead))];
         assert_eq!(choose(&world(vec![unknown])), None);
     }
 
@@ -255,15 +262,15 @@ mod tests {
 
     #[test]
     fn equal_rank_breaks_on_recency_then_on_name_ascending() {
-        let older = needing("bbb", Reason::Stale, 100);
-        let newer = needing("aaa", Reason::Stale, 200);
+        let older = needing("bbb", Reason::Blocked, 100);
+        let newer = needing("aaa", Reason::Blocked, 200);
         assert_eq!(choose(&world(vec![older, newer])).unwrap().name, "aaa");
 
         // Same rank AND same epoch: the name decides, ascending, whichever order
         // the world listed them in — frozen's "stable and scriptable, not
         // tmux-list order".
-        let first = needing("zeta", Reason::Stale, 500);
-        let second = needing("alpha", Reason::Stale, 500);
+        let first = needing("zeta", Reason::Blocked, 500);
+        let second = needing("alpha", Reason::Blocked, 500);
         assert_eq!(
             choose(&world(vec![first.clone(), second.clone()]))
                 .unwrap()
@@ -277,6 +284,7 @@ mod tests {
     fn an_unknown_activity_is_zero_and_still_a_candidate() {
         let mut silent = SessionEntry::new("silent", Status::Running);
         silent.attention = Some(Reason::Dead);
+        silent.agents = vec![agent("cl:lead", Some(Reason::Dead))];
         // No last_active_epoch at all — frozen's `printf '0'` when no file has
         // an mtime.
         assert_eq!(choose(&world(vec![silent.clone()])).unwrap().name, "silent");
@@ -299,13 +307,11 @@ mod tests {
     }
 
     #[test]
-    fn a_session_level_reason_no_agent_owns_names_no_agent() {
-        // `unanswered` is the pair fact the core keeps off every agent.
-        let mut entry = needing("waiting", Reason::Unanswered, 7);
+    fn an_unanswered_only_session_is_not_a_human_attention_candidate() {
+        let mut entry = SessionEntry::new("waiting", Status::Running);
+        entry.unanswered = Some(1);
         entry.agents = vec![agent("cl:lead", None)];
-        let chosen = choose(&world(vec![entry])).unwrap();
-        assert_eq!(chosen.agent, "");
-        assert_eq!(chosen.line(), "waiting  attn:unanswered  rank:1  \n");
+        assert_eq!(choose(&world(vec![entry])), None);
     }
 
     #[test]

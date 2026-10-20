@@ -22,6 +22,12 @@
 //!   record that can close them ([`Opening::answered_by`]). The rule lives in
 //!   [`crate::events::answers_external_asker`], so this sensor and the
 //!   watchdog's ledger reader cannot drift.
+//!
+//! An `accept` closes nothing. It ANNOTATES a pending row
+//! ([`Request::accepted`]): the target took the work on and still owes the
+//! reply. It is judged by the reply's own rule ([`Opening::answered_by`]) —
+//! who may answer a request is who may accept it — and the FIRST valid one
+//! after the newest opening counts, in append order.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -216,6 +222,28 @@ pub struct Request {
     /// The DISPLAY summary: the request's own text while pending, the closing
     /// event's text once closed.
     pub summary: Vec<u8>,
+    /// The target's acceptance, set only on a [`Status::Pending`] row: the
+    /// FIRST valid `accept` after the newest opening. The row stays pending,
+    /// because the reply is still owed.
+    pub accepted: Option<Acceptance>,
+    /// The `cancel` line that withdrew this row, byte for byte, set only on a
+    /// [`Status::Cancelled`] row — what a cross-session withdrawal copies into
+    /// the other participant's ledger.
+    pub(crate) withdrawal: Option<Vec<u8>>,
+}
+
+/// A target's `accept` of a pending request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Acceptance {
+    /// The accept record's `ts`.
+    pub at: Vec<u8>,
+    /// The accept record's `actor`.
+    pub by: Vec<u8>,
+    /// The accept record's `summary`: the target's note.
+    pub note: Vec<u8>,
+    /// The accept line, byte for byte — what a cross-session acceptance copies
+    /// into the other participant's ledger.
+    pub(crate) line: Vec<u8>,
 }
 
 /// The four statuses a request can report.
@@ -296,12 +324,22 @@ impl Request {
         self.recorded.as_ref().map(RecordedTarget::triple)
     }
 
+    /// The STATUS cell: the status token, except that a pending row its
+    /// target accepted reads `accepted` — still open, owned.
+    #[must_use]
+    pub fn status_cell(&self) -> &'static str {
+        match (self.status, &self.accepted) {
+            (Status::Pending, Some(_)) => "accepted",
+            (status, _) => status.token(),
+        }
+    }
+
     /// The table line for this row, `\n` included. The identity cells render
     /// through the ONE display mapping; the row keeps the stored bytes.
     fn write_line(&self, out: &mut Vec<u8>) {
         write_row(
             out,
-            self.status.token().as_bytes(),
+            self.status_cell().as_bytes(),
             &self.kind,
             &self.id,
             displayed(&self.from),
@@ -497,6 +535,27 @@ pub fn states(container: &[u8]) -> Vec<Request> {
     states_in(container, SessionKey::default())
 }
 
+/// The acceptance an open request carries: the first valid `accept` after its
+/// newest opening at `opened_at`, from the target the opening named.
+fn first_acceptance(
+    opening: &Opening,
+    opened_at: usize,
+    candidates: &[(usize, Closing)],
+) -> Option<Acceptance> {
+    // Candidates are newest-first, so the LAST valid one after the opening is
+    // the FIRST in append order: a later duplicate changes nothing.
+    let (_, closing) = candidates
+        .iter()
+        .filter(|(at, _)| *at < opened_at)
+        .rfind(|(_, candidate)| opening.answered_by(candidate))?;
+    Some(Acceptance {
+        at: closing.at.clone(),
+        by: closing.actor.clone(),
+        note: closing.summary.clone(),
+        line: closing.line.clone()?,
+    })
+}
+
 /// THE request sensor for a known session.
 #[must_use]
 pub(crate) fn states_in(container: &[u8], session: SessionKey<'_>) -> Vec<Request> {
@@ -513,6 +572,7 @@ pub(crate) fn states_in(container: &[u8], session: SessionKey<'_>) -> Vec<Reques
     let mut opened: HashMap<Vec<u8>, (usize, Opening)> = HashMap::new();
     let mut replies: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
     let mut cancels: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
+    let mut accepts: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
     // Newest first, because that is the order they are met in.
     let mut refs: Vec<Vec<u8>> = Vec::new();
     let mut scan = 0_usize;
@@ -543,7 +603,11 @@ pub(crate) fn states_in(container: &[u8], session: SessionKey<'_>) -> Vec<Reques
             b"cancel" => cancels
                 .entry(reference)
                 .or_default()
-                .push((scan, Closing::read(line))),
+                .push((scan, Closing::kept(line))),
+            b"accept" => accepts
+                .entry(reference)
+                .or_default()
+                .push((scan, Closing::kept(line))),
             _ => {}
         }
     }
@@ -581,6 +645,13 @@ pub(crate) fn states_in(container: &[u8], session: SessionKey<'_>) -> Vec<Reques
                 }
                 (None, None) => (Status::Pending, opening.summary.clone()),
             };
+            let withdrawal = cancel
+                .filter(|_| status == Status::Cancelled)
+                .and_then(|(_, closing)| closing.line.clone());
+            let accepted = accepts
+                .get(&reference)
+                .filter(|_| status == Status::Pending)
+                .and_then(|candidates| first_acceptance(&opening, opened_at, candidates));
             Some(Request {
                 status,
                 kind: opening.kind,
@@ -597,6 +668,8 @@ pub(crate) fn states_in(container: &[u8], session: SessionKey<'_>) -> Vec<Reques
                 to_session_id: opening.to_session_id,
                 recorded: opening.recorded,
                 summary,
+                accepted,
+                withdrawal,
             })
         })
         .collect()
@@ -759,8 +832,9 @@ struct Opening {
     ledger_valid: bool,
 }
 
-/// A candidate `reply` or `cancel`.
+/// A candidate `reply`, `cancel` or `accept`.
 struct Closing {
+    at: Vec<u8>,
     actor: Vec<u8>,
     target: Vec<u8>,
     actor_slot: Key,
@@ -770,6 +844,9 @@ struct Closing {
     actor_session_id: Key,
     target_session_id: Key,
     summary: Vec<u8>,
+    /// The line itself, kept only for a `cancel` or an `accept`
+    /// ([`Closing::kept`]): a reply's line is never copied anywhere.
+    line: Option<Vec<u8>>,
 }
 
 impl Opening {
@@ -882,6 +959,7 @@ impl Closing {
     fn read(line: &[u8]) -> Self {
         let [actor_session_id, target_session_id] = session_ids(line);
         Self {
+            at: extract(line, "ts"),
             actor: extract(line, "actor"),
             target: extract(line, "target"),
             actor_slot: Key::read(line, "actor_slot"),
@@ -891,6 +969,15 @@ impl Closing {
             actor_session_id,
             target_session_id,
             summary: fold_newlines(extract(line, "summary")),
+            line: None,
+        }
+    }
+
+    /// [`Closing::read`], keeping the line's bytes.
+    fn kept(line: &[u8]) -> Self {
+        Self {
+            line: Some(line.to_vec()),
+            ..Self::read(line)
         }
     }
 }

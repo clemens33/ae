@@ -126,7 +126,7 @@ different characters.
 | Mark | Glyph | ASCII | Means |
 |---|---|---|---|
 | dead | `✖` | `x` | the process behind the pane is gone |
-| needs-you | `⚠` | `!` | waiting-user, blocked, throttled, unanswered |
+| needs-you | `⚠` | `!` | waiting-user, blocked, limit, throttled — a session reads it when ANY seat does, whatever another seat's severity |
 | working | `●` | `*` | active within the watchdog's liveness window |
 | waiting-agent | `◔` | `~` | waiting on ANOTHER agent — quiet, no human needed; escalates to needs-you past its ceiling |
 | done | `✓` | `+` | declared complete or paused |

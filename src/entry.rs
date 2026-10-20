@@ -311,9 +311,9 @@ Sessions persist across reboots. Agents with session support resume conversation
 When inside an ae session, stop/end/reboot work without specifying the name.
 
 Config: ~/.ae/config (per-project override: .ae/config in project dir)
-Session helpers, in every session dir: send, relay, ask, review, reply, requests, state,
-  mark-done, goal, memo, say, peek (peak), agents, quota, usage, focus, interrupt, spawn, retire,
-  relaunch.
+Session helpers, in every session dir: send, relay, ask, review, reply, withdraw, accept,
+  requests, state, mark-done, goal, memo, say, peek (peak), agents, quota, usage, focus,
+  interrupt, spawn, retire, relaunch.
   ae @<session> <helper> [args...]
                          Run one of those helpers against a session, the short way
                          (e.g. ae @demo send lead 'ready'). Canonical session names
@@ -331,11 +331,11 @@ pub const LIST_HELP: &str = r"Usage: ae list [--running | --all | --stopped | --
   --running    running sessions only (explicit)
   --all        running sessions, then stopped ones
   --stopped    stopped sessions only
-  --needs-attn only running sessions with an attn reason — declared
-               waiting-user/blocked (a waiting-agent past its ceiling reads as
-               blocked), watchdog-derived dead/stale/limit/throttled, or an
-               unanswered inter-agent ask/review (older than 30m); implies
-               running-only
+  --needs-attn only running sessions that need you — declared
+               waiting-user/blocked (a waiting-agent past its ceiling and a
+               prompt only you may answer read as blocked) or watchdog-derived
+               dead/limit/throttled; stale and unanswered asks do not count;
+               implies running-only
                (aliases: --needs-me, --needs, --attn)
   --active     only running sessions with recent activity (an ae event in the
                last 5 min). Implies running-only (alias: --busy)

@@ -195,7 +195,8 @@ fn the_card_carries_the_goal_the_latest_record_per_topic_and_who_is_waiting() {
          \x20   lead          cl            waiting-user  12m   \"which layout do you want\"\n\
          \x20   scribe        cx            waiting-user  10m   \"worker-only layout request\"\n\
          \x20 needs you:\n\
-         \x20   lead          waiting-user  12m   which layout do you want\n",
+         \x20   lead          waiting-user  12m   which layout do you want\n\
+         \x20   scribe        waiting-user  10m   worker-only layout request\n",
         ages[0], ages[1],
     );
     assert_eq!(stdout, expected, "stderr: {stderr}");

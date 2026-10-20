@@ -127,9 +127,10 @@ impl RoutingMember {
 /// What a `ref` means, per the COMPLETE action table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefMeaning<'a> {
-    /// `ask` / `review` / `reply` / `cancel` — the request id pairing the
-    /// four. A withdrawal names the request it takes back, exactly as a reply
-    /// names the one it answers.
+    /// `ask` / `review` / `reply` / `cancel` / `accept` — the request id
+    /// pairing the five. A withdrawal names the request it takes back, and an
+    /// acceptance the one it takes on, exactly as a reply names the one it
+    /// answers.
     RequestId(&'a str),
     /// `memo` — the topic the memo was filed under.
     MemoTopic(&'a str),
@@ -492,7 +493,7 @@ impl Event {
             return RefMeaning::Undefined;
         };
         match self.action.as_str() {
-            "ask" | "review" | "reply" | "cancel" => RefMeaning::RequestId(value),
+            "ask" | "review" | "reply" | "cancel" | "accept" => RefMeaning::RequestId(value),
             "memo" => RefMeaning::MemoTopic(value),
             "recover" => RefMeaning::CapturedSessionId(value),
             "done-challenge" | "wait-challenge" => RefMeaning::LaunchId(value),

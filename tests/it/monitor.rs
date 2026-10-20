@@ -520,6 +520,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
             status: "running",
             main: Some("lead".to_owned()),
             attention: None,
+            unanswered: None,
             ae_version: None,
             as_of: ae::time::Timestamp::from_epoch(0),
             created_epoch: None,
@@ -550,18 +551,18 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
                 },
             ],
             needs: vec![
-                Need::Declared {
+                Need::Seat {
                     owner: "lead".to_owned(),
-                    state: "waiting-user".to_owned(),
+                    reason: ae::attention::Reason::WaitingUser,
                     age_secs: Some(720),
-                    reason: "FOCUS export: enable | defer (recommend enable for billing)"
+                    detail: "FOCUS export: enable | defer (recommend enable for billing)"
                         .to_owned(),
                 },
-                Need::Declared {
+                Need::Seat {
                     owner: "colead".to_owned(),
-                    state: "blocked".to_owned(),
+                    reason: ae::attention::Reason::Blocked,
                     age_secs: Some(3_600),
-                    reason: "gate needs a second provider: none seated".to_owned(),
+                    detail: "gate needs a second provider: none seated".to_owned(),
                 },
             ],
             degraded: false,
@@ -572,6 +573,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
             status: "running",
             main: Some("lead".to_owned()),
             attention: None,
+            unanswered: None,
             ae_version: None,
             as_of: ae::time::Timestamp::from_epoch(0),
             created_epoch: None,

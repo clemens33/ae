@@ -89,9 +89,10 @@ options are split onto their own lines.
 
 The conversation stays the lead pair's, but the section that follows it lists
 EVERY roster seat, workers included, whose attention verdict says you are
-needed. The verdict is the one `ae list` reads (dead, stale, `waiting-user`,
-`blocked`, an escalated `waiting-agent`, a usage limit, a throttle, unanswered
-asks); the chat derives none of its own. A row reads
+needed. The verdict is the one `ae list` reads, kept to the reasons that need you
+(dead, `waiting-user`, `blocked`, an escalated `waiting-agent`, a usage limit, a
+throttle); a stale seat and unanswered asks are not listed, and the chat derives none
+of its own. A row reads
 
 ```
   scout · blocked · /open scout · human prompt since 17:50:00 (10m)

@@ -46,6 +46,9 @@ pub struct Row {
     pub index: usize,
     pub mark: Mark,
     pub needy: bool,
+    /// Open requests past the unanswered threshold and not accepted; `None`
+    /// when the journal read was not complete.
+    pub unanswered: Option<usize>,
     pub counts: Counts,
     pub line2: Line2,
     pub home: bool,
@@ -191,8 +194,16 @@ fn row(
     };
     let mark = if stopped {
         Mark::Dead
-    } else if let Some(reason) = entry.attention {
-        Mark::for_reason(reason)
+    } else if entry.attention.is_some() {
+        // Aggregated as MARKS: a stale seat's severity cannot hide another
+        // seat that needs the human.
+        Mark::for_reasons(
+            entry
+                .agents
+                .iter()
+                .filter_map(|agent| agent.reason)
+                .chain(entry.attention),
+        )
     } else {
         match agents {
             Some(agents) if agents.iter().any(|agent| agent.mark() == Mark::Working) => {
@@ -225,6 +236,7 @@ fn row(
             .rows
             .iter()
             .any(|row| matches!(row.verdict, Verdict::Reason(_))),
+        unanswered: entry.unanswered,
         counts,
         line2,
         home: false,
@@ -363,6 +375,7 @@ mod tests {
             index,
             mark: Mark::Idle,
             needy: false,
+            unanswered: None,
             counts: Counts::Unknown,
             line2: Line2::NoGoal,
             home: false,

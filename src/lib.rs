@@ -71,6 +71,7 @@ pub mod relay;
 pub mod rename;
 pub mod render;
 pub mod reply;
+pub mod request_verb;
 pub mod requests;
 mod reseat;
 pub mod restore;
@@ -3403,6 +3404,26 @@ pub fn run_with(
             &own_session(dir),
             time::Timestamp::now(),
             send_defer(),
+            err,
+        )?,
+        cli::Request::Withdraw { dir, tail } => request_verb::run(
+            request_verb::Verb::Withdraw,
+            dir,
+            tail,
+            calling_pane().as_ref(),
+            &own_session(dir),
+            time::Timestamp::now(),
+            out,
+            err,
+        )?,
+        cli::Request::Accept { dir, tail } => request_verb::run(
+            request_verb::Verb::Accept,
+            dir,
+            tail,
+            calling_pane().as_ref(),
+            &own_session(dir),
+            time::Timestamp::now(),
+            out,
             err,
         )?,
         cli::Request::Review { dir, tail } => {

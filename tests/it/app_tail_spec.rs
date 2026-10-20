@@ -56,6 +56,7 @@ fn fleet() -> Fleet {
             index: 1,
             mark: Mark::Working,
             needy: false,
+            unanswered: None,
             counts: Counts::Unknown,
             line2: Line2::NoGoal,
             home: true,

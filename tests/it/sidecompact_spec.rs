@@ -79,6 +79,7 @@ fn srow(name: &str, index: usize, home: bool, line2: Line2) -> Row {
         index,
         mark: Mark::Working,
         needy: false,
+        unanswered: None,
         counts: Counts::Marks(vec![(Mark::Working, false, 1)]),
         line2,
         home,
@@ -406,6 +407,7 @@ fn stopped_session_is_one_row() {
         index: 4,
         mark: Mark::Dead,
         needy: false,
+        unanswered: None,
         counts: Counts::Stopped,
         line2: Line2::NotRunning {
             seats: 2,
@@ -461,6 +463,8 @@ fn agent_rows_are_single_line_without_client_or_reason_rows() {
         }],
         dir: None,
         base: ae::console::link::Base::default(),
+        unanswered: None,
+        unanswered_oldest_secs: None,
     };
     let shot = render(Frame {
         width: 150,
@@ -571,6 +575,8 @@ fn open_ask_reaches_the_header_row() {
         }],
         dir: None,
         base: ae::console::link::Base::default(),
+        unanswered: None,
+        unanswered_oldest_secs: None,
     };
     let shot = render(Frame {
         width: 150,
@@ -617,6 +623,7 @@ fn fleet10() -> Fleet {
                 index: at + 1,
                 mark: Mark::Idle,
                 needy: false,
+                unanswered: None,
                 counts: Counts::Unknown,
                 line2: Line2::NoGoal,
                 home: at == 0,
@@ -787,6 +794,7 @@ fn fleet60(home: &str, needy_last: bool) -> Fleet {
                     index,
                     mark: Mark::Working,
                     needy: needy_last && index == 60,
+                    unanswered: None,
                     counts: Counts::Unknown,
                     line2: Line2::NoGoal,
                     home: false,

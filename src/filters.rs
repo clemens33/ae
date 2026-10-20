@@ -62,7 +62,7 @@ impl Scope {
 pub struct Selection {
     /// Which sessions are in scope at all.
     pub scope: Scope,
-    /// Keep only sessions carrying an attention reason.
+    /// Keep only sessions with a reason that needs the human.
     pub needs_attention: bool,
     /// Keep only sessions with an ae event within this many seconds.
     pub active_within_secs: Option<i64>,
@@ -218,7 +218,7 @@ impl ListArgs {
 mod tests {
     use super::{DEFAULT_ACTIVE_WINDOW_SECS, ListArgs, Scope, Selection, UnknownFlag};
     use crate::attention::Reason;
-    use crate::digest::{SessionEntry, Status};
+    use crate::digest::{AgentEntry, SessionEntry, Status};
     use crate::time::Timestamp;
 
     const NOW: Timestamp = Timestamp::from_epoch(1_780_000_000);
@@ -230,6 +230,10 @@ mod tests {
     fn attn(name: &str, status: Status, reason: Reason) -> SessionEntry {
         let mut entry = session(name, status);
         entry.attention = Some(reason);
+        entry.agents = vec![AgentEntry {
+            reason: Some(reason),
+            ..AgentEntry::default()
+        }];
         entry
     }
 

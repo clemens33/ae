@@ -292,7 +292,6 @@ session's agents, by severity:
 | `attn:blocked` | an agent declared it's blocked on an external dep |
 | `attn:limit` | an agent's tool draws its own usage-limit notice (rank 3, exactly `blocked`'s); outranks a declaration it came after; clears when the notice leaves a live pane's bottom rows |
 | `attn:throttled` | an agent's tool draws its own transient rate-limit or overload error row |
-| `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the fixed 1800-second (30-minute) threshold |
 
 (`dead`/`stale`/`throttled`/`limit` reuse the watchdog's own alert events;
 `waiting-user`/`blocked` are self-declared and require a reason. A `waiting-user`
@@ -310,8 +309,15 @@ while the attention ceiling scales from the documented default 300 s (1200 s),
 because zero keeps the marker and only suppresses the nudge; its reason names the
 agent and what you need from them. `blocked` keeps a concrete EXTERNAL blocker only — a dependency, a service, a human
 decision elsewhere, a broken host — and names what blocks, who or what unblocks it, what
-you tried, and a long-form path. `unanswered` flags an `ask`/`review`
-whose target never replied within 1800 seconds (30 minutes) — the lowest-severity reason.)
+you tried, and a long-form path.)
+
+Every reason but `stale` NEEDS YOU: those sessions wear `⚠` (or `✖` for `dead`), count in
+`--needs-attn` and `ae next`, and fill `ae brief`'s `needs you:`. `stale` keeps its `attn:` token
+and the quiet `◌` mark, and claims no human. Request debt is NOT a reason at all: an
+`ask`/`review` its target has neither answered nor [`accept`ed](helpers.md) within the fixed
+1800 seconds (30 minutes) is counted as `unanswered:<n>` after the `attn:` token, never marks
+the session and never makes it need you. The count is omitted when the journal could not be read
+whole, because an unreadable ledger is not an exact zero.
 
 A seat on its usage limit whose auto reseat episode has an attempt open reads
 `limit · auto-reseat in flight` on its agent line; a terminal outcome — or none —
@@ -325,7 +331,7 @@ bulk of the list and just noise for monitoring. Flags:
 | *(none)* / `--running` | running sessions only |
 | `--all` | running sessions, then stopped ones |
 | `--stopped` | stopped sessions only |
-| `--needs-attn` | only running sessions with an `attn:` reason; aliases: `--needs-me`, `--needs`, `--attn` |
+| `--needs-attn` | only running sessions that need you: an `attn:` reason other than `stale`; aliases: `--needs-me`, `--needs`, `--attn` |
 | `--active` | only running sessions with recent activity (an ae event within the fixed 300 seconds / 5 minutes); alias: `--busy` |
 | `--json` | machine-readable digest (honours the filters above) |
 
@@ -376,8 +382,12 @@ session's live git branch (from the watchdog's status segment, with a git
 fallback) — together with `name`, `origin` and `mode` they give a consumer
 (e.g. the orchestrator) the session's context without any manual bookkeeping.
 `schema_version` lets consumers gate on shape. `attention_rank` is the numeric
-severity (`dead` 6 → `unanswered` 1); richer per-agent timing fields are a
-planned addition.
+severity (`dead` 6, `stale` 5, `waiting-user` 4, `blocked`/`limit` 3, `throttled` 2;
+rank 1 is retired). `needs_attention` is true only for a reason that needs you, so a
+session whose only reason is `stale` reads `false`. `unanswered`, when present, is the
+session's count of asks/reviews unanswered and unaccepted past 1800 seconds; it is absent
+when the journal could not be read whole. Richer per-agent timing fields are a planned
+addition.
 
 ## `ae brief`
 
@@ -415,7 +425,7 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · created 2d ago · starte
 | `goal:` | the session's [`goal`](helpers.md), in full, or `none` |
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
-| `needs you:` | explicit `waiting-user`/`blocked` declarations from the session's main agent or named `colead` (a `waiting-agent` past its ceiling is materialized as `blocked`), with each full reason wrapped across as many bounded lines as needed. Worker declarations and unanswered asks/reviews are intra-session traffic and stay out. Nothing here is inferred, so an empty section reads `none recorded` |
+| `needs you:` | one row per roster agent — main, colead, workers and spawned seats alike — whose attention reason needs you (`waiting-user`, `blocked` with an escalated `waiting-agent`, `limit`, `throttled`, `dead`): the agent, the reason, its age and the declared reason (or `no reason given`), each full reason wrapped across as many bounded lines as needed. `stale` and unanswered asks/reviews stay out; the header carries the `unanswered:<n>` count. An empty section reads `none recorded` |
 
 ### `--seat` — the seed pack
 
@@ -528,8 +538,8 @@ the bounded last-check record without triggering a check.
 
 The attention navigator — the action half of `ae list`. Names the single
 **top-ranked running session needing attention**, using the *same* rollup and
-severity ranking as `ae list` (`dead > stale > waiting-user > blocked >
-throttled > unanswered`):
+severity ranking as `ae list`, over the reasons that need you (`dead >
+waiting-user > blocked = limit > throttled`; `stale` and request debt never qualify):
 
 ```text
 $ ae next

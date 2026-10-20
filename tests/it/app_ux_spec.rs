@@ -34,6 +34,7 @@ fn fleet(needy: &[usize]) -> Fleet {
                     Mark::NeedsYou
                 },
                 needy: needy.contains(&at),
+                unanswered: None,
                 counts: Counts::Marks(Vec::new()),
                 line2: Line2::NoGoal,
                 home: false,

@@ -205,7 +205,7 @@ pub enum Mark {
     /// The process behind the pane is gone. Not a state anything recovers from
     /// on its own, and never drawn like a session that finished.
     Dead,
-    /// A human is the next step — waiting, blocked, throttled, unanswered.
+    /// A human is the next step — waiting, blocked, limited, throttled.
     NeedsYou,
     /// Moving, or recently moved.
     Working,
@@ -334,12 +334,31 @@ impl Mark {
         match reason {
             Reason::Dead => Self::Dead,
             Reason::Stale => Self::Stale,
-            Reason::WaitingUser
-            | Reason::Blocked
-            | Reason::Limit
-            | Reason::Throttled
-            | Reason::Unanswered => Self::NeedsYou,
+            Reason::WaitingUser | Reason::Blocked | Reason::Limit | Reason::Throttled => {
+                Self::NeedsYou
+            }
         }
+    }
+
+    /// The mark a session's seat reasons roll up to: the most urgent MARK
+    /// among them by [`Mark::rank`], [`Mark::Idle`] for none. Aggregated as
+    /// marks, never as [`Reason`] severity, which ranks `stale` above a human
+    /// blocker the mark table puts below it.
+    ///
+    /// ```
+    /// use ae::attention::Reason;
+    /// use ae::theme::Mark;
+    /// assert_eq!(Mark::for_reasons([Reason::Stale, Reason::Blocked]), Mark::NeedsYou);
+    /// assert_eq!(Mark::for_reasons([Reason::Stale]), Mark::Stale);
+    /// assert_eq!(Mark::for_reasons([]), Mark::Idle);
+    /// ```
+    #[must_use]
+    pub fn for_reasons<I: IntoIterator<Item = Reason>>(reasons: I) -> Self {
+        reasons
+            .into_iter()
+            .map(Self::for_reason)
+            .max_by_key(|mark| mark.rank())
+            .unwrap_or(Self::Idle)
     }
 }
 

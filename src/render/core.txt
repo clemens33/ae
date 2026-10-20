@@ -20,6 +20,7 @@ Use your session; another session requires explicit human authorization naming i
 "${meta_dir}/send" NAME 'information that needs no answer'
 "${meta_dir}/ask" NAME 'question you need answered'
 "${meta_dir}/review" NAME 'review request'
+"${meta_dir}/withdraw" ID 'reason' drops your ask; "${meta_dir}/accept" ID 'note' (reply owed)
 Need an answer before you can go on? ask, then declare waiting-agent. The request id the helper
 prints is not the answer; the reply arrives later as a new message.
 Bodies to agents are terse: fragments, no filler; keep file:line, commands, ids, error text and

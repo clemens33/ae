@@ -661,6 +661,8 @@ mod tests {
             to_session_id: Key::Absent,
             recorded: None,
             summary: Vec::new(),
+            accepted: None,
+            withdrawal: None,
         }
     }
 

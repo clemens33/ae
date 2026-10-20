@@ -23,6 +23,11 @@ pub struct Overview {
     /// written, and the viewer's home. Nothing is guessed: no recorded dir, no
     /// base dir.
     pub base: Base,
+    /// The session's unanswered requests — request debt, never something that
+    /// waits on the human; `None` when not known exactly.
+    pub unanswered: Option<usize>,
+    /// How long the oldest of them has waited, in seconds.
+    pub unanswered_oldest_secs: Option<i64>,
 }
 
 /// One thing waiting on the human.
@@ -61,5 +66,13 @@ pub fn of(
         dir: (entry.work_dir.clone()).filter(|dir| !dir.is_empty()),
         home: home.and_then(Path::to_str).map(str::to_owned),
     };
-    Overview { open, dir, base }
+    Overview {
+        open,
+        dir,
+        base,
+        unanswered: entry.unanswered,
+        unanswered_oldest_secs: entry
+            .unanswered_oldest_epoch
+            .map(|sent| now.epoch().saturating_sub(sent).max(0)),
+    }
 }

@@ -477,7 +477,7 @@ The marks are the **watchdog's verdict**, never a claim about what an agent is "
 | Mark | ASCII | Means |
 |---|---|---|
 | `✖` | `x` | the process behind the pane is gone |
-| `⚠` | `!` | waiting on you, blocked, throttled, or an unanswered request |
+| `⚠` | `!` | waiting on you, blocked, on its usage limit, or throttled |
 | `●` | `*` | working according to the latest liveness verdict |
 | `◔` | `~` | waiting on another agent — quiet, no human needed |
 | `✓` | `+` | declared done or paused |

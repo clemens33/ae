@@ -38,6 +38,9 @@ pub struct PendingRequest {
     pub target: Option<String>,
     /// When it was sent.
     pub sent_at: Timestamp,
+    /// When its target ACCEPTED it — the first `accept` its target recorded
+    /// after this opening. Still open (a reply is owed); no longer unanswered.
+    pub accepted_at: Option<Timestamp>,
 }
 
 impl PendingRequest {
@@ -304,7 +307,6 @@ impl SessionRead {
     /// Read an already-drained stream.
     ///
     /// ```
-    /// use ae::attention::Reason;
     /// use ae::events::{Cursor, Drain, Event};
     /// use ae::session::{DEFAULT_UNANSWERED_SECS, SessionRead};
     /// use ae::time::Timestamp;
@@ -323,10 +325,6 @@ impl SessionRead {
     ///
     /// let now = Timestamp::parse("2026-05-29T14:00:00Z").unwrap();
     /// assert_eq!(read.unanswered(now, DEFAULT_UNANSWERED_SECS).len(), 1);
-    /// assert_eq!(
-    ///     read.attention_contribution(now, DEFAULT_UNANSWERED_SECS),
-    ///     Some(Reason::Unanswered),
-    /// );
     /// # Ok::<(), ae::events::EventError>(())
     /// ```
     #[must_use]
@@ -352,23 +350,17 @@ impl SessionRead {
         }
     }
 
-    /// The requests that have been waiting longer than `threshold_secs`.
+    /// The requests that have been waiting longer than `threshold_secs` and
+    /// that their target has not accepted, oldest first. An accepted request
+    /// stays pending — a reply is owed — but it is not unanswered, at any age.
     #[must_use]
     pub fn unanswered(&self, now: Timestamp, threshold_secs: i64) -> Vec<&PendingRequest> {
         self.pending
             .iter()
-            .filter(|request| request.age_secs(now) > threshold_secs)
+            .filter(|request| {
+                request.accepted_at.is_none() && request.age_secs(now) > threshold_secs
+            })
             .collect()
-    }
-
-    /// This session's event-derived contribution to the attention rollup.
-    #[must_use]
-    pub fn attention_contribution(&self, now: Timestamp, threshold_secs: i64) -> Option<Reason> {
-        if self.unanswered(now, threshold_secs).is_empty() {
-            None
-        } else {
-            Some(Reason::Unanswered)
-        }
     }
 
     /// When the goal was last set.
@@ -887,14 +879,17 @@ pub fn entry_from(
         );
         entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
-    // The MAX across agent reasons PLUS session-level unresolved-request facts.
-    entry.attention = Reason::rollup(
-        entry
-            .agents
+    // The MAX across agent reasons. Request debt is not a reason: it is
+    // counted beside the marker, and only from a complete journal read.
+    entry.attention = Reason::rollup(entry.agents.iter().filter_map(|agent| agent.reason));
+    if let Some(read) = read.filter(|_| events_complete(snapshot)) {
+        let unanswered = read.unanswered(now, unanswered_secs);
+        entry.unanswered = Some(unanswered.len());
+        entry.unanswered_oldest_epoch = unanswered
             .iter()
-            .filter_map(|agent| agent.reason)
-            .chain(read.and_then(|read| read.attention_contribution(now, unanswered_secs))),
-    );
+            .map(|request| request.sent_at.epoch())
+            .min();
+    }
     entry.degraded =
         meta.is_none_or(|meta| anomalies_degrade(meta.anomalies())) || !events_complete(snapshot);
     // FAIL CLOSED, and NAME the gap: an unusable `idle_nudge_secs` pin
@@ -1219,7 +1214,8 @@ fn declared_reason(
     }
 }
 
-/// The `ask`/`review` requests nothing has closed, oldest first.
+/// The `ask`/`review` requests nothing has closed, oldest first, each with the
+/// first acceptance its target recorded after it.
 fn pending_requests(events: &[Event], session: SessionKey<'_>) -> Vec<PendingRequest> {
     open_requests(events, session)
         .into_iter()
@@ -1230,9 +1226,34 @@ fn pending_requests(events: &[Event], session: SessionKey<'_>) -> Vec<PendingReq
                 actor: event.actor.clone(),
                 target: event.target.clone(),
                 sent_at: event.ts,
+                accepted_at: accepted_at(events, event),
             })
         })
         .collect()
+}
+
+/// The action a request's target records to accept it: the work is taken on,
+/// the request stays open until its reply.
+pub const ACCEPT: &str = "accept";
+
+/// When `request`'s target first accepted it: the first `accept` carrying its
+/// id that APPEARS AFTER this opening in the journal — append order, never a
+/// stamp, so a newer opening of the same id is a new acceptance episode — and
+/// that [`speaks_for_target`]. `request` is the open opening itself, so every
+/// record after it came while it was open.
+fn accepted_at(events: &[Event], request: &Event) -> Option<Timestamp> {
+    let id = request.reference.as_deref()?;
+    let opened = events
+        .iter()
+        .position(|event| std::ptr::eq(event, request))?;
+    events[opened + 1..]
+        .iter()
+        .find(|event| {
+            event.action == ACCEPT
+                && event.ref_meaning() == RefMeaning::RequestId(id)
+                && speaks_for_target(request, event)
+        })
+        .map(|event| event.ts)
 }
 
 /// The same sensor's RECORDS, so a reader that needs more than the display
@@ -1377,19 +1398,24 @@ fn withdrawn(request: &Event, cancel: &Event, cancel_ref: &str) -> bool {
 /// answers it. The rule is [`crate::events::answers_external_asker`], shared
 /// with the view's sensor, so the two readers of one ledger cannot disagree.
 fn closes(request: &Event, reply: &Event, reply_ref: &str) -> bool {
-    if request.reference.as_deref() != Some(reply_ref) {
-        return false;
-    }
+    request.reference.as_deref() == Some(reply_ref) && speaks_for_target(request, reply)
+}
+
+/// Whether `record` is `request`'s TARGET speaking back to its asker — the
+/// full mirror a reply closes by, plus [`crate::events::answers_external_asker`]'s
+/// one arm. The ONE rule a reply and an acceptance are both judged by: who may
+/// answer a request is who may accept it.
+pub(crate) fn speaks_for_target(request: &Event, record: &Event) -> bool {
     let from_the_target = request
         .target_identity()
-        .is_some_and(|target| target.matches(reply.actor_identity()));
-    let to_the_asker = reply
+        .is_some_and(|target| target.matches(record.actor_identity()));
+    let to_the_asker = record
         .target_identity()
         .is_some_and(|target| target.matches(request.actor_identity()));
     let named_external_asker = crate::events::answers_external_asker(
         request.actor_identity(),
         request.actor.as_bytes(),
-        reply.target.as_deref().unwrap_or_default().as_bytes(),
+        record.target.as_deref().unwrap_or_default().as_bytes(),
     );
     from_the_target && (to_the_asker || named_external_asker)
 }
@@ -1560,14 +1586,10 @@ mod tests {
         let read = read(&lines);
         assert_eq!(read.pending.len(), 1);
         assert_eq!(read.unanswered(NOW, DEFAULT_UNANSWERED_SECS).len(), 1);
-        assert_eq!(
-            read.attention_contribution(NOW, DEFAULT_UNANSWERED_SECS),
-            Some(Reason::Unanswered)
-        );
     }
 
     #[test]
-    fn sc_017g_a_request_still_inside_the_threshold_is_not_an_attention_reason() {
+    fn sc_017g_a_request_still_inside_the_threshold_is_not_unanswered() {
         let lines = [event(
             &at(60),
             "lead",
@@ -1578,11 +1600,7 @@ mod tests {
         assert_eq!(read.pending.len(), 1, "it is pending");
         assert!(
             read.unanswered(NOW, DEFAULT_UNANSWERED_SECS).is_empty(),
-            "but it has not been waiting long enough to need a human"
-        );
-        assert_eq!(
-            read.attention_contribution(NOW, DEFAULT_UNANSWERED_SECS),
-            None
+            "but it has not passed the unanswered threshold"
         );
     }
 
@@ -1831,7 +1849,7 @@ mod tests {
     }
 
     #[test]
-    fn a_withdrawal_by_the_asker_ends_the_request_and_its_attention() {
+    fn a_withdrawal_by_the_asker_ends_the_request_and_its_unanswered_count() {
         let ask = event(
             &at(7200),
             "lead",
@@ -1846,20 +1864,16 @@ mod tests {
         );
         let read = read(&[ask.clone(), cancel]);
         assert!(read.pending.is_empty(), "nobody is waiting on it");
-        assert_eq!(
-            read.attention_contribution(Timestamp::now(), DEFAULT_UNANSWERED_SECS),
-            None,
-            "a withdrawn request must not keep its session marked unanswered"
-        );
+        assert!(read.unanswered(NOW, DEFAULT_UNANSWERED_SECS).is_empty());
     }
 
     #[test]
-    fn the_withdrawal_compact_writes_ends_the_request_and_its_attention() {
+    fn the_withdrawal_compact_writes_ends_the_request_and_its_unanswered_count() {
         // The production shape, not a tidy one: `tracked::run` records the
         // compact sender's session and leaves its slot empty, so the opening is
         // half-routed; the withdrawal goes out through the plain event writer
         // with no routing member at all. Comparing routing keys alone would
-        // leave this open, and the session would report `attn: unanswered` for
+        // leave this open, and the session would report unanswered debt for
         // a handover nobody is waiting on.
         let lines = [
             event(
@@ -1877,10 +1891,7 @@ mod tests {
         ];
         let read = read(&lines);
         assert!(read.pending.is_empty());
-        assert_eq!(
-            read.attention_contribution(Timestamp::now(), DEFAULT_UNANSWERED_SECS),
-            None
-        );
+        assert!(read.unanswered(NOW, DEFAULT_UNANSWERED_SECS).is_empty());
     }
 
     #[test]
@@ -2440,7 +2451,7 @@ mod tests {
 
     /// The OTHER projection of the same sensor, read the way the product reads
     /// it: [`SessionRead::open`] on a real session directory, which is where
-    /// the session name comes from and where `Reason::Unanswered` is decided.
+    /// the session name comes from and where unanswered requests are counted.
     ///
     /// The second half is the control, and it is the one that matters: the same
     /// ledger, read as a session whose name does not match what the request
@@ -2449,7 +2460,7 @@ mod tests {
     #[test]
     fn a_session_read_from_disk_closes_a_retired_seats_request_and_no_other() {
         // Older than DEFAULT_UNANSWERED_SECS, so the request is past the age at
-        // which it asks for attention: this test is about whether it STOPS.
+        // which it counts as unanswered: this test is about whether it STOPS.
         let ask = |session: &str| {
             event(
                 &at(3600),
@@ -2478,9 +2489,9 @@ mod tests {
         let before = SessionRead::open(&home.0).expect("the log reads");
         assert_eq!(before.pending.len(), 1, "nobody has answered it yet");
         assert_eq!(
-            before.attention_contribution(NOW, DEFAULT_UNANSWERED_SECS),
-            Some(Reason::Unanswered),
-            "and it is old enough to be asking for attention",
+            before.unanswered(NOW, DEFAULT_UNANSWERED_SECS).len(),
+            1,
+            "and it is old enough to count as unanswered",
         );
 
         home.events(&[ask(&name), retire.clone()]);
@@ -2491,9 +2502,9 @@ mod tests {
             after.pending,
         );
         assert_eq!(
-            after.attention_contribution(NOW, DEFAULT_UNANSWERED_SECS),
-            None,
-            "and a closed request raises no Unanswered",
+            after.unanswered(NOW, DEFAULT_UNANSWERED_SECS).len(),
+            0,
+            "and a closed request is not unanswered",
         );
 
         let away = Scratch::new("judges-no-other-session");
@@ -2505,9 +2516,9 @@ mod tests {
             "a request whose target lives elsewhere is not this session's to close",
         );
         assert_eq!(
-            control.attention_contribution(NOW, DEFAULT_UNANSWERED_SECS),
-            Some(Reason::Unanswered),
-            "and it goes on raising Unanswered",
+            control.unanswered(NOW, DEFAULT_UNANSWERED_SECS).len(),
+            1,
+            "and it remains in the unanswered count",
         );
     }
 
@@ -3806,7 +3817,7 @@ mod tests {
     #[test]
     fn sc_017g_amended_unanswered_is_a_session_fact_and_never_an_agent_reason() {
         // A pending ask is a PAIR fact with no owning agent, so no agents[].reason
-        // ever reads "unanswered" — but it still reaches the session marker.
+        // ever reads "unanswered". It has a separate quiet session count.
         let scratch = Scratch::new("unansweredrollup");
         scratch.meta(META);
         scratch.events(&[event(
@@ -3817,15 +3828,15 @@ mod tests {
         )]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(
-            entry.attention,
-            Some(Reason::Unanswered),
-            "it reaches the marker"
+            entry.attention, None,
+            "debt is outside the attention rollup"
         );
+        assert_eq!(entry.unanswered, Some(1), "debt stays visible");
+        assert!(!entry.needs_attention(), "no human action is implied");
         assert!(
             entry.agents.iter().all(|agent| agent.reason.is_none()),
             "and no agent owns it"
         );
-        assert_ne!(entry.agents[0].reason, Some(Reason::Unanswered));
     }
 
     #[test]

@@ -41,7 +41,7 @@ pub struct Helper {
 
 /// THE helper set — the names a session directory holds, and the only names
 /// this dispatch answers to.
-pub const HELPERS: [Helper; 25] = [
+pub const HELPERS: [Helper; 27] = [
     Helper {
         name: "send",
         entry: crate::cli::SEND,
@@ -65,6 +65,16 @@ pub const HELPERS: [Helper; 25] = [
     Helper {
         name: "reply",
         entry: crate::cli::REPLY,
+        prefix: &[],
+    },
+    Helper {
+        name: "withdraw",
+        entry: crate::cli::WITHDRAW,
+        prefix: &[],
+    },
+    Helper {
+        name: "accept",
+        entry: crate::cli::ACCEPT,
         prefix: &[],
     },
     Helper {
@@ -402,7 +412,7 @@ mod tests {
         let helper = lookup("usage").expect("usage is a helper");
         let argv = translate(helper, Path::new("/s/work"), &[]);
         assert_eq!(argv, ["_usage", "/s/work"]);
-        assert_eq!(HELPERS.len(), 25);
+        assert_eq!(HELPERS.len(), 27);
     }
 
     #[test]

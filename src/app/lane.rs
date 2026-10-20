@@ -239,6 +239,10 @@ fn header(
     if let Some((to, _)) = closed.and_then(|closed| closed.ask.as_ref()) {
         let _ = write!(qualifier, " to {to}");
     }
+    // An acceptance is ONE row: its note rides the header, and no body follows.
+    if matches!(item.kind, Kind::Accepted { .. }) && !item.body.is_empty() {
+        let _ = write!(qualifier, " · {}", item.body);
+    }
     let (_, time) = clock_text(clock.shift(item.micros));
     let minute: String = time.chars().take(5).collect();
     Line::from(vec![
@@ -266,6 +270,9 @@ fn body_rows(
     paint: Paint,
     bullet: &str,
 ) -> Vec<Drawn> {
+    if matches!(item.kind, Kind::Accepted { .. }) {
+        return Vec::new();
+    }
     let said = closed.map(|closed| match &closed.ask {
         Some((_, words)) if !words.is_empty() => format!("{}: {words}", closed.id),
         _ => closed.id.clone(),
@@ -498,6 +505,8 @@ fn head(kind: &Kind, main: &str, through: bool) -> (String, String, Voice) {
             format!("reply · not admitted: {why} · 600-char preview"),
             seat(from),
         ),
+        // Progress, not a turn the human must read: the whole row is dim.
+        Kind::Accepted { seat: name, .. } => (name.clone(), "accepted".to_owned(), Voice::System),
     }
 }
 
@@ -521,7 +530,8 @@ pub(super) fn preview_why(item: &Item) -> Option<String> {
         Kind::Inbound { .. }
         | Kind::NotDelivered { .. }
         | Kind::Card { .. }
-        | Kind::NeedsYou { .. } => Some(summary.to_owned()),
+        | Kind::NeedsYou { .. }
+        | Kind::Accepted { .. } => Some(summary.to_owned()),
         Kind::Said { .. } if item.body.chars().count() >= CHAT_SUMMARY_CAP => Some(format!(
             "journal summary, capped at {CHAT_SUMMARY_CAP} chars"
         )),

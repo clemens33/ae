@@ -4538,6 +4538,7 @@ mod tests {
             index,
             mark: Mark::Working,
             needy: false,
+            unanswered: None,
             counts: Counts::Unknown,
             line2: fleet::Line2::NoGoal,
             home,

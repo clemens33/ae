@@ -200,10 +200,7 @@ fn sc_017g_a_stray_reply_leaves_the_request_unanswered() {
     assert_eq!(read.pending.len(), 1, "the third agent did not answer it");
     assert_eq!(read.pending[0].id, "ae-20260529T090000Z-bbbb2222");
     // Sent 09:00, read at 14:00 — five hours, well past the 30-minute default.
-    assert_eq!(
-        read.attention_contribution(now(), DEFAULT_UNANSWERED_SECS),
-        Some(Reason::Unanswered)
-    );
+    assert_eq!(read.unanswered(now(), DEFAULT_UNANSWERED_SECS).len(), 1);
 }
 
 #[test]
@@ -213,10 +210,7 @@ fn sc_017g_and_511b_a_renamed_replier_still_closes_its_request() {
         read.pending.is_empty(),
         "the routing key survived the display-name change"
     );
-    assert_eq!(
-        read.attention_contribution(now(), DEFAULT_UNANSWERED_SECS),
-        None
-    );
+    assert!(read.unanswered(now(), DEFAULT_UNANSWERED_SECS).is_empty());
 }
 
 #[test]
@@ -227,9 +221,9 @@ fn sc_518_a_reply_addressed_to_a_third_party_does_not_close_the_request() {
     assert_eq!(read.pending.len(), 1);
     assert_eq!(read.pending[0].id, "ae-20260529T090000Z-dddd4444");
     assert_eq!(
-        read.attention_contribution(now(), DEFAULT_UNANSWERED_SECS),
-        Some(Reason::Unanswered),
-        "a loud false-pending beats a silent false-closure"
+        read.unanswered(now(), DEFAULT_UNANSWERED_SECS).len(),
+        1,
+        "a foreign reply cannot erase visible request debt"
     );
 }
 
@@ -531,17 +525,24 @@ fn sc_506_and_509b_one_damaged_session_degrades_alone_and_the_document_closes() 
     assert_eq!(entries[0].get("degraded"), None, "healthy entries omit it");
     assert_eq!(entries[1].get_str("name"), Some("sc-509b-meta-missing"));
     assert_eq!(entries[1].get("degraded"), Some(&json::Value::Bool(true)));
+    assert_eq!(entries[2].get("attention"), Some(&json::Value::Null));
     assert_eq!(
-        entries[2].get_str("attention"),
-        Some("unanswered"),
-        "and the session AFTER the damaged one is intact"
+        entries[2].get("unanswered"),
+        Some(&json::Value::Num(1)),
+        "and the quiet request debt AFTER the damaged session is intact"
     );
 }
 
 #[test]
 fn sc_509_and_017f_the_digest_carries_exactly_what_the_filters_selected() {
     let live = entry("sc-017e-activity-clock");
-    let flagged = entry("sc-017g-unanswered-request");
+    let unanswered = entry("sc-017g-unanswered-request");
+    let mut flagged = SessionEntry::new("human-blocked", Status::Running);
+    flagged.attention = Some(Reason::Blocked);
+    flagged.agents = vec![ae::digest::AgentEntry {
+        reason: Some(Reason::Blocked),
+        ..ae::digest::AgentEntry::default()
+    }];
     let old = entry_for(
         &fixture("sc-510a-required-keys"),
         "old",
@@ -549,7 +550,7 @@ fn sc_509_and_017f_the_digest_carries_exactly_what_the_filters_selected() {
         now(),
         DEFAULT_UNANSWERED_SECS,
     );
-    let sessions = vec![live, flagged, old];
+    let sessions = vec![live, unanswered, flagged, old];
 
     let selected: Vec<SessionEntry> = Selection {
         scope: Scope::All,
@@ -576,15 +577,12 @@ fn sc_509_and_017f_the_digest_carries_exactly_what_the_filters_selected() {
         1,
         "only the attention session survives the filter"
     );
-    assert_eq!(
-        entries[0].get_str("name"),
-        Some("sc-017g-unanswered-request")
-    );
+    assert_eq!(entries[0].get_str("name"), Some("human-blocked"));
     assert_eq!(
         entries[0].get("needs_attention"),
         Some(&json::Value::Bool(true))
     );
-    assert_eq!(entries[0].get("attention_rank"), Some(&json::Value::Num(1)));
+    assert_eq!(entries[0].get("attention_rank"), Some(&json::Value::Num(3)));
 }
 
 /// Every fixture directory, by name, in sorted order.

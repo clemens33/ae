@@ -33,6 +33,7 @@ fn app() -> App {
                 index: index + 1,
                 mark: Mark::Working,
                 needy: false,
+                unanswered: None,
                 counts: fleet::Counts::Unknown,
                 line2: fleet::Line2::NoGoal,
                 home: index == 0,

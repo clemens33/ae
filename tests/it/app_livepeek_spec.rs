@@ -38,6 +38,7 @@ fn sample() -> (Root, App, Receiver<Request>) {
             index: at + 1,
             mark: theme::Mark::Working,
             needy: false,
+            unanswered: None,
             counts: fleet::Counts::Unknown,
             line2: fleet::Line2::NoGoal,
             home: at == 0,

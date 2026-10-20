@@ -263,6 +263,12 @@ pub struct SessionEntry {
     pub started_epoch: Option<i64>,
     /// The session-level rollup.
     pub attention: Option<Reason>,
+    /// Open requests waiting past the unanswered threshold that their target
+    /// has not accepted — request debt, never a reason. `None` when the
+    /// journal read was not complete, so no exact count exists.
+    pub unanswered: Option<usize>,
+    /// When the oldest of those was sent (not a document field).
+    pub unanswered_oldest_epoch: Option<i64>,
     /// The session's agents.
     pub agents: Vec<AgentEntry>,
     /// The agent occupying the typed `main` roster slot, when established.
@@ -297,6 +303,8 @@ impl SessionEntry {
             created_epoch: None,
             started_epoch: None,
             attention: None,
+            unanswered: None,
+            unanswered_oldest_epoch: None,
             agents: Vec::new(),
             main_agent: None,
             degraded: false,
@@ -340,10 +348,24 @@ impl SessionEntry {
         self.knowledge.events.is_complete()
     }
 
+    /// The most actionable reason among this session's seats that needs the
+    /// human, or `None` — [`Reason::needs_you_rollup`] over every seat's
+    /// reason, so a `stale` seat's severity never hides another seat's
+    /// blocker.
+    #[must_use]
+    pub fn needs_you(&self) -> Option<Reason> {
+        Reason::needs_you_rollup(
+            self.agents
+                .iter()
+                .filter_map(|agent| agent.reason)
+                .chain(self.attention),
+        )
+    }
+
     /// Whether this session needs a human — `needs_attention`.
     #[must_use]
-    pub const fn needs_attention(&self) -> bool {
-        self.attention.is_some()
+    pub fn needs_attention(&self) -> bool {
+        self.needs_you().is_some()
     }
 
     /// This session as object.
@@ -412,6 +434,14 @@ impl SessionEntry {
             fields.push((
                 "attention_rank".to_owned(),
                 Value::Num(self.attention.map_or(0, Reason::rank)),
+            ));
+        }
+        // Present only when the journal read was complete: an unreadable
+        // count is not an exact zero.
+        if let Some(count) = self.unanswered {
+            fields.push((
+                "unanswered".to_owned(),
+                Value::Num(i64::try_from(count).unwrap_or(i64::MAX)),
             ));
         }
         fields.push((
@@ -748,12 +778,19 @@ mod tests {
     }
 
     #[test]
-    fn sc_509_needs_attention_and_rank_cannot_disagree_with_the_reason() {
+    fn sc_509_attention_rank_and_human_need_keep_their_distinct_meanings() {
         for reason in Reason::BY_SEVERITY {
             let mut session = SessionEntry::new("s", Status::Running);
             session.attention = Some(reason);
+            session.agents = vec![AgentEntry {
+                reason: Some(reason),
+                ..AgentEntry::default()
+            }];
             let value = session.to_json();
-            assert_eq!(value.get("needs_attention"), Some(&json::Value::Bool(true)));
+            assert_eq!(
+                value.get("needs_attention"),
+                Some(&json::Value::Bool(reason != Reason::Stale))
+            );
             assert_eq!(value.get_str("attention"), Some(reason.as_str()));
             assert_eq!(
                 value.get("attention_rank"),
@@ -873,6 +910,10 @@ mod tests {
         // A raw `Dead` has no source provenance here.
         let mut entry = SessionEntry::degraded("dead", Status::Running);
         entry.attention = Some(Reason::Dead);
+        entry.agents = vec![AgentEntry {
+            reason: Some(Reason::Dead),
+            ..AgentEntry::default()
+        }];
         let value = entry.to_json();
         assert_eq!(value.get("needs_attention"), Some(&json::Value::Bool(true)));
         assert_eq!(value.get("attention"), None);

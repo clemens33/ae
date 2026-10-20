@@ -73,7 +73,7 @@ ae list                        # running sessions: goal, git branch, per-agent s
                                # (--needs-attn, --all, --json; `watch -n 10 'ae list'` for a live board)
 ae next                        # name the top session needing attention (--attach jumps to it)
 ae brief [name] [--all]        # why a session needs you: goal, latest note per memo topic,
-                               # each agent's declared state, and every unanswered ask
+                               # each agent's declared state, and every open ask
 ae orchestrator                # start or reattach the local orchestrator seat
 ```
 

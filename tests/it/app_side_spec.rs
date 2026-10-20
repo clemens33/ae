@@ -35,6 +35,7 @@ fn fleet(count: usize) -> Fleet {
                 index,
                 mark: Mark::Working,
                 needy: false,
+                unanswered: None,
                 counts: Counts::Unknown,
                 line2: Line2::NoGoal,
                 home: index == 1,

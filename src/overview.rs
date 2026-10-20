@@ -170,17 +170,17 @@ pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
         let mut has_human_needs = false;
         for need in card.human_needs() {
             has_human_needs = true;
-            if let Need::Declared {
+            if let Need::Seat {
                 owner,
-                state,
                 reason,
+                detail,
                 ..
             } = need
             {
                 hash_field(&mut value, "declared");
                 hash_field(&mut value, owner);
-                hash_field(&mut value, state);
-                hash_field(&mut value, reason);
+                hash_field(&mut value, reason.as_str());
+                hash_field(&mut value, detail);
             }
         }
         if !has_human_needs && !has_working {
@@ -247,18 +247,18 @@ fn push_need_sessions(sections: &mut Vec<String>, sessions: &[NeedSession]) {
 
 fn human_need_parts(need: &Need) -> Option<(&str, &str, String, Option<i64>)> {
     match need {
-        Need::Declared {
+        Need::Seat {
             owner,
-            state,
-            age_secs,
             reason,
+            age_secs,
+            detail,
         } => Some((
             owner,
-            state,
-            if reason.is_empty() {
+            reason.as_str(),
+            if detail.is_empty() {
                 "no reason given".to_owned()
             } else {
-                reason.clone()
+                detail.clone()
             },
             *age_secs,
         )),
@@ -417,6 +417,7 @@ mod tests {
             status: "running",
             main,
             attention: None,
+            unanswered: None,
             ae_version: None,
             as_of: crate::time::Timestamp::from_epoch(0),
             created_epoch: None,
@@ -446,11 +447,11 @@ mod tests {
             )],
         );
         blocked.agents[0].reason = "choose blue or green".to_owned();
-        blocked.needs.push(Need::Declared {
+        blocked.needs.push(Need::Seat {
             owner: "lead".to_owned(),
-            state: "waiting-user".to_owned(),
+            reason: Reason::WaitingUser,
             age_secs: Some(720),
-            reason: "choose blue or green".to_owned(),
+            detail: "choose blue or green".to_owned(),
         });
         let mut working = card("beta", vec![agent("builder", "working", 30, None)]);
         working.goal = Some("ship the parser".to_owned());
@@ -512,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_main_not_first_and_colead_share_one_session_heading() {
+    fn every_roster_seat_shares_one_human_needs_session_heading() {
         let mut pending = card(
             "alpha",
             vec![
@@ -522,27 +523,27 @@ mod tests {
             ],
         );
         pending.main = Some("captain".to_owned());
-        pending.needs.push(Need::Declared {
+        pending.needs.push(Need::Seat {
             owner: "captain".to_owned(),
-            state: "waiting-user".to_owned(),
+            reason: Reason::WaitingUser,
             age_secs: Some(0),
-            reason: "main decision".to_owned(),
+            detail: "main decision".to_owned(),
         });
-        pending.needs.push(Need::Declared {
+        pending.needs.push(Need::Seat {
             owner: "worker".to_owned(),
-            state: "waiting-user".to_owned(),
+            reason: Reason::WaitingUser,
             age_secs: Some(3_600),
-            reason: "internal worker blocker".to_owned(),
+            detail: "internal worker blocker".to_owned(),
         });
-        pending.needs.push(Need::Declared {
+        pending.needs.push(Need::Seat {
             owner: "colead".to_owned(),
-            state: "blocked".to_owned(),
+            reason: Reason::Blocked,
             age_secs: Some(1_800),
-            reason: "co-lead gate".to_owned(),
+            detail: "co-lead gate".to_owned(),
         });
 
         let text = render(&[pending], "orchestrator");
-        assert!(text.contains("  alpha (2)"), "{text}");
+        assert!(text.contains("  alpha (3)"), "{text}");
         assert!(
             text.contains("colead      blocked       30m   co-lead gate"),
             "{text}"
@@ -551,8 +552,8 @@ mod tests {
             text.contains("captain     waiting-user  0s    main decision"),
             "{text}"
         );
-        assert!(!text.contains("worker"), "{text}");
-        assert!(!text.contains("internal worker blocker"), "{text}");
+        assert!(text.contains("worker"), "{text}");
+        assert!(text.contains("internal worker blocker"), "{text}");
     }
 
     #[test]
@@ -567,11 +568,11 @@ mod tests {
             vec![agent(&"o".repeat(18), "waiting-user", 99_999, None)],
         );
         entry.main = Some("o".repeat(18));
-        entry.needs.push(Need::Declared {
+        entry.needs.push(Need::Seat {
             owner: "o".repeat(18),
-            state: "waiting-user".to_owned(),
+            reason: Reason::WaitingUser,
             age_secs: Some(99_999),
-            reason: reason.clone(),
+            detail: reason.clone(),
         });
         let text = render(&[entry], "orchestrator");
         assert!(text.contains("decision"), "{text}");
@@ -587,11 +588,11 @@ mod tests {
     #[test]
     fn hostile_controls_in_a_reason_are_flattened() {
         let mut entry = card("alpha", vec![agent("lead", "blocked", 60, None)]);
-        entry.needs.push(Need::Declared {
+        entry.needs.push(Need::Seat {
             owner: "lead".to_owned(),
-            state: "blocked".to_owned(),
+            reason: Reason::Blocked,
             age_secs: Some(60),
-            reason: "choose\r\nblue \u{1b}[31mdecision".to_owned(),
+            detail: "choose\r\nblue \u{1b}[31mdecision".to_owned(),
         });
         let text = render(&[entry], "orchestrator");
         assert!(text.contains("choose blue [31mdecision"), "{text}");
@@ -634,25 +635,25 @@ mod tests {
             ],
         );
         recent.needs = vec![
-            Need::Declared {
+            Need::Seat {
                 owner: "lead".to_owned(),
-                state: "waiting-user".to_owned(),
+                reason: Reason::WaitingUser,
                 age_secs: Some(60),
-                reason: "newer".to_owned(),
+                detail: "newer".to_owned(),
             },
-            Need::Declared {
+            Need::Seat {
                 owner: "colead".to_owned(),
-                state: "blocked".to_owned(),
+                reason: Reason::Blocked,
                 age_secs: Some(1_200),
-                reason: "older".to_owned(),
+                detail: "older".to_owned(),
             },
         ];
         let mut oldest = card("oldest", vec![agent("lead", "blocked", 7_200, None)]);
-        oldest.needs.push(Need::Declared {
+        oldest.needs.push(Need::Seat {
             owner: "lead".to_owned(),
-            state: "blocked".to_owned(),
+            reason: Reason::Blocked,
             age_secs: Some(7_200),
-            reason: "oldest need".to_owned(),
+            detail: "oldest need".to_owned(),
         });
         let text = render(&[recent, oldest], "orchestrator");
         let oldest_session = text.find("  oldest (1)").unwrap_or(usize::MAX);
@@ -696,11 +697,11 @@ mod tests {
             author: "lead".to_owned(),
             text: "ship overview".to_owned(),
         });
-        pending.needs.push(Need::Declared {
+        pending.needs.push(Need::Seat {
             owner: "lead".to_owned(),
-            state: "waiting-user".to_owned(),
+            reason: Reason::WaitingUser,
             age_secs: Some(1_200),
-            reason: "choose blue".to_owned(),
+            detail: "choose blue".to_owned(),
         });
         pending.needs.push(Need::Unanswered {
             kind: "review".to_owned(),
@@ -719,7 +720,7 @@ mod tests {
         let mut later = original.clone();
         later[0].agents[0].age_secs = Some(1_320);
         later[0].topics[0].age_secs = Some(180);
-        if let Need::Declared { age_secs, .. } = &mut later[0].needs[0] {
+        if let Need::Seat { age_secs, .. } = &mut later[0].needs[0] {
             *age_secs = Some(1_320);
         }
         if let Need::Unanswered { age_secs, .. } = &mut later[0].needs[1] {
@@ -743,8 +744,8 @@ mod tests {
         let original = vec![hash_card()];
         let mut changed_reason = original.clone();
         changed_reason[0].agents[0].reason = "choose green".to_owned();
-        if let Need::Declared { reason, .. } = &mut changed_reason[0].needs[0] {
-            *reason = "choose green".to_owned();
+        if let Need::Seat { detail, .. } = &mut changed_reason[0].needs[0] {
+            *detail = "choose green".to_owned();
         }
         assert_ne!(
             semantic_hash(&original, "orchestrator"),
@@ -787,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_hash_ignores_a_hidden_worker_block() {
+    fn semantic_hash_changes_when_a_worker_needs_the_human() {
         let original = vec![card(
             "alpha",
             vec![
@@ -800,22 +801,22 @@ mod tests {
         worker_blocked[0].agents[1].reason = "internal worker blocker".to_owned();
         worker_blocked[0].agents[1].attention = Some(Reason::Blocked);
         worker_blocked[0].attention = Some(Reason::Blocked);
-        worker_blocked[0].needs.push(Need::Declared {
+        worker_blocked[0].needs.push(Need::Seat {
             owner: "worker".to_owned(),
-            state: "blocked".to_owned(),
+            reason: Reason::Blocked,
             age_secs: Some(0),
-            reason: "internal worker blocker".to_owned(),
+            detail: "internal worker blocker".to_owned(),
         });
 
-        assert_eq!(
+        assert_ne!(
             render(&original, "orchestrator"),
             render(&worker_blocked, "orchestrator"),
-            "worker needs stay absent from the overview"
+            "a worker's human need is visible in the overview"
         );
-        assert_eq!(
+        assert_ne!(
             semantic_hash(&original, "orchestrator"),
             semantic_hash(&worker_blocked, "orchestrator"),
-            "a hidden worker need never spends a seat turn"
+            "a new human need from any seat wakes the overview"
         );
     }
 

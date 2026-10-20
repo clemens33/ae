@@ -1160,9 +1160,25 @@ type Spans = Vec<(String, Style)>;
 
 /// The right side of `row`, richest first: a stopped session's age, then its
 /// word alone; a running one's whole tally, then each shorter one closed on
-/// `…` down to its most urgent count.
+/// `…` down to its most urgent count. Request debt rides last, dim — `↩<n>`
+/// (`r<n>` without icons) — so it is the first thing to give way and never
+/// reads as a mark.
 fn tally_choices(ctx: &Ctx<'_, '_>, row: &Row) -> Vec<Spans> {
     let (paint, dim) = (ctx.paint, ctx.paint.fg(|p| p.dim));
+    let debt = row
+        .unanswered
+        .filter(|count| *count > 0)
+        .map(|count| (unanswered_tally(ctx.icons, count), dim));
+    let with_debt = |alone: Spans| -> Vec<Spans> {
+        match &debt {
+            Some(debt) => {
+                let mut rich = alone.clone();
+                rich.push(debt.clone());
+                vec![rich, alone]
+            }
+            None => vec![alone],
+        }
+    };
     match &row.counts {
         Counts::Stopped => {
             let since = match row.line2 {
@@ -1183,20 +1199,22 @@ fn tally_choices(ctx: &Ctx<'_, '_>, row: &Row) -> Vec<Spans> {
                     (text, paint.mark(*mark))
                 })
                 .collect();
-            (1..=parts.len())
-                .rev()
-                .map(|kept| {
-                    let mut spans = parts[..kept].to_vec();
-                    if kept < parts.len() {
-                        spans.push(("…".to_owned(), dim));
-                    }
-                    spans
-                })
-                .collect()
+            let mut choices = with_debt(parts.clone());
+            choices.extend((1..parts.len()).rev().map(|kept| {
+                let mut spans = parts[..kept].to_vec();
+                spans.push(("…".to_owned(), dim));
+                spans
+            }));
+            choices
         }
-        Counts::Marks(_) => vec![vec![("no agents".to_owned(), dim)]],
-        Counts::Unknown => vec![vec![("?".to_owned(), dim)]],
+        Counts::Marks(_) => with_debt(vec![("no agents".to_owned(), dim)]),
+        Counts::Unknown => with_debt(vec![("?".to_owned(), dim)]),
     }
+}
+
+/// A session's unanswered-request count as the sidebar draws it.
+fn unanswered_tally(icons: bool, count: usize) -> String {
+    format!("{}{count}", if icons { "↩" } else { "r" })
 }
 
 /// The cells `spans` spend, one blank between neighbours.
@@ -1341,7 +1359,8 @@ impl Cells {
 /// and its state word at the right end. What
 /// waits on the human is told in the chat header, not under the seat. An ask
 /// from a seat the roster lacks is a row of its own after the roster; a
-/// session ae has no seat facts for says why.
+/// session ae has no seat facts for says why. Request debt closes the body as
+/// one dim row — `↩ <n> unanswered · oldest <age>` — never a mark.
 fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> {
     let dim = ctx.paint.fg(|p| p.dim);
     let gap = |words: &str| vec![Cells::of(vec![Span::styled(words.to_owned(), dim)])];
@@ -1383,6 +1402,15 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
             meta: ["", ""],
         };
         rows.extend(seat_rows(ctx, &seat, 0, room));
+    }
+    let overview = ctx.screen.overview;
+    if let Some(count) = overview.unanswered.filter(|count| *count > 0) {
+        let glyph = if ctx.icons { "↩" } else { "r" };
+        let words = format!(
+            "{glyph} {count} unanswered · oldest {}",
+            age(overview.unanswered_oldest_secs)
+        );
+        rows.push(Cells::of(vec![Span::styled(fit(&words, "", room), dim)]));
     }
     rows
 }
@@ -2825,6 +2853,7 @@ mod tests {
             index,
             mark: if needy { Mark::NeedsYou } else { Mark::Working },
             needy,
+            unanswered: None,
             counts: Counts::Marks(vec![(Mark::Working, false, 3), (Mark::Done, true, 12)]),
             line2: Line2::Question {
                 text: "a question long enough to be clipped at every width it meets".to_owned(),
@@ -2845,6 +2874,8 @@ mod tests {
             }],
             dir: Some("~/a/launch/directory/long/enough/to/clip".to_owned()),
             base: crate::console::link::Base::default(),
+            unanswered: None,
+            unanswered_oldest_secs: None,
         };
         let item = Item {
             micros: 1_759_500_000_000_000,

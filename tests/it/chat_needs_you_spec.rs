@@ -134,10 +134,17 @@ fn needs_fold_uses_supplied_reason_for_every_roster_seat_including_spawned() {
             agent.reason = Some(reason);
         }
         let section = rig.settled();
+        if reason == Reason::Stale {
+            assert!(
+                section.rows.is_empty(),
+                "stale stays visible outside needs-you"
+            );
+            continue;
+        }
         assert_eq!(
             section.rows.len(),
             3,
-            "each existing reason needs the human: {reason}"
+            "each human-needed reason covers all seats: {reason}"
         );
         assert!(
             section

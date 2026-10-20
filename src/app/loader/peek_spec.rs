@@ -174,6 +174,7 @@ fn test_s4_pre_panel_refusal_sends_no_request() {
                 index: 1,
                 mark: Mark::Working,
                 needy: false,
+                unanswered: None,
                 counts: Counts::Unknown,
                 line2: Line2::NoGoal,
                 home: true,
