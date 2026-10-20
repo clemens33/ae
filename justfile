@@ -925,7 +925,7 @@ LLVM_COV_VERSION := "0.9.0"
 # `cargo +{{ FUZZ_TOOLCHAIN }}`, and the product's 1.97.1 pin never moves.
 CARGO_FUZZ_VERSION := "0.13.2"
 FUZZ_TOOLCHAIN := "nightly-2026-08-20"
-FUZZ_TARGETS := "console_draft_name config_parse meta_parse launch_cmd_lex config_command quota_claude_cache quota_feed quota_codex_rollout quota_grok_log quota_agy_output quota_go_usage usage_claude_transcript usage_codex_rollout usage_prices harness_observed picker_agents launch_stamp last_live_epochs sanitize_field request_id_select events_parse journal_append board_claude board_codex board_grok board_muse board_agy board_opencode brief_retry_record challenge_summary console_command app_view ask_unframe lease_holder card_body effort_flag effort_record effort_fold token_parse codex_developer_record link_scan reader_decode"
+FUZZ_TARGETS := "console_draft_name config_parse meta_parse launch_cmd_lex config_command quota_claude_cache quota_feed quota_codex_rollout quota_grok_log quota_agy_output quota_go_usage quota_muse_usage usage_claude_transcript usage_codex_rollout usage_prices harness_observed picker_agents launch_stamp last_live_epochs sanitize_field request_id_select events_parse journal_append board_claude board_codex board_grok board_muse board_agy board_opencode brief_retry_record challenge_summary console_command app_view ask_unframe lease_holder card_body effort_flag effort_record effort_fold token_parse codex_developer_record link_scan reader_decode"
 # Arrived with the FIRST runtime dependency (P4.3): cargo-deny gates the graph's
 # advisories/licenses/bans/sources, cargo-vet gates its PROVENANCE (who reviewed
 # the code). See `rust-vet`.

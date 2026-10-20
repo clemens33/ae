@@ -372,6 +372,7 @@ leg of the EXISTING process door (`sysctl -n kern.boottime`, no argument a calle
 the `std::process::Command` inventory is unchanged. `tests/it/doors.rs` pins its one product
 caller beside `run_git`'s and `run_ps`'s.
 `transport::run_agy_quota` is that door's on-demand quota leg. It has two callers, both in `src/quota.rs`: `quota::run` (`ae quota`) and `quota::AgyCache`'s default leg. The tmux quota dialog runs that leg inline through `quota::view_cached`; the app's Settings > Quota never does: its reader reads `quota::view_held`, which shows the held answer (one with a window kept past a refresh that had none) or `asking agy /quota`, and runs the leg through `quota::ask` on a detached `ae-app-agy` thread, one ask at a time, landed at the next settings read and held for 300 s. `observe`, and so the watchdog, advisories and autoreseat, never reaches it: agy raises no advisory (known gap).
+`transport::run_muse_quota` is the same door's Muse leg (`muse exec --json`, fixed argv, child `HOME` set explicitly, a fresh empty 0700 workspace directory `ae-muse-cwd.<pid>.<n>` UNDER the temp dir as its cwd and removed when the call returns (muse refuses to start when its cwd holds `$TMPDIR`; a crash can leave one behind, nothing sweeps it, and a killed call leaves muse's own `tbh-process-lifetime-memory-*` directory in `TMPDIR`, which ae never deletes), 90 s, 256 KiB, no new `Command` site). Its one caller is `muse_usage::refresh`, itself called from `quota::run` alone, only under the global `[workspace] muse_quota = on` and `quota = on`, and the answer it pays for, a failure included, is HELD in `<state>/quota/muse.json` for 1800 s across processes: the settings dialogs (`quota::compose`'s `muse_held`) read that record and never ask, while `observe`, the watchdog, advisories and autoreseat neither ask nor read it (Muse stays `unsupported` there: no advisory, known gap, as for agy; `tests/it/quota_muse_spec.rs` pins the call sites).
 
 `doors::canonical_strict_dir` / `canonical_optional_ae` are the strict directory classifier with
 no variable of its own: lstat, canonicalize and metadata proving a recorded worker target or root
@@ -487,6 +488,7 @@ fleet_order = a, b, c      # fleet-strip order, named first; global config only
 restore = on              # bare ae resumes a crashed server's sessions; global config only
 auto_trust = on           # answer a seat's own measured folder-trust modal once per tool start; global only
 opencode_go_key_file = ~/.config/opencode/go-usage.key  # 0600 key file; ae quota shows opencode-go/* windows; global only
+muse_quota = off           # on: ae quota asks Muse once per 30 min (a model call, ~32K input tokens) for its allowance; global only
 palette = darcula          # darcula (default), a = neutral dark, b = warmer
 icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*

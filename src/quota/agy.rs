@@ -208,7 +208,7 @@ fn bucket_row(bucket: &Value, qualifier: Option<String>, now: i64) -> Option<Row
 /// key would let one report say two things — `num_turns` 0 and then 1 among
 /// them. Every object this parser reads passes here, and a repeat refuses the
 /// whole report rather than choosing one of its answers.
-fn distinct(value: &Value) -> Option<&Value> {
+pub(super) fn distinct(value: &Value) -> Option<&Value> {
     let Value::Obj(fields) = value else {
         return None;
     };

@@ -57,6 +57,7 @@ pub mod meta;
 pub mod migrate;
 pub mod model_drift;
 pub mod monitor;
+pub mod muse_usage;
 pub mod netprobe;
 pub mod next;
 pub mod orchestrator;

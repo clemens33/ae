@@ -281,7 +281,7 @@ fn addressable(server: &ServerId) -> bool {
 /// the inherited variables removed; [`spawn`] and [`spawn_until`] wire it.
 #[allow(
     clippy::disallowed_types,
-    reason = "the product's door: ae cannot answer a liveness question without running tmux, nor deliver a tracked request without the session's send helper, nor derive an archive preview's git facts without running git, nor read agy's quota windows without running agy"
+    reason = "the product's door: ae cannot answer a liveness question without running tmux, nor deliver a tracked request without the session's send helper, nor derive an archive preview's git facts without running git, nor read agy's or muse's quota windows without running them"
 )]
 fn command_for<A: AsRef<std::ffi::OsStr>>(
     program: &str,
@@ -406,7 +406,7 @@ enum Ran {
     Failed,
 }
 
-/// [`spawn`]'s sibling for the one leg that talks to the network: it stops
+/// [`spawn`]'s sibling for the legs that talk to the network (agy's and muse's): it stops
 /// waiting at `deadline`. A supplied capture is written by the macOS script;
 /// its stdout is discarded. No stream is a pipe: stdin and
 /// stderr are closed, and stdout is a scratch file whose length each `POLL`
@@ -419,6 +419,7 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     cap: u64,
     deadline: Duration,
     capture: Option<&CaptureScratch>,
+    cwd: Option<&Path>,
 ) -> Ran {
     const POLL: Duration = Duration::from_millis(25);
     fn halt(child: &mut std::process::Child, ended: Ran) -> Ran {
@@ -428,7 +429,13 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     }
     let owned = capture
         .is_none()
-        .then(|| CaptureScratch::tagged(if program == "agy" { "agy" } else { "clipboard" }))
+        .then(|| {
+            CaptureScratch::tagged(match program {
+                "agy" => "agy",
+                "muse" => "muse",
+                _ => "clipboard",
+            })
+        })
         .flatten();
     let Some(scratch) = capture.or(owned.as_ref()) else {
         return Ran::Failed;
@@ -438,6 +445,9 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     };
     // Never a tmux client, so never `-u`.
     let mut command = command_for(program, args, envs, false);
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
     command.stdin(std::process::Stdio::null());
     command.stdout(capture_output(handle, capture.is_some()));
     command.stderr(std::process::Stdio::null());
@@ -529,6 +539,7 @@ pub(crate) fn run_clipboard_image() -> Result<Vec<u8>, String> {
         20 * 1024 * 1024,
         Duration::from_secs(8),
         scratch.as_ref(),
+        None,
     ) {
         Ran::Exited(exit, bytes) if exit.success() => Ok(bytes),
         Ran::Absent => Err(format!(
@@ -738,8 +749,9 @@ pub(crate) enum AgyRun {
 /// measured), agy 1.2.14 on 2026-10-01.
 const AGY_DEADLINES: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(8)];
 
-/// The agy leg of the one process door, program and argvs FIXED here, and the
-/// only leg that reaches the network (through agy's own login). An agy below
+/// The agy leg of the one process door, program and argvs FIXED here, and with
+/// Muse's one of the two legs that reach the network (each through its own
+/// tool's login). An agy below
 /// [`crate::quota::agy::FLOOR`] reads `/quota` as a prompt and starts an agent
 /// turn, so `/quota` runs only once `--version` PROVED a release at or above it.
 /// The child runs with `HOME=home`: the account asked is the one ae judged.
@@ -756,18 +768,148 @@ fn agy_quota_with(home: &Path, envs: &[(&str, &str)], deadlines: [Duration; 2]) 
     };
     let envs = &[envs, &[("HOME", home)]].concat();
     let [version_deadline, quota_deadline] = deadlines;
-    match spawn_until("agy", &["--version"], envs, 4096, version_deadline, None) {
+    match spawn_until(
+        "agy",
+        &["--version"],
+        envs,
+        4096,
+        version_deadline,
+        None,
+        None,
+    ) {
         Ran::Absent => return AgyRun::Absent,
         Ran::Exited(exit, out) if exit.success() && crate::quota::agy::supports_quota(&out) => {}
         Ran::Exited(..) | Ran::TimedOut | Ran::Failed | Ran::Over => return AgyRun::TooOld,
     }
     let quota = ["-p", "/quota", "--output-format", "json"];
-    match spawn_until("agy", &quota, envs, 65_536, quota_deadline, None) {
+    match spawn_until("agy", &quota, envs, 65_536, quota_deadline, None, None) {
         Ran::Exited(exit, out) if exit.success() => {
             String::from_utf8(out).map_or(AgyRun::Failed, |text| AgyRun::Done { text })
         }
         Ran::TimedOut => AgyRun::TimedOut,
         Ran::Exited(..) | Ran::Absent | Ran::Failed | Ran::Over => AgyRun::Failed,
+    }
+}
+
+/// The directory a Muse quota call runs in: new, empty, private (0700) and
+/// UNDER the OS temp directory, removed when this guard drops.
+///
+/// Muse takes its working directory as its workspace and puts its own tool
+/// output under `$TMPDIR`; a workspace that holds `$TMPDIR` is refused at start
+/// (measured on muse 1.4.11, 2026-10-20), and an untrusted one keeps project
+/// rules and skills out of a paid model call. A crash between mint and drop
+/// leaves one `ae-muse-cwd.<pid>.<n>` directory behind; nothing sweeps it.
+struct Workspace {
+    path: PathBuf,
+}
+
+impl Workspace {
+    /// Mint one. `DirBuilder` refuses a taken name, a planted link included,
+    /// and a collision retries the next name.
+    fn new() -> Option<Self> {
+        use std::os::unix::fs::DirBuilderExt as _;
+        let base = std::env::temp_dir();
+        for attempt in 0..64_u32 {
+            let path = base.join(format!("ae-muse-cwd.{}.{attempt}", std::process::id()));
+            match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+                Ok(()) => return Some(Self { path }),
+                Err(why) if why.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// What the on-demand Muse quota leg came back with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MuseRun {
+    /// `muse exec`'s stdout, whole and UTF-8.
+    Done { text: String },
+    /// No `muse` on `PATH`: nothing was asked, so nothing was spent.
+    Absent,
+    /// `muse exec` ran past its deadline and was killed.
+    TimedOut,
+    /// `muse exec` wrote past the output ceiling and was killed.
+    TooLarge,
+    /// `muse exec` exited by itself with this non-zero status.
+    Exited(u8),
+    /// `muse exec` exited cleanly and wrote output that is not UTF-8.
+    NotUtf8,
+    /// `muse exec` was not started, not read back or killed by a signal.
+    Failed,
+}
+
+/// `muse exec` runs one ~32K-token model call on a shared bucket: 12.8 s, over 30 s and
+/// 57 s measured (muse 1.4.11, 2026-10-20), so the deadline leaves room above the slowest.
+const MUSE_DEADLINE: Duration = Duration::from_secs(90);
+
+/// The most stdout the call is read from; 23 KB measured.
+const MUSE_OUTPUT_CAP: u64 = 256 * 1024;
+
+/// The cheapest call that makes muse report its account allowance: no session
+/// log, no foreign personal context, the smallest reasoning effort. Fixed here,
+/// so a caller chooses nothing.
+const MUSE_ARGV: [&str; 9] = [
+    "exec",
+    "--json",
+    "--preset",
+    "empty",
+    "--reasoning-effort",
+    "minimal",
+    "--no-session-log",
+    "--no-foreign-personal-context",
+    "Reply with exactly: ok",
+];
+
+/// The Muse leg of the one process door, program and argv FIXED here. It spends
+/// one model call of the account, so its only caller sits behind the opt-in and
+/// the held cache. The child runs with `HOME=home`: the account asked is the one
+/// ae judged, in a [`Workspace`] of its own.
+pub(crate) fn run_muse_quota(home: &Path) -> MuseRun {
+    muse_quota_with(home, &[], MUSE_DEADLINE)
+}
+
+/// [`run_muse_quota`] with the child's environment and deadline passed in. A
+/// HOME that is not UTF-8 cannot be handed over, so muse is not started.
+fn muse_quota_with(home: &Path, envs: &[(&str, &str)], deadline: Duration) -> MuseRun {
+    let Some(home) = home.to_str() else {
+        return MuseRun::Failed;
+    };
+    let envs = &[envs, &[("HOME", home)]].concat();
+    let Some(workspace) = Workspace::new() else {
+        return MuseRun::Failed;
+    };
+    match spawn_until(
+        "muse",
+        &MUSE_ARGV,
+        envs,
+        MUSE_OUTPUT_CAP,
+        deadline,
+        None,
+        Some(workspace.path()),
+    ) {
+        Ran::Exited(exit, out) if exit.success() => {
+            String::from_utf8(out).map_or(MuseRun::NotUtf8, |text| MuseRun::Done { text })
+        }
+        Ran::Exited(exit, _) => exit
+            .code()
+            .and_then(|code| u8::try_from(code).ok())
+            .map_or(MuseRun::Failed, MuseRun::Exited),
+        Ran::TimedOut => MuseRun::TimedOut,
+        Ran::Over => MuseRun::TooLarge,
+        Ran::Absent => MuseRun::Absent,
+        Ran::Failed => MuseRun::Failed,
     }
 }
 
@@ -2012,6 +2154,7 @@ mod tests {
                 1024,
                 std::time::Duration::from_secs(8),
                 Some(&scratch),
+                None,
             );
             assert!(
                 matches!(out, super::Ran::Exited(exit, bytes) if exit.success() && bytes.is_empty())
@@ -2462,5 +2605,120 @@ mod tests {
         // WHAT THIS PINS IS THE OUTCOME, NOT THE REFUSAL.
         let relative = ServerId::Selected(Selector::Socket(PathBuf::from("relative/ae.sock")));
         assert_eq!(Tmux.enumerate(&relative), Err(QueryFailed));
+    }
+
+    /// One fake `muse` ALONE on the child's `PATH`, run through the Muse leg.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants its own fake muse in its own scratch dir"
+    )]
+    fn through_muse_leg(tag: &str, body: &str, deadline: Duration) -> (super::MuseRun, String) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("ae-muse-leg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch dir");
+        let fake = dir.join("muse");
+        std::fs::write(&fake, format!("#!/bin/sh\n{body}\n")).expect("the fake muse");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake muse is executable");
+        let path = dir.display().to_string();
+        let ran = super::muse_quota_with(&dir, &[("PATH", path.as_str())], deadline);
+        let _ = std::fs::remove_dir_all(&dir);
+        (ran, path)
+    }
+
+    #[test]
+    fn the_muse_leg_names_how_a_call_ended() {
+        use super::MuseRun;
+        const ROOMY: Duration = Duration::from_secs(20);
+        let table = [
+            (
+                "ok",
+                "printf '%s' hello",
+                MuseRun::Done {
+                    text: "hello".to_owned(),
+                },
+            ),
+            ("exit3", "echo noise >&2; exit 3", MuseRun::Exited(3)),
+            ("exit255", "exit 255", MuseRun::Exited(255)),
+            ("binary", "printf '\\377\\376'", MuseRun::NotUtf8),
+            (
+                "big",
+                "exec /usr/bin/head -c 262145 /dev/zero",
+                MuseRun::TooLarge,
+            ),
+            ("signal", "kill -9 $$", MuseRun::Failed),
+        ];
+        for (tag, body, expected) in table {
+            assert_eq!(through_muse_leg(tag, body, ROOMY).0, expected, "{tag}");
+        }
+        // Exactly the output ceiling is still an answer.
+        let full = through_muse_leg("full", "exec /usr/bin/head -c 262144 /dev/zero", ROOMY).0;
+        assert!(matches!(full, MuseRun::Done { text } if text.len() == 262_144));
+        let started = std::time::Instant::now();
+        let hung = through_muse_leg("hang", "exec /bin/sleep 30", Duration::from_secs(1)).0;
+        assert_eq!(hung, MuseRun::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "killed and reaped"
+        );
+    }
+
+    #[test]
+    fn the_muse_leg_asks_the_home_it_was_handed_and_finds_no_muse_without_one() {
+        use super::MuseRun;
+        let (ran, home) =
+            through_muse_leg("home", "printf '%s' \"$HOME\"", Duration::from_secs(20));
+        assert_eq!(ran, MuseRun::Done { text: home });
+        // A HOME muse cannot be handed starts nothing.
+        let raw = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/tmp/\xff");
+        assert_eq!(
+            super::muse_quota_with(raw.as_ref(), &[], Duration::from_secs(20)),
+            MuseRun::Failed
+        );
+        // An empty `PATH` has no muse: nothing asked, nothing spent.
+        let empty = std::env::temp_dir().join(format!("ae-muse-leg-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).expect("the empty dir");
+        let path = empty.display().to_string();
+        let absent =
+            super::muse_quota_with(&empty, &[("PATH", path.as_str())], Duration::from_secs(20));
+        let _ = std::fs::remove_dir_all(&empty);
+        assert_eq!(absent, MuseRun::Absent);
+    }
+
+    #[test]
+    fn the_muse_leg_runs_in_a_fresh_workspace_that_is_gone_afterwards() {
+        use super::MuseRun;
+        use crate::store::{SourcePresence, source_presence};
+        // The fake's `PATH` holds only itself: absolute programs, or builtins.
+        let body = "printf '%s\\n' \"$(pwd -P)\"; /bin/ls -A . | /usr/bin/wc -l";
+        let (ran, _) = through_muse_leg("cwd", body, Duration::from_secs(20));
+        let MuseRun::Done { text } = ran else {
+            panic!("the call answered: {ran:?}");
+        };
+        let mut lines = text.lines();
+        // The physical directory the child stood in, recorded while it ran.
+        let cwd = PathBuf::from(lines.next().expect("the cwd line"));
+        assert_eq!(lines.next().map(str::trim), Some("0"), "empty at entry");
+        let temp = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonical temp dir");
+        assert_eq!(
+            cwd.parent(),
+            Some(temp.as_path()),
+            "a direct child of the temp dir, never the temp dir itself: {}",
+            cwd.display()
+        );
+        let name = cwd
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default();
+        assert!(name.starts_with("ae-muse-cwd."), "{}", cwd.display());
+        assert_eq!(
+            source_presence(&cwd),
+            SourcePresence::Absent,
+            "{}",
+            cwd.display()
+        );
     }
 }

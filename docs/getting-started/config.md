@@ -195,6 +195,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `auto_reseat_grace_secs` | Whole seconds a usage-limit or headroom episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
 | `auto_reseat_at` | The judged percentage of a seat's OWN account at which auto reseat moves it before any limit (`50`-`100`, or `off`). Only a usable window proven at least one day long counts, the weekly one, never the 5-hour session window, judged as `ae quota`'s `EFFECTIVE` column. An unusable value means `95`, with one note the watchdog journals once per start. Global config only | `95` |
 | `opencode_go_key_file` | Path of a file holding your OpenCode Go API key (`~/`, `$HOME/` or absolute), which lets `ae quota` show the Go subscription's windows. Absent means ae reads no Go quota; see [OpenCode Go quota](#opencode-go-quota). Global config only | none |
+| `muse_quota` | `on` lets `ae quota` ask Muse for its allowance with one model call (about 32K input tokens), held for 30 minutes; `off` or absent asks nothing; see [Muse quota](#muse-quota). Global config only | `off` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
@@ -294,6 +295,45 @@ The endpoint is undocumented: if OpenCode changes its shape, the windows go away
 rather than showing a wrong number. Named gap: an OpenCode seat's quota scope is not joined to
 the seat (`quota::recorded_identity` reads none for opencode), so the per-seat checkpoint ask
 and throttle line do not cover it; the lead-pair advisories still fire.
+
+### Muse quota
+
+Muse keeps no allowance anywhere ae can read for free: its session logs omit it and the one
+place it is reported is the usage record of a model call. So Muse quota is opt-in and costs
+tokens. Put the switch in the GLOBAL config (a project `.ae/config` entry is ignored, so a
+checkout cannot spend your account):
+
+```toml
+[workspace]
+muse_quota = on
+```
+
+Only `ae quota` ever asks. It runs `muse exec --json --preset empty --reasoning-effort minimal
+--no-session-log --no-foreign-personal-context` with a one-line prompt, as the account of the
+caller's `HOME`, in a fresh empty private directory under the temp directory (`ae-muse-cwd.<pid>.<n>`,
+removed when the call returns; a crash can leave one behind and nothing sweeps it: muse refuses to
+start in a directory that holds `TMPDIR`), with a 90 s deadline and a 256 KiB output cap;
+a call is about 32K input tokens and takes 13 to 60 s. A call killed at the deadline leaves muse's
+own `tbh-process-lifetime-memory-*` directory in `TMPDIR`; ae does not delete vendor directories. The settings quota dialogs never ask: they show the
+held answer and say `muse quota not asked yet — run ae quota` until one exists. The watchdog,
+the advisories and auto reseat neither ask nor read it, so Muse raises no advisory (a known gap,
+as for agy). `ae quota` itself asks nothing with `[workspace] quota = off`, with no `muse` on
+`PATH` (named, and not held), or on a state root it cannot write to.
+
+The answer, a failed or timed-out one included (those cost tokens too, and a failure names its
+class: `exited N`, `output not parsed`, `output not UTF-8` or `output over 256 KiB`), is held for 30 minutes
+in `quota/muse.json` under the state root, shared by every ae process: a second `ae quota`
+shows the held numbers with the vendor's own age, so they read `stale` after 15 minutes, and
+only the process that wins the zero-wait lock `quota/.muse.lock` asks. Delete `muse.json` to
+force a new ask. Any other value than exactly `on` or `off` is ignored with a note.
+
+Rows are the shared account bucket: a `window` row, whose length the vendor does not state
+(so `WINDOW` is `-`), and a `weekly` one (7 days), each with its used percentage and reset;
+the subscription tier, when the vendor names one, labels them. `EFFECTIVE` and `PACE` come
+from the same derivation as every other scope, so a `manual_resets` declaration on the Muse
+`[clients]` label applies. Every Muse profile that keeps the caller's `HOME` is one scope.
+Named gap: if Muse changes the record's shape the rows go away with a note rather than
+showing a wrong number.
 
 ### Restoring after a tmux crash
 

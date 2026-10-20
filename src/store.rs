@@ -382,6 +382,42 @@ pub fn publish_private_in(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()
     publish_private(&dir.join(name), bytes)
 }
 
+/// Prove `dir` is a real directory — a link there is refused, never written
+/// through — without writing anything under it.
+///
+/// # Errors
+///
+/// A directory that is absent, a link or not a directory, or one whose
+/// metadata cannot be read.
+pub fn prove_real_directory(dir: &Path) -> io::Result<()> {
+    body_directory(dir).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the directory is not a real directory",
+        )
+    })
+}
+
+/// Prove a file can be created in the real directory `dir` and leave nothing
+/// behind: the permission [`publish_private_in`] needs, shown BEFORE a caller
+/// does something it could not afford to repeat. A name another writer holds
+/// proves nothing, so this belongs under the lock that serializes them.
+///
+/// # Errors
+///
+/// A directory [`prove_real_directory`] refuses, a temp the directory will not
+/// take, or one that could not be removed again.
+pub fn prove_publishable(dir: &Path) -> io::Result<()> {
+    prove_real_directory(dir)?;
+    let probe = dir.join(format!(".probe.{}", std::process::id()));
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&probe)?;
+    std::fs::remove_file(&probe)
+}
+
 /// [`publish_private`] with its last step handed in, so a test can fail the
 /// rename itself.
 pub(crate) fn publish_private_with(

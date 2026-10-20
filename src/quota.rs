@@ -11,6 +11,7 @@ pub mod codex;
 pub mod feed;
 pub mod go;
 pub mod grok;
+pub mod muse;
 mod pace;
 pub mod view;
 
@@ -1256,8 +1257,7 @@ impl SettingsScope {
                 .then_with(|| left.window_minutes.cmp(&right.window_minutes))
         });
         // agy's note beside the answer it kept past a refresh that had none.
-        let asked = self.group.tool.quota_is_asked();
-        let note = self.group.hint.clone().filter(|_| asked);
+        let note = leg_hint(&self.group).map(str::to_owned);
         let windows = readings
             .into_iter()
             .map(|reading| self.window_view(reading, now))
@@ -1319,7 +1319,7 @@ impl SettingsScope {
             );
         }
         // agy's hint is the leg's own reason, or the command to run by hand.
-        let own = self.group.hint.as_deref().filter(|_| agy);
+        let own = leg_hint(&self.group);
         let hint = manual_refresh_hint(self.group.tool, self.statuses.iter().copied()).or(own);
         if let Some(hint) = hint {
             let _ = write!(words, " — {hint}");
@@ -1664,7 +1664,7 @@ pub(crate) fn observe_full(
     let cfg = crate::config::read_identity(inputs.global, inputs.local)?;
     Ok(observe_scopes(
         inputs,
-        configured_scopes_with(&cfg, inputs.home, &GoKeyConfig::of(inputs)),
+        configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs)),
     ))
 }
 
@@ -1925,6 +1925,14 @@ const _: () = assert!(AGY_TTL_SECS < FRESH_SECS);
 const AGY_ASKING: &str = "asking agy /quota";
 const AGY_ABSENT: &str = "agy not found on PATH";
 
+/// What the Muse scopes say when they hold no rows. The fixed words of a refusal
+/// to ask or record live with their gap, in [`crate::muse_usage::Gap::words`].
+const MUSE_UNUSABLE: &str = "muse_quota: expected on or off";
+const MUSE_UNASKED: &str = "muse quota not asked yet — run ae quota";
+const MUSE_NO_ALLOWANCE: &str = "muse exec reported no allowance";
+const MUSE_TIMEOUT: &str = "muse exec passed its 90 s deadline";
+const MUSE_FAILED: &str = "muse exec gave no usable answer";
+
 /// The agy leg, shared with the worker that asks it off the app's reader.
 pub(crate) type AgyLeg = Arc<dyn Fn(&Path) -> AgyRun + Send + Sync>;
 
@@ -2040,7 +2048,7 @@ pub(crate) fn view_cached(inputs: &Inputs<'_>, cache: &mut AgyCache) -> Vec<view
     let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
         return view::unavailable();
     };
-    let scopes = configured_scopes_with(&cfg, inputs.home, &GoKeyConfig::of(inputs));
+    let scopes = configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs));
     let legs = agy_legs(&scopes);
     let shown = inputs.home.filter(|_| !legs.is_empty()).map(|home| {
         let (answer, done_at) = cache.answer(home, inputs.now);
@@ -2061,7 +2069,7 @@ pub(crate) fn view_held(
     let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
         return (view::unavailable(), None);
     };
-    let scopes = configured_scopes_with(&cfg, inputs.home, &GoKeyConfig::of(inputs));
+    let scopes = configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs));
     let legs = agy_legs(&scopes);
     let home = inputs.home.filter(|_| !legs.is_empty());
     let due = home.filter(|home| !flying && cache.due(home, inputs.now));
@@ -2082,9 +2090,13 @@ fn compose(
 ) -> Vec<view::Scope> {
     let done_at = shown.as_ref().and_then(|(_, _, done_at)| *done_at);
     let now = done_at.map_or(inputs.now, |done_at| inputs.now.max(done_at));
+    let muse = muse_held(inputs, &scopes, now);
     let (mut observation, _) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
     if let Some((rows, hint, _)) = shown {
         replace_agy(&mut observation.groups, legs, rows, hint.as_deref());
+    }
+    if let Some((spoken, rows, hint)) = muse {
+        replace_muse(&mut observation.groups, &spoken, rows, hint.as_deref());
     }
     observation.quota_view()
 }
@@ -2098,6 +2110,94 @@ fn attempt_rows(answer: &AgyRun, done_at: i64) -> (Vec<Row>, Option<&'static str
         row.observed_at = row.observed_at.or(Some(done_at));
     }
     (rows, hint)
+}
+
+/// What the dialogs show of Muse: the held record, read and never asked for. A dialog
+/// re-reads on a cadence of its own, so a paid ask from here would be a poll of the very
+/// account it measures; `ae quota` is the one asker.
+fn muse_held(
+    inputs: &Inputs<'_>,
+    scopes: &[Scope],
+    now: i64,
+) -> Option<(Vec<Leg>, Vec<Row>, Option<String>)> {
+    let legs = muse_legs(scopes);
+    let config_home = muse_home(scopes)?;
+    let held = inputs
+        .state_root()
+        .map(|root| crate::muse_usage::read(root, &config_home));
+    let (rows, hint) = match held {
+        Some(crate::muse_usage::Read::Cached(record)) => muse_rows(Some(&record), None, now),
+        Some(crate::muse_usage::Read::Missing) => muse_rows(None, None, now),
+        None => muse_rows(None, Some(crate::muse_usage::Gap::NoStore), now),
+    };
+    Some((legs, rows, hint))
+}
+
+/// The config home of the scope the Muse leg speaks for, when the config opted in.
+fn muse_home(scopes: &[Scope]) -> Option<PathBuf> {
+    scopes
+        .iter()
+        .find(|scope| scope.leg && scope.tool == ToolKind::Muse)
+        .and_then(|scope| scope.home.clone())
+}
+
+/// Which way a paid attempt left no answer, in words an operator can act on; the leading
+/// `no usable answer` is every failure's, the class follows in brackets.
+fn muse_failure_words(outcome: muse::Outcome) -> String {
+    match outcome {
+        muse::Outcome::Exited(code) => format!("{MUSE_FAILED} (exited {code})"),
+        muse::Outcome::NotUtf8 => format!("{MUSE_FAILED} (output not UTF-8)"),
+        muse::Outcome::Unparsed => format!("{MUSE_FAILED} (output not parsed)"),
+        muse::Outcome::TooLarge => format!("{MUSE_FAILED} (output over 256 KiB)"),
+        muse::Outcome::Done | muse::Outcome::TimedOut | muse::Outcome::Failed => {
+            MUSE_FAILED.to_owned()
+        }
+    }
+}
+
+/// The rows and words the Muse scope shows: a record's windows, or one placeholder and the
+/// reason there are none. `gap` rides beside held rows, so a paid answer that could not be
+/// recorded still shows what it cost.
+fn muse_rows(
+    record: Option<&muse::Cached>,
+    gap: Option<crate::muse_usage::Gap>,
+    now: i64,
+) -> (Vec<Row>, Option<String>) {
+    use crate::muse_usage::Gap;
+    let Some(record) = record else {
+        return match gap {
+            Some(Gap::Absent) => (
+                vec![placeholder(Status::Unsupported)],
+                Some(Gap::Absent.words().to_owned()),
+            ),
+            Some(Gap::Busy) => (
+                vec![placeholder(Status::Unknown)],
+                Some(Gap::Busy.words().to_owned()),
+            ),
+            Some(gap) => (
+                vec![placeholder(Status::ReadError)],
+                Some(gap.words().to_owned()),
+            ),
+            None => (
+                vec![placeholder(Status::Unknown)],
+                Some(MUSE_UNASKED.to_owned()),
+            ),
+        };
+    };
+    let (status, words) = match record.outcome {
+        muse::Outcome::Done => {
+            let rows = record.rows(now);
+            if !rows.is_empty() {
+                return (rows, gap.map(|gap| gap.words().to_owned()));
+            }
+            (Status::Unknown, MUSE_NO_ALLOWANCE.to_owned())
+        }
+        muse::Outcome::TimedOut => (Status::Truncated, MUSE_TIMEOUT.to_owned()),
+        outcome => (Status::ReadError, muse_failure_words(outcome)),
+    };
+    // What the call answered, then why the next `ae quota` may pay again.
+    let words = gap.map_or_else(|| words.clone(), |gap| format!("{words}; {}", gap.words()));
+    (vec![placeholder(status)], Some(words))
 }
 
 /// Whether an answer carries a window: only such an answer is kept past later attempts.
@@ -2123,6 +2223,9 @@ fn kept_note(answer: &AgyRun, at: i64) -> String {
 /// one process it may start is agy, once, when a scope's agy command keeps the
 /// caller's HOME ([`crate::transport::run_agy_quota`]); every row is then
 /// judged at the instant that call returned. [`observe`] never starts it.
+/// Once the GLOBAL config says `muse_quota = on` it may also spend one model
+/// call of Muse's account, through the record every ae process shares: that is
+/// the only paid entry, and the dialogs and the watchdog only read the record.
 ///
 /// # Errors
 ///
@@ -2140,7 +2243,7 @@ fn run_with(
 ) -> crate::Result<u8> {
     // ONE config read: the scopes the leg was judged on are the scopes folded.
     let scopes = match crate::config::read_identity(inputs.global, inputs.local) {
-        Ok(cfg) => configured_scopes_with(&cfg, inputs.home, &GoKeyConfig::of(inputs)),
+        Ok(cfg) => configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs)),
         Err(error) => {
             writeln!(err, "{error}")?;
             return Ok(1);
@@ -2150,8 +2253,12 @@ fn run_with(
     let started = Instant::now();
     let go = go_refresh(inputs, &scopes);
     let answer = inputs.home.filter(|_| !legs.is_empty()).map(leg);
+    let muse_ask = ask_muse(inputs, &scopes);
     let fetched = go.as_ref().is_some_and(|(_, refreshed)| refreshed.fetched);
-    let now = if answer.is_some() || fetched {
+    let paid = muse_ask
+        .as_ref()
+        .is_some_and(|(_, refreshed, _)| refreshed.asked);
+    let now = if answer.is_some() || fetched || paid {
         completed(inputs.now, started.elapsed())
     } else {
         inputs.now
@@ -2162,6 +2269,19 @@ fn run_with(
     {
         replace_agy(&mut observation.groups, &legs, rows.clone(), hint);
         replace_agy(&mut observation.rendered, &legs, rows, hint);
+    }
+    if let Some((spoken, refreshed, held)) = muse_ask {
+        // The record this very ask built, else the held one: never a re-read of a
+        // record that could not be published.
+        let record = refreshed.answer.as_ref().or(held.as_ref());
+        let (rows, hint) = muse_rows(record, refreshed.gap, now);
+        replace_muse(
+            &mut observation.groups,
+            &spoken,
+            rows.clone(),
+            hint.as_deref(),
+        );
+        replace_muse(&mut observation.rendered, &spoken, rows, hint.as_deref());
     }
     if let Some((key, refreshed)) = &go {
         note_go_key(&mut observation.groups, key, *refreshed);
@@ -2179,6 +2299,39 @@ fn run_with(
         )
     )?;
     Ok(0)
+}
+
+/// `ae quota`'s one Muse ask: the scopes the leg speaks for, what the refresh did, and the
+/// record held after it when the refresh made no ask of its own. `None` unless the global
+/// config opted in, quota is on and a scope kept the caller's HOME.
+fn ask_muse(
+    inputs: &Inputs<'_>,
+    scopes: &[Scope],
+) -> Option<(Vec<Leg>, crate::muse_usage::Refreshed, Option<muse::Cached>)> {
+    if !configured_quota_on(inputs.global, inputs.local) {
+        return None;
+    }
+    let legs = muse_legs(scopes);
+    let config_home = muse_home(scopes)?;
+    let (Some(root), Some(home)) = (inputs.state_root(), inputs.home) else {
+        let refreshed = crate::muse_usage::Refreshed {
+            asked: false,
+            gap: Some(crate::muse_usage::Gap::NoStore),
+            answer: None,
+        };
+        return Some((legs, refreshed, None));
+    };
+    let refreshed = crate::muse_usage::refresh(root, &config_home, home, inputs.now);
+    // The paid answer, else the held record: a failed publication is never read back.
+    let held = if refreshed.answer.is_none() {
+        match crate::muse_usage::read(root, &config_home) {
+            crate::muse_usage::Read::Cached(record) => Some(record),
+            crate::muse_usage::Read::Missing => None,
+        }
+    } else {
+        None
+    };
+    Some((legs, refreshed, held))
 }
 
 /// `ae quota`'s one inline `OpenCode` Go refresh, and the key it was made for:
@@ -2236,7 +2389,7 @@ pub(crate) fn go_key(inputs: &Inputs<'_>) -> Option<PathBuf> {
     go_key_of(&configured_scopes_with(
         &cfg,
         inputs.home,
-        &GoKeyConfig::of(inputs),
+        &OptIns::of(inputs),
     ))
 }
 
@@ -2281,9 +2434,18 @@ fn agy_rows(answer: &AgyRun, now: i64) -> Option<(Vec<Row>, Option<&'static str>
 
 /// Every scope the agy leg may speak for: its profiles and its clients.
 fn agy_legs(scopes: &[Scope]) -> Vec<Leg> {
+    legs_of(scopes, ToolKind::quota_is_asked)
+}
+
+/// Every scope the Muse leg may speak for; empty unless the global config opted in.
+fn muse_legs(scopes: &[Scope]) -> Vec<Leg> {
+    legs_of(scopes, |tool| tool == ToolKind::Muse)
+}
+
+fn legs_of(scopes: &[Scope], is: impl Fn(ToolKind) -> bool) -> Vec<Leg> {
     scopes
         .iter()
-        .filter(|scope| scope.leg)
+        .filter(|scope| scope.leg && is(scope.tool))
         .map(|scope| (scope.profiles.clone(), scope.clients.clone()))
         .collect()
 }
@@ -2291,9 +2453,23 @@ fn agy_legs(scopes: &[Scope]) -> Vec<Leg> {
 /// agy's one answer replaces the placeholder of every scope it speaks for, as ONE group (the
 /// leg asked one login).
 fn replace_agy(groups: &mut Vec<Group>, legs: &[Leg], rows: Vec<Row>, hint: Option<&str>) {
+    replace_leg(|tool| tool == ToolKind::Agy, groups, legs, rows, hint);
+}
+
+/// Muse's one answer replaces the placeholder of the scope it speaks for: one login.
+fn replace_muse(groups: &mut Vec<Group>, legs: &[Leg], rows: Vec<Row>, hint: Option<&str>) {
+    replace_leg(|tool| tool == ToolKind::Muse, groups, legs, rows, hint);
+}
+
+fn replace_leg(
+    is: impl Fn(ToolKind) -> bool,
+    groups: &mut Vec<Group>,
+    legs: &[Leg],
+    rows: Vec<Row>,
+    hint: Option<&str>,
+) {
     let spoken = |group: &Group| {
-        group.tool == ToolKind::Agy
-            && legs.contains(&(group.profiles.clone(), group.clients.clone()))
+        is(group.tool) && legs.contains(&(group.profiles.clone(), group.clients.clone()))
     };
     let first = groups.iter().position(spoken);
     let spoke = groups
@@ -2314,7 +2490,14 @@ fn replace_agy(groups: &mut Vec<Group>, legs: &[Leg], rows: Vec<Row>, hint: Opti
 /// [`configured_scopes_with`] with no `OpenCode` Go opt-in.
 #[cfg(test)]
 fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -> Vec<Scope> {
-    configured_scopes_with(cfg, home, &GoKeyConfig::Off)
+    configured_scopes_with(
+        cfg,
+        home,
+        &OptIns {
+            go: GoKeyConfig::Off,
+            muse: crate::muse_usage::Setting::Off,
+        },
+    )
 }
 
 /// What the GLOBAL config says about the `OpenCode` Go key file.
@@ -2326,6 +2509,23 @@ enum GoKeyConfig {
     Key(PathBuf),
     /// An opt-in ae cannot use, and why.
     Unusable(String),
+}
+
+/// The opt-ins the GLOBAL config makes. Each turns a tool that reports no local
+/// quota into a scope ae may read, and none is read from a project config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OptIns {
+    go: GoKeyConfig,
+    muse: crate::muse_usage::Setting,
+}
+
+impl OptIns {
+    fn of(inputs: &Inputs<'_>) -> Self {
+        Self {
+            go: GoKeyConfig::of(inputs),
+            muse: crate::muse_usage::setting(inputs.global),
+        }
+    }
 }
 
 impl Inputs<'_> {
@@ -2387,7 +2587,7 @@ fn go_identity(go_key: &GoKeyConfig) -> (Option<PathBuf>, Option<PathBuf>, Optio
 fn configured_scopes_with(
     cfg: &crate::config::IdentityConfig,
     home: Option<&Path>,
-    go: &GoKeyConfig,
+    opt: &OptIns,
 ) -> Vec<Scope> {
     let mut scopes: Vec<Scope> = Vec::new();
     for (profile, raw) in &cfg.profiles {
@@ -2397,7 +2597,7 @@ fn configured_scopes_with(
                     &mut scopes,
                     cfg,
                     home,
-                    go,
+                    opt,
                     Some(profile.as_str()),
                     &resolved,
                 );
@@ -2411,7 +2611,7 @@ fn configured_scopes_with(
     let mut owned: Vec<(&str, usize)> = Vec::new();
     for (label, _) in &cfg.clients {
         let index = match cfg.client_command(label, home) {
-            Ok(Some(resolved)) => absorb_resolved(&mut scopes, cfg, home, go, None, &resolved),
+            Ok(Some(resolved)) => absorb_resolved(&mut scopes, cfg, home, opt, None, &resolved),
             // The label came from `cfg.clients`, so it always resolves to a row.
             Ok(None) => continue,
             Err(error) => {
@@ -2422,6 +2622,14 @@ fn configured_scopes_with(
         owned.push((label.as_str(), index));
     }
     count_declarations(&mut scopes, cfg, &owned);
+    if opt.muse == crate::muse_usage::Setting::Unusable {
+        for scope in scopes
+            .iter_mut()
+            .filter(|scope| scope.tool == ToolKind::Muse)
+        {
+            push_note(scope, Some(MUSE_UNUSABLE.to_owned()));
+        }
+    }
     scopes
 }
 
@@ -2530,7 +2738,7 @@ fn absorb_resolved(
     scopes: &mut Vec<Scope>,
     cfg: &crate::config::IdentityConfig,
     home: Option<&Path>,
-    go_key: &GoKeyConfig,
+    opt: &OptIns,
     owner: Option<&str>,
     resolved: &crate::config::ResolvedCommand,
 ) -> usize {
@@ -2564,7 +2772,9 @@ fn absorb_resolved(
     };
     let resolution = crate::launch_cmd::config_home_resolution(resolved, tool, &lookup);
     // Read `unknown_variable` after both readers: agy's resolution alone never asks.
-    let leg = tool == ToolKind::Agy && crate::launch_cmd::inherits_home(resolved, &lookup);
+    let asks = tool == ToolKind::Agy
+        || (tool == ToolKind::Muse && opt.muse == crate::muse_usage::Setting::On);
+    let leg = asks && crate::launch_cmd::inherits_home(resolved, &lookup);
     if let Some(variable) = unknown_variable.into_inner() {
         scopes.push(unknown_scope(
             owner,
@@ -2589,14 +2799,18 @@ fn absorb_resolved(
         hint,
     } = paths;
     let leg = leg && config_home.is_some();
-    let go = *go_key != GoKeyConfig::Off
+    let go = opt.go != GoKeyConfig::Off
         && tool
             .adapter()
             .quota
             .plan
             .is_some_and(|plan| plan.routes(resolved.as_str()));
     let (source, source_key, hint) = if go {
-        go_identity(go_key)
+        go_identity(&opt.go)
+    } else if leg && tool == ToolKind::Muse {
+        // One keychain login is one account: its config home is the identity
+        // every Muse profile shares, and the declaration a client row makes.
+        (config_home.clone(), config_home.clone(), hint)
     } else {
         (source, source_key, hint)
     };
@@ -3664,6 +3878,16 @@ fn manual_refresh_hint(
         }
     }
     any.then_some(CLAUDE_REFRESH_HINT)
+}
+
+/// The leg's own words beside a scope: agy's always, Muse's only once a leg
+/// spoke, which is any hint but the adapter's standing "no local source" one.
+fn leg_hint(group: &Group) -> Option<&str> {
+    let hint = group.hint.as_deref()?;
+    let spoke = group.tool.quota_is_asked()
+        || (group.tool == ToolKind::Muse
+            && group.tool.adapter().quota.unsupported_hint != Some(hint));
+    spoke.then_some(hint)
 }
 
 /// The table with no history behind it: every PACE cell is `-`.
@@ -6685,5 +6909,73 @@ mod tests {
         assert_eq!(seen, [Some("9m"); 4], "shown at its real age while due");
         let (flying, due) = held_view(&config, Some(&root.0), &cache, true);
         assert_eq!((flying, due), (view, None), "one ask out: the same drawing");
+    }
+
+    /// Every paid outcome keeps its own words AND the reason the next ask may be paid again.
+    #[test]
+    fn a_paid_muse_outcome_keeps_its_words_beside_an_unrecorded_gap() {
+        use super::{MUSE_FAILED, MUSE_NO_ALLOWANCE, MUSE_TIMEOUT, muse_rows};
+        use crate::muse_usage::Gap;
+        use crate::quota::muse::{Cached, Outcome, extract};
+        let record = |outcome, allowance| Cached {
+            home: "/synthetic/muse-home".to_owned(),
+            attempt_at: 1_792_000_000,
+            outcome,
+            allowance,
+        };
+        let empty = extract(br#"{"record_type":"status","payload_type":"run.usage","payload":{}}"#)
+            .expect("a record with no allowance");
+        let failed = |class: &str| format!("{MUSE_FAILED} ({class})");
+        let table = [
+            (
+                record(Outcome::TimedOut, None),
+                Status::Truncated,
+                MUSE_TIMEOUT.to_owned(),
+            ),
+            (
+                record(Outcome::Failed, None),
+                Status::ReadError,
+                MUSE_FAILED.to_owned(),
+            ),
+            (
+                record(Outcome::TooLarge, None),
+                Status::ReadError,
+                failed("output over 256 KiB"),
+            ),
+            (
+                record(Outcome::Exited(3), None),
+                Status::ReadError,
+                failed("exited 3"),
+            ),
+            (
+                record(Outcome::NotUtf8, None),
+                Status::ReadError,
+                failed("output not UTF-8"),
+            ),
+            (
+                record(Outcome::Unparsed, None),
+                Status::ReadError,
+                failed("output not parsed"),
+            ),
+            (
+                record(Outcome::Done, Some(empty)),
+                Status::Unknown,
+                MUSE_NO_ALLOWANCE.to_owned(),
+            ),
+        ];
+        for (held, status, words) in table {
+            let (rows, hint) = muse_rows(Some(&held), Some(Gap::Unrecorded), 1_792_000_100);
+            assert_eq!(rows.len(), 1, "{held:?}");
+            assert_eq!(rows[0].status, status, "{held:?}");
+            let hint = hint.expect("words beside the placeholder");
+            assert!(hint.contains(&words), "{hint}");
+            assert!(hint.contains(Gap::Unrecorded.words()), "{hint}");
+            let (_, plain) = muse_rows(Some(&held), None, 1_792_000_100);
+            assert_eq!(
+                plain.as_deref(),
+                Some(words.as_str()),
+                "no gap, no extra words"
+            );
+        }
     }
 }
