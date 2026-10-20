@@ -78,6 +78,7 @@ fn command_sites_reported_by_clippy() -> Vec<String> {
     )]
     let output = std::process::Command::new(cargo)
         .current_dir(manifest)
+        .env("CARGO_INCREMENTAL", "0")
         .args([
             "clippy",
             "--quiet",

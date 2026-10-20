@@ -191,6 +191,35 @@ expect_used = "warn"
 # difference.
 disallowed_types = "deny"
 
+# DEV DEBUGINFO: line tables, not types and locals. The dev profile (and `test`,
+# which inherits it) defaulted to full debuginfo, and on macOS the default
+# `split-debuginfo = "unpacked"` keeps that DWARF in a loose `.o` per codegen
+# unit under target/. Every CalVer bump changes `CARGO_PKG_VERSION`, which is
+# part of every ae unit's identity, so each release leaves a whole new set of
+# those objects, incremental caches and test executables behind, and neither
+# Cargo nor rustc removes the identities of earlier versions
+# (docs/development.md, "Build disk").
+# Line tables keep what the agentic loop reads: panic and test-failure
+# backtraces with `file:line` for ae AND for every dependency, because this
+# profile applies to dependencies too. They drop only what an interactive
+# debugger reads (variable and type descriptions).
+#
+# Do NOT add a `[profile.dev.package."*"]` override: it would repeat what this
+# table already says for dependencies and, by Cargo's precedence, would also win
+# over `[profile.debugging]` below. Never `debug = 0` either: that loses the
+# `file:line` of every frame, ae's and the dependencies'.
+# `tests/it/gate.rs` pins this shape and a real backtrace.
+[profile.dev]
+debug = "line-tables-only"
+
+# OPT-IN full debuginfo for a human with a debugger:
+#   cargo build --profile debugging
+#   cargo nextest run --cargo-profile debugging
+# No lane uses it; it builds into its own target/debugging tree.
+[profile.debugging]
+inherits = "dev"
+debug = "full"
+
 [profile.release]
 strip = "symbols"
 lto = "thin"

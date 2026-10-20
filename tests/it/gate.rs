@@ -2876,3 +2876,231 @@ fn registered_readonly_residue_is_reaped_without_following_links() {
         outside_file_mode
     );
 }
+
+fn buildtune_profile<'a>(
+    manifest: &'a str,
+    table: &str,
+) -> std::collections::BTreeMap<&'a str, &'a str> {
+    let mut active = false;
+    let mut values = std::collections::BTreeMap::new();
+    for line in manifest.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            active = line == table;
+        } else if active && let Some((key, value)) = line.split_once('=') {
+            values.insert(key.trim(), value.trim());
+        }
+    }
+    values
+}
+
+fn buildtune_profiles_ok(manifest: &str) -> bool {
+    let dev = buildtune_profile(manifest, "[profile.dev]");
+    let debugging = buildtune_profile(manifest, "[profile.debugging]");
+    let release = buildtune_profile(manifest, "[profile.release]");
+    let release_contract = std::collections::BTreeMap::from([
+        ("strip", "\"symbols\""),
+        ("lto", "\"thin\""),
+        ("codegen-units", "1"),
+        ("panic", "\"abort\""),
+    ]);
+    dev.get("debug") == Some(&"\"line-tables-only\"")
+        && debugging.get("inherits") == Some(&"\"dev\"")
+        && debugging.get("debug") == Some(&"\"full\"")
+        && !manifest
+            .lines()
+            .any(|line| line.trim().starts_with("[profile.dev.package."))
+        && release == release_contract
+}
+
+#[test]
+fn buildtune_profiles_keep_line_tables_full_debug_opt_in_and_release_contract() {
+    let good = "[profile.dev]\ndebug = \"line-tables-only\"\n\
+                [profile.debugging]\ninherits = \"dev\"\ndebug = \"full\"\n\
+                [profile.release]\nstrip = \"symbols\"\nlto = \"thin\"\n\
+                codegen-units = 1\npanic = \"abort\"\n";
+    assert!(buildtune_profiles_ok(good));
+    for bad in [
+        good.replace("\"line-tables-only\"", "0"),
+        good.replace("debug = \"full\"", "debug = \"line-tables-only\""),
+        good.replace("inherits = \"dev\"", "inherits = \"release\""),
+        good.replace("lto = \"thin\"", "lto = false"),
+        format!("{good}\n[profile.dev.package.\"*\"]\ndebug = 0\n"),
+    ] {
+        assert!(
+            !buildtune_profiles_ok(&bad),
+            "the profile guard accepted broken input: {bad}"
+        );
+    }
+    assert!(
+        buildtune_profiles_ok(&read(&root().join("Cargo.toml"))),
+        "dev needs line tables, debugging needs full info including deps, release stays unchanged"
+    );
+}
+
+/// Observe the real guard call sites, with only the external Cargo executable
+/// replaced. It emits no diagnostics: the guard must reject it as non-vacuous,
+/// while its recorded environment/argv prove the changed subprocess behavior.
+#[test]
+fn buildtune_force_warn_children_override_incremental_without_changing_scope() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = super::cli::OwnedScratch::root("gate", "buildtune-guard-env");
+    let fake_cargo = scratch.join("cargo");
+    std::fs::write(
+        &fake_cargo,
+        "#!/bin/sh\nprintf '%s\\n' \"${CARGO_INCREMENTAL-unset}\" \"$@\" > \"$AE_BUILDTUNE_GUARD_CAPTURE\"\n",
+    )
+    .expect("the owned Cargo invocation observer");
+    std::fs::set_permissions(&fake_cargo, std::fs::Permissions::from_mode(0o755))
+        .expect("the invocation observer is executable");
+
+    let cases = [
+        (
+            "doors::the_capability_boundary_holds_against_any_lint_relaxation",
+            "force-warn-guard",
+            "clippy::disallowed_types",
+            "the force-warn probe reported no `Command` anywhere",
+        ),
+        (
+            "phase3::criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones",
+            "world-read-guard",
+            "clippy::disallowed_methods",
+            "the force-warn probe found no world-reading call anywhere",
+        ),
+    ];
+    for (test, target, lint, rejection) in cases {
+        let capture = scratch.join(format!("{target}-capture"));
+        let out = scratch.join(format!("{target}-out"));
+        let err = scratch.join(format!("{target}-err"));
+        let invocation =
+            Invocation::new(std::env::current_exe().expect("the integration test executable"))
+                .arg("--exact")
+                .arg(test)
+                .arg("--nocapture")
+                .env("CARGO", &fake_cargo)
+                .env("CARGO_INCREMENTAL", "1")
+                .env("AE_BUILDTUNE_GUARD_CAPTURE", &capture);
+        let status =
+            raw::run(&invocation, &scratch, &out, &err).expect("the real guard child starts");
+        let transcript = format!("{}\n{}", read(&out), read(&err));
+        assert!(
+            matches!(status.outcome(), ExitOutcome::Code(101)) && transcript.contains(rejection),
+            "the guard must reject the observer's empty diagnostics: {transcript}"
+        );
+        let recorded = read(&capture);
+        let lines: Vec<&str> = recorded.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("0"),
+            "{test} must override an inherited CARGO_INCREMENTAL=1"
+        );
+        let isolated_target = root().join("target").join(target);
+        // This pins the full guard argv; intentional scope changes update this contract.
+        assert_eq!(
+            &lines[1..],
+            [
+                "clippy",
+                "--quiet",
+                "--locked",
+                "--all-targets",
+                "--all-features",
+                "--message-format=json",
+                "--target-dir",
+                isolated_target
+                    .to_str()
+                    .expect("the repository path is UTF-8"),
+                "--",
+                "--force-warn",
+                lint,
+            ],
+            "the isolated force-warn lint scope is unchanged"
+        );
+    }
+}
+
+/// A real ae library frame calls a real dependency frame before the panic.
+/// The callback is dynamic: these frames are compiled in their own crates,
+/// not monomorphized in this integration test with its debug settings.
+#[test]
+fn buildtune_backtrace_probe_child() {
+    if std::env::var_os("AE_BUILDTUNE_BACKTRACE_CHILD").is_none() {
+        return;
+    }
+    let mut splitter = ae::board::Splitter::new();
+    splitter.feed_each(b"backtrace probe\n", &mut |_| {
+        let buffer =
+            ratatui_core::buffer::Buffer::empty(ratatui_core::layout::Rect::new(0, 0, 1, 1));
+        let _ = buffer.index_of(2, 0);
+    });
+    panic!("the out-of-bounds dependency probe must panic before returning");
+}
+
+/// A symbol name or panic-location header is insufficient: require a resolved frame.
+fn buildtune_has_source_line(trace: &str, source: &str) -> bool {
+    trace.lines().any(|line| {
+        let Some(frame) = line.trim_start().strip_prefix("at ") else {
+            return false;
+        };
+        frame.split_once(source).is_some_and(|(_, suffix)| {
+            suffix.strip_prefix(':').is_some_and(|location| {
+                location
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_digit())
+            })
+        })
+    })
+}
+
+#[test]
+fn buildtune_panic_backtraces_resolve_ae_and_dependency_source_lines() {
+    assert!(buildtune_has_source_line(
+        "at /repo/src/board.rs:703:4",
+        "src/board.rs"
+    ));
+    assert!(!buildtune_has_source_line(
+        "ae::board::Splitter::feed_each",
+        "src/board.rs"
+    ));
+    assert!(!buildtune_has_source_line(
+        "at /repo/src/board.rs",
+        "src/board.rs"
+    ));
+    assert!(!buildtune_has_source_line(
+        "at /repo/src/board.rs:unknown",
+        "src/board.rs"
+    ));
+    assert!(!buildtune_has_source_line(
+        "thread 'probe' panicked at /repo/src/buffer/buffer.rs:251:13:",
+        "src/buffer/buffer.rs"
+    ));
+
+    let scratch = super::cli::OwnedScratch::root("gate", "buildtune-backtrace");
+    let out = scratch.join("out");
+    let err = scratch.join("err");
+    let invocation =
+        Invocation::new(std::env::current_exe().expect("the integration test executable"))
+            .arg("--exact")
+            .arg("gate::buildtune_backtrace_probe_child")
+            .arg("--nocapture")
+            .env("AE_BUILDTUNE_BACKTRACE_CHILD", "1")
+            .env("RUST_BACKTRACE", "full");
+    let status =
+        raw::run(&invocation, &scratch, &out, &err).expect("the dependency panic probe starts");
+    let trace = read(&err);
+    assert!(
+        matches!(status.outcome(), ExitOutcome::Code(101)),
+        "the child must report a failed test, not a missing executable: {trace}"
+    );
+    assert!(
+        trace.contains("index outside of buffer"),
+        "the real dependency panic: {trace}"
+    );
+    for source in ["src/board.rs", "src/buffer/buffer.rs", "tests/it/gate.rs"] {
+        assert!(
+            buildtune_has_source_line(&trace, source),
+            "panic backtrace lost file:line for {source}: {trace}"
+        );
+    }
+}

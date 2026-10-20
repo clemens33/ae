@@ -145,7 +145,10 @@ Three modules are about the REPOSITORY rather than the product:
   the `bundle` recipe is the one definition of a bundle, that `just bump` derives its
   sequence from the tags, that the musl cross compiler has one spelling across the justfile
   and `.cargo/config.toml`, and that `just release` proves its push rights before the bump
-  and builds both bundles before the tag.
+  and builds both bundles before the tag. It also pins the dev profile's line-table
+  debuginfo and the opt-in `debugging` profile, proves with a real panic that `file:line`
+  survives for an ae frame and a dependency frame, and proves both clippy guards run their
+  child cargo with `CARGO_INCREMENTAL=0`.
 * `tests/it/parity.rs` — the suite's ONE child-process door. It was the plumbing of a
   bash-versus-core parity harness; the harness went with the bash it compared against, and
   the door stayed because every real-server test runs through it.
@@ -153,6 +156,77 @@ Three modules are about the REPOSITORY rather than the product:
 Every guard in those three is exercised against deliberately broken input as well as the
 real file. A rule that matches nothing is indistinguishable from a clean tree, so the red
 cases are the half that makes a green run mean something.
+
+## Build disk
+
+Version churn dominates what `target/` keeps. The package version is part of every ae unit's
+identity (`CARGO_PKG_VERSION` is embedded in the crate), so each CalVer bump gives the lib,
+the bin, both unit-test harnesses and the `it` target a fresh hash, in the clippy check tree
+as well as the build tree, and neither Cargo nor rustc removes the identities of earlier
+versions. Source edits also grow a version's retained incremental sessions, but only within
+that version; the number of versions has no bound.
+
+Measured on 2026-10-20 at v2026.10.97 as `du -sk` of each tree on its own, before and after
+this change. The figures are independent measurements, not parts of one sum: hard links make
+them overlap.
+
+| After one gate on a fresh `target/` | before | after |
+|---|---:|---:|
+| whole `target/` | 3.24 GiB | 2.22 GiB |
+| `debug/incremental` | 1.80 GiB | 1.61 GiB |
+| `debug/deps` | 1.02 GiB | 0.75 GiB |
+| each guard tree | 0.44 GiB | 0.07 to 0.08 GiB |
+
+| Added by each further version | before | after |
+|---|---:|---:|
+| `debug/incremental` | 1.80 GiB | 1.61 GiB |
+| `debug/deps` | 0.84 GiB | 0.59 GiB |
+| each guard tree | 384 to 402 MiB | 11 to 15 MiB |
+
+In the second table the before figures for the guard trees come from scratch trees that ran
+each guard's own command with incremental compilation on; the after figures come from the
+real guard tests. The main checkout's `target/` had reached 175 GB with 53 cached ae versions; how long ago it
+was last cleaned was not measured, and that total also holds the release and musl trees, so
+it is not only these dev identities.
+
+What keeps each release smaller:
+
+* **Line-table debuginfo.** `[profile.dev] debug = "line-tables-only"`; `test` inherits it
+  and it applies to dependencies. Panic and test-failure backtraces keep `file:line` for ae
+  and for dependencies; only the variable and type descriptions a debugger reads are gone.
+  For a debugger use the opt-in profile: `cargo build --profile debugging` or
+  `cargo nextest run --cargo-profile debugging`. It builds into its own `target/debugging`
+  tree and no lane uses it. Do not add a `[profile.dev.package."*"]` override (it would also
+  win over `debugging`) and never `debug = 0` (it loses every frame's `file:line`).
+* **The two clippy guards run without incremental state.** `tests/it/doors.rs` and
+  `tests/it/phase3.rs` each run a nested `cargo clippy --force-warn …` and read its JSON.
+  Each owns a target directory (`target/force-warn-guard`, `target/world-read-guard`)
+  because the lint arguments differ from the lane's: measured on 2026-10-20, sharing one
+  directory made every switch between `-D warnings` and `--force-warn` recheck the ae package
+  (about 40 s against 0.1 s when nothing changed), although the diagnostics stayed correct.
+  Their incremental cache is the part nothing reuses across releases (384 to 402 MiB per guard
+  per release against 11 to 15 MiB without it), so both children set `CARGO_INCREMENTAL=0`. The
+  price is paid when the crate's source or version changes: the guard's clippy then rechecks
+  the crate without incremental reuse. Measured on 2026-10-20 on a quiet machine, running only
+  the two guard tests after touching one source file: 18.2, 19.5 and 18.9 s with it against
+  9.8, 10.0 and 9.5 s without, a median of 9.4 s more per run over three paired runs (the
+  two guards run side by side; a whole-gate comparison was too noisy to resolve a difference
+  that small).
+
+What this does not do: these changes shrink the bytes a release leaves behind; they do not
+remove old releases. Reclaim them by hand until a prune recipe exists, and only while no
+lane is using that `target/`: delete the whole `target/` of a checkout nobody is building in
+(the next `just test` rebuilds it), or drop the ae package's artifacts of every version while
+keeping the compiled dependencies with `cargo clean -p ae --profile dev`. Measured on
+2026-10-20 in a target holding three ae versions, that command took 3.4 s: it removed all 30
+incremental directories (6.04 GiB), every `ae-*`, `libae-*`, `it-*` and `libit-*` file in
+`debug/deps` (1.95 GiB down to 0.15 GiB) and the ae units' fingerprints, and all 373
+compiled-dependency files stayed. The release trees
+are separate profiles: `--profile release`, and `--profile release --target
+x86_64-unknown-linux-musl` for the musl tree. The two guard trees are separate target
+directories: add `--target-dir target/force-warn-guard` or `--target-dir
+target/world-read-guard`. `--dry-run` prints a summary of what a command would remove; add
+`--verbose` to list the paths.
 
 ## Releases
 

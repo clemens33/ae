@@ -1605,6 +1605,7 @@ fn world_reading_sites() -> Vec<(String, usize)> {
     let scratch = super::cli::OwnedScratch::root("p3", "clippy");
     let (out, err) = (scratch.join("out"), scratch.join("err"));
     let invocation = Invocation::new(cargo)
+        .env("CARGO_INCREMENTAL", "0")
         .arg("clippy")
         .arg("--quiet")
         .arg("--locked")
