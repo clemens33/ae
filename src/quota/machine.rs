@@ -12,7 +12,7 @@ use std::path::Path;
 use super::pace::PaceTable;
 use super::{
     Credits, Derived, Effective, Group, Policy, RolloutSummary, Row, Status, collect_notes,
-    derived, manual_refresh_hint, placeholder, row_percent, scope_label, stated_observed_at,
+    derived, manual_refresh_hint, placeholder, row_percent, scope_name, stated_observed_at,
 };
 use crate::json::Value;
 
@@ -75,6 +75,26 @@ fn derivation(derived: Derived) -> Value {
         Effective::SpendCapped => Value::str("spend-cap"),
         Effective::Raw | Effective::Resets { .. } => Value::Null,
     }
+}
+
+/// The plan the account reports, as a name and the moment it was reported; `null` when the client
+/// states none. The table draws the same two facts in the scope cell, the moment under the same rule:
+/// a stamp in the future states no moment.
+fn plan(group: &Group, now: i64) -> Value {
+    let Some((reported, label)) = group
+        .plan
+        .as_ref()
+        .and_then(|reported| reported.label().map(|label| (reported, label)))
+    else {
+        return Value::Null;
+    };
+    Value::obj([
+        ("label", Value::Str(label)),
+        (
+            "reported_at",
+            epoch(stated_observed_at(reported.fetched_at, now)),
+        ),
+    ])
 }
 
 fn text(value: Option<&str>) -> Value {
@@ -169,8 +189,9 @@ pub(super) fn document<'a>(
                 "profiles",
                 Value::Arr(group.profiles.iter().map(Value::str).collect()),
             ),
-            ("scope", Value::str(scope_label(group, home))),
+            ("scope", Value::str(scope_name(group, home))),
             ("tool", Value::str(group.tool.as_str())),
+            ("plan", plan(group, now)),
             ("rollout_owner", text(group.owner.as_deref())),
             (
                 "credits",
@@ -204,9 +225,11 @@ mod tests {
 
     use super::{decimal, document, number, tenths, window};
     use crate::json::Value;
+    use crate::quota::claude::Plan;
     use crate::quota::pace::PaceTable;
     use crate::quota::{
         Account, Credits, Group, Policy, RolloutSummary, Row, Status, placeholder, render_at,
+        scope_label,
     };
     use crate::tool::ToolKind;
 
@@ -238,6 +261,18 @@ mod tests {
             summary: None,
             policy,
             notes: Vec::new(),
+            plan: None,
+        }
+    }
+
+    /// What `claude_max` + `default_claude_max_20x` reports, as the table words it: `claude max 20x`.
+    fn max_20x(fetched_at: Option<i64>) -> Plan {
+        Plan {
+            organization_type: Some("claude_max".to_owned()),
+            organization_rate_limit_tier: Some("default_claude_max_20x".to_owned()),
+            user_rate_limit_tier: None,
+            seat_tier: None,
+            fetched_at,
         }
     }
 
@@ -492,6 +527,71 @@ mod tests {
         );
     }
 
+    /// A reported plan is a name and a moment in `plan`, and the scope stays the plain name the table
+    /// draws before its plan words: the machine reader never has to cut a label apart. The moment obeys
+    /// the table's rule, so a stamp in the future or none states no moment; a plan that names nothing is
+    /// `null`.
+    #[test]
+    fn a_reported_plan_is_a_name_and_a_moment_beside_the_plain_scope_name() {
+        let mut claude = group(
+            vec![row("session", Some("66"), Status::Fresh)],
+            Policy::default(),
+        );
+        claude.tool = ToolKind::Claude;
+        claude.clients = vec!["cc".to_owned()];
+        let json = |group: &Group| document([group], &PaceTable::default(), None, NOW).render();
+        // The table's own scope cell, the function `render_at` draws it with.
+        let label = |group: &Group| scope_label(group, None, NOW);
+
+        assert!(
+            json(&claude).contains(
+                r#""scope":"claude · cc","tool":"claude","plan":null,"rollout_owner":null"#
+            ),
+            "{}",
+            json(&claude)
+        );
+        assert_eq!(label(&claude), "claude · cc");
+
+        // 1000 s ago: the table words it `16m ago`, the document states the epoch itself.
+        claude.plan = Some(max_20x(Some(NOW - 1000)));
+        assert!(
+            json(&claude).contains(r#""scope":"claude · cc","tool":"claude","plan":{"label":"claude max 20x","reported_at":1799999000},"rollout_owner":null"#),
+            "{}",
+            json(&claude)
+        );
+        assert_eq!(
+            label(&claude),
+            "claude · cc · plan: claude max 20x (reported 16m ago)"
+        );
+
+        for stamp in [Some(NOW + 100), None] {
+            claude.plan = Some(max_20x(stamp));
+            assert!(
+                json(&claude).contains(r#""plan":{"label":"claude max 20x","reported_at":null}"#),
+                "{}",
+                json(&claude)
+            );
+            assert_eq!(
+                label(&claude),
+                "claude · cc · plan: claude max 20x (reported)"
+            );
+        }
+
+        claude.plan = Some(Plan {
+            organization_type: None,
+            organization_rate_limit_tier: None,
+            user_rate_limit_tier: None,
+            seat_tier: None,
+            fetched_at: Some(NOW - 1000),
+        });
+        assert!(
+            json(&claude).contains(r#""tool":"claude","plan":null,"#),
+            "{}",
+            json(&claude)
+        );
+        assert_eq!(label(&claude), "claude · cc");
+    }
+
     #[test]
     fn the_document_lists_scopes_summary_entries_and_notes_once() {
         let mut shown = group(
@@ -511,12 +611,12 @@ mod tests {
         hidden.notes = vec!["declared note".to_owned()];
         let doc = document([&shown, &hidden], &PaceTable::default(), None, NOW).render();
         assert!(
-            doc.starts_with(r#"{"version":1,"now":1800000000,"scopes":[{"profiles":["solx"],"scope":"codex · cx · unidentified (session:lead)","tool":"codex","rollout_owner":"session:lead","credits":{"state":"unreported","balance":null},"summary":null,"windows":[{"bucket":"codex","#),
+            doc.starts_with(r#"{"version":1,"now":1800000000,"scopes":[{"profiles":["solx"],"scope":"codex · cx · unidentified (session:lead)","tool":"codex","plan":null,"rollout_owner":"session:lead","credits":{"state":"unreported","balance":null},"summary":null,"windows":[{"bucket":"codex","#),
             "{doc}"
         );
         assert!(
             doc.contains(
-                r#"{"profiles":["solx"],"scope":"codex · cx · unidentified","tool":"codex","rollout_owner":null,"credits":null,"summary":{"hidden_rollouts":3,"unreadable_rollouts":1,"oldest_observed_at":1799992800,"not_read":false,"status":"read-error"},"windows":[]}"#
+                r#"{"profiles":["solx"],"scope":"codex · cx · unidentified","tool":"codex","plan":null,"rollout_owner":null,"credits":null,"summary":{"hidden_rollouts":3,"unreadable_rollouts":1,"oldest_observed_at":1799992800,"not_read":false,"status":"read-error"},"windows":[]}"#
             ),
             "{doc}"
         );

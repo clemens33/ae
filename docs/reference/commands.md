@@ -1204,7 +1204,7 @@ The real output is one line; it is wrapped here:
 
 ```json
 {"version":1,"now":1788858600,"scopes":[{"profiles":["fablex"],"scope":"claude · ~/.claude",
- "tool":"claude","rollout_owner":null,"credits":{"state":"unreported","balance":null},"summary":null,
+ "tool":"claude","plan":null,"rollout_owner":null,"credits":{"state":"unreported","balance":null},"summary":null,
  "windows":[{"bucket":"session","qualifier":null,"window_minutes":300,"used_percent":66,
   "effective_percent":66,"derivation":null,"pace":{"kind":"unknown"},"resets_at":1788868199,
   "observed_at":1788858413,"status":"fresh","reason":null}]}],"notes":[]}
@@ -1213,8 +1213,13 @@ The real output is one line; it is wrapped here:
 Numbers are numbers and an absent fact is `null`; nothing is a display string where a number
 exists. Fields are only ever added, under `version`. A new field is absent until its phase ships.
 
-- `scopes`: the table's groups in its order. `scope` is the table's scope label, `tool` the client
-  tool, `rollout_owner` the Codex rollout's `<session>:<seat>` when the table shows one.
+- `scopes`: the table's groups in its order. `scope` is the table's scope name (tool and identity,
+  without the plan words the table appends), `tool` the client tool, `rollout_owner` the Codex
+  rollout's `<session>:<seat>` when the table shows one.
+- `plan` is `null` unless the client reports a plan for the scope's own account, else
+  `{"label":"claude max 20x","reported_at":…}`: the words the table's scope cell shows after `plan:`
+  and the epoch it was reported, where `reported_at` is `null` exactly when the table says only
+  `reported` (no stamp, or one in the future). A name, never a capacity: no verdict reads it.
 - `credits.state` is `unreported`, `unlimited`, `available`, `none` or `spend-cap` (the CREDITS
   cell). `balance` is the vendor's exact decimal literal as a number token, with no float round
   trip, or `null` when ae holds no exact amount.

@@ -3917,7 +3917,9 @@ fn scope_identity(group: &Group, home: Option<&Path>) -> String {
     }
 }
 
-fn scope_label(group: &Group, home: Option<&Path>, now: i64) -> String {
+/// The scope as the table names it before any plan: its tool and identity, and
+/// a Codex scope's rollout owner. The machine document states this on its own.
+fn scope_name(group: &Group, home: Option<&Path>) -> String {
     let mut label = format!("{} · {}", group.tool.as_str(), scope_identity(group, home));
     if group.tool.adapter().quota.source == QuotaSource::CodexRollouts {
         label.push_str(" · unidentified");
@@ -3925,6 +3927,11 @@ fn scope_label(group: &Group, home: Option<&Path>, now: i64) -> String {
             let _ = write!(label, " ({owner})");
         }
     }
+    label
+}
+
+fn scope_label(group: &Group, home: Option<&Path>, now: i64) -> String {
+    let mut label = scope_name(group, home);
     if let Some(words) = group.plan.as_ref().and_then(|plan| plan_words(plan, now)) {
         let _ = write!(label, " · {words}");
     }

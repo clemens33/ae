@@ -205,6 +205,7 @@ fn ae_quota_json_states_every_table_row_as_data() {
             "profiles",
             "scope",
             "tool",
+            "plan",
             "rollout_owner",
             "credits",
             "summary",
@@ -239,6 +240,41 @@ fn ae_quota_json_states_every_table_row_as_data() {
         include_str!("../fixtures/quota/expected.stdout")
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// The fixture's account reports `claude_max` / `default_claude_max_20x` and fetched its profile at
+/// 1788855960 (44 minutes before `NOW`, the table's `reported 44m ago`): the default Claude home's
+/// scope states that as a name and a moment under `plan`, keeps `scope` the plain name the plan-less
+/// table draws, and the custom home, which reports none, stays `null`.
+#[test]
+fn ae_quota_json_states_a_reported_plan_as_a_name_and_a_moment() {
+    let root = rig("json-plan");
+    std::fs::write(
+        root.join(".claude.json"),
+        include_bytes!("../fixtures/quota/claude-plan.json"),
+    )
+    .expect("plan cache");
+    let text = run_quota_json(&root);
+    let _ = std::fs::remove_dir_all(&root);
+
+    let got = ae::json::parse(&text).expect("the document parses");
+    let scopes = items(got.get("scopes"));
+    let want = ae::json::parse(r#"{"label":"claude max 20x","reported_at":1788855960}"#)
+        .expect("the expected plan parses");
+    let plan = |index: usize| scopes[index].get("plan");
+    assert_eq!(plan(2), Some(&want), "{text}");
+    assert_eq!(
+        scopes[2].get("scope"),
+        Some(&ae::json::Value::Str("claude · ~/.claude".to_owned())),
+        "the plan is beside the scope name, never in it: {text}"
+    );
+    for index in [0, 1, 3, 4, 5, 6] {
+        assert_eq!(
+            plan(index),
+            Some(&ae::json::Value::Null),
+            "scope {index}: {text}"
+        );
+    }
 }
 
 #[test]
