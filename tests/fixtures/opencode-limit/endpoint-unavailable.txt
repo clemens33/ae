@@ -1,0 +1,3 @@
+$ opencode run --model opencode/deepseek-v4.1-flash-free "reply with the single word ok"
+
+Error: Upstream request failed: Endpoint is unavailable.

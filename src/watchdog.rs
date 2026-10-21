@@ -86,32 +86,49 @@ const CODEX_LIMIT: &[&str] = &[
 /// not limit, and stays out.
 const MUSE_LIMIT: &[&str] = &["Usage limit reached", "model failed: API error 429"];
 
+/// `OpenCode` 1.19.3 on its free tier draws the limit in its spinner footer, the
+/// retry time inside brackets: `Free usage exceeded, subscribe to Go [retrying
+/// in 16h 10m attempt #1]`.
+const OPENCODE_LIMIT: &[&str] = &["Free usage exceeded"];
+
 /// How a tool draws one of its OWN rows — its usage-limit notice or its
 /// transient error — data only; the one reader is [`newest_row`]. The row
-/// starts with one of `markers` at column 0 exactly, sits within `window` rows
-/// of the capture's last non-blank row, and after the marker and its blanks
-/// its text starts with one of `phrases`. A transcript quoting the same words
-/// is indented under the tool's own furniture, or says something first, so it
-/// never matches. A tool without a measured row has no `Banner` for it and
-/// books nothing of that class.
+/// starts with `lead` exactly, sits within `window` rows of the capture's last
+/// non-blank row, and after the lead and its blanks its text starts with one of
+/// `phrases`. A transcript quoting the same words is indented under the tool's
+/// own furniture, or says something first, so it never matches. A tool without
+/// a measured row has no `Banner` for it and books nothing of that class.
 struct Banner {
-    markers: &'static [&'static str],
+    lead: Lead,
     window: usize,
     phrases: &'static [&'static str],
+}
+
+/// How a [`Banner`] row begins, before its text.
+enum Lead {
+    /// One of these strings at column 0, then any blanks.
+    Marks(&'static [&'static str]),
+    /// A spinner footer: exactly `indent`, a run of at least one of `glyphs`,
+    /// then at least one blank. The spinner animates, so the marker is its
+    /// glyph class, never one frame of it.
+    Spinner {
+        indent: &'static str,
+        glyphs: &'static [char],
+    },
 }
 
 /// Claude 2.1.281 draws the message under its response marker `  ⎿` and
 /// NBSP, with up to four dim rows below it; measured chrome puts the row about
 /// 8 rows up, and 20 is claude's own prompt window over the same chrome.
 const CLAUDE_BANNER: Banner = Banner {
-    markers: &["  ⎿"],
+    lead: Lead::Marks(&["  ⎿"]),
     window: 20,
     phrases: CLAUDE_LIMIT,
 };
 /// Codex 0.156.1 draws an error cell with `■` at column 0, measured 7 rows up
 /// from its footer; the rest is room for a wrapped cell and a draft.
 const CODEX_BANNER: Banner = Banner {
-    markers: &["■"],
+    lead: Lead::Marks(&["■"]),
     window: 16,
     phrases: CODEX_LIMIT,
 };
@@ -119,21 +136,34 @@ const CODEX_BANNER: Banner = Banner {
 /// column 0, measured 6 to 12 rows up from its status row; the rest is room
 /// for a wrapped cell and a draft.
 const MUSE_BANNER: Banner = Banner {
-    markers: &["◆"],
+    lead: Lead::Marks(&["◆"]),
     window: 16,
     phrases: MUSE_LIMIT,
+};
+/// `OpenCode` 1.19.3 draws the limit as its footer row, the capture's last
+/// non-blank row: three spaces, an eight-cell spinner of `⬝` and `■` that
+/// changes every frame, a space and the vendor's words, with its key hint after
+/// them. 8 rows is room for a wrapped footer or a toast above the edge; a row
+/// further up is not the live footer.
+const OPENCODE_BANNER: Banner = Banner {
+    lead: Lead::Spinner {
+        indent: "   ",
+        glyphs: &['⬝', '■'],
+    },
+    window: 8,
+    phrases: OPENCODE_LIMIT,
 };
 /// Claude 2.1.281 draws an API error as a message row whose glyph sits at
 /// column 0 — `⏺` on macOS, `●` elsewhere — with its wrap at column 2; the
 /// row sits over the same chrome as its notice.
 const CLAUDE_ERROR: Banner = Banner {
-    markers: &["⏺", "●"],
+    lead: Lead::Marks(&["⏺", "●"]),
     window: 20,
     phrases: CLAUDE_TRANSIENT,
 };
 /// Codex 0.156.1 draws every turn error in the same `■` cell as its limit.
 const CODEX_ERROR: Banner = Banner {
-    markers: &["■"],
+    lead: Lead::Marks(&["■"]),
     window: 16,
     phrases: CODEX_TRANSIENT,
 };
@@ -403,6 +433,7 @@ fn banner_for(agent_bin: &str) -> Option<&'static Banner> {
         "claude" => Some(&CLAUDE_BANNER),
         "codex" => Some(&CODEX_BANNER),
         "muse" => Some(&MUSE_BANNER),
+        "opencode" => Some(&OPENCODE_BANNER),
         _ => None,
     }
 }
@@ -416,13 +447,21 @@ fn error_row_for(agent_bin: &str) -> Option<&'static Banner> {
     }
 }
 
-/// The text after the marker when `row` is `banner`'s row.
+/// The text after the lead when `row` is `banner`'s row.
 fn row_text<'a>(banner: &Banner, row: &'a str) -> Option<&'a str> {
-    let text = banner
-        .markers
-        .iter()
-        .find_map(|marker| row.strip_prefix(marker))?
-        .trim_start_matches([' ', '\u{a0}']);
+    let text = match &banner.lead {
+        Lead::Marks(marks) => marks
+            .iter()
+            .find_map(|mark| row.strip_prefix(mark))?
+            .trim_start_matches([' ', '\u{a0}']),
+        Lead::Spinner { indent, glyphs } => {
+            let run = row.strip_prefix(indent)?;
+            let after = run.trim_start_matches(|ch| glyphs.contains(&ch));
+            let text = after.trim_start_matches([' ', '\u{a0}']);
+            // At least one glyph, and at least one blank before the words.
+            (after.len() < run.len() && text.len() < after.len()).then_some(text)?
+        }
+    };
     banner
         .phrases
         .iter()
@@ -3224,6 +3263,11 @@ mod tests {
             ("codex", "■ You’ve hit your usage limit.", 16),
             ("claude", "  ⎿  You've hit your session limit", 20),
             ("muse", "◆ Usage limit reached · /upgrade", 16),
+            (
+                "opencode",
+                "   ⬝⬝⬝⬝⬝⬝⬝⬝ Free usage exceeded, subscribe to Go [retrying in 16h 10m attempt #1]",
+                8,
+            ),
         ] {
             assert!(
                 limit_notice(&under(row, window - 1), bin).is_some(),
@@ -3275,6 +3319,113 @@ mod tests {
         }
         for bin in ["gemini", "grok", "muse", "agy", "somethingelse"] {
             assert_eq!(limit_notice("■ You’ve hit your usage limit.", bin), None);
+        }
+    }
+
+    /// `OpenCode` 1.19.3's free-tier limit footer, as measured: three spaces, the
+    /// spinner run, a space and the vendor's words with the retry time.
+    const OPENCODE_TAIL: &str =
+        "Free usage exceeded, subscribe to Go [retrying in 16h 10m attempt #1]";
+
+    /// The measured `OpenCode` frames are the seat on its free-tier usage limit:
+    /// whichever glyphs the spinner shows, the reader books the limit and quotes
+    /// the vendor's cell, the retry time included. Expected strings are written
+    /// out from the frames; the cutter projects `•` to `?`.
+    #[test]
+    fn an_opencode_free_usage_footer_reads_as_a_usage_limit() {
+        for (fixture, notice) in [
+            (
+                "spinner-dots",
+                "Free usage exceeded, subscribe to Go [retrying in 16h 10m attempt #1]        \
+                 esc interrupt    ? OpenCode 1.19.3",
+            ),
+            (
+                "spinner-mixed",
+                "Free usage exceeded, subscribe to Go [retrying in 16h 9m attempt #1]   \
+                 esc again to interrupt",
+            ),
+        ] {
+            let frame = claude_frame(&format!("opencode-limit/{fixture}.txt"));
+            assert_eq!(
+                throttle_class(&frame, "opencode"),
+                Some(Throttle::LimitReached),
+                "{fixture}"
+            );
+            assert_eq!(
+                limit_notice(&frame, "opencode").as_deref(),
+                Some(notice),
+                "{fixture}"
+            );
+            assert!(shows_throttle(&frame, "opencode"), "{fixture}");
+        }
+    }
+
+    /// A transcript that QUOTES the words, in every shape the quote takes inside
+    /// the bottom window, and the availability failure `opencode run` prints,
+    /// are no usage limit: the first has no spinner footer, the second is not a
+    /// limit at all and is no transient throttle either.
+    #[test]
+    fn an_opencode_quote_or_availability_error_is_no_usage_limit() {
+        for fixture in ["transcript-quote", "endpoint-unavailable"] {
+            let frame = claude_frame(&format!("opencode-limit/{fixture}.txt"));
+            assert_eq!(throttle_class(&frame, "opencode"), None, "{fixture}");
+            assert_eq!(limit_notice(&frame, "opencode"), None, "{fixture}");
+        }
+        let spinning =
+            "   ⬝⬝⬝⬝⬝⬝⬝⬝ Endpoint is unavailable [retrying in 5s attempt #1]   esc interrupt";
+        assert_eq!(throttle_class(spinning, "opencode"), None);
+    }
+
+    /// The `OpenCode` row is spinner-exact: three spaces, at least one spinner
+    /// glyph, at least one space or NBSP, then the phrase at the start of the
+    /// text. A quote is indented otherwise or carries other furniture; a
+    /// phrase mid-row is somebody's prose.
+    #[test]
+    fn an_opencode_limit_row_is_spinner_exact() {
+        let tail = OPENCODE_TAIL;
+        for (row, books) in [
+            (format!("   ⬝⬝⬝⬝⬝⬝⬝⬝ {tail}"), true),
+            (format!("   ■■■■⬝⬝⬝⬝ {tail}"), true),
+            (format!("   ⬝ {tail}"), true),
+            (format!("   ■ {tail}"), true),
+            (format!("   ⬝⬝⬝\u{a0}{tail}"), true),
+            (format!("   ⬝⬝⬝ \u{a0} {tail}"), true),
+            (format!("   ⬝⬝⬝⬝⬝⬝⬝⬝ {tail}   esc interrupt"), true),
+            (format!("   ⬝{tail}"), false),
+            (format!("   ⬝⬝⬝⬝⬝⬝⬝⬝{tail}"), false),
+            (format!("⬝⬝⬝⬝⬝⬝⬝⬝ {tail}"), false),
+            (format!(" ⬝⬝⬝ {tail}"), false),
+            (format!("  ⬝⬝⬝ {tail}"), false),
+            (format!("    ⬝⬝⬝ {tail}"), false),
+            (format!("     ⬝⬝⬝⬝⬝⬝⬝⬝ {tail}"), false),
+            (format!("   {tail}"), false),
+            (format!("    {tail}"), false),
+            (format!("   • {tail}"), false),
+            (format!("   ⎿ {tail}"), false),
+            (format!("   ▣ {tail}"), false),
+            (format!("   ⬝⬝x⬝ {tail}"), false),
+            (format!("   x⬝⬝ {tail}"), false),
+            (format!("  ┃  {tail}"), false),
+            (format!("   ⬝⬝⬝ the footer said: {tail}"), false),
+            (
+                "   ⬝⬝⬝ free usage exceeded, subscribe to Go".to_owned(),
+                false,
+            ),
+            ("   ⬝⬝⬝ Endpoint is unavailable".to_owned(), false),
+        ] {
+            assert_eq!(limit_notice(&row, "opencode").is_some(), books, "{row:?}");
+        }
+        let row = format!("   ⬝⬝⬝⬝⬝⬝⬝⬝ {tail}");
+        for bin in [
+            "claude",
+            "codex",
+            "muse",
+            "gemini",
+            "grok",
+            "agy",
+            "somethingelse",
+        ] {
+            assert_eq!(limit_notice(&row, bin), None, "{bin}");
         }
     }
 

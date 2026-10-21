@@ -1,0 +1,11 @@
+  ┃  what did the footer say when the free tier ran out?
+
+     The footer said:
+     ⬝⬝⬝⬝⬝⬝⬝⬝ Free usage exceeded, subscribe to Go [retrying in 16h 10m attempt #1]
+     Free usage exceeded, subscribe to Go is the vendor wording.
+  ┃
+  ┃  Free usage exceeded, subscribe to Go [retrying in 16h 10m attempt #1]
+  ┃
+  ┃  Build · DeepSeek V4.1 Flash Free Default / OpenCode                    ~/projects/clemens33/ae:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                                                                       ctrl+p commands    • OpenCode 1.19.3
