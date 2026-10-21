@@ -73,6 +73,7 @@ mod draftclaim_spec;
 mod effort_resume_spec;
 mod effort_spec;
 mod entry;
+mod entry_app_spec;
 mod fixtures;
 mod floor;
 mod gate;
