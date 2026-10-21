@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.104] - 2026-10-21
+- Wait for daemon cycles, not wall-clock seconds, in the unmapped-limit autoreseat tests
+- Use the imported Cell in the second-episode limitstop test
+- Pin bare ae landing in the app: acceptance spec
+- Open the app from bare ae on a terminal
+
 ## [v2026.10.103] - 2026-10-21
 - Run a ! line from ae chat and ae app as the human's own command
 
