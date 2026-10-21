@@ -11,9 +11,11 @@
               PRODUCT code may reach"
 )]
 
+use std::cell::Cell;
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::time::{Duration, Instant};
+use std::os::unix::fs::MetadataExt as _;
+use std::time::{Duration, Instant, SystemTime};
 
 use ae::autoreseat::{
     ATTEMPT_ACTION, DONE_ACTION, Decision, FAILED_ACTION, Frame, HELD_ACTION, Outcome, Pane,
@@ -660,6 +662,74 @@ fn seat_records(rig: &Rig) -> Vec<Event> {
 /// How many `action` records the seat has.
 fn booked(rig: &Rig, action: &str) -> usize {
     with_action(&seat_records(rig), action).len()
+}
+
+/// The daemon's own line for a cycle that began, refreshed its beat and then
+/// did nothing (`src/watchdog_daemon.rs:5499`, the one early return after the
+/// beat at `:3790`). The line is the only trace such a cycle leaves, so a
+/// reworded line stops being subtracted and the floor counts that cycle.
+const SKIPPED_CYCLE: &str = "pane enumeration failed — skipping cycle";
+
+/// Whole daemon cycles a watch must see AFTER the seat's `limit` is booked
+/// before an absent record counts as a missing one. A cycle reads the journal
+/// once, up front, so the hold is booked by the cycle AFTER the one that
+/// latched the limit; four leaves that cycle one to spare and the rest to
+/// watch for a duplicate.
+const CYCLES_AFTER_LIMIT: usize = 4;
+
+/// The daemon's beat: a fresh file renamed into place at the top of every
+/// cycle (`src/watchdog_daemon.rs:3790`), so a new identity is a cycle begun.
+fn beat(rig: &Rig) -> Option<(u64, SystemTime)> {
+    let meta = std::fs::metadata(ae::watchdog_glue::beat_path(&rig.dir)).ok()?;
+    Some((meta.ino(), meta.modified().ok()?))
+}
+
+/// Daemon cycles that began and did nothing, over every daemon this rig ran.
+fn skipped_cycles(rig: &Rig) -> usize {
+    daemon_err(rig).matches(SKIPPED_CYCLE).count()
+}
+
+/// What a watch saw of the daemon when the seat's `limit` first showed.
+#[derive(Clone, Copy)]
+struct Since {
+    beat: Option<(u64, SystemTime)>,
+    begun: usize,
+    skipped: usize,
+}
+
+/// An EVIDENCE floor in place of a wall-clock one: how many whole cycles the
+/// daemon has finished since the seat's `limit` was first seen booked. A slow
+/// host stretches the wait; it cannot end it before the daemon had the cycles
+/// the pin is about. Poll [`Cycles::finished`] on every pass, so no beat is
+/// missed (the daemon's interval is a second, the poll a tenth of one).
+#[derive(Default)]
+struct Cycles(Cell<Option<Since>>);
+
+impl Cycles {
+    /// Zero until the `limit` is booked. After it, every beat change is one
+    /// more cycle begun after the booking; the newest may still be running, and
+    /// a skipped cycle finished nothing.
+    fn finished(&self, rig: &Rig) -> usize {
+        let mut since = match self.0.get() {
+            Some(since) => since,
+            None if booked(rig, "limit") > 0 => Since {
+                beat: beat(rig),
+                begun: 0,
+                skipped: skipped_cycles(rig),
+            },
+            None => return 0,
+        };
+        let now = beat(rig);
+        if now != since.beat {
+            since.beat = now;
+            since.begun += 1;
+        }
+        self.0.set(Some(since));
+        since
+            .begun
+            .saturating_sub(1)
+            .saturating_sub(skipped_cycles(rig).saturating_sub(since.skipped))
+    }
 }
 
 /// The seat's records of the auto path, as `(action, ref)`.
@@ -1541,12 +1611,13 @@ fn limitstop_candidate_hold(rig: &Rig) -> Vec<Event> {
 )]
 fn limitstop_an_unmapped_limit_has_one_hold_and_one_notice_then_a_map_still_moves_it() {
     let (rig, pane) = limitstop_no_candidate("limitstopunmapped");
-    // Fixed observation time covers multiple daemon cycles even on the old
-    // code, where no hold appears. A missing record fails an assertion.
-    let started = Instant::now();
+    // The daemon's own cycles after the limit is booked cover the hold even on
+    // a slow host, and on the old code, where no hold appears, they end the
+    // watch so the missing record fails an assertion.
+    let cycles = Cycles::default();
     assert!(
         watch_until(&rig, || {
-            started.elapsed() >= Duration::from_secs(6)
+            cycles.finished(&rig) >= CYCLES_AFTER_LIMIT
                 && (limitstop_candidate_hold(&rig).is_empty()
                     || records(&rig)
                         .iter()
@@ -1668,7 +1739,7 @@ fn limitstop_operator_ineligible_unmapped_limits_stay_silent() {
 fn limitstop_an_unmapped_second_episode_gets_a_fresh_hold_and_notice() {
     let (rig, pane) = limitstop_no_candidate("limitstoprearm");
     let phase = std::cell::Cell::new(0);
-    let started = Instant::now();
+    let cycles = Cycles::default();
     // Keep ONE daemon observing limit, actual relief, then the second limit:
     // restarting between relief and its read would discard its capture latch.
     assert!(
@@ -1685,7 +1756,7 @@ fn limitstop_an_unmapped_second_episode_gets_a_fresh_hold_and_notice() {
                 assert!(std::fs::remove_file(rig.scratch.join("limitstop-clear")).is_ok());
                 phase.set(2);
             }
-            started.elapsed() >= Duration::from_secs(6)
+            cycles.finished(&rig) >= CYCLES_AFTER_LIMIT
                 && (held == 0
                     || (phase.get() == 2 && held == 2 && said(&rig).len() == 2 && notices == 6))
         }),
