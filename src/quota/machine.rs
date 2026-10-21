@@ -28,7 +28,7 @@ pub(super) fn number(value: f64) -> Value {
     }
 }
 
-/// A percentage as the table cell spells it: one decimal.
+/// A pace figure as its table cell spells it: one decimal.
 pub(super) fn tenths(value: f64) -> f64 {
     format!("{value:.1}").parse().unwrap_or(value)
 }
@@ -67,15 +67,6 @@ fn credits(policy: &Policy) -> Value {
     Value::obj([("state", Value::str(state)), ("balance", balance)])
 }
 
-/// The judged percentage: the EFFECTIVE cell's number, and the raw window's
-/// where the cell is `-` because nothing moved it.
-fn effective_percent(derived: Derived) -> f64 {
-    match derived.effective {
-        Effective::Resets { percent, .. } => tenths(percent),
-        _ => derived.judged(),
-    }
-}
-
 /// How the judged percentage got there; `null` when nothing was derived.
 fn derivation(derived: Derived) -> Value {
     match derived.effective {
@@ -111,7 +102,7 @@ fn summary(rollouts: &RolloutSummary) -> Value {
 /// One window. What the table withholds from an untrustworthy row is `null`.
 fn window(group: &Group, row: &Row, reason: Option<&str>, pace: Value, now: i64) -> Value {
     let trusted = matches!(row.status, Status::Fresh | Status::Stale);
-    let judged = derived(&group.policy, row).filter(|_| trusted);
+    let figure = derived(&group.policy, row).filter(|_| trusted);
     let when = |value: Option<i64>| if trusted { epoch(value) } else { Value::Null };
     Value::obj([
         (
@@ -126,11 +117,12 @@ fn window(group: &Group, row: &Row, reason: Option<&str>, pace: Value, now: i64)
                 .filter(|_| trusted)
                 .map_or(Value::Null, number),
         ),
+        // The figure a threshold classifies, unrounded: the cell's one decimal is for reading.
         (
             "effective_percent",
-            judged.map_or(Value::Null, |judged| number(effective_percent(judged))),
+            figure.map_or(Value::Null, |figure| number(figure.judged())),
         ),
-        ("derivation", judged.map_or(Value::Null, derivation)),
+        ("derivation", figure.map_or(Value::Null, derivation)),
         ("pace", pace),
         ("resets_at", when(row.resets_at)),
         (
@@ -440,6 +432,49 @@ mod tests {
         assert_eq!(cell(0.25), "0.2");
         assert_eq!(cell(33.333_333), "33.3");
         assert_eq!(cell(12.0), "12");
+    }
+
+    #[test]
+    fn the_effective_figure_is_the_unrounded_judged_percentage() {
+        // (declared resets, window usage, judged figure): usage / (1 + resets), worked by hand. Each sits just
+        // under a 90 or 95 threshold that the table's one-decimal cell rounds ONTO (89.96 reads 90.0%), so a
+        // rounded export would classify differently from the figure the watchdog judges.
+        for (resets, used, judged, derivation) in [
+            (0_u8, "89.96", "89.96", "null"),
+            (0, "94.96", "94.96", "null"),
+            (1, "189.9", "94.95", r#""x1""#),
+            (1, "89.96", "44.98", r#""x1""#),
+            (3, "359.8", "89.95", r#""x3""#),
+        ] {
+            let declared = group(
+                vec![row("codex", Some(used), Status::Fresh)],
+                Policy::for_tests(Some(resets), Account::default()),
+            );
+            let expected = format!(r#""effective_percent":{judged},"derivation":{derivation},"#);
+            assert!(
+                one(&declared).contains(&expected),
+                "{used}/{resets}: {}",
+                one(&declared)
+            );
+            // The same value the threshold reads, not a second derivation of it.
+            let read = crate::quota::derived(&declared.policy, &declared.rows[0])
+                .map(|derived| number(derived.judged()).render());
+            assert_eq!(read.as_deref(), Some(judged), "{used}/{resets}");
+        }
+        let boundary = group(
+            vec![row("codex", Some("89.96"), Status::Fresh)],
+            Policy::for_tests(Some(0), Account::default()),
+        );
+        let table = render_at(std::slice::from_ref(&boundary), None, NOW);
+        assert!(
+            table.contains("90%"),
+            "the cell rounds 89.96 to one decimal: {table}"
+        );
+        assert!(
+            !one(&boundary).contains(r#""effective_percent":90,"#),
+            "{}",
+            one(&boundary)
+        );
     }
 
     #[test]

@@ -1225,10 +1225,12 @@ exists. Fields are only ever added, under `version`. A new field is absent until
   `resets_at` are `null` exactly where the table prints `-` for an untrustworthy row (anything
   but `fresh` or `stale`); `bucket` is `null` on a placeholder row. `observed_at` is `null` when
   the stamp is in the future.
-- `effective_percent` is the percentage ae judges by whenever the window states a usage figure. On
-  a scope with nothing declared or reported it equals `used_percent` and `derivation` is `null`,
-  where the table's EFFECTIVE cell shows `-`; otherwise `derivation` is `"xN"` (N declared
-  resets), `"unlimited"` or `"spend-cap"`.
+- `effective_percent` is the percentage ae judges by whenever the window states a usage figure,
+  unrounded: the table's EFFECTIVE cell rounds it to one decimal, so a window at 89.96 reads
+  `90%` there and `89.96` here, which is the figure a threshold classifies. On a scope with
+  nothing declared or reported it equals `used_percent` and `derivation` is `null`, where the
+  cell shows `-`; otherwise `derivation` is `"xN"` (N declared resets), `"unlimited"` or
+  `"spend-cap"`.
 - `pace` is `null` where the PACE cell is `-`, else `{"kind":"unknown"}`,
   `{"kind":"bound","per_h":…}` or `{"kind":"rate","per_h":…,"eta_secs":…,"before_reset":…}`,
   rounded exactly as the cell rounds them.
