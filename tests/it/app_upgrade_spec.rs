@@ -416,7 +416,15 @@ impl InstalledRig {
 fn installed_app_idle_restarts_into_newer_link_core() {
     let rig = InstalledRig::new("upn", true);
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
+    rig.wait(&pane, WAIT, "first paint", |s| {
+        s.contains("Agents")
+            && s.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.session)
+            })
+    });
     rig.repoint_link(&crate::calver::newer());
 
     let restarted = rig.wait_restarted(WAIT, "idle app restarts into newer link core");
@@ -441,7 +449,15 @@ fn installed_app_idle_restarts_into_older_link_core() {
     let rig = InstalledRig::new("upo", true);
     // Q-A rollback ruling: older link version also restarts
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
+    rig.wait(&pane, WAIT, "first paint", |s| {
+        s.contains("Agents")
+            && s.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.session)
+            })
+    });
     rig.repoint_link(&crate::calver::older());
 
     let restarted = rig.wait_restarted(WAIT, "idle app restarts into older link core");
@@ -462,7 +478,15 @@ fn installed_app_idle_restarts_into_older_link_core() {
 fn installed_app_busy_with_draft_never_restarts_and_shows_busy_hint() {
     let rig = InstalledRig::new("upb", true);
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
+    rig.wait(&pane, WAIT, "first paint", |s| {
+        s.contains("Agents")
+            && s.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.session)
+            })
+    });
 
     // Enter compose mode (Enter or i per model.rs) then type text into composer
     rig.tmux(&["send-keys", "-t", &pane, "i"]);
@@ -525,7 +549,15 @@ fn standalone_app_in_unstamped_pane_restarts_into_the_linked_core() {
         "remain-on-exit",
         "on",
     ]);
-    rig.wait(&unstamped, WAIT, "first paint", |s| s.contains("▣ 1 "));
+    rig.wait(&unstamped, WAIT, "first paint", |s| {
+        s.contains("Agents")
+            && s.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.session)
+            })
+    });
     rig.repoint_link(&crate::calver::newer());
 
     let restarted = rig.wait_restarted(WAIT, "a hand-started idle app must restart");
@@ -539,7 +571,15 @@ fn standalone_app_in_unstamped_pane_restarts_into_the_linked_core() {
 fn checkout_shape_never_restarts_and_shows_no_hint() {
     let rig = InstalledRig::new("upc", true);
     let pane = rig.open_checkout_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
+    rig.wait(&pane, WAIT, "first paint", |s| {
+        s.contains("Agents")
+            && s.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.session)
+            })
+    });
     rig.repoint_link(&crate::calver::newer());
 
     // Hold >= 2*REFRESH (12s) before asserting checkout never hints or restarts
@@ -556,7 +596,15 @@ fn checkout_shape_never_restarts_and_shows_no_hint() {
 fn auto_upgrade_disabled_hints_only() {
     let rig = InstalledRig::new("upd", false); // auto_upgrade = off
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |s| s.contains("▣ 1 "));
+    rig.wait(&pane, WAIT, "first paint", |s| {
+        s.contains("Agents")
+            && s.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.session)
+            })
+    });
     let newer = crate::calver::newer();
     rig.repoint_link(&newer);
 

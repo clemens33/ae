@@ -49,6 +49,9 @@ use peek::Body;
 #[path = "app/applink_spec.rs"]
 mod applink_spec;
 #[cfg(test)]
+#[path = "app/apppolish3_spec.rs"]
+mod apppolish3_spec;
+#[cfg(test)]
 #[path = "app/appread_spec.rs"]
 mod appread_spec;
 mod backend;
@@ -361,12 +364,18 @@ struct Keep {
 /// Everything the app was answered, and the browse and compose state.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent facts of one loop, each read where it is set: loading, fleeted, touched, restored, early_named, again"
+    reason = "independent facts of one loop, each read where it is set: loading, fleeted, touched, restored, early_named, again, stopped_open"
 )]
 struct App {
     home: Option<String>,
     model: model::Model,
     fleet: fleet::Fleet,
+    /// The stopped sessions the closed group holds back from `fleet`, in the
+    /// fleet's order; empty while the group is open.
+    hidden: Vec<fleet::Row>,
+    /// Whether the stopped group is open: this window's memory, closed at
+    /// start, never persisted and never handed over.
+    stopped_open: bool,
     world: World,
     dirs: BTreeMap<String, PathBuf>,
     ids: BTreeMap<String, String>,
@@ -549,6 +558,8 @@ impl App {
             home,
             model: model::Model::new(&fleet),
             fleet,
+            hidden: Vec::new(),
+            stopped_open: false,
             world: World::new(Timestamp::now(), Vec::new()),
             dirs: BTreeMap::new(),
             ids: BTreeMap::new(),
@@ -969,7 +980,9 @@ impl App {
                     }
                     true
                 }
-                Some(draw::Hit::Session(_) | draw::Hit::Seat(_)) => self.clicked(mouse, fresh),
+                Some(draw::Hit::Session(_) | draw::Hit::Seat(_) | draw::Hit::Stopped) => {
+                    self.clicked(mouse, fresh)
+                }
                 _ if self.layout.grab(mouse).is_some() => self.clicked(mouse, fresh),
                 _ => {
                     self.arm(mouse, None, fresh);
@@ -1098,6 +1111,7 @@ impl App {
         let drawn: Vec<String> = self.fleet.rows.iter().map(|row| row.name.clone()).collect();
         self.pending = Some(read.fleet.rows.iter().map(|row| row.name.clone()).collect());
         self.fleet = read.fleet.arranged(&drawn);
+        self.fold_stopped(self.fleeted, read.scanned);
         self.pairs = read.pairs;
         self.fleeted = true;
         self.merged = None;
@@ -1155,6 +1169,81 @@ impl App {
         }
         self.evict();
         self.show();
+    }
+
+    /// Fold the stopped sessions of the fleet just read into the sidebar's one
+    /// group: out of the rows while it is closed, in them while it is open. A
+    /// read opens it when its own selection, already read once, turned stopped,
+    /// and when it takes a handed-over view of a stopped session: a session the
+    /// human is on never goes missing from under them.
+    fn fold_stopped(&mut self, seen: bool, scanned: bool) {
+        let stopped =
+            |name: &str| (self.fleet.rows.iter()).any(|row| row.name == name && row.is_stopped());
+        let selected = seen && self.model.selected().is_some_and(stopped);
+        let handed = self.keep.as_ref().is_some_and(|keep| {
+            let name = keep.view.session.as_str();
+            let id = self.ids.get(name).map(String::as_str);
+            let now = Timestamp::now().epoch();
+            stopped(name)
+                && handover::decide(keep.at, now, &keep.view, true, id, scanned)
+                    == handover::Verdict::Apply
+        });
+        self.stopped_open |= selected || handed;
+        self.hidden.clear();
+        if !self.stopped_open {
+            let (fleet, hidden) = std::mem::take(&mut self.fleet).without_stopped();
+            (self.fleet, self.hidden) = (fleet, hidden);
+        }
+    }
+
+    /// The stopped group the sidebar draws: every stopped session of the
+    /// fleet, in the rows or held back, whether it is open and how many it holds
+    /// back that need the human.
+    fn stopped(&self) -> model::Stopped {
+        let shown = self
+            .fleet
+            .rows
+            .iter()
+            .filter(|row| row.is_stopped())
+            .count();
+        model::Stopped {
+            total: shown + self.hidden.len(),
+            open: self.stopped_open,
+            hidden_needy: self.hidden.iter().filter(|row| row.needy).count(),
+        }
+    }
+
+    /// `z`, or a press on the group's line: open the stopped sessions into the
+    /// list, or close them out of it. Opening moves no selection. Closing with
+    /// the selection among them hands it to home when the list holds it, else to
+    /// the first row, else to nothing, and ends the writing and the panels of the
+    /// session it leaves. Whether a frame is due.
+    fn toggle_stopped(&mut self) -> bool {
+        if self.stopped().total == 0 {
+            return false;
+        }
+        self.stopped_open = !self.stopped_open;
+        if self.stopped_open {
+            let hidden = std::mem::take(&mut self.hidden);
+            let home = self.home.as_deref();
+            self.fleet = std::mem::take(&mut self.fleet).with_stopped(hidden, home);
+            return true;
+        }
+        let (fleet, hidden) = std::mem::take(&mut self.fleet).without_stopped();
+        (self.fleet, self.hidden) = (fleet, hidden);
+        let before = self.model.selected().map(str::to_owned);
+        self.model.reconcile(&self.fleet);
+        if before.as_deref() != self.model.selected() {
+            self.write(false);
+            if self.model.peek_open() {
+                self.close_peek();
+            }
+            if self.model.reader_open() {
+                self.close_reader();
+            }
+            self.show();
+        }
+        true
     }
 
     /// Settle the handed-over view with this read: applied when it lists the
@@ -2158,6 +2247,7 @@ impl App {
                 self.write(false);
                 act
             }
+            draw::Hit::Stopped => return self.toggle_stopped() || held,
             draw::Hit::Compose if !self.composing() => {
                 self.model
                     .key(model::Key::Compose, &self.fleet, self.can_compose())
@@ -2217,7 +2307,8 @@ impl App {
         if !self.layout.shows(drag.edge) {
             return false;
         }
-        let size = draw::dragged_to(drag, mouse, self.layout.area(), self.fleet.rows.len());
+        let count = draw::list_len(&self.fleet, self.stopped());
+        let size = draw::dragged_to(drag, mouse, self.layout.area(), count);
         self.model.drag_to(size)
     }
 
@@ -3053,6 +3144,7 @@ impl App {
         });
         let unread = self.cue.frame(rows, Timestamp::now().epoch());
         self.model.set_unread(unread);
+        self.model.set_stopped(self.stopped());
         let keys = self.keys();
         let (folds, open, sent) = self.fold_state();
         let name = self.model.selected();
@@ -4280,7 +4372,8 @@ fn paste(app: &mut App, bytes: &[u8], origin: Instant) {
 
 /// One Text byte while browsing: `q` and `o` press their armed key, `,`
 /// opens the settings and `?` its keys, `m` the menu on the selection's card,
-/// `s` starts or stops the selection, anything else decodes as it always has and ends the
+/// `s` starts or stops the selection, `z` opens or closes the stopped group,
+/// anything else decodes as it always has and ends the
 /// armed press. A byte of a read the menu spent does nothing. Browsing on
 /// entry; the caller routes the modes.
 fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
@@ -4295,6 +4388,7 @@ fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
             return Some(true);
         }
         b's' => return Some(app.toggle(origin)),
+        b'z' => return Some(app.toggle_stopped()),
         b'?' => {
             app.open_settings();
             app.model.show_settings_tab(model::SettingsTab::Keys);

@@ -186,21 +186,30 @@ impl Rig {
     }
 
     fn ready(&self, pane: &str) -> String {
+        let initial = self.wait(pane, WAIT, "initial stopped group", |s| {
+            s.contains("Stopped (12)") && s.contains("Enter writes")
+        });
+        if !initial.contains("▾ Stopped (") && !initial.contains("v Stopped (") {
+            self.literal(pane, "z");
+        }
         let first = self.wait(pane, WAIT, "GUARD undragged app frame", |s| {
-            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("Agents 40")
+            s.contains("Stopped (12)")
+                && s.contains("ws11")
+                && s.contains("Enter writes")
+                && s.contains("Agents 40")
         });
         let edge = first
             .lines()
             .position(|line| line.starts_with("──"))
             .expect("drawn list border");
-        // Thirteen one-row sessions all fit the undragged list: it ends at
-        // row 3 + 13, and its border stands two rows lower.
+        // Thirteen sessions plus their group header occupy fourteen list items
+        // from row2; their undragged border remains at row2 + 14 + 2 = 18.
         assert_eq!(edge, 18, "GUARD new undragged list border");
         assert_eq!(self.cards(&first).len(), 13, "GUARD new undragged cards");
-        // This suite judges wheel behavior with a windowed list: eight
-        // sessions under a more row (nine list rows, border at 3 + 9 + 2 =
-        // 14) above the Agents body. The appside spec independently
-        // pins the undragged default.
+        // Keep the Agents body rectangle unchanged: border14 gives ten list
+        // rows from row2. The more row leaves nine content items: eight
+        // sessions while the toggle is visible, nine after it scrolls away.
+        // Wheel offsets and more counts include the toggle as a list item.
         self.literal(
             pane,
             &format!("\x1b[<0;2;{}M\x1b[<32;2;15M\x1b[<0;2;15m", edge + 1),
@@ -220,7 +229,7 @@ impl Rig {
         );
         assert_eq!(self.cards(&pinned).len(), 8);
         self.wait(pane, WAIT, "GUARD home, overflow and seats ready", |s| {
-            s.contains("▣ 13 ") && s.contains("Enter writes") && s.contains("seat05")
+            s.contains("Stopped (12)") && s.contains("Enter writes") && s.contains("seat05")
         })
     }
 
@@ -289,6 +298,7 @@ fn cell(screen: &str, needle: &str) -> (usize, usize) {
     screen
         .lines()
         .enumerate()
+        .filter(|(y, _)| *y > 0 || !needle.starts_with("Agents"))
         .find_map(|(y, line)| {
             line.chars()
                 .collect::<Vec<_>>()
@@ -318,7 +328,11 @@ fn sidebar_cell(screen: &str, needle: &str) -> (usize, usize) {
 fn body_rows(screen: &str) -> Vec<String> {
     // A capture can fall between the resize clear and the repaint. Wait
     // predicates must see no body yet, rather than panic on its heading.
-    let Some(top) = screen.lines().position(|row| row.starts_with("  Agents")) else {
+    let Some(top) = screen
+        .lines()
+        .enumerate()
+        .find_map(|(y, row)| (y > 0 && row.starts_with("  Agents")).then_some(y))
+    else {
         return Vec::new();
     };
     let Some(width) = drawn_rule(screen) else {
@@ -447,7 +461,7 @@ fn click_pins_the_drawn_window_even_when_keys_were_following_selection() {
         FRAME,
         "GUARD key selection exposes final card",
         |s| {
-            rig.cards(s) == rig.names[5..13]
+            rig.cards(s) == rig.names[4..13]
                 && s.lines().next().is_some_and(|line| line.contains("ws11"))
         },
     );
@@ -543,8 +557,8 @@ fn list_wheel_moves_one_whole_card_and_clamps_without_remembering_overshoot() {
     assert!(more(&down).contains("↑ 1") && more(&down).contains("↓ 4"));
     rig.home_holds(&down, false);
     rig.report(&pane, 65, point, 40);
-    let bottom = rig.wait(&pane, FRAME, "A-LIST-BOTTOM clamped to last eight", |s| {
-        rig.cards(s) == rig.names[5..13]
+    let bottom = rig.wait(&pane, FRAME, "A-LIST-BOTTOM clamped to last nine", |s| {
+        rig.cards(s) == rig.names[4..13]
     });
     assert!(more(&bottom).contains("↑ 5") && !more(&bottom).contains('↓'));
     rig.report(&pane, 64, point, 1);
@@ -552,7 +566,7 @@ fn list_wheel_moves_one_whole_card_and_clamps_without_remembering_overshoot() {
         &pane,
         FRAME,
         "A-LIST-REVERSE overshoot was discarded",
-        |s| rig.cards(s) == rig.names[4..12],
+        |s| rig.cards(s) == rig.names[3..12],
     );
     rig.report(&pane, 64, point, 40);
     let top = rig.wait(&pane, FRAME, "A-LIST-TOP clamped to first eight", |s| {
@@ -575,7 +589,7 @@ fn clicked_revealed_card_keeps_window_and_same_selection_key_reveals_it() {
         &pane,
         FRAME,
         "A-CLICK-PRECOND wheel exposes later cards",
-        |s| rig.cards(s) == rig.names[3..11],
+        |s| rig.cards(s) == rig.names[2..11],
     );
     let target = "ws09";
     let point = sidebar_cell(&down, target);
@@ -754,7 +768,7 @@ fn refresh_clamps_shrunk_list_and_body_before_drawing() {
     let first = rig.ready(&pane);
     rig.report(&pane, 65, sidebar_cell(&first, &rig.home), 40);
     let down = rig.wait(&pane, FRAME, "A-REFRESH-PRECOND list at bottom", |s| {
-        rig.cards(s) == rig.names[5..13]
+        rig.cards(s) == rig.names[4..13]
     });
     rig.report(&pane, 65, (2, cell(&down, "Agents 40").1 + 2), 40);
     rig.wait(&pane, FRAME, "A-REFRESH-BODY-PRECOND final seat", |s| {
@@ -769,7 +783,7 @@ fn refresh_clamps_shrunk_list_and_body_before_drawing() {
         WAIT,
         "A-REFRESH-CLAMP current content visible",
         |s| {
-            s.contains("▣ 3 ")
+            s.contains("Stopped (2)")
                 && rig.cards(s) == rig.names[..3]
                 && s.contains("No seat facts")
                 && !s.contains("more rows")
@@ -810,7 +824,7 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
     );
     rig.tmux(&["resize-window", "-t", &pane, "-x", "80", "-y", "24"]);
     let hidden = rig.wait(&pane, FRAME, "GUARD sidebar hidden", |s| {
-        s.contains("sidebar needs") && !s.contains("▣ 13 ")
+        s.contains("sidebar needs") && !s.contains("Stopped (12)")
     });
     let chat = cell(&hidden, "to ");
     rig.report(&pane, 64, (2, chat.1), 1);
@@ -878,7 +892,7 @@ fn guard_header_heading_rule_keys_and_settings_never_scroll_underlying_sidebar()
     rig.report(&pane, 65, (2, 6), 20);
     rig.literal(&pane, ",");
     let closed = rig.wait(&pane, FRAME, "GUARD closed Settings", |s| {
-        s.contains("▣ 13 ") && s.contains("Enter writes")
+        s.contains("Stopped (12)") && s.contains("Enter writes")
     });
     assert_eq!(rig.cards(&closed), cards, "covered list never moved");
     assert_eq!(body(&closed), rows, "covered body never moved");

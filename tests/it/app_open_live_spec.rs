@@ -424,7 +424,8 @@ impl Rig {
         let screen = self.screen(app);
         let tab = screen
             .lines()
-            .position(|row| row.trim_start().starts_with("Agents"));
+            .enumerate()
+            .find_map(|(y, row)| (y > 0 && row.trim_start().starts_with("Agents")).then_some(y));
         let row = screen
             .lines()
             .enumerate()
@@ -840,6 +841,13 @@ fn stopped_selection_names_resume_command_and_does_not_resume() {
     let rig = Rig::new("stopped");
     rig.meta("openstopped", OTHER_UUID, &rig.socket, "spawned.0");
     let app = rig.app(&rig.socket);
+    rig.wait_screen(&app, "GUARD stopped group loaded", |s| {
+        s.contains("Stopped (1)")
+    });
+    rig.raw(&app, "z");
+    rig.wait_screen(&app, "GUARD stopped target revealed", |s| {
+        s.contains("openstopped")
+    });
     let viewer = rig.attach(HOME);
     let before = rig.viewed(&viewer);
     rig.click(&app, "openstopped", false);

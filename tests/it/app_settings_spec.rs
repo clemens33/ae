@@ -378,6 +378,19 @@ impl Rig {
         })
     }
 
+    /// Fixture targets are stopped records; reveal them before testing their UI.
+    fn reveal_stopped(&self, pane: &str) {
+        let first = self.wait(pane, WAIT, "stopped group loaded", |s| {
+            s.contains("Stopped (")
+        });
+        if first.contains("▸ Stopped (") || first.contains("> Stopped (") {
+            self.keys(pane, "z");
+        }
+        self.wait(pane, WAIT, "stopped group expanded", |s| {
+            s.contains("▾ Stopped (") || s.contains("v Stopped (")
+        });
+    }
+
     fn settings(&self, pane: &str) -> String {
         self.keys(pane, ",");
         self.wait(pane, FRAME, ", opens the settings frame", is_settings)
@@ -688,6 +701,7 @@ fn late_settings_answer_cannot_reopen_a_closed_panel_and_control_c_quits_inside_
     // drawing this new sidebar row proves UI application, not just send.
     rig.stopped("settings-late-sentinel");
     drop(world);
+    rig.reveal_stopped(&pane);
     let screen = rig.wait(&pane, WAIT, "later fleet answer applied", |s| {
         s.contains("settings-late-sentinel")
     });
@@ -719,6 +733,7 @@ fn closed_settings_does_not_read_before_open_or_keep_refreshing_after_close() {
         rig.held_after("@world", previous);
         rig.stopped(sentinel);
         drop(world);
+        rig.reveal_stopped(&pane);
         rig.wait(&pane, WAIT, "closed fleet refresh applied", |s| {
             s.contains(sentinel)
         });
@@ -738,6 +753,7 @@ fn closed_settings_does_not_read_before_open_or_keep_refreshing_after_close() {
     rig.held_after("@world", previous);
     rig.stopped("settings-cycle-three");
     drop(world);
+    rig.reveal_stopped(&pane);
     rig.wait(&pane, WAIT, "post-close answer applied", |s| {
         s.contains("settings-cycle-three")
     });
@@ -973,6 +989,7 @@ fn covered_session_targets_and_drag_borders_cannot_act_through_settings() {
     rig.stopped("settings-other");
     let (pane, _) = rig.direct(220, 60, &rig.root.join("config"));
     rig.ready(&pane);
+    rig.reveal_stopped(&pane);
     let before = rig.wait(&pane, WAIT, "covered targets drawn before open", |s| {
         s.contains("settings-other") && s.contains("Agents")
     });

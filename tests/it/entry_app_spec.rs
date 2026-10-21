@@ -38,10 +38,6 @@ use super::phase2::run_tmux;
 
 const WAIT: Duration = Duration::from_secs(20);
 
-/// The app's fleet header for one recorded session — its glyph set is the
-/// default (icons on), and the count is the recorded sessions, never tmux's.
-const FRAME: &str = "▣ 1 ";
-
 const CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n[roster]\nlead = idle\n\
     [workspace]\nmain = lead\nlayout = vertical\n";
 
@@ -316,9 +312,24 @@ fn command(args: &[&str], rc: &Path, outside: bool) -> String {
     line
 }
 
-/// The app fleet frame for exactly the named session.
+/// Every pane is 160 columns: its default 44-cell sidebar fits the word rung.
+/// Positive and negative app checks share this predicate, so both discriminate
+/// the current frame rather than relying on a removed summary glyph.
+fn app_frame(screen: &str) -> bool {
+    screen.lines().next().is_some_and(|row| {
+        row.starts_with("  Agents ")
+            && row.contains(" · Working ")
+            && row.contains(" · Needs you ")
+            && row.contains('│')
+    })
+}
+
+/// The named visible sidebar row proves the initial fleet read has completed.
 fn lands(screen: &str, name: &str) -> bool {
-    screen.contains(FRAME) && screen.lines().any(|row| row.contains(name))
+    app_frame(screen)
+        && screen.lines().skip(2).any(|row| {
+            row.chars().skip(4).collect::<String>().starts_with(name) && row.contains('│')
+        })
 }
 
 /// The `ae list` table row of a running session, in the same screen.
@@ -343,7 +354,7 @@ fn a_recorded_session_lands_outside_tmux_in_the_app_running_or_stopped() {
         lands(screen, "one")
     });
     assert!(
-        !screen.contains("stopped"),
+        !screen.contains("Stopped ("),
         "the row is running, not stopped:\n{screen}"
     );
     assert_eq!(rig.quit(&pane, &rc), "0", "the app quits cleanly");
@@ -354,9 +365,13 @@ fn a_recorded_session_lands_outside_tmux_in_the_app_running_or_stopped() {
     let rc = rig.scratch.join("rc-stopped");
     let pane = rig.pane("host", &gated(&command(&[], &rc, true), &gate));
     std::fs::write(&gate, "").expect("release the pane");
-    rig.wait(&pane, "a recorded stopped session lands too", |screen| {
-        lands(screen, "one") && screen.contains("stopped")
+    let screen = rig.wait(&pane, "a recorded stopped session lands too", |screen| {
+        app_frame(screen) && screen.contains("▸ Stopped (1)")
     });
+    assert!(
+        !lands(&screen, "one"),
+        "stopped rows start collapsed: {screen}"
+    );
     assert_eq!(rig.quit(&pane, &rc), "0", "the app quits cleanly");
     assert_eq!(rig.recorded(), ["one"], "the landing resumed nothing");
     assert!(
@@ -387,10 +402,7 @@ fn no_recorded_session_keeps_todays_refusal() {
         screen.contains("ae: no running ae session. Start one with: ae <name>"),
         "today's refusal, verbatim:\n{screen}"
     );
-    assert!(
-        !screen.contains(FRAME),
-        "no recording draws no app:\n{screen}"
-    );
+    assert!(!app_frame(&screen), "no recording draws no app:\n{screen}");
     assert_eq!(wait_for_rc(&rc), "1", "the refusal exits 1");
     assert!(rig.recorded().is_empty(), "the refusal created nothing");
 }
@@ -408,7 +420,7 @@ fn an_unstamped_pane_in_an_ae_session_lands_in_the_app() {
         lands(screen, "one")
     });
     assert!(
-        !screen.contains("stopped"),
+        !screen.contains("Stopped ("),
         "the row is running, not stopped:\n{screen}"
     );
     assert_eq!(rig.quit(&pane, &rc), "0", "the app quits cleanly");
@@ -433,7 +445,7 @@ fn a_seat_pane_and_an_unreadable_pane_keep_the_list_while_a_chat_pane_lands() {
     let screen = rig.wait(&seat, "a seat pane keeps the list", |screen| {
         listed(screen, "one")
     });
-    assert!(!screen.contains(FRAME), "a seat pane draws no app");
+    assert!(!app_frame(&screen), "a seat pane draws no app");
     assert_eq!(wait_for_rc(&rc), "0", "the list exits 0");
 
     let gate = rig.scratch.join("go-unreadable");
@@ -449,7 +461,7 @@ fn a_seat_pane_and_an_unreadable_pane_keep_the_list_while_a_chat_pane_lands() {
     let screen = rig.wait(&lost, "an unreadable pane keeps the list", |screen| {
         listed(screen, "one")
     });
-    assert!(!screen.contains(FRAME), "an unreadable pane draws no app");
+    assert!(!app_frame(&screen), "an unreadable pane draws no app");
     assert_eq!(wait_for_rc(&rc), "0", "the list exits 0");
 
     let gate = rig.scratch.join("go-chat");
@@ -482,7 +494,7 @@ fn a_seat_pane_and_an_unreadable_pane_keep_the_list_while_a_chat_pane_lands() {
         "an unrecorded caller session keeps the list",
         |screen| listed(screen, "one"),
     );
-    assert!(!screen.contains(FRAME), "an unknown home draws no app");
+    assert!(!app_frame(&screen), "an unknown home draws no app");
     assert_eq!(wait_for_rc(&rc), "0", "the list exits 0");
 }
 
@@ -538,7 +550,7 @@ fn the_bare_forms_keep_their_meaning() {
         )),
         "the hint names the launch server:\n{screen}"
     );
-    assert!(!screen.contains(FRAME), "`--no-attach` draws no app");
+    assert!(!app_frame(&screen), "`--no-attach` draws no app");
     assert_eq!(wait_for_rc(&rc), "0", "`--no-attach` exits 0");
 
     // `--tmux` inside its own server: today's list.
@@ -549,7 +561,7 @@ fn the_bare_forms_keep_their_meaning() {
     let screen = rig.wait(&inside, "`--tmux` lists inside tmux", |screen| {
         listed(screen, "one")
     });
-    assert!(!screen.contains(FRAME), "`--tmux` draws no app: {screen}");
+    assert!(!app_frame(&screen), "`--tmux` draws no app: {screen}");
     assert_eq!(wait_for_rc(&rc), "0", "`--tmux` exits 0");
 
     // `--tmux` outside, no terminal: today's attach, not the app.
@@ -599,7 +611,7 @@ fn a_crashed_cohort_is_restored_before_the_app_lands() {
         lands(screen, "one")
     });
     assert!(
-        !screen.contains("stopped"),
+        !screen.contains("Stopped ("),
         "the restored session is running in the frame:\n{screen}"
     );
     assert_eq!(rig.quit(&pane, &rc), "0", "the app quits cleanly");

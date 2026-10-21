@@ -40,18 +40,31 @@ recorded config first.
 
 ## Layout
 
-- **Sidebar** (44 cells from 140 wide, 34 from 90x20): a two-row summary
+- **Sidebar** (44 cells from 140 wide, 34 from 90x20): a one-line summary
   on the sidebar ground, regular counts with dim labels and separators —
-  `▣ 27 sessions · ◈ 69 agents`, then `● 12 working · ⚠ 2
-  need you` (`+?` where a running session's seats are unknown; a count of one
-  reads `1 session`, `1 needs you`) — a narrow band drops the words before it
-  cuts a count, and `icons = off` draws `# @ * !`. One blank row separates it
-  from the list: one row per session, the selected one too, with its mark, its
+  `Agents 32 · Working 10 · Needs you 1`: the live agents of the running
+  sessions (a stopped session's saved seats and a dead seat are not among
+  them), how many work, and how many sessions need you (`+?` where a running
+  session's seats are unknown). A line that does not fit gives way in steps:
+  `Agt 32 · Wrk 10 · Need 1`, then `◈ 32 ● 10 ⚠ 1`, then the needs-you count
+  alone; a count is never cut, and `icons = off` draws `@ * !`. One blank row
+  separates it from the list: one row per running session, the selected one too, with its mark, its
   name, `◂` (`<` with `icons = off`) after the name of the window's own
   session, and at the right end its seat tally (`●3 ◔1 ✓2`; a stopped session
   says `stopped <age>`, a running one with no seats `no agents`, one whose
   seats are unknown `?`). No row number is drawn; `1`-`9` still select the Nth
-  session of the list. What a session or seat waits on is told in the chat
+  session of the list.
+  Stopped sessions are hidden behind one line after the running ones,
+  `▸ Stopped (3)` (`> Stopped (3)` with `icons = off`): `z` or a click opens
+  them as rows (`▾`, `v`) with the start and resume controls they always had,
+  and again closes them. The group is this window's memory only, closed at every
+  start and never saved. No key, digit or click reaches a hidden row and the
+  digits count the sessions listed; closing the group while a stopped session is
+  selected selects the home session when it is listed, else the first listed
+  session, else none. A fleet read opens the group when the selected session
+  turned stopped, so it never leaves the list under you, and when it brings back
+  a handed-over view of a stopped session. The counts of the summary do not
+  change with the group. What a session or seat waits on is told in the chat
   header, never under a row. A narrow row gives up the glyph first, then the
   tally down to its most urgent count, then the name's tail. `↑` / `↓` at the band's first row's right end show needy
   rows outside the list, and `!` reaches the next one. The `Agents N` heading
@@ -181,6 +194,7 @@ Browsing:
 | Click a turn | mark it; clicking the marked turn again unmarks it |
 | Click a fold row, or `Enter` with a marked turn that has one | show that turn whole or fold it again ([Long turns](#long-turns)) |
 | Click session row | select that session |
+| Click the `Stopped (N)` line | open or close the stopped sessions |
 | Click a seat row | highlight that seat |
 | Wheel over chat or the Agents body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
@@ -189,6 +203,7 @@ Browsing:
 | `Esc` | clear the seat cursor, else back to home |
 | `Enter` or `i` | write the selected session, when no other app writes it |
 | `s` | start the selected session if it is stopped, else ask to stop it ([Session menu](#session-menu)) |
+| `z` | show or hide the stopped sessions (the `Stopped (N)` line) |
 | `,` | open Settings |
 | `?` | open Settings on its Keys tab, the list of every key |
 | Click the gear at the hint row's right end | open Settings, also while writing |

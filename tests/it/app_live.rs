@@ -144,6 +144,14 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// The loaded sidebar row proves a fleet read; the initial summary alone cannot.
+fn painted(screen: &str, name: &str) -> bool {
+    screen.contains("Agents ")
+        && screen.lines().skip(2).any(|row| {
+            row.chars().skip(4).collect::<String>().starts_with(name) && row.contains('│')
+        })
+}
+
 /// The row holding `needle`, as characters.
 fn row_with(screen: &str, needle: &str) -> Option<Vec<char>> {
     screen
@@ -162,7 +170,7 @@ fn the_live_app_paints_and_relays_out_on_resize() {
     let pane = rig.open_app();
     let name = rig.name.clone();
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("▣ 1 ") && screen.lines().any(|row| row.contains(&name))
+        painted(screen, &name)
     });
     let painted = rig.tmux(&["capture-pane", "-e", "-p", "-t", &pane]);
     assert!(!painted.contains("38;2;"), "theme off draws no colour (R7)");
@@ -188,7 +196,9 @@ fn the_live_app_paints_and_relays_out_on_resize() {
 fn a_session_with_no_look_paints_the_default_palette() {
     let rig = Rig::new("appd", true);
     let pane = rig.open_app();
-    rig.wait(&pane, WAIT, "first paint", |screen| screen.contains("▣ 1 "));
+    rig.wait(&pane, WAIT, "first paint", |screen| {
+        painted(screen, &rig.name)
+    });
     let painted = rig.tmux(&["capture-pane", "-e", "-p", "-t", &pane]);
     assert!(painted.contains("38;2;"), "the default palette is drawn");
 }
@@ -268,7 +278,9 @@ fn quitting_puts_the_terminal_back() {
             quote(&modes.to_string_lossy()),
         ),
     );
-    rig.wait(&pane, WAIT, "first paint", |screen| screen.contains("▣ 1 "));
+    rig.wait(&pane, WAIT, "first paint", |screen| {
+        painted(screen, &rig.name)
+    });
     rig.tmux(&["send-keys", "-t", &pane, "q", "q"]);
     let until = Instant::now() + WAIT;
     while fs::read_to_string(&modes).map_or(true, |text| text.is_empty()) {

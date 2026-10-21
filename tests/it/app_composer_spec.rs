@@ -784,6 +784,13 @@ fn browse_invalid_pair_held_stopped_and_revoked_read_only_keep_the_cursor_hidden
     fs::create_dir(&stopped).expect("stopped sibling");
     fs::write(stopped.join("meta"), format!("session=zzstop\nmode=local\nsession_id=0199c0de-bbbb-4890-abcd-ef0123456789\nlayout=lead-pair\nseat.main=lead\ntmux_server_kind=socket\ntmux_server={}\n", rig.socket.display())).expect("stopped meta");
     let pane = rig.open();
+    rig.wait(&pane, WAIT, "GUARD stopped group loaded", |f| {
+        f.text.contains("Stopped (1)")
+    });
+    rig.send(&pane, "z");
+    rig.wait(&pane, WAIT, "GUARD stopped target expanded", |f| {
+        f.text.contains("zzstop")
+    });
     assert_eq!(rig.frame(&pane).cursor.0, 0, "browse hides cursor");
     let meta_path = rig.tool.dir.join("meta");
     let meta = fs::read_to_string(&meta_path).expect("original lead pair");
@@ -869,7 +876,15 @@ fn no_home_selected_browse_hides_cursor_and_terminal_leave_restores_it() {
         &pane,
         WAIT,
         "GUARD outside app drew selected session",
-        |f| f.text.contains("▣ 1 ") && f.text.contains("Agents"),
+        |f| {
+            f.text.contains("Agents")
+                && f.text.lines().skip(2).any(|row| {
+                    row.chars()
+                        .skip(4)
+                        .collect::<String>()
+                        .starts_with(&rig.home)
+                })
+        },
     );
     let address = format!("to {}", rig.home);
     assert!(

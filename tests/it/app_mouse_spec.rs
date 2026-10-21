@@ -403,20 +403,43 @@ impl Rig {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        self.tmux(&[
-            "list-panes",
-            "-s",
-            "-t",
-            &self.name,
-            "-F",
-            "#{pane_id}|#{@ae_console}",
-        ])
-        .lines()
-        .find_map(|row| {
-            let (pane, stamp) = row.split_once('|')?;
-            (stamp == UUID).then(|| pane.to_owned())
-        })
-        .expect("the stamped app window")
+        let pane = self
+            .tmux(&[
+                "list-panes",
+                "-s",
+                "-t",
+                &self.name,
+                "-F",
+                "#{pane_id}|#{@ae_console}",
+            ])
+            .lines()
+            .find_map(|row| {
+                let (pane, stamp) = row.split_once('|')?;
+                (stamp == UUID).then(|| pane.to_owned())
+            })
+            .expect("the stamped app window");
+        let first = self.wait(&pane, WAIT, "initial app frame", |screen| {
+            // chat=on deliberately opens the classic console in one test.
+            (screen.contains("chat: ") && screen.contains("to lead>"))
+                || (screen.contains("Agents")
+                    && screen.lines().skip(2).any(|row| {
+                        row.chars()
+                            .skip(4)
+                            .collect::<String>()
+                            .starts_with(&self.name)
+                    })
+                    && screen.contains("Enter writes"))
+        });
+        if first.contains("Stopped (") {
+            self.tmux(&["send-keys", "-t", &pane, "-l", "--", "z"]);
+            self.wait(
+                &pane,
+                WAIT,
+                "stopped fixtures explicitly expanded",
+                |screen| screen.contains("▾ Stopped (") || screen.contains("v Stopped ("),
+            );
+        }
+        pane
     }
 
     fn screen(&self, pane: &str) -> String {
@@ -482,7 +505,7 @@ fn guard_literal_arrow_moves_selection() {
     let rig = Rig::new("amguard", 0, &["amstop"]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("▣ 2 ") && screen.contains("amstop")
+        screen.contains("Stopped (1)") && screen.contains("amstop")
     });
     rig.tmux(&["send-keys", "-t", &pane, "-l", "--", "\x1b[B"]);
     rig.wait(&pane, WAIT, "Down selects the stopped row", |screen| {
@@ -502,7 +525,7 @@ fn click_selects_session_row() {
     let pane = rig.open_app();
     let home = rig.name.clone();
     let screen = rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("▣ 2 ") && screen.contains("amstop")
+        screen.contains("Stopped (1)") && screen.contains("amstop")
     });
     let (col, row) = sidebar_cell_of(&screen, "amstop").expect("the stopped row");
     rig.click(&pane, col, row);
@@ -544,22 +567,22 @@ fn click_composer_writes_then_row_returns_with_draft() {
     );
 }
 
-/// Ruling 5: a spacing row between sessions is a blank row and no-ops.
+/// Ruling 5: the blank row after the expanded session group no-ops.
 #[test]
 fn click_blank_row_noops() {
     let rig = Rig::new("amblank", 0, &["amstop"]);
     let pane = rig.open_app();
     let home = rig.name.clone();
     let screen = rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("▣ 2 ") && screen.contains("Enter writes")
+        screen.contains("Stopped (1)") && screen.contains("Enter writes")
     });
     let (col, row) = sidebar_cell_of(&screen, &home).expect("the home row");
     let rows: Vec<&str> = screen.lines().collect();
     assert!(
-        !rows[row + 2].contains(&home) && !rows[row + 2].contains("amstop"),
+        !rows[row + 3].contains(&home) && !rows[row + 3].contains("amstop"),
         "the target is a spacing row:\n{screen}"
     );
-    rig.click(&pane, col, row + 2);
+    rig.click(&pane, col, row + 3);
     std::thread::sleep(SETTLE);
     let screen = rig.screen(&pane);
     assert!(
@@ -582,7 +605,7 @@ fn click_more_row_noops() {
     let rig = Rig::new("ammore", 0, &stopped);
     let pane = rig.open_app();
     let screen = rig.wait(&pane, WAIT, "the windowed list", |screen| {
-        screen.contains("▣ 13 ") && screen.contains("more")
+        screen.contains("Stopped (12)") && screen.contains("more")
     });
     let (col, row) = sidebar_cell_of(&screen, "more").expect("the more row");
     rig.click(&pane, col, row);
@@ -635,7 +658,7 @@ fn wheel_over_sidebar_noops() {
     let pane = rig.open_app();
     let home = rig.name.clone();
     let screen = rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("▣ 2 ") && screen.contains("scrollprobe-newest")
+        screen.contains("Stopped (1)") && screen.contains("scrollprobe-newest")
     });
     let (col, row) = sidebar_cell_of(&screen, &home).expect("the home row");
     for _ in 0..3 {
@@ -662,7 +685,13 @@ fn narrow_clicks_hit_drawn_only() {
     let home = rig.name.clone();
     let address = format!("to {home}");
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("▣ 1 ")
+        screen.contains("Agents")
+            && screen.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.name)
+            })
     });
     rig.tmux(&["resize-window", "-t", &pane, "-x", "80", "-y", "24"]);
     let screen = rig.wait(&pane, WAIT, "the sidebar goes", |screen| {
@@ -680,7 +709,7 @@ fn tiny_clicks_noop() {
     let rig = Rig::new("amtiny", 0, &["amstop"]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("▣ 2 ")
+        screen.contains("Stopped (1)")
     });
     rig.tmux(&["resize-window", "-t", &pane, "-x", "30", "-y", "10"]);
     rig.wait(&pane, WAIT, "the needs-size note", |screen| {
@@ -691,7 +720,7 @@ fn tiny_clicks_noop() {
     std::thread::sleep(SETTLE);
     rig.tmux(&["resize-window", "-t", &pane, "-x", "160", "-y", "45"]);
     rig.wait(&pane, WAIT, "home still selected", |screen| {
-        screen.contains("▣ 2 ") && screen.contains("Enter writes")
+        screen.contains("Stopped (1)") && screen.contains("Enter writes")
     });
 }
 
@@ -701,7 +730,13 @@ fn live_app_enables_mouse_mode() {
     let rig = Rig::new("amflag", 0, &[]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("▣ 1 ")
+        screen.contains("Agents")
+            && screen.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.name)
+            })
     });
     let flag = rig.tmux(&["display-message", "-p", "-t", &pane, "#{mouse_any_flag}"]);
     assert_eq!(flag.trim(), "1", "mouse mode is on in the app pane");
@@ -758,7 +793,13 @@ fn live_app_mouse_mode_set_exact() {
         ),
     );
     rig.wait(&pane, WAIT, "first paint lists the session", |screen| {
-        screen.contains("▣ 1 ")
+        screen.contains("Agents")
+            && screen.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(&rig.name)
+            })
     });
     for (format, want) in [
         ("#{mouse_any_flag}", "1"),
@@ -772,7 +813,7 @@ fn live_app_mouse_mode_set_exact() {
     }
     rig.tmux(&["send-keys", "-t", &pane, "q", "q"]);
     rig.wait(&pane, WAIT, "the app quit", |screen| {
-        !screen.contains("▣ 1 ")
+        !screen.contains("Enter writes")
     });
     for format in ["#{mouse_any_flag}", "#{mouse_sgr_flag}"] {
         let got = rig.tmux(&["display-message", "-p", "-t", &pane, format]);
@@ -813,7 +854,7 @@ fn click_composer_on_stopped_row_noops() {
     let rig = Rig::new("amforeign", 0, &["amstop"]);
     let pane = rig.open_app();
     rig.wait(&pane, WAIT, "both rows listed", |screen| {
-        screen.contains("▣ 2 ")
+        screen.contains("Stopped (1)")
     });
     rig.tmux(&["send-keys", "-t", &pane, "2"]);
     let screen = rig.wait(

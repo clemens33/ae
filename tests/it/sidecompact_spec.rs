@@ -220,8 +220,8 @@ fn lines_with<'a>(lines: &'a [String], token: &str) -> Vec<&'a String> {
 // RED: single-line rows (A1)
 // ---------------------------------------------------------------------------
 
-/// RED A1: three sessions take rows 3,4,5 after the summary spacer;
-/// the Agents heading sits at row 7;
+/// RED A1: three sessions take rows 2,3,4 after the one-row summary spacer;
+/// the Agents heading sits at row 6;
 /// no session row carries a second line (no tally `·`, no reason text).
 #[test]
 fn session_rows_are_single_line_with_heading_right_below() {
@@ -243,16 +243,16 @@ fn session_rows_are_single_line_with_heading_right_below() {
         look: icons_on(),
     });
     let side = sidebar(&shot);
-    assert!(side[2].is_empty(), "summary spacer:\n{}", side[2]);
-    assert!(side[3].contains("platform"), "row 3:\n{}", side[3]);
-    assert!(side[4].contains("571"), "row 4:\n{}", side[4]);
-    assert!(side[5].contains("demo"), "row 5:\n{}", side[5]);
+    assert!(side[1].is_empty(), "summary spacer:\n{}", side[1]);
+    assert!(side[2].contains("platform"), "row 2:\n{}", side[2]);
+    assert!(side[3].contains("571"), "row 3:\n{}", side[3]);
+    assert!(side[4].contains("demo"), "row 4:\n{}", side[4]);
     assert!(
-        side[7].trim_start().starts_with("Agents"),
-        "heading at row 7:\n{}",
-        side[7]
+        side[6].trim_start().starts_with("Agents"),
+        "heading at row 6:\n{}",
+        side[6]
     );
-    for (y, line) in side.iter().enumerate().take(6).skip(3) {
+    for (y, line) in side.iter().enumerate().take(5).skip(2) {
         assert!(
             !line.contains('·'),
             "row {y} has no second-line text:\n{line}"
@@ -397,10 +397,12 @@ fn session_row_ends_with_its_tally() {
     assert!(row[0].ends_with("●1"), "right-aligned tally:\n{}", row[0]);
 }
 
-/// RED A4: a stopped session keeps mark+name with `stopped` on its one row;
+/// RED A4: once revealed, a stopped session keeps mark+name and `stopped` on one row;
 /// the old `not running` second line is gone.
 #[test]
 fn stopped_session_is_one_row() {
+    // This renderer fixture supplies already-visible rows. The app's default
+    // collapse and expansion are pinned by apppolish3's frozen acceptance tests.
     let mut fleet = fleet3("platform");
     fleet.rows.push(Row {
         name: "archives".to_owned(),
@@ -806,7 +808,8 @@ fn fleet60(home: &str, needy_last: bool) -> Fleet {
 }
 
 /// GUARD A10: a 60-session fleet keeps the selection visible, counts its
-/// `more` row, and keeps the needy arrow.
+/// `more` row, and keeps the needy arrow. Unknown seat counts retain the `+?`
+/// lower bound in the one-line summary; the session total leaves that summary.
 #[test]
 fn long_fleet_keeps_selection_counts_more_and_marks_needy() {
     let fleet = fleet60("svc-01", true);
@@ -828,10 +831,12 @@ fn long_fleet_keeps_selection_counts_more_and_marks_needy() {
     });
     let side = sidebar(&shot);
     assert!(side[0].contains('↓'), "needy arrow kept:\n{}", side[0]);
-    assert!(
-        side[0].contains("60") || side[1].contains("60"),
-        "fleet counted"
+    assert_eq!(
+        side[0].trim_end().strip_suffix('↓').map(str::trim),
+        Some("Agents 0+? · Working 0+? · Needs you 1"),
+        "unknown seat counts stay lower bounds; needy sessions stay counted"
     );
+    assert!(side[1].is_empty(), "one-row summary keeps its spacer");
     assert!(side.join("\n").contains("more"), "`more` row counted");
 
     let fleet = fleet60("svc-60", false);
@@ -877,7 +882,7 @@ fn tiny_frame_draws_no_sidebar() {
         look: icons_on(),
     });
     let all = shot.text.join("\n");
-    assert!(!all.contains("sessions"), "no summary band");
+    assert_eq!(shot.rule, 89, "no sidebar rule below the sidebar floor");
     assert!(!all.contains("Agents"), "no agents heading");
 }
 

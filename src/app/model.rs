@@ -182,6 +182,16 @@ pub(crate) struct ReaderOverlay {
     pub(crate) generation: u64,
 }
 
+/// The stopped sessions the sidebar's one group stands for: how many there
+/// are, whether the group is open and how many of those it holds back need
+/// the human.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Stopped {
+    pub(crate) total: usize,
+    pub(crate) open: bool,
+    pub(crate) hidden_needy: usize,
+}
+
 /// The browse state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Model {
@@ -207,6 +217,8 @@ pub struct Model {
     note: Option<String>,
     /// The sessions the sidebar marks unread; the App writes it each frame.
     unread: BTreeSet<String>,
+    /// The stopped group the sidebar draws; the App writes it each frame.
+    stopped: Stopped,
     /// The marked turn, by the fingerprint that names it across re-reads.
     turn: Option<u64>,
     /// How many times what the panels show has changed: a session, an overlay.
@@ -672,6 +684,16 @@ impl Model {
     /// Replace the sessions the sidebar marks unread.
     pub(crate) fn set_unread(&mut self, unread: BTreeSet<String>) {
         self.unread = unread;
+    }
+
+    /// Replace the stopped group the sidebar draws.
+    pub(crate) fn set_stopped(&mut self, stopped: Stopped) {
+        self.stopped = stopped;
+    }
+
+    /// The stopped group the sidebar draws.
+    pub(crate) fn stopped(&self) -> Stopped {
+        self.stopped
     }
 
     /// Whether the sidebar marks `name` unread.

@@ -105,6 +105,12 @@ impl Rig {
             );
         }
         (rig.app, rig.term) = (rig.app.trim().to_owned(), rig.term.trim().to_owned());
+        if !nested {
+            // The plain-terminal fixture records aeprobe without starting it.
+            // First read has no selection; reveal it, then select its row.
+            rig.wait("stopped group loaded", |s| s.contains("Stopped (1)"));
+            rig.type_at("z1");
+        }
         rig.wait("app drawn", |screen| screen.contains("CLIPPROBE"));
         rig
     }

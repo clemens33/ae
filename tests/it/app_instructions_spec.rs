@@ -219,6 +219,7 @@ fn instructions_selected_stopped_session_uses_its_local_source_and_every_roster_
     let files = [global, local.clone()];
     let originals = source_bytes(&files);
     let (pane, _) = rig.direct(160, 40, &rig.root.join("config"));
+    rig.reveal_stopped(&pane);
     let fleet = rig.wait(&pane, WAIT, "stopped session visible", |s| s.contains(name));
     let (row, line) = fleet
         .lines()

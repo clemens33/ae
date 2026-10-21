@@ -33,6 +33,7 @@ fn alive(rig: &Rig, pane: &str) {
 
 fn selected_stopped(rig: &Rig, pane: &str) {
     rig.stopped("zzzstopped");
+    rig.reveal_stopped(pane);
     rig.wait(pane, WAIT, "GUARD stopped card loaded", |s| {
         s.contains("zzzstopped")
     });

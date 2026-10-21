@@ -160,7 +160,17 @@ impl Rig {
 #[test]
 fn a_hand_started_app_never_execs_over_a_kept_draft_or_an_open_composer() {
     let rig = Rig::new("rxbusy", true);
-    rig.wait("hand-started app paints", |s| s.contains("▣ 1 "));
+    let session = rig.tool.dir.file_name().unwrap().to_string_lossy();
+    rig.wait("hand-started app paints", |s| {
+        s.contains("Agents ")
+            && s.lines().skip(2).any(|row| {
+                row.chars()
+                    .skip(4)
+                    .collect::<String>()
+                    .starts_with(session.as_ref())
+                    && row.contains('│')
+            })
+    });
     rig.keys(&["i"]);
     rig.wait("composer opens", writing);
     rig.keys(&["-l", "--", "draft content"]);

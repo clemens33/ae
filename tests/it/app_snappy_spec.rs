@@ -241,12 +241,27 @@ impl Rig {
         }
     }
 
+    // Rig::new creates exactly one running home; seed() writes every sibling's
+    // metadata without a tmux session, so all count - 1 siblings are stopped.
     fn ready(&self, pane: &str, count: usize) -> String {
-        self.wait(pane, WAIT, "fixture fleet and home lane drawn", |screen| {
-            screen.contains(&format!("▣ {count} "))
+        let first = self.wait(pane, WAIT, "fixture fleet and home lane drawn", |screen| {
+            screen.contains(if count > 1 { "Stopped (" } else { "Agents" })
                 && header_is(screen, &self.home)
                 && screen.contains(&format!("{}-newest-39", self.home))
-        })
+        });
+        if count > 1 && !first.contains("▾ Stopped (") && !first.contains("v Stopped (") {
+            self.literal(pane, "z");
+            return self.wait(
+                pane,
+                WAIT,
+                "stopped fixtures explicitly expanded",
+                |screen| {
+                    screen.contains(&format!("Stopped ({})", count - 1))
+                        && (screen.contains("▾ Stopped (") || screen.contains("v Stopped ("))
+                },
+            );
+        }
+        first
     }
 
     fn keys(&self, pane: &str, keys: &str) {

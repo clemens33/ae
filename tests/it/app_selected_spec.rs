@@ -308,11 +308,20 @@ impl Rig {
             &self.s,
             &["resize-window", "-t", &pane, "-x", "160", "-y", "45"],
         );
-        let sessions = format!("▣ {count} ");
-        self.wait(&self.s, &pane, "GUARD target rows loaded", |screen| {
-            screen.contains(&sessions)
-                && (count == 0 || (screen.contains("Agents") && screen.contains(&self.t.name)))
+        let sessions = if count == 0 { "No sessions." } else { "Agents" };
+        let first = self.wait(&self.s, &pane, "GUARD target rows loaded", |screen| {
+            screen.contains(sessions)
+                && (count == 0
+                    || (card_position(screen, &self.s.name).is_some()
+                        && (card_position(screen, &self.t.name).is_some()
+                            || screen.contains("Stopped (1)"))))
         });
+        if first.contains("▸ Stopped (") || first.contains("> Stopped (") {
+            self.raw(&self.s, &pane, "z");
+            self.wait(&self.s, &pane, "GUARD stopped target revealed", |s| {
+                card_position(s, &self.t.name).is_some()
+            });
+        }
         (pane, gates)
     }
 
@@ -665,12 +674,12 @@ fn selecting_a_needy_card_ignores_its_attention_summary() {
     rig.select(&pane, &rig.t);
     fs::write(rig.s.dir.join("events.jsonl"), format!("{{\"ts\":\"{}\",\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"waiting-user\",\"summary\":\"review required\"}}\n", ae::time::Timestamp::now())).expect("fixture attention");
     rig.wait(&rig.s, &pane, "GUARD home attention summary", |s| {
-        s.lines().nth(1).is_some_and(|row| {
+        s.lines().next().is_some_and(|row| {
             row.chars()
                 .take(44)
                 .collect::<String>()
                 .trim_end()
-                .ends_with("⚠ 1 needs you")
+                .ends_with("Needs you 1")
         })
     });
     rig.select(&pane, &rig.s);
@@ -1669,7 +1678,7 @@ fn a_positive_absent_name_drops_its_draft_once_and_a_new_incarnation_never_inher
     );
     rig.raw(&rig.s, &pane, "\x1b");
     rig.wait(&rig.s, &pane, "GUARD returned T is listed", |s| {
-        s.contains("▣ 2 ") && s.contains(&rig.t.name)
+        s.contains("Agents") && s.contains(&rig.t.name)
     });
     rig.select(&pane, &rig.t);
     let frame = rig.enter(&pane, &rig.t, false);
@@ -1688,7 +1697,7 @@ fn no_home_and_no_selected_session_remain_read_only_with_a_hidden_cursor() {
     }
     let (pane, _) = rig.app_count("empty", false, 0);
     let frame = rig.wait(&rig.s, &pane, "B2 no selected target is read-only", |s| {
-        s.contains("▣ 0 ") && s.contains("read-only ·") && !s.contains("Enter writes")
+        s.contains("No sessions.") && s.contains("read-only ·") && !s.contains("Enter writes")
     });
     assert!(!frame.contains("(not home)"));
     assert_eq!(cursor(&rig, &rig.s, &pane).0, 0);

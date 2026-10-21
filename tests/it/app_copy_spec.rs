@@ -50,13 +50,17 @@ fn has_marked_body(screen: &str, body: &str) -> bool {
 }
 
 fn cell_of(screen: &str, needle: &str) -> Option<(usize, usize)> {
-    screen.lines().enumerate().find_map(|(row, line)| {
-        line.chars()
-            .collect::<Vec<_>>()
-            .windows(needle.chars().count())
-            .position(|w| w.iter().collect::<String>() == needle)
-            .map(|col| (col, row))
-    })
+    screen
+        .lines()
+        .enumerate()
+        .filter(|(row, _)| *row > 0 || !needle.starts_with("Agents"))
+        .find_map(|(row, line)| {
+            line.chars()
+                .collect::<Vec<_>>()
+                .windows(needle.chars().count())
+                .position(|w| w.iter().collect::<String>() == needle)
+                .map(|col| (col, row))
+        })
 }
 
 struct Rig {
@@ -503,6 +507,11 @@ fn turn_navigation_bounds_and_settings_retention() {
 fn session_switch_clears_mark() {
     let rig = Rig::with_stopped("session-switch", &["turn zero"], &["sibling"]);
     let app = rig.open();
+    rig.wait_screen(&app, "stopped sibling group loaded", |s| {
+        s.contains("Stopped (1)")
+    });
+    rig.raw(&app, "z");
+    rig.wait_screen(&app, "stopped sibling revealed", |s| s.contains("sibling"));
     let _viewer = rig.attach(&app);
 
     rig.wait_screen(&app, "turn zero drawn", |s| s.contains("turn zero"));

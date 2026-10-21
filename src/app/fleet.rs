@@ -84,6 +84,13 @@ pub enum Line2 {
     },
 }
 
+impl Row {
+    /// Whether this row is a stopped session.
+    pub(super) fn is_stopped(&self) -> bool {
+        matches!(self.counts, Counts::Stopped)
+    }
+}
+
 impl Fleet {
     /// These rows in the order `names` lists them, any row it omits after them
     /// in its own order, `index` renumbered to the new places.
@@ -95,10 +102,44 @@ impl Fleet {
                 .position(|name| *name == row.name)
                 .unwrap_or(usize::MAX)
         });
+        self.renumber();
+        self
+    }
+
+    /// This fleet without its stopped sessions, `index` renumbered, and those
+    /// rows apart in their order. A home among them is no longer the fleet's.
+    #[must_use]
+    pub(super) fn without_stopped(mut self) -> (Self, Vec<Row>) {
+        let (stopped, running): (Vec<Row>, Vec<Row>) =
+            self.rows.into_iter().partition(Row::is_stopped);
+        self.rows = running;
+        self.renumber();
+        if self
+            .home
+            .as_deref()
+            .is_some_and(|home| stopped.iter().any(|row| row.name == home))
+        {
+            self.home = None;
+        }
+        (self, stopped)
+    }
+
+    /// This fleet with `stopped` rows after its own, `index` renumbered, and
+    /// `home` its home again when a row of the fleet is it.
+    #[must_use]
+    pub(super) fn with_stopped(mut self, stopped: Vec<Row>, home: Option<&str>) -> Self {
+        self.rows.extend(stopped);
+        self.renumber();
+        self.home = home
+            .filter(|home| self.rows.iter().any(|row| row.name == *home))
+            .map(str::to_owned);
+        self
+    }
+
+    fn renumber(&mut self) {
         for (at, row) in self.rows.iter_mut().enumerate() {
             row.index = at + 1;
         }
-        self
     }
 }
 
@@ -303,8 +344,10 @@ pub(crate) fn micros_age(micros: Option<i64>, now: Timestamp) -> Option<i64> {
     micros.map(|micros| now.epoch().saturating_sub(micros / 1_000_000).max(0))
 }
 
-/// The whole fleet in numbers for the header; `unknown` makes `agents` and
-/// `working` lower bounds (a running session published no seat facts).
+/// The whole fleet in numbers for the header; `agents` are the live seats of the
+/// running sessions, a stopped session's saved seats and a dead seat not among
+/// them; `unknown` makes `agents` and `working` lower bounds (a running session
+/// published no seat facts).
 #[derive(Debug, Default)]
 pub(super) struct Summary {
     pub agents: usize,
@@ -318,18 +361,18 @@ pub(super) fn summary(fleet: &Fleet) -> Summary {
     let mut sum = Summary::default();
     for row in &fleet.rows {
         sum.needy += usize::from(row.needy);
-        match (&row.counts, &row.line2) {
-            (Counts::Marks(marks), _) => marks.iter().for_each(|(mark, _, count)| {
-                sum.agents = sum.agents.saturating_add(*count);
-                sum.working = sum
-                    .working
-                    .saturating_add(count * usize::from(*mark == Mark::Working));
-            }),
-            (Counts::Stopped, Line2::NotRunning { seats, .. }) => {
-                sum.agents = sum.agents.saturating_add(*seats);
-            }
-            (Counts::Unknown, _) => sum.unknown = true,
-            (Counts::Stopped, _) => {}
+        match &row.counts {
+            Counts::Marks(marks) => marks
+                .iter()
+                .filter(|(mark, _, _)| *mark != Mark::Dead)
+                .for_each(|(mark, _, count)| {
+                    sum.agents = sum.agents.saturating_add(*count);
+                    sum.working = sum
+                        .working
+                        .saturating_add(count * usize::from(*mark == Mark::Working));
+                }),
+            Counts::Unknown => sum.unknown = true,
+            Counts::Stopped => {}
         }
     }
     sum

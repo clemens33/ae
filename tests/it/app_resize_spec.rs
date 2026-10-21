@@ -233,20 +233,34 @@ impl Rig {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        self.tmux(&[
-            "list-panes",
-            "-s",
-            "-t",
-            &self.name,
-            "-F",
-            "#{pane_id}|#{@ae_console}",
-        ])
-        .lines()
-        .find_map(|row| {
-            let (pane, stamp) = row.split_once('|')?;
-            (stamp == UUID).then(|| pane.to_owned())
-        })
-        .expect("the stamped app window")
+        let pane = self
+            .tmux(&[
+                "list-panes",
+                "-s",
+                "-t",
+                &self.name,
+                "-F",
+                "#{pane_id}|#{@ae_console}",
+            ])
+            .lines()
+            .find_map(|row| {
+                let (pane, stamp) = row.split_once('|')?;
+                (stamp == UUID).then(|| pane.to_owned())
+            })
+            .expect("the stamped app window");
+        let first = self.wait(&pane, WAIT, "initial app frame", |screen| {
+            screen.contains("Agents") && screen.contains("Enter writes")
+        });
+        if first.contains("Stopped (") {
+            self.tmux(&["send-keys", "-t", &pane, "-l", "--", "z"]);
+            self.wait(
+                &pane,
+                WAIT,
+                "stopped fixtures explicitly expanded",
+                |screen| screen.contains("▾ Stopped (") || screen.contains("v Stopped ("),
+            );
+        }
+        pane
     }
 
     fn screen(&self, pane: &str) -> String {
@@ -387,13 +401,17 @@ fn horizontal_rule(screen: &str) -> Option<usize> {
 }
 
 fn cell_of(screen: &str, needle: &str) -> Option<(usize, usize)> {
-    screen.lines().enumerate().find_map(|(row, line)| {
-        line.chars()
-            .collect::<Vec<_>>()
-            .windows(needle.chars().count())
-            .position(|cells| cells.iter().collect::<String>() == needle)
-            .map(|col| (col, row))
-    })
+    screen
+        .lines()
+        .enumerate()
+        .filter(|(row, _)| *row > 0 || !needle.starts_with("Agents"))
+        .find_map(|(row, line)| {
+            line.chars()
+                .collect::<Vec<_>>()
+                .windows(needle.chars().count())
+                .position(|cells| cells.iter().collect::<String>() == needle)
+                .map(|col| (col, row))
+        })
 }
 
 fn quote(text: &str) -> String {
@@ -453,8 +471,8 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     let pane = rig.open_app();
     assert_eq!(
         horizontal_rule(&rig.ready(&pane)),
-        Some(6),
-        "one one-row session: list border at 3 + 1 + 2"
+        Some(5),
+        "one one-row session: list border at 2 + 1 + 2"
     );
     rig.grab_horizontal(&pane, 20);
     let screen = rig.horizontal(&pane, 20);
@@ -462,9 +480,9 @@ fn live_horizontal_drag_reserves_blank_rows_then_clamps() {
     assert_eq!(tab, 19);
     assert!(cell_of(&screen, "No seat facts").is_some_and(|(_, row)| row > 20));
     rig.motion(&pane, 1, 44);
-    rig.horizontal(&pane, 37); // list drag budget stays; spacer takes one body row.
+    rig.horizontal(&pane, 36); // The saved summary row goes to the body.
     rig.motion(&pane, 1, 0);
-    rig.horizontal(&pane, 6); // one session needs one list row, no more row.
+    rig.horizontal(&pane, 5); // one session needs one list row, no more row.
     rig.release(&pane, 1, 0);
 }
 
@@ -476,22 +494,22 @@ fn live_horizontal_minimum_keeps_one_session_and_more_row() {
     assert_eq!(
         horizontal_rule(&screen),
         Some(18),
-        "undragged default lists all 13 one-row sessions: border at 3 + 13 + 2"
+        "undragged default: 13 sessions plus stopped toggle at 2 + 14 + 2"
     );
     rig.grab_horizontal(&pane, 0);
     // Two list rows is the least with several sessions: one session and the
-    // more row, so the border stands at 3 + 2 + 2.
-    let screen = rig.horizontal(&pane, 7);
+    // more row, so the border stands at 2 + 2 + 2.
+    let screen = rig.horizontal(&pane, 6);
     assert!(
         screen
             .lines()
-            .nth(3)
+            .nth(2)
             .is_some_and(|row| row.contains(&rig.name))
     );
     assert!(
         screen
             .lines()
-            .nth(4)
+            .nth(3)
             .is_some_and(|row| row.contains("more"))
     );
     assert!(screen.contains("No seat facts"), "the body remains usable");
@@ -542,7 +560,7 @@ fn live_chosen_sizes_survive_shrink_hidden_sidebar_and_growth() {
     // Resize is not input: active drag continues, display clamps only.
     rig.resize(&pane, 90, 20);
     let screen = rig.vertical(&pane, 49);
-    assert_eq!(horizontal_rule(&screen), Some(12));
+    assert_eq!(horizontal_rule(&screen), Some(11));
     rig.resize(&pane, 160, 45);
     let screen = rig.vertical(&pane, 66);
     assert_eq!(horizontal_rule(&screen), Some(30));

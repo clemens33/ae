@@ -63,7 +63,13 @@ impl Hand {
             .to_owned();
         rig.tmux(&["set-window-option", "-t", &pane, "remain-on-exit", "on"]);
         rig.wait(&pane, WAIT, "GUARD manual app paints", |s| {
-            s.contains("▣ 1 ")
+            s.contains("Agents")
+                && s.lines().skip(2).any(|row| {
+                    row.chars()
+                        .skip(4)
+                        .collect::<String>()
+                        .starts_with(&rig.session)
+                })
         });
         Self { rig, pane }
     }

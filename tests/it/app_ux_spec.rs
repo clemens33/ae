@@ -71,14 +71,19 @@ fn row(buf: &Buffer, y: u16) -> String {
 }
 
 #[test]
-fn attention_draw_keeps_session_count_and_next_need_cell_in_both_looks() {
+fn attention_draw_keeps_live_counts_and_next_need_cell_in_both_looks() {
     for mode in ["on", "off"] {
         let buf = painted(
             &fleet(&[0, 1, 2, 3, 4, 5, 6]),
             &Look::read(mode, "", mode, "off"),
         );
-        let glyph = if mode == "on" { "▣" } else { "#" };
-        assert!(row(&buf, 0).starts_with(&format!("  {glyph} 10 ")));
+        // Ten rows publish no seats; seven need the human. At 160 columns
+        // the default 44-cell sidebar has room for the full-word rung.
+        assert_eq!(
+            row(&buf, 0).chars().take(44).collect::<String>().trim(),
+            "Agents 0 · Working 0 · Needs you 7"
+        );
+        assert!(row(&buf, 1).chars().take(44).all(|ch| ch == ' '));
         assert_eq!(buf[(40, 0)].symbol(), " ", "lone key marker removed");
         assert_eq!(buf[(41, 0)].symbol(), " ");
     }

@@ -268,7 +268,13 @@ impl Rig {
         let pane = self.tmux(&refs).trim().to_owned();
         assert!(pane.starts_with('%'), "fixture app pane: {pane}");
         self.wait(&pane, "GUARD outside app drew home", |s| {
-            s.contains("▣ 1 ") && s.contains(&self.home)
+            s.contains("Agents")
+                && s.lines().skip(2).any(|row| {
+                    row.chars()
+                        .skip(4)
+                        .collect::<String>()
+                        .starts_with(&self.home)
+                })
         });
         (pane, gates)
     }
