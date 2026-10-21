@@ -1485,7 +1485,8 @@ rust-vet:
 # working directory under the checkout, and when what `cargo clean --dry-run
 # --verbose` says for a tree is not provable: every non-empty line of its STDOUT
 # must be an absolute path inside the tree and link-free, and its stderr must hold
-# exactly one valid `Summary` line (a genuine zero-removal run has both, empty).
+# exactly one valid `Summary` line (a genuine zero-removal run has an empty stdout
+# and `Summary 0 files`).
 # No `rm`, no glob: cargo does the removal, and the two guard trees are named.
 # `ps` is required; `lsof` is used when installed, and without it the run says so
 # and judges by argv alone. A lane between phases, with no child alive, is
@@ -1604,7 +1605,8 @@ rust-prune apply="":
     # absolute path inside its root with no link on the way (dot segments refused); an
     # unreadable line is a refusal, never skipped. Stderr is diagnostics only, and
     # must hold exactly one valid Summary (`Summary <n> file[s][, <size> total]`) that
-    # does not claim files while listing none; a zero-removal run has both, empty.
+    # does not claim files while listing none; a zero-removal run has an empty stdout
+    # and `Summary 0 files`.
     # DFS output repeats parents, so the last proven directory spares re-walking them.
     prove() {
         local label="$1" tree="$2" top="$3" raw paths diag rc line dir ok="" d sum="" n="" rest word summaries=0 npaths=0 valid=""
