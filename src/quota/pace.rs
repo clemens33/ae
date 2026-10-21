@@ -744,6 +744,7 @@ mod tests {
             summary: None,
             policy,
             notes: Vec::new(),
+            plan: None,
         }
     }
 

@@ -2003,3 +2003,85 @@ fn unknown_rollouts_failing_for_the_same_reason_are_not_one_scope() {
         "each row names the seat it stands for: {text}"
     );
 }
+
+/// A reported plan names the scope and changes no other cell: the plan-less
+/// golden is the same table once the plan's own tokens are removed.
+#[test]
+fn a_reported_plan_names_the_scope_and_changes_no_number() {
+    let root = rig("claude-plan");
+    std::fs::write(
+        root.join(".claude.json"),
+        include_bytes!("../fixtures/quota/claude-plan.json"),
+    )
+    .expect("plan cache");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(text.contains("(reported 44m ago)"), "{text}");
+    assert_eq!(
+        text.matches("plan:").count(),
+        1,
+        "the custom home reports no plan"
+    );
+
+    let tokens = |text: &str| {
+        text.split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<String>>()
+    };
+    let mut got = tokens(&text);
+    for word in "· plan: claude max 20x (reported 44m ago)".split_whitespace() {
+        let at = got
+            .iter()
+            .position(|candidate| candidate.as_str() == word)
+            .expect("the plan stands whole in the scope cell");
+        got.remove(at);
+    }
+    got.sort_unstable();
+    let mut plain = tokens(include_str!("../fixtures/quota/expected.stdout"));
+    plain.sort_unstable();
+    assert_eq!(got, plain, "a plan adds its label and no number");
+}
+
+/// The five named keys are the whole of the read: a sibling identity field is
+/// never echoed, a field the gate refuses is dropped alone, and a file ae
+/// refuses to finish reading names no plan at all.
+#[test]
+fn a_hostile_or_oversized_settings_file_yields_no_plan_and_no_sentinel() {
+    let root = rig("claude-plan-hostile");
+    let hostile = include_str!("../fixtures/quota/claude-plan.json")
+        .replace(
+            "\"organizationType\": \"claude_max\"",
+            "\"organizationType\": \"claude max 20x\", \
+             \"accountUuid\": \"SENTINEL-UUID-6f\", \
+             \"emailAddress\": \"SENTINEL-EMAIL@example.invalid\", \
+             \"organizationName\": \"SENTINEL ORGANIZATION\"",
+        )
+        .replace(
+            "\"organizationRateLimitTier\": \"default_claude_max_20x\"",
+            "\"organizationRateLimitTier\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        )
+        .replace(
+            "\"accountUuid\": \"[REDACTED]\"",
+            "\"accountUuid\": \"SENTINEL-UUID-6f\"",
+        );
+    std::fs::write(root.join(".claude.json"), hostile).expect("hostile cache");
+    let text = run_quota(&root);
+    assert_eq!(
+        text,
+        include_str!("../fixtures/quota/expected.stdout"),
+        "nothing survives the gate, so the plan-less table stands"
+    );
+    for sentinel in ["SENTINEL", "claude max 20x", "plan:"] {
+        assert!(!text.contains(sentinel), "{sentinel} in {text}");
+    }
+
+    let oversized = vec![b'{'; 4 * 1024 * 1024 + 1];
+    std::fs::write(root.join(".claude.json"), oversized).expect("oversized cache");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(!text.contains("plan:"), "{text}");
+    // A file past the cap fails the read outright; `truncated` is the budget's
+    // word, not the cap's.
+    assert!(text.contains("read-error"), "{text}");
+}

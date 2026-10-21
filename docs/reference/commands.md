@@ -635,7 +635,8 @@ provenance.
 The dialog is one table, laid out by the same pure formatter `ae app`'s Settings > Quota
 tab uses (`src/quota/view.rs`). A dim column header (`WINDOW`, an 8-cell bar, `USED`,
 `COUNTS`, `NOTE`, `RESETS`, `SEEN`) sits above each scope: a head row naming the client
-(`claude · cc`), its profiles and any account fact (`credits 12.40`, `spend cap reached`),
+(`claude · cc`), its profiles and any account fact (`credits 12.40`, `spend cap reached`,
+`plan: claude max 20x (reported 44m ago)`),
 then one indented row per window. A window's name is plain (`Session 5h`, `Weekly 7d`,
 `Weekly Fable 7d`; a qualified session keeps its qualifier). The bar is filled to the
 judged percentage in eighths (`█`/`░`, or `#`/`.` when the session's icons are off), `USED`
@@ -1036,6 +1037,19 @@ rollout. The settings quota dialog groups by the same rule, so the two surfaces 
 whether something is one account. On a short client the dialog folds calm windows first and admits the dropped count in one inert
 row; low, critical, stale and unreadable rows never fold. Only a client too small for the table
 that remains refuses — and every refusal is told on the invoking client.
+
+A scope whose client reports its own plan shows it beside the scope, as `plan: claude max 20x`
+followed by the age of that report (`(reported 44m ago)`, or `(reported)` when the report
+carries no usable stamp). Claude Code's `.claude.json` supplies it: ae reads only
+`oauthAccount.organizationType`, `organizationRateLimitTier`, `userRateLimitTier` and `seatTier`,
+each accepted only as a plain bounded token, and `profileFetchedAt`, accepted only as a positive
+integral JSON millisecond count that dates the report, and shows the organization, seat and user
+tiers beside the plan when they disagree (`claude team (org max 20x, seat team_tier_1,
+user max 5x)`). A field it cannot read is dropped, and a file it cannot read at all, or one too
+large to read whole, names no plan. The label is the vendor's own billing name: it is never a
+capacity, a bucket size or a safe pace, so `EFFECTIVE` and `PACE` still decide, and no plan
+changes a level, an advisory or an auto reseat. The other tools keep their own plan words in
+their bucket qualifier (`codex (pro)`, grok's and Muse's tiers).
 
 A `manual_resets` declaration belongs to its `[clients]` label, so only that label's OWN scope may
 spend it, and only when that scope proved a source. A profile that reaches the same label under a

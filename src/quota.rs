@@ -766,6 +766,9 @@ pub(crate) struct Group {
     pub(crate) policy: Policy,
     /// Operator-facing notes about this scope's own declaration.
     pub(crate) notes: Vec<String>,
+    /// The plan the account reports, when its client states one. A label to
+    /// show: it is no part of [`Policy`] and no verdict reads it.
+    pub(crate) plan: Option<claude::Plan>,
 }
 
 /// One bounded read of every configured quota scope.
@@ -1233,7 +1236,7 @@ impl SettingsScope {
             .map(|profile| settings_cell(profile, SETTINGS_SCOPE_MAX))
             .collect::<Vec<_>>()
             .join(" ");
-        let account = self.account_words();
+        let account = self.account_words(now);
         let incomplete = self
             .statuses
             .iter()
@@ -1271,8 +1274,21 @@ impl SettingsScope {
         }
     }
 
-    /// The account facts that belong to the scope, not to one window.
-    fn account_words(&self) -> Option<String> {
+    /// The account facts that belong to the scope, not to one window: the
+    /// credit state, then the plan the client reports.
+    fn account_words(&self, now: i64) -> Option<String> {
+        let plan = self
+            .group
+            .plan
+            .as_ref()
+            .and_then(|plan| plan_words(plan, now));
+        match (self.credit_words(), plan) {
+            (Some(credits), Some(plan)) => Some(format!("{credits} · {plan}")),
+            (credits, plan) => credits.or(plan),
+        }
+    }
+
+    fn credit_words(&self) -> Option<String> {
         let credits = &self.policy.account.credits;
         if self.policy.spend_capped() {
             return Some(match credits {
@@ -1690,7 +1706,7 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
         let quota = scope.tool.adapter().quota;
         match quota.source {
             QuotaSource::ClaudeCache => {
-                let observed = claude_observed(scope, inputs, &mut budget);
+                let (observed, plan) = claude_observed(scope, inputs, &mut budget);
                 let group = Group {
                     profiles: scope.profiles.clone(),
                     tool: scope.tool,
@@ -1704,6 +1720,7 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
                     summary: None,
                     policy: Policy::new(scope.manual_resets, observed.account),
                     notes: scope.notes.clone(),
+                    plan,
                 };
                 rendered.push(group.clone());
                 groups.push(group);
@@ -1754,6 +1771,7 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
                     summary: None,
                     policy: Policy::new(scope.manual_resets, observed.account),
                     notes,
+                    plan: None,
                 };
                 rendered.push(group.clone());
                 groups.push(group);
@@ -1802,6 +1820,7 @@ fn go_group(scope: &Scope, inputs: &Inputs<'_>, series: &mut pace::SeriesSet) ->
         summary: None,
         policy: Policy::new(scope.manual_resets, observed.account),
         notes: scope.notes.iter().cloned().chain(notes).collect(),
+        plan: None,
     }
 }
 
@@ -3123,15 +3142,19 @@ pub(crate) fn publish_feed(
 }
 
 /// A Claude scope's windows: its `/usage` cache with its statusline feed beside it.
-fn claude_observed(scope: &Scope, inputs: &Inputs<'_>, budget: &mut Budget) -> Observed {
-    let read = read_claude(scope, inputs.now, budget);
+fn claude_observed(
+    scope: &Scope,
+    inputs: &Inputs<'_>,
+    budget: &mut Budget,
+) -> (Observed, Option<claude::Plan>) {
+    let (read, plan) = read_claude(scope, inputs.now, budget);
     let fed = read_feed(
         inputs.sessions,
         scope.source_key.as_deref(),
         inputs.now,
         budget,
     );
-    rows_or_placeholder(with_feed(read, fed))
+    (rows_or_placeholder(with_feed(read, fed)), plan)
 }
 
 /// The windows this scope's statusline feed recorded, judged at `now`. A
@@ -3290,24 +3313,29 @@ fn merge_declaration(scope: &mut Scope, declaration: &Declaration) {
     }
 }
 
-fn read_claude(scope: &Scope, now: i64, budget: &mut Budget) -> ReadRows {
+fn read_claude(scope: &Scope, now: i64, budget: &mut Budget) -> (ReadRows, Option<claude::Plan>) {
     let Some(path) = scope.source.as_deref() else {
-        return ReadRows::Missing;
+        return (ReadRows::Missing, None);
     };
     let bytes = match bounded_whole_file(path, CLAUDE_MAX_BYTES, budget) {
         Ok(Bounded::Ready(Some(bytes))) => bytes,
-        Ok(Bounded::Ready(None)) => return ReadRows::Missing,
-        Ok(Bounded::Truncated) => return ReadRows::Truncated,
-        Err(_) => return ReadRows::Failed,
+        Ok(Bounded::Ready(None)) => return (ReadRows::Missing, None),
+        Ok(Bounded::Truncated) => return (ReadRows::Truncated, None),
+        Err(_) => return (ReadRows::Failed, None),
     };
     match claude::parse(&bytes, now) {
-        Ok(Some(snapshot)) if !snapshot.rows.is_empty() => ReadRows::Rows(Observed {
-            rows: snapshot.rows,
-            account: Account::default(),
-            series: Vec::new(),
-        }),
-        Ok(_) => ReadRows::Missing,
-        Err(_) => ReadRows::Failed,
+        Ok(parsed) => match parsed.snapshot {
+            Some(snapshot) if !snapshot.rows.is_empty() => (
+                ReadRows::Rows(Observed {
+                    rows: snapshot.rows,
+                    account: Account::default(),
+                    series: Vec::new(),
+                }),
+                parsed.plan,
+            ),
+            _ => (ReadRows::Missing, parsed.plan),
+        },
+        Err(_) => (ReadRows::Failed, None),
     }
 }
 
@@ -3593,6 +3621,7 @@ fn codex_groups(
                 summary: None,
                 policy: Policy::new(scope.manual_resets, read.account),
                 notes: scope.notes.clone(),
+                plan: None,
             },
             observed,
         });
@@ -3728,6 +3757,7 @@ fn summarize_codex_groups(
             summary: None,
             policy: Policy::new(scope.manual_resets, Account::default()),
             notes: scope.notes.clone(),
+            plan: None,
         });
     }
     let summary_status = if truncated {
@@ -3760,6 +3790,7 @@ fn summarize_codex_groups(
                 not_read: truncated && shown == 0,
                 status: summary_status,
             }),
+            plan: None,
         });
     }
     groups
@@ -3840,7 +3871,7 @@ fn scope_identity(group: &Group, home: Option<&Path>) -> String {
     }
 }
 
-fn scope_label(group: &Group, home: Option<&Path>) -> String {
+fn scope_label(group: &Group, home: Option<&Path>, now: i64) -> String {
     let mut label = format!("{} · {}", group.tool.as_str(), scope_identity(group, home));
     if group.tool.adapter().quota.source == QuotaSource::CodexRollouts {
         label.push_str(" · unidentified");
@@ -3848,7 +3879,22 @@ fn scope_label(group: &Group, home: Option<&Path>) -> String {
             let _ = write!(label, " ({owner})");
         }
     }
+    if let Some(words) = group.plan.as_ref().and_then(|plan| plan_words(plan, now)) {
+        let _ = write!(label, " · {words}");
+    }
     label
+}
+
+/// The plan an account reports, as the scope's label draws it: the words the
+/// client states and the age of that report, or just that it is reported when
+/// the stamp is missing or lies in the future. A name, never a capacity.
+fn plan_words(plan: &claude::Plan, now: i64) -> Option<String> {
+    let label = plan.label()?;
+    let reported = stated_observed_at(plan.fetched_at, now).map_or_else(
+        || "reported".to_owned(),
+        |at| format!("reported {}", age_label(now - at)),
+    );
+    Some(sanitize_cell(&format!("plan: {label} ({reported})")))
 }
 
 fn short_path(path: &Path, home: Option<&Path>) -> String {
@@ -3982,7 +4028,7 @@ fn render_with_pace<'a>(
                     String::new()
                 },
                 if index == 0 {
-                    scope_label(group, home)
+                    scope_label(group, home, now)
                 } else {
                     String::new()
                 },
@@ -4769,6 +4815,7 @@ mod tests {
             summary: None,
             policy: Policy::default(),
             notes: Vec::new(),
+            plan: None,
         };
         let unproven_a = group(None, "rollout-a", "session:lead");
         let unproven_b = group(None, "rollout-b", "session:rev");
@@ -5213,7 +5260,9 @@ mod tests {
                 leg: false,
                 go: false,
             };
-            match read_claude(&scope, 1_001, &mut Budget::new()) {
+            let (read, plan) = read_claude(&scope, 1_001, &mut Budget::new());
+            assert!(plan.is_none(), "this cache reports no plan");
+            match read {
                 ReadRows::Rows(observed) => observed
                     .rows
                     .first()
@@ -5325,6 +5374,7 @@ mod tests {
             summary: None,
             policy: Policy::new(manual_resets, Account::default()),
             notes: Vec::new(),
+            plan: None,
         }
     }
 
@@ -5363,6 +5413,7 @@ mod tests {
             summary: None,
             policy: Policy::default(),
             notes: Vec::new(),
+            plan: None,
         }
     }
 
@@ -7042,5 +7093,125 @@ mod tests {
         assert!(words.contains("muse usage limit reached"), "{words}");
         assert!(words.contains("limit-derived"), "{words}");
         assert!(words.contains(Gap::Unrecorded.words()), "{words}");
+    }
+
+    fn plan_max_20x(fetched_at: Option<i64>) -> super::claude::Plan {
+        super::claude::Plan {
+            organization_type: Some("claude_max".to_owned()),
+            organization_rate_limit_tier: Some("default_claude_max_20x".to_owned()),
+            user_rate_limit_tier: None,
+            seat_tier: None,
+            fetched_at,
+        }
+    }
+
+    /// The plan cell is the ONE difference a reported plan may make: the
+    /// labelled scope cell, and the age `profileFetchedAt` supplies. A stamp in
+    /// the future or none at all says `reported` and no age, because ae never
+    /// quotes a moment it cannot place.
+    #[test]
+    fn a_plan_cell_names_the_scope_and_nothing_else() {
+        let mut group = unusable_claude_group(10_000, Some(9_000));
+        assert_eq!(
+            super::scope_label(&group, None, 10_000),
+            "claude · /tmp/mic/.claude-mic"
+        );
+
+        group.plan = Some(plan_max_20x(Some(9_000)));
+        assert_eq!(
+            super::scope_label(&group, None, 10_000),
+            "claude · /tmp/mic/.claude-mic · plan: claude max 20x (reported 16m ago)"
+        );
+
+        group.plan = Some(plan_max_20x(Some(20_000)));
+        assert_eq!(
+            super::scope_label(&group, None, 10_000),
+            "claude · /tmp/mic/.claude-mic · plan: claude max 20x (reported)"
+        );
+
+        group.plan = Some(plan_max_20x(None));
+        assert_eq!(
+            super::scope_label(&group, None, 10_000),
+            "claude · /tmp/mic/.claude-mic · plan: claude max 20x (reported)"
+        );
+    }
+
+    /// Whatever the wrapping does, the plan contributes its own tokens and not
+    /// one cell more: every other token in the table is the plan-less table's.
+    #[test]
+    fn a_reported_plan_adds_one_scope_label_and_no_verdict() {
+        let mut group = unusable_claude_group(10_000, Some(9_000));
+        let without = render_at(std::slice::from_ref(&group), None, 10_000);
+        group.plan = Some(plan_max_20x(Some(9_000)));
+        let with = render_at(std::slice::from_ref(&group), None, 10_000);
+
+        assert_eq!(with.matches("plan:").count(), 1, "{with}");
+
+        let tokens = |text: &str| {
+            text.split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
+        };
+        let mut got = tokens(&with);
+        for word in "· plan: claude max 20x (reported 16m ago)".split_whitespace() {
+            let at = got
+                .iter()
+                .position(|candidate| candidate.as_str() == word)
+                .expect("the plan stands whole in the scope cell");
+            got.remove(at);
+        }
+        got.sort_unstable();
+        let mut plain = tokens(&without);
+        plain.sort_unstable();
+        assert_eq!(got, plain, "a plan changes the scope cell and nothing else");
+    }
+
+    /// The dialog's head row is the settings surface: the plan follows the
+    /// account words it already had, in every branch, and stands alone when the
+    /// scope reports no account fact at all.
+    #[test]
+    fn the_settings_head_appends_the_plan_to_whatever_account_words_it_had() {
+        let plan_words = "plan: claude max 20x (reported 16m ago)";
+        let mut group = unusable_claude_group(10_000, Some(9_000));
+        group.plan = Some(plan_max_20x(Some(9_000)));
+
+        group.policy = Policy::new(
+            None,
+            Account {
+                credits: Credits::Available("12.40".to_owned()),
+                credits_observed_at: Some(9_900),
+                ..Account::default()
+            },
+        );
+        let scope = viewed(vec![group.clone()]).remove(0);
+        assert_eq!(
+            scope.account.as_deref(),
+            Some(format!("credits 12.40 · {plan_words}").as_str())
+        );
+
+        group.policy = Policy::new(
+            None,
+            Account {
+                spend_control_reached: Some(true),
+                spend_observed_at: Some(9_900),
+                ..Account::default()
+            },
+        );
+        let scope = viewed(vec![group.clone()]).remove(0);
+        assert_eq!(
+            scope.account.as_deref(),
+            Some(format!("spend cap reached · {plan_words}").as_str())
+        );
+
+        group.policy = Policy::new(None, Account::default());
+        let scope = viewed(vec![group.clone()]).remove(0);
+        assert_eq!(scope.account.as_deref(), Some(plan_words));
+
+        group.plan = None;
+        let scope = viewed(vec![group]).remove(0);
+        assert_eq!(
+            scope.account, None,
+            "no plan and no account fact is silence"
+        );
     }
 }

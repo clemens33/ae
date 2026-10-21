@@ -7918,6 +7918,7 @@ mod tests {
             summary: None,
             policy: crate::quota::Policy::for_tests(manual_resets, account),
             notes: Vec::new(),
+            plan: None,
         }
     }
 

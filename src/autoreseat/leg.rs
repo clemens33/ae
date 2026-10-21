@@ -1357,6 +1357,7 @@ mod effort_scope_spec {
             summary: None,
             policy,
             notes: vec![],
+            plan: None,
         }
     }
 
@@ -1895,6 +1896,7 @@ mod tests {
             summary: None,
             policy,
             notes: Vec::new(),
+            plan: None,
         }
     }
 

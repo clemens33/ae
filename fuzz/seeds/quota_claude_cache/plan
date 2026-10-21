@@ -1,0 +1,24 @@
+{
+  "oauthAccount": {
+    "organizationType": "claude_team",
+    "organizationRateLimitTier": "default_raven",
+    "userRateLimitTier": "default_claude_max_5x",
+    "seatTier": "team_tier_1",
+    "profileFetchedAt": 1788855960000,
+    "accountUuid": "[REDACTED]",
+    "emailAddress": "seed@example.invalid",
+    "organizationName": "seed org"
+  },
+  "cachedUsageUtilization": {
+    "fetchedAtMs": 1788858413691,
+    "utilization": {
+      "limits": [
+        {
+          "kind": "session",
+          "percent": 66,
+          "resets_at": "2026-09-08T11:49:59.759599+00:00"
+        }
+      ]
+    }
+  }
+}
