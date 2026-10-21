@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.106] - 2026-10-21
+- Add ae quota --json: the table rows as one JSON document
+- Quota json test: use char::is_control and uniform slices
+- Count src/quota/machine.rs in the quota boundary census
+- Export the unrounded judged percentage as effective_percent in ae quota --json
+- State a reported plan beside the scope name in ae quota --json
+- Show the burn rate per window in Settings > Quota
+
 ## [v2026.10.105] - 2026-10-21
 - Pin just rust-prune: report by default, own-tree cleans, containment and in-use guards
 - Add just rust-prune: report and clean this checkout's stale ae build output
