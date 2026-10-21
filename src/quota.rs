@@ -11,6 +11,7 @@ pub mod codex;
 pub mod feed;
 pub mod go;
 pub mod grok;
+mod machine;
 pub mod muse;
 mod pace;
 pub mod view;
@@ -2265,12 +2266,53 @@ fn kept_note(answer: &AgyRun, at: i64) -> String {
 ///
 /// Returns an I/O error only when the supplied output stream cannot be written.
 pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
-    run_with(inputs, out, err, crate::transport::run_agy_quota)
+    run_as(inputs, Format::Table, out, err)
 }
 
-/// [`run`] with the agy leg passed in, so a test can count its calls.
+/// How `ae quota` prints its one observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Format {
+    /// The operator table.
+    #[default]
+    Table,
+    /// One JSON document with the same rows (`--json`).
+    Json,
+}
+
+/// Parse `ae quota [--json]` without reading the world.
+///
+/// # Errors
+///
+/// Returns the first duplicate or unknown word.
+pub fn parse_args(tail: &[String]) -> Result<Format, String> {
+    let mut format = Format::Table;
+    for word in tail {
+        match word.as_str() {
+            "--json" if format == Format::Table => format = Format::Json,
+            _ => return Err(word.clone()),
+        }
+    }
+    Ok(format)
+}
+
+/// [`run`] printing `format`: the same one observation either way.
+///
+/// # Errors
+///
+/// Returns an I/O error only when the supplied output stream cannot be written.
+pub fn run_as(
+    inputs: &Inputs<'_>,
+    format: Format,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    run_with(inputs, format, out, err, crate::transport::run_agy_quota)
+}
+
+/// [`run_as`] with the agy leg passed in, so a test can count its calls.
 fn run_with(
     inputs: &Inputs<'_>,
+    format: Format,
     out: &mut impl Write,
     err: &mut impl Write,
     leg: impl FnOnce(&Path) -> AgyRun,
@@ -2322,16 +2364,20 @@ fn run_with(
         note_go_key(&mut observation.rendered, key, *refreshed);
     }
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
-    write!(
-        out,
-        "{}",
-        render_with_pace(
-            observation.ordered_groups(&observation.rendered),
-            &pace,
-            observation.home.as_deref().or(inputs.home),
-            observation.now
-        )
-    )?;
+    let groups = observation.ordered_groups(&observation.rendered);
+    let home = observation.home.as_deref().or(inputs.home);
+    match format {
+        Format::Table => write!(
+            out,
+            "{}",
+            render_with_pace(groups, &pace, home, observation.now)
+        )?,
+        Format::Json => writeln!(
+            out,
+            "{}",
+            machine::document(groups, &pace, home, observation.now).render()
+        )?,
+    }
     Ok(0)
 }
 
@@ -3995,16 +4041,7 @@ fn render_with_pace<'a>(
     let mut notes: Vec<String> = Vec::new();
     let mut claimed = std::collections::BTreeSet::new();
     for group in groups {
-        for note in group
-            .notes
-            .iter()
-            .cloned()
-            .chain(untrusted_credit_note(group))
-        {
-            if !notes.contains(&note) {
-                notes.push(note);
-            }
-        }
+        collect_notes(&mut notes, group);
         if let Some(summary) = &group.summary {
             table.push(RenderLine::Summary {
                 label: rollout_summary_label(summary, now),
@@ -4068,6 +4105,20 @@ fn render_with_pace<'a>(
         });
     }
     render_table(&table)
+}
+
+/// Add a group's notes to the report's, each once.
+fn collect_notes(notes: &mut Vec<String>, group: &Group) {
+    for note in group
+        .notes
+        .iter()
+        .cloned()
+        .chain(untrusted_credit_note(group))
+    {
+        if !notes.contains(&note) {
+            notes.push(note);
+        }
+    }
 }
 
 /// Say once why a reported unlimited-credit claim did not relieve this scope.
@@ -5352,6 +5403,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn quota_takes_one_json_flag_and_nothing_else() {
+        let args = |words: &[&str]| {
+            super::parse_args(
+                &words
+                    .iter()
+                    .map(|word| (*word).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(args(&[]), Ok(super::Format::Table));
+        assert_eq!(args(&["--json"]), Ok(super::Format::Json));
+        assert_eq!(args(&["--json", "--json"]), Err("--json".to_owned()));
+        assert_eq!(args(&["--json", "extra"]), Err("extra".to_owned()));
+        assert_eq!(args(&["extra", "--json"]), Err("extra".to_owned()));
+        assert_eq!(args(&["-x"]), Err("-x".to_owned()));
+        assert_eq!(args(&["--JSON"]), Err("--JSON".to_owned()));
+    }
+
     fn declared_group(manual_resets: Option<u8>, used: &str) -> Group {
         Group {
             profiles: vec!["solx".to_owned()],
@@ -5618,7 +5688,14 @@ mod tests {
                 AgyRun::Failed
             };
             let mut out = Vec::new();
-            let code = super::run_with(&inputs, &mut out, &mut Vec::new(), leg).ok();
+            let code = super::run_with(
+                &inputs,
+                super::Format::Table,
+                &mut out,
+                &mut Vec::new(),
+                leg,
+            )
+            .ok();
             let table = String::from_utf8_lossy(&out);
             let (errors, stale) = (table.matches("read-error").count(), table.contains("stale"));
             let unsupported = table.matches("unsupported").count();

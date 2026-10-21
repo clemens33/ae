@@ -154,6 +154,224 @@ fn ae_quota_renders_fixture_caches_missing_scopes_and_unsupported_clients() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+fn run_quota_json(root: &std::path::Path) -> String {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let code = ae::quota::run_as(
+        &ae::quota::Inputs {
+            home: Some(root),
+            global: Some(&root.join("config")),
+            local: None,
+            sessions: Some(&root.join("sessions")),
+            now: NOW,
+        },
+        ae::quota::Format::Json,
+        &mut stdout,
+        &mut stderr,
+    )
+    .expect("quota runs");
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+    String::from_utf8(stdout).expect("UTF-8 document")
+}
+
+fn items(value: Option<&ae::json::Value>) -> &[ae::json::Value] {
+    match value {
+        Some(ae::json::Value::Arr(items)) => items,
+        other => panic!("expected an array, got {other:?}"),
+    }
+}
+
+/// The fixture's known numbers, authored by hand in `expected.json`: the two Codex rollouts, the
+/// default and the custom Claude home, and the three clients with no local quota source.
+#[test]
+fn ae_quota_json_states_every_table_row_as_data() {
+    let root = rig("json-golden");
+    let text = run_quota_json(&root);
+    assert!(
+        text.ends_with("}\n") && text.matches('\n').count() == 1,
+        "one document on one line: {text}"
+    );
+    let got = ae::json::parse(&text).expect("the document parses");
+    let want = ae::json::parse(include_str!("../fixtures/quota/expected.json"))
+        .expect("the expected document parses");
+    for key in ["version", "now", "notes"] {
+        assert_eq!(got.get(key), want.get(key), "{key}");
+    }
+    let (got_scopes, want_scopes) = (items(got.get("scopes")), items(want.get("scopes")));
+    assert_eq!(got_scopes.len(), want_scopes.len(), "{text}");
+    for (index, (got, want)) in got_scopes.iter().zip(want_scopes).enumerate() {
+        for key in [
+            "profiles",
+            "scope",
+            "tool",
+            "rollout_owner",
+            "credits",
+            "summary",
+        ] {
+            assert_eq!(got.get(key), want.get(key), "scope {index} {key}");
+        }
+        let (got, want) = (items(got.get("windows")), items(want.get("windows")));
+        assert_eq!(got.len(), want.len(), "scope {index} windows");
+        for (row, (got, want)) in got.iter().zip(want).enumerate() {
+            assert_eq!(got, want, "scope {index} window {row}");
+        }
+    }
+    assert_eq!(got, want, "no key beyond the expected document");
+    // The table is the default and does not move: the flag changes the print, not the read.
+    let mut table = Vec::new();
+    let code = ae::quota::run_as(
+        &ae::quota::Inputs {
+            home: Some(&root),
+            global: Some(&root.join("config")),
+            local: None,
+            sessions: Some(&root.join("sessions")),
+            now: NOW,
+        },
+        ae::quota::Format::Table,
+        &mut table,
+        &mut Vec::new(),
+    )
+    .expect("quota runs");
+    assert_eq!(code, 0);
+    assert_eq!(
+        String::from_utf8(table).expect("UTF-8 table"),
+        include_str!("../fixtures/quota/expected.stdout")
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ae_quota_json_states_declared_resets_credits_and_a_spend_cap() {
+    let root = rig("json-declared");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "codex = codex manual_resets=1\n",
+            "[profiles]\n",
+            "astrax = codex --model astra\n",
+        ),
+    )
+    .expect("declared config");
+    let plant = |root: &std::path::Path, account: &str| {
+        let fixture =
+            String::from_utf8_lossy(include_bytes!("../fixtures/quota/codex-rollout.jsonl"))
+                .replace("\"used_percent\":7.0", "\"used_percent\":95.0")
+                .replace(
+                    "\"plan_type\":\"pro\"",
+                    &format!("\"plan_type\":\"pro\",{account}"),
+                );
+        for id in [FIRST_ID, SECOND_ID] {
+            std::fs::write(
+                root.join(format!(
+                    ".codex/sessions/2026/09/08/rollout-2026-09-08T09-00-00-{id}.jsonl"
+                )),
+                &fixture,
+            )
+            .expect("planted rollout");
+        }
+    };
+    let first_scope = |text: &str| {
+        let doc = ae::json::parse(text).expect("the document parses");
+        items(doc.get("scopes"))[0].clone()
+    };
+    plant(
+        &root,
+        "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.50\"},\"spend_control_reached\":false",
+    );
+    let scope = first_scope(&run_quota_json(&root));
+    // 95% spread over 1 + 1 windows is 47.5%; the balance keeps its exact digits.
+    assert_eq!(
+        scope.get("credits"),
+        ae::json::parse(r#"{"state":"available","balance":12.50}"#)
+            .ok()
+            .as_ref()
+    );
+    let window = &items(scope.get("windows"))[0];
+    assert_eq!(window.get("used_percent"), Some(&ae::json::Value::Num(95)));
+    assert_eq!(
+        window.get("effective_percent"),
+        Some(&ae::json::Value::Raw("47.5".to_owned()))
+    );
+    assert_eq!(window.get_str("derivation"), Some("x1"));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let capped = rig("json-capped");
+    std::fs::write(
+        capped.join("config"),
+        concat!(
+            "[clients]\n",
+            "codex = codex manual_resets=4\n",
+            "[profiles]\n",
+            "astrax = codex --model astra\n",
+        ),
+    )
+    .expect("capped config");
+    plant(
+        &capped,
+        "\"credits\":{\"has_credits\":false,\"unlimited\":false,\"balance\":\"0\"},\"spend_control_reached\":true",
+    );
+    let scope = first_scope(&run_quota_json(&capped));
+    assert_eq!(
+        scope.get("credits"),
+        ae::json::parse(r#"{"state":"spend-cap","balance":null}"#)
+            .ok()
+            .as_ref()
+    );
+    let window = &items(scope.get("windows"))[0];
+    assert_eq!(window.get("used_percent"), Some(&ae::json::Value::Num(95)));
+    assert_eq!(
+        window.get("effective_percent"),
+        Some(&ae::json::Value::Num(100))
+    );
+    assert_eq!(window.get_str("derivation"), Some("spend-cap"));
+    let _ = std::fs::remove_dir_all(&capped);
+}
+
+#[test]
+fn public_quota_takes_json_once_and_refuses_everything_else_with_exit_two() {
+    let root = rig("json-public");
+    let run = |args: &[&str]| {
+        crate::cli::ae()
+            .env("HOME", &root)
+            .env("AE_HOME", &root)
+            .env("CONFIG_FILE", root.join("config"))
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .expect("quota command")
+    };
+    let ok = run(&["quota", "--json"]);
+    assert_eq!(ok.status.code(), Some(0), "{ok:?}");
+    assert!(
+        ok.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let text = String::from_utf8(ok.stdout).expect("UTF-8 document");
+    assert_eq!(text.matches('\n').count(), 1, "{text}");
+    let doc = ae::json::parse(&text).expect("the document parses");
+    assert_eq!(doc.get("version"), Some(&ae::json::Value::Num(1)));
+    assert!(!items(doc.get("scopes")).is_empty(), "{text}");
+    for (args, word) in [
+        (&["quota", "--json", "--json"][..], "--json"),
+        (&["quota", "--bogus"], "--bogus"),
+        (&["quota", "extra"], "extra"),
+        (&["quota", "--json", "extra"], "extra"),
+    ] {
+        let refused = run(args);
+        assert_eq!(refused.status.code(), Some(2), "{args:?}");
+        assert!(refused.stdout.is_empty(), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&refused.stderr),
+            format!("ae quota: unknown argument: {word}\n"),
+            "{args:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Regression pin: a planted 5 h rollout, read end to end through `ae quota`.
 #[test]
 fn a_planted_five_hour_rollout_shows_its_pace_once_per_identical_reading() {

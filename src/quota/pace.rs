@@ -7,10 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use super::machine::{number, tenths};
 use super::{
     Derived, Effective, FUTURE_SKEW_SECS, Group, Policy, Reading, Row, Status, freshness,
     row_percent, span_label,
 };
+use crate::json::Value;
 
 /// Points kept per key: with the spacing below they reach one lookback back.
 const RETAINED: u8 = 32;
@@ -196,27 +198,58 @@ impl Pace {
     }
 }
 
+/// An upper bound rounds UP, or `<0.2` would claim less than the rule allows.
+fn bound_ceiling(per_h: f64) -> f64 {
+    (per_h * 10.0 - 1e-9).ceil() / 10.0
+}
+
+/// The ETA rounded once, to whole seconds.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a finite, non-negative ETA of at most a few million seconds"
+)]
+fn eta_whole(eta_secs: f64) -> i64 {
+    eta_secs.round() as i64
+}
+
 impl Pace {
     /// The PACE cell: the ETA is rounded once, here.
     pub(crate) fn cell(self) -> String {
         match self {
             Self::Absent => "-".to_owned(),
             Self::Unknown => "unknown".to_owned(),
-            // An upper bound rounds UP, or `<0.2` would claim less than the rule allows.
-            Self::Bound { per_h } => format!("<{:.1}%/h", (per_h * 10.0 - 1e-9).ceil() / 10.0),
+            Self::Bound { per_h } => format!("<{:.1}%/h", bound_ceiling(per_h)),
             Self::Rate {
                 per_h,
                 eta_secs,
                 before_reset,
             } => {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "a finite, non-negative ETA of at most a few million seconds"
-                )]
-                let eta = eta_secs.round() as i64;
                 let flag = if before_reset { "!" } else { "" };
-                format!("{per_h:.1}%/h ~{}{flag}", span_label(eta))
+                format!("{per_h:.1}%/h ~{}{flag}", span_label(eta_whole(eta_secs)))
             }
+        }
+    }
+
+    /// The same verdict for a machine reader, rounded exactly as [`Pace::cell`]
+    /// rounds it; `None` where the cell is `-`.
+    pub(crate) fn json(self) -> Option<Value> {
+        match self {
+            Self::Absent => None,
+            Self::Unknown => Some(Value::obj([("kind", Value::str("unknown"))])),
+            Self::Bound { per_h } => Some(Value::obj([
+                ("kind", Value::str("bound")),
+                ("per_h", number(bound_ceiling(per_h))),
+            ])),
+            Self::Rate {
+                per_h,
+                eta_secs,
+                before_reset,
+            } => Some(Value::obj([
+                ("kind", Value::str("rate")),
+                ("per_h", number(tenths(per_h))),
+                ("eta_secs", Value::Num(eta_whole(eta_secs))),
+                ("before_reset", Value::Bool(before_reset)),
+            ])),
         }
     }
 }
@@ -329,20 +362,28 @@ impl PaceTable {
 }
 
 impl PaceTable {
-    /// The PACE cell of one rendered row.
-    pub(crate) fn cell_for(&self, group: &Group, row: &Row, claimed: &mut BTreeSet<Key>) -> String {
-        let Some(source) = group.source.as_deref() else {
-            return "-".to_owned();
-        };
-        let key = Key::of(source, row);
+    /// The verdict of one rendered row: the key's winner, claimed once.
+    pub(crate) fn pace_for(
+        &self,
+        group: &Group,
+        row: &Row,
+        claimed: &mut BTreeSet<Key>,
+    ) -> Option<Pace> {
+        let key = Key::of(group.source.as_deref()?, row);
         let shown_is_winner = |verdict: &Verdict| {
             row.observed_at == Some(verdict.observed_at)
                 && row_percent(row).is_some_and(|used| used.total_cmp(&verdict.used).is_eq())
         };
         match self.0.get(&key) {
-            Some(verdict) if shown_is_winner(verdict) && claimed.insert(key) => verdict.pace.cell(),
-            _ => "-".to_owned(),
+            Some(verdict) if shown_is_winner(verdict) && claimed.insert(key) => Some(verdict.pace),
+            _ => None,
         }
+    }
+
+    /// The PACE cell of one rendered row.
+    pub(crate) fn cell_for(&self, group: &Group, row: &Row, claimed: &mut BTreeSet<Key>) -> String {
+        self.pace_for(group, row, claimed)
+            .map_or_else(|| "-".to_owned(), Pace::cell)
     }
 }
 
@@ -473,6 +514,45 @@ mod tests {
         assert!(per_h > 0.2, "{per_h}");
         assert_eq!(pace.cell(), "<0.3%/h");
         assert_eq!(Pace::Bound { per_h: 0.2 }.cell(), "<0.2%/h");
+    }
+
+    #[test]
+    fn a_verdict_reaches_a_machine_reader_rounded_exactly_as_its_cell() {
+        let json = |pace: Pace| pace.json().map(|value| value.render());
+        assert_eq!(json(Pace::Absent), None);
+        assert_eq!(Pace::Absent.cell(), "-");
+        assert_eq!(
+            json(Pace::Unknown).as_deref(),
+            Some(r#"{"kind":"unknown"}"#)
+        );
+        // 0.201 %/h rounds UP to 0.3, as the cell does; 0.2 stays 0.2.
+        let bound = |per_h| Pace::Bound { per_h };
+        assert_eq!(
+            json(bound(0.201)).as_deref(),
+            Some(r#"{"kind":"bound","per_h":0.3}"#)
+        );
+        assert_eq!(bound(0.201).cell(), "<0.3%/h");
+        assert_eq!(
+            json(bound(0.2)).as_deref(),
+            Some(r#"{"kind":"bound","per_h":0.2}"#)
+        );
+        // 0.25 prints "0.2" in the cell (exact tie, round half to even): the number is that one.
+        let rate = |per_h, eta_secs, before_reset| Pace::Rate {
+            per_h,
+            eta_secs,
+            before_reset,
+        };
+        assert_eq!(rate(0.25, 3600.0, false).cell(), "0.2%/h ~1h00m");
+        assert_eq!(
+            json(rate(0.25, 3600.0, false)).as_deref(),
+            Some(r#"{"kind":"rate","per_h":0.2,"eta_secs":3600,"before_reset":false}"#)
+        );
+        // 5.04 %/h and 4000.4 s: one decimal, whole seconds, the flag as a bool.
+        assert_eq!(rate(5.04, 4000.4, true).cell(), "5.0%/h ~1h06m!");
+        assert_eq!(
+            json(rate(5.04, 4000.4, true)).as_deref(),
+            Some(r#"{"kind":"rate","per_h":5,"eta_secs":4000,"before_reset":true}"#)
+        );
     }
 
     #[test]

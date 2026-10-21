@@ -382,10 +382,13 @@ fn run_public_quota(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    if let Some(extra) = tail.first() {
-        writeln!(err, "ae quota: unknown argument: {extra}")?;
-        return Ok(entry::EXIT_USAGE);
-    }
+    let format = match quota::parse_args(tail) {
+        Ok(format) => format,
+        Err(extra) => {
+            writeln!(err, "ae quota: unknown argument: {extra}")?;
+            return Ok(entry::EXIT_USAGE);
+        }
+    };
     let Some(root) = doors::state_root(shape) else {
         writeln!(err, "ae: {NO_STATE_ROOT}")?;
         return Ok(EXIT_UNAVAILABLE);
@@ -395,7 +398,7 @@ fn run_public_quota(
     let local = doors::local_config(&cwd);
     let home = doors::home();
     let roots = inventory::Roots::under(&root);
-    quota::run(
+    quota::run_as(
         &quota::Inputs {
             home: home.as_deref(),
             global: Some(&global),
@@ -403,6 +406,7 @@ fn run_public_quota(
             sessions: Some(roots.sessions()),
             now: time::Timestamp::now().epoch(),
         },
+        format,
         out,
         err,
     )

@@ -266,7 +266,8 @@ Usage:
   ae app [session]       The fleet in a sidebar beside one session's overview, agents and
                          chat, drawn in this terminal; typing reaches the selected
                          session's lead pair
-  ae quota               Show local cached quota windows for configured agent profiles
+  ae quota [--json]      Show local cached quota windows for configured agent profiles;
+                         --json prints the same rows as one JSON document
   ae usage [name…] [--json]
                          Show API-equivalent list-price usage for live sessions
   ae orchestrator        Start or reattach the orchestrator seat (a session named

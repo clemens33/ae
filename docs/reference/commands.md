@@ -28,7 +28,8 @@ ae brief [name] [--all] [--since <dur>] [--seat <agent>]
                        Card a session: goal, the latest note per memo topic, each agent's
                        declared state, and who is waiting on you. Read-only.
                        --seat prints ONE seat's seed pack instead of the cards
-ae quota               Show bounded local quota snapshots for every configured account
+ae quota [--json]      Show bounded local quota snapshots for every configured account;
+                       --json prints the same rows as one JSON document
 ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
@@ -1192,6 +1193,47 @@ is `unknown`.
 Cached Claude numbers become `unknown` when the file's current and cached account UUIDs disagree;
 the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
 are reduced to printable table cells before widths or wrapping are calculated.
+
+### Machine-readable: `ae quota --json`
+
+`ae quota --json` prints the table's rows as ONE JSON document and a newline, from the same single
+observation (no extra vendor ask). Without the flag the table is unchanged byte for byte. The
+flag may appear once; a repeat or any other word exits 2. The session helper `quota` stays a table.
+
+The real output is one line; it is wrapped here:
+
+```json
+{"version":1,"now":1788858600,"scopes":[{"profiles":["fablex"],"scope":"claude · ~/.claude",
+ "tool":"claude","rollout_owner":null,"credits":{"state":"unreported","balance":null},"summary":null,
+ "windows":[{"bucket":"session","qualifier":null,"window_minutes":300,"used_percent":66,
+  "effective_percent":66,"derivation":null,"pace":{"kind":"unknown"},"resets_at":1788868199,
+  "observed_at":1788858413,"status":"fresh","reason":null}]}],"notes":[]}
+```
+
+Numbers are numbers and an absent fact is `null`; nothing is a display string where a number
+exists. Fields are only ever added, under `version`. A new field is absent until its phase ships.
+
+- `scopes`: the table's groups in its order. `scope` is the table's scope label, `tool` the client
+  tool, `rollout_owner` the Codex rollout's `<session>:<seat>` when the table shows one.
+- `credits.state` is `unreported`, `unlimited`, `available`, `none` or `spend-cap` (the CREDITS
+  cell). `balance` is the vendor's exact decimal literal as a number token, with no float round
+  trip, or `null` when ae holds no exact amount.
+- `summary` is non-`null` on the entry that stands for the table's `+N rollouts not shown` line:
+  `hidden_rollouts`, `unreadable_rollouts`, `oldest_observed_at`, `not_read` and `status`. That
+  entry has no `windows`.
+- Each window mirrors one table row. `window_minutes`, `used_percent`, `effective_percent` and
+  `resets_at` are `null` exactly where the table prints `-` for an untrustworthy row (anything
+  but `fresh` or `stale`); `bucket` is `null` on a placeholder row. `observed_at` is `null` when
+  the stamp is in the future.
+- `effective_percent` is the percentage ae judges by whenever the window states a usage figure. On
+  a scope with nothing declared or reported it equals `used_percent` and `derivation` is `null`,
+  where the table's EFFECTIVE cell shows `-`; otherwise `derivation` is `"xN"` (N declared
+  resets), `"unlimited"` or `"spend-cap"`.
+- `pace` is `null` where the PACE cell is `-`, else `{"kind":"unknown"}`,
+  `{"kind":"bound","per_h":…}` or `{"kind":"rate","per_h":…,"eta_secs":…,"before_reset":…}`,
+  rounded exactly as the cell rounds them.
+- `status` is the STATUS word; `reason` is the hint the table prints beside it, or `null`.
+- `notes` is the table's footer notes, each once.
 
 ### Feed Claude quota from your statusline
 

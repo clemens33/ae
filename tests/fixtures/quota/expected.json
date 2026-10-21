@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "now": 1788858600,
+  "scopes": [
+    {
+      "profiles": ["astrax", "solx"],
+      "scope": "codex · ~/.codex · unidentified (session:lead)",
+      "tool": "codex",
+      "rollout_owner": "session:lead",
+      "credits": {"state": "unreported", "balance": null},
+      "summary": null,
+      "windows": [
+        {"bucket": "codex", "qualifier": "pro", "window_minutes": 10080, "used_percent": 7, "effective_percent": 7, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1789466400, "observed_at": 1788858060, "status": "fresh", "reason": null},
+        {"bucket": "codex_bengalfox", "qualifier": "pro", "window_minutes": 300, "used_percent": 3.5, "effective_percent": 3.5, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1788861600, "observed_at": 1788858120, "status": "fresh", "reason": null},
+        {"bucket": "codex_bengalfox", "qualifier": "pro", "window_minutes": 10080, "used_percent": 12, "effective_percent": 12, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1789466400, "observed_at": 1788858120, "status": "fresh", "reason": null}
+      ]
+    },
+    {
+      "profiles": ["astrax", "solx"],
+      "scope": "codex · ~/.codex · unidentified (session:reviewer)",
+      "tool": "codex",
+      "rollout_owner": "session:reviewer",
+      "credits": {"state": "unreported", "balance": null},
+      "summary": null,
+      "windows": [
+        {"bucket": "codex", "qualifier": "pro", "window_minutes": 10080, "used_percent": 7, "effective_percent": 7, "derivation": null, "pace": null, "resets_at": 1789466400, "observed_at": 1788858060, "status": "fresh", "reason": null},
+        {"bucket": "codex_bengalfox", "qualifier": "pro", "window_minutes": 300, "used_percent": 3.5, "effective_percent": 3.5, "derivation": null, "pace": null, "resets_at": 1788861600, "observed_at": 1788858120, "status": "fresh", "reason": null},
+        {"bucket": "codex_bengalfox", "qualifier": "pro", "window_minutes": 10080, "used_percent": 12, "effective_percent": 12, "derivation": null, "pace": null, "resets_at": 1789466400, "observed_at": 1788858120, "status": "fresh", "reason": null}
+      ]
+    },
+    {
+      "profiles": ["fablex", "fable5", "opusx"],
+      "scope": "claude · ~/.claude",
+      "tool": "claude",
+      "rollout_owner": null,
+      "credits": {"state": "unreported", "balance": null},
+      "summary": null,
+      "windows": [
+        {"bucket": "session", "qualifier": null, "window_minutes": 300, "used_percent": 66, "effective_percent": 66, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1788868199, "observed_at": 1788858413, "status": "fresh", "reason": null},
+        {"bucket": "weekly_all", "qualifier": null, "window_minutes": 10080, "used_percent": 9, "effective_percent": 9, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1789257599, "observed_at": 1788858413, "status": "fresh", "reason": null},
+        {"bucket": "weekly_scoped", "qualifier": "Fable", "window_minutes": 10080, "used_percent": 100, "effective_percent": 100, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1789257599, "observed_at": 1788858413, "status": "fresh", "reason": null}
+      ]
+    },
+    {
+      "profiles": ["micx"],
+      "scope": "claude · mic",
+      "tool": "claude",
+      "rollout_owner": null,
+      "credits": {"state": "unreported", "balance": null},
+      "summary": null,
+      "windows": [
+        {"bucket": "session", "qualifier": null, "window_minutes": 300, "used_percent": 77, "effective_percent": 77, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1788868199, "observed_at": 1788858413, "status": "fresh", "reason": null},
+        {"bucket": "weekly_all", "qualifier": null, "window_minutes": 10080, "used_percent": 9, "effective_percent": 9, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1789257599, "observed_at": 1788858413, "status": "fresh", "reason": null},
+        {"bucket": "weekly_scoped", "qualifier": "Fable", "window_minutes": 10080, "used_percent": 100, "effective_percent": 100, "derivation": null, "pace": {"kind": "unknown"}, "resets_at": 1789257599, "observed_at": 1788858413, "status": "fresh", "reason": null}
+      ]
+    },
+    {
+      "profiles": ["grok46"],
+      "scope": "grok · ~/.grok",
+      "tool": "grok",
+      "rollout_owner": null,
+      "credits": {"state": "unreported", "balance": null},
+      "summary": null,
+      "windows": [
+        {"bucket": null, "qualifier": null, "window_minutes": null, "used_percent": null, "effective_percent": null, "derivation": null, "pace": null, "resets_at": null, "observed_at": null, "status": "unsupported", "reason": "run /usage in grok"}
+      ]
+    },
+    {
+      "profiles": ["opencode"],
+      "scope": "opencode · ~/.local/share/opencode",
+      "tool": "opencode",
+      "rollout_owner": null,
+      "credits": {"state": "unreported", "balance": null},
+      "summary": null,
+      "windows": [
+        {"bucket": null, "qualifier": null, "window_minutes": null, "used_percent": null, "effective_percent": null, "derivation": null, "pace": null, "resets_at": null, "observed_at": null, "status": "unsupported", "reason": "local stats are cost history, not quota"}
+      ]
+    },
+    {
+      "profiles": ["gemini"],
+      "scope": "gemini · ~/.gemini",
+      "tool": "gemini",
+      "rollout_owner": null,
+      "credits": {"state": "unreported", "balance": null},
+      "summary": null,
+      "windows": [
+        {"bucket": null, "qualifier": null, "window_minutes": null, "used_percent": null, "effective_percent": null, "derivation": null, "pace": null, "resets_at": null, "observed_at": null, "status": "unsupported", "reason": "no verified local quota source"}
+      ]
+    }
+  ],
+  "notes": []
+}
