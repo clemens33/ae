@@ -3130,7 +3130,9 @@ const PRUNE_LABELS: [&str; 5] = [
 /// pointed at, one path per line (a `--target` clean also lists the host `release` units, and
 /// a `--target-dir` one wants its `CACHEDIR.TAG`, as real cargo 1.97 does); a dry run prints
 /// them, plus the lines of the `lie` knob when its first line is part of the tree path, and a
-/// real run removes them. Knob files in `$AE_FIX`: `metadata.fail`, `clean.fail`, `lie`.
+/// real run removes them. Knob files in `$AE_FIX`: `metadata.fail`, `clean.fail`, `lie`, and for a
+/// dry run's stderr `stderr.extra` (lines added before the Summary), `summary.text` (the Summary
+/// lines, instead of its own) and `summary.none` (no Summary at all).
 const FAKE_CARGO: &str = r#"#!/bin/sh
 printf '%s|%s\n' "$(pwd -P)" "$*" >>"$AE_FIX/cargo.log"
 walk() {
@@ -3178,7 +3180,16 @@ clean)
         if [ -f "$AE_FIX/lie" ]; then
             case "$dirs" in *"$(head -1 "$AE_FIX/lie")"*) sed 1d "$AE_FIX/lie" ;; esac
         fi
-        echo "     Summary $n files, 1B total" >&2
+        [ ! -f "$AE_FIX/stderr.extra" ] || cat "$AE_FIX/stderr.extra" >&2
+        if [ -f "$AE_FIX/summary.text" ]; then
+            cat "$AE_FIX/summary.text" >&2
+        elif [ -f "$AE_FIX/summary.none" ]; then
+            :
+        elif [ "$n" = 0 ]; then
+            echo "     Summary 0 files" >&2
+        else
+            echo "     Summary $n files, 1B total" >&2
+        fi
         echo "warning: no files deleted due to --dry-run" >&2
     else
         printf '%s\n' "$list" | while IFS= read -r p; do [ -z "$p" ] || rm -rf "$p"; done
@@ -3765,6 +3776,168 @@ fn rust_prune_refuses_a_dry_run_path_that_escapes_and_cleans_nothing() {
     }
 }
 
+/// Only cargo's STDOUT is the inventory, and every non-empty line of it must be an absolute
+/// path: a relative one (`../outside/victim`), a decorated one or prose is a path the recipe
+/// cannot contain, so it is refused before any real clean, never skipped.
+#[test]
+fn rust_prune_refuses_a_dry_run_line_that_is_not_an_absolute_path() {
+    let fixture = Prune::new("prune-grammar");
+    let outside = fixture.base.join("outside");
+    put(&outside.join("victim"), "x\n");
+    for (filter, line) in [
+        ("/target/debug", "../outside/victim"),
+        ("/target/debug", "target/debug/ae-unit"),
+        ("/target/debug", "./ae-unit"),
+        ("/target/debug", "removing ae-unit"),
+        ("/target/debug", " /target/debug/ae-unit"),
+        ("world-read-guard", "../../outside/victim"),
+    ] {
+        fixture.clear("cargo.log");
+        fixture.knob("lie", &format!("{filter}\n{line}\n"));
+        let ran = fixture.prune(&["apply=yes"], &[]);
+        assert_refused(&ran, "not an absolute path");
+        assert!(ran.err.contains(line), "`{line}` is named: {}", ran.err);
+        assert_eq!(fixture.real_cleans(), 0, "`{line}` reached a real clean");
+        assert!(
+            outside.join("victim").is_file(),
+            "`{line}`: the outside file survived"
+        );
+        assert!(fixture.alive(), "`{line}`: nothing was removed");
+    }
+}
+
+/// A dry run is also proven by its Summary: exactly one valid line on stderr
+/// (`Summary <n> file[s]`, then optionally `, <size> total`), so a missing, malformed,
+/// repeated or mislabelled one refuses before any real clean.
+#[test]
+fn rust_prune_refuses_a_dry_run_that_does_not_end_in_a_valid_summary() {
+    let fixture = Prune::new("prune-summary");
+    for (knob, text) in [
+        ("summary.none", ""),
+        ("summary.text", "     Summary\n"),
+        ("summary.text", "     Summary lots of files, 1B total\n"),
+        ("summary.text", "     Summary -3 files, 1B total\n"),
+        ("summary.text", "     Summary 3 files and more\n"),
+        ("summary.text", "     Summary 3 files, \n"),
+        (
+            "summary.text",
+            "     Summary 3 files, 1B total\n     Summary 3 files, 1B total\n",
+        ),
+        ("summary.text", "     Removed 3 files, 1B total\n"),
+    ] {
+        fixture.clear("summary.none");
+        fixture.clear("summary.text");
+        fixture.clear("cargo.log");
+        fixture.knob(knob, text);
+        let ran = fixture.prune(&["apply=yes"], &[]);
+        assert_refused(&ran, "without a valid Summary");
+        assert_eq!(fixture.real_cleans(), 0, "`{text}` reached a real clean");
+        assert!(fixture.alive(), "`{text}`: nothing was removed");
+    }
+}
+
+/// A Summary that claims files while STDOUT lists none is not a proof of what a clean removes,
+/// and a path that only STDERR carries is not inventory.
+#[test]
+fn rust_prune_refuses_a_summary_that_claims_files_stdout_does_not_list() {
+    let fixture = Prune::new("prune-claim");
+    std::fs::remove_dir_all(fixture.tree.join("target/debug/ae-unit"))
+        .unwrap_or_else(|why| panic!("emptying the dev tree: {why}"));
+    fixture.knob("summary.text", "     Summary 7 files, 1B total\n");
+    let ran = fixture.prune(&["apply=yes"], &[]);
+    assert_refused(&ran, "listed no path on stdout");
+    assert_eq!(fixture.real_cleans(), 0);
+
+    fixture.clear("cargo.log");
+    fixture.knob(
+        "stderr.extra",
+        &format!("{}/target/debug/ae-unit\n", fixture.tree.display()),
+    );
+    let ran = fixture.prune(&["apply=yes"], &[]);
+    assert_refused(&ran, "listed no path on stdout");
+    assert_eq!(fixture.real_cleans(), 0);
+}
+
+/// Cargo's diagnostics are not paths: a stderr line that starts with `/` and names something
+/// elsewhere neither counts as inventory nor refuses, and the run goes on to clean.
+#[test]
+fn rust_prune_reads_paths_from_stdout_only_and_never_from_diagnostics() {
+    let fixture = Prune::new("prune-streams");
+    fixture.knob(
+        "stderr.extra",
+        "warning: could not read /elsewhere/other-unit\n/elsewhere/not-ours: skipped\n",
+    );
+    let ran = fixture.prune(&["apply=yes"], &[]);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    assert_eq!(fixture.cargo_log(), expected_cargo(&fixture.tree, true));
+    assert!(fixture.gone(), "the ae units are cleaned");
+    assert!(fixture.kept(), "every other file stays");
+}
+
+/// What a genuine run looks like still passes: the Summary spellings cargo uses, a blank line on
+/// stdout, and a tree with nothing to remove (empty stdout, `Summary 0 files`).
+#[test]
+fn rust_prune_accepts_a_zero_removal_dry_run_and_the_summaries_cargo_prints() {
+    let fixture = Prune::new("prune-genuine");
+    fixture.knob("lie", "/target/debug\n\n");
+    for text in [
+        "     Summary 1 file, 1B total\n",
+        "     Summary 12 files, 3.4MiB total\n",
+        "     Summary 0 files\n",
+        "     Summary 0 files, 0B total\n",
+    ] {
+        fixture.knob("summary.text", text);
+        let ran = fixture.prune(&[], &[]);
+        assert_eq!(ran.code, 0, "`{text}`: {}{}", ran.out, ran.err);
+        assert!(ran.out.contains("would clean debug: "), "{}", ran.out);
+    }
+    fixture.clear("lie");
+    fixture.clear("summary.text");
+    for tree in PRUNE_TREES {
+        std::fs::remove_dir_all(fixture.tree.join(tree).join("ae-unit"))
+            .unwrap_or_else(|why| panic!("emptying {tree}: {why}"));
+    }
+    fixture.clear("cargo.log");
+    let ran = fixture.prune(&["apply=yes"], &[]);
+    assert_eq!(
+        ran.code, 0,
+        "nothing to remove is not a refusal: {}{}",
+        ran.out, ran.err
+    );
+    assert_eq!(fixture.cargo_log(), expected_cargo(&fixture.tree, true));
+    assert!(fixture.kept(), "every other file stays");
+}
+
+/// Without `lsof` the run cannot see a process that only has its working directory in the
+/// checkout; it says so, once for the whole run, and stays quiet when `lsof` is there.
+#[test]
+fn rust_prune_says_once_that_a_missing_lsof_leaves_it_judging_by_argv_alone() {
+    let fixture = Prune::new("prune-nolsof");
+    let ran = fixture.prune(&["apply=yes"], &[]);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    assert_eq!(
+        ran.err.matches("lsof is not installed").count(),
+        1,
+        "named once although apply asks twice: {}",
+        ran.err
+    );
+    assert!(
+        ran.err.contains("working directory"),
+        "the limitation is named: {}",
+        ran.err
+    );
+
+    fixture.install_fake_lsof();
+    fixture.knob("lsof.out", "");
+    let ran = fixture.prune(&[], &[]);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    assert!(
+        !ran.err.contains("lsof"),
+        "an installed lsof needs no note: {}",
+        ran.err
+    );
+}
+
 /// `target/`, or a tree the recipe cleans, that is a LINK is refused whole, so a clean never
 /// walks out through it: the file the link points at survives.
 #[test]
@@ -4146,9 +4319,37 @@ fn cargo_metadata_follows_the_working_directorys_config_not_the_manifests() {
     );
 }
 
+/// The file count of the ONE `Summary` line in a dry run's stderr when it is in the grammar
+/// `rust-prune` accepts (`Summary <n> file[s]`, then optionally `, <size> total`), else `None`.
+/// The contract pin below holds real cargo's output to it.
+fn dry_run_summary_files(stderr: &str) -> Option<u64> {
+    let mut lines = stderr
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Summary "));
+    let text = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let (count, rest) = text.split_once(' ')?;
+    if count.is_empty() || !count.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let sized = |unit: &str| {
+        rest.strip_prefix(unit)
+            .and_then(|tail| tail.strip_prefix(", "))
+            .is_some_and(|tail| tail.ends_with(" total"))
+    };
+    if rest == "file" || rest == "files" || sized("file") || sized("files") {
+        count.parse().ok()
+    } else {
+        None
+    }
+}
+
 /// CONTRACT PIN, not a regression test: the grammar `rust-prune` parses. `cargo clean -p ae
-/// --dry-run --verbose` prints the absolute paths it would remove on stdout and `Summary` on
-/// stderr and deletes nothing; a `--target` clean also lists the host units under
+/// --dry-run --verbose` prints the absolute paths it would remove, and nothing else, on stdout
+/// and exactly one `Summary` on stderr and deletes nothing; a tree with nothing to remove
+/// prints no path and `Summary 0 files`; a `--target` clean also lists the host units under
 /// `target/release` (why the recipe's root is `target/`); a `--target-dir` one without its
 /// `CACHEDIR.TAG` is refused by cargo.
 #[test]
@@ -4188,8 +4389,8 @@ fn cargo_clean_dry_run_lists_absolute_paths_and_removes_nothing() {
     let listed = |ran: &Ran, prefixes: &[String]| {
         assert_eq!(ran.code, 0, "a dry run succeeds: {}", ran.err);
         assert!(
-            ran.err.contains("Summary"),
-            "the summary is on stderr: {}",
+            dry_run_summary_files(&ran.err).is_some_and(|files| files > 0),
+            "one valid Summary, claiming files, is on stderr: {}",
             ran.err
         );
         let lines: Vec<&str> = ran.out.lines().filter(|line| !line.is_empty()).collect();
@@ -4240,4 +4441,55 @@ fn cargo_clean_dry_run_lists_absolute_paths_and_removes_nothing() {
     for rel in fake_files {
         assert!(target.join(rel).is_file(), "a dry run left {rel} alone");
     }
+}
+
+/// CONTRACT PIN, not a regression test: a genuine run that removes nothing. `cargo clean -p ae
+/// --dry-run --verbose` over a tree that holds no ae unit exits 0, prints no path on stdout and
+/// says `Summary 0 files` on stderr, which `rust-prune` must accept rather than read as a
+/// missing proof.
+#[test]
+fn cargo_clean_dry_run_with_nothing_to_remove_lists_nothing_and_says_zero_files() {
+    let scratch = super::cli::OwnedScratch::root("gate", "prune-zero");
+    let base = std::fs::canonicalize(&*scratch).unwrap_or_else(|why| panic!("{why}"));
+    let krate = base.join("ae");
+    scratch_crate(&base, &krate);
+    let guard = krate.join("target/world-read-guard");
+    put(
+        &guard.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    );
+    put(&guard.join("debug/deps/libdep-keep.rlib"), "x\n");
+    let manifest = format!("{}/Cargo.toml", krate.display());
+    let target_dir = guard.display().to_string();
+    let ran = real_cargo(
+        &base,
+        &krate,
+        &[
+            "clean",
+            "--locked",
+            "--manifest-path",
+            manifest.as_str(),
+            "-p",
+            "ae",
+            "--profile",
+            "dev",
+            "--target-dir",
+            target_dir.as_str(),
+            "--dry-run",
+            "--verbose",
+        ],
+    );
+    assert_eq!(
+        ran.code, 0,
+        "a tree with nothing to remove is a success: {}",
+        ran.err
+    );
+    assert!(ran.out.trim().is_empty(), "and lists no path: {}", ran.out);
+    assert_eq!(
+        dry_run_summary_files(&ran.err),
+        Some(0),
+        "and says `Summary 0 files`: {}",
+        ran.err
+    );
+    assert!(guard.join("debug/deps/libdep-keep.rlib").is_file());
 }
