@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.103] - 2026-10-21
+- Run a ! line from ae chat and ae app as the human's own command
+
 ## [v2026.10.102] - 2026-10-20
 - Show a muse usage limit with its reset in ae quota instead of read-error exit 1
 
