@@ -356,9 +356,9 @@ fn public_quota_takes_json_once_and_refuses_everything_else_with_exit_two() {
     assert!(!items(doc.get("scopes")).is_empty(), "{text}");
     for (args, word) in [
         (&["quota", "--json", "--json"][..], "--json"),
-        (&["quota", "--bogus"], "--bogus"),
-        (&["quota", "extra"], "extra"),
-        (&["quota", "--json", "extra"], "extra"),
+        (&["quota", "--bogus"][..], "--bogus"),
+        (&["quota", "extra"][..], "extra"),
+        (&["quota", "--json", "extra"][..], "extra"),
     ] {
         let refused = run(args);
         assert_eq!(refused.status.code(), Some(2), "{args:?}");

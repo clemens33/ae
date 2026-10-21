@@ -490,6 +490,6 @@ mod tests {
             doc.ends_with(r#""notes":["declared note","bell\u0007note"]}"#),
             "{doc}"
         );
-        assert!(!doc.chars().any(|ch| ch.is_control()), "{doc:?}");
+        assert!(!doc.chars().any(char::is_control), "{doc:?}");
     }
 }
