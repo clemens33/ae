@@ -3104,3 +3104,1140 @@ fn buildtune_panic_backtraces_resolve_ae_and_dependency_source_lines() {
         );
     }
 }
+
+/// The five trees `just rust-prune` cleans, relative to a checkout. The fixture puts an
+/// `ae-unit` (what a clean removes) and an `other/keep` (what it must not) in each.
+const PRUNE_TREES: [&str; 5] = [
+    "target/debug",
+    "target/release",
+    "target/x86_64-unknown-linux-musl/release",
+    "target/force-warn-guard/debug",
+    "target/world-read-guard/debug",
+];
+
+/// The labels the report and the apply run print for them, in order.
+const PRUNE_LABELS: [&str; 5] = [
+    "debug",
+    "release",
+    "musl-release",
+    "force-warn-guard",
+    "world-read-guard",
+];
+
+/// A `cargo` that logs every call as `<cwd>|<argv>` and plays the two verbs the recipe uses.
+/// `metadata` finds `target-dir` / `build-dir` in the nearest `.cargo/config.toml` at or above ITS
+/// working directory, as cargo does. `clean` lists the `ae-*` entries under the tree it is
+/// pointed at, one path per line (a `--target` clean also lists the host `release` units, and
+/// a `--target-dir` one wants its `CACHEDIR.TAG`, as real cargo 1.97 does); a dry run prints
+/// them, plus the lines of the `lie` knob when its first line is part of the tree path, and a
+/// real run removes them. Knob files in `$AE_FIX`: `metadata.fail`, `clean.fail`, `lie`.
+const FAKE_CARGO: &str = r#"#!/bin/sh
+printf '%s|%s\n' "$(pwd -P)" "$*" >>"$AE_FIX/cargo.log"
+walk() {
+    d=$(pwd -P)
+    while :; do
+        if [ -f "$d/.cargo/config.toml" ]; then
+            v=$(sed -n "s/^$1 *= *\"\\(.*\\)\"\$/\\1/p" "$d/.cargo/config.toml" | head -1)
+            if [ -n "$v" ]; then printf '%s\n' "$v"; return; fi
+        fi
+        [ "$d" = / ] && break
+        d=$(dirname "$d")
+    done
+    printf '%s/target\n' "$(pwd -P)"
+}
+cmd=$1
+shift
+case "$cmd" in
+metadata)
+    [ ! -f "$AE_FIX/metadata.fail" ] || exit 1
+    printf '{"packages":[],"workspace_members":[],"target_directory":"%s","build_directory":"%s","version":1}\n' "$(walk target-dir)" "$(walk build-dir)"
+    ;;
+clean)
+    dry=no; tdir=""; tgt=""; prof=dev
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) dry=yes ;;
+            --target-dir) tdir=$2; shift ;;
+            --target) tgt=$2; shift ;;
+            --profile) prof=$2; shift ;;
+            --manifest-path) shift ;;
+        esac
+        shift
+    done
+    if [ -n "$tdir" ] && [ ! -f "$tdir/CACHEDIR.TAG" ]; then
+        echo "error: cannot clean $tdir: missing or invalid CACHEDIR.TAG file" >&2
+        exit 101
+    fi
+    base=${tdir:-$(pwd -P)/target}
+    if [ -n "$tgt" ]; then dirs="$base/release $base/$tgt/release"; elif [ "$prof" = release ]; then dirs=$base/release; else dirs=$base/debug; fi
+    list=$(for dir in $dirs; do find -P "$dir" -name 'ae-*' -prune -print 2>/dev/null; done)
+    n=$(printf '%s\n' "$list" | grep -c .)
+    if [ "$dry" = yes ]; then
+        [ ! -f "$AE_FIX/clean.fail" ] || exit 1
+        [ -z "$list" ] || printf '%s\n' "$list"
+        if [ -f "$AE_FIX/lie" ]; then
+            case "$dirs" in *"$(head -1 "$AE_FIX/lie")"*) sed 1d "$AE_FIX/lie" ;; esac
+        fi
+        echo "     Summary $n files, 1B total" >&2
+        echo "warning: no files deleted due to --dry-run" >&2
+    else
+        printf '%s\n' "$list" | while IFS= read -r p; do [ -z "$p" ] || rm -rf "$p"; done
+        echo "     Removed $n files, 1B total" >&2
+    fi
+    ;;
+esac
+"#;
+
+/// The first `tool` in `dirs`, then on `PATH`.
+fn tool_path(tool: &str, dirs: &[&str]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    dirs.iter()
+        .map(PathBuf::from)
+        .chain(std::env::split_paths(&path))
+        .map(|dir| dir.join(tool))
+        .find(|file| file.is_file())
+}
+
+/// Write `text` to `path`, creating its parent directories.
+fn put(path: &Path, text: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|why| panic!("{}: {why}", parent.display()));
+    }
+    std::fs::write(path, text).unwrap_or_else(|why| panic!("{}: {why}", path.display()));
+}
+
+/// One finished command: its exit code (`-1` when a signal ended it) and both streams.
+struct Ran {
+    code: i32,
+    out: String,
+    err: String,
+}
+
+/// A throwaway checkout for the `rust-prune` pins: a git repository `tree` whose five target
+/// trees each hold an `ae-unit` and an `other/keep`, beside a `bin` that is the recipe's WHOLE
+/// `PATH`. `bin` links the real `just`, `git`, `bash` and the few tools the recipe and the fake
+/// cargo use, and holds the fake `cargo` and a `ps` that is the real one unless `ps.fail` or
+/// `ps.extra` (rows appended to the table) say otherwise. There is no `lsof` until a test adds
+/// one. Knobs are files in `base`, which the fakes read through `$AE_FIX`.
+struct Prune {
+    base: super::cli::OwnedScratch,
+    tree: PathBuf,
+}
+
+impl Prune {
+    fn new(tag: &str) -> Self {
+        let base = super::cli::OwnedScratch::root("gate", tag);
+        std::fs::create_dir_all(base.join("tree")).unwrap_or_else(|why| panic!("the tree: {why}"));
+        let tree = std::fs::canonicalize(base.join("tree"))
+            .unwrap_or_else(|why| panic!("the tree's real path: {why}"));
+        let fixture = Self { base, tree };
+        fixture.stock_bin();
+        put(
+            &fixture.tree.join("Cargo.toml"),
+            "[package]\nname = \"ae\"\nversion = \"0.0.0\"\n",
+        );
+        for tree in PRUNE_TREES {
+            put(&fixture.tree.join(tree).join("ae-unit/payload"), "x\n");
+            put(&fixture.tree.join(tree).join("other/keep"), "x\n");
+        }
+        for guard in ["force-warn-guard", "world-read-guard"] {
+            put(
+                &fixture.tree.join("target").join(guard).join("CACHEDIR.TAG"),
+                "Signature: 8a477f597d28d172789f06886806bc55\n",
+            );
+        }
+        let init = fixture.exec(&fixture.tree, "git", &["init", "-q"], &[]);
+        assert_eq!(init.code, 0, "git init: {}", init.err);
+        fixture
+    }
+
+    fn bin(&self) -> PathBuf {
+        self.base.join("bin")
+    }
+
+    fn stock_bin(&self) {
+        std::fs::create_dir_all(self.bin()).unwrap_or_else(|why| panic!("the fakes' dir: {why}"));
+        for (tool, system) in [
+            ("just", false),
+            ("git", false),
+            ("bash", true),
+            ("sed", true),
+            ("head", true),
+            ("dirname", true),
+            ("find", true),
+            ("grep", true),
+            ("rm", true),
+            ("cat", true),
+        ] {
+            let dirs: &[&str] = if system { &["/bin", "/usr/bin"] } else { &[] };
+            let real = tool_path(tool, dirs).unwrap_or_else(|| panic!("{tool} must be installed"));
+            std::os::unix::fs::symlink(real, self.bin().join(tool))
+                .unwrap_or_else(|why| panic!("the linked {tool}: {why}"));
+        }
+        let ps = tool_path("ps", &["/bin", "/usr/bin"])
+            .unwrap_or_else(|| panic!("ps must be installed"));
+        self.install(
+            "ps",
+            &format!(
+                "#!/bin/sh\n[ ! -f \"$AE_FIX/ps.fail\" ] || exit 1\n{} \"$@\"\n\
+                 [ ! -f \"$AE_FIX/ps.extra\" ] || cat \"$AE_FIX/ps.extra\"\nexit 0\n",
+                ps.display()
+            ),
+        );
+        self.install("cargo", FAKE_CARGO);
+    }
+
+    /// An executable `name` in `bin`, replacing whatever is there.
+    fn install(&self, name: &str, body: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let file = self.bin().join(name);
+        let _ = std::fs::remove_file(&file);
+        put(&file, body);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|why| panic!("the fake {name}: {why}"));
+    }
+
+    /// A fake `lsof` that prints the `lsof.out` knob, or fails when `lsof.fail` exists.
+    fn install_fake_lsof(&self) {
+        self.install(
+            "lsof",
+            "#!/bin/sh\n[ ! -f \"$AE_FIX/lsof.fail\" ] || exit 1\ncat \"$AE_FIX/lsof.out\"\n",
+        );
+    }
+
+    fn knob(&self, name: &str, text: &str) {
+        put(&self.base.join(name), text);
+    }
+
+    fn clear(&self, name: &str) {
+        let _ = std::fs::remove_file(self.base.join(name));
+    }
+
+    /// The command's environment: nothing inherited, `bin` the only `PATH` entry.
+    fn environment(&self, invocation: Invocation) -> Invocation {
+        invocation
+            .env_cleared()
+            .env("PATH", self.bin())
+            .env("HOME", &*self.base)
+            .env("TMPDIR", &*self.base)
+            .env("AE_FIX", &*self.base)
+            .env("GIT_CONFIG_GLOBAL", self.base.join("gitconfig"))
+    }
+
+    fn finish(&self, invocation: &Invocation, cwd: &Path, name: &str) -> Ran {
+        let out = self.base.join(format!("capture-{name}.out"));
+        let err = self.base.join(format!("capture-{name}.err"));
+        let status = raw::run(invocation, cwd, &out, &err)
+            .unwrap_or_else(|why| panic!("{name} must be runnable: {why}"));
+        Ran {
+            code: match status.outcome() {
+                ExitOutcome::Code(code) => code,
+                ExitOutcome::Signalled => -1,
+            },
+            out: std::fs::read_to_string(&out).unwrap_or_default(),
+            err: std::fs::read_to_string(&err).unwrap_or_default(),
+        }
+    }
+
+    fn exec(&self, cwd: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -> Ran {
+        let mut invocation = self.environment(Invocation::new(self.bin().join(program)));
+        for arg in args {
+            invocation = invocation.arg(arg);
+        }
+        for (key, value) in env {
+            invocation = invocation.env(key, value);
+        }
+        self.finish(&invocation, cwd, program)
+    }
+
+    /// `just rust-prune <args>` for the checkout, started in it.
+    fn prune(&self, args: &[&str], env: &[(&str, &str)]) -> Ran {
+        self.prune_in(&self.tree, &self.tree, args, env)
+    }
+
+    /// `just rust-prune <args>` for the checkout at `working`, started from `at`.
+    fn prune_in(&self, at: &Path, working: &Path, args: &[&str], env: &[(&str, &str)]) -> Ran {
+        let mut invocation = self
+            .environment(Invocation::new(self.bin().join("just")))
+            .arg("--justfile")
+            .arg(root().join("justfile"))
+            .arg("--working-directory")
+            .arg(working)
+            .arg("rust-prune");
+        for arg in args {
+            invocation = invocation.arg(arg);
+        }
+        for (key, value) in env {
+            invocation = invocation.env(key, value);
+        }
+        self.finish(&invocation, at, "just")
+    }
+
+    /// Every `<cwd>|<argv>` line the fake cargo logged.
+    fn cargo_log(&self) -> Vec<String> {
+        std::fs::read_to_string(self.base.join("cargo.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// How many logged cargo calls were real cleans (not `--dry-run`).
+    fn real_cleans(&self) -> usize {
+        self.cargo_log()
+            .iter()
+            .filter(|line| line.contains("|clean ") && !line.contains("--dry-run"))
+            .count()
+    }
+
+    fn unit(&self, tree: &str) -> PathBuf {
+        self.tree.join(tree).join("ae-unit/payload")
+    }
+
+    /// Whether every tree still holds its `ae-unit`.
+    fn alive(&self) -> bool {
+        PRUNE_TREES.iter().all(|tree| self.unit(tree).is_file())
+    }
+
+    /// Whether no tree holds its `ae-unit` any more.
+    fn gone(&self) -> bool {
+        PRUNE_TREES.iter().all(|tree| !self.unit(tree).exists())
+    }
+
+    /// Whether every tree still holds its `other/keep`.
+    fn kept(&self) -> bool {
+        PRUNE_TREES
+            .iter()
+            .all(|tree| self.tree.join(tree).join("other/keep").is_file())
+    }
+
+    /// Move the checkout's `rel` to `<base>/<to>` and leave a link to it in its place.
+    fn relink(&self, rel: &str, to: &str) -> PathBuf {
+        let moved = self.base.join(to);
+        std::fs::rename(self.tree.join(rel), &moved)
+            .and_then(|()| std::os::unix::fs::symlink(&moved, self.tree.join(rel)))
+            .unwrap_or_else(|why| panic!("linking {rel}: {why}"));
+        moved
+    }
+
+    /// Undo [`Prune::relink`].
+    fn unlink(&self, rel: &str, moved: &Path) {
+        std::fs::remove_file(self.tree.join(rel))
+            .and_then(|()| std::fs::rename(moved, self.tree.join(rel)))
+            .unwrap_or_else(|why| panic!("restoring {rel}: {why}"));
+    }
+}
+
+/// The cargo calls a clean run makes in `tree`: metadata, the five dry runs and, when `apply`,
+/// the five real cleans, in that order.
+fn expected_cargo(tree: &Path, apply: bool) -> Vec<String> {
+    let t = tree.display();
+    let head = format!("{t}|clean --locked --manifest-path {t}/Cargo.toml -p ae");
+    let flags = [
+        "--profile dev".to_owned(),
+        "--profile release".to_owned(),
+        "--profile release --target x86_64-unknown-linux-musl".to_owned(),
+        format!("--profile dev --target-dir {t}/target/force-warn-guard"),
+        format!("--profile dev --target-dir {t}/target/world-read-guard"),
+    ];
+    let mut log = vec![format!(
+        "{t}|metadata --no-deps --locked --format-version 1 --manifest-path {t}/Cargo.toml"
+    )];
+    log.extend(
+        flags
+            .iter()
+            .map(|flag| format!("{head} {flag} --dry-run --verbose")),
+    );
+    if apply {
+        log.extend(flags.iter().map(|flag| format!("{head} {flag}")));
+    }
+    log
+}
+
+/// A refusal: exit 1, the recipe's own `rust-prune: refused:` line, and `why` in it.
+fn assert_refused(ran: &Ran, why: &str) {
+    assert_eq!(ran.code, 1, "a refusal exits 1: {}{}", ran.out, ran.err);
+    assert!(
+        ran.err.contains("rust-prune: refused: "),
+        "the recipe's own refusal line: {}",
+        ran.err
+    );
+    assert!(
+        ran.err.contains(why),
+        "the refusal names `{why}`: {}",
+        ran.err
+    );
+}
+
+/// A process that outlives its starter so the recipe can find it; killed when dropped.
+struct Sleeper {
+    pid: String,
+    dir: PathBuf,
+}
+
+impl Sleeper {
+    /// `sh -c 'sleep 30; :' <argv0>`: a process whose argv names `argv0`, started in `cwd`.
+    fn with_argv(fixture: &Prune, cwd: &Path, argv0: &str) -> Self {
+        Self::start(
+            fixture,
+            cwd,
+            "sh -c 'sleep 30; :' \"$1\" </dev/null >/dev/null 2>&1 & echo $! >\"$2\"",
+            argv0,
+        )
+    }
+
+    /// `sleep 30` with `cwd` as its working directory.
+    fn in_dir(fixture: &Prune, cwd: &Path) -> Self {
+        Self::start(
+            fixture,
+            cwd,
+            "sleep 30 </dev/null >/dev/null 2>&1 & echo $! >\"$2\"",
+            "-",
+        )
+    }
+
+    fn start(fixture: &Prune, cwd: &Path, script: &str, first: &str) -> Self {
+        let pidfile = fixture.base.join("sleeper.pid");
+        let _ = std::fs::remove_file(&pidfile);
+        let invocation = Invocation::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .arg("starter")
+            .arg(first)
+            .arg(&pidfile);
+        let status = raw::run(
+            &invocation,
+            cwd,
+            &fixture.base.join("start.out"),
+            &fixture.base.join("start.err"),
+        )
+        .unwrap_or_else(|why| panic!("the sleeper starts: {why}"));
+        assert!(matches!(status.outcome(), ExitOutcome::Code(0)));
+        let pid = wait_written(&pidfile).trim().to_owned();
+        assert!(!pid.is_empty(), "the sleeper wrote its pid");
+        Self {
+            pid,
+            dir: fixture.base.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for Sleeper {
+    fn drop(&mut self) {
+        let _ = raw::run(
+            &Invocation::new("kill").arg(&self.pid),
+            &self.dir,
+            &self.dir.join("kill.out"),
+            &self.dir.join("kill.err"),
+        );
+    }
+}
+
+/// `just rust-prune` reports by default: one `would clean` line per tree, cargo asked only for
+/// the build directories and five dry runs, nothing removed.
+#[test]
+fn rust_prune_reports_by_default_and_removes_nothing() {
+    let fixture = Prune::new("prune-report");
+    let ran = fixture.prune(&[], &[]);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    for label in PRUNE_LABELS {
+        assert!(
+            ran.out.contains(&format!("would clean {label}: ")),
+            "a report line for {label}: {}",
+            ran.out
+        );
+    }
+    assert!(
+        ran.out.contains("report only, nothing removed"),
+        "{}",
+        ran.out
+    );
+    assert_eq!(fixture.cargo_log(), expected_cargo(&fixture.tree, false));
+    assert!(
+        fixture.alive() && fixture.kept(),
+        "a report removes nothing"
+    );
+}
+
+/// `apply=yes` runs the five cleans, in order, each from the checkout, after all five dry
+/// runs; the ae units go and every other file stays.
+#[test]
+fn rust_prune_apply_yes_runs_the_five_cleans_and_touches_nothing_else() {
+    let fixture = Prune::new("prune-apply");
+    put(&fixture.tree.join("src/main.rs"), "fn main() {}\n");
+    let ran = fixture.prune(&["apply=yes"], &[]);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    for label in PRUNE_LABELS {
+        assert!(
+            ran.out.contains(&format!("cleaned {label}: ")),
+            "an apply line for {label}: {}",
+            ran.out
+        );
+    }
+    assert_eq!(fixture.cargo_log(), expected_cargo(&fixture.tree, true));
+    assert!(fixture.gone(), "the ae units are cleaned");
+    assert!(fixture.kept(), "every other file stays");
+    assert!(fixture.tree.join("src/main.rs").is_file());
+    assert!(fixture.tree.join("Cargo.toml").is_file());
+}
+
+/// Anything but nothing or exactly `apply=yes` is a usage error, before cargo is asked.
+#[test]
+fn rust_prune_takes_no_argument_or_exactly_apply_yes() {
+    let fixture = Prune::new("prune-usage");
+    for word in ["yes", "apply=no", "everything"] {
+        let ran = fixture.prune(&[word], &[]);
+        assert_eq!(
+            ran.code, 2,
+            "`{word}` is a usage error: {}{}",
+            ran.out, ran.err
+        );
+        assert!(ran.err.contains("takes no argument"), "{}", ran.err);
+        assert!(fixture.cargo_log().is_empty(), "`{word}` asked cargo");
+    }
+    assert!(fixture.alive());
+}
+
+/// A redirect variable hides the real build directory, so a SET one refuses, whatever it names.
+#[test]
+fn rust_prune_refuses_a_set_redirect_variable_before_asking_cargo_anything() {
+    let fixture = Prune::new("prune-env");
+    for var in [
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
+        "CARGO_BUILD_TARGET",
+    ] {
+        let ran = fixture.prune(&["apply=yes"], &[(var, "/elsewhere")]);
+        assert_refused(&ran, var);
+        assert!(fixture.cargo_log().is_empty(), "{var} reached cargo");
+        assert!(fixture.alive(), "{var} removed something");
+    }
+}
+
+/// Cargo finds `.cargo/config.toml` from the working directory and its parents, never from
+/// `--manifest-path`, so the recipe asks from the checkout and judges THAT config: a redirect
+/// in the checkout's own, or a parent's, refuses, and one only the caller has does not.
+#[test]
+fn rust_prune_judges_the_checkouts_cargo_config_not_the_callers() {
+    let fixture = Prune::new("prune-config");
+    let redirect =
+        |key: &str, dir: &str| format!("[build]\n{key} = \"{}/{dir}\"\n", fixture.base.display());
+
+    // The caller sits in a directory with a redirect; the checkout has none.
+    let caller = fixture.base.join("caller");
+    put(
+        &caller.join(".cargo/config.toml"),
+        &redirect("target-dir", "caller-out"),
+    );
+    let ran = fixture.prune_in(&caller, &fixture.tree, &[], &[]);
+    assert_eq!(
+        ran.code, 0,
+        "the caller's config is not the checkout's: {}{}",
+        ran.out, ran.err
+    );
+    let prefix = format!("{}|", fixture.tree.display());
+    assert!(
+        fixture
+            .cargo_log()
+            .iter()
+            .all(|line| line.starts_with(&prefix)),
+        "cargo ran from the checkout: {:?}",
+        fixture.cargo_log()
+    );
+
+    // The checkout's own config, the other way round, or a parent directory's.
+    let clean_caller = fixture.base.join("clean-caller");
+    std::fs::create_dir_all(&clean_caller).unwrap_or_else(|why| panic!("a caller dir: {why}"));
+    let own = fixture.tree.join(".cargo/config.toml");
+    let parent = fixture.base.join(".cargo/config.toml");
+    for (file, key, guard) in [
+        (&own, "target-dir", "target_directory"),
+        (&own, "build-dir", "build_directory"),
+        (&parent, "target-dir", "target_directory"),
+    ] {
+        fixture.clear("cargo.log");
+        put(file, &redirect(key, "elsewhere"));
+        let ran = fixture.prune_in(&clean_caller, &fixture.tree, &["apply=yes"], &[]);
+        assert_refused(&ran, guard);
+        assert!(
+            ran.err.contains("a redirect in a cargo config"),
+            "{}",
+            ran.err
+        );
+        assert_eq!(fixture.real_cleans(), 0, "{guard} cleaned something");
+        assert!(fixture.alive(), "{guard} removed something");
+        std::fs::remove_file(file).unwrap_or_else(|why| panic!("{}: {why}", file.display()));
+    }
+}
+
+/// It judges the one checkout it runs at the root of: a subdirectory refuses, a link to the
+/// root works and cargo still runs from the real path.
+#[test]
+fn rust_prune_wants_the_checkout_root_and_resolves_a_linked_working_directory() {
+    let fixture = Prune::new("prune-root");
+    let sub = fixture.tree.join("src");
+    std::fs::create_dir_all(&sub).unwrap_or_else(|why| panic!("a subdirectory: {why}"));
+    let ran = fixture.prune_in(&sub, &sub, &[], &[]);
+    assert_refused(&ran, "run it from the checkout root");
+    assert!(fixture.cargo_log().is_empty());
+
+    let link = fixture.base.join("tree-link");
+    std::os::unix::fs::symlink(&fixture.tree, &link)
+        .unwrap_or_else(|why| panic!("a link to the checkout: {why}"));
+    let ran = fixture.prune_in(&link, &link, &[], &[]);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    assert_eq!(fixture.cargo_log(), expected_cargo(&fixture.tree, false));
+}
+
+/// With no `target/` there is nothing to judge and cargo is never asked.
+#[test]
+fn rust_prune_with_no_target_directory_does_nothing() {
+    let fixture = Prune::new("prune-none");
+    std::fs::remove_dir_all(fixture.tree.join("target")).unwrap_or_else(|why| panic!("{why}"));
+    let ran = fixture.prune(&["apply=yes"], &[]);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    assert!(ran.out.contains("nothing to do"), "{}", ran.out);
+    assert!(fixture.cargo_log().is_empty());
+}
+
+/// A cargo that lists a path outside the build directory (or its guard's own), through a dot
+/// segment, or through a link is not trusted with the real clean: all five dry runs happen
+/// first, so nothing is cleaned and the file outside survives.
+#[test]
+fn rust_prune_refuses_a_dry_run_path_that_escapes_and_cleans_nothing() {
+    let fixture = Prune::new("prune-escape");
+    let outside = fixture.base.join("outside");
+    put(&outside.join("victim"), "x\n");
+    std::os::unix::fs::symlink(&outside, fixture.tree.join("target/debug/linkdir"))
+        .and_then(|()| {
+            std::os::unix::fs::symlink(
+                &outside,
+                fixture
+                    .tree
+                    .join("target/world-read-guard/debug/incremental"),
+            )
+        })
+        .unwrap_or_else(|why| panic!("the links: {why}"));
+    let t = fixture.tree.display();
+    for (filter, line, why) in [
+        (
+            "/target/debug",
+            format!("{}/victim", outside.display()),
+            "outside",
+        ),
+        (
+            "/target/debug",
+            format!("{t}/target/debug/../../evil"),
+            "dot segment",
+        ),
+        (
+            "/target/debug",
+            format!("{t}/target/debug/linkdir/victim"),
+            "through a link",
+        ),
+        (
+            "world-read-guard",
+            format!("{t}/target/world-read-guard/debug/incremental/victim"),
+            "through a link",
+        ),
+        (
+            "force-warn-guard",
+            format!("{t}/target/debug/ae-unit/payload"),
+            "outside",
+        ),
+    ] {
+        fixture.clear("cargo.log");
+        fixture.knob("lie", &format!("{filter}\n{line}\n"));
+        let ran = fixture.prune(&["apply=yes"], &[]);
+        assert_refused(&ran, "cargo would remove");
+        assert!(ran.err.contains(why), "{why}: {}", ran.err);
+        assert_eq!(
+            fixture.real_cleans(),
+            0,
+            "{why}: {line} reached a real clean"
+        );
+        assert!(
+            outside.join("victim").is_file(),
+            "{why}: the outside file survived"
+        );
+        assert!(fixture.alive(), "{why}: nothing was removed");
+    }
+}
+
+/// `target/`, or a tree the recipe cleans, that is a LINK is refused whole, so a clean never
+/// walks out through it: the file the link points at survives.
+#[test]
+fn rust_prune_refuses_a_linked_tree_and_removes_nothing_through_it() {
+    let fixture = Prune::new("prune-links");
+    for (rel, to) in [
+        ("target/force-warn-guard", "moved-guard"),
+        ("target/world-read-guard", "moved-world"),
+        ("target/debug", "moved-debug"),
+        ("target/x86_64-unknown-linux-musl", "moved-musl"),
+        ("target", "moved-target"),
+    ] {
+        let moved = fixture.relink(rel, to);
+        let ran = fixture.prune(&["apply=yes"], &[]);
+        assert_refused(&ran, "is not a plain directory");
+        assert_eq!(fixture.real_cleans(), 0, "{rel} cleaned something");
+        let kept = std::fs::read_dir(&moved).map_or(0, Iterator::count);
+        assert!(kept > 0, "{rel}: the linked directory is intact");
+        fixture.unlink(rel, &moved);
+        assert!(fixture.alive(), "{rel}: restored and untouched");
+    }
+}
+
+/// Cargo's own failure stops the run with its message, and a build directory it cannot name
+/// is no build directory: nothing is cleaned in any of the three cases.
+#[test]
+fn rust_prune_stops_on_a_cargo_failure_and_shows_why() {
+    let fixture = Prune::new("prune-cargo");
+    fixture.knob("metadata.fail", "");
+    assert_refused(&fixture.prune(&["apply=yes"], &[]), "cargo metadata failed");
+    fixture.clear("metadata.fail");
+
+    fixture.knob("clean.fail", "");
+    assert_refused(
+        &fixture.prune(&["apply=yes"], &[]),
+        "cargo clean --dry-run failed for debug",
+    );
+    fixture.clear("clean.fail");
+
+    let tag = fixture.tree.join("target/force-warn-guard/CACHEDIR.TAG");
+    std::fs::remove_file(&tag).unwrap_or_else(|why| panic!("{why}"));
+    let ran = fixture.prune(&["apply=yes"], &[]);
+    assert_refused(&ran, "cargo clean --dry-run failed for force-warn-guard");
+    assert!(
+        ran.err.contains("CACHEDIR.TAG"),
+        "cargo's message is shown: {}",
+        ran.err
+    );
+    assert_eq!(fixture.real_cleans(), 0);
+    assert!(fixture.alive());
+}
+
+/// A process outside the run's own ancestry that names the checkout in its argv, or has its
+/// working directory in it, blocks the prune before cargo is asked; `ps` is required, `lsof`
+/// is read when installed, and a sibling directory sharing the checkout's name prefix is not it.
+#[test]
+fn rust_prune_refuses_a_process_using_the_checkout() {
+    let fixture = Prune::new("prune-use");
+    let t = fixture.tree.display().to_string();
+
+    fixture.knob(
+        "ps.extra",
+        &format!("424242 1 {t}/target/debug/deps/ae-123 --nocapture\n"),
+    );
+    assert_refused(&fixture.prune(&[], &[]), "pid 424242 is running under");
+    fixture.clear("ps.extra");
+    fixture.knob("ps.fail", "");
+    assert_refused(&fixture.prune(&[], &[]), "ps failed");
+    fixture.clear("ps.fail");
+    assert!(
+        fixture.cargo_log().is_empty(),
+        "a busy checkout reached cargo"
+    );
+
+    fixture.install_fake_lsof();
+    fixture.knob("lsof.out", &format!("p424242\nfcwd\nn{t}/src\n"));
+    assert_refused(
+        &fixture.prune(&[], &[]),
+        "pid 424242 has its working directory under",
+    );
+    fixture.knob("lsof.out", &format!("p424242\nfcwd\nn{t}\n"));
+    assert_refused(
+        &fixture.prune(&[], &[]),
+        "pid 424242 has its working directory under",
+    );
+    fixture.knob("lsof.fail", "");
+    assert_refused(&fixture.prune(&[], &[]), "lsof failed");
+    fixture.clear("lsof.fail");
+    assert!(
+        fixture.cargo_log().is_empty(),
+        "a busy checkout reached cargo"
+    );
+
+    fixture.knob(
+        "lsof.out",
+        &format!("p424242\nfcwd\nn{t}-sibling\np424243\nfcwd\nn/\n"),
+    );
+    let ran = fixture.prune(&[], &[]);
+    assert_eq!(
+        ran.code, 0,
+        "only a path INSIDE the checkout counts: {}{}",
+        ran.out, ran.err
+    );
+}
+
+/// With the real `ps`: a run whose own ancestor names the checkout is still its own
+/// (the exemption is the proven ancestry), while an unrelated process with an argv under
+/// `target/` refuses.
+#[test]
+fn rust_prune_exempts_its_own_ancestry_but_not_an_unrelated_argv() {
+    let fixture = Prune::new("prune-argv");
+    let t = fixture.tree.display().to_string();
+    let wrapped = fixture
+        .environment(Invocation::new("/bin/sh"))
+        .arg("-c")
+        .arg("\"$@\"; :")
+        .arg(format!("{t}/target/debug/deps/ae-own-run"))
+        .arg(fixture.bin().join("just"))
+        .arg("--justfile")
+        .arg(root().join("justfile"))
+        .arg("--working-directory")
+        .arg(&fixture.tree)
+        .arg("rust-prune");
+    let own = fixture.finish(&wrapped, &fixture.tree, "wrapped");
+    assert_eq!(
+        own.code, 0,
+        "an ancestor's argv under the checkout is the run's own: {}{}",
+        own.out, own.err
+    );
+
+    let _stray = Sleeper::with_argv(
+        &fixture,
+        &fixture.base,
+        &format!("{t}/target/debug/deps/ae-stray"),
+    );
+    let ran = fixture.prune(&[], &[]);
+    assert_refused(&ran, "is running under");
+    assert!(
+        ran.err.contains("ae-stray"),
+        "the process is named: {}",
+        ran.err
+    );
+    assert_eq!(fixture.real_cleans(), 0);
+}
+
+/// With the real `lsof`: the run's own shells have the checkout as their working directory and
+/// are exempt; an unrelated process there refuses. Skipped, loudly, where `lsof` is not installed
+/// (the recipe treats it as optional).
+#[test]
+fn rust_prune_exempts_its_own_working_directory_but_not_an_unrelated_one() {
+    let Some(lsof) = tool_path("lsof", &["/usr/sbin", "/usr/bin", "/sbin", "/bin"]) else {
+        eprintln!("note: lsof is not installed, so the working-directory pin is skipped");
+        return;
+    };
+    let fixture = Prune::new("prune-cwd");
+    std::os::unix::fs::symlink(lsof, fixture.bin().join("lsof"))
+        .unwrap_or_else(|why| panic!("the linked lsof: {why}"));
+    let own = fixture.prune(&[], &[]);
+    assert_eq!(
+        own.code, 0,
+        "the run's own working directory is exempt: {}{}",
+        own.out, own.err
+    );
+
+    let _stray = Sleeper::in_dir(&fixture, &fixture.tree);
+    let ran = fixture.prune(&[], &[]);
+    assert_refused(&ran, "has its working directory under");
+    assert_eq!(fixture.real_cleans(), 0);
+}
+
+/// What is wrong with the `rust-prune` recipe body `lines`, empty when nothing is: no hand
+/// deletion and no glob, nothing a lead-only wrapper owns, nothing GNU-only, the two guard
+/// trees named, and cargo asked for exactly one `metadata` and two `clean`s, each locked, scoped
+/// to `ae` and pointed at the manifest.
+fn prune_recipe_defects(lines: &[String]) -> Vec<String> {
+    let mut defects = Vec::new();
+    let text = lines.join("\n");
+    if lines.is_empty() {
+        defects.push("no recipe body".to_owned());
+    }
+    for word in ["rm", "rmdir", "unlink", "shred"] {
+        if bare_word_count(&text, word) > 0 {
+            defects.push(format!("the recipe calls `{word}`"));
+        }
+    }
+    for forbidden in [
+        "-delete",
+        "*-guard",
+        "git clean",
+        "git worktree",
+        ".local",
+        "ae-wt",
+        "AE_GATE",
+        "locks/gate",
+        "readlink -f",
+        "stat -c",
+        "flock",
+        "timeout ",
+        "grep -P",
+        "sed -i",
+    ] {
+        if text.contains(forbidden) {
+            defects.push(format!("the recipe contains `{forbidden}`"));
+        }
+    }
+    for tree in [
+        "force-warn-guard",
+        "world-read-guard",
+        "x86_64-unknown-linux-musl",
+    ] {
+        if !text.contains(tree) {
+            defects.push(format!("the recipe never names `{tree}`"));
+        }
+    }
+    let calls: Vec<&str> = text
+        .split("$(cargo ")
+        .skip(1)
+        .filter_map(|rest| rest.split_whitespace().next())
+        .collect();
+    if calls != ["metadata", "clean", "clean"] {
+        defects.push(format!("cargo is called as {calls:?}"));
+    }
+    for line in lines.iter().filter(|line| line.contains("$(cargo ")) {
+        let need: &[&str] = if line.contains("$(cargo metadata") {
+            &["--locked", "--no-deps", "--manifest-path"]
+        } else {
+            &["--locked", " -p ae", "--manifest-path"]
+        };
+        for flag in need {
+            if !line.contains(flag) {
+                defects.push(format!("`{flag}` is missing from `{line}`"));
+            }
+        }
+    }
+    defects
+}
+
+/// The recipe's text obeys [`prune_recipe_defects`], and each deliberately broken body is caught.
+#[test]
+fn the_rust_prune_recipe_has_no_hand_deletion_no_private_machinery_and_scoped_cargo() {
+    let justfile = read(&root().join("justfile"));
+    assert!(
+        justfile
+            .lines()
+            .any(|line| line == "set positional-arguments"),
+        "the recipe reads its argument as $1, which needs positional arguments"
+    );
+    let good = recipe_text(&justfile, "rust-prune apply=\"\":");
+    assert!(!good.is_empty(), "the recipe exists");
+    assert_eq!(prune_recipe_defects(&good), Vec::<String>::new());
+
+    let with = |extra: &str| {
+        let mut lines = good.clone();
+        lines.push(extra.to_owned());
+        lines
+    };
+    let swapped = |from: &str, to: &str| -> Vec<String> {
+        good.iter().map(|line| line.replace(from, to)).collect()
+    };
+    for (name, body) in [
+        ("rm", with("rm -rf \"$target\"")),
+        ("find -delete", with("find \"$target\" -delete")),
+        (
+            "a glob over the guards",
+            with("for g in \"$target\"/*-guard; do :; done"),
+        ),
+        ("the fleet lock", with("mkdir .local/locks/gate")),
+        ("a worktree path", with("cd ../ae-wt/x")),
+        ("GNU readlink", with("readlink -f \"$target\"")),
+        ("another cargo verb", with("x=\"$(cargo build)\"")),
+        ("an unlocked cargo", swapped("--locked", "")),
+        ("an unscoped clean", swapped(" -p ae", "")),
+        ("a dropped guard tree", swapped("world-read-guard", "other")),
+        ("an empty recipe", Vec::new()),
+    ] {
+        assert!(
+            !prune_recipe_defects(&body).is_empty(),
+            "{name} must be reported"
+        );
+    }
+}
+
+/// A real `cargo` in `cwd`, offline, with a clean environment: only what a toolchain needs, so
+/// a redirect variable the lane or a developer exports cannot reach it. Captures go to `scratch`.
+fn real_cargo(scratch: &Path, cwd: &Path, args: &[&str]) -> Ran {
+    let mut invocation = Invocation::new("cargo").env_cleared();
+    for key in [
+        "PATH",
+        "HOME",
+        "RUSTUP_TOOLCHAIN",
+        "RUSTUP_HOME",
+        "CARGO_HOME",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            invocation = invocation.env(key, value);
+        }
+    }
+    for arg in args {
+        invocation = invocation.arg(arg);
+    }
+    let out = scratch.join("cargo.out");
+    let err = scratch.join("cargo.err");
+    let status = raw::run(&invocation, cwd, &out, &err)
+        .unwrap_or_else(|why| panic!("cargo must be runnable: {why}"));
+    Ran {
+        code: match status.outcome() {
+            ExitOutcome::Code(code) => code,
+            ExitOutcome::Signalled => -1,
+        },
+        out: std::fs::read_to_string(&out).unwrap_or_default(),
+        err: std::fs::read_to_string(&err).unwrap_or_default(),
+    }
+}
+
+/// A one-package crate named `ae` with a lockfile, at `dir`.
+fn scratch_crate(scratch: &Path, dir: &Path) {
+    put(
+        &dir.join("Cargo.toml"),
+        "[package]\nname = \"ae\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    put(&dir.join("src/lib.rs"), "");
+    let made = real_cargo(scratch, dir, &["generate-lockfile", "--offline"]);
+    assert_eq!(
+        made.code, 0,
+        "a lockfile for the scratch crate: {}",
+        made.err
+    );
+}
+
+/// CONTRACT PIN, not a regression test: it describes real cargo and passes before the recipe
+/// exists. The recipe asks `cargo metadata` from the checkout because cargo reads
+/// `.cargo/config.toml` from the working directory and its parents; `--manifest-path`
+/// moves the manifest and leaves the config where the caller stands.
+#[test]
+fn cargo_metadata_follows_the_working_directorys_config_not_the_manifests() {
+    let scratch = super::cli::OwnedScratch::root("gate", "prune-cfg");
+    let base = std::fs::canonicalize(&*scratch).unwrap_or_else(|why| panic!("{why}"));
+    let (with_config, without) = (base.join("with"), base.join("without"));
+    scratch_crate(&base, &with_config);
+    scratch_crate(&base, &without);
+    put(
+        &with_config.join(".cargo/config.toml"),
+        &format!("[build]\ntarget-dir = \"{}/redirected\"\n", base.display()),
+    );
+    let ask = |cwd: &Path, manifest: &Path| {
+        let manifest = format!("{}/Cargo.toml", manifest.display());
+        let ran = real_cargo(
+            &base,
+            cwd,
+            &[
+                "metadata",
+                "--no-deps",
+                "--locked",
+                "--offline",
+                "--format-version",
+                "1",
+                "--manifest-path",
+                manifest.as_str(),
+            ],
+        );
+        assert_eq!(ran.code, 0, "cargo metadata: {}", ran.err);
+        ran.out
+    };
+    let moved = ask(&with_config, &without);
+    assert!(
+        moved.contains(&format!(
+            "\"target_directory\":\"{}/redirected\"",
+            base.display()
+        )),
+        "the config of the directory cargo runs in applies to another manifest: {moved}"
+    );
+    let left = ask(&without, &with_config);
+    assert!(
+        left.contains(&format!(
+            "\"target_directory\":\"{}/target\"",
+            with_config.display()
+        )),
+        "a manifest's own directory config does not apply from elsewhere: {left}"
+    );
+}
+
+/// CONTRACT PIN, not a regression test: the grammar `rust-prune` parses. `cargo clean -p ae
+/// --dry-run --verbose` prints the absolute paths it would remove on stdout and `Summary` on
+/// stderr and deletes nothing; a `--target` clean also lists the host units under
+/// `target/release` (why the recipe's root is `target/`); a `--target-dir` one without its
+/// `CACHEDIR.TAG` is refused by cargo.
+#[test]
+fn cargo_clean_dry_run_lists_absolute_paths_and_removes_nothing() {
+    let scratch = super::cli::OwnedScratch::root("gate", "prune-dry");
+    let base = std::fs::canonicalize(&*scratch).unwrap_or_else(|why| panic!("{why}"));
+    let krate = base.join("ae");
+    scratch_crate(&base, &krate);
+    let target = krate.join("target");
+    let fake_files = [
+        "debug/.fingerprint/ae-abc123/lib-ae",
+        "debug/incremental/ae-xyz/s-1/dep-graph.bin",
+        "debug/deps/libdep-keep.rlib",
+        "release/.fingerprint/ae-abc123/lib-ae",
+        "x86_64-unknown-linux-musl/release/.fingerprint/ae-abc123/lib-ae",
+        "force-warn-guard/debug/.fingerprint/ae-abc123/lib-ae",
+    ];
+    for rel in fake_files {
+        put(&target.join(rel), "x\n");
+    }
+    let tag = target.join("force-warn-guard/CACHEDIR.TAG");
+    put(&tag, "Signature: 8a477f597d28d172789f06886806bc55\n");
+    let manifest = format!("{}/Cargo.toml", krate.display());
+    let clean = |flags: &[&str]| {
+        let mut args = vec![
+            "clean",
+            "--locked",
+            "--manifest-path",
+            manifest.as_str(),
+            "-p",
+            "ae",
+        ];
+        args.extend_from_slice(flags);
+        args.extend(["--dry-run", "--verbose"]);
+        real_cargo(&base, &krate, &args)
+    };
+    let listed = |ran: &Ran, prefixes: &[String]| {
+        assert_eq!(ran.code, 0, "a dry run succeeds: {}", ran.err);
+        assert!(
+            ran.err.contains("Summary"),
+            "the summary is on stderr: {}",
+            ran.err
+        );
+        let lines: Vec<&str> = ran.out.lines().filter(|line| !line.is_empty()).collect();
+        assert!(!lines.is_empty(), "a dry run lists paths: {}", ran.err);
+        for line in &lines {
+            assert!(
+                prefixes
+                    .iter()
+                    .any(|prefix| line.starts_with(prefix.as_str())),
+                "`{line}` is an absolute path under one of {prefixes:?}"
+            );
+        }
+        ran.out.clone()
+    };
+    let t = target.display();
+    let dev = listed(&clean(&["--profile", "dev"]), &[format!("{t}/debug/")]);
+    assert!(
+        dev.contains("ae-abc123") && dev.contains("dep-graph.bin"),
+        "{dev}"
+    );
+    assert!(
+        !dev.contains("libdep-keep"),
+        "a dependency is not an ae unit: {dev}"
+    );
+    let musl = listed(
+        &clean(&[
+            "--profile",
+            "release",
+            "--target",
+            "x86_64-unknown-linux-musl",
+        ]),
+        &[
+            format!("{t}/release/"),
+            format!("{t}/x86_64-unknown-linux-musl/"),
+        ],
+    );
+    assert!(
+        musl.contains(&format!("{t}/release/")) && musl.contains("x86_64-unknown-linux-musl/"),
+        "a --target clean lists the host units too: {musl}"
+    );
+    let guard_dir = format!("{t}/force-warn-guard");
+    let guard = clean(&["--profile", "dev", "--target-dir", guard_dir.as_str()]);
+    listed(&guard, &[format!("{guard_dir}/debug/")]);
+    std::fs::remove_file(&tag).unwrap_or_else(|why| panic!("{why}"));
+    let untagged = clean(&["--profile", "dev", "--target-dir", guard_dir.as_str()]);
+    assert_ne!(untagged.code, 0, "cargo refuses an untagged target-dir");
+    assert!(untagged.err.contains("CACHEDIR.TAG"), "{}", untagged.err);
+    for rel in fake_files {
+        assert!(target.join(rel).is_file(), "a dry run left {rel} alone");
+    }
+}
