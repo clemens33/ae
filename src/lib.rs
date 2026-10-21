@@ -1609,8 +1609,13 @@ fn run_entry(
         entry::Route::Compact(tail) => {
             return run_compact(preamble, &tail, out, err);
         }
-        entry::Route::Attach => return run_bare_attach(preamble, true, out, err),
-        entry::Route::BareDetached => return run_bare_attach(preamble, false, out, err),
+        entry::Route::Attach => return run_bare_attach(preamble, Bare::App, out, err),
+        entry::Route::BareDetached => return run_bare_attach(preamble, Bare::Detached, out, err),
+        entry::Route::BareTmux => return run_bare_attach(preamble, Bare::Tmux, out, err),
+        entry::Route::TmuxNoAttach => {
+            write!(err, "{}", entry::TMUX_NO_ATTACH)?;
+            entry::EXIT_USAGE
+        }
         entry::Route::Launch(user) => {
             if user.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION) {
                 let Some(flags) = orchestrator::parse_launch_tail(&user[1..]) else {
@@ -1634,12 +1639,25 @@ fn run_entry(
     Ok(code)
 }
 
-/// Bare `ae`: list when already on the launch server, print the cross-server
-/// attach hint from another tmux, or attach this terminal and let tmux choose
-/// its most recent session. `attach` false (`ae --no-attach`) only names the command.
+/// Which bare form was typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bare {
+    /// `ae`: the app when both ends are a terminal, else the tmux view.
+    App,
+    /// `ae --tmux`: the tmux view, never the app.
+    Tmux,
+    /// `ae --no-attach`: the tmux view's attach command, printed.
+    Detached,
+}
+
+/// Bare `ae`: on a terminal, open the app over the recorded sessions — from
+/// outside tmux, or from a pane of ae's own server that is no seat. Otherwise
+/// list when already on the launch server, print the cross-server attach hint
+/// from another tmux, or attach this terminal and let tmux choose its most
+/// recent session. [`Bare::Detached`] only names the command.
 fn run_bare_attach(
     preamble: &entry::Preamble,
-    attach: bool,
+    bare: Bare,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
@@ -1651,12 +1669,24 @@ fn run_bare_attach(
         )?;
         return Ok(entry::EXIT_USAGE);
     };
+    let attach = bare != Bare::Detached;
+    // The app draws on this process's own streams, so it is a choice only
+    // when BOTH are a terminal; `app::run` refuses the rest again itself.
+    let app = bare == Bare::App
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
     if preamble.inside_tmux {
         let same_server = preamble.caller_server.as_ref().is_some_and(|caller| {
             let mut sockets = SocketPaths::asking(transport::observe_socket_path);
             sockets.proven_same(caller, server)
         });
         if same_server {
+            // The pane is read for the app alone.
+            if app && caller_pane_lands(preamble) {
+                out.flush()?;
+                err.flush()?;
+                return run_dispatch(&["app".to_owned()], out, err);
+            }
             return run_dispatch(&["list".to_owned()], out, err);
         }
         writeln!(
@@ -1692,6 +1722,13 @@ fn run_bare_attach(
         restored = restore::run(preamble, &verdicts, out, err)?;
     }
     let failed = u8::from(restored.failed > 0);
+    // AFTER the restore, so a restored session is drawn running, and BEFORE the
+    // server is asked, so a fleet that is all stopped still lands.
+    if app && !current_world(&preamble.home).1.sessions.is_empty() {
+        out.flush()?;
+        err.flush()?;
+        return Ok(run_dispatch(&["app".to_owned()], out, err)?.max(failed));
+    }
     if transport::session_names(server).is_some_and(|names| !names.is_empty()) {
         if attach {
             return Ok(transport::attach(server).max(failed));
@@ -1723,6 +1760,34 @@ fn run_bare_attach(
         writeln!(err, "Stopped sessions: {}", stopped.join(", "))?;
     }
     Ok(entry::EXIT_FAILED)
+}
+
+/// Whether the calling pane may draw the app, read on the caller's server —
+/// which the bare entry has just proven to be the launch server, so a pane id
+/// it answers for is a pane it owns.
+fn caller_pane_lands(preamble: &entry::Preamble) -> bool {
+    let viewer = preamble
+        .caller_server
+        .as_ref()
+        .zip(doors::calling_pane_id())
+        .and_then(|(caller, pane)| transport::observe_viewer(caller, &pane));
+    pane_may_land(viewer.as_ref(), |name| {
+        console::locate(&preamble.home, name).is_some()
+    })
+}
+
+/// Whether the calling pane may draw the app: tmux described it, it carries no
+/// `@ae_agent` (a seat or a monitor keeps the list), and its session is one
+/// this state root records — the home `app::run` would otherwise refuse. A chat
+/// pane is stamped `@ae_console`, never `@ae_agent`, so it lands. Anything
+/// unread fails closed to the list.
+fn pane_may_land(
+    viewer: Option<&tmux::ObservedViewer>,
+    recorded: impl FnOnce(&str) -> bool,
+) -> bool {
+    viewer.is_some_and(|viewer| {
+        viewer.agent.is_none() && viewer.session.as_deref().is_some_and(recorded)
+    })
 }
 
 /// `ae compact [name]` — resolve the target, path-check it, then hand the
@@ -3769,6 +3834,31 @@ pub fn run_with(
 
 #[cfg(test)]
 mod tests {
+
+    /// The seat-pane test of bare `ae`: only a described, unstamped pane whose
+    /// session is recorded draws the app; every other reading keeps the list.
+    #[test]
+    fn only_an_unstamped_pane_of_a_recorded_session_lands() {
+        let pane = |agent: Option<&str>, session: Option<&str>| crate::tmux::ObservedViewer {
+            agent: agent.map(ToOwned::to_owned),
+            session: session.map(ToOwned::to_owned),
+            ..crate::tmux::ObservedViewer::default()
+        };
+        let recorded = |name: &str| name == "one";
+        let lands =
+            |viewer: Option<&crate::tmux::ObservedViewer>| super::pane_may_land(viewer, recorded);
+        assert!(
+            lands(Some(&pane(None, Some("one")))),
+            "a plain or chat pane"
+        );
+        assert!(!lands(Some(&pane(Some("lead"), Some("one")))), "a seat");
+        assert!(
+            !lands(Some(&pane(None, Some("host")))),
+            "an unrecorded home"
+        );
+        assert!(!lands(Some(&pane(None, None))), "no session read");
+        assert!(!lands(None), "an unread pane fails closed");
+    }
 
     /// Every candidate keeps its runtime, in snapshot order, and every Running
     /// record is in the pane map even when nothing could be listed for it.

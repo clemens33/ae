@@ -1,8 +1,12 @@
 # Commands
 
 ```text
-ae                     Attach to the fleet server's most recently used session;
-                       inside that server, list the fleet instead
+ae                     Restore crashed sessions, then open the app on every recorded
+                       session, running or stopped, when stdin and stdout are a
+                       terminal; otherwise attach to the fleet server's most recently
+                       used session, and inside that server list the fleet
+ae --tmux              Bare ae with the tmux view: attach (list inside), never the app;
+                       --tmux --no-attach is a usage error, exit 2
 ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach]
                        Start or reattach a session. --dir selects its origin;
                        --no-attach prints the exact attach command and exits
@@ -122,7 +126,8 @@ See [Chat](../chat.md) for input, replies, coverage, and the follow view.
 ## `ae app`
 
 `ae app [session]` draws the fleet as a terminal UI beside the selected session's
-chat; it needs a terminal on stdin and stdout. `[workspace] chat = app` runs it in
+chat; it needs a terminal on stdin and stdout. Bare `ae` opens it on a terminal
+([tmux server](#tmux-server)). `[workspace] chat = app` runs it in
 the `chat` window. See [App](../app.md) for the layout, keys and ownership.
 
 ## `ae init`
@@ -236,10 +241,18 @@ With no checkout override, every new session starts on ae's isolated named serve
 tmux -L ae attach -t "=my-feature"
 ```
 
-Outside tmux, bare `ae` attaches to this server without a session target, so tmux chooses its most
-recently used session. Inside the same server, it behaves as `ae list`. When the server
-crashed it first resumes the sessions it held (`restore` in the config guide; `--no-attach` prints
-the attach command instead). From another tmux server it
+Outside tmux, bare `ae` first resumes the sessions a crashed server held (`restore` in the config
+guide). Then, with a terminal on both stdin and stdout and at least one recorded session, running
+or stopped, it opens [the app](../app.md) on the fleet; it creates and resumes nothing itself.
+Inside the same server it opens the app in the current pane, unless that pane is a seat's
+(`@ae_agent`, which keeps `ae list`; a chat pane is no seat) or tmux cannot describe it or its
+session is not one ae records, which also keep `ae list`.
+
+Otherwise — no terminal, `--no-attach`, `ae --tmux`, or no recorded session — bare `ae` attaches
+to this server without a session target, so tmux chooses its most recently used session; inside
+the same server it behaves as `ae list`; `--no-attach` prints the attach command instead, and
+`--tmux --no-attach` is a usage error (exit 2). With nothing to attach to it prints
+`ae: no running ae session. Start one with: ae <name>` and exits 1. From another tmux server it
 prints this line; a declared socket uses the corresponding `tmux -S <path> attach` form:
 
 ```text

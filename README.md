@@ -56,10 +56,10 @@ ae my-app
 ```bash
 ae my-feature                  # start or reattach a named session; after a reboot every agent resumes with its history
 ae my-feature --solo           # lead only, no colead
-ae                             # attach to the fleet server's most recent session
+ae                             # open the app on every recorded session; ae --tmux attaches tmux instead
 ```
 
-Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held, then attaches ([details](docs/reference/commands.md#tmux-server)).
+Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held, then opens the app on a terminal, else attaches ([details](docs/reference/commands.md#tmux-server)).
 
 **Ask your agent to bring in help:** just tell it what you need -- it knows how to spawn others and coordinate. *"Get a second agent to review the changes in src/"* or *"Spin up a pair programmer to help refactor auth."* Agents pick descriptive names, show up in their own tmux windows, and talk to each other directly.
 

@@ -10,6 +10,13 @@ client ([Opening a seat](#opening-a-seat)). `ae chat` is unchanged beside it.
 It needs a terminal on both stdin and stdout. Without one it prints
 `ae app draws a terminal UI; use ae chat to print the lane` on stderr and exits 1.
 
+Plain `ae` opens it too: on a terminal, with at least one recorded session,
+running or stopped, bare `ae` restores what a crashed tmux server held and then
+lands here, creating and resuming nothing; inside ae's tmux server it lands in
+the current pane unless that pane is a seat's, which keeps `ae list`. Without a
+terminal, with `--no-attach` or as `ae --tmux` it keeps the tmux view
+([tmux server](reference/commands.md#tmux-server)).
+
 ## Home
 
 The **home** session is the one the app opens on and `Esc` returns to: the

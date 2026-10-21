@@ -338,7 +338,8 @@ showing a wrong number.
 ### Restoring after a tmux crash
 
 Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held,
-then attaches (`ae --no-attach` prints the attach command instead). A session
+then opens the app on a terminal, else attaches (`ae --no-attach` prints the
+attach command instead). A session
 qualifies when it has not been stopped through `ae` since its latest launch, had
 a watchdog running, its recorded server is proven gone, and its watchdog beat is
 within 15 minutes of the newest beat among the qualifying candidates on that

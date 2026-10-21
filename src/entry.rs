@@ -219,8 +219,11 @@ pub const COMPACT_USAGE: &str =
 pub const HELP: &str = r"ae - agentic engineering: tmux multi-agent workspace
 
 Usage:
-  ae                     Attach to the ae tmux server, restoring crashed sessions
-  ae --no-attach         Same, print the attach command instead of attaching
+  ae                     Restore crashed sessions, then open the app on every recorded
+                         session (running or stopped) when both ends are a terminal;
+                         else attach to the ae tmux server (list from inside it)
+  ae --no-attach         Restore, then print the attach command instead of attaching
+  ae --tmux              The tmux view: restore and attach (list from inside it), never the app
   ae <name>              Start or reattach a named session
   ae <name> --solo       lead only, no colead
   ae <name> --dir <path> Start or reattach using an explicit origin directory
@@ -360,6 +363,11 @@ pub const ARCHIVE_USAGE: &str = "Usage: ae archive preview [session-name]\n";
 /// The refusal a nameless `ae archive preview` gets outside a session.
 pub const ARCHIVE_PREVIEW_USAGE: &str = "Usage: ae archive preview [session-name]\n(Run inside an ae tmux session to preview it without naming it.)\n";
 
+/// What `ae --tmux --no-attach` prints, in either order: the tmux view IS the
+/// attach, so there is nothing left to detach from.
+pub const TMUX_NO_ATTACH: &str =
+    "ae: --tmux attaches the tmux view, so it cannot take --no-attach.\n";
+
 /// The exit code a usage error takes — the crate's, kept distinct from `1`.
 pub const EXIT_USAGE: u8 = 2;
 
@@ -404,6 +412,7 @@ pub const ROUTED_VERBS: &[&str] = &[
     "stop",
     "telegram",
     "transfer",
+    "upgrade",
     "usage",
     "version",
     "watchdog",
@@ -563,10 +572,15 @@ pub enum Route {
     /// `ae compact …`: the R9 tripwire is answered before the preamble, and
     /// a bare tail reaches the stateful verb through this route.
     Compact(Vec<String>),
-    /// An EMPTY argv: attach to the ae tmux server or list from inside it.
+    /// An EMPTY argv: open the app on a terminal, else attach to the ae tmux
+    /// server or list from inside it.
     Attach,
     /// Exactly `ae --no-attach`: the bare form, minus the attach.
     BareDetached,
+    /// Exactly `ae --tmux`: the bare form with the tmux view, never the app.
+    BareTmux,
+    /// `ae --tmux --no-attach`, in either order: [`TMUX_NO_ATTACH`], exit 2.
+    TmuxNoAttach,
     /// Everything else: create or resume an explicitly named session.
     Launch(Vec<String>),
 }
@@ -594,6 +608,8 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
     match argv.first().map(String::as_str) {
         None => Route::Attach,
         Some("--no-attach") if argv.len() == 1 => Route::BareDetached,
+        Some("--tmux") if argv.len() == 1 => Route::BareTmux,
+        Some("--tmux" | "--no-attach") if is_tmux_no_attach(argv) => Route::TmuxNoAttach,
         Some("list" | "ls") => {
             if argv[1..]
                 .iter()
@@ -651,8 +667,19 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("transfer") => Route::Retired(RETIRED_TRANSFER),
         Some("help" | "-h" | "--help") => Route::Help,
         Some("version" | "--version" | "-V") => Route::Version,
+        // `crate::run` answers `upgrade` above the install gate, so the binary
+        // never reaches this arm; it keeps this match the whole map of the
+        // words ae answers itself, which is the set no session may be named.
+        Some("upgrade") => Route::Core(with_head("upgrade", &tail())),
         Some(_) => Route::Launch(argv.to_vec()),
     }
+}
+
+/// Whether `argv` is exactly `--tmux` and `--no-attach`, in either order.
+fn is_tmux_no_attach(argv: &[String]) -> bool {
+    matches!(argv, [first, second]
+        if (first == "--tmux" && second == "--no-attach")
+            || (first == "--no-attach" && second == "--tmux"))
 }
 
 /// `head` followed by `tail` — the one shape every translated word takes.
@@ -754,8 +781,8 @@ mod tests {
         );
     }
     use super::{
-        DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, ROUTED_VERBS, Route, is_direct_child_name,
-        name_is_routed_verb, route, routed_verb_refusal,
+        DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, ROUTED_VERBS, Route, TMUX_NO_ATTACH,
+        is_direct_child_name, name_is_routed_verb, route, routed_verb_refusal,
     };
 
     fn argv(words: &[&str]) -> Vec<String> {
@@ -853,6 +880,33 @@ mod tests {
                 Route::Launch(argv(&more))
             );
         }
+    }
+
+    #[test]
+    fn exactly_bare_tmux_is_the_tmux_view_and_refuses_no_attach() {
+        assert_eq!(
+            route(&preamble(), &argv(&["--tmux"]), None),
+            Route::BareTmux
+        );
+        for pair in [["--tmux", "--no-attach"], ["--no-attach", "--tmux"]] {
+            assert_eq!(route(&preamble(), &argv(&pair), None), Route::TmuxNoAttach);
+        }
+        for more in [["--tmux", "demo"], ["demo", "--tmux"]] {
+            assert_eq!(
+                route(&preamble(), &argv(&more), None),
+                Route::Launch(argv(&more))
+            );
+        }
+        assert!(TMUX_NO_ATTACH.contains("--tmux") && TMUX_NO_ATTACH.contains("--no-attach"));
+    }
+
+    #[test]
+    fn upgrade_is_a_word_the_route_answers_so_no_session_takes_it() {
+        assert_eq!(
+            route(&preamble(), &argv(&["upgrade", "--check"]), None),
+            Route::Core(argv(&["upgrade", "--check"]))
+        );
+        assert!(name_is_routed_verb("upgrade"));
     }
 
     #[test]
