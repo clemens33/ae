@@ -237,16 +237,22 @@ The guards come first, and a refusal exits 1 with one line naming the one that f
   directory's included; cargo finds config from the working directory, not from
   `--manifest-path`, which is why the recipe judges only the tree it runs in);
 * `target/` or a tree the recipe cleans is a link;
-* a path the dry-run lists lies outside `target/` (outside the guard's own directory for the
-  two guard cleans; the `--target` clean lists the host units under `target/release` too),
-  has a `.` or `..` segment, or goes through a link;
+* a dry-run's stdout, the paths cargo would remove, holds a non-empty line that is not an
+  absolute path (a relative one such as `../outside/x` is refused, never skipped), one that
+  lies outside `target/` (outside the guard's own directory for the two guard cleans; the
+  `--target` clean lists the host units under `target/release` too), has a `.` or `..`
+  segment, or goes through a link;
+* a dry-run's stderr, which is diagnostics and never an inventory, does not hold exactly one
+  valid `Summary <n> file[s]` line (`, <size> total` after it), or claims files while stdout
+  lists none. A tree with nothing to remove has an empty stdout and `Summary 0 files`, and
+  passes;
 * cargo itself refuses a `--dry-run` (a `target-dir` without its `CACHEDIR.TAG` is one) and
   the recipe prints cargo's message and stops;
 * a process outside this run's own ancestry (the recipe shell, `just`, the invoking shell)
   has an argv naming the checkout or, when `lsof` is installed, a working directory inside
   it, which includes the other end of a pipe (`just rust-prune | tail` is refused). `ps` is
-  required. A gate between its phases, with no child alive, cannot be seen: do not run the
-  recipe during one.
+  required; without `lsof` the run says so once on stderr and judges by argv alone. A gate
+  between its phases, with no child alive, cannot be seen: do not run the recipe during one.
 
 The recipe never removes a file itself: cargo does. To reclaim the compiled dependencies too,
 delete the whole `target/` of a checkout nobody is building in. `--dry-run` prints a summary

@@ -1482,12 +1482,15 @@ rust-vet:
 # working directory and its parents, not from `--manifest-path`) puts the target
 # or build directory anywhere but `target/`, when `target/` or a tree below it is
 # a link, when any process outside this run's own ancestry has an argv or a
-# working directory under the checkout, and when the paths `cargo clean
-# --dry-run --verbose` lists for a tree are not all inside it and link-free. No
-# `rm`, no glob: cargo does the removal, and the two guard trees are named.
-# `ps` is required; `lsof` is used when installed. A lane between phases, with
-# no child alive, is invisible to both: do not run this during a gate. Do not pipe
-# its output either: the pipe's other end runs in the checkout and is refused.
+# working directory under the checkout, and when what `cargo clean --dry-run
+# --verbose` says for a tree is not provable: every non-empty line of its STDOUT
+# must be an absolute path inside the tree and link-free, and its stderr must hold
+# exactly one valid `Summary` line (a genuine zero-removal run has both, empty).
+# No `rm`, no glob: cargo does the removal, and the two guard trees are named.
+# `ps` is required; `lsof` is used when installed, and without it the run says so
+# and judges by argv alone. A lane between phases, with no child alive, is
+# invisible to both: do not run this during a gate. Do not pipe its output
+# either: the pipe's other end runs in the checkout and is refused.
 rust-prune apply="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1513,7 +1516,9 @@ rust-prune apply="":
     plain_dir "$target" || refuse "$target is not a plain directory"
     # Refuse when a process outside THIS run's own ancestry (the recipe shell, just,
     # the invoking shell) has an argv naming the checkout or its working directory
-    # inside it. Anything else, same cwd or not, is somebody else's.
+    # inside it. Anything else, same cwd or not, is somebody else's. Without `lsof`
+    # the working-directory half cannot be asked: that is said once per run.
+    lsof_noted=""
     in_use() {
         local table pid ppid cmd n=0 i cur=$$ hops=0 up="" ancestry=" " out line path
         local -a pids ppids cmds
@@ -1560,6 +1565,9 @@ rust-prune apply="":
                         ;;
                 esac
             done <<<"$out"
+        elif [ -z "$lsof_noted" ]; then
+            lsof_noted=yes
+            echo "rust-prune: note: lsof is not installed, so only a process whose argv names $root is seen; one that merely has its working directory there is not" >&2
         fi
     }
     in_use
@@ -1580,17 +1588,41 @@ rust-prune apply="":
         "$1" force-warn-guard "$target/force-warn-guard" "$target/force-warn-guard" --profile dev --target-dir "$target/force-warn-guard"
         "$1" world-read-guard "$target/world-read-guard" "$target/world-read-guard" --profile dev --target-dir "$target/world-read-guard"
     }
-    # Dry-run one clean and prove every path cargo would remove is inside its root
-    # with no link on the way (dot segments refused). DFS output repeats parents, so
-    # the last proven directory spares re-walking its ancestors.
+    # One dry run with its two streams kept apart: cargo's STDOUT (the paths it would
+    # remove) comes first, then a `rust-prune-end <exit status>` line, then its
+    # stderr (diagnostics and the Summary). The reader splits at the LAST end line,
+    # so nothing on either stream can pose as the other.
+    nl=$'\n'
+    dry_run() {
+        local err rc=0
+        {
+            err="$(cargo clean --locked --manifest-path "$root/Cargo.toml" -p ae "$@" --dry-run --verbose 2>&1 1>&3)" || rc=$?
+            printf 'rust-prune-end %s\n%s\n' "$rc" "$err"
+        } 3>&1
+    }
+    # Dry-run one clean and prove what cargo says. Every non-empty stdout line is an
+    # absolute path inside its root with no link on the way (dot segments refused); an
+    # unreadable line is a refusal, never skipped. Stderr is diagnostics only, and
+    # must hold exactly one valid Summary (`Summary <n> file[s][, <size> total]`) that
+    # does not claim files while listing none; a zero-removal run has both, empty.
+    # DFS output repeats parents, so the last proven directory spares re-walking them.
     prove() {
-        local label="$1" tree="$2" top="$3" out line dir ok="" d sum
+        local label="$1" tree="$2" top="$3" raw paths diag rc line dir ok="" d sum="" n="" rest word summaries=0 npaths=0 valid=""
         shift 3
         { [ -e "$tree" ] || [ -L "$tree" ]; } || return 0
         plain_dir "$tree" || refuse "$tree is not a plain directory"
-        out="$(cargo clean --locked --manifest-path "$root/Cargo.toml" -p ae "$@" --dry-run --verbose 2>&1)" || { printf '%s\n' "$out" >&2; refuse "cargo clean --dry-run failed for $label"; }
+        raw="$(dry_run "$@")"
+        raw="$nl$raw"
+        case "$raw" in *"${nl}rust-prune-end "*) ;; *) refuse "cargo's dry run for $label left no end marker" ;; esac
+        paths=${raw%"${nl}rust-prune-end "*}
+        diag=${raw#"$paths${nl}rust-prune-end "}
+        rc=${diag%%"$nl"*}
+        diag=${diag#"$rc$nl"}
+        [ "$rc" = 0 ] || { printf '%s\n' "$diag" >&2; refuse "cargo clean --dry-run failed for $label"; }
         while IFS= read -r line; do
-            case "$line" in /*) ;; *) continue ;; esac
+            [ -n "$line" ] || continue
+            npaths=$((npaths + 1))
+            case "$line" in /*) ;; *) refuse "cargo's dry run for $label listed a line that is not an absolute path: $line" ;; esac
             case "$line" in "$top"/*) ;; *) refuse "cargo would remove $line, outside $top" ;; esac
             case "/$line/" in */../* | */./*) refuse "cargo would remove a path with a dot segment: $line" ;; esac
             [ ! -L "$line" ] || refuse "cargo would remove through a link: $line"
@@ -1602,10 +1634,26 @@ rust-prune apply="":
                 d="${d%/*}"
             done
             ok="$dir"
-        done <<<"$out"
-        sum="$(printf '%s\n' "$out" | sed -n 's/^ *Summary //p' | head -1)"
+        done <<<"$paths"
+        while IFS= read -r line; do
+            word=${line#"${line%%[! ]*}"}
+            case "$word" in
+                "Summary " | "Summary") summaries=$((summaries + 1)); sum="" ;;
+                "Summary "*) summaries=$((summaries + 1)); sum=${word#Summary } ;;
+            esac
+        done <<<"$diag"
+        if [ "$summaries" = 1 ]; then
+            n=${sum%% *}
+            rest=${sum#"$n"}
+            case "$n" in
+                '' | *[!0-9]*) ;;
+                *) case "$rest" in " file" | " files" | " file, "*" total" | " files, "*" total") valid=yes ;; esac ;;
+            esac
+        fi
+        [ -n "$valid" ] || refuse "cargo's dry run for $label ended without a valid Summary line (found $summaries)"
+        [ "$n" = 0 ] || [ "$npaths" -gt 0 ] || refuse "cargo's dry run for $label reports $n files but listed no path on stdout"
         if [ "$mode" = report ]; then
-            echo "would clean $label: ${sum:-no summary}"
+            echo "would clean $label: $sum"
         fi
     }
     clean_one() {
