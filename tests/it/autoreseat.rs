@@ -1738,7 +1738,7 @@ fn limitstop_operator_ineligible_unmapped_limits_stay_silent() {
 #[test]
 fn limitstop_an_unmapped_second_episode_gets_a_fresh_hold_and_notice() {
     let (rig, pane) = limitstop_no_candidate("limitstoprearm");
-    let phase = std::cell::Cell::new(0);
+    let phase = Cell::new(0);
     let cycles = Cycles::default();
     // Keep ONE daemon observing limit, actual relief, then the second limit:
     // restarting between relief and its read would discard its capture latch.
