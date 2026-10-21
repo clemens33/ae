@@ -2171,6 +2171,7 @@ mod tests {
             "--from",
             "use",
             "--nope",
+            "--tmux",
         ] {
             assert!(!launch_tail_is_valid(&[flag.to_owned()]), "{flag}");
         }

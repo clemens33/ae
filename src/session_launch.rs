@@ -28,13 +28,13 @@ pub(crate) mod name;
 pub use capture::developer_record_carries;
 
 /// The usage line for the core entry.
-pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--solo] [--from <uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <name>] <session-name>";
+pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--tmux] [--solo] [--from <uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <name>] <session-name>";
 
 /// The public refusal for a launch argv that names no session.
 pub const MISSING_NAME: &str = "Error: a session needs a name: ae <name> [...]";
 
 /// The public launch usage line paired with [`MISSING_NAME`].
-pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--solo] [--from <archive-uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <agent>]";
+pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--tmux] [--solo] [--from <archive-uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <agent>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
 /// anything is pasted.
@@ -231,6 +231,9 @@ pub struct Plan {
     pub dir: Option<String>,
     /// A public attach override. `None` keeps the preamble's default.
     pub attach: Option<bool>,
+    /// `--tmux` — the tmux view, never the app. The entry reads it; `_launch`
+    /// accepts it in the user argv and ignores it, so the launch is today's.
+    pub tmux: bool,
 }
 
 /// Parse the user's launch argv.
@@ -260,6 +263,7 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
             "--local" => plan.mode = Some(Mode::Local),
             "--attach" if allow_attach => plan.attach = Some(true),
             "--no-attach" => plan.attach = Some(false),
+            "--tmux" if !allow_attach => plan.tmux = true,
             "--solo" if !allow_attach => plan.workers = Some(String::new()),
             _ if word == "--dir" || word.starts_with("--dir=") => {
                 if plan.dir.is_some() {
@@ -386,7 +390,7 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
             }
             _ if word.starts_with("--") => {
                 return Err(format!(
-                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
+                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --tmux, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
                 ));
             }
             // A launch takes exactly one session name: a second positional is
@@ -774,6 +778,7 @@ pub fn relaunch(
         seat_profiles: Vec::new(),
         dir: None,
         attach: None,
+        tmux: false,
     };
     launch(&env, &launch_plan, Some(plan.proof), None, None, out, err)
 }
@@ -5317,6 +5322,16 @@ fn same_directory(one: &str, other: &str) -> bool {
     }
 }
 
+/// The recorded origin an explicit `--dir` would contradict, with the
+/// directory it named: `Some` only when `dir` holds a session record whose
+/// `origin` is non-empty and `requested` is an existing, different directory.
+/// Every other case is no verdict, and the launch answers it as it always has.
+pub(crate) fn recorded_origin_conflict(dir: &Path, requested: &str) -> Option<(String, PathBuf)> {
+    let requested = canonical_directory(Path::new(requested))?;
+    let recorded = meta_value(dir, "origin").filter(|value| !value.is_empty())?;
+    (!same_directory(&recorded, &requested.display().to_string())).then_some((recorded, requested))
+}
+
 /// One existing directory, canonicalised.
 #[allow(
     clippy::disallowed_methods,
@@ -6061,6 +6076,24 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn tmux_is_a_public_launch_flag_the_seat_grammar_refuses() {
+        let words = |argv: &[&str]| {
+            argv.iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let plan = parse_plan(&words(&["demo", "--tmux", "--tmux"])).expect("--tmux parses");
+        assert!(plan.tmux && plan.attach.is_none());
+        let both = parse_plan(&words(&["--no-attach", "demo", "--tmux"])).expect("both parse");
+        assert!(both.tmux && both.attach == Some(false));
+        let path = parse_plan(&words(&["demo", "--dir", "--tmux"])).expect("a path");
+        assert_eq!(path.dir.as_deref(), Some("--tmux"));
+        assert!(!path.tmux, "a --dir value is never the flag");
+        assert!(parse_plan_with_attach(&words(&["--tmux"]), true).is_err());
+        assert!(super::PUBLIC_USAGE.contains("[--tmux]") && super::USAGE.contains("[--tmux]"));
     }
 
     #[test]

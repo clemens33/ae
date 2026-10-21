@@ -17,6 +17,12 @@ the current pane unless that pane is a seat's, which keeps `ae list`. Without a
 terminal, with `--no-attach` or as `ae --tmux` it keeps the tmux view
 ([tmux server](reference/commands.md#tmux-server)).
 
+`ae <name>` lands here the same way, with `<name>` as the home: a running session
+is opened as it is, a stopped one is resumed in its stored working copy first, and
+an unknown name is started in the current directory first. From inside ae's tmux
+server it lands from any pane that is not a seat's. `ae <name> --tmux` keeps the
+tmux view.
+
 ## Home
 
 The **home** session is the one the app opens on and `Esc` returns to: the

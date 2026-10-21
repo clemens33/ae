@@ -7,9 +7,11 @@ ae                     Restore crashed sessions, then open the app on every reco
                        used session, and inside that server list the fleet
 ae --tmux              Bare ae with the tmux view: attach (list inside), never the app;
                        --tmux --no-attach is a usage error, exit 2
-ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach]
-                       Start or reattach a session. --dir selects its origin;
-                       --no-attach prints the exact attach command and exits
+ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--tmux]
+                       Start, resume or reattach a session, then open the app on it
+                       when stdin and stdout are a terminal; otherwise attach to it.
+                       --dir selects a new session's origin; --no-attach prints the
+                       exact attach command and exits; --tmux keeps the tmux view
 ae <name> --solo       lead only, no colead
 ae <name> use <alias>  Start session with a specific agent as main
 ae <name> --seat <agent>=<profile> [...]
@@ -272,6 +274,16 @@ published only after the replacement panes exist; a failed build leaves the old 
 Metadata from before server pairs existed is checked on tmux's historical `default` server and
 backfilled only when the session's ownership marker, state root, and recorded main pane all prove
 it is this ae session. An unreachable server or an unowned namesake is refused rather than guessed.
+
+`ae <name>` on a terminal — stdin and stdout both, no `--no-attach` or `--tmux`, and either
+outside tmux or on a pane of the same server that is no seat's — starts, resumes or leaves running
+the session exactly as the tmux view would, without attaching, then opens [the app](../app.md) with
+that session as its home. A stopped session resumes in its stored working copy; your current
+directory never moves it. An explicit `--dir` that names another directory than an existing
+session's recorded origin is refused there as a usage error (exit 2) naming the recorded one; on
+every other path the same `--dir` keeps the launch's own refusal (exit 1). `ae orchestrator` never
+opens the app. `ae <name> --tmux` is the tmux view below, and `--tmux --no-attach` is a usage error
+(exit 2).
 
 Attaching follows the servers, not just the session name. Outside tmux, ae attaches on the recorded
 destination. From a client on that same proven server it switches clients. From another tmux server

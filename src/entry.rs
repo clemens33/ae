@@ -224,7 +224,9 @@ Usage:
                          else attach to the ae tmux server (list from inside it)
   ae --no-attach         Restore, then print the attach command instead of attaching
   ae --tmux              The tmux view: restore and attach (list from inside it), never the app
-  ae <name>              Start or reattach a named session
+  ae <name>              Start, resume or reattach a named session, then open the app on
+                         it when both ends are a terminal; else attach its tmux view
+  ae <name> --tmux       Start or reattach a named session in the tmux view, never the app
   ae <name> --solo       lead only, no colead
   ae <name> --dir <path> Start or reattach using an explicit origin directory
   ae <name> --no-attach  Start or reattach without attaching; print attach command

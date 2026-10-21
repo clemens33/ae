@@ -1629,9 +1629,9 @@ fn run_entry(
                 }
                 seat.inside_tmux |= flags.inside_tmux;
                 seat.no_autostart |= flags.no_autostart;
-                return run_launch(&seat, &launch, out, err);
+                return run_launch(&seat, &launch, false, out, err);
             }
-            return run_launch(preamble, &user, out, err);
+            return run_launch(preamble, &user, true, out, err);
         }
     };
     out.flush()?;
@@ -1670,17 +1670,9 @@ fn run_bare_attach(
         return Ok(entry::EXIT_USAGE);
     };
     let attach = bare != Bare::Detached;
-    // The app draws on this process's own streams, so it is a choice only
-    // when BOTH are a terminal; `app::run` refuses the rest again itself.
-    let app = bare == Bare::App
-        && std::io::IsTerminal::is_terminal(&std::io::stdin())
-        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let app = bare == Bare::App && both_terminal();
     if preamble.inside_tmux {
-        let same_server = preamble.caller_server.as_ref().is_some_and(|caller| {
-            let mut sockets = SocketPaths::asking(transport::observe_socket_path);
-            sockets.proven_same(caller, server)
-        });
-        if same_server {
+        if on_launch_server(preamble, server) {
             // The pane is read for the app alone.
             if app && caller_pane_lands(preamble) {
                 out.flush()?;
@@ -1762,32 +1754,67 @@ fn run_bare_attach(
     Ok(entry::EXIT_FAILED)
 }
 
-/// Whether the calling pane may draw the app, read on the caller's server —
-/// which the bare entry has just proven to be the launch server, so a pane id
-/// it answers for is a pane it owns.
-fn caller_pane_lands(preamble: &entry::Preamble) -> bool {
-    let viewer = preamble
+/// Whether BOTH of this process's streams are a terminal. The app draws on
+/// them, so it is a choice only then; `app::run` refuses the rest again itself.
+fn both_terminal() -> bool {
+    std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
+/// Whether the caller's tmux server is proven to be `server`.
+fn on_launch_server(preamble: &entry::Preamble, server: &inventory::ServerId) -> bool {
+    preamble.caller_server.as_ref().is_some_and(|caller| {
+        let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+        sockets.proven_same(caller, server)
+    })
+}
+
+/// The calling pane as tmux describes it, read on the caller's server — which
+/// the entry has just proven to be the launch server, so a pane id it answers
+/// for is a pane it owns.
+fn caller_viewer(preamble: &entry::Preamble) -> Option<tmux::ObservedViewer> {
+    preamble
         .caller_server
         .as_ref()
         .zip(doors::calling_pane_id())
-        .and_then(|(caller, pane)| transport::observe_viewer(caller, &pane));
-    pane_may_land(viewer.as_ref(), |name| {
+        .and_then(|(caller, pane)| transport::observe_viewer(caller, &pane))
+}
+
+/// Whether the calling pane may draw the app over the whole fleet: see
+/// [`pane_may_land`].
+fn caller_pane_lands(preamble: &entry::Preamble) -> bool {
+    pane_may_land(caller_viewer(preamble).as_ref(), |name| {
         console::locate(&preamble.home, name).is_some()
     })
 }
 
-/// Whether the calling pane may draw the app: tmux described it, it carries no
-/// `@ae_agent` (a seat or a monitor keeps the list), and its session is one
-/// this state root records — the home `app::run` would otherwise refuse. A chat
-/// pane is stamped `@ae_console`, never `@ae_agent`, so it lands. Anything
-/// unread fails closed to the list.
+/// Whether the calling pane is no seat: tmux described it and it carries no
+/// `@ae_agent` (a seat or a monitor keeps today's entry). Anything unread
+/// fails closed.
+fn caller_pane_seatless(preamble: &entry::Preamble) -> bool {
+    pane_is_seatless(caller_viewer(preamble).as_ref())
+}
+
+/// Whether a described pane carries no `@ae_agent`. A chat pane is stamped
+/// `@ae_console`, never `@ae_agent`, so it is no seat. Described means tmux
+/// named the pane's session: for a pane id it cannot find, tmux 3.7b still
+/// exits 0 and prints every pane field empty.
+fn pane_is_seatless(viewer: Option<&tmux::ObservedViewer>) -> bool {
+    viewer.is_some_and(|viewer| viewer.session.is_some() && viewer.agent.is_none())
+}
+
+/// Whether the calling pane may draw the app with no session named: it is no
+/// seat ([`pane_is_seatless`]) and its session is one this state root records
+/// — the home `app::run` would otherwise refuse. Anything unread fails closed
+/// to the list.
 fn pane_may_land(
     viewer: Option<&tmux::ObservedViewer>,
     recorded: impl FnOnce(&str) -> bool,
 ) -> bool {
-    viewer.is_some_and(|viewer| {
-        viewer.agent.is_none() && viewer.session.as_deref().is_some_and(recorded)
-    })
+    pane_is_seatless(viewer)
+        && viewer
+            .and_then(|viewer| viewer.session.as_deref())
+            .is_some_and(recorded)
 }
 
 /// `ae compact [name]` — resolve the target, path-check it, then hand the
@@ -1877,10 +1904,13 @@ fn run_archive_preview(
     Ok(code)
 }
 
-/// The launch fall-through: the prelude the glue ran, then `_launch`.
+/// The launch fall-through: the prelude the glue ran, then `_launch`. `land`
+/// lets a named line on a terminal open the app on its session instead of
+/// attaching ([`named_lands`]); the orchestrator seat passes false.
 fn run_launch(
     preamble: &entry::Preamble,
     user: &[String],
+    land: bool,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
@@ -1892,6 +1922,11 @@ fn run_launch(
             return Ok(entry::EXIT_USAGE);
         }
     };
+    if plan.tmux && plan.attach == Some(false) {
+        write!(err, "{}", entry::TMUX_NO_ATTACH)?;
+        err.flush()?;
+        return Ok(entry::EXIT_USAGE);
+    }
     let Some(hint) = plan.name.as_deref() else {
         writeln!(err, "{}", session_launch::MISSING_NAME)?;
         writeln!(err, "{}", session_launch::PUBLIC_USAGE)?;
@@ -1915,7 +1950,78 @@ fn run_launch(
         err.flush()?;
         return Ok(entry::EXIT_FAILED);
     }
+    if land && named_lands(preamble, &plan) {
+        return run_named_landing(preamble, &plan, hint, user, out, err);
+    }
     run_dispatch(&preamble.launch_argv(user), out, err)
+}
+
+/// Whether a named line opens the app: a name it may land on, no `--tmux` and
+/// no `--no-attach`, both streams a terminal, and the caller outside tmux or on
+/// a pane of the launch server that is no seat. The app's home is the NAMED
+/// session, so the caller's own session need not be one ae records.
+fn named_lands(preamble: &entry::Preamble, plan: &session_launch::Plan) -> bool {
+    if !plan.name.as_deref().is_some_and(landing_name)
+        || plan.tmux
+        || plan.attach == Some(false)
+        || !both_terminal()
+    {
+        return false;
+    }
+    if !preamble.inside_tmux {
+        return true;
+    }
+    preamble
+        .launch_target
+        .as_ref()
+        .is_some_and(|server| on_launch_server(preamble, server))
+        && caller_pane_seatless(preamble)
+}
+
+/// Whether `name` may be landed on: the session grammar, so it is a plain
+/// direct child of the sessions root before any of its state is read, and
+/// neither a word the entry answers nor the orchestrator seat. Every other
+/// name keeps today's launch, which refuses it.
+fn landing_name(name: &str) -> bool {
+    session_launch::name::is_session_name(name)
+        && !entry::name_is_routed_verb(name)
+        && name != orchestrator::ORCHESTRATOR_SESSION
+}
+
+/// `ae <name>` on a terminal: the ONE launch, headless — create from the cwd,
+/// resume in the stored working copy, or leave a running session as it is —
+/// then the app with `<name>` as its home. An explicit `--dir` that
+/// contradicts the recorded origin is refused first, as usage.
+fn run_named_landing(
+    preamble: &entry::Preamble,
+    plan: &session_launch::Plan,
+    name: &str,
+    user: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    if let Some((recorded, requested)) = plan.dir.as_deref().and_then(|dir| {
+        session_launch::recorded_origin_conflict(&preamble.sessions().join(name), dir)
+    }) {
+        writeln!(
+            err,
+            "Error: session '{name}' exists with a different origin; --dir cannot repoint it."
+        )?;
+        writeln!(err, "       recorded: {recorded}")?;
+        writeln!(err, "       requested: {}", requested.display())?;
+        writeln!(err, "       Open it with: ae {name}")?;
+        err.flush()?;
+        return Ok(entry::EXIT_USAGE);
+    }
+    let mut headless = preamble.clone();
+    headless.attach = false;
+    let code = run_dispatch(&headless.launch_argv(user), out, err)?;
+    if code != 0 {
+        return Ok(code);
+    }
+    out.flush()?;
+    err.flush()?;
+    run_dispatch(&["app".to_owned(), name.to_owned()], out, err)
 }
 
 /// The two lines an unsafe session path is refused with.
@@ -3858,6 +3964,46 @@ mod tests {
         );
         assert!(!lands(Some(&pane(None, None))), "no session read");
         assert!(!lands(None), "an unread pane fails closed");
+    }
+
+    /// The named entry's seat test: any described pane without `@ae_agent`,
+    /// whatever session it sits in, because the app's home is the named one.
+    #[test]
+    fn a_named_landing_asks_only_that_the_pane_is_no_seat() {
+        let pane = |agent: Option<&str>, session: Option<&str>| crate::tmux::ObservedViewer {
+            agent: agent.map(ToOwned::to_owned),
+            session: session.map(ToOwned::to_owned),
+            ..crate::tmux::ObservedViewer::default()
+        };
+        assert!(super::pane_is_seatless(Some(&pane(None, Some("host")))));
+        assert!(
+            !super::pane_is_seatless(Some(&pane(None, None))),
+            "no session named"
+        );
+        assert!(!super::pane_is_seatless(Some(&pane(
+            Some("lead"),
+            Some("one")
+        ))));
+        assert!(!super::pane_is_seatless(None), "unread fails closed");
+        // tmux 3.7b's whole answer for a pane id it cannot find: exit 0, every
+        // pane field empty, only the server's socket path filled.
+        let missing = crate::tmux::interpret_viewer(true, " |  |  |  | /tmp/s/sock\n");
+        assert!(missing.is_some(), "tmux answered");
+        assert!(!super::pane_is_seatless(missing.as_ref()), "a missing pane");
+    }
+
+    /// Only a grammar name lands, so the `--dir` read stays under the sessions
+    /// root: a path, a traversal, an entry word and the orchestrator seat keep
+    /// today's launch and its refusal.
+    #[test]
+    fn only_a_plain_session_name_is_landed_on() {
+        assert!(super::landing_name("demo"));
+        for name in ["/etc", "../demo", "a/b", ".hidden", "", "list", "upgrade"] {
+            assert!(!super::landing_name(name), "{name:?}");
+        }
+        assert!(!super::landing_name(
+            crate::orchestrator::ORCHESTRATOR_SESSION
+        ));
     }
 
     /// Every candidate keeps its runtime, in snapshot order, and every Running
