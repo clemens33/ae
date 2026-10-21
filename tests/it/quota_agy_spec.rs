@@ -304,7 +304,8 @@ fn oversized_stdout_is_refused_without_echoing_vendor_bytes() {
 /// Structural safety pin complements the driver's in-crate observe runtime pin.
 /// Neither local observer — nor the dialog facts builder — may gain a path
 /// to the on-demand executor; only the dialog entry may name the agy leg, through
-/// its cache, and it never reads pace (D6) nor calls the CLI's writer.
+/// its cache, and it never calls the CLI's writer. The old D6 ban on pace reads
+/// is reversed for Settings display only; no executor or classifier path is added.
 #[test]
 fn local_observers_never_reference_the_on_demand_leg_or_run_wrapper() {
     let source = include_str!("../../src/quota.rs");
@@ -337,13 +338,7 @@ fn local_observers_never_reference_the_on_demand_leg_or_run_wrapper() {
             leg,
             "{start}: the leg is named iff {leg}"
         );
-        for forbidden in [
-            "run_with(",
-            "spawn_until(",
-            "observe_full(",
-            "PaceTable",
-            "pace::",
-        ] {
+        for forbidden in ["run_with(", "spawn_until(", "observe_full("] {
             assert!(!body.contains(forbidden), "{start} references {forbidden}");
         }
     }

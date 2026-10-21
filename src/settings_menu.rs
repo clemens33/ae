@@ -1424,6 +1424,7 @@ mod tests {
             stale: false,
             resets: Some("2h10m".to_owned()),
             seen: Some("2m".to_owned()),
+            burn: None,
         };
         let low = Window {
             name: "Weekly 7d".to_owned(),
@@ -1488,6 +1489,7 @@ mod tests {
                 stale: false,
                 resets: Some("2h10m".to_owned()),
                 seen: Some("2m".to_owned()),
+                burn: None,
             }],
         }];
         let full = super::quota_dialog_menu(&scopes, &crate::theme::Palette::DARCULA, true, 90, 40)

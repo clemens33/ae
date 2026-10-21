@@ -9968,6 +9968,7 @@ mod tests {
                 stale: false,
                 resets: Some("2h10m".to_owned()),
                 seen: Some("2m".to_owned()),
+                burn: None,
             }],
         }
     }

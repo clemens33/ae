@@ -1082,14 +1082,21 @@ impl Observation {
         scopes
     }
 
+    /// [`Self::quota_view_paced`] with no history: the facts without a burn.
+    #[cfg(test)]
+    pub(crate) fn quota_view(&self) -> Vec<view::Scope> {
+        self.quota_view_paced(&pace::PaceTable::default())
+    }
+
     /// Every scope as view facts, headroom first: the one projection both quota
     /// screens lay out. Every percentage comes from [`derived`], the same
     /// derivation the table and the watchdog read, and every level from the one
-    /// classifier; a scope with nothing usable states why instead of a guess.
-    pub(crate) fn quota_view(&self) -> Vec<view::Scope> {
+    /// classifier; a scope with nothing usable states why instead of a guess. `pace`
+    /// is the table `ae quota` draws its PACE column from, read for display only.
+    pub(crate) fn quota_view_paced(&self, pace: &pace::PaceTable) -> Vec<view::Scope> {
         self.ordered_scopes()
             .iter()
-            .map(|scope| scope.viewed(self.home.as_deref(), self.now))
+            .map(|scope| scope.viewed(self.home.as_deref(), self.now, pace))
             .collect()
     }
 
@@ -1224,7 +1231,7 @@ impl SettingsScope {
 
     /// This scope as view facts: its windows in a
     /// stable bucket/qualifier/window order that no input order can change.
-    fn viewed(&self, home: Option<&Path>, now: i64) -> view::Scope {
+    fn viewed(&self, home: Option<&Path>, now: i64, pace: &pace::PaceTable) -> view::Scope {
         let title = format!(
             "{} · {}",
             self.group.tool.as_str(),
@@ -1264,7 +1271,7 @@ impl SettingsScope {
         let note = leg_hint(&self.group).map(str::to_owned);
         let windows = readings
             .into_iter()
-            .map(|reading| self.window_view(reading, now))
+            .map(|reading| self.window_view(reading, now, pace))
             .collect();
         view::Scope {
             title,
@@ -1345,7 +1352,12 @@ impl SettingsScope {
     }
 
     /// One adopted window as view facts.
-    fn window_view(&self, reading: &SettingsReading, now: i64) -> view::Window {
+    fn window_view(
+        &self,
+        reading: &SettingsReading,
+        now: i64,
+        pace: &pace::PaceTable,
+    ) -> view::Window {
         let row = &reading.reading.row;
         let derived = derived(&self.policy, row);
         let judged = derived.map(Derived::judged);
@@ -1381,6 +1393,40 @@ impl SettingsScope {
             stale,
             resets: row.resets_at.map(|at| span_label(at.saturating_sub(now))),
             seen: row.observed_at.map(|at| span_label(now.saturating_sub(at))),
+            burn: self.burn_view(pace, row, why),
+        }
+    }
+
+    /// How fast this window fills, read from the ONE verdict the `PACE` column draws: no
+    /// second rate, and no burn where the judged percentage is already settled by an
+    /// account constraint (unlimited credits, a spend cap).
+    fn burn_view(
+        &self,
+        pace: &pace::PaceTable,
+        row: &Row,
+        why: Option<view::Why>,
+    ) -> Option<view::Burn> {
+        if matches!(why, Some(view::Why::Unlimited | view::Why::SpendCap)) {
+            return None;
+        }
+        let Some(source) = self.group.source.as_deref() else {
+            return Some(view::Burn::NoHistory);
+        };
+        let verdict = pace.verdict_for(source, row)?;
+        match (verdict.pace, verdict.basis) {
+            (pace::Pace::Absent, _)
+            | (pace::Pace::Bound { .. } | pace::Pace::Rate { .. }, None) => None,
+            (pace::Pace::Unknown, None) => Some(view::Burn::Unusable),
+            (pace::Pace::Unknown, Some(basis)) => Some(view::Burn::Short {
+                seen: span_label(basis.span_secs),
+                need: span_label(basis.need_secs),
+            }),
+            (found @ (pace::Pace::Bound { .. } | pace::Pace::Rate { .. }), Some(basis)) => {
+                Some(view::Burn::Rate {
+                    rate: found.cell(),
+                    span: span_label(basis.span_secs),
+                })
+            }
         }
     }
 }
@@ -1672,9 +1718,8 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
 
 /// [`observe`], plus the thinned history the sources kept beside their rows.
 ///
-/// Only the operator table reads the history: the watchdog and the autoreseat leg
-/// keep calling [`observe`], and the dialogs [`view_cached`], so pace can never
-/// reach a level.
+/// The operator table and the dialogs read the history, for DISPLAY only: the watchdog
+/// and the autoreseat leg keep calling [`observe`], and no pace reaches a level.
 pub(crate) fn observe_full(
     inputs: &Inputs<'_>,
 ) -> Result<(Observation, pace::SeriesSet), crate::config::ConfigError> {
@@ -2114,14 +2159,16 @@ fn compose(
     let done_at = shown.as_ref().and_then(|(_, _, done_at)| *done_at);
     let now = done_at.map_or(inputs.now, |done_at| inputs.now.max(done_at));
     let muse = muse_held(inputs, &scopes, now);
-    let (mut observation, _) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
+    let (mut observation, series) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
     if let Some((rows, hint, _)) = shown {
         replace_agy(&mut observation.groups, legs, rows, hint.as_deref());
     }
     if let Some((spoken, rows, hint)) = muse {
         replace_muse(&mut observation.groups, &spoken, rows, hint.as_deref());
     }
-    observation.quota_view()
+    // The same table `ae quota` draws its PACE column from, so one rate decides both.
+    let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
+    observation.quota_view_paced(&pace)
 }
 
 /// One attempt's rows, or a placeholder and its reason. A row with no windows still says
@@ -4711,6 +4758,355 @@ fn dated_dir(root: &Path, seconds: i64) -> Option<PathBuf> {
         return None;
     }
     Some(root.join(year).join(month).join(day))
+}
+
+// Append this module byte-identically to src/quota.rs. Frozen acceptance tests.
+#[cfg(test)]
+mod quotaburn_acceptance {
+    use super::view::{Geometry, Scope, layout};
+    use super::{AgyCache, Inputs};
+    use std::fmt::Write as _;
+    use std::path::PathBuf;
+
+    const NOW: i64 = 1_788_858_600;
+    const ID: &str = "01a08046-1974-7352-ade3-81a786200795";
+
+    struct Rig {
+        root: PathBuf,
+        config: PathBuf,
+        sessions: PathBuf,
+    }
+
+    impl Rig {
+        // Every tuple is (seconds before newest, short USED, weekly USED).
+        fn new(tag: &str, age: i64, samples: &[(i64, f64, f64)], resets: u8) -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("ae-quotaburn-spec-{tag}-{}", std::process::id()));
+            std::fs::create_dir(&root).expect("claim a fresh scratch fixture");
+            let day = root.join(".codex/sessions/2026/09/08");
+            let sessions = root.join("sessions");
+            std::fs::create_dir_all(&day).expect("rollout day");
+            std::fs::create_dir_all(sessions.join("spec")).expect("session fixture");
+            let config = root.join("config");
+            std::fs::write(
+                &config,
+                format!(
+                    "[clients]\ncx = codex manual_resets={resets}\n[profiles]\np = cx --model sol\n"
+                ),
+            )
+            .expect("identity config");
+            std::fs::write(
+                sessions.join("spec/meta"),
+                format!(
+                    "schema=2\nseat.main=lead\nprofile.main=p\nharness_session.main={ID}\nagent_bin.main=codex\n"
+                ),
+            )
+            .expect("session meta");
+            let mut records = String::new();
+            for &(ago, short, weekly) in samples {
+                let timestamp = crate::time::Timestamp::from_epoch(NOW - age - ago);
+                let _ = writeln!(
+                    records,
+                    "{{\"timestamp\":\"{timestamp}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"rate_limits\":{{\"limit_id\":\"codex\",\"plan_type\":\"pro\",\"primary\":{{\"used_percent\":{short},\"window_minutes\":300,\"resets_at\":{}}},\"secondary\":{{\"used_percent\":{weekly},\"window_minutes\":10080,\"resets_at\":{}}}}}}}}}",
+                    NOW + 2 * 3600,
+                    NOW + 3 * 86400,
+                );
+            }
+            std::fs::write(day.join(format!("rollout-test-{ID}.jsonl")), records)
+                .expect("rollout history");
+            Self {
+                root,
+                config,
+                sessions,
+            }
+        }
+
+        fn inputs(&self) -> Inputs<'_> {
+            Inputs {
+                home: Some(&self.root),
+                global: Some(&self.config),
+                local: None,
+                sessions: Some(&self.sessions),
+                now: NOW,
+            }
+        }
+
+        fn views(&self) -> Vec<Scope> {
+            let cache = AgyCache::new(|_| panic!("no paid quota ask in acceptance test"));
+            let (held, due) = super::view_held(&self.inputs(), &cache, false);
+            assert!(due.is_none());
+            let mut cache = AgyCache::new(|_| panic!("no paid quota ask in acceptance test"));
+            assert_eq!(
+                held,
+                super::view_cached(&self.inputs(), &mut cache),
+                "app held view and tmux cached view must carry the same quota facts"
+            );
+            held
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn lines(scopes: &[Scope], width: usize) -> Vec<String> {
+        layout(
+            scopes,
+            Geometry {
+                width,
+                rows: None,
+                icons: false,
+            },
+        )
+        .into_iter()
+        .map(|line| line.text)
+        .collect()
+    }
+
+    fn window(lines: &[String], duration: &str) -> String {
+        lines
+            .iter()
+            .find(|line| token(line, duration))
+            .unwrap_or_else(|| panic!("missing {duration} window: {lines:?}"))
+            .clone()
+    }
+
+    fn token(line: &str, expected: &str) -> bool {
+        line.split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == expected)
+    }
+
+    fn has(line: &str, pieces: &[&str]) {
+        for piece in pieces {
+            let present = if piece.chars().all(|c| c.is_ascii_alphanumeric()) {
+                token(line, piece)
+            } else {
+                line.contains(piece)
+            };
+            assert!(present, "missing {piece:?}: {line}");
+        }
+    }
+
+    #[test]
+    fn quotaburn_settings_reads_history_and_keeps_short_weekly_span_reset_and_seen_separate() {
+        // 3 pp / 0.5 h = 6 pp/h; 12 pp / 6 h = 2 pp/h.
+        let rig = Rig::new(
+            "history",
+            120,
+            &[(21600, 0.0, 8.0), (1800, 20.0, 19.0), (0, 23.0, 20.0)],
+            0,
+        );
+        let views = rig.views();
+        assert_eq!(views.len(), 1);
+        let shown = lines(&views, 180);
+        has(&window(&shown, "5h"), &["6.0%/h", "30m", "2h00m", "2m"]);
+        has(&window(&shown, "7d"), &["2.0%/h", "6h00m", "3d", "2m"]);
+    }
+
+    #[test]
+    fn quotaburn_insufficient_history_explains_measured_and_required_span_per_window() {
+        // Pace's short minimum is 1 h / 3 = 20 m; weekly is 12 h / 3 = 4 h.
+        let rig = Rig::new(
+            "insufficient",
+            120,
+            &[(600, 10.0, 10.0), (0, 16.0, 16.0)],
+            0,
+        );
+        let shown = lines(&rig.views(), 180);
+        let short = window(&shown, "5h");
+        has(&short, &["insufficient", "10m", "20m"]);
+        // Weekly thinning needs >=1350 s between retained samples.
+        let weekly_rig = Rig::new(
+            "insufficient-weekly",
+            120,
+            &[(1500, 10.0, 10.0), (0, 16.0, 16.0)],
+            0,
+        );
+        let weekly = window(&lines(&weekly_rig.views(), 180), "7d");
+        has(&weekly, &["insufficient", "25m", "4h00m"]);
+        assert!(!short.contains("%/h") && !weekly.contains("%/h"));
+    }
+
+    #[test]
+    fn quotaburn_one_sample_is_explicitly_insufficient_never_bare_unknown() {
+        let rig = Rig::new("one", 120, &[(0, 23.0, 20.0)], 0);
+        let shown = lines(&rig.views(), 180);
+        has(&window(&shown, "5h"), &["insufficient", "0m", "20m"]);
+        has(&window(&shown, "7d"), &["insufficient", "0m", "4h00m"]);
+    }
+
+    #[test]
+    fn quotaburn_minimum_span_boundary_is_the_pace_rule() {
+        // A 5 h window needs exactly 1200 s, not a new view-specific threshold.
+        let below = Rig::new("below", 120, &[(1199, 10.0, 10.0), (0, 16.0, 16.0)], 0);
+        has(
+            &window(&lines(&below.views(), 180), "5h"),
+            &["insufficient", "20m"],
+        );
+        let exact = Rig::new("exact", 120, &[(1200, 10.0, 10.0), (0, 16.0, 16.0)], 0);
+        has(
+            &window(&lines(&exact.views(), 180), "5h"),
+            &["18.0%/h", "20m"],
+        );
+    }
+
+    #[test]
+    fn quotaburn_quantized_weekly_bound_rounds_up_and_reports_its_span() {
+        // Existing Pace rule: <2 pp over 9 h => upper bound 2/9, rounded UP.
+        let rig = Rig::new("bound", 120, &[(32400, 10.0, 10.0), (0, 11.99, 11.99)], 0);
+        has(
+            &window(&lines(&rig.views(), 180), "7d"),
+            &["<0.3%/h", "9h00m"],
+        );
+    }
+
+    #[test]
+    fn quotaburn_rate_uses_judged_percentage_with_manual_resets() {
+        // One declared reset halves judged movement: 6 raw pp / 0.5 h / 2.
+        let rig = Rig::new("judged", 120, &[(1800, 20.0, 20.0), (0, 26.0, 26.0)], 1);
+        has(&window(&lines(&rig.views(), 180), "5h"), &["6.0%/h", "30m"]);
+    }
+
+    #[test]
+    fn quotaburn_reset_drop_restarts_the_observation_span() {
+        let rig = Rig::new(
+            "restart",
+            120,
+            &[(3600, 50.0, 50.0), (600, 5.0, 5.0), (0, 9.0, 9.0)],
+            0,
+        );
+        let shown = lines(&rig.views(), 180);
+        has(&window(&shown, "5h"), &["insufficient", "10m", "20m"]);
+        // Keep the post-drop weekly sample beyond its 1350 s thinning spacing.
+        let weekly_rig = Rig::new(
+            "restart-weekly",
+            120,
+            &[(3600, 50.0, 50.0), (1500, 5.0, 5.0), (0, 9.0, 9.0)],
+            0,
+        );
+        has(
+            &window(&lines(&weekly_rig.views(), 180), "7d"),
+            &["insufficient", "25m", "4h00m"],
+        );
+    }
+
+    #[test]
+    fn quotaburn_forecast_is_conditional_and_does_not_become_a_stop_instruction() {
+        let rig = Rig::new("forecast", 120, &[(1800, 60.0, 60.0), (0, 90.0, 90.0)], 0);
+        let short = window(&lines(&rig.views(), 180), "5h");
+        has(&short, &["60.0%/h", "30m"]);
+        assert!(
+            short.contains("at this rate") || (short.contains('~') && short.contains('!')),
+            "conditional projection or existing ~ETA! required: {short}"
+        );
+        let lower = short.to_ascii_lowercase();
+        for word in ["stop", "park", "exhausted"] {
+            assert!(!lower.contains(word), "forecast is guidance: {short}");
+        }
+    }
+
+    #[test]
+    fn quotaburn_narrow_settings_preserves_complete_rate_span_and_reset_numbers() {
+        let rig = Rig::new(
+            "width",
+            120,
+            &[(21600, 0.0, 8.0), (1800, 20.0, 19.0), (0, 26.0, 20.0)],
+            0,
+        );
+        let views = rig.views();
+        for width in [100, 90, 80] {
+            let shown = lines(&views, width);
+            let short = window(&shown, "5h");
+            has(&short, &["12.0%/h", "30m", "2h00m"]);
+            has(&window(&shown, "7d"), &["2.0%/h", "6h00m", "3d"]);
+            assert!(
+                shown.iter().all(|line| line.chars().count() <= width),
+                "overflow at width {width}: {shown:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn quotaburn_stale_row_keeps_a_trusted_rate_and_reports_its_own_age() {
+        let rig = Rig::new("stale", 1200, &[(1800, 20.0, 20.0), (0, 26.0, 26.0)], 0);
+        has(
+            &window(&lines(&rig.views(), 180), "5h"),
+            &["12.0%/h", "30m", "stale", "20m"],
+        );
+    }
+
+    #[test]
+    fn quotaburn_operator_table_pace_cells_keep_their_existing_spelling() {
+        use super::pace::Pace;
+        assert_eq!(Pace::Unknown.cell(), "unknown");
+        assert_eq!(Pace::Absent.cell(), "-");
+        assert_eq!(Pace::Bound { per_h: 2.0 / 9.0 }.cell(), "<0.3%/h");
+        assert_eq!(
+            Pace::Rate {
+                per_h: 6.0,
+                eta_secs: 50400.0,
+                before_reset: false
+            }
+            .cell(),
+            "6.0%/h ~14h00m"
+        );
+        assert_eq!(
+            Pace::Rate {
+                per_h: 60.0,
+                eta_secs: 600.0,
+                before_reset: true
+            }
+            .cell(),
+            "60.0%/h ~10m!"
+        );
+    }
+
+    #[test]
+    fn quotaburn_no_history_provider_states_no_burn_history_in_both_settings_paths() {
+        let rig = Rig::new("no-history", 120, &[(0, 20.0, 20.0)], 0);
+        std::fs::write(&rig.config, "[profiles]\na = agy\n").expect("agy-only config");
+        let payload = r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":0.75,"reset_time":"2026-09-08T11:10:00Z"},{"id":"gemini-weekly","window":"weekly","remaining_fraction":0.8,"reset_time":"2026-09-11T09:10:00Z"}]}]}}}"#;
+        let mut cache = AgyCache::new(|_| panic!("held answer must prevent a paid ask"));
+        cache.settle(
+            &rig.root,
+            NOW,
+            NOW,
+            super::AgyRun::Done {
+                text: payload.to_owned(),
+            },
+        );
+        let inputs = Inputs {
+            sessions: None,
+            ..rig.inputs()
+        };
+        let (held, due) = super::view_held(&inputs, &cache, false);
+        assert!(due.is_none());
+        assert_eq!(held, super::view_cached(&inputs, &mut cache));
+        let shown = lines(&held, 180);
+        for duration in ["5h", "7d"] {
+            let row = window(&shown, duration);
+            has(&row, &["no burn history"]);
+            assert!(
+                !row.contains("%/h") && !row.contains("insufficient"),
+                "{row}"
+            );
+        }
+    }
+
+    #[test]
+    fn quotaburn_unusable_rate_says_insufficient_without_a_false_short_span_pair() {
+        // Finite USED=1e308 over 1/3 hour overflows the rate: existing Pace::Unknown.
+        let rig = Rig::new("unusable", 120, &[(1200, 0.0, 0.0), (0, 1e308, 1e308)], 0);
+        let row = window(&lines(&rig.views(), 180), "5h");
+        has(&row, &["insufficient", "data"]);
+        assert!(!row.contains("%/h"), "{row}");
+        assert!(
+            !token(&row, "20m") && !row.contains("needed"),
+            "span is already sufficient; do not claim a short span: {row}"
+        );
+    }
 }
 
 #[cfg(test)]

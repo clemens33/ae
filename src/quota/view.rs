@@ -3,7 +3,7 @@
 //! PURE by design: its only reach beyond `std` is the one prose cutter
 //! (`event_text::clip_head`). Every number, label and level reaches this
 //! module as an already-formatted string or a small enum that the one builder
-//! (`Observation::quota_view`) made from the existing single owners; nothing
+//! (`Observation::quota_view_paced`) made from the existing single owners; nothing
 //! here derives, judges or reads a clock. Both quota surfaces (the tmux dialog
 //! and the app's Settings > Quota) lay the same facts out AFTER they know their
 //! live geometry.
@@ -38,6 +38,27 @@ pub enum Why {
     SpendCap,
 }
 
+/// How fast one window is filling, and how much observed span says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Burn {
+    /// A rate (or an upper bound) already spelled, over this observed span.
+    Rate { rate: String, span: String },
+    /// Too little history yet: this much observed, this much the rule needs.
+    Short { seen: String, need: String },
+    /// A rate that could not be made from history that was long enough.
+    Unusable,
+    /// This client keeps no history a rate could be read from.
+    NoHistory,
+}
+
+/// How much prose a BURN cell keeps, most first. The numbers outlast the words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    Full,
+    Brief,
+    Bare,
+}
+
 /// What a line is drawn in. Every tone also carries its word in the text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tone {
@@ -66,6 +87,8 @@ pub struct Window {
     pub resets: Option<String>,
     /// Age of the observation, already spelled.
     pub seen: Option<String>,
+    /// How fast this window is filling; `None` states nothing for it.
+    pub burn: Option<Burn>,
 }
 
 /// One client scope: its identity, account facts and windows.
@@ -157,6 +180,27 @@ fn tone_of(window: &Window) -> Tone {
     }
 }
 
+/// One BURN cell at `tier`. Words drop before digits, and a cell is never cut.
+fn burn_cell(burn: Option<&Burn>, tier: Tier) -> String {
+    match (burn, tier) {
+        (None, _) => "-".to_owned(),
+        (Some(Burn::Rate { rate, span }), Tier::Full) => format!("{rate} (over {span})"),
+        (Some(Burn::Rate { rate, span }), Tier::Brief) => format!("{rate} ({span})"),
+        (Some(Burn::Rate { rate, .. }), Tier::Bare) => rate.clone(),
+        (Some(Burn::Short { seen, need }), Tier::Full) => {
+            format!("insufficient data ({seen} of {need} needed)")
+        }
+        (Some(Burn::Short { seen, need }), Tier::Brief) => {
+            format!("insufficient ({seen} of {need})")
+        }
+        (Some(Burn::Unusable), Tier::Full) => "insufficient data (no usable rate)".to_owned(),
+        (Some(Burn::Short { .. } | Burn::Unusable), Tier::Brief | Tier::Bare) => {
+            "insufficient".to_owned()
+        }
+        (Some(Burn::NoHistory), _) => "no burn history".to_owned(),
+    }
+}
+
 fn bar(fill: Option<u8>, icons: bool) -> String {
     let Some(fill) = fill else {
         return " ".repeat(BAR_CELLS);
@@ -210,6 +254,8 @@ struct Columns {
     resets: usize,
     seen: Option<usize>,
     long: bool,
+    /// The BURN column's tier and width; `None` when no kept window states a burn.
+    burn: Option<(Tier, usize)>,
 }
 
 impl Columns {
@@ -253,10 +299,18 @@ impl Columns {
             resets,
             seen: Some(seen),
             long: true,
+            burn: None,
         };
         columns.note = columns.note_width(windows);
-        // Drop order: SEEN, the bar, long notes, then names down to the floor.
+        if windows.iter().any(|w| w.burn.is_some()) {
+            columns.burn_at(windows, Tier::Full);
+        }
+        // Drop order: the BURN prose, SEEN, the bar, long notes, the BURN span,
+        // then names down to the floor.
         let excess = |columns: &Self| columns.total().saturating_sub(width);
+        if excess(&columns) > 0 && columns.burn.is_some() {
+            columns.burn_at(windows, Tier::Brief);
+        }
         if excess(&columns) > 0 {
             columns.seen = None;
         }
@@ -266,6 +320,9 @@ impl Columns {
         if excess(&columns) > 0 {
             columns.long = false;
             columns.note = columns.note_width(windows);
+        }
+        if excess(&columns) > 0 && columns.burn.is_some() {
+            columns.burn_at(windows, Tier::Bare);
         }
         let over = excess(&columns);
         if over > 0 {
@@ -286,6 +343,17 @@ impl Columns {
             .max("NOTE".len())
     }
 
+    /// Draw the BURN column at `tier`, as wide as its widest cell.
+    fn burn_at(&mut self, windows: &[&Window], tier: Tier) {
+        let widest = windows
+            .iter()
+            .map(|w| burn_cell(w.burn.as_ref(), tier).chars().count())
+            .max()
+            .unwrap_or(0)
+            .max("BURN".len());
+        self.burn = Some((tier, widest));
+    }
+
     fn total(&self) -> usize {
         2 + self.name
             + if self.bar { 1 + BAR_CELLS } else { 0 }
@@ -297,6 +365,7 @@ impl Columns {
             + 2
             + self.resets
             + self.seen.map_or(0, |seen| 2 + seen)
+            + self.burn.map_or(0, |(_, burn)| 2 + burn)
     }
 
     fn row(&self, cells: &Cells<'_>) -> String {
@@ -313,6 +382,9 @@ impl Columns {
         if let Some(width) = self.seen {
             let _ = write!(line, "  {:>width$}", cells.seen);
         }
+        if let Some((_, width)) = self.burn {
+            let _ = write!(line, "  {:<width$}", cells.burn);
+        }
         line.trim_end().to_owned()
     }
 }
@@ -326,6 +398,7 @@ struct Cells<'a> {
     note: &'a str,
     resets: &'a str,
     seen: &'a str,
+    burn: &'a str,
 }
 
 /// Which windows the height rule has dropped, and the admit row's text.
@@ -372,6 +445,7 @@ fn draw(scopes: &[Scope], dropped: &[Vec<bool>], geometry: Geometry) -> Vec<Line
             note: "NOTE",
             resets: "RESETS",
             seen: "SEEN",
+            burn: "BURN",
         }),
         tone: Tone::Dim,
         calm: false,
@@ -416,6 +490,9 @@ fn draw(scopes: &[Scope], dropped: &[Vec<bool>], geometry: Geometry) -> Vec<Line
                     note: &note(window, columns.long),
                     resets: window.resets.as_deref().unwrap_or("?"),
                     seen: window.seen.as_deref().unwrap_or("?"),
+                    burn: &columns.burn.map_or_else(String::new, |(tier, _)| {
+                        burn_cell(window.burn.as_ref(), tier)
+                    }),
                 }),
                 tone: tone_of(window),
                 calm: is_calm(window),

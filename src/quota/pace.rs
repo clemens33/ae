@@ -91,6 +91,11 @@ fn lookback_secs(window_minutes: u32) -> i64 {
     (i64::from(window_minutes) * 60 / 5).clamp(30 * 60, 12 * 3600)
 }
 
+/// The least observed span a rate needs: a third of the lookback.
+fn min_span_secs(window_minutes: u32) -> i64 {
+    lookback_secs(window_minutes) / 3
+}
+
 /// Keep at most [`RETAINED`] points, newest always, each at least `spacing`
 /// older than the one kept before it; equal stamps keep the HIGHER used.
 pub fn thin(mut points: Vec<Point>, window_minutes: u32) -> Vec<Point> {
@@ -137,9 +142,17 @@ fn secs(value: i64) -> f64 {
     f64::from(i32::try_from(value.clamp(0, i64::from(i32::MAX))).unwrap_or(i32::MAX))
 }
 
+/// The span a pace was measured over and the span its rule needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Basis {
+    pub(crate) span_secs: i64,
+    pub(crate) need_secs: i64,
+}
+
 impl Pace {
     /// The pace of `newest`, the row the table shows, which is always the exact endpoint.
     /// Newer, other-instance and pre-restart history is ignored; both ends use `policy`.
+    #[cfg(test)]
     pub(crate) fn of(
         policy: &Policy,
         window_minutes: u32,
@@ -147,12 +160,25 @@ impl Pace {
         history: &[Point],
         now: i64,
     ) -> Self {
+        Self::measured(policy, window_minutes, newest, history, now).0
+    }
+
+    /// The pace of `newest` and the span it was measured over: `Some` exactly when a span,
+    /// short or sufficient, explains the verdict, so a reader never pairs a span with a rate
+    /// it did not produce. This is the one rate; the test-only `of` is its pace alone.
+    pub(crate) fn measured(
+        policy: &Policy,
+        window_minutes: u32,
+        newest: Point,
+        history: &[Point],
+        now: i64,
+    ) -> (Self, Option<Basis>) {
         let derived = Derived::judge(policy, newest.used, Some(newest.observed_at));
         if matches!(
             derived.effective,
             Effective::Unlimited | Effective::SpendCapped
         ) {
-            return Self::Absent;
+            return (Self::Absent, None);
         }
         let run = run_to(newest, history);
         let lookback = lookback_secs(window_minutes);
@@ -160,11 +186,15 @@ impl Pace {
             .iter()
             .find(|point| newest.observed_at.saturating_sub(point.observed_at) <= lookback)
         else {
-            return Self::Unknown;
+            return (Self::Unknown, None);
         };
         let span = newest.observed_at.saturating_sub(oldest.observed_at);
-        if span < lookback / 3 {
-            return Self::Unknown;
+        let basis = Basis {
+            span_secs: span,
+            need_secs: min_span_secs(window_minutes),
+        };
+        if span < basis.need_secs {
+            return (Self::Unknown, Some(basis));
         }
         // Rounding may leave an older point a hair above the newest: never a
         // negative movement.
@@ -178,23 +208,29 @@ impl Pace {
         let span_h = secs(span) / 3600.0;
         let delta = latest - earlier;
         if !(delta.is_finite() && span_h > 0.0 && delta >= 0.0) {
-            return Self::Unknown;
+            return (Self::Unknown, None);
         }
         if delta < MIN_DELTA_PP {
-            return Self::Bound {
-                per_h: MIN_DELTA_PP / span_h,
-            };
+            return (
+                Self::Bound {
+                    per_h: MIN_DELTA_PP / span_h,
+                },
+                Some(basis),
+            );
         }
         let per_h = delta / span_h;
         let eta_secs = ((100.0 - latest) / per_h * 3600.0).max(0.0);
         if !(per_h.is_finite() && per_h > 0.0 && eta_secs.is_finite()) {
-            return Self::Unknown;
+            return (Self::Unknown, None);
         }
-        Self::Rate {
-            per_h,
-            eta_secs,
-            before_reset: eta_secs < secs(newest.resets_at.saturating_sub(now)),
-        }
+        (
+            Self::Rate {
+                per_h,
+                eta_secs,
+                before_reset: eta_secs < secs(newest.resets_at.saturating_sub(now)),
+            },
+            Some(basis),
+        )
     }
 }
 
@@ -289,6 +325,7 @@ pub(crate) struct Verdict {
     pub(crate) observed_at: i64,
     pub(crate) used: f64,
     pub(crate) pace: Pace,
+    pub(crate) basis: Option<Basis>,
 }
 
 #[derive(Debug, Default)]
@@ -362,6 +399,15 @@ impl PaceTable {
 }
 
 impl PaceTable {
+    /// The verdict of one rendered row, only when that row is the one the verdict was
+    /// computed from: a shown row older than its key's winner reads nothing.
+    pub(crate) fn verdict_for(&self, source: &std::path::Path, row: &Row) -> Option<&Verdict> {
+        self.0.get(&Key::of(source, row)).filter(|verdict| {
+            row.observed_at == Some(verdict.observed_at)
+                && row_percent(row).is_some_and(|used| used.total_cmp(&verdict.used).is_eq())
+        })
+    }
+
     /// The verdict of one rendered row: the key's winner, claimed once.
     pub(crate) fn pace_for(
         &self,
@@ -369,15 +415,9 @@ impl PaceTable {
         row: &Row,
         claimed: &mut BTreeSet<Key>,
     ) -> Option<Pace> {
-        let key = Key::of(group.source.as_deref()?, row);
-        let shown_is_winner = |verdict: &Verdict| {
-            row.observed_at == Some(verdict.observed_at)
-                && row_percent(row).is_some_and(|used| used.total_cmp(&verdict.used).is_eq())
-        };
-        match self.0.get(&key) {
-            Some(verdict) if shown_is_winner(verdict) && claimed.insert(key) => Some(verdict.pace),
-            _ => None,
-        }
+        let source = group.source.as_deref()?;
+        let verdict = self.verdict_for(source, row)?;
+        claimed.insert(Key::of(source, row)).then_some(verdict.pace)
     }
 
     /// The PACE cell of one rendered row.
@@ -391,10 +431,11 @@ impl Key {
     fn verdict(&self, gathered: &Gathered<'_>, series: &SeriesSet, now: i64) -> Verdict {
         let winner = gathered.winner;
         let used = row_percent(winner);
-        let shown = |pace| Verdict {
+        let shown = |(pace, basis)| Verdict {
             observed_at: winner.observed_at.unwrap_or_default(),
             used: used.unwrap_or_default(),
             pace,
+            basis,
         };
         let (Some(used), Some(resets_at), Some(window), Some(merged)) = (
             used,
@@ -402,10 +443,10 @@ impl Key {
             self.window_minutes,
             gathered.merged.as_ref(),
         ) else {
-            return shown(Pace::Absent);
+            return shown((Pace::Absent, None));
         };
         if !trusted(winner, now) {
-            return shown(Pace::Absent);
+            return shown((Pace::Absent, None));
         }
         let newest = Point {
             observed_at: winner.observed_at.unwrap_or_default(),
@@ -416,7 +457,13 @@ impl Key {
         if let Some(held) = series.0.get(self) {
             history.extend(held.iter().copied());
         }
-        shown(Pace::of(&merged.policy, window, newest, &history, now))
+        shown(Pace::measured(
+            &merged.policy,
+            window,
+            newest,
+            &history,
+            now,
+        ))
     }
 }
 
