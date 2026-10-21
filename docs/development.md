@@ -58,6 +58,7 @@ just check            # shellcheck + shfmt over install, the one bash file
 just install          # checkout-mode immutable versioned install
 just rust-setup       # install pinned Rust toolchain and dev tools
 just rust-check       # Rust fmt, clippy, nextest, and doctests
+just rust-prune       # report stale ae build output here; apply=yes cleans it
 just version          # current AE_VERSION
 just bundles          # both platform bundles + release SHA256SUMS into ./dist
 just release          # full release pipeline (CalVer → bundles → tag → gh release)
@@ -213,20 +214,43 @@ What keeps each release smaller:
   two guards run side by side; a whole-gate comparison was too noisy to resolve a difference
   that small).
 
-What this does not do: these changes shrink the bytes a release leaves behind; they do not
-remove old releases. Reclaim them by hand until a prune recipe exists, and only while no
-lane is using that `target/`: delete the whole `target/` of a checkout nobody is building in
-(the next `just test` rebuilds it), or drop the ae package's artifacts of every version while
-keeping the compiled dependencies with `cargo clean -p ae --profile dev`. Measured on
-2026-10-20 in a target holding three ae versions, that command took 3.4 s: it removed all 30
+What this does not do by itself: these changes shrink the bytes a release leaves behind; they
+do not remove old releases. `just rust-prune` does, for the checkout it is run in, from that
+checkout's root, once per checkout (a worktree is its own checkout). It drops the ae
+package's artifacts of every version while keeping the compiled dependencies, so the next
+`just test` rebuilds only ae, in a minute or two. Measured on 2026-10-20 in a target holding
+three ae versions, `cargo clean -p ae --profile dev` took 3.4 s: it removed all 30
 incremental directories (6.04 GiB), every `ae-*`, `libae-*`, `it-*` and `libit-*` file in
 `debug/deps` (1.95 GiB down to 0.15 GiB) and the ae units' fingerprints, and all 373
-compiled-dependency files stayed. The release trees
-are separate profiles: `--profile release`, and `--profile release --target
-x86_64-unknown-linux-musl` for the musl tree. The two guard trees are separate target
-directories: add `--target-dir target/force-warn-guard` or `--target-dir
-target/world-read-guard`. `--dry-run` prints a summary of what a command would remove; add
-`--verbose` to list the paths.
+compiled-dependency files stayed.
+
+`just rust-prune` only reports; `just rust-prune apply=yes` cleans. It runs five cleans, each
+`cargo clean --locked -p ae` with `--profile dev`, `--profile release`, `--profile release
+--target x86_64-unknown-linux-musl`, and `--profile dev --target-dir target/force-warn-guard`
+or `target/world-read-guard` for the two guard trees, after a `--dry-run --verbose` of each.
+The guards come first, and a refusal exits 1 with one line naming the one that fired:
+
+* a redirect variable (`CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, `CARGO_BUILD_BUILD_DIR`,
+  `CARGO_BUILD_TARGET`) is set;
+* `cargo metadata`, asked from the checkout, puts the target or build directory anywhere but
+  `target/` (a `build.target-dir` or `build.build-dir` in a cargo config, a parent
+  directory's included; cargo finds config from the working directory, not from
+  `--manifest-path`, which is why the recipe judges only the tree it runs in);
+* `target/` or a tree the recipe cleans is a link;
+* a path the dry-run lists lies outside `target/` (outside the guard's own directory for the
+  two guard cleans; the `--target` clean lists the host units under `target/release` too),
+  has a `.` or `..` segment, or goes through a link;
+* cargo itself refuses a `--dry-run` (a `target-dir` without its `CACHEDIR.TAG` is one) and
+  the recipe prints cargo's message and stops;
+* a process outside this run's own ancestry (the recipe shell, `just`, the invoking shell)
+  has an argv naming the checkout or, when `lsof` is installed, a working directory inside
+  it, which includes the other end of a pipe (`just rust-prune | tail` is refused). `ps` is
+  required. A gate between its phases, with no child alive, cannot be seen: do not run the
+  recipe during one.
+
+The recipe never removes a file itself: cargo does. To reclaim the compiled dependencies too,
+delete the whole `target/` of a checkout nobody is building in. `--dry-run` prints a summary
+of what a cargo command would remove; add `--verbose` to list the paths.
 
 ## Releases
 

@@ -1468,6 +1468,163 @@ rust-deny:
 rust-vet:
     cargo vet --locked
 
+# Reclaim THIS checkout's stale ae build output and keep the compiled dependencies.
+# Every CalVer bump and source edit leaves another version's units behind
+# (docs/development.md, Build disk); `cargo clean -p ae` drops the ae package's
+# artifacts of every version from the five trees below, and the next gate
+# rebuilds them in a minute or two. `just rust-prune` only REPORTS;
+# `just rust-prune apply=yes` cleans. It judges the one tree it runs in, so run
+# it from a checkout's root, once per checkout.
+#
+# THE GUARDS ARE THE POINT, not the five cleans. It refuses (exit 1, one line
+# naming the guard) when a redirect variable is set, when `cargo metadata`
+# (asked from this tree, because cargo finds `.cargo/config.toml` from the
+# working directory and its parents, not from `--manifest-path`) puts the target
+# or build directory anywhere but `target/`, when `target/` or a tree below it is
+# a link, when any process outside this run's own ancestry has an argv or a
+# working directory under the checkout, and when the paths `cargo clean
+# --dry-run --verbose` lists for a tree are not all inside it and link-free. No
+# `rm`, no glob: cargo does the removal, and the two guard trees are named.
+# `ps` is required; `lsof` is used when installed. A lane between phases, with
+# no child alive, is invisible to both: do not run this during a gate. Do not pipe
+# its output either: the pipe's other end runs in the checkout and is refused.
+rust-prune apply="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "${1:-}" in
+        "") mode=report ;;
+        apply=yes) mode=apply ;;
+        *) echo "Error: rust-prune takes no argument (a report) or apply=yes" >&2; exit 2 ;;
+    esac
+    refuse() { echo "rust-prune: refused: $*" >&2; exit 1; }
+    for var in CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR CARGO_BUILD_BUILD_DIR CARGO_BUILD_TARGET; do
+        [ -z "${!var+x}" ] || refuse "$var is set; a redirected build directory is not one this recipe judges"
+    done
+    top="$(git rev-parse --show-toplevel 2>/dev/null)" || refuse "not inside a git checkout"
+    root="$(cd -P "$top" && pwd -P)"
+    [ "$(pwd -P)" = "$root" ] || refuse "run it from the checkout root, $root"
+    target="$root/target"
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+        echo "rust-prune: no target/ in $root, nothing to do"
+        exit 0
+    fi
+    # A real directory, not a link, whose physical path is exactly $1.
+    plain_dir() { [ -d "$1" ] && [ ! -L "$1" ] && [ "$(cd -P "$1" 2>/dev/null && pwd -P)" = "$1" ]; }
+    plain_dir "$target" || refuse "$target is not a plain directory"
+    # Refuse when a process outside THIS run's own ancestry (the recipe shell, just,
+    # the invoking shell) has an argv naming the checkout or its working directory
+    # inside it. Anything else, same cwd or not, is somebody else's.
+    in_use() {
+        local table pid ppid cmd n=0 i cur=$$ hops=0 up="" ancestry=" " out line path
+        local -a pids ppids cmds
+        table="$(ps -A -ww -o pid=,ppid=,command= 2>/dev/null)" || refuse "ps failed, so a running build cannot be ruled out"
+        while read -r pid ppid cmd; do
+            case "$pid" in '' | *[!0-9]*) continue ;; esac
+            pids[n]="$pid"
+            ppids[n]="$ppid"
+            cmds[n]="$cmd"
+            n=$((n + 1))
+        done <<<"$table"
+        while [ "$cur" -gt 1 ] && [ "$hops" -lt 64 ]; do
+            ancestry="$ancestry$cur "
+            up=""
+            for ((i = 0; i < n; i++)); do
+                if [ "${pids[i]}" = "$cur" ]; then
+                    up="${ppids[i]}"
+                    break
+                fi
+            done
+            if [ -z "$up" ]; then
+                [ "$hops" -gt 0 ] || refuse "this run is not in the process table, so its own ancestry cannot be proven"
+                break
+            fi
+            cur="$up"
+            hops=$((hops + 1))
+        done
+        for ((i = 0; i < n; i++)); do
+            case "$ancestry" in *" ${pids[i]} "*) continue ;; esac
+            case "${cmds[i]}" in *"$root/"*) refuse "pid ${pids[i]} is running under $root: ${cmds[i]}" ;; esac
+        done
+        if command -v lsof >/dev/null 2>&1; then
+            # From `/`, because lsof lists itself and inherits this directory.
+            out="$(cd / && lsof -d cwd -Fpn 2>/dev/null)" || refuse "lsof failed, so a working directory under $root cannot be ruled out"
+            pid=""
+            while IFS= read -r line; do
+                case "$line" in
+                    p*) pid="${line#p}" ;;
+                    n*)
+                        path="${line#n}"
+                        case "$path/" in
+                            "$root/"*) case "$ancestry" in *" $pid "*) ;; *) refuse "pid $pid has its working directory under $root" ;; esac ;;
+                        esac
+                        ;;
+                esac
+            done <<<"$out"
+        fi
+    }
+    in_use
+    meta="$(cargo metadata --no-deps --locked --format-version 1 --manifest-path "$root/Cargo.toml" 2>/dev/null)" || refuse "cargo metadata failed, so the build directories are unknown"
+    for key in target_directory build_directory; do
+        dir="$(printf '%s\n' "$meta" | sed -n 's/.*"'"$key"'":"\([^"]*\)".*/\1/p' | head -1)"
+        [ -n "$dir" ] || refuse "cargo metadata names no $key"
+        case "$dir" in *\\*) refuse "cargo's $key is not a plain path: $dir" ;; esac
+        [ "$(cd -P "$dir" 2>/dev/null && pwd -P)" = "$target" ] || refuse "cargo's $key is $dir, not $target: a redirect in a cargo config"
+    done
+    # The five cleans, fixed and named; $1 is a callback taking label, tree (skipped
+    # when absent), root (everything cargo may remove for it lies inside; a --target
+    # clean also lists the host units under target/<profile>) and cargo flags.
+    each() {
+        "$1" debug "$target/debug" "$target" --profile dev
+        "$1" release "$target/release" "$target" --profile release
+        "$1" musl-release "$target/x86_64-unknown-linux-musl" "$target" --profile release --target x86_64-unknown-linux-musl
+        "$1" force-warn-guard "$target/force-warn-guard" "$target/force-warn-guard" --profile dev --target-dir "$target/force-warn-guard"
+        "$1" world-read-guard "$target/world-read-guard" "$target/world-read-guard" --profile dev --target-dir "$target/world-read-guard"
+    }
+    # Dry-run one clean and prove every path cargo would remove is inside its root
+    # with no link on the way (dot segments refused). DFS output repeats parents, so
+    # the last proven directory spares re-walking its ancestors.
+    prove() {
+        local label="$1" tree="$2" top="$3" out line dir ok="" d sum
+        shift 3
+        { [ -e "$tree" ] || [ -L "$tree" ]; } || return 0
+        plain_dir "$tree" || refuse "$tree is not a plain directory"
+        out="$(cargo clean --locked --manifest-path "$root/Cargo.toml" -p ae "$@" --dry-run --verbose 2>&1)" || { printf '%s\n' "$out" >&2; refuse "cargo clean --dry-run failed for $label"; }
+        while IFS= read -r line; do
+            case "$line" in /*) ;; *) continue ;; esac
+            case "$line" in "$top"/*) ;; *) refuse "cargo would remove $line, outside $top" ;; esac
+            case "/$line/" in */../* | */./*) refuse "cargo would remove a path with a dot segment: $line" ;; esac
+            [ ! -L "$line" ] || refuse "cargo would remove through a link: $line"
+            dir="${line%/*}"
+            case "$ok/" in "$dir/"*) continue ;; esac
+            d="$dir"
+            while [ "${#d}" -gt "${#top}" ]; do
+                [ ! -L "$d" ] || refuse "cargo would remove through a link: $d"
+                d="${d%/*}"
+            done
+            ok="$dir"
+        done <<<"$out"
+        sum="$(printf '%s\n' "$out" | sed -n 's/^ *Summary //p' | head -1)"
+        if [ "$mode" = report ]; then
+            echo "would clean $label: ${sum:-no summary}"
+        fi
+    }
+    clean_one() {
+        local label="$1" tree="$2" out sum
+        shift 3
+        { [ -e "$tree" ] || [ -L "$tree" ]; } || return 0
+        out="$(cargo clean --locked --manifest-path "$root/Cargo.toml" -p ae "$@" 2>&1)" || { printf '%s\n' "$out" >&2; refuse "cargo clean failed for $label"; }
+        sum="$(printf '%s\n' "$out" | sed -n 's/^ *Removed //p' | head -1)"
+        echo "cleaned $label: ${sum:-done}"
+    }
+    each prove
+    if [ "$mode" = report ]; then
+        echo "rust-prune: report only, nothing removed; just rust-prune apply=yes cleans"
+        exit 0
+    fi
+    in_use
+    each clean_one
+    echo "rust-prune: done; the next gate rebuilds the ae units"
+
 # NATIVE is a real, runnable binary and is run here to prove it.
 #
 # THE MUSL COMPILE-SMOKE WAS REMOVED at the first dependency (2026-08-29, P4.3
