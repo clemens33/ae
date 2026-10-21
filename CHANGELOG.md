@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.105] - 2026-10-21
+- Pin just rust-prune: report by default, own-tree cleans, containment and in-use guards
+- Add just rust-prune: report and clean this checkout's stale ae build output
+- List just rust-prune in the lanes table
+- Pin rust-prune dry-run grammar: stdout paths only, a valid Summary, one lsof note
+- Read the dry run from stdout alone and require a valid Summary
+- Say what a zero-removal dry run looks like, not that both streams are empty
+- Show each quota scope's reported account plan
+- Read OpenCode's free-tier usage limit from its spinner footer
+- Ae <name> on a terminal opens the app on that session; --tmux keeps the tmux entry
+
 ## [v2026.10.104] - 2026-10-21
 - Wait for daemon cycles, not wall-clock seconds, in the unmapped-limit autoreseat tests
 - Use the imported Cell in the second-episode limitstop test
