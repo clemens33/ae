@@ -125,7 +125,7 @@ ${sessions_dir}/state done "shipped X"
 ${sessions_dir}/state                                                # print current state
 ```
 
-`mark-done "<summary>"` is preserved as shorthand for `state done`. Declare `working` on every new task, `waiting-user` only after asking the human, `waiting-agent` when you wait on another agent (name them in the reason), `blocked` only with a concrete EXTERNAL blocker: a dependency, a service, a human decision elsewhere, a broken host.
+`mark-done "<summary>"` is preserved as shorthand for `state done`. Declare `working` on every new task, `waiting-user` only after asking the human a question you cannot continue without (an optional offer is `done`, named in the reason), `waiting-agent` when you wait on another agent (name them in the reason), `blocked` only with a concrete EXTERNAL blocker: a dependency, a service, a human decision elsewhere, a broken host.
 
 Record durable findings, decisions, and handoffs in shared session memory:
 ```bash
@@ -2239,8 +2239,7 @@ mod tests {
                 "{slot} misses the ctx lead-in: {document}"
             );
             assert!(
-                flat(&document)
-                    .contains("⟦ae:ctx⟧ means setup; its attached brief is your assignment"),
+                flat(&document).contains("⟦ae:ctx⟧ means setup; its brief is your assignment"),
                 "{slot} misses the ctx-setup sentence: {document}"
             );
         }
@@ -2257,7 +2256,7 @@ mod tests {
             let document = context_document(&dir, "s", "/w", slot, &[]);
             let flat = flat(&document);
             assert!(
-                flat.contains("A wrapper enclosing the whole turn uses its first inner line."),
+                flat.contains("A wrapper enclosing the turn uses its first inner line."),
                 "{slot} misses the wrapper sentence: {document}"
             );
             assert!(
@@ -2549,7 +2548,7 @@ mod tests {
         for (slot, document) in [("main", &main), ("worker.1", &worker)] {
             let flat = flat(document);
             for sentence in [
-                "Read your brief fully; fetch every line if it is file-backed.",
+                "Read your brief fully; fetch every line if file-backed.",
                 "Follow its scope and authorized owner updates.",
                 "Coordinate before changing another agent's files.",
                 "Ask your owner about conflicting scope or evidence; make ordinary authorized choices yourself.",
@@ -2599,10 +2598,10 @@ mod tests {
             for sentence in [
                 "To agents: helpers only, never raw tmux keys; destructive tmux from your shell needs -S <private socket>, never -L.",
                 "Use your session; another session requires explicit human authorization naming its target and --cross-session.",
-                "Need an answer before you can go on? ask, then declare waiting-agent.",
+                "Need an answer to go on? ask, then declare waiting-agent.",
                 "The request id the helper prints is not the answer; the reply arrives later as a new message.",
                 "Bodies to agents are terse: fragments, no filler; keep file:line, commands, ids, error text and verdict words exact.",
-                "Evidence longer than 20 lines goes to a file under .local/; send the path.",
+                "Evidence over 20 lines goes to a file under .local/; send the path.",
                 "A review reply lists every finding, one line each, no cap.",
             ] {
                 assert!(
@@ -2631,11 +2630,11 @@ mod tests {
                 "unresolved, notify your owner with the saved-body path.",
                 "Preserve supplied return commands: helper spelling, flags, recipient and id.",
                 "Replace \"<your reply>\" (quotes included) with one single-quoted body; apostrophe example: 'can'\\''t'.",
-                "Answer REQUEST/REVIEW with its supplied return command; an [id] answer is not another request.",
+                "Answer REQUEST/REVIEW with its return command; an [id] answer is not another request.",
                 "For LONG BODY, read the whole saved file; relative paths start at the helper directory.",
                 "Use any return command inside that file, never the notice's.",
                 "ABANDONED: nothing pasted; retry when the obstruction clears.",
-                "Other refusals: follow the stated fix.",
+                "Other refusals: follow the fix.",
                 "Unknown/unconfirmed or \"recorded as pending\": may have landed; never blindly resend.",
                 "Never poll panes for answers or treat drafts as replies.",
             ] {
@@ -2660,11 +2659,11 @@ mod tests {
                 "{slot}: {document}"
             );
             for sentence in [
-                "working — you are doing the task; declare it when you start or resume, not after you finish.",
+                "working — you are doing the task; declare it when you start or resume, not after finishing.",
                 "waiting-agent — you need a named agent's answer or result before continuing (an ask you sent, or a worker you spawned). Typed: waiting-agent --on <agent|session:agent|@session> 'reason'.",
-                "waiting-user — only after you asked the human yourself.",
+                "waiting-user — only after you asked the human yourself and cannot continue without the answer; an optional offer is done.",
                 "blocked — an external impediment (service, dependency, broken host), never another agent.",
-                "done — you handed your result back, or your owner paused you for an explained reason; nothing is left for you to do now, even if follow-up questions may come.",
+                "done — you handed your result back, or your owner paused you for an explained reason; nothing is left for you to do, even if follow-up questions may come.",
                 "Example: you replied with your report → done, not waiting-agent.",
                 "Wait and blocked reasons: 80–600 characters naming who or what unblocks and the evidence path.",
                 "On a watchdog challenge, check the condition: still true → declare it again; changed → declare the real state.",

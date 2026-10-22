@@ -70,7 +70,7 @@ Declare your current work state. It shows in `ae list` (per agent). Your `waitin
 {{DIR}}/state                                                # print current state
 ```
 
-`mark-done "<summary>"` is preserved as shorthand for `state done`. Declare `working` on every new task, `waiting-user` only after asking the human, `waiting-agent` when you wait on another agent (name them in the reason), `blocked` only with a concrete EXTERNAL blocker: a dependency, a service, a human decision elsewhere, a broken host.
+`mark-done "<summary>"` is preserved as shorthand for `state done`. Declare `working` on every new task, `waiting-user` only after asking the human a question you cannot continue without (an optional offer is `done`, named in the reason), `waiting-agent` when you wait on another agent (name them in the reason), `blocked` only with a concrete EXTERNAL blocker: a dependency, a service, a human decision elsewhere, a broken host.
 
 Record durable findings, decisions, and handoffs in shared session memory:
 ```bash
