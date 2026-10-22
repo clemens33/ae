@@ -194,7 +194,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `auto_reseat_sessions` | Comma-separated sessions auto reseat acts in; absent means every session. An entry that is not a session name, or is named twice, is ignored with a note | every session |
 | `auto_reseat_grace_secs` | Whole seconds a usage-limit or headroom episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
 | `auto_reseat_at` | The judged percentage of a seat's OWN account at which auto reseat moves it before any limit (`50`-`100`, or `off`). Only a usable window proven at least one day long counts, the weekly one, never the 5-hour session window, judged as `ae quota`'s `EFFECTIVE` column. An unusable value means `95`, with one note the watchdog journals once per start. Global config only | `95` |
-| `opencode_go_key_file` | Path of a file holding your OpenCode Go API key (`~/`, `$HOME/` or absolute), which lets `ae quota` show the Go subscription's windows. Absent means ae reads no Go quota; see [OpenCode Go quota](#opencode-go-quota). Global config only | none |
+| `opencode_go_key_file` | Path of a file holding an OpenCode Console key with usage access, separate from the key opencode uses for model calls (`~/`, `$HOME/` or absolute), which lets `ae quota` show the Go subscription's windows. Absent means ae reads no Go quota; see [OpenCode Go quota](#opencode-go-quota). Global config only | none |
 | `muse_quota` | `on` lets `ae quota` ask Muse for its allowance with one model call (about 32K input tokens), held for 30 minutes; `off` or absent asks nothing; see [Muse quota](#muse-quota). Global config only | `off` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
@@ -255,9 +255,10 @@ they never trigger a check.
 
 ### OpenCode Go quota
 
-OpenCode stores no quota where ae can read it, so Go quota is opt-in. Put the key in a file
-only you can read, and name it in the GLOBAL config (`~/`, `$HOME/`, `${HOME}/` or an absolute
-path; a project `.ae/config` entry is ignored):
+OpenCode stores no quota where ae can read it, so Go quota is opt-in. The key is an OpenCode
+Console key with usage access, separate from the key opencode uses for model calls. Put it in a
+file only you can read, and name that file in the GLOBAL config (`~/`, `$HOME/`, `${HOME}/` or an
+absolute path; a project `.ae/config` entry is ignored):
 
 ```toml
 [workspace]

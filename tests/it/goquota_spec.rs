@@ -770,6 +770,55 @@ fn failure_notes_name_401_403_429_and_timeout_and_keep_last_good_rows() {
     }
 }
 
+/// Oracle: issue #123 and `.local/brief-gowords.md` — the note reads
+/// `opencode go: last refresh <age> ago failed — <class>` with exactly one
+/// "ago". The doubled `0m ago ago failed` shipped in v2026.10.114.
+#[test]
+fn the_failure_note_says_ago_once_between_the_age_and_failed() {
+    let wall = Timestamp::now().epoch();
+    for (tag, fail, class) in [
+        (
+            "ago-401",
+            Failure::Unauthorized,
+            "key rejected (401): check opencode_go_key_file",
+        ),
+        ("ago-403", Failure::NotEntitled, NOTE_403),
+        (
+            "ago-timeout",
+            Failure::Timeout,
+            "the usage call hit its timeout",
+        ),
+    ] {
+        let rig = Rig::global_with_key(tag, "go = opencode --model opencode-go/x\n");
+        assert!(
+            rig.refresh(wall.saturating_sub(301), |_| Ok(live_body().into_bytes()))
+                .fetched,
+            "{tag}"
+        );
+        assert_eq!(
+            rig.refresh(wall, |_| Err(fail)).outcome,
+            Some(fail),
+            "{tag}"
+        );
+        let text = rig.table();
+        let note = text
+            .lines()
+            .find(|line| line.contains("opencode go: last refresh"))
+            .unwrap_or_else(|| panic!("{tag}: no failure note in {text}"));
+        assert_eq!(note.matches("ago").count(), 1, "{tag}: {note}");
+        let (age, rest) = note
+            .trim()
+            .strip_prefix("opencode go: last refresh ")
+            .and_then(|tail| tail.split_once(" ago failed — "))
+            .unwrap_or_else(|| panic!("{tag}: not `<age> ago failed — <class>`: {note}"));
+        assert!(
+            !age.is_empty() && age.chars().all(|c| c.is_ascii_digit() || c == 'm'),
+            "{tag}: age {age:?} in {note}"
+        );
+        assert_eq!(rest, class, "{tag}");
+    }
+}
+
 // --- observe stays network-free ------------------------------------------
 
 #[test]

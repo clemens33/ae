@@ -2009,7 +2009,7 @@ fn go_failure_note(outcome: &str, age: i64) -> String {
         ),
     };
     format!(
-        "opencode go: last refresh {} ago failed — {class}",
+        "opencode go: last refresh {} failed — {class}",
         age_label(age.max(0))
     )
 }
