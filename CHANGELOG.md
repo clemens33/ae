@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.113] - 2026-10-22
+- CORE state text: waiting-user only when the answer is required; an optional offer is done (#256)
+- Toggling the stopped group no longer moves the Agents section: the sessions region is sized for the open group and a closed one leaves its rows empty (#237)
+- The summary shows the Working and Needs you marks beside their counts (#237)
+- Reseat keeps the conversation when only the model or effort changes: the same tool and account resume it in place on the new flags, proven after the start, else the move seeds loudly (#252)
+
 ## [v2026.10.112] - 2026-10-22
 - A PACE forecast steers, never stops: advisories and the checkpoint ask name the window reset and the same-scope weekly reading; guidance reads PACE beside EFFECTIVE (#247)
 - Refuse to create a session from a mistyped ae command word (#254)
