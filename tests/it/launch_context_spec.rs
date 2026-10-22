@@ -49,3 +49,26 @@ fn a_spawned_worker_reads_the_worker_card_context_byte_for_byte() {
         include_str!("../fixtures/launch-context-spawned-worker.golden")
     );
 }
+
+// #247 policy ruling: expected text is frozen independently of the renderer.
+#[test]
+fn pacewords_forecast_steers_new_work_without_banning_a_scope() {
+    const PACE: &str = r"Read PACE beside EFFECTIVE: `!` or an ETA before RESETS is a forecast, never a stop. It steers NEW work toward lower effort, more EFFECTIVE headroom and sensible concurrency, task quality kept. A short window near its reset returns soon; weekly headroom is the scarce one: at 80% EFFECTIVE weekly step effort down, at 90% park the scope (no NEW work). Only exhausted, blocked, spend-cap or a vendor usage-limit line removes a scope now; parking one never stops the others. Report a forecast with its adjustment and uncertainty. `unknown` or `-` neither blocks nor proves headroom; PACE never replaces EFFECTIVE.";
+    const LOW: &str = r"At low or critical WEEKLY headroom, or when a seat's spend (`<DIR>/usage`) is out of proportion to its task class, step DOWN before switching provider: effort xhigh → high for bounded work, sol → terra → luna for chores; xhigh stays for judgment seats only.";
+    let document = rendered("pacewords", SOLO, "main", false);
+    assert!(document.contains(PACE), "{document}");
+    assert!(document.contains(LOW), "{document}");
+    assert!(
+        !document.contains("choose another profile now"),
+        "{document}"
+    );
+    assert!(
+        !document.contains("At low or critical headroom"),
+        "{document}"
+    );
+    let unaware = rendered("pacewords-off", SOLO, "main", true);
+    assert!(
+        !unaware.contains(PACE),
+        "quota off keeps the guidance absent"
+    );
+}

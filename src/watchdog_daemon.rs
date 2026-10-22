@@ -899,6 +899,7 @@ impl QuotaCarry {
         predicate: impl Fn(&PendingAsk) -> bool,
         reason: &str,
         meta_dir: &Path,
+        now: i64,
         actions: &mut Vec<QuotaAction>,
     ) {
         let mut retained = Vec::new();
@@ -908,13 +909,43 @@ impl QuotaCarry {
                     .retain(|(key, recipient)| !(*key == ask.key && *recipient == ask.recipient));
                 actions.push(QuotaAction::AskDropped {
                     recipient: ask.recipient.agent,
-                    summary: format!("{reason}: {}", ask.advisory.checkpoint_ask(meta_dir)),
+                    summary: format!("{reason}: {}", ask.advisory.checkpoint_ask(meta_dir, now)),
                 });
             } else {
                 retained.push(ask);
             }
         }
         self.asks = retained;
+    }
+
+    /// The account-wide weekly reading of `sample`'s scope — the same tool and
+    /// the same canonical source — as the cell its notice names beside its
+    /// reset. Each reading is the one HELD, offered this pass's observation:
+    /// a weekly window sorted after `sample` is still seen, and a row the raw
+    /// clock refused never replaces a held one.
+    fn held_weekly(
+        &self,
+        samples: &[QuotaSample<'_>],
+        sample: &QuotaSample<'_>,
+        trigger: &crate::quota::Classified,
+    ) -> Option<String> {
+        let held: Vec<crate::quota::Classified> = samples
+            .iter()
+            .filter(|other| {
+                other.key != sample.key
+                    && other.group.tool == sample.group.tool
+                    && other.key.source == sample.key.source
+            })
+            .map(|other| {
+                let Some(tracked) = self.tracked.iter().find(|held| held.key == other.key) else {
+                    return crate::quota::Classified::first(other.reading.clone());
+                };
+                let mut classified = tracked.classified.clone();
+                let _ = classified.adopt(&other.reading);
+                classified
+            })
+            .collect();
+        crate::quota::weekly_context(sample.group.tool, trigger, &held)
     }
 
     /// Book ONE checkpoint ask for every seat on a scope whose window sits in
@@ -965,7 +996,9 @@ impl QuotaCarry {
                     key: key.clone(),
                     observed_at: held.observed_at(),
                     recipient: candidate.recipient.clone(),
-                    advisory: observation.transition(sample.group, &held),
+                    advisory: observation
+                        .transition(sample.group, &held)
+                        .with_weekly(self.held_weekly(samples, sample, &held)),
                     attempts: 0,
                 });
                 self.settled
@@ -984,6 +1017,7 @@ impl QuotaCarry {
         &mut self,
         candidates: &[QuotaAskCandidate],
         meta_dir: &Path,
+        now: i64,
         actions: &mut Vec<QuotaAction>,
     ) {
         let mut retained = Vec::new();
@@ -1006,7 +1040,7 @@ impl QuotaCarry {
                 "{}: checkpoint seat now runs {live}, not {}: {}",
                 ask.recipient.agent,
                 ask.key.qualifier.as_deref().unwrap_or_default(),
-                ask.advisory.checkpoint_ask(meta_dir)
+                ask.advisory.checkpoint_ask(meta_dir, now)
             )));
         }
         self.asks = retained;
@@ -1052,12 +1086,14 @@ impl QuotaCarry {
             },
             "checkpoint recipient is gone",
             meta_dir,
+            now,
             actions,
         );
         self.cancel_asks_where(
             |ask| !ask.advisory.current_at(now),
             "checkpoint ask expired",
             meta_dir,
+            now,
             actions,
         );
     }
@@ -1152,7 +1188,9 @@ impl QuotaCarry {
             // decided the level, so its numbers and the provenance it is booked
             // under cannot be another sample's.
             let held = self.tracked[index].classified.clone();
-            let advisory = observation.transition(sample.group, &held);
+            let advisory = observation
+                .transition(sample.group, &held)
+                .with_weekly(self.held_weekly(&samples, sample, &held));
             // ENTERING the band opens a new episode: every seat on the scope is
             // asked once more. Moving around inside it does not, and neither
             // does leaving it; only a re-entry after `classify`'s hysteresis
@@ -1174,7 +1212,7 @@ impl QuotaCarry {
                 });
             }
         }
-        self.withdraw_switched(candidates, meta_dir, &mut actions);
+        self.withdraw_switched(candidates, meta_dir, observation.now, &mut actions);
         self.book_asks(observation, &samples, candidates);
 
         actions.extend(
@@ -1227,6 +1265,7 @@ impl QuotaCarry {
             |ask| silent_keys.contains(&ask.key),
             "quota observation went silent",
             meta_dir,
+            now,
             actions,
         );
     }
@@ -1284,6 +1323,7 @@ impl QuotaCarry {
         delivered: &PendingAsk,
         result: QuotaDelivery,
         meta_dir: &Path,
+        now: i64,
     ) -> Option<QuotaAction> {
         let index = self.asks.iter().position(|ask| {
             ask.key == delivered.key
@@ -1301,7 +1341,7 @@ impl QuotaCarry {
                     recipient: ask.recipient.agent,
                     summary: format!(
                         "delivery result uncertain; not retrying: {}",
-                        ask.advisory.checkpoint_ask(meta_dir)
+                        ask.advisory.checkpoint_ask(meta_dir, now)
                     ),
                 });
             }
@@ -1316,7 +1356,7 @@ impl QuotaCarry {
             recipient: ask.recipient.agent,
             summary: format!(
                 "delivery failed twice: {}",
-                ask.advisory.checkpoint_ask(meta_dir)
+                ask.advisory.checkpoint_ask(meta_dir, now)
             ),
         })
     }
@@ -4959,7 +4999,7 @@ impl Cycle<'_> {
                     // The SAME sender as the advisory — one delivery owner, so
                     // the seat reads one marker, written by `provenance`. The
                     // receipt rides the event the helper writes on delivery.
-                    let text = ask.advisory.checkpoint_ask(self.meta_dir);
+                    let text = ask.advisory.checkpoint_ask(self.meta_dir, now);
                     let receipt = ask_receipt(&ask.key, ask.advisory.resets_at(), &ask.recipient);
                     let delivery = self.deliver(
                         &ask.recipient.agent,
@@ -4968,8 +5008,8 @@ impl Cycle<'_> {
                         &text,
                         receipt.as_deref(),
                     );
-                    if let Some(QuotaAction::Dropped { recipient, summary }) =
-                        carry.record_ask_delivery(&ask, quota_delivery(&delivery), self.meta_dir)
+                    if let Some(QuotaAction::Dropped { recipient, summary }) = carry
+                        .record_ask_delivery(&ask, quota_delivery(&delivery), self.meta_dir, now)
                     {
                         self.emit(
                             crate::quota::action::CHECKPOINT_DROPPED,
@@ -8287,7 +8327,7 @@ mod tests {
         let booked = carry.asks[0].clone();
         assert!(
             carry
-                .record_ask_delivery(&booked, QuotaDelivery::Delivered, meta)
+                .record_ask_delivery(&booked, QuotaDelivery::Delivered, meta, 10_000)
                 .is_none(),
             "a delivered ask is simply forgotten"
         );
@@ -8567,7 +8607,7 @@ mod tests {
         let booked = carry.asks[0].clone();
         assert!(
             carry
-                .record_ask_delivery(&booked, QuotaDelivery::Delivered, meta)
+                .record_ask_delivery(&booked, QuotaDelivery::Delivered, meta, 10_000)
                 .is_none()
         );
 
@@ -8654,7 +8694,7 @@ mod tests {
             carry.asks[0].observed_at, 9_904,
             "and it carries the newer entry"
         );
-        let text = carry.asks[0].advisory.checkpoint_ask(meta);
+        let text = carry.asks[0].advisory.checkpoint_ask(meta, 10_000);
         assert!(text.contains("88"), "the facts of the new entry: {text}");
         assert!(!text.contains("85"), "never the superseded booking: {text}");
     }
@@ -8703,7 +8743,7 @@ mod tests {
         );
         assert_eq!(carry.asks.len(), 1, "and books nothing new");
 
-        let text = carry.asks[0].advisory.checkpoint_ask(meta);
+        let text = carry.asks[0].advisory.checkpoint_ask(meta, 10_000);
         assert!(text.contains("low"), "the level it was judged at: {text}");
         assert!(text.contains("85"), "the judged percentage: {text}");
         assert!(
@@ -8847,14 +8887,14 @@ mod tests {
             "Opus is not asked"
         );
         let taken = carry.asks[0].clone();
-        let _ = carry.record_ask_delivery(&taken, QuotaDelivery::Delivered, meta);
+        let _ = carry.record_ask_delivery(&taken, QuotaDelivery::Delivered, meta, 10_000);
         // (d) The window is already critical: no entry will come, and the
         // switch alone asks.
         assert_eq!(asked_agents(&pass(&mut carry, "Fable 5.1")), ["lead"]);
         let owed = carry.asks[0].clone();
         assert!(
             carry
-                .record_ask_delivery(&owed, QuotaDelivery::Retryable, meta)
+                .record_ask_delivery(&owed, QuotaDelivery::Retryable, meta, 10_000)
                 .is_none(),
             "refused before submit: still owed"
         );
@@ -8877,7 +8917,7 @@ mod tests {
         // the colead keeps the mark its delivered ask left.
         assert_eq!(asked_agents(&pass(&mut carry, "Fable 5.1")), ["lead"]);
         let owed = carry.asks[0].clone();
-        let _ = carry.record_ask_delivery(&owed, QuotaDelivery::Delivered, meta);
+        let _ = carry.record_ask_delivery(&owed, QuotaDelivery::Delivered, meta, 10_000);
         assert!(pass(&mut carry, "Fable 5.1").is_empty(), "asked once");
         assert!(
             pass(&mut carry, "Opus 5.5").is_empty(),
@@ -8947,7 +8987,7 @@ mod tests {
             let asked = asked_agents(&actions);
             for ask in checkpoint_asks(&actions) {
                 journal.push(receipt_of(ask));
-                let _ = carry.record_ask_delivery(ask, QuotaDelivery::Delivered, meta);
+                let _ = carry.record_ask_delivery(ask, QuotaDelivery::Delivered, meta, 10_000);
             }
             asked
         };
@@ -8985,7 +9025,7 @@ mod tests {
                 } else {
                     QuotaDelivery::Retryable
                 };
-                let _ = carry.record_ask_delivery(ask, result, meta);
+                let _ = carry.record_ask_delivery(ask, result, meta, 10_000);
             }
             let dropped: Vec<String> = actions
                 .iter()
@@ -9173,7 +9213,7 @@ mod tests {
             let _ = carry.reconcile_with_candidates(&scope, &[], &candidates, meta);
         }
         let ask = &carry.asks[0];
-        let text = ask.advisory.checkpoint_ask(meta);
+        let text = ask.advisory.checkpoint_ask(meta, 10_000);
         let receipt = ask_receipt(&ask.key, ask.advisory.resets_at(), &ask.recipient)
             .expect("codex states its reset, so the ask carries a receipt");
         let declared = parsed(&journal_line("lead", "state", "", "waiting-user", "why"));
@@ -9335,7 +9375,7 @@ mod tests {
         let mut carry = QuotaCarry::default();
         let booked = carry.reconcile_with_candidates(&window, &[], &here, &scratch.0);
         let owed = checkpoint_asks(&booked)[0].clone();
-        let _ = carry.record_ask_delivery(&owed, QuotaDelivery::Retryable, &scratch.0);
+        let _ = carry.record_ask_delivery(&owed, QuotaDelivery::Retryable, &scratch.0, 10_000);
         // The seat is gone before the retry: the cancelled ask is the ask's news.
         let gone = carry.reconcile_with_candidates(&window, &[], &[], &scratch.0);
         assert!(
@@ -10558,7 +10598,7 @@ mod tests {
                 &crate::quota::Classified::first(sample.reading.clone()),
                 Path::new("/m/demo")
             ),
-            "quota: codex · cx · demo:lead weekly_scoped Fable 5h 80% (low, observed 2m ago), resets in 1h00m — prefer another client for new spawns; table: /m/demo/quota"
+            "quota: codex · cx · demo:lead weekly_scoped Fable 5h 80% (low, observed 2m ago), resets in 1h00m — assess this window's reset and weekly headroom before new work; table: /m/demo/quota"
         );
 
         let reset = quota_for("74", 9_902);
@@ -10577,7 +10617,7 @@ mod tests {
             Path::new("/m"),
         );
         assert!(line.contains(" 80.1% (low,"), "{line}");
-        assert!(line.len() < 240, "numeric display stayed bounded: {line}");
+        assert!(line.len() < 280, "numeric display stayed bounded: {line}");
 
         let mut hostile = observation.clone();
         hostile.groups[0].rows[0].bucket = format!("bad\u{1b}[2J\r\n{}", "x".repeat(300));
@@ -10591,7 +10631,7 @@ mod tests {
         assert!(!line.contains('\u{1b}'));
         assert!(!line.contains('\r'));
         assert!(!line.contains('\n'));
-        assert!(line.len() < 240, "hostile labels stayed bounded: {line}");
+        assert!(line.len() < 280, "hostile labels stayed bounded: {line}");
     }
 
     #[test]
@@ -17981,5 +18021,386 @@ mod tests {
         let interval = cycle.knobs.interval_secs.to_string();
         let trigger = crate::session_notice::TRIGGER_ACTION.to_owned();
         assert_eq!(booked(&scratch.0), [(trigger, Some(interval))]);
+    }
+    // #247 oracle: lead-ruling-r1.md plus qualifier ruling 2026-10-22.
+    mod pacewords_spec {
+        use super::*;
+
+        fn scope(
+            claude: bool,
+            short: &str,
+            at: i64,
+            weekly: Option<&str>,
+        ) -> (RosterEntry, crate::quota::Observation) {
+            let seat = if claude {
+                claude_seat("main", "lead", CONVERSATION_A)
+            } else {
+                codex_seat("main", "lead", "/tmp/cx")
+            };
+            let mut observation = if claude {
+                quota_observation(vec![claude_group(&seat, short, at)], 10_000)
+            } else {
+                codex_scope(&seat, short, at)
+            };
+            let group = &mut observation.groups[0];
+            group.rows[0].resets_at = Some(11_500);
+            if claude {
+                group.rows[0].bucket = "session".to_owned();
+            }
+            if let Some(used) = weekly {
+                let mut row = group.rows[0].clone();
+                if claude {
+                    row.bucket = "weekly_all".to_owned();
+                }
+                row.window_minutes = Some(10_080);
+                row.used_percent = Some(used.to_owned());
+                row.resets_at = Some(600_000);
+                group.rows.push(row);
+            }
+            observation.rendered = observation.groups.clone();
+            (seat, observation)
+        }
+
+        fn entry(claude: bool, weekly: Option<&str>) -> (QuotaCarry, Vec<QuotaAction>) {
+            let (seat, before) = scope(claude, "70", 9_900, weekly);
+            let candidates = quota_ask_candidates(
+                std::slice::from_ref(&seat),
+                &live_panes(std::slice::from_ref(&seat)),
+            );
+            let recipients = [quota_recipient("main", "lead")];
+            let mut carry = QuotaCarry::default();
+            assert!(
+                carry
+                    .reconcile_with_candidates(&before, &recipients, &candidates, Path::new("/m"))
+                    .is_empty()
+            );
+            let (_, low) = scope(claude, "81", 9_901, weekly);
+            let actions =
+                carry.reconcile_with_candidates(&low, &recipients, &candidates, Path::new("/m"));
+            (carry, actions)
+        }
+
+        #[test]
+        fn claude_and_codex_deliver_window_reset_and_same_scope_weekly() {
+            for claude in [true, false] {
+                let (carry, actions) = entry(claude, Some("32"));
+                let notices = transition_deliveries(&actions);
+                assert_eq!(notices.len(), 1, "lead recipient unchanged");
+                assert_eq!(
+                    asked_agents(&actions),
+                    ["lead"],
+                    "near-reset Low still asks"
+                );
+                let advisory = notices[0].advisory.render(Path::new("/m"), 10_000);
+                let checkpoint = carry.asks[0]
+                    .advisory
+                    .checkpoint_ask(Path::new("/m"), 10_000);
+                for text in [&advisory, &checkpoint] {
+                    assert!(text.contains("5h"), "{text}");
+                    assert!(text.contains("resets in 25m; weekly 32%"), "{text}");
+                    assert!(!text.contains("lose its voice"), "{text}");
+                }
+                assert!(
+                    advisory
+                        .contains("assess this window's reset and weekly headroom before new work"),
+                    "{advisory}"
+                );
+                assert!(
+                    checkpoint.contains(
+                        "Checkpoint NOW before this pool can run out: /m/memo add --topic"
+                    ),
+                    "{checkpoint}"
+                );
+                assert!(checkpoint.ends_with("No reply needed."), "{checkpoint}");
+                assert!(checkpoint.chars().count() <= crate::quota::CHECKPOINT_ASK_MAX);
+            }
+        }
+
+        #[test]
+        fn missing_weekly_is_omitted_and_countdown_uses_delivery_now() {
+            let (carry, actions) = entry(true, None);
+            let held = &carry.asks[0].advisory;
+            for text in [
+                transition_deliveries(&actions)[0]
+                    .advisory
+                    .render(Path::new("/m"), 10_300),
+                held.checkpoint_ask(Path::new("/m"), 10_300),
+            ] {
+                assert!(text.contains("resets in 20m"), "{text}");
+                assert!(!text.contains("; weekly"), "{text}");
+            }
+        }
+
+        #[test]
+        fn first_sight_low_sees_weekly_after_short_in_same_pass() {
+            let (seat, low) = scope(true, "81", 9_900, Some("32"));
+            let candidates = quota_ask_candidates(
+                std::slice::from_ref(&seat),
+                &live_panes(std::slice::from_ref(&seat)),
+            );
+            let mut carry = QuotaCarry::default();
+            let actions = carry.reconcile_with_candidates(
+                &low,
+                &[quota_recipient("main", "lead")],
+                &candidates,
+                Path::new("/m"),
+            );
+            assert!(
+                transition_deliveries(&actions).is_empty(),
+                "first-sight advisory stays silent"
+            );
+            assert_eq!(asked_agents(&actions), ["lead"]);
+            assert!(
+                carry.asks[0]
+                    .advisory
+                    .checkpoint_ask(Path::new("/m"), 10_000)
+                    .contains("; weekly 32%")
+            );
+        }
+
+        #[test]
+        fn weekly_context_rejects_other_scope_and_any_claude_model_qualifier() {
+            for qualifier in [None, Some("Fable"), Some("future-model")] {
+                let (seat, mut before) = scope(true, "70", 9_900, Some("32"));
+                before.groups[0].rows[1].qualifier = qualifier.map(str::to_owned);
+                let mut foreign = before.groups[0].clone();
+                foreign.source = Some(PathBuf::from("/different-scope/.claude.json"));
+                foreign.rows.remove(0);
+                foreign.rows[0].qualifier = None;
+                foreign.rows[0].used_percent = Some("67".to_owned());
+                before.groups.push(foreign);
+                let candidates = quota_ask_candidates(
+                    std::slice::from_ref(&seat),
+                    &live_panes(std::slice::from_ref(&seat)),
+                );
+                let mut carry = QuotaCarry::default();
+                let _ = carry.reconcile_with_candidates(&before, &[], &candidates, Path::new("/m"));
+                before.groups[0].rows[0].observed_at = Some(9_901);
+                before.groups[0].rows[0].used_percent = Some("81".to_owned());
+                let _ = carry.reconcile_with_candidates(&before, &[], &candidates, Path::new("/m"));
+                let text = carry.asks[0]
+                    .advisory
+                    .checkpoint_ask(Path::new("/m"), 10_000);
+                assert_eq!(text.contains("; weekly 32%"), qualifier.is_none(), "{text}");
+                assert!(
+                    !text.contains("; weekly 67%"),
+                    "foreign scope leaked: {text}"
+                );
+            }
+        }
+
+        #[test]
+        fn weekly_context_uses_held_clock_and_worst_effective() {
+            let (seat, mut before) = scope(true, "70", 9_900, Some("32"));
+            let mut sibling = before.groups[0].rows[1].clone();
+            sibling.bucket = "second-account-weekly".to_owned();
+            sibling.used_percent = Some("44".to_owned());
+            before.groups[0].rows.push(sibling);
+            let candidates = quota_ask_candidates(
+                std::slice::from_ref(&seat),
+                &live_panes(std::slice::from_ref(&seat)),
+            );
+            let mut carry = QuotaCarry::default();
+            let _ = carry.reconcile_with_candidates(&before, &[], &candidates, Path::new("/m"));
+            before.groups[0].rows[0].observed_at = Some(9_901);
+            before.groups[0].rows[0].used_percent = Some("81".to_owned());
+            for row in &mut before.groups[0].rows[1..] {
+                row.observed_at = Some(9_899);
+                row.used_percent = Some("99".to_owned());
+            }
+            let _ = carry.reconcile_with_candidates(&before, &[], &candidates, Path::new("/m"));
+            let text = carry.asks[0]
+                .advisory
+                .checkpoint_ask(Path::new("/m"), 10_000);
+            assert!(
+                text.contains("; weekly 44%"),
+                "must use held worst, not refused 99%: {text}"
+            );
+        }
+
+        #[test]
+        fn weekly_trigger_names_its_reset_without_echoing_itself() {
+            let (seat, mut low) = scope(true, "81", 9_900, None);
+            low.groups[0].rows[0].bucket = "weekly_all".to_owned();
+            low.groups[0].rows[0].window_minutes = Some(10_080);
+            let candidates = quota_ask_candidates(
+                std::slice::from_ref(&seat),
+                &live_panes(std::slice::from_ref(&seat)),
+            );
+            let mut carry = QuotaCarry::default();
+            let _ = carry.reconcile_with_candidates(&low, &[], &candidates, Path::new("/m"));
+            let text = carry.asks[0]
+                .advisory
+                .checkpoint_ask(Path::new("/m"), 10_000);
+            assert!(text.contains("7d"), "{text}");
+            assert!(text.contains("resets in 25m"), "{text}");
+            assert!(!text.contains("; weekly"), "{text}");
+        }
+
+        #[test]
+        fn missing_reset_is_unknown_and_spend_cap_does_not_promise_refill() {
+            let (seat, mut low) = scope(false, "81", 9_900, None);
+            low.groups[0].rows[0].resets_at = None;
+            let candidates = quota_ask_candidates(
+                std::slice::from_ref(&seat),
+                &live_panes(std::slice::from_ref(&seat)),
+            );
+            let mut carry = QuotaCarry::default();
+            let _ = carry.reconcile_with_candidates(&low, &[], &candidates, Path::new("/m"));
+            assert!(
+                carry.asks.is_empty(),
+                "resetless readings remain ineligible for checkpoint booking"
+            );
+            let advisory = low.transition(&low.groups[0], &quota_classified(&low.groups[0]));
+            let text = advisory.checkpoint_ask(Path::new("/m"), 10_000);
+            assert!(text.contains("resets in unknown"), "{text}");
+            let capped = quota_scope_group(
+                Path::new("/tmp/cx/sessions"),
+                None,
+                None,
+                vec![quota_row(
+                    "codex",
+                    Some("pro"),
+                    "81",
+                    9_900,
+                    crate::quota::Status::Fresh,
+                )],
+                None,
+                crate::quota::Account {
+                    spend_control_reached: Some(true),
+                    ..crate::quota::Account::default()
+                },
+            );
+            let observation = quota_observation(vec![capped], 10_000);
+            let advisory = observation.transition(
+                &observation.groups[0],
+                &quota_classified(&observation.groups[0]),
+            );
+            let text = advisory.checkpoint_ask(Path::new("/m"), 10_000);
+            assert!(
+                text.contains("spend cap is not freed by a reset. Checkpoint NOW:"),
+                "{text}"
+            );
+        }
+        #[test]
+        fn weekly_picker_compares_effective_not_raw_and_rejects_unknown_qualifiers() {
+            use crate::quota::{Account, Classified, Policy, Reading};
+            use crate::tool::ToolKind;
+            let (_, observation) = scope(true, "81", 9_900, Some("90"));
+            let trigger = quota_classified(&observation.groups[0]);
+            let row = observation.groups[0].rows[1].clone();
+            let reset = Classified::first(
+                Reading::of(Policy::for_tests(Some(2), Account::default()), row.clone()).unwrap(),
+            );
+            let mut raw = row.clone();
+            raw.used_percent = Some("44".to_owned());
+            let raw = Classified::first(
+                Reading::of(Policy::for_tests(None, Account::default()), raw).unwrap(),
+            );
+            assert_eq!(
+                crate::quota::weekly_context(ToolKind::Claude, &trigger, [&reset, &raw]),
+                Some("44%".to_owned())
+            );
+            let mut qualified = row.clone();
+            qualified.qualifier = Some("unrecognised".to_owned());
+            let qualified = Classified::first(
+                Reading::of(Policy::for_tests(None, Account::default()), qualified).unwrap(),
+            );
+            assert_eq!(
+                crate::quota::weekly_context(ToolKind::Claude, &trigger, [&qualified]),
+                None
+            );
+            assert_eq!(
+                crate::quota::weekly_context(ToolKind::Unknown, &trigger, [&qualified]),
+                None
+            );
+            let mut not_weekly = row;
+            not_weekly.window_minutes = Some(10_081);
+            let not_weekly = Classified::first(
+                Reading::of(Policy::for_tests(None, Account::default()), not_weekly).unwrap(),
+            );
+            assert_eq!(
+                crate::quota::weekly_context(ToolKind::Claude, &trigger, [&not_weekly]),
+                None
+            );
+        }
+
+        #[test]
+        fn unusable_weekly_and_other_tool_cannot_supply_context() {
+            for foreign_tool in [false, true] {
+                let (seat, mut low) = scope(true, "81", 9_900, Some("32"));
+                if foreign_tool {
+                    let mut foreign = low.groups[0].clone();
+                    foreign.tool = crate::tool::ToolKind::Codex;
+                    foreign.rows.remove(0);
+                    foreign.rows[0].bucket = "foreign-weekly".to_owned();
+                    low.groups[0].rows.pop();
+                    low.groups.push(foreign);
+                } else {
+                    low.groups[0].rows[1].status = crate::quota::Status::Unknown;
+                }
+                let candidates = quota_ask_candidates(
+                    std::slice::from_ref(&seat),
+                    &live_panes(std::slice::from_ref(&seat)),
+                );
+                let mut carry = QuotaCarry::default();
+                let _ = carry.reconcile_with_candidates(&low, &[], &candidates, Path::new("/m"));
+                let text = carry.asks[0]
+                    .advisory
+                    .checkpoint_ask(Path::new("/m"), 10_000);
+                assert!(
+                    !text.contains("; weekly"),
+                    "unusable/other-tool fact leaked: {text}"
+                );
+            }
+        }
+        #[test]
+        fn dropped_checkpoint_summaries_count_down_from_delivery_now() {
+            for uncertain in [true, false] {
+                let (mut carry, _) = entry(true, None);
+                let booked = carry.asks[0].clone();
+                let action = if uncertain {
+                    carry.record_ask_delivery(
+                        &booked,
+                        QuotaDelivery::Uncertain,
+                        Path::new("/m"),
+                        10_300,
+                    )
+                } else {
+                    assert!(
+                        carry
+                            .record_ask_delivery(
+                                &booked,
+                                QuotaDelivery::Retryable,
+                                Path::new("/m"),
+                                10_200
+                            )
+                            .is_none()
+                    );
+                    carry.record_ask_delivery(
+                        &booked,
+                        QuotaDelivery::Retryable,
+                        Path::new("/m"),
+                        10_300,
+                    )
+                };
+                let Some(QuotaAction::Dropped { summary, .. }) = action else {
+                    panic!("drop shape unchanged");
+                };
+                assert!(
+                    summary.starts_with(if uncertain {
+                        "delivery result uncertain; not retrying: "
+                    } else {
+                        "delivery failed twice: "
+                    }),
+                    "{summary}"
+                );
+                assert!(
+                    summary.contains("resets in 20m"),
+                    "uses delivery now, never observed_at: {summary}"
+                );
+                assert!(carry.asks.is_empty());
+            }
+        }
     }
 }

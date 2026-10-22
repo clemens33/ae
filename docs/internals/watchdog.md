@@ -193,6 +193,15 @@ marker and the same single retry as the advisory, under the action `quota-checkp
 around inside the band asks nothing further; only a band that clears and is entered again asks
 again, and `classify`'s own hysteresis decides "cleared".
 
+Both notices name the window's reset, counted at delivery, and beside it the same scope's weekly
+reading when the daemon holds one: `resets in 25m; weekly 32%`. A short window near its refill thus
+reads as a pool that returns, not a depleted account, while a seat can still be cut before it does,
+which is why such a window still asks. The weekly reading is a held, judged 7-day window of the same
+tool and canonical source with no model scope (Codex's plan label scopes nothing; a Claude
+qualifier does); several: the worst. It is omitted when absent or unusable, never guessed, and an
+advisory about the weekly window itself adds none. A spend-capped scope's ask says a reset does not
+free the cap.
+
 A window the vendor scopes to one model family — Claude's weekly Fable bucket, say — asks only the
 seats not proven to run another family. A seat's live model is what its own pane drew in the
 composer, held for the current launch; a recognised family (`fable`, `opus`, `sonnet`, `haiku`)

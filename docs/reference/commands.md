@@ -1161,8 +1161,10 @@ frees it. The watchdog advisory and the delegation guidance read this percentage
 
 `PACE` says how fast a window is filling and whether it empties before it resets: `2.4%/h ~2h10m!`
 is 2.4 judged percentage points per hour, empty in about 2 h 10 min, and `!` means that is before
-`RESETS`. `<2.0%/h` is a bound: the window moved less than 2 points over the span, too little to
-state a rate or an ETA. `unknown` is a trusted row whose history is too short (a window needs a
+`RESETS`. That is a forecast, never a stop: it steers new work (lower effort, an account with more
+`EFFECTIVE` headroom), and only an exhausted, blocked or spend-capped window or a vendor usage
+limit removes a scope now. `<2.0%/h` is a bound: the window moved less than 2 points over the span,
+too little to state a rate or an ETA. `unknown` is a trusted row whose history is too short (a window needs a
 span of a third of its lookback: a fifth of the window, 30 min to 12 h). `-` is no verdict, and
 means one of: the row is not trusted (`unknown`, expired or clock-skewed; a `stale` row up to an
 hour old IS trusted), no reusable local history (agy) or no quota (opencode, muse, gemini, or a
@@ -1366,7 +1368,8 @@ baseline. Later transitions into `low` (80%), `critical` (95%), or back to `head
 that session's main seat and, for a lead-pair, its colead. The thresholds classify the `EFFECTIVE`
 percentage, so a window with a declared reset in hand or unlimited credits does not raise one, and a
 spend-capped scope is critical whatever its window says — the line then names the cap and does not
-send the reader to a reset.
+send the reader to a reset. Each line names the window's reset and, when the scope holds one, its
+account-wide weekly reading (`resets in 25m; weekly 32%`).
 
 A window belongs to the client scope, not to the conversation that observed it: the tracked state is
 keyed by canonical source, bucket, qualifier, and window, never by rollout. Several Codex rollouts

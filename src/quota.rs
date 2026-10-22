@@ -601,6 +601,14 @@ impl Classified {
         self.level
     }
 
+    /// Whether this is an account-wide weekly window (see [`weekly_context`]).
+    fn account_weekly(&self, tool: ToolKind) -> bool {
+        let row = &self.reading.row;
+        row.window_minutes == Some(10_080)
+            && (row.qualifier.is_none()
+                || tool.adapter().quota.source == QuotaSource::CodexRollouts)
+    }
+
     /// The percentage that level was decided from, for ranking one scope
     /// against another.
     pub(crate) fn judged(&self) -> f64 {
@@ -867,6 +875,31 @@ pub(crate) fn scoped_elsewhere(
     matches!((window, seat), (Some(window), Some(seat)) if window != seat)
 }
 
+/// The account-wide weekly reading among `held`, as its judged cell, for the
+/// notice about a SHORTER window of the same scope to name beside its reset.
+///
+/// Account-wide: exactly a week long, and not scoped to a model. A qualifier
+/// scopes a window only for Claude, whose qualifier is a model; Codex spells
+/// its plan there. `None` when `trigger` is itself that window, or when nothing
+/// held qualifies. Several: the worst by JUDGED percentage, the first on a tie.
+/// Which readings are the scope's is the caller's rule; this trusts its input.
+pub(crate) fn weekly_context<'a>(
+    tool: ToolKind,
+    trigger: &Classified,
+    held: impl IntoIterator<Item = &'a Classified>,
+) -> Option<String> {
+    if trigger.account_weekly(tool) {
+        return None;
+    }
+    held.into_iter()
+        .filter(|reading| reading.account_weekly(tool))
+        .fold(None::<&Classified>, |worst, reading| match worst {
+            Some(worst) if worst.judged() >= reading.judged() => Some(worst),
+            _ => Some(reading),
+        })
+        .map(|reading| reading.reading.derived().settings_cell())
+}
+
 /// Sanitized, bounded quota facts retained across a deferred advisory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Advisory {
@@ -889,12 +922,16 @@ pub(crate) struct Advisory {
     /// below from the very reading that decided the level, so the checkpoint
     /// ask cannot quote a percentage some other observation produced.
     judged: String,
+    /// The same scope's account-wide weekly reading as its judged cell, when
+    /// the caller held one (see [`weekly_context`]). Never guessed.
+    weekly: Option<String>,
 }
 
-/// The checkpoint ask's ONE text owner: fixed wording, two substitutions and
+/// The checkpoint ask's ONE text owner: fixed wording, three substitutions and
 /// nothing a sender may re-word. `{facts}` is the HELD reading's own scope,
-/// level and judged percentage; `{memo}` is this session's memo helper.
-const CHECKPOINT_ASK: &str = "{facts}. This seat may lose its voice. Checkpoint NOW: {memo} add \
+/// level, judged percentage and reset; `{cause}` says why now, empty when a
+/// reset cannot help; `{memo}` is this session's memo helper.
+const CHECKPOINT_ASK: &str = "{facts}. Checkpoint NOW{cause}: {memo} add \
                               --topic <your slice>, then --topic parking; each carries next exact \
                               command · decisions + why · dead ends · constraints VERBATIM · files \
                               + git · owed replies (ids). No reply needed.";
@@ -923,21 +960,37 @@ impl Advisory {
             .is_some_and(|at| now.saturating_sub(at) <= 60 * 60)
     }
 
+    /// These facts plus the scope's account-wide weekly reading, or none.
+    pub(crate) fn with_weekly(mut self, weekly: Option<String>) -> Self {
+        self.weekly = weekly;
+        self
+    }
+
+    /// When the window resets, as a span from `now`: `unknown` when the vendor
+    /// stated none, never a guessed duration. With the weekly reading beside it.
+    fn reset_words(&self, now: i64) -> String {
+        let reset = self.resets_at.map_or_else(
+            || "unknown".to_owned(),
+            |at| span_label(at.saturating_sub(now)),
+        );
+        match &self.weekly {
+            Some(weekly) => format!("{reset}; weekly {weekly}"),
+            None => reset,
+        }
+    }
+
     pub(crate) fn render(&self, meta_dir: &Path, now: i64) -> String {
         let observed = self.observed_at.map_or_else(
             || "unknown".to_owned(),
             |at| age_label(now.saturating_sub(at)),
         );
-        let reset = self.resets_at.map_or_else(
-            || "unknown".to_owned(),
-            |at| span_label(at.saturating_sub(now)),
-        );
+        let reset = self.reset_words(now);
         let advice = if self.spend_capped {
             " — spend cap reached: another client or more credits, not a window reset"
         } else if self.recovered {
             " — back to headroom"
         } else {
-            " — prefer another client for new spawns"
+            " — assess this window's reset and weekly headroom before new work"
         };
         let derivation = self
             .derivation
@@ -967,9 +1020,23 @@ impl Advisory {
     ///
     /// Advisory only: it asks for a durable checkpoint and explicitly wants no
     /// reply, so it opens no request and changes no state.
-    pub(crate) fn checkpoint_ask(&self, meta_dir: &Path) -> String {
+    pub(crate) fn checkpoint_ask(&self, meta_dir: &Path, now: i64) -> String {
+        // A reset frees a window, never a spend cap: say so instead of promising
+        // that the pool returns.
+        let reset = self.reset_words(now);
+        let (resets, cause) = if self.spend_capped {
+            (
+                format!("window resets in {reset}; spend cap is not freed by a reset"),
+                "",
+            )
+        } else {
+            (
+                format!("resets in {reset}"),
+                " before this pool can run out",
+            )
+        };
         let facts = format!(
-            "quota {} · {}{} {} {} — {} at {}",
+            "quota {} · {}{} {} {} — {} at {}, {}",
             self.tool.as_str(),
             self.scope,
             self.owner
@@ -979,10 +1046,14 @@ impl Advisory {
             self.window,
             self.state,
             self.judged,
+            resets,
         );
+        // The facts go in LAST: a vendor-supplied label is never scanned for
+        // another placeholder.
         CHECKPOINT_ASK
-            .replace("{facts}", &facts)
+            .replace("{cause}", cause)
             .replace("{memo}", &format!("{}/memo", meta_dir.display()))
+            .replace("{facts}", &facts)
     }
 }
 
@@ -1190,6 +1261,7 @@ impl Observation {
             // The SAME derivation the EFFECTIVE column and the settings dialog
             // read, taken from the reading that decided `state` just above.
             judged: reading.derived().settings_cell(),
+            weekly: None,
         }
     }
 }
