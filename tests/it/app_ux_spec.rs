@@ -79,9 +79,14 @@ fn attention_draw_keeps_live_counts_and_next_need_cell_in_both_looks() {
         );
         // Ten rows publish no seats; seven need the human. At 160 columns
         // the default 44-cell sidebar has room for the full-word rung.
+        let (work, need) = if mode == "on" {
+            ("●", "⚠")
+        } else {
+            ("*", "!")
+        };
         assert_eq!(
             row(&buf, 0).chars().take(44).collect::<String>().trim(),
-            "Agents 0 · Working 0 · Needs you 7"
+            format!("Agents 0 · {work} Working 0 · {need} Needs you 7")
         );
         assert!(row(&buf, 1).chars().take(44).all(|ch| ch == ' '));
         assert_eq!(buf[(40, 0)].symbol(), " ", "lone key marker removed");

@@ -312,15 +312,23 @@ fn command(args: &[&str], rc: &Path, outside: bool) -> String {
     line
 }
 
-/// Every pane is 160 columns: its default 44-cell sidebar fits the word rung.
-/// Positive and negative app checks share this predicate, so both discriminate
-/// the current frame rather than relying on a removed summary glyph.
+/// Every pane is 160 columns: its default 44-cell sidebar holds the word rung,
+/// or the short one once a count is a lower bound (`0+?`), and on either rung
+/// the Working and Needs you labels each follow their mark (`●` `⚠`, or `*` `!`
+/// with icons off). Positive and negative app checks share this predicate, so
+/// both discriminate the current frame rather than relying on a removed summary
+/// glyph.
 fn app_frame(screen: &str) -> bool {
     screen.lines().next().is_some_and(|row| {
-        row.starts_with("  Agents ")
-            && row.contains(" · Working ")
-            && row.contains(" · Needs you ")
-            && row.contains('│')
+        let marked = |glyphs: [&str; 2], label: &str| {
+            (glyphs.iter()).any(|glyph| row.contains(&format!(" · {glyph} {label} ")))
+        };
+        let words = row.starts_with("  Agents ")
+            && marked(["●", "*"], "Working")
+            && marked(["⚠", "!"], "Needs you");
+        let short =
+            row.starts_with("  Agt ") && marked(["●", "*"], "Wrk") && marked(["⚠", "!"], "Need");
+        (words || short) && row.contains('│')
     })
 }
 

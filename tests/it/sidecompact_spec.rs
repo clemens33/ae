@@ -833,7 +833,7 @@ fn long_fleet_keeps_selection_counts_more_and_marks_needy() {
     assert!(side[0].contains('↓'), "needy arrow kept:\n{}", side[0]);
     assert_eq!(
         side[0].trim_end().strip_suffix('↓').map(str::trim),
-        Some("Agents 0+? · Working 0+? · Needs you 1"),
+        Some("Agt 0+? · ● Wrk 0+? · ⚠ Need 1"),
         "unknown seat counts stay lower bounds; needy sessions stay counted"
     );
     assert!(side[1].is_empty(), "one-row summary keeps its spacer");

@@ -42,12 +42,13 @@ recorded config first.
 
 - **Sidebar** (44 cells from 140 wide, 34 from 90x20): a one-line summary
   on the sidebar ground, regular counts with dim labels and separators —
-  `Agents 32 · Working 10 · Needs you 1`: the live agents of the running
+  `Agents 32 · ● Working 10 · ⚠ Needs you 1`: the live agents of the running
   sessions (a stopped session's saved seats and a dead seat are not among
   them), how many work, and how many sessions need you (`+?` where a running
   session's seats are unknown). A line that does not fit gives way in steps:
-  `Agt 32 · Wrk 10 · Need 1`, then `◈ 32 ● 10 ⚠ 1`, then the needs-you count
-  alone; a count is never cut, and `icons = off` draws `@ * !`. One blank row
+  `Agt 32 · ● Wrk 10 · ⚠ Need 1`, then `◈ 32 ● 10 ⚠ 1`, then the needs-you count
+  alone; Working and Needs you wear the marks their rows wear, a count is never
+  cut, and `icons = off` draws `@ * !`. One blank row
   separates it from the list: one row per running session, the selected one too, with its mark, its
   name, `◂` (`<` with `icons = off`) after the name of the window's own
   session, and at the right end its seat tally (`●3 ◔1 ✓2`; a stopped session

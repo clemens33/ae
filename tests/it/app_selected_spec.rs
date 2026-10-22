@@ -679,7 +679,7 @@ fn selecting_a_needy_card_ignores_its_attention_summary() {
                 .take(44)
                 .collect::<String>()
                 .trim_end()
-                .ends_with("Needs you 1")
+                .ends_with("Need 1")
         })
     });
     rig.select(&pane, &rig.s);

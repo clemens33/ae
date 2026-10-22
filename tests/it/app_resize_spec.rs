@@ -882,8 +882,13 @@ fn live_drag_through_stock_tmux_client_reaches_app_and_release() {
     outer_tmux(&["kill-server"]);
 }
 
-/// Row zero is blank before its vertical rule. Removing spaces leaves its
-/// exact terminal style sequences without depending on their SGR spelling.
+/// The style sequence row zero draws its vertical rule in: the last escape
+/// before the rule, spaces removed, so the summary's own spans — which change
+/// with the rung the sidebar's width holds — stay out of the comparison and
+/// the exact sequence does not depend on its SGR spelling.
 fn style_before_rule(row: &str) -> String {
-    row.split_once('│').expect("drawn rule").0.replace(' ', "")
+    let before = row.split_once('│').expect("drawn rule").0;
+    before
+        .rfind('\x1b')
+        .map_or_else(String::new, |at| before[at..].replace(' ', ""))
 }

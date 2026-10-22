@@ -421,8 +421,8 @@ fn summary_app(unknown: bool) -> App {
 #[test]
 fn summary_is_one_line_in_requested_order_and_keeps_partial_count_marker() {
     for (unknown, expected) in [
-        (false, "Agents 32 · Working 10 · Needs you 1"),
-        (true, "Agents 32+? · Working 10+? · Needs you 1"),
+        (false, "Agents 32 · ● Working 10 · ⚠ Needs you 1"),
+        (true, "Agents 32+? · ● Working 10+? · ⚠ Needs you 1"),
     ] {
         let mut app = summary_app(unknown);
         let buf = frame(&mut app, 80, true);
@@ -457,12 +457,29 @@ fn last_running_selection_that_stops_stays_visible_until_explicit_collapse() {
 #[test]
 fn summary_width_ladder_is_full_words_short_labels_glyph_counts_then_need_only() {
     // Sidebar content width is its rule minus four cells (two on each side).
-    // 34 -> 30 cells fits the 28-cell glyph rung; 30 -> 26 needs only.
+    // 34 -> 30 cells fits the 28-cell short rung with its marks and the 28-cell
+    // glyph rung of huge counts; 30 -> 26 fits neither short rung, so small
+    // counts take the glyph rung and huge ones the needs-only rung.
     // The ladder is pinned through rendered geometry, not a helper's output.
     for icons in [false, true] {
+        let (work, need) = if icons { ("●", "⚠") } else { ("*", "!") };
         for (sidebar, huge, expected) in [
-            (44, false, "Agents 32 · Working 10 · Needs you 1"),
-            (30, false, "Agt 32 · Wrk 10 · Need 1"),
+            (
+                44,
+                false,
+                format!("Agents 32 · {work} Working 10 · {need} Needs you 1"),
+            ),
+            (34, false, format!("Agt 32 · {work} Wrk 10 · {need} Need 1")),
+            (
+                30,
+                false,
+                if icons {
+                    "◈ 32 ● 10 ⚠ 1"
+                } else {
+                    "@ 32 * 10 ! 1"
+                }
+                .to_owned(),
+            ),
             (
                 34,
                 true,
@@ -470,9 +487,10 @@ fn summary_width_ladder_is_full_words_short_labels_glyph_counts_then_need_only()
                     "◈ 1234567890 ● 123456789 ⚠ 1"
                 } else {
                     "@ 1234567890 * 123456789 ! 1"
-                },
+                }
+                .to_owned(),
             ),
-            (30, true, if icons { "⚠ 1" } else { "! 1" }),
+            (30, true, if icons { "⚠ 1" } else { "! 1" }.to_owned()),
         ] {
             let mut app = if huge {
                 let mut live = row("run-a", 1, false);
