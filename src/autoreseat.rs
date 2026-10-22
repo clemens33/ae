@@ -1742,15 +1742,41 @@ pub struct Move<'a> {
     pub tool: (&'a str, &'a str),
     /// The model before and after.
     pub model: (&'a str, &'a str),
-    /// The conversation went with the seat, and how the one continuation turn
-    /// it was handed went; `None` for a seeded move.
-    pub carried: Option<Nudge>,
+    /// What became of the conversation.
+    pub fate: Fate,
+    /// How the one continuation turn a move whose conversation continued was
+    /// handed went; `None` for a seeded move.
+    pub nudge: Option<Nudge>,
     /// The target was already critical when it was chosen.
     pub critical: bool,
     /// The seat's work tree has tracked changes.
     pub dirty: bool,
     /// The headroom trigger, as its episode names it; empty for a limit.
     pub cause: &'a str,
+}
+
+/// What a move did with the seat's conversation — ONE spelling for every
+/// record and notice that names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fate {
+    /// A fresh conversation, handed the seed pack.
+    Seeded,
+    /// Copied into another account of the same tool.
+    Carried,
+    /// Resumed in place on another model or effort.
+    Kept,
+}
+
+impl Fate {
+    /// The word a record or a notice says it with.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Seeded => "seeded",
+            Self::Carried => "carried",
+            Self::Kept => "kept",
+        }
+    }
 }
 
 /// How the continuation turn a carried move hands its seat went, as the
@@ -1799,11 +1825,7 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
             moved.tool.1,
             moved.model.0,
             moved.model.1,
-            if moved.carried.is_some() {
-                "carried"
-            } else {
-                "seeded"
-            },
+            moved.fate.word(),
             if moved.critical {
                 ", target already critical"
             } else {
@@ -1812,7 +1834,7 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
             if moved.dirty { "dirty" } else { "clean" },
             // Never a resend the pane does not call for: a nudge ae could not
             // prove absent may already be there.
-            match moved.carried {
+            match moved.nudge {
                 None => "check it picked up its seat pack".to_owned(),
                 Some(Nudge::Submitted) =>
                     "nothing, its continuation nudge was submitted".to_owned(),
@@ -2942,7 +2964,8 @@ mod tests {
             to: "opus55x",
             tool: ("codex", "claude"),
             model: ("gpt-6-sol", "opus"),
-            carried: Some(Nudge::Submitted),
+            fate: super::Fate::Carried,
+            nudge: Some(Nudge::Submitted),
             critical: false,
             dirty: false,
             cause: "",
@@ -2971,14 +2994,15 @@ mod tests {
                 SESSION,
                 AGENT,
                 &Ending::Moved(Move {
-                    carried: Some(nudge),
+                    nudge: Some(nudge),
                     ..moved
                 }),
             );
             assert!(said.ends_with(want), "{nudge:?}: {said}");
         }
         let seeded = Move {
-            carried: None,
+            fate: super::Fate::Seeded,
+            nudge: None,
             critical: true,
             dirty: true,
             ..moved
@@ -4430,6 +4454,32 @@ mod tests {
         .flatten()
         {
             assert!(!line.contains('\n'), "one line: {line}");
+        }
+    }
+
+    #[cfg(test)]
+    mod keepconv_spec {
+        #[test]
+        fn automatic_kept_notice_names_kept_and_submitted_continuation() {
+            let moved = super::super::Move {
+                from: "old",
+                to: "new",
+                tool: ("claude", "claude"),
+                model: ("opus", "sonnet"),
+                fate: super::super::Fate::Kept,
+                nudge: Some(super::super::Nudge::Submitted),
+                critical: false,
+                dirty: false,
+                cause: "",
+            };
+            let actual = super::super::notice("s", "builder", &super::super::Ending::Moved(moved));
+            assert_eq!(
+                actual,
+                "auto reseat: builder moved old -> new (tool claude -> claude, model opus -> sonnet), kept; work tree clean. If builder is half of a review pair, re-check its gate provider. Next: nothing, its continuation nudge was submitted."
+            );
+            assert_eq!(super::super::Fate::Kept.word(), "kept");
+            assert_eq!(super::super::Fate::Carried.word(), "carried");
+            assert_eq!(super::super::Fate::Seeded.word(), "seeded");
         }
     }
 }

@@ -1065,7 +1065,7 @@ fn a_blocked_auto_continuation_leaves_the_move_intact_and_reports_an_explicit_ne
 }
 #[test]
 fn a_failed_continuation_keeps_status_and_safe_recovery_with_maximum_agent_names() {
-    use ae::autoreseat::{Ending, Move, NOTICE_CHARS, Nudge, notice};
+    use ae::autoreseat::{Ending, Fate, Move, NOTICE_CHARS, Nudge, notice};
     let agent = "n".repeat(64);
     assert!(ae::config::is_agent_name(&agent));
     let profile = "p".repeat(64);
@@ -1087,7 +1087,8 @@ fn a_failed_continuation_keeps_status_and_safe_recovery_with_maximum_agent_names
             to: &profile,
             tool: ("claude", "claude"),
             model: (&model, &model),
-            carried: Some(nudge),
+            fate: Fate::Carried,
+            nudge: Some(nudge),
             critical: true,
             dirty: true,
             cause: "",

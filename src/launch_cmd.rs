@@ -885,6 +885,51 @@ pub fn effort_skeleton(cmd: &str, tool: ToolKind) -> Result<(Vec<String>, Level)
     Ok((parts, level))
 }
 
+/// One command reduced to what an exact resume of the SAME conversation may not
+/// change, under the tool's measured [`crate::tool::KeepSpec`]: every word with
+/// the ONE model flag's value dropped and, where effort may differ, the ONE
+/// effort setting taken out whole, so an absent one equals any level. `None`
+/// (unmeasured, unlexable, no single valued model flag, unreadable effort)
+/// proves nothing.
+pub(crate) fn keep_skeleton(cmd: &str, tool: ToolKind) -> Option<Vec<String>> {
+    let crate::tool::KeepSpec::Measured {
+        model_flags,
+        effort,
+    } = tool.adapter().resume.keep
+    else {
+        return None;
+    };
+    let command = lex_simple_command(cmd).ok()?;
+    let model = sole_flag(&command, model_flags)
+        .ok()
+        .filter(|flag| !flag.value.is_empty())?;
+    let level = if effort {
+        match effort_in(cmd, tool) {
+            Ok((_, flag, _)) => Some(flag),
+            Err(EffortRefusal::Absent) => None,
+            Err(_) => return None,
+        }
+    } else {
+        None
+    };
+    let mut parts = command.assignments.clone();
+    for (index, value) in command.word_values.iter().enumerate() {
+        if model.value_index == Some(index)
+            || level
+                .as_ref()
+                .is_some_and(|flag| index == flag.flag || index == flag.value)
+        {
+            continue;
+        }
+        parts.push(if index == model.index {
+            model.name.to_owned()
+        } else {
+            value.clone()
+        });
+    }
+    Some(parts)
+}
+
 /// The executable word selected by the same prefix grammar the executor uses.
 pub(crate) struct LaunchBinary<'a> {
     /// Index inside [`SimpleCommand::words`].

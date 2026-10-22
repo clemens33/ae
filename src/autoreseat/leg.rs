@@ -101,10 +101,10 @@ pub(crate) fn outcome(
         )
     };
     match ended {
-        Ended::Moved { carried } => (
+        Ended::Moved { fate } => (
             DONE_ACTION,
             left.to_owned(),
-            format!("to {to}, {}", if carried { "carried" } else { "seeded" }),
+            format!("to {to}, {}", fate.word()),
         ),
         Ended::Refused(class) if class.transient() => (HELD_ACTION, key.to_owned(), quoted(class)),
         Ended::Refused(class) => (REFUSED_ACTION, key.to_owned(), quoted(class)),
@@ -760,7 +760,7 @@ pub(crate) fn run(
     let summary = tagged(&summary, &cause);
     record(&argv, &agent, now, action, &reference, &summary);
     let text = match ended {
-        Ended::Moved { carried } => {
+        Ended::Moved { fate } => {
             let after = crate::meta::read_bytes(dir).unwrap_or_default();
             let after = crate::meta::Meta::parse(&String::from_utf8_lossy(&after));
             let tool_after = after
@@ -773,13 +773,14 @@ pub(crate) fn run(
                 .is_ok_and(|wdir| crate::git::work_tree_dirty(wdir.as_bytes()));
             // AFTER the move's own record: the episode is closed before the
             // seat is handed anything, so nothing retries or repeats the turn.
-            let carried = carried.then(|| nudge(&argv, &agent));
+            let nudge = (fate != super::Fate::Seeded).then(|| nudge(&argv, &agent, fate));
             notice(super::Ending::Moved(super::Move {
                 from: &profile,
                 to: &named(&pick),
                 tool: (&tool_before, &tool_after),
                 model: (&model_before, &model_after),
-                carried,
+                fate,
+                nudge,
                 critical: tier == super::Tier::Critical,
                 dirty,
                 cause: &cause,
@@ -968,25 +969,37 @@ fn said(argv: &Argv, now: Timestamp, text: &str) {
     ));
 }
 
-/// The ONE turn a carried move hands its seat: its conversation came along, so
-/// no seed pack does, and without a turn the seat sits idle in it.
-const CONTINUE: &str = "auto reseat moved you to another account of the same tool, and your \
-     conversation came with you. Restore your state first: re-declare it, then check your pending \
-     requests (requests inbox, requests mine) and the session memo and brief (memo read, ae brief). \
-     Resume only authorized outstanding work. Keep any genuine wait on a human or an agent, and any \
-     parked scope, exactly as it was, and send no request again.";
+/// The ONE turn a move whose conversation continued hands its seat: no seed
+/// pack does, and without a turn the seat sits idle in it. It opens with what
+/// moved ([`continuation`]).
+const CONTINUE: &str = "and your conversation came with you. Restore your state first: re-declare \
+     it, then check your pending requests (requests inbox, requests mine) and the session memo and \
+     brief (memo read, ae brief). Resume only authorized outstanding work. Keep any genuine wait on \
+     a human or an agent, and any parked scope, exactly as it was, and send no request again.";
 
-/// The summary that turn's record carries, which names it among the notices.
-const CONTINUE_SUMMARY: &str = "continuation turn after an automatic carried reseat";
+/// The continuation turn for `fate`, and the summary its record carries, which
+/// names it among the notices.
+fn continuation(fate: super::Fate) -> (String, String) {
+    let word = fate.word();
+    let moved = match fate {
+        super::Fate::Kept => "another model or effort",
+        _ => "another account",
+    };
+    (
+        format!("auto reseat moved you to {moved} of the same tool, {CONTINUE}"),
+        format!("continuation turn after an automatic {word} reseat"),
+    )
+}
 
-/// Hand `agent` the [`CONTINUE`] turn through the session's own `send` helper,
-/// and read back how it went: submitted only on the helper's exit 0 AND its own
-/// unmarked record past the journal as it read before the send.
-fn nudge(argv: &Argv, agent: &str) -> super::Nudge {
+/// Hand `agent` its [`continuation`] turn through the session's own `send`
+/// helper, and read back how it went: submitted only on the helper's exit 0 AND
+/// its own unmarked record past the journal as it read before the send.
+fn nudge(argv: &Argv, agent: &str, fate: super::Fate) -> super::Nudge {
+    let (text, summary) = continuation(fate);
     let before = crate::watchdog_daemon::read_events(&argv.dir).len();
     let send = argv.dir.join("send");
-    let env = notice_env(CONTINUE_SUMMARY);
-    if crate::transport::deliver(&send, agent, CONTINUE, false, &env).code != Some(0) {
+    let env = notice_env(&summary);
+    if crate::transport::deliver(&send, agent, &text, false, &env).code != Some(0) {
         return super::Nudge::Refused;
     }
     let events = crate::watchdog_daemon::read_events(&argv.dir);
@@ -998,7 +1011,7 @@ fn nudge(argv: &Argv, agent: &str) -> super::Nudge {
             event.actor == WATCHDOG_ACTOR
                 && event.action == super::NOTICE_ACTION
                 && event.target.as_deref() == Some(agent)
-                && event.summary.as_deref() == Some(CONTINUE_SUMMARY)
+                && event.summary.as_deref() == Some(summary.as_str())
         });
     if submitted {
         super::Nudge::Submitted
@@ -1715,13 +1728,17 @@ mod tests {
         let left = "sol6x";
         for (ended, action, reference, summary) in [
             (
-                Ended::Moved { carried: true },
+                Ended::Moved {
+                    fate: crate::autoreseat::Fate::Carried,
+                },
                 DONE_ACTION,
                 left,
                 "to opus55x, carried",
             ),
             (
-                Ended::Moved { carried: false },
+                Ended::Moved {
+                    fate: crate::autoreseat::Fate::Seeded,
+                },
                 DONE_ACTION,
                 left,
                 "to opus55x, seeded",
@@ -3161,5 +3178,29 @@ mod tests {
                 .is_some_and(|line| line.contains("its own account is not provable")),
             "an unreadable command is named, not skipped"
         );
+    }
+
+    #[cfg(test)]
+    mod keepconv_spec {
+        #[test]
+        fn automatic_kept_outcome_records_kept_not_carried_or_seeded() {
+            let actual = super::super::outcome(
+                crate::reseat::Ended::Moved {
+                    fate: crate::autoreseat::Fate::Kept,
+                },
+                "episode",
+                "old",
+                "new",
+                "",
+            );
+            assert_eq!(
+                actual,
+                (
+                    crate::autoreseat::DONE_ACTION,
+                    "old".to_owned(),
+                    "to new, kept".to_owned()
+                )
+            );
+        }
     }
 }

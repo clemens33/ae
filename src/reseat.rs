@@ -48,7 +48,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::autoreseat::CauseClass;
+use crate::autoreseat::{CauseClass, Fate};
 use crate::harness_state::HarnessState;
 use crate::inventory::ServerId;
 use crate::procs::{self, Descendancy};
@@ -190,9 +190,13 @@ enum Carried {
     /// were ARCHIVED first: moved aside, never deleted, into one directory of
     /// this move that the record names.
     Archived { count: usize, dir: PathBuf },
-    /// The carry was live and REFUSED. The move still happens — a fresh
-    /// conversation and the seed pack — and this is what it could not do.
+    /// The carry was live and REFUSED, or a conversation that was to be kept
+    /// could not be. The move still happens — a fresh conversation and the
+    /// seed pack — and this is what it could not do.
     Seeded(String),
+    /// The SAME tool in the SAME account resumes the conversation on another
+    /// model or effort ([`keeps`]): nothing travelled, nothing was left.
+    Kept,
 }
 
 impl Carried {
@@ -200,13 +204,24 @@ impl Carried {
     fn word(&self) -> String {
         match self {
             Self::No => String::new(),
-            Self::Yes => "carried".to_owned(),
             Self::Archived { count, dir } => format!(
-                "carried, archived {} in {}",
+                "{}, archived {} in {}",
+                Fate::Carried.word(),
                 crate::carry::files(*count),
                 dir.display()
             ),
-            Self::Seeded(why) => format!("seeded ({why})"),
+            Self::Seeded(why) => format!("{} ({why})", Fate::Seeded.word()),
+            Self::Yes | Self::Kept => self.fate().word().to_owned(),
+        }
+    }
+
+    /// What became of the conversation, in the one vocabulary a caller of the
+    /// verb journals it in.
+    const fn fate(&self) -> Fate {
+        match self {
+            Self::Yes | Self::Archived { .. } => Fate::Carried,
+            Self::Kept => Fate::Kept,
+            Self::No | Self::Seeded(_) => Fate::Seeded,
         }
     }
 
@@ -216,15 +231,15 @@ impl Carried {
     /// say the opposite of what happened. Every other arm really did leave one.
     fn field(&self) -> &'static str {
         match self {
-            Self::Yes | Self::Archived { .. } => "conversation",
+            Self::Yes | Self::Archived { .. } | Self::Kept => "conversation",
             Self::No | Self::Seeded(_) => "prior",
         }
     }
 
-    /// Did the conversation travel? Archiving on the way changes what the
-    /// record says, never what the move does.
+    /// Does the seat go on in the conversation it had? Archiving on the way
+    /// changes what the record says, never what the move does.
     fn travelled(&self) -> bool {
-        matches!(self, Self::Yes | Self::Archived { .. })
+        self.fate() != Fate::Seeded
     }
 }
 
@@ -278,6 +293,78 @@ fn carry_plan(
         from: Some(&from),
         to: Some(&account.path),
     })
+}
+
+/// One KEEP question's inputs: the seat's recorded rows (raw, empty when
+/// absent) and its recorded profile resolved now, beside the new profile's.
+struct Keep<'a> {
+    from_binary: &'a str,
+    to_binary: &'a str,
+    tool: ToolKind,
+    id: &'a str,
+    from_home: &'a str,
+    from_base: &'a str,
+    to_home: Option<(&'a str, Option<&'a str>)>,
+    from_command: Option<&'a str>,
+    to_command: &'a str,
+}
+
+/// Does this move KEEP the seat's conversation? PURE. The same binary and
+/// recorded account (path, mode and implicit base), an id the tool's resume
+/// takes, and commands equal under [`crate::launch_cmd::keep_skeleton`].
+fn keeps(keep: &Keep<'_>) -> bool {
+    use crate::meta::RecordedConfigHome;
+    let Some((to_home, to_base)) = keep.to_home else {
+        return false;
+    };
+    let recorded = RecordedConfigHome::parse(keep.from_home);
+    let base_matches = match recorded {
+        RecordedConfigHome::Path(_) => keep.from_base.is_empty() && to_base.is_none(),
+        RecordedConfigHome::Implicit(_) => {
+            !keep.from_base.is_empty() && to_base == Some(keep.from_base)
+        }
+        _ => false,
+    };
+    let skeleton = |cmd: &str| crate::launch_cmd::keep_skeleton(cmd, keep.tool);
+    !keep.from_binary.is_empty()
+        && keep.from_binary == keep.to_binary
+        && crate::launch::id_probeable(keep.id)
+        && base_matches
+        && recorded.record_value().as_deref() == Some(to_home)
+        && keep
+            .from_command
+            .and_then(skeleton)
+            .is_some_and(|from| skeleton(keep.to_command) == Some(from))
+}
+
+/// The command the seat's recorded profile resolves to NOW, exactly as `_run`
+/// resolves it — a recorded client override included — or `None`.
+fn recorded_command(dir: &Path, bytes: &[u8], seated: &crate::meta::RosterEntry) -> Option<String> {
+    let cfg = identity_config(dir, bytes).ok()?;
+    crate::run::read_seat_command(
+        &cfg,
+        seated.profile.as_deref()?,
+        &seated.name,
+        &seated.slot,
+        &seated.client,
+        crate::doors::home().as_deref(),
+    )
+    .ok()
+    .map(|command| command.as_str().to_owned())
+}
+
+/// The model and effort each profile sets, for the line naming a kept move.
+fn kept_change(from: &str, to: &str, tool: ToolKind) -> String {
+    let crate::tool::KeepSpec::Measured { model_flags, .. } = tool.adapter().resume.keep else {
+        return String::new();
+    };
+    let model = |cmd| crate::launch_cmd::sole_flag_value(cmd, model_flags).unwrap_or_default();
+    let effort = |cmd| crate::launch_cmd::effort_flag(cmd, tool).map_or("default", |l| l.word());
+    let (was, now) = ((model(from), effort(from)), (model(to), effort(to)));
+    format!(
+        " (model {} -> {}, effort {} -> {})",
+        was.0, now.0, was.1, now.1
+    )
 }
 
 /// Where this seat's seed is published — beside the meta, 0600, and KEPT after
@@ -427,6 +514,7 @@ fn resolve_profile(dir: &Path, bytes: &[u8], profile: &str, agent: &str) -> Resu
         tool: parsed.tool(),
         pin: crate::launch_cmd::model_flag_value(command.as_str(), parsed.tool()),
         binary: parsed.binary,
+        command: command.as_str().to_owned(),
     })
 }
 
@@ -436,6 +524,8 @@ struct Moving {
     /// The model its `--model` flag pins, when it pins one.
     pin: Option<String>,
     binary: String,
+    /// The command it resolves to.
+    command: String,
     /// Where this profile's conversations live, when ae can say.
     account: Option<Account>,
 }
@@ -506,8 +596,9 @@ pub(crate) fn account_of(
 /// How one reseat ended, for a caller that must journal it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ended {
-    /// The seat runs its new profile; `carried` when its conversation came too.
-    Moved { carried: bool },
+    /// The seat runs its new profile, and this is what became of its
+    /// conversation.
+    Moved { fate: Fate },
     /// Nothing of the seat changed, for the named cause, decided where it was
     /// refused. A transient one ([`CauseClass::transient`]) may pass on a retry.
     Refused(CauseClass),
@@ -1155,6 +1246,7 @@ fn run_parsed(
             return Ok(refused);
         }
     };
+    let from_command = recorded_command(&dir, &bytes, seated);
     // The moment of a human's choice: say once if the profile chosen has no
     // exit off its account. The watchdog's own move is no choice of anyone's.
     if caller.display != crate::watchdog::WATCHDOG_ACTOR
@@ -1211,6 +1303,21 @@ fn run_parsed(
     // from it, and the audit line reads the conversation the predecessor holds.
     let locked = crate::meta::read_bytes(&dir).unwrap_or_default();
     let prior = crate::lifecycle::meta_value(&locked, &format!("harness_session.{}", target.slot));
+    // DOES THE SEAT KEEP ITS CONVERSATION? From the records under the lock. A
+    // kept move stays in its account, which a carry never does.
+    let row = |key: &str| crate::lifecycle::meta_value(&locked, &format!("{key}.{}", target.slot));
+    let keeping = keeps(&Keep {
+        from_binary: &row("agent_bin"),
+        to_binary: &moving.binary,
+        tool: moving.tool,
+        id: &prior,
+        from_home: &row("config_home"),
+        from_base: &row("config_home_base"),
+        to_home: (moving.account.as_ref())
+            .map(|account| (account.row.as_str(), account.base.as_deref())),
+        from_command: from_command.as_deref(),
+        to_command: &moving.command,
+    });
     let mut at = Record {
         caller: &caller,
         now,
@@ -1300,6 +1407,31 @@ fn run_parsed(
     // anything is removed, so a refusal costs only the reading. Every arm that
     // does not carry leaves the rest of this function exactly as it was.
     let plan = carry_plan(&locked, &target.slot, &moving, &prior, &before.work_dir);
+    // A conversation to keep must still be in the tool's own store, asked by
+    // the probe `_run` resumes with, keyed by the seat's recorded working copy.
+    // When it is not, the move seeds and says what it could not keep.
+    let kept = match moving.account.as_ref() {
+        Some(account) if keeping => Some(
+            if crate::run::resumable_in(
+                moving.tool,
+                &prior,
+                &crate::launch_cmd::Resolved::Path(account.path.clone()),
+                Some(Path::new(&before.work_dir)),
+            ) {
+                Carried::Kept
+            } else {
+                let why = format!("not in its store at {}", account.path.display());
+                writeln!(
+                    out,
+                    "could not keep conversation {prior} ({why}) — moving it on a fresh \
+                     conversation with its seed pack instead"
+                )?;
+                Carried::Seeded(why)
+            },
+        ),
+        _ => None,
+    };
+    let keep_on = kept == Some(Carried::Kept);
     let marker = crate::run::started_marker(&dir, &target.slot);
     // THE RESUME MARKER, PROVEN WRITABLE BEFORE ANYTHING MOVES. `clear_slot`
     // below removes it and a carried seat has to have it back, or `_run` would
@@ -1311,7 +1443,7 @@ fn run_parsed(
     // clear arm below and the put-back arm both take that case, and both say
     // what they left. Re-running the same reseat converges — the source store
     // is untouched and the seat still records the conversation.
-    if plan.is_some()
+    if (plan.is_some() || keep_on)
         && let Err(why) = crate::launch::publish_data(&marker, b"")
     {
         writeln!(
@@ -1321,9 +1453,9 @@ fn run_parsed(
         )?;
         return Ok(broke);
     }
-    let planned = plan.is_some();
+    let planned = plan.is_some() || keep_on;
     let carried = match plan {
-        None => Carried::No,
+        None => kept.unwrap_or(Carried::No),
         Some(plan) => {
             let (from, to) = plan.homes();
             // A move whose Check never ran — its working copy was not usable
@@ -1394,7 +1526,9 @@ fn run_parsed(
     // the cleanup below removes that file. A CARRIED seat gets neither: the
     // conversation itself travelled, so there is nothing for ae to tell the
     // successor and nothing for a human to re-send by hand.
-    let seed = if carried.travelled() {
+    // A KEPT seat's pack is built too but published only if its resume falls
+    // back ([`finish`]): this is the last moment its first message is readable.
+    let seed = if carried.fate() == Fate::Carried {
         None
     } else {
         let pack = match crate::seat_pack(
@@ -1410,8 +1544,9 @@ fn run_parsed(
                 return Ok(broke);
             }
         };
-        if let Err(why) =
-            crate::launch::publish_data(&seed_file(&dir, &target.agent), pack.as_bytes())
+        if !keep_on
+            && let Err(why) =
+                crate::launch::publish_data(&seed_file(&dir, &target.agent), pack.as_bytes())
         {
             writeln!(err, "Error: {why}. Nothing was reseated.")?;
             return Ok(broke);
@@ -1426,7 +1561,7 @@ fn run_parsed(
         // the marker was there; a seat that never started must not be handed
         // one it never had.
         let stranded = planned && crate::launch::publish_data(&marker, b"").is_err();
-        let note = match (stranded, carried.travelled()) {
+        let note = match (stranded, carried.fate() == Fate::Carried) {
             (true, _) => {
                 " Its start marker could not be put back either, so its next start would open a \
                  NEW conversation beside the one it records."
@@ -1464,17 +1599,28 @@ fn run_parsed(
             back = crate::launch::publish_data(&marker, b"");
         }
         if let Err(why) = back {
+            let copied = carried.fate() == Fate::Carried;
             writeln!(
                 err,
-                "Error: {why} — the conversation was copied but slot {} could not be marked as \
-                 resuming, so the seat was not moved and '{}' still records {was}. Re-run the \
-                 same reseat once {} can be written; until then relaunching '{}' would start a \
-                 NEW conversation on its old account. The source account still holds the \
-                 conversation; the copy in the other account is inert, since no record names it.",
+                "Error: {why} — {}slot {} could not be marked as resuming, so the seat was not \
+                 moved and '{}' still records {was}. Re-run the same reseat once {} can be \
+                 written; until then relaunching '{}' would start a NEW conversation on its old \
+                 account.{}",
+                if copied {
+                    "the conversation was copied but "
+                } else {
+                    ""
+                },
                 target.slot,
                 target.agent,
                 marker.display(),
-                target.agent
+                target.agent,
+                if copied {
+                    " The source account still holds the conversation; the copy in the other \
+                     account is inert, since no record names it."
+                } else {
+                    ""
+                }
             )?;
             return Ok(broke);
         }
@@ -1492,15 +1638,18 @@ fn run_parsed(
             profile: &parsed.profile,
             binary: &moving.binary,
             launch_id: &crate::session_launch::launch_token(moving.tool, None),
-            conversation: match (carried.travelled(), moving.account.as_ref()) {
+            conversation: match (&carried, moving.account.as_ref()) {
+                (Carried::Kept, _) => crate::meta::Conversation::Kept,
                 // The account rows and the kept conversation are published in
                 // the SAME replacement: a conversation whose store no row names
                 // is the window a later reader would resolve to the home the
                 // seat just left.
-                (true, Some(account)) => crate::meta::Conversation::Carried {
-                    config_home: &account.row,
-                    config_home_base: account.base.as_deref(),
-                },
+                (Carried::Yes | Carried::Archived { .. }, Some(account)) => {
+                    crate::meta::Conversation::Carried {
+                        config_home: &account.row,
+                        config_home_base: account.base.as_deref(),
+                    }
+                }
                 // A carry proves an account, so the second arm is unreachable;
                 // it is spelled rather than unwrapped, and it is today's move.
                 _ => crate::meta::Conversation::Fresh {
@@ -1559,7 +1708,16 @@ fn run_parsed(
             Ok(Ended::Failed)
         }
         Started::NotSeen => {
-            record(&dir, &at, &target, NOT_SEEN, Mentions::Conversation);
+            // `_run` may have fallen back before its tool failed: a fresh id
+            // proves that, and an unchanged one proves no resume either.
+            let unproven = at.carry == Carried::Kept
+                && !resume_fell_back(&dir, &target, seed.as_deref(), &mut at, None, out, err)?;
+            let mentions = if unproven {
+                Mentions::NothingOfIt
+            } else {
+                Mentions::Conversation
+            };
+            record(&dir, &at, &target, NOT_SEEN, mentions);
             writeln!(
                 err,
                 "Error: '{}' moved to '{}' and its tool was not seen: look at the pane; \
@@ -1575,11 +1733,56 @@ fn run_parsed(
             resuming_seat,
             parsed,
             seed.as_deref(),
-            &at,
+            &mut at,
+            &from_command.map_or_else(String::new, |from| {
+                kept_change(&from, &moving.command, moving.tool)
+            }),
             out,
             err,
         ),
     }
+}
+
+/// A KEPT conversation is proven only by the id `_run` left: one that fell back
+/// recorded a fresh id and gets the seed pack, and nothing says kept. A proven
+/// keep is named on stdout only with a `kept_line`, for a tool seen running.
+fn resume_fell_back(
+    dir: &Path,
+    target: &Target,
+    seed: Option<&str>,
+    at: &mut Record<'_>,
+    kept_line: Option<&str>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let id_now = crate::lifecycle::meta_value(
+        &crate::meta::read_bytes(dir).unwrap_or_default(),
+        &format!("harness_session.{}", target.slot),
+    );
+    if id_now == at.prior {
+        if let Some(change) = kept_line {
+            writeln!(
+                out,
+                "kept conversation {} from profile '{}' to '{}'{change}",
+                at.prior, at.from, at.to
+            )?;
+        }
+        return Ok(false);
+    }
+    let file = seed_file(dir, &target.agent);
+    writeln!(
+        out,
+        "could not keep conversation {} (resume fell back) — its seed pack is {}",
+        at.prior,
+        file.display()
+    )?;
+    at.carry = Carried::Seeded("resume fell back".to_owned());
+    if let Some(pack) = seed
+        && let Err(why) = crate::launch::publish_data(&file, pack.as_bytes())
+    {
+        writeln!(err, "note: the seed could not be kept on disk ({why}).")?;
+    }
+    Ok(true)
 }
 
 /// Everything past the lock: the tool's own launch turn, the seed turn, the
@@ -1595,11 +1798,19 @@ fn finish(
     resuming_seat: bool,
     parsed: &Parsed,
     seed: Option<&str>,
-    at: &Record<'_>,
+    at: &mut Record<'_>,
+    change: &str,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<Ended> {
     let tool = proven.seat.tool;
+    let seed = if at.carry == Carried::Kept
+        && !resume_fell_back(dir, target, seed, at, Some(change), out, err)?
+    {
+        None
+    } else {
+        seed
+    };
     // The tool's OWN launch turn first, where its adapter has one: codex's
     // rollout does not exist until a user turn, and the registration handshake
     // it carries must not be buried under a 24 KB seed.
@@ -1669,10 +1880,11 @@ fn finish(
         launch_turn.map_or((true, ""), crate::seat_relaunch::turn_verdict);
     // A seat that was handed no seed has no seed verdict to report, and says
     // what it DID instead: the conversation came with it.
-    let (seed_ok, seed_note) = seed_turn.map_or((true, ", carried".to_owned()), |turn| {
-        let (ok, word) = crate::seat_relaunch::turn_verdict(turn);
-        (ok, format!(", seed {word}"))
-    });
+    let (seed_ok, seed_note) =
+        seed_turn.map_or((true, format!(", {}", at.carry.fate().word())), |turn| {
+            let (ok, word) = crate::seat_relaunch::turn_verdict(turn);
+            (ok, format!(", seed {word}"))
+        });
     let launch_note = if launch_word.is_empty() {
         String::new()
     } else {
@@ -1695,7 +1907,7 @@ fn finish(
     }
     writeln!(out, "{line}")?;
     Ok(Ended::Moved {
-        carried: at.carry.travelled(),
+        fate: at.carry.fate(),
     })
 }
 
@@ -2680,5 +2892,238 @@ mod tests {
             ),
             "a timeout keeps the existing actionable refusal"
         );
+    }
+
+    // Frozen requirements: #252 + lead-ruling-r1/r1a. Author: keepconv-nav.
+    #[cfg(test)]
+    mod keepconv_spec {
+        use super::super::{Keep, keeps};
+        use crate::tool::ToolKind;
+
+        const ID: &str = "22222222-2222-4222-8222-222222222222";
+        const FROM: &str = "claude --model opus --effort high";
+        const TO: &str = "claude --model sonnet --effort low";
+
+        fn baseline() -> Keep<'static> {
+            Keep {
+                from_binary: "claude",
+                to_binary: "claude",
+                tool: ToolKind::Claude,
+                id: ID,
+                from_home: "/account",
+                from_base: "",
+                to_home: Some(("/account", None)),
+                from_command: Some(FROM),
+                to_command: TO,
+            }
+        }
+
+        #[test]
+        fn model_effort_and_both_changes_keep_only_normalized_values() {
+            for (from, to) in [
+                (FROM, "claude --model sonnet --effort high"),
+                (FROM, "claude --model opus --effort low"),
+                (FROM, TO),
+                (FROM, FROM),
+                ("claude --model opus", "claude --model sonnet"),
+                (FROM, "claude --model sonnet"),
+                ("claude --model opus", TO),
+                ("claude --model=opus --effort=high", TO),
+            ] {
+                let keep = Keep {
+                    from_command: Some(from),
+                    to_command: to,
+                    ..baseline()
+                };
+                assert!(
+                    keeps(&keep),
+                    "only model/effort values or presence differ: {from} -> {to}"
+                );
+            }
+        }
+
+        #[test]
+        fn third_word_permissions_assignments_and_flag_order_are_not_normalized() {
+            for to in [
+                "claude --model sonnet --effort low --verbose",
+                "claude --model sonnet --effort low --permission-mode bypassPermissions",
+                "X=1 claude --model sonnet --effort low",
+                "/elsewhere/claude --model sonnet --effort low",
+            ] {
+                assert!(
+                    !keeps(&Keep {
+                        to_command: to,
+                        ..baseline()
+                    }),
+                    "extra argv change: {to}"
+                );
+            }
+        }
+
+        #[test]
+        fn absent_duplicate_missing_or_unreadable_model_never_keeps() {
+            for to in [
+                "claude --effort low",
+                "claude --model",
+                "claude --model= --effort low",
+                "claude --model sonnet --model opus --effort low",
+                "claude --model sonnet ; echo surprise",
+            ] {
+                assert!(
+                    !keeps(&Keep {
+                        to_command: to,
+                        ..baseline()
+                    }),
+                    "unproven model: {to}"
+                );
+            }
+            assert!(!keeps(&Keep {
+                from_command: None,
+                ..baseline()
+            }));
+            assert!(!keeps(&Keep {
+                from_command: Some("claude --effort high"),
+                ..baseline()
+            }));
+        }
+
+        #[test]
+        fn duplicate_unknown_or_environment_effort_is_not_silently_dropped() {
+            for to in [
+                "claude --model sonnet --effort high --effort low",
+                "claude --model sonnet --effort bananas",
+                "claude --model sonnet --effort",
+                "CLAUDE_CODE_EFFORT_LEVEL=high claude --model sonnet --effort low",
+            ] {
+                assert!(
+                    !keeps(&Keep {
+                        to_command: to,
+                        ..baseline()
+                    }),
+                    "unreadable effort: {to}"
+                );
+            }
+        }
+
+        #[test]
+        fn conversation_id_uses_resume_grammar_including_opencode_ids() {
+            for id in [
+                "",
+                "pending",
+                "../x",
+                "id with space",
+                "claude:abc",
+                "id\nnext",
+            ] {
+                assert!(!keeps(&Keep { id, ..baseline() }), "unusable id: {id:?}");
+            }
+            assert!(keeps(&Keep {
+                id: "ses_alpha_123",
+                ..baseline()
+            }));
+        }
+
+        #[test]
+        fn binary_and_account_mode_path_and_implicit_base_are_identity() {
+            for keep in [
+                Keep {
+                    from_binary: "",
+                    ..baseline()
+                },
+                Keep {
+                    to_binary: "codex",
+                    ..baseline()
+                },
+                Keep {
+                    to_home: None,
+                    ..baseline()
+                },
+                Keep {
+                    to_home: Some(("/another", None)),
+                    ..baseline()
+                },
+                Keep {
+                    from_home: "",
+                    ..baseline()
+                },
+                Keep {
+                    from_home: "unknown",
+                    ..baseline()
+                },
+                Keep {
+                    from_home: "implicit:/account",
+                    from_base: "/base",
+                    ..baseline()
+                },
+                Keep {
+                    from_base: "/base",
+                    ..baseline()
+                },
+                Keep {
+                    from_home: "implicit:/account",
+                    from_base: "/base",
+                    to_home: Some(("implicit:/account", Some("/other"))),
+                    ..baseline()
+                },
+            ] {
+                assert!(!keeps(&keep), "identity change must not keep");
+            }
+            assert!(keeps(&Keep {
+                from_home: "implicit:/account",
+                from_base: "/base",
+                to_home: Some(("implicit:/account", Some("/base"))),
+                ..baseline()
+            }));
+        }
+
+        #[test]
+        fn codex_measured_model_and_config_pair_effort_keep() {
+            let keep = Keep {
+                from_binary: "codex",
+                to_binary: "codex",
+                tool: ToolKind::Codex,
+                from_command: Some("codex -m gpt-6-luna -c model_reasoning_effort=high"),
+                to_command: "codex -m gpt-6.1-sol -c model_reasoning_effort=medium",
+                ..baseline()
+            };
+            assert!(keeps(&keep));
+            assert!(keeps(&Keep {
+                to_command: "codex -m gpt-6.1-sol",
+                ..keep
+            }));
+        }
+
+        #[test]
+        fn opencode_model_measured_variant_not_normalized_other_rows_unmeasured() {
+            let keep = Keep {
+                from_binary: "opencode",
+                to_binary: "opencode",
+                tool: ToolKind::OpenCode,
+                id: "ses_alpha_123",
+                from_command: Some("opencode --model provider/old --agent build"),
+                to_command: "opencode --model provider/new --agent build",
+                ..baseline()
+            };
+            assert!(
+                keeps(&keep),
+                "OpenCode measured model resume is independent of observed-model support"
+            );
+            assert!(!keeps(&Keep {
+                to_command: "opencode --model provider/new --agent build --variant high",
+                ..keep
+            }));
+            for tool in [
+                ToolKind::Gemini,
+                ToolKind::Agy,
+                ToolKind::Grok,
+                ToolKind::Muse,
+                ToolKind::Unknown,
+            ] {
+                assert!(
+                    !keeps(&Keep { tool, ..baseline() }),
+                    "unmeasured tool {tool:?}"
+                );
+            }
+        }
     }
 }

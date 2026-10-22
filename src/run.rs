@@ -1273,8 +1273,20 @@ fn resume_keeps_context(tool: ToolKind, exact: bool) -> bool {
     )
 }
 
-/// Should this seat be resumed with the id its meta records?
+/// Should this seat be resumed with the id its meta records? Asked from the
+/// pane's own working directory.
 fn resumable(tool: ToolKind, id: &str, config_home: &crate::launch_cmd::Resolved) -> bool {
+    resumable_in(tool, id, config_home, working_dir().as_deref())
+}
+
+/// [`resumable`] keyed by `work_dir`: the ONE store probe, which `ae reseat`
+/// asks with the seat's RECORDED working copy before it keeps a conversation.
+pub(crate) fn resumable_in(
+    tool: ToolKind,
+    id: &str,
+    config_home: &crate::launch_cmd::Resolved,
+    work_dir: Option<&Path>,
+) -> bool {
     if !launch::id_probeable(id) {
         return false;
     }
@@ -1285,13 +1297,13 @@ fn resumable(tool: ToolKind, id: &str, config_home: &crate::launch_cmd::Resolved
             let crate::launch_cmd::Resolved::Path(home) = config_home else {
                 return true;
             };
-            let Some(cwd) = working_dir() else {
+            let Some(cwd) = work_dir else {
                 return false;
             };
             crate::lifecycle::path_exists(
                 &home
                     .join("projects")
-                    .join(crate::carry::project_key(&cwd))
+                    .join(crate::carry::project_key(cwd))
                     .join(format!("{id}.jsonl")),
             )
         }

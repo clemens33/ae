@@ -1920,9 +1920,11 @@ Every attempt that reaches the pane is recorded as a `reseat` event, naming its 
 seat by its own ref, a plain shell as the human) and both profiles. The MOVE's record also
 names the conversation, and names it by what happened to it: `prior <id>` where the move
 left one behind, `conversation <id>, carried` where that same one continues in the other
-account, so a record never reads as if a live conversation were dead — and, when the move
-was between two accounts of one tool, whether it was `carried` or `seeded`, with the
-reason. A stop gets its own record, written once the pane is proven back at its shell
+account, `conversation <id>, kept` where the same tool in the same account resumes it on
+another model or effort, so a record never reads as if a live conversation were dead — and,
+when the move was between two accounts of one tool, whether it was `carried` or `seeded`,
+with the reason. A kept move whose resume fell back after the start says so:
+`prior <id>, seeded (resume fell back)`. A stop gets its own record, written once the pane is proven back at its shell
 and never before — it names the binary that was ended, because the meta keeps only the
 current one, and no conversation at all: it is written before the move's verdict, and
 which binary was ended in which pane is the whole of that event. The seat's history is

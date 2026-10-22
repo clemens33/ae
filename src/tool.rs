@@ -183,6 +183,26 @@ pub(crate) struct ResumeSpec {
     pub(crate) form: ResumeForm,
     /// What evidence permits the exact form.
     pub(crate) probe: StoreProbe,
+    /// Whether an exact resume of the SAME conversation takes another model or
+    /// effort, so `ae reseat` within one account keeps it.
+    pub(crate) keep: KeepSpec,
+}
+
+/// Which launch words an exact resume may change and still continue the SAME
+/// conversation — measured per harness (2026-10-21: claude 2.1.306 `--resume`
+/// with `--model`/`--effort`, codex 0.163.0 `resume` with `-m` and
+/// `-c model_reasoning_effort=`, opencode 1.19.3 `-s` with `-m`; a codeword
+/// from turn 1 recalled on the other model). Every other row is unmeasured, and
+/// an unmeasured move seeds exactly as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeepSpec {
+    /// No measured resume across a model change.
+    Unmeasured,
+    /// The model flag spellings, and whether the effort setting may differ too.
+    Measured {
+        model_flags: &'static [&'static str],
+        effort: bool,
+    },
 }
 
 /// How a harness-created conversation id is found after launch.
@@ -695,6 +715,10 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         // another seat's newest.
         form: ResumeForm::ExactOnly { exact: "--resume" },
         probe: StoreProbe::ProjectTranscript,
+        keep: KeepSpec::Measured {
+            model_flags: &["--model"],
+            effort: true,
+        },
     },
     carry: CarrySpec::ProjectTranscript,
     capture: CaptureSpec::None,
@@ -798,6 +822,10 @@ const CODEX: ToolAdapter = ToolAdapter {
             after: &["-c", "--config"],
         },
         probe: StoreProbe::DatedRollouts,
+        keep: KeepSpec::Measured {
+            model_flags: &["-m", "--model"],
+            effort: true,
+        },
     },
     carry: CarrySpec::NotPortable,
     capture: CaptureSpec::HandshakeRolloutOrTui,
@@ -853,6 +881,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         // another seat's newest.
         form: ResumeForm::ExactOnly { exact: "--resume" },
         probe: StoreProbe::RecordedId,
+        keep: KeepSpec::Unmeasured,
     },
     carry: CarrySpec::NotPortable,
     capture: CaptureSpec::ChatHistory,
@@ -907,6 +936,7 @@ const AGY: ToolAdapter = ToolAdapter {
             exact: "--conversation",
         },
         probe: StoreProbe::ConversationDatabase,
+        keep: KeepSpec::Unmeasured,
     },
     carry: CarrySpec::NotPortable,
     capture: CaptureSpec::ConversationDatabaseOrLog,
@@ -1000,6 +1030,7 @@ const GROK: ToolAdapter = ToolAdapter {
             exact: "--resume",
         },
         probe: StoreProbe::RecordedId,
+        keep: KeepSpec::Unmeasured,
     },
     carry: CarrySpec::NotPortable,
     capture: CaptureSpec::None,
@@ -1075,6 +1106,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         // A token-proven directory basename is the session id. Muse logs do
         // not put that id in their `session.jsonl` file name for a store probe.
         probe: StoreProbe::RecordedId,
+        keep: KeepSpec::Unmeasured,
     },
     carry: CarrySpec::NotPortable,
     capture: CaptureSpec::MuseDatedSessions,
@@ -1131,6 +1163,11 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         // is never provably the seat's own — an unproven seat starts fresh.
         form: ResumeForm::ExactOnly { exact: "--session" },
         probe: StoreProbe::RecordedId,
+        // `--variant` is a `run` flag only, not the TUI's: effort never differs.
+        keep: KeepSpec::Measured {
+            model_flags: &["--model", "-m"],
+            effort: false,
+        },
     },
     carry: CarrySpec::NotPortable,
     capture: CaptureSpec::SessionList,
@@ -1214,6 +1251,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     resume: ResumeSpec {
         form: ResumeForm::None,
         probe: StoreProbe::RecordedId,
+        keep: KeepSpec::Unmeasured,
     },
     carry: CarrySpec::NotPortable,
     capture: CaptureSpec::None,
@@ -1606,6 +1644,10 @@ mod tests {
                         // `--continue` into another seat's newest.
                         form: ResumeForm::ExactOnly { exact: "--resume" },
                         probe: StoreProbe::ProjectTranscript,
+                        keep: KeepSpec::Measured {
+                            model_flags: &["--model"],
+                            effort: true
+                        },
                     },
                     carry: CarrySpec::ProjectTranscript,
                     capture: CaptureSpec::None,
@@ -1689,6 +1731,10 @@ mod tests {
                             after: &["-c", "--config"],
                         },
                         probe: StoreProbe::DatedRollouts,
+                        keep: KeepSpec::Measured {
+                            model_flags: &["-m", "--model"],
+                            effort: true
+                        },
                     },
                     carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::HandshakeRolloutOrTui,
@@ -1743,6 +1789,7 @@ mod tests {
                         // `--resume latest` into another seat's newest.
                         form: ResumeForm::ExactOnly { exact: "--resume" },
                         probe: StoreProbe::RecordedId,
+                        keep: KeepSpec::Unmeasured,
                     },
                     carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::ChatHistory,
@@ -1794,6 +1841,7 @@ mod tests {
                             exact: "--conversation",
                         },
                         probe: StoreProbe::ConversationDatabase,
+                        keep: KeepSpec::Unmeasured,
                     },
                     carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::ConversationDatabaseOrLog,
@@ -1870,6 +1918,7 @@ mod tests {
                             exact: "--resume",
                         },
                         probe: StoreProbe::RecordedId,
+                        keep: KeepSpec::Unmeasured,
                     },
                     carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::None,
@@ -1926,6 +1975,7 @@ mod tests {
                             after: &[],
                         },
                         probe: StoreProbe::RecordedId,
+                        keep: KeepSpec::Unmeasured,
                     },
                     carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::MuseDatedSessions,
@@ -1974,6 +2024,10 @@ mod tests {
                     resume: ResumeSpec {
                         form: ResumeForm::ExactOnly { exact: "--session" },
                         probe: StoreProbe::RecordedId,
+                        keep: KeepSpec::Measured {
+                            model_flags: &["--model", "-m"],
+                            effort: false
+                        },
                     },
                     carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::SessionList,
@@ -2041,6 +2095,7 @@ mod tests {
                 resume: ResumeSpec {
                     form: ResumeForm::None,
                     probe: StoreProbe::RecordedId,
+                    keep: KeepSpec::Unmeasured,
                 },
                 carry: CarrySpec::NotPortable,
                 capture: CaptureSpec::None,

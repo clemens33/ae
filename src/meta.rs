@@ -2158,6 +2158,10 @@ pub(crate) enum Conversation<'a> {
         /// IMPLICIT store was selected against, and `None` for an explicit one.
         config_home_base: Option<&'a str>,
     },
+    /// The conversation STAYS: the same tool in the same account resumes it
+    /// on another model or effort, so the id, its capture floor, the store
+    /// rows and the predecessor list are all left exactly as they are.
+    Kept,
 }
 
 /// The seat's rows after that move — PURE, so every one of them is pinnable
@@ -2241,6 +2245,7 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
                 config_home_base.map(str::to_owned),
             ));
         }
+        Conversation::Kept => {}
     }
     let next = rows.iter().fold(text.to_owned(), |document, (key, value)| {
         rewritten(&document, key, value.as_deref())
@@ -6100,5 +6105,50 @@ agent_bin.main=claude
                     .to_owned()
             )
         );
+    }
+
+    #[cfg(test)]
+    mod keepconv_spec {
+        #[test]
+        fn kept_replacement_preserves_conversation_store_floor_and_old_priors_only() {
+            let text = "seat.main=lead\nprofile.main=old\nagent_bin.main=claude\nclient.main=override\nharness_session.main=22222222-2222-4222-8222-222222222222\ncapture_floor.main=100\nconfig_home.main=implicit:/store\nconfig_home_base.main=/base\nharness_session_prior.main=codex:11111111-1111-4111-8111-111111111111\nobserved_model.main=Opus\nobserved_model_pin.main=opus\nlaunch_time.main=111\neffort.main=damaged\n";
+            let actual = super::super::reseated(
+                text,
+                "main",
+                &super::super::SeatMove {
+                    profile: "new",
+                    binary: "claude",
+                    launch_id: "new-launch",
+                    conversation: super::super::Conversation::Kept,
+                },
+            );
+            for line in [
+                "profile.main=new",
+                "agent_bin.main=claude",
+                "launch_id.main=new-launch",
+                "harness_session.main=22222222-2222-4222-8222-222222222222",
+                "capture_floor.main=100",
+                "config_home.main=implicit:/store",
+                "config_home_base.main=/base",
+                "harness_session_prior.main=codex:11111111-1111-4111-8111-111111111111",
+            ] {
+                assert!(
+                    actual.lines().any(|got| got == line),
+                    "required row {line}: {actual}"
+                );
+            }
+            for prefix in [
+                "client.main=",
+                "observed_model.main=",
+                "observed_model_pin.main=",
+                "launch_time.main=",
+                "effort.main=",
+            ] {
+                assert!(
+                    !actual.lines().any(|got| got.starts_with(prefix)),
+                    "stale row {prefix}: {actual}"
+                );
+            }
+        }
     }
 }

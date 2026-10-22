@@ -85,6 +85,7 @@ mod honestwords_spec;
 mod imgpaste_spec;
 mod init;
 mod install;
+mod keepconv_spec;
 mod launch_context_spec;
 mod lifecycle;
 mod menu;

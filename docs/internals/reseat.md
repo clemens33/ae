@@ -118,7 +118,8 @@ Then, under `.lifecycle.<session>.lock`:
     reading. A move that does not carry leaves steps 10-17 exactly as they
     were. A copy failure here is only what appeared after 7a — the target
     account is outside the lock — or a write the Check never tries, and it
-    keeps the loud seeded fallback;
+    keeps the loud seeded fallback. The KEEP question (below) is asked at the
+    same point, and only for a move that stays in its account;
 10. the seed pack is BUILT — before anything is removed, because it reads the
     seat's recorded first message and step 11 deletes that file;
 11. the seed is published as `seed.<agent>.md` (0600), then `run::clear_slot`
@@ -127,7 +128,8 @@ Then, under `.lifecycle.<session>.lock`:
     and no resume decision to make. A CARRIED seat publishes no seed and then
     puts the start marker BACK: `_run` reads exactly that file to choose
     between creating a conversation and resuming one, so without it the store
-    would be copied and the successor would open a new conversation beside it;
+    would be copied and the successor would open a new conversation beside it.
+    A KEPT seat does the same, its pack held in memory for the post-start proof;
 12. ONE guarded meta replacement (`meta::publish_seat_move`);
 13. `read_seat` again — the command, the tool and the conversation are the new
     profile's now — then `start`.
@@ -140,7 +142,8 @@ to 45 s and no session may be held out of its own lifecycle for that. Past it:
     under a 24 KB seed);
 15. the seed, as `⟦ae:ctx⟧` — `provenance` puts the marker on, because
     `deliver_launch_turn` pastes its text verbatim. A carried seat is handed
-    none: it resumed the conversation itself;
+    none: it resumed the conversation itself. A kept seat is handed none
+    either, unless the post-start proof finds its resume fell back;
 16. the post-launch capture for a slot that still reads `pending`;
 17. a LAST identity reading, because exit 0 means the seat is up NOW.
 
@@ -153,7 +156,7 @@ interleaves, but a `retire` plus a re-`spawn` can land a DIFFERENT seat on the
 slot, and that successor must not inherit the move.
 
 `meta::Conversation` says what becomes of the conversation, as ONE value: the
-two arms differ in three rows at once, and a caller able to spell half of each
+arms differ in three rows at once, and a caller able to spell half of each
 would publish a seat whose records contradict themselves.
 
 `Fresh` WRITES `harness_session` (a fresh UUID where the tool takes one at
@@ -169,7 +172,10 @@ and `config_home_base` to the target account instead, in that same replacement �
 a published conversation whose store no row names is the window that would let a
 later reader resolve it in the home the seat just left.
 
-Both arms WRITE `profile`, `agent_bin` and `launch_id`, and REMOVE `launch_time`
+`Kept` touches none of the four and leaves the account rows as they are: the
+same tool in the same account resumes the same conversation.
+
+All three arms WRITE `profile`, `agent_bin` and `launch_id`, and REMOVE `launch_time`
 (it would date a launch that has not happened), `observed_model` and its pin
 (they would read as drift the moment the new tool answers, and a second account
 of one tool may well serve a different one), and `client` (a launch's
@@ -177,7 +183,7 @@ of one tool may well serve a different one), and `client` (a launch's
 The client row is removed rather than emptied: an empty override is not the
 same fact as no override.
 
-Both arms also REMOVE every `effort.<slot>` line, bare, damaged and CR-ended
+All three arms also REMOVE every `effort.<slot>` line, bare, damaged and CR-ended
 ones included: a quota-driven effort record belongs to the setup that is
 leaving, and the `reseat` record resets the seat's effort fold in the journal.
 A resume decides the same record in `effort::on_resume`, first rule wins:
@@ -434,6 +440,44 @@ prior would send a later reader after it believing it dead. A seeded fallback
 really did abandon one, so it keeps `prior`, and a move that was never a carry
 question writes what a tool change always wrote, byte for byte.
 
+## Keeping the conversation on another model or effort (`reseat::keeps`)
+
+A move inside ONE account of ONE tool that changes only the model or the effort
+resumes the SAME conversation on the new flags instead of seeding a fresh one.
+`keeps` is pure and asked under the lock from the records: the same recorded
+`agent_bin`, the same recorded account (path, mode and implicit base), an id
+`launch::id_probeable` accepts, and the recorded profile's command (resolved as
+`_run` resolves it, client override included) equal to the new one under
+`launch_cmd::keep_skeleton`. That skeleton drops the ONE model flag's value and,
+where the row allows, the ONE effort setting whole — absent on either side
+compares equal; a duplicate or unreadable one proves nothing.
+
+The rows are `tool::KeepSpec`, MEASURED 2026-10-21 by a codeword recalled across
+the change: claude 2.1.306 `--resume` with `--model`/`--effort`, codex 0.163.0
+`resume` with `-m` and `-c model_reasoning_effort=`, opencode 1.19.3 `-s` with
+`-m` (model only: `--variant` is a `run` flag). Every other row is unmeasured
+and seeds as before. BOTH commands must name a model: a model-flagless profile
+never keeps, because nothing then says what the resume would run on.
+
+Past the dead proof, `run::resumable_in` — the one probe `_run` resumes with —
+asks the store keyed by the seat's RECORDED working copy; a miss seeds and
+stdout says `could not keep conversation <id> (…)`. A kept move writes no
+predecessor, keeps the id, floor and account rows (`meta::Conversation::Kept`),
+puts the start marker back as a carry does, and publishes no seed: its pack is
+built before `clear_slot` and held. KEPT IS PROVEN ONLY AFTER THE START, by the
+id `_run` left: an unchanged id prints `kept conversation <id> from profile …
+(model … -> …, effort … -> …)` and the record reads `conversation <id>, kept`;
+a fresh id means the resume fell back, so the pack is published and pasted, the
+record reads `prior <id>, seeded (resume fell back)` and the exit stays 0. A
+tool never seen claims nothing: a fresh id there is the same fallback, an
+unchanged one leaves the conversation out of the record.
+
+Named residuals: `_run` probes the pane's PHYSICAL cwd while the reseat keys the
+recorded one, so a working copy reached through a link can disagree — the
+post-start proof turns that into a loud seed, never a false `kept`; and
+opencode's probe is `RecordedId`, which checks no store, so a vanished opencode
+session still reads as kept.
+
 THE STOP RECORD NAMES NO CONVERSATION AT ALL (`Mentions`). Which binary was ended,
 in which pane, and which move it belongs to is the whole of that event: a
 conversation id is not a fact about stopping a tool. It matters most where the
@@ -571,8 +615,10 @@ which ends no declaration. Refusals and failures the trigger closes itself are
 chat-only; the two endings a forged argv can reach journal their record and say
 nothing further.
 
-A CARRIED move hands the moved seat one turn before it is told about: its
-conversation came along, so no seed pack did. After the `-done` record, the leg
+A CARRIED or KEPT move hands the moved seat one turn before it is told about:
+its conversation came along, so no seed pack did; the turn names what moved
+(another account, or another model or effort), and the records say `kept`
+where the conversation stayed. After the `-done` record, the leg
 sends one continuation (re-declare, check requests, memo and brief, resume only
 authorized work, keep real waits and parked scope) through the same `send`
 helper and its guards, journaled as `auto-reseat-notice` to the seat. The
