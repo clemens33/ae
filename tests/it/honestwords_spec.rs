@@ -515,3 +515,139 @@ fn honestwords_usage_limit_keeps_declared_reason_age_and_reseat_qualifier() {
         assert_eq!(row.contains("auto-reseat in flight"), moving, "{row}");
     }
 }
+
+mod unreach {
+    use super::*;
+    use ae::attention::Reason;
+
+    const UNREACHABLE: &str = "nudge unreachable/occupied — 3 undelivered attempts (idle 5m)";
+
+    fn targeted(action: &str, summary: &str, age: i64) -> Event {
+        Event::parse_line(
+            &Value::Obj(vec![
+                (
+                    "ts".into(),
+                    Value::str(Timestamp::from_epoch(NOW - age).to_string()),
+                ),
+                ("actor".into(), Value::str("watchdog")),
+                ("action".into(), Value::str(action)),
+                ("target".into(), Value::str("lead")),
+                ("target_slot".into(), Value::str("main")),
+                ("target_session".into(), Value::str("one")),
+                ("target_session_id".into(), Value::str(UUID)),
+                ("summary".into(), Value::str(summary)),
+            ])
+            .render(),
+        )
+        .expect("synthetic durable verdict")
+    }
+
+    #[test]
+    fn unreach_one_durable_alert_stands_until_own_activity_clear_or_new_start() {
+        let mut events = vec![
+            declaration("done", "review complete", 720, "lead"),
+            targeted("alert", UNREACHABLE, 600),
+        ];
+        for cycle in 0..6 {
+            events.push(targeted("watchdog-start", "restarted", 590 - cycle));
+            assert_eq!(
+                ae::session::alert_reason_in(&events, "one", "main", "lead"),
+                Some(Reason::Stale)
+            );
+            let e = entry(Some(events.clone()));
+            assert_eq!(
+                e.attention,
+                Some(Reason::Stale),
+                "session rollup preserves unreachable rank"
+            );
+            assert_eq!(e.agents[0].reason, Some(Reason::Stale));
+            let text = ae::listing::table_at(&[&e], now());
+            let row = text
+                .lines()
+                .find(|r| r.trim_start().starts_with("lead "))
+                .expect("lead seat row");
+            assert!(
+                row.contains("unreachable"),
+                "declared done must not hide failure: {row}"
+            );
+            assert!(!row.contains("finished"), "{row}");
+            assert!(text.contains("attn:unreachable"), "session word: {text}");
+        }
+        let mut clear = events.clone();
+        clear.push(targeted("alert-cleared", "reachable again", 2));
+        assert_eq!(
+            ae::session::alert_reason_in(&clear, "one", "main", "lead"),
+            None
+        );
+        let mut own = events;
+        own.push(declaration("working", "back", 1, "lead"));
+        assert_eq!(
+            ae::session::alert_reason_in(&own, "one", "main", "lead"),
+            None
+        );
+        assert_eq!(
+            entry(Some(own)).attention,
+            None,
+            "own activity removes rollup too"
+        );
+    }
+
+    #[test]
+    fn unreach_word_reaches_picker_app_and_border_without_changing_marks() {
+        for icons in [true, false] {
+            for grammar in ["v1", "v2"] {
+                let row = picker_row("unreachable", icons, grammar, 160);
+                assert!(row.contains("unreachable"), "{row}");
+                assert!(
+                    row.trim_start().starts_with(Mark::Stale.glyph(icons)),
+                    "{row}"
+                );
+            }
+            let text = app_sidebar(&declared("done", "review complete"), "unreachable", icons);
+            assert!(
+                text.lines()
+                    .any(|r| r.contains("lead") && r.contains("unreachable")),
+                "{text}"
+            );
+            let border = theme::pane_state(
+                &Palette::DARCULA,
+                Mark::Stale,
+                Mark::Stale.glyph(icons),
+                "unreachable",
+            );
+            assert!(border.contains("unreachable"), "{border}");
+        }
+        assert_eq!(picker_agent("unreachable").mark(), Mark::Stale);
+        assert_eq!(Mark::Stale.word(), "stale");
+        assert_eq!(Reason::Stale.rank(), 5);
+        for grammar in ["v1", "v2"] {
+            let extra = if grammar == "v2" { "::::" } else { "" };
+            let raw = format!("{grammar};{NOW};60;lead:demo:unreachable:%1{extra}");
+            let parsed = ae::tmux::parse_picker_agents(&raw, NOW).expect("new stable roster word");
+            assert_eq!(parsed[0].state, "unreachable");
+            assert_eq!(parsed[0].mark(), Mark::Stale);
+        }
+    }
+
+    #[test]
+    fn unreach_staleness_does_not_acquire_the_unreachable_word() {
+        for summary in [
+            "max nudges reached (idle 30m), needs attention",
+            "not sweeping — stale overview",
+        ] {
+            let events = vec![
+                declaration("done", "old result", 720, "lead"),
+                targeted("alert", summary, 600),
+            ];
+            let text = ae::listing::table_at(&[&entry(Some(events))], now());
+            assert!(
+                text.contains("attn:stale"),
+                "actual staleness remains stale: {text}"
+            );
+            assert!(!text.contains("unreachable"), "{text}");
+        }
+    }
+}
+include!("unreach_agreement_a3.rs");
+include!("unreach_delivery_a4.rs");
+include!("unreach_interrupt_a5.rs");

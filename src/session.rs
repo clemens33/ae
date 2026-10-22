@@ -516,24 +516,88 @@ pub(crate) fn alert_record_since_in(
     reference: &str,
     started_epoch: Option<i64>,
 ) -> Option<(usize, Reason)> {
-    match events
-        .iter()
-        .enumerate()
-        .filter_map(|(at, event)| {
-            let verdict = decisive_verdict(event, session, slot, reference)?;
-            if matches!(verdict, Verdict::Raised(_))
-                && started_epoch.is_some_and(|started| event.ts.epoch() < started)
-            {
-                None
-            } else {
-                Some((at, verdict))
-            }
-        })
-        .next_back()
-    {
-        Some((at, Verdict::Raised(reason))) => Some((at, reason)),
-        Some((_, Verdict::Clear)) | None => None,
+    alerts_since_in(events, session, slot, reference, started_epoch).winner()
+}
+
+/// Whether the seat's ONE unreachable failure is what its alert fold reads.
+pub(crate) fn unreachable_standing(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    reference: &str,
+    started_epoch: Option<i64>,
+) -> bool {
+    alerts_since_in(events, session, slot, reference, started_epoch).unreachable()
+}
+
+/// What the ONE alert fold reads for one agent since `started_epoch`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Alerts {
+    /// The newest record that settles the agent, while it raises.
+    pub(crate) newest: Option<(usize, Reason)>,
+    /// The ONE unreachable failure standing under it. Only the seat's own
+    /// record, a delivery that landed or the watchdog's reachable-again clear
+    /// ends it: a prompt's naming or its clear does not.
+    pub(crate) failure: Option<usize>,
+    /// A prompt's naming stands that no clear has followed.
+    pub(crate) named: bool,
+}
+
+impl Alerts {
+    /// The record that wins: a dead pane, else the standing failure, which
+    /// outranks every other raise as `Stale`, else the newest raise.
+    pub(crate) fn winner(self) -> Option<(usize, Reason)> {
+        match (self.newest, self.failure) {
+            (Some((at, Reason::Dead)), _) => Some((at, Reason::Dead)),
+            (_, Some(at)) => Some((at, Reason::Stale)),
+            (newest, None) => newest,
+        }
     }
+
+    /// Whether the standing failure is the record that wins.
+    pub(crate) fn unreachable(self) -> bool {
+        self.failure.is_some() && self.winner().map(|(at, _)| at) == self.failure
+    }
+}
+
+/// The ONE alert fold over `events` for the agent at `slot` / `reference`.
+pub(crate) fn alerts_since_in(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    reference: &str,
+    started_epoch: Option<i64>,
+) -> Alerts {
+    let mut alerts = Alerts::default();
+    for (at, event) in events.iter().enumerate() {
+        if crate::events::landed(event)
+            && crate::watchdog::event_is_addressed_to(event, session, slot, reference)
+        {
+            alerts.newest = alerts.newest.filter(|(n, _)| Some(*n) != alerts.failure);
+            alerts.failure = None;
+        }
+        match decisive_verdict(event, session, slot, reference) {
+            Some(Verdict::Raised(_))
+                if started_epoch.is_some_and(|started| event.ts.epoch() < started) => {}
+            Some(Verdict::Raised(reason)) => {
+                alerts.newest = Some((at, reason));
+                if crate::events::unreachable_word(event) {
+                    alerts.failure = Some(at);
+                }
+                alerts.named |= event.action == "human-prompt";
+            }
+            Some(Verdict::Clear) => {
+                let own = crate::watchdog::event_is_actor(event, session, slot, reference);
+                alerts.newest = None;
+                if own || crate::events::unreachable_word(event) {
+                    alerts.failure = None;
+                }
+                alerts.named &= event.action != "human-prompt-cleared";
+            }
+            None => {}
+        }
+    }
+    alerts
 }
 
 /// What one record settles for one agent, when it settles anything at all.
@@ -1177,6 +1241,15 @@ fn agent_entries(
                     }),
                 model_drift,
                 auto_reseat_open: false,
+                unreachable: read.is_some_and(|read| {
+                    unreachable_standing(
+                        &read.events,
+                        session,
+                        &slot.slot,
+                        &reference,
+                        started_epoch,
+                    )
+                }),
                 effort: Some(meta.effort(&slot.slot)),
                 // The words of the SAME event the state cell reads, so a reason
                 // is never a caption on a superseded declaration.
@@ -1462,6 +1535,9 @@ pub(crate) fn speaks_for_target(request: &Event, record: &Event) -> bool {
     );
     from_the_target && (to_the_asker || named_external_asker)
 }
+
+#[cfg(test)]
+include!("../tests/unit/unreach_session.rs");
 
 #[cfg(test)]
 mod tests {

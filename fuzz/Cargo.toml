@@ -327,3 +327,10 @@ path = "fuzz_targets/panel_episode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "unreach_fold"
+path = "fuzz_targets/unreach_fold.rs"
+test = false
+doc = false
+bench = false

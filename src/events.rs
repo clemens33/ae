@@ -575,6 +575,38 @@ impl Event {
     }
 }
 
+/// The summary an unreachable failure's one `alert` opens with.
+pub const UNREACHABLE: &str = "nudge unreachable/occupied";
+/// The summary the `alert-cleared` that ends it opens with.
+pub const REACHABLE_AGAIN: &str = "reachable again";
+
+/// Whether `event` is the unreachable failure's `alert` or the `alert-cleared`
+/// that ends it: the one reading of both words.
+pub(crate) fn unreachable_word(event: &Event) -> bool {
+    let summary = event.summary.as_deref().unwrap_or_default();
+    match event.action.as_str() {
+        "alert" => summary.starts_with(UNREACHABLE),
+        "alert-cleared" => summary.starts_with(REACHABLE_AGAIN),
+        _ => false,
+    }
+}
+
+/// Whether `event` is a pasted turn whose submit was confirmed: the delivery
+/// that ends an unreachable failure. An `interrupt` is one only with its
+/// message body; a bare one sent keys alone.
+pub(crate) fn landed(event: &Event) -> bool {
+    let pasted = match event.action.as_str() {
+        "send" | "ask" | "review" | "reply" | "relay" | "nudge" | "done-challenge"
+        | "wait-challenge" => true,
+        "interrupt" => event
+            .body_file
+            .as_deref()
+            .is_some_and(|file| !file.is_empty()),
+        _ => false,
+    };
+    pasted && !crate::tracked::summary_is_unconfirmed(event.summary.as_deref())
+}
+
 /// The reason an incumbent alert `summary` names.
 fn alert_class(summary: Option<&str>) -> Reason {
     let summary = summary.unwrap_or_default();

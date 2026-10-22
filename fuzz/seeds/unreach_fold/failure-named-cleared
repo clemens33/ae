@@ -1,0 +1,3 @@
+{"ts":"2023-11-14T22:13:00Z","actor":"watchdog","action":"alert","target":"lead","target_slot":"main","target_session":"s","summary":"nudge unreachable/occupied — 3 undelivered attempts (idle 5m)"}
+{"ts":"2023-11-14T22:13:05Z","actor":"watchdog","action":"human-prompt","target":"lead","target_slot":"main","target_session":"s","summary":"Warnings · 1 of 1 · Startup — press: k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll"}
+{"ts":"2023-11-14T22:13:09Z","actor":"watchdog","action":"human-prompt-cleared","target":"lead","target_slot":"main","target_session":"s","summary":"gone"}

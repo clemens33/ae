@@ -78,6 +78,9 @@ pub struct AgentEntry {
     /// An auto reseat attempt is open in the seat's current limit episode.
     /// TABLE only, same rule as `own_work`.
     pub auto_reseat_open: bool,
+    /// The seat's one unreachable failure stands
+    /// ([`crate::session::unreachable_standing`]). TABLE only.
+    pub unreachable: bool,
     /// The seat's `effort.<slot>` record. TABLE only, same rule as `own_work`.
     pub effort: Option<crate::effort::Stored>,
     /// What the seat's newest declaration says in its own words, for the human
@@ -749,6 +752,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                unreachable: false,
                 declaration: None,
                 effort: None,
             };
@@ -786,6 +790,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            unreachable: false,
             declaration: None,
             effort: None,
         };
@@ -838,6 +843,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            unreachable: false,
             declaration: None,
             effort: None,
         }];
@@ -1179,6 +1185,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            unreachable: false,
             declaration: None,
             effort: None,
         }

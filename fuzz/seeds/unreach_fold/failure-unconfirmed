@@ -1,0 +1,2 @@
+{"ts":"2023-11-14T22:13:00Z","actor":"watchdog","action":"alert","target":"lead","target_slot":"main","target_session":"s","summary":"nudge unreachable/occupied — 3 undelivered attempts (idle 5m)"}
+{"ts":"2023-11-14T22:13:05Z","actor":"watchdog","action":"done-challenge","target":"lead","target_slot":"main","target_session":"s","summary":"[unconfirmed] done-challenge; refused pre-paste: busy"}

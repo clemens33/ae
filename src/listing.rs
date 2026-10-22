@@ -334,8 +334,15 @@ fn push_markers(out: &mut String, session: &SessionEntry) {
     if session.attention_is_exact()
         && let Some(reason) = session.attention
     {
+        // The seat word's own fact names the session's: one failure, one word.
+        let unreachable = reason == crate::attention::Reason::Stale
+            && session.agents.iter().any(|agent| agent.unreachable);
         out.push_str("attn:");
-        out.push_str(reason.as_str());
+        out.push_str(if unreachable {
+            "unreachable"
+        } else {
+            reason.as_str()
+        });
         out.push(' ');
     }
     // Request debt, named quietly beside the marker and never as one.
@@ -354,6 +361,10 @@ fn push_wait_end(out: &mut String, session: &SessionEntry) {
 
 /// The tabular view at the snapshot time that supplied `sessions`.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one row writer per column, in the order the table prints them"
+)]
 pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
     let mut out = String::new();
     for session in sessions {
@@ -394,11 +405,13 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // drift.
             push_padded(&mut out, agent.display_session_id(), ID_WIDTH);
             // Per-agent HEALTH is deliberately NOT a column here.
-            // The verdict cell. A standing usage limit REPLACES the declared state
-            // here — the pane fact is what needs the human, and the JSON digest
-            // keeps the declaration under its own `state` key.
+            // The verdict cell. A standing usage limit or unreachable failure
+            // REPLACES the declared state here — the pane fact is what needs the
+            // human, and the JSON digest keeps the declaration under `state`.
             if agent.reason == Some(crate::attention::Reason::Limit) {
                 out.push_str(limit_cell(agent));
+            } else if agent.unreachable {
+                out.push_str(crate::theme::seat_word("unreachable"));
             } else if session.agent_state_is_exact() && agent.state.as_deref() == Some("done") {
                 match agent.done_progress {
                     Some(
@@ -755,6 +768,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            unreachable: false,
             declaration: None,
             effort: None,
         }
@@ -1969,6 +1983,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                unreachable: false,
                 declaration: None,
                 effort: None,
             }];
@@ -2008,6 +2023,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                unreachable: false,
                 declaration: None,
                 effort: None,
             }];
@@ -2063,6 +2079,7 @@ mod tests {
                 own_work,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                unreachable: false,
                 declaration: None,
                 effort: None,
             }];
@@ -2116,6 +2133,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            unreachable: false,
             declaration: None,
             effort: None,
         }];
@@ -2158,6 +2176,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            unreachable: false,
             declaration: None,
             effort: None,
         }];
@@ -2216,6 +2235,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                unreachable: false,
                 declaration: None,
                 effort: None,
             },
@@ -2233,6 +2253,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                unreachable: false,
                 declaration: None,
                 effort: None,
             },

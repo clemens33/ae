@@ -1,0 +1,2 @@
+{"ts":"2023-11-14T22:13:00Z","actor":"watchdog","action":"alert","target":"lead","target_slot":"main","target_session":"s","summary":"nudge unreachable/occupied — 3 undelivered attempts (idle 5m)"}
+{"ts":"2023-11-14T22:13:05Z","actor":"lead","action":"state","actor_slot":"worker","actor_session":"s","summary":"working"}

@@ -303,7 +303,8 @@ from the agent's own declaration: it reports only what the watchdog positively
 recognized in the current terminal frame.
 The state cell speaks in task words: `working`, `finished` (declared done, with its
 `(unconfirmed c/r)` proof while one runs), `waiting on an agent`, `needs you (waiting
-on you)`, `needs you (blocked)`, `needs you (usage limit)`, `no current status` for a
+on you)`, `needs you (blocked)`, `needs you (usage limit)`, `unreachable (no delivery)` when the watchdog's
+challenges stopped landing, `no current status` for a
 seat with no current declaration and `unknown` when the source cannot be trusted. Each
 seat then reads its newest declaration's own reason and age (`· review complete ·
 12m`), `no reason given` when it left none and `reason unavailable` when the journal

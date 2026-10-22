@@ -1,0 +1,2 @@
+{"ts":"2023-11-14T22:13:00Z","actor":"watchdog","action":"alert","target":"lead","target_slot":"main","target_session":"s","summary":"max nudges reached (idle 30m), needs attention"}
+{"ts":"2023-11-14T22:13:01Z","actor":"watchdog","action":"alert","target":"lead","target_slot":"main","target_session":"s","summary":"not sweeping — stale overview"}

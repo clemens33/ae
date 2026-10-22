@@ -3638,7 +3638,7 @@ fn picker_agent_mark(state: &str) -> Option<Mark> {
         "waiting-agent" => Some(Mark::WaitingAgent),
         "working" | "sweeping" | "busy" => Some(Mark::Working),
         "done" => Some(Mark::Done),
-        "stale" | "starting" => Some(Mark::Stale),
+        "stale" | "starting" | "unreachable" => Some(Mark::Stale),
         "idle" => Some(Mark::Idle),
         _ => None,
     }
@@ -6334,6 +6334,7 @@ mod tests {
             Verdict::HumanPrompt,
             Verdict::Idle,
             Verdict::Stale,
+            Verdict::Unreachable,
             Verdict::Active,
             Verdict::Meta(SweepVerdict::MetaSweeping),
             Verdict::Meta(SweepVerdict::MetaWedged),
@@ -6355,6 +6356,7 @@ mod tests {
                 | Verdict::HumanPrompt
                 | Verdict::Idle
                 | Verdict::Stale
+                | Verdict::Unreachable
                 | Verdict::Active
                 | Verdict::Meta(
                     SweepVerdict::MetaSweeping

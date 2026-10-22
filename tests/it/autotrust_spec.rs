@@ -2042,5 +2042,106 @@ mod unreach {
         );
         assert_eq!(rig.count("auto-dismiss-reserved"), 0);
     }
+
+    fn start_challenges(rig: &mut Rig) {
+        let command = rig
+            .command(ae::cli::WATCHDOG_RUN)
+            .arg("--interval")
+            .arg("1")
+            .arg("--quota-every-secs")
+            .arg("0")
+            .arg("--idle-nudge-secs")
+            .arg("1")
+            .arg("--sweep-secs")
+            .arg("0")
+            .arg("--tg-supervise-secs")
+            .arg("0");
+        let root = rig.root.clone();
+        rig.daemon = Some(std::thread::spawn(move || {
+            let _ = raw::run(
+                &command,
+                &root,
+                &root.join("watch.out"),
+                &root.join("watch.err"),
+            );
+        }));
+    }
+
+    fn unreachable_alerts(rig: &Rig) -> usize {
+        rig.events()
+            .iter()
+            .filter(|e| {
+                e.action == "alert"
+                    && e.summary
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with("nudge unreachable/occupied"))
+            })
+            .count()
+    }
+
+    #[test]
+    fn unreach_real_watchdog_publishes_one_failure_fact_for_done_and_wait_after_restart() {
+        for state in ["done", "blocked"] {
+            let mut rig = Rig::new(&format!("ur-once-{state}"), "codex", "normal");
+            off(&rig);
+            rig.replace_meta("idle_nudge_secs", "1");
+            rig.replace_meta("done_confirmations", "2");
+            let now = Timestamp::now().epoch();
+            append(
+                &rig,
+                &line(now - 300, "lead", "state", "unreach acceptance", state),
+            );
+            let action = if state == "done" {
+                "done-challenge"
+            } else {
+                "wait-challenge"
+            };
+            let summary = if state == "done" {
+                "[unconfirmed] confirmation 1/2; refused pre-paste: composer unreadable"
+            } else {
+                "[unconfirmed] blocked confirmation 1/2; refused pre-paste: composer unreadable"
+            };
+            for age in [240, 180, 120] {
+                append(
+                    &rig,
+                    &line(now - age, "watchdog", action, summary, "start-one"),
+                );
+            }
+            start_challenges(&mut rig);
+            wait_for("first unreachable alert", || unreachable_alerts(&rig) > 0);
+            std::thread::sleep(Duration::from_secs(5));
+            rig.stop();
+            start_challenges(&mut rig);
+            std::thread::sleep(Duration::from_secs(5));
+            assert_eq!(
+                unreachable_alerts(&rig),
+                1,
+                "one episode across cycles and restart: {state}"
+            );
+            assert!(
+                rig.wire().is_empty(),
+                "panel has no idle composer, no recovery paste"
+            );
+            assert_eq!(rig.count(action), 3, "attempt bound is preserved");
+            let roster = rig.tmux(&["show-option", "-qv", "-t", "s", "@ae_agents"]);
+            let agents = ae::tmux::parse_picker_agents(roster.trim(), Timestamp::now().epoch())
+                .expect("actual published roster");
+            let seat = agents.iter().find(|a| a.name == "lead").expect("lead fact");
+            assert_eq!(
+                seat.state, "unreachable",
+                "done/wait does not conceal failure: {roster}"
+            );
+            assert_eq!(seat.mark(), ae::theme::Mark::Stale);
+            rig.stop();
+            let (code, out, err) = rig.invoke(rig.environment().arg("list"), "unreach-list");
+            assert_eq!(code, 0, "list: {err}");
+            assert!(
+                out.contains("unreachable"),
+                "list consumes same standing failure: {out}"
+            );
+        }
+    }
 }
+include!("unreach_recovery_a1.rs");
 include!("unreach_guard_a2.rs");
+include!("unreach_restart_a4.rs");

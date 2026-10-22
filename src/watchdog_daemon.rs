@@ -253,6 +253,10 @@ pub struct PaneState {
 /// What the cycle saw about one pane, after [`crate::watchdog`]'s pure
 /// classifiers ran over it.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent per-cycle readings, each judged by its own ladder step"
+)]
 pub struct Observation {
     /// Wall clock for this cycle, epoch seconds.
     pub now_epoch: i64,
@@ -298,8 +302,17 @@ pub struct Observation {
     pub launch_attempt: crate::tmux::Evidence,
     /// The alert the log still shows this seat, if any.
     pub outstanding_alert: Option<crate::attention::Reason>,
+    /// The seat's one unreachable failure stands in the log
+    /// ([`crate::session::unreachable_standing`]).
+    pub unreachable: bool,
+    /// That failure was booked against another proven tool start, and so
+    /// ended with it.
+    pub failed_elsewhere: bool,
+    /// A prompt's naming stands in the log that no clear has followed.
+    pub prompt_named: bool,
     /// The tool start the cycle's process table shows under the pane
-    /// ([`crate::autotrust::start_of`]): what a panel's naming is keyed to.
+    /// ([`crate::autotrust::start_of`]): what a panel's naming and an
+    /// unreachable failure are keyed to.
     pub start: Option<String>,
     /// Age of the newest event this agent is the ACTOR of.
     pub last_actor_event_age_secs: u64,
@@ -354,6 +367,9 @@ pub enum Verdict {
     Idle,
     /// Silent past the window, with nothing recent anywhere.
     Stale,
+    /// Proof challenges stopped reaching the seat: its one unreachable failure
+    /// stands, and it outranks the declaration it would hide.
+    Unreachable,
     /// Moving, recently moved, or recently active in the log.
     Active,
     /// The orchestrator main, judged by its own cadence rather than by silence.
@@ -385,7 +401,7 @@ impl Verdict {
             Self::Active | Self::Meta(SweepVerdict::MetaSweeping) => Mark::Working,
             Self::Quiet(QuietKind::Done) => Mark::Done,
             Self::Idle => Mark::Idle,
-            Self::Stale | Self::Meta(SweepVerdict::MetaStarting) => Mark::Stale,
+            Self::Stale | Self::Unreachable | Self::Meta(SweepVerdict::MetaStarting) => Mark::Stale,
         }
     }
 
@@ -403,6 +419,7 @@ impl Verdict {
             Self::HumanPrompt => "prompt",
             Self::Idle => "idle",
             Self::Stale => "stale",
+            Self::Unreachable => "unreachable",
             Self::Active => "working",
             Self::Meta(SweepVerdict::MetaSweeping) => "sweeping",
             Self::Meta(SweepVerdict::MetaWedged) => "wedged",
@@ -1968,6 +1985,12 @@ pub fn account_with_trust(
     next.identity = Some(seen.identity);
     let mut effects = Vec::new();
     book_unknown(&mut next, &mut effects, seen.descendancy);
+    if seen.failed_elsewhere {
+        effects.push(Effect::Emit {
+            action: "alert-cleared",
+            summary: format!("{} — new tool start", crate::events::REACHABLE_AGAIN),
+        });
+    }
 
     // 1. Already dead: no second alert, no further judgement — until the one
     //    clear rule holds (`clear_death_latch`), which this cycle then judges.
@@ -2009,7 +2032,19 @@ pub fn account_with_trust(
         };
     }
 
-    account_ordinary(prior, next, effects, (seen, trust), knobs)
+    let mut accounted = account_ordinary(prior, next, effects, (seen, trust), knobs);
+    // The ONE unreachable failure outranks every verdict but dead. A prompt
+    // keeps its own here for the brief and notice gates; the cycle publishes
+    // it as unreachable.
+    if seen.unreachable
+        && !matches!(
+            accounted.verdict,
+            Verdict::Dead | Verdict::Meta(_) | Verdict::HumanPrompt
+        )
+    {
+        accounted.verdict = Verdict::Unreachable;
+    }
+    accounted
 }
 
 /// Steps 3 through 10 — the ordinary judgement of a pane that is not dead (any
@@ -2081,9 +2116,7 @@ fn account_ordinary(
     //     clear-and-relatch pairs while a live modal sits untouched.
     //     A restarted daemon clears the naming it did not count.
     if seen.capture_ok && seen.human_prompt.is_none() {
-        if prior.human_prompt_streak >= knobs.human_prompt_cycles
-            || seen.outstanding_alert == Some(crate::attention::Reason::Blocked)
-        {
+        if prior.human_prompt_streak >= knobs.human_prompt_cycles || seen.prompt_named {
             effects.push(Effect::Emit {
                 action: "human-prompt-cleared",
                 summary: "the human-only prompt is gone from the pane".to_owned(),
@@ -2100,15 +2133,12 @@ fn account_ordinary(
         attempts,
     } = seen.done_progress
     {
-        if attempts < knobs.undelivered_max {
-            effects.push(Effect::DoneChallenge {
-                confirmations,
-                required,
-                done_age_secs,
-            });
-        } else if attempts == knobs.undelivered_max {
-            effects.extend(unreachable_effects(attempts, &stale_display(done_age_secs)));
-        }
+        let challenge = Effect::DoneChallenge {
+            confirmations,
+            required,
+            done_age_secs,
+        };
+        effects.extend(bounded(attempts, seen, knobs, challenge, done_age_secs));
     }
 
     // The wait push, gated on the pane hold; the state comes from the hold
@@ -2128,17 +2158,14 @@ fn account_ordinary(
         },
     ) = (wait_state, seen.wait_progress)
     {
-        if attempts < knobs.undelivered_max {
-            effects.push(Effect::WaitChallenge {
-                confirmations,
-                required,
-                wait_age_secs,
-                state: wait_state,
-                escalated: waiting_agent_escalates(seen, knobs),
-            });
-        } else if attempts == knobs.undelivered_max {
-            effects.extend(unreachable_effects(attempts, &stale_display(wait_age_secs)));
-        }
+        let challenge = Effect::WaitChallenge {
+            confirmations,
+            required,
+            wait_age_secs,
+            state: wait_state,
+            escalated: waiting_agent_escalates(seen, knobs),
+        };
+        effects.extend(bounded(attempts, seen, knobs, challenge, wait_age_secs));
     }
 
     // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
@@ -2286,7 +2313,8 @@ fn account_harness(
             next.idle_since_epoch = None;
             next.nudge_count = 0;
             next.undelivered_streak = 0;
-            if seen.harness.durable_stale {
+            // Motion is no delivery: an unreachable failure stands.
+            if seen.harness.durable_stale && !seen.unreachable {
                 effects.push(Effect::Emit {
                     action: "alert-cleared",
                     summary: "agent busy again — stale alert cleared".to_owned(),
@@ -2562,12 +2590,33 @@ pub fn record_nudge(
     Vec::new()
 }
 
+/// A due proof challenge at `attempts`: tried below the bound; AT it the ONE
+/// unreachable failure is booked unless it stands; at or past it the challenge
+/// is tried again only at a drawn, empty, idle composer — the recovery.
+fn bounded(
+    attempts: u32,
+    seen: &Observation,
+    knobs: &Knobs,
+    challenge: Effect,
+    age_secs: u64,
+) -> Vec<Effect> {
+    let idle = seen.harness.frame == HarnessState::Idle && !seen.harness.human_draft;
+    if attempts < knobs.undelivered_max || (seen.unreachable && idle) {
+        vec![challenge]
+    } else if attempts == knobs.undelivered_max && !seen.unreachable {
+        unreachable_effects(attempts, &stale_display(age_secs))
+    } else {
+        Vec::new()
+    }
+}
+
 fn unreachable_effects(attempts: u32, display: &str) -> Vec<Effect> {
     vec![
         Effect::Emit {
             action: "alert",
             summary: format!(
-                "nudge unreachable/occupied — {attempts} undelivered attempts ({display})"
+                "{} — {attempts} undelivered attempts ({display})",
+                crate::events::UNREACHABLE
             ),
         },
         Effect::Notify(format!(
@@ -2818,7 +2867,7 @@ impl Counts {
         self.total += 1;
         match verdict {
             Verdict::Dead => self.dead += 1,
-            Verdict::Stale => self.stale += 1,
+            Verdict::Stale | Verdict::Unreachable => self.stale += 1,
             _ => self.active += 1,
         }
     }
@@ -3885,6 +3934,7 @@ fn watch(
                         // replaced, while this daemon runs.
                         meta_agent: is_meta_agent(bytes),
                         roster: meta.roster().to_vec(),
+                        started: meta.started_epoch().or_else(|| meta.latest_launch_epoch()),
                         launch_ids: meta
                             .roster()
                             .iter()
@@ -4845,6 +4895,8 @@ struct Cycle<'a> {
     /// observed-model write publishes under, so a re-created slot cannot
     /// inherit the old seat's observation.
     launch_ids: Vec<(String, String)>,
+    /// The session's start, as `ae list` reads it: alerts older are not news.
+    started: Option<i64>,
     /// The global auto reseat settings, read per cycle beside the fleet order,
     /// so turning the switch off stops the next move.
     auto: crate::autoreseat::Settings,
@@ -5691,6 +5743,8 @@ impl Cycle<'_> {
                     state,
                 )
             });
+            let alerts =
+                crate::session::alerts_since_in(&events, self.session, &slot, agent, self.started);
             let start = table
                 .as_deref()
                 .zip(pane.pane_pid)
@@ -5698,6 +5752,13 @@ impl Cycle<'_> {
                 .and_then(|((table, pid), (launch, bin))| {
                     crate::autotrust::start_of(table, pid, (&slot, launch), bin)
                 });
+            // A failure keyed to a start, read against the one proven now.
+            let failed_elsewhere = alerts.unreachable()
+                && alerts
+                    .failure
+                    .and_then(|at| events[at].reference.as_deref())
+                    .is_some_and(|booked| !booked.is_empty() && start.as_deref() != Some(booked))
+                && start.is_some();
             let seen = Observation {
                 now_epoch: now,
                 hash,
@@ -5722,12 +5783,10 @@ impl Cycle<'_> {
                 wait_ends_elsewhere: crate::wait_on::ends_elsewhere(&wait_links, agent),
                 descendancy,
                 launch_attempt: attempt,
-                outstanding_alert: crate::session::alert_reason_in(
-                    &events,
-                    self.session,
-                    &slot,
-                    agent,
-                ),
+                outstanding_alert: alerts.winner().map(|(_, reason)| reason),
+                unreachable: alerts.unreachable() && !failed_elsewhere,
+                failed_elsewhere,
+                prompt_named: alerts.named,
                 start,
                 last_actor_event_age_secs: last_actor_event_age(
                     &events,
@@ -5810,7 +5869,13 @@ impl Cycle<'_> {
                     room: own_room,
                 });
             }
-            counts.record(booked.verdict);
+            // A prompt over a standing failure is published as the failure.
+            let shown = if seen.unreachable && booked.verdict == Verdict::HumanPrompt {
+                Verdict::Unreachable
+            } else {
+                booked.verdict
+            };
+            counts.record(shown);
             // AFTER the accounting, so the identity reset and the dead verdict
             // this cycle just decided are the ones the hold answers to.
             let seat_identity = self.resolve_identity(
@@ -5827,12 +5892,12 @@ impl Cycle<'_> {
             by_agent.push(AgentObservation {
                 slot,
                 pane: pane.pane_id.clone(),
-                verdict: booked.verdict,
+                verdict: shown,
                 identity: seat_identity,
             });
             by_pane.push(PaneMark {
                 pane: pane.pane_id.clone(),
-                verdict: booked.verdict,
+                verdict: shown,
                 observed: observed_option(seen.harness.frame, carried),
             });
         }
@@ -6406,19 +6471,24 @@ impl Cycle<'_> {
     ) -> crate::Result<()> {
         let agent = on.agent;
         match effect {
-            // A panel's naming is keyed to its tool start: what the quiet
-            // gate ages from.
-            Effect::Emit { action, summary } if crate::autotrust::panel_named(summary) => Journal {
-                meta_dir: self.meta_dir,
-                session: self.session,
+            // A panel's naming and an unreachable failure are keyed to their
+            // tool start: what the quiet gate ages from, what a new start ends.
+            Effect::Emit { action, summary }
+                if crate::autotrust::panel_named(summary)
+                    || (*action == "alert" && summary.starts_with(crate::events::UNREACHABLE)) =>
+            {
+                Journal {
+                    meta_dir: self.meta_dir,
+                    session: self.session,
+                }
+                .record_referring(
+                    action,
+                    agent,
+                    on.seen.start.as_deref().unwrap_or_default(),
+                    summary,
+                    err,
+                )
             }
-            .record_referring(
-                action,
-                agent,
-                on.seen.start.as_deref().unwrap_or_default(),
-                summary,
-                err,
-            ),
             Effect::Emit { action, summary } => self.emit(action, agent, summary, err),
             Effect::Notify(text) => {
                 self.notify(agent, text);
@@ -6461,7 +6531,9 @@ impl Cycle<'_> {
                     waiting.as_deref(),
                     on.seen.ended_wait,
                 );
-                let delivered = self.deliver(agent, &text, "nudge", &summary, None).code == Some(0);
+                let code = self.deliver(agent, &text, "nudge", &summary, None).code;
+                self.reachable_again(on, "nudge", code, err)?;
+                let delivered = code == Some(0);
                 for effect in record_nudge(state, delivered, &self.knobs, &display) {
                     self.apply(&effect, on, state, err)?;
                 }
@@ -6485,8 +6557,10 @@ impl Cycle<'_> {
                     *required,
                 );
                 let launch = launch_id_for(&self.launch_ids, on.slot);
-                let _ = self.deliver(agent, &text, "done-challenge", &summary, launch);
-                Ok(())
+                let code = self
+                    .deliver(agent, &text, "done-challenge", &summary, launch)
+                    .code;
+                self.reachable_again(on, "done-challenge", code, err)
             }
             Effect::WaitChallenge {
                 confirmations,
@@ -6511,10 +6585,36 @@ impl Cycle<'_> {
                     *required,
                 );
                 let launch = launch_id_for(&self.launch_ids, on.slot);
-                let _ = self.deliver(agent, &text, "wait-challenge", &summary, launch);
-                Ok(())
+                let code = self
+                    .deliver(agent, &text, "wait-challenge", &summary, launch)
+                    .code;
+                self.reachable_again(on, "wait-challenge", code, err)
             }
         }
+    }
+
+    /// After a delivery to a seat whose unreachable failure stands: ONE
+    /// `alert-cleared` once the helper's own record of `action` says it landed.
+    fn reachable_again(
+        &self,
+        on: &Acting<'_>,
+        action: &str,
+        code: Option<i32>,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        if !on.seen.unreachable || code != Some(0) {
+            return Ok(());
+        }
+        let events = read_events(self.meta_dir);
+        let landed = events.iter().rev().find(|event| {
+            event.action == action
+                && crate::watchdog::event_is_addressed_to(event, self.session, on.slot, on.agent)
+        });
+        if landed.is_some_and(|event| !tracked::summary_is_unconfirmed(event.summary.as_deref())) {
+            let summary = format!("{} — {action} landed", crate::events::REACHABLE_AGAIN);
+            self.emit("alert-cleared", on.agent, &summary, err)?;
+        }
+        Ok(())
     }
 
     /// Deliver one sweep prompt and book what happened.
@@ -7947,6 +8047,9 @@ mod tests {
             descendancy: Descendancy::Present,
             launch_attempt: crate::tmux::Evidence::Silent,
             outstanding_alert: Some(crate::attention::Reason::Dead),
+            unreachable: false,
+            failed_elsewhere: false,
+            prompt_named: false,
             start: None,
             last_actor_event_age_secs: 0,
             declared_age_secs: 0,
@@ -10507,6 +10610,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
+            started: None,
         };
         let mut err = Vec::new();
         cycle
@@ -10575,6 +10679,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
+            started: None,
         };
         assert!(
             cycle.throttle_quota(&carry, "main", 10_000, true).is_some(),
@@ -13476,6 +13581,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
+            started: None,
         };
         let seat = ("spawned.3", "builder");
         let quota = QuotaCarry::default();
@@ -13559,6 +13665,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
+            started: None,
         };
         let seat = ("spawned.3", "builder");
         // `fable`'s family is `opus` alone: the lead's two carry another effort.
@@ -13638,6 +13745,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
+            started: None,
         };
         let now = crate::time::Timestamp::now().epoch();
         // The episode keys, both well inside today's journal.
@@ -14242,6 +14350,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
+            started: None,
         };
         let now = crate::time::Timestamp::now().epoch();
         let at = crate::time::Timestamp::from_epoch;
@@ -15079,6 +15188,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
+            started: None,
         };
         let events = vec![
             Event::parse_line(
@@ -15154,6 +15264,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: Vec::new(),
+            started: None,
         };
         let events = vec![
             Event::parse_line(
@@ -16654,6 +16765,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: false,
             launch_ids: vec![("main".to_owned(), launch.to_owned())],
+            started: None,
         }
     }
 
@@ -17302,6 +17414,7 @@ mod tests {
             auto_trust: crate::config::AutoTrust::Off,
             meta_agent: true,
             launch_ids: Vec::new(),
+            started: None,
         }
     }
 
@@ -18469,4 +18582,6 @@ mod tests {
             }
         }
     }
+    include!("../tests/unit/unreach_episode.rs");
+    include!("../tests/unit/unreach_motion_a4.rs");
 }

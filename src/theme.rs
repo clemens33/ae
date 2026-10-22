@@ -1289,6 +1289,7 @@ pub fn seat_word(word: &str) -> &str {
         "prompt" => "needs you (prompt)",
         "wedged" => "needs you (sweep wedged)",
         "stale" => "unknown",
+        "unreachable" => "unreachable (no delivery)",
         "starting" => "unknown (starting)",
         "idle" => "no current status",
         other => other,
