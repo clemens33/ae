@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.114] - 2026-10-22
+- Codex's Warnings panel is named and, under auto_trust, dismissed with one Escape per panel episode: aged from its first naming, held by recent client input, reserved before the key; a drawn panel refuses deliveries by its question
+- A seat whose proof challenges stop landing reads unreachable everywhere: one durable alert per episode, one fold for the watchdog, ae list, roster and rollup, outranking quiet declarations and prompt namings; it ends only on the seat's own record, a confirmed delivery or a new tool start
+
 ## [v2026.10.113] - 2026-10-22
 - CORE state text: waiting-user only when the answer is required; an optional offer is done (#256)
 - Toggling the stopped group no longer moves the Agents section: the sessions region is sized for the open group and a closed one leaves its rows empty (#237)
