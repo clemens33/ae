@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.111] - 2026-10-22
+- Typed wait target: state waiting-agent --on <agent|session:agent|@session> names who a wait is on; app and ae list follow the chain and a wait that ends in another session never escalates to blocked (#237)
+
 ## [v2026.10.110] - 2026-10-22
 - Honest seat state words: working, finished, waiting on an agent, needs you, no current status, with the declared reason and age and a legend for the seven marks (#237)
 
