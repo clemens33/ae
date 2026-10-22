@@ -2017,6 +2017,17 @@ fn launch(
     // server for the tmux floor; absence makes the captured action stale and
     // is refused before a lock-file or any other effect.
     let preflight_meta_present = !settings_start && node_exists(&dir.join(crate::store::META));
+    // A near-miss word may not CREATE a session: no record is the launch's own
+    // create-versus-resume discriminator, so a session already named so still
+    // resumes. Read-only above this line, so a refusal has written nothing.
+    if expected_launch.is_none()
+        && restore.is_none()
+        && !preflight_meta_present
+        && let Some(refusal) = crate::entry::near_miss_refusal(&session)
+    {
+        writeln!(err, "{refusal}")?;
+        return Ok(EXIT_USAGE);
+    }
     if expected_launch.is_some_and(ExpectedLaunch::is_resume) && !preflight_meta_present {
         writeln!(
             err,

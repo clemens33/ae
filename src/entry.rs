@@ -441,6 +441,31 @@ pub fn routed_verb_refusal(name: &str) -> String {
     )
 }
 
+/// The fleet nouns a caller types meaning `ae list`.
+const FLEET_NOUNS: &[&str] = &["agent", "agents", "seat", "seats", "session", "sessions"];
+
+/// The command a mistyped session name most likely meant, when `name` is one of
+/// the near-miss words: a [`ROUTED_VERBS`] entry plus `s`, or a [`FLEET_NOUNS`]
+/// word. Exact and case-sensitive, like [`name_is_routed_verb`]; no edit
+/// distance, which would trap short legitimate names.
+fn near_miss_command(name: &str) -> Option<&str> {
+    if FLEET_NOUNS.contains(&name) {
+        return Some("list");
+    }
+    name.strip_suffix('s')
+        .filter(|verb| ROUTED_VERBS.contains(verb))
+}
+
+/// What a launch CREATING a session, and a rename into a new name, print when
+/// `name` is a near-miss word; `None` for every other name.
+#[must_use]
+pub fn near_miss_refusal(name: &str) -> Option<String> {
+    let command = near_miss_command(name)?;
+    Some(format!(
+        "Error: '{name}' looks like a mistyped ae command, not a new session name. Did you mean: ae {command}? No session was created; pick another name to create one."
+    ))
+}
+
 /// The ambient facts an invocation carries — every one of them resolved from a
 /// door in [`crate::doors`], and none of them readable from the argv.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -771,6 +796,70 @@ mod tests {
         }
     }
 
+    /// The near-miss set, spelled from the rulings and never from the code:
+    /// every routed verb plus `s` answers `ae <verb>`, and the six fleet nouns
+    /// answer `ae list`.
+    fn expected_near_misses() -> Vec<(String, String)> {
+        let mut set: Vec<(String, String)> = ROUTED_VERBS
+            .iter()
+            .map(|verb| (format!("{verb}s"), (*verb).to_owned()))
+            .collect();
+        for noun in ["agent", "agents", "seat", "seats", "session", "sessions"] {
+            set.push((noun.to_owned(), "list".to_owned()));
+        }
+        set
+    }
+
+    #[test]
+    fn the_near_miss_set_is_every_routed_verb_plus_s_and_the_six_fleet_nouns() {
+        let expected = expected_near_misses();
+        for (word, command) in &expected {
+            assert_eq!(
+                near_miss_refusal(word),
+                Some(format!(
+                    "Error: '{word}' looks like a mistyped ae command, not a new session name. Did you mean: ae {command}? No session was created; pick another name to create one."
+                )),
+                "{word}"
+            );
+        }
+        // Nothing else: the members' own neighbours are members only when the
+        // rulings name them, and the legitimate near names stay free.
+        let mut probes: Vec<String> = ["sessionx", "my-sessions", "listing", "", "Sessions", "s"]
+            .map(str::to_owned)
+            .to_vec();
+        for word in expected
+            .iter()
+            .map(|(word, _)| word.as_str())
+            .chain(ROUTED_VERBS.iter().copied())
+        {
+            probes.push(word.to_owned());
+            probes.push(format!("{word}x"));
+            probes.push(format!("x{word}"));
+            probes.push(format!("{word}s"));
+            probes.push(format!("{word}es"));
+            probes.push(word.to_uppercase());
+            probes.push(word[1..].to_owned());
+            probes.push(word[..word.len() - 1].to_owned());
+        }
+        for probe in probes {
+            assert_eq!(
+                near_miss_refusal(&probe).is_some(),
+                expected.iter().any(|(word, _)| *word == probe),
+                "'{probe}'"
+            );
+        }
+    }
+
+    #[test]
+    fn the_near_miss_set_leaves_the_orchestrator_and_the_routed_verbs_alone() {
+        // `orchestrator` is the one routed word a session may be named, and the
+        // routed verbs themselves are `name_is_routed_verb`'s, not this set's.
+        assert!(near_miss_refusal(crate::orchestrator::ORCHESTRATOR_SESSION).is_none());
+        for verb in ROUTED_VERBS {
+            assert!(near_miss_refusal(verb).is_none(), "{verb}");
+        }
+    }
+
     #[test]
     fn the_refusal_names_the_word_and_what_it_costs() {
         let text = routed_verb_refusal("brief");
@@ -785,7 +874,7 @@ mod tests {
     }
     use super::{
         DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, ROUTED_VERBS, Route, TMUX_NO_ATTACH,
-        is_direct_child_name, name_is_routed_verb, route, routed_verb_refusal,
+        is_direct_child_name, name_is_routed_verb, near_miss_refusal, route, routed_verb_refusal,
     };
 
     fn argv(words: &[&str]) -> Vec<String> {

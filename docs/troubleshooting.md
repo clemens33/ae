@@ -12,6 +12,14 @@ ae doctor
 
 Look at the `agent:<alias>` lines. Each one verifies the agent's executable is on `PATH`. Fix the command in `~/.ae/config` or add the CLI to `PATH`.
 
+## `ae <word>` says `looks like a mistyped ae command`
+
+```
+Error: 'sessions' looks like a mistyped ae command, not a new session name. Did you mean: ae list? ...
+```
+
+`ae <name>` creates a session when none of that name exists, so a typo for a command (`ae sessions`, `ae agents`, `ae lists`) would have created an empty one. ae refuses to create a session named after a routed command plus `s`, or after `agent`, `seat` or `session` (singular or plural), and exits 2 with nothing written. Run the command it suggests, or pick another name. A session that already carries such a name resumes, stops and lists as usual.
+
 ## `ae` installed but command not found
 
 Make sure `~/.local/bin` is on `PATH`. `ae doctor` warns explicitly when it isn't.

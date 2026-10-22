@@ -558,6 +558,139 @@ fn a_word_the_route_answers_is_refused_as_a_session_name() {
     // that launch end to end; the exemption itself is pinned in `src/entry.rs`.
 }
 
+/// The refusal a near-miss word is given, spelled from the ruling.
+fn near_miss_line(word: &str, command: &str) -> String {
+    format!(
+        "Error: '{word}' looks like a mistyped ae command, not a new session name. Did you mean: ae {command}? No session was created; pick another name to create one.\n"
+    )
+}
+
+/// A MISTYPED READ MUST REFUSE, NOT LAUNCH (#254): `ae sessions` meant `ae
+/// list`, and `sessions` passes the name grammar, so ae used to CREATE an empty
+/// session by that name. A launch that would create one is refused as usage,
+/// from outside and from inside tmux, and writes nothing.
+#[test]
+fn a_near_miss_word_refuses_to_create_a_session() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("nearmiss");
+    let sock = rig.sock.clone();
+    let words = [
+        ("sessions", "list"),
+        ("agents", "list"),
+        ("seat", "list"),
+        ("lists", "list"),
+        ("boards", "board"),
+        ("usages", "usage"),
+    ];
+    for (word, command) in words {
+        let (code, stdout, stderr) = rig.run_on(Some(&sock), &[word]);
+        assert_eq!(code, Some(2), "{word}: stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(stderr, near_miss_line(word, command), "{word}");
+        assert!(stdout.is_empty(), "{word}: a refusal reached stdout");
+    }
+    // Inside tmux the launch takes the same refusal: a caller session on the
+    // launch server changes nothing about what a mistyped word creates.
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "caller"])
+            .0,
+        "a caller session"
+    );
+    for (word, command) in words {
+        let (code, stdout, stderr) = rig.run_inside_on(&sock, Some(&sock), &[word]);
+        assert_eq!(code, Some(2), "{word}: stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(stderr, near_miss_line(word, command), "{word}");
+    }
+    assert!(!rig.sessions().exists(), "a refused word built state");
+    let (_, listed) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert_eq!(
+        listed.trim(),
+        "caller",
+        "a refused word made a tmux session"
+    );
+}
+
+/// A RENAME INTO A NEAR-MISS WORD is refused the same way, and moves nothing.
+#[test]
+fn a_rename_into_a_near_miss_word_is_refused_and_moves_nothing() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("nearrename");
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["alpha", "--no-attach"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    for (word, command) in [("sessions", "list"), ("agents", "list"), ("lists", "list")] {
+        let (code, stdout, stderr) = rig.run_on(Some(&sock), &["rename", "alpha", word]);
+        assert_eq!(code, Some(2), "{word}: stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(stderr, near_miss_line(word, command), "{word}");
+        assert!(stdout.is_empty(), "{word}: a refusal reached stdout");
+        assert!(
+            !rig.sessions().join(word).exists(),
+            "{word}: a refused rename built the target"
+        );
+    }
+    assert!(
+        rig.sessions().join("alpha").join("meta").exists(),
+        "a refused rename moved the source"
+    );
+    assert!(
+        rig.tmux(&["has-session", "-t", "=alpha"]).0,
+        "a refused rename disturbed the running session"
+    );
+}
+
+/// ONLY A NEW NAME IS REFUSED: a legitimate near name still creates, and a
+/// session that already carries a near-miss name (the stray `sessions` of
+/// #254) still resumes, lists and renames to itself exactly as before.
+#[test]
+fn a_legitimate_near_name_creates_and_an_existing_near_miss_session_still_resumes() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("nearlegit");
+    let sock = rig.sock.clone();
+    for name in ["sessionx", "my-sessions", "listing"] {
+        let (code, stdout, stderr) = rig.run_on(Some(&sock), &[name, "--no-attach"]);
+        assert_eq!(code, Some(0), "{name}: stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            rig.sessions().join(name).join("meta").exists(),
+            "{name} was not created"
+        );
+    }
+
+    // A session made before the refusal existed: record it under the near-miss
+    // name by hand, since no launch can create one now.
+    let (ok, why) = rig.tmux(&["kill-session", "-t", "=sessionx"]);
+    assert!(ok, "stop the source: {why}");
+    let made = rig.sessions().join("sessionx");
+    let stray = rig.sessions().join("sessions");
+    assert!(std::fs::rename(&made, &stray).is_ok(), "move the record");
+    let meta = std::fs::read_to_string(stray.join("meta")).unwrap_or_default();
+    assert!(
+        meta.contains("session=sessionx\n"),
+        "the record names its session: {meta}"
+    );
+    assert!(
+        std::fs::write(
+            stray.join("meta"),
+            meta.replace("session=sessionx\n", "session=sessions\n")
+        )
+        .is_ok(),
+        "rewrite the recorded name"
+    );
+
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["sessions", "--no-attach"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.tmux(&["has-session", "-t", "=sessions"]).0,
+        "the existing session resumed: {stdout}{stderr}"
+    );
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["rename", "sessions", "sessions"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+}
+
 /// THE REFUSED SET IS THE ROUTE'S OWN ARMS, read from the router's source.
 ///
 /// The unit beside `route` proves every listed word is answered; only the

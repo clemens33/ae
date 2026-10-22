@@ -407,6 +407,85 @@ fn no_recorded_session_keeps_todays_refusal() {
     assert!(rig.recorded().is_empty(), "the refusal created nothing");
 }
 
+/// `ae <near-miss word>` on a terminal takes the named landing, whose headless
+/// launch is the same one that refuses (#254): the refusal is the launch's
+/// own, exit 2, and no session is recorded or started — for a fleet noun, a
+/// plural noun and a verb plus `s` alike.
+#[test]
+fn a_near_miss_word_on_a_terminal_refuses_before_the_app_opens() {
+    let rig = Rig::split("nearmiss");
+    for word in ["sessions", "agents", "lists"] {
+        let gate = rig.scratch.join(format!("go-{word}"));
+        let rc = rig.scratch.join(format!("rc-{word}"));
+        let pane = rig.pane("host", &gated(&command(&[word], &rc, true), &gate));
+        std::fs::write(&gate, "").expect("release the pane");
+        let screen = rig.wait(&pane, "the near-miss word is refused", |screen| {
+            screen.contains("looks like a mistyped ae command")
+        });
+        assert!(
+            screen.contains(&format!(
+                "Error: '{word}' looks like a mistyped ae command, not a new session name. Did you mean: ae list? No session was created; pick another name to create one."
+            )),
+            "{word}: the refusal, verbatim:\n{screen}"
+        );
+        assert!(
+            !app_frame(&screen),
+            "{word}: a refused word draws no app:\n{screen}"
+        );
+        assert_eq!(
+            wait_for_rc(&rc),
+            "2",
+            "{word}: the refusal is a usage error"
+        );
+        assert!(
+            rig.recorded().is_empty(),
+            "{word}: the refusal created nothing"
+        );
+        assert!(
+            !rig.has_session(word),
+            "{word}: the refusal started no tmux session"
+        );
+    }
+}
+
+/// A session that already carries a near-miss name lands in the app as before:
+/// only a NEW name is refused.
+#[test]
+fn an_existing_near_miss_session_still_lands_in_the_app() {
+    let rig = Rig::new("nearexists");
+    rig.launch("one");
+    rig.stop("one");
+    // Made before the refusal existed: record it under the near-miss name by
+    // hand, since no launch can create one now.
+    let made = rig.dir("one");
+    let stray = rig.dir("sessions");
+    std::fs::rename(&made, &stray).expect("move the record");
+    let meta = std::fs::read_to_string(stray.join("meta")).expect("the record");
+    assert!(
+        meta.contains("session=one\n"),
+        "the record names it: {meta}"
+    );
+    std::fs::write(
+        stray.join("meta"),
+        meta.replace("session=one\n", "session=sessions\n"),
+    )
+    .expect("rewrite the recorded name");
+
+    let gate = rig.scratch.join("go");
+    let rc = rig.scratch.join("rc");
+    let pane = rig.pane("host", &gated(&command(&["sessions"], &rc, true), &gate));
+    std::fs::write(&gate, "").expect("release the pane");
+    let screen = rig.wait(&pane, "the existing session lands", |screen| {
+        lands(screen, "sessions")
+    });
+    assert!(
+        !screen.contains("mistyped"),
+        "an existing session is not refused:\n{screen}"
+    );
+    assert_eq!(rig.quit(&pane, &rc), "0", "the app quits cleanly");
+    assert!(rig.has_session("sessions"), "the landing resumed it");
+}
+
 /// An unstamped pane in a recorded ae session is not a seat pane: it lands.
 #[test]
 fn an_unstamped_pane_in_an_ae_session_lands_in_the_app() {

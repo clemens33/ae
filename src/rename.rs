@@ -150,6 +150,14 @@ pub fn run(
         writeln!(err, "{}", crate::entry::routed_verb_refusal(&new))?;
         return Ok(EXIT_USAGE);
     }
+    // A near-miss word is no new name either; the same-name no-op below is not a
+    // new name, so a session already carrying one is left alone.
+    if old != new
+        && let Some(refusal) = crate::entry::near_miss_refusal(&new)
+    {
+        writeln!(err, "{refusal}")?;
+        return Ok(EXIT_USAGE);
+    }
     if !crate::lifecycle::name_is_usable(root, &old) {
         writeln!(
             err,
