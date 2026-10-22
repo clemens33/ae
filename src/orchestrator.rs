@@ -573,15 +573,16 @@ const NAME_CAP: usize = 18;
 
 /// The widest a state-word column is ever drawn, session row or agent row.
 ///
-/// `waiting-agent` is 13 terminal cells, the longest word in the declared
-/// vocabulary; at the old cap of 9 BOTH `waiting-user` (12) and `waiting-agent`
-/// (13) clipped to the identical `waiting-…`, so the human could not tell "you
-/// are needed" from "an agent is needed" in the one surface they glance at.
-/// 13 covers the whole vocabulary. The cost is bounded and paid only by draws
-/// that actually contain a 10–13-cell state: the state column is shared, so
-/// such a draw widens it by at most 4 cells and the row's existing
-/// `clip_cells(label, inner_width)` bounds what the tail loses.
-const STATE_CAP: usize = 13;
+/// `needs you (waiting on you)` is 26 terminal cells, the longest seat word the
+/// human vocabulary draws ([`crate::theme::seat_word`]); at the old cap of 9
+/// BOTH `waiting-user` (12) and `waiting-agent` (13) clipped to the identical
+/// `waiting-…`, so the human could not tell "you are needed" from "an agent is
+/// needed" in the one surface they glance at. 26 covers the whole vocabulary.
+/// The cost is bounded and paid only by draws that actually contain a long
+/// state: the state column is shared, so such a draw widens it up to the cap
+/// and the row's existing `clip_cells(label, inner_width)` bounds what the
+/// tail loses.
+const STATE_CAP: usize = 26;
 
 /// The widest the branch column is ever drawn.
 const BRANCH_CAP: usize = 14;
@@ -706,7 +707,7 @@ impl Columns {
     /// be chosen until `name` and `state` are final.
     fn hold_agent(&mut self, name: &str, state: &str) {
         Self::widen(&mut self.name, name, NAME_CAP);
-        Self::widen(&mut self.state, state, STATE_CAP);
+        Self::widen(&mut self.state, crate::theme::seat_word(state), STATE_CAP);
     }
 
     /// Phases B and C: pick this draw's rung, then fit the model block to it.
@@ -1499,7 +1500,7 @@ fn agent_item(
             "  {} {} {}",
             agent.mark().glyph(icons),
             pad(&agent.name, columns.name),
-            pad(&agent.state, columns.state),
+            pad(crate::theme::seat_word(&agent.state), columns.state),
         )
     } else {
         format!(
@@ -1507,7 +1508,7 @@ fn agent_item(
             agent.mark().glyph(icons),
             pad(&agent.name, columns.name),
             block,
-            pad(&agent.state, columns.state),
+            pad(crate::theme::seat_word(&agent.state), columns.state),
         )
     };
     MenuItem {
@@ -2226,10 +2227,11 @@ mod tests {
         );
     }
 
-    /// The invariant the fifth state exists under at the picker: `waiting-user`
-    /// (12 cells) and `waiting-agent` (13) must NEVER render identically. The
-    /// old `STATE_CAP` of 9 clipped both to `waiting-…` — byte-identical in the
-    /// one surface the human glances at.
+    /// The invariant the fifth state exists under at the picker: "you are
+    /// needed" and "an agent is needed" must NEVER render identically. The old
+    /// `STATE_CAP` of 9 clipped `waiting-user` and `waiting-agent` to the same
+    /// `waiting-…` — byte-identical in the one surface the human glances at —
+    /// and the human words must stay apart at the widened cap.
     #[test]
     fn waiting_user_and_waiting_agent_never_render_identically_in_the_picker() {
         let mut hub = session("hub", "$1", 0, "");
@@ -2244,21 +2246,16 @@ mod tests {
         };
         let user = row("u");
         let agent = row("a");
-        let state = |label: &str| {
-            label
-                .split_whitespace()
-                .last()
-                .unwrap_or_default()
-                .to_owned()
-        };
-        assert!(user.contains("waiting-user"), "{user}");
-        assert!(agent.contains("waiting-agent"), "{agent}");
-        assert_eq!(state(&user), "waiting-user");
-        assert_eq!(state(&agent), "waiting-agent");
-        assert_ne!(state(&user), state(&agent), "the words must differ");
+        assert!(
+            user.trim_end().ends_with("needs you (waiting on you)"),
+            "{user}"
+        );
+        assert!(agent.trim_end().ends_with("waiting on an agent"), "{agent}");
+        assert!(!user.contains("waiting-user"), "{user}");
+        assert!(!agent.contains("waiting-agent"), "{agent}");
         assert_eq!(
-            super::terminal_cells("waiting-agent"),
-            13,
+            super::terminal_cells("needs you (waiting on you)"),
+            26,
             "the widest word the cap must hold, measured"
         );
     }
@@ -2296,17 +2293,18 @@ mod tests {
         hub.agents = format!("v1;{NOW};300;w:p:done:%1;a-much-longer-agent:gpt56sol:working:%2");
         let expanded = labels(&bounded_menu(&[hub], 8));
         // The widest agent name is 19 cells, past the 18-cell cap, and the
-        // widest state word is 7. This is a v1 fact, so neither seat carries a
-        // client or a model: both cells fall back to the DECLARED profile, and
-        // the `~` makes the widest of them 9 rather than 8.
+        // widest state word is `finished`, 8 (the human word for `done`). This
+        // is a v1 fact, so neither seat carries a client or a model: both cells
+        // fall back to the DECLARED profile, and the `~` makes the widest of
+        // them 9 rather than 8.
         assert_eq!(
             expanded[1],
-            format!("  ✓ {:<18} {:<9} {:<7}", "w", "~p", "done"),
+            format!("  ✓ {:<18} {:<9} {:<8}", "w", "~p", "finished"),
         );
         assert_eq!(
             expanded[2],
             format!(
-                "  ● {:<18} {:<9} {:<7}",
+                "  ● {:<18} {:<9} {:<8}",
                 "a-much-longer-age…", "~gpt56sol", "working"
             ),
         );
@@ -2777,7 +2775,14 @@ mod tests {
         assert_eq!(drawn.items.len(), 5);
         for (index, (glyph, name, client, model, effort, state)) in [
             ("●", "lead", "claude", "Fable 5.1", "xhigh", "working"),
-            ("·", "colead", "codex", "gpt-6-astra", "medium", "idle"),
+            (
+                "·",
+                "colead",
+                "codex",
+                "gpt-6-astra",
+                "medium",
+                "no current status",
+            ),
             ("●", "acctmove", "cc-mic", "Opus 5", "xhigh!", "working"),
             (
                 "●",
@@ -2794,7 +2799,7 @@ mod tests {
             let row = drawn.items[index + 1].label.as_str();
             assert_eq!(
                 row,
-                format!("  {glyph} {name:<9} {client:<6} {model:<16} {effort:<6} {state:<7}"),
+                format!("  {glyph} {name:<9} {client:<6} {model:<16} {effort:<6} {state:<17}"),
                 "row {index} golden"
             );
             assert_eq!(col_of(row, model), 21, "model starts together: {row:?}");
@@ -2806,6 +2811,9 @@ mod tests {
     /// At the plainer rung the effort column VANISHES for every row — no ragged
     /// blanks — the drift mark glues to the model, and a `~profile` fallback
     /// aligns in the model column (any observation keeps the sub-columns).
+    /// The width is the old 42 plus the 10 cells `no current status` (17) adds
+    /// to the shared state column over `idle` (7), so the model block gets the
+    /// budget this rung was measured at.
     #[test]
     fn the_no_effort_rung_drops_the_effort_column_for_all_rows() {
         let panes = [pane("$7", "%10"), pane("$7", "%11")];
@@ -2814,13 +2822,13 @@ mod tests {
              acct:op5x:working:%11:cc-mic:Opus 5::!;\
              new:astram:idle::cx:::",
             &panes,
-            42,
+            52,
         );
         assert_eq!(drawn.items.len(), 4);
         for (index, (glyph, name, client, model, state)) in [
             ("●", "lead", "cc", "Fable 5.1", "working"),
             ("●", "acct", "cc-mic", "Opus 5!", "working"),
-            ("·", "new", "cx", "~astram", "idle"),
+            ("·", "new", "cx", "~astram", "no current status"),
         ]
         .into_iter()
         .enumerate()
@@ -2828,7 +2836,7 @@ mod tests {
             let row = drawn.items[index + 1].label.as_str();
             assert_eq!(
                 row,
-                format!("  {glyph} {name:<4} {client:<6} {model:<9} {state:<7}"),
+                format!("  {glyph} {name:<4} {client:<6} {model:<9} {state:<17}"),
                 "row {index} golden"
             );
             assert!(
@@ -2882,7 +2890,7 @@ mod tests {
         let mut effort_at = Vec::new();
         for (index, (glyph, name, client, model, effort, state)) in [
             ("●", "a", "muse", "muse-spark-1.3-…", "max", "working"),
-            ("✓", "b", "cc", "M", "xhigh", "done"),
+            ("✓", "b", "cc", "M", "xhigh", "finished"),
         ]
         .into_iter()
         .enumerate()
@@ -2890,7 +2898,7 @@ mod tests {
             let row = drawn.items[index + 1].label.as_str();
             assert_eq!(
                 row,
-                format!("  {glyph} {name:<4} {client:<4} {model:<16} {effort:<5} {state:<7}"),
+                format!("  {glyph} {name:<4} {client:<4} {model:<16} {effort:<5} {state:<8}"),
                 "row {index} golden"
             );
             effort_at.push(col_of(row, effort));
@@ -2931,15 +2939,15 @@ mod tests {
         // so every cell is the declared profile behind a `~`.
         assert_eq!(
             drawn.items[1].label,
-            format!("  ● {:<7} {:<10} {:<7}", "lead", "~fable5", "working")
+            format!("  ● {:<7} {:<10} {:<8}", "lead", "~fable5", "working")
         );
         assert_eq!(
             drawn.items[2].label,
-            format!("  ✓ {:<7} {:<10} {:<7}", "builder", "~gpt56sol", "done")
+            format!("  ✓ {:<7} {:<10} {:<8}", "builder", "~gpt56sol", "finished")
         );
         assert_eq!(
             drawn.items[3].label,
-            format!("  ✖ {:<7} {:<10} {:<7}", "gone", "~gpt56luna", "dead")
+            format!("  ✖ {:<7} {:<10} {:<8}", "gone", "~gpt56luna", "dead")
         );
         assert!(drawn.items[1..].iter().all(|item| item.key.is_empty()));
         let MenuAction::Run(jump) = &drawn.items[2].action else {
@@ -2986,7 +2994,7 @@ mod tests {
             assert_eq!(drawn.items.len(), 3, "icons={icons}");
             let row = &drawn.items[2].label;
             assert!(
-                row.starts_with(&format!("  {glyph} ")) && row.contains("waiting-agent"),
+                row.starts_with(&format!("  {glyph} ")) && row.contains("waiting on an agent"),
                 "icons={icons}: {row}"
             );
             assert!(

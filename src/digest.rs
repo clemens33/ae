@@ -80,6 +80,50 @@ pub struct AgentEntry {
     pub auto_reseat_open: bool,
     /// The seat's `effort.<slot>` record. TABLE only, same rule as `own_work`.
     pub effort: Option<crate::effort::Stored>,
+    /// What the seat's newest declaration says in its own words, for the human
+    /// surfaces. TABLE only, same rule as `own_work`: the JSON key set is a
+    /// published contract. `None` means nobody asked, which only a hand-built
+    /// entry says; [`crate::session::entry_from`] always answers.
+    pub declaration: Option<Declaration>,
+}
+
+/// A seat's newest declaration as a person reads it: its own words and when it
+/// was made, never a reason ae composed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Declaration {
+    /// The event source could not be read, so a declaration is neither present
+    /// nor absent.
+    Unreadable,
+    /// The source was read and holds no declaration for this seat.
+    Absent,
+    /// The newest declaration: its words, possibly empty, and the second it was
+    /// made, `None` when the carrier has no stamp for it.
+    Made { reason: String, at: Option<i64> },
+}
+
+impl Declaration {
+    /// The reason words and, where there is a declaration, the age words a
+    /// surface draws at `now`. A missing reason says so, an unreadable source
+    /// says so, and an age is only ever a declaration's own.
+    #[must_use]
+    pub fn words(&self, now: Timestamp) -> (String, Option<String>) {
+        match self {
+            Self::Unreadable => ("reason unavailable".to_owned(), None),
+            Self::Absent => ("no reason given".to_owned(), None),
+            Self::Made { reason, at } => {
+                let clean = crate::board::terminal_text(&crate::goal::printable(reason));
+                let reason = match clean.trim() {
+                    "" => "no reason given".to_owned(),
+                    words => words.to_owned(),
+                };
+                let age = at.map_or_else(
+                    || "age unknown".to_owned(),
+                    |at| crate::brief::age(Some(now.epoch().saturating_sub(at))),
+                );
+                (reason, Some(age))
+            }
+        }
+    }
 }
 
 /// Frozen's placeholder for an agent whose session id is absent or unresolved.
@@ -614,6 +658,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                declaration: None,
                 effort: None,
             };
             assert_eq!(agent.display_session_id(), want, "{why}");
@@ -650,6 +695,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            declaration: None,
             effort: None,
         };
         let short = agent.display_session_id();
@@ -701,6 +747,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            declaration: None,
             effort: None,
         }];
         Digest::new(
@@ -1041,6 +1088,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            declaration: None,
             effort: None,
         }
         .to_json();

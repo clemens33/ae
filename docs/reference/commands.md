@@ -297,10 +297,20 @@ Checkout runs may override the destination with the typed `AE_TMUX_SERVER_KIND` 
 ## `ae list`
 
 Tabular view of ae sessions with per-agent health, declared state, current
-`observed:<busy|idle|unknown>` harness frame, and a session-level
+`observed:<busy|input ready|unknown>` harness frame, and a session-level
 `attn:<reason>` marker when a session needs attention. `observed` is distinct
 from the agent's own declaration: it reports only what the watchdog positively
 recognized in the current terminal frame.
+The state cell speaks in task words: `working`, `finished` (declared done, with its
+`(unconfirmed c/r)` proof while one runs), `waiting on an agent`, `needs you (waiting
+on you)`, `needs you (blocked)`, `needs you (usage limit)`, `no current status` for a
+seat with no current declaration and `unknown` when the source cannot be trusted. Each
+seat then reads its newest declaration's own reason and age (`· review complete ·
+12m`), `no reason given` when it left none and `reason unavailable` when the journal
+could not be read. A seat on its usage limit keeps `needs you (usage limit)` and
+labels the declaration `declared:` so the words never read as the limit's. `observed:input ready` is an empty input box and says nothing about
+the task, so `finished · observed:input ready` is normal. `ae list --json` keeps the
+protocol words (`done`, `idle`, `waiting-agent`, ...) unchanged.
 Each session's indented detail line ends with three lifecycle ages:
 `created` is the first launch, `started` is the latest launch or resume, and
 `active` is the newest ae event. Legacy sessions derive creation from the
@@ -753,7 +763,7 @@ selected action provides the next clear.
 │ beta  ◌ stale   main       port the watchdog                       (2) │
 │   ● lead  gpt56sol  working                                            │
 │ alpha · idle    picker     ship the S0 picker                      (3) │
-│   ✓ lead  gpt56luna done                                               │
+│   ✓ lead  gpt56luna finished                                           │
 │ notes ✖ stopped feat/docs  park the spend notes                    (4) │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -784,9 +794,12 @@ same pane is untouched, exactly like a running row's jump. A row clicked after
 its client detached or its server was replaced refuses without starting
 anything.
 
-Column widths are fitted PER DRAW: name, state word, branch and profile are each
+Column widths are fitted PER DRAW: name, state word and branch are each
 as wide as the widest content among the rows that draw actually shows, with a
-four-cell floor and the layout's own cap (18, 9, 14 and 12 cells). A session row
+four-cell floor and the layout's own cap (18, 26 and 14 cells). An agent row's
+state word is the human word, so the state column grows to `no current status` (17
+cells) or `needs you (waiting on you)` (26, the longest) when such a seat is
+drawn, and follows the widest word drawn otherwise. A session row
 and the agent rows under it share one name column and one state column, so both
 kinds of row stay in a single grid. Two short session names therefore give narrow
 columns instead of a field of blanks, and one long name is cut at the cap.

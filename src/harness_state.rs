@@ -43,6 +43,20 @@ impl HarnessState {
             Self::Unknown => "unknown",
         }
     }
+
+    /// The words the human `ae list` table prints for what the frame shows.
+    ///
+    /// An empty input box is a fact about the harness, not about the task: a
+    /// seat that declared `working` shows one too. So it reads `input ready`,
+    /// and [`Self::as_str`] stays the protocol spelling every machine reads.
+    #[must_use]
+    pub const fn human(self) -> &'static str {
+        match self {
+            Self::Busy => "busy",
+            Self::Idle => "input ready",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// The idle episode carried in the watchdog-owned observed pane option.

@@ -492,7 +492,7 @@ fn agent_rows_are_single_line_without_client_or_reason_rows() {
     }
     let colead = lines_with(&side, "colead");
     assert_eq!(colead.len(), 1, "colead on one row");
-    for word in ["colead", "gpt-6.1-sol", "waiting-user"] {
+    for word in ["colead", "gpt-6.1-sol", "needs you"] {
         assert!(
             colead[0].contains(word),
             "colead row keeps {word}:\n{}",

@@ -78,17 +78,33 @@ recorded config first.
 - **Agents** under the list: every seat of the selected session: its mark, its
   name, the model its own frame drew (the client when none was) and the effort
   that frame drew, each only when known, never the profile name, and its state
-  at the right end (from the watchdog's published roster). A seat takes one row
+  at the right end (from the watchdog's published roster), in words a person
+  reads: `working`, `finished` (only a seat that declared done), `waiting on an
+  agent`, `needs you (waiting on you)` / `(blocked)` / `(throttled)` / `(usage
+  limit)` / `(prompt)`, `unknown` and `dead`. In a narrow sidebar the
+  parenthetical goes first (`needs you (blocked)` reads `needs you`) so the
+  model and effort keep their row, and the head word stays. A seat whose input box is empty
+  with no current done, waiting or blocked declaration reads `no current status`: an
+  empty box is a fact about the harness, not that the seat finished. A dim row
+  under each seat carries its newest declaration's own reason and the age of the
+  declaration (`colimafix result · 12m`); `no reason given` when it left none,
+  `reason unavailable` when the journal could not be read, never a reason ae
+  made up. The tmux picker and the pane border draw the same state words (up
+  to 26 cells: `needs you (waiting on you)`; `waiting on an agent` is 19 and
+  `no current status` 17, so in the 44-cell sidebar they leave less room and a
+  label moves to its second row sooner) but no reason or age. A seat's label takes one row
   when its whole label fits beside its name and state, with the labels of the
-  one-row seats lined up in one column; otherwise a second row carries the label
-  under the name. That row drops the effort only when it cannot hold both, and
+  one-row seats lined up in one column; otherwise a second label row carries the
+  label under the name, and the dim detail row follows either. That row drops the effort only when it cannot hold both, and
   cuts the model on `…` only when the model alone is longer than the row (24
   cells at the narrowest sidebar). A click on either row is a click on that
   seat; `n` / `p` step seat by seat and the wheel scrolls rows. Short of room the name's tail
   goes, last the state. A seat that waits on the human is told in the chat header (`⚠ <seat>:
   <reason> · <age>`: the viewed seat's ask, else the cursor seat's, else
-  the first); a reason from a seat the roster lacks is drawn as a row of its
-  own after the roster, so no ask is lost. A session on
+  the first), not under the seat: the open request text stays in the header,
+  while the seat's own declaration reason sits in its detail row. A reason from
+  a seat the roster lacks is drawn as a row of its own after the roster, so no
+  ask is lost. A session on
   another tmux server, or one whose watchdog publishes nothing, names that gap
   instead of seats. The body that does not fit gives its last row to the rows
   it hides, `↑ a · ↓ b more rows`, and the wheel moves it three rows a notch;
@@ -667,8 +683,10 @@ the gear closes it like `Esc`, `j` / `k` and `↓` / `↑` scroll a line, the
 wheel three rows per notch, `PgUp` / `PgDn` a page, everything else is
 swallowed (every other click too), and a draft being written is kept untouched
 until it closes. Five
-tabs: Keys lists every key of browsing, writing, a held composer, Settings and
-the mouse
+tabs: Keys lists what each of the seven marks means (`✖` dead, `⚠` needs you,
+`◌` unknown, `●` working, `◔` waiting on an agent, `✓` finished, `·` no current
+status; the `icons = off` letters when icons are off) and then every key of
+browsing, writing, a held composer, Settings and the mouse
 (`?` opens it while browsing); Quota draws the same table as the tmux quota dialog from one formatter — a column
 header, a head per scope, then per window a name, an 8-cell bar, `USED`, `COUNTS`, `NOTE`,
 `RESETS` and `SEEN`, determinable scopes first, most available first, unreadable scopes last —

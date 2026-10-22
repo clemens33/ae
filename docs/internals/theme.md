@@ -286,9 +286,11 @@ mark is drawn glued to the model cell's last drawn cell — after the effort at
 full fidelity, after the model when the effort is dropped — and never on a
 declared-fallback cell, where no observed model names a disagreement. Those
 column widths are fitted per draw — the widest content among the drawn rows,
-floored at four cells and capped at the layout's name 18, state 13, branch 14
-and model 29 — and a session row
-shares its name and state columns with the agent rows under it. The model column
+floored at four cells and capped at the layout's name 18, state 26 and branch 14
+— and a session row
+shares its name and state columns with the agent rows under it. The model block
+is three sub-columns, capped at client 12, model 16 and effort 6 cells, plus one
+drift cell. The model column
 is chosen in a second pass, after those shared columns are final: one fidelity
 rung for the whole menu, dropping the effort before the model is clipped, and
 never the client; the one-cell drift mark survives the effort drop. The tmux reader

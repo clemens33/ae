@@ -14,7 +14,7 @@ use std::io;
 use std::path::Path;
 
 use crate::attention::Reason;
-use crate::digest::{AgentEntry, FactState, RenderKnowledge, SessionEntry, Status};
+use crate::digest::{AgentEntry, Declaration, FactState, RenderKnowledge, SessionEntry, Status};
 use crate::events::{
     AlertMeaning, Cursor, Drain, Event, EventLog, RefMeaning, SessionKey, SkippedLine,
 };
@@ -1156,6 +1156,16 @@ fn agent_entries(
                 model_drift,
                 auto_reseat_open: false,
                 effort: Some(meta.effort(&slot.slot)),
+                // The words of the SAME event the state cell reads, so a reason
+                // is never a caption on a superseded declaration.
+                declaration: Some(match (read, declared) {
+                    (None, _) => Declaration::Unreadable,
+                    (Some(_), None) => Declaration::Absent,
+                    (Some(_), Some(event)) => Declaration::Made {
+                        reason: event.summary.clone().unwrap_or_default(),
+                        at: Some(event.ts.epoch()),
+                    },
+                }),
             };
             // Read only for a seat whose standing reason is its limit: the
             // suffix says the move off it is under way.
@@ -3318,10 +3328,9 @@ mod tests {
             entry.agents[0].done_progress,
             Some(crate::watchdog::DoneProgress::Lapsed { .. })
         ));
-        assert!(
-            crate::listing::table(&[&entry])
-                .contains("done (unconfirmed 0/2, lapsed) · observed:unknown")
-        );
+        let shown = crate::listing::table(&[&entry]);
+        assert!(shown.contains("finished (unconfirmed 0/2, lapsed) · no reason given · "));
+        assert!(shown.contains(" · observed:unknown"));
     }
 
     #[test]
@@ -3344,7 +3353,7 @@ mod tests {
             entry.agents[0].wait_progress,
             Some(crate::watchdog::WaitProgress::Challenged { .. })
         ));
-        assert!(crate::listing::table(&[&entry]).contains("blocked (unconfirmed 0/2)"));
+        assert!(crate::listing::table(&[&entry]).contains("needs you (blocked) (unconfirmed 0/2)"));
         assert_eq!(entry.agents[0].to_json().get("wait_progress"), None);
 
         let later = Timestamp::from_epoch(NOW.epoch() + 400);
@@ -3355,7 +3364,10 @@ mod tests {
             later,
             DEFAULT_UNANSWERED_SECS,
         );
-        assert!(crate::listing::table(&[&entry]).contains("blocked (unconfirmed 0/2, lapsed)"));
+        assert!(
+            crate::listing::table(&[&entry])
+                .contains("needs you (blocked) (unconfirmed 0/2, lapsed)")
+        );
     }
 
     /// BLOCKER 1, routing half: a rename-back history (live → oldname → live)
@@ -4437,7 +4449,7 @@ mod tests {
             assert_eq!(entry.agents[0].auto_reseat_open, open, "{lines:?}");
             let table = crate::listing::table(&[&entry]);
             assert_eq!(
-                table.contains("limit · auto-reseat in flight"),
+                table.contains("needs you (usage limit) · auto-reseat in flight"),
                 open,
                 "{table}"
             );

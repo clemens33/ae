@@ -895,13 +895,16 @@ fn daemon_delivers_once_due_with_unchanged_payload_and_budget() {
 
 #[test]
 fn list_keeps_existing_unconfirmed_cell_words_for_both_wait_states() {
-    for state in [WaitState::WaitingAgent, WaitState::Blocked] {
+    for (state, human) in [
+        (WaitState::WaitingAgent, "waiting on an agent"),
+        (WaitState::Blocked, "needs you (blocked)"),
+    ] {
         let journal = Journal::proof(state);
         for seconds in [630, 930] {
             let seen = journal.observe(at(seconds), state, HarnessState::Unknown);
             let table = ae::listing::table_at(&[&seen.entry], at(seconds));
             assert!(
-                table.contains(&format!("{} (unconfirmed 1/2)", state.as_str())),
+                table.contains(&format!("{human} (unconfirmed 1/2)")),
                 "{table}"
             );
             assert_eq!(seen.entry.agents[0].to_json().get("wait_progress"), None);

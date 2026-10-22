@@ -1392,14 +1392,19 @@ impl Cells {
     }
 }
 
-/// The Agents body: one row per seat, two when its label does not fit beside
-/// its name and state. Its mark, name, the model its frame drew (the client
-/// when none was) and the effort, each only when known and never the profile,
-/// and its state word at the right end. What
-/// waits on the human is told in the chat header, not under the seat. An ask
-/// from a seat the roster lacks is a row of its own after the roster; a
-/// session ae has no seat facts for says why. Request debt closes the body as
-/// one dim row — `↩ <n> unanswered · oldest <age>` — never a mark.
+/// The Agents body: per seat one label row, a second when its label does not
+/// fit beside its name and state, and a dim detail row under them for its
+/// newest declaration's own reason and age (`no reason given` when it left
+/// none, `reason unavailable` when the journal could not be read). The label
+/// row carries its mark, name, the model its frame drew (the client when none
+/// was) and the effort, each only when known and never the profile, and its
+/// state word at the right end, in the human words
+/// ([`crate::theme::seat_word`]), never the verdict word. The seat's open
+/// REQUEST text stays in the chat header, not under the seat; only its own
+/// DECLARATION reason is drawn under it. An ask from a seat the roster lacks is
+/// a row of its own after the roster; a session ae has no seat facts for says
+/// why. Request debt closes the body as one dim row — `↩ <n> unanswered ·
+/// oldest <age>` — never a mark.
 fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> {
     let dim = ctx.paint.fg(|p| p.dim);
     let gap = |words: &str| vec![Cells::of(vec![Span::styled(words.to_owned(), dim)])];
@@ -1427,10 +1432,11 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
         let seat = Seat {
             name: &agent.name,
             mark: agent.mark(),
-            state: &agent.state,
+            state: crate::theme::seat_word(&agent.state),
             meta: [model, agent.effort.as_str()],
         };
         rows.extend(seat_rows(ctx, &seat, column, room));
+        rows.extend(declaration_row(ctx, entry, &agent.name, room));
     }
     let listed = |ask: &&Open| agents.iter().any(|agent| agent.name == ask.seat);
     for ask in open.iter().filter(|ask| !listed(ask)) {
@@ -1469,8 +1475,40 @@ struct Seat<'a> {
 /// it fits there; else a second row carries the label under the name, the
 /// effort left off only when that row cannot hold both and the model cut on
 /// `…` only past it. Short of room the name's tail goes down to [`NAME_MIN`]
-/// cells, and last the state word.
+/// cells, and last the state word. A state word's parenthetical gives way
+/// BEFORE any of that: when the full word would be left off, or would push the
+/// label to a second row, its head word (`needs you (blocked)` → `needs you`)
+/// is laid out instead if that keeps the state, or the label beside it.
 fn seat_rows(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Vec<Cells> {
+    let full = seat_row(ctx, seat, column, room);
+    let head = seat
+        .state
+        .split_once(" (")
+        .map_or(seat.state, |(head, _)| head);
+    if head == seat.state {
+        return full;
+    }
+    let short = Seat {
+        state: head,
+        ..*seat
+    };
+    let short = seat_row(ctx, &short, column, room);
+    // What a layout keeps, poorest first: the state word, then one row.
+    let kept = |rows: &[Cells]| {
+        (
+            rows.first().is_some_and(|row| row.right.is_some()),
+            rows.len() == 1,
+        )
+    };
+    if kept(&short) > kept(&full) {
+        short
+    } else {
+        full
+    }
+}
+
+/// `seat`'s rows with its state word exactly as given.
+fn seat_row(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Vec<Cells> {
     let (paint, mark) = (ctx.paint, seat.mark);
     let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
     // The mark and its blank.
@@ -1525,6 +1563,46 @@ fn seat_rows(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Vec<
         });
     }
     rows
+}
+
+/// The dim row under seat `name`: its newest declaration's own reason and the
+/// declaration's age, a clipped reason keeping its age. Nothing when the entry
+/// carries no declaration for it. A source the seat's state cannot be trusted
+/// from says `reason unavailable`, never an absence, and an absent declaration
+/// says `no reason given` with no age: ae never supplies a reason of its own.
+fn declaration_row(
+    ctx: &Ctx<'_, '_>,
+    entry: &SessionEntry,
+    name: &str,
+    room: u16,
+) -> Option<Cells> {
+    let declaration = entry
+        .agents
+        .iter()
+        .find(|agent| agent.name == name)?
+        .declaration
+        .as_ref()?;
+    let (reason, age) = if entry.agent_state_is_exact() {
+        declaration.words(ctx.screen.now)
+    } else {
+        crate::digest::Declaration::Unreadable.words(ctx.screen.now)
+    };
+    // The mark and its blank, so the words sit under the name.
+    let lead = 2;
+    let width = room.saturating_sub(lead);
+    let words = match age {
+        Some(age) => aged_by(&crate::board::terminal_text(&reason), &age, width),
+        None => fit(&crate::board::terminal_text(&reason), "", width),
+    };
+    Some(Cells {
+        left: Line::from(vec![
+            Span::raw(" ".repeat(usize::from(lead))),
+            Span::styled(words, ctx.paint.fg(|p| p.dim)),
+        ]),
+        right: None,
+        seat: Some(name.to_owned()),
+        continued: true,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2611,7 +2689,11 @@ fn settings_body(
             Some(about) => about_body(about, text),
         },
         SettingsTab::Instructions => instructions_body(&bodies.instructions, width, paint),
-        SettingsTab::Keys => keys_body(paint),
+        SettingsTab::Keys => {
+            let mut rows = marks_legend(paint, icons);
+            rows.extend(keys_body(paint));
+            rows
+        }
     };
     // A kept quota body says how old it is, above it, in the stale tone.
     if let (SettingsTab::Quota, Some(kept)) = (tab, &bodies.quota_kept) {
@@ -2688,6 +2770,43 @@ const SETTINGS_KEYS: [(&str, &str); 10] = [
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; a paste too"),
 ];
+
+/// What each of the seven marks means, in the glyph vocabulary being drawn.
+/// The words are the ones a seat row prints ([`crate::theme::seat_word`]); the
+/// rest says what the mark rests on, so a finished seat is only ever one that
+/// declared it and an empty input box is never read as completion.
+fn marks_legend(paint: Paint, icons: bool) -> Vec<(String, Style)> {
+    let (text, head) = (paint.fg(|p| p.text), paint.fg(|p| p.title));
+    let mut rows = vec![(
+        "Marks (the glyph before a name)".to_owned(),
+        head.add_modifier(Modifier::BOLD),
+    )];
+    rows.extend(
+        [
+            (Mark::Dead, "dead — agent process gone"),
+            (
+                Mark::NeedsYou,
+                "needs you — waiting on you / blocked / problem; the reason follows",
+            ),
+            (
+                Mark::Stale,
+                "unknown — state unestablished, or silent past the window",
+            ),
+            (Mark::Working, "working — a turn is running"),
+            (
+                Mark::WaitingAgent,
+                "waiting on an agent — declared; its reason may name whom",
+            ),
+            (Mark::Done, "finished — only when the agent declared done"),
+            (
+                Mark::Idle,
+                "no current status — alive, not working, no current done/waiting/blocked declaration",
+            ),
+        ]
+        .map(|(mark, words)| (format!("{:<2}{words}", mark.glyph(icons)), text)),
+    );
+    rows
+}
 
 /// The Keys tab's rows: every key of browse, write, held and the overlay.
 fn keys_body(paint: Paint) -> Vec<(String, Style)> {
@@ -2824,7 +2943,12 @@ fn instructions_body(view: &InstructionsView, width: u16, paint: Paint) -> Vec<(
 
 /// `text · <age>` in `room` cells: a clipped text keeps its age.
 fn aged(text: &str, since: Option<i64>, room: u16) -> String {
-    let tail = format!(" · {}", age(since));
+    aged_by(text, &age(since), room)
+}
+
+/// [`aged`] with the age already in words.
+fn aged_by(text: &str, words: &str, room: u16) -> String {
+    let tail = format!(" · {words}");
     let (whole, tail_cells) = (drawn_cols(text), cells(tail.chars().count()));
     if whole + tail_cells <= room {
         return format!("{text}{tail}");
@@ -4970,6 +5094,12 @@ mod tests {
         assert_eq!(at(159, 44), None, "the gear is a target, not a border");
     }
 
+    /// Fixed text width for geometry-only fixtures. This deliberately unmapped
+    /// 13-cell word passes through unchanged; production vocabulary is pinned
+    /// independently by `honestwords_spec`. These fixtures keep their measured
+    /// label capacity, with the existing unknown-word Stale mark.
+    const FIT_STATE: &str = "unmapped-word";
+
     /// Two seats in the Agents body, by name.
     fn seat_facts(names: &[&str]) -> Facts {
         let Facts::Seats { id, agents } = sweep_seats() else {
@@ -4977,6 +5107,7 @@ mod tests {
         };
         let seat_of = |name: &&str| PickerAgent {
             name: (*name).to_owned(),
+            state: FIT_STATE.to_owned(),
             ..agents[0].clone()
         };
         Facts::Seats {
@@ -5253,6 +5384,127 @@ mod tests {
         assert!(super::drawn_cols(&words) <= 14, "{words:?}");
     }
 
+    /// Approved legend teaches all seven task marks in each glyph vocabulary.
+    #[test]
+    fn honestwords_keys_tab_explains_every_mark_in_both_glyph_vocabularies() {
+        for icons in [true, false] {
+            let rows: Vec<String> = super::settings_body(
+                super::SettingsTab::Keys,
+                &super::SettingsBodies::default(),
+                Paint::of(None),
+                100,
+                icons,
+            )
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+            for (unicode, ascii, word) in [
+                ("✖", "x", "dead"),
+                ("⚠", "!", "needs you"),
+                ("◌", "?", "unknown"),
+                ("●", "*", "working"),
+                ("◔", "~", "waiting on an agent"),
+                ("✓", "+", "finished"),
+                ("·", "-", "no current status"),
+            ] {
+                let glyph = if icons { unicode } else { ascii };
+                assert!(
+                    rows.iter()
+                        .any(|row| row.trim_start().starts_with(glyph) && row.contains(word)),
+                    "{glyph} {word}: {rows:?}"
+                );
+            }
+            let text = rows.join("\n");
+            assert!(
+                text.contains("declared done"),
+                "completion needs a declaration: {text}"
+            );
+            assert!(
+                text.contains("silent past"),
+                "unknown includes silence: {text}"
+            );
+            assert!(
+                text.contains("no current done/waiting/blocked declaration"),
+                "Idle ruling: {text}"
+            );
+            assert!(
+                text.contains("Browse") && text.contains("Write") && text.contains("Mouse"),
+                "existing key help survives"
+            );
+        }
+    }
+
+    /// Lead final-r1 ruling: a qualifier yields before identity; its head
+    /// remains visible at the 30-cell sidebar floor. Independent geometry:
+    /// sidebar minus four gives room; colead spends ten cells before its label.
+    #[test]
+    fn honestwords_app_qualifier_yields_before_identity_and_preserves_state_at_floor() {
+        for icons in [true, false] {
+            let look = Look::read(if icons { "on" } else { "off" }, "darcula", "on", "off");
+            for (sidebar, model, effort, full, wrapped) in [
+                (60, "gpt-6.1-sol", "xhigh", true, false),
+                (44, "gpt-6.1-sol", "xhigh", false, false),
+                (30, "gpt-6.1-sol", "xhigh", false, true),
+                (30, "", "", false, false),
+                (44, "m12345678901234567890123456789", "xhigh", true, true),
+            ] {
+                let mut shot = Shot::new();
+                let mut facts =
+                    label_facts(&[("colead", model, effort, "atlas"), ("next", "", "", "")]);
+                let Facts::Seats { agents, .. } = &mut facts else {
+                    unreachable!("synthetic seat facts");
+                };
+                agents[0].state = "waiting-user".to_owned();
+                agents[1].state = "working".to_owned();
+                shot.agents = Some(facts);
+                with_sidebar(&mut shot, sidebar);
+                let (buf, layout) = framed(&shot, 160, Some(&look));
+                let rule = horizontal(&buf).expect("the Agents rule");
+                let row = |y| line(&buf, y)[..usize::from(sidebar)].concat();
+                let first = row(rule + 1);
+                assert!(
+                    first.contains("colead") && first.contains("needs you"),
+                    "{sidebar}: {first}"
+                );
+                assert!(
+                    first
+                        .trim_start()
+                        .starts_with(if icons { "⚠" } else { "!" }),
+                    "{first}"
+                );
+                assert_eq!(
+                    first.contains("(waiting on you)"),
+                    full,
+                    "{sidebar}: {first}"
+                );
+                let label = if wrapped {
+                    row(rule + 2)
+                } else {
+                    first.clone()
+                };
+                if !model.is_empty() {
+                    assert!(
+                        label.contains(model) && label.contains(effort),
+                        "{sidebar}: {label}"
+                    );
+                    assert!(
+                        !label.contains("atlas"),
+                        "observed model replaces client: {label}"
+                    );
+                    if wrapped {
+                        assert!(!first.contains(model), "label belongs on row two: {first}");
+                    }
+                }
+                let next = row(rule + if wrapped { 3 } else { 2 });
+                assert!(
+                    next.contains("next"),
+                    "seat row group stays bounded: {next}"
+                );
+                assert_eq!(layout.seats, ["colead", "next"]);
+            }
+        }
+    }
+
     /// The Keys tab teaches the new glyphs and the positional digits.
     #[test]
     fn the_keys_tab_names_the_home_glyph_the_cursor_and_the_nth_session() {
@@ -5332,7 +5584,7 @@ mod tests {
             for x in 0..rule - 2 {
                 assert_eq!(buf[(x, first)].bg, ground, "{name} ({x},{first})");
             }
-            let mark = super::colour(palette.accent(Mark::WaitingAgent));
+            let mark = super::colour(palette.accent(Mark::Stale));
             let drawn: Vec<_> = (0..rule - 2)
                 .map(|x| &buf[(x, first)])
                 .filter(|cell| cell.symbol() != " ")
@@ -6269,6 +6521,7 @@ mod tests {
                 .iter()
                 .map(|(name, model, effort, client)| PickerAgent {
                     name: (*name).to_owned(),
+                    state: FIT_STATE.to_owned(),
                     model: (*model).to_owned(),
                     effort: (*effort).to_owned(),
                     client: (*client).to_owned(),
@@ -6305,10 +6558,10 @@ mod tests {
         assert_eq!(layout.seats, ["aa", "bb", "cc"]);
         let one = line(&buf, rule + 1).concat();
         assert!(one.contains("m-model-fourte e1234"), "{one}");
-        assert!(one.contains("waiting-agent"), "{one}");
+        assert!(one.contains(FIT_STATE), "{one}");
         assert_eq!(buf[(8, rule + 1)].symbol(), "m", "the meta column");
-        assert_eq!(buf[(29, rule + 1)].symbol(), "w", "the state word starts");
-        assert_eq!(buf[(41, rule + 1)].symbol(), "t", "the state word ends");
+        assert_eq!(buf[(29, rule + 1)].symbol(), "u", "the state word starts");
+        assert_eq!(buf[(41, rule + 1)].symbol(), "d", "the state word ends");
         assert!(
             line(&buf, rule + 2).concat().contains("bb"),
             "one row a seat"
@@ -6833,6 +7086,10 @@ mod tests {
         let Facts::Seats { id, agents } = sweep_seats() else {
             unreachable!("the sweep draws seats");
         };
+        let mut agents = agents;
+        for agent in &mut agents {
+            agent.state = FIT_STATE.to_owned();
+        }
         let agents: Vec<PickerAgent> = agents.into_iter().cycle().take(20).collect();
         shot.agents = Some(Facts::Seats { id, agents });
         let wrapped = shot.draw(100, 21, READ_ONLY);

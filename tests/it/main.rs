@@ -81,6 +81,7 @@ mod gate;
 mod git;
 mod goquota_spec;
 mod honeststatus_spec;
+mod honestwords_spec;
 mod imgpaste_spec;
 mod init;
 mod install;

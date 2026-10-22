@@ -273,7 +273,7 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
 /// The verdict cell for a `waiting-agent`/`blocked` declaration: raw state,
 /// qualified while its proof episode runs.
 fn wait_cell(agent: &AgentEntry, out: &mut String) {
-    let word = agent.state.as_deref().unwrap_or("blocked");
+    let word = crate::theme::seat_word(agent.state.as_deref().unwrap_or("blocked"));
     let Some(progress) = agent.wait_progress else {
         return out.push_str(word);
     };
@@ -382,16 +382,18 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                             required,
                         },
                     ) => {
-                        let _ = write!(out, "done (unconfirmed {confirmations}/{required})");
+                        let _ = write!(out, "finished (unconfirmed {confirmations}/{required})");
                     }
                     Some(crate::watchdog::DoneProgress::Lapsed {
                         confirmations,
                         required,
                     }) => {
-                        let _ =
-                            write!(out, "done (unconfirmed {confirmations}/{required}, lapsed)");
+                        let _ = write!(
+                            out,
+                            "finished (unconfirmed {confirmations}/{required}, lapsed)"
+                        );
                     }
-                    _ => out.push_str("done"),
+                    _ => out.push_str(crate::theme::seat_word("done")),
                 }
             } else if session.agent_state_is_exact()
                 && matches!(agent.state.as_deref(), Some("waiting-agent" | "blocked"))
@@ -400,14 +402,15 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             } else {
                 out.push_str(
                     match (session.agent_state_is_exact(), agent.state.as_deref()) {
-                        (true, Some(state)) => state,
-                        (true, None) => "-",
+                        (true, Some(state)) => crate::theme::seat_word(state),
+                        (true, None) => crate::theme::seat_word("idle"),
                         (false, _) => "unknown",
                     },
                 );
             }
+            push_declaration(&mut out, agent, session.agent_state_is_exact(), now);
             out.push_str(" · observed:");
-            out.push_str(agent.observed.as_str());
+            out.push_str(agent.observed.human());
             // Observed model drift, or the loud absence of an observer for this
             // tool: silence must never read as preservation.
             match &agent.model_drift {
@@ -454,13 +457,50 @@ fn effort_cell(effort: Option<&crate::effort::Stored>, out: &mut String) {
     };
 }
 
+/// The most characters of a declared reason the table carries.
+const REASON_MAX: usize = 60;
+
+/// The seat's own words and their age beside the state they caption.
+///
+/// A standing usage limit replaces the declared state in the cell, so a
+/// declaration made on that row is labelled `declared:` — its words never read
+/// as the limit's own. A source the state cell cannot trust says
+/// `reason unavailable`, never an absence.
+fn push_declaration(out: &mut String, agent: &AgentEntry, exact: bool, now: Timestamp) {
+    let Some(declaration) = agent.declaration.as_ref() else {
+        return;
+    };
+    let (reason, age) = if exact {
+        declaration.words(now)
+    } else {
+        crate::digest::Declaration::Unreadable.words(now)
+    };
+    out.push_str(" · ");
+    if exact
+        && agent.reason == Some(crate::attention::Reason::Limit)
+        && matches!(declaration, crate::digest::Declaration::Made { .. })
+    {
+        out.push_str("declared: ");
+    }
+    if reason.chars().count() > REASON_MAX {
+        out.extend(reason.chars().take(REASON_MAX - 1));
+        out.push('…');
+    } else {
+        out.push_str(&reason);
+    }
+    if let Some(age) = age {
+        out.push_str(" · ");
+        out.push_str(&age);
+    }
+}
+
 /// The verdict cell of a seat on its usage limit: the move off it, while an
 /// auto reseat attempt is open.
 const fn limit_cell(agent: &AgentEntry) -> &'static str {
     if agent.auto_reseat_open {
-        "limit · auto-reseat in flight"
+        "needs you (usage limit) · auto-reseat in flight"
     } else {
-        "limit"
+        "needs you (usage limit)"
     }
 }
 
@@ -680,6 +720,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            declaration: None,
             effort: None,
         }
     }
@@ -1307,13 +1348,16 @@ mod tests {
         };
         // The pane verdict replaces a declaration…
         let limited = render(Some("working"), Some(Reason::Limit));
-        assert!(limited.contains("limit · observed:unknown"), "{limited}");
+        assert!(
+            limited.contains("needs you (usage limit) · observed:unknown"),
+            "{limited}"
+        );
         assert!(
             !limited.contains("working"),
             "the cell was replaced: {limited}"
         );
         // …and stands even with nothing declared.
-        assert!(render(None, Some(Reason::Limit)).contains("limit · observed:"));
+        assert!(render(None, Some(Reason::Limit)).contains("needs you (usage limit) · observed:"));
         // An open auto reseat attempt is named on the limit cell alone.
         let moving = |reason: Reason| {
             let mut session = SessionEntry::new("solo", Status::Running);
@@ -1323,11 +1367,14 @@ mod tests {
             session.agents = vec![entry];
             table(&[&session])
         };
-        assert!(moving(Reason::Limit).contains("limit · auto-reseat in flight · observed:"));
+        assert!(
+            moving(Reason::Limit)
+                .contains("needs you (usage limit) · auto-reseat in flight · observed:")
+        );
         assert!(!moving(Reason::Dead).contains("auto-reseat"));
         // Every other reason, and none, leaves the cell exactly as it was.
         for reason in [Some(Reason::Throttled), Some(Reason::Dead), None] {
-            assert!(render(None, reason).contains("- · observed:unknown"));
+            assert!(render(None, reason).contains("no current status · observed:unknown"));
         }
         // The JSON keeps the declaration under its own key.
         let mut entry = agent("lead", Some(true), Some("working"));
@@ -1349,17 +1396,17 @@ mod tests {
                 confirmations: 1,
                 required: 2,
             }))
-            .contains("done (unconfirmed 1/2)")
+            .contains("finished (unconfirmed 1/2)")
         );
         assert!(
             render(Some(crate::watchdog::DoneProgress::Lapsed {
                 confirmations: 1,
                 required: 2,
             }))
-            .contains("done (unconfirmed 1/2, lapsed) · observed:unknown"),
+            .contains("finished (unconfirmed 1/2, lapsed) · observed:unknown"),
             "the lapsed verdict stays visible without claiming confirmed done"
         );
-        assert!(render(None).contains("done · observed:unknown"));
+        assert!(render(None).contains("finished · observed:unknown"));
         let mut entry = agent("lead", Some(true), Some("done"));
         entry.done_progress = Some(crate::watchdog::DoneProgress::Provisional {
             confirmations: 0,
@@ -1372,7 +1419,7 @@ mod tests {
         let mut limited = SessionEntry::new("limited", Status::Running);
         limited.agents = vec![entry.clone()];
         let shown = table(&[&limited]);
-        assert!(shown.contains("limit · observed:unknown"));
+        assert!(shown.contains("needs you (usage limit) · observed:unknown"));
         assert!(!shown.contains("unconfirmed"), "limit replaces the cell");
 
         entry.reason = None;
@@ -1381,7 +1428,7 @@ mod tests {
         no_state.state = None;
         undeclared.agents = vec![no_state];
         let shown = table(&[&undeclared]);
-        assert!(shown.contains("- · observed:unknown"));
+        assert!(shown.contains("no current status · observed:unknown"));
         assert!(!shown.contains("unconfirmed"), "undeclared stays bare");
 
         let mut unknown = SessionEntry::degraded("unknown", Status::Running);
@@ -1685,7 +1732,7 @@ mod tests {
             );
             let line = table(&[&entry]);
             assert!(
-                line.contains("waiting-agent"),
+                line.contains("waiting on an agent"),
                 "{tag}: the declared state is on the agent line: {line}"
             );
 
@@ -1831,6 +1878,9 @@ mod tests {
                     "-",
                     "unknown",
                     "·",
+                    "reason",
+                    "unavailable",
+                    "·",
                     "observed:unknown",
                     "·",
                     "drift:unknown"
@@ -1884,6 +1934,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                declaration: None,
                 effort: None,
             }];
             let rendered = table(&[&session]);
@@ -1922,6 +1973,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                declaration: None,
                 effort: None,
             }];
             row_fields(&table(&[&session]), "fake:lead")
@@ -1976,6 +2028,7 @@ mod tests {
                 own_work,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                declaration: None,
                 effort: None,
             }];
             let rendered = table(&[&session]);
@@ -1992,13 +2045,13 @@ mod tests {
             oldest_epoch: Some(1_780_000_000),
         }));
         assert!(
-            waiting.ends_with("working · observed:idle · waiting on 2 requests, 1 spawn"),
+            waiting.ends_with("working · observed:input ready · waiting on 2 requests, 1 spawn"),
             "the reason follows the observation: {waiting}"
         );
 
         let alone = row(Some(crate::session::OwnWork::default()));
         assert!(
-            alone.ends_with("working · observed:idle"),
+            alone.ends_with("working · observed:input ready"),
             "nothing outstanding adds nothing: {alone}"
         );
         assert_eq!(
@@ -2028,6 +2081,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            declaration: None,
             effort: None,
         }];
         let rendered = table(&[&session]);
@@ -2038,7 +2092,16 @@ mod tests {
         let cells: Vec<&str> = row.split_whitespace().collect();
         assert_eq!(
             cells,
-            ["fake:lead", "e795c9e9", "blocked", "·", "observed:idle"],
+            [
+                "fake:lead",
+                "e795c9e9",
+                "needs",
+                "you",
+                "(blocked)",
+                "·",
+                "observed:input",
+                "ready"
+            ],
             "reference, short id, declared state, observed frame: {rendered}"
         );
     }
@@ -2060,6 +2123,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            declaration: None,
             effort: None,
         }];
         // The short session id now sits between the reference and the semantic
@@ -2067,7 +2131,16 @@ mod tests {
         // (running, stopped) and our table omitted it.
         assert_eq!(
             row_fields(&table(&[&session]), "lead"),
-            ["lead", "claude", "-", "blocked", "·", "observed:unknown"],
+            [
+                "lead",
+                "claude",
+                "-",
+                "needs",
+                "you",
+                "(blocked)",
+                "·",
+                "observed:unknown"
+            ],
             "name, profile, short id, declared state"
         );
 
@@ -2076,7 +2149,16 @@ mod tests {
         // the second is exact no-declaration.
         assert_eq!(
             row_fields(&table(&[&session]), "lead"),
-            ["lead", "claude", "-", "-", "·", "observed:unknown"],
+            [
+                "lead",
+                "claude",
+                "-",
+                "no",
+                "current",
+                "status",
+                "·",
+                "observed:unknown"
+            ],
             "no declaration renders the dash cell"
         );
     }
@@ -2099,6 +2181,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                declaration: None,
                 effort: None,
             },
             AgentEntry {
@@ -2115,6 +2198,7 @@ mod tests {
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
                 auto_reseat_open: false,
+                declaration: None,
                 effort: None,
             },
         ];
@@ -2128,7 +2212,8 @@ mod tests {
                 "22222222",
                 "working",
                 "·",
-                "observed:idle"
+                "observed:input",
+                "ready"
             ],
             "the profile is a clipped field between name and id: {rendered}"
         );

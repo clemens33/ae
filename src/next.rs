@@ -225,6 +225,7 @@ mod tests {
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
             auto_reseat_open: false,
+            declaration: None,
             effort: None,
         }
     }

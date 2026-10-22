@@ -1238,7 +1238,7 @@ pub fn pane_active_border_style(palette: &Palette) -> String {
 ///
 /// Nothing here is escaped, and nothing may need to be: this is an option
 /// VALUE, which tmux interpolates literally, and `reason` is one of a closed
-/// set of words this crate wrote.
+/// set of words this crate wrote, drawn through [`seat_word`].
 #[must_use]
 pub fn pane_state(palette: &Palette, mark: Mark, glyph: &str, reason: &str) -> String {
     pane_state_coloured(palette.accent(mark), glyph, reason)
@@ -1252,9 +1252,47 @@ pub fn pane_state_frame(frame: &WorkingFrame, reason: &str) -> String {
 
 fn pane_state_coloured(fg: &str, glyph: &str, reason: &str) -> String {
     format!(
-        "{}{glyph}#[default] {reason}",
+        "{}{glyph}#[default] {}",
         style(&[&format!("fg={fg}")]),
+        seat_word(reason),
     )
+}
+
+/// The words a human reads for a seat verdict word.
+///
+/// The verdict word is a SHARED fact: the `@ae_agents` roster carries it, an
+/// older core parses it back to a mark, and `ae list --json` publishes it
+/// beside the declaration. So it never changes; every surface that draws a seat
+/// to a person draws it through this one map. A word it does not know is drawn
+/// as it came, because a closed set of words this crate wrote can grow ahead of
+/// this table and silence would hide it.
+///
+/// `idle` is the harness's empty input box, not a task state: it reads `no
+/// current status`, which claims neither that the seat finished nor that it
+/// declared nothing (a `working` declaration also leaves an empty box).
+///
+/// ```
+/// assert_eq!(ae::theme::seat_word("done"), "finished");
+/// assert_eq!(ae::theme::seat_word("idle"), "no current status");
+/// assert_eq!(ae::theme::seat_word("elsewhere"), "elsewhere");
+/// ```
+#[must_use]
+pub fn seat_word(word: &str) -> &str {
+    match word {
+        "sweeping" => "working (sweeping)",
+        "done" => "finished",
+        "waiting-agent" => "waiting on an agent",
+        "waiting-user" => "needs you (waiting on you)",
+        "blocked" => "needs you (blocked)",
+        "throttled" => "needs you (throttled)",
+        "limit" => "needs you (usage limit)",
+        "prompt" => "needs you (prompt)",
+        "wedged" => "needs you (sweep wedged)",
+        "stale" => "unknown",
+        "starting" => "unknown (starting)",
+        "idle" => "no current status",
+        other => other,
+    }
 }
 
 /// Free text as an option VALUE can carry it.

@@ -10933,7 +10933,7 @@ mod tests {
                 "-t",
                 "%6",
                 "@ae_pane_state",
-                "#[fg=#537187]●#[default] sweeping",
+                "#[fg=#537187]●#[default] working (sweeping)",
                 ";",
                 "set-option",
                 "-w",
@@ -10955,10 +10955,11 @@ mod tests {
     /// The ticker animates the WORKING mark only: `Active` and
     /// `MetaSweeping` share the glyph, and the word after it is the VERDICT's —
     /// a literal "working" written over both repainted a pane that had just
-    /// published `● sweeping` as `● working` a hundred milliseconds later, and
-    /// made two panes with different observed values render identically. A
-    /// fresh `Quiet(WaitingAgent)` is NOT repainted: its seventh mark is
-    /// static, so the published `◔ waiting-agent` stands.
+    /// published `● working (sweeping)` as `● working` a hundred milliseconds
+    /// later, and made two panes with different observed values render
+    /// identically. A fresh `Quiet(WaitingAgent)` is NOT repainted: its
+    /// seventh mark is static, so the published `◔ waiting on an agent`
+    /// stands.
     #[test]
     fn a_ticked_pane_keeps_the_word_its_own_verdict_declares() {
         let mut state = MotionState {
@@ -10989,7 +10990,7 @@ mod tests {
         let args = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
         for expected in [
             "#[fg=#537187]●#[default] working",
-            "#[fg=#537187]●#[default] sweeping",
+            "#[fg=#537187]●#[default] working (sweeping)",
         ] {
             assert!(
                 args.iter().any(|word| word == expected),
