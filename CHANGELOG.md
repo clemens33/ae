@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.109] - 2026-10-22
+- A session's mark is its seats' most actionable mark: waiting-agent and done stop reading as idle in the app sidebar (#237)
+
 ## [v2026.10.108] - 2026-10-22
 - Name claude's folder-trust modal in a narrow pane (#255)
 
