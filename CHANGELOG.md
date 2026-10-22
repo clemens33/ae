@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.107] - 2026-10-22
+- Ae app: hide stopped sessions behind one collapsed toggle, one-line Agents / Working / Needs you summary
+
 ## [v2026.10.106] - 2026-10-21
 - Add ae quota --json: the table rows as one JSON document
 - Quota json test: use char::is_control and uniform slices
