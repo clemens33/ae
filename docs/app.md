@@ -64,7 +64,9 @@ recorded config first.
   session, else none. A fleet read opens the group when the selected session
   turned stopped, so it never leaves the list under you, and when it brings back
   a handed-over view of a stopped session. The counts of the summary do not
-  change with the group. What a session or seat waits on is told in the chat
+  change with the group, and neither does where the Agents section starts: the
+  list keeps the rows the open group needs (up to its share of the pane) while
+  the group is closed. What a session or seat waits on is told in the chat
   header, never under a row. A narrow row gives up the glyph first, then the
   tally down to its most urgent count, then the name's tail. `↑` / `↓` at the band's first row's right end show needy
   rows outside the list, and `!` reaches the next one. The `Agents N` heading

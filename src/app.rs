@@ -85,6 +85,8 @@ pub mod select;
 #[cfg(test)]
 mod select_spec;
 mod settings;
+#[cfg(test)]
+mod stablesplit_spec;
 mod tty;
 pub mod upgrade;
 #[cfg(test)]

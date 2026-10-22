@@ -756,9 +756,13 @@ fn list_lines(fleet: &Fleet, stopped: Stopped) -> Vec<Listed> {
     lines
 }
 
-/// How many lines the list has for `fleet` and its stopped group.
+/// How many lines the list has for `fleet` and its stopped group open: the
+/// running sessions, the group's toggle and every stopped session, whether the
+/// rows hold them or not. The list's size comes from this, so the group's state
+/// never changes it.
 pub(crate) fn list_len(fleet: &Fleet, stopped: Stopped) -> usize {
-    fleet.rows.len() + usize::from(stopped.total > 0)
+    let shown = fleet.rows.iter().filter(|row| row.is_stopped()).count();
+    fleet.rows.len() + usize::from(stopped.total > 0) + stopped.total.saturating_sub(shown)
 }
 
 /// Which sessions the list shows and where it ends.
@@ -817,8 +821,14 @@ fn sidebar(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, layout: &mut Layout) 
     let selected = model.position(fleet);
     let selected_line =
         selected.and_then(|at| lines.iter().position(|line| *line == Listed::Session(at)));
-    let (rows, pinned) = list_rows(buf.area, model.split(), count);
-    let list = List::of(count, selected_line, rows, pinned, model.list_top());
+    // The region is what the list holds with the stopped group open, whatever
+    // the group's state: a closed group leaves its rows empty, a list too long
+    // for it scrolls inside it, and the Agents section below never moves for a
+    // toggle.
+    let full = list_len(fleet, model.stopped());
+    let (rows, pinned) = list_rows(buf.area, model.split(), full);
+    let region = List::of(full, None, rows, pinned, None).end - LIST_TOP;
+    let list = List::of(count, selected_line, region, true, model.list_top());
     layout.list = Rect::new(0, LIST_TOP, rule, list.end - LIST_TOP);
     layout.selectable(
         buf,
