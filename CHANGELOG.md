@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.108] - 2026-10-22
+- Name claude's folder-trust modal in a narrow pane (#255)
+
 ## [v2026.10.107] - 2026-10-22
 - Ae app: hide stopped sessions behind one collapsed toggle, one-line Agents / Working / Needs you summary
 
