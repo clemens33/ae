@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.112] - 2026-10-22
+- A PACE forecast steers, never stops: advisories and the checkpoint ask name the window reset and the same-scope weekly reading; guidance reads PACE beside EFFECTIVE (#247)
+- Refuse to create a session from a mistyped ae command word (#254)
+
 ## [v2026.10.111] - 2026-10-22
 - Typed wait target: state waiting-agent --on <agent|session:agent|@session> names who a wait is on; app and ae list follow the chain and a wait that ends in another session never escalates to blocked (#237)
 
