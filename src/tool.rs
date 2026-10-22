@@ -705,18 +705,31 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     // MEASURED on claude 2.1.281 (2026-09-24, private probe panes, 80x24 and
-    // 200x50, bare and bypassPermissions alike): the folder-trust modal in a
-    // never-trusted directory (`tests/fixtures/claude-trust/`). A full-width
-    // rule, "Accessing workspace:", the path, then a question Ink wraps with
-    // its `?` mid-row, and the selection `❯` on "No, exit". Rule to hint is
-    // 17 rows at 80x24 and 16 at 200x50; the window's spare rows are for a
-    // narrower pane wrapping the question further.
+    // 200x50, bare and bypassPermissions alike) and on 2.1.306 (a 39x23 lead
+    // pane): the folder-trust modal in a never-trusted directory
+    // (`tests/fixtures/claude-trust/`). A full-width rule, "Accessing
+    // workspace:", the path, then a question Ink wraps with its `?` mid-row,
+    // and the selection `❯` on "No, exit".
+    //
+    // The window must hold the RULE, because the title is found under it:
+    // rule to hint is 16 rows at 200 columns, 17 at 80, 21 at 39 (all three
+    // measured); a greedy wrap to `columns - 1`, which reproduces those three
+    // frames exactly, gives 19 at 60, 20 at 45-50, 21 at 39-44, 22 at 34-38,
+    // 23 at 33 and 25 at 30-32. 25 is the smallest window that still holds the
+    // whole modal at 30 columns; the old 20 cropped the rule below 45.
+    // The trust block is answered only from 34 columns up, where the 33-cell
+    // hint row still draws on ONE row. At 30-33 columns the prompt is NAMED
+    // and never answered; so is a folder path longer than the row (Ink wraps
+    // it onto two), while that one extra row still fits the 25-row window.
+    // Below 30 columns the modal outgrows the window and is not promised.
+    // A pane shorter than the modal scrolls its rule off the visible screen, so
+    // the screen capture can miss it where the scrollback capture does not.
     prompt: Some(PromptSpec {
         question: Question::StartsWith("Quick safety check:"),
         title: Some("Accessing workspace:"),
         selected: '❯',
         keys: &["to confirm · "],
-        window: 20,
+        window: 25,
         trust: Some(TrustSpec {
             heading: "Accessing workspace:",
             paragraphs: &[
@@ -1607,7 +1620,7 @@ mod tests {
                         title: Some("Accessing workspace:"),
                         selected: '❯',
                         keys: &["to confirm · "],
-                        window: 20,
+                        window: 25,
                         trust: Some(TrustSpec {
                             heading: "Accessing workspace:",
                             paragraphs: &[

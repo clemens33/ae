@@ -24,6 +24,64 @@ const AGY: &str = include_str!("../fixtures/agy-composer/agy-trust-modal-frame.t
 const CLAUDE_IDLE: &str = include_str!("../fixtures/harness-state/claude-idle-167x40.txt");
 const AGY_IDLE: &str = include_str!("../fixtures/agy-composer/agy-composed-frame.txt");
 
+#[test]
+fn trustmiss_watchdog_answers_only_the_recorded_folder_and_names_off_or_foreign() {
+    let narrow = include_str!("../fixtures/claude-trust/claude-trust-modal-39x23.txt");
+    for case in ["on", "off", "foreign"] {
+        let mut rig = Rig::new(&format!("tm-{case}"), "claude", "normal");
+        // A short, real directory keeps the measured folder on ONE row even
+        // when the runner's own scratch base has a longer path.
+        rig.replace_meta("work_dir.main", "/tmp");
+        if case == "off" {
+            write(
+                rig.root.join("config"),
+                "[workspace]\nauto_trust = off\nquota = off\nauto_upgrade = off\ntheme = off\n",
+            );
+        } else if case == "foreign" {
+            rig.replace_meta("work_dir.main", &rig.root.display().to_string());
+        }
+        let frame = narrow.replace("/tmp/claude-trust-probe", "/tmp");
+        write(rig.root.join("frame"), &frame);
+        rig.repaint(&frame);
+        rig.start();
+        rig.result();
+        if case == "on" {
+            assert_eq!(
+                rig.count("auto-trust"),
+                1,
+                "measured narrow modal is answered"
+            );
+            assert_eq!(rig.wire(), b"\x1b[B\r", "only Down then Enter");
+            assert_eq!(rig.count("auto-trust-reserved"), 1);
+            assert_eq!(rig.count("human-prompt"), 0, "a landed answer is not named");
+        } else {
+            assert_eq!(
+                rig.count("human-prompt"),
+                1,
+                "{case}: name the actual question"
+            );
+            assert_eq!(rig.count("auto-trust"), 0, "{case}: no completion");
+            assert_eq!(
+                rig.count("auto-trust-reserved"),
+                0,
+                "{case}: no reservation"
+            );
+            assert!(rig.wire().is_empty(), "{case}: zero keys");
+            let named = rig
+                .events()
+                .into_iter()
+                .find(|event| event.action == "human-prompt")
+                .expect("named question");
+            assert!(
+                named
+                    .summary
+                    .unwrap_or_default()
+                    .contains("Quick safety check:")
+            );
+        }
+    }
+}
+
 // A copied native perl executable named claude/agy supplies an OS-proven tool
 // process, unlike a shebang whose comm is perl. No vendor store is opened.
 const VENDOR: &str = r#"use strict;

@@ -2492,6 +2492,11 @@ fn human_prompts_refuse_helpers_without_keys_or_request_state_changes() {
 fn human_prompts_stop_every_paste_shape_before_the_first_key() {
     for (tool, frame, question) in [
         ("claude", HUMAN_CLAUDE, "Quick safety check:"),
+        (
+            "claude",
+            include_str!("../fixtures/claude-trust/claude-trust-modal-39x23.txt"),
+            "Quick safety check:",
+        ),
         ("agy", HUMAN_AGY, "Do you trust"),
     ] {
         let rig = Rig::with_frame(&format!("hp-shapes-{tool}"), tool, frame);
