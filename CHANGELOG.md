@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.115] - 2026-10-22
+- Opencode go quota failure note says ago once: the age label already ends in ago; the docs name the key an OpenCode Console key with usage access, separate from the key opencode uses for model calls (#123)
+
 ## [v2026.10.114] - 2026-10-22
 - Codex's Warnings panel is named and, under auto_trust, dismissed with one Escape per panel episode: aged from its first naming, held by recent client input, reserved before the key; a drawn panel refuses deliveries by its question
 - A seat whose proof challenges stop landing reads unreachable everywhere: one durable alert per episode, one fold for the watchdog, ae list, roster and rollup, outranking quiet declarations and prompt namings; it ends only on the seat's own record, a confirmed delivery or a new tool start
