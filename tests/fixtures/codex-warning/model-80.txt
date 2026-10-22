@@ -1,0 +1,12 @@
+  Warnings · 2 of 2 · Startup
+
+  This session was recorded with model `gpt-6-luna` but is resuming with `gpt-
+  6.1-sol`. Consider switching back to `gpt-6-luna` as it may affect Codex
+  performance.
+
+
+
+
+
+
+  k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll

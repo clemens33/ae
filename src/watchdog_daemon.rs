@@ -233,6 +233,9 @@ pub struct PaneState {
     /// latch flag: the streak IS the latch, reaching the bound exactly once,
     /// which is how `throttle_streak` already names a persistent throttle.
     pub human_prompt_streak: u32,
+    /// The tool start the prompt was last seen on: a different proven start
+    /// is a new episode, named again.
+    pub prompt_start: Option<String>,
     /// Consecutive nudges that did not land.
     pub undelivered_streak: u32,
     /// Consecutive cycles whose process snapshot was unusable.
@@ -295,6 +298,9 @@ pub struct Observation {
     pub launch_attempt: crate::tmux::Evidence,
     /// The alert the log still shows this seat, if any.
     pub outstanding_alert: Option<crate::attention::Reason>,
+    /// The tool start the cycle's process table shows under the pane
+    /// ([`crate::autotrust::start_of`]): what a panel's naming is keyed to.
+    pub start: Option<String>,
     /// Age of the newest event this agent is the ACTOR of.
     pub last_actor_event_age_secs: u64,
     /// Age of this seat's newest declaration: what a `waiting-agent` ceiling
@@ -1709,7 +1715,14 @@ fn book_human_prompt(
     knobs: &Knobs,
 ) -> Option<Verdict> {
     let prompt = seen.human_prompt.as_ref()?;
-    next.human_prompt_streak = prior.human_prompt_streak.saturating_add(1);
+    let restarted = prior.prompt_start.is_some() && seen.start.is_some();
+    let streak = if restarted && prior.prompt_start != seen.start {
+        0
+    } else {
+        prior.human_prompt_streak
+    };
+    next.human_prompt_streak = streak.saturating_add(1);
+    next.prompt_start.clone_from(&seen.start);
     if next.human_prompt_streak < knobs.human_prompt_cycles {
         return None;
     }
@@ -1717,6 +1730,14 @@ fn book_human_prompt(
     // lasts — `book_throttle`'s rule, and the reason no latch flag is needed.
     let name = next.human_prompt_streak == knobs.human_prompt_cycles;
     match trust {
+        // A panel is named first: its naming is the first sight its quiet
+        // gate ages from, so the Escape always follows a record.
+        Some(crate::autotrust::Due::Yes) if prompt.dismiss => {
+            if name {
+                effects.extend(naming(prompt));
+            }
+            effects.push(Effect::AnswerTrust { name: false });
+        }
         // A trust block that is this seat's to answer is answered on every
         // cycle from the bound on until its start is spent, and named only
         // when the answer does not land.
@@ -2058,14 +2079,18 @@ fn account_ordinary(
     //     READ the pane and no longer shows the prompt. A FAILED capture is an
     //     absence of evidence — clearing on it would flap the latch with
     //     clear-and-relatch pairs while a live modal sits untouched.
+    //     A restarted daemon clears the naming it did not count.
     if seen.capture_ok && seen.human_prompt.is_none() {
-        if prior.human_prompt_streak >= knobs.human_prompt_cycles {
+        if prior.human_prompt_streak >= knobs.human_prompt_cycles
+            || seen.outstanding_alert == Some(crate::attention::Reason::Blocked)
+        {
             effects.push(Effect::Emit {
                 action: "human-prompt-cleared",
                 summary: "the human-only prompt is gone from the pane".to_owned(),
             });
         }
         next.human_prompt_streak = 0;
+        next.prompt_start = None;
     }
 
     if let DoneProgress::ChallengeDue {
@@ -5666,6 +5691,13 @@ impl Cycle<'_> {
                     state,
                 )
             });
+            let start = table
+                .as_deref()
+                .zip(pane.pane_pid)
+                .zip(launch.zip(agent_bin.as_deref()))
+                .and_then(|((table, pid), (launch, bin))| {
+                    crate::autotrust::start_of(table, pid, (&slot, launch), bin)
+                });
             let seen = Observation {
                 now_epoch: now,
                 hash,
@@ -5696,6 +5728,7 @@ impl Cycle<'_> {
                     &slot,
                     agent,
                 ),
+                start,
                 last_actor_event_age_secs: last_actor_event_age(
                     &events,
                     self.session,
@@ -5740,7 +5773,10 @@ impl Cycle<'_> {
                 events: &events,
                 overview: seen.sweep.as_ref().and(overview.as_ref()),
             };
-            let trust = self.trust_due(&seen, &slot, &pane.pane_id, agent_bin.as_deref());
+            let input = carried
+                .client_activity
+                .and_then(|(_, at)| i64::try_from(at).ok());
+            let trust = self.trust_due(&seen, (&slot, &pane.pane_id), agent_bin.as_deref(), input);
             let booked = account_with_trust(carried, &seen, &self.knobs, trust.as_ref());
             *carried = booked.next;
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
@@ -6357,6 +6393,10 @@ impl Cycle<'_> {
     }
 
     /// Perform one effect.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per effect, each the effect's whole delivery and record"
+    )]
     fn apply(
         &self,
         effect: &Effect,
@@ -6366,6 +6406,19 @@ impl Cycle<'_> {
     ) -> crate::Result<()> {
         let agent = on.agent;
         match effect {
+            // A panel's naming is keyed to its tool start: what the quiet
+            // gate ages from.
+            Effect::Emit { action, summary } if crate::autotrust::panel_named(summary) => Journal {
+                meta_dir: self.meta_dir,
+                session: self.session,
+            }
+            .record_referring(
+                action,
+                agent,
+                on.seen.start.as_deref().unwrap_or_default(),
+                summary,
+                err,
+            ),
             Effect::Emit { action, summary } => self.emit(action, agent, summary, err),
             Effect::Notify(text) => {
                 self.notify(agent, text);
@@ -6747,19 +6800,19 @@ impl Cycle<'_> {
     fn trust_due(
         &self,
         seen: &Observation,
-        slot: &str,
-        pane: &str,
+        (slot, pane): (&str, &str),
         tool: Option<&str>,
+        input: Option<i64>,
     ) -> Option<crate::autotrust::Due> {
         let prompt = seen
             .human_prompt
             .as_ref()
-            .filter(|_| self.auto_trust.answers());
-        let sighting = prompt?.trust.as_ref()?;
-        Some(crate::autotrust::due(
-            &self.trust_seat(slot, pane, tool?),
-            sighting,
-        ))
+            .filter(|_| self.auto_trust.answers())?;
+        let seat = self.trust_seat(slot, pane, tool?);
+        if prompt.dismiss {
+            return Some(crate::autotrust::dismiss_due(&seat, input));
+        }
+        Some(crate::autotrust::due(&seat, prompt.trust.as_ref()?))
     }
 
     fn trust_seat<'s>(
@@ -6788,9 +6841,20 @@ impl Cycle<'_> {
         err: &mut impl Write,
     ) -> crate::Result<()> {
         let tool = self.agent_bin(on.slot).unwrap_or_default();
-        match crate::deliver::answer_trust(&self.trust_seat(on.slot, on.pane, &tool), err) {
+        let seat = self.trust_seat(on.slot, on.pane, &tool);
+        // A panel is named at the bound already (`name` is false): the clear
+        // that follows a landed Escape is 5c's, so the streak is left to it.
+        let (ask, word) = if on.seen.human_prompt.as_ref().is_some_and(|it| it.dismiss) {
+            let input = state
+                .client_activity
+                .and_then(|(_, at)| i64::try_from(at).ok());
+            (crate::deliver::Ask::Panel(input), "auto-dismiss")
+        } else {
+            (crate::deliver::Ask::Trust, "auto-trust")
+        };
+        match crate::deliver::answer_trust(&seat, ask, err) {
             crate::deliver::TrustAnswer::Trusted(summary) => {
-                self.notify(on.agent, &format!("auto-trust: {summary}"));
+                self.notify(on.agent, &format!("{word}: {summary}"));
                 // Never named, so nothing is to clear: a modal still drawn is
                 // counted again and, its start now spent, named at the bound.
                 if name {
@@ -7504,6 +7568,7 @@ mod tests {
             question: "Do you trust the contents of this project?".to_owned(),
             keys: "↑/↓ Navigate · enter Confirm".to_owned(),
             trust: None,
+            dismiss: false,
         }
     }
 
@@ -7882,6 +7947,7 @@ mod tests {
             descendancy: Descendancy::Present,
             launch_attempt: crate::tmux::Evidence::Silent,
             outstanding_alert: Some(crate::attention::Reason::Dead),
+            start: None,
             last_actor_event_age_secs: 0,
             declared_age_secs: 0,
             sweep: None,

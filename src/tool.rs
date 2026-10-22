@@ -609,6 +609,27 @@ pub(crate) struct TrustSpec {
     pub(crate) trailer: usize,
 }
 
+/// An information panel a harness draws in place of its composer until a key
+/// closes it — data only, read by [`crate::watchdog::human_prompt_class`]. It
+/// is NAMED by its title and hint alone; `auto_trust` may dismiss it only when
+/// its body is one listed here WHOLE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PanelSpec {
+    /// The title row, trimmed, of a panel that counts nothing.
+    pub(crate) title: &'static str,
+    /// The title row of a counted panel: these two around `<i> of <n>`.
+    pub(crate) counted: (&'static str, &'static str),
+    /// The key-hint row, trimmed: the last non-blank row.
+    pub(crate) hint: &'static str,
+    /// How far up from the hint, in rows, the title must sit, hint included.
+    pub(crate) window: usize,
+    /// The bodies that may be dismissed, wrapped rows joined; each `{}` is a
+    /// slot holding one token with no space or backtick.
+    pub(crate) bodies: &'static [&'static str],
+    /// The longest a slot may be, in bytes.
+    pub(crate) slot_bytes: usize,
+}
+
 /// How a human-only prompt's question row is recognised, once trimmed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Question {
@@ -666,6 +687,9 @@ pub(crate) struct ToolAdapter {
     pub(crate) input: InputSpec,
     /// The prompt only the human may answer, where one is measured.
     pub(crate) prompt: Option<PromptSpec>,
+    /// The information panel that can stand where the composer was, where one
+    /// is measured.
+    pub(crate) panel: Option<PanelSpec>,
     /// Which pane grammar proves this harness's live identity, if any.
     pub(crate) identity: IdentitySpec,
     /// In-place compaction capability (R11).
@@ -769,6 +793,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
             trailer: 0,
         }),
     }),
+    panel: None,
     identity: IdentitySpec::BorderComposer,
     model: ModelSpec::ReportOnly(&["--model"]),
     pin_match: PinMatch::FamilyVersion,
@@ -836,6 +861,20 @@ const CODEX: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: true,
     },
     prompt: None,
+    // MEASURED on codex 0.163.0 (F2, or a click on its footer warning):
+    // `tests/fixtures/codex-warning/`.
+    panel: Some(PanelSpec {
+        title: "Warnings",
+        counted: ("Warnings · ", " · Startup"),
+        hint: "k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll",
+        window: 12,
+        bodies: &[
+            "Running without the shared background server: command-line configuration overrides (-c, --enable, --disable, or --search) requires embedded mode.",
+            "This session was recorded with model `{}` but is resuming with `{}`. Consider switching back to `{}` as it may affect Codex performance.",
+            "No warnings",
+        ],
+        slot_bytes: 256,
+    }),
     identity: IdentitySpec::StyleFooter,
     model: ModelSpec::Replayable(&["-m", "--model"]),
     pin_match: PinMatch::Exact,
@@ -892,6 +931,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    panel: None,
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -982,6 +1022,7 @@ const AGY: ToolAdapter = ToolAdapter {
             trailer: 1,
         }),
     }),
+    panel: None,
     identity: IdentitySpec::TrailingLabel,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -1059,6 +1100,7 @@ const GROK: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    panel: None,
     identity: IdentitySpec::BorderText,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -1122,6 +1164,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    panel: None,
     identity: IdentitySpec::RuleFooter,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -1209,6 +1252,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    panel: None,
     identity: IdentitySpec::RailStatus,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -1262,6 +1306,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    panel: None,
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -1289,6 +1334,11 @@ const KNOWN: [&ToolAdapter; 7] = [&CLAUDE, &CODEX, &GEMINI, &AGY, &GROK, &MUSE, 
 /// carrying a second list beside the adapter rows.
 pub fn config_home_envs() -> impl Iterator<Item = &'static str> {
     KNOWN.iter().filter_map(|adapter| adapter.config_home_env)
+}
+
+/// Every measured info panel a known adapter row declares.
+pub(crate) fn panels() -> impl Iterator<Item = PanelSpec> {
+    KNOWN.iter().filter_map(|adapter| adapter.panel)
 }
 
 /// Whether `token` is a client token some adapter row declares.
@@ -1679,6 +1729,7 @@ mod tests {
                             trailer: 0,
                         }),
                     }),
+                    panel: None,
                     identity: IdentitySpec::BorderComposer,
                     model: ModelSpec::ReportOnly(&["--model"]),
                     pin_match: PinMatch::FamilyVersion,
@@ -1745,6 +1796,18 @@ mod tests {
                         paste_initial_on_resume: true,
                     },
                     prompt: None,
+                    panel: Some(PanelSpec {
+                        title: "Warnings",
+                        counted: ("Warnings · ", " · Startup"),
+                        hint: "k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll",
+                        window: 12,
+                        bodies: &[
+                            "Running without the shared background server: command-line configuration overrides (-c, --enable, --disable, or --search) requires embedded mode.",
+                            "This session was recorded with model `{}` but is resuming with `{}`. Consider switching back to `{}` as it may affect Codex performance.",
+                            "No warnings",
+                        ],
+                        slot_bytes: 256,
+                    }),
                     identity: IdentitySpec::StyleFooter,
                     model: ModelSpec::Replayable(&["-m", "--model"]),
                     pin_match: PinMatch::Exact,
@@ -1800,6 +1863,7 @@ mod tests {
                         paste_initial_on_resume: false,
                     },
                     prompt: None,
+                    panel: None,
                     identity: IdentitySpec::Unmodelled,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -1874,6 +1938,7 @@ mod tests {
                             trailer: 1,
                         }),
                     }),
+                    panel: None,
                     identity: IdentitySpec::TrailingLabel,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -1933,6 +1998,7 @@ mod tests {
                         paste_initial_on_resume: false,
                     },
                     prompt: None,
+                    panel: None,
                     identity: IdentitySpec::BorderText,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -1986,6 +2052,7 @@ mod tests {
                         paste_initial_on_resume: false,
                     },
                     prompt: None,
+                    panel: None,
                     identity: IdentitySpec::RuleFooter,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -2046,6 +2113,7 @@ mod tests {
                         paste_initial_on_resume: false,
                     },
                     prompt: None,
+                    panel: None,
                     identity: IdentitySpec::RailStatus,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -2106,6 +2174,7 @@ mod tests {
                     paste_initial_on_resume: false,
                 },
                 prompt: None,
+                panel: None,
                 identity: IdentitySpec::Unmodelled,
                 model: ModelSpec::Unobserved,
                 pin_match: PinMatch::Exact,

@@ -8,7 +8,7 @@ pub mod notice;
 pub mod region;
 pub(crate) mod trust;
 
-pub(crate) use trust::{FRAME_GAP, TrustAnswer, answer_trust};
+pub(crate) use trust::{Ask, FRAME_GAP, TrustAnswer, answer_trust};
 
 use std::fmt;
 use std::io::{self, Write};
@@ -983,7 +983,10 @@ fn quiet_held(
 
 /// Whether `tool` has a MEASURED human-only prompt row to read for.
 fn prompt_row(tool: Option<ToolKind>) -> bool {
-    tool.is_some_and(|kind| kind.adapter().prompt.is_some())
+    tool.is_some_and(|kind| {
+        let adapter = kind.adapter();
+        adapter.prompt.is_some() || adapter.panel.is_some()
+    })
 }
 
 /// What the ONE delivery-side read saw. Never "clear": coverage is the tool's

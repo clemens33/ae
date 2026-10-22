@@ -7391,6 +7391,7 @@ mod tests {
             question: question.to_owned(),
             keys: "Enter to confirm · Esc to cancel".to_owned(),
             trust: None,
+            dismiss: false,
         }))
     }
 
@@ -7411,6 +7412,7 @@ mod tests {
             question: question.to_owned(),
             keys: "Enter to confirm · Esc to cancel".to_owned(),
             trust: None,
+            dismiss: false,
         })
     }
 

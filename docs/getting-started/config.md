@@ -201,7 +201,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
 | `fleet_order` | The order your sessions are drawn in on the fleet strip, and the sessions pinned to the top of the app's sidebar, as a comma-separated list of session names; global config only | creation order |
 | `restore` | Let bare `ae` resume the sessions a crashed tmux server held (`on` / `off`); global config only | `on` |
-| `auto_trust` | Answer claude's and agy's folder-trust modal for a seat's OWN recorded folder, once per tool start (`on` / `off`); global config only | `on` |
+| `auto_trust` | Answer claude's and agy's folder-trust modal for a seat's OWN recorded folder, once per tool start, and dismiss codex's Warnings panel with one Escape per panel episode (`on` / `off`); global config only | `on` |
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
@@ -349,13 +349,18 @@ one incarnation. Sessions still live are left alone; a candidate skipped during
 a restore run is named on stderr as `ae: skipped <name>: <reason>`, and a failed
 attempt as `ae: restore failed <name>:`.
 
-`auto_trust` answers ONE prompt: the measured folder-trust modal of claude or
+`auto_trust` answers TWO prompts. The first is the measured folder-trust modal of claude or
 agy, drawn whole, naming exactly the folder the seat was started in (symlinks
 resolved). It presses at most one arrow onto "Yes, I trust this folder" and one
 Enter per tool start, inside a `spawn` brief or launch-turn wait, else through
 the session's watchdog. Every answer is journaled (`auto-trust` and its
 `auto-trust-*` steps) and said once on the chat. Anything else — another prompt,
 another folder, a damaged journal — is named as before and left to you.
+The second is codex's Warnings panel, which replaces its input box (F2 opens it,
+and so does a click on codex's `⚠ N warning · f2 to view` footer): once it has
+been named for 60 s with no input from you on that pane, ae presses one Escape
+per panel episode, journaled as `auto-dismiss` and its `auto-dismiss-*` steps.
+An unmeasured panel body is only named.
 Absence and `on` answer, the exact lowercase `off` does not, and any other value
 answers nothing, said once by the watchdog. A claude or agy launch with no
 watchdog pastes no turn, so nothing answers its modal.

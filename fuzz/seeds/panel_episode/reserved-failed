@@ -1,0 +1,3 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"human-prompt","target":"lead","target_slot":"main","target_session":"s","summary":"Warnings · 1 of 1 · Startup — press: k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll","ref":"main:start-one:7"}
+{"ts":"2023-11-14T22:14:21Z","actor":"watchdog","action":"auto-dismiss-reserved","target":"lead","target_slot":"main","target_session":"s","summary":"reserved","ref":"main:start-one:7@1700000000"}
+{"ts":"2023-11-14T22:14:22Z","actor":"watchdog","action":"auto-dismiss-failed","target":"lead","target_slot":"main","target_session":"s","summary":"key refused","ref":"main:start-one:7@1700000000"}

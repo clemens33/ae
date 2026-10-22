@@ -1,0 +1,2 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"human-prompt","target":"lead","target_slot":"main","target_session":"s","summary":"Warnings · 1 of 1 · Startup — press: k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll","ref":"main:start-one:7"}
+{"ts":"2023-11-14T22:14:21Z","actor":"watchdog","action":"auto-trust-reserved","target":"lead","target_slot":"main","target_session":"s","summary":"trust spent earlier","ref":"main:start-one:7"}

@@ -10,7 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::events::Event;
+use crate::attention::Reason;
+use crate::events::{AlertMeaning, Event};
 use crate::inventory::ServerId;
 use crate::procs::{Lineage, Proc};
 use crate::store::SourceRead;
@@ -27,6 +28,18 @@ pub const KEY: &str = "auto-trust-key";
 pub const TRUSTED: &str = "auto-trust";
 /// A reserved start that stopped before the modal was gone.
 pub const FAILED: &str = "auto-trust-failed";
+/// Reserves one measured info-panel run of one tool start before its Escape;
+/// like [`RESERVED`], the reservation ALONE spends it.
+pub const DISMISS_RESERVED: &str = "auto-dismiss-reserved";
+/// The one Escape sent, or refused by tmux.
+pub const DISMISS_KEY: &str = "auto-dismiss-key";
+/// The panel is gone after the Escape.
+pub const DISMISSED: &str = "auto-dismiss";
+/// A reserved panel run that stopped before the panel was gone.
+pub const DISMISS_FAILED: &str = "auto-dismiss-failed";
+/// Both quiet gates of a dismissal, in seconds: since the panel run's durable
+/// first sight, and since the newest input a client viewing the pane gave.
+pub(crate) const DISMISS_QUIET_SECS: i64 = 60;
 
 /// The seat an answer is for, as its caller placed it. Every field is proven
 /// again against the meta, tmux and the process table before each key.
@@ -48,6 +61,27 @@ pub(crate) struct Proof {
     name: String,
     episode: String,
     folder: PathBuf,
+    kind: Kind,
+}
+
+/// Which answer an episode is, and so which four records it writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// The folder-trust block: one tool start.
+    Trust,
+    /// The measured info panel: one panel run of one tool start, keyed
+    /// `<start>@<first sight>`.
+    Dismiss,
+}
+
+impl Kind {
+    /// The reservation, key, completion and failure actions, in that order.
+    const fn actions(self) -> [&'static str; 4] {
+        match self {
+            Self::Trust => [RESERVED, KEY, TRUSTED, FAILED],
+            Self::Dismiss => [DISMISS_RESERVED, DISMISS_KEY, DISMISSED, DISMISS_FAILED],
+        }
+    }
 }
 
 /// Whether a drawn trust block is this seat's to answer now.
@@ -146,14 +180,35 @@ fn try_in_wait(
         pane,
         tool: &tool,
     };
-    Some(crate::deliver::answer_trust(&seat, err))
+    Some(crate::deliver::answer_trust(
+        &seat,
+        crate::deliver::Ask::Trust,
+        err,
+    ))
 }
 
-/// The seat, proven from its records and its pane: the recorded server and
-/// binary, the pane stamped as this slot of this session incarnation and the
-/// only pane of the slot, one live tool process under it, and the seat's
-/// folder equal to `drawn`, both canonical.
+/// The seat, proven from its records and its pane as [`start`] proves it, and
+/// the seat's folder equal to `drawn`, both canonical.
 pub(crate) fn prove(seat: &Seat<'_>, drawn: &str) -> Result<Proof, String> {
+    let (meta, proof) = start(seat)?;
+    let recorded = crate::meta::resolve_seat_dir(&meta, seat.slot)?;
+    if !Path::new(&recorded).is_absolute() {
+        return Err("the seat records no folder".to_owned());
+    }
+    let folder = crate::doors::canonical_strict_dir(Path::new(&recorded))
+        .map_err(|why| format!("the seat's folder {}", place(&why)))?;
+    let shown = crate::doors::canonical_strict_dir(Path::new(drawn))
+        .map_err(|why| format!("the drawn folder {}", place(&why)))?;
+    if folder != shown {
+        return Err(format!("the modal names {drawn}, not the seat's folder"));
+    }
+    Ok(Proof { folder, ..proof })
+}
+
+/// The seat's tool START, proven from its records and its pane: the recorded
+/// server and binary, the pane stamped as this slot of this session
+/// incarnation and the only pane of the slot, one live tool process under it.
+pub(crate) fn start(seat: &Seat<'_>) -> Result<(crate::meta::Meta, Proof), String> {
     let meta = meta(seat.dir)?;
     match meta.server_selector() {
         crate::meta::ServerSelector::Positive(named)
@@ -196,22 +251,38 @@ pub(crate) fn prove(seat: &Seat<'_>, drawn: &str) -> Result<Proof, String> {
         .ok_or("pane pid unreadable")?;
     let table = crate::procs::snapshot().ok_or("process table unreadable")?;
     let pid = tool_pid(&table, pane_pid, seat.tool)?;
-    let recorded = crate::meta::resolve_seat_dir(&meta, seat.slot)?;
-    if !Path::new(&recorded).is_absolute() {
-        return Err("the seat records no folder".to_owned());
-    }
-    let folder = crate::doors::canonical_strict_dir(Path::new(&recorded))
-        .map_err(|why| format!("the seat's folder {}", place(&why)))?;
-    let shown = crate::doors::canonical_strict_dir(Path::new(drawn))
-        .map_err(|why| format!("the drawn folder {}", place(&why)))?;
-    if folder != shown {
-        return Err(format!("the modal names {drawn}, not the seat's folder"));
-    }
-    Ok(Proof {
+    let proof = Proof {
         name: entry.name.clone(),
         episode: format!("{}:{launch}:{pid}", seat.slot),
-        folder,
-    })
+        folder: PathBuf::new(),
+        kind: Kind::Trust,
+    };
+    Ok((meta, proof))
+}
+
+/// The tool start a cycle's own process table shows under the pane, spelled
+/// as [`start`] spells it: what a panel's naming is keyed to. `None` when the
+/// table names no one start.
+pub(crate) fn start_of(
+    table: &[Proc],
+    pane_pid: u32,
+    (slot, launch): (&str, &str),
+    tool: &str,
+) -> Option<String> {
+    let pid = tool_pid(table, pane_pid, tool).ok()?;
+    (!launch.is_empty()).then(|| format!("{slot}:{launch}:{pid}"))
+}
+
+/// Prove `proof`'s seat again before a key: `Ok(false)` when it changed.
+pub(crate) fn again(seat: &Seat<'_>, proof: &Proof, drawn: &str) -> Result<bool, String> {
+    match proof.kind {
+        Kind::Trust => prove(seat, drawn).map(|again| again == *proof),
+        Kind::Dismiss => start(seat).map(|(_, again)| {
+            again.name == proof.name
+                && proof.episode.rsplit_once('@').map(|(start, _)| start)
+                    == Some(again.episode.as_str())
+        }),
+    }
 }
 
 /// The pane's own readings name `slot` of `session`, in the incarnation
@@ -289,7 +360,7 @@ fn spent(events: &[Event], episode: &str) -> bool {
 }
 
 /// Append the reservation only to a journal that reads strictly and holds none
-/// for this start, under one hold of its lock; then read it back exactly once.
+/// for this start.
 pub(crate) fn reserve(seat: &Seat<'_>, proof: &Proof, yes: bool) -> Result<(), String> {
     let selected = if yes { "yes" } else { "no" };
     let summary = format!(
@@ -297,47 +368,186 @@ pub(crate) fn reserve(seat: &Seat<'_>, proof: &Proof, yes: bool) -> Result<(), S
         seat.tool,
         proof.folder.display()
     );
-    let line = line(seat, proof, RESERVED, &summary);
-    let store = crate::store::open(seat.dir);
-    match store.append_event_decided(|source| match ledger(source) {
-        Ok(events) if spent(&events, &proof.episode) => {
+    book(seat, proof, &summary, |events| {
+        if spent(events, &proof.episode) {
             Err(format!("{} is already spent", proof.episode))
+        } else {
+            Ok(())
         }
-        Ok(_) => Ok(line),
-        Err(why) => Err(why),
+    })
+}
+
+/// Append `proof`'s reservation only to a journal that reads strictly and
+/// that `owed` accepts, under one hold of its lock; then read it back once.
+fn book(
+    seat: &Seat<'_>,
+    proof: &Proof,
+    summary: &str,
+    owed: impl FnOnce(&[Event]) -> Result<(), String>,
+) -> Result<(), String> {
+    let [reserved, ..] = proof.kind.actions();
+    let line = line(seat, proof, reserved, summary);
+    let store = crate::store::open(seat.dir);
+    match store.append_event_decided(|source| {
+        ledger(source)
+            .and_then(|events| owed(&events))
+            .map(|()| line)
     }) {
         Err(why) => return Err(format!("reservation not written: {why}")),
         Ok(Err(why)) => return Err(why),
         Ok(Ok(())) => {}
     }
     let events = ledger(store.events_source())?;
-    let reserved = events
+    let count = events
         .iter()
         .filter(|event| {
-            event.action == RESERVED && event.reference.as_deref() == Some(&proof.episode)
+            event.action == reserved && event.reference.as_deref() == Some(&proof.episode)
         })
         .count();
-    if reserved == 1 {
+    if count == 1 {
         Ok(())
     } else {
         Err("the reservation did not read back exactly once".to_owned())
     }
 }
 
-/// The modal is gone: record it, then tell the chat in the record's words.
-/// The summary, or why its record failed.
-pub(crate) fn trusted(
+/// Whether a `human-prompt` summary names a measured info panel: its title,
+/// then its hint — the one reading both the naming's key and its age use.
+pub(crate) fn panel_named(summary: &str) -> bool {
+    crate::tool::panels().any(|panel| {
+        summary.starts_with(panel.title) && summary.ends_with(&format!("— press: {}", panel.hint))
+    })
+}
+
+/// The epoch this tool start's panel run was FIRST named: the oldest panel
+/// naming keyed to `start` since the run's last end. A clear, any other
+/// naming, and a dead alert end a run.
+fn first_sight(
+    events: &[Event],
+    (session, slot, agent): (&str, &str, &str),
+    start: &str,
+) -> Option<i64> {
+    let mut first = None;
+    for event in events
+        .iter()
+        .filter(|event| crate::watchdog::event_is_addressed_to(event, session, slot, agent))
+    {
+        let ended = event.action == "human-prompt-cleared"
+            || event.alert_meaning() == AlertMeaning::Raised(Reason::Dead);
+        let summary = event.summary.as_deref().unwrap_or_default();
+        if event.action == "human-prompt"
+            && panel_named(summary)
+            && event.reference.as_deref() == Some(start)
+        {
+            first.get_or_insert(event.ts.epoch());
+        } else if ended || event.action == "human-prompt" {
+            first = None;
+        }
+    }
+    first
+}
+
+/// Whether the panel run named for `start` is owed its ONE Escape at `now`:
+/// first seen at least [`DISMISS_QUIET_SECS`] ago, no client input inside the
+/// same span (a future stamp holds), and no reservation for the run yet.
+/// Public for the `panel_episode` fuzz target only.
+#[doc(hidden)]
+#[must_use]
+pub fn dismiss_due_at(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    start: &str,
+    now: i64,
+    input: Option<i64>,
+) -> Due {
+    let quiet = |at: i64| {
+        now.checked_sub(at)
+            .is_some_and(|age| age >= DISMISS_QUIET_SECS)
+    };
+    let Some(first) = first_sight(events, (session, slot, agent), start) else {
+        return Due::No;
+    };
+    let episode = format!("{start}@{first}");
+    let spent = events.iter().any(|event| {
+        event.action == DISMISS_RESERVED && event.reference.as_deref() == Some(&episode)
+    });
+    if quiet(first) && input.is_none_or(quiet) && !spent {
+        Due::Yes
+    } else {
+        Due::No
+    }
+}
+
+/// [`dismiss_due_at`] for the seat's proven start, now, over the strict
+/// journal: an unproven seat is not owed, a doubtful journal is doubt.
+pub(crate) fn dismiss_due(seat: &Seat<'_>, input: Option<i64>) -> Due {
+    let Ok((_, proof)) = start(seat) else {
+        return Due::No;
+    };
+    match ledger(crate::store::open(seat.dir).events_source()) {
+        Err(why) => Due::Doubt(why),
+        Ok(events) => dismiss_due_at(
+            &events,
+            seat.session,
+            seat.slot,
+            &proof.name,
+            &proof.episode,
+            Timestamp::now().epoch(),
+            input,
+        ),
+    }
+}
+
+/// Reserve the panel run `start` names, re-judged under the journal's lock:
+/// the dismissal's own proof, keyed `<start>@<first sight>`.
+pub(crate) fn reserve_dismissal(
+    seat: &Seat<'_>,
+    start: &Proof,
+    question: &str,
+    input: Option<i64>,
+) -> Result<Proof, String> {
+    let at = (seat.session, seat.slot, start.name.as_str());
+    let events = ledger(crate::store::open(seat.dir).events_source())?;
+    let first = first_sight(&events, at, &start.episode).ok_or("the panel has no first sight")?;
+    let proof = Proof {
+        episode: format!("{}@{first}", start.episode),
+        kind: Kind::Dismiss,
+        ..start.clone()
+    };
+    let now = Timestamp::now().epoch();
+    book(
+        seat,
+        &proof,
+        &format!("{} {question}", seat.tool),
+        |events| {
+            let due = dismiss_due_at(events, at.0, at.1, at.2, &start.episode, now, input);
+            if due == Due::Yes && first_sight(events, at, &start.episode) == Some(first) {
+                Ok(())
+            } else {
+                Err(format!("{} is not owed a dismissal", proof.episode))
+            }
+        },
+    )?;
+    Ok(proof)
+}
+
+/// The modal or panel `drawn` is gone: record it, then tell the chat in the
+/// record's words. The summary, or why its record failed.
+pub(crate) fn finished(
     seat: &Seat<'_>,
     proof: &Proof,
+    drawn: &str,
     err: &mut impl std::io::Write,
 ) -> Result<String, String> {
-    let summary = format!(
-        "trusted {} for {} ({})",
-        proof.folder.display(),
-        proof.name,
-        seat.tool
-    );
-    if let Err(why) = record(seat, proof, TRUSTED, &summary) {
+    let summary = match proof.kind {
+        Kind::Trust => format!("trusted {}", proof.folder.display()),
+        Kind::Dismiss => format!("dismissed {drawn}"),
+    };
+    let summary = format!("{summary} for {} ({})", proof.name, seat.tool);
+    let [.., done, _] = proof.kind.actions();
+    if let Err(why) = record(seat, proof, done, &summary) {
         let _ = writeln!(err, "ae: auto_trust: {summary}; record failed: {why}");
         return Err(format!("journal: {why}"));
     }
@@ -357,13 +567,24 @@ pub(crate) fn fail(
     err: &mut impl std::io::Write,
 ) -> crate::deliver::TrustAnswer {
     let summary = format!("{step}: {why}");
-    if let Err(failed) = record(seat, proof, FAILED, &summary) {
+    let [.., failed] = proof.kind.actions();
+    if let Err(failed) = record(seat, proof, failed, &summary) {
         let _ = writeln!(
             err,
             "ae: auto_trust stopped ({summary}); record failed: {failed}"
         );
     }
     crate::deliver::TrustAnswer::Failed(summary)
+}
+
+/// Record one key of `proof`'s answer, sent or refused.
+pub(crate) fn record_key(
+    seat: &Seat<'_>,
+    proof: &Proof,
+    summary: &str,
+) -> Result<(), crate::store::Error> {
+    let [_, key, ..] = proof.kind.actions();
+    record(seat, proof, key, summary)
 }
 
 /// Append one record of `action` for this start.
@@ -392,6 +613,11 @@ fn line(seat: &Seat<'_>, proof: &Proof, action: &str, summary: &str) -> String {
         "",
     ))
 }
+
+#[cfg(test)]
+include!("../tests/unit/unreach_clock.rs");
+#[cfg(test)]
+include!("../tests/unit/unreach_clock_a2.rs");
 
 #[cfg(test)]
 mod tests {
@@ -549,6 +775,7 @@ mod tests {
             name: "lead".to_owned(),
             episode: "main:start:7".to_owned(),
             folder: std::path::PathBuf::from("/tmp"),
+            kind: super::Kind::Trust,
         };
         let refused = reserve(&seat, &proof, true).expect_err("already spent");
         assert_eq!(refused, "main:start:7 is already spent");

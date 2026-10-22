@@ -35,32 +35,32 @@ pub(crate) enum TrustAnswer {
     Failed(String),
 }
 
-/// Answer the trust modal on `seat`'s pane. `err` receives the lines a record
-/// could not carry.
-pub(crate) fn answer_trust(seat: &Seat<'_>, err: &mut impl Write) -> TrustAnswer {
+/// What one attempt answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ask {
+    /// The measured folder-trust modal: trust-yes, then Enter.
+    Trust,
+    /// The measured info panel, closed with ONE Escape; the newest client
+    /// input the caller remembers.
+    Panel(Option<i64>),
+}
+
+/// Answer `ask` on `seat`'s pane. `err` receives the lines a record could not
+/// carry.
+pub(crate) fn answer_trust(seat: &Seat<'_>, ask: Ask, err: &mut impl Write) -> TrustAnswer {
     let Some(_held) = super::lock_target(seat.dir, seat.pane, Duration::ZERO) else {
         return TrustAnswer::NotYet("another delivery holds the pane".to_owned());
     };
-    let first = match steady(seat, false) {
-        Ok(sighting) => sighting,
-        Err(why) => return TrustAnswer::NotYet(why),
+    let (proof, drawn, arrow) = match opened(seat, ask) {
+        Ok(opened) => opened,
+        Err(stop) => return stop,
     };
-    let proof = match autotrust::prove(seat, &first.folder) {
-        Ok(proof) => proof,
-        Err(why) => return TrustAnswer::Declined(why),
-    };
-    if let Some(why) = viewer(seat) {
-        return TrustAnswer::NotYet(why);
-    }
-    if let Err(why) = autotrust::reserve(seat, &proof, first.toward_yes.is_none()) {
-        return TrustAnswer::Declined(why);
-    }
-    if let Some(arrow) = first.toward_yes {
-        if let Err(stop) = press(seat, &proof, &first.folder, arrow, err) {
+    if let Some(arrow) = arrow {
+        if let Err(stop) = press(seat, &proof, &drawn, arrow, err) {
             return stop;
         }
         match steady(seat, true) {
-            Ok(after) if after.toward_yes.is_none() && after.folder == first.folder => {}
+            Ok(after) if after.toward_yes.is_none() && after.folder == drawn => {}
             Ok(_) => {
                 return fail(
                     seat,
@@ -72,22 +72,51 @@ pub(crate) fn answer_trust(seat: &Seat<'_>, err: &mut impl Write) -> TrustAnswer
             Err(why) => return fail(seat, &proof, ("after-nav", &why), err),
         }
     }
-    if let Err(stop) = press(seat, &proof, &first.folder, Key::Enter, err) {
+    let (key, still) = match ask {
+        Ask::Trust => (
+            Key::Enter,
+            ("after-enter", "the trust modal is still drawn"),
+        ),
+        Ask::Panel(_) => (Key::Escape, ("after-escape", "the panel is still drawn")),
+    };
+    if let Err(stop) = press(seat, &proof, &drawn, key, err) {
         return stop;
     }
     for _ in 0..GONE_READS {
         std::thread::sleep(FRAME_GAP);
         if matches!(read(seat), Frame::Clear) {
-            return autotrust::trusted(seat, &proof, err)
+            return autotrust::finished(seat, &proof, &drawn, err)
                 .map_or_else(TrustAnswer::Failed, TrustAnswer::Trusted);
         }
     }
-    fail(
-        seat,
-        &proof,
-        ("after-enter", "the trust modal is still drawn"),
-        err,
-    )
+    fail(seat, &proof, still, err)
+}
+
+/// Everything before the first key: two equal reads, the proof, no viewer, and
+/// the durable reservation read back. The proof, what was drawn (the folder,
+/// or the panel's title) and the arrow onto trust-yes when one is owed.
+fn opened(seat: &Seat<'_>, ask: Ask) -> Result<(Proof, String, Option<Key>), TrustAnswer> {
+    let (proof, drawn, arrow) = match ask {
+        Ask::Trust => {
+            let first = steady(seat, false).map_err(TrustAnswer::NotYet)?;
+            let proof = autotrust::prove(seat, &first.folder).map_err(TrustAnswer::Declined)?;
+            (proof, first.folder, first.toward_yes)
+        }
+        Ask::Panel(_) => {
+            let question = panel(seat).map_err(TrustAnswer::NotYet)?;
+            let (_, start) = autotrust::start(seat).map_err(TrustAnswer::Declined)?;
+            (start, question, None)
+        }
+    };
+    if let Some(why) = viewer(seat) {
+        return Err(TrustAnswer::NotYet(why));
+    }
+    match ask {
+        Ask::Trust => autotrust::reserve(seat, &proof, arrow.is_none()).map(|()| proof),
+        Ask::Panel(input) => autotrust::reserve_dismissal(seat, &proof, &drawn, input),
+    }
+    .map(|proof| (proof, drawn, arrow))
+    .map_err(TrustAnswer::Declined)
 }
 
 /// Re-prove, press `key`, and record it before anything else is pressed.
@@ -102,13 +131,14 @@ fn press(
         Key::Up => ("nav", "Up"),
         Key::Down => ("nav", "Down"),
         Key::Enter => ("enter", "Enter"),
-        Key::ClearLine | Key::LineEnd | Key::Escape | Key::CancelCopyMode => {
-            return Err(fail(seat, proof, ("nav", "not a trust key"), err));
+        Key::Escape => ("escape", "Escape"),
+        Key::ClearLine | Key::LineEnd | Key::CancelCopyMode => {
+            return Err(fail(seat, proof, ("nav", "not an answer key"), err));
         }
     };
-    match autotrust::prove(seat, folder) {
-        Ok(again) if again == *proof => {}
-        Ok(_) => return Err(fail(seat, proof, (step, "the seat changed"), err)),
+    match autotrust::again(seat, proof, folder) {
+        Ok(true) => {}
+        Ok(false) => return Err(fail(seat, proof, (step, "the seat changed"), err)),
         Err(why) => return Err(fail(seat, proof, (step, &why), err)),
     }
     // Past the reservation a held key cannot wait for a later cycle: the
@@ -118,7 +148,7 @@ fn press(
     }
     let pressed = crate::transport::send_key(seat.server, seat.pane, key);
     let word = if pressed { "sent" } else { "refused" };
-    if let Err(why) = autotrust::record(seat, proof, autotrust::KEY, &format!("{name} {word}")) {
+    if let Err(why) = autotrust::record_key(seat, proof, &format!("{name} {word}")) {
         return Err(fail(seat, proof, ("journal", &why.to_string()), err));
     }
     if pressed {
@@ -160,6 +190,23 @@ fn steady(seat: &Seat<'_>, settle: bool) -> Result<TrustSighting, String> {
         Ok(second)
     } else {
         Err("the trust modal moved between two reads".to_owned())
+    }
+}
+
+/// Two reads `FRAME_GAP` apart capturing the SAME whole frame of a dismissable
+/// panel, so a body that moves under an unchanged title holds; its title.
+fn panel(seat: &Seat<'_>) -> Result<String, String> {
+    let shown = || {
+        let frame = crate::transport::capture_pane(seat.server, seat.pane)?;
+        let prompt = crate::watchdog::human_prompt_class(&frame, seat.tool)?;
+        prompt.dismiss.then_some((frame, prompt.question))
+    };
+    let first = shown().ok_or("no dismissable panel is drawn")?;
+    std::thread::sleep(FRAME_GAP);
+    match shown() {
+        Some(second) if second == first => Ok(second.1),
+        Some(_) => Err("the panel moved between two reads".to_owned()),
+        None => Err("no dismissable panel is drawn".to_owned()),
     }
 }
 

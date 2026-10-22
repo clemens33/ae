@@ -527,7 +527,7 @@ behaves exactly as without the feature.
 ## Human-only prompts
 
 A modal only the human may answer is NAMED and never answered — except the measured folder-trust
-block below, under `auto_trust` — and ae writes no tool's trust list or config itself. `watchdog::human_prompt_class` is the one detector, pure over a
+block and codex's Warnings panel below, under `auto_trust` — and ae writes no tool's trust list or config itself. `watchdog::human_prompt_class` is the one detector, pure over a
 frame and the seat's binary name; the shape comes from that tool's adapter row
 (`tool::PromptSpec`), so a tool with no row, or a renamed binary, reads as no prompt.
 
@@ -566,6 +566,22 @@ re-proven and recorded), and an answer that does not land names the prompt as be
 send-lock, or a client's input on the pane within `VIEW_GRACE` (4 s), spends nothing before the
 reservation and is retried each later cycle without naming again; after it, that input stops the
 answer before its next key as `auto-trust-failed`, and the start stays spent.
+
+**codex's Warnings panel**, under the same switch. `tool::PanelSpec` carries the measured panel
+(codex-cli 0.163.0, `tests/fixtures/codex-warning/`): the title `Warnings` or
+`Warnings · <i> of <n> · Startup` within its window above the exact key-hint row, which is the
+last non-blank row, no composer, and its body rows joined into one of the measured whole bodies; the detector
+reports it with `dismiss` set, and a drifted body is named only. Its naming is booked FIRST and
+carries the tool start (`autotrust::start_of`) as `ref`; `autotrust::dismiss_due_at` reads the
+journal for the run named for that start since its last clear, other naming or dead alert,
+ages it from the OLDEST naming (a restarted daemon reads the same), and owes the run one Escape
+only 60 s after that sight and 60 s after the pane's last client input (`client_activity`,
+remembered across a detach; a future stamp holds) with no `auto-dismiss-reserved` keyed
+`<start>@<first sight>`. `deliver::answer_trust(Ask::Panel)` takes the send-lock, reads two
+equal WHOLE captures FRAME_GAP apart, checks `VIEW_GRACE`, reserves, presses Escape and records
+`auto-dismiss-key`; the first of up to three reads with no panel writes `auto-dismiss`, anything else
+`auto-dismiss-failed`, and the episode stays spent either way. A new tool start is a new episode,
+named again.
 
 Named residuals: claude's accessible `Enter y/n:` branch, a project-settings warning block and
 panes narrower than about 65 columns are unmeasured and can push the modal out of the window, so

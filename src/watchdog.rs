@@ -214,6 +214,9 @@ pub struct HumanPrompt {
     pub keys: String,
     /// The tool's MEASURED folder-trust block, when this prompt is one, whole.
     pub trust: Option<TrustSighting>,
+    /// Whether this is a measured information panel whose body is listed
+    /// whole, so `auto_trust` may close it with one Escape.
+    pub dismiss: bool,
 }
 
 /// What a measured folder-trust block shows. Reading it sends nothing.
@@ -247,6 +250,12 @@ pub struct TrustSighting {
 #[must_use]
 pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
     let adapter = crate::tool::ToolKind::from_known_binary_name(agent_bin)?.adapter();
+    if let Some(panel) = adapter
+        .panel
+        .and_then(|panel| panel_shown(buf, adapter.input, panel))
+    {
+        return Some(panel);
+    }
     let spec = adapter.prompt?;
     let rows = bottom_window(buf, spec.window)?;
     let window = rows.as_slice();
@@ -299,8 +308,79 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
                 trust: spec.trust.and_then(|trust| {
                     trust_block(window, question, question + 1 + keys, trust, spec.selected)
                 }),
+                dismiss: false,
             })
         })
+}
+
+/// The information panel [`human_prompt_class`] names for a tool that measured
+/// one: its hint the last non-blank row, its title at most `window` rows up,
+/// and no composer drawn there. The rows under the title, wrapped rows joined,
+/// must be one listed body WHOLE for it to be dismissable.
+fn panel_shown(
+    buf: &str,
+    input: crate::tool::InputSpec,
+    panel: crate::tool::PanelSpec,
+) -> Option<HumanPrompt> {
+    let rows = bottom_window(buf, panel.window)?;
+    let (hint, above) = rows.split_last()?;
+    if hint.trim() != panel.hint
+        || crate::deliver::region::composer_drawn(&rows.join("\n"), input.model, input.composed)
+    {
+        return None;
+    }
+    let (open, close) = panel.counted;
+    let title = above.iter().map(|row| row.trim()).position(|row| {
+        let count = row
+            .strip_prefix(open)
+            .and_then(|rest| rest.strip_suffix(close));
+        row == panel.title
+            || count
+                .and_then(|count| count.split_once(" of "))
+                .is_some_and(|(at, of)| match (at.parse::<u16>(), of.parse::<u16>()) {
+                    (Ok(at), Ok(of)) => 1 <= at && at <= of,
+                    _ => false,
+                })
+    })?;
+    let mut body = String::new();
+    for row in above[title + 1..].iter().map(|row| row.trim()) {
+        if !row.is_empty() && !body.is_empty() && !body.ends_with('-') {
+            body.push(' ');
+        }
+        body.push_str(row);
+    }
+    Some(HumanPrompt {
+        question: above[title].trim().to_owned(),
+        keys: panel.hint.to_owned(),
+        trust: None,
+        dismiss: panel
+            .bodies
+            .iter()
+            .any(|whole| fills(&body, whole, panel.slot_bytes)),
+    })
+}
+
+/// Whether `body` is `whole` with every `{}` filled by one token of at most
+/// `max` bytes, holding no whitespace and no backtick.
+fn fills(body: &str, whole: &str, max: usize) -> bool {
+    let mut pieces = whole.split("{}");
+    let Some(mut rest) = pieces.next().and_then(|first| body.strip_prefix(first)) else {
+        return false;
+    };
+    for piece in pieces {
+        let Some(at) = rest.find(piece) else {
+            return false;
+        };
+        let slot = &rest[..at];
+        if slot.is_empty()
+            || slot.len() > max
+            || slot.contains(|ch: char| ch.is_whitespace() || ch == '`')
+        {
+            return false;
+        }
+        rest = &rest[at + piece.len()..];
+    }
+    rest.is_empty()
 }
 
 /// The trust block bound to the ONE match [`human_prompt_class`] chose — its

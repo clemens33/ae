@@ -320,3 +320,10 @@ path = "fuzz_targets/reader_decode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "panel_episode"
+path = "fuzz_targets/panel_episode.rs"
+test = false
+doc = false
+bench = false

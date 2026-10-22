@@ -880,6 +880,7 @@ mod source_seam {
             descendancy: ae::procs::Descendancy::Present,
             launch_attempt: ae::tmux::Evidence::Silent,
             outstanding_alert: None,
+            start: None,
             last_actor_event_age_secs: 7200,
             declared_age_secs: 7200,
             sweep: None,

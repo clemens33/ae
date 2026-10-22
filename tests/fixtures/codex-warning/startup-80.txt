@@ -1,0 +1,12 @@
+  Warnings · 1 of 1 · Startup
+
+  Running without the shared background server: command-line configuration
+  overrides (-c, --enable, --disable, or --search) requires embedded mode.
+
+
+
+
+
+
+
+  k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll

@@ -127,6 +127,11 @@ while (1) {
         while (length $buffer) {
             if ($buffer =~ s/^\e\[200~//) { $pasting = 1; next; }
             if ($buffer =~ s/^\e\[201~//) { $pasting = 0; next; }
+            if (!$trusted && $tool eq 'codex' && $buffer =~ s/^\e$//) {
+                logline("$root/actions", "Escape\n");
+                composer() if $mode ne 'remain';
+                next;
+            }
             if ($buffer =~ /^\e(?:\[|O)?$/) { last; }
             if (!$trusted && $buffer =~ s/^\e(?:\[|O)([AB])//) {
                 my $key = $1 eq 'B' ? 'Down' : 'Up';
@@ -166,14 +171,19 @@ while (1) {
 const TMUX: &str = r#"#!/usr/bin/perl
 use strict; use warnings;
 use Fcntl qw(:flock);
+use Time::HiRes qw(time);
 my $root = '__ROOT__'; my $real = '__TMUX__';
 sub get { open(my $f, '<', $_[0]) or return ''; local $/; return <$f> // ''; }
 sub put { open(my $f, '>', $_[0]) or die; print $f $_[1]; close $f; }
 my $mode = get("$root/wrapper");
 my $owned = grep { $_ eq "$root/sock" } @ARGV;
+if ($owned && $mode eq 'panel-input' && (grep { $_ eq 'list-clients' } @ARGV) && get('__DIR__/events.jsonl') =~ /auto-dismiss-reserved/) {
+    print '/dev/unreach-fixture | s | ', get("$root/pane"), ' | ', int(time()), "\n";
+    put("$root/input-checked", 'yes'); exit 0;
+}
 if ($owned && grep { $_ eq 'send-keys' } @ARGV) {
     open(my $log, '>>', "$root/attempts") or die; print $log "$ARGV[-1]\n"; close $log;
-    if (($mode eq 'refuse-enter' && $ARGV[-1] eq 'Enter') || ($mode eq 'refuse-nav' && $ARGV[-1] eq 'Down')) {
+    if (($mode eq 'refuse-enter' && $ARGV[-1] eq 'Enter') || ($mode eq 'refuse-nav' && $ARGV[-1] eq 'Down') || ($mode eq 'panel-refuse' && $ARGV[-1] eq 'Escape')) {
         put("$root/refused", $ARGV[-1]); put("$root/pre-refusal", get("__DIR__/events.jsonl"));
         exit 1;
     }
@@ -200,6 +210,24 @@ sub paint {
     unlink "$root/repainted"; put("$root/repaint", get($_[0]));
     for (1..200) { last if -e "$root/repainted"; select undef,undef,undef,0.01; }
     die 'redraw failed' unless -e "$root/repainted";
+}
+if ($owned && get("$root/tool") eq 'codex' && locked()) {
+    if (grep { $_ eq 'capture-pane' } @ARGV) {
+        open(my $log, '>>', "$root/locked-captures") or die;
+        print $log time(), "\n"; close $log;
+        if ($mode eq 'panel-moves') {
+            my $count = 1 + (get("$root/panel-captures") || 0); put("$root/panel-captures", $count);
+            paint($count % 2 ? "$root/frame" : "$root/alternate-frame");
+        }
+    }
+    if ($ARGV[-1] eq '#{@ae_slot} | #{session_name} | #{@ae_agent} | #{@ae_session_uuid} | #{socket_path}') {
+        open(my $log, '>>', "$root/locked-proofs") or die; print $log "proof\n"; close $log;
+        if ($mode eq 'panel-proof') {
+            my $meta = get('__DIR__/meta');
+            $meta =~ s/^launch_id.main=.*$/launch_id.main=changed-start/m;
+            put('__DIR__/meta', $meta);
+        }
+    }
 }
 if ($owned && $mode eq 'decline' && locked()) {
     paint("$root/declined-frame") if grep { $_ eq 'capture-pane' } @ARGV;
@@ -272,7 +300,9 @@ impl Rig {
         );
         write(root.join("vendor.pl"), VENDOR);
         let folder = fs::canonicalize(&root).unwrap_or_else(|why| panic!("fixture folder: {why}"));
-        let frame = if tool == "agy" {
+        let frame = if tool == "codex" {
+            include_str!("../fixtures/codex-warning/startup-200.txt").to_owned()
+        } else if tool == "agy" {
             AGY.replace("/tmp/agy-trust-probe", &folder.display().to_string())
         } else {
             CLAUDE.replace("/tmp/claude-trust-probe", &folder.display().to_string())
@@ -280,7 +310,13 @@ impl Rig {
         write(root.join("frame"), &frame);
         write(
             root.join("idle"),
-            if tool == "agy" { AGY_IDLE } else { CLAUDE_IDLE },
+            if tool == "codex" {
+                include_str!("../fixtures/codex-composer/codex-idle-0.156.1-200x40.esc")
+            } else if tool == "agy" {
+                AGY_IDLE
+            } else {
+                CLAUDE_IDLE
+            },
         );
         write(root.join("mode"), mode);
         write(root.join("tool"), tool);
@@ -336,6 +372,7 @@ impl Rig {
             .trim()
             .clone_into(&mut rig.pane);
         assert!(rig.pane.starts_with('%'), "setup: pane id");
+        write(rig.root.join("pane"), &rig.pane);
         rig.tmux(&["set-option", "-p", "-t", &rig.pane, "@ae_slot", "main"]);
         rig.tmux(&["set-option", "-p", "-t", &rig.pane, "@ae_agent", "lead"]);
         rig.tmux(&["set-option", "-t", "s", "@ae_session_uuid", UUID]);
@@ -1559,3 +1596,451 @@ fn v14_reseat_seed_wait_answers_without_a_watchdog_and_keeps_the_original_seed()
     assert_eq!(event.target.as_deref(), Some("helper"));
     assert_eq!(event.target_slot.value(), Some("spawned.0"));
 }
+// Install this one public-API test first, run its behavioural RED, then install
+// the complete frozen autotrust_spec.rs (which contains this same test).
+#[test]
+fn unreach_measured_startup_panel_is_named_before_any_answer() {
+    let frame = include_str!("../fixtures/codex-warning/startup-80.txt");
+    let prompt = ae::watchdog::human_prompt_class(frame, "codex")
+        .expect("the measured Startup panel must be named");
+    assert_eq!(prompt.question, "Warnings · 1 of 1 · Startup");
+    assert_eq!(
+        prompt.keys,
+        "k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll"
+    );
+    assert!(prompt.trust.is_none(), "an info panel is not folder trust");
+}
+
+#[cfg(test)]
+mod unreach {
+    use super::*;
+    use ae::json::Value;
+    use ae::time::Timestamp;
+
+    const HINT: &str = "k keep & next · esc dismiss & close · ⌃o copy · ←/→ warning · ↓ scroll";
+    const STARTUP: &str = include_str!("../fixtures/codex-warning/startup-80.txt");
+    const WIDE: &str = include_str!("../fixtures/codex-warning/startup-200.txt");
+    const MODEL: &str = include_str!("../fixtures/codex-warning/model-80.txt");
+    const EMPTY: &str = include_str!("../fixtures/codex-warning/empty-80.txt");
+
+    fn line(at: i64, actor: &str, action: &str, summary: &str, reference: &str) -> String {
+        let mut fields = vec![
+            (
+                "ts".into(),
+                Value::str(Timestamp::from_epoch(at).to_string()),
+            ),
+            ("actor".into(), Value::str(actor)),
+            ("action".into(), Value::str(action)),
+            ("summary".into(), Value::str(summary)),
+            ("ref".into(), Value::str(reference)),
+        ];
+        if actor == "lead" {
+            fields.extend([
+                ("actor_slot".into(), Value::str("main")),
+                ("actor_session".into(), Value::str("s")),
+                ("actor_session_id".into(), Value::str(UUID)),
+            ]);
+        } else {
+            fields.extend([
+                ("target".into(), Value::str("lead")),
+                ("target_slot".into(), Value::str("main")),
+                ("target_session".into(), Value::str("s")),
+                ("target_session_id".into(), Value::str(UUID)),
+            ]);
+        }
+        Value::Obj(fields).render() + "\n"
+    }
+
+    fn append(rig: &Rig, record: &str) {
+        write(
+            rig.dir.join("events.jsonl"),
+            text(rig.dir.join("events.jsonl")) + record,
+        );
+    }
+
+    fn start_ref(rig: &Rig) -> String {
+        format!("main:start-one:{}", text(rig.root.join("ready")).trim())
+    }
+
+    fn old_panel(rig: &Rig) {
+        append(
+            rig,
+            &line(
+                Timestamp::now().epoch() - 120,
+                "watchdog",
+                "human-prompt",
+                &format!("Warnings · 1 of 1 · Startup — press: {HINT}"),
+                &start_ref(rig),
+            ),
+        );
+        write(
+            rig.root.join("guard-lock"),
+            rig.root
+                .join("sessions/.locks")
+                .join(format!("send-lock-{}", rig.pane.replace('%', "_")))
+                .display()
+                .to_string(),
+        );
+    }
+
+    fn off(rig: &Rig) {
+        write(
+            rig.root.join("config"),
+            "[workspace]\nauto_trust = off\nquota = off\nauto_upgrade = off\ntheme = off\nmotion = off\n",
+        );
+    }
+
+    fn completed(rig: &Rig) {
+        wait_for("panel dismissal", || rig.count("auto-dismiss") == 1);
+        assert_eq!(
+            rig.wire(),
+            b"\x1b",
+            "one Escape, no Enter, arrows, or paste"
+        );
+        let events = rig.events();
+        let reservation = events
+            .iter()
+            .position(|e| e.action == "auto-dismiss-reserved")
+            .expect("durable reservation");
+        let done = events
+            .iter()
+            .position(|e| e.action == "auto-dismiss")
+            .expect("completion");
+        assert!(reservation < done);
+        assert_eq!(rig.count("auto-dismiss-reserved"), 1);
+        assert_eq!(rig.count("auto-dismiss-key"), 1);
+        let key = events
+            .iter()
+            .find(|e| e.action == "auto-dismiss-key")
+            .expect("key audit");
+        assert_eq!(key.summary.as_deref(), Some("Escape sent"));
+        let before_key = text(rig.root.join("pre-key"));
+        assert!(
+            before_key.contains("auto-dismiss-reserved"),
+            "reservation was durable before first byte"
+        );
+        let reference = events[reservation]
+            .reference
+            .as_deref()
+            .expect("episode ref");
+        assert!(
+            reference.starts_with(&(start_ref(rig) + "@")),
+            "tool pid binds episode: {reference}"
+        );
+        for event in events
+            .iter()
+            .filter(|e| e.action.starts_with("auto-dismiss"))
+        {
+            assert_eq!(event.actor, "watchdog");
+            assert_eq!(event.reference.as_deref(), Some(reference));
+        }
+        let chats = events
+            .iter()
+            .filter(|e| e.action == "chat" && e.summary == events[done].summary)
+            .collect::<Vec<_>>();
+        assert_eq!(chats.len(), 1, "one completion receipt");
+        assert!(
+            chats[0].target.as_deref().unwrap_or_default().is_empty(),
+            "targetless receipt"
+        );
+        for event in events.iter().filter(|e| {
+            e.action.starts_with("auto-dismiss")
+                || (e.action == "chat" && e.summary == events[done].summary)
+        }) {
+            assert_eq!(event.actor, "watchdog");
+            for state in ["done", "waiting-user", "waiting-agent", "blocked"] {
+                assert!(
+                    !ae::watchdog::ends_quiet(state, event, false, &[]),
+                    "automatic action preserves {state}"
+                );
+            }
+        }
+        let captures = text(rig.root.join("locked-captures"))
+            .lines()
+            .map(|s| s.parse::<f64>().expect("capture time"))
+            .collect::<Vec<_>>();
+        assert!(captures.len() >= 2, "two captures under send lock");
+        assert!(
+            captures[1] - captures[0] >= 0.9,
+            "FRAME_GAP separates reads: {captures:?}"
+        );
+        assert!(
+            text(rig.root.join("locked-proofs")).lines().count() >= 2,
+            "identity re-proved before Escape"
+        );
+        assert!(
+            ae::harness_state::classify(
+                &rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]),
+                ae::tool::ToolKind::Codex
+            ) == ae::harness_state::HarnessState::Idle,
+            "composer is drawn after completion"
+        );
+    }
+
+    #[test]
+    fn unreach_whitelist_uses_measured_whole_bodies_and_names_drift_without_answering() {
+        for (frame, title) in [
+            (STARTUP, "Warnings · 1 of 1 · Startup"),
+            (WIDE, "Warnings · 1 of 1 · Startup"),
+            (MODEL, "Warnings · 2 of 2 · Startup"),
+            (EMPTY, "Warnings"),
+        ] {
+            let prompt =
+                ae::watchdog::human_prompt_class(frame, "codex").expect("measured panel named");
+            assert_eq!(prompt.question, title);
+            assert_eq!(prompt.keys, HINT);
+            assert!(prompt.dismiss, "measured whitelist eligible: {title}");
+            assert!(prompt.trust.is_none());
+        }
+        for frame in [
+            STARTUP.replace("requires embedded mode.", "requires your approval."),
+            STARTUP.replacen("\n\n", "\n  Delete all local files?\n", 1),
+            MODEL.replace("gpt-6-luna", "bad model with spaces"),
+            MODEL.replace("gpt-6-luna", &"x".repeat(257)),
+        ] {
+            let prompt = ae::watchdog::human_prompt_class(&frame, "codex")
+                .expect("generic panel remains named");
+            assert!(!prompt.dismiss, "unknown body is never answered: {frame}");
+        }
+        for tool in ["claude", "agy", "unknown", ""] {
+            assert!(
+                ae::watchdog::human_prompt_class(STARTUP, tool).is_none(),
+                "codex-only: {tool}"
+            );
+        }
+        for frame in [
+            STARTUP.replace(HINT, "esc confirm"),
+            format!("{STARTUP}\n› Ask Codex to do anything\n"),
+            STARTUP.replace(HINT, &format!("{}{HINT}", "\n".repeat(25))),
+        ] {
+            assert!(
+                ae::watchdog::human_prompt_class(&frame, "codex").is_none(),
+                "not the measured bottom panel"
+            );
+        }
+    }
+
+    #[test]
+    fn unreach_watchdog_dismisses_each_measured_body_with_one_audited_escape() {
+        for (tag, frame) in [("startup", WIDE), ("model", MODEL), ("empty", EMPTY)] {
+            let mut rig = Rig::new(&format!("ur-{tag}"), "codex", "normal");
+            rig.repaint(frame);
+            old_panel(&rig);
+            // A previously answered trust prompt must not spend this budget.
+            append(
+                &rig,
+                &line(
+                    Timestamp::now().epoch() - 100,
+                    "watchdog",
+                    "auto-trust-reserved",
+                    "earlier trust",
+                    &start_ref(&rig),
+                ),
+            );
+            rig.start();
+            completed(&rig);
+        }
+    }
+
+    #[test]
+    fn unreach_newly_named_panel_is_not_answered_early_and_delivery_names_it() {
+        let mut rig = Rig::new("ur-young", "codex", "normal");
+        rig.start();
+        rig.named();
+        std::thread::sleep(Duration::from_secs(5));
+        assert!(
+            rig.wire().is_empty(),
+            "first sight has not aged sixty seconds"
+        );
+        assert_eq!(rig.count("auto-dismiss-reserved"), 0);
+        let naming = rig
+            .events()
+            .into_iter()
+            .find(|e| e.action == "human-prompt")
+            .expect("named record");
+        assert_eq!(
+            naming.reference.as_deref(),
+            Some(start_ref(&rig).as_str()),
+            "first sight belongs to proven start"
+        );
+        rig.stop();
+        let call = rig
+            .environment()
+            .arg("@s")
+            .arg("send")
+            .arg("lead")
+            .arg("harmless unreach acceptance");
+        let (code, _, err) = rig.invoke(call, "named-send");
+        assert_ne!(code, 0, "human panel blocks delivery");
+        assert!(
+            err.contains("Warnings · 1 of 1 · Startup"),
+            "panel named in refusal: {err}"
+        );
+        assert!(
+            !err.contains("composer unreadable"),
+            "known panel has its own refusal: {err}"
+        );
+        assert!(rig.wire().is_empty());
+    }
+
+    #[test]
+    fn unreach_off_unknown_body_and_unproven_seat_are_named_without_keys() {
+        for case in ["off", "unknown", "uuid", "ledger"] {
+            let mut rig = Rig::new(&format!("ur-{case}"), "codex", "normal");
+            old_panel(&rig);
+            match case {
+                "off" => off(&rig),
+                "unknown" => {
+                    rig.repaint(
+                        &WIDE.replace("requires embedded mode.", "requires your approval."),
+                    );
+                }
+                "uuid" => {
+                    rig.tmux(&[
+                        "set-option",
+                        "-t",
+                        "s",
+                        "@ae_session_uuid",
+                        "foreign-incarnation",
+                    ]);
+                }
+                _ => append(&rig, "damaged journal line\n"),
+            }
+            rig.start();
+            std::thread::sleep(Duration::from_secs(5));
+            assert!(rig.wire().is_empty(), "{case}: zero keys");
+            assert_eq!(
+                rig.count("auto-dismiss-reserved"),
+                0,
+                "{case}: no reservation"
+            );
+            assert_eq!(rig.count("auto-dismiss"), 0);
+            assert!(
+                ae::watchdog::human_prompt_class(
+                    &rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]),
+                    "codex"
+                )
+                .is_some(),
+                "{case}: still named"
+            );
+        }
+    }
+
+    #[test]
+    fn unreach_send_lock_moving_frame_changed_proof_and_late_input_hold_escape() {
+        for case in ["lock", "panel-moves", "panel-proof", "panel-input"] {
+            let mut rig = Rig::new(&format!("ur-{case}"), "codex", "normal");
+            old_panel(&rig);
+            write(rig.root.join("alternate-frame"), EMPTY);
+            let locks = rig.root.join("sessions/.locks");
+            fs::create_dir_all(&locks).expect("lock directory");
+            let held = if case == "lock" {
+                Some(
+                    ae::store::lock(
+                        &locks.join(format!("send-lock-{}", rig.pane.replace('%', "_"))),
+                        Duration::ZERO,
+                    )
+                    .expect("foreign sender"),
+                )
+            } else {
+                write(rig.root.join("wrapper"), case);
+                None
+            };
+            rig.start();
+            std::thread::sleep(Duration::from_secs(6));
+            assert!(rig.wire().is_empty(), "{case}: zero keys");
+            assert_eq!(rig.count("auto-dismiss"), 0);
+            if case == "lock" || case == "panel-moves" {
+                assert_eq!(
+                    rig.count("auto-dismiss-reserved"),
+                    0,
+                    "{case}: pre-reservation hold"
+                );
+            }
+            if case == "panel-input" {
+                assert!(
+                    rig.root.join("input-checked").is_file(),
+                    "fresh client snapshot was supplied after reservation"
+                );
+            }
+            rig.stop();
+            drop(held);
+        }
+    }
+
+    #[test]
+    fn unreach_failed_or_refused_escape_spends_episode_across_daemon_restart() {
+        for case in ["remain", "panel-refuse"] {
+            let mut rig = Rig::new(
+                &format!("ur-{case}"),
+                "codex",
+                if case == "remain" { "remain" } else { "normal" },
+            );
+            old_panel(&rig);
+            if case == "panel-refuse" {
+                write(rig.root.join("wrapper"), case);
+            }
+            rig.start();
+            wait_for("reserved dismissal fails", || {
+                rig.count("auto-dismiss-failed") == 1
+            });
+            rig.stop();
+            rig.start();
+            std::thread::sleep(Duration::from_secs(5));
+            rig.stop();
+            assert_eq!(
+                rig.count("auto-dismiss-reserved"),
+                1,
+                "no retry after reservation"
+            );
+            assert_eq!(rig.count("auto-dismiss-failed"), 1);
+            assert_eq!(rig.count("auto-dismiss"), 0);
+            assert_eq!(
+                rig.wire(),
+                if case == "remain" {
+                    b"\x1b".as_slice()
+                } else {
+                    b"".as_slice()
+                }
+            );
+            assert_eq!(
+                text(rig.root.join("attempts"))
+                    .lines()
+                    .filter(|s| *s == "Escape")
+                    .count(),
+                1,
+                "one attempted Escape only"
+            );
+        }
+    }
+
+    #[test]
+    fn unreach_remembers_recent_viewer_input_after_detach() {
+        let mut rig = Rig::new("ur-detach", "codex", "normal");
+        old_panel(&rig);
+        rig.tmux(&[
+            "set-window-option",
+            "-t",
+            &rig.pane,
+            "window-size",
+            "manual",
+        ]);
+        rig.tmux(&["resize-window", "-t", &rig.pane, "-x", "200", "-y", "50"]);
+        let client = super::super::cli::tmux_attached_client(&rig.root.join("sock"), "s")
+            .expect("real client");
+        wait_for("real client on pane", || {
+            rig.tmux(&["list-clients", "-F", "#{client_pid}|#{pane_id}"])
+                .contains(&format!("{}|{}", client.id(), rig.pane))
+        });
+        rig.start();
+        std::thread::sleep(Duration::from_secs(3));
+        drop(client);
+        std::thread::sleep(Duration::from_secs(6));
+        assert!(
+            rig.wire().is_empty(),
+            "detaching does not erase the sixty-second input hold"
+        );
+        assert_eq!(rig.count("auto-dismiss-reserved"), 0);
+    }
+}
+include!("unreach_guard_a2.rs");

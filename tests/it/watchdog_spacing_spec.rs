@@ -214,6 +214,7 @@ impl Journal {
             descendancy: ae::procs::Descendancy::Present,
             launch_attempt: ae::tmux::Evidence::Silent,
             outstanding_alert: None,
+            start: None,
             last_actor_event_age_secs: ae::watchdog_daemon::last_actor_event_age(
                 events,
                 SESSION,
