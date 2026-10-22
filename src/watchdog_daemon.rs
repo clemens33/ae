@@ -3532,12 +3532,12 @@ struct Published<'a> {
 /// pane is NOT there. A rollup that read only the first would leave the fleet
 /// strip calling a session idle while its roster says an agent is missing.
 fn session_mark(by_pane: &[PaneMark], roster: &[Mark]) -> Mark {
-    by_pane
-        .iter()
-        .map(|entry| entry.verdict.mark())
-        .chain(roster.iter().copied())
-        .max_by_key(|mark| mark.rank())
-        .unwrap_or(Mark::Idle)
+    Mark::most_actionable(
+        by_pane
+            .iter()
+            .map(|entry| entry.verdict.mark())
+            .chain(roster.iter().copied()),
+    )
 }
 
 fn launch_id_for<'a>(ids: &'a [(String, String)], slot: &str) -> Option<&'a str> {
@@ -16808,6 +16808,42 @@ mod tests {
             Mark::Idle,
             "a roster that is merely quiet says nothing"
         );
+    }
+
+    /// Oracle: `Mark::BY_URGENCY` (`Working` before `WaitingAgent` before
+    /// `Done` before `Idle`), whatever order the panes and the roster arrive in.
+    #[test]
+    fn the_session_mark_takes_the_most_actionable_seat_in_either_order() {
+        let pane = |pane: &str, verdict| PaneMark {
+            pane: pane.to_owned(),
+            verdict,
+            observed: "unknown".to_owned(),
+        };
+        let wait = || Verdict::Quiet(QuietKind::WaitingAgent);
+        let done = || Verdict::Quiet(QuietKind::Done);
+        let cases = [
+            (done(), Verdict::Idle, Mark::Done),
+            (wait(), Verdict::Idle, Mark::WaitingAgent),
+            (wait(), done(), Mark::WaitingAgent),
+            (Verdict::Active, wait(), Mark::Working),
+            (Verdict::Active, done(), Mark::Working),
+            (Verdict::Idle, Verdict::Idle, Mark::Idle),
+        ];
+        for (first, second, expected) in cases {
+            let (a, b) = (first.mark(), second.mark());
+            assert_eq!(
+                session_mark(&[pane("%1", first), pane("%2", second)], &[]),
+                expected,
+                "panes {a:?}, {b:?}"
+            );
+            assert_eq!(
+                session_mark(&[pane("%1", second), pane("%2", first)], &[]),
+                expected,
+                "panes {b:?}, {a:?}"
+            );
+            assert_eq!(session_mark(&[], &[a, b]), expected, "roster {a:?}, {b:?}");
+            assert_eq!(session_mark(&[], &[b, a]), expected, "roster {b:?}, {a:?}");
+        }
     }
 
     #[test]

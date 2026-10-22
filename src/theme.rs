@@ -340,10 +340,39 @@ impl Mark {
         }
     }
 
+    /// The mark a session shows for its seats' marks: the one earliest in
+    /// [`Mark::BY_URGENCY`], [`Mark::Idle`] for none.
+    ///
+    /// The ONE session fold. It reads the urgency table, never [`Mark::rank`]:
+    /// `Working` and `WaitingAgent` share a published rank, so a fold by rank
+    /// would pick between them by the order its input arrives in.
+    ///
+    /// ```
+    /// use ae::theme::Mark;
+    /// assert_eq!(Mark::most_actionable([Mark::Done, Mark::Idle]), Mark::Done);
+    /// assert_eq!(
+    ///     Mark::most_actionable([Mark::WaitingAgent, Mark::Working]),
+    ///     Mark::Working
+    /// );
+    /// assert_eq!(Mark::most_actionable([]), Mark::Idle);
+    /// ```
+    #[must_use]
+    pub fn most_actionable<I: IntoIterator<Item = Self>>(marks: I) -> Self {
+        marks
+            .into_iter()
+            .min_by_key(|mark| {
+                Self::BY_URGENCY
+                    .iter()
+                    .position(|listed| listed == mark)
+                    .unwrap_or(usize::MAX)
+            })
+            .unwrap_or(Self::Idle)
+    }
+
     /// The mark a session's seat reasons roll up to: the most urgent MARK
-    /// among them by [`Mark::rank`], [`Mark::Idle`] for none. Aggregated as
-    /// marks, never as [`Reason`] severity, which ranks `stale` above a human
-    /// blocker the mark table puts below it.
+    /// among them ([`Mark::most_actionable`]), [`Mark::Idle`] for none.
+    /// Aggregated as marks, never as [`Reason`] severity, which ranks `stale`
+    /// above a human blocker the mark table puts below it.
     ///
     /// ```
     /// use ae::attention::Reason;
@@ -354,11 +383,7 @@ impl Mark {
     /// ```
     #[must_use]
     pub fn for_reasons<I: IntoIterator<Item = Reason>>(reasons: I) -> Self {
-        reasons
-            .into_iter()
-            .map(Self::for_reason)
-            .max_by_key(|mark| mark.rank())
-            .unwrap_or(Self::Idle)
+        Self::most_actionable(reasons.into_iter().map(Self::for_reason))
     }
 }
 
@@ -2945,6 +2970,47 @@ mod tests {
                 palette.name,
             );
         }
+    }
+
+    /// Oracle: the urgency order the ruling names, written out here and not
+    /// read from the code under test (`BY_URGENCY` is pinned equal to it above).
+    #[test]
+    fn the_most_actionable_mark_is_the_earliest_in_urgency_whatever_the_order() {
+        let urgency = [
+            Mark::Dead,
+            Mark::NeedsYou,
+            Mark::Stale,
+            Mark::Working,
+            Mark::WaitingAgent,
+            Mark::Done,
+            Mark::Idle,
+        ];
+        assert_eq!(Mark::most_actionable([]), Mark::Idle);
+        for (at, first) in urgency.into_iter().enumerate() {
+            assert_eq!(Mark::most_actionable([first]), first, "{first:?} alone");
+            for second in urgency.into_iter().skip(at) {
+                assert_eq!(
+                    Mark::most_actionable([first, second]),
+                    first,
+                    "{first:?}, {second:?}"
+                );
+                assert_eq!(
+                    Mark::most_actionable([second, first]),
+                    first,
+                    "{second:?}, {first:?}"
+                );
+            }
+        }
+        // The tie a rank cannot break: same published rank, one winner.
+        assert_eq!(Mark::Working.rank(), Mark::WaitingAgent.rank());
+        assert_eq!(
+            Mark::most_actionable([Mark::WaitingAgent, Mark::Working]),
+            Mark::Working
+        );
+        assert_eq!(
+            Mark::most_actionable([Mark::Working, Mark::WaitingAgent]),
+            Mark::Working
+        );
     }
 
     /// The window stamp is a VALUE, not a presence: a window dressed by an

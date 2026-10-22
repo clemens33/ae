@@ -246,13 +246,19 @@ fn row(
                 .chain(entry.attention),
         )
     } else {
-        match agents {
-            Some(agents) if agents.iter().any(|agent| agent.mark() == Mark::Working) => {
-                Mark::Working
-            }
-            Some(_) => Mark::Idle,
-            None => Mark::Stale,
-        }
+        // The most actionable QUIET seat mark: a `waiting-agent` or `done`
+        // seat must not draw as idle while the row's own tally counts it.
+        // Dead, needs-you and stale belong to the world rollup
+        // (`entry.attention`, the arm above), so a seat's own such mark is
+        // ignored here.
+        agents.map_or(Mark::Stale, |agents| {
+            Mark::most_actionable(agents.iter().map(PickerAgent::mark).filter(|mark| {
+                matches!(
+                    mark,
+                    Mark::Working | Mark::WaitingAgent | Mark::Done | Mark::Idle
+                )
+            }))
+        })
     };
     let counts = match (stopped, agents) {
         (true, _) => Counts::Stopped,
@@ -386,11 +392,12 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{Counts, Fleet, Line2, Row, rows};
+    use super::{Counts, Facts, Fleet, Line2, Row, rows};
     use crate::digest::{SessionEntry, Status};
     use crate::listing::World;
     use crate::theme::{FleetOrder, Mark};
     use crate::time::Timestamp;
+    use crate::tmux::PickerAgent;
 
     fn fleet_of(names: &[&str], home: &str) -> Fleet {
         let now = Timestamp::from_epoch(1_759_500_600);
@@ -434,6 +441,65 @@ mod tests {
             .map(|row| (row.name.as_str(), row.index))
             .collect();
         assert_eq!(seen, [("c", 1), ("a", 2), ("b", 3), ("d", 4)]);
+    }
+
+    /// Oracle: the ask (#237 item 7) and `Mark::BY_URGENCY` - with no
+    /// attention a session shows its most actionable QUIET seat, so a
+    /// `waiting-agent` or `done` seat does not draw as idle while the same
+    /// row tallies it; a seat's own attention-class mark adds nothing (the
+    /// world rollup owns those). Both seat orders.
+    #[test]
+    fn a_session_with_no_attention_shows_its_most_actionable_seat_in_either_order() {
+        let now = Timestamp::from_epoch(1_759_500_600);
+        let seat = |name: &str, state: &str| PickerAgent {
+            name: name.to_owned(),
+            profile: "p".to_owned(),
+            state: state.to_owned(),
+            pane: "%1".to_owned(),
+            client: String::new(),
+            model: String::new(),
+            effort: String::new(),
+            drift: false,
+        };
+        let session_mark = |states: [&str; 2]| {
+            let agents = vec![seat("lead", states[0]), seat("colead", states[1])];
+            let facts = BTreeMap::from([(
+                "s".to_owned(),
+                Facts::Seats {
+                    id: "$1".to_owned(),
+                    agents,
+                },
+            )]);
+            let world = World::new(now, vec![SessionEntry::new("s", Status::Running)]);
+            let fleet = rows(
+                &world,
+                &facts,
+                &BTreeMap::new(),
+                &FleetOrder::EMPTY,
+                &BTreeMap::new(),
+                None,
+                now,
+            );
+            fleet.rows[0].mark
+        };
+        let cases = [
+            (["done", "idle"], Mark::Done),
+            (["waiting-agent", "idle"], Mark::WaitingAgent),
+            (["waiting-agent", "done"], Mark::WaitingAgent),
+            (["working", "waiting-agent"], Mark::Working),
+            (["working", "done"], Mark::Working),
+            (["idle", "idle"], Mark::Idle),
+            // A seat's own attention-class mark is the world rollup's to
+            // show (`entry.attention`); with none, it adds nothing here.
+            (["blocked", "done"], Mark::Done),
+            (["dead", "waiting-agent"], Mark::WaitingAgent),
+            (["blocked", "working"], Mark::Working),
+            (["stale", "idle"], Mark::Idle),
+        ];
+        for ([first, second], expected) in cases {
+            assert_eq!(session_mark([first, second]), expected, "{first}, {second}");
+            assert_eq!(session_mark([second, first]), expected, "{second}, {first}");
+        }
     }
 
     #[test]
