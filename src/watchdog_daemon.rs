@@ -286,6 +286,9 @@ pub struct Observation {
     /// Wait episode verdict for the seat's CURRENT wait declaration; `None`
     /// for every other state, including a pane-yielded wait.
     pub wait_progress: WaitProgress,
+    /// The seat's typed wait chain ends in another session
+    /// ([`crate::wait_on::ends_elsewhere`]): its ceiling does not escalate.
+    pub wait_ends_elsewhere: bool,
     /// Whether a process named the agent binary runs under the pane.
     pub descendancy: Descendancy,
     /// This cycle's `.launch-attempt` stamp; the grace rule judges it.
@@ -1809,6 +1812,7 @@ fn book_waiting_agent_escalation(
 /// answer the escalated verdict and the challenge text both read.
 fn waiting_agent_escalates(seen: &Observation, knobs: &Knobs) -> bool {
     seen.quiet == Some(QuietKind::WaitingAgent)
+        && !seen.wait_ends_elsewhere
         && crate::watchdog::waiting_agent_escalated(seen.declared_age_secs, knobs.idle_nudge_secs)
 }
 
@@ -5522,6 +5526,20 @@ impl Cycle<'_> {
         let key = crate::events::SessionKey::new(self.session, &session_id);
         let outstanding = crate::session::Outstanding::read_in(&events, key, &seats);
 
+        // ONE wait-chain reading per cycle, over the seats this cycle holds.
+        let held: Vec<(&str, &str, &str)> = observed
+            .iter()
+            .filter_map(|pane| {
+                let agent = pane.agent.as_deref()?;
+                seats
+                    .iter()
+                    .any(|seat| seat == agent)
+                    .then(|| (pane.slot.as_deref().unwrap_or_default(), agent, agent))
+            })
+            .collect();
+        let wait_facts = crate::wait_on::Facts::read(&events, self.session, &held);
+        let wait_links = crate::wait_on::Facts::links(&wait_facts);
+
         // ONE client read per cycle; a failed read changes no pane's memory.
         let clients = transport::observe_clients(self.server);
         let mut live: Vec<String> = Vec::new();
@@ -5629,6 +5647,7 @@ impl Cycle<'_> {
                 ended_wait: resolved.ended,
                 done_progress,
                 wait_progress,
+                wait_ends_elsewhere: crate::wait_on::ends_elsewhere(&wait_links, agent),
                 descendancy,
                 launch_attempt: attempt,
                 outstanding_alert: crate::session::alert_reason_in(
@@ -7819,6 +7838,7 @@ mod tests {
             ended_wait: None,
             done_progress: DoneProgress::None,
             wait_progress: WaitProgress::None,
+            wait_ends_elsewhere: false,
             descendancy: Descendancy::Present,
             launch_attempt: crate::tmux::Evidence::Silent,
             outstanding_alert: Some(crate::attention::Reason::Dead),
@@ -14704,6 +14724,7 @@ mod tests {
             assert_eq!(listed.agents[0].reason, reason, "ae list at {now}");
             let challenged = Observation {
                 wait_progress: wait_due(0),
+                wait_ends_elsewhere: false,
                 ..observed.clone()
             };
             let pushed = account(&PaneState::default(), &challenged, &Knobs::default());

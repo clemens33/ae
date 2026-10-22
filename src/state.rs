@@ -43,7 +43,7 @@ pub const VALUES: [&str; 5] = [
 ];
 
 /// The usage text.
-pub const USAGE: &str = "Usage: state <working|waiting-user|waiting-agent|blocked|done> [reason]\n       state                              # print current state\n\n  working        actively making progress\n  waiting-user   needs human input\n  waiting-agent  waiting on another ae agent — REASON REQUIRED\n  blocked        stuck on external dep — REASON REQUIRED\n  done           complete or paused\n";
+pub const USAGE: &str = "Usage: state <working|waiting-user|waiting-agent|blocked|done> [reason]\n       state waiting-agent --on <agent|session:agent|@session> <reason>\n       state                              # print current state\n\n  working        actively making progress\n  waiting-user   needs human input\n  waiting-agent  waiting on another ae agent — REASON REQUIRED\n  blocked        stuck on external dep — REASON REQUIRED\n  done           complete or paused\n";
 
 const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained decision in 80–600 characters: '<what you need decided>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)'; waiting-agent names who you wait on, what you need from them, and a long-form path in 80–600 characters; blocked names what blocks, who/what unblocks it, what you tried, and a long-form path in 80–600 characters";
 
@@ -68,6 +68,9 @@ pub struct Declaration {
     pub value: String,
     /// The remaining arguments joined by one space — `"${*:-}"`.
     pub reason: String,
+    /// The `--on` target of a `waiting-agent`, grammar-checked by
+    /// [`crate::wait_on::Target::parse`]; `None` keeps today's record.
+    pub on: Option<String>,
 }
 
 /// Why argv was refused.
@@ -81,6 +84,9 @@ pub enum Usage {
     WaitingAgentNeedsReason,
     /// Not one of [`VALUES`].
     UnknownValue(String),
+    /// `--on` on a state other than `waiting-agent`, given twice, or with a
+    /// target outside the agent and session grammars.
+    BadTarget(String),
 }
 
 impl Usage {
@@ -99,6 +105,7 @@ impl Usage {
                 format!("Error: 'waiting-agent' requires a reason\n{REASON_SHAPE}\n{USAGE}")
             }
             Self::UnknownValue(_) => USAGE.to_owned(),
+            Self::BadTarget(why) => format!("Error: {why}\n{USAGE}"),
         }
     }
 }
@@ -126,6 +133,28 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
     if !VALUES.contains(&value.as_str()) {
         return Err(Usage::UnknownValue(value.clone()));
     }
+    let (on, rest) = match rest.split_first() {
+        Some((flag, after)) if flag == "--on" => {
+            if value != "waiting-agent" {
+                return Err(Usage::BadTarget(format!(
+                    "--on names a waiting-agent target, not a {value} one"
+                )));
+            }
+            let Some((target, after)) = after.split_first() else {
+                return Err(Usage::BadTarget("--on needs a target".to_owned()));
+            };
+            if crate::wait_on::Target::parse(target, "").is_none() {
+                return Err(Usage::BadTarget(format!(
+                    "--on target {target:?} is not <agent>, <session>:<agent> or @<session>"
+                )));
+            }
+            if after.first().is_some_and(|word| word == "--on") {
+                return Err(Usage::BadTarget("--on given twice".to_owned()));
+            }
+            (Some(target.clone()), after)
+        }
+        _ => (None, rest),
+    };
     let reason = rest.join(" ");
     let trimmed_len = reason.trim().chars().count();
     if trimmed_len < REASON_MIN {
@@ -139,12 +168,14 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
             return Ok(Command::Declare(Declaration {
                 value: value.clone(),
                 reason,
+                on,
             }));
         });
     }
     Ok(Command::Declare(Declaration {
         value: value.clone(),
         reason,
+        on,
     }))
 }
 
@@ -332,6 +363,18 @@ pub fn event_line(
     reference: &str,
     summary: &str,
 ) -> String {
+    line_with(ts, actor, action, reference, summary, None)
+}
+
+/// [`event_line`] with one optional trailing `(key, value)` member.
+fn line_with(
+    ts: Timestamp,
+    actor: &str,
+    action: &str,
+    reference: &str,
+    summary: &str,
+    extra: Option<(&str, &str)>,
+) -> String {
     let mut fields = vec![
         ("ts".to_owned(), Value::Str(ts.to_string())),
         ("actor".to_owned(), Value::Str(actor.to_owned())),
@@ -343,17 +386,21 @@ pub fn event_line(
     if !summary.is_empty() {
         fields.push(("summary".to_owned(), Value::Str(summary.to_owned())));
     }
+    if let Some((key, value)) = extra {
+        fields.push((key.to_owned(), Value::Str(value.to_owned())));
+    }
     let mut line = Value::Obj(fields).render();
     line.push('\n');
     line
 }
 
-/// The bytes one declaration appends: the `state` line, plus the bare `done`
-/// line for `done`.
+/// The bytes one declaration appends: the `state` line, carrying `wait_on`
+/// only when typed, plus the bare `done` line for `done`.
 #[must_use]
 pub fn event_body(ts: Timestamp, actor: &str, declaration: &Declaration) -> String {
     let summary = summary_of(&declaration.reason);
-    let mut body = event_line(ts, actor, "state", &declaration.value, &summary);
+    let on = declaration.on.as_deref().map(|on| ("wait_on", on));
+    let mut body = line_with(ts, actor, "state", &declaration.value, &summary, on);
     if declaration.value == "done" {
         body.push_str(&event_line(ts, actor, "done", "", &summary));
     }
@@ -493,14 +540,16 @@ mod tests {
             parse(&words(&["working", "two", "words"])),
             Ok(Command::Declare(Declaration {
                 value: "working".to_owned(),
-                reason: "two words".to_owned()
+                reason: "two words".to_owned(),
+                on: None
             }))
         );
         assert_eq!(
             parse(&words(&["done"])),
             Ok(Command::Declare(Declaration {
                 value: "done".to_owned(),
-                reason: String::new()
+                reason: String::new(),
+                on: None
             }))
         );
         assert_eq!(parse(&words(&["blocked"])), Err(Usage::BlockedNeedsReason));
@@ -639,6 +688,7 @@ mod tests {
         let done = Declaration {
             value: "done".to_owned(),
             reason: "fin".to_owned(),
+            on: None,
         };
         let body = event_body(ts, "cl:lead", &done);
         assert_eq!(body.lines().count(), 2);
@@ -646,6 +696,7 @@ mod tests {
         let working = Declaration {
             value: "working".to_owned(),
             reason: String::new(),
+            on: None,
         };
         assert_eq!(event_body(ts, "cl:lead", &working).lines().count(), 1);
     }
@@ -656,6 +707,7 @@ mod tests {
         let decl = Declaration {
             value: "working".to_owned(),
             reason: String::new(),
+            on: None,
         };
         let result = declare(&dir, &Viewer::default(), &decl, Timestamp::now());
         assert!(matches!(result, Err(Failure::NoIdentity)));
@@ -671,6 +723,7 @@ mod tests {
         let decl = Declaration {
             value: "waiting-user".to_owned(),
             reason: "x".repeat(REASON_MIN),
+            on: None,
         };
         let failure = declare(&dir, &spawned(), &decl, Timestamp::now())
             .expect_err("a spawned seat has no human question to own");
@@ -693,6 +746,7 @@ mod tests {
             let decl = Declaration {
                 value: value.to_owned(),
                 reason: "x".repeat(REASON_MIN),
+                on: None,
             };
             declare(&dir, &spawned(), &decl, Timestamp::now())
                 .expect("a spawned seat keeps every state but waiting-user");
@@ -711,6 +765,7 @@ mod tests {
             let decl = Declaration {
                 value: "waiting-user".to_owned(),
                 reason: "x".repeat(REASON_MIN),
+                on: None,
             };
             let line = declare(&dir, &viewer, &decl, Timestamp::now())
                 .expect("only spawned.<n> is refused");
@@ -746,6 +801,7 @@ mod tests {
         let decl = Declaration {
             value: "done".to_owned(),
             reason: "all green".to_owned(),
+            on: None,
         };
         let line = declare(&dir, &lead(), &decl, Timestamp::now()).unwrap();
         assert_eq!(line, "Marked cl:lead done: all green\n");
@@ -760,6 +816,7 @@ mod tests {
         let again = Declaration {
             value: "working".to_owned(),
             reason: String::new(),
+            on: None,
         };
         declare(&dir, &lead(), &again, Timestamp::now()).unwrap();
         let container = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();

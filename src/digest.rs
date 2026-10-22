@@ -98,7 +98,17 @@ pub enum Declaration {
     Absent,
     /// The newest declaration: its words, possibly empty, and the second it was
     /// made, `None` when the carrier has no stamp for it.
-    Made { reason: String, at: Option<i64> },
+    Made {
+        reason: String,
+        at: Option<i64>,
+        /// The `--on` target of a CURRENT typed `waiting-agent`.
+        on: Option<crate::wait_on::Target>,
+        /// That typed wait ends in another session and is past the ceiling
+        /// it is exempt from: drawn, never escalated.
+        overdue: bool,
+        /// The world proved `on` absent ([`crate::wait_on::Target::missing`]).
+        missing: bool,
+    },
 }
 
 impl Declaration {
@@ -110,7 +120,7 @@ impl Declaration {
         match self {
             Self::Unreadable => ("reason unavailable".to_owned(), None),
             Self::Absent => ("no reason given".to_owned(), None),
-            Self::Made { reason, at } => {
+            Self::Made { reason, at, .. } => {
                 let clean = crate::board::terminal_text(&crate::goal::printable(reason));
                 let reason = match clean.trim() {
                     "" => "no reason given".to_owned(),
@@ -136,6 +146,39 @@ const PENDING_SESSION_ID: &str = "pending";
 const SHORT_SESSION_ID_CHARS: usize = 8;
 
 impl AgentEntry {
+    /// A CURRENT typed wait: its target, whether the world proved it absent,
+    /// and past the ceiling it is exempt from, how long it is overdue.
+    #[must_use]
+    pub(crate) fn typed_wait(
+        &self,
+        now: Timestamp,
+    ) -> Option<(&crate::wait_on::Target, bool, Option<String>)> {
+        let Some(Declaration::Made {
+            on: Some(on),
+            at,
+            overdue,
+            missing,
+            ..
+        }) = &self.declaration
+        else {
+            return None;
+        };
+        let age = at.map(|at| now.epoch().saturating_sub(at));
+        Some((on, *missing, overdue.then(|| crate::brief::age(age))))
+    }
+
+    /// [`Self::typed_wait`] in one cell's words.
+    #[must_use]
+    pub(crate) fn wait_words(&self, now: Timestamp) -> Option<String> {
+        let (on, missing, overdue) = self.typed_wait(now)?;
+        let mut words = on.words(missing);
+        if let Some(age) = overdue {
+            words.push_str(" · overdue ");
+            words.push_str(&age);
+        }
+        Some(words)
+    }
+
     /// The DISPLAY session id — frozen's short form, shared by BOTH surfaces.
     #[must_use]
     pub(crate) fn display_session_id(&self) -> &str {
@@ -325,6 +368,10 @@ pub struct SessionEntry {
     /// Roster references whose `Dead` came from a complete, typed runtime
     /// hand-in.
     established_runtime_dead_agents: Vec<String>,
+    /// Where the session's waits end ([`crate::wait_on::session_end`]).
+    /// TABLE only, like [`AgentEntry::own_work`]: the JSON key set is a
+    /// published contract.
+    pub(crate) wait_end: Option<crate::wait_on::End>,
 }
 
 impl SessionEntry {
@@ -354,6 +401,7 @@ impl SessionEntry {
             degraded: false,
             knowledge: RenderKnowledge::complete(),
             established_runtime_dead_agents: Vec::new(),
+            wait_end: None,
         }
     }
 
@@ -384,6 +432,49 @@ impl SessionEntry {
         (self.knowledge.roster.is_complete() && self.knowledge.events.is_complete())
             || (self.attention.is_some_and(Reason::is_severity_maximum)
                 && !self.established_runtime_dead_agents.is_empty())
+    }
+
+    /// Where the session's waits end, in the words a session row draws.
+    #[must_use]
+    pub(crate) fn wait_end_words(&self) -> Option<String> {
+        self.wait_end.as_ref().map(crate::wait_on::End::words)
+    }
+
+    /// This session's seat names, only when its roster was read completely.
+    #[must_use]
+    pub(crate) fn known_roster(&self) -> Option<Vec<String>> {
+        self.knowledge
+            .roster
+            .is_complete()
+            .then(|| self.agents.iter().map(|agent| agent.name.clone()).collect())
+    }
+
+    /// Mark each typed wait target a complete roster of `rosters` (session
+    /// name, [`Self::known_roster`]) or the `sessions` inventory, when
+    /// complete, proves absent.
+    pub(crate) fn resolve_waits(
+        &mut self,
+        sessions: Option<&[&str]>,
+        rosters: &[(String, Option<Vec<String>>)],
+    ) {
+        let own = self.name.clone();
+        let roster_of = |session: Option<&str>| {
+            let session = session.unwrap_or(&own);
+            rosters
+                .iter()
+                .find(|(name, _)| name == session)
+                .and_then(|(_, roster)| roster.as_deref())
+        };
+        for agent in &mut self.agents {
+            if let Some(Declaration::Made {
+                on: Some(on),
+                missing,
+                ..
+            }) = &mut agent.declaration
+            {
+                *missing = on.missing(roster_of, sessions);
+            }
+        }
     }
 
     /// Whether event-derived agent state is exact enough for a human cell.

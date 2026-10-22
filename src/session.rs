@@ -867,7 +867,7 @@ pub fn entry_from(
             .iter()
             .find(|seat| seat.slot == "main")
             .map(|seat| seat.name.clone());
-        entry.agents = agent_entries(
+        (entry.agents, entry.wait_end) = agent_entries(
             meta,
             read,
             runtime,
@@ -1008,7 +1008,7 @@ fn agent_entries(
     now: Timestamp,
     idle_nudge_secs: Option<u64>,
     done_confirmations: u8,
-) -> Vec<AgentEntry> {
+) -> (Vec<AgentEntry>, Option<crate::wait_on::End>) {
     // The seats that still exist: a stopped or absent pane holds nobody's
     // work, and a retired agent is off the roster entirely.
     let seats: Vec<String> = meta
@@ -1019,7 +1019,23 @@ fn agent_entries(
         .collect();
     let key = SessionKey::new(session, meta.session_id().unwrap_or_default());
     let outstanding = read.map(|read| Outstanding::read_in(&read.events, key, &seats));
-    meta.roster()
+    // ONE wait-chain reading over the live seats, the watchdog's own builder.
+    let live: Vec<(String, String, String)> = meta
+        .roster()
+        .iter()
+        .filter(|slot| agent_liveness(runtime, runtime.agent(&slot.slot)) != Some(false))
+        .map(|slot| (slot.slot.clone(), slot.reference(), slot.name.clone()))
+        .collect();
+    let live: Vec<(&str, &str, &str)> = live
+        .iter()
+        .map(|(slot, reference, name)| (slot.as_str(), reference.as_str(), name.as_str()))
+        .collect();
+    let wait_facts = read.map_or_else(Vec::new, |read| {
+        crate::wait_on::Facts::read(&read.events, session, &live)
+    });
+    let links = crate::wait_on::Facts::links(&wait_facts);
+    let agents = meta
+        .roster()
         .iter()
         .map(|slot| {
             let reference = slot.reference();
@@ -1044,6 +1060,7 @@ fn agent_entries(
             let declared_age_secs =
                 declared.map(|event| u64::try_from(event.ts.seconds_until(now)).unwrap_or(0));
             let declared_current = declaration.is_some_and(|(_, current)| current);
+            let elsewhere = crate::wait_on::ends_elsewhere(&links, &slot.name);
             let runtime_agent = runtime.agent(&slot.slot);
             // Model drift: only the two harnesses whose live model ae can read
             // are ever marked with an observation; every other tool's model is
@@ -1136,7 +1153,12 @@ fn agent_entries(
                         .zip(declared_age_secs)
                         .filter(|_| !alerts.contains(&Reason::Limit))
                         .and_then(|(state, age_secs)| {
-                            declared_reason(state, age_secs, idle_nudge_secs, declared_current)
+                            declared_reason(
+                                state,
+                                age_secs,
+                                idle_nudge_secs,
+                                declared_current && !elsewhere,
+                            )
                         });
                     Reason::rollup(alerts.into_iter().chain(declared))
                 },
@@ -1164,6 +1186,16 @@ fn agent_entries(
                     (Some(_), Some(event)) => Declaration::Made {
                         reason: event.summary.clone().unwrap_or_default(),
                         at: Some(event.ts.epoch()),
+                        on: wait_facts
+                            .iter()
+                            .find(|fact| fact.name() == slot.name)
+                            .and_then(crate::wait_on::Facts::on)
+                            .cloned(),
+                        overdue: elsewhere
+                            && declared_age_secs.zip(idle_nudge_secs).is_some_and(
+                                |(age_secs, cadence)| waiting_agent_escalated(age_secs, cadence),
+                            ),
+                        missing: false,
                     },
                 }),
             };
@@ -1176,7 +1208,8 @@ fn agent_entries(
                 });
             entry
         })
-        .collect()
+        .collect();
+    (agents, crate::wait_on::session_end(&links))
 }
 
 /// Whether a meta's anomalies degrade the session, per anomaly KIND.

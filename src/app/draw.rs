@@ -1423,16 +1423,30 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
         .map(|agent| drawn_cols(&agent.name))
         .max()
         .unwrap_or(0);
+    // Where the session's waits end, above the seats whose chain it follows.
+    if let Some(words) = entry.wait_end_words().filter(|_| !agents.is_empty()) {
+        rows.push(Cells::of(vec![Span::styled(fit(&words, "", room), dim)]));
+    }
     for agent in agents {
         let model = if agent.model.is_empty() {
             agent.client.as_str()
         } else {
             agent.model.as_str()
         };
+        // A typed wait names its target in place of the generic wait word;
+        // what the narrow row would cut rides its declaration row.
+        let typed = entry
+            .agents
+            .iter()
+            .find(|seat| seat.name == agent.name && agent.state == "waiting-agent")
+            .and_then(|seat| seat.typed_wait(ctx.screen.now))
+            .map(|(on, _, _)| on.words(false));
         let seat = Seat {
             name: &agent.name,
             mark: agent.mark(),
-            state: crate::theme::seat_word(&agent.state),
+            state: typed
+                .as_deref()
+                .unwrap_or_else(|| crate::theme::seat_word(&agent.state)),
             meta: [model, agent.effort.as_str()],
         };
         rows.extend(seat_rows(ctx, &seat, column, room));
@@ -1576,17 +1590,25 @@ fn declaration_row(
     name: &str,
     room: u16,
 ) -> Option<Cells> {
-    let declaration = entry
-        .agents
-        .iter()
-        .find(|agent| agent.name == name)?
-        .declaration
-        .as_ref()?;
-    let (reason, age) = if entry.agent_state_is_exact() {
+    let agent = entry.agents.iter().find(|agent| agent.name == name)?;
+    let declaration = agent.declaration.as_ref()?;
+    let (mut reason, age) = if entry.agent_state_is_exact() {
         declaration.words(ctx.screen.now)
     } else {
         crate::digest::Declaration::Unreadable.words(ctx.screen.now)
     };
+    if let Some((on, missing, overdue)) = agent
+        .typed_wait(ctx.screen.now)
+        .filter(|_| entry.agent_state_is_exact())
+    {
+        let notes = [
+            missing.then(|| format!("{} (not found)", on.label())),
+            overdue.map(|age| format!("overdue {age}")),
+        ];
+        for note in notes.into_iter().flatten().rev() {
+            reason = format!("{note} · {reason}");
+        }
+    }
     // The mark and its blank, so the words sit under the name.
     let lead = 2;
     let width = room.saturating_sub(lead);

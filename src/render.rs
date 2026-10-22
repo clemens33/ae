@@ -2661,7 +2661,7 @@ mod tests {
             );
             for sentence in [
                 "working — you are doing the task; declare it when you start or resume, not after you finish.",
-                "waiting-agent — you need a named agent's answer or result before you can continue (an ask you sent, or a worker you spawned).",
+                "waiting-agent — you need a named agent's answer or result before continuing (an ask you sent, or a worker you spawned). Typed: waiting-agent --on <agent|session:agent|@session> 'reason'.",
                 "waiting-user — only after you asked the human yourself.",
                 "blocked — an external impediment (service, dependency, broken host), never another agent.",
                 "done — you handed your result back, or your owner paused you for an explained reason; nothing is left for you to do now, even if follow-up questions may come.",

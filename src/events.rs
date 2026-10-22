@@ -77,6 +77,11 @@ pub struct Event {
     pub identity_gap: Option<String>,
     /// Where the writer stored the delivered text, when it stored one.
     pub body_file: Option<String>,
+    /// A `waiting-agent` state's typed target, exactly as declared. LENIENT,
+    /// so outside [`KNOWN_KEYS`]: a missing, empty, non-string, repeated or
+    /// ungrammatical one, or one on any other record, reads as `None` and
+    /// never costs the record.
+    pub wait_on: Option<String>,
 }
 
 /// One half of a routing key, exactly as the record carries it.
@@ -453,7 +458,7 @@ impl Event {
         let ts_text = required(value, "ts")?;
         let ts = Timestamp::parse(ts_text)
             .ok_or_else(|| EventError::UnreadableTimestamp(ts_text.to_owned()))?;
-        Ok(Self {
+        let mut event = Self {
             ts,
             actor: required(value, "actor")?.to_owned(),
             action: required(value, "action")?.to_owned(),
@@ -475,7 +480,12 @@ impl Event {
             caller_session_uuid: optional(value, "caller_session_uuid")?,
             identity_gap: optional(value, "identity_gap")?,
             body_file: optional(value, "body_file")?,
-        })
+            wait_on: None,
+        };
+        if event.action == "state" && event.reference.as_deref() == Some("waiting-agent") {
+            event.wait_on = wait_on_of(fields);
+        }
+        Ok(event)
     }
 
     /// What this event's `ref` means.
@@ -653,6 +663,19 @@ fn reject_duplicate_known_keys(fields: &[(String, Value)]) -> Result<(), EventEr
         }
     }
     Ok(())
+}
+
+/// The one `wait_on` string a record carries, when it carries exactly one
+/// that the target grammar admits.
+fn wait_on_of(fields: &[(String, Value)]) -> Option<String> {
+    let mut named = fields.iter().filter(|(key, _)| key == "wait_on");
+    let (_, Value::Str(text)) = named.next()? else {
+        return None;
+    };
+    if named.next().is_some() {
+        return None;
+    }
+    crate::wait_on::Target::parse(text, "").map(|_| text.clone())
 }
 
 /// A required string key.

@@ -36,12 +36,35 @@ impl World {
             sessions,
             losses: 0,
         }
+        .resolved()
     }
 
     /// The same world, carrying what loss facts amount to.
     #[must_use]
     pub fn with_losses(mut self, losses: &[FailedSource]) -> Self {
         self.losses = distinct_losses(losses);
+        self.resolved()
+    }
+
+    /// Every typed wait target marked as this world proves it: absent when it
+    /// names a seat off its own roster, or a session off a COMPLETE
+    /// inventory. An incomplete world proves no session absent.
+    fn resolved(mut self) -> Self {
+        let known: Vec<String> = self
+            .sessions
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect();
+        let known: Vec<&str> = known.iter().map(String::as_str).collect();
+        let inventory = self.inventory_complete().then_some(known.as_slice());
+        let rosters: Vec<(String, Option<Vec<String>>)> = self
+            .sessions
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.known_roster()))
+            .collect();
+        for entry in &mut self.sessions {
+            entry.resolve_waits(inventory, &rosters);
+        }
         self
     }
 
@@ -134,6 +157,7 @@ impl<'a> Presentation<'a> {
             // never as the paths — see [`World::losses`].
             losses: distinct_losses(&self.snapshot.incomplete),
         }
+        .resolved()
     }
 }
 
@@ -271,9 +295,10 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
 }
 
 /// The verdict cell for a `waiting-agent`/`blocked` declaration: raw state,
-/// qualified while its proof episode runs.
-fn wait_cell(agent: &AgentEntry, out: &mut String) {
-    let word = crate::theme::seat_word(agent.state.as_deref().unwrap_or("blocked"));
+/// or a typed wait's own words, qualified while its proof episode runs.
+fn wait_cell(agent: &AgentEntry, typed: Option<&str>, out: &mut String) {
+    let word = typed
+        .unwrap_or_else(|| crate::theme::seat_word(agent.state.as_deref().unwrap_or("blocked")));
     let Some(progress) = agent.wait_progress else {
         return out.push_str(word);
     };
@@ -319,6 +344,14 @@ fn push_markers(out: &mut String, session: &SessionEntry) {
     }
 }
 
+/// Where the session's waits end, beside its markers.
+fn push_wait_end(out: &mut String, session: &SessionEntry) {
+    if let Some(words) = session.wait_end_words() {
+        out.push_str(&words);
+        out.push(' ');
+    }
+}
+
 /// The tabular view at the snapshot time that supplied `sessions`.
 #[must_use]
 pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
@@ -328,6 +361,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         push_padded(&mut out, &session.name, NAME_WIDTH);
         push_padded(&mut out, session.status.as_str(), STATUS_WIDTH);
         push_markers(&mut out, session);
+        push_wait_end(&mut out, session);
         // ORIGIN — where this session came from.
         match session
             .origin
@@ -398,7 +432,8 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             } else if session.agent_state_is_exact()
                 && matches!(agent.state.as_deref(), Some("waiting-agent" | "blocked"))
             {
-                wait_cell(agent, &mut out);
+                let typed = agent.wait_words(now);
+                wait_cell(agent, typed.as_deref(), &mut out);
             } else {
                 out.push_str(
                     match (session.agent_state_is_exact(), agent.state.as_deref()) {

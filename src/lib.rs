@@ -107,6 +107,7 @@ pub mod tracked;
 pub mod transport;
 pub mod upgrade;
 pub mod usage;
+pub mod wait_on;
 pub mod watchdog;
 pub mod watchdog_daemon;
 pub mod watchdog_glue;
