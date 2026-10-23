@@ -6582,21 +6582,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn a_resume_document_fixture_preserves_an_overlapping_fixture_and_cleans_its_root() {
+        let (first, dir, env, ..) = resume_parts("first meta\n");
+        let first_path = env.home.parent().unwrap().to_path_buf();
+        std::fs::write(dir.join("sentinel"), "first").unwrap();
+        let (second, other, env, ..) = resume_parts("second meta\n");
+        let second_path = env.home.parent().unwrap().to_path_buf();
+        println!("owned fixture roots: {first_path:?} {second_path:?}");
+        assert_eq!(std::fs::read(dir.join("sentinel")).unwrap(), b"first");
+        assert_eq!(std::fs::read(dir.join("meta")).unwrap(), b"first meta\n");
+        assert_eq!(std::fs::read(other.join("meta")).unwrap(), b"second meta\n");
+        assert_ne!(first_path, second_path);
+        drop(second);
+        assert!(!second_path.exists());
+        assert_eq!(std::fs::read(dir.join("sentinel")).unwrap(), b"first");
+        drop(first);
+        assert!(!first_path.exists());
+    }
+
+    struct ResumeScratch(PathBuf);
+    impl AsRef<std::path::Path> for ResumeScratch {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for ResumeScratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// A resume rebuild's parts over a prior meta: the scratch root, the
     /// session dir, and the launch inputs. The caller drives `meta_document`
     /// itself — `resume_over` is the no-breakage shorthand.
     fn resume_parts(
         meta_text: &str,
     ) -> (
-        PathBuf,
+        ResumeScratch,
         PathBuf,
         super::Env,
         super::Session,
         [super::Launching; 1],
         super::WatchdogFacts<'_>,
     ) {
-        let root = scratch("seat-dir-document");
-        let home = root.join("home");
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = (0..64)
+            .find_map(|_| {
+                let n = NEXT.fetch_add(1, Ordering::Relaxed);
+                let dir = PathBuf::from(format!("/tmp/ae-resume-{}-{n}", std::process::id()));
+                match std::fs::create_dir(&dir) {
+                    Ok(()) => Some(ResumeScratch(dir)),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(e) => panic!("resume scratch: {e}"),
+                }
+            })
+            .expect("an unused resume scratch root within 64 attempts");
+        let home = root.as_ref().join("home");
         let dir = home.join("sessions").join("s");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("meta"), meta_text).unwrap();
@@ -6651,18 +6694,18 @@ mod tests {
         (root, dir, env, shape, launching, watchdog)
     }
 
-    /// A resume rebuild over a prior meta: the session dir (kept, the caller
-    /// removes it), the prior bytes, and whatever the rebuild decided.
-    fn resume_over(meta_text: &str) -> (PathBuf, Vec<u8>, Result<String, String>) {
-        let (_root, dir, env, shape, launching, watchdog) = resume_parts(meta_text);
+    /// A resume rebuild over a prior meta: the owned root, session dir,
+    /// prior bytes, and whatever the rebuild decided.
+    fn resume_over(meta_text: &str) -> (ResumeScratch, PathBuf, Vec<u8>, Result<String, String>) {
+        let (root, dir, env, shape, launching, watchdog) = resume_parts(meta_text);
         let before = std::fs::read(dir.join("meta")).unwrap();
         let document = super::meta_document(&env, &shape, &launching, watchdog, None);
-        (dir, before, document)
+        (root, dir, before, document)
     }
 
     #[test]
     fn a_resume_document_carries_a_valid_seat_dir_forward() {
-        let (dir, _before, document) = resume_over(
+        let (_root, dir, _before, document) = resume_over(
             "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
              started=1\nwork_dir=/w\norigin=/o\nseat.main=lead\nprofile.main=fable5\n\
              agent_bin.main=claude\nharness_session.main=sid\nlaunch_id.main=L1\n\
@@ -6685,7 +6728,7 @@ mod tests {
             "work_dir.main=\n",
             "work_dir.main=/a\nwork_dir.main=/b\n",
         ] {
-            let (dir, before, document) = resume_over(&format!(
+            let (_root, dir, before, document) = resume_over(&format!(
                 "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
                  started=1\nwork_dir=/w\norigin=/o\nseat.main=lead\nprofile.main=fable5\n\
                  agent_bin.main=claude\nharness_session.main=sid\nlaunch_id.main=L1\n{bad}"
