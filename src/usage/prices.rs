@@ -12,8 +12,8 @@ pub struct Price {
     pub output: u64,
 }
 
-// Source: https://raw.githubusercontent.com/BerriAI/litellm/fbed17d567a62b14b8fc7d9ef13c5cd61a8d1ae0/model_prices_and_context_window.json
-// Commit observed 2026-09-10. Base service tier/context and five-minute cache writes only.
+// Source: https://raw.githubusercontent.com/BerriAI/litellm/82a4ef40958131d36130cb5192448de09e0582b7/model_prices_and_context_window.json
+// Commit observed 2026-10-23. Base service tier/context and five-minute cache writes only.
 const PRICES: &[(&str, Price)] = &[
     // Each row uses: input_cost_per_token, cache_creation_input_token_cost,
     // cache_read_input_token_cost, output_cost_per_token.
@@ -42,6 +42,26 @@ const PRICES: &[(&str, Price)] = &[
         "claude-sonnet-5",
         Price::new(2_000_000, 2_500_000, 200_000, 10_000_000),
     ),
+    // Source key: claude-opus-5-5
+    (
+        "claude-opus-5-5",
+        Price::new(4_000_000, 5_000_000, 200_000, 20_000_000),
+    ),
+    // Source key: claude-sonnet-5-5
+    (
+        "claude-sonnet-5-5",
+        Price::new(2_000_000, 2_500_000, 100_000, 10_000_000),
+    ),
+    // Source key: claude-haiku-5-5
+    (
+        "claude-haiku-5-5",
+        Price::new(100_000, 125_000, 10_000, 500_000),
+    ),
+    // Source key: claude-haiku-4-5
+    (
+        "claude-haiku-4-5",
+        Price::new(1_000_000, 1_250_000, 100_000, 5_000_000),
+    ),
     // Source key: gpt-5.6-sol
     (
         "gpt-5.6-sol",
@@ -62,6 +82,13 @@ const PRICES: &[(&str, Price)] = &[
         "gpt-6-astra",
         Price::new(10_000_000, 12_500_000, 1_000_000, 50_000_000),
     ),
+    // Source key: gpt-6.1-sol
+    (
+        "gpt-6.1-sol",
+        Price::new(2_000_000, 2_500_000, 100_000, 10_000_000),
+    ),
+    // Source key: gpt-6-luna
+    ("gpt-6-luna", Price::new(100_000, 125_000, 10_000, 500_000)),
 ];
 
 /// Bundled prices overlaid by validated `[prices]` aliases.
