@@ -2,7 +2,8 @@
 # workspace, so this dependency graph stays outside ae's product deny/vet lanes.
 #
 # There is NO rust-toolchain.toml here: the justfile's `FUZZ_TOOLCHAIN` is the
-# lane's one nightly pin, and every invocation passes it as `cargo +<pin>`.
+# execution lane's nightly pin, passed as `cargo +<pin>`. Compile checks and
+# release lock refreshes use the root's pinned product compiler.
 # Cargo.lock IS committed; `just rust-fuzz` proves it with `cargo metadata
 # --locked` because cargo-fuzz 0.13.2 has no `--locked` pass-through.
 [package]

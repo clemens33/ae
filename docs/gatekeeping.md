@@ -112,7 +112,8 @@ days you are tired, rushed, or running on a smaller model.
    BLOCKER). Name the blind spot out loud, then check that region by hand.
 
 **Verification mechanics, as of slice Z4.** `just rust-check` is the whole gate — format,
-clippy under `-D warnings`, `cargo nextest` and the doctests — and `just test` is that same
+clippy under `-D warnings`, stable compilation of every fuzz target, `cargo nextest`
+and the doctests — and `just test` is that same
 command. `just check` is shellcheck and shfmt over `install`, the one bash file left. There
 is no scoped inner loop to run first and no serial full pass to run after: the split existed
 because the bash integration suite cost half an hour, and it does not exist any more.

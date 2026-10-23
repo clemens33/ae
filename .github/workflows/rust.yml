@@ -43,6 +43,9 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - fuzz/Cargo.toml
+      - fuzz/Cargo.lock
+      - fuzz/fuzz_targets/**
       - rust-toolchain.toml
       - deny.toml
       - clippy.toml
@@ -59,6 +62,9 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - fuzz/Cargo.toml
+      - fuzz/Cargo.lock
+      - fuzz/fuzz_targets/**
       - rust-toolchain.toml
       - deny.toml
       - clippy.toml

@@ -1418,19 +1418,26 @@ fn the_heavy_lanes_run_cargo_niced_and_a_filtered_run_does_not() {
 }
 
 /// Whether the `release` recipe refreshes the fuzz crate's lock inside the
-/// version commit, and cannot refuse the release when it does not.
+/// version commit, with the product compiler, lets that refresh move nothing
+/// but the ae version, and stops before the commit otherwise.
 ///
 /// The fuzz crate is outside the workspace, so the bump's own rewrite never
 /// reaches its lock — and that lock records the ae version. Refreshed too early
 /// it records the OLD version; refreshed after the commit it needs a second
-/// one; refreshed without a probe it turns a missing DEV toolchain into a
-/// failed release.
+/// one. Since #240 the gate type-checks the fuzz crate with `--locked`, so a
+/// lock the release leaves stale turns the release commit's own gate red, and
+/// every gate after it. The refresh therefore uses the toolchain every gate
+/// already has — never the fuzz nightly, never behind a probe that may skip
+/// it, never `--locked` (which refuses instead of refreshing) — and a failure
+/// stops the release rather than committing the stale lock. A release is not a
+/// dependency update: the lock's delta is compared with the bumped version, and
+/// any other change stops the release before the commit.
 fn fuzz_lock_refresh_ok(justfile: &str) -> bool {
     let lines = recipe_text(justfile, "release:");
     let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
     let (Some(bump), Some(refresh), Some(commit)) = (
         position("just bump"),
-        position("metadata --manifest-path fuzz/Cargo.toml"),
+        position("--manifest-path fuzz/Cargo.toml"),
         position("chore(release):"),
     ) else {
         return false;
@@ -1440,42 +1447,140 @@ fn fuzz_lock_refresh_ok(justfile: &str) -> bool {
     if !(bump < refresh && refresh < commit) {
         return false;
     }
-    // ONE condition: the refresh runs only when the fuzz nightly answers.
-    if !lines[refresh].contains("rustup run") {
+    let line = &lines[refresh];
+    // The product compiler, as every gate runs it: no override, no probe.
+    let foreign = [
+        "rustup",
+        "cargo +",
+        "FUZZ_TOOLCHAIN",
+        "nightly",
+        "--locked",
+        "--frozen",
+    ];
+    if bare_word_count(line, "cargo") == 0 || foreign.iter().any(|word| line.contains(word)) {
         return false;
     }
-    // And nothing from the refresh to the commit may refuse.
-    lines[refresh..commit]
+    // A failure stops the release ON ITS OWN STATUS: a plain command under
+    // `set -e`, an `||` arm that exits, or an `if` guard whose own body exits
+    // before its `fi`. A later check cannot stand in: a refresh that wrote the
+    // allowed version line and then failed leaves a delta that check accepts.
+    let errexit = lines.iter().any(|row| row.contains("set -euo pipefail"));
+    let (stops, end) = if line.starts_with("if ") {
+        let Some(end) = (refresh + 1..commit).find(|&at| {
+            lines[at] == "fi" || lines[at].starts_with("fi ") || lines[at].starts_with("fi;")
+        }) else {
+            return false;
+        };
+        let exits = lines[refresh..end]
+            .iter()
+            .any(|row| bare_word_count(row, "exit") > 0);
+        (exits, end)
+    } else if let Some((_, arm)) = line.split_once("||") {
+        (bare_word_count(arm, "exit") > 0, refresh)
+    } else {
+        (errexit, refresh)
+    };
+    // The refresh may move only the ae version: after it and before the
+    // commit, the lock's diff is compared with the bumped `$VERSION`, and a
+    // mismatch exits.
+    let Some(delta) = (end + 1..commit)
+        .find(|&at| lines[at].contains("git diff") && lines[at].contains("fuzz/Cargo.lock"))
+    else {
+        return false;
+    };
+    let compared = lines[delta..commit]
         .iter()
-        .all(|line| bare_word_count(line, "exit") == 0)
+        .any(|row| row.contains("$VERSION") || row.contains("${VERSION}"));
+    let refuses = lines[delta..commit]
+        .iter()
+        .any(|row| bare_word_count(row, "exit") > 0);
+    // And nothing after it may put the stale lock back.
+    stops
+        && compared
+        && refuses
+        && lines[refresh..commit]
+            .iter()
+            .all(|row| !row.contains("fuzz/Cargo.lock") || !row.contains("checkout"))
 }
 
 #[test]
-fn the_release_recipe_refreshes_the_fuzz_lock_without_being_able_to_refuse() {
+fn the_release_recipe_refreshes_the_fuzz_lock_with_the_product_compiler_or_stops() {
     assert!(
         fuzz_lock_refresh_ok(&read(&root().join("justfile"))),
-        "the release must carry the refreshed fuzz lock in its version commit, and \
-         a missing fuzz nightly must warn rather than fail the release"
+        "the release must carry a fuzz lock refreshed by the product compiler in its \
+         version commit, whose only change is the ae version, and stop before that \
+         commit otherwise: the gate checks the fuzz crate with --locked (#240)"
     );
 
-    // RED — no refresh at all: the fuzz lane refuses on a stale lock after every
-    // release until someone refreshes it by hand.
+    let head = "release:\n    set -euo pipefail\n    VERSION=$(just bump)\n    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null\n";
+    let delta = r#"    delta="$(git diff -U0 -- fuzz/Cargo.lock | grep -E '^[-+][^-+]' || true)"
+    if [ "$delta" != "$(printf -- '-version = "%s"\n+version = "%s"' "$PREVIOUS" "$VERSION")" ]; then
+        echo "Error: fuzz/Cargo.lock changed beyond the ae version" >&2
+        exit 1
+    fi
+"#;
+    let tail = "    git add -u\n    git commit -m \"chore(release): $TAG\"\n";
+    let good = format!("{head}{delta}{tail}");
+    assert!(fuzz_lock_refresh_ok(&good));
+    // GREEN — an explicit refusal of the refresh is a stop too.
+    assert!(fuzz_lock_refresh_ok(&good.replace(
+        "--format-version 1 >/dev/null\n",
+        "--format-version 1 >/dev/null || { echo \"fuzz lock refresh failed\" >&2; exit 1; }\n"
+    )));
+    // GREEN — an `if` guard whose own failing body exits.
+    assert!(fuzz_lock_refresh_ok(&good.replace(
+        "    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null\n",
+        "    if ! cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null; then\n        echo \"Error: fuzz lock refresh failed\" >&2\n        exit 1\n    fi\n"
+    )));
+    // RED — a guard that only warns, leaning on the later delta check: a
+    // refresh that wrote the allowed version line and then failed passes it.
+    assert!(!fuzz_lock_refresh_ok(&good.replace(
+        "    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null\n",
+        "    if ! cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null; then\n        echo \"Warning: fuzz lock not refreshed\" >&2\n    fi\n"
+    )));
+    // RED — the shape before #240: refreshed only when the fuzz nightly answers,
+    // otherwise the stale lock is put back and committed with a warning.
     assert!(!fuzz_lock_refresh_ok(
-        "release:\n    VERSION=$(just bump)\n    git commit -m \"chore(release): $TAG\"\n"
+        "release:\n    set -euo pipefail\n    VERSION=$(just bump)\n    if rustup run nightly rustc --version >/dev/null 2>&1 && cargo +nightly metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null 2>&1; then\n        git add fuzz/Cargo.lock\n    else\n        git checkout -- fuzz/Cargo.lock\n        echo \"Warning: fuzz/Cargo.lock NOT refreshed\" >&2\n    fi\n    git commit -m \"chore(release): $TAG\"\n"
     ));
-    // RED — refreshed BEFORE the bump, so the lock records the version the
-    // release is replacing.
+    // RED — no refresh at all.
     assert!(!fuzz_lock_refresh_ok(
-        "release:\n    if rustup run nightly rustc --version && cargo +nightly metadata --manifest-path fuzz/Cargo.toml; then git add fuzz/Cargo.lock; fi\n    VERSION=$(just bump)\n    git commit -m \"chore(release): $TAG\"\n"
+        "release:\n    set -euo pipefail\n    VERSION=$(just bump)\n    git commit -m \"chore(release): $TAG\"\n"
     ));
-    // RED — unguarded: a laptop without the fuzz nightly cannot release.
+    // RED — refreshed BEFORE the bump, so the lock records the replaced version.
+    assert!(!fuzz_lock_refresh_ok(&format!(
+        "release:\n    set -euo pipefail\n    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null\n    VERSION=$(just bump)\n{delta}{tail}"
+    )));
+    // RED — `--locked` refuses the bumped lock instead of refreshing it.
+    assert!(!fuzz_lock_refresh_ok(&good.replace(
+        "cargo metadata --manifest",
+        "cargo metadata --locked --manifest"
+    )));
+    // RED — the refresh's failure is swallowed.
+    assert!(!fuzz_lock_refresh_ok(&good.replace(
+        "--format-version 1 >/dev/null\n",
+        "--format-version 1 >/dev/null || true\n"
+    )));
+    // RED — no errexit, so a plain failing refresh runs on into the commit.
     assert!(!fuzz_lock_refresh_ok(
-        "release:\n    VERSION=$(just bump)\n    cargo +nightly metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null\n    git commit -m \"chore(release): $TAG\"\n"
+        &good.replace("    set -euo pipefail\n", "")
     ));
-    // RED — guarded, in order, and still able to refuse.
-    assert!(!fuzz_lock_refresh_ok(
-        "release:\n    VERSION=$(just bump)\n    if rustup run nightly rustc --version && cargo +nightly metadata --manifest-path fuzz/Cargo.toml; then git add fuzz/Cargo.lock; else exit 1; fi\n    git commit -m \"chore(release): $TAG\"\n"
-    ));
+    // RED — refreshed, then the old lock put back.
+    assert!(!fuzz_lock_refresh_ok(&good.replace(
+        "    git add -u\n",
+        "    git checkout -- fuzz/Cargo.lock\n    git add -u\n"
+    )));
+    // RED — no delta check: a dependency drift rides into the release commit.
+    assert!(!fuzz_lock_refresh_ok(&format!("{head}{tail}")));
+    // RED — the delta is checked only after the commit already carries it.
+    assert!(!fuzz_lock_refresh_ok(&format!("{head}{tail}{delta}")));
+    // RED — a mismatch only warns.
+    assert!(!fuzz_lock_refresh_ok(&good.replace("        exit 1\n", "")));
+    // RED — the delta is not compared with the bumped version: any change passes.
+    assert!(!fuzz_lock_refresh_ok(&good.replace(
+        r#"    if [ "$delta" != "$(printf -- '-version = "%s"\n+version = "%s"' "$PREVIOUS" "$VERSION")" ]; then"#,
+        r#"    if [ -z "$delta" ]; then"#
+    )));
 }
 
 /// Whether the fuzz lane BOUNDS the duration it hands libFuzzer, on every route.
@@ -4492,4 +4597,395 @@ fn cargo_clean_dry_run_with_nothing_to_remove_lists_nothing_and_says_zero_files(
         ran.err
     );
     assert!(guard.join("debug/deps/libdep-keep.rlib").is_file());
+}
+
+/// The recipes a justfile recipe header names as its dependencies.
+fn recipe_deps(justfile: &str, name: &str) -> Vec<String> {
+    let header = format!("{name}:");
+    justfile
+        .lines()
+        .find_map(|line| line.strip_prefix(header.as_str()))
+        .map(|rest| rest.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Whether THE GATE type-checks every declared fuzz target, on the product
+/// compiler, in a target directory the gate may write (#240).
+///
+/// The fuzz targets are a crate outside the workspace, so no product lane built
+/// them, and an enum variant added on main broke one for days unseen. The fix
+/// is a stable `cargo check` of that crate inside `rust-check`, so a break
+/// shows at the commit that causes it. It must select every `[[bin]]` (not a
+/// default or a single target), honour the committed lock, use the compiler
+/// `rust-toolchain.toml` pins rather than the fuzz nightly, run no fuzzer, and
+/// write its output under the inherited `CARGO_TARGET_DIR` or the checkout's
+/// own `target` — never under `fuzz/`, which the Linux gate mounts read-only.
+fn fuzz_check_ok(justfile: &str) -> bool {
+    if !recipe_deps(justfile, "rust-check")
+        .iter()
+        .any(|dep| dep == "rust-fuzz-check")
+    {
+        return false;
+    }
+    let lines = recipe_text(justfile, "rust-fuzz-check:");
+    let text = lines.join("\n");
+    let foreign = [
+        "FUZZ_TOOLCHAIN",
+        "nightly",
+        "cargo +",
+        "rustup",
+        "cargo fuzz",
+        "cargo-fuzz",
+        "max_total_time",
+        "-Z",
+        "fuzz/target",
+    ];
+    if foreign.iter().any(|word| text.contains(word)) {
+        return false;
+    }
+    let checks: Vec<&String> = lines
+        .iter()
+        .filter(|line| bare_word_count(line, "cargo") > 0 && bare_word_count(line, "check") > 0)
+        .collect();
+    let [check] = checks.as_slice() else {
+        return false;
+    };
+    let every_bin = check.contains("--bins") || check.contains("--all-targets");
+    let narrowed = check.contains("--bin ") || check.contains("--bin=") || check.contains("--lib");
+    let redirect = text.contains("${CARGO_TARGET_DIR:-")
+        && (check.contains("--target-dir")
+            || check.contains("CARGO_TARGET_DIR=")
+            || text.contains("export CARGO_TARGET_DIR="));
+    check.contains("--locked")
+        && check.contains("--manifest-path")
+        && check.contains("fuzz/Cargo.toml")
+        && every_bin
+        && !narrowed
+        && redirect
+}
+
+#[test]
+fn the_gate_type_checks_every_fuzz_target_on_the_product_compiler() {
+    assert!(
+        fuzz_check_ok(&read(&root().join("justfile"))),
+        "rust-check must depend on rust-fuzz-check, a locked stable `cargo check` of every \
+         fuzz/Cargo.toml bin into the inherited or checkout target dir, with no nightly \
+         and no fuzz run (#240)"
+    );
+
+    let good = "rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test\n\nrust-fuzz-check:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    dir=\"${CARGO_TARGET_DIR:-$PWD/target}\"\n    nice -n 10 cargo check --locked --manifest-path fuzz/Cargo.toml --bins --target-dir \"$dir\"\n";
+    assert!(fuzz_check_ok(good));
+    // GREEN — the redirect handed on through the environment instead.
+    assert!(fuzz_check_ok(&good.replace(
+        "    dir=\"${CARGO_TARGET_DIR:-$PWD/target}\"\n    nice -n 10 cargo check --locked --manifest-path fuzz/Cargo.toml --bins --target-dir \"$dir\"\n",
+        "    export CARGO_TARGET_DIR=\"${CARGO_TARGET_DIR:-$PWD/target}\"\n    cargo check --locked --manifest-path fuzz/Cargo.toml --all-targets\n"
+    )));
+    // RED — the recipe exists but the gate never runs it: #240 as it stands.
+    assert!(!fuzz_check_ok(&good.replace(
+        "rust-lint rust-fuzz-check rust-test",
+        "rust-lint rust-test"
+    )));
+    // RED — the fuzz nightly in an ordinary lane: CI carries none.
+    assert!(!fuzz_check_ok(&good.replace(
+        "nice -n 10 cargo check",
+        "cargo +nightly-2026-08-20 check"
+    )));
+    // RED — a second compiler pin beside rust-toolchain.toml.
+    assert!(!fuzz_check_ok(
+        &good.replace("nice -n 10 cargo check", "cargo +1.97.1 check")
+    ));
+    // RED — cargo-fuzz's own check: needs the nightly and its sanitizer flags.
+    assert!(!fuzz_check_ok(&good.replace(
+        "cargo check --locked --manifest-path fuzz/Cargo.toml --bins",
+        "cargo fuzz check --locked"
+    )));
+    // RED — the gate runs a fuzzer.
+    assert!(!fuzz_check_ok(&format!(
+        "{good}    cargo +nightly-2026-08-20 fuzz run console_command -- -max_total_time=1\n"
+    )));
+    // RED — unlocked: cargo may rewrite the committed lock and report green.
+    assert!(!fuzz_check_ok(&good.replace("--locked ", "")));
+    // RED — one target checked, the other declared ones never.
+    assert!(!fuzz_check_ok(
+        &good.replace("--bins", "--bin console_command")
+    ));
+    // RED — no target selection named: the all-bins claim rests on a default.
+    assert!(!fuzz_check_ok(&good.replace(" --bins", "")));
+    // RED — default output dir fuzz/target, which the Linux gate mounts read-only.
+    assert!(!fuzz_check_ok(&good.replace(" --target-dir \"$dir\"", "")));
+    assert!(!fuzz_check_ok(&good.replace(
+        "${CARGO_TARGET_DIR:-$PWD/target}",
+        "$PWD/fuzz/target"
+    )));
+    // RED — an inherited redirect (a contained runner) overridden.
+    assert!(!fuzz_check_ok(
+        &good.replace("${CARGO_TARGET_DIR:-$PWD/target}", "$PWD/target")
+    ));
+}
+
+/// The `[[bin]]` blocks of a cargo manifest as (name, path); `None` when a
+/// block lacks either key.
+fn manifest_bins(manifest: &str) -> Option<Vec<(String, String)>> {
+    let mut blocks = Vec::new();
+    let mut open: Option<(Option<String>, Option<String>)> = None;
+    for raw in manifest.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            blocks.extend(open.take());
+            if line == "[[bin]]" {
+                open = Some((None, None));
+            }
+            continue;
+        }
+        if let (Some((name, path)), Some((key, value))) = (open.as_mut(), line.split_once('=')) {
+            let value = value.trim().trim_matches('"').to_owned();
+            match key.trim() {
+                "name" => *name = Some(value),
+                "path" => *path = Some(value),
+                _ => {}
+            }
+        }
+    }
+    blocks.extend(open);
+    blocks
+        .into_iter()
+        .map(|(name, path)| Some((name?, path?)))
+        .collect()
+}
+
+/// Whether every fuzz target source is a declared `[[bin]]` that the gate's
+/// all-bins check builds in full.
+///
+/// `cargo check --bins` builds exactly the manifest's `[[bin]]` blocks and
+/// silently skips one whose `required-features` are off. A source no block
+/// declares, or code behind a `cfg` the stable check does not set (cargo-fuzz
+/// sets `fuzzing`, the gate does not), is type-checked by no lane at all.
+fn fuzz_inventory_ok(manifest: &str, sources: &[(String, String)]) -> bool {
+    let Some(bins) = manifest_bins(manifest) else {
+        return false;
+    };
+    let mut names: Vec<&str> = bins.iter().map(|(name, _)| name.as_str()).collect();
+    names.sort_unstable();
+    let declared = names.len();
+    names.dedup();
+    let mut files: Vec<&str> = sources
+        .iter()
+        .filter_map(|(file, _)| file.strip_suffix(".rs"))
+        .collect();
+    files.sort_unstable();
+    let hidden = |body: &str| {
+        ["#[cfg", "#![cfg", "cfg_attr"]
+            .iter()
+            .any(|attr| body.contains(attr))
+    };
+    declared > 0
+        && names.len() == declared
+        && files.len() == sources.len()
+        && names == files
+        && bins.iter().all(|(name, path)| {
+            path.strip_prefix("fuzz_targets/")
+                .and_then(|rest| rest.strip_suffix(".rs"))
+                == Some(name.as_str())
+        })
+        && !manifest.contains("required-features")
+        && sources.iter().all(|(_, body)| !hidden(body))
+}
+
+#[test]
+fn every_fuzz_target_source_is_a_declared_bin_the_gate_check_cannot_skip() {
+    let dir = root().join("fuzz/fuzz_targets");
+    let mut sources = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap_or_else(|why| panic!("{}: {why}", dir.display())) {
+        let path = entry.expect("a fuzz_targets entry").path();
+        let file = path
+            .file_name()
+            .and_then(|file| file.to_str())
+            .expect("a UTF-8 file name")
+            .to_owned();
+        // A dot file is an editor's or the OS's, never a target.
+        if !file.starts_with('.') {
+            sources.push((file, read(&path)));
+        }
+    }
+    assert!(
+        fuzz_inventory_ok(&read(&root().join("fuzz/Cargo.toml")), &sources),
+        "every fuzz/fuzz_targets/<name>.rs must be a [[bin]] named <name> with that path, \
+         no bin may carry required-features and no target may hide code behind a cfg: \
+         the gate's all-bins check must reach every target (#240)"
+    );
+
+    let manifest = "[package]\nname = \"ae-fuzz\"\n\n[dependencies]\nlibfuzzer-sys = \"=0.4.13\"\n\n[[bin]]\nname = \"a\"\npath = \"fuzz_targets/a.rs\"\ntest = false\n\n[[bin]]\nname = \"b\"\npath = \"fuzz_targets/b.rs\"\ntest = false\n";
+    let body = "#![no_main]\nuse libfuzzer_sys::fuzz_target;\nfuzz_target!(|data: &[u8]| {\n    let _ = data;\n});\n";
+    let two = [
+        ("a.rs".to_owned(), body.to_owned()),
+        ("b.rs".to_owned(), body.to_owned()),
+    ];
+    assert!(fuzz_inventory_ok(manifest, &two));
+    // RED — a target file no block declares: built by no lane.
+    let mut three = two.to_vec();
+    three.push(("c.rs".to_owned(), body.to_owned()));
+    assert!(!fuzz_inventory_ok(manifest, &three));
+    // RED — a declared bin whose path disagrees with its name and file.
+    assert!(!fuzz_inventory_ok(
+        &manifest.replace("fuzz_targets/b.rs", "fuzz_targets/other.rs"),
+        &two
+    ));
+    // RED — the same name declared twice.
+    assert!(!fuzz_inventory_ok(
+        &manifest.replace(
+            "name = \"b\"\npath = \"fuzz_targets/b.rs\"",
+            "name = \"a\"\npath = \"fuzz_targets/a.rs\""
+        ),
+        &two
+    ));
+    // RED — required-features: `--bins` skips the target without a word.
+    assert!(!fuzz_inventory_ok(
+        &manifest.replacen("test = false", "required-features = [\"x\"]", 1),
+        &two
+    ));
+    // RED — a block with no path.
+    assert!(!fuzz_inventory_ok(
+        &manifest.replace("path = \"fuzz_targets/b.rs\"\n", ""),
+        &two
+    ));
+    // RED — the target's body sits behind cargo-fuzz's cfg: the stable check sees nothing.
+    let hidden = [
+        (
+            "a.rs".to_owned(),
+            body.replace("fuzz_target!", "#[cfg(fuzzing)]\nfuzz_target!"),
+        ),
+        ("b.rs".to_owned(), body.to_owned()),
+    ];
+    assert!(!fuzz_inventory_ok(manifest, &hidden));
+    // RED — nothing declared: a check of no target is no check.
+    assert!(!fuzz_inventory_ok("[package]\nname = \"ae-fuzz\"\n", &[]));
+}
+
+/// The `paths` filter one trigger of a workflow lists, in order.
+fn trigger_paths(workflow: &str, trigger: &str) -> Vec<String> {
+    let header = format!("  {trigger}:");
+    let mut out = Vec::new();
+    let mut listing = false;
+    for line in workflow
+        .lines()
+        .skip_while(|line| *line != header.as_str())
+        .skip(1)
+    {
+        if !line.starts_with("    ") && !line.trim().is_empty() {
+            break;
+        }
+        if line == "    paths:" {
+            listing = true;
+        } else if let Some(item) = line.strip_prefix("      - ").filter(|_| listing) {
+            out.push(item.trim().to_owned());
+        } else if !line.trim_start().starts_with('#') {
+            listing = false;
+        }
+    }
+    out
+}
+
+/// Whether a change to the fuzz crate alone starts the workflow that now
+/// type-checks it, on push and on pull request alike.
+fn fuzz_ci_triggers_ok(workflow: &str) -> bool {
+    let push = trigger_paths(workflow, "push");
+    let pull = trigger_paths(workflow, "pull_request");
+    let reaches = |file: &str| push.iter().any(|path| path == file || path == "fuzz/**");
+    !push.is_empty()
+        && push == pull
+        && ["fuzz/Cargo.toml", "fuzz/Cargo.lock", "fuzz/fuzz_targets/**"]
+            .iter()
+            .all(|file| reaches(file))
+        && workflow.contains("run: just rust-check")
+}
+
+#[test]
+fn a_fuzz_only_change_starts_the_gate_and_no_workflow_carries_a_nightly() {
+    let rust = read(&root().join(".github/workflows/rust.yml"));
+    assert!(
+        fuzz_ci_triggers_ok(&rust),
+        "both rust.yml triggers must list fuzz/Cargo.toml, fuzz/Cargo.lock and \
+         fuzz/fuzz_targets/** (or fuzz/**), identically, and the job must run just \
+         rust-check: a target break shows at the commit that causes it (#240)"
+    );
+    // The fuzz runs stay human-run: no workflow line installs or runs a nightly.
+    let dir = root().join(".github/workflows");
+    for entry in std::fs::read_dir(&dir).unwrap_or_else(|why| panic!("{}: {why}", dir.display())) {
+        let path = entry.expect("a workflows entry").path();
+        let text = read(&path);
+        for line in text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+        {
+            assert!(
+                !line.contains("nightly")
+                    && !line.contains("cargo fuzz")
+                    && !line.contains("cargo-fuzz"),
+                "{}: CI carries no nightly and runs no fuzzer: {line}",
+                path.display()
+            );
+        }
+    }
+
+    let good = "on:\n  push:\n    branches: [main]\n    # comment\n    paths:\n      - src/**\n      - fuzz/Cargo.toml\n      - fuzz/Cargo.lock\n      - fuzz/fuzz_targets/**\n  pull_request:\n    branches: [main]\n    paths:\n      - src/**\n      - fuzz/Cargo.toml\n      - fuzz/Cargo.lock\n      - fuzz/fuzz_targets/**\n  # the manual escape hatch\n  workflow_dispatch:\njobs:\n  rust:\n    steps:\n      - name: just rust-check\n        run: just rust-check\n";
+    assert!(fuzz_ci_triggers_ok(good));
+    // GREEN — the whole crate directory as one entry.
+    assert!(fuzz_ci_triggers_ok(&good.replace(
+        "      - fuzz/Cargo.toml\n      - fuzz/Cargo.lock\n      - fuzz/fuzz_targets/**\n",
+        "      - fuzz/**\n"
+    )));
+    // RED — the filter before #240: a target-only commit starts nothing.
+    assert!(!fuzz_ci_triggers_ok(&good.replace(
+        "      - fuzz/Cargo.toml\n      - fuzz/Cargo.lock\n      - fuzz/fuzz_targets/**\n",
+        ""
+    )));
+    // RED — a lock-only commit (a dependency bump) starts nothing.
+    assert!(!fuzz_ci_triggers_ok(
+        &good.replace("      - fuzz/Cargo.lock\n", "")
+    ));
+    // RED — the two hand-synced lists drifted: pull requests miss target edits.
+    assert!(!fuzz_ci_triggers_ok(&good.replace(
+        "      - fuzz/fuzz_targets/**\n  # the manual",
+        "  # the manual"
+    )));
+    // RED — triggered, but the job no longer runs the gate.
+    assert!(!fuzz_ci_triggers_ok(
+        &good.replace("run: just rust-check", "run: just rust-test")
+    ));
+}
+
+/// Whether the `AGENTS.md` lanes row for THE GATE names every recipe
+/// `rust-check` runs: the contract says what the gate is.
+fn gate_row_ok(agents: &str, justfile: &str) -> bool {
+    let deps = recipe_deps(justfile, "rust-check");
+    let Some(row) = agents
+        .lines()
+        .find(|line| line.starts_with("| `just test` / `just rust-check` |"))
+    else {
+        return false;
+    };
+    !deps.is_empty() && deps.iter().all(|dep| row.contains(&format!("`{dep}`")))
+}
+
+#[test]
+fn the_contract_names_every_lane_the_gate_runs() {
+    assert!(
+        gate_row_ok(
+            &read(&root().join("AGENTS.md")),
+            &read(&root().join("justfile"))
+        ),
+        "the AGENTS.md lanes row for just test / just rust-check must name every \
+         rust-check dependency"
+    );
+
+    let justfile = "rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test\n";
+    let row = "| `just test` / `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test` |\n";
+    assert!(gate_row_ok(row, justfile));
+    // RED — the row before #240 against the gate after it.
+    assert!(!gate_row_ok(
+        &row.replace(" + `rust-fuzz-check`", ""),
+        justfile
+    ));
+    // RED — no such row.
+    assert!(!gate_row_ok("| `just test` | the gate |\n", justfile));
 }

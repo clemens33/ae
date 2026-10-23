@@ -58,7 +58,7 @@ justfile            — dev/release pipeline; holds every dev-tool version pin
 docs/               — user + internals docs; history.md holds the retired contract
 fuzz/               — the cargo-fuzz crate: one thin target per hostile parser, tracked
                       seeds in seeds/<target>/. Its own lock and its own nightly, outside
-                      the product graph. Human-run, never a CI gate
+                      the product graph. Stable compile gate; human-run fuzzing
 contrib/            — optional sidecars: aeorchestrator (templates only, no code)
 .github/workflows/  — rust lanes (both platforms) + dispatch-only release-proof lanes
 .github/ISSUE_TEMPLATE/ — the bug report form; docs/troubleshooting.md §Filing a bug is the fact list
@@ -76,7 +76,7 @@ README.md  VISION.md  AGENTS.md  CLAUDE.md (@AGENTS.md)
 
 The loop, in order:
 
-1. `just test` — THE GATE. Exactly `just rust-check` (fmt-check + lint + test), ~25s warm.
+1. `just test` — THE GATE. Exactly `just rust-check` (fmt-check + lint + fuzz compile + test).
    There is no fast/slow split; run the whole thing. The lane sizes its threads and build jobs
    from `jobs-budget` when installed and runs cargo niced (docs/development.md).
 2. `just check` — only when you touched `install` (shellcheck + shfmt).
@@ -222,11 +222,12 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | Recipe | What it is |
 |---|---|
 | `just rust-setup` | bootstrap: toolchain + pinned tools. Idempotent, and CI asserts it |
-| `just test` / `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-test` |
+| `just test` / `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test` |
 | `just check` | the bash lane: shellcheck + shfmt over `install` |
 | `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt` |
 | `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |
 | `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked`. Both. nextest does not run doctests |
+| `just rust-fuzz-check` | product compiler, locked `cargo check --bins` over every fuzz target; no execution. Uses inherited `CARGO_TARGET_DIR` or root `target` |
 | `just rust-deny` / `rust-vet` | supply chain. The TLS graph is EXEMPTED, not audited (docs/history.md §11) |
 | `just rust-mutants` | does the suite discriminate? CI runs it diff-bounded per push. Bounded in config: 2 tests, 60 s kill, RSS watcher (`AE_MUTANTS_RSS_MAX_MB`, default 2048). `rust-cov` reports, never gates |
 | `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. Refuses on an unpinned tool or a stale `fuzz/Cargo.lock`, ends on the cutover evidence line, and REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |

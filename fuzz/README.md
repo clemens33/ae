@@ -1,8 +1,9 @@
 # fuzz — the hostile-parser lane
 
 AGENTS.md: *a parser of hostile persisted state gets cargo-fuzz BEFORE it cuts
-over.* This crate is that gate. It is human-run and it REPORTS; it never gates
-CI, because the runners carry no nightly.
+over.* Fuzz execution is human-run and REPORTS. Separately, `just rust-fuzz-check`
+type-checks every target with the product compiler in `just test` and CI, without
+running a fuzzer. CI carries no nightly or cargo-fuzz.
 
 Session meta, config text, journals, archives and anything hand-editable are
 hostile input: a human, a crashed write or another tool put them on disk, and
@@ -158,16 +159,15 @@ evidence — is reached rather than silently collapsed into "nothing recorded".
 ## Lock refresh after a release
 
 This lock records the path dependency as `ae <version>`, so a CalVer bump moves
-it. `just release` refreshes it between the bump and the version commit, with
-the pinned nightly, so one commit carries the whole bump and the lane's
-`--locked` proof agrees with what was written.
+it. `just release` refreshes it between the bump and the version commit with the
+product compiler. Any refresh error stops before committing. The whole lock must
+match its committed bytes with only the ae package version updated; unchanged
+locks and any other delta stop the release. Deliberate refresh omits `--locked`;
+the compile gate and fuzz execution both require a current lock.
 
-That refresh is BEST EFFORT by design: a release must never fail on a dev
-toolchain. On a machine without the nightly the release publishes with this lock
-as committed and warns instead, and the lane then refuses until someone runs the
-remedy the warning prints:
+To refresh deliberately outside a release (review any dependency changes):
 
 ```sh
-cargo +<pin> metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
+cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
 git add fuzz/Cargo.lock
 ```

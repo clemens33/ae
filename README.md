@@ -174,7 +174,7 @@ Requires [just](https://github.com/casey/just) and [rustup](https://rustup.rs), 
 
 ```bash
 just rust-setup       # pinned toolchain + dev tools (idempotent; installs nothing on a second run)
-just test             # the gate: Rust format, lint, and tests (= just rust-check)
+just test             # the gate: format, lint, compile every fuzz target, tests (= just rust-check)
 just check            # lint (shellcheck) + format check (shfmt) for the installer
 just release          # check → test → CalVer bump → changelog → tag → gh release
 ```

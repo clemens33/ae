@@ -568,24 +568,20 @@ release:
     RELEASE_BODY=$(just _cliff-run --tag "$TAG" --unreleased --strip header)
     RELEASE_BODY="${RELEASE_BODY:-Release $TAG}"
 
-    # The fuzz crate is outside the workspace, so nothing above refreshed ITS
-    # lock — and it records the ae version too, which the bump just moved. It is
-    # refreshed HERE so one commit carries the whole CalVer bump, and with the
-    # fuzz lane's own nightly so the lane's `cargo metadata --locked` proof
-    # agrees with what was written.
-    #
-    # A RELEASE NEVER FAILS ON A DEV TOOLCHAIN. The probe and the refresh are one
-    # condition: a machine without the nightly publishes with the lock as
-    # committed and says so, and the fuzz lane then refuses on the stale lock
-    # with this same command. The `checkout` is why the warning can promise the
-    # lock is untouched — a metadata run that failed half-way leaves no residue
-    # for `git add -u` below to stage.
-    if rustup run {{ FUZZ_TOOLCHAIN }} rustc --version >/dev/null 2>&1 && cargo +{{ FUZZ_TOOLCHAIN }} metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null 2>&1; then
-        git add fuzz/Cargo.lock
-    else
-        git checkout -- fuzz/Cargo.lock
-        echo "Warning: fuzz/Cargo.lock NOT refreshed — {{ FUZZ_TOOLCHAIN }} is missing or its metadata run failed" >&2
-        echo "         the fuzz lane will refuse until: cargo +{{ FUZZ_TOOLCHAIN }} metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null" >&2
+    # The separate fuzz lock must carry the bump too. Any refresh failure stops
+    # here under errexit, even if cargo wrote a valid-looking partial update.
+    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
+    fuzz_delta="$(git diff --no-ext-diff --no-color --numstat -- fuzz/Cargo.lock)"
+    # Compare all bytes, allowing only this ae version. A failed git show also
+    # yields a mismatch and refuses; process-substitution errors cannot pass.
+    if [ "$fuzz_delta" != $'1\t1\tfuzz/Cargo.lock' ] || ! cmp -s fuzz/Cargo.lock <(git show HEAD:fuzz/Cargo.lock | awk -v version="$VERSION" '
+        /^\[\[package\]\]$/ { ae = 0 }
+        /^name = "ae"$/ { ae = 1 }
+        ae && /^version = / { $0 = "version = \"" version "\""; ae = 0 }
+        { print }
+    '); then
+        echo "Error: fuzz/Cargo.lock must change only the ae version to $VERSION" >&2
+        exit 1
     fi
 
     # Commit
@@ -921,8 +917,8 @@ MUTANTS_VERSION := "27.1.0"
 LLVM_COV_VERSION := "0.9.0"
 # The fuzz lane's three pins. cargo-fuzz is installed on request, not by
 # `rust-setup`, because the lane is human-run. FUZZ_TOOLCHAIN is the lane's ONE
-# nightly source — there is no fuzz/rust-toolchain.toml, every invocation passes
-# `cargo +{{ FUZZ_TOOLCHAIN }}`, and the product's 1.97.1 pin never moves.
+# nightly source — there is no fuzz/rust-toolchain.toml. Fuzz execution passes
+# `cargo +{{ FUZZ_TOOLCHAIN }}`; compile checks use the product's unchanged pin.
 CARGO_FUZZ_VERSION := "0.13.2"
 FUZZ_TOOLCHAIN := "nightly-2026-08-20"
 FUZZ_TARGETS := "console_draft_name config_parse meta_parse launch_cmd_lex config_command quota_claude_cache quota_feed quota_codex_rollout quota_grok_log quota_agy_output quota_go_usage quota_copilot_user quota_muse_usage usage_claude_transcript usage_codex_rollout usage_prices harness_observed picker_agents launch_stamp last_live_epochs sanitize_field request_id_select events_parse journal_append board_claude board_codex board_grok board_muse board_agy board_opencode brief_retry_record challenge_summary console_command app_view ask_unframe lease_holder card_body effort_flag effort_record effort_fold token_parse codex_developer_record link_scan reader_decode panel_episode unreach_fold"
@@ -1025,7 +1021,7 @@ rust-setup:
     echo "==> ready — run: just rust-check"
 
 # The gate: everything a change must pass before it is offered for review
-rust-check: rust-fmt-check rust-lint rust-test
+rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test
 
 # Check formatting in both languages of the build: Rust and TOML
 rust-fmt-check:
@@ -1045,6 +1041,10 @@ rust-fmt:
 rust-lint:
     cargo clippy --locked --all-targets --all-features -- -D warnings
     taplo lint
+
+# Type-check every fuzz bin with the product compiler, sharing the gate cache.
+rust-fuzz-check:
+    bash -euo pipefail -c 'jobs="${CARGO_BUILD_JOBS:-$(command -v jobs-budget >/dev/null 2>&1 && jobs-budget || echo 4)}"; [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo "Error: invalid build jobs: $jobs" >&2; exit 1; }; [ "$jobs" -le 4 ] || jobs=4; nice -n 10 cargo check --locked --manifest-path fuzz/Cargo.toml --bins --target-dir "${CARGO_TARGET_DIR:-$PWD/target}" --jobs "$jobs"'
 
 # nextest does NOT run doctests. Doctests are KEPT — they are the executable half
 # of the public docs — so they get their own invocation. Dropping that second

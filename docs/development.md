@@ -52,12 +52,12 @@ linter page. The SC2016 and SC2329 sites carry their own reasoned comments inste
 ```bash
 just check            # shellcheck + shfmt (diff mode)
 just format           # shfmt -w
-just test             # unit + integration
+just test             # compile every fuzz target + unit + integration
 just test             # the whole test surface (= just rust-check)
 just check            # shellcheck + shfmt over install, the one bash file
 just install          # checkout-mode immutable versioned install
 just rust-setup       # install pinned Rust toolchain and dev tools
-just rust-check       # Rust fmt, clippy, nextest, and doctests
+just rust-check       # Rust fmt, clippy, compile every fuzz target, nextest, doctests
 just rust-prune       # report stale ae build output here; apply=yes cleans it
 just version          # current AE_VERSION
 just bundles          # both platform bundles + release SHA256SUMS into ./dist
@@ -83,7 +83,8 @@ cargo-nextest, whose aws-lc-sys build script segfaults.)
 
 ## Tests
 
-**The whole test surface is Rust.** `just rust-check` is format, lint, `cargo nextest` over
+**The whole test surface is Rust.** `just rust-check` is format, lint, a locked stable
+`cargo check --bins` of every fuzz target, `cargo nextest` over
 the unit tests and the single `tests/it` integration target, and `cargo test --doc` for the
 doctests. `just test` is that same command — there is no inner-loop/gate split any more,
 because the whole suite now costs what one scoped bash domain used to. `just rust-mutants`
@@ -91,6 +92,11 @@ asks the harder question: whether those tests would ever go red. The `menu` modu
 real tmux server and real attached clients, so `.config/nextest.toml` keeps all of it in one
 small test-group: parallel load can starve a client the test is waiting on, and the group
 bounds that contention without weakening a single assertion.
+
+`just rust-fuzz-check` also runs in CI, using the gate's target cache. A cold registry
+fetches the independent fuzz graph; `libfuzzer-sys` builds C++ even under `cargo check`,
+so a C++ compiler is required. This graph remains outside product deny/vet. No nightly
+or cargo-fuzz is needed; fuzz execution remains human-run (`fuzz/README.md`).
 
 Slice Z4 retired the bash suites. Every `tests/integration` section and every live
 `tests/unit` block was matched against a Rust test that already proved the same invariant,
