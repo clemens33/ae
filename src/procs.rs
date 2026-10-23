@@ -301,6 +301,23 @@ pub(crate) fn harness_rows(procs: &[Proc], pane_pid: u32) -> Vec<(ToolKind, &Pro
         .collect()
 }
 
+/// The pane's one recorded tool; unreadable rows that might hide another hold.
+pub(crate) fn tool_in(table: &[(Proc, String)], pane_pid: u32, bin: &str) -> Option<u32> {
+    let procs: Vec<Proc> = table.iter().map(|(proc, _)| proc.clone()).collect();
+    if table.iter().any(|(proc, stat)| {
+        !readable_stat(proc, stat)
+            && (proc.pid == pane_pid || lineage(&procs, pane_pid, proc.pid) != Lineage::Clear)
+    }) {
+        return None;
+    }
+    let mut found = harness_rows(&procs, pane_pid)
+        .into_iter()
+        .filter(|(_, proc, place)| *place == Lineage::Under && name_matches(&proc.comm, bin))
+        .map(|(_, proc, _)| proc.pid);
+    let pid = found.next()?;
+    found.next().is_none().then_some(pid)
+}
+
 /// Basename compare tolerant of a trailing `.exe` on either operand — the ONE
 /// name equality, shared by the descendant walk and by every caller that
 /// compares a foreground command with a recorded binary or its live family.
@@ -330,9 +347,9 @@ pub fn snapshot() -> Option<Vec<Proc>> {
     }
 }
 
-/// `ps -A -o pid=,ppid=,stat=,comm=` rows beside their state flags, or `None`
-/// if ANY non-blank line is not `<pid> <ppid> <stat> <comm>`, a stat being one
-/// state letter then flags as BSD and procps spell them: unknown is no table.
+/// `ps -A -o pid=,ppid=,stat=,comm=` rows, retaining unreadable names and states
+/// for the caller's lineage proof. Missing pid/ppid/stat or invalid pids reject
+/// the whole table: those rows cannot be placed safely.
 #[must_use]
 pub(crate) fn parse_stat_table(raw: &str) -> Option<Vec<(Proc, String)>> {
     let mut out = Vec::new();
@@ -341,15 +358,6 @@ pub(crate) fn parse_stat_table(raw: &str) -> Option<Vec<(Proc, String)>> {
         let (parent, rest) = split_first_token(rest)?;
         let (stat, comm) = split_first_token(rest)?;
         let comm = comm.trim();
-        let mut flags = stat.chars();
-        if comm.is_empty()
-            || !flags
-                .next()
-                .is_some_and(|state| "DIPRSTUWXZt".contains(state))
-            || !flags.all(|flag| "+<>AEHLNSVWXls".contains(flag))
-        {
-            return None;
-        }
         let row = Proc {
             pid: own.parse().ok()?,
             ppid: parent.parse().ok()?,
@@ -360,6 +368,16 @@ pub(crate) fn parse_stat_table(raw: &str) -> Option<Vec<(Proc, String)>> {
     Some(out)
 }
 
+/// One state letter then BSD/procps flags, with a known command name.
+fn readable_stat(proc: &Proc, stat: &str) -> bool {
+    let mut flags = stat.chars();
+    !proc.comm.is_empty()
+        && flags
+            .next()
+            .is_some_and(|state| "DIPRSTUWXZt".contains(state))
+        && flags.all(|flag| "+<>AEHLNSVWXls".contains(flag))
+}
+
 /// Whether the tool process `tool` runs a BACKGROUND task: a shell beneath it
 /// leading its own session (`s`), as a command claude and codex run does and
 /// an idle tool's MCP wrapper shell does not (measured). `None` is unknown.
@@ -368,6 +386,12 @@ pub(crate) fn background_task(table: Option<&[(Proc, String)]>, tool: u32) -> Op
     let table = table?;
     let procs: Vec<Proc> = table.iter().map(|(proc, _)| proc.clone()).collect();
     procs.iter().find(|proc| proc.pid == tool)?;
+    if table.iter().any(|(proc, stat)| {
+        !readable_stat(proc, stat)
+            && (proc.pid == tool || lineage(&procs, tool, proc.pid) != Lineage::Clear)
+    }) {
+        return None;
+    }
     Some(table.iter().any(|(proc, stat)| {
         let base = proc.comm.rsplit('/').next().unwrap_or(&proc.comm);
         let shell = crate::watchdog::command_is_shell(base.trim_start_matches('-'));
@@ -378,7 +402,7 @@ pub(crate) fn background_task(table: Option<&[(Proc, String)]>, tool: u32) -> Op
     }))
 }
 
-/// The live table with state flags, parsed; `None` as [`snapshot`] is.
+/// The live state table; failed reads or structural damage yield `None`.
 #[must_use]
 pub(crate) fn stat_snapshot() -> Option<Vec<(Proc, String)>> {
     let (succeeded, stdout) = crate::transport::run_ps(&PsArgv::with_stat());
@@ -398,6 +422,14 @@ pub fn own_tty() -> Option<String> {
         _ => Some(tty),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/it/statrow_verdict_spec.rs"]
+mod statrow_verdict_spec;
+
+#[cfg(test)]
+#[path = "../tests/it/statrow_tool_spec.rs"]
+mod statrow_tool_spec;
 
 #[cfg(test)]
 mod tests {
@@ -420,18 +452,28 @@ mod tests {
         let deep = format!("{idle}105   102 Ss   -bash\n");
         let table = super::parse_stat_table(&deep).expect("login shell spelling");
         assert_eq!(super::background_task(Some(&table), 100), Some(true));
+        let verdict =
+            |raw: &str| super::background_task(super::parse_stat_table(raw).as_deref(), 100);
         assert_eq!(
-            super::parse_stat_table("100 90 S+\n"),
+            verdict("100 90 S+\n"),
             None,
-            "a row needs a name"
+            "a tool row needs a name: an unnamed tool is unknown, never a clear tree"
         );
-        assert_eq!(super::parse_stat_table("x 90 S+ claude\n"), None);
         assert_eq!(
-            super::parse_stat_table("100 90 ? claude\n101 100 ? /bin/sh\n"),
+            super::parse_stat_table("x 90 S+ claude\n"),
             None,
-            "an unknown stat is no table, never a clear tree"
+            "a row ae cannot place is no table"
         );
-        assert_eq!(super::parse_stat_table("100 90 Sq claude\n"), None);
+        assert_eq!(
+            verdict("100 90 ? claude\n101 100 ? /bin/sh\n"),
+            None,
+            "an unknown stat on the tool or under it is unknown, never a clear tree"
+        );
+        assert_eq!(
+            verdict("100 90 Sq claude\n"),
+            None,
+            "an unknown flag on the tool is unknown, never a clear tree"
+        );
     }
 
     fn trow(proc: u32, parent: u32, comm: &str) -> Proc {

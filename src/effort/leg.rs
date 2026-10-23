@@ -13,7 +13,7 @@ use super::{
 };
 use crate::events::{Event, SessionKey};
 use crate::inventory::ServerId;
-use crate::procs::{Lineage, Proc};
+use crate::procs::Proc;
 use crate::time::Timestamp;
 
 /// The judged percentage a new episode opens at: fixed (lead R3).
@@ -284,18 +284,8 @@ fn inbound(dir: &Path, seat: &Seat) -> bool {
 /// ONE snapshot with state flags, and the seat's one recorded tool under the pane.
 fn tool_of(seat: &Seat, pane_pid: Option<u32>) -> Option<(Vec<(Proc, String)>, u32)> {
     let table = crate::procs::stat_snapshot()?;
-    let procs: Vec<Proc> = table.iter().map(|(proc, _)| proc.clone()).collect();
-    let found: Vec<u32> = crate::procs::harness_rows(&procs, pane_pid?)
-        .into_iter()
-        .filter(|(_, proc, place)| {
-            *place == Lineage::Under && crate::procs::name_matches(&proc.comm, seat.bin())
-        })
-        .map(|(_, proc, _)| proc.pid)
-        .collect();
-    match found.as_slice() {
-        [pid] => Some((table, *pid)),
-        _ => None,
-    }
+    let pid = crate::procs::tool_in(&table, pane_pid?, seat.bin())?;
+    Some((table, pid))
 }
 
 /// The watchdog's effort step: per lead-pair seat ONE decision, journaled
