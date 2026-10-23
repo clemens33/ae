@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.116] - 2026-10-23
+- Opencode go failure note names the measured vendor code: a 401 whose body carries api_key_expired reads 'key expired (401 api_key_expired): renew it in the OpenCode Console'; the body is read only for a 401, by the pure parser, into a closed Copy code, so no vendor text reaches a note, the cache or a log, and a non-401 error still answers on its head; the cache outcome gains unauthorized:<code> with fuzz seeds (#123)
+- Resume document test fixtures each own a fresh scratch root and remove it on drop, so an overlapping fixture can no longer delete another one's files (#216)
+- Ae quota shows the opt-in GitHub Copilot premium-request allowance from a 0600 token file named by [workspace] copilot_token_file: one shared cache and zero-wait lock with the Go door, a fuzzed pure parser, display and settings only, a 401/403 reads token rejected
+
 ## [v2026.10.115] - 2026-10-22
 - Opencode go quota failure note says ago once: the age label already ends in ago; the docs name the key an OpenCode Console key with usage access, separate from the key opencode uses for model calls (#123)
 
