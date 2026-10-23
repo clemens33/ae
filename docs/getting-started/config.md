@@ -288,9 +288,10 @@ refresh it inline; the watchdog refreshes it on a background thread, one at a ti
 quota-aware session. With `[workspace] quota = off` nothing asks the network at all; a cache
 already there is still shown. Rotating the key file makes the next refresh due at once, and
 answers kept for the old key are dropped. A failed refresh keeps the last good answer and adds
-one note: a 401 names the key file, a 403 says the key has no Go subscription, a 429 says the
-vendor throttled the call, and a timeout, a redirect, an oversized or unreadable answer are
-each named.
+one note: a 401 names the key file (or, when the vendor's answer carries the code
+`api_key_expired`, says the key expired and to renew it in the OpenCode Console), a 403 says the
+key has no Go subscription, a 429 says the vendor throttled the call, and a timeout, a redirect,
+an oversized or unreadable answer are each named.
 
 The endpoint is undocumented: if OpenCode changes its shape, the windows go away with a note
 rather than showing a wrong number. Named gap: an OpenCode seat's quota scope is not joined to

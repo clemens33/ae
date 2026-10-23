@@ -130,6 +130,49 @@ fn window(
     ))
 }
 
+/// A vendor rejection code ae has measured: all that leaves this parser of an
+/// error body, as a closed `Copy` value and never as text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Code {
+    /// The key itself has expired.
+    ApiKeyExpired,
+}
+
+impl Code {
+    /// The vendor's own spelling, which is also the cache outcome's suffix.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ApiKeyExpired => "api_key_expired",
+        }
+    }
+
+    /// The code spelled exactly `name`.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        match name {
+            "api_key_expired" => Some(Self::ApiKeyExpired),
+            _ => None,
+        }
+    }
+}
+
+/// The measured code a rejection's body names: a string field of the root
+/// object, or of its `error` object, spelled exactly as one (issue #123 names
+/// the code, not the body, so this is its narrowest reading). Any other or
+/// unreadable body names none.
+#[must_use]
+pub fn rejection(bytes: &[u8]) -> Option<Code> {
+    let root = json::parse(std::str::from_utf8(bytes).ok()?).ok()?;
+    let named = |object: &Value| match object {
+        Value::Obj(fields) => fields
+            .iter()
+            .find_map(|(_, value)| value.as_str().and_then(Code::named)),
+        _ => None,
+    };
+    named(&root).or_else(|| named(root.get("error")?))
+}
+
 /// An RFC 3339 instant with `Z` or a `±hh:mm` offset, as epoch seconds.
 #[must_use]
 pub fn timestamp(text: &str) -> Option<i64> {
@@ -273,7 +316,8 @@ fn read_unsigned(value: &Value) -> Option<u64> {
     }
 }
 
-/// The fixed outcome slugs, plus `status-NNN` for any other HTTP status.
+/// The fixed outcome slugs, plus `status-NNN` for any other HTTP status and
+/// `unauthorized:<code>` for a measured [`Code`].
 const OUTCOMES: [&str; 9] = [
     "ok",
     "unauthorized",
@@ -293,6 +337,9 @@ pub fn is_outcome(slug: &str) -> bool {
         || slug
             .strip_prefix("status-")
             .is_some_and(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()))
+        || slug
+            .strip_prefix("unauthorized:")
+            .is_some_and(|code| Code::named(code).is_some())
 }
 
 #[cfg(test)]
@@ -345,6 +392,81 @@ mod tests {
         assert!(is_outcome("status-418"));
         assert!(!is_outcome("status-4180"));
         assert!(!is_outcome("status-ab1"));
+    }
+
+    /// Oracle: `.local/brief-govendor.md` — `unauthorized:api_key_expired` is
+    /// the one new slug, every older record still reads, and a code ae never
+    /// measured is not an outcome.
+    #[test]
+    fn the_measured_rejection_code_is_an_outcome_and_an_unmeasured_one_is_not() {
+        assert!(is_outcome("unauthorized"));
+        assert!(is_outcome("unauthorized:api_key_expired"));
+        for bad in [
+            "unauthorized:",
+            "unauthorized:made_up",
+            "unauthorized:API_KEY_EXPIRED",
+            "unauthorized:api_key_expired ",
+            "unauthorized:api_key_expired:x",
+            "api_key_expired",
+        ] {
+            assert!(!is_outcome(bad), "{bad}");
+        }
+        let cached = Cached {
+            key: identity(),
+            attempt_at: 5,
+            outcome: "unauthorized:api_key_expired".to_owned(),
+            samples: Vec::new(),
+        };
+        assert_eq!(parse_cache(cached.render().as_bytes()), Some(cached));
+    }
+
+    /// Oracle: `.local/brief-govendor.md` — the narrowest reading of issue #123,
+    /// which names the code `api_key_expired` and not the JSON around it: a
+    /// string field of the root object, or of its `error` object, equal to it.
+    #[test]
+    fn a_rejection_names_a_code_only_from_the_root_or_the_error_object() {
+        for body in [
+            r#"{"code":"api_key_expired"}"#,
+            r#"{"error":"api_key_expired"}"#,
+            r#"{"error":{"code":"api_key_expired"}}"#,
+            r#"{"type":"error","error":{"type":"AuthError","code":"api_key_expired","message":"x"}}"#,
+        ] {
+            assert_eq!(
+                rejection(body.as_bytes()),
+                Some(Code::ApiKeyExpired),
+                "{body}"
+            );
+        }
+        let long = format!(r#"{{"error":{{"code":"{}"}}}}"#, "a".repeat(64 * 1024));
+        for body in [
+            "",
+            "{}",
+            "api_key_expired",
+            r#"["api_key_expired"]"#,
+            r#"{"error":{"code":"quota_exceeded"}}"#,
+            r#"{"error":{"code":"API_KEY_EXPIRED"}}"#,
+            r#"{"error":{"code":"api_key_expired "}}"#,
+            r#"{"error":{"code":["api_key_expired"]}}"#,
+            r#"{"error":{"detail":{"code":"api_key_expired"}}}"#,
+            r#"{"errors":[{"code":"api_key_expired"}]}"#,
+            r#"{"error":{"code":"api_key_expired""#,
+            long.as_str(),
+        ] {
+            assert_eq!(
+                rejection(body.as_bytes()),
+                None,
+                "{}",
+                &body[..body.len().min(80)]
+            );
+        }
+        assert_eq!(rejection(&[0xff, 0xfe, b'{']), None);
+    }
+
+    #[test]
+    fn a_code_reads_back_from_its_own_spelling_and_is_an_outcome() {
+        let code = Code::ApiKeyExpired;
+        assert_eq!(Code::named(code.name()), Some(code));
+        assert!(is_outcome(&format!("unauthorized:{}", code.name())));
     }
 
     #[test]

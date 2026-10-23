@@ -14,7 +14,9 @@
 //!
 //! THE KEY never leaves [`GoKey`]: it has a redacting `Debug`, no `Display`,
 //! and becomes part of a string only in the one request header. [`Failure`]
-//! is `Copy`, so it cannot carry text a formatter could print a key out of.
+//! is `Copy`, so it cannot carry text a formatter could print a key out of: a
+//! rejection's body is read by the pure parser alone, which hands back a
+//! closed [`Code`], never the text.
 //! The cache records the key file's IDENTITY (path, device, inode, length,
 //! mtime), never its content, so a rotated key makes the next refresh due.
 //!
@@ -30,7 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::quota::go::{self, Cached, KeyIdentity, Sample};
+use crate::quota::go::{self, Cached, Code, KeyIdentity, Sample};
 
 /// The production endpoint.
 const USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
@@ -86,6 +88,8 @@ impl GoKey {
 pub enum Failure {
     /// HTTP 401: the key was rejected.
     Unauthorized,
+    /// HTTP 401 whose body names a code ae has measured.
+    Rejected(Code),
     /// HTTP 403: the account has no Go subscription.
     NotEntitled,
     /// HTTP 429.
@@ -124,6 +128,7 @@ impl Failure {
         Some(
             match self {
                 Self::Unauthorized => "unauthorized",
+                Self::Rejected(code) => return Some(format!("unauthorized:{}", code.name())),
                 Self::NotEntitled => "not-entitled",
                 Self::Throttled => "throttled",
                 Self::Status(code) => return Some(format!("status-{code:03}")),
@@ -512,6 +517,9 @@ fn agent(https_only: bool) -> ureq::Agent {
         .https_only(https_only)
         .proxy(None)
         .max_redirects(0)
+        // A 4xx/5xx comes back as a response, so `get` can offer a rejection's
+        // body to the pure parser; the default would drop it with the error.
+        .http_status_as_error(false)
         .timeout_connect(Some(TIMEOUT_CONNECT))
         .timeout_recv_response(Some(TIMEOUT_RECV_RESPONSE))
         .timeout_global(Some(TIMEOUT_GLOBAL))
@@ -533,26 +541,36 @@ fn get(url: &str, key: &GoKey) -> Result<Vec<u8>, Failure> {
         .call();
     let mut response = sent.map_err(classify)?;
     let status = response.status().as_u16();
+    if status >= 400 && status != 401 {
+        // Only a 401's body is read; every other error answers on its head.
+        return Err(status_failure(status, &[]));
+    }
     let mut body = Vec::new();
-    response
+    let read = response
         .body_mut()
         .as_reader()
         .take(MAX_BODY as u64 + 1)
-        .read_to_end(&mut body)
-        .map_err(|_| Failure::Transport)?;
+        .read_to_end(&mut body);
+    if status == 401 {
+        // A rejection's body that cannot be held whole offers the parser nothing.
+        let held = read.is_ok() && body.len() <= MAX_BODY;
+        return Err(status_failure(status, if held { &body[..] } else { &[] }));
+    }
+    read.map_err(|_| Failure::Transport)?;
     if body.len() > MAX_BODY {
         return Err(Failure::TooLarge);
     }
     match status {
         200..=299 => Ok(body),
         300..=399 => Err(Failure::Redirected),
-        other => Err(status_failure(other)),
+        other => Err(status_failure(other, &[])),
     }
 }
 
-const fn status_failure(code: u16) -> Failure {
+/// The class of a non-2xx `code`; only a 401 reads `body`, for a measured code.
+fn status_failure(code: u16, body: &[u8]) -> Failure {
     match code {
-        401 => Failure::Unauthorized,
+        401 => go::rejection(body).map_or(Failure::Unauthorized, Failure::Rejected),
         403 => Failure::NotEntitled,
         429 => Failure::Throttled,
         other => Failure::Status(other),
@@ -567,7 +585,7 @@ const fn status_failure(code: u16) -> Failure {
 )]
 fn classify(error: ureq::Error) -> Failure {
     match error {
-        ureq::Error::StatusCode(code) => status_failure(code),
+        ureq::Error::StatusCode(code) => status_failure(code, &[]),
         ureq::Error::Timeout(_) => Failure::Timeout,
         ureq::Error::TooManyRedirects | ureq::Error::RedirectFailed => Failure::Redirected,
         _ => Failure::Transport,
@@ -670,6 +688,133 @@ mod tests {
         }
         assert_eq!(Failure::Status(502).slug().as_deref(), Some("status-502"));
         assert!(go::is_outcome(&Failure::Status(502).slug().expect("slug")));
+    }
+
+    /// A loopback answer that promises a body and never sends it: the head,
+    /// then silence until the client hangs up.
+    fn serve_head_only(status: &str) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback");
+        let url = format!(
+            "http://{}/zen/go/v1/usage",
+            listener.local_addr().expect("addr")
+        );
+        let head =
+            format!("HTTP/1.1 {status}\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n");
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(12)))
+                .expect("timeout");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).expect("line") == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let mut stream = stream;
+            let _ = stream.write_all(head.as_bytes());
+            let _ = reader.read(&mut [0u8; 1]);
+        });
+        (url, handle)
+    }
+
+    /// Colead review r1: a non-401 error answers on its head. Its body is never
+    /// read, so a body that never comes costs no wait.
+    #[test]
+    fn a_non_401_error_answers_on_its_head_without_waiting_for_a_body() {
+        for (status, want) in [
+            ("403 Forbidden", Failure::NotEntitled),
+            ("429 Too Many Requests", Failure::Throttled),
+            ("502 Bad Gateway", Failure::Status(502)),
+        ] {
+            let (url, server) = serve_head_only(status);
+            let started = std::time::Instant::now();
+            let got = get(&url, &GoKey("k".to_owned()));
+            let waited = started.elapsed();
+            server.join().expect("server");
+            assert_eq!(got, Err(want), "{status}");
+            assert!(
+                waited < Duration::from_secs(3),
+                "{status} waited {waited:?}"
+            );
+        }
+    }
+
+    /// Oracle: issue #123 (2026-10-22 live setup) — the usage route answered
+    /// 401 with the vendor code `api_key_expired`. The record names that code
+    /// and nothing else of the answer.
+    #[test]
+    fn a_401_naming_api_key_expired_is_recorded_with_that_code_alone() {
+        for body in [
+            r#"{"error":{"code":"api_key_expired"}}"#,
+            r#"{"code":"api_key_expired"}"#,
+            r#"{"error":"api_key_expired"}"#,
+            r#"{"type":"error","error":{"type":"AuthError","code":"api_key_expired","message":"SYNTH-VENDOR-TEXT"}}"#,
+        ] {
+            let (url, server) = serve(answer("401 Unauthorized", "", body.as_bytes()));
+            let failure = get(&url, &GoKey("k".to_owned())).expect_err("a 401 is a failure");
+            server.join().expect("server");
+            assert_eq!(
+                failure.slug().as_deref(),
+                Some("unauthorized:api_key_expired"),
+                "{body}"
+            );
+        }
+    }
+
+    /// An unknown code, a body that is not the narrow shape and a body past the
+    /// cap all stay what a 401 was before the code was read.
+    #[test]
+    fn a_401_whose_body_names_no_measured_code_stays_plain_unauthorized() {
+        let oversize = format!(
+            r#"{{"error":{{"code":"api_key_expired"}},"pad":"{}"}}"#,
+            "x".repeat(MAX_BODY)
+        );
+        for body in [
+            String::new(),
+            "api_key_expired".to_owned(),
+            r#"{"error":{"code":"quota_exceeded"}}"#.to_owned(),
+            r#"{"error":{"code":"API_KEY_EXPIRED"}}"#.to_owned(),
+            r#"{"error":{"code":["api_key_expired"]}}"#.to_owned(),
+            r#"{"error":{"detail":{"code":"api_key_expired"}}}"#.to_owned(),
+            r#"{"errors":[{"code":"api_key_expired"}]}"#.to_owned(),
+            oversize,
+        ] {
+            let (url, server) = serve(answer("401 Unauthorized", "", body.as_bytes()));
+            let got = get(&url, &GoKey("k".to_owned()));
+            server.join().expect("server");
+            assert_eq!(
+                got,
+                Err(Failure::Unauthorized),
+                "{}",
+                &body[..body.len().min(80)]
+            );
+        }
+    }
+
+    /// The code is read from a 401 only: the other measured classes keep theirs
+    /// whatever their body says.
+    #[test]
+    fn only_a_401_reads_a_code_from_its_body() {
+        for (status, want) in [
+            ("403 Forbidden", Failure::NotEntitled),
+            ("429 Too Many Requests", Failure::Throttled),
+            ("502 Bad Gateway", Failure::Status(502)),
+        ] {
+            let body = br#"{"error":{"code":"api_key_expired"}}"#;
+            let (url, server) = serve(answer(status, "", body));
+            assert_eq!(get(&url, &GoKey("k".to_owned())), Err(want), "{status}");
+            server.join().expect("server");
+        }
+    }
+
+    /// The custody property: a failure holds no text, whatever the body said.
+    #[test]
+    fn a_failure_stays_copy_so_no_vendor_text_rides_in_one() {
+        const fn copy<T: Copy>() {}
+        copy::<Failure>();
+        copy::<Code>();
     }
 
     #[test]

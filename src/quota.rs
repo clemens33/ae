@@ -2003,6 +2003,9 @@ fn go_failure_note(outcome: &str, age: i64) -> String {
         "too-large" => "the answer passed its size cap".to_owned(),
         "malformed" => "the answer had no readable window".to_owned(),
         "redirected" => "the answer was a redirect, which is never followed".to_owned(),
+        "unauthorized:api_key_expired" => {
+            "key expired (401 api_key_expired): renew it in the OpenCode Console".to_owned()
+        }
         other => other.strip_prefix("status-").map_or_else(
             || "unknown outcome".to_owned(),
             |code| format!("HTTP {code}"),
@@ -5197,6 +5200,32 @@ mod tests {
     use crate::tool::ToolKind;
     use crate::transport::AgyRun;
     use std::path::Path;
+
+    /// Oracle: issue #123 (2026-10-22 live setup) and `.local/brief-govendor.md` —
+    /// a 401 whose vendor code is `api_key_expired` tells the operator to renew
+    /// the key, naming the code, with one "ago"; any other outcome reads as before.
+    #[test]
+    fn the_go_failure_note_names_the_expired_key_code_and_nothing_else_changes() {
+        assert_eq!(
+            super::go_failure_note("unauthorized:api_key_expired", 60),
+            "opencode go: last refresh 1m ago failed — key expired (401 api_key_expired): renew it in the OpenCode Console"
+        );
+        for (outcome, class) in [
+            (
+                "unauthorized",
+                "key rejected (401): check opencode_go_key_file",
+            ),
+            ("not-entitled", "no Go subscription (403)"),
+            ("status-502", "HTTP 502"),
+            ("unauthorized:made_up", "unknown outcome"),
+        ] {
+            assert_eq!(
+                super::go_failure_note(outcome, 60),
+                format!("opencode go: last refresh 1m ago failed — {class}"),
+                "{outcome}"
+            );
+        }
+    }
 
     #[test]
     fn only_two_recognized_and_different_families_prove_a_window_binds_elsewhere() {
