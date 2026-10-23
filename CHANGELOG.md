@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.117] - 2026-10-23
+- Auto effort: with the global [workspace] auto_effort = on, the watchdog steps a lead-pair claude or codex seat's reasoning effort down one level once a usable window of its own account at least a day long judges 80%, by an in-place exact-resume restart that keeps pane, profile, account, model and conversation, and restores the profile's own effort once every window that moved it reads under 75% or passed its reset; a detached _auto-effort leg under the seat lock, the effort.<slot> record published under a full identity CAS, a model-drift hold, outcome unproven on a missing upward proof, a resume replaying a recorded move, fuzzed record and fold seeds (#253)
+- Compile every fuzz target in the stable gate
+- Handle closed stdout without masking command failures
+- Wait for effort reservation through transient holds
+
 ## [v2026.10.116] - 2026-10-23
 - Opencode go failure note names the measured vendor code: a 401 whose body carries api_key_expired reads 'key expired (401 api_key_expired): renew it in the OpenCode Console'; the body is read only for a 401, by the pure parser, into a closed Copy code, so no vendor text reaches a note, the cache or a log, and a non-401 error still answers on its head; the cache outcome gains unauthorized:<code> with fuzz seeds (#123)
 - Resume document test fixtures each own a fresh scratch root and remove it on drop, so an overlapping fixture can no longer delete another one's files (#216)
