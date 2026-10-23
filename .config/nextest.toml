@@ -45,8 +45,11 @@ test-group = 'tmux-clients'
 max-threads = 2
 
 # `reseat_carry` is the same class: the same rig, the same stop, the same waits.
+# `effort_live_spec` drives real watchdogs and the same restart_in_place stop:
+# share these slots to limit contention during their safe-point and recovery
+# waits at release scheduling. Nothing skipped, retried or weakened.
 [[profile.default.overrides]]
-filter = 'test(/^reseat(_carry)?::/)'
+filter = 'test(/^(reseat(_carry)?|effort_live_spec)::/)'
 test-group = 'tmux-seats'
 
 # `spawn::tests::tmux_*`: same class again — socket-pinned REAL tmux
