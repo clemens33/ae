@@ -2676,16 +2676,20 @@ fn raw_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
         .filter(move |_| !bytes.is_empty())
 }
 
-/// Whether a raw line claims `effort.<slot>`: its key — before the first `=`,
-/// or the whole line less one trailing CR — is that one.
-fn claims_effort(line: &[u8], slot: &str) -> bool {
+/// A raw line's key: before the first `=`, or the whole line less one
+/// trailing CR, so a bare claim is keyed too.
+fn raw_key(line: &[u8]) -> &[u8] {
     let key = line.split(|byte| *byte == b'=').next().unwrap_or_default();
-    let key = if key.len() == line.len() {
+    if key.len() == line.len() {
         key.strip_suffix(b"\r").unwrap_or(key)
     } else {
         key
-    };
-    key.strip_prefix(crate::effort::META_PREFIX.as_bytes()) == Some(slot.as_bytes())
+    }
+}
+
+/// Whether a raw line claims `effort.<slot>` by its [`raw_key`].
+fn claims_effort(line: &[u8], slot: &str) -> bool {
+    raw_key(line).strip_prefix(crate::effort::META_PREFIX.as_bytes()) == Some(slot.as_bytes())
 }
 
 /// Every raw `effort.<slot>` line, bare and CR included, in order.
@@ -2743,6 +2747,66 @@ pub(crate) fn discard_effort(dir: &Path, proof: &EffortProof<'_>, line: &str) ->
         Ok(()) => Discard::Done,
         Err(why) => discard_error(&why),
     }
+}
+
+/// The session rows a seat's identity, working copy and config pair are read from.
+const EFFORT_SESSION_ROWS: [&str; 5] = ["session_id", "session", "work_dir", "origin", "config"];
+
+/// The per-seat rows of its identity and account, each keyed `<row><slot>`.
+const EFFORT_SEAT_ROWS: [&str; 10] = [
+    SEAT_PREFIX,
+    PROFILE_PREFIX,
+    CLIENT_PREFIX,
+    ROSTER_BIN_PREFIX,
+    HARNESS_SESSION_PREFIX,
+    HARNESS_SESSION_PRIOR_PREFIX,
+    CONFIG_HOME_PREFIX,
+    CONFIG_HOME_BASE_PREFIX,
+    LAUNCH_ID_PREFIX,
+    SEAT_WORK_DIR_PREFIX,
+];
+
+/// Every raw row of `slot`'s identity and account by its [`raw_key`], bare
+/// claims and duplicates kept, in order and byte for byte: what a restart
+/// publication must find unchanged.
+pub(crate) fn effort_identity(bytes: &[u8], slot: &str) -> Vec<Vec<u8>> {
+    raw_lines(bytes)
+        .filter(|line| {
+            let key = raw_key(line);
+            EFFORT_SESSION_ROWS.iter().any(|row| key == row.as_bytes())
+                || EFFORT_SEAT_ROWS
+                    .iter()
+                    .any(|row| key.strip_prefix(row.as_bytes()) == Some(slot.as_bytes()))
+        })
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
+/// Replace the seat's effort record with `row`, or drop it on `None`, in ONE
+/// write under `meta.lock` while `proof` and the `identity` rows hold. The leg
+/// journals after it.
+pub(crate) fn publish_effort(
+    dir: &Path,
+    proof: &EffortProof<'_>,
+    identity: &[Vec<u8>],
+    row: Option<&str>,
+) -> bool {
+    let Ok(_held) = lock(dir) else {
+        return false;
+    };
+    let Ok(current) = read_bytes(dir) else {
+        return false;
+    };
+    if !effort_proof_holds(&current, proof) || effort_identity(&current, proof.slot) != identity {
+        return false;
+    }
+    let mut next = without_effort(&current, proof.slot);
+    if let Some(row) = row {
+        next.extend_from_slice(
+            format!("{}{}={row}\n", crate::effort::META_PREFIX, proof.slot).as_bytes(),
+        );
+    }
+    publish_bytes(dir, &crate::store::open(dir).meta_path(), &next).is_ok()
 }
 
 /// The ONE locked read-modify-write the row writers share: take `meta.lock`,
@@ -3049,6 +3113,103 @@ mod tests {
         reason = "fixtures build and inspect real directories; the boundary is about \
                   what PRODUCT code may reach"
     )]
+    // Driver units (#253 b4, supplementary): the restart publication's identity CAS.
+    mod effort_publish {
+        use super::super::{EffortProof, effort_identity, publish_effort};
+        use super::Scratch;
+        use crate::tool::ToolKind;
+
+        const SID: &str = "11111111-1111-4111-8111-111111111111";
+        const META: &str = "session_id=11111111-1111-4111-8111-111111111111\nsession=fx\n\
+            work_dir=/w\norigin=/o\nconfig=/c/config\nseat.main=lead\nprofile.main=opus55x\n\
+            client.main=cc\nagent_bin.main=claude\n\
+            harness_session.main=22222222-2222-4222-8222-222222222222\n\
+            harness_session_prior.main=claude:33333333-3333-4333-8333-333333333333\n\
+            config_home.main=/h\nconfig_home_base.main=/b\nlaunch_id.main=tok-1\n\
+            work_dir.main=/s\neffort.main=old\nseat.worker.0=colead\nprofile.worker.0=sol\n\
+            launch_time.main=5\ngoal=keep\n";
+
+        fn proof() -> EffortProof<'static> {
+            EffortProof {
+                session_id: SID,
+                slot: "main",
+                agent: "lead",
+                tool: ToolKind::Claude,
+                launch_id: "tok-1",
+                rows: vec![b"effort.main=old".to_vec()],
+            }
+        }
+
+        /// Publish `new` against META's identity into a meta that now reads `text`.
+        fn publish(tag: &str, text: &str) -> (bool, String) {
+            let scratch = Scratch::new(tag);
+            std::fs::write(scratch.0.join("meta"), text).expect("owned meta fixture");
+            let identity = effort_identity(META.as_bytes(), "main");
+            let done = publish_effort(&scratch.0, &proof(), &identity, Some("new"));
+            let after = std::fs::read_to_string(scratch.0.join("meta")).expect("meta");
+            (done, after)
+        }
+
+        const ROWS: [&str; 15] = [
+            "session_id=11111111-1111-4111-8111-111111111111",
+            "session=fx",
+            "work_dir=/w",
+            "origin=/o",
+            "config=/c/config",
+            "seat.main=lead",
+            "profile.main=opus55x",
+            "client.main=cc",
+            "agent_bin.main=claude",
+            "harness_session.main=22222222-2222-4222-8222-222222222222",
+            "harness_session_prior.main=claude:33333333-3333-4333-8333-333333333333",
+            "config_home.main=/h",
+            "config_home_base.main=/b",
+            "launch_id.main=tok-1",
+            "work_dir.main=/s",
+        ];
+
+        #[test]
+        fn a_changed_identity_or_account_row_refuses_the_publication_and_writes_nothing() {
+            for row in ROWS {
+                let key = row.split('=').next().expect("a keyed row");
+                for (how, text) in [
+                    ("changed", META.replacen(row, &format!("{key}=other"), 1)),
+                    (
+                        "duplicated",
+                        META.replacen(row, &format!("{row}\n{row}"), 1),
+                    ),
+                    ("emptied", META.replacen(row, &format!("{key}="), 1)),
+                    ("cr", META.replacen(row, &format!("{row}\r"), 1)),
+                    ("removed", META.replacen(&format!("{row}\n"), "", 1)),
+                    ("bare", META.replacen(row, &format!("{row}\n{key}"), 1)),
+                    ("bare-cr", META.replacen(row, &format!("{row}\n{key}\r"), 1)),
+                ] {
+                    let (done, after) = publish(&format!("effp-{how}"), &text);
+                    assert!(!done, "{how} {key}");
+                    assert_eq!(after, text, "{how} {key}: nothing written");
+                }
+            }
+        }
+
+        #[test]
+        fn an_unrelated_row_change_still_publishes() {
+            for text in [
+                META.to_owned(),
+                META.replacen("goal=keep", "goal=other", 1),
+                META.replacen("profile.worker.0=sol", "profile.worker.0=x", 1),
+                META.replacen("launch_time.main=5", "launch_time.main=9", 1),
+                format!("{META}observed_model.main=gpt-x\nharness_session.worker.0=other\n"),
+            ] {
+                let (done, after) = publish("effp-unrelated", &text);
+                assert!(done, "{text}");
+                assert_eq!(
+                    after,
+                    format!("{}effort.main=new\n", text.replace("effort.main=old\n", ""))
+                );
+            }
+        }
+    }
+
     // Frozen P2 owner tests: real locks, real journal append and publication.
     mod effort_resume_spec {
         use super::super::{

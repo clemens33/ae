@@ -3750,6 +3750,14 @@ pub fn run_with(
                 EXIT_UNAVAILABLE
             }
         }
+        cli::Request::AutoEffort { tail } => {
+            if let Some(root) = state_root() {
+                effort::leg::run(&root, tail, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
         cli::Request::CheckDeps { tail } => doctor::check_deps(tail, err)?,
         cli::Request::ShimsRender { dir, tail } => doctor::shims_render(dir, tail, err)?,
         cli::Request::Install { tail } => install::run(tail, out, err)?,

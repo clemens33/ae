@@ -235,6 +235,10 @@ pub const RESEAT: &str = "reseat";
 /// `_auto-reseat <dir> <slot> <key>`. Validated by [`crate::autoreseat`].
 pub const AUTO_RESEAT: &str = "_auto-reseat";
 
+/// The watchdog's own leg that restarts a lead-pair seat at another effort:
+/// `_auto-effort <dir> <slot> <episode>`. Validated by [`crate::effort`].
+pub const AUTO_EFFORT: &str = "_auto-effort";
+
 /// The launch prelude's hard-dependency gate: `_check-deps [--bash-major <n>]`.
 pub const CHECK_DEPS: &str = "_check-deps";
 
@@ -761,6 +765,11 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `_auto-effort <dir> <slot> <episode>` — validated by [`crate::effort`].
+    AutoEffort {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `_check-deps [--bash-major <n>]` — validated by [`crate::doctor`].
     CheckDeps {
         /// Everything after the subcommand, as typed.
@@ -971,6 +980,9 @@ impl Request {
                 tail: args[1..].to_vec(),
             },
             Some(AUTO_RESEAT) => Self::AutoReseat {
+                tail: args[1..].to_vec(),
+            },
+            Some(AUTO_EFFORT) => Self::AutoEffort {
                 tail: args[1..].to_vec(),
             },
             Some(CHECK_DEPS) => Self::CheckDeps {
@@ -1518,6 +1530,7 @@ impl Request {
             | Self::Rename { .. }
             | Self::Reseat { .. }
             | Self::AutoReseat { .. }
+            | Self::AutoEffort { .. }
             | Self::CheckDeps { .. }
             | Self::Install { .. }
             | Self::Autoupgrade { .. }
@@ -1623,7 +1636,7 @@ impl Request {
             | Self::Usage { dir, .. }
             | Self::Run { dir, .. }
             | Self::ShimsRender { dir, .. } => Some(dir),
-            Self::AutoReseat { tail } => tail.first().map(Path::new),
+            Self::AutoReseat { tail } | Self::AutoEffort { tail } => tail.first().map(Path::new),
             Self::Version
             | Self::Help
             | Self::Next { .. }

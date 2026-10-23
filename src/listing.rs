@@ -487,7 +487,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
 }
 
 /// The effort cell: the level ae runs the seat at and why, a move still
-/// pending, or a record ae cannot trust, as the seat's own record says. No
+/// pending or restarting, or a record ae cannot trust, as the seat's own record says. No
 /// record draws nothing.
 fn effort_cell(effort: Option<&crate::effort::Stored>, out: &mut String) {
     use crate::effort::{State, Stored};
@@ -502,6 +502,8 @@ fn effort_cell(effort: Option<&crate::effort::Stored>, out: &mut String) {
         State::Applied => write!(out, " · effort:{low} (auto from {base})"),
         State::PendingDown => write!(out, " · effort:pending {base}->{low}"),
         State::PendingUp => write!(out, " · effort:pending {low}->{base}"),
+        State::RestartDown => write!(out, " · effort:restarting {base}->{low}"),
+        State::RestartUp => write!(out, " · effort:restarting {low}->{base}"),
     };
 }
 

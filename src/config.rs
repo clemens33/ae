@@ -1839,8 +1839,9 @@ fn workspace_key_occurrences(
     Ok(found)
 }
 
-/// The global `[workspace] auto_effort` ruling: whether a resume replays a
-/// quota-driven effort move ae proved and recorded.
+/// The global `[workspace] auto_effort` ruling: whether the watchdog moves a
+/// lead seat's effort on quota pressure, and a resume replays a move ae proved
+/// and recorded. Absent is `Off`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoEffort {
     On,
@@ -1859,7 +1860,7 @@ pub fn auto_effort_in(file: &Path, text: &str) -> AutoEffort {
     match workspace_key_occurrences(file, text, "auto_effort") {
         Err(why) => unusable(&why),
         Ok(found) => match found.as_slice() {
-            [] => AutoEffort::On,
+            [] => AutoEffort::Off,
             [Ok(value)] if value.trim() == "on" => AutoEffort::On,
             [Ok(value)] if value.trim() == "off" => AutoEffort::Off,
             [Ok(value)] => unusable(&format!("{value:?} is not on or off")),
@@ -1870,14 +1871,14 @@ pub fn auto_effort_in(file: &Path, text: &str) -> AutoEffort {
 }
 
 /// GLOBAL ONLY, like `restore`, so a project `.ae/config` never votes. No
-/// file is `On`; a file ae cannot read is `Unusable`.
+/// file is `Off`; a file ae cannot read is `Unusable`.
 #[must_use]
 pub fn global_auto_effort(global: Option<&Path>) -> AutoEffort {
     let Some(file) = global else {
-        return AutoEffort::On;
+        return AutoEffort::Off;
     };
     match read_global_text(file) {
-        Ok(None) => AutoEffort::On,
+        Ok(None) => AutoEffort::Off,
         Ok(Some(text)) => auto_effort_in(file, &text),
         Err(why) => AutoEffort::Unusable(why.escape_debug().to_string()),
     }

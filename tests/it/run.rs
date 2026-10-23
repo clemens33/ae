@@ -383,6 +383,7 @@ mod effort_resume_spec {
             "--permission-mode bypassPermissions --model gpt-6.1-sol --effort xhigh"
         };
         rig.only_profile(&format!("EFFORT_ACCOUNT=kept {} {flags}", rig.tool(tool)));
+        switch(&rig, "auto_effort = on");
         rig.seat("custom", CONV);
         rig.append_meta(&format!("session_id={SID}\nagent_bin.main={tool}\n"));
         let row = VALID
@@ -399,6 +400,13 @@ mod effort_resume_spec {
     fn switch(rig: &Rig, rows: &str) {
         let old = std::fs::read_to_string(&rig.config)
             .unwrap_or_else(|why| panic!("fixture config: {why}"));
+        let old = old
+            .lines()
+            .filter(|line| !line.starts_with("auto_effort ="))
+            .fold(String::new(), |mut out, line| {
+                let _ = writeln!(out, "{line}");
+                out
+            });
         std::fs::write(&rig.config, format!("{old}\n[workspace]\n{rows}\n"))
             .unwrap_or_else(|why| panic!("global switch fixture: {why}"));
     }
@@ -574,7 +582,7 @@ mod effort_resume_spec {
         std::fs::write(rolls.join(format!("rollout-{CONV}.jsonl")), "{}\n")
             .expect("same conversation in selected account");
         let canonical = std::fs::canonicalize(&store).expect("canonical store");
-        std::fs::write(&rig.config, format!("[clients]\nselected = {} config_home={}\n[profiles]\ncustom = \"selected --yolo -m gpt-6.1-sol -c model_reasoning_effort=xhigh\"\n[roster]\nlead = custom\n[workspace]\nmain = lead\n", rig.tool("codex"), canonical.display())).expect("client profile");
+        std::fs::write(&rig.config, format!("[clients]\nselected = {} config_home={}\n[profiles]\ncustom = \"selected --yolo -m gpt-6.1-sol -c model_reasoning_effort=xhigh\"\n[roster]\nlead = custom\n[workspace]\nmain = lead\nauto_effort = on\n", rig.tool("codex"), canonical.display())).expect("client profile");
         let path = rig.dir.join("meta");
         let text = std::fs::read_to_string(&path)
             .expect("meta")

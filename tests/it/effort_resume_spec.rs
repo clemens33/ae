@@ -548,12 +548,12 @@ fn effort_resume_discard_builder_routes_without_paint_or_attention() {
 #[test]
 fn effort_resume_switch_text_has_strict_global_only_grammar() {
     for (text, expected) in [
-        ("", AutoEffort::On),
-        ("[workspace]\n", AutoEffort::On),
+        ("", AutoEffort::Off),
+        ("[workspace]\n", AutoEffort::Off),
         ("[workspace]\nauto_effort = on\n", AutoEffort::On),
         ("[workspace]\nauto_effort = off\n", AutoEffort::Off),
         ("[workspace]\nauto_effort = \"off\"\n", AutoEffort::Off),
-        ("[profiles]\nauto_effort = off\n", AutoEffort::On),
+        ("[profiles]\nauto_effort = off\n", AutoEffort::Off),
     ] {
         assert_eq!(
             auto_effort_in(Path::new("global"), text),
@@ -584,10 +584,10 @@ fn effort_resume_switch_text_has_strict_global_only_grammar() {
 #[test]
 fn effort_resume_switch_global_absence_and_read_error_are_distinct() {
     let scratch = super::cli::OwnedScratch::root("effp2", "switch");
-    assert_eq!(global_auto_effort(None), AutoEffort::On);
+    assert_eq!(global_auto_effort(None), AutoEffort::Off);
     assert_eq!(
         global_auto_effort(Some(&scratch.path().join("missing"))),
-        AutoEffort::On
+        AutoEffort::Off
     );
     assert!(
         matches!(

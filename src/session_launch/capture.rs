@@ -57,8 +57,9 @@ pub(crate) struct Target {
     pub(crate) pane: String,
 }
 
-/// A detached argv minted ONLY by [`argv`] and [`auto_reseat_argv`], so the
-/// detached process door cannot be handed an arbitrary command line.
+/// A detached argv minted ONLY by [`argv`], [`auto_reseat_argv`] and
+/// [`auto_effort_argv`], so the detached process door cannot be handed an
+/// arbitrary command line.
 pub struct CaptureArgv(Vec<String>);
 
 impl CaptureArgv {
@@ -137,6 +138,20 @@ pub(crate) fn auto_reseat_argv(
             dir.display().to_string(),
             slot.to_owned(),
             key.to_string(),
+        ])
+    })
+}
+
+/// The THIRD spelling: `_auto-effort <dir> <slot> <episode>`, the leg that
+/// restarts a lead-pair seat at another effort. `None` as [`auto_reseat_argv`].
+#[must_use]
+pub(crate) fn auto_effort_argv(dir: &Path, slot: &str, episode: i64) -> Option<CaptureArgv> {
+    crate::requests::is_slot(slot).then(|| {
+        CaptureArgv(vec![
+            crate::cli::AUTO_EFFORT.to_owned(),
+            dir.display().to_string(),
+            slot.to_owned(),
+            episode.to_string(),
         ])
     })
 }

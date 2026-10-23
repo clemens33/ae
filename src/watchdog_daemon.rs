@@ -2771,7 +2771,7 @@ fn sweep_seconds(meta_bytes: &[u8], env: Option<&str>, fallback: u64) -> u64 {
 }
 
 /// Resolve the session-pinned quota cadence before the internal flag/default.
-fn quota_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
+pub(crate) fn quota_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
     pinned_seconds(meta_bytes, "quota_every_secs", fallback)
 }
 
@@ -4361,6 +4361,8 @@ struct Carry {
     auto_noted: Vec<String>,
     /// The unusable `auto_trust` values this daemon named: each once per start.
     trust_noted: Vec<String>,
+    /// The effort step's note and recent legs.
+    effort: crate::effort::leg::Carry,
     /// The last look this daemon actually READ, and `None` until one answers.
     ///
     /// Carried so that a cycle whose read failed draws in the look it saw last
@@ -4384,6 +4386,7 @@ impl Carry {
             auto_named: Vec::new(),
             auto_noted: Vec::new(),
             trust_noted: Vec::new(),
+            effort: crate::effort::leg::Carry::default(),
             look: None,
         }
     }
@@ -5668,6 +5671,8 @@ impl Cycle<'_> {
         let mut quota_refresh = false;
         // Every seat whose limit latch stands after its accounting.
         let mut auto_seats: Vec<AutoSeat> = Vec::new();
+        // The lead-pair seats the effort step judges.
+        let mut effort_seats: Vec<crate::effort::leg::Sight> = Vec::new();
         // ONE stamp read per cycle; every pane shares the session's grace.
         let attempt = crate::store::open(self.meta_dir).launch_attempt();
 
@@ -5839,6 +5844,22 @@ impl Cycle<'_> {
             let booked = account_with_trust(carried, &seen, &self.knobs, trust.as_ref());
             *carried = booked.next;
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
+            if crate::effort::leg::eligible(&slot) && !self.meta_agent {
+                effort_seats.push(crate::effort::leg::Sight {
+                    slot: slot.clone(),
+                    capture: capture.clone(),
+                    limited: carried.limit_since.is_some(),
+                    point: crate::effort::leg::Point {
+                        ready: capture_ok
+                            && seen.harness.frame == HarnessState::Idle
+                            && !seen.harness.human_draft
+                            && seen.human_prompt.is_none(),
+                        input,
+                        reseating: seen.auto_in_flight.is_some(),
+                        pane_pid: pane.pane_pid,
+                    },
+                });
+            }
             {
                 let frame = seen.harness.frame;
                 auto_seats.push(AutoSeat {
@@ -5911,6 +5932,15 @@ impl Cycle<'_> {
         self.tell_seats(&by_slot, &events, now);
         self.auto_note(&mut carry.auto_noted, err)?;
         self.trust_note(&mut carry.trust_noted, err)?;
+        let effort = crate::effort::leg::Cycle {
+            dir: self.meta_dir,
+            session: self.session,
+            events: &events,
+            quota: carry.quota.last_observation.as_ref(),
+            auto: &self.auto,
+            now,
+        };
+        crate::effort::leg::step(&effort, &effort_seats, &mut carry.effort, err)?;
         self.auto_reseat(&mut carry.auto_named, &auto_seats, &events, now, err)?;
         self.close(
             carry,

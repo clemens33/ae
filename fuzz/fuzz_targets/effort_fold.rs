@@ -1,7 +1,8 @@
 #![no_main]
 
 use ae::effort::{
-    Decision, Fold, Inputs, Leg, Level, Record, Scope, Stored, Twin, Window, decide, fold,
+    Decision, Direction, Fold, Inputs, Leg, Level, Record, Resume, Scope, Stored, Switch,
+    Transition, Twin, Window, decide, fold, on_resume,
 };
 use ae::events::{Event, SessionKey};
 use ae::quota::WindowKey;
@@ -49,6 +50,45 @@ fuzz_target!(|data: &[u8]| {
         Fold::Open(episode) => Some(episode),
         Fold::Armed | Fold::Doubt(_) => None,
     };
+    // A restart record replays only on its own episode's authority.
+    for (state, direction) in [
+        ("restart-down", Direction::Down),
+        ("restart-up", Direction::Up),
+    ] {
+        let Ok(record) = Record::parse(&VALID.replace("applied", state)) else {
+            panic!("a restart record parses");
+        };
+        let resumed = on_resume(
+            &Stored::Present(record),
+            Ok(()),
+            Some(&folded),
+            Switch::On,
+            true,
+        );
+        if let Resume::Replay(level) = resumed {
+            let down = Transition {
+                direction: Direction::Down,
+                from: Level::Xhigh,
+                to: Level::High,
+            };
+            let up = Transition {
+                direction: Direction::Up,
+                from: Level::High,
+                to: Level::Xhigh,
+            };
+            let legs = match direction {
+                Direction::Down => (Leg::Reserved(down), Leg::Unspent, Level::High),
+                Direction::Up => (Leg::Done(down), Leg::Reserved(up), Level::Xhigh),
+            };
+            assert!(
+                open.is_some_and(|e| e.key == 1_700_000_000
+                    && e.threshold == 80
+                    && !e.yielded
+                    && (e.down, e.up, level) == legs),
+                "a restart replays only this episode's reserved move"
+            );
+        }
+    }
     let twin = Ok(Twin {
         baseline: Level::Xhigh,
         target: Level::High,

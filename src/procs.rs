@@ -23,6 +23,16 @@ impl PsArgv {
         ])
     }
 
+    /// The snapshot argv with each process's state flags ([`background_task`]).
+    #[must_use]
+    pub fn with_stat() -> Self {
+        Self(vec![
+            "-A".to_owned(),
+            "-o".to_owned(),
+            "pid=,ppid=,stat=,comm=".to_owned(),
+        ])
+    }
+
     /// The argv reading ONE process's controlling tty — frozen's `ps -o tty= -p
     /// $$`, which `ae next --attach` uses to tell a real pane from an inherited
     /// `$TMUX`.
@@ -320,6 +330,61 @@ pub fn snapshot() -> Option<Vec<Proc>> {
     }
 }
 
+/// `ps -A -o pid=,ppid=,stat=,comm=` rows beside their state flags, or `None`
+/// if ANY non-blank line is not `<pid> <ppid> <stat> <comm>`, a stat being one
+/// state letter then flags as BSD and procps spell them: unknown is no table.
+#[must_use]
+pub(crate) fn parse_stat_table(raw: &str) -> Option<Vec<(Proc, String)>> {
+    let mut out = Vec::new();
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let (own, rest) = split_first_token(line)?;
+        let (parent, rest) = split_first_token(rest)?;
+        let (stat, comm) = split_first_token(rest)?;
+        let comm = comm.trim();
+        let mut flags = stat.chars();
+        if comm.is_empty()
+            || !flags
+                .next()
+                .is_some_and(|state| "DIPRSTUWXZt".contains(state))
+            || !flags.all(|flag| "+<>AEHLNSVWXls".contains(flag))
+        {
+            return None;
+        }
+        let row = Proc {
+            pid: own.parse().ok()?,
+            ppid: parent.parse().ok()?,
+            comm: comm.to_owned(),
+        };
+        out.push((row, stat.to_owned()));
+    }
+    Some(out)
+}
+
+/// Whether the tool process `tool` runs a BACKGROUND task: a shell beneath it
+/// leading its own session (`s`), as a command claude and codex run does and
+/// an idle tool's MCP wrapper shell does not (measured). `None` is unknown.
+#[must_use]
+pub(crate) fn background_task(table: Option<&[(Proc, String)]>, tool: u32) -> Option<bool> {
+    let table = table?;
+    let procs: Vec<Proc> = table.iter().map(|(proc, _)| proc.clone()).collect();
+    procs.iter().find(|proc| proc.pid == tool)?;
+    Some(table.iter().any(|(proc, stat)| {
+        let base = proc.comm.rsplit('/').next().unwrap_or(&proc.comm);
+        let shell = crate::watchdog::command_is_shell(base.trim_start_matches('-'));
+        shell
+            && stat.contains('s')
+            && proc.pid != tool
+            && lineage(&procs, tool, proc.pid) != Lineage::Clear
+    }))
+}
+
+/// The live table with state flags, parsed; `None` as [`snapshot`] is.
+#[must_use]
+pub(crate) fn stat_snapshot() -> Option<Vec<(Proc, String)>> {
+    let (succeeded, stdout) = crate::transport::run_ps(&PsArgv::with_stat());
+    succeeded.then(|| parse_stat_table(&stdout)).flatten()
+}
+
 /// This process's controlling tty, or `None` when it has none.
 #[must_use]
 pub fn own_tty() -> Option<String> {
@@ -337,6 +402,37 @@ pub fn own_tty() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{Descendancy, Proc, PsArgv, descendancy, has_descendant_named, parse_table};
+
+    /// Shapes measured in `.local/effort/idle-trees.md`: an idle claude keeps
+    /// an MCP wrapper `/bin/sh` (`S+`) running docker; a command either tool
+    /// runs is a `/bin/zsh` session leader (`Ss`).
+    #[test]
+    fn only_a_session_leading_shell_beneath_the_tool_is_a_background_task() {
+        let idle = "  1     0 Ss   /sbin/launchd\n 90     1 Ss   -zsh\n100    90 S+   claude\n\
+                    101   100 S+   /bin/sh\n102   101 S+   docker\n";
+        let table = super::parse_stat_table(idle).expect("measured rows parse");
+        assert_eq!(super::background_task(Some(&table), 100), Some(false));
+        assert_eq!(super::background_task(Some(&table), 7), None, "no tool row");
+        assert_eq!(super::background_task(None, 100), None, "no table");
+        let busy = format!("{idle}103   100 Ss   /bin/zsh\n104   103 S    sleep\n");
+        let table = super::parse_stat_table(&busy).expect("measured rows parse");
+        assert_eq!(super::background_task(Some(&table), 100), Some(true));
+        let deep = format!("{idle}105   102 Ss   -bash\n");
+        let table = super::parse_stat_table(&deep).expect("login shell spelling");
+        assert_eq!(super::background_task(Some(&table), 100), Some(true));
+        assert_eq!(
+            super::parse_stat_table("100 90 S+\n"),
+            None,
+            "a row needs a name"
+        );
+        assert_eq!(super::parse_stat_table("x 90 S+ claude\n"), None);
+        assert_eq!(
+            super::parse_stat_table("100 90 ? claude\n101 100 ? /bin/sh\n"),
+            None,
+            "an unknown stat is no table, never a clear tree"
+        );
+        assert_eq!(super::parse_stat_table("100 90 Sq claude\n"), None);
+    }
 
     fn trow(proc: u32, parent: u32, comm: &str) -> Proc {
         Proc {

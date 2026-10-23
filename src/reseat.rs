@@ -883,6 +883,7 @@ fn stop_running_tool(
     target: &Target,
     bytes: &[u8],
     parsed: &Parsed,
+    hook: &mut dyn FnMut() -> bool,
     err: &mut impl Write,
 ) -> io::Result<Stop> {
     let policy = parsed.stop;
@@ -1019,6 +1020,10 @@ fn stop_running_tool(
         return Ok(Stop::Refused(CauseClass::UnknownFrame));
     }
 
+    // The caller's last word under every lock: the effort leg reserves here.
+    if !hook() {
+        return Ok(Stop::Refused(CauseClass::Other));
+    }
     // THE ONLY WRITE. A tmux that refuses the argv leaves the tool running,
     // and says so in its own words rather than the timeout's.
     let (respawned, _) = transport::run_tmux_op(&crate::session_tmux::argv(
@@ -1066,6 +1071,43 @@ fn stop_running_tool(
         target.agent
     )?;
     Ok(Stop::Failed)
+}
+
+/// The effort leg's actuator: restart `agent` IN PLACE on its own records —
+/// the stop with `hook` as its last word, the dead proof, `_run`, all under the
+/// lifecycle lock, recorded as no reseat or relaunch. `None`: nothing stopped.
+pub(crate) fn restart_in_place(
+    root: &Path,
+    dir: &Path,
+    session: &str,
+    agent: &str,
+    hook: &mut dyn FnMut() -> bool,
+    err: &mut impl Write,
+) -> io::Result<Option<bool>> {
+    let Ok(target) = resolve(dir, agent, session) else {
+        return Ok(None);
+    };
+    let Ok(_lifecycle) = crate::lifecycle::lock(root, session) else {
+        return Ok(None);
+    };
+    let locked = crate::meta::read_bytes(dir).unwrap_or_default();
+    let parsed = Parsed {
+        session: session.to_owned(),
+        agent: agent.to_owned(),
+        profile: crate::lifecycle::meta_value(&locked, &format!("profile.{}", target.slot)),
+        stop: StopPolicy::Proven,
+    };
+    match stop_running_tool(dir, &target, &locked, &parsed, hook, err)? {
+        Stop::Stopped(_) => {}
+        Stop::Failed => return Ok(Some(false)),
+        Stop::NotRunning | Stop::Refused(_) => return Ok(None),
+    }
+    let Some(proven) = crate::seat_relaunch::prove_dead(dir, &target, RESEAT_VERB, err)? else {
+        return Ok(Some(false));
+    };
+    let started =
+        crate::seat_relaunch::start(dir, &target, &proven, Timestamp::now(), RESEAT_VERB, err)?;
+    Ok(Some(matches!(started, Started::Running { .. })))
 }
 
 /// `ae reseat <session> <agent> --using <profile> [--stop-unknown]`.
@@ -1379,7 +1421,7 @@ fn run_parsed(
         )?;
     }
     // THE STOP, before the dead proof and before anything durable is written.
-    let stopped = match stop_running_tool(&dir, &target, &locked, parsed, err)? {
+    let stopped = match stop_running_tool(&dir, &target, &locked, parsed, &mut || true, err)? {
         Stop::Refused(class) => return Ok(Ended::Refused(class)),
         Stop::Failed => return Ok(Ended::Failed),
         // The record goes in only once the pane is PROVEN back at its shell:

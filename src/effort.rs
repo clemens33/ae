@@ -7,7 +7,9 @@
 //! back once that window is relieved. This module owns the vocabulary, the
 //! twin derivation over `[profiles]`, the quota entry and recovery rules, the
 //! persisted `effort.<slot>` record, the journal fold and the one decision.
-//! Nothing here reads the world or acts on a pane: phase 1 ships it inert.
+//! Nothing here reads the world or acts on a pane; [`leg`] is the live half.
+
+pub(crate) mod leg;
 
 use std::path::Path;
 
@@ -260,10 +262,6 @@ pub struct Scope {
 }
 
 /// [`crate::autoreseat::leg::own_scope`] in effort's terms.
-#[expect(
-    dead_code,
-    reason = "inert until phase 4b: the watchdog step is its caller"
-)]
 pub(crate) fn own_scope(
     quota: Option<&crate::quota::Observation>,
     entry: &crate::meta::RosterEntry,
@@ -478,10 +476,21 @@ pub enum State {
     Applied,
     /// The step back up is reserved and not yet proven.
     PendingUp,
+    /// The step down is reserved AND its restart authorized: a resume of the
+    /// same conversation replays it when the journal proves the reservation.
+    RestartDown,
+    /// The step back up, likewise.
+    RestartUp,
 }
 
 impl State {
-    const ALL: [Self; 3] = [Self::PendingDown, Self::Applied, Self::PendingUp];
+    const ALL: [Self; 5] = [
+        Self::PendingDown,
+        Self::Applied,
+        Self::PendingUp,
+        Self::RestartDown,
+        Self::RestartUp,
+    ];
 
     /// The state's one spelling.
     #[must_use]
@@ -490,6 +499,8 @@ impl State {
             Self::PendingDown => "pending-down",
             Self::Applied => "applied",
             Self::PendingUp => "pending-up",
+            Self::RestartDown => "restart-down",
+            Self::RestartUp => "restart-up",
         }
     }
 }
@@ -765,12 +776,12 @@ impl Record {
         )
     }
 
-    /// The move a pending state reserved; `None` once applied.
+    /// The move a pending or restart state reserved; `None` once applied.
     #[must_use]
     pub fn pending(&self) -> Option<Transition> {
         match self.state {
-            State::PendingDown => Transition::down(self.base),
-            State::PendingUp => Transition::up(self.base),
+            State::PendingDown | State::RestartDown => Transition::down(self.base),
+            State::PendingUp | State::RestartUp => Transition::up(self.base),
             State::Applied => None,
         }
     }
@@ -956,7 +967,10 @@ pub enum Fold {
 }
 
 /// The reasons a [`HELD`] record may name.
-const REASONS: [&str; 14] = [
+pub(crate) const REASONS: [&str; 17] = [
+    "background-task",
+    "model-drift",
+    "unresumable",
     "spend-cap",
     "unrecordable",
     "unsupported",
@@ -1391,7 +1405,7 @@ fn up(
 /// `[workspace] auto_effort`, as a resume reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Switch {
-    /// On, the default.
+    /// On.
     On,
     /// The kill switch: a resume drops the record.
     Off,
@@ -1452,6 +1466,12 @@ pub enum Resume {
     },
     /// An unresolved move: refuse the launch.
     Refuse(State),
+    /// An authorized step down whose conversation is not the one this launch
+    /// keeps: journal it failed, drop the record, launch the profile as written.
+    Failed {
+        /// The record's episode.
+        episode: i64,
+    },
 }
 
 /// The ONE resume decision. `retained` says the launch resumes the recorded
@@ -1474,8 +1494,16 @@ pub fn on_resume(
     };
     let episode = record.map(|record| record.episode);
     let discard = |why| Resume::Discard { episode, why };
+    // A fresh conversation spends an authorized step down rather than
+    // forgetting it, or the pressure that reserved it would restart again.
+    let fresh = match record {
+        Some(record) if record.state == State::RestartDown => Resume::Failed {
+            episode: record.episode,
+        },
+        _ => discard(Discarded::Fresh),
+    };
     if !retained {
-        return discard(Discarded::Fresh);
+        return fresh;
     }
     match (switch, stored, record) {
         (Switch::Off, ..) => return discard(Discarded::Off),
@@ -1487,9 +1515,12 @@ pub fn on_resume(
         return Resume::None;
     };
     match guard {
-        Err(Foreign::Conversation) => return discard(Discarded::Fresh),
+        Err(Foreign::Conversation) => return fresh,
         Err(foreign @ (Foreign::Session | Foreign::Slot | Foreign::Agent | Foreign::Tool)) => {
             return Resume::Keep(Kept::Foreign(foreign));
+        }
+        Ok(()) if matches!(record.state, State::RestartDown | State::RestartUp) => {
+            return authorized(record, ledger);
         }
         _ if record.state != State::Applied => return Resume::Refuse(record.state),
         Err(foreign) => return Resume::Keep(Kept::Foreign(foreign)),
@@ -1518,6 +1549,28 @@ pub fn on_resume(
     }
 }
 
+/// A restart record's replay: only THIS episode, at its own threshold, not
+/// yielded, with exactly the record's move reserved and the other leg where
+/// that move needs it. Anything else refuses, as a pending record does.
+fn authorized(record: &Record, ledger: Option<&Fold>) -> Resume {
+    let refuse = Resume::Refuse(record.state);
+    let (Some(t), Some(Fold::Open(open))) = (record.pending(), ledger) else {
+        return refuse;
+    };
+    let legs = match t.direction {
+        Direction::Down => open.down == Leg::Reserved(t) && open.up == Leg::Unspent,
+        Direction::Up => {
+            Transition::down(record.base).is_some_and(|down| open.down == Leg::Done(down))
+                && open.up == Leg::Reserved(t)
+        }
+    };
+    if legs && open.key == record.episode && open.threshold == record.threshold && !open.yielded {
+        Resume::Replay(t.to)
+    } else {
+        refuse
+    }
+}
+
 /// The seat a [`DISCARDED`] record is routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiscardSeat<'a> {
@@ -1541,12 +1594,25 @@ pub fn discard_line(
     why: Discarded,
 ) -> String {
     let reference = episode.map(|key| key.to_string()).unwrap_or_default();
+    line(now, seat, DISCARDED, &reference, why.word())
+}
+
+/// The ONE effort journal line, as the watchdog, routed to the seat by slot and
+/// session id so a rename keeps it addressed. No trailing newline.
+#[must_use]
+pub fn line(
+    now: Timestamp,
+    seat: &DiscardSeat<'_>,
+    action: &str,
+    reference: &str,
+    summary: &str,
+) -> String {
     let line = crate::tracked::event_line(&crate::tracked::EventFields {
         ts: now,
         actor: crate::watchdog::WATCHDOG_ACTOR,
-        action: DISCARDED,
+        action,
         target: seat.agent,
-        reference: &reference,
+        reference,
         actor_slot: "",
         actor_session: "",
         target_slot: seat.slot,
@@ -1560,7 +1626,7 @@ pub fn discard_line(
         caller_pane: "",
         caller_session_uuid: "",
         identity_gap: "",
-        summary: why.word(),
+        summary,
         body_file: "",
     });
     line.trim_end_matches('\n').to_owned()

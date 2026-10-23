@@ -67,9 +67,9 @@ const MEMO_ROWS_MAX: usize = 30;
 /// The most cells the Activity dialog's actor column keeps.
 const ACTIVITY_ACTOR_CELLS: usize = 16;
 
-/// The most cells the Activity dialog's kind column keeps: `watchdog-start`
+/// The most cells the Activity dialog's kind column keeps: `effort-restored`
 /// fits exactly, so no curated kind ever clips.
-const ACTIVITY_KIND_CELLS: usize = 14;
+const ACTIVITY_KIND_CELLS: usize = 15;
 
 /// The most cells the Memos dialog's topic column keeps.
 const MEMO_TOPIC_CELLS: usize = 16;
@@ -116,7 +116,7 @@ pub enum CellRow {
 }
 
 /// The event kinds a human cares about; the docs name what is not.
-const ACTIVITY_KINDS: [&str; 12] = [
+const ACTIVITY_KINDS: [&str; 15] = [
     "state",
     "done",
     "goal",
@@ -129,6 +129,9 @@ const ACTIVITY_KINDS: [&str; 12] = [
     "reply",
     "watchdog-start",
     "watchdog-stop",
+    "effort-applied",
+    "effort-restored",
+    "effort-failed",
 ];
 
 /// The context-menu row that starts the stop chain. ASCII, because the row is

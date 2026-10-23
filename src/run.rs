@@ -77,7 +77,16 @@ struct EffortStep {
     launch_id: String,
     rows: Vec<Vec<u8>>,
     episode: Option<i64>,
-    why: crate::effort::Discarded,
+    why: Dropped,
+}
+
+/// Why a resume drops a seat's effort record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dropped {
+    /// Journaled as a discard.
+    Discard(crate::effort::Discarded),
+    /// An authorized step down this launch cannot keep: journaled failed.
+    Failed(crate::effort::Transition),
 }
 
 impl EffortStep {
@@ -99,7 +108,17 @@ impl EffortStep {
             slot,
             agent: &self.agent,
         };
-        crate::effort::discard_line(crate::time::Timestamp::now(), &seat, self.episode, self.why)
+        let now = crate::time::Timestamp::now();
+        match self.why {
+            Dropped::Discard(why) => crate::effort::discard_line(now, &seat, self.episode, why),
+            Dropped::Failed(t) => crate::effort::line(
+                now,
+                &seat,
+                crate::effort::FAILED,
+                &format!("{}-down", self.episode.unwrap_or_default()),
+                &format!("{}->{}", t.from.word(), t.to.word()),
+            ),
+        }
     }
 }
 
@@ -681,7 +700,7 @@ fn effort_on_resume(
     exact: bool,
 ) -> Result<(Option<EffortStep>, Option<String>), String> {
     use crate::config::AutoEffort;
-    use crate::effort::{Foreign, Resume, State, Stored, Switch};
+    use crate::effort::{Resume, State, Stored, Switch};
     let Ok(bytes) = crate::meta::read_bytes(dir) else {
         return Ok((None, None));
     };
@@ -707,29 +726,23 @@ fn effort_on_resume(
                 let session = crate::events::SessionKey::new(&seat.session, &session_id);
                 crate::effort::fold(&events, session, slot, &seat.agent)
             });
-        let entry = meta.roster().iter().find(|entry| entry.slot == slot);
-        let model = crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool);
-        let now = crate::effort::SeatNow {
-            session_id: &session_id,
-            slot,
-            agent: &seat.agent,
-            tool: seat.tool,
-            conversation: exact.then_some(seat.harness_session.as_str()),
-            profile: entry
-                .and_then(|entry| entry.profile.as_deref())
-                .unwrap_or_default(),
-            client: entry.map_or(&crate::meta::RecordedClient::Invalid, |entry| &entry.client),
-            model: model.as_deref(),
-            baseline: crate::launch_cmd::effort_flag(seat.command.as_str(), seat.tool).ok(),
-        };
-        guard = if seat.recorded_tool == seat.tool {
-            crate::effort::guard(record, &now)
-        } else {
-            Err(Foreign::Tool)
-        };
+        guard = effort_guard(record, seat, &meta, slot, exact);
     }
     let base = record.map_or("", |record| record.base.word());
     let low = record.map_or("", |record| record.low.word());
+    let step = |episode, why| EffortStep {
+        session: seat.session.clone(),
+        session_id: session_id.clone(),
+        agent: seat.agent.clone(),
+        tool: seat.recorded_tool,
+        launch_id: seat.launch_id.clone(),
+        rows: crate::meta::effort_claims(&bytes, slot)
+            .into_iter()
+            .map(<[u8]>::to_vec)
+            .collect(),
+        episode,
+        why,
+    };
     match crate::effort::on_resume(&stored, guard, ledger.as_ref(), switch, exact) {
         Resume::None | Resume::Keep(_) => Ok((None, None)),
         Resume::Replay(level) => {
@@ -749,10 +762,11 @@ fn effort_on_resume(
                     refusal.word()
                 ),
             };
-            Ok((None, Some(said)))
+            // A replayed step back up runs the profile's own effort: nothing to say.
+            Ok((None, (level.word() == low).then_some(said)))
         }
         Resume::Refuse(state) => {
-            let (from, to) = if state == State::PendingUp {
+            let (from, to) = if matches!(state, State::PendingUp | State::RestartUp) {
                 (low, base)
             } else {
                 (base, low)
@@ -762,35 +776,90 @@ fn effort_on_resume(
                 state.word()
             ))
         }
-        Resume::Discard { episode, why } => Ok((
-            Some(EffortStep {
-                session: seat.session.clone(),
-                session_id,
-                agent: seat.agent.clone(),
-                tool: seat.recorded_tool,
-                launch_id: seat.launch_id.clone(),
-                rows: crate::meta::effort_claims(&bytes, slot)
-                    .into_iter()
-                    .map(<[u8]>::to_vec)
-                    .collect(),
-                episode,
-                why,
-            }),
-            None,
-        )),
+        Resume::Failed { episode } => {
+            let why = record.and_then(crate::effort::Record::pending).map_or(
+                Dropped::Discard(crate::effort::Discarded::Fresh),
+                Dropped::Failed,
+            );
+            Ok((Some(step(Some(episode), why)), None))
+        }
+        Resume::Discard { episode, why } => Ok((Some(step(episode, Dropped::Discard(why))), None)),
     }
 }
 
-/// The one line a resume says about the effort record it tried to drop.
-fn discard_said(
+/// [`crate::effort::guard`] of `record` against `seat` as `meta` records it,
+/// shared by a resume and the effort leg; `exact`: the recorded conversation runs.
+pub(crate) fn effort_guard(
+    record: &crate::effort::Record,
+    seat: &Seat,
+    meta: &crate::meta::Meta,
     slot: &str,
-    why: crate::effort::Discarded,
-    outcome: &crate::meta::Discard,
-) -> String {
+    exact: bool,
+) -> Result<(), crate::effort::Foreign> {
+    let entry = meta.roster().iter().find(|entry| entry.slot == slot);
+    let model = crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool);
+    let now = crate::effort::SeatNow {
+        session_id: meta.session_id().unwrap_or_default(),
+        slot,
+        agent: &seat.agent,
+        tool: seat.tool,
+        conversation: exact.then_some(seat.harness_session.as_str()),
+        profile: entry
+            .and_then(|entry| entry.profile.as_deref())
+            .unwrap_or_default(),
+        client: entry.map_or(&crate::meta::RecordedClient::Invalid, |entry| &entry.client),
+        model: model.as_deref(),
+        baseline: crate::launch_cmd::effort_flag(seat.command.as_str(), seat.tool).ok(),
+    };
+    if seat.recorded_tool == seat.tool {
+        crate::effort::guard(record, &now)
+    } else {
+        Err(crate::effort::Foreign::Tool)
+    }
+}
+
+/// The seat's effort twin in its own config pair, and whether `_run`'s store
+/// probe still finds its recorded conversation.
+pub(crate) fn effort_twin(
+    seat: &Seat,
+    entry: &crate::meta::RosterEntry,
+) -> (
+    Result<crate::effort::Twin, crate::effort::TwinRefusal>,
+    bool,
+) {
+    let resumable = match &seat.config_home {
+        crate::meta::RecordedConfigHome::Path(path)
+        | crate::meta::RecordedConfigHome::Implicit(path) => resumable_in(
+            seat.tool,
+            &seat.harness_session,
+            &crate::launch_cmd::Resolved::Path(path.clone()),
+            Some(Path::new(&seat.work_dir)),
+        ),
+        _ => false,
+    };
+    let twin = crate::config::read_identity(
+        seat.identity_global.as_deref(),
+        seat.identity_local.as_deref(),
+    )
+    .map_or(Err(crate::effort::TwinRefusal::Unresolved), |cfg| {
+        crate::effort::twin_in(
+            &cfg,
+            crate::doors::home().as_deref(),
+            entry.profile.as_deref().unwrap_or_default(),
+            &entry.client,
+            seat.tool,
+        )
+    });
+    (twin, resumable)
+}
+
+/// The one line a resume says about the effort record it tried to drop.
+fn discard_said(slot: &str, why: Dropped, outcome: &crate::meta::Discard) -> String {
     use crate::meta::Discard;
     let cause = match why {
-        crate::effort::Discarded::Off => "auto_effort = off",
-        crate::effort::Discarded::Fresh => "a new conversation",
+        Dropped::Discard(crate::effort::Discarded::Off) => "auto_effort = off",
+        Dropped::Discard(crate::effort::Discarded::Fresh) => "a new conversation",
+        Dropped::Failed(_) => "a new conversation: its authorized step down failed",
     };
     let what = match outcome {
         Discard::Done => format!("dropped ({cause})"),
@@ -1670,12 +1739,12 @@ pub(crate) struct Seat {
     /// The tool class the command resolves to — what decides capture, the
     /// launch turn and the identity to observe.
     pub(crate) tool: ToolKind,
-    harness_session: String,
-    launch_id: String,
+    pub(crate) harness_session: String,
+    pub(crate) launch_id: String,
     config_home: crate::meta::RecordedConfigHome,
     config_home_base: crate::meta::RecordedConfigHomeBase,
     /// The agent's NAME — the identity the meta guard compares.
-    agent: String,
+    pub(crate) agent: String,
     /// The model this seat was positively observed running, where a retained
     /// row records one.
     observed_model: Option<String>,
@@ -1690,7 +1759,7 @@ pub(crate) struct Seat {
     /// The tool class the RECORDED `agent_bin.<slot>` names — the observation's
     /// only provenance, because a recorded model says what ran and never which
     /// harness ran it.
-    recorded_tool: ToolKind,
+    pub(crate) recorded_tool: ToolKind,
 }
 
 /// Read the seat `slot` names, refusing anything that is not launchable.

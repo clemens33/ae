@@ -31,7 +31,7 @@ const DEFER_POLL: Duration = Duration::from_millis(400);
 
 /// A client's quiet period, past which it is no longer evidence of a human at
 /// the pane.
-const VIEW_GRACE: i64 = 4;
+pub(crate) const VIEW_GRACE: i64 = 4;
 
 /// The pause between the paste and the Enter for a STYLE-delimited composer —
 /// codex: no Enter-drop evidence there, and every send would pay the latency.

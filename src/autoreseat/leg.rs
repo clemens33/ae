@@ -493,7 +493,7 @@ pub(crate) fn read_quota(
 }
 
 /// [`read_quota`] for the session at `dir` under the state root `root`.
-fn read_quota_at(
+pub(crate) fn read_quota_at(
     root: &Path,
     dir: &Path,
     meta: &crate::meta::Meta,

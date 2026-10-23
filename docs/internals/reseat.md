@@ -191,9 +191,10 @@ A resume decides the same record in `effort::on_resume`, first rule wins:
 | Seat on resume | Effort record |
 |---|---|
 | no record | nothing |
-| not the retained conversation (create, fallback, a new compacted id) | dropped, `fresh` |
+| not the retained conversation (create, fallback, a new compacted id) | dropped, `fresh`; a `restart-down` record is journaled `effort-failed` instead, its authorized step down spent |
 | `auto_effort = off` | dropped, `off` |
 | switch unusable, record damaged, another seat or setup, journal unproven, yielded | kept, profile as written |
+| a `restart-down`/`restart-up` move, guard ok | replayed to its target when the journal reserves exactly that move for its episode and threshold, unyielded; otherwise refused |
 | a move still pending, switch on | refused before the start marker |
 | applied, guard and journal agree | one effort value rewritten to the recorded level |
 
@@ -206,6 +207,17 @@ discard whose meta write failed keeps them too, and the next off-resume
 discards again; one whose directory sync failed has them visibly gone, durability
 unproven. A kept record says nothing. Either way the launch goes ahead at the
 profile's effort.
+
+The live restart under `auto_effort` is settled by the next leg after a
+crash, never by a second stop: a reservation with no record or no respawn is
+`effort-failed`, and a restarted tool with no outcome is proven again by
+`Ctx::prove`. One window is a NAMED residual (plan W7): an `up` move whose
+meta clear landed while its journal did not leaves nothing to prove against —
+the record carried the identity and the old pid. The next leg journals
+`effort-failed` with `outcome unproven: record cleared, identity and pid receipt
+lost, profile effort expected` and tells the seat the same, never `restart
+failed` and never `restored`, because neither is known. The episode makes no
+further attempt.
 
 A conversation the tagger cannot prove is not handed on: `prior_with` refuses
 an id it cannot judge rather than recording a guess, so a seat whose capture

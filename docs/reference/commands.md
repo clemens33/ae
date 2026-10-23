@@ -945,7 +945,7 @@ proven.
 
 The `Activity` dialog lists the newest 30 records a human cares about, newest
 first: `state`, `done`, `goal`, `spawn`, `retire`, `relaunch`, `reseat`, `ask`,
-`review`, `reply`, `watchdog-start` and `watchdog-stop` (the watchdog rows draw only for non-`ae:` actors, so ae-driven restarts never flood the dialog), each with actor,
+`review`, `reply`, `watchdog-start`, `watchdog-stop`, and the effort moves `effort-applied`, `effort-restored` and `effort-failed` (the watchdog rows draw only for non-`ae:` actors, so ae-driven restarts never flood the dialog), each with actor,
 kind, clipped text and truthful age in aligned columns. Watchdog
 ticks, quota samples, other audits, delivery records, `memo`, `chat`, `focus`,
 `cancel`, `spawn-failed` and lifecycle request/result pairs are not activity
@@ -2461,9 +2461,10 @@ its cleanup is live session state only.
 Everything ae does is one core operation reached through a `_`-prefixed entry: `_launch`,
 `_stop`, `_end`, `_compact`, `_spawn`, `_retire`, `_send`, `_relay`, `_ask`, `_review`, `_reply`,
 `_requests`, `_state`, `_goal`, `_memo`, `_say`, `_peek`, `_agents`, `_focus`, `_interrupt`,
-`_watchdog`, `_telegram`, `_auto-reseat`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
+`_watchdog`, `_telegram`, `_auto-reseat`, `_auto-effort`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
 The public words above and the session helpers are thin routes to them.
 `_auto-reseat <dir> <slot> <key>` is the detached leg the auto reseat trigger spawns to move a seat off its usage limit, or off an account read at or past `auto_reseat_at` — never run it by hand.
+`_auto-effort <dir> <slot> <episode>` is the detached leg the watchdog spawns under `auto_effort = on` to restart a lead-pair seat in place at another effort — never run it by hand either.
 
 Don't call them directly — the core refuses any `_`-prefixed word it does not serve, with
 exit 2 and before any side effect, so a typo cannot quietly become a session name.
