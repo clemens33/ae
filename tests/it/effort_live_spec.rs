@@ -1031,9 +1031,12 @@ fn another_accounts_hot_weekly_window_cannot_move_the_seat() {
 }
 
 // Addendum r3: receipt identity, stale detached work and honest crash wording.
-// Four equally spaced samples cover the observed sub-second incidental hold.
+// Check stale facts after every invocation, then prove the same episode can reserve.
 const DIRECT_LEG_TRIES: usize = 4;
 const DIRECT_LEG_GAP: Duration = Duration::from_secs(1);
+// Unknown process snapshots intentionally hold a leg until a later cycle. Give
+// the positive control the normal fixture deadline, rather than four snapshots.
+const DIRECT_LEG_WAIT: Duration = WAIT;
 
 fn still_held(seat: &Seat, ep: i64, original: Option<u32>) {
     for attempt in 0..DIRECT_LEG_TRIES {
@@ -1048,26 +1051,26 @@ fn still_held(seat: &Seat, ep: i64, original: Option<u32>) {
 fn reserve_same_episode(seat: &Seat, ep: i64) {
     let rig = &seat.rig;
     let mut diagnostics = String::new();
-    for attempt in 0..DIRECT_LEG_TRIES {
+    let deadline = Instant::now() + DIRECT_LEG_WAIT;
+    let mut attempt = 0;
+    while Instant::now() < deadline {
+        attempt += 1;
         let output = invoke_effort(seat, ep);
         writeln!(
             diagnostics,
-            "attempt {}: {}",
-            attempt + 1,
+            "attempt {attempt}: {}",
             String::from_utf8_lossy(&output.stderr)
         )
         .expect("string write");
         if !records(rig, "effort-reserved").is_empty() {
             break;
         }
-        if attempt + 1 < DIRECT_LEG_TRIES {
-            std::thread::sleep(DIRECT_LEG_GAP);
-        }
+        std::thread::sleep(DIRECT_LEG_GAP.min(deadline.saturating_duration_since(Instant::now())));
     }
     assert_eq!(
         records(rig, "effort-reserved").len(),
         1,
-        "positive control: the same episode must reserve with eligible facts\n{diagnostics}\n{}",
+        "positive control: the same episode must reserve with eligible facts within {DIRECT_LEG_WAIT:?}\n{diagnostics}\n{}",
         rig.events()
     );
 }
