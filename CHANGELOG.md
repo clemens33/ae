@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.119] - 2026-10-23
+- Limit concurrent effort restart fixtures
+- Refresh bundled list prices to litellm 82a4ef40
+
 ## [v2026.10.118] - 2026-10-23
 - Scope unreadable process rows to the seat
 - Correct launch-attempt lock ownership (#208)
