@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.118] - 2026-10-23
+- Scope unreadable process rows to the seat
+- Correct launch-attempt lock ownership (#208)
+- Auto reseat: order derived candidates least disruptive first (#252)
+
 ## [v2026.10.117] - 2026-10-23
 - Auto effort: with the global [workspace] auto_effort = on, the watchdog steps a lead-pair claude or codex seat's reasoning effort down one level once a usable window of its own account at least a day long judges 80%, by an in-place exact-resume restart that keeps pane, profile, account, model and conversation, and restores the profile's own effort once every window that moved it reads under 75% or passed its reset; a detached _auto-effort leg under the seat lock, the effort.<slot> record published under a full identity CAS, a model-drift hold, outcome unproven on a missing upward proof, a resume replaying a recorded move, fuzzed record and fold seeds (#253)
 - Compile every fuzz target in the stable gate
