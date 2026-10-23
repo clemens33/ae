@@ -9,13 +9,16 @@
 use std::io::{BufRead as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::cli::{OwnedChild, OwnedScratch, Runner, ae, bounded};
 use super::phase2::run_tmux;
 
 const CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n[roster]\nlead = idle\n\
     [workspace]\nmain = lead\nlayout = vertical\n";
+
+const CRASH_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+const CRASH_SETTLE_POLL: Duration = Duration::from_millis(50);
 
 struct Fleet {
     scratch: OwnedScratch,
@@ -117,14 +120,23 @@ impl Fleet {
         // This command runs on the fixture's private -S server only. SIGKILL
         // leaves a stale socket; a clean exit can leave one too.
         let _ = self.tmux(&["run-shell", &format!("kill -KILL {pid}")]);
-        assert!(!self.tmux(&["list-sessions"]).0, "server must be gone");
-        // phase2::run_tmux writes command stderr here (phase2.rs:1022).
-        let diagnostic = std::fs::read_to_string(self.scratch.join("stderr"))
-            .unwrap_or_else(|why| panic!("private crash diagnostic: {why}"));
-        assert!(
-            diagnostic.starts_with("no server running on "),
-            "stale socket must prove absence: {diagnostic}"
-        );
+        let until = Instant::now() + CRASH_SETTLE_TIMEOUT;
+        loop {
+            let (ok, _) = self.tmux(&["list-sessions"]);
+            let diagnostic = std::fs::read_to_string(self.scratch.join("stderr"))
+                .unwrap_or_else(|why| panic!("private crash diagnostic: {why}"));
+            let gone = !ok && diagnostic.starts_with("no server running on ");
+            assert!(
+                gone || (Instant::now() < until
+                    && (ok || diagnostic.starts_with("server exited unexpectedly"))),
+                "stale socket must prove absence within {}s; last diagnostic: {diagnostic}",
+                CRASH_SETTLE_TIMEOUT.as_secs()
+            );
+            if gone {
+                break;
+            }
+            std::thread::sleep(CRASH_SETTLE_POLL);
+        }
     }
 
     fn stamp(&self, name: &str, epoch: i64) {
