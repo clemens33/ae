@@ -2216,12 +2216,18 @@ mod tests {
         };
         let full = candidate(
             "full",
-            Provenance::Derived(crate::autoreseat::Kin::Sibling),
+            Provenance::Derived(
+                crate::autoreseat::Kin::Sibling,
+                crate::autoreseat::Step::Seeded,
+            ),
             100.0,
         );
         let twin = candidate(
             "twin",
-            Provenance::Derived(crate::autoreseat::Kin::Twin),
+            Provenance::Derived(
+                crate::autoreseat::Kin::Twin,
+                crate::autoreseat::Step::Account,
+            ),
             10.0,
         );
         let choice = choose(&[full.clone(), twin], 0);

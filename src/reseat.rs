@@ -311,7 +311,7 @@ struct Keep<'a> {
 
 /// Does this move KEEP the seat's conversation? PURE. The same binary and
 /// recorded account (path, mode and implicit base), an id the tool's resume
-/// takes, and commands equal under [`crate::launch_cmd::keep_skeleton`].
+/// takes, and commands equal under [`crate::launch_cmd::keep_commands`].
 fn keeps(keep: &Keep<'_>) -> bool {
     use crate::meta::RecordedConfigHome;
     let Some((to_home, to_base)) = keep.to_home else {
@@ -325,7 +325,6 @@ fn keeps(keep: &Keep<'_>) -> bool {
         }
         _ => false,
     };
-    let skeleton = |cmd: &str| crate::launch_cmd::keep_skeleton(cmd, keep.tool);
     !keep.from_binary.is_empty()
         && keep.from_binary == keep.to_binary
         && crate::launch::id_probeable(keep.id)
@@ -333,8 +332,7 @@ fn keeps(keep: &Keep<'_>) -> bool {
         && recorded.record_value().as_deref() == Some(to_home)
         && keep
             .from_command
-            .and_then(skeleton)
-            .is_some_and(|from| skeleton(keep.to_command) == Some(from))
+            .is_some_and(|from| crate::launch_cmd::keep_commands(from, keep.to_command, keep.tool))
 }
 
 /// The command the seat's recorded profile resolves to NOW, exactly as `_run`

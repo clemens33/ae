@@ -930,6 +930,13 @@ pub(crate) fn keep_skeleton(cmd: &str, tool: ToolKind) -> Option<Vec<String>> {
     Some(parts)
 }
 
+/// Whether `from` and `to` are the same launch under [`keep_skeleton`]: an exact
+/// resume of one could continue the other's conversation. THE ONE comparison
+/// `reseat` decides a kept move by and auto reseat's ladder predicts one by.
+pub(crate) fn keep_commands(from: &str, to: &str, tool: ToolKind) -> bool {
+    keep_skeleton(from, tool).is_some_and(|from| keep_skeleton(to, tool) == Some(from))
+}
+
 /// The executable word selected by the same prefix grammar the executor uses.
 pub(crate) struct LaunchBinary<'a> {
     /// Index inside [`SimpleCommand::words`].

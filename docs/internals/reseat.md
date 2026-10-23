@@ -601,8 +601,12 @@ suggestion may name a profile the operator keeps for rare use.
 The chooser takes the first usable candidate of the best tier, in listed order —
 and every declared candidate outranks every derived one: a declared candidate on
 a worse tier still wins over a fresh twin, and an operator who wants the family
-first changes the row. Among derived candidates twins come before siblings only
-on an equal tier. A candidate is judged by its EFFECTIVE percentage, never the
+first changes the row. Among derived candidates a critical one ranks last; the
+rest rank by `autoreseat::Step` — `Kept` (same store, commands equal under
+`launch_cmd::keep_commands`, the comparison `reseat` decides a kept move by),
+then `Account` (another proven store), then `Seeded` — and only then by tier.
+The step is a prediction: the move still proves the conversation kept or seeds
+loudly. A plan-routed candidate (`tool::PlanRoute::routes`) is never derived. A candidate is judged by its EFFECTIVE percentage, never the
 raw window: a reached spend cap judges 100 and reads exhausted, and only a FRESH
 window places a tier — below critical first, then unknown, then critical. A
 window scoped to another model family binds no one else, while a pinless

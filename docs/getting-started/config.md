@@ -472,11 +472,17 @@ Every listed seat also gets the profiles of its OWN family, after its row — an
 with no usable row, those alone. A TWIN is the seat's setup on another account:
 the same command word for word, the account variable aside, on a config home ae
 can prove is a different one. A SIBLING is the same tool and flags pinned to
-another model, on any account. Twins are listed first, then siblings, each in
-`[profiles]` order. A declared candidate always comes before a derived one, even
-when its account is worse off — to prefer the family, change the row. Among
-derived ones the better-off account wins, and a twin beats a sibling only when
-the two are equally well off. The seat's own profile, a profile listed already,
+another model, on any account. The family is ordered least disruptive first
+(#252): a KEPT candidate (same account, a command that differs only in the model
+or effort the tool's resume is measured to take) can continue the conversation;
+then one on another proven account (claude carries the conversation, other
+tools seed); then the rest, which seed. Inside a step twins come before
+siblings, each in `[profiles]` order. A declared candidate always comes before a
+derived one, even when its account is worse off — to prefer the family, change
+the row. Among derived ones a candidate at critical comes after every other,
+then the step decides, then the better-off account. A profile whose model routes
+through the tool's separately billed plan (today `opencode-go/`) is never
+derived; name it in the row to allow it. The seat's own profile, a profile listed already,
 and one that runs the same setup on a store ae proves is the same as one listed
 before it add nothing; an account ae cannot name is never proof of either, and
 on a tool with no account variable only a byte-identical command is the same

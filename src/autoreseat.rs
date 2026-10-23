@@ -509,6 +509,18 @@ pub enum Kin {
     Sibling,
 }
 
+/// The rung of the recovery ladder a derived candidate PREDICTS, least
+/// disruptive first; the move itself still proves what it kept (#252).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Step {
+    /// The same account, commands equal under the tool's measured keep rule.
+    Kept,
+    /// The same tool on another proven account: carried or seeded.
+    Account,
+    /// Anything else the family holds.
+    Seeded,
+}
+
 /// How a candidate came to be on a seat's list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Provenance {
@@ -516,7 +528,7 @@ pub enum Provenance {
     #[default]
     Declared,
     /// Derived from the seat's own profile.
-    Derived(Kin),
+    Derived(Kin, Step),
 }
 
 impl Provenance {
@@ -526,8 +538,15 @@ impl Provenance {
     pub const fn word(self) -> &'static str {
         match self {
             Self::Declared => "",
-            Self::Derived(Kin::Twin) => ", derived twin",
-            Self::Derived(Kin::Sibling) => ", derived sibling",
+            Self::Derived(Kin::Twin, _) => ", derived twin",
+            Self::Derived(Kin::Sibling, _) => ", derived sibling",
+        }
+    }
+
+    const fn step(self) -> Option<Step> {
+        match self {
+            Self::Declared => None,
+            Self::Derived(_, step) => Some(step),
         }
     }
 }
@@ -553,9 +572,10 @@ pub struct Shape {
     pub store: Store,
     /// The resolved command, byte for byte.
     pub raw: String,
-    /// The tool the command launches. [`listed`] never reads it; the cover
-    /// verdict does, because tools without an account variable all read
-    /// `Store::Shared` and only the tool tells their accounts apart.
+    /// The tool the command launches. Family membership never reads it; the
+    /// plan-route rule, the [`Step`] and the cover verdict do, because tools
+    /// without an account variable all read `Store::Shared` and only the tool
+    /// tells their accounts apart.
     pub tool: ToolKind,
 }
 
@@ -597,9 +617,11 @@ impl Shape {
 
 /// The seat's candidates: `declared` in its own order, then the seat's own
 /// family among `profiles` — every twin, then every sibling, each in
-/// `profiles` order. A profile is listed once, where it first appears, and a
-/// derived one that is the [`Shape::same`] as one listed before it is dropped:
-/// its windows are that one's. The seat's own profile is never listed.
+/// `profiles` order, then stably ordered by [`Step`]. A profile is listed once,
+/// where it first appears, and a derived one that is the [`Shape::same`] as one
+/// listed before it is dropped: its windows are that one's. The seat's own
+/// profile is never listed, and a profile routed through its tool's separately
+/// billed plan ([`crate::tool::PlanRoute::routes`]) is never derived.
 #[must_use]
 pub fn listed(
     declared: &[String],
@@ -632,7 +654,9 @@ pub fn listed(
                         seat.pin.is_some() && candidate.pin.is_some() && candidate.pin != seat.pin
                     }
                 };
+            let routed = candidate.tool.adapter().quota.plan;
             if !family
+                || routed.is_some_and(|plan| plan.routes(&candidate.raw))
                 || name == profile
                 || list.iter().any(|(taken, _)| taken == name)
                 || kept.iter().any(|shape| shape.same(candidate))
@@ -640,10 +664,25 @@ pub fn listed(
                 continue;
             }
             kept.push(candidate);
-            list.push((name.clone(), Provenance::Derived(kin)));
+            list.push((
+                name.clone(),
+                Provenance::Derived(kin, step(seat, candidate)),
+            ));
         }
     }
+    list[declared.len()..].sort_by_key(|(_, provenance)| provenance.step());
     list
+}
+
+/// The [`Step`] a move from `seat` to its family member `candidate` predicts.
+fn step(seat: &Shape, candidate: &Shape) -> Step {
+    match seat.off_account(candidate) {
+        Some(true) => Step::Account,
+        Some(false) if crate::launch_cmd::keep_commands(&seat.raw, &candidate.raw, seat.tool) => {
+            Step::Kept
+        }
+        _ => Step::Seeded,
+    }
 }
 
 /// Whether a profile has a way off its own account.
@@ -1482,7 +1521,8 @@ pub struct Choice {
 
 /// Take the first usable candidate of the best tier, in listed order — a
 /// declared one before any derived one, whatever its tier: the row is the
-/// human's own preference, derivation only ae's fallback.
+/// human's own preference, derivation only ae's fallback. Among derived ones a
+/// critical one comes last, then the least disruptive [`Step`] wins.
 #[must_use]
 pub fn choose(candidates: &[Candidate], now: i64) -> Choice {
     choose_with(candidates, now, None)
@@ -1492,24 +1532,29 @@ pub fn choose(candidates: &[Candidate], now: i64) -> Choice {
 /// candidate must have room below it. `None` is a limit episode's chooser.
 #[must_use]
 pub fn choose_with(candidates: &[Candidate], now: i64, room: Option<u8>) -> Choice {
+    type Rank = (bool, bool, Option<Step>, Tier);
     let mut skipped = Vec::new();
-    let mut best: Option<(&Candidate, (bool, Tier))> = None;
+    let mut best: Option<(&Candidate, Rank)> = None;
     for candidate in candidates {
         if let Some(skip) = passed_over(candidate, now, room) {
             let named = format!("{}{}", candidate.profile, candidate.provenance.word());
             skipped.push((named, skip));
             continue;
         }
+        let tier = tier(&candidate.windows);
+        let derived = candidate.provenance.step();
         let rank = (
-            candidate.provenance != Provenance::Declared,
-            tier(&candidate.windows),
+            derived.is_some(),
+            derived.is_some() && tier == Tier::Critical,
+            derived,
+            tier,
         );
         if best.is_none_or(|(_, held)| rank < held) {
             best = Some((candidate, rank));
         }
     }
     Choice {
-        pick: best.map(|(candidate, (_, tier))| (candidate.profile.clone(), tier)),
+        pick: best.map(|(candidate, (.., tier))| (candidate.profile.clone(), tier)),
         provenance: best.map_or(Provenance::Declared, |(candidate, _)| candidate.provenance),
         skipped,
     }
@@ -2521,8 +2566,8 @@ mod tests {
     #[test]
     fn the_family_lists_twins_then_siblings_and_collapses_only_a_proven_alias() {
         let seat = shape(Some("opus"), proven("/a"));
-        let twin = Provenance::Derived(Kin::Twin);
-        let sibling = Provenance::Derived(Kin::Sibling);
+        let twin = Provenance::Derived(Kin::Twin, Step::Account);
+        let sibling = Provenance::Derived(Kin::Sibling, Step::Seeded);
         let other = Shape {
             words: vec!["claude".to_owned(), "--model".to_owned(), "low".to_owned()],
             ..shape(Some("opus"), proven("/d"))
@@ -2561,7 +2606,7 @@ mod tests {
     #[test]
     fn distinct_unknown_accounts_never_collapse_even_against_a_declared_one() {
         let seat = shape(Some("opus"), proven("/a"));
-        let sibling = Provenance::Derived(Kin::Sibling);
+        let sibling = Provenance::Derived(Kin::Sibling, Step::Seeded);
         let unknown = rows(&[
             ("first", shape(Some("sonnet"), Store::Unknown)),
             ("second", shape(Some("sonnet"), Store::Unknown)),
@@ -2596,7 +2641,7 @@ mod tests {
 
     #[test]
     fn a_respelled_model_flag_on_a_shared_store_is_never_an_alias() {
-        let sibling = Provenance::Derived(Kin::Sibling);
+        let sibling = Provenance::Derived(Kin::Sibling, Step::Seeded);
         let on = |pin: &str, raw: &str| Shape {
             raw: raw.to_owned(),
             ..shape(Some(pin), Store::Shared)
@@ -4193,7 +4238,7 @@ mod tests {
         ]);
         assert_eq!(
             listed(&[], ("spark", &seat), &all),
-            rows(&[("wonder", Provenance::Derived(Kin::Sibling))]),
+            rows(&[("wonder", Provenance::Derived(Kin::Sibling, Step::Seeded))]),
             "a Grok profile is no sibling of a Muse one"
         );
     }
@@ -4229,7 +4274,7 @@ mod tests {
         ]);
         assert_eq!(
             listed(&[], ("spark", &spark), &all),
-            rows(&[("wonder", Provenance::Derived(Kin::Sibling))])
+            rows(&[("wonder", Provenance::Derived(Kin::Sibling, Step::Seeded))])
         );
         assert_eq!(cover(&[], ("spark", &spark), &all), Cover::Bare);
         assert_eq!(

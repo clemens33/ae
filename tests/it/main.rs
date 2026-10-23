@@ -105,6 +105,7 @@ mod quota_grok_spec;
 mod quota_muse_spec;
 mod quota_view_spec;
 mod reader;
+mod recovery_ladder_spec;
 mod refusal_rig;
 mod renametell_notice_spec;
 mod renametell_routing_spec;
