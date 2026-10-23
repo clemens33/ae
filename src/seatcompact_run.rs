@@ -128,8 +128,9 @@ pub(crate) fn run(
             observation: seat.observation.as_ref(),
         })
         .collect();
-    write!(out, "{}", seatcompact::report(&lines))?;
-    Ok(seatcompact::exit_code(&lines))
+    let code = seatcompact::exit_code(&lines);
+    crate::error::with_status(code, write!(out, "{}", seatcompact::report(&lines)))?;
+    Ok(code)
 }
 
 /// Watch one dispatched seat and record what was seen. The dispatch record is

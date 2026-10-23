@@ -398,8 +398,9 @@ pub fn run(
             continue;
         };
         let label = crate::tmux_floor::server_label(&ServerId::Selected(guard.server.clone()));
-        writeln!(out, "ae: restoring {name} ({label})")?;
-        out.flush()?;
+        let failed = u8::from(report.failed > 0);
+        crate::error::with_status(failed, writeln!(out, "ae: restoring {name} ({label})"))?;
+        crate::error::with_status(failed, out.flush())?;
         let attempt = Attempt {
             guard,
             skipped: Cell::new(None),
@@ -414,7 +415,7 @@ pub fn run(
         )?;
         match (code, attempt.skipped.take()) {
             (0, None) => {
-                writeln!(out, "ae: restored {name} ({label})")?;
+                crate::error::with_status(failed, writeln!(out, "ae: restored {name} ({label})"))?;
                 report.restored += 1;
             }
             (0, Some(why)) => writeln!(err, "ae: skipped {name}: {why}")?,

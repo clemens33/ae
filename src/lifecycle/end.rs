@@ -891,8 +891,9 @@ fn run_supervised(
             }
         }
     }
-    out.write_all(&captured_out)?;
+    let output = crate::error::with_status(code, out.write_all(&captured_out));
     err.write_all(&captured_err)?;
+    output?;
     Ok(code)
 }
 

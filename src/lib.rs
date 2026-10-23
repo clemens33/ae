@@ -185,6 +185,20 @@ pub fn run_program(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
+    error::settle(run_program_dispatch(
+        program,
+        args,
+        &mut error::Stdout::new(out),
+        err,
+    ))
+}
+
+fn run_program_dispatch(
+    program: Option<&str>,
+    args: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
     let Some(program) = program else {
         return run(args, out, err);
     };
@@ -328,8 +342,8 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     if args.first().map(String::as_str) == Some("compact")
         && let Some(code) = crate::lifecycle::compaction::compact_tripwire(&args[1..], err)?
     {
-        out.flush()?;
         err.flush()?;
+        error::with_status(code, out.flush())?;
         return Ok(code);
     }
     let shape = shape::current();
@@ -349,8 +363,8 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         };
         let path = doors::config_file(shape, &root);
         let code = init::run(&path, &args[1..], out, err)?;
-        out.flush()?;
         err.flush()?;
+        error::with_status(code, out.flush())?;
         return Ok(code);
     }
     // Quota reads only selected config and bounded vendor caches. Route it
@@ -358,16 +372,16 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     // observational boundary and make a missing server block the report.
     if args.first().map(String::as_str) == Some("quota") {
         let code = run_public_quota(shape, &args[1..], out, err)?;
-        out.flush()?;
         err.flush()?;
+        error::with_status(code, out.flush())?;
         return Ok(code);
     }
     // Usage shares quota's observational boundary: the command classifies
     // sessions once, then hands only live durable roots to the pure reader.
     if args.first().map(String::as_str) == Some("usage") {
         let code = run_public_usage(shape, &args[1..], out, err)?;
-        out.flush()?;
         err.flush()?;
+        error::with_status(code, out.flush())?;
         return Ok(code);
     }
     let Some(preamble) = resolve_facts(shape, err)? else {
@@ -1639,8 +1653,8 @@ fn run_entry(
             return run_launch(preamble, &user, true, out, err);
         }
     };
-    out.flush()?;
     err.flush()?;
+    error::with_status(code, out.flush())?;
     Ok(code)
 }
 
@@ -1722,18 +1736,24 @@ fn run_bare_attach(
     // AFTER the restore, so a restored session is drawn running, and BEFORE the
     // server is asked, so a fleet that is all stopped still lands.
     if app && !current_world(&preamble.home).1.sessions.is_empty() {
-        out.flush()?;
         err.flush()?;
-        return Ok(run_dispatch(&["app".to_owned()], out, err)?.max(failed));
+        error::with_status(failed, out.flush())?;
+        return match run_dispatch(&["app".to_owned()], out, err) {
+            Ok(code) => Ok(code.max(failed)),
+            Err(Error::Io(why)) => error::with_status(failed, Err(why)).map_err(Error::from),
+        };
     }
     if transport::session_names(server).is_some_and(|names| !names.is_empty()) {
         if attach {
             return Ok(transport::attach(server).max(failed));
         }
-        writeln!(
-            out,
-            "ae: attach with: {}",
-            session_launch::server_attach_hint(server)
+        error::with_status(
+            failed,
+            writeln!(
+                out,
+                "ae: attach with: {}",
+                session_launch::server_attach_hint(server)
+            ),
         )?;
         return Ok(failed);
     }
@@ -1866,8 +1886,8 @@ fn run_compact(
         return Ok(entry::EXIT_FAILED);
     }
     let code = seatcompact_run::run(&preamble.home, &target, out, err)?;
-    out.flush()?;
     err.flush()?;
+    error::with_status(code, out.flush())?;
     Ok(code)
 }
 
@@ -1904,8 +1924,8 @@ fn run_archive_preview(
         return Ok(entry::EXIT_FAILED);
     }
     let code = archive::preview(&dir, out, err)?;
-    out.flush()?;
     err.flush()?;
+    error::with_status(code, out.flush())?;
     Ok(code)
 }
 
@@ -3946,8 +3966,8 @@ pub fn run_with(
             EXIT_UNAVAILABLE
         }
     };
-    out.flush()?;
     err.flush()?;
+    error::with_status(code, out.flush())?;
     Ok(code)
 }
 

@@ -1441,8 +1441,9 @@ pub fn run(
     if let Some(target) = &args.refresh {
         refresh(root, target, args.global.as_deref(), &mut document);
     }
-    write!(out, "{}", document.render())?;
-    Ok(document.exit_code())
+    let code = document.exit_code();
+    crate::error::with_status(code, write!(out, "{}", document.render()))?;
+    Ok(code)
 }
 
 /// Pending rename transactions, if any: each names its phase and the proved

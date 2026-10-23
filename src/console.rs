@@ -1040,8 +1040,10 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     }
     let code = pump(&mut console, term.as_mut(), args.follow, out, err);
     if term.is_some() {
-        write!(out, "{}", input::RESTORE)?;
-        out.flush()?;
+        let restored = write!(out, "{}", input::RESTORE).and_then(|()| out.flush());
+        if let Ok(status) = code {
+            crate::error::with_status(status, restored)?;
+        }
     }
     code
 }
@@ -1083,11 +1085,15 @@ fn pump(
                         "ae chat: {}: {why} — this chat no longer follows it; reopen it with prefix h (or ae chat <session>)",
                         console.name
                     );
-                    if let Some(term) = term.as_deref_mut() {
-                        write!(out, "{}{}", term.settle(), console.printed.flush_outcomes())?;
-                        out.flush()?;
-                    }
+                    let settled = match term.as_deref_mut() {
+                        Some(term) => {
+                            write!(out, "{}{}", term.settle(), console.printed.flush_outcomes())
+                                .and_then(|()| out.flush())
+                        }
+                        None => Ok(()),
+                    };
                     writeln!(err, "{}", terminal_text(&text))?;
+                    crate::error::with_status(crate::EXIT_UNAVAILABLE, settled)?;
                     return Ok(crate::EXIT_UNAVAILABLE);
                 }
             };

@@ -97,6 +97,7 @@ mod nativeview_alias;
 mod parity;
 mod phase2;
 mod phase3;
+mod pipequiet_spec;
 mod quota;
 mod quota_agy_spec;
 mod quota_feed_spec;

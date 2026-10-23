@@ -377,9 +377,9 @@ pub fn run(
             Ok(0)
         }
         Err(why) => {
-            out.flush()?;
             writeln!(err, "ae: {why}")?;
             err.flush()?;
+            crate::error::with_status(crate::entry::EXIT_FAILED, out.flush())?;
             Ok(crate::entry::EXIT_FAILED)
         }
     }

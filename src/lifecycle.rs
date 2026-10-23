@@ -27,6 +27,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::error::with_status;
 use crate::inventory::ServerId;
 use crate::meta::{self, Selector, ServerSelector};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
@@ -406,15 +407,16 @@ pub(crate) fn run_stop(
             return Ok(EXIT_FAILED);
         }
         let mut failures = 0_u32;
-        for name in names {
+        for (index, name) in names.iter().enumerate() {
+            let carry = u8::from(failures > 0 || index + 1 < names.len());
             // A stopped session in the roster is not a failure of `stop all`:
             // the fleet form's job is that nothing is left running, and one
             // already down satisfies it.
-            match stop_recorded(root, &name, None, out, err)? {
+            match stop_recorded(root, name, None, carry, out, err)? {
                 StopOutcome::Stopped => {}
                 // Down, but a pane view of it may still run its agents.
                 StopOutcome::AlreadyStopped => {
-                    if !orphans_gone(root, &name, err)? {
+                    if !orphans_gone(root, name, err)? {
                         failures += 1;
                     }
                 }
@@ -436,7 +438,7 @@ pub(crate) fn run_stop(
         writeln!(err, "ae: '{target}' is not a usable session name.")?;
         return Ok(EXIT_FAILED);
     }
-    match stop_recorded(root, &target, None, out, err)? {
+    match stop_recorded(root, &target, None, 0, out, err)? {
         StopOutcome::Stopped => Ok(0),
         StopOutcome::AlreadyStopped | StopOutcome::Failed | StopOutcome::Refused(_) => {
             Ok(EXIT_FAILED)
@@ -750,14 +752,17 @@ fn confirm_fleet_stop(
         writeln!(err, "  Nothing was stopped.")?;
         return Ok(false);
     }
-    write!(out, "Stop all {count} running ae session(s)? [y/N] ")?;
-    out.flush()?;
+    with_status(
+        EXIT_FAILED,
+        write!(out, "Stop all {count} running ae session(s)? [y/N] "),
+    )?;
+    with_status(EXIT_FAILED, out.flush())?;
     let mut reply = String::new();
     let answered = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut reply)
         .is_ok_and(|read| read > 0);
     let reply = reply.trim_start();
     if !answered || !(reply.starts_with('y') || reply.starts_with('Y')) {
-        writeln!(out, "Nothing was stopped.")?;
+        with_status(EXIT_FAILED, writeln!(out, "Nothing was stopped."))?;
         return Ok(false);
     }
     Ok(true)
@@ -769,6 +774,7 @@ fn stop_recorded(
     root: &Path,
     name: &str,
     expect: Option<&StopExpectation>,
+    carry: u8,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<StopOutcome> {
@@ -791,8 +797,14 @@ fn stop_recorded(
         STOP_RESULT_ACTION,
         &stop_summary(&outcome, &captured_err),
     );
-    out.write_all(&captured_out)?;
+    let code = if matches!(outcome, StopOutcome::Failed | StopOutcome::Refused(_)) {
+        EXIT_FAILED
+    } else {
+        carry
+    };
+    let output = with_status(code, out.write_all(&captured_out));
     err.write_all(&captured_err)?;
+    output?;
     Ok(outcome)
 }
 
@@ -1236,31 +1248,33 @@ fn self_supervised(
                 }
             };
         }
-        writeln!(
-            out,
-            "Stop '{name}'? This kills the session you are working in."
-        )?;
-        writeln!(
-            out,
-            "  Agents may be mid-turn: active writes and partial turns can be interrupted."
-        )?;
-        writeln!(
-            out,
-            "  Your ae state, working tree and provider conversation files are PRESERVED —"
-        )?;
-        writeln!(
-            out,
-            "  the guarantee is recoverability (resume from the provider's own checkpoint),"
-        )?;
-        writeln!(out, "  not mid-write atomicity.")?;
-        write!(out, "Continue? [y/N] ")?;
-        out.flush()?;
+        let prompt = (|| {
+            writeln!(
+                out,
+                "Stop '{name}'? This kills the session you are working in."
+            )?;
+            writeln!(
+                out,
+                "  Agents may be mid-turn: active writes and partial turns can be interrupted."
+            )?;
+            writeln!(
+                out,
+                "  Your ae state, working tree and provider conversation files are PRESERVED —"
+            )?;
+            writeln!(
+                out,
+                "  the guarantee is recoverability (resume from the provider's own checkpoint),"
+            )?;
+            write!(out, "  not mid-write atomicity.\nContinue? [y/N] ")?;
+            out.flush()
+        })();
+        with_status(EXIT_FAILED, prompt)?;
         let mut reply = String::new();
         let answered = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut reply)
             .is_ok_and(|read| read > 0);
         let reply = reply.trim_start();
         if !answered || !(reply.starts_with('y') || reply.starts_with('Y')) {
-            writeln!(out, "Not stopped.")?;
+            with_status(EXIT_FAILED, writeln!(out, "Not stopped."))?;
             return Ok(EXIT_FAILED);
         }
     }
@@ -1658,7 +1672,7 @@ fn supervise_one(
     // stop itself is the durable outcome. A menu-origin stop answers the ONE
     // client that asked for it; only an ordinary supervisor announces to every
     // client, because only it has no particular human to answer.
-    match stop_recorded(root, name, expect, out, err)? {
+    match stop_recorded(root, name, expect, 0, out, err)? {
         StopOutcome::Stopped => {
             let line = format!("Stopped {name}");
             match expect {
@@ -1905,8 +1919,10 @@ fn stop_one(
         STOP_RESULT_ACTION,
         &stop_summary(&outcome, &confirmed_err),
     );
-    out.write_all(&confirmed_out)?;
+    let code = u8::from(!matches!(outcome, StopOutcome::Stopped));
+    let output = with_status(code, out.write_all(&confirmed_out));
     err.write_all(&confirmed_err)?;
+    output?;
     Ok(outcome)
 }
 
