@@ -175,6 +175,7 @@ fn runtime() -> SessionRuntime {
         status: Status::Running,
         branch: Some("fixture".to_owned()),
         agents: vec![AgentRuntime {
+            pane_id: None,
             slot: "main".to_owned(),
             alive: Some(true),
             alert: None,

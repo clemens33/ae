@@ -108,6 +108,7 @@ fn entry(events: Option<Vec<Event>>) -> SessionEntry {
         status: Status::Running,
         branch: None,
         agents: vec![AgentRuntime {
+            pane_id: None,
             slot: "main".to_owned(),
             alive: Some(true),
             alert: None,
@@ -342,7 +343,10 @@ fn honestwords_list_labels_declarations_and_observation_independently() {
                 "alive",
                 "observed",
                 "state",
-                "reason"
+                "reason",
+                "client",
+                "account",
+                "runtime"
             ]
         );
     }

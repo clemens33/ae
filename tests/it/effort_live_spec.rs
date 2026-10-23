@@ -260,6 +260,7 @@ fn list_renders_restart_direction_and_keeps_effort_display_out_of_json() {
         unreachable: false,
         declaration: None,
         effort: None,
+        ..Default::default()
     };
     let all = ae::filters::ListArgs::parse(&["--all"]).expect("list flags");
     let json = ae::filters::ListArgs::parse(&["--all", "--json"]).expect("JSON flags");

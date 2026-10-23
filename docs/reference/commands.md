@@ -403,8 +403,10 @@ script or agent; no `jq` is required to produce it. The filters
       "agents": [
         {"ref": "claude:lead", "alias": "claude", "name": "lead",
          "session_id": "e795c9e9", "alive": true, "observed": "idle", "state": "blocked",
-         "reason": "blocked"}
-      ]
+         "reason": "blocked", "client": "unknown", "account": null,
+         "runtime": {"model": "unknown", "effort": "unknown"}}
+      ],
+      "coverage": {"joined_live_seats": 0, "live_seats": 1, "unknown_seats": 0}
     }
   ]
 }
@@ -425,6 +427,30 @@ session whose only reason is `stale` reads `false`. `unanswered`, when present, 
 session's count of asks/reviews unanswered and unaccepted past 1800 seconds; it is absent
 when the journal could not be read whole. Richer per-agent timing fields are a planned
 addition.
+
+`client` and `runtime.model`/`runtime.effort` come only from a fresh watchdog
+`@ae_agents` v2 roster fact, matched by agent name, recorded profile and a unique
+slot pane. Fresh means at most two watchdog intervals old or one interval ahead
+of `generated_at`. Missing, stale, failed or mismatched observations read `"unknown"`;
+a degraded fact can retain its client or model while effort stays unknown.
+Client labels are preserved, including legacy adapter tokens such as `cc`/`cx`;
+empty or `-` labels read `"unknown"`. A literal model named `unknown` has the
+same spelling as an unavailable observation. These fields never change `observed`.
+
+`account` is either `{"tool":"claude|codex","source":"canonical source path"}`
+or `null` (no proven join). It is the recorded quota identity scope: Claude's
+`.claude.json` source or Codex's `sessions` directory, not a vendor login identity.
+Codex also requires a recorded conversation. Other tools and incomplete recorded
+identities have no proven join. The join remains available for stopped sessions.
+
+Each session's final `coverage` member counts `joined_live_seats` (live seats with
+a proven account join), `live_seats` (status running and `alive: true`), and
+`unknown_seats` (`alive: null`, in neither other count). Degraded running sessions
+use the same rule; roster-fact incompleteness affects runtime, not coverage.
+Stopped sessions report integer counts `0/0/0`; unknown session status reports
+`coverage: null`. Filters keep each selected session's own counts. Only explicit
+JSON listings pay for the extra roster-fact read; pane identity rides on the
+existing fleet pane listing.
 
 ## `ae brief`
 

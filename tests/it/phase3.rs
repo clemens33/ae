@@ -2050,6 +2050,7 @@ fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
         unreachable: false,
         declaration: None,
         effort: None,
+        ..Default::default()
     }];
     let world = World::new(NOW, vec![entry]);
     let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));

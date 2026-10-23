@@ -398,6 +398,7 @@ fn sc_405g_the_branch_is_a_runtime_input_not_a_meta_key() {
         status: Status::Running,
         branch: Some("feature/login".to_owned()),
         agents: vec![AgentRuntime {
+            pane_id: None,
             slot: "main".to_owned(),
             alive: Some(true),
             alert: None,
@@ -429,6 +430,7 @@ fn sc_980_a_typed_alert_outranks_a_self_declaration() {
         status: Status::Running,
         branch: None,
         agents: vec![AgentRuntime {
+            pane_id: None,
             slot: "worker.0".to_owned(),
             alive: Some(false),
             alert: Some(Reason::Dead),

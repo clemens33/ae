@@ -90,6 +90,7 @@ mod install;
 mod keepconv_spec;
 mod launch_context_spec;
 mod lifecycle;
+mod liveseats_spec;
 mod menu;
 mod migrate;
 mod monitor;

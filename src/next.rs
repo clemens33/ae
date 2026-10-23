@@ -228,6 +228,7 @@ mod tests {
             unreachable: false,
             declaration: None,
             effort: None,
+            ..Default::default()
         }
     }
 

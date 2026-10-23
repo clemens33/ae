@@ -8,7 +8,9 @@
 //! A member whose own source was complete is rendered whatever its value, and
 //! `degraded` is aggregate visibility only: one failed source never erases a
 //! fact another established. `null` is the spelling of a complete, legitimate
-//! empty answer, never of an unreadable input.
+//! empty answer, never of an unreadable input. The additive identity fields
+//! use `unknown` for missing runtime cells, `null` for no proven account join,
+//! and coverage is `null` only when session status is unknown.
 
 use crate::attention::Reason;
 use crate::json::Value;
@@ -88,6 +90,20 @@ pub struct AgentEntry {
     /// published contract. `None` means nobody asked, which only a hand-built
     /// entry says; [`crate::session::entry_from`] always answers.
     pub declaration: Option<Declaration>,
+    /// Fresh roster-fact client label. JSON only.
+    pub client: Option<String>,
+    /// Proven recorded quota scope. JSON only; populated by
+    /// [`crate::session::enrich_list_json`], otherwise no join is proven.
+    pub account: Option<Account>,
+    /// Fresh roster-fact model and effort. JSON only.
+    pub runtime: crate::harness_state::HarnessIdentity,
+}
+
+/// A recorded identity's quota join key, not a vendor login identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub tool: String,
+    pub source: String,
 }
 
 /// A seat's newest declaration as a person reads it: its own words and when it
@@ -244,6 +260,32 @@ impl AgentEntry {
                     .map_or(Value::Null, |reason| Value::str(reason.as_str())),
             ));
         }
+        fields.push((
+            "client".to_owned(),
+            Value::str(self.client.as_deref().unwrap_or("unknown")),
+        ));
+        fields.push((
+            "account".to_owned(),
+            self.account.as_ref().map_or(Value::Null, |account| {
+                Value::Obj(vec![
+                    ("tool".to_owned(), Value::str(&account.tool)),
+                    ("source".to_owned(), Value::str(&account.source)),
+                ])
+            }),
+        ));
+        fields.push((
+            "runtime".to_owned(),
+            Value::Obj(vec![
+                (
+                    "model".to_owned(),
+                    Value::str(self.runtime.model.as_deref().unwrap_or("unknown")),
+                ),
+                (
+                    "effort".to_owned(),
+                    Value::str(self.runtime.effort.as_deref().unwrap_or("unknown")),
+                ),
+            ]),
+        ));
         Value::Obj(fields)
     }
 }
@@ -602,7 +644,34 @@ impl SessionEntry {
         if self.degraded {
             fields.push(("degraded".to_owned(), Value::Bool(true)));
         }
+        fields.push(("coverage".to_owned(), self.coverage()));
         Value::Obj(fields)
+    }
+
+    fn coverage(&self) -> Value {
+        if self.status == Status::Unknown {
+            return Value::Null;
+        }
+        let mut joined = 0;
+        let mut live = 0;
+        let mut unknown = 0;
+        if self.status == Status::Running {
+            for agent in &self.agents {
+                match agent.alive {
+                    Some(true) => {
+                        live += 1;
+                        joined += i64::from(agent.account.is_some());
+                    }
+                    None => unknown += 1,
+                    Some(false) => {}
+                }
+            }
+        }
+        Value::Obj(vec![
+            ("joined_live_seats".to_owned(), Value::Num(joined)),
+            ("live_seats".to_owned(), Value::Num(live)),
+            ("unknown_seats".to_owned(), Value::Num(unknown)),
+        ])
     }
 }
 
@@ -755,6 +824,7 @@ mod tests {
                 unreachable: false,
                 declaration: None,
                 effort: None,
+                ..Default::default()
             };
             assert_eq!(agent.display_session_id(), want, "{why}");
             // The RAW field is untouched: resume and capture logic still need it.
@@ -793,6 +863,7 @@ mod tests {
             unreachable: false,
             declaration: None,
             effort: None,
+            ..AgentEntry::default()
         };
         let short = agent.display_session_id();
         assert_eq!(
@@ -846,6 +917,7 @@ mod tests {
             unreachable: false,
             declaration: None,
             effort: None,
+            ..Default::default()
         }];
         Digest::new(
             Timestamp::parse("2026-05-29T14:00:00Z").expect("the documented stamp"),
@@ -866,7 +938,9 @@ mod tests {
             r#""branch":"feature/login","last_active_epoch":1780000000,"#,
             r#""needs_attention":true,"attention":"blocked","attention_rank":3,"#,
             r#""agents":[{"ref":"claude:lead","alias":"claude","name":"lead","#,
-            r#""session_id":"e795c9e9","alive":true,"observed":"idle","state":"blocked","reason":"blocked"}]"#,
+            r#""session_id":"e795c9e9","alive":true,"observed":"idle","state":"blocked","reason":"blocked","#,
+            r#""client":"unknown","account":null,"runtime":{"model":"unknown","effort":"unknown"}}],"#,
+            r#""coverage":{"joined_live_seats":0,"live_seats":1,"unknown_seats":0}"#,
             r#"}],"inventory_complete":true}"#
         );
         let actual = json::parse(&rendered).expect("the digest is json");
@@ -1008,6 +1082,14 @@ mod tests {
             ("needs_attention", json::Value::Bool(false)),
             ("agents", json::Value::Arr(vec![])),
             ("degraded", json::Value::Bool(true)),
+            (
+                "coverage",
+                json::Value::obj([
+                    ("joined_live_seats", json::Value::Num(0)),
+                    ("live_seats", json::Value::Num(0)),
+                    ("unknown_seats", json::Value::Num(0)),
+                ]),
+            ),
         ]);
         assert!(
             damaged.same_members(&expected),
@@ -1143,6 +1225,7 @@ mod tests {
                 "attention",
                 "attention_rank",
                 "agents",
+                "coverage",
             ]),
             "every documented member of a READ entry is present: {value}"
         );
@@ -1188,6 +1271,7 @@ mod tests {
             unreachable: false,
             declaration: None,
             effort: None,
+            ..AgentEntry::default()
         }
         .to_json();
         let json::Value::Obj(fields) = &value else {
@@ -1204,7 +1288,10 @@ mod tests {
                 "alive",
                 "observed",
                 "state",
-                "reason"
+                "reason",
+                "client",
+                "account",
+                "runtime"
             ]),
             "every documented agent member is present: {value}"
         );

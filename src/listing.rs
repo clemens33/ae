@@ -773,6 +773,7 @@ mod tests {
             unreachable: false,
             declaration: None,
             effort: None,
+            ..Default::default()
         }
     }
 
@@ -1838,6 +1839,7 @@ mod tests {
             status: Status::Running,
             branch: Some("published/branch".to_owned()),
             agents: vec![crate::session::AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: Some(true),
                 alert: None,
@@ -1988,6 +1990,7 @@ mod tests {
                 unreachable: false,
                 declaration: None,
                 effort: None,
+                ..Default::default()
             }];
             let rendered = table(&[&session]);
             assert!(
@@ -2028,6 +2031,7 @@ mod tests {
                 unreachable: false,
                 declaration: None,
                 effort: None,
+                ..Default::default()
             }];
             row_fields(&table(&[&session]), "fake:lead")
         };
@@ -2084,6 +2088,7 @@ mod tests {
                 unreachable: false,
                 declaration: None,
                 effort: None,
+                ..Default::default()
             }];
             let rendered = table(&[&session]);
             rendered
@@ -2138,6 +2143,7 @@ mod tests {
             unreachable: false,
             declaration: None,
             effort: None,
+            ..Default::default()
         }];
         let rendered = table(&[&session]);
         let row = rendered
@@ -2181,6 +2187,7 @@ mod tests {
             unreachable: false,
             declaration: None,
             effort: None,
+            ..Default::default()
         }];
         // The short session id now sits between the reference and the semantic
         // fields, on every status, because frozen rendered it on both grammars
@@ -2240,6 +2247,7 @@ mod tests {
                 unreachable: false,
                 declaration: None,
                 effort: None,
+                ..Default::default()
             },
             AgentEntry {
                 reference: "colead".to_owned(),
@@ -2258,6 +2266,7 @@ mod tests {
                 unreachable: false,
                 declaration: None,
                 effort: None,
+                ..Default::default()
             },
         ];
 

@@ -354,6 +354,7 @@ mod tests {
             runtime.agents = seats
                 .iter()
                 .map(|(slot, _)| AgentRuntime {
+                    pane_id: None,
                     slot: (*slot).to_owned(),
                     alive: Some(true),
                     alert: None,

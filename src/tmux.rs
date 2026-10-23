@@ -515,6 +515,8 @@ pub fn list_panes_args(server: &ServerId, session: &str) -> Vec<String> {
 /// One pane the server reported, as four readings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedPane {
+    /// Valid pane id from the all-panes listing, absent from per-session reads.
+    pub pane_id: Option<String>,
     /// `#{pane_dead}` — `Some(true)` for a dead pane, `Some(false)` for a live
     /// one, `None` when the field was not a readable `0`/`1`.
     pub dead: Option<bool>,
@@ -559,6 +561,7 @@ pub fn interpret_panes(succeeded: bool, stdout: &str) -> Result<Vec<ObservedPane
 /// One enumeration line as an [`ObservedPane`].
 fn read_pane(line: &str) -> ObservedPane {
     let blank = ObservedPane {
+        pane_id: None,
         dead: None,
         slot: None,
         command: None,
@@ -572,6 +575,7 @@ fn read_pane(line: &str) -> ObservedPane {
 fn pane_from_cells(cells: [&str; PANE_FIELDS]) -> ObservedPane {
     let usable = |value: &str| Some(value.to_owned()).filter(|v| !v.is_empty());
     ObservedPane {
+        pane_id: None,
         // `0`/`1` and nothing else.
         dead: match cells[0] {
             "0" => Some(false),
@@ -585,13 +589,13 @@ fn pane_from_cells(cells: [&str; PANE_FIELDS]) -> ObservedPane {
 }
 
 /// The format `list-panes -a` is asked for: the exact session name, the branch
-/// that session published, then the four [`PANE_FORMAT`] cells. The session
+/// that session published, then the four [`PANE_FORMAT`] cells and the pane id. The session
 /// name is its own whole field, so a pane is attributed by equality and never by
 /// containment.
-pub const ALL_PANES_FORMAT: &str = "#{session_name} | #{@ae_branch_name} | #{pane_dead} | #{@ae_slot} | #{@ae_observed} | #{pane_current_command}";
+pub const ALL_PANES_FORMAT: &str = "#{session_name} | #{@ae_branch_name} | #{pane_dead} | #{@ae_slot} | #{@ae_observed} | #{pane_current_command} | #{pane_id}";
 
 /// How many [`FIELD_SEPARATOR`]-separated fields [`ALL_PANES_FORMAT`] produces per row.
-const ALL_PANES_FIELDS: usize = PANE_FIELDS + 2;
+const ALL_PANES_FIELDS: usize = PANE_FIELDS + 3;
 
 /// The full argument list for enumerating every pane on `server`.
 #[must_use]
@@ -638,6 +642,8 @@ impl ServerPanes {
 /// session with one dropped row and another good row can read a missing roster
 /// slot as dead where the per-session read called it unknown. That residual is
 /// accepted: R3 forbids attributing a row we cannot prove.
+/// An invalid final pane id leaves every other fact intact. A command carrying
+/// the separator still drops the row, as it did before the id cell was added.
 pub fn interpret_all_panes(succeeded: bool, stdout: &str) -> Result<ServerPanes, QueryFailed> {
     if !succeeded {
         return Err(QueryFailed);
@@ -645,7 +651,7 @@ pub fn interpret_all_panes(succeeded: bool, stdout: &str) -> Result<ServerPanes,
     let mut sessions = std::collections::BTreeMap::<String, SessionPanes>::new();
     for line in stdout.lines() {
         let fields: Vec<&str> = line.trim_end_matches('\r').split(FIELD_SEPARATOR).collect();
-        let Ok([name, branch, cells @ ..]) =
+        let Ok([name, branch, cells @ .., pane_id]) =
             <[&str; ALL_PANES_FIELDS]>::try_from(fields.as_slice())
         else {
             continue;
@@ -660,7 +666,9 @@ pub fn interpret_all_panes(succeeded: bool, stdout: &str) -> Result<ServerPanes,
         if held.branch.is_none() {
             held.branch = Some(branch.trim_end().to_owned()).filter(|value| !value.is_empty());
         }
-        held.panes.push(pane_from_cells(cells));
+        let mut pane = pane_from_cells(cells);
+        pane.pane_id = pane_id_is_valid(pane_id).then(|| pane_id.to_owned());
+        held.panes.push(pane);
     }
     Ok(ServerPanes(sessions))
 }
@@ -7284,6 +7292,7 @@ mod tests {
     /// A pane reading, spelled the way the fields arrive.
     fn pane(dead: Option<bool>, slot: Option<&str>, command: Option<&str>) -> ObservedPane {
         ObservedPane {
+            pane_id: None,
             dead,
             slot: slot.map(ToOwned::to_owned),
             command: command.map(ToOwned::to_owned),
@@ -7979,7 +7988,47 @@ mod tests {
     }
 
     fn all_panes_row(name: &str, branch: &str, dead: &str, slot: &str, command: &str) -> String {
-        [name, branch, dead, slot, "", command].join(super::FIELD_SEPARATOR)
+        [name, branch, dead, slot, "", command, ""].join(super::FIELD_SEPARATOR)
+    }
+
+    #[test]
+    fn an_all_panes_row_carries_its_valid_trailing_pane_id() {
+        let all =
+            super::interpret_all_panes(true, "seat | branch | 0 | main | busy | claude | %42")
+                .unwrap();
+        assert!(
+            all.session("seat").is_some(),
+            "a seven-cell row is attributed"
+        );
+        let row = &all.session("seat").unwrap().panes[0];
+        assert_eq!(row.pane_id.as_deref(), Some("%42"));
+        assert!(
+            super::interpret_all_panes(true, "seat | branch | 0 | main | busy | claude")
+                .unwrap()
+                .session("seat")
+                .is_none(),
+            "a short row cannot prove the new format's arity"
+        );
+    }
+
+    #[test]
+    fn an_invalid_all_panes_id_preserves_every_existing_row_fact() {
+        for id in ["", "%", "%x", "42", "%4x"] {
+            let text = format!("seat | branch | 1 | main | busy | claude | {id}");
+            let all = super::interpret_all_panes(true, &text).unwrap();
+            assert!(
+                all.session("seat").is_some(),
+                "invalid id {id:?} keeps the row"
+            );
+            let session = all.session("seat").unwrap();
+            assert_eq!(session.branch.as_deref(), Some("branch"));
+            let row = &session.panes[0];
+            assert_eq!(row.pane_id, None, "invalid pane id {id:?}");
+            assert_eq!(row.dead, Some(true));
+            assert_eq!(row.slot.as_deref(), Some("main"));
+            assert_eq!(row.command.as_deref(), Some("claude"));
+            assert_eq!(row.observed, crate::harness_state::HarnessState::Busy);
+        }
     }
 
     #[test]
@@ -7990,7 +8039,9 @@ mod tests {
             super::ALL_PANES_FORMAT
         );
         assert!(
-            super::ALL_PANES_FORMAT.ends_with(super::PANE_FORMAT),
+            super::ALL_PANES_FORMAT
+                .strip_suffix(" | #{pane_id}")
+                .is_some_and(|prefix| prefix.ends_with(super::PANE_FORMAT)),
             "{}",
             super::ALL_PANES_FORMAT
         );

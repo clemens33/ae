@@ -182,6 +182,7 @@ impl Journal {
             .and_then(|event| watchdog::quiet_reason(&event));
         let runtime = SessionRuntime {
             agents: vec![AgentRuntime {
+                pane_id: None,
                 slot: SLOT.to_owned(),
                 alive: Some(true),
                 alert: None,

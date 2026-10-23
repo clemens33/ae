@@ -408,6 +408,8 @@ impl SessionRead {
 /// What one agent's RUNTIME says — facts no session directory holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRuntime {
+    /// Valid pane id, only when the pane listing uniquely proves this slot.
+    pub pane_id: Option<String>,
     /// The slot this describes — `main` / `worker.<n>` / `spawned.<n>`.
     pub slot: String,
     /// Whether the agent's pane is alive, three-valued.
@@ -1251,6 +1253,9 @@ fn agent_entries(
                     )
                 }),
                 effort: Some(meta.effort(&slot.slot)),
+                client: None,
+                account: None,
+                runtime: crate::harness_state::HarnessIdentity::default(),
                 // The words of the SAME event the state cell reads, so a reason
                 // is never a caption on a superseded declaration.
                 declaration: Some(match (read, declared) {
@@ -1283,6 +1288,56 @@ fn agent_entries(
         })
         .collect();
     (agents, crate::wait_on::session_end(&links))
+}
+
+/// Enrich explicit JSON listings without changing activity or durable reads.
+/// Runtime cells require one fresh roster fact and a unique slot-pane proof
+/// from the listing's liveness snapshot; account identity is independently durable.
+pub fn enrich_list_json(
+    entry: &mut SessionEntry,
+    roster: &[crate::meta::RosterEntry],
+    fact: Option<&str>,
+    panes: Option<&[crate::tmux::WatchPane]>,
+    now: Timestamp,
+) {
+    let observed = fact.and_then(|raw| crate::tmux::parse_picker_agents(raw, now.epoch()));
+    for agent in &mut entry.agents {
+        agent.client = None;
+        agent.runtime = crate::harness_state::HarnessIdentity::default();
+        let seat = roster.iter().find(|seat| seat.name == agent.name);
+        agent.account = seat
+            .and_then(crate::quota::recorded_identity)
+            .and_then(|identity| {
+                Some(crate::digest::Account {
+                    tool: identity.tool.as_str().to_owned(),
+                    source: identity.source.to_str()?.to_owned(),
+                })
+            });
+        if entry.status != crate::digest::Status::Running {
+            continue;
+        }
+        let proven =
+            seat.zip(observed.as_ref())
+                .zip(panes)
+                .and_then(|((seat, observed), panes)| {
+                    let fact = observed.iter().find(|fact| {
+                        fact.name == seat.name
+                            && Some(&fact.profile) == seat.profile.as_ref()
+                            && fact.state != "dead"
+                            && !fact.pane.is_empty()
+                    })?;
+                    let mut listed = panes
+                        .iter()
+                        .filter(|pane| pane.slot.as_deref() == Some(&seat.slot));
+                    let pane = listed.next()?;
+                    (listed.next().is_none() && pane.pane_id == fact.pane).then_some(fact)
+                });
+        if let Some(fact) = proven {
+            agent.client = (!matches!(fact.client.as_str(), "" | "-")).then(|| fact.client.clone());
+            agent.runtime.model = (!fact.model.is_empty()).then(|| fact.model.clone());
+            agent.runtime.effort = (!fact.effort.is_empty()).then(|| fact.effort.clone());
+        }
+    }
 }
 
 /// Whether a meta's anomalies degrade the session, per anomaly KIND.
@@ -3609,6 +3664,7 @@ mod tests {
             status: Status::Running,
             branch: None,
             agents: vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: None,
                 alert: Some(Reason::Dead),
@@ -3841,6 +3897,7 @@ mod tests {
             status: Status::Running,
             branch: None,
             agents: vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: None,
                 alert: Some(Reason::Blocked),
@@ -4129,6 +4186,7 @@ mod tests {
             status: Status::Running,
             branch: Some("feature/login".to_owned()),
             agents: vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: Some(false),
                 alert: Some(Reason::Dead),
@@ -4211,6 +4269,7 @@ mod tests {
         ] {
             let mut runtime = SessionRuntime::new(Status::Running);
             runtime.agents = vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: observed,
                 alert: None,
@@ -4257,6 +4316,7 @@ mod tests {
             status: Status::Running,
             branch: None,
             agents: vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: Some(true),
                 alert: Some(Reason::Dead),
@@ -4486,6 +4546,7 @@ mod tests {
             scratch.events(lines);
             let mut runtime = running();
             runtime.agents = vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: Some(true),
                 alert,
@@ -4549,6 +4610,7 @@ mod tests {
             scratch.events(&lines);
             let mut runtime = running();
             runtime.agents = vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: Some(true),
                 alert: Some(Reason::Limit),
@@ -4677,6 +4739,7 @@ mod tests {
             status: Status::Running,
             branch: None,
             agents: vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: Some(false),
                 alert: Some(Reason::Dead),
@@ -4926,6 +4989,7 @@ mod tests {
             status: Status::Running,
             branch: None,
             agents: vec![AgentRuntime {
+                pane_id: None,
                 slot: "main".to_owned(),
                 alive: Some(true),
                 alert: Some(Reason::Stale),

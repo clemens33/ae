@@ -195,7 +195,7 @@ pub fn agent_runtimes(panes: &[ObservedPane], slots: &[String]) -> Vec<AgentRunt
     slots
         .iter()
         .map(|slot| {
-            let (alive, alert, observed) = match slot_observation(panes, slot) {
+            let (alive, alert, observed, pane_id) = match slot_observation(panes, slot) {
                 SlotObservation::Unique => {
                     let pane = panes
                         .iter()
@@ -206,21 +206,27 @@ pub fn agent_runtimes(panes: &[ObservedPane], slots: &[String]) -> Vec<AgentRunt
                         pane.map_or(crate::harness_state::HarnessState::Unknown, |pane| {
                             pane.observed
                         }),
+                        pane.and_then(|pane| pane.pane_id.clone()),
                     )
                 }
                 SlotObservation::Absent { unidentified: 0 } => (
                     Some(false),
                     Some(Reason::Dead),
                     crate::harness_state::HarnessState::Unknown,
+                    None,
                 ),
                 // Two different unprovabilities, one answer: several panes
                 // carry the slot so the association is ambiguous, or an
                 // unmarked pane could be this agent's.
-                SlotObservation::Duplicated { .. } | SlotObservation::Absent { .. } => {
-                    (None, None, crate::harness_state::HarnessState::Unknown)
-                }
+                SlotObservation::Duplicated { .. } | SlotObservation::Absent { .. } => (
+                    None,
+                    None,
+                    crate::harness_state::HarnessState::Unknown,
+                    None,
+                ),
             };
             AgentRuntime {
+                pane_id,
                 slot: slot.clone(),
                 alive,
                 alert,
@@ -1050,6 +1056,7 @@ mod tests {
 
     fn pane(dead: Option<bool>, slot: Option<&str>, command: Option<&str>) -> ObservedPane {
         ObservedPane {
+            pane_id: None,
             dead,
             slot: slot.map(ToOwned::to_owned),
             command: command.map(ToOwned::to_owned),

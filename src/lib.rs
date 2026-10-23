@@ -577,10 +577,59 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     }
     let wants_world = request_needs_world(&request);
     if wants_world && let Some(root) = state_root() {
-        let (_, world) = current_world(&root);
-        return run_with(args, Some(&world), out, err);
+        let mut read = world_read(&root, &mut session::RecordSnapshot::read);
+        if matches!(&request, cli::Request::List(options) if options.json) {
+            enrich_list_json(&read.snapshot, &mut read.world, &read.panes);
+        }
+        return run_with(args, Some(&read.world), out, err);
     }
     run_with(args, None, out, err)
+}
+
+/// Only explicit JSON listings pay for the per-Running-session roster read.
+fn enrich_list_json(
+    snapshot: &liveness::Snapshot,
+    world: &mut listing::World,
+    listed: &ListedPanes,
+) {
+    debug_assert_eq!(snapshot.sessions.len(), world.sessions.len());
+    // Presentation preserves classified order, including same-name records.
+    for (classified, entry) in snapshot.sessions.iter().zip(&mut world.sessions) {
+        if classified.candidate.name != entry.name {
+            continue;
+        }
+        let record = classified.candidate.durable.as_ref();
+        let meta = record.and_then(|record| record.snapshot.meta.as_ref());
+        let roster = meta.map_or(&[][..], meta::Meta::roster);
+        let server = record
+            .and_then(|record| record.server.entitles())
+            .map(|selector| inventory::ServerId::Selected(selector.clone()));
+        let fact = server
+            .filter(|_| entry.status == digest::Status::Running)
+            .and_then(|server| {
+                transport::observe_session_option(&server, &entry.name, theme::AGENTS_OPTION)
+            });
+        let panes: Option<Vec<_>> = record
+            .and_then(|record| listed.get(&record.path))
+            .and_then(Option::as_ref)
+            .map(|agents| {
+                agents
+                    .iter()
+                    .filter_map(|agent| {
+                        // The enrichment seam reads only pane_id and slot.
+                        Some(tmux::WatchPane {
+                            pane_id: agent.pane_id.clone()?,
+                            slot: Some(agent.slot.clone()),
+                            agent: None,
+                            current_command: String::new(),
+                            pane_pid: None,
+                            observed: String::new(),
+                        })
+                    })
+                    .collect()
+            });
+        session::enrich_list_json(entry, roster, fact.as_deref(), panes.as_deref(), world.now);
+    }
 }
 
 /// Whether a parsed request needs the durable world behind `ae list`.
