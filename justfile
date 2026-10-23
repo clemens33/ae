@@ -1323,6 +1323,14 @@ _tmux-isolated lane *args:
             ;;
         cov) detached nice -n 10 cargo llvm-cov nextest --locked --all-features ;;
         mutants)
+            if [[ "$test_tmux_tmp" == *"{"* || "$test_tmux_tmp" == *"}"* ]]; then
+                echo "Error: mutants scratch path cannot contain braces: $test_tmux_tmp" >&2
+                exit 1
+            fi
+            # Both artifact roots leave with the lane, including Cargo's target alias.
+            export CARGO_TARGET_DIR="$test_tmux_tmp/target"
+            export CARGO_BUILD_TARGET_DIR="$CARGO_TARGET_DIR"
+            export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
             rss_watch &
             watcher=$!
             status=0

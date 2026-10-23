@@ -140,6 +140,21 @@ against what the core links at launch, so the refresh entry and the launch entry
 drift. It asserts the set is EXACTLY the core's list, never `>= N`, so an artifact quietly
 appearing or vanishing is a failure rather than a different number.
 
+Each `just rust-mutants` invocation uses a fresh `target` below its lane scratch
+for both Cargo final and intermediate artifacts. The lane replaces inherited
+`CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR`, overriding
+ordinary Cargo file config. Explicit Cargo argument redirects, including extra
+Cargo arguments in `mutants.toml`, remain the caller's responsibility and sit
+outside this guarantee. Existing pass-through stays unchanged and Cargo decides
+precedence. The location of `mutants.out` stays unchanged.
+
+This builds cold each time and can consume several GB under `AE_TEST_TMPDIR`
+(default `/tmp`). Normal lane cleanup removes those artifacts; SIGKILL leftovers
+can remain until a later lane successfully reaps them. Mutants refuses `{` or `}`
+in its scratch path before Cargo starts, because Cargo templates build-dir paths.
+The existing RSS matcher splits the executable path at whitespace, so use an
+unspaced scratch base to retain that protection.
+
 Three modules are about the REPOSITORY rather than the product:
 
 * `tests/it/doors.rs` — the capability boundary. `clippy.toml` denies

@@ -1417,6 +1417,605 @@ fn the_heavy_lanes_run_cargo_niced_and_a_filtered_run_does_not() {
     }
 }
 
+/// #222: the fake `cargo` for the Cargo-root pins. For a nextest, doctest,
+/// llvm-cov or mutants call it resolves the final root (`CARGO_TARGET_DIR`,
+/// else `CARGO_BUILD_TARGET_DIR`, else `$PWD/target`) and the intermediate one
+/// (`CARGO_BUILD_BUILD_DIR`, else the final one), notes whether a marker of an
+/// earlier call was already there, leaves a marker of its own in both, and then
+/// records one block of `key=value` lines ending `end`: the tool, every
+/// argument, each of the three selectors as it saw it (or `<name> unset`), the
+/// lane's `TMUX_TMPDIR`, its cwd and the two roots. The model is only where the
+/// markers go; no assertion leans on which selector Cargo ranks first.
+const ROOTS_CARGO: &str = r#"case "$1" in nextest|test|llvm-cov|mutants) ;; *) exit 0 ;; esac
+t="${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-$PWD/target}}"
+b="${CARGO_BUILD_BUILD_DIR:-$t}"
+stale=no
+for f in "$t"/ae-mark.* "$b"/ae-mark.*; do [ -e "$f" ] && stale=yes; done
+mkdir -p "$t" "$b" && : >"$t/ae-mark.$1.$$" && : >"$b/ae-mark.$1.$$" || exit 97
+{
+  echo "tool=$1"
+  for a in "$@"; do echo "arg=$a"; done
+  if [ -n "${CARGO_TARGET_DIR+x}" ]; then echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR"; else echo "CARGO_TARGET_DIR unset"; fi
+  if [ -n "${CARGO_BUILD_TARGET_DIR+x}" ]; then echo "CARGO_BUILD_TARGET_DIR=$CARGO_BUILD_TARGET_DIR"; else echo "CARGO_BUILD_TARGET_DIR unset"; fi
+  if [ -n "${CARGO_BUILD_BUILD_DIR+x}" ]; then echo "CARGO_BUILD_BUILD_DIR=$CARGO_BUILD_BUILD_DIR"; else echo "CARGO_BUILD_BUILD_DIR unset"; fi
+  echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+  echo "pwd=$PWD"
+  echo "target=$t"
+  echo "build=$b"
+  echo "stale=$stale"
+  echo end
+} >>"$AE_FAKE_REC"
+exit "${AE_FAKE_EXIT:-0}"
+"#;
+
+/// The three Cargo output selectors a caller can export, in the order the
+/// #222 pins name them.
+const CARGO_ROOT_VARS: [&str; 3] = [
+    "CARGO_TARGET_DIR",
+    "CARGO_BUILD_TARGET_DIR",
+    "CARGO_BUILD_BUILD_DIR",
+];
+
+/// One fake `cargo` call [`ROOTS_CARGO`] recorded: its lines, `end` dropped.
+struct Call(Vec<String>);
+
+impl Call {
+    /// The value of `key=value`; `None` for `<key> unset` and for no such line.
+    fn field(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+    }
+
+    /// Every argument the fake was handed, in order.
+    fn args(&self) -> Vec<&str> {
+        self.0
+            .iter()
+            .filter_map(|line| line.strip_prefix("arg="))
+            .collect()
+    }
+}
+
+/// Every call `record` holds, oldest first; an absent record holds none.
+fn calls(record: &Path) -> Vec<Call> {
+    let text = std::fs::read_to_string(record).unwrap_or_default();
+    let mut out = Vec::new();
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if line == "end" {
+            out.push(Call(std::mem::take(&mut lines)));
+        } else {
+            lines.push(line.to_owned());
+        }
+    }
+    out
+}
+
+/// The caller's three output selectors for the #222 pins, each an existing
+/// directory under `base` with a space in its name and one `caller-sentinel`
+/// file in it: `(variable, directory)`.
+fn caller_roots(base: &Path) -> [(&'static str, String); 3] {
+    [
+        ("CARGO_TARGET_DIR", "caller t"),
+        ("CARGO_BUILD_TARGET_DIR", "caller bt"),
+        ("CARGO_BUILD_BUILD_DIR", "caller b"),
+    ]
+    .map(|(var, name)| {
+        let dir = base.join(name);
+        std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(dir.join("caller-sentinel"), ""))
+            .unwrap_or_else(|why| panic!("the caller's {name}: {why}"));
+        let text = dir
+            .to_str()
+            .unwrap_or_else(|| panic!("a UTF-8 scratch path: {}", dir.display()))
+            .to_owned();
+        (var, text)
+    })
+}
+
+/// One `_tmux-isolated` run for the #222 pins: from `<base>/work`, over
+/// `lane_base` as the lane's `AE_TEST_TMPDIR`, with `cargo` as the fake body,
+/// the caller's `env` and the lane's `args`. The fake records into
+/// `<base>/record`. Returns the outcome, the recorded calls and the stderr.
+fn rooted_lane(
+    base: &Path,
+    lane_base: &Path,
+    cargo: &str,
+    env: &[(&str, String)],
+    args: &[&str],
+) -> (ExitOutcome, Vec<Call>, String) {
+    let work = base.join("work");
+    for dir in [work.as_path(), lane_base] {
+        std::fs::create_dir_all(dir).unwrap_or_else(|why| panic!("{}: {why}", dir.display()));
+    }
+    let record = base.join("record");
+    let _ = std::fs::remove_file(&record);
+    let mut lane = lane_over(base, Some("6"), cargo)
+        .env("AE_TEST_TMPDIR", lane_base)
+        .env("TMPDIR", lane_base)
+        .env("AE_FAKE_REC", &record)
+        .arg("--working-directory")
+        .arg(&work)
+        .arg("--justfile")
+        .arg(root().join("justfile"))
+        .arg("_tmux-isolated");
+    for arg in args {
+        lane = lane.arg(arg);
+    }
+    for (key, value) in env {
+        lane = lane.env(key, value);
+    }
+    let ran = raw::run(&lane, &work, &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("the lane runs: {why}"));
+    (ran.outcome(), calls(&record), read(&base.join("err")))
+}
+
+/// The lane directory `call` ran in — the `TMUX_TMPDIR` the lane exports as
+/// its own `$test_tmux_tmp` — proven one `ae-rust-test.*` directory directly
+/// under `lane_base`.
+fn lane_root<'c>(call: &'c Call, lane_base: &Path, context: &str) -> &'c str {
+    let dir = call
+        .field("TMUX_TMPDIR")
+        .unwrap_or_else(|| panic!("{context}: no TMUX_TMPDIR recorded"));
+    let path = Path::new(dir);
+    assert!(
+        path.parent() == Some(lane_base)
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("ae-rust-test.")),
+        "{context}: {dir:?} is not a lane directory under {}",
+        lane_base.display()
+    );
+    dir
+}
+
+/// `dir` is an absolute path strictly beneath `lane`, with no `..` in it.
+fn assert_beneath(dir: &str, lane: &str, context: &str) {
+    let path = Path::new(dir);
+    assert!(
+        path.is_absolute()
+            && path.starts_with(lane)
+            && path != Path::new(lane)
+            && path
+                .components()
+                .all(|part| part != std::path::Component::ParentDir),
+        "{context}: {dir:?} is not beneath the lane's own {lane:?}"
+    );
+}
+
+/// Whether the mutants lane's memory watcher would take `path` for a test
+/// binary: its awk pattern `/target/.*/deps/[^/]+$`.
+fn watcher_sees(path: &str) -> bool {
+    path.rsplit_once('/').is_some_and(|(head, name)| {
+        !name.is_empty()
+            && head
+                .strip_suffix("/deps")
+                .is_some_and(|above| above.contains("/target/"))
+    })
+}
+
+/// The `ae-rust-test.*` lane directories left under `lane_base`.
+fn lanes_left(lane_base: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(lane_base) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("ae-rust-test."))
+        .collect()
+}
+
+/// Each caller directory still holds its `caller-sentinel` and nothing else.
+fn assert_untouched(callers: &[(&str, String)], context: &str) {
+    for (var, dir) in callers {
+        let names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap_or_else(|why| panic!("{context}: the caller's {var}: {why}"))
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["caller-sentinel"],
+            "{context}: the caller's {var} was written"
+        );
+    }
+}
+
+/// #222: a mutation run builds its final AND its intermediate artifacts in
+/// Cargo roots the lane owns, whichever output selectors the caller exported or
+/// left unset — an inherited file config is covered by the same exports,
+/// because Cargo ranks the environment above configuration files. Both
+/// target-dir spellings name ONE lane root, so no ranking between them is
+/// assumed. Every root lies beneath the lane's own directory, which its cleanup
+/// removes, keeps the `/target/…/deps/` shape the memory watcher reads, and no
+/// caller directory is written.
+#[test]
+fn a_mutants_lane_builds_in_cargo_roots_it_owns_whatever_the_caller_exported() {
+    let scratch = super::cli::OwnedScratch::root("gate", "mroot");
+    let base = scratch.path();
+    let lane_base = base.join("l b");
+    let callers = caller_roots(base);
+    let none: &[(&str, String)] = &[];
+    for (case, env) in [
+        ("all three exported", &callers[..]),
+        ("the intermediate root alone", &callers[2..]),
+        ("the alternate target spelling alone", &callers[1..2]),
+        ("none exported", none),
+    ] {
+        let (outcome, calls, stderr) =
+            rooted_lane(base, &lane_base, ROOTS_CARGO, env, &["mutants"]);
+        assert!(matches!(outcome, ExitOutcome::Code(0)), "{case}: {stderr}");
+        let [call] = &calls[..] else {
+            panic!(
+                "{case}: one cargo call expected, {} recorded: {stderr}",
+                calls.len()
+            );
+        };
+        let lane = lane_root(call, &lane_base, case);
+        for var in CARGO_ROOT_VARS {
+            let dir = call.field(var).unwrap_or_else(|| {
+                panic!("{case}: cargo mutants ran with no {var} of the lane's: {stderr}")
+            });
+            assert_beneath(dir, lane, &format!("{case}: {var}"));
+        }
+        assert_eq!(
+            call.field("CARGO_TARGET_DIR"),
+            call.field("CARGO_BUILD_TARGET_DIR"),
+            "{case}: the two target-dir spellings name different roots"
+        );
+        let build = call.field("build").unwrap_or_default();
+        assert!(
+            watcher_sees(&format!("{build}/debug/deps/ae-0123abcd")),
+            "{case}: the memory watcher cannot see a test binary under {build:?}"
+        );
+        assert_eq!(
+            call.field("stale"),
+            Some("no"),
+            "{case}: a marker was already there"
+        );
+        for key in ["target", "build"] {
+            let dir = call.field(key).unwrap_or_default();
+            assert!(
+                !Path::new(dir).exists(),
+                "{case}: the lane left its {key} root {dir:?}"
+            );
+        }
+        assert!(lanes_left(&lane_base).is_empty(), "{case}: {stderr}");
+        assert_untouched(&callers, case);
+        assert!(
+            !base.join("work/target").exists(),
+            "{case}: the caller's own target/ was written"
+        );
+    }
+}
+
+/// #222 control: only the mutation run gets roots of its own. The full test
+/// run, a filtered one and the coverage run hand Cargo exactly the output
+/// selectors the caller exported — spaces kept — and invent none when the
+/// caller exported none.
+#[test]
+fn the_test_and_cov_lanes_keep_the_callers_cargo_roots() {
+    let scratch = super::cli::OwnedScratch::root("gate", "oroot");
+    let base = scratch.path();
+    let lane_base = base.join("l b");
+    let callers = caller_roots(base);
+    let none: &[(&str, String)] = &[];
+    for (args, tools) in [
+        (&["test"][..], &["nextest", "test"][..]),
+        (&["test", "filter"][..], &["nextest"][..]),
+        (&["cov"][..], &["llvm-cov"][..]),
+    ] {
+        for env in [&callers[..], none] {
+            let (outcome, calls, stderr) = rooted_lane(base, &lane_base, ROOTS_CARGO, env, args);
+            assert!(
+                matches!(outcome, ExitOutcome::Code(0)),
+                "{args:?}: {stderr}"
+            );
+            let ran: Vec<&str> = calls
+                .iter()
+                .map(|call| call.field("tool").unwrap_or_default())
+                .collect();
+            assert_eq!(ran, tools, "{args:?}: {stderr}");
+            for call in &calls {
+                for var in CARGO_ROOT_VARS {
+                    let exported = env
+                        .iter()
+                        .find(|(name, _)| *name == var)
+                        .map(|(_, dir)| dir.as_str());
+                    assert_eq!(call.field(var), exported, "{args:?} {var}: {stderr}");
+                }
+            }
+            assert!(lanes_left(&lane_base).is_empty(), "{args:?}: {stderr}");
+        }
+    }
+}
+
+/// #222: two mutation runs from one checkout never share a Cargo root, so the
+/// second can neither build on nor run what the first left.
+#[test]
+fn two_mutants_lanes_never_share_or_reuse_a_cargo_root() {
+    let scratch = super::cli::OwnedScratch::root("gate", "mtwice");
+    let base = scratch.path();
+    let lane_base = base.join("l b");
+    let mut seen: Vec<(String, Vec<String>)> = Vec::new();
+    for attempt in ["first", "second"] {
+        let (outcome, calls, stderr) =
+            rooted_lane(base, &lane_base, ROOTS_CARGO, &[], &["mutants"]);
+        assert!(
+            matches!(outcome, ExitOutcome::Code(0)),
+            "{attempt}: {stderr}"
+        );
+        let [call] = &calls[..] else {
+            panic!(
+                "{attempt}: one cargo call expected, {} recorded: {stderr}",
+                calls.len()
+            );
+        };
+        let lane = lane_root(call, &lane_base, attempt).to_owned();
+        let mut roots = Vec::new();
+        for var in CARGO_ROOT_VARS {
+            let dir = call
+                .field(var)
+                .unwrap_or_else(|| panic!("{attempt}: no {var} of the lane's: {stderr}"));
+            assert_beneath(dir, &lane, &format!("{attempt}: {var}"));
+            roots.push(dir.to_owned());
+        }
+        assert_eq!(
+            call.field("stale"),
+            Some("no"),
+            "{attempt}: a marker was already there"
+        );
+        seen.push((lane, roots));
+    }
+    assert_ne!(seen[0].0, seen[1].0, "both runs used one lane directory");
+    for dir in &seen[1].1 {
+        assert!(!seen[0].1.contains(dir), "the second run reused {dir:?}");
+    }
+}
+
+/// #222 control: the INNER `_tmux-isolated` mutants arm still hands
+/// cargo-mutants its own pinned flags and then every argument it received —
+/// spaces kept, nothing added or dropped — runs it from the caller's directory,
+/// ends with its status and still removes the lane. This pins that inner argv
+/// only, never the public `rust-mutants` recipe's `{{ args }}` forwarding
+/// (#221).
+#[test]
+fn a_mutants_lane_passes_its_arguments_through_and_ends_as_cargo_mutants_did() {
+    let scratch = super::cli::OwnedScratch::root("gate", "margs");
+    let base = scratch.path();
+    let lane_base = base.join("l b");
+    let mut env = caller_roots(base).to_vec();
+    env.push(("AE_FAKE_EXIT", "7".to_owned()));
+    let args = ["mutants", "--in-diff", "a b.diff", "--", "-E", "test(x)"];
+    let (outcome, calls, stderr) = rooted_lane(base, &lane_base, ROOTS_CARGO, &env, &args);
+    assert!(matches!(outcome, ExitOutcome::Code(7)), "{stderr}");
+    let [call] = &calls[..] else {
+        panic!(
+            "one cargo call expected, {} recorded: {stderr}",
+            calls.len()
+        );
+    };
+    assert_eq!(
+        call.args(),
+        [
+            "mutants",
+            "--cargo-arg=--locked",
+            "--jobs",
+            "1",
+            "--in-diff",
+            "a b.diff",
+            "--",
+            "-E",
+            "test(x)",
+        ],
+        "{stderr}"
+    );
+    let pwd = call.field("pwd").unwrap_or_default();
+    assert_eq!(
+        std::fs::canonicalize(pwd).ok(),
+        std::fs::canonicalize(base.join("work")).ok(),
+        "cargo mutants ran from {pwd:?}"
+    );
+    assert!(lanes_left(&lane_base).is_empty(), "{stderr}");
+}
+
+/// `root.sh <binary>`: start `<binary>` (a link to bash) on `kid.sh`, so the
+/// binary runs below the fake `cargo-mutants` that runs this, wait for it and
+/// write its exit status to `hog.status` — `137` when the watcher killed it.
+const WATCH_ROOT_SH: &str = r#""$1" "$AE_FAKE_W/kid.sh" "$AE_FAKE_W/hog.pid" 60000000 &
+wait "$!"
+echo "$?" >"$AE_FAKE_W/hog.status"
+"#;
+
+/// `kid.sh <pidfile> <bytes>`: publish the pid, hold that much memory in this
+/// very process, say so in `<pidfile>.ready`, then stay until the release file
+/// appears or a minute passes.
+const WATCH_KID_SH: &str = r#"echo $$ >"$1.tmp" && mv "$1.tmp" "$1"
+printf -v x '%*s' "$2" ''
+: >"$1.ready"
+i=0
+while [ ! -e "$AE_FAKE_W/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
+"#;
+
+/// The fake `cargo` for the #222 watcher pin: it links a test binary `ae-hog`
+/// into `<intermediate root>/debug/deps/` (resolved as [`ROOTS_CARGO`] does),
+/// runs it over the 32 MB ceiling below a fake `cargo-mutants`, waits up to
+/// 15 s for the lane's receipt, and records `dead <status>` when `root.sh`
+/// already saw the binary end, else `alive` — read from that status, never from
+/// a pid. Only then does it release the binary and wait for its own
+/// `cargo-mutants` child, so no fixture process outlives it and nothing is ever
+/// signalled by a pid that may have been reused.
+const WATCHED_CARGO: &str = r#"case "$1" in mutants) ;; *) exit 0 ;; esac
+W=$AE_FAKE_W
+b="${CARGO_BUILD_BUILD_DIR:-${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-$PWD/target}}}"
+mkdir -p "$b/debug/deps" && ln -sf /bin/bash "$b/debug/deps/ae-hog" || exit 97
+"$W/cargo-mutants" "$W/root.sh" "$b/debug/deps/ae-hog" &
+cm=$!
+trap 'touch "$W/release"; wait "$cm" 2>/dev/null' EXIT
+i=0
+until [ -e "$W/hog.pid.ready" ]; do i=$((i + 1)); [ "$i" -lt 300 ] || exit 3; sleep 0.2; done
+i=0
+while [ ! -s mutants.out/ae-rss-kills.log ] && [ "$i" -lt 75 ]; do i=$((i + 1)); sleep 0.2; done
+sleep 1
+if [ -e "$W/hog.status" ]; then echo "dead $(cat "$W/hog.status")"; else echo alive; fi >"$AE_FAKE_REC"
+exit 0
+"#;
+
+/// #222: the memory watcher still sees a test binary of the mutation run in
+/// the lane's own intermediate root — even when the caller's intermediate
+/// directory has no `target` component it could match — and the receipt still
+/// lands in the caller's `mutants.out`. The lane base has no space: the
+/// watcher reads the first argv word, so a spaced base blinds it, today and
+/// after (a named residual, not this pin's subject).
+#[test]
+fn the_mutants_watcher_sees_a_test_binary_in_the_lanes_own_build_root() {
+    use std::os::unix::fs::symlink;
+    let scratch = super::cli::OwnedScratch::root("gate", "mwatch");
+    let base = scratch.path();
+    let (watch, lane_base, caller) = (base.join("watch"), base.join("lane"), base.join("callerb"));
+    for dir in [&watch, &lane_base, &caller] {
+        std::fs::create_dir_all(dir).unwrap_or_else(|why| panic!("{}: {why}", dir.display()));
+    }
+    std::fs::write(caller.join("caller-sentinel"), "")
+        .unwrap_or_else(|why| panic!("the caller sentinel: {why}"));
+    let _ = std::fs::remove_file(watch.join("cargo-mutants"));
+    symlink("/bin/bash", watch.join("cargo-mutants"))
+        .unwrap_or_else(|why| panic!("the fake cargo-mutants: {why}"));
+    for (name, body) in [("root.sh", WATCH_ROOT_SH), ("kid.sh", WATCH_KID_SH)] {
+        std::fs::write(watch.join(name), body).unwrap_or_else(|why| panic!("{name}: {why}"));
+    }
+    let text = |path: &Path| {
+        path.to_str()
+            .unwrap_or_else(|| panic!("a UTF-8 scratch path: {}", path.display()))
+            .to_owned()
+    };
+    let env = [
+        ("AE_FAKE_W", text(watch.as_path())),
+        ("AE_MUTANTS_RSS_MAX_MB", "32".to_owned()),
+        ("CARGO_BUILD_BUILD_DIR", text(caller.as_path())),
+    ];
+    let (outcome, _, stderr) = rooted_lane(base, &lane_base, WATCHED_CARGO, &env, &["mutants"]);
+    assert!(matches!(outcome, ExitOutcome::Code(0)), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(base.join("record")).unwrap_or_default(),
+        "dead 137\n",
+        "the over-ceiling test binary outlived the watcher: {stderr}"
+    );
+    let receipt =
+        std::fs::read_to_string(base.join("work/mutants.out/ae-rss-kills.log")).unwrap_or_default();
+    assert!(
+        !receipt.is_empty(),
+        "no receipt in the caller's mutants.out: {stderr}"
+    );
+    let lanes = text(lane_base.as_path());
+    for line in receipt.lines() {
+        let binary = line.split_whitespace().nth(3).unwrap_or_default();
+        assert!(
+            binary.starts_with(&format!("{lanes}/ae-rust-test."))
+                && binary.ends_with("/debug/deps/ae-hog"),
+            "{line:?}"
+        );
+    }
+    assert_untouched(
+        &[("CARGO_BUILD_BUILD_DIR", text(caller.as_path()))],
+        "watcher",
+    );
+    assert!(lanes_left(&lane_base).is_empty(), "{stderr}");
+}
+
+/// #222: the repository's own cargo-mutants config adds no Cargo output
+/// redirect of its own. Its extra argv is an explicit Cargo argument, which the
+/// lane passes through and its isolation guarantee does not cover, so a
+/// redirect there would sit outside that guarantee for every run.
+#[test]
+fn the_repo_mutants_config_adds_no_cargo_output_redirect() {
+    let text = read(&root().join(".cargo/mutants.toml"));
+    for needle in [
+        "target-dir",
+        "build-dir",
+        "target_dir",
+        "build_dir",
+        "--config",
+    ] {
+        assert!(!text.contains(needle), ".cargo/mutants.toml names {needle}");
+    }
+}
+
+/// #222: Cargo 1.97.1 expands `{…}` templates in a build-dir path (its
+/// `build.build-dir` "supports path templating", and no escape is documented),
+/// so a lane directory whose path holds `{` or `}` cannot be bound as the
+/// mutation run's intermediate root without the resolved path possibly leaving
+/// the lane's own tree. The mutants lane refuses such a path before it starts
+/// cargo — nonzero, a diagnostic naming the path, no cargo call — and still
+/// removes the lane. A known template and an unmatched brace of either kind are
+/// refused alike; the test and coverage lanes over the same bases run as before.
+///
+/// Each base is proven usable FIRST: its deepest lane socket fits `sun_path`,
+/// and the test and coverage lanes run there. Only then can the mutants lane's
+/// failure be the refusal, not a base no lane could start on.
+#[test]
+fn a_mutants_lane_refuses_a_scratch_path_cargo_would_template() {
+    use std::os::unix::fs::MetadataExt as _;
+    let scratch = super::cli::OwnedScratch::root("gate", "mb");
+    let base = scratch.path();
+    let uid = std::fs::metadata(base)
+        .unwrap_or_else(|why| panic!("{}: {why}", base.display()))
+        .uid();
+    for name in ["t{workspace-root}", "u{", "v}"] {
+        let lane_base = base.join(name);
+        let shown = lane_base
+            .to_str()
+            .unwrap_or_else(|| panic!("a UTF-8 scratch path: {}", lane_base.display()))
+            .to_owned();
+        // The deepest socket a lane binds here: its `ae-rust-test.<pid>.XXXXXX`
+        // (seven pid digits, Linux's PID_MAX_LIMIT), then `tmux-<uid>/ae` for
+        // its `tmux -L ae` sentry.
+        let deepest = format!("{shown}/ae-rust-test.4194304.XXXXXX/tmux-{uid}/ae");
+        assert!(
+            deepest.len() <= super::scratch::SOCKET_PATH_MAX,
+            "{name}: a lane under {shown:?} binds a {}-byte tmux socket, past {}: shorten AE_TEST_TMPDIR",
+            deepest.len(),
+            super::scratch::SOCKET_PATH_MAX
+        );
+        for (args, tools) in [
+            (&["test"][..], &["nextest", "test"][..]),
+            (&["cov"][..], &["llvm-cov"][..]),
+        ] {
+            let (outcome, calls, stderr) = rooted_lane(base, &lane_base, ROOTS_CARGO, &[], args);
+            assert!(
+                matches!(outcome, ExitOutcome::Code(0)),
+                "{name} {args:?}: {stderr}"
+            );
+            let ran: Vec<&str> = calls
+                .iter()
+                .map(|call| call.field("tool").unwrap_or_default())
+                .collect();
+            assert_eq!(ran, tools, "{name} {args:?}: {stderr}");
+            assert!(
+                lanes_left(&lane_base).is_empty(),
+                "{name} {args:?}: {stderr}"
+            );
+        }
+        let (outcome, calls, stderr) =
+            rooted_lane(base, &lane_base, ROOTS_CARGO, &[], &["mutants"]);
+        assert!(
+            matches!(outcome, ExitOutcome::Code(code) if code != 0),
+            "{name}: the mutants lane did not refuse: {stderr}"
+        );
+        assert!(
+            calls.is_empty(),
+            "{name}: cargo ran {} time(s): {stderr}",
+            calls.len()
+        );
+        assert!(
+            stderr.contains(&shown),
+            "{name}: the refusal does not name {shown:?}: {stderr}"
+        );
+        assert!(lanes_left(&lane_base).is_empty(), "{name}: {stderr}");
+    }
+}
+
 /// Whether the `release` recipe refreshes the fuzz crate's lock inside the
 /// version commit, with the product compiler, lets that refresh move nothing
 /// but the ae version, and stops before the commit otherwise.
