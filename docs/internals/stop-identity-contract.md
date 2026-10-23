@@ -235,11 +235,12 @@ deletes no state, so it crosses the proof with no acknowledgement. One compositi
 purpose:
 
 * `.launch-attempt` (`store::LAUNCH_ATTEMPT`) — the launch-attempt stamp, written by every
-  launch, resume and spawn, for every tool, under the lifecycle lock and BEFORE the tmux
-  create it describes. It is checked, not best-effort: a launch that cannot write it is
-  refused and creates no tmux session. It exists because every other fact is published
-  AFTER the create, so an attempt that died in between would have left a session ae could
-  then prove "gone".
+  launch, resume and spawn, for every tool, BEFORE the tmux create it describes. Launch
+  and resume stamp under the lifecycle lock; spawn stamps before creating its window
+  without that lock. It is checked, not best-effort: an attempt that cannot write it is
+  refused and creates no tmux session or window. It exists because every other fact is
+  published AFTER the create, so an attempt that died in between would have left a
+  session ae could then prove "gone".
 * `started`, `launch_time.<slot>`, `capture_floor.<slot>` — meta rows, for the sessions that
   predate the stamp. `launch_time` and `capture_floor` are capture-tool-only and
   best-effort; they are read, never relied on.

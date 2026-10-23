@@ -71,12 +71,14 @@ const GOAL_SETTER: &str = ".goal-setter.lock";
 /// The LAUNCH-ATTEMPT stamp: when ae last tried to put this session on a tmux
 /// server.
 ///
-/// Written BEFORE the create it is about, under the lifecycle lock, by every
-/// launch, resume and spawn — so an attempt that then died between the create
-/// and the meta publication has still left the moment behind. That is what
-/// makes it the evidence [`crate::tmux::classify_absence`] can weigh against
-/// the host's boot time: nothing else ae writes is both universal (every tool,
-/// every seat) and earlier than the tmux session it describes.
+/// Written BEFORE the create it is about: launch and resume stamp under the
+/// lifecycle lock; spawn stamps before creating its window without that lock.
+/// Every tool and seat owes a checked stamp: failure refuses the tmux create.
+/// An attempt that then died between the create and the meta publication has
+/// still left the moment behind. That is what makes it the evidence
+/// [`crate::tmux::classify_absence`] can weigh against the host's boot time:
+/// nothing else ae writes is both universal (every tool, every seat) and
+/// earlier than the tmux session it describes.
 pub const LAUNCH_ATTEMPT: &str = ".launch-attempt";
 
 /// The most a launch-attempt stamp may be: one epoch and a newline. A larger
