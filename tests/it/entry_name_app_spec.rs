@@ -152,7 +152,7 @@ impl Rig {
         run_tmux(&args, &self.scratch)
     }
 
-    fn env(&self) -> [(String, String); 8] {
+    fn env(&self) -> [(String, String); 9] {
         [
             ("HOME".to_owned(), self.scratch.display().to_string()),
             ("AE_HOME".to_owned(), self.home.display().to_string()),
@@ -169,6 +169,10 @@ impl Rig {
             ("TMUX_TMPDIR".to_owned(), self.scratch.display().to_string()),
             (
                 "AE_TEST_GO_USAGE_URL".to_owned(),
+                "http://127.0.0.1:9/".to_owned(),
+            ),
+            (
+                "AE_TEST_COPILOT_USAGE_URL".to_owned(),
                 "http://127.0.0.1:9/".to_owned(),
             ),
         ]

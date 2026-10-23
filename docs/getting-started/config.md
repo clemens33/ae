@@ -195,6 +195,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `auto_reseat_grace_secs` | Whole seconds a usage-limit or headroom episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
 | `auto_reseat_at` | The judged percentage of a seat's OWN account at which auto reseat moves it before any limit (`50`-`100`, or `off`). Only a usable window proven at least one day long counts, the weekly one, never the 5-hour session window, judged as `ae quota`'s `EFFECTIVE` column. An unusable value means `95`, with one note the watchdog journals once per start. Global config only | `95` |
 | `opencode_go_key_file` | Path of a file holding an OpenCode Console key with usage access, separate from the key opencode uses for model calls (`~/`, `$HOME/` or absolute), which lets `ae quota` show the Go subscription's windows. Absent means ae reads no Go quota; see [OpenCode Go quota](#opencode-go-quota). Global config only | none |
+| `copilot_token_file` | Path of a private file holding your GitHub token (`~/`, `$HOME/` or absolute). Opts into the display-only premium allowance; see [GitHub Copilot quota](#github-copilot-quota). Global config only | none |
 | `muse_quota` | `on` lets `ae quota` ask Muse for its allowance with one model call (about 32K input tokens), held for 30 minutes; `off` or absent asks nothing; see [Muse quota](#muse-quota). Global config only | `off` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
@@ -252,6 +253,50 @@ automatic upgrades disabled until corrected. Checkout builds never
 auto-upgrade, and `AE_NO_AUTOSTART=1` suppresses scheduling along with the other
 companions. `ae version` and `ae doctor` report policy plus last check/result;
 they never trigger a check.
+
+### GitHub Copilot quota
+
+Copilot quota is opt-in. Choose the GitHub account that holds your Copilot subscription and
+create a file yourself, for example using GitHub CLI (replace `<account>`):
+
+```sh
+mkdir -p ~/.credentials
+umask 077
+gh auth token --user <account> > ~/.credentials/copilot
+chmod 600 ~/.credentials/copilot
+```
+
+Name it in the GLOBAL config; a project `.ae/config` entry never votes:
+
+```toml
+[workspace]
+copilot_token_file = ~/.credentials/copilot
+```
+
+ae never runs `gh` or reads another tool's authentication store. The file must be regular,
+private (no group/other permissions), nonempty printable ASCII, at most 4 KiB. Its contents
+go only into the authorization header, never argv, output or the shared cache's key identity.
+
+`ae quota` asks `GET https://api.github.com/copilot_internal/user`. This is GitHub's internal,
+undocumented, unversioned endpoint and may break. Light polling reads your own quota; it
+invokes no model and spends 0 premium requests. One shared private cache
+(`quota/github-copilot.json`) and zero-wait lock limit the fleet to one attempt per 300 seconds,
+including failures. Token rotation makes the next attempt due; a failed refresh retains the
+last good answer with its original age and a named failure note. `quota = off` prevents fetches.
+
+Profiles running OpenCode with `--model` or `-m github-copilot/<model>` share one group.
+With none configured, the group still appears with `-` in PROFILES. Only the closed plan names
+`individual`, `business` and `enterprise` are displayed; anything else says `plan unknown`.
+USED is `(entitlement - remaining) / entitlement * 100` when both counts are valid integers;
+only when both are absent does it use `100 - percent_remaining`. Partial or invalid counts,
+missing fields and unknown shapes yield notes, never invented numbers. `unlimited: true`
+reads `unlimited` in CREDITS. RESETS comes from `quota_reset_date`; the monthly WINDOW has
+no fixed length and supplies no PACE history or weekly quota-ladder input.
+
+Unlike Go, Copilot has no watchdog refresh or advisory feed. The settings quota dialog reads
+the held snapshot, shows its age and tells you to run `ae quota` to refresh. Copilot quota
+does not drive automatic reseating or effort changes. A rejected token names its HTTP code
+and `copilot_token_file`; transport, timeout, redirect, size and parse failures are named.
 
 ### OpenCode Go quota
 

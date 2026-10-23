@@ -8,6 +8,7 @@
 pub mod agy;
 pub mod claude;
 pub mod codex;
+pub mod copilot;
 pub mod feed;
 pub mod go;
 pub mod grok;
@@ -1896,6 +1897,17 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
             }
         }
     }
+    if let Some(group) = copilot_group(inputs) {
+        for held in [&mut groups, &mut rendered] {
+            held.retain_mut(|old| {
+                let was_empty = old.profiles.is_empty();
+                old.profiles
+                    .retain(|profile| !group.profiles.contains(profile));
+                was_empty || !old.profiles.is_empty()
+            });
+            held.push(group.clone());
+        }
+    }
     let home = inputs.home.and_then(|home| {
         crate::run::canonical_config_home(&crate::launch_cmd::Resolved::Path(home.to_path_buf()))
             .ok()
@@ -1914,6 +1926,131 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
             now: inputs.now,
         },
         series,
+    )
+}
+
+const COPILOT_SCOPE: &str = "github copilot · plan ";
+
+fn is_copilot(group: &Group) -> bool {
+    group
+        .clients
+        .first()
+        .is_some_and(|label| label.starts_with(COPILOT_SCOPE))
+}
+
+/// One explicitly opted-in account, even when no configured profile uses it.
+/// No source key: these monthly rows never enter automation or pace history.
+fn copilot_group(inputs: &Inputs<'_>) -> Option<Group> {
+    use crate::go_usage::{Provider, Read};
+    let provider = Provider::Copilot;
+    let configured = crate::go_usage::configured_for(provider, inputs.global, inputs.home);
+    if matches!(configured, Ok(None)) {
+        return None;
+    }
+    let mut parsed = copilot::Parsed::default();
+    let mut notes = Vec::new();
+    match configured {
+        Ok(Some(key)) => {
+            if let Some(root) = inputs.state_root() {
+                match crate::go_usage::read_for(provider, root, &key) {
+                    Read::Custody(failure, mode) => {
+                        notes.extend(provider.key_note(failure, &key, mode));
+                    }
+                    Read::Cached(cache) => {
+                        if cache.outcome != "ok" {
+                            notes.push(copilot_failure_note(
+                                &cache.outcome,
+                                inputs.now.saturating_sub(cache.attempt_at),
+                            ));
+                        }
+                        if let Some(sample) = cache.samples.last() {
+                            parsed = copilot::parse(sample.body.as_bytes(), sample.at, inputs.now);
+                        }
+                    }
+                    Read::Missing => {
+                        notes
+                            .push("github copilot: no usage fetched yet for this token".to_owned());
+                    }
+                }
+            }
+        }
+        Err(why) => notes.push(format!("github copilot: {why}")),
+        Ok(None) => return None,
+    }
+    notes.append(&mut parsed.notes);
+    let cfg = crate::config::read_identity(inputs.global, inputs.local).ok()?;
+    let profiles = cfg
+        .profiles
+        .iter()
+        .filter_map(|(name, _)| {
+            let command = cfg.command(name, inputs.home).ok()??;
+            let route = resolved_tool(command.as_str()).adapter().quota.plan?;
+            crate::tool::PlanRoute {
+                prefix: "github-copilot/",
+                ..route
+            }
+            .routes(command.as_str())
+            .then(|| name.clone())
+        })
+        .collect();
+    let account = Account {
+        credits: if parsed.unlimited {
+            Credits::Unlimited
+        } else {
+            Credits::Unreported
+        },
+        credits_observed_at: parsed.rows.first().and_then(|row| row.observed_at),
+        ..Account::default()
+    };
+    Some(Group {
+        profiles,
+        tool: resolved_tool("opencode"),
+        home: None,
+        source: None,
+        clients: vec![format!(
+            "{COPILOT_SCOPE}{}",
+            parsed.plan.as_deref().unwrap_or("unknown")
+        )],
+        rollout: None,
+        owner: None,
+        rows: if parsed.rows.is_empty() {
+            vec![placeholder(Status::Unknown)]
+        } else {
+            parsed.rows
+        },
+        hint: None,
+        summary: None,
+        policy: Policy::new(None, account),
+        notes,
+        plan: None,
+    })
+}
+
+fn copilot_failure_note(outcome: &str, age: i64) -> String {
+    let class = match outcome {
+        code if code == "unauthorized" || code.starts_with("unauthorized:") => {
+            "token rejected (401): check copilot_token_file".to_owned()
+        }
+        "not-entitled" => "token rejected (403): check copilot_token_file".to_owned(),
+        "throttled" => "the vendor throttled the quota call (429)".to_owned(),
+        "timeout" => "the quota call hit its timeout".to_owned(),
+        "transport" => "the quota call could not connect".to_owned(),
+        "too-large" => "the answer passed its size cap".to_owned(),
+        "malformed" => "the quota answer was unparseable".to_owned(),
+        "redirected" => "the answer was a redirect, which is never followed".to_owned(),
+        other => other
+            .strip_prefix("status-")
+            .filter(|code| code.len() == 3)
+            .and_then(|code| code.parse::<u16>().ok())
+            .filter(|code| (100..=599).contains(code))
+            .map_or_else(
+                || "unknown outcome".to_owned(),
+                |code| format!("HTTP {code}"),
+            ),
+    };
+    format!(
+        "github copilot: last refresh {} failed — {class}",
+        age_label(age.max(0))
     )
 }
 
@@ -2450,13 +2587,18 @@ fn run_with(
     let legs = agy_legs(&scopes);
     let started = Instant::now();
     let go = go_refresh(inputs, &scopes);
+    let copilot = copilot_refresh(inputs);
     let answer = inputs.home.filter(|_| !legs.is_empty()).map(leg);
     let muse_ask = ask_muse(inputs, &scopes);
     let fetched = go.as_ref().is_some_and(|(_, refreshed)| refreshed.fetched);
     let paid = muse_ask
         .as_ref()
         .is_some_and(|(_, refreshed, _)| refreshed.asked);
-    let now = if answer.is_some() || fetched || paid {
+    let now = if answer.is_some()
+        || fetched
+        || paid
+        || copilot.as_ref().is_some_and(|(_, result)| result.fetched)
+    {
         completed(inputs.now, started.elapsed())
     } else {
         inputs.now
@@ -2485,6 +2627,21 @@ fn run_with(
         note_go_key(&mut observation.groups, key, *refreshed);
         note_go_key(&mut observation.rendered, key, *refreshed);
     }
+    if let Some((key, refreshed)) = copilot {
+        for groups in [&mut observation.groups, &mut observation.rendered] {
+            for group in groups.iter_mut().filter(|group| is_copilot(group)) {
+                if let Some(note) = refreshed.outcome.and_then(|failure| {
+                    crate::go_usage::Provider::Copilot.key_note(failure, &key, None)
+                }) && !group
+                    .notes
+                    .iter()
+                    .any(|held| held.starts_with("github copilot: token file"))
+                {
+                    group.notes.push(note);
+                }
+            }
+        }
+    }
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
     let groups = observation.ordered_groups(&observation.rendered);
     let home = observation.home.as_deref().or(inputs.home);
@@ -2501,6 +2658,25 @@ fn run_with(
         )?,
     }
     Ok(0)
+}
+
+fn copilot_refresh(inputs: &Inputs<'_>) -> Option<(PathBuf, crate::go_usage::Refreshed)> {
+    if !configured_quota_on(inputs.global, inputs.local) {
+        return None;
+    }
+    let key = crate::go_usage::configured_for(
+        crate::go_usage::Provider::Copilot,
+        inputs.global,
+        inputs.home,
+    )
+    .ok()??;
+    let result = crate::go_usage::refresh_for(
+        crate::go_usage::Provider::Copilot,
+        inputs.state_root()?,
+        &key,
+        inputs.now,
+    );
+    Some((key, result))
 }
 
 /// `ae quota`'s one Muse ask: the scopes the leg speaks for, what the refresh did, and the
@@ -4042,6 +4218,9 @@ fn scope_identity(group: &Group, home: Option<&Path>) -> String {
 /// The scope as the table names it before any plan: its tool and identity, and
 /// a Codex scope's rollout owner. The machine document states this on its own.
 fn scope_name(group: &Group, home: Option<&Path>) -> String {
+    if is_copilot(group) {
+        return scope_identity(group, home);
+    }
     let mut label = format!("{} · {}", group.tool.as_str(), scope_identity(group, home));
     if group.tool.adapter().quota.source == QuotaSource::CodexRollouts {
         label.push_str(" · unidentified");
@@ -4119,6 +4298,9 @@ fn manual_refresh_hint(
 /// The leg's own words beside a scope: agy's always, Muse's only once a leg
 /// spoke, which is any hint but the adapter's standing "no local source" one.
 fn leg_hint(group: &Group) -> Option<&str> {
+    if is_copilot(group) {
+        return Some("refresh: ae quota (at most every 5 min)");
+    }
     let hint = group.hint.as_deref()?;
     let spoke = group.tool.quota_is_asked()
         || (group.tool == ToolKind::Muse
@@ -5200,6 +5382,17 @@ mod tests {
     use crate::tool::ToolKind;
     use crate::transport::AgyRun;
     use std::path::Path;
+
+    /// Oracle: `.local/brief-copilot.md` I5 — every Copilot 401 reads "token
+    /// rejected (401)" naming `copilot_token_file`, one "ago"; a coded 401
+    /// outcome, which only the Go route measures, never reads "unknown outcome".
+    #[test]
+    fn a_coded_401_outcome_on_the_copilot_group_still_reads_token_rejected() {
+        assert_eq!(
+            super::copilot_failure_note("unauthorized:api_key_expired", 60),
+            "github copilot: last refresh 1m ago failed — token rejected (401): check copilot_token_file"
+        );
+    }
 
     /// Oracle: issue #123 (2026-10-22 live setup) and `.local/brief-govendor.md` —
     /// a 401 whose vendor code is `api_key_expired` tells the operator to renew

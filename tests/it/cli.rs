@@ -621,7 +621,8 @@ fn isolated(mut command: Runner, dir: &std::path::Path) -> Runner {
         .env("SHELL", "/bin/sh")
         // CHECKOUT-only Go usage URL: a refused loopback so no it-test can
         // reach opencode.ai even if a fixture forgets to override it.
-        .env("AE_TEST_GO_USAGE_URL", "http://127.0.0.1:9/");
+        .env("AE_TEST_GO_USAGE_URL", "http://127.0.0.1:9/")
+        .env("AE_TEST_COPILOT_USAGE_URL", "http://127.0.0.1:9/");
     command
 }
 

@@ -2012,6 +2012,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         "src/quota/grok.rs",
         "src/quota/view.rs",
         "src/quota/go.rs",
+        "src/quota/copilot.rs",
         "src/quota/muse.rs",
         "src/quota/machine.rs",
         "src/watchdog_daemon.rs",
@@ -2035,7 +2036,8 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     // parser of Muse's `run.usage` allowance and of ae's own cache record of
     // it, which builds no level; `machine.rs` the tenth, a pure renderer of the
     // already-observed groups as one JSON document, which reads the judged
-    // percentage through `Derived` and builds no level). Two
+    // percentage through `Derived` and builds no level; `copilot.rs` the
+    // eleventh, a pure optional-field quota parser that builds no level). Two
     // descendants it cannot see: a module written INLINE inside
     // `src/quota.rs`, because the owner file is skipped whole, and a
     // `#[path]`-attributed module whose file lives outside this directory, which is scanned with the Outside needles and
@@ -2045,7 +2047,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         seen.iter()
             .filter(|name| name.starts_with("src/quota/"))
             .count(),
-        10,
+        11,
         "the quota directory gained or lost a file, and each one needs the \
          child scan: {seen:?}"
     );

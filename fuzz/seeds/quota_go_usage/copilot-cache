@@ -1,0 +1,1 @@
+{"v":1,"key":{"path":"/tmp/synthetic-copilot.token","dev":1,"ino":1,"len":12,"mtime_ns":1},"attempt_at":1792416000,"outcome":"ok","samples":[{"at":1792416000,"body":"{\"copilot_plan\":\"individual\",\"quota_reset_date\":\"2099-01-01T00:00:00Z\",\"quota_snapshots\":{\"premium_interactions\":{\"entitlement\":300,\"remaining\":210}}}\n"}]}

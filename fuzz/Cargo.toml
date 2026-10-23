@@ -112,6 +112,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quota_copilot_user"
+path = "fuzz_targets/quota_copilot_user.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "quota_muse_usage"
 path = "fuzz_targets/quota_muse_usage.rs"
 test = false

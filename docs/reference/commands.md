@@ -1339,7 +1339,15 @@ windows once the global `[workspace] opencode_go_key_file` names a `0600` key fi
 ([Config](../getting-started/config.md#opencode-go-quota)). `ae quota` refreshes the shared cache
 `quota/opencode-go.json` inline at most once per 300 s across the fleet, and never with `quota =
 off`; the watchdog refreshes it on a background thread; every other reader reads the cache only.
-Every other OpenCode profile, OpenRouter included, stays `unsupported`.
+
+An OpenCode `github-copilot/<model>` profile shows the premium-request allowance once the
+global `[workspace] copilot_token_file` names a private token file
+([Config](../getting-started/config.md#github-copilot-quota)). `ae quota` refreshes
+`quota/github-copilot.json` inline at most once per 300 s across the fleet, failures included;
+`quota = off` prevents fetches. The group also appears without matching profiles. Copilot is
+display-only: settings dialogs read the cache and show its age and refresh instruction;
+the watchdog, advisories, automatic reseating and effort decisions do not use it.
+Other OpenCode profiles, OpenRouter included, stay `unsupported`.
 
 A Muse profile shows the account's `window` and `weekly` allowance once the global
 `[workspace] muse_quota = on` opts in

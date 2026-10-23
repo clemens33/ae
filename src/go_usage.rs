@@ -1,10 +1,12 @@
 //! The `OpenCode` Go usage door: the key file, the shared cache, and the one
-//! HTTPS GET to `opencode.ai`.
+//! HTTPS GET to `opencode.ai`, shared with the opt-in GitHub Copilot door.
+//! Copilot uses the same custody, cache envelope, fleet lock and locked client;
+//! its separate cache keeps a bounded raw answer, re-parsed by `quota::copilot`.
 //!
-//! OPT-IN: nothing here runs unless the GLOBAL config names a key file with
-//! `[workspace] opencode_go_key_file`. A project `.ae/config` never votes, so a
-//! checkout cannot point ae at some other private file and have it sent away
-//! as a Bearer token.
+//! OPT-IN: the GLOBAL config must name `[workspace] opencode_go_key_file`
+//! or `copilot_token_file` for the respective provider. A project `.ae/config`
+//! never votes, so a checkout cannot point ae at some other private file and
+//! have it sent away as an authorization token.
 //!
 //! ONE FETCH FOR THE FLEET. Every session watchdog and every `ae quota` share
 //! one cache under the state root. A fetch is due only when the cache holds no
@@ -67,6 +69,45 @@ const DIR: &str = "quota";
 const CACHE: &str = "opencode-go.json";
 const LOCK: &str = ".opencode-go.lock";
 
+/// Provider-specific facts; every custody and transport rule remains shared.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Provider {
+    Go,
+    Copilot,
+}
+
+impl Provider {
+    pub(crate) const fn setting(self) -> &'static str {
+        match self {
+            Self::Go => KEY_SETTING,
+            Self::Copilot => "copilot_token_file",
+        }
+    }
+
+    const fn cache(self) -> &'static str {
+        match self {
+            Self::Go => CACHE,
+            Self::Copilot => "github-copilot.json",
+        }
+    }
+
+    const fn lock(self) -> &'static str {
+        match self {
+            Self::Go => LOCK,
+            Self::Copilot => ".github-copilot.lock",
+        }
+    }
+
+    pub(crate) fn key_note(
+        self,
+        failure: Failure,
+        path: &Path,
+        mode: Option<u32>,
+    ) -> Option<String> {
+        failure.key_note_for(self, path, mode)
+    }
+}
+
 /// The key, held for exactly one request.
 pub struct GoKey(String);
 
@@ -80,6 +121,13 @@ impl GoKey {
     /// The one place the key becomes part of a string: the request header.
     fn bearer(&self) -> String {
         format!("Bearer {}", self.0)
+    }
+
+    fn authorization(&self, provider: Provider) -> String {
+        match provider {
+            Provider::Go => self.bearer(),
+            Provider::Copilot => format!("token {}", self.0),
+        }
     }
 }
 
@@ -152,22 +200,30 @@ impl Failure {
     /// a request failure, which the cache's outcome speaks for.
     #[must_use]
     pub fn key_note(self, path: &Path, mode: Option<u32>) -> Option<String> {
-        let path = path.display();
+        self.key_note_for(Provider::Go, path, mode)
+    }
+
+    fn key_note_for(self, provider: Provider, path: &Path, mode: Option<u32>) -> Option<String> {
+        let (prefix, noun) = match provider {
+            Provider::Go => ("opencode go", "key"),
+            Provider::Copilot => ("github copilot", "token"),
+        };
+        let file = format!("{prefix}: {noun} file {}", path.display());
         Some(match self {
             Self::KeyInsecure => match mode {
-                Some(mode) => format!(
-                    "opencode go: key file {path} is readable by others (mode {mode:04o}); chmod 600 it"
-                ),
-                None => format!("opencode go: key file {path} is readable by others; chmod 600 it"),
+                Some(mode) => {
+                    format!("{file} is readable by others (mode {mode:04o}); chmod 600 it")
+                }
+                None => format!("{file} is readable by others; chmod 600 it"),
             },
-            Self::KeyNotRegular => format!("opencode go: key file {path} is not a regular file"),
-            Self::KeyUnreadable => format!("opencode go: key file {path} could not be read"),
-            Self::KeyEmpty => format!("opencode go: key file {path} is empty"),
+            Self::KeyNotRegular => format!("{file} is not a regular file"),
+            Self::KeyUnreadable => format!("{file} could not be read"),
+            Self::KeyEmpty => format!("{file} is empty"),
             Self::KeyNotPrintable => {
-                format!("opencode go: key file {path} holds a byte that is not printable ASCII")
+                format!("{file} holds a byte that is not printable ASCII")
             }
             Self::KeyTooLong => {
-                format!("opencode go: key file {path} is longer than {MAX_KEY} bytes")
+                format!("{file} is longer than {MAX_KEY} bytes")
             }
             _ => return None,
         })
@@ -231,16 +287,25 @@ pub fn configured_key(
     global: Option<&Path>,
     home: Option<&Path>,
 ) -> Result<Option<PathBuf>, String> {
+    configured_for(Provider::Go, global, home)
+}
+
+pub(crate) fn configured_for(
+    provider: Provider,
+    global: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let setting = provider.setting();
     let Some(global) = global else {
         return Ok(None);
     };
-    let Some(raw) = crate::config::read_global_workspace_key(global, KEY_SETTING)? else {
+    let Some(raw) = crate::config::read_global_workspace_key(global, setting)? else {
         return Ok(None);
     };
     let value = raw.trim();
     let under_home = |rest: &str| {
         home.map(|home| home.join(rest))
-            .ok_or_else(|| format!("{KEY_SETTING} names $HOME, which is not set"))
+            .ok_or_else(|| format!("{setting} names $HOME, which is not set"))
     };
     let path = if let Some(rest) = value.strip_prefix("~/") {
         under_home(rest)?
@@ -253,7 +318,7 @@ pub fn configured_key(
         PathBuf::from(value)
     } else {
         return Err(format!(
-            "{KEY_SETTING} must be ~/…, $HOME/… or an absolute path"
+            "{setting} must be ~/…, $HOME/… or an absolute path"
         ));
     };
     Ok(Some(path))
@@ -274,11 +339,15 @@ pub enum Read {
 /// Read the cache for `key_path` under `root`.
 #[must_use]
 pub fn read(root: &Path, key_path: &Path) -> Read {
+    read_for(Provider::Go, root, key_path)
+}
+
+pub(crate) fn read_for(provider: Provider, root: &Path, key_path: &Path) -> Read {
     let identity = match key_identity(key_path) {
         Ok(identity) => identity,
         Err((failure, mode)) => return Read::Custody(failure, mode),
     };
-    match read_cache(root) {
+    match read_cache(provider, root) {
         Some(cached) if cached.key == identity => Read::Cached(cached),
         _ => Read::Missing,
     }
@@ -288,7 +357,13 @@ pub fn read(root: &Path, key_path: &Path) -> Read {
 /// production endpoint.
 #[must_use]
 pub fn refresh(root: &Path, key_path: &Path, now: i64) -> Refreshed {
-    refresh_with(root, key_path, now, fetch_network)
+    refresh_for(Provider::Go, root, key_path, now)
+}
+
+pub(crate) fn refresh_for(provider: Provider, root: &Path, key_path: &Path, now: i64) -> Refreshed {
+    refresh_using(provider, root, key_path, now, |key| {
+        get_for(provider, &endpoint(provider), key)
+    })
 }
 
 /// [`refresh`] with the fetch handed in.
@@ -302,6 +377,16 @@ pub fn refresh_with(
     now: i64,
     fetch: impl FnOnce(&GoKey) -> Result<Vec<u8>, Failure>,
 ) -> Refreshed {
+    refresh_using(Provider::Go, root, key_path, now, fetch)
+}
+
+fn refresh_using(
+    provider: Provider,
+    root: &Path,
+    key_path: &Path,
+    now: i64,
+    fetch: impl FnOnce(&GoKey) -> Result<Vec<u8>, Failure>,
+) -> Refreshed {
     let skipped = |outcome| Refreshed {
         fetched: false,
         outcome,
@@ -310,7 +395,7 @@ pub fn refresh_with(
         Ok(identity) => identity,
         Err((failure, _)) => return skipped(Some(failure)),
     };
-    let held = read_cache(root).filter(|cached| cached.key == identity);
+    let held = read_cache(provider, root).filter(|cached| cached.key == identity);
     if !due(held.as_ref(), now) {
         return skipped(None);
     }
@@ -318,10 +403,10 @@ pub fn refresh_with(
     if ensure_dir(&dir).is_err() {
         return skipped(None);
     }
-    let Ok(_lock) = crate::store::lock(&dir.join(LOCK), Duration::ZERO) else {
+    let Ok(_lock) = crate::store::lock(&dir.join(provider.lock()), Duration::ZERO) else {
         return skipped(None);
     };
-    let held = read_cache(root).filter(|cached| cached.key == identity);
+    let held = read_cache(provider, root).filter(|cached| cached.key == identity);
     if !due(held.as_ref(), now) {
         return skipped(None);
     }
@@ -333,7 +418,11 @@ pub fn refresh_with(
         if body.len() > MAX_BODY {
             return Err(Failure::TooLarge);
         }
-        if !go::parse(&body, now, now).usable() {
+        let usable = match provider {
+            Provider::Go => go::parse(&body, now, now).usable(),
+            Provider::Copilot => crate::quota::copilot::parse(&body, now, now).valid,
+        };
+        if !usable {
             return Err(Failure::Malformed);
         }
         String::from_utf8(body).map_err(|_| Failure::Malformed)
@@ -356,7 +445,12 @@ pub fn refresh_with(
         outcome: slug,
         samples: kept(samples, now),
     };
-    let _ = crate::store::publish_private_in(&dir, CACHE, record.render().as_bytes());
+    let mut record = record;
+    if provider == Provider::Copilot {
+        // No fixed-length history: one bounded raw answer, including optional-field notes.
+        record.samples = record.samples.into_iter().rev().take(1).collect();
+    }
+    let _ = crate::store::publish_private_in(&dir, provider.cache(), record.render().as_bytes());
     Refreshed {
         fetched: true,
         outcome,
@@ -395,8 +489,8 @@ fn ensure_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
-fn read_cache(root: &Path) -> Option<Cached> {
-    match crate::store::read_capped_in(&root.join(DIR), CACHE, MAX_CACHE) {
+fn read_cache(provider: Provider, root: &Path) -> Option<Cached> {
+    match crate::store::read_capped_in(&root.join(DIR), provider.cache(), MAX_CACHE) {
         Ok(crate::store::SourceRead::Ready(bytes)) => go::parse_cache(&bytes),
         _ => None,
     }
@@ -406,7 +500,7 @@ fn read_cache(root: &Path) -> Option<Cached> {
 fn key_identity(path: &Path) -> Result<KeyIdentity, (Failure, Option<u32>)> {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: classifies the opted-in Go key file, following a link as telegram's token file does, before anything reads it — see clippy.toml"
+        reason = "a door: classifies the globally opted-in quota key file, following a link as telegram's token file does, before reading it — see clippy.toml"
     )]
     let probed = std::fs::metadata(path);
     let metadata = match probed {
@@ -442,7 +536,7 @@ fn custody(
 fn read_key(path: &Path) -> Result<GoKey, Failure> {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: the opted-in Go key file itself, after classification — this module's ONE open of it; see clippy.toml"
+        reason = "a door: the globally opted-in quota key file, after classification — this module's ONE open of it; see clippy.toml"
     )]
     let opened = std::fs::File::open(path);
     let file = opened.map_err(|_| Failure::KeyUnreadable)?;
@@ -473,15 +567,22 @@ fn read_key(path: &Path) -> Result<GoKey, Failure> {
 // ─── the locked client ───────────────────────────────────────────────────
 
 /// Where the GET goes: the production endpoint, or — in the CHECKOUT shape
-/// only — `AE_TEST_GO_USAGE_URL`, so the hermetic suite can point it at a
-/// refused loopback and never reach `opencode.ai`.
-fn endpoint() -> String {
+/// only — the provider's `AE_TEST_*_USAGE_URL`, so the hermetic suite can
+/// point it at a refused loopback and never reach a vendor endpoint.
+fn endpoint(provider: Provider) -> String {
+    let (variable, production) = match provider {
+        Provider::Go => ("AE_TEST_GO_USAGE_URL", USAGE_URL),
+        Provider::Copilot => (
+            "AE_TEST_COPILOT_USAGE_URL",
+            "https://api.github.com/copilot_internal/user",
+        ),
+    };
     if crate::shape::current().honours_environment() {
         #[allow(
             clippy::disallowed_methods,
-            reason = "a door: AE_TEST_GO_USAGE_URL keeps the hermetic suite off opencode.ai — CHECKOUT only"
+            reason = "a door: AE_TEST_GO_USAGE_URL and AE_TEST_COPILOT_USAGE_URL keep the hermetic suite off vendor endpoints — CHECKOUT only"
         )]
-        let raw = std::env::var_os("AE_TEST_GO_USAGE_URL");
+        let raw = std::env::var_os(variable);
         if let Some(url) = raw
             .and_then(|raw| raw.into_string().ok())
             .filter(|url| !url.is_empty())
@@ -489,7 +590,7 @@ fn endpoint() -> String {
             return url;
         }
     }
-    USAGE_URL.to_owned()
+    production.to_owned()
 }
 
 /// Whether `url` is a plaintext loopback, the one non-TLS endpoint allowed.
@@ -528,21 +629,31 @@ fn agent(https_only: bool) -> ureq::Agent {
     ureq::Agent::new_with_config(config)
 }
 
-fn fetch_network(key: &GoKey) -> Result<Vec<u8>, Failure> {
-    get(&endpoint(), key)
+/// GET `url` with the key as a Bearer, holding at most [`MAX_BODY`] bytes.
+#[cfg(test)]
+fn get(url: &str, key: &GoKey) -> Result<Vec<u8>, Failure> {
+    get_for(Provider::Go, url, key)
 }
 
-/// GET `url` with the key as a Bearer, holding at most [`MAX_BODY`] bytes.
-fn get(url: &str, key: &GoKey) -> Result<Vec<u8>, Failure> {
-    let sent = agent(!loopback(url))
+fn get_for(provider: Provider, url: &str, key: &GoKey) -> Result<Vec<u8>, Failure> {
+    let mut request = agent(!loopback(url))
         .get(url)
-        .header("Authorization", key.bearer())
-        .header("Accept", "application/json")
-        .call();
+        .header("Authorization", key.authorization(provider))
+        .header("Accept", "application/json");
+    if provider == Provider::Copilot {
+        request = request
+            .header("Editor-Version", "vscode/1.95.0")
+            .header("Editor-Plugin-Version", "copilot-chat/0.22.0")
+            .header("User-Agent", "ae-quota");
+    }
+    let sent = request.call();
     let mut response = sent.map_err(classify)?;
     let status = response.status().as_u16();
+    if provider == Provider::Copilot && status == 401 {
+        return Err(Failure::Unauthorized);
+    }
     if status >= 400 && status != 401 {
-        // Only a 401's body is read; every other error answers on its head.
+        // Only a Go 401's body is read; every other error answers on its head.
         return Err(status_failure(status, &[]));
     }
     let mut body = Vec::new();
@@ -841,5 +952,29 @@ mod tests {
             kept.windows(2)
                 .all(|pair| pair[1].at - pair[0].at >= SAMPLE_SPACING_SECS)
         );
+    }
+
+    /// Oracle: `.local/brief-copilot.md` I5 (a Copilot 401 reads "token
+    /// rejected (401)") and `.local/brief-govendor.md` (`api_key_expired` is a
+    /// code measured on the `OpenCode` Go route alone): a Copilot 401 never
+    /// reads a Go vendor code, whatever its body says.
+    #[test]
+    fn a_copilot_401_never_reads_a_go_vendor_code() {
+        for body in [
+            r#"{"error":{"code":"api_key_expired"}}"#,
+            r#"{"code":"api_key_expired"}"#,
+            r#"{"error":"api_key_expired"}"#,
+            r#"{"type":"error","error":{"type":"AuthError","code":"api_key_expired","message":"SYNTH-VENDOR-TEXT"}}"#,
+        ] {
+            let (url, server) = serve(answer("401 Unauthorized", "", body.as_bytes()));
+            let got = get_for(Provider::Copilot, &url, &GoKey("k".to_owned()));
+            server.join().expect("server");
+            assert_eq!(got, Err(Failure::Unauthorized), "{body}");
+            assert_eq!(
+                got.err().and_then(Failure::slug).as_deref(),
+                Some("unauthorized"),
+                "{body}"
+            );
+        }
     }
 }

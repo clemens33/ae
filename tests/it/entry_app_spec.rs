@@ -142,7 +142,8 @@ impl Rig {
             .env("AE_TMUX_SERVER", &self.socket)
             .env("AE_NO_AUTOSTART", "1")
             .env("SHELL", "/bin/sh")
-            .env("AE_TEST_GO_USAGE_URL", "http://127.0.0.1:9/");
+            .env("AE_TEST_GO_USAGE_URL", "http://127.0.0.1:9/")
+            .env("AE_TEST_COPILOT_USAGE_URL", "http://127.0.0.1:9/");
         for arg in args {
             call = call.arg(arg);
         }
