@@ -3588,18 +3588,25 @@ fn assert_refused(ran: &Ran, why: &str) {
 /// A process that outlives its starter so the recipe can find it; killed when dropped.
 struct Sleeper {
     pid: String,
+    child: Option<String>,
     dir: PathBuf,
 }
 
 impl Sleeper {
-    /// `sh -c 'sleep 30; :' <argv0>`: a process whose argv names `argv0`, started in `cwd`.
+    /// A process tree whose argv names `argv0`, started in `cwd`.
     fn with_argv(fixture: &Prune, cwd: &Path, argv0: &str) -> Self {
-        Self::start(
+        let mut sleeper = Self::start(
             fixture,
             cwd,
-            "sh -c 'sleep 30; :' \"$1\" </dev/null >/dev/null 2>&1 & echo $! >\"$2\"",
+            "sh -c 'sleep 30 & echo $! >\"$1\"; wait' \"$1\" \"$3\" </dev/null >/dev/null 2>&1 & echo $! >\"$2\"",
             argv0,
-        )
+        );
+        let child = wait_written(&fixture.base.join("sleeper-child.pid"))
+            .trim()
+            .to_owned();
+        assert!(!child.is_empty(), "the sleeper wrote its child pid");
+        sleeper.child = Some(child);
+        sleeper
     }
 
     /// `sleep 30` with `cwd` as its working directory.
@@ -3615,12 +3622,14 @@ impl Sleeper {
     fn start(fixture: &Prune, cwd: &Path, script: &str, first: &str) -> Self {
         let pidfile = fixture.base.join("sleeper.pid");
         let _ = std::fs::remove_file(&pidfile);
+        let _ = std::fs::remove_file(fixture.base.join("sleeper-child.pid"));
         let invocation = Invocation::new("/bin/sh")
             .arg("-c")
             .arg(script)
             .arg("starter")
             .arg(first)
-            .arg(&pidfile);
+            .arg(&pidfile)
+            .arg(fixture.base.join("sleeper-child.pid"));
         let status = raw::run(
             &invocation,
             cwd,
@@ -3633,6 +3642,7 @@ impl Sleeper {
         assert!(!pid.is_empty(), "the sleeper wrote its pid");
         Self {
             pid,
+            child: None,
             dir: fixture.base.to_path_buf(),
         }
     }
@@ -3640,13 +3650,66 @@ impl Sleeper {
 
 impl Drop for Sleeper {
     fn drop(&mut self) {
+        let mut kill = Invocation::new("kill").arg(&self.pid);
+        if let Some(child) = &self.child {
+            kill = kill.arg(child);
+        }
         let _ = raw::run(
-            &Invocation::new("kill").arg(&self.pid),
+            &kill,
             &self.dir,
             &self.dir.join("kill.out"),
             &self.dir.join("kill.err"),
         );
     }
+}
+
+fn ps(dir: &Path) -> String {
+    let out = dir.join("sleeper-ps.out");
+    let command = Invocation::new("ps")
+        .arg("-A")
+        .arg("-ww")
+        .arg("-o")
+        .arg("pid=,ppid=,stat=");
+    assert!(raw::run(&command, dir, &out, Path::new("/dev/null")).is_ok());
+    read(&out)
+}
+fn child_of(dir: &Path, parent: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if let Some(pid) = ps(dir).lines().find_map(|line| {
+            let f: Vec<_> = line.split_whitespace().collect();
+            (f.get(1).copied() == Some(parent)).then(|| f[0].to_owned())
+        }) {
+            return pid;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("sleeper child of pid {parent} appears");
+}
+#[test]
+fn a_dropped_sleeper_leaves_no_process_behind() {
+    let fixture = Prune::new("sleeper-drop");
+    let argv0 = format!("{}/target/debug/deps/ae-sleeper", fixture.tree.display());
+    let sleeper = Sleeper::with_argv(&fixture, &fixture.base, &argv0);
+    let child = child_of(&fixture.base, &sleeper.pid);
+    drop(sleeper);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut alive = true;
+    while alive && std::time::Instant::now() < deadline {
+        alive = ps(&fixture.base).lines().any(|line| {
+            let f: Vec<_> = line.split_whitespace().collect();
+            f.first()
+                .zip(f.get(2))
+                .is_some_and(|(p, s)| *p == child.as_str() && !s.starts_with('Z'))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if alive {
+        let null = Path::new("/dev/null");
+        let kill = Invocation::new("kill").arg(&child);
+        let _ = raw::run(&kill, &fixture.base, null, null);
+    }
+    assert!(!alive, "pid {child} outlived the fixture (#261)");
 }
 
 /// `just rust-prune` reports by default: one `would clean` line per tree, cargo asked only for
