@@ -933,6 +933,67 @@ fn running_override_refusal(session: &str) -> String {
     format!("Error: session '{session}' is running; stop it before changing a seat profile.")
 }
 
+/// The one read-only launch-config resolver. Preflight supplies the defaults
+/// that the launch will seed later; a resume reads its recorded files as-is.
+fn launch_identity(
+    env: &Env,
+    snapshot: Option<&SeatOverrideSnapshot>,
+    before_seed: bool,
+) -> Result<IdentityConfig, config::ConfigError> {
+    if let Some(snapshot) = snapshot {
+        return Ok(snapshot.cfg.clone());
+    }
+    let orchestrator_seat = env
+        .local
+        .as_deref()
+        .is_some_and(|local| crate::orchestrator::is_seat_overlay(local, &env.home));
+    let local = if orchestrator_seat {
+        None
+    } else {
+        env.local.as_deref()
+    };
+    let mut cfg = if before_seed {
+        config::read_identity_with_global_default(
+            env.global.as_deref(),
+            local,
+            crate::entry::DEFAULT_CONFIG,
+        )?
+    } else {
+        config::read_identity(env.global.as_deref(), local)?
+    };
+    if orchestrator_seat {
+        // The dedicated overlay contributes only workspace choices. Its legacy
+        // profile/roster sections are deliberately ignored at both call sites.
+        let defaults = if before_seed && !env.local.as_deref().is_some_and(node_exists) {
+            config::parse_identity(crate::orchestrator::DEFAULT_CONFIG)?
+        } else {
+            IdentityConfig::default()
+        };
+        let keys = config::read_workspace_keys(None, env.local.as_deref(), &["main", "workers"]);
+        cfg.main = keys[0].clone().or(defaults.main).or(cfg.main);
+        cfg.workers = keys[1].clone().or(defaults.workers).or(cfg.workers);
+    }
+    Ok(cfg)
+}
+
+/// Existing metadata deliberately bypasses this creation-only reservation.
+fn reserved_launch_actor(
+    env: &Env,
+    plan: &Plan,
+    snapshot: Option<&SeatOverrideSnapshot>,
+) -> Option<String> {
+    let mut cfg = launch_identity(env, snapshot, true).ok()?;
+    if let Some(workers) = &plan.workers {
+        cfg.workers = Some(workers.clone());
+    }
+    config::launch_plan(&cfg, plan.main.as_deref(), crate::doors::home().as_deref())
+        .ok()?
+        .seats
+        .into_iter()
+        .find(|seat| config::is_reserved_actor(&seat.name))
+        .map(|seat| seat.name)
+}
+
 fn solo_resume_refusal(plan: &Plan, dir: &Path, resuming: bool) -> Option<String> {
     if plan.workers.as_deref() != Some("") || !resuming {
         return None;
@@ -2113,6 +2174,16 @@ fn launch(
             }
         };
 
+    if !preflight_meta_present
+        && let Some(actor) = reserved_launch_actor(env, plan, seat_overrides.as_ref())
+    {
+        writeln!(
+            err,
+            "Error: agent name '{actor}' is reserved for ae's journal actors; pick another name."
+        )?;
+        return Ok(EXIT_USAGE);
+    }
+
     #[cfg(debug_assertions)]
     if let Some(marker) = &env.test_pre_lock_marker {
         let _ = std::fs::OpenOptions::new()
@@ -2515,34 +2586,13 @@ fn launch(
     }
 
     // ---- config, roster, workspace values ----
-    let mut cfg: IdentityConfig = if let Some(snapshot) = seat_overrides.as_ref() {
-        snapshot.cfg.clone()
-    } else {
-        match if orchestrator_seat {
-            config::read_identity(env.global.as_deref(), None)
-        } else {
-            config::read_identity(env.global.as_deref(), env.local.as_deref())
-        } {
-            Ok(cfg) => cfg,
-            Err(why) => {
-                writeln!(err, "{why}")?;
-                return Ok(EXIT_FAILED);
-            }
+    let mut cfg = match launch_identity(&env, seat_overrides.as_ref(), false) {
+        Ok(cfg) => cfg,
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            return Ok(EXIT_FAILED);
         }
     };
-    if orchestrator_seat && seat_overrides.is_none() {
-        // Identity is global-only, while the dedicated seat still overlays its
-        // workspace choices. Read those two keys without parsing legacy local
-        // profiles or roster rows.
-        let local_workspace =
-            config::read_workspace_keys(None, env.local.as_deref(), &["main", "workers"]);
-        if local_workspace[0].is_some() {
-            cfg.main.clone_from(&local_workspace[0]);
-        }
-        if local_workspace[1].is_some() {
-            cfg.workers.clone_from(&local_workspace[1]);
-        }
-    }
     let extras = config::read_workspace_keys(
         env.global.as_deref(),
         env.local.as_deref(),

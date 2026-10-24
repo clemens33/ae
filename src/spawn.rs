@@ -293,6 +293,16 @@ fn run_spawn_inner(
     state_root: Option<&Path>,
     invoker_cwd: &Path,
 ) -> io::Result<u8> {
+    if let Ok(parsed) = parse(tail)
+        && crate::config::is_reserved_actor(&parsed.name)
+    {
+        writeln!(
+            err,
+            "Error: agent name '{}' is reserved for ae's journal actors; pick another name.",
+            parsed.name
+        )?;
+        return Ok(EXIT_USAGE);
+    }
     let staged = match record_spawned_seat(dir, tail, now, target, state_root, invoker_cwd) {
         Ok(staged) => staged,
         Err(why) => {

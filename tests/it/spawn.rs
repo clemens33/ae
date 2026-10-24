@@ -1678,6 +1678,31 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
 
 /// The argv grammar refuses before any effect.
 #[test]
+fn reserved_actor_names_refuse_before_spawn_writes_or_creates_a_pane() {
+    let rig = Rig::new("reserved");
+    let meta = rig.meta();
+    let events = rig.events();
+    let panes = rig.panes();
+    for name in ["ae", "human", "watchdog"] {
+        let (code, _, stderr) = rig.run(ae::cli::SPAWN, &[name, "--using", "fake"]);
+        assert_eq!(code, Some(2), "{name}: {stderr}");
+        assert!(
+            stderr.contains(name) && stderr.contains("pick another name"),
+            "{stderr}"
+        );
+        assert_eq!(rig.meta(), meta);
+        assert_eq!(rig.events(), events);
+        assert_eq!(rig.panes(), panes);
+    }
+    for name in ["watchdog2", "Watchdog"] {
+        let (code, _, stderr) = rig.run(ae::cli::SPAWN, &[name, "--using", "fake"]);
+        assert_eq!(code, Some(0), "{name}: {stderr}");
+        assert!(rig.meta().contains(&format!("={name}\n")));
+    }
+}
+
+/// The argv grammar refuses before any effect.
+#[test]
 fn the_spawn_grammar_refuses_a_missing_profile_and_a_hostile_name() {
     let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe4"));
     if !present {

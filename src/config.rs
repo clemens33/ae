@@ -344,6 +344,13 @@ pub fn is_agent_name(name: &str) -> bool {
     name.len() <= 64 && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// Journal actors ae owns. Reserve only when creating seats: older records
+/// remain valid agent names for every reader and helper.
+#[must_use]
+pub fn is_reserved_actor(name: &str) -> bool {
+    matches!(name, "ae" | "human" | "watchdog")
+}
+
 /// Whether `label` may ride the `@ae_agents` client cell: a letter or digit,
 /// then up to 31 of letters, digits, `_` or `-`.
 ///
@@ -2843,6 +2850,17 @@ mod tests {
             assert!(!is_agent_name(bad), "{bad:?}");
         }
         assert_eq!(AGENT_NAME_GRAMMAR, "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$");
+    }
+
+    #[test]
+    fn reserved_actors_remain_agent_names_and_match_exactly() {
+        for name in ["ae", "human", "watchdog"] {
+            assert!(is_agent_name(name));
+            assert!(is_reserved_actor(name));
+        }
+        for name in ["watchdog2", "Watchdog", "AE", "Human", "ae:rename", ""] {
+            assert!(!is_reserved_actor(name), "{name}");
+        }
     }
 
     #[test]

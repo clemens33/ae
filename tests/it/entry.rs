@@ -38,6 +38,129 @@ use super::phase2::{run_tmux, tmux_present};
 const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
      [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n";
 
+#[test]
+fn a_new_launch_reserves_actor_names_before_any_state_write() {
+    if skip() {
+        return;
+    }
+    for name in ["ae", "human", "watchdog"] {
+        for selection in ["main", "worker", "use"] {
+            let rig = Rig::idle(&format!("actor-{name}-{selection}"));
+            let config = IDLE_CONFIG.replace("lead = idle", &format!("lead = idle\n{name} = idle"));
+            let config = match selection {
+                "main" => config.replace("main = lead", &format!("main = {name}")),
+                "worker" => {
+                    config.replace("main = lead", &format!("main = lead\nworkers = {name}"))
+                }
+                _ => config,
+            };
+            assert!(std::fs::write(rig.config(), &config).is_ok());
+            let mut args = vec!["actor-test", "--no-attach"];
+            if selection == "use" {
+                args.extend(["use", name]);
+            }
+            let before = super::cli::byte_tree(&rig.home);
+            let (code, stdout, stderr) = rig.run_on(Some(&rig.sock), &args);
+            assert_eq!(code, Some(2), "{name}/{selection}: {stdout}{stderr}");
+            assert!(
+                stderr.contains(name) && stderr.contains("pick another name"),
+                "{stderr}"
+            );
+            assert!(!rig.sessions().exists(), "a refusal wrote session state");
+            assert!(!rig.home.join("worktrees").exists());
+            assert_eq!(std::fs::read_to_string(rig.config()).unwrap(), config);
+            assert_eq!(super::cli::byte_tree(&rig.home), before);
+            assert!(!rig.tmux(&["has-session", "-t", "=actor-test"]).0);
+        }
+    }
+}
+
+#[test]
+fn a_reserved_local_seat_refuses_before_the_first_global_config_seed() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("actor-first");
+    let local = rig.project.join(".ae");
+    assert!(std::fs::create_dir_all(&local).is_ok());
+    assert!(
+        std::fs::write(
+            local.join("config"),
+            IDLE_CONFIG.replace("lead", "watchdog")
+        )
+        .is_ok()
+    );
+    let before = super::cli::byte_tree(&rig.project);
+    let (code, stdout, stderr) = rig.run_on(Some(&rig.sock), &["first", "--no-attach"]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("watchdog") && stderr.contains("pick another name"),
+        "{stderr}"
+    );
+    assert!(!rig.home.exists(), "a refusal seeded global config/state");
+    assert_eq!(super::cli::byte_tree(&rig.project), before);
+    assert!(!rig.tmux(&["has-session", "-t", "=first"]).0);
+}
+
+#[test]
+fn creation_checks_only_the_selected_seats_after_cli_overrides() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("actor-selected");
+    let config = IDLE_CONFIG.replace(
+        "lead = idle",
+        "lead = idle\nwatchdog = idle\nWatchdog = idle\nwatchdog2 = idle",
+    );
+    let config = config.replace("main = lead", "main = watchdog\nworkers = watchdog2");
+    assert!(std::fs::write(rig.config(), config).is_ok());
+    let (code, stdout, stderr) = rig.run_on(
+        Some(&rig.sock),
+        &["selected", "use", "Watchdog", "--no-attach"],
+    );
+    assert_eq!(code, Some(0), "near names: {stdout}{stderr}");
+    let config = IDLE_CONFIG.replace("lead = idle", "lead = idle\nwatchdog = idle");
+    assert!(
+        std::fs::write(
+            rig.config(),
+            config.replace("main = lead", "main = lead\nworkers = watchdog")
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) =
+        rig.run_on(Some(&rig.sock), &["solo-selected", "--solo", "--no-attach"]);
+    assert_eq!(code, Some(0), "excluded worker: {stdout}{stderr}");
+}
+
+#[test]
+fn unused_reserved_roster_names_and_existing_reserved_seats_still_work() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("actor-legacy");
+    let config = IDLE_CONFIG.replace("lead = idle", "lead = idle\nwatchdog = idle");
+    assert!(std::fs::write(rig.config(), &config).is_ok());
+    let (code, stdout, stderr) = rig.run_on(Some(&rig.sock), &["legacy", "--no-attach"]);
+    assert_eq!(code, Some(0), "unused binding: {stdout}{stderr}");
+    assert!(rig.tmux(&["kill-session", "-t", "=legacy"]).0);
+    let path = rig.sessions().join("legacy").join("meta");
+    let old = std::fs::read_to_string(&path).unwrap();
+    assert!(old.contains("seat.main=lead\n"), "{old}");
+    assert!(std::fs::write(&path, old.replace("lead", "watchdog")).is_ok());
+    assert!(
+        std::fs::write(
+            rig.config(),
+            config.replace("main = lead", "main = watchdog")
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) = rig.run_on(Some(&rig.sock), &["legacy", "--no-attach"]);
+    assert_eq!(code, Some(0), "legacy resume: {stdout}{stderr}");
+    let (code, stdout, stderr) = rig.run_on(Some(&rig.sock), &["list"]);
+    assert_eq!(code, Some(0), "legacy list: {stdout}{stderr}");
+    assert!(stdout.contains("watchdog"), "{stdout}");
+}
+
 /// An isolated ae home and a project directory.
 struct Rig {
     scratch: OwnedScratch,
