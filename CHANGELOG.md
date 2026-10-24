@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.123] - 2026-10-24
+- **archive**: Record harness sessions and list ended archives
+
 ## [v2026.10.122] - 2026-10-24
 - **app**: Render Markdown in the file reader
 
