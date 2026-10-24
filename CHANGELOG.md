@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.121] - 2026-10-24
+- Update TLS dependencies for RustSec advisories
+
 ## [v2026.10.120] - 2026-10-24
 - Fix sleeper fixture child cleanup
 - Isolate mutation Cargo artifacts within lane scratch
