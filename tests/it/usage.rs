@@ -1042,3 +1042,541 @@ fn meta_and_events_read_failures_are_visible_and_partial_but_missing_events_are_
     let _ = std::fs::remove_dir_all(events_root);
     let _ = std::fs::remove_dir_all(missing_root);
 }
+
+/// #246 `ae usage --hourly`, frozen acceptance spec (usagehour-nav). Every oracle
+/// is a hand sum over the synthetic transcripts written here, never the reducer.
+/// Clock 2026-09-08T12:30:00Z: the six buckets are 07:00 … 12:00 (open).
+mod hourly_spec {
+    use super::{CLAUDE_ID, CODEX_ID, RETIRED_ID, SessionInput, rig};
+    use ae::json::Value;
+    use std::io::Write as _;
+    use std::path::{Path, PathBuf};
+
+    const NOW: i64 = 1_788_870_600;
+    const OLDEST: i64 = 1_788_850_800;
+    const MIB: u64 = 1024 * 1024;
+    const DEFAULT_HELPER: &str =
+        "session  seat   tool  model  in   cache-w  cache-r  out  usd   age
+live     lead   grok  n/a    n/a  n/a      n/a      n/a  n/a   n/a
+live     total  -     -      0    0        0        0    0.00  -
+fleet    total  -     -      0    0        0        0    0.00  -
+";
+    const DEFAULT_JSON: &str = r#""sessions":[],"fleet_input_tokens":0,"fleet_cache_write_tokens":0,"fleet_cache_read_tokens":0,"fleet_output_tokens":0,"fleet_usd_micro":0,"fleet_partial":false,"unpriced":[]}"#;
+    const ASSISTANT: &str = r#"{"type":"assistant",@"requestId":"req-$0","message":{"id":"$0","model":"claude-fable-5-1","usage":{"input_tokens":$2,"cache_creation_input_tokens":$3,"cache_read_input_tokens":$4,"output_tokens":$5}}}"#;
+    const COUNTER: &str = r#"{@"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":$1,"cached_input_tokens":$2,"output_tokens":$3,"reasoning_output_tokens":$3,"total_tokens":$7},"last_token_usage":{"input_tokens":$4,"cached_input_tokens":$5,"output_tokens":$6,"reasoning_output_tokens":$6,"total_tokens":$8}}}}"#;
+    const MARK: &str = r#"{@"type":"$0","payload":{"model":"gpt-6.1-sol"},"message":{"role":"user","content":"go"}}"#;
+
+    /// Fixture rows, one record each. Claude `id stamp input cache_write cache_read
+    /// output`; Codex `stamp input cached output last_input last_cached last_output`
+    /// (input includes cached; reasoning = output, so adding it is caught);
+    /// `user|turn_context stamp`; `-` = no stamp; any other row is copied verbatim.
+    fn rows(text: &str) -> String {
+        let mut out = String::new();
+        for row in text.lines().map(str::trim).filter(|row| !row.is_empty()) {
+            let mut words: Vec<String> = row.split(' ').map(str::to_owned).collect();
+            let number = |word: &String| word.parse::<u64>().expect("count");
+            let (template, at) = match words.len() {
+                6 => (ASSISTANT, 1),
+                7 => {
+                    let total = number(&words[1]) + number(&words[3]);
+                    let last = number(&words[4]) + number(&words[6]);
+                    words.extend([total.to_string(), last.to_string()]);
+                    (COUNTER, 0)
+                }
+                2 if words[0] == "user" || words[0] == "turn_context" => (MARK, 1),
+                _ => (row, usize::MAX),
+            };
+            let stamp = match words.get(at) {
+                Some(at) if at != "-" => format!(r#""timestamp":"2026-09-08T{at}","#),
+                _ => String::new(),
+            };
+            let mut record = template.replacen('@', &stamp, 1);
+            for (index, word) in words.iter().enumerate().filter(|_| at != usize::MAX) {
+                record = record.replace(&format!("${index}"), word);
+            }
+            out += &record;
+            out.push('\n');
+        }
+        out
+    }
+
+    /// A 2 MiB but valid record: no line cap applies to an in-memory tail.
+    fn padded(record: &str) -> String {
+        let pad = format!(r#"{{"pad":"{}","#, "a".repeat(2 * 1024 * 1024));
+        record.replacen('{', &pad, 1)
+    }
+
+    fn id(n: u8) -> String {
+        format!("0199c0de-1234-4890-abcd-ef01234567{n:02x}")
+    }
+
+    fn world(tag: &str) -> PathBuf {
+        let root = rig(tag);
+        std::fs::create_dir_all(root.join("claude/projects/work")).expect("Claude store");
+        std::fs::create_dir_all(root.join("codex/sessions/2026/09/08")).expect("Codex day");
+        root
+    }
+
+    fn claude_file(root: &Path, id: &str) -> PathBuf {
+        root.join(format!("claude/projects/work/{id}.jsonl"))
+    }
+
+    fn codex_file(root: &Path, id: &str) -> PathBuf {
+        root.join(format!(
+            "codex/sessions/2026/09/08/rollout-2026-09-08T09-00-00-{id}.jsonl"
+        ))
+    }
+
+    fn seat(root: &Path, slot: &str, name: &str, bin: &str, id: &str) -> String {
+        let home = root
+            .join(if bin == "codex" { "codex" } else { "claude" })
+            .display()
+            .to_string();
+        format!(
+            "seat.{slot}={name}\nprofile.{slot}=p\nharness_session.{slot}={id}\nagent_bin.{slot}={bin}\nconfig_home.{slot}={home}\n"
+        )
+    }
+
+    fn write(path: &Path, body: &str) {
+        std::fs::write(path, body).expect("fixture");
+    }
+
+    /// `head`, a NUL hole, then a newline and `tail` as the last bytes: a 64 MiB
+    /// tail read starts inside the hole, so only `tail` can be seen.
+    fn sparse(path: &Path, head: &str, hole: u64, tail: &str) {
+        write(path, head);
+        let file = std::fs::OpenOptions::new().append(true).open(path);
+        let mut file = file.expect("append");
+        let len = u64::try_from(head.len()).expect("head") + hole;
+        file.set_len(len).expect("hole");
+        file.write_all(format!("\n{tail}").as_bytes())
+            .expect("tail");
+    }
+
+    fn observe(root: &Path, seats: &str) -> (Vec<Value>, String) {
+        let meta = format!("schema=2\n{seats}");
+        write(&root.join("sessions/live/meta"), &meta);
+        let path = root.join("sessions/live");
+        let sessions = [SessionInput {
+            name: "live".to_owned(),
+            path,
+        }];
+        let inputs = ae::usage::HourlyInputs {
+            home: Some(root),
+            sessions: &sessions,
+            now: NOW,
+        };
+        let observed = ae::usage::observe_hourly(&inputs);
+        let table = ae::usage::hourly::render(&observed, false);
+        let json = ae::usage::hourly::render(&observed, true);
+        let wide = table.lines().any(|line| line.chars().count() > 100);
+        assert!(!wide, "{table}");
+        assert!(!format!("{table}{json}").contains("usd"), "{json}");
+        let json = ae::json::parse(&json).expect("hourly JSON");
+        assert_eq!(num(json.get("as_of")), u64::try_from(NOW).ok());
+        let open = u64::try_from(OLDEST + 5 * 3600).ok();
+        assert_eq!(num(json.get("open_hour")), open);
+        let _ = list(json.get("exclusions"));
+        let session = &list(json.get("sessions"))[0];
+        assert_eq!(session.get_str("name"), Some("live"));
+        (list(session.get("seats")).to_vec(), table)
+    }
+
+    fn list(value: Option<&Value>) -> &[Value] {
+        let Some(Value::Arr(items)) = value else {
+            panic!("not an array: {value:?}")
+        };
+        items
+    }
+
+    fn num(value: Option<&Value>) -> Option<u64> {
+        let Some(Value::Num(number)) = value else {
+            return None;
+        };
+        u64::try_from(*number).ok()
+    }
+
+    fn named<'a>(seats: &'a [Value], name: &str) -> &'a Value {
+        let hit = |seat: &&Value| seat.get_str("seat").is_some_and(|s| s.starts_with(name));
+        let found = seats.iter().find(hit);
+        found.unwrap_or_else(|| panic!("no {name} seat in {seats:?}"))
+    }
+
+    /// Each hour as the oracle spells it — `n` complete, `n+?` partial, `?`
+    /// nothing known, `~` approximate — after checking the JSON contract, which
+    /// makes every Codex hour approximate.
+    fn cells(seat: &Value) -> String {
+        let hours = list(seat.get("hours"));
+        assert_eq!(hours.len(), 6, "{seat:?}");
+        let tool = seat.get_str("tool");
+        let ids = seat.get_str("slot").is_some() && matches!(tool, Some("claude" | "codex"));
+        let flag = matches!(seat.get("retired"), Some(Value::Bool(_)));
+        let counts = num(seat.get("unbucketed_tokens")).and(num(seat.get("predecessors_not_read")));
+        let reason = seat.get("coverage_reason").is_some();
+        assert!(ids && flag && reason && counts.is_some(), "{seat:?}");
+        let mut out = Vec::new();
+        for (index, hour) in (0_i64..).zip(hours) {
+            let start = u64::try_from(OLDEST + index * 3600).ok();
+            assert_eq!(num(hour.get("start")), start);
+            assert_eq!(hour.get("open"), Some(&Value::Bool(index == 5)));
+            let coded = |code: Option<&str>| CODES.contains(&format!(" {} ", code.unwrap_or("-")));
+            let reasons = list(hour.get("reasons"));
+            assert!(reasons.iter().map(Value::as_str).all(coded), "{seat:?}");
+            let known = num(hour.get("known_tokens")).expect("known_tokens");
+            assert!(matches!(hour.get("approximate"), Some(Value::Bool(_))));
+            let approximate = hour.get("approximate") == Some(&Value::Bool(true));
+            assert!(approximate || tool != Some("codex"), "{seat:?}");
+            let tilde = ["", "~"][usize::from(approximate)];
+            out.push(match (hour.get_str("coverage"), hour.get("tokens")) {
+                (Some("complete"), tokens) if num(tokens) == Some(known) => {
+                    format!("{known}{tilde}")
+                }
+                (Some("partial"), Some(Value::Null)) if known > 0 => format!("{known}{tilde}+?"),
+                (Some("unknown"), Some(Value::Null)) if known == 0 => "?".to_owned(),
+                other => panic!("hour {index} breaks the coverage contract: {other:?} {known}"),
+            });
+        }
+        out.join(" ")
+    }
+
+    fn row(table: &str, label: &str) -> String {
+        let first = |line: &&str| line.split_whitespace().next() == Some(label);
+        let line = table.lines().find(first);
+        let line = line.unwrap_or_else(|| panic!("no {label} in\n{table}"));
+        let words: Vec<_> = line.split_whitespace().skip(1).collect();
+        words.join(" ")
+    }
+
+    const UNKNOWN: &str = "? ? ? ? ? ?";
+    const CODES: &str = " before_tail gap future budget unreadable conflict unbucketed ";
+
+    // Catches: mtime/local zone/rolling window/.999999 up/+02:00 ignored/future
+    // counted; snapshots summed, equal repeat moved, vector conflict hidden, replay
+    // recharged; unstamped guessed; id-less summed; 1 MiB cap; whole-window taint.
+    #[test]
+    fn claude_whole_files_bucket_by_utc_stamp_once_per_request() {
+        let root = world("hourly-claude");
+        let clock = rows(
+            "a 11:59:59.999999Z 1 0 0 0
+            b 12:00:00Z 2 0 0 0
+            c 12:30:00+02:00 0 4 0 0
+            d 09:00:00.5Z 0 0 8 0
+            e 12:30:01Z 16 0 0 0
+            f 06:59:59Z 32 0 0 0
+            g 12:30:00.9Z 0 0 0 64",
+        );
+        let snapshots = rows(
+            "grow 10:59:50Z 100 0 0 0
+            rep 09:59:59Z 10 5 5 10
+            grow 11:00:10Z 150 0 0 0
+            rep 10:00:01Z 10 5 5 10
+            late 08:00:30Z 7 0 0 0
+            late 07:59:50Z 7 0 0 0
+            tie 09:10:00Z 5 0 0 0
+            tie 09:20:00Z 0 5 0 0",
+        );
+        let unstamped = rows("t 10:10:00Z 5 0 0 0\nu - 9 0 0 0");
+        let in_flight =
+            r#"{"type":"assistant","timestamp":"2026-09-08T12:10:00Z","message":{"id":"z""#;
+        let malformed = rows("p 08:10:00Z 1 0 0 0\n{not json\nq 09:20:00Z 2 0 0 0")
+            + &padded(&rows("big 10:30:00Z 8 0 0 0"))
+            + &rows("r 11:10:00Z 4 0 0 0")
+            + in_flight;
+        let anonymous = rows("x 10:30:00Z 50 0 0 0").replace(r#""id":"x","#, "")
+            + &rows("v 10:40:00Z 60 0 0 0").replace(r#""requestId":"req-v","#, "");
+        let noid = rows("k 10:10:00Z 1 0 0 0") + &anonymous + &rows("m 10:50:00Z 2 0 0 0");
+        let mut roster = String::new();
+        let bodies = [
+            ("clock", clock),
+            ("snapshots", snapshots),
+            ("unstamped", unstamped),
+            ("malformed", malformed),
+            ("noid", noid),
+        ];
+        for (n, (name, body)) in (0xa0..).zip(bodies) {
+            write(&claude_file(&root, &id(n)), &body);
+            let slot = format!("spawned.{}", n - 0xa0);
+            roster += &seat(&root, &slot, name, "claude", &id(n));
+        }
+        let subagents = root.join(format!("claude/projects/work/{}/subagents", id(0xa1)));
+        std::fs::create_dir_all(&subagents).expect("subagents");
+        let side = rows("side 11:30:00Z 0 0 0 3\nrep 10:00:01Z 10 5 5 10");
+        write(&subagents.join("agent-1.jsonl"), &side);
+        let (seats, table) = observe(&root, &roster);
+        let clock = named(&seats, "clock");
+        assert_eq!(cells(clock), "0 0 8 4 1 66+?");
+        let reasons = list(list(clock.get("hours"))[5].get("reasons"));
+        assert!(reasons.contains(&Value::str("future")), "{reasons:?}");
+        assert_eq!(row(&table, "live:clock"), "0 0 8 4 1 66+?");
+        assert!(table.contains("UTC"), "{table}");
+        let now = table.lines().any(|line| line.trim_end().ends_with(" now"));
+        assert!(now, "{table}");
+        assert_eq!(cells(named(&seats, "snapshots")), "7 0 35~ 0 153 0");
+        let unstamped = named(&seats, "unstamped");
+        assert_eq!(cells(unstamped), "0 0 0 5+? ? ?");
+        assert_eq!(num(unstamped.get("unbucketed_tokens")), Some(9));
+        assert!(table.contains("unbucketed"), "{table}");
+        assert_eq!(cells(named(&seats, "malformed")), "0 1+? 2+? 8 4 0");
+        assert_eq!(cells(named(&seats, "noid")), "0 0 0 3+? 0 0");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Catches: a read past the 64 MiB tail, a cut first record consumed, a 16 MiB refusal,
+    // absent history as 0, a G=600 off-by-one per tool, a turn_context witness, a lifetime charge.
+    #[test]
+    fn tails_are_complete_only_behind_the_witness_and_codex_baselines() {
+        let root = world("hourly-tails");
+        // The 64 MiB tail starts on the `{` of `trap`: a valid record whose line
+        // began one byte earlier, so it must be skipped as a partial first line.
+        let cut = |path: &Path, trap: &str, tail: &str| {
+            let hole = 64 * MIB - u64::try_from(trap.len() + 1 + tail.len()).expect("len");
+            sparse(path, &format!("a{trap}"), hole, tail);
+        };
+        let codex = |n: u8| format!("01a08046-1974-7352-ade3-81a7862007a{n}");
+        let trap = rows("old 08:20:00Z 1000 0 0 0");
+        let counter = rows("08:20:00Z 800 0 0 800 0 0");
+        for (n, witness) in [(0, "08:50:00Z"), (1, "08:50:01Z")] {
+            let tail = format!("user {witness}\nin 09:10:00Z 5 0 0 0\non 11:00:00Z 7 0 0 0");
+            cut(&claude_file(&root, &id(0xa0 + n)), &trap, &rows(&tail));
+            let chain = format!("{witness} 900 0 0 40 0 0\n09:10:00Z 905 0 0 5 0 0");
+            let chain = rows(&format!("{chain}\n11:00:00Z 912 0 0 7 0 0"));
+            cut(&codex_file(&root, &codex(n)), &counter, &chain);
+        }
+        let tail =
+            rows("turn_context 08:40:00Z\n09:20:00Z 900 0 100 40 0 0\n10:10:00Z 930 0 110 30 0 10");
+        let head = rows("08:00:00Z 5000 0 0 5000 0 0");
+        sparse(&codex_file(&root, CODEX_ID), &head, 64 * MIB, &tail);
+        let roster = seat(&root, "main", "exact", "claude", &id(0xa0))
+            + &seat(&root, "worker.0", "baseline", "codex", CODEX_ID)
+            + &seat(&root, "spawned.0", "short", "claude", &id(0xa1))
+            + &seat(&root, "spawned.1", "cexact", "codex", &codex(0))
+            + &seat(&root, "spawned.2", "cshort", "codex", &codex(1));
+        let (seats, _) = observe(&root, &roster);
+        assert_eq!(cells(named(&seats, "exact")), "? ? 5 0 7 0");
+        assert_eq!(cells(named(&seats, "short")), "? ? 5+? 0 7 0");
+        assert_eq!(cells(named(&seats, "cexact")), "? ? 5~ 0~ 7~ 0~");
+        assert_eq!(cells(named(&seats, "cshort")), "? ? 5~+? 0~ 7~ 0~");
+        assert_eq!(cells(named(&seats, "baseline")), "? ? ? 40~ 0~ 0~");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Catches: summed counters/last_usage, reasoning or cache twice, a clamped or
+    // unmarked reset; inherited baseline charged, unstamped swept, malformed read as
+    // 0, non-counter lines tainting, width or spelling drift past 1e9.
+    #[test]
+    fn codex_charges_counter_deltas_to_receipt_hours_and_names_gaps() {
+        let root = world("hourly-codex");
+        let chain = rows(
+            "turn_context 09:00:00Z
+            09:10:00Z 60 20 40 60 20 40
+            10:20:00Z 80 20 60 20 0 20
+            10:30:00Z 80 20 60 20 0 20
+            11:40:00Z 900 20 140 820 0 80
+            11:45:00Z 15 0 5 15 0 5
+            12:10:00Z 35 0 15 20 0 10",
+        );
+        write(&codex_file(&root, CODEX_ID), &chain);
+        let gaps_id = "01a08046-1974-7352-ade3-81a786200796";
+        let overlong =
+            r#"{"timestamp":"2026-09-08T12:05:00Z","type":"response_item","payload":{}}"#;
+        let gaps = rows(
+            r#"09:10:00Z 900000000 0 100000000 40 0 0
+            - 980000000 0 120000000 40 0 0
+            10:30:00Z 1020000000 0 130000000 40 0 0
+            {"timestamp":"2026-09-08T11:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":"x","output_tokens":1}}}}
+            11:20:00Z 1060000000 0 140000000 40 0 0
+            {garbage"#,
+        ) + &padded(overlong)
+            + "\n"
+            + &rows(
+                "12:10:00Z 1110000000 0 150000000 40 0 0\n12:20:00Z 3100000000 0 160000000 40 0 0",
+            );
+        write(&codex_file(&root, gaps_id), &gaps);
+        let long = "seat-name-of-twenty-seven-c";
+        let roster = seat(&root, "worker.0", "colead", "codex", CODEX_ID)
+            + &seat(&root, "spawned.0", long, "codex", gaps_id);
+        let (seats, table) = observe(&root, &roster);
+        let chain = named(&seats, "colead");
+        assert_eq!(cells(chain), "0~ 0~ 100~ 40~ 900~+? 30~");
+        assert_eq!(row(&table, "live:colead"), "0~ 0~ 100~ 40~ 900~+? 30~");
+        let gaps = named(&seats, long);
+        assert_eq!(cells(gaps), "? ? ? 50000000~+? ? 2060000000~");
+        assert_eq!(num(gaps.get("unbucketed_tokens")), Some(100_000_000));
+        let label = format!("live:{long}");
+        assert_eq!(label.len(), 32);
+        let cells = row(&table, &label);
+        let (head, last) = cells.rsplit_once(' ').expect("cells");
+        assert_eq!(head, "? ? ? 50.0M~+? ?");
+        let science = last.strip_suffix('~').expect("approximate");
+        assert!(science.contains('e') && science.len() <= 6, "{science}");
+        assert!(table.contains("subagent"), "{table}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Catches: predecessor read, resume clipped at launch, symlink followed, shared
+    // transcript double counted, same owner twice, stores merged by UUID, failed
+    // parent's child complete, retired dropped.
+    #[test]
+    fn owners_lineage_and_links_decide_what_is_read() {
+        let root = world("hourly-owners");
+        let files = [
+            (CLAUDE_ID.to_owned(), "x 11:10:00Z 5 0 0 0"),
+            (RETIRED_ID.to_owned(), "z 10:10:00Z 3 0 0 0"),
+            (id(0xa0), "n 10:10:00Z 5 0 0 0"),
+            (id(0xa1), "o 11:20:00Z 1000 0 0 0"),
+            (id(0xa2), "y 09:10:00Z 6 0 0 0"),
+            (id(0xa4), "l 10:10:00Z 2 0 0 0"),
+        ];
+        for (id, body) in files {
+            write(&claude_file(&root, &id), &rows(body));
+        }
+        let outside = root.join("outside.jsonl");
+        write(&outside, &rows("out 11:00:00Z 77 0 0 0"));
+        std::os::unix::fs::symlink(&outside, claude_file(&root, &id(0xa3))).expect("symlink");
+        let child = root.join(format!("claude/projects/work/{}/subagents", id(0xa3)));
+        std::fs::create_dir_all(&child).expect("child");
+        write(&child.join("agent-1.jsonl"), &rows("kid 11:00:00Z 9 0 0 0"));
+        let other = root.join("claude2/projects/work");
+        std::fs::create_dir_all(&other).expect("second store");
+        let right = other.join(format!("{}.jsonl", id(0xa4)));
+        write(&right, &rows("r 10:20:00Z 4 0 0 0"));
+        let home = root.join("claude").display().to_string();
+        let retire = |target: &str, id: &str, slot: &str| {
+            format!(
+                r#"{{"ts":"2026-09-08T10:00:00Z","actor":"lead","action":"retire","target":"{target}","ref":"{id}","target_slot":"{slot}","summary":"tool=claude profile=p config_home={home} config_home_base="}}"#
+            ) + "\n"
+        };
+        let events = retire("shadow", CLAUDE_ID, "spawned.5")
+            + &retire("past", RETIRED_ID, "spawned.6")
+            + &retire("past", RETIRED_ID, "spawned.6");
+        write(&root.join("sessions/live/events.jsonl"), &events);
+        let roster = seat(&root, "main", "lead", "claude", CLAUDE_ID)
+            + &seat(&root, "worker.0", "heir", "claude", &id(0xa0))
+            + &format!("harness_session_prior.worker.0=claude:{}\n", id(0xa1))
+            + "launch_time.worker.0=1788868800\n"
+            + &seat(&root, "spawned.0", "solo", "claude", &id(0xa2))
+            + &seat(&root, "spawned.1", "twin", "claude", &id(0xa2))
+            + &seat(&root, "spawned.2", "linky", "claude", &id(0xa3))
+            + &seat(&root, "spawned.3", "left", "claude", &id(0xa4))
+            + &seat(&root, "spawned.4", "right", "claude", &id(0xa4))
+                .replace("/claude\n", "/claude2\n");
+        let (seats, table) = observe(&root, &roster);
+        for name in ["lead", "solo", "twin", "shadow"] {
+            assert_eq!(cells(named(&seats, name)), UNKNOWN, "{name}");
+            let why = named(&seats, name).get_str("coverage_reason");
+            assert!(why.is_some_and(|w| w.contains("conflict")), "{name}");
+        }
+        assert!(table.contains("conflict"), "{table}");
+        let heir = named(&seats, "heir");
+        assert_eq!(cells(heir), "0 0 0 5 0 0");
+        assert_eq!(num(heir.get("predecessors_not_read")), Some(1));
+        assert!(table.contains("predecessors not read (1)"), "{table}");
+        let past = named(&seats, "past");
+        assert_eq!(past.get("retired"), Some(&Value::Bool(true)));
+        assert_eq!(cells(past), "0 0 0 3 0 0");
+        let past = |seat: &&Value| seat.get_str("seat") == Some("past");
+        assert_eq!(seats.iter().filter(past).count(), 1);
+        assert_eq!(cells(named(&seats, "left")), "0 0 0 2 0 0");
+        assert_eq!(cells(named(&seats, "right")), "0 0 0 4 0 0");
+        let linky = cells(named(&seats, "linky"));
+        assert!(linky.split(' ').all(|cell| cell.ends_with('?')), "{linky}");
+        assert!(named(&seats, "linky").get_str("coverage_reason").is_some());
+        assert_eq!(row(&table, "live:linky"), linky);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Catches: an unbounded call (all ten read), a seat-count cap (512 / 64 = 8
+    // refuses the ninth) or a refusal not named per seat in slot order.
+    #[test]
+    fn the_512_mib_call_budget_names_every_seat_it_could_not_read() {
+        let root = world("hourly-budget");
+        let mut roster = String::new();
+        for n in 0..10 {
+            let path = claude_file(&root, &id(0xa0 + n));
+            let hole = 60 * MIB * u64::from(n > 0);
+            sparse(&path, "", hole, &rows("w 11:00:00Z 1 0 0 0"));
+            let (slot, name) = (format!("spawned.{n}"), format!("s{n}"));
+            roster += &seat(&root, &slot, &name, "claude", &id(0xa0 + n));
+        }
+        let (seats, table) = observe(&root, &roster);
+        assert_eq!(seats.len(), 10);
+        for (n, seat) in seats[..9].iter().enumerate() {
+            assert_eq!(seat.get_str("slot"), Some(format!("spawned.{n}").as_str()));
+            assert_eq!(seat.get("coverage_reason"), Some(&Value::Null), "{seat:?}");
+            assert_eq!(num(list(seat.get("hours"))[4].get("known_tokens")), Some(1));
+        }
+        let why = seats[9].get_str("coverage_reason");
+        assert_eq!(why, Some("not read (budget)"));
+        assert_eq!(cells(&seats[9]), UNKNOWN);
+        assert!(table.contains("not read (budget)"), "{table}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn run(root: &Path, args: &[&str]) -> (Option<i32>, String) {
+        let mut ae = crate::cli::ae();
+        ae.env("HOME", root).env("AE_HOME", root);
+        ae.env("CONFIG_FILE", root.join("config")).current_dir(root);
+        let output = ae.args(args).output().expect("ae");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        (output.status.code(), stdout)
+    }
+
+    // Catches: a broken flag grammar, the hourly path loading the price book, a
+    // helper that drops or widens its one flag or reads the wall clock wrong,
+    // stale help, changed default bytes, fuzz targets that miss the hourly parsers.
+    #[test]
+    fn hourly_surface_reads_no_price_book_and_leaves_default_output_unchanged() {
+        let root = world("hourly-surface");
+        let path = root.join("sessions/live");
+        let dir = path.to_str().expect("session path");
+        write(&root.join("config"), "[workspace]\nmain = lead\n");
+        let meta =
+            "schema=2\nsession=live\nseat.main=lead\nprofile.main=grok46\nagent_bin.main=grok\n";
+        write(&path.join("meta"), meta);
+        let (code, out) = run(&root, &["_usage", dir]);
+        assert!(code == Some(0) && out == DEFAULT_HELPER, "{out}");
+        let (code, json) = run(&root, &["usage", "--json"]);
+        assert!(code == Some(0) && json.starts_with(r#"{"now":"#), "{json}");
+        let fleet = json.split_once(',').map(|(_, rest)| rest.trim_end());
+        assert_eq!(fleet, Some(DEFAULT_JSON), "{json}");
+        let prices = "[workspace]\nmain = lead\n[prices]\na = same,1,2,3,4\nb = same,4,3,2,1\n";
+        write(&root.join("config"), prices);
+        assert_eq!(run(&root, &["usage"]).0, Some(2));
+        assert_eq!(run(&root, &["_usage", dir, "--json"]).0, Some(2));
+        let parsed = ae::usage::parse_args(&["--json", "--hourly", "live"].map(String::from));
+        let parsed = parsed.expect("args");
+        assert!(parsed.hourly && parsed.json && parsed.sessions == ["live"]);
+        assert!(!ae::usage::parse_args(&[]).expect("bare").hourly);
+        let twice = ae::usage::parse_args(&["--hourly", "--hourly"].map(String::from));
+        assert_eq!(twice, Err("--hourly".to_owned()));
+        let now = ae::time::Timestamp::now().epoch();
+        let stamp = ae::time::Timestamp::from_epoch(now - 7200).to_string();
+        let body = rows("k 11:10:00Z 5 0 0 0").replace("2026-09-08T11:10:00Z", &stamp);
+        write(&claude_file(&root, CLAUDE_ID), &body);
+        let counter = rows("09:00:00Z 40 0 0 40 0 0").replace("2026-09-08T09:00:00Z", &stamp);
+        write(&codex_file(&root, CODEX_ID), &counter);
+        let w = seat(&root, "worker.0", "w", "claude", CLAUDE_ID);
+        let c = seat(&root, "spawned.0", "c", "codex", CODEX_ID);
+        write(&path.join("meta"), &format!("{meta}{w}{c}"));
+        assert_eq!(run(&root, &["usage", "--hourly"]).0, Some(0));
+        let (code, table) = run(&root, &["@live", "usage", "--hourly"]);
+        assert_eq!(code, Some(0), "{table}");
+        assert_eq!(row(&table, "live:lead"), UNKNOWN);
+        let either = ["0 0 0 5 0 0", "0 0 5 0 0 0"];
+        assert!(either.contains(&row(&table, "live:w").as_str()), "{table}");
+        let either = ["0~ 0~ 0~ 40~ 0~ 0~", "0~ 0~ 40~ 0~ 0~ 0~"];
+        assert!(either.contains(&row(&table, "live:c").as_str()), "{table}");
+        let twice = run(&root, &["_usage", dir, "--hourly", "--hourly"]);
+        assert_eq!(twice.0, Some(2));
+        let (code, help) = run(&root, &["@live", "usage", "--help"]);
+        assert!(code == Some(0) && help.contains("--hourly"), "{help}");
+        let (code, help) = run(&root, &["--help"]);
+        assert!(code == Some(0) && help.contains("--hourly"), "{help}");
+        let fuzz = format!("{}/fuzz/fuzz_targets", env!("CARGO_MANIFEST_DIR"));
+        for target in ["usage_claude_transcript", "usage_codex_rollout"] {
+            let source = std::fs::read_to_string(format!("{fuzz}/{target}.rs")).expect("fuzz");
+            assert!(source.contains("usage::hourly::"), "{target}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

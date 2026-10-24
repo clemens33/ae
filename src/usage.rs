@@ -2,6 +2,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod hourly;
 pub mod prices;
 
 use std::fs::File;
@@ -62,9 +63,10 @@ pub struct SessionInput {
 pub struct Args {
     pub sessions: Vec<String>,
     pub json: bool,
+    pub hourly: bool,
 }
 
-/// Parse `ae usage [session…] [--json]` without reading the world.
+/// Parse `ae usage [session…] [--hourly] [--json]` without reading the world.
 ///
 /// # Errors
 ///
@@ -74,7 +76,8 @@ pub fn parse_args(tail: &[String]) -> Result<Args, String> {
     for word in tail {
         match word.as_str() {
             "--json" if !parsed.json => parsed.json = true,
-            "--json" => return Err(word.clone()),
+            "--hourly" if !parsed.hourly => parsed.hourly = true,
+            "--json" | "--hourly" => return Err(word.clone()),
             option if option.starts_with('-') => return Err(word.clone()),
             name if crate::session_launch::name::is_session_name(name) => {
                 if parsed.sessions.iter().any(|known| known == name) {
@@ -945,6 +948,27 @@ fn locate_transcript(path: &Path, budget: &mut Budget) -> Result<Option<Transcri
     }))
 }
 
+fn checked_transcript(path: &Path, metadata: &std::fs::Metadata) -> Result<File, Coverage> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: streams only the lstat-checked agent transcript"
+    )]
+    let file =
+        File::open(path).map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
+    let opened = file
+        .metadata()
+        .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
+    if !opened.file_type().is_file()
+        || opened.len() < metadata.len()
+        || !same_file(metadata, &opened)
+    {
+        return Err(Coverage::Unreadable(
+            "transcript changed during read".to_owned(),
+        ));
+    }
+    Ok(file)
+}
+
 fn parse_transcript(
     transcript: &TranscriptFile,
     budget: &mut TranscriptBudget,
@@ -952,23 +976,7 @@ fn parse_transcript(
     if !budget.claim(transcript.metadata.len()) {
         return Err(Coverage::Truncated);
     }
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: streams only the lstat-checked agent transcript"
-    )]
-    let file = File::open(&transcript.path)
-        .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
-    let opened = file
-        .metadata()
-        .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
-    if !opened.file_type().is_file()
-        || opened.len() < transcript.metadata.len()
-        || !same_file(&transcript.metadata, &opened)
-    {
-        return Err(Coverage::Unreadable(
-            "transcript changed during read".to_owned(),
-        ));
-    }
+    let file = checked_transcript(&transcript.path, &transcript.metadata)?;
     let mut reader = BufReader::new(file.take(transcript.metadata.len()));
     let mut line = Vec::new();
     let mut parser = claude::Parser::default();
@@ -1782,5 +1790,204 @@ fn coverage_name(coverage: &Coverage) -> &'static str {
         Coverage::Unsupported => "unsupported",
         Coverage::Unlocated => "unlocated",
         Coverage::Truncated => "truncated",
+    }
+}
+
+/// Roots and clock for the price-independent hourly observation.
+pub struct HourlyInputs<'a> {
+    pub home: Option<&'a Path>,
+    pub sessions: &'a [SessionInput],
+    pub now: i64,
+}
+/// Observe current conversations only; predecessor history stays excluded.
+#[must_use]
+pub fn observe_hourly(inputs: &HourlyInputs<'_>) -> hourly::Observation {
+    let mut left = 512 * 1024 * 1024;
+    let mut observation = hourly::Observation {
+        now: inputs.now,
+        sessions: Vec::new(),
+        exclusions: Vec::new(),
+    };
+    let inventory = hourly_inventory(inputs, &mut observation.exclusions);
+    for (session, entry, retired, source, key, prior) in &inventory {
+        let codex = *source == UsageSource::CodexRollout;
+        let conflict = key.is_some() && inventory.iter().filter(|r| r.4 == *key).count() > 1;
+        let scan = if conflict {
+            hourly::Scan::failed(32, codex)
+        } else {
+            let result = key
+                .as_ref()
+                .ok_or(Coverage::Unsupported)
+                .and_then(|(root, id)| hourly_source(root, id, *source, &mut left, inputs.now));
+            result.unwrap_or_else(|coverage| hourly::Scan::failed(hourly_code(&coverage), codex))
+        };
+        let reason = scan.failure();
+        if let Some(reason) = &reason {
+            observation
+                .exclusions
+                .push(format!("{session}:{}: {reason}", entry.name));
+        }
+        if *prior > 0 {
+            observation.exclusions.push(format!(
+                "{session}:{}: predecessors not read ({prior})",
+                entry.name
+            ));
+        }
+        let row = scan
+            .finish(inputs.now)
+            .seat(entry, *retired, *prior, reason, inputs.now);
+        if observation.sessions.last().is_none_or(|r| r.0 != *session) {
+            observation.sessions.push((session.clone(), Vec::new()));
+        }
+        if let Some((_, seats)) = observation.sessions.last_mut() {
+            seats.push(row);
+        }
+        if *source != UsageSource::Unsupported {
+            let caveat = if codex {
+                "Codex internal subagents not read; inclusion unknown"
+            } else {
+                "Claude parent replay outside parent tail unmeasured"
+            };
+            observation.exclusions.push(caveat.to_owned());
+        }
+    }
+    observation.exclusions.sort();
+    observation.exclusions.dedup();
+    observation
+}
+const HOURLY_TAIL: u64 = 64 * 1024 * 1024;
+fn hourly_source(
+    root: &Path,
+    id: &str,
+    source: UsageSource,
+    left: &mut u64,
+    now: i64,
+) -> Result<hourly::Scan, Coverage> {
+    let mut budget = Budget::new();
+    let unreadable = || Coverage::Unreadable("unreadable transcript".to_owned());
+    match source {
+        UsageSource::CodexRollout => {
+            let file = match crate::quota::find_codex_rollout(root, id, &mut budget) {
+                Ok(Bounded::Ready(Some(file))) => file,
+                Ok(Bounded::Truncated) => return Err(Coverage::Truncated),
+                _ => return Err(unreadable()),
+            };
+            let (bytes, boundary, whole) = hourly_tail(file.path(), file.metadata(), left)?;
+            Ok(hourly::parse(&bytes, boundary, whole, now, true))
+        }
+        UsageSource::ClaudeTranscripts => {
+            let found = locate_claude(root, id, &mut budget, true)?;
+            let parent = found.parent.ok_or_else(unreadable)?;
+            let mut scan = {
+                let (bytes, boundary, whole) = hourly_tail(&parent.path, &parent.metadata, left)?;
+                hourly::parse(&bytes, boundary, whole, now, false)
+            };
+            let ids = scan.ids();
+            let mut children = found.sidechains;
+            children.sort_by(|a, b| a.path.cmp(&b.path));
+            for child in children {
+                let child = match hourly_tail(&child.path, &child.metadata, left) {
+                    Ok((bytes, boundary, whole)) => {
+                        hourly::parse(&bytes, boundary, whole, now, false)
+                    }
+                    Err(coverage) => hourly::Scan::failed(hourly_code(&coverage), false),
+                };
+                scan.merge(child, &ids);
+            }
+            Ok(scan)
+        }
+        UsageSource::Unsupported => Err(Coverage::Unsupported),
+    }
+}
+fn hourly_tail(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    left: &mut u64,
+) -> Result<(Vec<u8>, bool, bool), Coverage> {
+    use std::io::{Seek as _, SeekFrom};
+    let unreadable = || Coverage::Unreadable("unreadable transcript".to_owned());
+    let mut file = checked_transcript(path, metadata)?;
+    let planned = metadata.len().min(HOURLY_TAIL);
+    if !claim_transcript(Some(left), planned) {
+        return Err(Coverage::Truncated);
+    }
+    let mut budget = Budget::local(HOURLY_TAIL);
+    if !budget.reserve_bytes(planned) {
+        return Err(unreadable());
+    }
+    file.seek(SeekFrom::Start(metadata.len() - planned))
+        .map_err(|_| unreadable())?;
+    let mut bytes = Vec::with_capacity(usize::try_from(planned).unwrap_or(0));
+    file.take(planned)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unreadable())?;
+    if u64::try_from(bytes.len()).ok() != Some(planned) {
+        return Err(unreadable());
+    }
+    let whole = metadata.len() <= HOURLY_TAIL;
+    let boundary = whole || bytes.first() == Some(&b'\n');
+    Ok((bytes, boundary, whole))
+}
+
+type HourlySeat = (
+    String,
+    RosterEntry,
+    bool,
+    UsageSource,
+    Option<(PathBuf, String)>,
+    usize,
+);
+fn hourly_inventory(inputs: &HourlyInputs<'_>, exclusions: &mut Vec<String>) -> Vec<HourlySeat> {
+    let mut inventory = Vec::new();
+    let mut sessions = inputs.sessions.iter().collect::<Vec<_>>();
+    sessions.sort_by_key(|s| &s.name);
+    for session in sessions {
+        let mut budget = Budget::new();
+        let Ok(meta) = read_meta(&session.path, &mut budget) else {
+            exclusions.push(format!("{}: unreadable meta", session.name));
+            continue;
+        };
+        let mut seats = profile_current(&meta, inputs.now);
+        let mut audit = crate::profile_view::Audit::default();
+        if let Ok(Some((bytes, _))) = read_regular(
+            &session.path.join(crate::store::EVENTS),
+            EVENTS_MAX_BYTES,
+            &mut budget,
+        ) {
+            profile_retired(&bytes, &session.name, &mut seats, &mut audit);
+        }
+        exclusions.extend(audit.gaps);
+        seats.sort_by(|a, b| (&a.0.slot, &a.0.name, a.3).cmp(&(&b.0.slot, &b.0.name, b.3)));
+        for (entry, _, _, retired) in seats {
+            let source = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""))
+                .adapter()
+                .usage
+                .source;
+            let key = source_for(&entry, source, inputs.home)
+                .ok()
+                .zip(valid_id(entry.harness_session.as_deref()));
+            let prior = if retired {
+                0
+            } else {
+                meta.harness_session_prior(&entry.slot).len()
+            };
+            if !inventory.iter().any(|r: &HourlySeat| {
+                r.0 == session.name
+                    && r.1.slot == entry.slot
+                    && r.1.name == entry.name
+                    && r.2 == retired
+                    && r.4 == key
+            }) {
+                inventory.push((session.name.clone(), entry, retired, source, key, prior));
+            }
+        }
+    }
+    inventory
+}
+
+fn hourly_code(coverage: &Coverage) -> u8 {
+    match coverage {
+        Coverage::Truncated => 8,
+        _ => 16,
     }
 }

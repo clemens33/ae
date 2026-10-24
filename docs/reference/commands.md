@@ -30,7 +30,7 @@ ae brief [name] [--all] [--since <dur>] [--seat <agent>]
                        --seat prints ONE seat's seed pack instead of the cards
 ae quota [--json]      Show bounded local quota snapshots for every configured account;
                        --json prints the same rows as one JSON document
-ae usage [name…] [--json]
+ae usage [name…] [--hourly] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
 ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>] [--assistant]
@@ -1485,6 +1485,22 @@ is not live exits 1. The session helper reads only its own session:
 ae usage my-feature --json
 ~/.ae/sessions/my-feature/usage
 ```
+
+`ae usage [name…] --hourly [--json]` reports six UTC hour buckets, ending with the
+current open hour. The helper accepts `usage --hourly` for its own session (table only).
+Hourly mode reads no price book. Each seat has one row: `~` means approximate, `+?`
+means a known subtotal with incomplete coverage, and `?` means nothing is known.
+JSON separates `known_tokens` from nullable `tokens`, with coverage and reason codes.
+
+Both tools read at most one 64 MiB tail per source and 512 MiB across the call.
+A verified whole file covers earlier empty buckets; a truncated tail needs a timestamp
+witness at least ten minutes before a bucket. Claude assigns the greatest request
+snapshot to its receipt hour. Codex assigns cumulative counter increments to their
+receipt hour, so every Codex bucket is approximate. Missing timestamps retain known
+unbucketed tokens; future records are excluded. Current and typed retired conversations
+are included, predecessors excluded and named. Conflicting ownership yields unknown rows.
+Codex internal subagents are not scanned; Claude parent replays outside the parent tail
+remain an unmeasured limit. These are recorded-token observations, not quota capacity.
 
 The table has one row per seat and model, session totals, then a fleet total. JSON carries the
 same raw token counters, micro-USD cost, coverage, observation time, retirement and approximation

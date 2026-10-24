@@ -493,6 +493,16 @@ fn run_public_usage(
             return Ok(EXIT_UNAVAILABLE);
         }
     };
+    if parsed.hourly {
+        let home = doors::home();
+        let observed = usage::observe_hourly(&usage::HourlyInputs {
+            home: home.as_deref(),
+            sessions: &sessions,
+            now: time::Timestamp::now().epoch(),
+        });
+        write!(out, "{}", usage::hourly::render(&observed, parsed.json))?;
+        return Ok(0);
+    }
     let cwd = doors::cwd();
     let global = doors::config_file(shape, &root);
     let local = doors::local_config(&cwd);
@@ -3290,9 +3300,24 @@ fn run_quota_helper(
 /// The session helper's usage entry: read only its durable session.
 fn run_usage_helper(
     dir: &std::path::Path,
+    hourly: bool,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
+    if hourly {
+        let home = doors::home();
+        let sessions = [usage::SessionInput {
+            name: own_session(dir),
+            path: dir.to_owned(),
+        }];
+        let observed = usage::observe_hourly(&usage::HourlyInputs {
+            home: home.as_deref(),
+            sessions: &sessions,
+            now: time::Timestamp::now().epoch(),
+        });
+        write!(out, "{}", usage::hourly::render(&observed, false))?;
+        return Ok(0);
+    }
     let local = usage::local_config(dir);
     let root = state_root().or_else(|| {
         dir.parent()
@@ -3720,7 +3745,8 @@ pub fn run_with(
             panes::agents(dir, tail, &own_session(dir), out, err)?
         }
         cli::Request::Quota { dir } => run_quota_helper(dir, out, err)?,
-        cli::Request::Usage { dir } => run_usage_helper(dir, out, err)?,
+        cli::Request::Usage { dir } => run_usage_helper(dir, false, out, err)?,
+        cli::Request::UsageHourly { dir } => run_usage_helper(dir, true, out, err)?,
         cli::Request::Focus { dir, tail } => {
             panes::focus(dir, tail, &own_session(dir), time::Timestamp::now(), err)?
         }

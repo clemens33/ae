@@ -1,0 +1,4 @@
+{"type": "event_msg", "timestamp": "2026-09-08T09:10:00Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 40}, "last_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 40}}}}
+{"type": "event_msg", "timestamp": "2026-09-08T10:10:00Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 140, "cached_input_tokens": 20, "output_tokens": 40}, "last_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 40}}}}
+{"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 140, "cached_input_tokens": 20, "output_tokens": 60}, "last_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 40}}}}
+{not json

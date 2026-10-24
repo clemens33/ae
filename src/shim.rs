@@ -151,7 +151,7 @@ pub const HELPERS: [Helper; 27] = [
     },
     Helper {
         name: "usage",
-        usage: "Usage: usage\nShow this session's offline token usage and reference-price spend.\n",
+        usage: "Usage: usage [--hourly]\nShow this session's offline token usage and reference-price spend.\n--hourly: six UTC hour buckets, no prices.\n",
         entry: crate::cli::USAGE,
         prefix: &[],
     },

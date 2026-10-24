@@ -1,0 +1,4 @@
+{"type": "assistant", "timestamp": "2026-09-08T10:59:59.999999Z", "requestId": "r", "message": {"id": "m", "model": "claude-fable-5-1", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3, "output_tokens": 5}}}
+{"type": "assistant", "timestamp": "2026-09-08T11:00:00Z", "requestId": "r", "message": {"id": "m", "model": "claude-fable-5-1", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3, "output_tokens": 8}}}
+{"type": "assistant", "requestId": "r", "message": {"id": "m", "model": "claude-fable-5-1", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3, "output_tokens": 8}}}
+{bad

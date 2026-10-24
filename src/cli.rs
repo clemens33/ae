@@ -751,6 +751,11 @@ pub enum Request {
         /// The session directory the helper derives from `$0`.
         dir: PathBuf,
     },
+    /// `_usage <dir> --hourly` — read six UTC token buckets.
+    UsageHourly {
+        /// The session directory the helper derives from `$0`.
+        dir: PathBuf,
+    },
     /// `rename [old] <new>` — validated by [`crate::rename`].
     Rename {
         /// Everything after the subcommand, as typed.
@@ -920,6 +925,7 @@ impl Request {
                 _ => Self::MissingOperand(QUOTA),
             },
             Some(USAGE) => match &args[1..] {
+                [dir, flag] if flag == "--hourly" => Self::UsageHourly { dir: dir.into() },
                 [dir] => Self::Usage { dir: dir.into() },
                 [_, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(USAGE),
@@ -1528,6 +1534,7 @@ impl Request {
             | Self::App { .. }
             | Self::Quota { .. }
             | Self::Usage { .. }
+            | Self::UsageHourly { .. }
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
             | Self::Say { .. }
@@ -1646,6 +1653,7 @@ impl Request {
             | Self::CompactFindOutstanding { dir, .. }
             | Self::Quota { dir, .. }
             | Self::Usage { dir, .. }
+            | Self::UsageHourly { dir, .. }
             | Self::Run { dir, .. }
             | Self::ShimsRender { dir, .. } => Some(dir),
             Self::AutoReseat { tail } | Self::AutoEffort { tail } => tail.first().map(Path::new),

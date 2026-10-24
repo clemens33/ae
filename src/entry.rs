@@ -269,7 +269,7 @@ Usage:
                          session's lead pair
   ae quota [--json]      Show local cached quota windows for configured agent profiles;
                          --json prints the same rows as one JSON document
-  ae usage [name…] [--json]
+  ae usage [name…] [--hourly] [--json]
                          Show API-equivalent list-price usage for live sessions
   ae orchestrator        Start or reattach the orchestrator seat (a session named
                          orchestrator; config: ~/.ae/orchestrator.config)
