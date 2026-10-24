@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.131] - 2026-10-24
+- Refuse historical replies after seat retirement
+
 ## [v2026.10.130] - 2026-10-24
 - Hold session writers through End archive teardown
 
