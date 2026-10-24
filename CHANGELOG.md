@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.124] - 2026-10-24
+- Open linked files by click and step through turn links
+- Store bounded quota and workload history
+
 ## [v2026.10.123] - 2026-10-24
 - **archive**: Record harness sessions and list ended archives
 
