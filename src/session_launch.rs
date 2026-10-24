@@ -2814,7 +2814,7 @@ fn launch(
         if dir_exists(&work_root) {
             writeln!(
                 err,
-                "Error: working copy '{}' exists without session metadata; refusing to overwrite it.",
+                "Error: working copy '{}' exists without session metadata; refusing to overwrite it — choose a fresh name or remove/relocate the preserved workdir yourself.",
                 work_root.display()
             )?;
             return Ok(EXIT_FAILED);

@@ -1025,11 +1025,15 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
         let store = crate::store::open(&dir);
         let has_memory = has_nonempty(&store.memo_path())
             || has_nonempty(&store.events_path())
-            || has_message_payload(&dir.join("messages"));
+            || has_message_payload(&dir.join("messages"))
+            || archive::retained::has_evidence(&dir);
         return if has_memory {
             Plan {
                 action: Action::Unavailable,
-                detail: "its meta is missing, so ae cannot identify the session — but its memo, events or request payloads are still there".to_owned(),
+                detail: format!(
+                    "its meta is missing or unreadable, so ae cannot identify {} — session memory or retained evidence is still there",
+                    dir.display()
+                ),
                 purge,
             }
         } else {
@@ -1177,6 +1181,33 @@ fn end_one(
         return Ok(false);
     };
     let dir = sessions_dir(root).join(name);
+    let current_purge = confirmed_for(args, name).map_or(args.purge_cli, |confirmed| {
+        if confirmed.from_default {
+            None
+        } else {
+            Some(confirmed.plan.purge)
+        }
+    });
+    // Refuse unsupported/unreadable snapshot nodes before migration writes
+    // meta. This is advisory; the publisher repeats capture under source holds.
+    let preflight_plan = resolve_plan(root, name, current_purge);
+    if preflight_plan.action == Action::Keep
+        && let Err(why) = crate::archive::retained::preflight(&dir)
+    {
+        let target = root
+            .join("archive")
+            .join(archive::canonical_uuid(&meta::session_id_in(&dir)));
+        if archive::retained::node_exists(&target) {
+            writeln!(
+                err,
+                "Error: {}",
+                archive::publish::mismatch(&dir, &target, &why)
+            )?;
+        } else {
+            writeln!(err, "Error: {why}")?;
+        }
+        return Ok(false);
+    }
     // The chain, under the lifecycle lock this end already holds. A refusal is
     // REPORTED, never fatal — the whole point of an end is that a session can
     // always be torn down, whatever shape its meta is in.
@@ -1298,13 +1329,6 @@ fn end_one(
     // A session ae cannot IDENTIFY is refused HERE, before anything is stopped:
     // the archive step would refuse it at the end anyway, and there is no
     // reason to stop a session for a failure already visible.
-    let current_purge = confirmed_for(args, name).map_or(args.purge_cli, |confirmed| {
-        if confirmed.from_default {
-            None
-        } else {
-            Some(confirmed.plan.purge)
-        }
-    });
     let plan = resolve_plan(root, name, current_purge);
     if plan.action == Action::Unavailable {
         writeln!(
@@ -1497,6 +1521,11 @@ fn end_one(
         git.workdir = work_dir.display().to_string();
     }
 
+    if !preserve_workdir && nonlossless_workdir(&work_dir, name, out)? {
+        preserve_workdir = true;
+        git.preserved = work_dir.display().to_string();
+    }
+
     // The last thing before the session stops existing: capture it, or fail and
     // keep it.
     if !archive_step(root, name, &plan, &git, out, err)? {
@@ -1506,10 +1535,7 @@ fn end_one(
         return Ok(false);
     }
     if preserve_workdir {
-        writeln!(
-            out,
-            "Ended {name} — work committed locally (no origin remote to push to)."
-        )?;
+        writeln!(out, "Ended {name} — working directory preserved.")?;
         writeln!(out, "  Directory preserved: {}", work_dir.display())?;
     } else {
         writeln!(out, "Ended {name}")?;
@@ -1619,7 +1645,7 @@ fn archive_step(
                 archived_at: &archived_at,
             };
             let mut captured = Vec::new();
-            let code = archive::publish::run(&dir, &ops, &mut captured, err)?;
+            let code = archive::publish::end_snapshot(&dir, &ops, &mut captured, err)?;
             if code != 0 {
                 writeln!(
                     err,
@@ -1658,6 +1684,8 @@ fn cleanup(
     let mode = meta_value(bytes, "mode");
     let origin = meta_value(bytes, "origin");
 
+    keep_legacy(root, name, &origin, out)?;
+
     // Read meta BEFORE the removal below.
     if plan.purge {
         purge_conversation_files(root, name, bytes, out, err)?;
@@ -1686,8 +1714,6 @@ fn cleanup(
             }
             return Ok(false);
         }
-        // Older layouts: the worktree-nested and origin-nested paths.
-        remove_legacy(root, name, &origin);
         if preserve {
             writeln!(
                 out,
@@ -1699,6 +1725,9 @@ fn cleanup(
         return Ok(true);
     }
     if (mode == "full" || mode == "git") && valid {
+        // Repeat the positive proof immediately before managed removal.
+        let workdir = resolve_workdir(root, bytes, name);
+        let preserve = preserve || nonlossless_workdir(&workdir, name, out)?;
         // The core owns BOTH the managed workdir AND the canonical state
         // (workdir first, canonical last).
         if crate::teardown::run_nonlocal(&dir, preserve, out, err)? != 0 {
@@ -1726,7 +1755,6 @@ fn cleanup(
     }
     // A grammar-invalid name: removed here, so it is never made un-endable.
     let _ = std::fs::remove_dir_all(&dir);
-    remove_legacy(root, name, &origin);
     if preserve {
         writeln!(
             out,
@@ -1738,15 +1766,36 @@ fn cleanup(
     Ok(true)
 }
 
-/// The pre-canonical state locations, removed best-effort.
-fn remove_legacy(root: &Path, name: &str, origin: &str) {
-    let _ = std::fs::remove_dir_all(worktrees_dir(root).join(name).join(".ae").join(name));
+/// A failed/unknown proof preserves the managed resource and explains why.
+fn nonlossless_workdir(workdir: &Path, name: &str, out: &mut impl Write) -> io::Result<bool> {
+    let proof = if archive::retained::legacy_state(workdir, name).is_some() {
+        Err("legacy session state or a non-directory/unreadable .ae path remains")
+    } else {
+        crate::git::lossless_removal(workdir.as_os_str().as_encoded_bytes())
+    };
+    if let Err(why) = proof {
+        writeln!(
+            out,
+            "  Working directory preserved: {} ({why}).",
+            workdir.display()
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Legacy history stays where it is; inspect no link target and delete nothing.
+fn keep_legacy(root: &Path, name: &str, origin: &str, out: &mut impl Write) -> io::Result<()> {
+    let mut bases = vec![worktrees_dir(root).join(name)];
     if !origin.is_empty() {
-        let nested = Path::new(origin).join(".ae").join(name);
-        if dir_exists(&nested) {
-            let _ = std::fs::remove_dir_all(nested);
+        bases.push(PathBuf::from(origin));
+    }
+    for base in bases {
+        if let Some(path) = archive::retained::legacy_state(&base, name) {
+            writeln!(out, "  Legacy session state preserved: {}", path.display())?;
         }
     }
+    Ok(())
 }
 
 /// Delete the agent CLI conversation files this session's captured harness ids

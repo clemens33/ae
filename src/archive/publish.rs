@@ -85,6 +85,34 @@ pub(crate) fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    run_policy(dir, ops, false, out, err)
+}
+
+/// Ordinary End alone requests complete retention and exact unchanged reuse.
+pub(crate) fn end_snapshot(
+    dir: &Path,
+    ops: &Ops,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    run_policy(dir, ops, true, out, err)
+}
+
+pub(crate) fn mismatch(dir: &Path, target: &Path, why: &str) -> String {
+    format!(
+        "archive {} cannot match live directory {}: {why}",
+        target.display(),
+        dir.display()
+    )
+}
+
+fn run_policy(
+    dir: &Path,
+    ops: &Ops,
+    strict: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
     // The timestamp comes from the caller (std cannot format one without a time
     // dependency), and argv is not trusted for being the normal caller's: the
     // exact UTC shape is validated before it reaches an immutable archive.
@@ -128,26 +156,11 @@ pub(crate) fn run(
             return Ok(EXIT_FAILED);
         }
     };
-    let name = {
-        let n = meta_get(&meta_bytes, "session");
-        if n.is_empty() { "?".to_owned() } else { n }
-    };
-
-    let raw_id = meta_get(&meta_bytes, "session_id");
-    let aid = canonical_uuid(&raw_id);
-    if aid.is_empty() {
-        writeln!(
-            err,
-            "archive: session '{name}' has no UUID session_id ('{raw_id}') — it cannot be archived."
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    let id_origin = {
-        let o = meta_get(&meta_bytes, "session_id_origin");
-        if o.is_empty() {
-            "session".to_owned()
-        } else {
-            o
+    let (name, aid, id_origin) = match source_identity(&meta_bytes) {
+        Ok(identity) => identity,
+        Err(diag) => {
+            writeln!(err, "{diag}")?;
+            return Ok(EXIT_FAILED);
         }
     };
 
@@ -162,7 +175,7 @@ pub(crate) fn run(
         }
     };
 
-    let vol = Volatiles {
+    let mut vol = Volatiles {
         snapshot: "archived",
         archived_at: ops.archived_at.to_owned(),
         git: derive_git(&meta_bytes, ops.push_outcome, ops.workdir.as_bytes()),
@@ -180,7 +193,8 @@ pub(crate) fn run(
         return Ok(EXIT_FAILED);
     }
     let target = root.join(&aid);
-    if exists(&target) {
+    let reuse = strict && exists(&target);
+    if !strict && exists(&target) {
         writeln!(
             err,
             "archive: {} already exists — an archive is immutable and is never merged into.",
@@ -188,6 +202,19 @@ pub(crate) fn run(
         )?;
         return Ok(EXIT_FAILED);
     }
+
+    let inventory = match prepare_policy(strict, reuse, dir, &target, &aid, &mut vol) {
+        Ok(tree) => tree,
+        Err(why) => {
+            let why = if reuse {
+                mismatch(dir, &target, &why)
+            } else {
+                why
+            };
+            writeln!(err, "Error: {why}")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
 
     let facts = StagedFacts {
         meta_bytes: &meta_bytes,
@@ -198,8 +225,59 @@ pub(crate) fn run(
         roster: &roster,
         vol: &vol,
         reason: ops.reason,
+        inventory: inventory.as_ref(),
+        reuse,
     };
     publish_under_claim(&root, &target, dir, &facts, &before, out, err)
+}
+
+fn source_identity(meta: &[u8]) -> Result<(String, String, String), String> {
+    let name = meta_get(meta, "session");
+    let name = if name.is_empty() {
+        "?".to_owned()
+    } else {
+        name
+    };
+    let raw_id = meta_get(meta, "session_id");
+    let aid = canonical_uuid(&raw_id);
+    if aid.is_empty() {
+        return Err(format!(
+            "archive: session '{name}' has no UUID session_id ('{raw_id}') — it cannot be archived."
+        ));
+    }
+    let origin = meta_get(meta, "session_id_origin");
+    let origin = if origin.is_empty() {
+        "session".to_owned()
+    } else {
+        origin
+    };
+    Ok((name, aid, origin))
+}
+
+fn prepare_policy(
+    strict: bool,
+    reuse: bool,
+    dir: &Path,
+    target: &Path,
+    aid: &str,
+    vol: &mut Volatiles,
+) -> Result<Option<super::retained::Inventory>, String> {
+    if !strict {
+        return Ok(None);
+    }
+    if reuse {
+        validate_tree(target, aid)?;
+        super::retained::validate(&target.join("retained"))?;
+        let archived =
+            read_file(&target.join(super::store::META)).map_err(|why| why.to_string())?;
+        // Only timestamp/operation facts are substitutions. Independently
+        // derived git base/final/range above still have to match the archive.
+        vol.archived_at = meta_get(&archived, "archived_at");
+        vol.push_outcome = meta_get(&archived, "git_push_outcome");
+        vol.push_ref = meta_get(&archived, "git_push_ref");
+        vol.preserved = meta_get(&archived, "preserved_work_dir");
+    }
+    super::retained::inventory(dir).map(Some)
 }
 
 /// Under our atomic claim, stage → validate → durably publish, then report the
@@ -241,8 +319,22 @@ fn publish_under_claim(
                 claim.display()
             )?;
         }
-        writeln!(err, "{diag}")?;
+        if facts.reuse {
+            writeln!(err, "Error: {}", mismatch(dir, target, &diag))?;
+        } else {
+            writeln!(err, "{diag}")?;
+        }
         return Ok(EXIT_FAILED);
+    }
+
+    if facts.reuse {
+        // The complete candidate matched the immutable archive. Remove only
+        // our disposable candidate/claim, never rewrite the recovery point.
+        fs::remove_dir_all(&claim)?;
+        fsync_dir(root)?;
+        let (files, bytes) = count_tree(target);
+        writeln!(out, "{}\t{files}\t{bytes}", target.display())?;
+        return Ok(0);
     }
 
     // The commit boundary.
@@ -306,6 +398,8 @@ struct StagedFacts<'a> {
     id_origin: &'a str,
     roster: &'a [(String, String)],
     vol: &'a Volatiles,
+    inventory: Option<&'a super::retained::Inventory>,
+    reuse: bool,
 }
 
 /// Stage the payload under the held claim and validate it — up to but NOT
@@ -345,13 +439,15 @@ fn stage_and_validate(
     // Messages: NEVER follow a symlinked or non-directory messages/ root.
     let messages_src = dir.join("messages");
     let messages_real = matches!(symlink_meta(&messages_src), Ok(m) if m.is_dir());
-    if !messages_real && exists(&messages_src) {
+    if facts.inventory.is_none() && !messages_real && exists(&messages_src) {
         let _ = writeln!(
             err,
             "archive: skipping messages/ — it is a symlink or not a directory, and an archive never follows one."
         );
     }
-    if messages_real {
+    if let Some(tree) = facts.inventory {
+        super::retained::stage(dir, &payload, tree)?;
+    } else if messages_real {
         let before_msgs = messages_fingerprint(&messages_src);
         stage_messages(&messages_src, &messages_dst, err)?;
         if messages_fingerprint(&messages_src) != before_msgs {
@@ -387,10 +483,24 @@ fn stage_and_validate(
         ));
     }
 
+    if let Some(tree) = facts.inventory {
+        super::retained::reprove(dir, &payload, tree)?;
+        let current = read_sources(dir).map_err(|why| why.join("; "))?;
+        if current.0 != facts.meta_bytes
+            || current.1 != facts.memo_bytes
+            || current.2 != facts.event_bytes
+        {
+            return Err("archive: core bytes changed while publishing; retry.".to_owned());
+        }
+    }
+
     validate_tree(&payload, facts.aid)?;
+    if facts.reuse && !super::retained::same_tree(&payload, target)? {
+        return Err("complete archive snapshot differs; nothing was deleted".to_owned());
+    }
 
     // TOCTOU: refuse if the target appeared while we staged.
-    if exists(target) {
+    if !facts.reuse && exists(target) {
         return Err(format!(
             "archive: {} appeared while staging — refusing to overwrite it.",
             target.display()

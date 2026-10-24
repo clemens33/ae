@@ -113,6 +113,7 @@ fn reject_unknown_top_level(path: &Path) -> Result<(), String> {
         EVENTS,
         "messages",
         super::harness::FILE,
+        "retained",
     ];
     let top = read_dir(path).map_err(|why| {
         format!(
@@ -175,6 +176,13 @@ pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
 
     reject_unknown_top_level(path)?;
     validate_members(path)?;
+    let retained = path.join("retained");
+    match symlink_meta(&retained) {
+        Err(why) if why.kind() == io::ErrorKind::NotFound => {}
+        Err(why) => return Err(format!("archive: cannot inspect retained/: {why}")),
+        Ok(meta) if meta.is_dir() => super::retained::validate(&retained)?,
+        Ok(_) => return Err("archive: retained/ must be a real directory.".to_owned()),
+    }
     let msgs = path.join("messages");
     let msgs_meta =
         symlink_meta(&msgs).map_err(|_| "archive: 'messages/' is missing.".to_owned())?;
@@ -306,6 +314,75 @@ pub(super) fn symlink_meta(path: &Path) -> io::Result<fs::Metadata> {
     )]
     let meta = std::fs::symlink_metadata(path);
     meta
+}
+
+/// Link text only, never its target.
+pub(super) fn read_link(path: &Path) -> io::Result<PathBuf> {
+    fs::read_link(path)
+}
+
+/// Open only an lstat-classified plain file. Same-UID path replacement between
+/// classification and open remains the existing pathname-I/O limitation.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the archive store file-read door"
+)]
+fn plain_file(path: &Path) -> io::Result<fs::File> {
+    if !symlink_meta(path)?.is_file() {
+        return Err(io::Error::other("not a plain file"));
+    }
+    let file = fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("source changed kind"));
+    }
+    Ok(file)
+}
+
+/// Read-only preflight before an End migration can modify the live meta.
+pub(super) fn prove_readable(path: &Path) -> io::Result<()> {
+    io::copy(&mut plain_file(path)?, &mut io::sink()).map(|_| ())
+}
+
+/// Stream arbitrary retained bytes without a new allocation or size limit.
+pub(super) fn copy_file_0600(src: &Path, dst: &Path) -> io::Result<()> {
+    let mut input = plain_file(src)?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(dst)?;
+    io::copy(&mut input, &mut output)?;
+    fs::set_permissions(dst, fs::Permissions::from_mode(0o600))?;
+    output.sync_all()
+}
+
+/// Equal bytes, not a size/mtime approximation; bounded working memory.
+pub(super) fn files_equal(left: &Path, right: &Path) -> io::Result<bool> {
+    use std::io::Read as _;
+    fn chunk(file: &mut fs::File, buffer: &mut [u8]) -> io::Result<usize> {
+        let mut filled = 0;
+        while filled < buffer.len() {
+            let n = file.read(&mut buffer[filled..])?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        Ok(filled)
+    }
+    let mut a = plain_file(left)?;
+    let mut b = plain_file(right)?;
+    let (mut ab, mut bb) = ([0; 8192], [0; 8192]);
+    loop {
+        let an = chunk(&mut a, &mut ab)?;
+        let bn = chunk(&mut b, &mut bb)?;
+        if an != bn || ab[..an] != bb[..bn] {
+            return Ok(false);
+        }
+        if an == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 /// Whether `path` exists (an lstat that answers, symlink included) — the door

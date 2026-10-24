@@ -2201,6 +2201,38 @@ Wraps up:
    `agent_bin.<slot>` and the canonical `config_home.<slot>` recorded at first start;
    Gemini and OpenCode files are always left in place.
 
+Ordinary End captures the complete non-registration snapshot, including hidden,
+binary and empty files and directories. Existing memo, events and direct regular
+`messages/*.txt` keep their archive paths; other data goes under inert `retained/`,
+including drafts, seeds, raw meta backups, cursor files, scripts and unknown locks or
+publication temps. Helper-named **symlinks** and exact generated registration files
+are omitted; regular files with helper names are retained without execution bits.
+Other links, special nodes and unreadable files refuse with the path and remedy.
+Pre-canonical `.ae/<name>` state in the origin or managed workdir stays in place;
+End reports each existing path.
+
+A managed workdir is removed only after commit/push and a positive lossless proof.
+Ignored output, excluded files, masked index entries, gitlinks or an unproven check
+keep it, with its path and reason. Build/dependency output commonly causes this.
+A same-name managed launch refuses: choose a fresh name or remove/relocate the
+preserved workdir yourself. Local workdirs and no-origin managed workdirs stay.
+The conservative proof also keeps tracked symlinks, files whose clean filters
+change stored bytes (such as LFS or line-ending conversion), and SHA-256 repos.
+End hashes every tracked file twice; `list --ended` inspects every retained node.
+If the final recheck newly preserves a workdir, its path and reason are printed,
+but the archive's `preserved_work_dir` and final End line reflect the earlier proof.
+
+This is snapshot coverage, not a transaction through teardown. A draft or cursor
+published after capture can still be lost; the source locks are released before
+cleanup. An unchanged **direct** retry can reuse an exactly matching complete
+archive. Any mismatch keeps the archive byte-for-byte and the live state, naming
+both paths. A supervised retry adds `end-request` and therefore refuses safely.
+Git work still repeats on retry; an already removed managed workdir still refuses,
+and its existing error can misleadingly say the stopped session is running.
+
+Older cores reject `retained/` archives as invalid in `list --ended`, `--from` and
+purge. Their bytes remain untouched; reinstall a compatible core to read them.
+
 ### Controlling conversation-file cleanup
 
 `ae end all` resolves both decisions **per session** and lists them, one line each:
@@ -2230,6 +2262,8 @@ existing. An archive is that memory, kept: an inert, immutable, UUID-keyed snaps
   digest.md                       0600   the human-readable summary
   memo.tsv                        0600   durable shared memory, verbatim
   events.jsonl                    0600   the raw event log, verbatim evidence
+  harness.tsv                     0600   inert recorded conversation identifiers
+  retained/                       0700   other End snapshot data, inert 0600 files
   messages/                       0700
     <ae-generated>.txt            0600   the request payload bodies the digest links
 ```
@@ -2237,14 +2271,12 @@ existing. An archive is that memory, kept: an inert, immutable, UUID-keyed snaps
 Four properties are worth knowing, because they are what the archive *is*:
 
 - **Inert by validator, not by intent.** Before anything is published, ae proves the
-  staged tree against an exact path whitelist: every entry is a regular file or the one
-  expected directory, nothing is a symlink or a special file, no file carries an
-  executable bit for *anyone*, and the meta and digest agree about what they describe.
-  Helpers, the `launch.*` per-slot bookkeeping, provider session-id scratch files, locks
-  and the generated `workspace.md` are all left behind — an archive is data, and it must
-  not be possible to run one. The no-symlink rule earns its keep here: since slice Z2 a
-  helper *is* a symlink to the ae core, so a copied one would put the binary itself one
-  hop from an archive.
+  staged tree against an exact top-level whitelist. Every entry is a real directory
+  or plain file, nothing is a symlink or a special node, and modes are 0700/0600 with
+  no execution bits on files. The meta and digest agree about what they describe.
+  Only the closed registration inventory is omitted; unknown locks and regular
+  helper-named files are data under `retained/`. Neither `--from` nor a launch
+  executes or restores retained files.
 - **The meta is generated, never copied.** Live meta carries runtime coordinates that are
   meaningless or harmful in a snapshot — panes, sockets, watchdog state, launch ids — and
   in `harness_session.<slot>` it carries the *provider conversation UUID*, the one field

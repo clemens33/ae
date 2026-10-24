@@ -506,7 +506,7 @@ fn count_roster_lines(meta_bytes: &[u8], key: &str) -> usize {
 
 /// `_valid_slot`: the one slot grammar the event path enforces —
 /// `^(main|worker\.[0-9]+|spawned\.[0-9]+)$`.
-fn valid_slot(slot: &str) -> bool {
+pub(crate) fn valid_slot(slot: &str) -> bool {
     slot == "main"
         || slot
             .strip_prefix("worker.")
@@ -653,6 +653,7 @@ pub(crate) mod from;
 pub mod harness;
 pub(crate) mod purge;
 mod request_states;
+pub(crate) mod retained;
 mod store;
 use request_states::{RequestRow, request_states};
 

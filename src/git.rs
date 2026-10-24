@@ -80,6 +80,14 @@ enum Query<'a> {
     DiffCachedQuiet,
     /// `ls-files --others --exclude-standard` — untracked, judged by output.
     LsFilesOthers,
+    /// End's lossless-removal proof, independent of dirt-hiding settings.
+    LosslessDiff { cached: bool },
+    /// `ls-files --others --directory -z` — include ignored and empty paths.
+    AllOthers,
+    /// `ls-files --stage --full-name -v -z` — full index entries and flags.
+    IndexEntries,
+    /// `hash-object --no-filters -- <paths>` — hashes of actual workdir bytes.
+    HashPaths { paths: &'a [&'a str] },
     /// `remote get-url origin` — whether a push target exists at all.
     RemoteGetUrl,
     /// `fetch origin --quiet` — the silent refresh before the
@@ -212,6 +220,59 @@ fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
             args.push("ls-files".into());
             args.push("--others".into());
             args.push("--exclude-standard".into());
+        }
+        Query::LosslessDiff { cached } => {
+            for setting in [
+                "core.fileMode=true",
+                "core.ignoreStat=false",
+                "core.fsmonitor=false",
+                "core.trustctime=true",
+                "core.checkStat=default",
+                "core.symlinks=true",
+            ] {
+                args.extend(["-c".into(), setting.into()]);
+            }
+            args.extend(
+                [
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--ignore-submodules=none",
+                    "--quiet",
+                ]
+                .map(OsString::from),
+            );
+            if cached {
+                args.push("--cached".into());
+            }
+        }
+        Query::AllOthers => {
+            args.extend(
+                [
+                    "-c",
+                    "core.untrackedCache=false",
+                    "-c",
+                    "core.fsmonitor=false",
+                ]
+                .map(OsString::from),
+            );
+            args.extend(["ls-files", "--others", "--directory", "-z"].map(OsString::from));
+        }
+        Query::IndexEntries => {
+            args.extend(
+                [
+                    "-c",
+                    "core.untrackedCache=false",
+                    "-c",
+                    "core.fsmonitor=false",
+                ]
+                .map(OsString::from),
+            );
+            args.extend(["ls-files", "--stage", "--full-name", "-v", "-z"].map(OsString::from));
+        }
+        Query::HashPaths { paths } => {
+            args.extend(["hash-object", "--no-filters", "--"].map(OsString::from));
+            args.extend(paths.iter().map(OsString::from));
         }
         Query::RemoteGetUrl => {
             args.push("remote".into());
@@ -497,6 +558,67 @@ pub(crate) fn has_pending_work(wdir: &[u8]) -> bool {
     }
     let (_, listed) = crate::transport::run_git(&argv(path, &Query::LsFilesOthers));
     !listed.trim().is_empty()
+}
+
+/// Positive, conservative proof before managed-workdir removal. Failures,
+/// ignored/untracked data (including empty dirs), masked index entries and
+/// gitlinks preserve the directory. Hash actual bytes rather than trusting stat.
+pub(crate) fn lossless_removal(wdir: &[u8]) -> Result<(), &'static str> {
+    fn ask(path: &OsStr, query: &Query<'_>) -> (bool, String) {
+        crate::transport::run_git(&argv(path, query))
+    }
+    let path = OsStr::from_bytes(wdir);
+    let (ok, before) = ask(path, &Query::Head);
+    if !ok || !is_hex40(before.trim()) || !head_is_on_a_remote(wdir) {
+        return Err("the current commit is not proven on a remote");
+    }
+    for cached in [false, true] {
+        if !ask(path, &Query::LosslessDiff { cached }).0 {
+            return Err("tracked or staged data is not proven clean");
+        }
+    }
+    let (ok, others) = ask(path, &Query::AllOthers);
+    if !ok || !others.is_empty() {
+        return Err("untracked or ignored data remains, or its absence is unproven");
+    }
+    let (ok, index) = ask(path, &Query::IndexEntries);
+    if !ok || index.contains('\u{fffd}') || !index.is_empty() && !index.ends_with('\0') {
+        return Err("the complete index could not be proven");
+    }
+    let entries: Vec<_> = index
+        .split_terminator('\0')
+        .map(index_entry)
+        .collect::<Option<_>>()
+        .ok_or("the index has a masked, unsupported or gitlink entry")?;
+    for chunk in entries.chunks(128) {
+        let paths: Vec<_> = chunk.iter().map(|(_, name)| *name).collect();
+        let (ok, hashes) = ask(path, &Query::HashPaths { paths: &paths });
+        if !ok || hashes.lines().ne(chunk.iter().map(|(hash, _)| *hash)) {
+            return Err("tracked bytes differ from their committed index, or cannot be read");
+        }
+    }
+    let (ok, after_index) = ask(path, &Query::IndexEntries);
+    let (head_ok, after_head) = ask(path, &Query::Head);
+    if !ok || !head_ok || after_index != index || after_head != before {
+        return Err("git facts changed during the removal proof");
+    }
+    Ok(())
+}
+
+fn index_entry(row: &str) -> Option<(&str, &str)> {
+    let (header, path) = row.strip_prefix("H ")?.split_once('\t')?;
+    let mut fields = header.split(' ');
+    let mode = fields.next()?;
+    let hash = fields.next()?;
+    if !matches!(mode, "100644" | "100755")
+        || !is_hex40(hash)
+        || fields.next()? != "0"
+        || fields.next().is_some()
+        || path.is_empty()
+    {
+        return None;
+    }
+    Some((hash, path))
 }
 
 /// `git -C <wdir> add -A` then `commit -m <subject> -m <body>`.

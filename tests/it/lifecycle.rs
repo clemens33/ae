@@ -31,6 +31,8 @@ use super::phase2::run_tmux;
 mod endrecord_spec;
 #[path = "lifecycle_purgeguard_spec.rs"]
 mod purgeguard_spec;
+#[path = "lifecycle_retain_spec.rs"]
+mod retain_spec;
 #[path = "lifecycle_stop_sole_uuid_spec.rs"]
 mod stop_sole_uuid;
 

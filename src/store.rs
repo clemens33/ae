@@ -68,6 +68,27 @@ const PANE_VIEW: &str = ".pane-view.lock";
 /// The goal setters' lock, beside the meta's and the journal's.
 const GOAL_SETTER: &str = ".goal-setter.lock";
 
+/// Closed registration-file names for End's snapshot inventory. Unknown locks
+/// and publication temps remain user data, rather than suffix-based garbage.
+pub(crate) fn registration_file(name: &str) -> bool {
+    if [
+        CONSOLE_ADMISSION,
+        CONSOLE_WRITER,
+        PANE_VIEW,
+        GOAL_SETTER,
+        LAUNCH_ATTEMPT,
+    ]
+    .contains(&name)
+        || [META, MEMO, EVENTS]
+            .iter()
+            .any(|file| lock_path(Path::new(file)).as_os_str() == name)
+    {
+        return true;
+    }
+    name.strip_suffix(".lock")
+        .is_some_and(|draft| console_draft_instance(draft).is_some())
+}
+
 /// The LAUNCH-ATTEMPT stamp: when ae last tried to put this session on a tmux
 /// server.
 ///
