@@ -137,6 +137,8 @@ pub(super) enum Answer {
         config: Option<super::settings::ConfigView>,
         about: Option<super::settings::AboutFacts>,
         instructions: Option<super::settings::InstructionsView>,
+        /// This generation's live-seat snapshot; `None` when none was read.
+        live_seats: Option<crate::quota::LiveSeats>,
     },
     /// What the command link says to this app, after every fleet read.
     Core(Option<super::upgrade::Upgrade>),
@@ -295,6 +297,7 @@ pub(super) struct Reader {
     selected: Option<String>,
     focus_at: Instant,
     fleet_at: Option<Instant>,
+    live_facts: Option<(Vec<crate::quota::LiveSeatFact>, bool, i64)>,
     rereads: BTreeSet<String>,
     looks: BTreeSet<String>,
     /// Home's look is drawn, so no other session's look dresses the app.
@@ -379,6 +382,7 @@ impl Reader {
             selected: None,
             focus_at: Instant::now(),
             fleet_at: None,
+            live_facts: None,
             rereads: BTreeSet::new(),
             looks: BTreeSet::new(),
             home_drawn: false,
@@ -619,6 +623,7 @@ impl Reader {
             snapshot,
             world,
             panes,
+            sockets,
         } = crate::world_read(&self.root, &mut |dir| journals.snapshot(dir));
         let records: BTreeMap<&Path, _> = snapshot
             .sessions
@@ -638,6 +643,21 @@ impl Reader {
             .server
             .as_ref()
             .and_then(transport::observe_picker_sessions);
+        let incomplete = world.losses > 0 || !snapshot.incomplete.is_empty();
+        self.live_facts = (!incomplete || !world.sessions.is_empty()).then(|| {
+            (
+                fleet_live_facts(
+                    &snapshot,
+                    &world,
+                    &panes,
+                    &sockets,
+                    self.server.as_ref(),
+                    picker.as_deref(),
+                ),
+                incomplete,
+                world.now.epoch(),
+            )
+        });
         // Needs from this read's own records and pane listings; tmux is asked
         // again only for a session this read did not find Running.
         let mut needs = |name: &str, dir: &Path| {
@@ -1063,7 +1083,7 @@ impl Reader {
         let (generation, _) = self.settings.unwrap_or((0, None));
         let paths = self.settings_paths.clone();
         self.land();
-        let quota = {
+        let (quota, keys) = {
             let roots = crate::inventory::Roots::under(&self.root);
             let now = crate::time::Timestamp::now().epoch();
             let inputs = crate::quota::Inputs {
@@ -1073,7 +1093,7 @@ impl Reader {
                 sessions: Some(roots.sessions()),
                 now,
             };
-            let (quota, due) = crate::quota::view_held_cached(
+            let (quota, keys, due) = crate::quota::view_held_keyed(
                 &inputs,
                 &self.agy,
                 self.flight.is_some(),
@@ -1082,7 +1102,7 @@ impl Reader {
             if let Some(home) = due {
                 self.fly(home, now);
             }
-            quota
+            (quota, keys)
         };
         let (config, about, instructions) = if self.settings_full {
             (None, None, None)
@@ -1106,6 +1126,13 @@ impl Reader {
             config,
             about,
             instructions,
+            live_seats: self.live_facts.as_ref().map(|(facts, incomplete, at)| {
+                let mut seats = crate::quota::project_live_seats(facts, &keys, *incomplete);
+                for group in &mut seats.groups {
+                    group.observed_at = Some(*at);
+                }
+                seats
+            }),
         }
     }
 
@@ -1204,12 +1231,125 @@ pub(super) fn sole_uuid(dir: &Path) -> Option<String> {
     (!one.is_empty()).then_some(one)
 }
 
+fn fleet_live_facts(
+    snapshot: &crate::liveness::Snapshot,
+    world: &World,
+    panes: &crate::ListedPanes,
+    sockets: &crate::SocketPaths,
+    server: Option<&ServerId>,
+    picker: Option<&[crate::tmux::PickerSession]>,
+) -> Vec<crate::quota::LiveSeatFact> {
+    let mut facts = Vec::new();
+    for (classified, entry) in snapshot.sessions.iter().zip(&world.sessions) {
+        if entry.status == crate::digest::Status::Stopped {
+            continue;
+        }
+        let record = classified.candidate.durable.as_ref();
+        let roster = record
+            .and_then(|record| record.snapshot.meta.as_ref())
+            .map_or(&[][..], crate::meta::Meta::roster);
+        let recorded = record
+            .and_then(|record| record.server.entitles())
+            .map(|selector| ServerId::Selected(selector.clone()));
+        let fact = picker
+            .and_then(|rows| rows.iter().find(|row| row.name == entry.name))
+            .map(|row| row.agents.as_str());
+        let listed: Option<Vec<_>> = record
+            .and_then(|record| panes.get(&record.path))
+            .and_then(Option::as_ref)
+            .map(|agents| {
+                agents
+                    .iter()
+                    .filter_map(|agent| {
+                        Some(crate::tmux::WatchPane {
+                            pane_id: agent.pane_id.clone()?,
+                            slot: Some(agent.slot.clone()),
+                            agent: None,
+                            current_command: String::new(),
+                            pane_pid: None,
+                            observed: String::new(),
+                        })
+                    })
+                    .collect()
+            });
+        facts.extend(live_session(
+            entry,
+            roster,
+            (sockets, recorded.as_ref(), server),
+            fact,
+            listed.as_deref(),
+            world.now,
+        ));
+    }
+    facts
+}
+
+/// Same fleet pass for the durable account, socket proof and pane proof.
+fn live_session(
+    entry: &crate::digest::SessionEntry,
+    roster: &[crate::meta::RosterEntry],
+    proof: (&crate::SocketPaths, Option<&ServerId>, Option<&ServerId>),
+    fact: Option<&str>,
+    panes: Option<&[crate::tmux::WatchPane]>,
+    now: Timestamp,
+) -> Vec<crate::quota::LiveSeatFact> {
+    let (sockets, recorded, app) = proof;
+    let same = recorded
+        .zip(app)
+        .is_some_and(|(recorded, app)| sockets.known_same(recorded, app));
+    crate::quota::live_seat_facts(entry, roster, fact, panes, same, now)
+}
+
 #[cfg(test)]
 mod tests {
     //! Oracles: the brief's rulings 2 and 3 (priority, cadence), ruling
     //! appuse-b R-B5/R-B7 (what keeps home writable), the fixture root's own
     //! records and the existing owners' coverage words.
 
+    #[test]
+    fn live_runtime_requires_the_recorded_socket_answer_to_match_the_app() {
+        use crate::{
+            digest::{AgentEntry, SessionEntry, Status},
+            inventory::ServerId,
+            meta::{Meta, Selector},
+            time::Timestamp,
+            tmux::WatchPane,
+        };
+        let recorded = ServerId::Selected(Selector::Name("ae".into()));
+        let app = ServerId::Selected(Selector::Socket("/tmp/ae".into()));
+        let meta = Meta::parse("seat.main=lead\nprofile.main=cl\nagent_bin.main=claude\n");
+        let mut entry = SessionEntry::new("spec", Status::Running);
+        entry.agents.push(AgentEntry {
+            name: "lead".into(),
+            reference: "lead".into(),
+            alias: "cl".into(),
+            alive: Some(true),
+            ..AgentEntry::default()
+        });
+        let panes = [WatchPane {
+            pane_id: "%3".into(),
+            slot: Some("main".into()),
+            agent: None,
+            current_command: String::new(),
+            pane_pid: None,
+            observed: String::new(),
+        }];
+        let no_read = |_: &ServerId| -> Option<String> {
+            panic!("new socket read");
+        };
+        for (answer, expected) in [("/tmp/ae", Some("Spec")), ("/tmp/other", None)] {
+            let sockets = crate::SocketPaths::primed(no_read, &recorded, Some(answer.into()));
+            let facts = super::live_session(
+                &entry,
+                meta.roster(),
+                (&sockets, Some(&recorded), Some(&app)),
+                Some("v2;2000000;60;lead:cl:working:%3:claude:Spec:xhigh:"),
+                Some(&panes),
+                Timestamp::from_epoch(2_000_000),
+            );
+            assert_eq!(facts[0].model.as_deref(), expected);
+        }
+    }
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};

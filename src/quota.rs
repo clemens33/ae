@@ -956,6 +956,163 @@ pub(crate) struct RecordedIdentity {
     pub(crate) source: PathBuf,
 }
 
+/// One live-seat snapshot for Settings > Quota. Keyed by [`RecordedIdentity`];
+/// `key: None` is the "Account unknown" display group, never a typed join.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LiveSeats {
+    pub(crate) incomplete: bool,
+    pub(crate) groups: Vec<LiveGroup>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LiveGroup {
+    pub(crate) key: Option<RecordedIdentity>,
+    pub(crate) heading: String,
+    pub(crate) gap: Option<String>,
+    pub(crate) rows: Vec<LiveRow>,
+    /// Seats of this group whose liveness is unknown: counted, never listed.
+    pub(crate) unknown_liveness: usize,
+    pub(crate) observed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LiveRow {
+    pub(crate) session_seat: String,
+    pub(crate) profile: String,
+    pub(crate) model: String,
+    pub(crate) effort: String,
+    pub(crate) activity: String,
+    pub(crate) declared: String,
+}
+
+/// One roster seat of one listed session, after the ONE account join and the
+/// ONE runtime proof. `liveness`: `Some(true)` live, `None` unknown,
+/// `Some(false)` dead or stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiveSeatFact {
+    pub(crate) session: String,
+    pub(crate) seat: String,
+    pub(crate) profile: String,
+    pub(crate) tool: ToolKind,
+    pub(crate) identity: Option<RecordedIdentity>,
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<String>,
+    pub(crate) activity: crate::harness_state::HarnessState,
+    pub(crate) declared: Option<String>,
+    pub(crate) liveness: Option<bool>,
+}
+
+// GRANT ae-20261024T143648Z-bd5bf3db: the existing join owner quota::recorded_identity -> run::canonical_config_home may run its fs::canonicalize + symlink_metadata probes, on the LOADER thread only, at most once per proved seat per fleet projection, through the unchanged owner. Still forbidden: file content/cache/session scans, a second quota observation, tmux/process/network reads, new doors, UI-thread I/O, any lexical/second join.
+/// One listed session's seats as live-seat facts. `fact` is the local picker's
+/// `@ae_agents` and `panes` this world read's listing; `same_server` says the
+/// session's recorded server is this app's.
+#[must_use]
+pub(crate) fn live_seat_facts(
+    entry: &crate::digest::SessionEntry,
+    roster: &[crate::meta::RosterEntry],
+    fact: Option<&str>,
+    panes: Option<&[crate::tmux::WatchPane]>,
+    same_server: bool,
+    now: Timestamp,
+) -> Vec<LiveSeatFact> {
+    let mut enriched = entry.clone();
+    crate::session::enrich_list_json(
+        &mut enriched,
+        roster,
+        fact.filter(|_| same_server),
+        panes,
+        now,
+    );
+    enriched
+        .agents
+        .into_iter()
+        .map(|agent| {
+            let seat = roster.iter().find(|seat| seat.name == agent.name);
+            let tool = ToolKind::from_binary_name(
+                seat.and_then(|seat| seat.binary.as_deref())
+                    .unwrap_or_default(),
+            );
+            LiveSeatFact {
+                session: entry.name.clone(),
+                seat: agent.name,
+                profile: agent.alias,
+                tool,
+                identity: agent.account.map(|account| RecordedIdentity {
+                    tool,
+                    source: account.source.into(),
+                }),
+                model: agent.runtime.model,
+                effort: agent.runtime.effort,
+                activity: agent.observed,
+                declared: agent.state,
+                liveness: match entry.status {
+                    crate::digest::Status::Running => agent.alive,
+                    crate::digest::Status::Stopped => Some(false),
+                    crate::digest::Status::Unknown => None,
+                },
+            }
+        })
+        .collect()
+}
+
+/// Group live-seat facts by account in `scope_keys` order.
+#[must_use]
+pub(crate) fn project_live_seats(
+    facts: &[LiveSeatFact],
+    scope_keys: &[RecordedIdentity],
+    incomplete: bool,
+) -> LiveSeats {
+    let mut groups: Vec<LiveGroup> = Vec::new();
+    for fact in facts.iter().filter(|fact| fact.liveness != Some(false)) {
+        let gap = fact.identity.is_none().then(|| {
+            if fact.tool.adapter().config_home_default.is_none() {
+                "home not recorded"
+            } else {
+                "account identity unproved"
+            }
+            .to_owned()
+        });
+        let at = groups.iter().position(|group| {
+            fact.identity
+                .as_ref()
+                .is_some_and(|key| group.key.as_ref() == Some(key))
+        });
+        let at = at.unwrap_or_else(|| {
+            groups.push(LiveGroup {
+                key: fact.identity.clone(),
+                gap,
+                heading: fact.identity.as_ref().map_or_else(
+                    || "Account unknown".to_owned(),
+                    |key| format!("{} · {}", key.tool.as_str(), key.source.display()),
+                ),
+                ..LiveGroup::default()
+            });
+            groups.len() - 1
+        });
+        let group = &mut groups[at];
+        if fact.liveness.is_none() {
+            group.unknown_liveness += 1;
+            continue;
+        }
+        group.rows.push(LiveRow {
+            session_seat: format!("{}:{}", fact.session, fact.seat),
+            profile: fact.profile.clone(),
+            model: fact.model.clone().unwrap_or_else(|| "?".to_owned()),
+            effort: fact.effort.clone().unwrap_or_else(|| "?".to_owned()),
+            activity: fact.activity.as_str().to_owned(),
+            declared: fact.declared.clone().unwrap_or_else(|| "?".to_owned()),
+        });
+    }
+    groups.sort_by_key(|group| {
+        group
+            .key
+            .as_ref()
+            .and_then(|key| scope_keys.iter().position(|scope| scope == key))
+            .unwrap_or(usize::MAX)
+    });
+    LiveSeats { incomplete, groups }
+}
+
 /// Every journal action the watchdog's quota pass writes, spelled once.
 ///
 /// The wire names are a contract with every reader of the journal, so they
@@ -1301,6 +1458,7 @@ impl Observation {
     /// derivation the table and the watchdog read, and every level from the one
     /// classifier; a scope with nothing usable states why instead of a guess. `pace`
     /// is the table `ae quota` draws its PACE column from, read for display only.
+    #[cfg(test)]
     pub(crate) fn quota_view_paced(&self, pace: &pace::PaceTable) -> Vec<view::Scope> {
         self.ordered_scopes()
             .iter()
@@ -2545,24 +2703,33 @@ pub(crate) fn view_stored(inputs: &Inputs<'_>) -> Vec<view::Scope> {
 /// [`view_cached`] that never runs the leg: the agy scopes show what `cache` holds, or the
 /// asking words. `flying` says an ask is already out; the home returned is the one a new
 /// ask is due for, which the caller runs off its own thread and settles into `cache`.
-pub(crate) fn view_held_cached(
+pub(crate) fn view_held_keyed(
     inputs: &Inputs<'_>,
     cache: &AgyCache,
     flying: bool,
     history: &mut HistoryCache,
-) -> (Vec<view::Scope>, Option<PathBuf>) {
+) -> (Vec<view::Scope>, Vec<RecordedIdentity>, Option<PathBuf>) {
     let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
-        return (view::unavailable(), None);
+        return (view::unavailable(), Vec::new(), None);
     };
     let scopes = configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs));
     let legs = agy_legs(&scopes);
     let home = inputs.home.filter(|_| !legs.is_empty());
     let due = home.filter(|home| !flying && cache.due(home, inputs.now));
     let shown = home.and_then(|home| cache.shown(home, flying || due.is_some()));
-    (
-        compose(inputs, scopes, &legs, shown, history),
-        due.map(Path::to_path_buf),
-    )
+    let (views, keys) = compose_keyed(inputs, scopes, &legs, shown, history);
+    (views, keys, due.map(Path::to_path_buf))
+}
+
+#[cfg(test)]
+pub(crate) fn view_held_cached(
+    inputs: &Inputs<'_>,
+    cache: &AgyCache,
+    flying: bool,
+    history: &mut HistoryCache,
+) -> (Vec<view::Scope>, Option<PathBuf>) {
+    let (views, _, due) = view_held_keyed(inputs, cache, flying, history);
+    (views, due)
 }
 
 #[cfg(test)]
@@ -2583,6 +2750,16 @@ fn compose(
     shown: Option<Shown>,
     history: &mut HistoryCache,
 ) -> Vec<view::Scope> {
+    compose_keyed(inputs, scopes, legs, shown, history).0
+}
+
+fn compose_keyed(
+    inputs: &Inputs<'_>,
+    scopes: Vec<Scope>,
+    legs: &[Leg],
+    shown: Option<Shown>,
+    history: &mut HistoryCache,
+) -> (Vec<view::Scope>, Vec<RecordedIdentity>) {
     let done_at = shown.as_ref().and_then(|(_, _, done_at)| *done_at);
     let now = done_at.map_or(inputs.now, |done_at| inputs.now.max(done_at));
     let muse = muse_held(inputs, &scopes, now);
@@ -2596,7 +2773,23 @@ fn compose(
     // The same table `ae quota` draws its PACE column from, so one rate decides both.
     history.extend(&Inputs { now, ..*inputs }, &observation.groups, &mut series);
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
-    observation.quota_view_paced(&pace)
+    let scopes = observation.ordered_scopes();
+    let keys = scopes
+        .iter()
+        .filter_map(|scope| {
+            Some(RecordedIdentity {
+                tool: scope.group.tool,
+                source: scope.group.source.clone()?,
+            })
+        })
+        .collect();
+    (
+        scopes
+            .iter()
+            .map(|scope| scope.viewed(observation.home.as_deref(), observation.now, &pace))
+            .collect(),
+        keys,
+    )
 }
 
 /// One attempt's rows, or a placeholder and its reason. A row with no windows still says

@@ -2986,11 +2986,72 @@ fn settings_body(
             rows
         }
     };
+    if let (SettingsTab::Quota, Some(seats)) = (tab, &bodies.live_seats) {
+        body.extend(live_seat_rows(seats, paint, width));
+    }
     // A kept quota body says how old it is, above it, in the stale tone.
     if let (SettingsTab::Quota, Some(kept)) = (tab, &bodies.quota_kept) {
         body.insert(0, (clean(kept), paint.fg(|p| p.stale)));
     }
     body
+}
+
+fn live_seat_rows(
+    seats: &crate::quota::LiveSeats,
+    paint: Paint,
+    width: u16,
+) -> Vec<(String, Style)> {
+    let clean = crate::board::terminal_text;
+    let dim = paint.fg(|p| p.dim);
+    let text = paint.fg(|p| p.text);
+    let head = text.add_modifier(Modifier::BOLD);
+    let mut rows = Vec::new();
+    let room = width.saturating_sub(LEFT);
+    let line = |value: &str| fit(&clean(value).replace(['\n', '\r', '\t'], " "), "", room);
+    rows.push((String::new(), dim));
+    rows.push((line("Live seats by account"), head));
+    if let Some(at) = seats.groups.first().and_then(|group| group.observed_at) {
+        rows.push((
+            line(&format!(
+                "snapshot {} ago",
+                crate::quota::age_label(Timestamp::now().epoch().saturating_sub(at))
+            )),
+            dim,
+        ));
+    }
+    if seats.incomplete {
+        rows.push((line("incomplete fleet snapshot"), dim));
+    }
+    if seats.groups.is_empty() {
+        rows.push((line("no live seats"), dim));
+    }
+    for group in &seats.groups {
+        rows.push((line(&group.heading), head));
+        if let Some(gap) = &group.gap {
+            rows.push((line(gap), dim));
+        }
+        if group.unknown_liveness > 0 {
+            rows.push((
+                line(&format!("{} liveness unknown", group.unknown_liveness)),
+                dim,
+            ));
+        }
+        for row in &group.rows {
+            rows.push((
+                line(&format!(
+                    "{}  {}  {}  {}  activity={}  declared={}",
+                    row.session_seat,
+                    row.profile,
+                    row.model,
+                    row.effort,
+                    row.activity,
+                    row.declared
+                )),
+                text,
+            ));
+        }
+    }
+    rows
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
@@ -3284,6 +3345,9 @@ fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line<'_>, max: u16) -> u16 
     }
     buf.set_line(x, y, line, max).0
 }
+
+#[cfg(test)]
+mod seatjoin_spec;
 
 #[cfg(test)]
 mod tests {

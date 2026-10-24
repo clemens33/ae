@@ -741,7 +741,14 @@ impl App {
                 config,
                 about,
                 instructions,
-            } => self.settled(generation, quota, config, about, instructions),
+                live_seats,
+            } => {
+                let current = self.model.settings_generation(generation);
+                self.settled(generation, quota, config, about, instructions);
+                if current && let Some(seats) = live_seats {
+                    self.settings_bodies.live_seats = Some(seats);
+                }
+            }
             Answer::Core(seen) => self.upgrade = seen,
             Answer::Handover { view, at } => {
                 self.keep = (!self.touched).then_some(Keep { view, at });
@@ -1155,9 +1162,11 @@ impl App {
         self.model.open_settings(self.settings_generation);
         // An earlier open's quota stays drawn, marked kept, until this open's own answer.
         let quota = self.settings_bodies.quota.take();
+        let live_seats = self.settings_bodies.live_seats.take();
         self.settings_bodies = settings::SettingsBodies {
             quota_kept: quota.as_ref().map(|_| String::new()),
             quota,
+            live_seats,
             ..settings::SettingsBodies::default()
         };
         self.quota_failed = false;
@@ -8238,6 +8247,7 @@ mod tests {
             config: None,
             about: None,
             instructions: None,
+            live_seats: None,
         });
         let shown = framed(&mut app);
         assert!(
@@ -8298,6 +8308,7 @@ mod tests {
             config: None,
             about: None,
             instructions: None,
+            live_seats: None,
         });
         let first_body_row = |shown: &str| {
             shown
@@ -8338,6 +8349,7 @@ mod tests {
             config: None,
             about: None,
             instructions: None,
+            live_seats: None,
         });
         let body_ends = |app: &mut App| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
@@ -10380,10 +10392,69 @@ mod tests {
             config: None,
             about: None,
             instructions: None,
+            live_seats: None,
         });
         app.close_settings();
         app.open_settings();
         app
+    }
+
+    /// seatjoin #242 s2 (frozen): live seats ride `settled()`'s generation gate.
+    /// Wrong: kept outside the gate, a stale answer merged, or cleared on reopen.
+    #[test]
+    fn seatjoin_live_seats_follow_the_settings_generation() {
+        use crate::quota::{LiveGroup, LiveRow, LiveSeats};
+        // `None` is a refresh that failed outright: no quota, no seat snapshot.
+        let answer = |app: &mut App, generation, seats: Option<&[&str]>| {
+            let row = |seat: &&str| LiveRow {
+                session_seat: (*seat).to_owned(),
+                ..LiveRow::default()
+            };
+            let live_seats = seats.map(|seats| LiveSeats {
+                groups: vec![LiveGroup {
+                    rows: seats.iter().map(row).collect(),
+                    ..LiveGroup::default()
+                }],
+                incomplete: false,
+            });
+            let quota = match seats {
+                Some(_) => vec![quotacache_scope("qrow")],
+                None => crate::quota::view::unavailable(),
+            };
+            app.answer(Answer::Settings {
+                generation,
+                quota,
+                config: None,
+                about: None,
+                instructions: None,
+                live_seats,
+            });
+        };
+        let mut app = app(Some("api"));
+        app.open_settings();
+        answer(&mut app, 1, Some(&["old:lead"][..]));
+        assert!(framed(&mut app).contains("old:lead"), "own answer draws");
+        app.close_settings();
+        app.open_settings();
+        let kept = framed(&mut app);
+        assert!(kept.contains("last updated"), "kept line: {kept}");
+        assert!(kept.contains("old:lead"), "kept seat: {kept}");
+        answer(&mut app, 1, Some(&["stale:lead"][..]));
+        let stale = framed(&mut app);
+        assert!(stale.contains("old:lead"), "{stale}");
+        assert!(!stale.contains("stale:lead"), "stale answer drawn: {stale}");
+        answer(&mut app, 2, Some(&["new:lead"][..]));
+        answer(&mut app, 2, None);
+        let failed = framed(&mut app);
+        assert!(failed.contains("refresh failed"), "{failed}");
+        assert!(failed.contains("new:lead"), "failure keeps seats: {failed}");
+        assert!(
+            !failed.contains("old:lead"),
+            "replaced, not merged: {failed}"
+        );
+        answer(&mut app, 2, Some(&[]));
+        let fresh = framed(&mut app);
+        assert!(!fresh.contains("new:lead"), "fresh empty drops it: {fresh}");
     }
 
     /// P1: reopen paints the kept quota snapshot at once, with a kept line
@@ -10417,6 +10488,7 @@ mod tests {
             config: None,
             about: None,
             instructions: None,
+            live_seats: None,
         });
         let kept = framed(&mut app);
         assert!(
@@ -10429,6 +10501,7 @@ mod tests {
             config: None,
             about: None,
             instructions: None,
+            live_seats: None,
         });
         let fresh = framed(&mut app);
         assert!(fresh.contains("qrow-fresh"), "own answer paints:\n{fresh}");
@@ -10451,6 +10524,7 @@ mod tests {
             config: None,
             about: None,
             instructions: None,
+            live_seats: None,
         });
         let shown = framed(&mut app);
         let line = "last updated 3m ago — refreshing";
@@ -10473,6 +10547,7 @@ mod tests {
                 config: None,
                 about: None,
                 instructions: None,
+                live_seats: None,
             });
         };
         let mut cold = app(Some("api"));

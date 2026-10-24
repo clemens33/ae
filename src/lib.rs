@@ -1440,6 +1440,24 @@ impl SocketPaths {
         left.is_some() && self.of(right) == left
     }
 
+    /// Reuse this fleet read's proof; an uncached app socket is already held
+    /// from tmux's own marker. A cached failure always wins over that spelling.
+    pub(crate) fn known_same(
+        &self,
+        recorded: &inventory::ServerId,
+        app: &inventory::ServerId,
+    ) -> bool {
+        let cached = |server| self.seen.iter().find(|(known, _)| known == server);
+        let Some((_, Some(path))) = cached(recorded) else {
+            return false;
+        };
+        match cached(app) {
+            Some((_, answer)) => answer.as_ref() == Some(path),
+            None => matches!(app, inventory::ServerId::Selected(meta::Selector::Socket(socket))
+                if socket.as_os_str().to_str() == Some(path.as_str())),
+        }
+    }
+
     /// Keep the first spelling of each server whose socket identity tmux can
     /// prove. Recorded pointers precede the default named entitlement, so a
     /// durable record retains its own spelling when both name one server.
@@ -3443,6 +3461,7 @@ pub(crate) struct WorldRead {
     pub(crate) snapshot: liveness::Snapshot,
     pub(crate) world: listing::World,
     pub(crate) panes: ListedPanes,
+    pub(crate) sockets: SocketPaths,
 }
 
 /// Each Running record's panes by its state directory: `None` when the read
@@ -3503,6 +3522,7 @@ pub(crate) fn world_read(
         snapshot,
         world,
         panes,
+        sockets,
     }
 }
 
@@ -4097,6 +4117,34 @@ pub fn run_with(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn live_seat_socket_proof_is_cache_only_and_unknown_never_matches() {
+        use crate::{inventory::ServerId, meta::Selector};
+        let name = |s: &str| ServerId::Selected(Selector::Name(s.into()));
+        let socket = |s: &str| ServerId::Selected(Selector::Socket(s.into()));
+        let (recorded, alias) = (name("ae"), name("alias"));
+        let no_read = |_: &ServerId| -> Option<String> {
+            panic!("new socket read");
+        };
+        let mut cache = super::SocketPaths::primed(no_read, &recorded, Some("/tmp/ae".into()));
+        cache.seen.push((alias.clone(), Some("/tmp/ae".into())));
+        assert!(cache.known_same(&recorded, &alias));
+        assert!(cache.known_same(&recorded, &socket("/tmp/ae")));
+        assert!(!cache.known_same(&recorded, &socket("/private/tmp/ae")));
+        assert!(!cache.known_same(&recorded, &socket("/tmp/other")));
+        assert!(!cache.known_same(&name("uncached"), &name("uncached")));
+        assert!(!cache.known_same(&socket("/tmp/new"), &socket("/tmp/new")));
+        cache
+            .seen
+            .push((socket("/tmp/ae"), Some("/tmp/elsewhere".into())));
+        assert!(!cache.known_same(&recorded, &socket("/tmp/ae")));
+        cache.seen.push((name("failed"), None));
+        assert!(!cache.known_same(&recorded, &name("failed")));
+        assert!(!cache.known_same(&name("failed"), &alias));
+        cache.seen.push((socket("/tmp/missing"), None));
+        assert!(!cache.known_same(&recorded, &socket("/tmp/missing")));
+    }
 
     /// The seat-pane test of bare `ae`: only a described, unstamped pane whose
     /// session is recorded draws the app; every other reading keeps the list.

@@ -128,7 +128,11 @@ pub(crate) struct SettingsBodies {
     pub(crate) quota: Option<Vec<crate::quota::view::Scope>>,
     /// Set while `quota` is an earlier open's body, until this open's own answer: the line
     /// drawn above it saying how old that drawing is, or that its refresh failed.
+    /// Live seats retain their own fleet snapshot age independently.
     pub(crate) quota_kept: Option<String>,
+    /// Live-seat snapshot from the loader-owned fleet projection. `None` until
+    /// one lands; `Some` with empty groups is a read with no live seats.
+    pub(crate) live_seats: Option<crate::quota::LiveSeats>,
     pub(crate) config: ConfigView,
     pub(crate) about: Option<AboutFacts>,
     pub(crate) instructions: InstructionsView,
@@ -139,6 +143,7 @@ impl Default for SettingsBodies {
         Self {
             quota: None,
             quota_kept: None,
+            live_seats: None,
             config: ConfigView::Loading,
             about: None,
             instructions: InstructionsView::Loading,
