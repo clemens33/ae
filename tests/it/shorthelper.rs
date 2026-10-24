@@ -97,6 +97,57 @@ fn sessions(root: &Path) -> Vec<String> {
 }
 
 #[test]
+fn every_helper_answers_help_before_session_work() {
+    let root = scratch("help");
+    let dir = plant(&root, "demo");
+    fs::write(dir.join("meta"), "invalid session metadata\n").expect("hostile meta");
+    fs::write(dir.join("events.jsonl"), "").expect("empty journal");
+    for helper in ae::shim::HELPERS {
+        link(&dir, helper.name);
+    }
+    let snapshot = || {
+        let mut names: Vec<_> = fs::read_dir(&dir)
+            .expect("session contents")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        names.sort();
+        (
+            names,
+            fs::read(dir.join("meta")).expect("meta bytes"),
+            fs::read(dir.join("events.jsonl")).expect("journal bytes"),
+        )
+    };
+    let before = snapshot();
+    for helper in ae::shim::HELPERS {
+        for flag in ["--help", "-h"] {
+            let got = through_link(&root, &dir.join(helper.name), &[flag, "ignored"]);
+            assert_eq!(got.0, Some(0), "{} {flag}: {got:?}", helper.name);
+            assert!(
+                got.1.starts_with(&format!("Usage: {}", helper.name)),
+                "{got:?}"
+            );
+            assert!(got.1.lines().count() >= 2, "usage and purpose: {got:?}");
+            assert!(got.2.is_empty(), "{got:?}");
+            assert_eq!(snapshot(), before, "{} {flag} wrote state", helper.name);
+            assert_eq!(run(&root, &["@demo", helper.name, flag]), got);
+        }
+    }
+    assert_eq!(snapshot(), before, "short help wrote state");
+}
+
+#[test]
+fn short_helper_help_needs_no_session_directory() {
+    let root = scratch("help-absent");
+    for flag in ["--help", "-h"] {
+        let got = run(&root, &["@missing", "relaunch", flag]);
+        assert_eq!(got.0, Some(0), "{got:?}");
+        assert!(got.1.starts_with("Usage: relaunch"), "{got:?}");
+        assert!(got.2.is_empty(), "{got:?}");
+        assert!(sessions(&root).is_empty(), "help created a session");
+    }
+}
+
+#[test]
 fn the_short_form_runs_the_named_sessions_own_helper() {
     let root = scratch("round-trip");
     let demo = plant(&root, "demo");

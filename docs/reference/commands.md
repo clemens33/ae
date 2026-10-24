@@ -1582,6 +1582,8 @@ generations if it wants to.
 
 ## Session helpers
 
+Every helper accepts `--help` or `-h` as its first argument: usage on stdout, exit 0, no session access or action; later occurrences remain operands (for example, `send lead --help`).
+
 Every helper in `~/.ae/sessions/<name>/` has two accepted spellings, and they
 run the same helper from the same core:
 

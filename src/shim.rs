@@ -37,143 +37,175 @@ pub struct Helper {
     pub entry: &'static str,
     /// Words inserted between the session directory and the caller's argv.
     pub prefix: &'static [&'static str],
+    /// The helper's argv grammar and purpose, printed without session access.
+    pub usage: &'static str,
 }
+
+/// Goal usage shared with the legacy internal entry's usage errors.
+pub const GOAL_USAGE: &str = "Usage: goal            # show the session goal\n       goal <text>     # set it (one line)\n       goal --clear    # remove it\n";
 
 /// THE helper set — the names a session directory holds, and the only names
 /// this dispatch answers to.
 pub const HELPERS: [Helper; 27] = [
     Helper {
         name: "send",
+        usage: "Usage: send [--cross-session] <agent-name|pane-id|@session:agent> <message>\nDeliver a message to another agent.\n",
         entry: crate::cli::SEND,
         prefix: &[],
     },
     Helper {
         name: "relay",
+        usage: "Usage: relay <session[:agent]> <text…>\nRelay bare human instructions from an orchestrator session.\n",
         entry: crate::cli::RELAY,
         prefix: &[],
     },
     Helper {
         name: "ask",
+        usage: "Usage: ask [--cross-session] <agent-name|pane-id|@session:agent> <question>\nSend a tracked question that requires a reply.\n",
         entry: crate::cli::ASK,
         prefix: &[],
     },
     Helper {
         name: "review",
+        usage: "Usage: review [--cross-session] <agent-name|pane-id|@session:agent> <request>\nRequest a tracked critical review.\n",
         entry: crate::cli::REVIEW,
         prefix: &[],
     },
     Helper {
         name: "reply",
+        usage: "Usage: reply [--as <agent>] <request-id> <message>\nReply to a logged ask or review.\n",
         entry: crate::cli::REPLY,
         prefix: &[],
     },
     Helper {
         name: "withdraw",
+        usage: "Usage: withdraw <request-id> <reason>\nWithdraw an open ask or review you sent.\n",
         entry: crate::cli::WITHDRAW,
         prefix: &[],
     },
     Helper {
         name: "accept",
+        usage: "Usage: accept <request-id> <note>\nAccept an open ask or review sent to you; a reply is still owed.\n",
         entry: crate::cli::ACCEPT,
         prefix: &[],
     },
     Helper {
         name: "requests",
+        usage: "Usage: requests [mine|inbox|all] [--limit N]\nInspect tracked request state.\n",
         entry: crate::cli::REQUESTS,
         prefix: &[],
     },
     Helper {
         name: "state",
+        usage: "Usage: state [working|waiting-user|waiting-agent|blocked|done] [reason]\n       state waiting-agent --on <agent|session:agent|@session> <reason>\nShow or declare your work state.\n",
         entry: crate::cli::STATE,
         prefix: &[],
     },
     Helper {
         name: "mark-done",
+        usage: "Usage: mark-done [message]\nDeclare done with an optional completion message.\n",
         entry: crate::cli::STATE,
         prefix: &["done"],
     },
     Helper {
         name: "say",
+        usage: "Usage: say [text…]\nPush text to the human's Telegram chat; no arguments reads stdin.\n",
         entry: crate::cli::SAY,
         prefix: &[],
     },
     Helper {
         name: "memo",
+        usage: "Usage: memo add [--topic <topic>] <text> | read [--topic <topic>] | tail [n]\nWrite or read durable session memory.\n",
         entry: crate::cli::MEMO,
         prefix: &[],
     },
     Helper {
         name: "goal",
+        usage: GOAL_USAGE,
         entry: crate::cli::GOAL,
         prefix: &[],
     },
     Helper {
         name: "peek",
+        usage: "Usage: peek <agent> [lines]\nCapture recent pane output for inspection.\n",
         entry: crate::cli::PEEK,
         prefix: &[],
     },
     Helper {
         name: "peak",
+        usage: "Usage: peak <agent> [lines]\nAlias for peek: capture recent pane output.\n",
         entry: crate::cli::PEEK,
         prefix: &[],
     },
     Helper {
         name: "agents",
+        usage: "Usage: agents [--all]\nList session agents, or all running sessions' agents.\n",
         entry: crate::cli::AGENTS,
         prefix: &[],
     },
     Helper {
         name: "quota",
+        usage: "Usage: quota\nShow cached quota windows and effective headroom.\n",
         entry: crate::cli::QUOTA,
         prefix: &[],
     },
     Helper {
         name: "usage",
+        usage: "Usage: usage\nShow this session's offline token usage and reference-price spend.\n",
         entry: crate::cli::USAGE,
         prefix: &[],
     },
     Helper {
         name: "focus",
+        usage: "Usage: focus <agent>\nSwitch tmux focus to an agent's pane.\n",
         entry: crate::cli::FOCUS,
         prefix: &[],
     },
     Helper {
         name: "interrupt",
+        usage: "Usage: interrupt [--cross-session] <agent-name|pane-id|@session:agent> [message]\nCancel an agent's current turn.\n",
         entry: crate::cli::INTERRUPT,
         prefix: &[],
     },
     Helper {
         name: "spawn",
+        usage: "Usage: spawn <name> --using <profile> [--] [prompt]\nAdd an agent to this session.\n",
         entry: crate::cli::SPAWN,
         prefix: &[],
     },
     Helper {
         name: "retire",
+        usage: "Usage: retire <agent-name|pane-id>\nRemove a spawned agent.\n",
         entry: crate::cli::RETIRE,
         prefix: &[],
     },
     Helper {
         name: "relaunch",
+        usage: "Usage: relaunch <agent>\nRestart a provably dead seat in this session.\n",
         entry: crate::cli::RELAUNCH,
         prefix: &[],
     },
     Helper {
         name: "_register-sid",
+        usage: "Usage: _register-sid <slot> [session-id]\nInternal: register the Codex session id; not for direct use.\n",
         entry: crate::cli::REGISTER_SID,
         prefix: &[],
     },
     Helper {
         name: "watchdog",
+        usage: "Usage: watchdog [--interval <n>] [--quota-every-secs <n>] [--idle-nudge-secs <n>]\n       [--stale-secs <n>] [--max-nudges <n>] [--throttle-alert-cycles <n>]\n       [--undelivered-max <n>] [--quiet-beat-ms <n>] [--quiet-tries <n>]\n       [--quiet-panes-per-cycle <n>] [--sweep-secs <n>] [--sweep-retry-secs <n>]\n       [--sweep-retry-max <n>] [--tg-supervise-secs <n>]\nInternal: run the session watchdog; not for direct use.\n",
         entry: crate::cli::WATCHDOG_RUN,
         prefix: &[],
     },
     Helper {
         name: "loop",
+        usage: "Usage: loop [watchdog options]\nInternal: deprecated alias for watchdog; not for direct use.\n",
         entry: crate::cli::WATCHDOG_RUN,
         prefix: &[],
     },
     Helper {
         name: "events-tail",
+        usage: "Usage: events-tail\nInternal: show the live event log; not for direct use.\n",
         entry: crate::cli::EVENTS_TAIL,
         prefix: &[],
     },
@@ -183,6 +215,12 @@ pub const HELPERS: [Helper; 27] = [
 #[must_use]
 pub fn lookup(name: &str) -> Option<&'static Helper> {
     HELPERS.iter().find(|helper| helper.name == name)
+}
+
+/// Only the first word after a helper requests help; later flags are operands.
+#[must_use]
+pub fn help(helper: &Helper, tail: &[String]) -> Option<&'static str> {
+    matches!(tail.first().map(String::as_str), Some("--help" | "-h")).then_some(helper.usage)
 }
 
 /// What `argv[0]` says this process is.
@@ -348,6 +386,28 @@ pub fn translate(helper: &Helper, dir: &Path, tail: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_helper_has_usage_and_only_a_leading_flag_requests_it() {
+        for helper in HELPERS {
+            assert!(helper.usage.starts_with(&format!("Usage: {}", helper.name)));
+            assert!(helper.usage.lines().count() >= 2, "grammar and purpose");
+            assert_eq!(help(&helper, &[]), None);
+            for flag in ["--help", "-h"] {
+                assert_eq!(help(&helper, &[flag.to_owned()]), Some(helper.usage));
+                assert_eq!(
+                    help(&helper, &["operand".to_owned(), flag.to_owned()]),
+                    None
+                );
+            }
+        }
+        for (name, target) in [("send", "lead"), ("reply", "request-id")] {
+            let helper = lookup(name).expect("contract helper");
+            let tail = [target.to_owned(), "--help".to_owned()];
+            let translated = translate(helper, Path::new("/s/demo"), &tail);
+            assert_eq!(&translated[2..], tail, "help remains the message body");
+        }
+    }
 
     #[test]
     fn a_link_invoked_by_path_names_its_own_session() {

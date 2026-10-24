@@ -210,10 +210,14 @@ fn run_program_dispatch(
             err.flush()?;
             Ok(entry::EXIT_USAGE)
         }
-        // A helper carries no preamble: the pane execs the link directly, so
-        // the translated argv goes straight to the ordinary dispatch — through
-        // the gate, which is the ONE thing a helper still pays.
+        // A helper carries no preamble. Help answers directly; every operation
+        // goes through the install gate and ordinary dispatch.
         shim::Invocation::Helper { helper, dir } => {
+            if let Some(usage) = shim::help(helper, args) {
+                write!(out, "{usage}")?;
+                out.flush()?;
+                return Ok(0);
+            }
             if let Some(code) = install_gate(err)? {
                 return Ok(code);
             }
@@ -252,10 +256,12 @@ fn invocation_dir() -> std::path::PathBuf {
 /// # Ok::<(), ae::Error>(())
 /// ```
 pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
-    // TWO WORDS ARE OWED AN ANSWER ON A BROKEN INSTALL, and they are the ONLY
-    // two, which is why they sit ahead of the gate: `version` is how a mismatch
-    // is diagnosed, so it may not depend on the thing it diagnoses, and
-    // `upgrade` is how one is repaired.
+    // Help needs only argv, even when the named session or install is broken.
+    if let Some(code) = short_helper_help(args, out)? {
+        return Ok(code);
+    }
+    // Version and upgrade also answer on a broken install: `version` diagnoses
+    // a mismatch, and `upgrade` repairs it, so both sit ahead of the gate.
     match args.first().map(String::as_str) {
         Some("version" | "--version" | "-V") => {
             writeln!(out, "{}", version_line())?;
@@ -2167,6 +2173,18 @@ fn session_path_is_safe(preamble: &entry::Preamble, name: &str) -> bool {
         None | Some(PathKind::Directory) => true,
         Some(PathKind::Symlink | PathKind::Other) => false,
     }
+}
+
+/// Answer short-form helper help using argv alone.
+fn short_helper_help(args: &[String], out: &mut impl Write) -> Result<Option<u8>> {
+    if let shim::Short::Call { helper, tail, .. } = shim::short_form(args)
+        && let Some(usage) = shim::help(helper, tail)
+    {
+        write!(out, "{usage}")?;
+        out.flush()?;
+        return Ok(Some(0));
+    }
+    Ok(None)
 }
 
 /// `ae @<session> <helper> <args…>`: the short spelling of a session helper.

@@ -29,7 +29,7 @@ use crate::time::Timestamp;
 use crate::tracked::EventFields;
 
 /// The usage text.
-pub const USAGE: &str = "Usage: goal            # show the session goal\n       goal <text>     # set it (one line)\n       goal --clear    # remove it\n";
+pub const USAGE: &str = crate::shim::GOAL_USAGE;
 
 /// The meta key.
 pub const KEY: &str = "goal";
