@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.129] - 2026-10-24
+- Add cached Telegram quota command
+
 ## [v2026.10.128] - 2026-10-24
 - Reduce Telegram bridge outbound discovery work
 
