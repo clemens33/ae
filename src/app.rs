@@ -8464,6 +8464,119 @@ mod tests {
         assert_eq!(body, Err(std::io::ErrorKind::NotFound), "no body written");
     }
 
+    /// #248 P1b-2 Batch A amendment (lead ruling e581edb4): an app writer
+    /// whose session was replaced under its name re-enters the new
+    /// incarnation with no refusal, publishes its draft there, and the old
+    /// incarnation's record writes nothing into the replacement. `uuid` is
+    /// the replacement's: a new one, or the same one in a new directory.
+    fn reentered(tag: &str, uuid: &str) {
+        let root = Root::new(tag);
+        let dir = root.0.join("sessions").join("api");
+        let (mut app, reader) = housed(&root);
+        writing(&mut app);
+        let old = app.recovery.record(&dir).expect("own lifetime");
+        old.publish(b"before").expect("the bound record publishes");
+        let again = app.recovery.record(&dir).expect("own lifetime");
+        assert!(
+            std::sync::Arc::ptr_eq(&old, &again),
+            "{tag}: a current record is kept"
+        );
+        std::fs::rename(dir.join("meta"), root.0.join("meta")).expect("meta aside");
+        let unknown = app.recovery.record(&dir).expect("own lifetime");
+        assert!(
+            std::sync::Arc::ptr_eq(&old, &unknown),
+            "{tag}: an unknown record is kept"
+        );
+        std::fs::rename(root.0.join("meta"), dir.join("meta")).expect("meta back");
+        drop((again, unknown));
+        app.write(false);
+        std::fs::rename(&dir, root.0.join("gone")).expect("unregistered");
+        std::fs::create_dir_all(&dir).expect("a same-name replacement");
+        meta(&root, uuid, "colead");
+        refold(&mut app, &reader, &root, &[("api", Status::Running)]);
+        let seen = app.notices.len();
+        writing(&mut app);
+        let said: Vec<&str> = app.notices[seen..]
+            .iter()
+            .map(|(_, n)| n.body.as_str())
+            .collect();
+        assert!(
+            !said
+                .iter()
+                .any(|body| body.contains("refused") || body.contains("not restored")),
+            "{tag}: re-entry surfaces no refusal: {said:?}"
+        );
+        assert!(app.held.is_none(), "{tag}: {:?}", app.held);
+        assert_eq!(
+            drafted(&app),
+            "",
+            "{tag}: nothing of the old incarnation is restored"
+        );
+        let fresh = app
+            .recovery
+            .record(&dir)
+            .expect("a record of the new incarnation");
+        fresh
+            .publish(b"after")
+            .expect("the draft publishes in the new incarnation");
+        assert!(
+            old.publish(b"stale").is_err(),
+            "{tag}: the old record refuses"
+        );
+        let _ = old.clear();
+        assert_eq!(
+            super::submit::recover(&fresh),
+            super::submit::Draft::Kept(b"after".to_vec()),
+            "{tag}: nothing written into the replacement by the old record"
+        );
+    }
+
+    #[test]
+    fn a_writer_reentering_a_replaced_session_binds_the_new_incarnation() {
+        reentered("reenter", &ID.replace("1234", "cccc"));
+    }
+
+    /// A replacement keeping the UUID is told apart by its directory alone.
+    #[test]
+    fn a_writer_reentering_a_same_uuid_replacement_binds_the_new_directory() {
+        reentered("reenter-dir", ID);
+    }
+
+    /// #248 P1b-2 Batch A amendment 2 (lead ruling on 1e1b8b61): a draft
+    /// mutation guard that is not a regular file refuses the entry at once,
+    /// naming its path, and the writer sees why; a regular guard enters.
+    #[test]
+    fn a_nonregular_draft_mutation_guard_refuses_the_entry_by_name() {
+        let root = Root::new("guard-dir");
+        let guard = root
+            .0
+            .join("sessions")
+            .join("api")
+            .join(".console-draft-mutation.lock");
+        std::fs::create_dir(&guard).expect("the guard is a directory");
+        let (mut app, _reader) = housed(&root);
+        app.take(Reading::Owner, Instant::now());
+        let started = Instant::now();
+        app.write(true);
+        let took = started.elapsed();
+        assert!(!app.composing(), "a non-regular guard refuses the entry");
+        let why = app.held.clone().unwrap_or_default();
+        assert!(
+            why.contains(&guard.display().to_string())
+                && why.contains("draft mutation guard")
+                && !why.contains("lifetime lock"),
+            "the writer is told the guard, not a busy lifetime lock: {why:?}"
+        );
+        assert!(
+            took < Duration::from_secs(4),
+            "refused at once, not after a wait: {took:?}"
+        );
+        std::fs::remove_dir(&guard).expect("the guard dir removed");
+        app.write(false);
+        writing(&mut app);
+        assert!(app.held.is_none(), "{:?}", app.held);
+    }
+
     /// An app on `api` whose lane holds one `said` turn for each of `bodies`,
     /// framed once so the keys and clicks have a layout to act on.
     fn turned(bodies: &[&str]) -> App {

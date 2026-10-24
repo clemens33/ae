@@ -1142,13 +1142,17 @@ fn an_orphan_whose_liveness_cannot_be_proven_is_not_offered_and_not_touched() {
     rig.escape(&a);
     rig.kill(&a);
     // Discover this instance's own files without assuming their names:
-    // everything new beside the known admission lock and body store,
+    // everything new beside the known session-scoped locks (admission,
+    // draft mutation guard) and body store,
     // split into the record (it holds the line) and the rest (the
     // lifetime lock a claimant must take to prove A gone).
     let mut records = Vec::new();
     let mut locks = Vec::new();
     for name in rig.entries().difference(&baseline) {
-        if name == ".console-admission.lock" || name == "messages" {
+        if name == ".console-admission.lock"
+            || name == ".console-draft-mutation.lock"
+            || name == "messages"
+        {
             continue;
         }
         let path = rig.tool.dir.join(name);

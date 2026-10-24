@@ -149,6 +149,38 @@ pub(crate) fn run_nonlocal(
     commit_teardown(dir, &roots.sessions, &name, "session", RECOVER_ARCHIVE, err)
 }
 
+/// Ordinary End recovery only; no argv route. The transaction has matched a
+/// complete archive under all source/activity holds and proved a durable push.
+pub(crate) fn end_removed(
+    dir: &Path,
+    proof: &crate::lifecycle::end::transaction::RemovedWorkdir,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let (name, roots) = match prelude(dir, err)? {
+        Ok(v) => v,
+        Err(code) => return Ok(code),
+    };
+    let bytes = match prove_identified_session_dir(dir, &name, err)? {
+        Ok(v) => v,
+        Err(code) => return Ok(code),
+    };
+    let expected = roots.worktrees.join(&name);
+    if !matches!(classify_dir(&roots.worktrees), DirKind::RealDir)
+        || proof.path() != expected
+        || meta::first_value(&bytes, "work_dir") != Some(expected.as_os_str().as_bytes())
+        || !matches!(meta::first_value(&bytes, "mode"), Some(b"full" | b"git"))
+        || !matches!(classify_dir(&expected), DirKind::Absent)
+    {
+        writeln!(
+            err,
+            "teardown: missing managed workdir proof changed for {} — refusing.",
+            expected.display()
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    commit_teardown(dir, &roots.sessions, &name, "session", RECOVER_ARCHIVE, err)
+}
+
 /// Shared front matter for both entries: derive the name, reject a bad grammar
 /// or a `..` traversal, resolve the configured roots from the environment, and
 /// prove the operand is the configured `sessions/<name>` direct child.

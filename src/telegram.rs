@@ -942,6 +942,8 @@ pub fn load_cursor(path: &Path) -> Result<Option<Cursor>, CursorError> {
 /// checkpoint as an un-checkpointed delivery — the event was sent, and the
 /// duplicate on restart is the designed cost.
 pub fn store_cursor(path: &Path, cursor: &Cursor) -> Result<(), CursorError> {
+    let _checkpoint = crate::store::lock(&crate::store::lock_path(path), crate::store::LOCK_WAIT)
+        .map_err(CursorError::NotWritten)?;
     durable_write(path, &cursor.render()).map_err(CursorError::NotWritten)
 }
 

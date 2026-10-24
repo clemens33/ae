@@ -52,17 +52,44 @@ impl Reason {
     }
 }
 
-/// Acquire the three source locks in the one fixed global order and return the
-/// held handles (released on drop) — or a diagnostic naming the lock that could
-/// not be taken.
-fn hold_sources(dir: &Path) -> Result<[fs::File; 3], String> {
+/// The source locks and the directory they protect, retained until drop.
+pub(crate) struct SourceGuards {
+    dir: PathBuf,
+    _files: [fs::File; 3],
+    pub(crate) removed_git: Option<GitFacts>,
+}
+
+impl SourceGuards {
+    fn git(&self, meta: &[u8], ops: &Ops, strict: bool) -> GitFacts {
+        if strict {
+            self.removed_git.as_ref().map_or_else(
+                || derive_git(meta, ops.push_outcome, ops.workdir.as_bytes()),
+                |g| GitFacts {
+                    base: g.base.clone(),
+                    final_commit: g.final_commit.clone(),
+                    range: g.range.clone(),
+                    count: g.count.clone(),
+                },
+            )
+        } else {
+            derive_git(meta, ops.push_outcome, ops.workdir.as_bytes())
+        }
+    }
+}
+
+/// Acquire meta, memo and events in that order, naming any refused lock.
+pub(crate) fn hold_sources(dir: &Path) -> Result<SourceGuards, String> {
     // Each lock is its file's own name plus `.lock`, spelled by the store, so
     // this cannot drift from the lock the writer takes.
     let store = crate::store::open(dir);
     let meta = hold(&dir.join(crate::meta::FILE))?;
     let memo = hold(&store.memo_path())?;
     let events = hold(&store.events_path())?;
-    Ok([meta, memo, events])
+    Ok(SourceGuards {
+        dir: dir.to_owned(),
+        _files: [meta, memo, events],
+        removed_git: None,
+    })
 }
 
 /// Hold `path`'s lock, or say which lock could not be taken.
@@ -85,24 +112,41 @@ pub(crate) fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    run_policy(dir, ops, false, out, err)
+    run_policy(dir, ops, false, None, out, err)
 }
 
 /// Ordinary End alone requests complete retention and exact unchanged reuse.
 pub(crate) fn end_snapshot(
     dir: &Path,
     ops: &Ops,
+    held: &SourceGuards,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    run_policy(dir, ops, true, out, err)
+    run_policy(dir, ops, true, Some(held), out, err)
+}
+
+/// Read a complete strict End archive for a captured UUID, without source locks.
+pub(crate) fn completed_end(dir: &Path, id: &str) -> Option<Vec<u8>> {
+    if id.is_empty() || canonical_uuid(id) != id {
+        return None;
+    }
+    let root = archive_root_of(dir)?;
+    require_real_root(&root, false).ok()?;
+    let target = root.join(id);
+    validate_tree(&target, id).ok()?;
+    super::retained::validate(&target.join("retained")).ok()?;
+    let bytes = read_file(&target.join(super::store::META)).ok()?;
+    (meta_get(&bytes, "reason") == "end" && meta_get(&bytes, "source_session_id") == id)
+        .then_some(bytes)
 }
 
 pub(crate) fn mismatch(dir: &Path, target: &Path, why: &str) -> String {
     format!(
-        "archive {} cannot match live directory {}: {why}",
+        "archive {} cannot match live directory {}: {why}. NOTHING was deleted. Move the whole STOPPED live directory to a new private recovery directory outside {}, then restart under a fresh name.",
         target.display(),
-        dir.display()
+        dir.display(),
+        dir.parent().unwrap_or(dir).display()
     )
 }
 
@@ -110,6 +154,7 @@ fn run_policy(
     dir: &Path,
     ops: &Ops,
     strict: bool,
+    borrowed: Option<&SourceGuards>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -127,13 +172,37 @@ fn run_policy(
 
     // The coherent snapshot: hold all three source locks, in the one fixed
     // global order, through every read below.
-    let _held = match hold_sources(dir) {
-        Ok(handles) => handles,
-        Err(diag) => {
-            writeln!(err, "{diag}")?;
-            return Ok(EXIT_FAILED);
-        }
+    let owned;
+    let held = if let Some(held) = borrowed {
+        held
+    } else {
+        owned = match hold_sources(dir) {
+            Ok(handles) => handles,
+            Err(diag) => {
+                writeln!(err, "{diag}")?;
+                return Ok(EXIT_FAILED);
+            }
+        };
+        &owned
     };
+    run_guarded(dir, ops, strict, held, out, err)
+}
+
+fn run_guarded(
+    dir: &Path,
+    ops: &Ops,
+    strict: bool,
+    held: &SourceGuards,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    if held.dir != dir {
+        writeln!(
+            err,
+            "archive: source guards belong to a different directory."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
 
     // Classified-source refusal, under the locks, BEFORE any read: an existing
     // non-regular core source (symlink, FIFO, directory) fails the whole
@@ -178,7 +247,7 @@ fn run_policy(
     let mut vol = Volatiles {
         snapshot: "archived",
         archived_at: ops.archived_at.to_owned(),
-        git: derive_git(&meta_bytes, ops.push_outcome, ops.workdir.as_bytes()),
+        git: held.git(&meta_bytes, ops, strict),
         push_outcome: ops.push_outcome.to_owned(),
         push_ref: ops.push_ref.to_owned(),
         preserved: ops.preserved.to_owned(),
@@ -374,10 +443,15 @@ fn publish_under_claim(
     if let Err(why) = fs::remove_dir(&claim) {
         writeln!(
             err,
-            "archive: published {}, but could not remove the completed claim {} ({why}); it is harmless — remove it by hand.",
+            "archive: published {}, but could not remove the completed claim {} ({why}); inspect it and remove it by hand before retrying.",
             target.display(),
             claim.display()
         )?;
+        if facts.inventory.is_some() {
+            return Ok(EXIT_FAILED);
+        }
+    } else if facts.inventory.is_some() {
+        fsync_dir(root)?;
     } else {
         let _ = fsync_dir(root);
     }

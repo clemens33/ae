@@ -29,6 +29,11 @@ pub(crate) fn node_exists(path: &Path) -> bool {
     !matches!(symlink_meta(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
+/// Positive directory proof through the existing archive lstat door.
+pub(crate) fn plain_dir(path: &Path) -> bool {
+    symlink_meta(path).is_ok_and(|meta| meta.is_dir())
+}
+
 /// Report legacy state without traversing a link in its `.ae` component.
 pub(crate) fn legacy_state(base: &Path, name: &str) -> Option<PathBuf> {
     let parent = base.join(".ae");

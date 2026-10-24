@@ -126,9 +126,10 @@ fn restored(read: Result<SourceRead, Oversized>, offered: bool) -> Draft {
     }
 }
 
-/// One process identity, with one lifetime hold per touched session. Browsing
-/// never drops these holds. An exec/restart mints a new identity, so the old
-/// process's durable records become orphans subject to the normal offer.
+/// One process identity, with one lifetime hold per touched session incarnation.
+/// Browsing keeps these holds until a replacement is positively proven. An
+/// exec/restart mints a new identity, so the old process's durable records become
+/// orphans subject to the normal offer.
 pub(crate) struct Recovery {
     instance: String,
     records: std::collections::BTreeMap<std::path::PathBuf, Arc<store::DraftRecord>>,
@@ -145,11 +146,20 @@ impl Default for Recovery {
 
 impl Recovery {
     pub(crate) fn record(&mut self, dir: &Path) -> Result<Arc<store::DraftRecord>, String> {
+        if self
+            .records
+            .get(dir)
+            .is_some_and(|record| record.is_current() == Some(false))
+        {
+            // Drop our stale Arc before reopening the same instance. Unknown
+            // identity keeps its cached hold and fails the mutation-time proof.
+            self.records.remove(dir);
+        }
         if let Some(record) = self.records.get(dir) {
             return Ok(Arc::clone(record));
         }
-        let record = store::DraftRecord::open(dir, &self.instance)
-            .map_err(|why| format!("the draft lifetime lock is not free ({why})"))?;
+        let record =
+            store::DraftRecord::open(dir, &self.instance).map_err(|why| why.to_string())?;
         let record = Arc::new(record);
         self.records.insert(dir.to_owned(), Arc::clone(&record));
         Ok(record)

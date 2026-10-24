@@ -21,14 +21,15 @@ use crate::transport;
 
 use super::{
     ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, claims, confirm_on_client,
-    dir_exists, emit_lifecycle_event, handoff_clients_before_kill, kill_verified, lock, meta_value,
-    name_is_usable, path_exists, recorded_server, server_of, sessions_dir, views_gone,
-    worktrees_dir,
+    dir_exists, handoff_clients_before_kill, kill_verified, lock, meta_value, name_is_usable,
+    path_exists, recorded_server, server_of, sessions_dir, views_gone, worktrees_dir,
 };
 
 /// The usage line.
 const USAGE: &str =
     "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>";
+
+pub(crate) mod transaction;
 
 const END_REQUEST_ACTION: &str = "end-request";
 const END_RESULT_ACTION: &str = "end-result";
@@ -858,7 +859,14 @@ fn run_supervised(
             let summary = format!("FAILED: end supervisor I/O: {why}");
             for notice in &notices {
                 if dir_exists(&notice.dir) {
-                    emit_lifecycle_event(&notice.dir, &notice.name, END_RESULT_ACTION, &summary);
+                    transaction::emit(
+                        &notice.dir,
+                        &notice.name,
+                        if notice.purge { "" } else { &notice.archive_id },
+                        END_RESULT_ACTION,
+                        &summary,
+                    );
+                    transaction::notice(root, notice, &summary);
                 }
             }
             writeln!(err, "Error: end supervisor I/O failed: {why}")?;
@@ -887,7 +895,14 @@ fn run_supervised(
         let summary = format!("FAILED: {reason}");
         for notice in &notices {
             if dir_exists(&notice.dir) {
-                emit_lifecycle_event(&notice.dir, &notice.name, END_RESULT_ACTION, &summary);
+                transaction::emit(
+                    &notice.dir,
+                    &notice.name,
+                    if notice.purge { "" } else { &notice.archive_id },
+                    END_RESULT_ACTION,
+                    &summary,
+                );
+                transaction::notice(root, notice, &summary);
             }
         }
     }
@@ -929,25 +944,43 @@ fn handoff(
         return Ok(EXIT_FAILED);
     };
     let requested = request_summary(args.pane.as_deref());
-    for target in frozen {
-        emit_lifecycle_event(
-            &sessions_dir(root).join(&target.name),
-            &target.name,
-            END_REQUEST_ACTION,
-            &requested,
-        );
+    let captured: Vec<_> = frozen
+        .iter()
+        .map(|target| {
+            let dir = sessions_dir(root).join(&target.name);
+            let id = if target.plan.action == Action::Keep {
+                archive::canonical_uuid(&meta::session_id_in(&dir))
+            } else {
+                String::new()
+            };
+            (target.name.as_str(), dir, id)
+        })
+        .collect();
+    for (name, dir, id) in &captured {
+        transaction::emit(dir, name, id, END_REQUEST_ACTION, &requested);
     }
     let mut failures = 0_u32;
     for (name, argv) in supervisors {
         if !transport::run_detached(&argv) {
             failures += 1;
             let dir = sessions_dir(root).join(name);
-            emit_lifecycle_event(
-                &dir,
-                name,
-                END_RESULT_ACTION,
-                "FAILED: supervisor did not start",
-            );
+            if let Some((_, _, id)) = captured.iter().find(|(n, _, _)| *n == name.as_str()) {
+                transaction::emit(
+                    &dir,
+                    name,
+                    id,
+                    END_RESULT_ACTION,
+                    "FAILED: supervisor did not start",
+                );
+                let notice = Notice {
+                    name: name.clone(),
+                    dir,
+                    server: recorded_server(root, name),
+                    archive_id: id.clone(),
+                    purge: false,
+                };
+                transaction::notice(root, &notice, "supervisor did not start; retry ae end");
+            }
         }
     }
     if failures > 0 {
@@ -1386,6 +1419,18 @@ fn end_one(
         return Ok(false);
     }
 
+    let retry = if plan.action == Action::Keep {
+        match transaction::inspect(&dir, &bytes) {
+            Ok(retry) => retry,
+            Err(why) => {
+                writeln!(err, "Error: {why}")?;
+                return Ok(false);
+            }
+        }
+    } else {
+        None
+    };
+
     // Local mode manages no branch of its own, so the archive records the git
     // outcome honestly as not-managed rather than inventing a range from the
     // human's own checkout.
@@ -1400,17 +1445,52 @@ fn end_one(
             return Ok(false);
         }
         if let Some(note) = handoff_note {
-            emit_lifecycle_event(&dir, name, END_RESULT_ACTION, &note);
+            transaction::emit(
+                &dir,
+                name,
+                &if plan.action == Action::Keep {
+                    archive::canonical_uuid(&meta_value(&bytes, "session_id"))
+                } else {
+                    String::new()
+                },
+                END_RESULT_ACTION,
+                &note,
+            );
             writeln!(err, "Warning: {note}")?;
         }
         // CAPTURE BEFORE DELETE.
-        if !archive_step(root, name, &plan, &Git::none(), out, err)? {
-            return Ok(false);
-        }
-        if !cleanup(root, name, &bytes, &plan, false, out, err)? {
+        let git = retry.unwrap_or_else(Git::none);
+        if !transaction::finish(root, name, &bytes, &plan, &git, out, err)? {
             return Ok(false);
         }
         writeln!(out, "Ended local session {name}")?;
+        return Ok(true);
+    }
+
+    if let Some(git) = retry {
+        let handoff_note = server
+            .as_ref()
+            .zip(session_id.as_ref())
+            .and_then(|(server, _)| handoff_clients_before_kill(server, name));
+        if let (Some(server), Some(id)) = (server.as_ref(), session_id.as_ref())
+            && !kill_verified(server, name, "end", id, err)?
+        {
+            return Ok(false);
+        }
+        if let Some(note) = handoff_note {
+            transaction::emit(
+                &dir,
+                name,
+                &archive::canonical_uuid(&meta_value(&bytes, "session_id")),
+                END_RESULT_ACTION,
+                &note,
+            );
+            writeln!(err, "Warning: {note}")?;
+        }
+        if !transaction::finish(root, name, &bytes, &plan, &git, out, err)? {
+            return Ok(false);
+        }
+        writeln!(out, "Ended {name}")?;
         return Ok(true);
     }
 
@@ -1439,7 +1519,17 @@ fn end_one(
         return Ok(false);
     }
     if let Some(note) = handoff_note {
-        emit_lifecycle_event(&dir, name, END_RESULT_ACTION, &note);
+        transaction::emit(
+            &dir,
+            name,
+            &if plan.action == Action::Keep {
+                archive::canonical_uuid(&meta_value(&bytes, "session_id"))
+            } else {
+                String::new()
+            },
+            END_RESULT_ACTION,
+            &note,
+        );
         writeln!(err, "Warning: {note}")?;
     }
 
@@ -1514,7 +1604,11 @@ fn end_one(
     } else {
         // B3 durability: a no-remote git target just COMMITTED work that exists
         // ONLY in this directory.
-        writeln!(out, "No remote 'origin' — skipping push.")?;
+        writeln!(
+            out,
+            "Working directory preserved: {} (no origin remote to push to).",
+            work_dir.display()
+        )?;
         preserve_workdir = true;
         "no-origin".clone_into(&mut git.outcome);
         git.preserved = work_dir.display().to_string();
@@ -1528,10 +1622,7 @@ fn end_one(
 
     // The last thing before the session stops existing: capture it, or fail and
     // keep it.
-    if !archive_step(root, name, &plan, &git, out, err)? {
-        return Ok(false);
-    }
-    if !cleanup(root, name, &bytes, &plan, preserve_workdir, out, err)? {
+    if !transaction::finish(root, name, &bytes, &plan, &git, out, err)? {
         return Ok(false);
     }
     if preserve_workdir {
@@ -1551,6 +1642,7 @@ struct Git {
     push_ref: String,
     preserved: String,
     workdir: String,
+    retry_id: Option<String>,
 }
 
 impl Git {
@@ -1561,6 +1653,7 @@ impl Git {
             push_ref: "-".to_owned(),
             preserved: "-".to_owned(),
             workdir: String::new(),
+            retry_id: None,
         }
     }
 }
@@ -1625,49 +1718,67 @@ fn archive_step(
             Ok(true)
         }
         Action::Keep => {
-            let bytes = meta::read_bytes(&dir).unwrap_or_default();
-            let aid = archive::canonical_uuid(&meta_value(&bytes, "session_id"));
-            let archived_at = Timestamp::now().to_string();
-            let ops = archive::publish::Ops {
-                reason: archive::publish::Reason::End,
-                push_outcome: &git.outcome,
-                push_ref: if git.push_ref.is_empty() {
-                    "-"
-                } else {
-                    &git.push_ref
-                },
-                preserved: if git.preserved.is_empty() {
-                    "-"
-                } else {
-                    &git.preserved
-                },
-                workdir: &git.workdir,
-                archived_at: &archived_at,
+            let held = match archive::publish::hold_sources(&dir) {
+                Ok(held) => held,
+                Err(why) => {
+                    writeln!(err, "{why}")?;
+                    return Ok(false);
+                }
             };
-            let mut captured = Vec::new();
-            let code = archive::publish::end_snapshot(&dir, &ops, &mut captured, err)?;
-            if code != 0 {
-                writeln!(
-                    err,
-                    "Error: archiving session '{name}' failed — the session is STOPPED and NOTHING was deleted."
-                )?;
-                writeln!(
-                    err,
-                    "  Fix the cause reported above, then re-run: ae end {name}"
-                )?;
-                return Ok(false);
-            }
-            let line = String::from_utf8_lossy(&captured);
-            let mut fields = line.trim_end_matches('\n').split('\t');
-            let path = fields.next().unwrap_or_default();
-            let files = fields.next().unwrap_or_default();
-            let count = fields.next().unwrap_or_default();
-            writeln!(out, "Archived {aid}")?;
-            writeln!(out, "  {path}")?;
-            writeln!(out, "  {files} file(s), {count} byte(s)")?;
-            Ok(true)
+            archive_keep(&dir, name, git, &held, out, err)
         }
     }
+}
+
+fn archive_keep(
+    dir: &Path,
+    name: &str,
+    git: &Git,
+    held: &archive::publish::SourceGuards,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let bytes = meta::read_bytes(dir).unwrap_or_default();
+    let aid = archive::canonical_uuid(&meta_value(&bytes, "session_id"));
+    let archived_at = Timestamp::now().to_string();
+    let ops = archive::publish::Ops {
+        reason: archive::publish::Reason::End,
+        push_outcome: &git.outcome,
+        push_ref: if git.push_ref.is_empty() {
+            "-"
+        } else {
+            &git.push_ref
+        },
+        preserved: if git.preserved.is_empty() {
+            "-"
+        } else {
+            &git.preserved
+        },
+        workdir: &git.workdir,
+        archived_at: &archived_at,
+    };
+    let mut captured = Vec::new();
+    let code = archive::publish::end_snapshot(dir, &ops, held, &mut captured, err)?;
+    if code != 0 {
+        writeln!(
+            err,
+            "Error: archiving session '{name}' failed — the session is STOPPED and NOTHING was deleted."
+        )?;
+        writeln!(
+            err,
+            "  Fix the cause reported above, then re-run: ae end {name}"
+        )?;
+        return Ok(false);
+    }
+    let line = String::from_utf8_lossy(&captured);
+    let mut fields = line.trim_end_matches('\n').split('\t');
+    let path = fields.next().unwrap_or_default();
+    let files = fields.next().unwrap_or_default();
+    let count = fields.next().unwrap_or_default();
+    writeln!(out, "Archived {aid}")?;
+    writeln!(out, "  {path}")?;
+    writeln!(out, "  {files} file(s), {count} byte(s)")?;
+    Ok(true)
 }
 
 /// Remove the live session.

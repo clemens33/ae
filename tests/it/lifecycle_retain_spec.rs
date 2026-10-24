@@ -741,42 +741,8 @@ fn retain_a_retry_after_a_later_commit_refuses() {
     drifted(8, "git");
 }
 
-/// Channel: the detached supervisor journals its inner End's first `Error:`
-/// line as the `FAILED:` end-result (`end.rs::run_supervised`), so the drift
-/// refusal's both-path line is what that record must carry.
-#[test]
-fn retain_a_supervised_retry_refuses_on_its_own_end_request_and_leaves_the_archive_exact() {
-    let rig = Rig::new("rs1");
-    let first = half_ended(&rig);
-    let (code, out, err) = rig.run(&["_end", "--handoff", &rig.name]);
-    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
-    let mut result = None;
-    for _ in 0..400 {
-        let events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
-        let after = events
-            .split_once("\"action\":\"end-request\"")
-            .map(|(_, t)| t);
-        result = after
-            .and_then(|t| t.lines().find(|l| l.contains("\"action\":\"end-result\"")))
-            .map(str::to_owned);
-        if result.is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let result = result.expect("the supervisor journaled a result after its end-request");
-    assert!(
-        result.contains("FAILED:")
-            && result.contains(&rig.archive().display().to_string())
-            && result.contains(&rig.dir.display().to_string()),
-        "the END_REQUEST drift refusal, naming both paths, is the recorded cause: {result}"
-    );
-    assert!(exists(&rig.dir.join("meta")), "the registration is kept");
-    assert_eq!(tree(&rig.archive()), first, "the archive is exact");
-}
-
 /// A git-mode session whose managed worktree has an `origin` remote.
-fn managed(tag: &str) -> (Rig, PathBuf, PathBuf) {
+pub(super) fn managed(tag: &str) -> (Rig, PathBuf, PathBuf) {
     use super::super::cli::git_in;
     let rig = Rig::new(tag);
     let remote = rig.home.join("remote.git");

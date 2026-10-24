@@ -68,6 +68,9 @@ const PANE_VIEW: &str = ".pane-view.lock";
 /// The goal setters' lock, beside the meta's and the journal's.
 const GOAL_SETTER: &str = ".goal-setter.lock";
 
+/// Serializes short draft mutations, independently of lifetime ownership.
+const DRAFT_MUTATION: &str = ".console-draft-mutation.lock";
+
 /// Closed registration-file names for End's snapshot inventory. Unknown locks
 /// and publication temps remain user data, rather than suffix-based garbage.
 pub(crate) fn registration_file(name: &str) -> bool {
@@ -76,10 +79,11 @@ pub(crate) fn registration_file(name: &str) -> bool {
         CONSOLE_WRITER,
         PANE_VIEW,
         GOAL_SETTER,
+        DRAFT_MUTATION,
         LAUNCH_ATTEMPT,
     ]
     .contains(&name)
-        || [META, MEMO, EVENTS]
+        || [META, MEMO, EVENTS, crate::telegram::CURSOR_FILE]
             .iter()
             .any(|file| lock_path(Path::new(file)).as_os_str() == name)
     {
@@ -573,14 +577,56 @@ pub fn open(dir: &Path) -> SessionStore {
 /// opened before any publication and outlives browse mode and delivery threads.
 /// Lock files stay in place: unlinking one would split a lifetime into two locks.
 #[derive(Debug)]
-pub(crate) struct DraftRecord {
+pub struct DraftRecord {
     path: PathBuf,
+    incarnation: DraftIncarnation,
     _lifetime: File,
 }
 
+/// Directory identity plus the session UUID, when this is a real session.
+/// UUID-less scratch directories retain only the directory identity proof.
+#[derive(Debug, PartialEq, Eq)]
+struct DraftIncarnation {
+    directory: (u64, u64),
+    session_id: Option<String>,
+}
+
+impl DraftIncarnation {
+    fn read(dir: &Path) -> io::Result<Self> {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: binds a draft to its real directory without following a replacement link"
+        )]
+        let node = std::fs::symlink_metadata(dir)?;
+        if !node.is_dir() {
+            return Err(io::Error::other("draft directory is not a real directory"));
+        }
+        let session_id = match read_source(&dir.join(META)) {
+            SourceRead::Absent => None,
+            SourceRead::Ready(bytes) => {
+                let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
+                crate::meta::Meta::parse(text)
+                    .session_id()
+                    .map(str::to_owned)
+            }
+            SourceRead::Invalid(why) | SourceRead::Unreadable(why) => {
+                return Err(io::Error::other(why));
+            }
+        };
+        Ok(Self {
+            directory: (node.dev(), node.ino()),
+            session_id,
+        })
+    }
+}
+
 impl DraftRecord {
-    /// Open this instance's lifetime hold, without waiting or publishing bytes.
-    pub(crate) fn open(dir: &Path, instance: &str) -> io::Result<Self> {
+    /// Take the short mutation guard, then this instance's zero-wait lifetime hold.
+    ///
+    /// # Errors
+    ///
+    /// An invalid instance, unreadable incarnation, or either lock's failure.
+    pub fn open(dir: &Path, instance: &str) -> io::Result<Self> {
         let name = format!("{CONSOLE_DRAFT}.{instance}");
         if console_draft_instance(&name).is_none() {
             return Err(io::Error::new(
@@ -588,25 +634,70 @@ impl DraftRecord {
                 "invalid draft instance",
             ));
         }
+        let _mutation = open(dir).draft_mutation(LOCK_WAIT)?;
+        let incarnation = DraftIncarnation::read(dir).map_err(|why| {
+            io::Error::new(
+                why.kind(),
+                format!("draft session {}: {why}", dir.display()),
+            )
+        })?;
         let path = dir.join(name);
-        let lifetime = lock(&lock_path(&path), Duration::ZERO)?;
+        let lifetime_path = lock_path(&path);
+        let lifetime = lock(&lifetime_path, Duration::ZERO).map_err(|why| {
+            let what = if why.kind() == io::ErrorKind::WouldBlock {
+                "the draft lifetime lock is not free"
+            } else {
+                "the draft lifetime lock is not usable"
+            };
+            io::Error::new(
+                why.kind(),
+                format!("{what} ({}: {why})", lifetime_path.display()),
+            )
+        })?;
         Ok(Self {
             path,
+            incarnation,
             _lifetime: lifetime,
         })
     }
 
-    pub(crate) fn publish(&self, bytes: &[u8]) -> io::Result<()> {
+    /// Read-only cache proof: an unavailable UUID or directory is unknown.
+    /// Mutation still rechecks the complete incarnation under its guard.
+    pub(crate) fn is_current(&self) -> Option<bool> {
+        let now = DraftIncarnation::read(self.path.parent()?).ok()?;
+        if now.directory != self.incarnation.directory {
+            return Some(false);
+        }
+        match (&now.session_id, &self.incarnation.session_id) {
+            (Some(now), Some(original)) => Some(now == original),
+            (None, None) => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Publish this instance's draft bytes.
+    ///
+    /// # Errors
+    ///
+    /// A draft over the cap, a busy guard, a stale incarnation, or publication failure.
+    pub fn publish(&self, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() as u64 > CONSOLE_DRAFT_CAP {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("a draft over {CONSOLE_DRAFT_CAP} bytes"),
             ));
         }
+        let _mutation = self.mutation()?;
         publish_private(&self.path, bytes)
     }
 
-    pub(crate) fn clear(&self) -> io::Result<()> {
+    /// Drop this instance's draft; none there is no failure.
+    ///
+    /// # Errors
+    ///
+    /// A busy guard, a stale incarnation, or the removal's failure.
+    pub fn clear(&self) -> io::Result<()> {
+        let _mutation = self.mutation()?;
         match std::fs::remove_file(&self.path) {
             Err(why) if why.kind() == io::ErrorKind::NotFound => Ok(()),
             done => done,
@@ -617,7 +708,11 @@ impl DraftRecord {
     /// renaming it under this lifetime hold; the bytes remain on disk until a
     /// confirmed send or an explicit discard. The boolean distinguishes an
     /// orphan offer from an own-instance restore.
-    pub(crate) fn recover(&self) -> (Result<SourceRead, Oversized>, bool) {
+    pub fn recover(&self) -> (Result<SourceRead, Oversized>, bool) {
+        let _mutation = match self.mutation() {
+            Ok(held) => held,
+            Err(why) => return (Ok(SourceRead::Unreadable(why.to_string())), false),
+        };
         let own = read_capped(&self.path, CONSOLE_DRAFT_CAP);
         match &own {
             Ok(SourceRead::Absent) => {}
@@ -677,6 +772,18 @@ impl DraftRecord {
             }
         }
         (own, false)
+    }
+
+    fn mutation(&self) -> io::Result<File> {
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        let held = open(dir).draft_mutation(LOCK_WAIT)?;
+        if DraftIncarnation::read(dir)? != self.incarnation {
+            return Err(io::Error::other(format!(
+                "{}: draft belongs to a different session incarnation",
+                dir.display()
+            )));
+        }
+        Ok(held)
     }
 }
 
@@ -998,6 +1105,7 @@ impl SessionStore {
             let why = format!("a draft over {CONSOLE_DRAFT_CAP} bytes");
             return Err(io::Error::new(io::ErrorKind::InvalidInput, why));
         }
+        let _mutation = self.draft_mutation(LOCK_WAIT)?;
         publish_private(&self.dir.join(CONSOLE_DRAFT), bytes)
     }
 
@@ -1007,6 +1115,7 @@ impl SessionStore {
     ///
     /// The removal's own failure.
     pub fn clear_console_draft(&self) -> io::Result<()> {
+        let _mutation = self.draft_mutation(LOCK_WAIT)?;
         match std::fs::remove_file(self.dir.join(CONSOLE_DRAFT)) {
             Err(why) if why.kind() == io::ErrorKind::NotFound => Ok(()),
             done => done,
@@ -1021,6 +1130,17 @@ impl SessionStore {
     /// [`lock`]'s.
     pub fn console_admission(&self) -> io::Result<File> {
         lock(&self.dir.join(CONSOLE_ADMISSION), LOCK_WAIT)
+    }
+
+    /// The short draft mutation guard; End takes it without waiting.
+    pub(crate) fn draft_mutation(&self, wait: Duration) -> io::Result<File> {
+        let path = self.dir.join(DRAFT_MUTATION);
+        lock(&path, wait).map_err(|why| {
+            io::Error::new(
+                why.kind(),
+                format!("draft mutation guard {}: {why}", path.display()),
+            )
+        })
     }
 
     /// [`Self::console_admission`] taken without waiting: an `ae app`'s
@@ -1337,7 +1457,28 @@ pub fn lock(path: &Path, wait: Duration) -> io::Result<File> {
     let started = Instant::now();
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(file),
+            Ok(()) => {
+                #[allow(
+                    clippy::disallowed_methods,
+                    reason = "a door: proves the acquired lock still names its own regular inode after a queued wait"
+                )]
+                let observed = std::fs::symlink_metadata(path).map_err(|why| {
+                    io::Error::new(
+                        why.kind(),
+                        format!("{}: acquired lock path unavailable: {why}", path.display()),
+                    )
+                })?;
+                let held = file.metadata()?;
+                if !observed.is_file()
+                    || (observed.dev(), observed.ino()) != (held.dev(), held.ino())
+                {
+                    return Err(io::Error::other(format!(
+                        "{}: acquired lock no longer names the same regular file",
+                        path.display()
+                    )));
+                }
+                return Ok(file);
+            }
             Err(TryLockError::WouldBlock) => {
                 if started.elapsed() >= wait {
                     return Err(io::Error::new(

@@ -2269,13 +2269,45 @@ End hashes every tracked file twice; `list --ended` inspects every retained node
 If the final recheck newly preserves a workdir, its path and reason are printed,
 but the archive's `preserved_work_dir` and final End line reflect the earlier proof.
 
-This is snapshot coverage, not a transaction through teardown. A draft or cursor
-published after capture can still be lost; the source locks are released before
-cleanup. An unchanged **direct** retry can reuse an exactly matching complete
-archive. Any mismatch keeps the archive byte-for-byte and the live state, naming
-both paths. A supervised retry adds `end-request` and therefore refuses safely.
-Git work still repeats on retry; an already removed managed workdir still refuses,
-and its existing error can misleadingly say the stopped session is running.
+Ordinary End holds the app writer, admission, goal setter, draft mutation and
+cursor guards from after stop/git through durable unregister, then meta, memo
+and events in that order. Busy activity guards refuse immediately; source locks
+wait up to five seconds. Idle draft ownership and pane views do not block End.
+Staging, full retained-file reproof and managed-workdir hashing/removal run under
+these holds, so journal writers may time out while a large session is ending.
+
+An unchanged direct or supervised retry reuses the complete archive byte for
+byte and skips commit/fetch/push. Read-only git proofs still run. If a previously
+pushed, losslessly removed managed workdir is positively absent, the matching
+archive permits canonical unregister alone. A missing preserved/no-origin or
+unproven workdir refuses, including a kept workdir removed manually.
+
+Rare double failure: publication succeeds, teardown fails, then the stopped
+session changes before retry. End deletes nothing and names the archive and live
+directory. Move the WHOLE stopped live directory to a NEW private recovery
+backup outside the configured `sessions/` root, then restart under a fresh name.
+The backup is not in `list --ended`; keep it until its evidence is reconciled.
+Never delete the immutable archive to unblock retry. A standing publishing claim
+also refuses: inspect it, then remove it manually only after verifying ownership
+and recovery state. Completed-claim removal is proved before final source
+reproof; noncooperating drift after claim removal still needs manual recovery.
+
+After a complete strict publish, End appends no new request/result event. A
+failure reports stderr and tells attached clients the session, archive and live
+paths; the stopped registration stays in `ae list --all` until unregister completes.
+With no attached client, that notice is transient and the detached stderr may
+be missed. Old
+archives retaining bytes at the newly reserved `.console-draft-mutation.lock`
+or `telegram-outbound.cursor.lock` names refuse reuse without losing either copy.
+
+Same-UID swaps after a proof, UUID-less inode reuse and an in-place UUID rewrite
+while another app flight owns the draft lifetime remain conservative residuals.
+The watchdog quota-history writer/pruner uses its own lock outside this set;
+verified tmux stop sends SIGHUP asynchronously, so a late write or prune between
+capture and deletion remains a loss window. Other detached meta/journal writers
+are excluded by the held source locks; queued stale-inode lockers fail loudly.
+Event suppression validates the archive while holding the events lock, adding
+archive-validation time to that lock's hold span.
 
 Older cores reject `retained/` archives as invalid in `list --ended`, `--from` and
 purge. Their bytes remain untouched; reinstall a compatible core to read them.

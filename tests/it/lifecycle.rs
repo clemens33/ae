@@ -29,12 +29,16 @@ use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
 use super::phase2::run_tmux;
 #[path = "lifecycle_endrecord_spec.rs"]
 mod endrecord_spec;
+#[path = "lifecycle_guard_spec.rs"]
+mod guard_spec;
 #[path = "lifecycle_purgeguard_spec.rs"]
 mod purgeguard_spec;
 #[path = "lifecycle_retain_spec.rs"]
 mod retain_spec;
 #[path = "lifecycle_stop_sole_uuid_spec.rs"]
 mod stop_sole_uuid;
+#[path = "lifecycle_transact_spec.rs"]
+mod transact_spec;
 
 const UUID: &str = "33333333-3333-3333-3333-333333333333";
 
