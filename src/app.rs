@@ -77,6 +77,9 @@ mod mdreader_spec;
 mod menu;
 pub mod model;
 #[cfg(test)]
+#[path = "app/navigate_spec.rs"]
+mod navigate_spec;
+#[cfg(test)]
 mod order_spec;
 pub mod overview;
 mod paneview;
@@ -283,8 +286,11 @@ struct ReaderPane {
     /// The file as the link named it, and the line it asked for.
     path: String,
     line: Option<usize>,
-    /// How many file links the marked turn holds, the first of which is read.
+    /// The turn's file occurrences, with the active position and resolution base.
     links: usize,
+    files: Vec<link::FileRef>,
+    base: link::Base,
+    index: usize,
     /// The body on screen; `None` until the answer lands.
     body: Option<reader::Body>,
     /// The body's wrap, and the text width it was made for.
@@ -556,6 +562,8 @@ struct App {
     last_input: Option<Instant>,
     /// The drag in progress, or the highlight it left.
     select: Option<Held>,
+    /// File press bound to its frame, pointer and panel epoch until release.
+    read_press: Option<(draw::FileHit, Position, u64)>,
     /// The cells of the frame on screen, before any highlight.
     shot: Buffer,
     /// The last frame left a hint it did not draw: draw again.
@@ -680,6 +688,7 @@ impl App {
             failed: None,
             last_input: None,
             select: None,
+            read_press: None,
             shot: Buffer::default(),
             again: false,
             keep: None,
@@ -952,7 +961,7 @@ impl App {
     }
 
     /// `r`: open the reader on the first file link of the marked turn, read as
-    /// the text `y` copies reads, in the session's link base. A refusal is said
+    /// the displayed lane parts, in the session's link base. A refusal is said
     /// on the hint row, opens nothing and asks the reader thread nothing.
     fn open_reader(&mut self) {
         let item = match self.marked_item() {
@@ -963,8 +972,18 @@ impl App {
             }
         };
         let base = self.overview.base.clone();
-        let found = link::files(&terminal_text(&item.body), &base);
-        let Some(first) = found.first() else {
+        let found = self
+            .keys()
+            .iter()
+            .position(|key| *key == lane::key(&item))
+            .map(|at| lane::read_links(&self.lane.items, at, &base).1)
+            .unwrap_or_default();
+        self.read_file(found, 0, base);
+    }
+
+    /// Every activation and step uses the same reader generation and file door.
+    fn read_file(&mut self, found: Vec<link::FileRef>, index: usize, base: link::Base) {
+        let Some(first) = found.get(index) else {
             self.flash = Some(("no file link in that turn".to_owned(), Instant::now()));
             return;
         };
@@ -982,12 +1001,35 @@ impl App {
             path: ask.path.clone(),
             line: ask.line,
             links: ask.links,
+            files: found,
+            base: ask.base.clone(),
+            index,
             raw: ask.line.is_some(),
             ..ReaderPane::default()
         };
         if let Some(tx) = &self.ask {
             let _ = tx.send(Request::Read(Some(ask)));
         }
+    }
+
+    /// Resolve the press frame against the current turn before using its ordinal.
+    fn file_list(&mut self, hit: &draw::FileHit) -> Option<Vec<link::FileRef>> {
+        if self.model.selected() != Some(hit.session.as_str())
+            || self.overview.base != hit.link.base
+        {
+            return None;
+        }
+        let at = self.keys().iter().position(|key| *key == hit.link.turn)?;
+        if self.fold_key(self.lane.items.get(at)?) != hit.fold {
+            return None;
+        }
+        let (fingerprint, files) = lane::read_links(&self.lane.items, at, &hit.link.base);
+        (fingerprint == hit.link.fingerprint && files.get(hit.link.index) == Some(&hit.link.file))
+            .then_some(files)
+    }
+
+    fn changed_read(&mut self) {
+        self.flash = Some(("refused: read: the view changed".to_owned(), Instant::now()));
     }
 
     /// Close the reader and tell the reader thread to drop an unread ask. It
@@ -2155,6 +2197,9 @@ impl App {
     /// made on a frame the bound dropped is not taken, and the hint row says so.
     /// A right press opens the menu on the card its frame drew there.
     fn mouse_made(&mut self, mouse: Mouse, origin: Instant) -> bool {
+        if mouse.kind != MouseKind::Release {
+            self.read_press = None;
+        }
         if mouse.kind == MouseKind::Menu
             && !self.model.settings_open()
             && !self.model.peek_open()
@@ -2208,6 +2253,9 @@ impl App {
     /// selection a panel change left behind goes first, and so does one a
     /// press ends.
     fn mouse_in(&mut self, mouse: Mouse, fresh: bool) -> bool {
+        if mouse.kind != MouseKind::Release {
+            self.read_press = None;
+        }
         let mut redraw = self.stale_selection();
         if mouse.kind == MouseKind::Click {
             redraw |= self.unselect();
@@ -2282,7 +2330,21 @@ impl App {
     /// A press: what it always did, then a selection armed where it landed.
     fn clicked(&mut self, mouse: Mouse, fresh: bool) -> bool {
         let before = self.model.turn();
-        let acted = self.click(mouse);
+        let acted = if let Some(hit) = self.layout.file(mouse).cloned() {
+            self.held = None;
+            if self.file_list(&hit).is_some() {
+                self.read_press = Some((
+                    hit,
+                    Position::new(mouse.column, mouse.row),
+                    self.model.epoch(),
+                ));
+            } else {
+                self.changed_read();
+            }
+            true
+        } else {
+            self.click(mouse)
+        };
         self.arm(mouse, before, fresh);
         acted
     }
@@ -2390,7 +2452,8 @@ impl App {
             return;
         };
         let fp = select::fingerprint(&self.shot, region.area, &self.layout.map.blanks);
-        let turn = matches!(self.layout.hit(mouse), Some(draw::Hit::Turn(_)));
+        let turn = self.layout.file(mouse).is_none()
+            && matches!(self.layout.hit(mouse), Some(draw::Hit::Turn(_)));
         self.select = Some(Held {
             sel: select::Selection::start(&region, at, fp),
             epoch: self.model.epoch(),
@@ -2425,7 +2488,8 @@ impl App {
     /// The button let go: a selection that never moved was a click; one that
     /// did asks for its copy, which the next frame paints and then ships.
     fn finish(&mut self, mouse: Mouse) -> bool {
-        self.follow(mouse).is_some_and(|_| {
+        let pending = self.read_press.take();
+        let moved = self.follow(mouse).is_some_and(|_| {
             let moved = self.select.as_mut().is_some_and(|held| {
                 held.down = false;
                 held.stage = Stage::Requested;
@@ -2435,7 +2499,20 @@ impl App {
                 self.select = None;
             }
             moved
-        })
+        });
+        if !moved
+            && let Some((hit, at, epoch)) = pending
+            && at == Position::new(mouse.column, mouse.row)
+            && epoch == self.model.epoch()
+        {
+            if let Some(files) = self.file_list(&hit) {
+                self.read_file(files, hit.link.index, hit.link.base);
+            } else {
+                self.changed_read();
+            }
+            return true;
+        }
+        moved
     }
 
     /// A press or Esc ends a selection: whether a highlight went away.
@@ -2448,6 +2525,7 @@ impl App {
     /// a highlight went away.
     fn stale_selection(&mut self) -> bool {
         let epoch = self.model.epoch();
+        self.read_press.take_if(|(_, _, pressed)| *pressed != epoch);
         let stale = self.select.take_if(|held| held.epoch != epoch);
         stale.is_some_and(|held| held.sel.moved())
     }
@@ -3374,9 +3452,9 @@ impl App {
                 top: view.top,
                 links: view.links,
             };
-            draw::paint_markdown_column(&markdown, look, buf, &mut self.layout)
+            draw::paint_markdown_column(self.reader.index, &markdown, look, buf, &mut self.layout)
         } else {
-            draw::paint_reader_column(&view, look, buf, &mut self.layout)
+            draw::paint_reader_column(self.reader.index, &view, look, buf, &mut self.layout)
         };
         self.model.set_reader_page_rows(bounds.visible);
         if self.deferred.is_empty() {
@@ -4273,6 +4351,9 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
     let mut redraw = false;
     let mut keyed = keyed.into_iter();
     while let Some((mut key, origin)) = keyed.next() {
+        if !matches!(key, Key::Mouse(_)) {
+            app.read_press = None;
+        }
         // A pane view a key just asked for takes the terminal next: every key
         // after it, held ones included, was typed for the seat, never here.
         if app.pane_view.is_some() {
@@ -4588,6 +4669,18 @@ fn reader_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
 fn reader_keys(app: &mut App, keys: Vec<model::Key>) -> bool {
     let mut redraw = false;
     for key in keys {
+        if matches!(key, model::Key::SeatNext | model::Key::SeatPrev) {
+            let next = if key == model::Key::SeatNext {
+                app.reader.index.checked_add(1)
+            } else {
+                app.reader.index.checked_sub(1)
+            };
+            if let Some(next) = next.filter(|next| *next < app.reader.files.len()) {
+                app.read_file(app.reader.files.clone(), next, app.reader.base.clone());
+                redraw = true;
+            }
+            continue;
+        }
         if key == model::Key::Mode {
             if app.reader.document.is_some() {
                 if let Some(why) = app.reader.rendered.as_ref().and_then(|(_, r)| r.refusal()) {

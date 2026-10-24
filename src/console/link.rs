@@ -100,17 +100,26 @@ pub fn scan(text: &str, base: &Base) -> Vec<Link> {
 pub fn files(text: &str, base: &Base) -> Vec<FileRef> {
     walk(text, base)
         .into_iter()
-        .filter_map(|(link, target)| {
-            let target = target?;
-            Some(FileRef {
-                start: link.start,
-                end: link.end,
-                path: target.path,
-                line: target.line,
-                col: target.col,
-            })
-        })
+        .filter_map(|(link, target)| target.map(|target| file_ref(&link, &target)))
         .collect()
+}
+
+fn file_ref(link: &Link, target: &Target) -> FileRef {
+    FileRef {
+        start: link.start,
+        end: link.end,
+        path: target.path.clone(),
+        line: target.line,
+        col: target.col,
+    }
+}
+
+/// A wrapped row and its file occurrences: each pair names the index in
+/// `row.links` and the ORIGINAL source range/target, including any line suffix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placed {
+    pub row: Row,
+    pub files: Vec<(usize, FileRef)>,
 }
 
 /// The one walk both [`scan`] and [`files`] make: each link with the target of
@@ -302,13 +311,26 @@ fn encode_path(path: &str) -> String {
 /// cannot straddle.
 #[must_use]
 pub fn wrapped(text: &str, width: usize, first: usize, bar: usize, base: &Base) -> Vec<Row> {
+    placed(text, width, first, bar, base)
+        .into_iter()
+        .map(|placed| placed.row)
+        .collect()
+}
+
+/// The same placement as [`wrapped`], retaining each file occurrence across
+/// row breaks. Duplicate paths and different line suffixes remain distinct.
+#[must_use]
+pub fn placed(text: &str, width: usize, first: usize, bar: usize, base: &Base) -> Vec<Placed> {
     let rows = wrap_in(text, width, first, bar);
-    let links = scan(text, base);
+    let links = walk(text, base);
     if links.is_empty() {
-        let unlinked = |(gap, piece)| Row {
-            gap,
-            piece,
-            links: Vec::new(),
+        let unlinked = |(gap, piece)| Placed {
+            row: Row {
+                gap,
+                piece,
+                links: Vec::new(),
+            },
+            files: Vec::new(),
         };
         return rows.into_iter().map(unlinked).collect();
     }
@@ -320,7 +342,7 @@ pub fn wrapped(text: &str, width: usize, first: usize, bar: usize, base: &Base) 
     // Each link as the half-open range of non-whitespace characters it spans.
     let (mut seen, mut cursor) = (0, 0);
     let spans: Vec<(usize, usize)> = (links.iter())
-        .map(|link| {
+        .map(|(link, _)| {
             seen += letters(text.get(cursor..link.start));
             let from = seen;
             seen += letters(text.get(link.start..link.end));
@@ -340,8 +362,8 @@ pub fn wrapped(text: &str, width: usize, first: usize, bar: usize, base: &Base) 
         while spans.get(live).is_some_and(|(_, to)| *to <= lo) {
             live += 1;
         }
-        let mut here = Vec::new();
-        for ((from, to), link) in spans.iter().zip(&links).skip(live) {
+        let (mut here, mut files) = (Vec::new(), Vec::new());
+        for ((from, to), (link, target)) in spans.iter().zip(&links).skip(live) {
             if *from >= hi {
                 break;
             }
@@ -350,6 +372,9 @@ pub fn wrapped(text: &str, width: usize, first: usize, bar: usize, base: &Base) 
                 .then(|| (marks.get(a), marks.get(b - 1)))
                 .and_then(|pair| Some((pair.0?, pair.1?)));
             if let Some((head, tail)) = ends {
+                if let Some(target) = target {
+                    files.push((here.len(), file_ref(link, target)));
+                }
                 here.push(Link {
                     start: head.0,
                     end: tail.1,
@@ -357,10 +382,13 @@ pub fn wrapped(text: &str, width: usize, first: usize, bar: usize, base: &Base) 
                 });
             }
         }
-        placed.push(Row {
-            gap,
-            piece,
-            links: here,
+        placed.push(Placed {
+            row: Row {
+                gap,
+                piece,
+                links: here,
+            },
+            files,
         });
     }
     placed

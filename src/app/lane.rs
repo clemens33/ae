@@ -39,6 +39,7 @@ pub(super) struct Tail {
     pub(super) turns: Vec<Turn>,
     /// The links of each of `rows`, parallel to it.
     pub(super) links: Vec<Links>,
+    pub(super) files: Vec<FileRuns>,
 }
 
 /// The links of one row, left to right: the cell they start at, counted from
@@ -46,11 +47,22 @@ pub(super) struct Tail {
 pub(super) type Links = Vec<(usize, usize, String)>;
 
 /// A row and its links.
-type Drawn = (Line<'static>, Links);
+pub(super) type FileRuns = Vec<(usize, usize, ReadLink)>;
+type Drawn = (Line<'static>, Links, FileRuns);
+
+/// A drawn file occurrence, bound to its source turn and resolution base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReadLink {
+    pub turn: u64,
+    pub fingerprint: u64,
+    pub index: usize,
+    pub file: link::FileRef,
+    pub base: link::Base,
+}
 
 /// A row without links.
 fn plain(line: Line<'static>) -> Drawn {
-    (line, Vec::new())
+    (line, Vec::new(), Vec::new())
 }
 
 /// A turn's place in [`Tail::rows`]: its item, its header row and its row
@@ -177,7 +189,10 @@ pub(super) fn tail_with(
     rows.extend(coverage.into_iter().rev());
     let mut placed = Vec::with_capacity(turns.len());
     for (at, turn, fold) in turns.into_iter().rev() {
-        let spacer = usize::from(turn.first().is_some_and(|(line, _)| line.spans.is_empty()));
+        let spacer = usize::from(
+            turn.first()
+                .is_some_and(|(line, _, _)| line.spans.is_empty()),
+        );
         placed.push(Turn {
             at,
             first: rows.len() + spacer,
@@ -186,12 +201,18 @@ pub(super) fn tail_with(
         });
         rows.extend(turn);
     }
-    let (rows, links) = rows.into_iter().unzip();
+    let (mut text_rows, mut links, mut files) = (Vec::new(), Vec::new(), Vec::new());
+    for (line, runs, reads) in rows {
+        text_rows.push(line);
+        links.push(runs);
+        files.push(reads);
+    }
     Tail {
-        rows,
+        rows: text_rows,
         complete: items.len() == 0 && gaps.len() == 0,
         turns: placed,
         links,
+        files,
     }
 }
 
@@ -203,6 +224,7 @@ struct Closing {
     /// The recipient and the words' excerpt; `None` when the lane no longer
     /// holds the ask.
     ask: Option<(String, String)>,
+    cut: bool,
 }
 
 /// The [`Closing`] of `items[at]`, read back from the lane itself.
@@ -220,9 +242,13 @@ fn closing(items: &[Item], at: usize) -> Option<Closing> {
             }
             _ => None,
         });
+    let cut = asked
+        .as_ref()
+        .is_some_and(|(_, words)| words.chars().count() > crate::console::CLOSED_CHARS);
     Some(Closing {
         id: id.clone(),
         ask: asked,
+        cut,
     })
 }
 
@@ -257,19 +283,8 @@ fn bullet(icons: bool) -> &'static str {
     if icons { "• " } else { "- " }
 }
 
-/// A turn's body rows, wrapped to `width`, with the links each carries. A
-/// close shows the id it closed and the words of that ask, the same `closed
-/// <id>: <words>` its closer was told. A decision card is drawn in its laid-out
-/// parts: an option wears its label or `bullet` and hangs its wrapped rows
-/// under its words, evidence dims, a gap is one empty row. `base` is where a
-/// path in the words resolves.
-fn body_rows(
-    item: &Item,
-    closed: Option<&Closing>,
-    (width, base): (usize, &link::Base),
-    paint: Paint,
-    bullet: &str,
-) -> Vec<Drawn> {
+/// The same displayed parts serve keyboard reads and drawn occurrences.
+fn parts(item: &Item, closed: Option<&Closing>) -> Vec<(Role, String)> {
     if matches!(item.kind, Kind::Accepted { .. }) {
         return Vec::new();
     }
@@ -284,6 +299,76 @@ fn body_rows(
         }],
         None => view::body_parts(item),
     };
+    parts
+        .into_iter()
+        .map(|part| (part.role, terminal_text(part.text)))
+        .collect()
+}
+
+fn fingerprint(item: &Item, parts: &[(Role, String)]) -> u64 {
+    let mut hash = DefaultHasher::new();
+    item.kind.hash(&mut hash);
+    for (_, text) in parts {
+        text.hash(&mut hash);
+    }
+    hash.finish()
+}
+
+fn file_refs(text: &str, base: &link::Base, cut: bool) -> Vec<link::FileRef> {
+    link::files(text, base)
+        .into_iter()
+        .filter(|file| {
+            !cut || text
+                .get(file.end..)
+                .and_then(|rest| rest.strip_suffix('…'))
+                .is_none_or(|gap| gap.chars().any(char::is_whitespace))
+        })
+        .collect()
+}
+
+/// All displayed file occurrences, before folding, clipping or scrolling.
+pub(super) fn read_links(
+    items: &[Item],
+    at: usize,
+    base: &link::Base,
+) -> (u64, Vec<link::FileRef>) {
+    let Some(item) = items.get(at) else {
+        return (0, Vec::new());
+    };
+    let closed = closing(items, at);
+    let parts = parts(item, closed.as_ref());
+    let files = parts
+        .iter()
+        .flat_map(|(role, text)| {
+            let label = match role {
+                Role::Option { label } => *label,
+                _ => 0,
+            };
+            file_refs(
+                text.get(label..).unwrap_or(text),
+                base,
+                closed.as_ref().is_some_and(|c| c.cut),
+            )
+        })
+        .collect();
+    (fingerprint(item, &parts), files)
+}
+
+/// A turn's body rows, wrapped to `width`, with the links each carries. A
+/// close shows the id it closed and the words of that ask, the same `closed
+/// <id>: <words>` its closer was told. A decision card is drawn in its laid-out
+/// parts: an option wears its label or `bullet` and hangs its wrapped rows
+/// under its words, evidence dims, a gap is one empty row. `base` is where a
+/// path in the words resolves.
+fn body_rows(
+    item: &Item,
+    closed: Option<&Closing>,
+    (width, base): (usize, &link::Base),
+    paint: Paint,
+    bullet: &str,
+) -> Vec<Drawn> {
+    let parts = parts(item, closed);
+    let stamp = fingerprint(item, &parts);
     // A link is underlined where the look is drawn, and nowhere else.
     let underline = |hue: Style| {
         if paint.drawn() {
@@ -292,43 +377,74 @@ fn body_rows(
             hue
         }
     };
-    let row = |gap: usize, lead: &str, piece: &link::Row, hue: Style| {
-        linked_row(
-            gap,
-            lead,
-            (&piece.piece, &piece.links),
-            (hue, underline(hue)),
-        )
-    };
     let mut rows = Vec::new();
-    for part in parts {
-        match part.role {
+    let mut index = 0;
+    for (role, text) in parts {
+        let label = match role {
+            Role::Option { label } => label,
+            _ => 0,
+        };
+        let refs = file_refs(
+            text.get(label..).unwrap_or(&text),
+            base,
+            closed.is_some_and(|c| c.cut),
+        );
+        let row = |gap: usize, lead: &str, placed: &link::Placed, hue: Style| {
+            let piece = &placed.row;
+            let (line, links) = linked_row(
+                gap,
+                lead,
+                (&piece.piece, &piece.links),
+                (hue, underline(hue)),
+            );
+            let files = placed
+                .files
+                .iter()
+                .filter_map(|(slot, file)| {
+                    let ordinal = refs
+                        .binary_search_by_key(&file.start, |found| found.start)
+                        .ok()?;
+                    let (column, width, _) = links.get(*slot)?;
+                    Some((
+                        *column,
+                        *width,
+                        ReadLink {
+                            turn: key(item),
+                            fingerprint: stamp,
+                            index: index + ordinal,
+                            file: file.clone(),
+                            base: base.clone(),
+                        },
+                    ))
+                })
+                .collect();
+            (line, links, files)
+        };
+        match role {
             Role::Gap => rows.push(plain(Line::from(vec![
                 Span::raw(" ".repeat(2)),
                 Span::styled(String::new(), paint.fg(|p| p.text)),
             ]))),
             Role::Text | Role::Evidence => {
-                let hue = if part.role == Role::Evidence {
+                let hue = if role == Role::Evidence {
                     paint.fg(|p| p.dim)
                 } else {
                     paint.fg(|p| p.text)
                 };
-                let pieces = link::wrapped(&terminal_text(part.text), width, 2, 1, base);
-                rows.extend(pieces.iter().map(|piece| row(piece.gap, "", piece, hue)));
+                let pieces = link::placed(&text, width, 2, 1, base);
+                rows.extend(
+                    pieces
+                        .iter()
+                        .map(|piece| row(piece.row.gap, "", piece, hue)),
+                );
             }
             Role::Option { label } => {
-                let (mark, words) = match part.text.split_at_checked(label) {
+                let (mark, words) = match text.split_at_checked(label) {
                     Some((mark, words)) if label > 0 => (mark, words),
-                    _ => (bullet, part.text),
+                    _ => (bullet, text.as_str()),
                 };
                 let hang = mark.chars().count();
-                let pieces = link::wrapped(
-                    &terminal_text(words),
-                    width.saturating_sub(hang),
-                    2,
-                    1,
-                    base,
-                );
+                let pieces = link::placed(words, width.saturating_sub(hang), 2, 1, base);
                 rows.extend(pieces.iter().enumerate().map(|(at, piece)| {
                     let mark = if at == 0 {
                         terminal_text(mark)
@@ -336,12 +452,13 @@ fn body_rows(
                         " ".repeat(hang)
                     };
                     // The mark sits at the margin; the words' own indent follows it.
-                    let indent = " ".repeat(piece.gap.saturating_sub(2));
+                    let indent = " ".repeat(piece.row.gap.saturating_sub(2));
                     let hue = paint.fg(|p| p.text);
-                    row(piece.gap.min(2), &format!("{mark}{indent}"), piece, hue)
+                    row(piece.row.gap.min(2), &format!("{mark}{indent}"), piece, hue)
                 }));
             }
         }
+        index += refs.len();
     }
     rows
 }
@@ -355,7 +472,7 @@ fn linked_row(
     lead: &str,
     (piece, links): (&str, &[link::Link]),
     (hue, linked): (Style, Style),
-) -> Drawn {
+) -> (Line<'static>, Links) {
     let text = format!("{lead}{piece}");
     let mut spans = vec![Span::raw(" ".repeat(gap))];
     let (mut runs, mut at) = (Vec::new(), 0);
@@ -412,7 +529,7 @@ pub(super) fn rows(
         rows.push(header(item, closed.as_ref(), clock, main, paint, false));
         let base = link::Base::default();
         let body = body_rows(item, closed.as_ref(), (width, &base), paint, bullet(true));
-        rows.extend(body.into_iter().map(|(line, _)| line));
+        rows.extend(body.into_iter().map(|(line, _, _)| line));
     }
     rows
 }
@@ -573,6 +690,10 @@ fn voiced(paint: Paint, voice: Voice) -> Style {
         Voice::System => paint.fg(|p| p.dim),
     }
 }
+
+#[cfg(test)]
+#[path = "lane_cut_spec.rs"]
+mod cut_spec;
 
 #[cfg(test)]
 mod tests {

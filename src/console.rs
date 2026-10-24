@@ -817,7 +817,7 @@ pub(crate) fn excerpt(said: &str) -> String {
 }
 
 /// The most characters of an ask's words a close notice quotes.
-const CLOSED_CHARS: usize = 80;
+pub(crate) const CLOSED_CHARS: usize = 80;
 
 /// The journal as `/close` decides on it: every complete line an [`Event`],
 /// or a refusal naming the first that is not — never a guess past it.

@@ -131,4 +131,50 @@ fuzz_target!(|data: &[u8]| {
             "the rows' parts do not spell the scanned links of {url:?}"
         );
     }
+    // Original source ranges, rather than URLs, identify occurrences. A split
+    // suffix and repeated paths must never be merged or attached to a neighbor.
+    let width = usize::from(data.first().copied().unwrap_or(0)) % 128;
+    let placed = ae::console::link::placed(&text, width, 2, 1, &base);
+    let mut occurrences = std::collections::BTreeMap::<(usize, usize), String>::new();
+    let mut previous = 0;
+    for piece in &placed {
+        let mut previous_slot = None;
+        for (slot, file) in &piece.files {
+            assert!(previous_slot.is_none_or(|last| last < *slot));
+            previous_slot = Some(*slot);
+            assert!(previous <= file.start, "occurrences preserve source order");
+            previous = file.start;
+            let original = files
+                .binary_search_by_key(&file.start, |found| found.start)
+                .map(|index| &files[index])
+                .expect("placed file comes from the source");
+            assert_eq!(file, original, "placement keeps path and complete suffix");
+            let fragment = piece
+                .row
+                .links
+                .get(*slot)
+                .expect("file slot indexes a row link");
+            let text = piece
+                .row
+                .piece
+                .get(fragment.start..fragment.end)
+                .expect("fragment indexes the row at character boundaries");
+            occurrences
+                .entry((file.start, file.end))
+                .or_default()
+                .push_str(text);
+        }
+    }
+    assert_eq!(
+        occurrences.len(),
+        files.len(),
+        "every occurrence is placed once"
+    );
+    for file in &files {
+        assert_eq!(
+            occurrences.get(&(file.start, file.end)).map(String::as_str),
+            text.get(file.start..file.end),
+            "row fragments spell this occurrence"
+        );
+    }
 });

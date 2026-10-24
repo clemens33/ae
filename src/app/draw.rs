@@ -147,6 +147,22 @@ struct Border {
     grab: Rect,
 }
 
+fn link_area(offset: usize, width: usize, (left, y, room): (u16, u16, u16)) -> Rect {
+    let start = u16::try_from(offset).unwrap_or(u16::MAX);
+    let width = u16::try_from(width)
+        .unwrap_or(u16::MAX)
+        .min(room.saturating_sub(start));
+    Rect::new(left.saturating_add(start), y, width, 1)
+}
+
+/// One visible file occurrence, including the session incarnation's fold key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FileHit {
+    pub session: String,
+    pub fold: u64,
+    pub link: super::lane::ReadLink,
+}
+
 /// The last frame's input geometry and chat scroll bounds.
 #[derive(Debug, Default)]
 pub(crate) struct Layout {
@@ -195,6 +211,7 @@ pub(crate) struct Layout {
     /// The links the frame drew, one run per link per row, clipped to the
     /// column: the backend wraps exactly these cells in OSC 8.
     pub(crate) links: Vec<super::backend::Run>,
+    files: Vec<(Rect, FileHit)>,
 }
 
 impl Layout {
@@ -204,20 +221,67 @@ impl Layout {
     fn link_runs(&mut self, links: &[super::lane::Links], (left, y0, room): (u16, u16, u16)) {
         for (step, row) in links.iter().enumerate() {
             for (offset, width, url) in row {
-                let start = u16::try_from(*offset).unwrap_or(u16::MAX);
-                let wide = u16::try_from(*width).unwrap_or(u16::MAX);
-                let width = wide.min(room.saturating_sub(start));
-                if width == 0 {
+                let area = link_area(
+                    *offset,
+                    *width,
+                    (left, y0.saturating_add(cells(step)), room),
+                );
+                if area.width == 0 {
                     continue;
                 }
                 self.links.push(super::backend::Run {
-                    x: left.saturating_add(start),
-                    y: y0.saturating_add(cells(step)),
-                    width,
+                    x: area.x,
+                    y: area.y,
+                    width: area.width,
                     url: url.clone(),
                 });
             }
         }
+    }
+
+    fn file_runs(
+        &mut self,
+        files: &[super::lane::FileRuns],
+        ctx: &Ctx<'_, '_>,
+        (left, y0, room): (u16, u16, u16),
+    ) {
+        for (step, reads) in files.iter().enumerate() {
+            for (offset, width, link) in reads {
+                let Some(at) = ctx.wait.keys.iter().position(|key| *key == link.turn) else {
+                    continue;
+                };
+                let Some(fold) = ctx.wait.folds.get(at) else {
+                    continue;
+                };
+                let area = link_area(
+                    *offset,
+                    *width,
+                    (left, y0.saturating_add(cells(step)), room),
+                );
+                if area.width > 0 {
+                    self.files.push((
+                        area,
+                        FileHit {
+                            session: ctx.screen.model.selected().unwrap_or_default().to_owned(),
+                            fold: *fold,
+                            link: link.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Only cells still owned by a turn can activate a file: folds and
+    /// overlays take priority, as do the border grabs.
+    pub(super) fn file(&self, mouse: Mouse) -> Option<&FileHit> {
+        if self.grab(mouse).is_some() || !matches!(self.hit(mouse), Some(Hit::Turn(_))) {
+            return None;
+        }
+        self.files.iter().find_map(|(area, file)| {
+            area.contains(Position::new(mouse.column, mouse.row))
+                .then_some(file)
+        })
     }
 
     fn record(&mut self, buf: &Buffer, area: Rect, target: Hit) {
@@ -1689,10 +1753,12 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         complete,
         turns,
         mut links,
+        mut files,
     } = lane_tail(ctx, &clock, main, (room, need));
     if ctx.wait.lane {
         rows.push(Line::from(Span::styled("loading", dim)));
         links.push(Vec::new());
+        files.push(Vec::new());
     }
     let (turns, bars, folds) = place_turns(ctx, &turns, &mut rows, layout);
     let last = rows
@@ -1705,14 +1771,12 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         put_line(buf, left, y0 + cells(step), line, room);
     }
     layout.link_runs(links.get(first..last).unwrap_or_default(), (left, y0, room));
-    // A fold row is recorded before its turn: the first target to hold a cell wins.
-    for (key, row) in folds {
-        if (first..last).contains(&row) {
-            let rect = Rect::new(left, y0 + cells(row - first), room, 1);
-            layout.record(buf, rect, Hit::Fold(key));
-        }
-    }
-    turn_targets(buf, layout, &turns, (first..last, left, y0, room));
+    layout.file_runs(
+        files.get(first..last).unwrap_or_default(),
+        ctx,
+        (left, y0, room),
+    );
+    turn_targets(buf, layout, (&turns, &folds), (first..last, left, y0, room));
     layout.lane(buf, (left, top, room, room_rows), &bars, (first..last, y0));
     let viewing = screen.composer.in_place();
     if room_rows > 0 && scroll > 0 && last < rows.len() && !viewing {
@@ -1878,9 +1942,16 @@ fn place_turns(
 fn turn_targets(
     buf: &Buffer,
     layout: &mut Layout,
-    turns: &[(u64, Range<usize>)],
+    (turns, folds): (&[TurnSpan], &[(u64, usize)]),
     (window, left, y0, room): (Range<usize>, u16, u16, u16),
 ) {
+    // A fold row is recorded before its turn: the first target to hold a cell wins.
+    for (key, row) in folds {
+        if window.contains(row) {
+            let rect = Rect::new(left, y0 + cells(*row - window.start), room, 1);
+            layout.record(buf, rect, Hit::Fold(*key));
+        }
+    }
     for (key, span) in turns {
         let (from, to) = (span.start.max(window.start), span.end.min(window.end));
         if from < to {
@@ -2450,7 +2521,7 @@ pub(crate) fn paint_peek_column(
 #[must_use]
 pub fn draw_reader(view: &reader::View<'_>, look: Option<Look>, buf: &mut Buffer) -> Bounds {
     let area = buf.area;
-    paint_reader(view, Paint::of(look.as_ref()), buf, area).0
+    paint_reader(view, Paint::of(look.as_ref()), buf, area, None).0
 }
 
 /// Markdown has its own draw surface; raw files retain the original contract.
@@ -2460,17 +2531,18 @@ pub fn draw_markdown(
     look: Option<Look>,
     buf: &mut Buffer,
 ) -> Bounds {
-    paint_markdown(view, Paint::of(look.as_ref()), buf, buf.area).0
+    paint_markdown(view, Paint::of(look.as_ref()), buf, buf.area, 0).0
 }
 
 pub(crate) fn paint_markdown_column(
+    index: usize,
     view: &super::markdown::View<'_>,
     look: Option<&Look>,
     buf: &mut Buffer,
     layout: &mut Layout,
 ) -> Bounds {
     let area = layout.lane_area().unwrap_or_default();
-    let (bounds, text) = paint_markdown(view, Paint::of(look), buf, area);
+    let (bounds, text) = paint_markdown(view, Paint::of(look), buf, area, index);
     layout.peek_column(buf, text);
     bounds
 }
@@ -2484,6 +2556,7 @@ fn paint_markdown(
     paint: Paint,
     buf: &mut Buffer,
     area: Rect,
+    index: usize,
 ) -> (Bounds, Rect) {
     use super::markdown::Shown;
     let area = area.intersection(buf.area);
@@ -2569,11 +2642,7 @@ fn paint_markdown(
         .map_or_else(|| mode.to_owned(), |why| format!("raw: {why}"));
     let first = if total == 0 { 0 } else { start + 1 };
     let last = start.saturating_add(visible).min(total);
-    let links_note = if view.links > 1 {
-        format!(" · first of {} links", view.links)
-    } else {
-        String::new()
-    };
+    let links_note = read_place(index, view.links);
     let header = format!(
         "Read · {}{suffix} · {mode} · rows {first}-{last}/{total}{links_note}",
         crate::board::terminal_text(view.path)
@@ -2587,6 +2656,18 @@ fn paint_markdown(
         paint.fg(|p| p.dim),
     );
     (Bounds { visible, max_back }, text)
+}
+
+fn read_place(index: usize, count: usize) -> String {
+    if count <= 1 {
+        return String::new();
+    }
+    let place = if index == 0 {
+        "first".to_owned()
+    } else {
+        (index + 1).to_string()
+    };
+    format!(" · {place} of {count} links")
 }
 
 fn markdown_style(mark: super::markdown::Marks, paint: Paint) -> Style {
@@ -2617,6 +2698,7 @@ fn markdown_style(mark: super::markdown::Marks, paint: Paint) -> Style {
 /// the frame drew stand, and a drag selects in the file text, never the
 /// gutter.
 pub(crate) fn paint_reader_column(
+    index: usize,
     view: &reader::View<'_>,
     look: Option<&Look>,
     buf: &mut Buffer,
@@ -2626,7 +2708,7 @@ pub(crate) fn paint_reader_column(
         layout.peek_column(buf, Rect::default());
         return Bounds::default();
     };
-    let (bounds, text) = paint_reader(view, Paint::of(look), buf, lane);
+    let (bounds, text) = paint_reader(view, Paint::of(look), buf, lane, Some(index));
     layout.peek_column(buf, text);
     bounds
 }
@@ -2641,6 +2723,7 @@ fn paint_reader(
     paint: Paint,
     buf: &mut Buffer,
     area: Rect,
+    index: Option<usize>,
 ) -> (Bounds, Rect) {
     let area = area.intersection(buf.area);
     if area.is_empty() {
@@ -2670,10 +2753,20 @@ fn paint_reader(
         }
         (None, _) => None,
     };
-    let status = reader::status(&reader::View { flow, ..*view }, visible);
+    let status = reader::status(
+        &reader::View {
+            flow,
+            links: if index.is_some() { 0 } else { view.links },
+            ..*view
+        },
+        visible,
+    );
+    let place = index
+        .map(|at| read_place(at, view.links))
+        .unwrap_or_default();
     let at = view.line.map(|line| format!(":{line}")).unwrap_or_default();
     let header = format!(
-        "Read · {}{at} · {status}",
+        "Read · {}{at} · {status}{place}",
         crate::board::terminal_text(view.path)
     );
     put(buf, area.x, area.y, &header, area.width, dim);
@@ -2947,11 +3040,12 @@ const PEEK_KEYS: [(&str, &str); 6] = [
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; nothing reaches the pane"),
 ];
-const READER_KEYS: [(&str, &str); 8] = [
+const READER_KEYS: [(&str, &str); 9] = [
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
     ("g/G", "top / bottom of the file; Home/End too"),
     ("m", "Markdown: rendered / raw"),
+    ("n/p", "next / previous file link"),
     ("Esc q r", "back to the lane"),
     ("^C", "quit; a draft clears first"),
     ("wheel", "scroll 3 rows per notch"),

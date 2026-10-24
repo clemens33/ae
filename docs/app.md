@@ -510,15 +510,26 @@ shown.
 
 ## Reading a linked file
 
-`r` on a marked turn (`[` / `]`, or a click) opens the first file link of that
-turn in the chat column, read-only, with the sidebar still live. The turn is
-scanned as `y` would copy it, with the same link grammar as [Links](#links); a
-turn with a web URL first and a path later opens the path, and a turn with no
-file link says `no file link in that turn` on the hint row. With no mark the
-hint row says `no turn marked - click one or press [ ]`, and a mark the lane
-no longer holds is cleared (`that turn changed or left the lane - mark it
-again`). When the turn holds more than one file link the status says
-`first of N links`; only the first opens.
+A plain press and release on any file-link cell opens that occurrence in the
+chat column, read-only, with the sidebar still live. Wrapped links and wide
+characters work on every covered cell. A press changes no mark or draft; dragging
+selects text instead. Another press, key, wheel notch or changed view cancels the
+pending click. A stale link says `refused: read: the view changed`. Web links keep
+the ordinary turn-mark toggle; Cmd/Ctrl-click stays with the terminal.
+
+`r` on a marked turn (`[` / `]`, or a click outside a file link) opens its first
+file link. Both paths use the same list over every displayed part, including
+options and evidence, before folding, clipping or scrolling. Duplicate occurrences
+stay separate; web URLs are omitted. Closed asks use the displayed excerpt;
+Accepted turns have no links. A turn with no file link says `no file link in that
+turn`. With no mark the hint row says `no turn marked - click one or press [ ]`,
+and a mark the lane no longer holds is cleared (`that turn changed or left the
+lane - mark it again`).
+
+In the reader, `n` / `p` visit the next / previous file occurrence and stop at the
+ends. Each step opens at the top in that link's default mode. More than one link
+adds `first of N links` or `K of N links` to the header, including while loading
+or refused. One link has no position suffix.
 
 The file is read once, off the UI thread, and only when it is a regular file
 whose real path lies under the session's work dir or your home: a path that
@@ -556,8 +567,11 @@ column appear raw. Past the row or cell limit, the whole document opens raw;
 the header and `m` say why.
 
 Named limits. The file can change between the check and the open, or after it
-is read; the panel shows the bytes it read. Clicking a link to open it is not
-part of this: use `r` on the marked turn.
+is read; the panel shows the bytes it read. A terminal that reports Cmd-click as
+an ordinary press lets ae handle it. Closed-ask excerpts stop at 80 characters:
+any file token touching the synthetic `…` is omitted from the reader list and
+click cells, even a path ending exactly at character 80 when more text follows.
+Its legacy terminal hyperlink remains; those cells keep the turn-mark toggle.
 
 ## Long turns
 
@@ -686,8 +700,9 @@ set -as terminal-features ',xterm*:hyperlinks'
 
 to `~/.tmux.conf` (the glob must match your `$TERM`). ae never writes that
 server option. Where the link is not forwarded the text is shown unchanged.
-Following a link inside ae is only [`r`](#reading-a-linked-file) on a marked
-turn (a file link; memos and request threads have none). Dragging over a link selects and copies the visible text, as ever.
+Following a file link inside ae uses a plain click or
+[`r`](#reading-a-linked-file) on a marked turn; memos and request threads have no
+reader. Dragging over a link selects and copies the visible text, as ever.
 
 ## Settings
 
