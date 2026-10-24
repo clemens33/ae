@@ -813,6 +813,12 @@ expansion, or an upstream registry certification becoming available — replace 
 exemption with an imported audit the moment one is possible. cargo-deny gates the
 whole graph for advisories in the meantime.
 
+2026-10-24 security-fix exception to the 14-day age rule: bumped rustls `0.23.45` →
+`0.23.46` (published 2026-10-14), rustls-webpki `0.103.15` → `0.103.16` (2026-10-20),
+and webpki-roots `1.0.9` → `1.0.10` (2026-10-19) for RUSTSEC-2026-0346,
+RUSTSEC-2026-0347, RUSTSEC-2026-0348, RUSTSEC-2026-0349, RUSTSEC-2026-0382 and
+RUSTSEC-2026-0381; the TLS graph remains **EXEMPTED, not audited**.
+
 **Std replaces crates since our MSRV** — use these, never the crate equivalents:
 `std::process::ExitCode`/`Termination` (1.61) over raw `exit()`, `std::io::IsTerminal`
 (1.70) over atty/is-terminal, `core::error::Error` (1.81) for no-std-shaped error trees.
