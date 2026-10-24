@@ -12,6 +12,7 @@ pub mod copilot;
 pub mod feed;
 pub mod go;
 pub mod grok;
+pub mod history;
 mod machine;
 pub mod muse;
 mod pace;
@@ -524,6 +525,67 @@ impl Reading {
     fn derived(&self) -> Derived {
         Derived::judge(&self.policy, self.used, Some(self.observed_at))
     }
+}
+
+/// Project canonical local scope facts, without retaining a conversation id.
+pub(crate) fn history_scope(group: &Group) -> Option<history::Scope> {
+    Some(history::Scope {
+        tool: group.tool.as_str().to_owned(),
+        source: canonical_source(group.source.clone()?)
+            .ok()?
+            .to_str()?
+            .to_owned(),
+        account: group
+            .home
+            .clone()
+            .and_then(|p| canonical_source(p).ok())
+            .and_then(|p| p.to_str().map(str::to_owned)),
+    })
+}
+
+/// Keep a reading's accepted policy and raw clock together in its history row.
+pub(crate) fn history_sample(
+    group: &Group,
+    reading: &Reading,
+    producer: &str,
+    incarnation: &str,
+    now: i64,
+) -> Option<history::Sample> {
+    let row = &reading.row;
+    let judged = derived(&reading.policy, row)?;
+    let derivation = match judged.effective {
+        Effective::Raw | Effective::Resets { resets: 0, .. } => "raw",
+        Effective::Resets { .. } => "resets",
+        Effective::Unlimited => "unlimited",
+        Effective::SpendCapped => "spend-cap",
+    };
+    Some(history::Sample {
+        producer: producer.to_owned(),
+        incarnation: incarnation.to_owned(),
+        collected_at: now,
+        scope: history_scope(group)?,
+        bucket: row.bucket.clone(),
+        qualifier: row.qualifier.clone(),
+        window_minutes: row.window_minutes,
+        resets_at: row.resets_at?,
+        observed_at: reading.observed_at(),
+        raw: row.used_percent.clone()?,
+        effective: format!("{:.6}", judged.judged()),
+        derivation: derivation.to_owned(),
+        policy: history::PolicyFacts {
+            version: 1,
+            manual_resets: reading.policy.manual_resets,
+            credits: match reading.policy.account.credits {
+                Credits::Unreported => "unreported",
+                Credits::Unlimited => "unlimited",
+                Credits::Available(_) => "available",
+                Credits::AvailableUnknown => "available-unknown",
+                Credits::Exhausted => "exhausted",
+            }
+            .to_owned(),
+            spend_cap: reading.policy.account.spend_control_reached,
+        },
+    })
 }
 
 /// Advisory state for one stable vendor quota key.

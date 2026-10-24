@@ -203,6 +203,8 @@ pub struct PaneState {
     /// again. `account`'s own identity reset drops it with the rest of the
     /// carry when the seat changes underneath a reused pane id.
     pub held_identity: Option<IdentityHold>,
+    /// Last successful capture's clock, decoded state and launch, never a quota clock.
+    pub history_capture: Option<(i64, String, Option<String>)>,
     /// Dead is LATCHED once alerted, and the latch ends exactly once: on a
     /// POSITIVE process reading that shows the seat's harness back under the
     /// pane (a re-run in place), or on the seat's own later journal activity
@@ -611,6 +613,9 @@ struct QuotaCarry {
     /// not a delivery.
     settled: Vec<(QuotaKey, QuotaRecipient)>,
     last_observation: Option<crate::quota::Observation>,
+    /// Only successfully appended samples, bounded to one current pass (256 keys).
+    history_seen: Vec<crate::quota::history::Sample>,
+    history_note_day: Option<i64>,
 }
 
 /// Whether this classification ENTERS the checkpoint band.
@@ -682,6 +687,22 @@ fn quota_samples_at(observation: &crate::quota::Observation, now: i64) -> Vec<Qu
 
 fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample<'_>> {
     quota_samples_at(observation, observation.now)
+}
+
+fn history_clock(at: Option<i64>, now: i64) -> Option<i64> {
+    at.filter(|at| {
+        *at > 0 && *at < now && now.saturating_sub(*at) <= crate::quota::history::ALIGN_SECS
+    })
+}
+
+fn history_same(a: &crate::quota::history::Sample, b: &crate::quota::history::Sample) -> bool {
+    a.scope == b.scope
+        && a.bucket == b.bucket
+        && a.qualifier == b.qualifier
+        && a.window_minutes == b.window_minutes
+        && a.resets_at == b.resets_at
+        && a.observed_at == b.observed_at
+        && a.policy == b.policy
 }
 
 /// Whether the seat at `slot` is one of the lead pair: the main seat, and
@@ -890,6 +911,7 @@ impl QuotaCarry {
         self.asks.clear();
         self.settled.clear();
         self.last_observation = None;
+        self.history_seen.clear();
     }
 
     fn cancel_where(
@@ -5104,6 +5126,134 @@ impl Cycle<'_> {
         Ok(())
     }
 
+    fn history_seat(
+        &self,
+        entry: &RosterEntry,
+        inputs: &QuotaInputs<'_>,
+        now: i64,
+    ) -> (crate::quota::history::Seat, Option<i64>) {
+        let launch = launch_id_for(&self.launch_ids, &entry.slot);
+        let held = inputs
+            .panes
+            .iter()
+            .find(|pane| {
+                pane.slot.as_deref() == Some(entry.slot.as_str())
+                    && pane.agent.as_deref() == Some(entry.name.as_str())
+            })
+            .and_then(|pane| {
+                inputs
+                    .held
+                    .iter()
+                    .find(|(id, _)| id == &pane.pane_id)
+                    .map(|(_, state)| state)
+            });
+        let capture = held
+            .and_then(|state| state.history_capture.as_ref())
+            .filter(|(_, _, id)| id.as_deref() == launch);
+        let clock = history_clock(capture.map(|(at, _, _)| *at), now);
+        let identity = held
+            .and_then(|state| state.held_identity.as_ref())
+            .filter(|hold| Some(hold.launch.as_str()) == launch && clock.is_some());
+        let declared = latest_relevant_event(inputs.events, self.session, &entry.slot, &entry.name)
+            .filter(crate::watchdog::declaration_current)
+            .and_then(|relevant| relevant.event.declared_state())
+            .map(str::to_owned);
+        (
+            crate::quota::history::Seat {
+                slot: entry.slot.clone(),
+                agent: entry.name.clone(),
+                launch: launch.map(str::to_owned),
+                observed: clock
+                    .and(capture)
+                    .map_or("unknown", |(_, state, _)| state.as_str())
+                    .to_owned(),
+                declared,
+                model: identity.and_then(|hold| hold.identity.model.clone()),
+                effort: identity.and_then(|hold| hold.identity.effort.clone()),
+            },
+            clock,
+        )
+    }
+
+    fn write_quota_history(
+        &self,
+        carry: &mut QuotaCarry,
+        observation: &crate::quota::Observation,
+        inputs: &QuotaInputs<'_>,
+        now: i64,
+        err: &mut impl Write,
+    ) {
+        use crate::quota::history::{self, Row, Workload};
+        if !self.knobs.quota_aware || self.knobs.quota_every_secs == 0 {
+            return;
+        }
+        let incarnation = crate::meta::session_id_in(self.meta_dir);
+        let mut current: Vec<_> = quota_samples_at(observation, now)
+            .iter()
+            .filter_map(|s| {
+                crate::quota::history_sample(s.group, &s.reading, self.session, &incarnation, now)
+            })
+            .collect();
+        let mut rows: Vec<_> = current
+            .iter()
+            .filter(|s| !carry.history_seen.iter().any(|held| history_same(held, s)))
+            .cloned()
+            .map(Row::Sample)
+            .collect();
+        let scopes: std::collections::BTreeSet<_> = observation
+            .groups
+            .iter()
+            .filter_map(crate::quota::history_scope)
+            .collect();
+        let identities: Vec<_> = self
+            .roster
+            .iter()
+            .map(|entry| (entry, crate::quota::recorded_identity(entry)))
+            .collect();
+        let unscoped = identities
+            .iter()
+            .filter(|(_, identity)| identity.is_none())
+            .count();
+        for scope in scopes {
+            let mut seats = Vec::new();
+            let mut observed_at: Option<i64> = None;
+            for (entry, _) in identities.iter().filter(|(_, identity)| {
+                identity.as_ref().is_some_and(|id| {
+                    id.tool.as_str() == scope.tool
+                        && id.source.to_str() == Some(scope.source.as_str())
+                })
+            }) {
+                let (seat, clock) = self.history_seat(entry, inputs, now);
+                if let Some(at) = clock {
+                    observed_at = Some(observed_at.map_or(at, |old| old.min(at)));
+                }
+                seats.push(seat);
+            }
+            rows.push(Row::Workload(Workload {
+                producer: self.session.to_owned(),
+                incarnation: incarnation.clone(),
+                collected_at: now,
+                scope,
+                observed_at,
+                seats,
+                unscoped,
+            }));
+        }
+        match history::append(self.meta_dir, &rows, now) {
+            Ok(()) => {
+                current.truncate(256);
+                carry.history_seen = current;
+            }
+            Err(why) => {
+                let day = now.div_euclid(86_400);
+                if carry.history_note_day != Some(day) {
+                    carry.history_note_day = Some(day);
+                    let _ = writeln!(err, "ae: watchdog: quota history skipped: {why}");
+                }
+            }
+        }
+    }
+
     fn refresh_quota(
         &self,
         carry: &mut QuotaCarry,
@@ -5139,6 +5289,7 @@ impl Cycle<'_> {
                 // happened. Tracing before delivery would attest booking
                 // while the receipt was still absent.
                 self.apply_quota_actions(carry, actions, now, err)?;
+                self.write_quota_history(carry, &observation, inputs, now, err);
                 Self::trace_quota(&summary);
                 Ok(())
             }
@@ -5690,6 +5841,7 @@ impl Cycle<'_> {
                 crate::tool::ToolKind::from_binary_name(agent_bin.as_deref().unwrap_or_default());
 
             let (capture, capture_ok) = capture_pane(self.server, &pane.pane_id);
+            let capture_at = capture_ok.then(|| Timestamp::now().epoch());
             let hash = quiet_hash(&capture);
             // Model drift rides the SAME capture, under the seat's launch
             // guard, and shares this cycle's one reading of the profile pin
@@ -5909,6 +6061,20 @@ impl Cycle<'_> {
                     verdict: booked.verdict,
                 },
             );
+            // The next quota pass reads this successful capture, never its own
+            // collection clock. Failed captures clear knowledge rather than age it anew.
+            carried.history_capture = capture_at.map(|at| {
+                (
+                    at,
+                    if booked.verdict == Verdict::Dead {
+                        "unknown"
+                    } else {
+                        seen.harness.frame.as_str()
+                    }
+                    .to_owned(),
+                    launch.map(str::to_owned),
+                )
+            });
             by_slot.push((slot.clone(), booked.verdict));
             by_agent.push(AgentObservation {
                 slot,
@@ -7655,6 +7821,13 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn history_state_is_known_at_900_seconds_and_unknown_at_901() {
+        assert_eq!(super::history_clock(Some(100), 1000), Some(100));
+        assert_eq!(super::history_clock(Some(100), 1001), None);
+        assert_eq!(super::history_clock(None, 1000), None);
+        assert_eq!(super::history_clock(Some(1000), 1000), None);
+    }
     use super::{
         ACTOR, ADOPTION_TICK, Adopted, Adoption, AdoptionBackend, AgentObservation, Carry,
         Continuation, Cycle, DETACHED_MOTION_TICK, DoneProgress, Effect, FactRung, HOLD_MAX_CYCLES,

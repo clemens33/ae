@@ -1820,6 +1820,8 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // Codex rollout id. It neither reads credentials nor starts a
             // client process.
             "src/quota.rs".to_owned(),
+            // Own-session quota history appends and bounded read-only fleet files.
+            "src/quota/history/store.rs".to_owned(),
             // The two document renders' own reads (A.2c): the INI config behind
             // the profile inventory and `prompt.instructions`, and the `[[ -f
             // ]]` that decides whether a parent archive's digest is still on

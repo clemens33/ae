@@ -1,0 +1,1 @@
+{"v":1,"kind":"workload","producer":"s","incarnation":"11111111-1111-4111-8111-111111111111","collected_at":2000030000,"scope":{"tool":"claude","source":"/h/.claude.json","account":null},"observed_at":2000029995,"unscoped":0,"seats":[{"slot":"main","agent":"lead","observed":"unknown"}]}

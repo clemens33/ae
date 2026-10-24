@@ -54,6 +54,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 
 | Target | Parser | Input |
 |---|---|---|
+| `quota_history` | `quota::history::parse` + `render` + pure `fold` | bounded JSONL rows; versions, duplicate keys, samples, workload, scope/policy segmentation and world-clock alignment; never a filesystem path |
 | `config_parse` | `config::parse_identity` | one identity v2 config text |
 | `meta_parse` | `meta::Meta::parse` + `meta::meta_agent_role` + `rename::parse_intent` + `meta::raw_seat_work_dir` (fixed slots) + `meta::named_conversations` + `meta::resolve_seat_dir` + `meta::explicit_seat_row` + `meta::resolve_seat_target` + `meta::contained_in` + `meta::effective_seat_dir` + `meta::explicit_token_only` + `seatcompact::incarnation` (fixed slots, fixed synthetic roots, pure only — never a fuzz-selected host path; raw-bytes resolver judgment + provenance policy only, no filesystem-existence or JIT-consumer coverage) | one session meta document, including the byte-exact orchestrator-role claim and seat-dir rows in every damage shape, or one stopped-rename intent document |
 | `archive_harness` | `archive::harness::{parse,encode,from_meta}` (fixed archive UUID; canonical byte round-trip) | inert `harness.tsv` or source session meta; parser bounded at 1 MiB/1024 slots, no filesystem or deletion |

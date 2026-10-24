@@ -105,6 +105,7 @@ mod quota;
 mod quota_agy_spec;
 mod quota_feed_spec;
 mod quota_grok_spec;
+mod quota_history_spec;
 mod quota_muse_spec;
 mod quota_view_spec;
 mod reader;
