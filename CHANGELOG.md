@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.122] - 2026-10-24
+- **app**: Render Markdown in the file reader
+
 ## [v2026.10.121] - 2026-10-24
 - Update TLS dependencies for RustSec advisories
 
