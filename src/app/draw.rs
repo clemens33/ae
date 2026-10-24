@@ -2453,6 +2453,165 @@ pub fn draw_reader(view: &reader::View<'_>, look: Option<Look>, buf: &mut Buffer
     paint_reader(view, Paint::of(look.as_ref()), buf, area).0
 }
 
+/// Markdown has its own draw surface; raw files retain the original contract.
+#[must_use]
+pub fn draw_markdown(
+    view: &super::markdown::View<'_>,
+    look: Option<Look>,
+    buf: &mut Buffer,
+) -> Bounds {
+    paint_markdown(view, Paint::of(look.as_ref()), buf, buf.area).0
+}
+
+pub(crate) fn paint_markdown_column(
+    view: &super::markdown::View<'_>,
+    look: Option<&Look>,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+) -> Bounds {
+    let area = layout.lane_area().unwrap_or_default();
+    let (bounds, text) = paint_markdown(view, Paint::of(look), buf, area);
+    layout.peek_column(buf, text);
+    bounds
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "bounded panel draw keeps header and body geometry together"
+)]
+fn paint_markdown(
+    view: &super::markdown::View<'_>,
+    paint: Paint,
+    buf: &mut Buffer,
+    area: Rect,
+) -> (Bounds, Rect) {
+    use super::markdown::Shown;
+    let area = area.intersection(buf.area);
+    if area.is_empty() {
+        return (Bounds::default(), Rect::default());
+    }
+    let visible = usize::from(area.height.saturating_sub(1));
+    let (total, mode) = match view.shown {
+        Shown::Rendered(r) => (r.rows(), "rendered"),
+        Shown::Raw(flow) => (flow.rows(), "raw"),
+    };
+    let (start, max_back) = reader::window(total, visible, view.top);
+    let body = Rect::new(
+        area.x,
+        area.y.saturating_add(1),
+        area.width,
+        area.height.saturating_sub(1),
+    );
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            buf[(x, y)].reset();
+        }
+    }
+    buf.set_style(area, paint.ground(|p| p.ink));
+    let text = match view.shown {
+        Shown::Raw(flow) => {
+            let raw = reader::View {
+                path: view.path,
+                line: view.line,
+                body: None,
+                flow: Some(flow),
+                top: view.top,
+                links: view.links,
+            };
+            paint_file_rows(
+                &raw,
+                flow,
+                reader::gutter(view.lines.len()),
+                paint,
+                buf,
+                body,
+            )
+            .1
+        }
+        Shown::Rendered(r) => {
+            for (step, row) in (start..total).take(visible).enumerate() {
+                let Some(text) = r.text(row) else {
+                    continue;
+                };
+                let mut spans = Vec::new();
+                let mut from = 0;
+                let mut old = r.marks(row, 0);
+                for (at, _) in text.char_indices().skip(1) {
+                    let mark = r.marks(row, at);
+                    if mark != old {
+                        spans.push(Span::styled(
+                            crate::board::terminal_text(&text[from..at]),
+                            markdown_style(old, paint),
+                        ));
+                        from = at;
+                        old = mark;
+                    }
+                }
+                spans.push(Span::styled(
+                    crate::board::terminal_text(&text[from..]),
+                    markdown_style(old, paint),
+                ));
+                let y = body.y + cells(step);
+                if r.marks(row, text.len()).code_block {
+                    buf.set_style(
+                        Rect::new(body.x, y, body.width, 1),
+                        markdown_style(r.marks(row, text.len()), paint),
+                    );
+                }
+                put_line(buf, body.x, y, &Line::from(spans), body.width);
+            }
+            body
+        }
+    };
+    let suffix = view.line.map(|n| format!(":{n}")).unwrap_or_default();
+    let mode = view
+        .refusal
+        .map_or_else(|| mode.to_owned(), |why| format!("raw: {why}"));
+    let first = if total == 0 { 0 } else { start + 1 };
+    let last = start.saturating_add(visible).min(total);
+    let links_note = if view.links > 1 {
+        format!(" · first of {} links", view.links)
+    } else {
+        String::new()
+    };
+    let header = format!(
+        "Read · {}{suffix} · {mode} · rows {first}-{last}/{total}{links_note}",
+        crate::board::terminal_text(view.path)
+    );
+    put(
+        buf,
+        area.x,
+        area.y,
+        &header,
+        area.width,
+        paint.fg(|p| p.dim),
+    );
+    (Bounds { visible, max_back }, text)
+}
+
+fn markdown_style(mark: super::markdown::Marks, paint: Paint) -> Style {
+    let mut style = if mark.target || mark.note {
+        paint.fg(|p| p.dim)
+    } else if mark.heading.is_some() {
+        paint.fg(|p| p.title)
+    } else {
+        paint.fg(|p| p.text)
+    };
+    if mark.code || mark.code_block {
+        style = style.patch(paint.ground(|p| p.panel));
+    }
+    if mark.heading.is_some() || mark.strong {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if mark.emphasis {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if mark.strike {
+        style = style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    style
+}
+
 /// Paint the reader into the frame's chat column: its header on the lane's
 /// first row, the numbered file under it. The sidebar and the composer rows
 /// the frame drew stand, and a drag selects in the file text, never the
@@ -2788,10 +2947,11 @@ const PEEK_KEYS: [(&str, &str); 6] = [
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; nothing reaches the pane"),
 ];
-const READER_KEYS: [(&str, &str); 7] = [
+const READER_KEYS: [(&str, &str); 8] = [
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
     ("g/G", "top / bottom of the file; Home/End too"),
+    ("m", "Markdown: rendered / raw"),
     ("Esc q r", "back to the lane"),
     ("^C", "quit; a draft clears first"),
     ("wheel", "scroll 3 rows per notch"),

@@ -530,9 +530,17 @@ lossily; every line is neutralised when painted (a control character or escape
 shows as `�`), a tab expands and a line wraps to the column with its
 continuation rows two cells in. A line over 2000 characters ends in `…`.
 
-The header row reads `Read · <path>[:line] · rows A-B/N`. Lines are numbered in
-a gutter, and the `:line` of the link is jumped to with three rows of context
-above it and its number in bold. `j` / `k`, `↓` / `↑` scroll a row, `PgUp` /
+Markdown files (`.md` or `.markdown`, case-insensitive) open rendered: headings,
+nested lists, emphasis, code, quotes, rules and tables. Link targets remain dim
+text, images show as `[image: alt](target)`, and HTML stays literal. Nothing is
+fetched or opened. `m` switches between rendered and raw Markdown without another
+read; switching or resizing keeps the top source block in view. Other files keep
+their raw view, where `m` does nothing.
+
+Markdown headers add `rendered` or `raw` before `rows A-B/N`. Other files keep
+`Read · <path>[:line] · rows A-B/N`. Raw lines are numbered in a gutter. Any
+`:line` link opens raw, jumps with three rows of context above the line and
+shows its number in bold; `m` can then render it. `j` / `k`, `↓` / `↑` scroll a row, `PgUp` /
 `PgDn` a page, `g` / `Home` the top and `G` / `End` the bottom, and the wheel
 three rows a notch. `Esc`, `q` or `r` close it and the lane comes back as it
 was, with the mark, the scroll and any kept draft untouched; `^C` clears a kept
@@ -540,6 +548,12 @@ draft first and quits when there is none, as in the lane. A click on the selecte
 session or a seat leaves it. Every other key and a paste is swallowed. Nothing
 is typed, written or journaled, and ae never opens a web URL itself. An upgrade
 restart waits while a file is read.
+
+Rendered output has limits: 50,000 rows, 2,000,000 cells including code padding,
+32 table columns, 240 cells per padded table row, and 32 nested quote/list items.
+A block beyond a local limit appears raw after one note. Tables wider than the
+column appear raw. Past the row or cell limit, the whole document opens raw;
+the header and `m` say why.
 
 Named limits. The file can change between the check and the open, or after it
 is read; the panel shows the bytes it read. Clicking a link to open it is not

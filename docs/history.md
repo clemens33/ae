@@ -890,6 +890,30 @@ whole graph for advisories. **Revisit triggers:** any version change, a new
 advisory, a feature expansion, or an imported audit becoming available for an
 exempted version — replace the exemption the moment one is possible.
 
+### Inert Markdown reader (#251, owner ruling 2026-10-21)
+
+The linked-file reader uses `pulldown-cmark =0.13.4`, exact-pinned with
+`default-features = false`. It was published 2026-05-20; 0.13.5 (2026-10-21)
+was younger than the required fourteen days at selection. Only tables and
+strikethrough are enabled at runtime. No HTML emitter, syntax colouring,
+network fetch, URI opener, external viewer or tui-markdown is introduced.
+
+The resolved graph adds exactly pulldown-cmark 0.13.4 (CommonMark events),
+memchr 2.8.3 (byte scanning) and unicase 2.10.0 (reference matching), reusing
+bitflags 2.13.2. Their MIT/Apache-2.0 licenses already fit deny.toml. Exact
+versions have no imported cargo-vet coverage; their three named exemptions
+encode accepted risk, not audits. Revisit on version or feature changes, an
+advisory, or an imported audit becoming available.
+
+The parser's events are cached independently of width. Mapping neutralises
+text before measurement and bounds rows (50,000), cells including code padding
+(2,000,000), table columns (32), padded table width (240), and combined quote /
+list-item depth (32). Local limits show that source block raw with one note;
+a table wider than the viewport is raw without a note. Global row/cell
+exhaustion uses the existing whole-document raw reader with the reason in its
+header (lead R4 interpretation). The reader_markdown fuzz target exercises
+this parser consumer before the rendered reader is enabled.
+
 
 ---
 

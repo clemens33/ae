@@ -34,6 +34,8 @@ pub enum Key {
     Peek,
     /// `r`: read the first file link of the marked turn.
     Read,
+    /// `m`: switch Markdown mode in the reader.
+    Mode,
     /// `g`, Home: the top of what is read.
     Top,
     /// `G`, End: the bottom of what is read.
@@ -78,6 +80,7 @@ fn letter(byte: u8) -> Option<Key> {
         b'y' => Some(Key::Copy),
         b'v' => Some(Key::Peek),
         b'r' => Some(Key::Read),
+        b'm' => Some(Key::Mode),
         b'g' => Some(Key::Top),
         b'G' => Some(Key::Bottom),
         _ => None,
@@ -301,7 +304,7 @@ impl Model {
             Key::Peek => Act::Peek,
             Key::Read => Act::Read,
             Key::Quit => Act::Quit,
-            Key::Top | Key::Bottom | Key::Tab | Key::Compose => Act::None,
+            Key::Top | Key::Bottom | Key::Tab | Key::Compose | Key::Mode => Act::None,
         }
     }
 
@@ -647,6 +650,7 @@ impl Model {
             | Key::Copy
             | Key::Peek
             | Key::Read
+            | Key::Mode
             | Key::Top
             | Key::Bottom => Act::None,
         }

@@ -104,6 +104,10 @@ criteria = "safe-to-deploy"
 version = "0.18.5"
 criteria = "safe-to-deploy"
 
+[[exemptions.memchr]]
+version = "2.8.3"
+criteria = "safe-to-deploy"
+
 [[exemptions.once_cell]]
 version = "1.21.4"
 criteria = "safe-to-deploy"
@@ -114,6 +118,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.proc-macro2]]
 version = "1.0.107"
+criteria = "safe-to-deploy"
+
+[[exemptions.pulldown-cmark]]
+version = "0.13.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.ratatui-core]]
@@ -174,6 +182,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.thiserror-impl]]
 version = "2.0.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicase]]
+version = "2.10.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.unicode-ident]]

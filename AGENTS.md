@@ -40,7 +40,8 @@ src/app/            — `ae app`; src/app.rs is the coordinator (loop, frame, ke
                       fleet.rs sidebar rows, overview.rs what waits + the work dir,
                       model.rs the browse reducer, lane.rs chat turns as rows, draw.rs
                       the cells, peek.rs the peek panel, reader.rs the file
-                      reader's bounds, decode, wrap and viewport math,
+                      reader's bounds, decode, wrap and viewport math;
+                      markdown.rs its inert, budgeted Markdown mapping,
                       select.rs text selection,
                       menu.rs the card session menu and its Stop question,
                       cue.rs unread cues, handover.rs the restart view.
@@ -179,6 +180,8 @@ Other rules of the loop:
   ruling, not a commit. See docs/history.md §11 for the researched line and its triggers.
   thiserror is carved out TRANSITIVELY only (kasuari and ratatui-core, under `ae app`): it is
   never a direct ae dependency and no ae code imports it (docs/history.md §11).
+  #251 owner ruling permits exact-pinned pulldown-cmark (default features off),
+  tables + strikethrough only; inert output, no tui-markdown (docs/history.md §11).
 - **No new Bash.** `install` is policy-frozen. There is no other bash file and none may
   be added. The ONE shell literal is the chat's pane argv `src/console/toggle.rs::TTY_SETUP`
   (`stty`, then `exec`; termios needs libc or `unsafe`): not a bash file, not a door, one site.

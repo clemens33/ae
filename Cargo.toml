@@ -79,6 +79,9 @@ path = "tests/it/main.rs"
 # and it applies to the dependency graph too. `Cargo.lock` is committed; a bump
 # is a deliberate commit, and cargo-deny's `wildcards = "deny"` agrees.
 [dependencies]
+# #251 owner ruling: inert Markdown; no HTML emitter, CLI, SIMD or serde.
+# Only TABLES | STRIKETHROUGH are enabled by the mapper at runtime.
+pulldown-cmark = { version = "=0.13.4", default-features = false }
 # `default-features = false` drops ureq's `gzip` (flate2) and leaves `json`
 # (serde/serde_json) off — we parse Telegram's replies with `crate::json`, which
 # already bounds nesting at MAX_DEPTH and keeps oversized integers verbatim.

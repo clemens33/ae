@@ -81,6 +81,8 @@ exceptions = [
 # `ae` itself is `publish = false`; it is still MIT and still checked.
 ignore = false
 
+# #251: pulldown-cmark 0.13.4 + memchr 2.8.3 + unicase 2.10.0 use
+# the existing MIT/Apache-2.0 allow-list; no license exception is added.
 [bans]
 # A duplicate version is a smell worth seeing, not a defect worth blocking.
 multiple-versions = "warn"

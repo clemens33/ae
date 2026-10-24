@@ -70,6 +70,10 @@ mod lane;
 #[cfg(test)]
 mod lane_spec;
 mod loader;
+pub mod markdown;
+#[cfg(test)]
+#[path = "app/mdreader_spec.rs"]
+mod mdreader_spec;
 mod menu;
 pub mod model;
 #[cfg(test)]
@@ -287,6 +291,56 @@ struct ReaderPane {
     flow: Option<(usize, reader::Flow)>,
     /// The `:line` jump waits for the first frame that wraps the body.
     jump: bool,
+    /// Markdown keeps its parse across widths and both views across toggles.
+    document: Option<markdown::Document>,
+    rendered: Option<(usize, markdown::Rendered)>,
+    raw: bool,
+    /// A mode or width change restores this zero-based source anchor.
+    anchor: Option<usize>,
+}
+
+impl ReaderPane {
+    fn shown(&self) -> Option<markdown::Shown<'_>> {
+        let (_, rendered) = self.rendered.as_ref()?;
+        Some(if self.raw || rendered.refusal().is_some() {
+            markdown::Shown::Raw(&self.flow.as_ref()?.1)
+        } else {
+            markdown::Shown::Rendered(rendered)
+        })
+    }
+
+    fn source_line(&self, top: usize) -> usize {
+        match self.shown() {
+            Some(markdown::Shown::Rendered(r)) => r.line_of(top.min(r.rows().saturating_sub(1))),
+            _ => self
+                .flow
+                .as_ref()
+                .and_then(|(_, f)| f.display(top.min(f.rows().saturating_sub(1))).map(|r| r.0))
+                .unwrap_or(0),
+        }
+    }
+
+    fn reflow(&mut self, width: usize, top: usize) {
+        let source = self.source_line(top);
+        let Some(reader::Body::Text { lines, .. }) = &self.body else {
+            return;
+        };
+        let room = width.saturating_sub(reader::gutter(lines.len()));
+        if self.flow.as_ref().is_none_or(|(held, _)| *held != room) {
+            self.flow = Some((room, reader::flow(lines, room)));
+        }
+        if let Some(doc) = &self.document
+            && self
+                .rendered
+                .as_ref()
+                .is_none_or(|(held, _)| *held != width)
+        {
+            if self.rendered.is_some() {
+                self.anchor.get_or_insert(source);
+            }
+            self.rendered = Some((width, doc.layout(width)));
+        }
+    }
 }
 
 /// A drag that began in a selectable region, from its press until its copy is
@@ -884,6 +938,14 @@ impl App {
         {
             return;
         }
+        self.reader.document = match &body {
+            reader::Body::Text { lines, .. } if markdown::is_markdown(&self.reader.path) => {
+                Some(markdown::Document::parse(&lines.join("\n")))
+            }
+            _ => None,
+        };
+        self.reader.rendered = None;
+        self.reader.anchor = None;
         self.reader.body = Some(body);
         self.reader.flow = None;
         self.reader.jump = true;
@@ -920,6 +982,7 @@ impl App {
             path: ask.path.clone(),
             line: ask.line,
             links: ask.links,
+            raw: ask.line.is_some(),
             ..ReaderPane::default()
         };
         if let Some(tx) = &self.ask {
@@ -3271,12 +3334,8 @@ impl App {
         let lane = self.layout.lane_area().unwrap_or_default();
         let width = usize::from(lane.width);
         let visible = usize::from(lane.height.saturating_sub(1));
-        if let Some(reader::Body::Text { lines, .. }) = &self.reader.body {
-            let room = width.saturating_sub(reader::gutter(lines.len()));
-            if (self.reader.flow.as_ref()).is_none_or(|(held, _)| *held != room) {
-                self.reader.flow = Some((room, reader::flow(lines, room)));
-            }
-        }
+        self.reader
+            .reflow(width, self.model.reader_top().unwrap_or(0));
         if self.reader.jump
             && let Some((_, flow)) = &self.reader.flow
         {
@@ -3287,6 +3346,14 @@ impl App {
                 self.model.set_reader_top(top);
             }
         }
+        if let Some(line) = self.reader.anchor.take() {
+            let top = match self.reader.shown() {
+                Some(markdown::Shown::Rendered(r)) => r.row_of(line.saturating_add(1)),
+                Some(markdown::Shown::Raw(f)) => f.row_of(line.saturating_add(1)),
+                None => 0,
+            };
+            self.model.set_reader_top(top);
+        }
         let view = reader::View {
             path: &self.reader.path,
             line: self.reader.line,
@@ -3295,7 +3362,22 @@ impl App {
             top: self.model.reader_top().unwrap_or(0),
             links: self.reader.links,
         };
-        let bounds = draw::paint_reader_column(&view, look, buf, &mut self.layout);
+        let bounds = if let (Some(reader::Body::Text { lines, .. }), Some(shown)) =
+            (&self.reader.body, self.reader.shown())
+        {
+            let markdown = markdown::View {
+                path: view.path,
+                line: view.line,
+                lines,
+                shown,
+                refusal: self.reader.rendered.as_ref().and_then(|(_, r)| r.refusal()),
+                top: view.top,
+                links: view.links,
+            };
+            draw::paint_markdown_column(&markdown, look, buf, &mut self.layout)
+        } else {
+            draw::paint_reader_column(&view, look, buf, &mut self.layout)
+        };
         self.model.set_reader_page_rows(bounds.visible);
         if self.deferred.is_empty() {
             self.model.clamp_reader(bounds.max_back);
@@ -4506,6 +4588,19 @@ fn reader_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
 fn reader_keys(app: &mut App, keys: Vec<model::Key>) -> bool {
     let mut redraw = false;
     for key in keys {
+        if key == model::Key::Mode {
+            if app.reader.document.is_some() {
+                if let Some(why) = app.reader.rendered.as_ref().and_then(|(_, r)| r.refusal()) {
+                    app.flash = Some((why.to_owned(), Instant::now()));
+                } else {
+                    app.reader.anchor =
+                        Some(app.reader.source_line(app.model.reader_top().unwrap_or(0)));
+                    app.reader.raw = !app.reader.raw;
+                }
+                redraw = true;
+            }
+            continue;
+        }
         if key == model::Key::Copy {
             app.flash = Some(("drag to copy text".to_owned(), Instant::now()));
             redraw = true;

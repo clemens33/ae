@@ -70,7 +70,7 @@ fn expand_tabs(line: &str, column: usize) -> String {
 
 /// The first row of `text` in `room` cells and what is left, which never
 /// starts with a space. The row is at least one scalar.
-fn split_row(text: &str, room: usize) -> (&str, &str) {
+pub(crate) fn split_row(text: &str, room: usize) -> (&str, &str) {
     let (mut used, mut space) = (0, None);
     for (at, ch) in text.char_indices() {
         if used + cell(ch) > room && at > 0 {
