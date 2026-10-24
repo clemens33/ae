@@ -189,6 +189,7 @@ pub fn observe(inputs: &Inputs<'_>) -> Observation {
                         &mut seat_budget,
                         &mut unpriced,
                         false,
+                        None,
                     ));
                 }
                 (seats, None)
@@ -246,6 +247,299 @@ fn read_meta(dir: &Path, budget: &mut Budget) -> Result<crate::meta::Meta, Cover
     Ok(crate::meta::Meta::parse(text))
 }
 
+fn claim_transcript(left: Option<&mut u64>, bytes: u64) -> bool {
+    let Some(left) = left else {
+        return true;
+    };
+    if bytes > *left {
+        return false;
+    }
+    *left -= bytes;
+    true
+}
+
+/// Host inventory without a liveness probe; every read uses the existing doors.
+pub(crate) fn profile_seats(
+    inputs: &crate::quota::Inputs<'_>,
+    mut transcript: u64,
+    budget: &mut Budget,
+) -> crate::profile_view::Audit {
+    use crate::profile_view::{Audit, Seat};
+    let mut audit = Audit::default();
+    let Some(root) = inputs.sessions else {
+        return audit;
+    };
+    let inventory = profile_inventory(root, budget, &mut audit.gaps);
+    let book = match prices::read(inputs.global, inputs.local) {
+        Ok(book) => book,
+        Err(error) => {
+            audit
+                .gaps
+                .push(format!("prices unreadable: {error}; totals partial"));
+            prices::Book::default()
+        }
+    };
+    let usage_inputs = Inputs {
+        home: inputs.home,
+        sessions: &[],
+        prices: &book,
+        now: inputs.now,
+    };
+    let mut skipped = 0_usize;
+    for (path, session, meta, _) in inventory {
+        let mut candidates = profile_current(&meta, inputs.now);
+        match read_regular(&path.join(crate::store::EVENTS), 16 * 1024 * 1024, budget) {
+            Ok(Some((bytes, _))) => {
+                profile_retired(&bytes, &session, &mut candidates, &mut audit);
+            }
+            Err(coverage) => audit.gaps.push(format!(
+                "{session}: journal skipped {}; budget or read failure; totals partial",
+                scan_failure_reason(coverage)
+            )),
+            Ok(None) => {}
+        }
+        candidates.sort_by(|a, b| a.0.slot.cmp(&b.0.slot).then(a.3.cmp(&b.3)));
+        let mut identities = std::collections::BTreeSet::new();
+        for (entry, lifetime, drift, retired) in candidates {
+            if !identities.insert((
+                entry.slot.clone(),
+                entry.name.clone(),
+                entry.harness_session.clone(),
+                retired,
+            )) {
+                audit.gaps.push(format!(
+                    "{session}/{}: duplicate seat; totals partial",
+                    entry.name
+                ));
+                continue;
+            }
+            let Some(profile) = entry.profile.clone() else {
+                audit.gaps.push(format!(
+                    "{session}/{}: unattributed seat=1; totals partial",
+                    entry.name
+                ));
+                continue;
+            };
+            if audit.seats.len() >= 256 {
+                skipped += 1;
+                audit
+                    .gaps
+                    .push(format!("{session}/{}: not read (seat budget)", entry.name));
+                continue;
+            }
+            let source = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""))
+                .adapter()
+                .usage
+                .source;
+            let rows = observe_entry(
+                &entry,
+                &usage_inputs,
+                &mut Budget::local(16 * 1024 * 1024),
+                &mut Vec::new(),
+                retired,
+                Some(&mut transcript),
+            );
+            audit.seats.push(Seat {
+                profile,
+                session: session.clone(),
+                name: entry.name,
+                slot: entry.slot,
+                source,
+                rows,
+                drift,
+                lifetime,
+                retired,
+            });
+        }
+    }
+    if skipped > 0 {
+        audit.gaps.push(format!(
+            "skipped {skipped} seats: seat budget; totals partial"
+        ));
+    }
+    audit
+}
+
+fn profile_current(meta: &crate::meta::Meta, now: i64) -> Vec<ProfileCandidate> {
+    meta.roster()
+        .iter()
+        .cloned()
+        .map(|entry| {
+            let lifetime = meta
+                .launch_epoch(&entry.slot)
+                .filter(|at| *at <= now)
+                .and_then(|at| u64::try_from(now - at).ok());
+            let drift = meta.observed_model(&entry.slot).map(str::to_owned);
+            (entry, lifetime, drift, false)
+        })
+        .collect()
+}
+
+type ProfileInventory = Vec<(PathBuf, String, crate::meta::Meta, Option<i64>)>;
+
+fn profile_inventory(root: &Path, budget: &mut Budget, gaps: &mut Vec<String>) -> ProfileInventory {
+    let Ok(Bounded::Ready(paths)) = crate::quota::session_paths(root, budget) else {
+        gaps.push(
+            "sessions skipped: directory unreadable or file budget; totals partial (at least)"
+                .to_owned(),
+        );
+        return Vec::new();
+    };
+    let mut inventory = Vec::new();
+    for path in paths {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        match read_regular(
+            &path.join(crate::meta::FILE),
+            SESSION_META_MAX_BYTES,
+            budget,
+        ) {
+            Ok(Some((bytes, _))) => {
+                let Ok(text) = std::str::from_utf8(&bytes) else {
+                    gaps.push(format!(
+                        "{name}: damaged meta=1 (not UTF-8); totals partial"
+                    ));
+                    continue;
+                };
+                let meta = crate::meta::Meta::parse(text);
+                if !meta.anomalies().is_empty() {
+                    gaps.push(format!(
+                        "{name}: damaged meta={} anomalies; totals partial",
+                        meta.anomalies().len()
+                    ));
+                }
+                let live = crate::inventory::last_live_with_meta_evidence(
+                    &path,
+                    crate::inventory::launch_epochs(&bytes),
+                );
+                let stamp = match live {
+                    crate::tmux::Evidence::At(at) => Some(at),
+                    _ => None,
+                };
+                inventory.push((path, name, meta, stamp));
+            }
+            Err(Coverage::Truncated) => gaps.push(format!(
+                "{name}: meta not read (budget or size cap); skipped, totals partial"
+            )),
+            Err(coverage) => gaps.push(format!(
+                "{name}: damaged meta=1 {}; skipped, totals partial",
+                scan_failure_reason(coverage)
+            )),
+            Ok(None) => gaps.push(format!("{name}: damaged meta=1 missing; totals partial")),
+        }
+    }
+    inventory.sort_by(|a, b| b.3.cmp(&a.3).then(a.1.cmp(&b.1)));
+    if inventory.len() > 128 {
+        gaps.push(format!(
+            "skipped {} sessions: session budget; totals partial",
+            inventory.len() - 128
+        ));
+        for (_, name, _, _) in &inventory[128..] {
+            gaps.push(format!("{name}: not read (session budget)"));
+        }
+        inventory.truncate(128);
+    }
+    inventory
+}
+
+type ProfileCandidate = (RosterEntry, Option<u64>, Option<String>, bool);
+
+fn profile_retired(
+    bytes: &[u8],
+    session: &str,
+    seats: &mut Vec<ProfileCandidate>,
+    audit: &mut crate::profile_view::Audit,
+) {
+    let mut malformed = 0_usize;
+    let mut unattributed = 0_usize;
+    let mut spawns: Vec<(String, String, i64, usize)> = Vec::new();
+    for line in String::from_utf8_lossy(bytes)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        let Ok(event) = crate::events::Event::parse_line(line) else {
+            malformed += 1;
+            continue;
+        };
+        if !matches!(event.action.as_str(), "spawn" | "retire") {
+            continue;
+        }
+        let name = event
+            .target
+            .as_deref()
+            .filter(|name| crate::config::is_agent_name(name));
+        let slot = event
+            .target_slot
+            .value()
+            .filter(|slot| crate::requests::is_slot(slot));
+        if event.action == "spawn" {
+            if let (Some(name), Some(slot)) = (name, slot) {
+                if let Some(found) = spawns.iter_mut().find(|row| row.0 == slot && row.1 == name) {
+                    found.3 += 1;
+                } else {
+                    spawns.push((slot.to_owned(), name.to_owned(), event.ts.epoch(), 1));
+                }
+            }
+            continue;
+        }
+        let fields = event.summary.as_deref().and_then(retired_fields);
+        let (Some(name), Some((tool, profile, home, base))) = (name, fields) else {
+            unattributed += 1;
+            continue;
+        };
+        let lifetime = slot
+            .and_then(|slot| spawns.iter_mut().find(|row| row.0 == slot && row.1 == name))
+            .and_then(|row| {
+                let elapsed = (row.3 == 1 && event.ts.epoch() >= row.2)
+                    .then(|| u64::try_from(event.ts.epoch() - row.2).ok())
+                    .flatten();
+                row.3 += 1;
+                elapsed
+            });
+        if lifetime.is_none() {
+            audit.notes.push(format!(
+                "{session}/{name}: retired lifetime unknown=1 (missing, reused or overlapping pair)"
+            ));
+        }
+        let id = event
+            .reference
+            .filter(|id| crate::archive::canonical_uuid(id) == *id);
+        let entry = RosterEntry {
+            slot: slot.unwrap_or("?").to_owned(),
+            name: name.to_owned(),
+            profile: Some(profile),
+            client: RecordedClient::Missing,
+            harness_session: id,
+            config_home: if home.is_empty() {
+                RecordedConfigHome::Missing
+            } else {
+                RecordedConfigHome::parse(&home)
+            },
+            config_home_base: if base.is_empty() {
+                RecordedConfigHomeBase::Missing
+            } else {
+                RecordedConfigHomeBase::parse(&base)
+            },
+            binary: Some(tool),
+            work_dir: RecordedWorkDir::Missing,
+        };
+        seats.push((entry, lifetime, None, true));
+    }
+    if malformed > 0 {
+        audit.gaps.push(format!(
+            "{session}: malformed journal lines={malformed}; totals partial"
+        ));
+    }
+    if unattributed > 0 {
+        audit.gaps.push(format!(
+            "{session}: unattributed retire records={unattributed}; totals partial"
+        ));
+    }
+}
+
 pub(crate) fn is_model_id(model: &str) -> bool {
     !model.is_empty() && model.len() <= MODEL_MAX_BYTES && !model.chars().any(char::is_control)
 }
@@ -256,15 +550,16 @@ fn observe_entry(
     budget: &mut Budget,
     unpriced: &mut Vec<String>,
     retired: bool,
+    transcript: Option<&mut u64>,
 ) -> Vec<SeatUsage> {
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
     match tool.adapter().usage.source {
         UsageSource::ClaudeTranscripts => {
-            observe_claude(entry, tool, inputs, budget, unpriced, retired)
+            observe_claude(entry, tool, inputs, budget, unpriced, retired, transcript)
         }
         UsageSource::CodexRollout => {
             vec![observe_codex(
-                entry, tool, inputs, budget, unpriced, retired,
+                entry, tool, inputs, budget, unpriced, retired, transcript,
             )]
         }
         UsageSource::Unsupported => vec![unsupported(entry, tool, retired)],
@@ -308,6 +603,7 @@ fn observe_claude(
     budget: &mut Budget,
     unpriced: &mut Vec<String>,
     retired: bool,
+    transcript: Option<&mut u64>,
 ) -> Vec<SeatUsage> {
     let Some(id) = valid_id(entry.harness_session.as_deref()) else {
         return vec![if retired {
@@ -320,7 +616,7 @@ fn observe_claude(
         Ok(store) => store,
         Err(reason) => return vec![unreadable(entry, tool, &reason, retired)],
     };
-    let found = match claude_files(&store, &id, budget) {
+    let found = match claude_files(&store, &id, budget, transcript) {
         Ok(found) => found,
         Err(coverage) => return vec![coverage_row(entry, tool, coverage, retired)],
     };
@@ -366,6 +662,7 @@ fn observe_codex(
     budget: &mut Budget,
     unpriced: &mut Vec<String>,
     retired: bool,
+    transcript: Option<&mut u64>,
 ) -> SeatUsage {
     let Some(id) = valid_id(entry.harness_session.as_deref()) else {
         return if retired {
@@ -389,6 +686,15 @@ fn observe_codex(
         Err(_) => return unreadable(entry, tool, "rollout unreadable", retired),
     };
     let observed_at = file.modified().and_then(epoch);
+    let needed = file.len().min(CODEX_TAIL_BYTES)
+        + if file.len() > CODEX_TAIL_BYTES {
+            file.len().min(CODEX_HEAD_BYTES)
+        } else {
+            0
+        };
+    if !claim_transcript(transcript, needed) {
+        return unreadable(entry, tool, "not read (budget)", retired);
+    }
     let head = if file.len() > CODEX_TAIL_BYTES {
         match crate::quota::bounded_head_after_lstat(&file, CODEX_HEAD_BYTES, budget) {
             Ok(Bounded::Ready(head)) => head,
@@ -472,7 +778,12 @@ struct LocatedClaude {
     observed_at: Option<i64>,
 }
 
-fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFiles, Coverage> {
+fn claude_files(
+    store: &Path,
+    id: &str,
+    budget: &mut Budget,
+    transcript: Option<&mut u64>,
+) -> Result<ClaudeFiles, Coverage> {
     let located = locate_claude(store, id, budget, true)?;
     let LocatedClaude {
         parent,
@@ -482,6 +793,16 @@ fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFil
     let Some(parent) = parent else {
         return Ok(None);
     };
+    let bytes = sidechains.iter().fold(parent.metadata.len(), |sum, file| {
+        sum.saturating_add(file.metadata.len())
+    });
+    if transcript.is_some()
+        && (bytes > CLAUDE_SEAT_MAX_BYTES || !claim_transcript(transcript, bytes))
+    {
+        return Err(Coverage::Unreadable(
+            "not read (budget or seat cap)".to_owned(),
+        ));
+    }
     let mut transcript_budget = TranscriptBudget::new();
     let (parent, mut truncated) = parse_transcript(&parent, &mut transcript_budget)?;
     let mut parsed_sidechains = Vec::new();
@@ -1048,6 +1369,7 @@ fn add_retired(
             &mut seat_budget,
             unpriced,
             true,
+            None,
         ));
     }
     scan

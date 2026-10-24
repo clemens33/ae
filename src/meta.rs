@@ -1185,6 +1185,16 @@ impl Meta {
         positive_epoch(self.started.as_deref())
     }
 
+    pub(crate) fn launch_epoch(&self, slot: &str) -> Option<i64> {
+        let key = format!("{LAUNCH_TIME_PREFIX}{slot}");
+        let mut found = self.launch_times.iter().filter(|(held, _)| held == &key);
+        let (_, value) = found.next()?;
+        if found.next().is_some() {
+            return None;
+        }
+        positive_epoch(Some(value))
+    }
+
     /// Newest configured-seat launch time, for sessions predating started.
     #[must_use]
     pub fn latest_launch_epoch(&self) -> Option<i64> {

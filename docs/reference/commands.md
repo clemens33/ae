@@ -1253,6 +1253,36 @@ Cached Claude numbers become `unknown` when the file's current and cached accoun
 the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
 are reduced to printable table cells before widths or wrapping are calculated.
 
+### Profile coverage: `ae quota --profiles`
+
+Lists configured profiles in config order: client, command-spelled model/effort, observed
+provider and model evidence, usage/pricing coverage, descriptive seat totals, and every window
+of the profile's quota scope. `resolves` means syntax only; ae cannot determine spend-policy
+eligibility. Levels are the existing dialog's first-sight levels; EFFECTIVE and PACE use the
+same derivations as the quota table. This mode reads held local data without refreshing
+Antigravity, Go, Copilot or Muse, and starts no process or network request.
+
+Served-model IDs come from usage transcripts; drift-only meta observations are secondary and
+labelled. Unknown IDs stay unknown. Conflicting known providers read `mixed`; a known provider
+alongside unfamiliar IDs keeps that provider with partial evidence. Configured model pins and
+client names never establish a served provider.
+
+Seats include retained rosters and attributable retire records in this host's canonical
+sessions directory, excluding archives and nested legacy layouts. Order follows last recorded
+sign of life, with no liveness probe. Current-incarnation lifetime is elapsed time since the
+seat's latest recorded launch, including idle/wait time. Retired lifetimes need an unambiguous
+routed spawn/retire pair; missing evidence reads `unknown`. Tokens and API-equivalent list-price
+spend describe seats, not task outcomes, subscription cash or recommendations. Codex reasoning
+is included in output; Claude does not report reasoning separately.
+The current-incarnation total adds retained seats' elapsed seconds (seat-seconds).
+
+The scan admits at most 128 sessions and 256 seats, with 4096 files / 16 MiB for metadata
+and journals. Quota observations retain their own bounded read allowance. Transcripts have a
+separate 1 GiB allowance and existing per-seat caps: a seat either fits or is named as not read. Damaged, unattributed and skipped
+records are named; incomplete totals are labelled partial. Missing usage never becomes zero.
+No flags or positional arguments combine with `--profiles`; the session helper keeps its
+existing table-only syntax.
+
 ### Machine-readable: `ae quota --json`
 
 `ae quota --json` prints the table's rows as ONE JSON document and a newline, from the same single

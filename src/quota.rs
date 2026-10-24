@@ -778,6 +778,75 @@ pub struct Inputs<'a> {
     pub now: i64,
 }
 
+/// Render the offline profile inventory.
+///
+/// # Errors
+///
+/// Returns an error when output cannot be written.
+pub fn run_profiles(
+    inputs: &Inputs<'_>,
+    transcript_bytes: u64,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> crate::Result<u8> {
+    let cfg = match crate::config::read_identity(inputs.global, inputs.local) {
+        Ok(cfg) => cfg,
+        Err(error) => {
+            writeln!(err, "ae quota: {error}")?;
+            return Ok(1);
+        }
+    };
+    let mut budget = Budget::local(QUOTA_MAX_BYTES);
+    let audit = crate::usage::profile_seats(inputs, transcript_bytes, &mut budget);
+    let (observation, series) = observe_scopes_budget(
+        inputs,
+        configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs)),
+        &mut Budget::local(QUOTA_MAX_BYTES),
+    );
+    let pace = pace::PaceTable::build(&observation.groups, &series, inputs.now);
+    let mut tables = Vec::new();
+    for (name, _) in &cfg.profiles {
+        let mut table = String::from(
+            "  quota SCOPE | BUCKET | WINDOW | USED | EFFECTIVE | CREDITS | PACE | RESETS | OBSERVED | STATUS | dialog first-sight level\n",
+        );
+        let mut claimed = std::collections::BTreeSet::new();
+        for group in observation
+            .ordered_groups(&observation.groups)
+            .into_iter()
+            .filter(|group| group.profiles.contains(name))
+        {
+            for (index, row) in group.rows.iter().enumerate() {
+                let cells = table_cells(
+                    group,
+                    row,
+                    index,
+                    &pace,
+                    &mut claimed,
+                    inputs.home,
+                    inputs.now,
+                );
+                let level = Reading::of(group.policy.clone(), row.clone())
+                    .map(Classified::first)
+                    .map_or("unknown", |classified| classified.level().label());
+                let _ = writeln!(table, "  {} | {level}", cells[1..].join(" | "));
+            }
+            for note in &group.notes {
+                let _ = writeln!(table, "  {note}");
+            }
+        }
+        tables.push((
+            name.clone(),
+            crate::board::terminal_text(&table).replace('\t', " "),
+        ));
+    }
+    write!(
+        out,
+        "{}",
+        crate::profile_view::render(&cfg, inputs.home, &audit, &tables)
+    )?;
+    Ok(0)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Scope {
     tool: ToolKind,
@@ -1819,7 +1888,15 @@ impl Budget {
     }
 
     pub(crate) fn expired(&self) -> bool {
-        self.started.elapsed() >= self.max_elapsed
+        self.max_elapsed != Duration::MAX && self.started.elapsed() >= self.max_elapsed
+    }
+
+    pub(crate) fn local(bytes: u64) -> Self {
+        Self {
+            bytes_left: bytes,
+            max_elapsed: Duration::MAX,
+            ..Self::new()
+        }
     }
 
     pub(crate) fn claim_file(&mut self) -> bool {
@@ -1870,12 +1947,20 @@ pub(crate) fn observe_full(
     clippy::too_many_lines,
     reason = "one arm per quota source over one scope table; each arm is the whole of its source's read"
 )]
-fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, pace::SeriesSet) {
+fn observe_scopes(inputs: &Inputs<'_>, scopes: Vec<Scope>) -> (Observation, pace::SeriesSet) {
+    observe_scopes_budget(inputs, scopes, &mut Budget::new())
+}
+
+#[allow(clippy::too_many_lines, reason = "one arm per existing quota source")]
+fn observe_scopes_budget(
+    inputs: &Inputs<'_>,
+    mut scopes: Vec<Scope>,
+    budget: &mut Budget,
+) -> (Observation, pace::SeriesSet) {
     let mut groups = Vec::new();
     let mut rendered = Vec::new();
     let mut series = pace::SeriesSet::default();
-    let mut budget = Budget::new();
-    let fleet = fleet_rollouts(inputs.sessions, &mut budget);
+    let fleet = fleet_rollouts(inputs.sessions, budget);
     add_recorded_codex_scopes(&mut scopes, &fleet);
     for scope in &scopes {
         if scope.go {
@@ -1887,7 +1972,7 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
         let quota = scope.tool.adapter().quota;
         match quota.source {
             QuotaSource::ClaudeCache => {
-                let (observed, plan) = claude_observed(scope, inputs, &mut budget);
+                let (observed, plan) = claude_observed(scope, inputs, budget);
                 let group = Group {
                     profiles: scope.profiles.clone(),
                     tool: scope.tool,
@@ -1907,7 +1992,7 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
                 groups.push(group);
             }
             QuotaSource::CodexRollouts => {
-                let observed = codex_groups(scope, &fleet, inputs.now, &mut budget);
+                let observed = codex_groups(scope, &fleet, inputs.now, budget);
                 for (source, held) in observed.series {
                     series.add(&source, held);
                 }
@@ -1916,7 +2001,7 @@ fn observe_scopes(inputs: &Inputs<'_>, mut scopes: Vec<Scope>) -> (Observation, 
             }
             QuotaSource::Unsupported | QuotaSource::GrokLog => {
                 let (read, on_demand) = match quota.source {
-                    QuotaSource::GrokLog => read_grok(scope, inputs.now, &mut budget),
+                    QuotaSource::GrokLog => read_grok(scope, inputs.now, budget),
                     _ => (ReadRows::Missing, false),
                 };
                 // No readable window is the row this tool always had.
@@ -3938,7 +4023,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
     }
 }
 
-fn session_paths(root: &Path, budget: &mut Budget) -> io::Result<Bounded<Vec<PathBuf>>> {
+pub(crate) fn session_paths(root: &Path, budget: &mut Budget) -> io::Result<Bounded<Vec<PathBuf>>> {
     if !budget.claim_file() {
         return Ok(Bounded::Truncated);
     }
@@ -4424,51 +4509,16 @@ fn render_with_pace<'a>(
             });
             continue;
         }
-        let refresh_hint = manual_refresh_hint(group.tool, group.rows.iter().map(|row| row.status));
         for (index, row) in group.rows.iter().enumerate() {
-            let trustworthy = matches!(row.status, Status::Fresh | Status::Stale);
-            let status = group.hint.as_deref().or(refresh_hint).map_or_else(
-                || row.status.as_str().to_owned(),
-                |hint| format!("{} ({hint})", row.status.as_str()),
-            );
-            table.push(RenderLine::Cells([
-                if index == 0 {
-                    profiles_label(&group.profiles)
-                } else {
-                    String::new()
-                },
-                if index == 0 {
-                    scope_label(group, home, now)
-                } else {
-                    String::new()
-                },
-                bucket_label(row),
-                trustworthy
-                    .then(|| row.window_minutes.map(window_label))
-                    .flatten()
-                    .unwrap_or_else(|| "-".to_owned()),
-                trustworthy
-                    .then(|| row.used_percent.as_deref().map(percent_label))
-                    .flatten()
-                    .unwrap_or_else(|| "-".to_owned()),
-                trustworthy
-                    .then(|| effective_cell(group, row))
-                    .flatten()
-                    .unwrap_or_else(|| "-".to_owned()),
-                if index == 0 {
-                    credits_label(&group.policy)
-                } else {
-                    String::new()
-                },
-                pace.cell_for(group, row, &mut claimed),
-                trustworthy
-                    .then(|| row.resets_at.map(|reset| reset_label(reset, now)))
-                    .flatten()
-                    .unwrap_or_else(|| "-".to_owned()),
-                stated_observed_at(row.observed_at, now)
-                    .map_or_else(|| "-".to_owned(), |observed| age_label(now - observed)),
-                status,
-            ]));
+            table.push(RenderLine::Cells(table_cells(
+                group,
+                row,
+                index,
+                pace,
+                &mut claimed,
+                home,
+                now,
+            )));
         }
     }
     for note in notes {
@@ -4478,6 +4528,61 @@ fn render_with_pace<'a>(
         });
     }
     render_table(&table)
+}
+
+fn table_cells(
+    group: &Group,
+    row: &Row,
+    index: usize,
+    pace: &pace::PaceTable,
+    claimed: &mut std::collections::BTreeSet<pace::Key>,
+    home: Option<&Path>,
+    now: i64,
+) -> [String; COLUMNS] {
+    let refresh_hint = manual_refresh_hint(group.tool, group.rows.iter().map(|row| row.status));
+    let trustworthy = matches!(row.status, Status::Fresh | Status::Stale);
+    let status = group.hint.as_deref().or(refresh_hint).map_or_else(
+        || row.status.as_str().to_owned(),
+        |hint| format!("{} ({hint})", row.status.as_str()),
+    );
+    [
+        if index == 0 {
+            profiles_label(&group.profiles)
+        } else {
+            String::new()
+        },
+        if index == 0 {
+            scope_label(group, home, now)
+        } else {
+            String::new()
+        },
+        bucket_label(row),
+        trustworthy
+            .then(|| row.window_minutes.map(window_label))
+            .flatten()
+            .unwrap_or_else(|| "-".to_owned()),
+        trustworthy
+            .then(|| row.used_percent.as_deref().map(percent_label))
+            .flatten()
+            .unwrap_or_else(|| "-".to_owned()),
+        trustworthy
+            .then(|| effective_cell(group, row))
+            .flatten()
+            .unwrap_or_else(|| "-".to_owned()),
+        if index == 0 {
+            credits_label(&group.policy)
+        } else {
+            String::new()
+        },
+        pace.cell_for(group, row, claimed),
+        trustworthy
+            .then(|| row.resets_at.map(|reset| reset_label(reset, now)))
+            .flatten()
+            .unwrap_or_else(|| "-".to_owned()),
+        stated_observed_at(row.observed_at, now)
+            .map_or_else(|| "-".to_owned(), |observed| age_label(now - observed)),
+        status,
+    ]
 }
 
 /// Add a group's notes to the report's, each once.

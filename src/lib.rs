@@ -64,6 +64,7 @@ pub mod orchestrator;
 pub mod overview;
 pub mod panes;
 pub mod procs;
+mod profile_view;
 pub mod provenance;
 pub mod quota;
 mod reader;
@@ -391,13 +392,20 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     run_entry(&preamble, args, out, err)
 }
 
+const PROFILE_TRANSCRIPT_BYTES: u64 = 1 << 30;
+
 fn run_public_quota(
     shape: &shape::Shape,
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    let format = match quota::parse_args(tail) {
+    let profiles = tail.first().is_some_and(|word| word == "--profiles");
+    if profiles && tail.len() > 1 {
+        writeln!(err, "ae quota: unknown argument: {}", tail[1])?;
+        return Ok(entry::EXIT_USAGE);
+    }
+    let format = match quota::parse_args(if profiles { &[] } else { tail }) {
         Ok(format) => format,
         Err(extra) => {
             writeln!(err, "ae quota: unknown argument: {extra}")?;
@@ -413,6 +421,20 @@ fn run_public_quota(
     let local = doors::local_config(&cwd);
     let home = doors::home();
     let roots = inventory::Roots::under(&root);
+    if profiles {
+        return quota::run_profiles(
+            &quota::Inputs {
+                home: home.as_deref(),
+                global: Some(&global),
+                local: local.as_deref(),
+                sessions: Some(roots.sessions()),
+                now: time::Timestamp::now().epoch(),
+            },
+            PROFILE_TRANSCRIPT_BYTES,
+            out,
+            err,
+        );
+    }
     quota::run_as(
         &quota::Inputs {
             home: home.as_deref(),
