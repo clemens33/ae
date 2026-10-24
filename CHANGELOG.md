@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.125] - 2026-10-24
+- Retain session evidence when ending sessions
+- Add offline profile coverage view
+
 ## [v2026.10.124] - 2026-10-24
 - Open linked files by click and step through turn links
 - Store bounded quota and workload history
