@@ -448,20 +448,33 @@ fn every_prestage_refusal_is_decided_before_the_first_key_reaches_the_pane() {
             .join("deliver.rs"),
     )
     .expect("the deliver source should read");
-    let start = source
-        .find("\npub fn deliver(")
-        .expect("deliver's own definition");
-    // The body ends at the next top-level item, so nothing below `deliver`
-    // can satisfy an ordering this test is asserting about `deliver`.
-    let rest = &source[start + 1..];
-    let end = rest
-        .find("\n}\n")
-        .map_or(rest.len(), |at| at + "\n}\n".len());
-    let body = &rest[..end];
+    // Each body ends at the next top-level item, so nothing below the named
+    // function can satisfy an ordering this test is asserting about it.
+    let body_of = |head: &str| {
+        let start = source
+            .find(head)
+            .unwrap_or_else(|| panic!("{head} definition"));
+        let rest = &source[start + 1..];
+        let end = rest
+            .find("\n}\n")
+            .map_or(rest.len(), |at| at + "\n}\n".len());
+        &rest[..end]
+    };
+    // The public `deliver` hands every delivery to `deliver_checked`, whose
+    // body holds the ordering; a key or read of its own there would come
+    // before every refusal below, so it may touch no transport at all.
+    let entry = body_of("\npub fn deliver(");
+    assert!(
+        entry.contains("deliver_checked(request, None, false, err)")
+            && !entry.contains("transport::"),
+        "deliver must only delegate to deliver_checked; the pin is stale"
+    );
+    let body = body_of("\npub(crate) fn deliver_checked(");
 
     let at = |needle: &str| {
-        body.find(needle)
-            .unwrap_or_else(|| panic!("deliver must still contain {needle}; the pin is stale"))
+        body.find(needle).unwrap_or_else(|| {
+            panic!("deliver_checked must still contain {needle}; the pin is stale")
+        })
     };
     // The FIRST key that reaches the pane. Everything a retry may re-arm on
     // has to be decided above this line.

@@ -2109,8 +2109,10 @@ fn a_composer_busy_between_step_1_and_3_skips_at_once() {
 
 #[test]
 fn a_fifo_at_the_meta_path_leaves_the_critical_section_unaffected() {
-    // R10 pin: under the lock NO file is opened — a FIFO at the meta path
-    // would block any open forever. Bounded 30 s, then rescue-or-fail.
+    // R10 pin: under the lock the meta is read ONLY by the address guard's
+    // no-follow reproof, which classifies the node before any open — a FIFO
+    // at the meta path would block a plain open forever. The FIFO is damage:
+    // a bounded safe refusal, no key. Bounded 30 s, then rescue-or-fail.
     let rig = Rig::new("guardfifo", "claude", 0);
     let (done_send, done_recv) = std::sync::mpsc::channel();
     let dir = rig.dir.clone();
@@ -2153,9 +2155,13 @@ fn a_fifo_at_the_meta_path_leaves_the_critical_section_unaffected() {
     }
     let outcome = first.expect("the first wait succeeded");
     assert!(
-        matches!(outcome, Ok(deliver::Outcome::Sent(_))),
+        matches!(
+            outcome,
+            Ok(deliver::Outcome::Skipped(deliver::Leg::Mismatch))
+        ),
         "{outcome:?}"
     );
+    assert_eq!(rig.enter_count(), 0, "no Enter after the refused reproof");
 }
 
 /// Restart the rig's server VERBOSE: the server log then records every
@@ -2218,10 +2224,12 @@ fn server_log(scratch: &Path) -> Option<PathBuf> {
 #[test]
 fn the_critical_section_bills_two_calls_per_enter() {
     // R10 pin: over a live seat steps 3+4 are ONE pane probe, ONE busy
-    // capture, ONE client list, load, paste, then one send plus one capture
-    // PER Enter — COUNTED as the clients the verbose server accepted after
-    // `prove` checkpoints the log offset, never wall time. Verdict is any
-    // Sent; the count relation is the claim. Both locks release.
+    // capture, ONE client list, the address guard's reproof — the target
+    // viewer read, the pane's session identity and its session-name lookup —
+    // load, paste, then one send plus one capture PER Enter — COUNTED as
+    // the clients the verbose server accepted after `prove` checkpoints the
+    // log offset, never wall time. Verdict is any Sent; the count relation
+    // is the claim. Both locks release.
     //
     // Why the server log and not a socket proxy: tmux clients pass stdio
     // fds over the socket, and a byte relay without recvmsg leaks the
@@ -2239,7 +2247,7 @@ fn the_critical_section_bills_two_calls_per_enter() {
         prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
     });
     assert!(matches!(done, Ok(deliver::Outcome::Sent(_))), "{done:?}");
-    // Five calls are fixed; every Enter bills exactly one send plus one
+    // Eight calls are fixed; every Enter bills exactly one send plus one
     // submit capture — judged on `born` itself.
     // BIRTHS, not frees: tmux logs `new client` on accept, before the client
     // can finish, so a call made before `prove` is always logged before the
@@ -2258,18 +2266,18 @@ fn the_critical_section_bills_two_calls_per_enter() {
             .count();
         steady = if now == born { steady + 1 } else { 0 };
         born = now;
-        if matches!(born, 7 | 9 | 11) && steady >= 5 && rig.enter_count() >= 1 {
+        if matches!(born, 10 | 12 | 14) && steady >= 5 && rig.enter_count() >= 1 {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     let enters = rig.enter_count();
     assert!(
-        matches!(born, 7 | 9 | 11),
-        "five fixed, then send + capture per Enter: born={born} enters={enters}"
+        matches!(born, 10 | 12 | 14),
+        "eight fixed, then send + capture per Enter: born={born} enters={enters}"
     );
     assert!(
-        (1..=(born - 5) / 2).contains(&enters),
+        (1..=(born - 8) / 2).contains(&enters),
         "TUI receipt lags, never exceeds: born={born} enters={enters}"
     );
     let free_send = lock_is_free(&rig.send_lock_path());

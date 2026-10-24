@@ -207,6 +207,35 @@ fn caller(
     if !is_session_name(session) || !config::is_agent_name(actor) {
         return Err("caller pane has an invalid ae identity");
     }
+    let (caller_dir, bytes) = physical_session(dir, viewer, actual_server)?;
+    Ok((
+        Caller {
+            dir: caller_dir,
+            session: session.to_owned(),
+            actor: actor.to_owned(),
+            slot: viewer
+                .slot
+                .as_deref()
+                .filter(|slot| is_slot(slot))
+                .unwrap_or_default()
+                .to_owned(),
+        },
+        bytes,
+    ))
+}
+
+/// Session proof shared with agent-address admission; monitor panes need no
+/// agent-name stamp. The relay itself additionally requires a legal agent.
+pub(crate) fn physical_session(
+    dir: &Path,
+    viewer: &ObservedViewer,
+    actual_server: &ServerId,
+) -> Result<(PathBuf, Vec<u8>), &'static str> {
+    let session = viewer
+        .session
+        .as_deref()
+        .filter(|s| is_session_name(s))
+        .ok_or("caller has no session")?;
     let Some(root) = dir.parent() else {
         return Err("caller session directory could not be resolved");
     };
@@ -226,20 +255,7 @@ fn caller(
     if !sockets.proven_same(actual_server, &recorded_server) {
         return Err("caller session is not the recorded one");
     }
-    Ok((
-        Caller {
-            dir: caller_dir,
-            session: session.to_owned(),
-            actor: actor.to_owned(),
-            slot: viewer
-                .slot
-                .as_deref()
-                .filter(|slot| is_slot(slot))
-                .unwrap_or_default()
-                .to_owned(),
-        },
-        bytes,
-    ))
+    Ok((caller_dir, bytes))
 }
 
 fn target(caller: &Caller, raw: &str) -> Result<Target, String> {

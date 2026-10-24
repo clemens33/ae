@@ -562,6 +562,10 @@ pub fn delivery_env<'a>(sender: &'a str, id: &'a str) -> [(&'a str, &'a str); 3]
 /// # Errors
 ///
 /// Only a failure to write `err`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the role reply's target lock visibly alive through its durable closing record"
+)]
 pub fn run(
     dir: &Path,
     tail: &[String],
@@ -582,6 +586,10 @@ pub fn run(
         Ok(admitted) => admitted,
         Err(code) => return Ok(code),
     };
+    if let Err(why) = tracked::check_request_binding(dir, &request, None, false) {
+        tracked::refuse_address(dir, &why, err)?;
+        return Ok(EXIT_FAILED);
+    }
     if let Some(warning) = &verified.warning {
         write!(err, "{warning}")?;
     }
@@ -631,6 +639,18 @@ pub fn run(
         writeln!(err, "Error: request '{}': {line}; not delivered", parsed.id)?;
         return Ok(EXIT_FAILED);
     }
+    let guard = match tracked::admit_agent_address(
+        dir,
+        &server,
+        &resolved,
+        tracked::AddressMode::Reply(&parsed.id),
+    ) {
+        Ok(guard) => guard,
+        Err(why) => {
+            tracked::refuse_address(dir, &why, err)?;
+            return Ok(EXIT_FAILED);
+        }
+    };
     let cross_session = !me.session.is_empty() && resolved.session != me.session;
     let target_name = if resolved.agent.is_empty() {
         reply_target.clone()
@@ -658,8 +678,28 @@ pub fn run(
         composed: crate::tool::Composed::NONE,
     };
     fields.target = &target_name;
-    let (delivery, outcome) =
-        tracked::caller_across_cut(dir, || tracked::deliver_request(&request, err));
+    let strict = tracked::address_meta(dir, &resolved.session).is_ok_and(|(_, bytes)| {
+        crate::meta::meta_agent_role(&bytes) != crate::meta::MetaAgentRole::Absent
+    });
+    if strict && verified.warning.is_some() {
+        tracked::refuse_address(dir, "seat binding display override differs", err)?;
+        return Ok(EXIT_FAILED);
+    }
+    let reply_lock = if strict {
+        crate::deliver::target_lock(&request, err)?
+    } else {
+        None
+    };
+    if strict && (reply_lock.is_none() || !guard.check(err)?) {
+        return Ok(EXIT_FAILED);
+    }
+    let (delivery, outcome) = tracked::caller_across_cut(dir, || {
+        if strict {
+            crate::deliver::deliver_checked(&request, Some(&guard), true, err)
+        } else {
+            tracked::deliver_request(&request, err)
+        }
+    });
     let delivery = delivery?;
     fields = tracked::stamp_caller(&fields, &outcome);
     let cross_session = cross_session.then_some(tracked::CrossSession {

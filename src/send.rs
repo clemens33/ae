@@ -392,7 +392,7 @@ pub fn run(
         event.target_slot = &resolved.slot;
         event.target_session = &resolved.session;
     }
-    let delivery = deliver::deliver(&request, err)?;
+    let delivery = tracked::deliver_addressed(&request, &resolved, err)?;
     write_retryable_marker(&action, &delivery, out)?;
     let cross = cross_session.then_some(tracked::CrossSession {
         caller: caller_session,

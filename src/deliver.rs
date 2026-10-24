@@ -302,6 +302,17 @@ pub fn deliver(
     request: &Request<'_>,
     err: &mut impl Write,
 ) -> io::Result<Result<Delivered, Failure>> {
+    deliver_checked(request, None, false, err)
+}
+
+/// Admitted helper delivery; `locked` means reply owns the lock through its
+/// journal close. Ordinary product/owner delivery retains the original entry.
+pub(crate) fn deliver_checked(
+    request: &Request<'_>,
+    guard: Option<&crate::tracked::AddressGuard<'_>>,
+    locked: bool,
+    err: &mut impl Write,
+) -> io::Result<Result<Delivered, Failure>> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
     let (input, tool) = target_input(request, &probe.command);
     // Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
@@ -329,9 +340,17 @@ pub fn deliver(
             return Ok(Err(Failure::Storage));
         }
     };
-    let Some(_held) = target_lock(request, err)? else {
-        return Ok(Err(Failure::Lock));
+    let held_lock = if locked {
+        None
+    } else {
+        target_lock(request, err)?
     };
+    if !locked && held_lock.is_none() {
+        return Ok(Err(Failure::Lock));
+    }
+    if !address_check(guard, err)? {
+        return Ok(Err(Failure::Storage));
+    }
     let prepared = notice::prepare(
         input.model,
         request.action,
@@ -351,7 +370,7 @@ pub fn deliver(
         )?;
         return Ok(Err(Failure::NoticeRefused { body_file }));
     };
-    if let Err(failure) = quiet_or_abandoned(request, input.model, tool, err)? {
+    if let Err(failure) = quiet_or_abandoned(request, input.model, tool, guard, err)? {
         return Ok(Err(failure));
     }
     // Every other shape reads for a human-only prompt BEFORE its first key.
@@ -364,6 +383,9 @@ pub fn deliver(
     if let Err(failure) = launch_recheck(request, input, &body_file, err)? {
         return Ok(Err(failure));
     }
+    if !address_check(guard, err)? {
+        return Ok(Err(Failure::Storage));
+    }
     // Safe now: cancel, then paste — all by `-t` target, never by selection.
     let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
     if request.shape == Shape::Interrupt
@@ -371,7 +393,10 @@ pub fn deliver(
     {
         return Ok(Err(failure));
     }
-    match submit(request, input, &mode, &body_file, &framed, err)? {
+    if !address_check(guard, err)? {
+        return Ok(Err(Failure::Storage));
+    }
+    match submit(request, input, &mode, &body_file, &framed, guard, err)? {
         Ok(verification) => Ok(Ok(Delivered {
             body_file,
             framed,
@@ -384,6 +409,13 @@ pub fn deliver(
             Ok(Err(failure))
         }
     }
+}
+
+fn address_check(
+    guard: Option<&crate::tracked::AddressGuard<'_>>,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    guard.map_or(Ok(true), |guard| guard.check(err))
 }
 
 /// The line naming an unconfirmed delivery and where its body is.
@@ -433,7 +465,7 @@ pub fn deliver_composed(
         )?;
         return Ok(None);
     };
-    if quiet_or_abandoned(request, input.model, tool, err)?.is_err() {
+    if quiet_or_abandoned(request, input.model, tool, None, err)?.is_err() {
         return Ok(None);
     }
     let Some(body) = compose() else {
@@ -465,7 +497,7 @@ pub fn deliver_composed(
         return Ok(Some(Err(Failure::NoticeRefused { body_file })));
     };
     let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
-    let submitted = submit(&request, input, &mode, &body_file, &framed, err)?;
+    let submitted = submit(&request, input, &mode, &body_file, &framed, None, err)?;
     Ok(Some(submitted.map(|verification| Delivered {
         body_file,
         framed,
@@ -926,22 +958,29 @@ fn wait_for_quiet(
     request: &Request<'_>,
     model: InputModel,
     tool: Option<ToolKind>,
-) -> Option<Snapshot> {
+    guard: Option<&crate::tracked::AddressGuard<'_>>,
+    err: &mut impl Write,
+) -> io::Result<Option<Snapshot>> {
     let started = Instant::now();
     let mut flushed = false;
     loop {
-        let snapshot = quiet_held(request.server, request.pane, model, tool)?;
+        if !address_check(guard, err)? {
+            return Ok(None);
+        }
+        let Some(snapshot) = quiet_held(request.server, request.pane, model, tool) else {
+            return Ok(None);
+        };
         let held = snapshot.held;
         if held == DeferHeld::HumanPrompt {
-            return Some(snapshot); // only the human clears it: no flush, no wait
+            return Ok(Some(snapshot)); // only the human clears it: no flush, no wait
         }
         if held.composer_held() && !flushed && !held.viewed() {
             flushed = true;
             let budget = request.defer.saturating_sub(started.elapsed());
-            let _ = flush_staged_chip(request.server, request.pane, model, budget);
+            let _ = flush_staged_chip(request.server, request.pane, model, budget, guard, err)?;
         }
         if started.elapsed() >= request.defer {
-            return Some(snapshot);
+            return Ok(Some(snapshot));
         }
         std::thread::sleep(DEFER_POLL);
     }
@@ -1115,7 +1154,9 @@ fn flush_staged_chip(
     pane: &str,
     model: InputModel,
     budget: Duration,
-) -> Option<SubmitState> {
+    guard: Option<&crate::tracked::AddressGuard<'_>>,
+    err: &mut impl Write,
+) -> io::Result<Option<SubmitState>> {
     let started = Instant::now();
     let mut previous = transport::capture_screen(server, pane, Styling::Plain);
     loop {
@@ -1125,11 +1166,14 @@ fn flush_staged_chip(
             break;
         }
         if started.elapsed() >= budget {
-            return None;
+            return Ok(None);
         }
         previous = current;
     }
-    match still_staged(server, pane, model) {
+    if !address_check(guard, err)? {
+        return Ok(None);
+    }
+    Ok(match still_staged(server, pane, model) {
         // Re-read the SHAPE, not just the verdict: a draft typed under the chip
         // is not ours to submit, and the chip may have drained on its own.
         SubmitState::StillStaged if staged_chip_present(server, pane, model) => {
@@ -1138,7 +1182,7 @@ fn flush_staged_chip(
             Some(still_staged(server, pane, model))
         }
         observed => Some(observed),
-    }
+    })
 }
 
 /// Is it UNSAFE to paste into this pane right now — `_paste_input_busy`?
@@ -1339,12 +1383,13 @@ fn quiet_or_abandoned(
     request: &Request<'_>,
     model: InputModel,
     tool: Option<ToolKind>,
+    guard: Option<&crate::tracked::AddressGuard<'_>>,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
     if !matches!(request.shape, Shape::Send | Shape::Relay | Shape::Context) {
         return Ok(Ok(()));
     }
-    if let Some(snapshot) = wait_for_quiet(request, model, tool) {
+    if let Some(snapshot) = wait_for_quiet(request, model, tool, guard, err)? {
         if let Some(prompt) = snapshot.prompt.clone() {
             let read = PromptRead::Drawn(prompt);
             if let Some(held) = prompt_refusal(request, false, &read, err)? {
@@ -1362,6 +1407,9 @@ fn quiet_or_abandoned(
         return Ok(Err(Failure::Abandoned {
             held: snapshot.held,
         }));
+    }
+    if !address_check(guard, err)? {
+        return Ok(Err(Failure::Storage));
     }
     Ok(Ok(()))
 }
@@ -1485,6 +1533,7 @@ fn submit(
     mode: &notice::Mode,
     body_file: &str,
     framed: &str,
+    guard: Option<&crate::tracked::AddressGuard<'_>>,
     err: &mut impl Write,
 ) -> io::Result<Result<DeliveryVerification, Failure>> {
     let payload = match mode {
@@ -1549,7 +1598,7 @@ fn submit(
     // bounded retry the quiet gate uses, so a spawn's brief lands without an
     // interrupt.
     if staged_chip_present(server, pane, model) {
-        match flush_staged_chip(server, pane, model, request.defer) {
+        match flush_staged_chip(server, pane, model, request.defer, guard, err)? {
             Some(SubmitState::Submitted) => return Ok(Ok(DeliveryVerification::Verified)),
             Some(SubmitState::Unknown(reason)) => {
                 return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
@@ -1678,13 +1727,11 @@ pub enum Leg {
     /// Staging or pasting failed under the lock; a staged-then-refused buffer
     /// was already deleted, so no byte reached the pane.
     PasteFailed,
-    /// Identity legs — constructed ONLY by the caller's `prove` closure,
-    /// never by the operation itself. The live identity read could not be
-    /// made.
+    /// The caller's identity proof could not read the live seat.
     Unreadable,
     /// The seat's live identity is vacant where the carried facts name it.
     Vacant,
-    /// The live identity differs from the carried facts.
+    /// The live identity differs from carried facts, or role admission changed.
     Mismatch,
     /// A coherent same-name replacement holds the seat: the live occupant is
     /// not ours, and is left untouched.
@@ -1713,8 +1760,8 @@ pub struct EnterFailed;
 /// (meta+`ps`), the pane's send-lock, the busy/human-input deferral; (2) the
 /// caller's `prove`, which takes the lifecycle lock and re-proves identity,
 /// returning the held lock or a leg; (3) under that lock, the operation's OWN
-/// instant delivery-safety variants — one pane probe, one busy snapshot, no
-/// loop, no file, no process; (4) the paste ([`stage_and_paste`]) and the
+/// instant delivery-safety variants — one pane probe, one busy snapshot and
+/// the role/seat recheck, with no delivery wait; (4) the paste ([`stage_and_paste`]) and the
 /// BOUNDED submit ([`submit_bounded`]); (5) the lifecycle lock drops, (6) then
 /// the send-lock. A RAW still-staged verdict is the caller's to settle
 /// ([`settle_staged`]), after both locks are gone.
@@ -1752,6 +1799,24 @@ pub fn deliver_guarded(
         defer: request.defer,
         composed: Composed::NONE,
     };
+    let target = crate::tracked::Resolved {
+        pane: request.pane.to_owned(),
+        agent: String::new(),
+        slot: request.pane_slot.to_owned(),
+        session: request.target_session.to_owned(),
+    };
+    let guard = match crate::tracked::admit_agent_address(
+        request.dir,
+        request.server,
+        &target,
+        crate::tracked::AddressMode::Initiate,
+    ) {
+        Ok(guard) => guard,
+        Err(why) => {
+            let _ = crate::tracked::refuse_address(request.dir, &why, &mut io::sink());
+            return Ok(Outcome::Skipped(Leg::Mismatch));
+        }
+    };
     // (1a) The `deliver()`-identical dead-pane refusal — the meta+`ps` owner —
     // BEFORE any lock, so a dead pane refuses fast and lock-free. The same
     // probe names the prompt tool, once, for both quiet reads below.
@@ -1768,10 +1833,16 @@ pub fn deliver_guarded(
     };
     // (1c) The full busy/human-input deferral — the `wait_for_quiet` owner,
     // OUTSIDE the lifecycle lock.
-    if let Some(snapshot) = wait_for_quiet(&view, request.model, tool) {
+    if let Some(snapshot) =
+        wait_for_quiet(&view, request.model, tool, Some(&guard), &mut io::sink())
+            .map_err(|_| EnterFailed)?
+    {
         return Ok(Outcome::Skipped(Leg::Busy {
             held: snapshot.held,
         }));
+    }
+    if !guard.check(&mut io::sink()).unwrap_or(false) {
+        return Ok(Outcome::Skipped(Leg::Mismatch));
     }
     // (2) The caller's proof: the lifecycle lock, then identity. A leg skips
     // with the send-lock released by the scope.
@@ -1781,7 +1852,7 @@ pub fn deliver_guarded(
     };
     // (3)+(4) under the held lock; (5) the lifecycle lock drops first, (6)
     // then the send-lock.
-    let outcome = under_lock(request, tool);
+    let outcome = under_lock(request, tool, &guard);
     drop(lifecycle_lock);
     drop(send_lock);
     outcome
@@ -1856,11 +1927,12 @@ fn staged_after_settle(
 }
 
 /// Steps (3)+(4) under the caller-held lifecycle lock: the instant re-proof —
-/// tmux reads ONLY, no file, no process, no wait — and the paste with its
-/// bounded submit.
+/// tmux safety reads and the shared role/seat proof, without a delivery wait —
+/// and the paste with its bounded submit.
 fn under_lock(
     request: &GuardedRequest<'_>,
     tool: Option<ToolKind>,
+    guard: &crate::tracked::AddressGuard<'_>,
 ) -> Result<Outcome, EnterFailed> {
     // (3) One probe: a shell in the foreground — or no readable probe at all,
     // which fails closed — refuses as Dead. Meta and `ps` are NOT consulted.
@@ -1877,6 +1949,9 @@ fn under_lock(
         return Ok(Outcome::Skipped(Leg::Busy {
             held: snapshot.held,
         }));
+    }
+    if !guard.check(&mut io::sink()).unwrap_or(false) {
+        return Ok(Outcome::Skipped(Leg::Mismatch));
     }
     // (4) The paste, then the bounded submit under the same lock.
     if stage_and_paste(

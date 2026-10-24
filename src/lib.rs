@@ -1990,6 +1990,9 @@ fn run_compact(
         err.flush()?;
         return Ok(entry::EXIT_FAILED);
     }
+    if tracked::refuse_role_entry(&dir, err)? {
+        return Ok(state::EXIT_FAILED);
+    }
     let code = seatcompact_run::run(&preamble.home, &target, out, err)?;
     err.flush()?;
     error::with_status(code, out.flush())?;
@@ -3054,6 +3057,9 @@ fn run_goal(
         }
         Ok(goal::Command::Write(write)) => write,
     };
+    if tracked::refuse_role_entry(dir, err)? {
+        return Ok(state::EXIT_FAILED);
+    }
     let mut viewer = calling_viewer(dir);
     viewer.session_id = tracked::routing_id(dir, &viewer.slot, &viewer.session, &own_session(dir));
     match goal::run(dir, &viewer, &write, time::Timestamp::now()) {
@@ -3817,6 +3823,9 @@ pub fn run_with(
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE
             }
+        }
+        cli::Request::Spawn { dir, .. } if tracked::refuse_role_entry(dir, err)? => {
+            state::EXIT_FAILED
         }
         cli::Request::Spawn { dir, tail } => spawn::run_spawn(
             dir,

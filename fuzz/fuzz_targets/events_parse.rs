@@ -25,4 +25,13 @@ fuzz_target!(|data: &[u8]| {
     // The request reader retains strict opening facts from these same
     // hostile records, including optional launch keys and damaged rows.
     let _ = std::hint::black_box(ae::requests::states(data));
+    if let Some(line) = text.lines().next()
+        && let Ok(event) = ae::events::Event::parse_line(line)
+        && let Some(id) = event.reference
+    {
+        let pair = [data, line.as_bytes()];
+        let _ = std::hint::black_box(ae::requests::bound_opening(pair, &id, None));
+        let repair = text.lines().last().map(str::as_bytes);
+        let _ = std::hint::black_box(ae::requests::bound_opening(pair, &id, repair));
+    }
 });

@@ -723,6 +723,80 @@ pub(crate) fn states_in(container: &[u8], session: SessionKey<'_>) -> Vec<Reques
         .collect()
 }
 
+/// Prove one unique, byte-equivalent opening in both participant ledgers.
+/// A repair may remove only its exact original closing line before checking
+/// Pending; every other close or retirement still refuses.
+///
+/// # Errors
+/// A missing, duplicate, malformed, divergent, unbound or closed opening.
+pub fn bound_opening(
+    ledgers: [&[u8]; 2],
+    id: &str,
+    repair: Option<&[u8]>,
+) -> Result<Event, &'static str> {
+    let mut proven = None;
+    for (side, bytes) in ledgers.into_iter().enumerate() {
+        let mut opens = read_lines(bytes).into_iter().filter(|line| {
+            extract(line, "ref") == id.as_bytes()
+                && matches!(extract(line, "action").as_slice(), b"ask" | b"review")
+        });
+        let line = opens.next().ok_or("missing opening")?;
+        if opens.next().is_some() {
+            return Err("duplicate opening");
+        }
+        let event = std::str::from_utf8(line)
+            .ok()
+            .and_then(|s| Event::parse_line(s).ok())
+            .ok_or("malformed opening")?;
+        let fields = [
+            &event.actor_slot,
+            &event.actor_session,
+            &event.actor_session_id,
+            &event.actor_launch_id,
+            &event.target_slot,
+            &event.target_session,
+            &event.target_session_id,
+            &event.target_launch_id,
+        ];
+        if fields
+            .iter()
+            .any(|field| field.value().is_none_or(str::is_empty))
+        {
+            return Err(
+                "legacy or incomplete seat binding; report through your own lead and ask again",
+            );
+        }
+        if proven.as_ref().is_some_and(|first| first != &event) {
+            return Err("divergent opening");
+        }
+        let (name, uuid) = if side == 0 {
+            (&event.actor_session, &event.actor_session_id)
+        } else {
+            (&event.target_session, &event.target_session_id)
+        };
+        let mut pending = Vec::new();
+        for line in read_lines(bytes)
+            .into_iter()
+            .filter(|line| Some(*line) != repair)
+        {
+            pending.extend_from_slice(line);
+            pending.push(b'\n');
+        }
+        let key = SessionKey::new(
+            name.value().unwrap_or_default(),
+            uuid.value().unwrap_or_default(),
+        );
+        if !states_in(&pending, key)
+            .iter()
+            .any(|row| row.id == id.as_bytes() && row.status == Status::Pending)
+        {
+            return Err("opening is no longer Pending");
+        }
+        proven = Some(event);
+    }
+    proven.ok_or("missing opening")
+}
+
 /// One routing member, owned — [`Member`]'s three states, kept past the life of
 /// the line they were read from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2248,6 +2322,74 @@ mod tests {
             // Lead ruling I1: an opening that is not a strict event is listed but never trusted.
             let loose = OPEN.replace("2026-10-24T10:00:00Z", "2026-10-24 10:00:00");
             assert_eq!(judged(&loose, &loose), (Status::Pending, "unproven"));
+        }
+    }
+    #[test]
+    fn a_bound_opening_is_unique_pending_in_both_ledgers_and_repairs_only_its_own_close() {
+        let opening = concat!(
+            r#"{"ts":"2026-10-24T00:00:00Z","actor":"boss","action":"ask","ref":"q","target":"wkr","summary":"why","actor_slot":"main","actor_session":"role","actor_session_id":"11111111-1111-4111-8111-111111111111","actor_launch_id":"r1","target_slot":"main","target_session":"work","target_session_id":"22222222-2222-4222-8222-222222222222","target_launch_id":"w1"}"#,
+            "\n"
+        );
+        let close = br#"{"ts":"2026-10-24T00:00:01Z","actor":"wkr","action":"reply","ref":"q","target":"boss","actor_slot":"main","actor_session":"work","actor_session_id":"22222222-2222-4222-8222-222222222222","target_slot":"main","target_session":"role","target_session_id":"11111111-1111-4111-8111-111111111111"}"#;
+        let accepted = String::from_utf8_lossy(close).replace("reply", "accept");
+        let cancelled = String::from_utf8_lossy(close)
+            .replace("reply", "cancel")
+            .replace("wkr", "TEMP")
+            .replace("boss", "wkr")
+            .replace("TEMP", "boss")
+            .replace("work", "TEMP")
+            .replace("role", "work")
+            .replace("TEMP", "role")
+            .replace("22222222-2222-4222-8222-222222222222", "TEMP")
+            .replace(
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222",
+            )
+            .replace("TEMP", "11111111-1111-4111-8111-111111111111");
+        let retired = r#"{"ts":"2026-10-24T00:00:01Z","actor":"ae","action":"retire","target":"wkr","target_slot":"main","target_session":"work","target_session_id":"22222222-2222-4222-8222-222222222222"}"#;
+        let good = opening.as_bytes();
+        assert!(super::bound_opening([good, good], "q", None).is_ok());
+        for side in 0..2 {
+            for (label, bad) in [
+                ("missing", String::new()),
+                ("duplicate", opening.repeat(2)),
+                (
+                    "closed",
+                    format!("{opening}{}\n", String::from_utf8_lossy(close)),
+                ),
+                ("cancelled", format!("{opening}{cancelled}\n")),
+                ("retired", format!("{opening}{retired}\n")),
+                ("payload", opening.replace("why", "other")),
+                (
+                    "unbound",
+                    opening.replace(",\"actor_launch_id\":\"r1\"", ""),
+                ),
+            ] {
+                // A retirement closes only its containing participant's seat.
+                if label == "retired" && side == 0 {
+                    continue;
+                }
+                let mut pair = [good, good];
+                pair[side] = bad.as_bytes();
+                assert!(
+                    super::bound_opening(pair, "q", None).is_err(),
+                    "{label} side{side}"
+                );
+            }
+        }
+        let accepted_log = format!("{opening}{accepted}\n");
+        assert!(super::bound_opening([good, accepted_log.as_bytes()], "q", None).is_ok());
+        for original in [close, cancelled.as_bytes()] {
+            let closed = format!("{opening}{}\n", String::from_utf8_lossy(original));
+            let pair = [closed.as_bytes(), good];
+            assert!(
+                super::bound_opening(pair, "q", Some(original)).is_ok(),
+                "exact repair"
+            );
+            assert!(
+                super::bound_opening(pair, "q", Some(b"other")).is_err(),
+                "foreign repair"
+            );
         }
     }
 }

@@ -76,6 +76,10 @@ pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
 /// # Errors
 ///
 /// Only a failure to write `err`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one interrupt coordinator keeps admission, bare cancel and message outcomes in order"
+)]
 pub fn run(
     dir: &Path,
     tail: &[String],
@@ -142,9 +146,21 @@ pub fn run(
         composed: crate::tool::Composed::NONE,
     };
     if parsed.message.is_empty() {
-        return bare_cancel(&request, &target_name, now, cross, err);
+        let guard = match tracked::admit_agent_address(
+            dir,
+            &server,
+            &resolved,
+            tracked::AddressMode::Initiate,
+        ) {
+            Ok(guard) => guard,
+            Err(why) => {
+                tracked::refuse_address(dir, &why, err)?;
+                return Ok(EXIT_FAILED);
+            }
+        };
+        return bare_cancel(&request, &guard, &target_name, now, cross, err);
     }
-    let delivered = match deliver::deliver(&request, err)? {
+    let delivered = match tracked::deliver_addressed(&request, &resolved, err)? {
         Ok(delivered) => delivered,
         // Refused before its paste on a human-only prompt: the shared
         // diagnostic, never an `interrupt` record.
@@ -194,6 +210,7 @@ pub fn run(
 /// and both keys go under the target send-lock.
 fn bare_cancel(
     request: &deliver::Request<'_>,
+    guard: &tracked::AddressGuard<'_>,
     target: &str,
     now: Timestamp,
     cross: Option<CrossDelivery<'_>>,
@@ -207,6 +224,9 @@ fn bare_cancel(
     let (_, read) = deliver::prompt_hold(server, pane, InputModel::Unmodelled, tool);
     if let Some(held) = deliver::prompt_refusal(request, false, &read, err)? {
         return record(dir, target, Some(held), now, actor, cross, err);
+    }
+    if !guard.check(err)? {
+        return Ok(EXIT_FAILED);
     }
     let _ = transport::send_key(server, pane, crate::tmux::Key::CancelCopyMode);
     let _ = transport::send_key(server, pane, crate::tmux::Key::Escape);

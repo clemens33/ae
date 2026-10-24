@@ -1147,7 +1147,28 @@ pub(crate) fn deliver_request(
         }
         return Ok(hit);
     }
-    crate::deliver::deliver(request, err)
+    let target = Resolved {
+        pane: request.pane.to_owned(),
+        agent: request.logged_target.to_owned(),
+        slot: request.pane_slot.to_owned(),
+        session: request.target_session.to_owned(),
+    };
+    deliver_addressed(request, &target, err)
+}
+
+pub(crate) fn deliver_addressed(
+    request: &crate::deliver::Request<'_>,
+    target: &Resolved,
+    err: &mut impl Write,
+) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
+    let mode = address_mode(request.actor);
+    match admit_agent_address(request.dir, request.server, target, mode) {
+        Ok(guard) => crate::deliver::deliver_checked(request, Some(&guard), false, err),
+        Err(why) => {
+            refuse_address(request.dir, &why, err)?;
+            Ok(Err(crate::deliver::Failure::Storage))
+        }
+    }
 }
 
 /// Observe, run `cut`, re-observe. Correlation is kept only when the triple is
@@ -1185,6 +1206,318 @@ fn target_meta_dir(dir: &Path, resolved_session: &str, own_session: &str) -> Pat
         dir.parent()
             .map_or_else(|| dir.to_path_buf(), |root| root.join(resolved_session))
     }
+}
+
+/// Canonical state wins; fallback is permitted only on positive absence.
+/// Existing no-follow directory/file doors keep damage from selecting a copy.
+pub(crate) fn address_meta(dir: &Path, session: &str) -> Result<(PathBuf, Vec<u8>), String> {
+    let fallback = participant_dir(dir, session).map_err(|e| e.to_string())?;
+    let root = crate::doors::state_root(crate::shape::current()).ok_or("state root unavailable")?;
+    let canonical = root.join("sessions").join(session);
+    let read = |path: &Path| store::read_capped_in(path, store::META, u64::MAX);
+    let (path, source) = match read(&canonical) {
+        Ok(store::SourceRead::Absent) => (fallback.clone(), read(&fallback)),
+        source => (canonical, source),
+    };
+    match source {
+        Ok(store::SourceRead::Ready(bytes)) => Ok((path, bytes)),
+        Ok(store::SourceRead::Absent) => Ok((path, Vec::new())),
+        _ => Err(
+            "session meta unreadable or damaged; orchestrator role cannot be ruled out".to_owned(),
+        ),
+    }
+}
+
+/// Typed entry authority; helper environment and display actors cannot mint Owner.
+#[derive(Clone)]
+pub(crate) enum AddressMode<'a> {
+    Initiate,
+    Reply(&'a str),
+    Owner,
+}
+
+// lib::speaks_as_reserved rejects helper overrides in both console:/human:
+// namespaces; only the typed console submit path may mint these identities.
+fn address_mode(actor: &str) -> AddressMode<'static> {
+    if matches!(actor, CONSOLE_SINK | CONSOLE_DISPLAY) {
+        AddressMode::Owner
+    } else {
+        AddressMode::Initiate
+    }
+}
+
+/// Physical caller proof shared by entry, bound replies and refusal auditing.
+fn proven_caller(
+    dir: &Path,
+) -> Result<(crate::tmux::ObservedViewer, ServerId, PathBuf, String), String> {
+    let (viewer, server) = crate::actual_calling_pane().ok_or("caller pane unproven")?;
+    let (caller_dir, bytes) =
+        crate::relay::physical_session(dir, &viewer, &server).map_err(str::to_owned)?;
+    let uuid = correlate_uuid(&viewer.session_uuid, &bytes).map_err(|_| "caller UUID unproven")?;
+    Ok((viewer, server, caller_dir, uuid))
+}
+
+/// Reusable under-lock proof. An aborted guard never becomes live again.
+pub(crate) struct AddressGuard<'a> {
+    dir: &'a Path,
+    server: &'a ServerId,
+    target: &'a Resolved,
+    mode: AddressMode<'a>,
+    stamp: (
+        Option<crate::tmux::SessionIdentity>,
+        String,
+        String,
+        String,
+        meta::MetaAgentRole,
+    ),
+    aborted: std::cell::Cell<bool>,
+}
+
+/// The ONE role-session entry policy. Ordinary targets preserve compatibility;
+/// role membership is physical server + tmux session identity, UUID cross-check only.
+pub(crate) fn admit_agent_address<'a>(
+    dir: &'a Path,
+    server: &'a ServerId,
+    target: &'a Resolved,
+    mode: AddressMode<'a>,
+) -> Result<AddressGuard<'a>, String> {
+    let (meta_dir, bytes) = address_meta(dir, &target.session)?;
+    let role = meta::meta_agent_role(&bytes);
+    let viewer = transport::observe_viewer(server, &target.pane).unwrap_or_default();
+    let uuid = meta::session_id_in(&meta_dir);
+    let slot = viewer.slot.unwrap_or_default();
+    let token = launch_id_at(&meta_dir, &slot, &uuid);
+    let physical = transport::observe_pane_session_identity(server, &target.pane);
+    if role != meta::MetaAgentRole::Absent {
+        let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+        let meta::ServerSelector::Positive(selector) = parsed.server_selector() else {
+            return Err("orchestrator role server unproven".to_owned());
+        };
+        if !crate::SocketPaths::asking(transport::observe_socket_path)
+            .proven_same(server, &ServerId::Selected(selector))
+            || meta::sole_value(&bytes, "session") != Some(target.session.as_bytes())
+        {
+            return Err("orchestrator role target identity changed".to_owned());
+        }
+    }
+
+    if role != meta::MetaAgentRole::Absent && !matches!(mode, AddressMode::Owner) {
+        let fail = "orchestrator role refuses unproven/outside initiation; use its pane, ae chat, ae app or Telegram";
+        if role == meta::MetaAgentRole::Damaged {
+            return Err(fail.to_owned());
+        }
+        let (_, actual, caller_dir, _) = proven_caller(dir).map_err(|_| fail)?;
+        correlate_uuid(&viewer.session_uuid, &bytes).map_err(|_| fail)?;
+        let pane = crate::doors::calling_pane_id().ok_or(fail)?;
+        if let AddressMode::Reply(id) = mode {
+            check_role_request(
+                dir,
+                id,
+                &target.session,
+                &crate::own_session(&caller_dir),
+                None,
+                false,
+            )?;
+        } else {
+            let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+            let caller_identity = transport::observe_pane_session_identity(&actual, &pane);
+            if !sockets.proven_same(&actual, server)
+                || physical.is_none()
+                || physical != caller_identity
+            {
+                return Err(fail.to_owned());
+            }
+        }
+    }
+    Ok(AddressGuard {
+        dir,
+        server,
+        target,
+        mode,
+        stamp: (physical, uuid, slot, token, role),
+        aborted: std::cell::Cell::new(false),
+    })
+}
+
+impl AddressGuard<'_> {
+    /// Re-prove at every first-key/wait boundary; journal exactly one refusal.
+    pub(crate) fn check(&self, err: &mut impl Write) -> io::Result<bool> {
+        if self.aborted.get() {
+            return Ok(false);
+        }
+        let fresh = admit_agent_address(self.dir, self.server, self.target, self.mode.clone());
+        let reason = match fresh {
+            Ok(now) if now.stamp == self.stamp => return Ok(true),
+            Ok(now) if now.stamp.0.is_none() => {
+                "target physical session identity became unreadable".to_owned()
+            }
+            Ok(_) => "role or target seat binding changed during delivery".to_owned(),
+            Err(reason) => reason,
+        };
+        self.aborted.set(true);
+        refuse_address(self.dir, &reason, err)?;
+        Ok(false)
+    }
+}
+
+pub(crate) fn refuse_address(dir: &Path, reason: &str, err: &mut impl Write) -> io::Result<()> {
+    let reason = format!(
+        "ae: delivery REFUSED — {reason}; nothing further typed. Report through your own lead; owner routes for an orchestrator role: pane, ae chat, ae app, Telegram."
+    );
+    if let Ok((viewer, _, caller_dir, _)) = proven_caller(dir) {
+        let line = event_line(&EventFields::new(
+            Timestamp::now(),
+            viewer.agent.as_deref().unwrap_or("unknown"),
+            "refused",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &reason,
+            "",
+        ));
+        if let Err(why) = store::open(&caller_dir).append_event(&line) {
+            writeln!(err, "ae: refusal audit failed: {why}")?;
+        }
+    }
+    writeln!(err, "{reason}")
+}
+
+/// Live binding and the pure fold are shared by reply and both record-only verbs,
+/// including idempotent mirror repair. Legacy ordinary requests never enter here.
+pub(crate) fn bound_request(
+    dir: &Path,
+    id: &str,
+    asker: &str,
+    recipient: &str,
+    repair: Option<&[u8]>,
+) -> Result<crate::events::Event, String> {
+    let (ad, _) = address_meta(dir, asker)?;
+    let (td, _) = address_meta(dir, recipient)?;
+    let a = store::open(&ad).container();
+    let t = store::open(&td).container();
+    let event = crate::requests::bound_opening([&a, &t], id, repair).map_err(str::to_owned)?;
+    for (path, uuid, slot, token) in [
+        (
+            &ad,
+            &event.actor_session_id,
+            &event.actor_slot,
+            &event.actor_launch_id,
+        ),
+        (
+            &td,
+            &event.target_session_id,
+            &event.target_slot,
+            &event.target_launch_id,
+        ),
+    ] {
+        if launch_id_at(
+            path,
+            slot.value().unwrap_or_default(),
+            uuid.value().unwrap_or_default(),
+        ) != token.value().unwrap_or_default()
+        {
+            return Err(
+                "seat binding changed; report through your own lead and ask again".to_owned(),
+            );
+        }
+    }
+    Ok(event)
+}
+
+pub(crate) fn check_request_binding(
+    dir: &Path,
+    request: &crate::requests::Request,
+    repair: Option<&[u8]>,
+    asker_side: bool,
+) -> Result<(), String> {
+    if is_external(&String::from_utf8_lossy(&request.from)) {
+        return Ok(());
+    }
+    let asker = std::str::from_utf8(request.from_session.value().unwrap_or_default())
+        .map_err(|_| "session damaged")?;
+    let recipient = std::str::from_utf8(request.to_session.value().unwrap_or_default())
+        .map_err(|_| "session damaged")?;
+    // Resolve UUIDs before names through the record writer's participant owner.
+    // Legacy or renamed role requests still require the complete strict opening.
+    let home = crate::own_session(dir);
+    let id = meta::session_id_in(dir);
+    let other = crate::request_verb::other_ledger(dir, request, &home, &id)?;
+    let asker = match request.from_session_id.pin() {
+        crate::requests::Pin::Id(v) if v != id => other
+            .map(|(name, _)| name)
+            .ok_or("asker session unproven")?,
+        crate::requests::Pin::Id(_) => home,
+        _ if asker.is_empty() => home,
+        _ => asker.to_owned(),
+    };
+    if meta::meta_agent_role(&address_meta(dir, &asker)?.1) == meta::MetaAgentRole::Absent {
+        return Ok(());
+    }
+    check_role_request(
+        dir,
+        &String::from_utf8_lossy(&request.id),
+        &asker,
+        recipient,
+        repair,
+        asker_side,
+    )
+}
+
+/// The sole strict role-request rule: both ledgers, both live seats and the
+/// physical endpoint authorized for this verb. Reply rechecks it under lock.
+pub(crate) fn check_role_request(
+    dir: &Path,
+    id: &str,
+    asker: &str,
+    recipient: &str,
+    repair: Option<&[u8]>,
+    asker_side: bool,
+) -> Result<(), String> {
+    let (caller, _, _, uuid) = proven_caller(dir).map_err(|_| "seat binding caller unproven")?;
+    let event = bound_request(dir, id, asker, recipient, repair)?;
+    let (id, slot) = if asker_side {
+        (&event.actor_session_id, &event.actor_slot)
+    } else {
+        (&event.target_session_id, &event.target_slot)
+    };
+    if id.value() != Some(uuid.as_str()) || slot.value() != caller.slot.as_deref() {
+        return Err("seat binding caller differs".to_owned());
+    }
+    Ok(())
+}
+
+/// Entry routes without a resolved seat (goal/compact/spawn) use this same owner.
+pub(crate) fn refuse_role_entry(dir: &Path, err: &mut impl Write) -> io::Result<bool> {
+    let session = crate::own_session(dir);
+    let (_, bytes) = match address_meta(dir, &session) {
+        Ok(meta) => meta,
+        Err(why) => {
+            refuse_address(dir, &why, err)?;
+            return Ok(true);
+        }
+    };
+    if meta::meta_agent_role(&bytes) == meta::MetaAgentRole::Absent {
+        return Ok(false);
+    }
+    let main = meta::Meta::parse(&String::from_utf8_lossy(&bytes))
+        .roster()
+        .iter()
+        .find(|row| row.slot == "main")
+        .map(|row| row.name.clone())
+        .unwrap_or_default();
+    let route = resolve_on(&main, &session, dir)
+        .map_err(|e| e.message())
+        .and_then(|(target, server)| {
+            admit_agent_address(dir, &server, &target, AddressMode::Initiate).map(|_| ())
+        });
+    if let Err(why) = route {
+        refuse_address(dir, &why, err)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 // ---- the event ------------------------------------------------------------
@@ -1502,6 +1835,15 @@ pub fn refuse_cross_session(
     now: Timestamp,
     err: &mut impl Write,
 ) -> io::Result<bool> {
+    if let Err(why) = admit_agent_address(
+        dir,
+        &pane_server_for(dir, resolved),
+        resolved,
+        address_mode(actor),
+    ) {
+        refuse_address(dir, &why, err)?;
+        return Ok(true);
+    }
     if allowed || resolved.session.is_empty() || resolved.session == caller_session {
         return Ok(false);
     }
@@ -1550,6 +1892,11 @@ pub fn refuse_cross_session(
     });
     writeln!(err, "{refusal}")?;
     Ok(true)
+}
+
+fn pane_server_for(dir: &Path, resolved: &Resolved) -> ServerId {
+    named_server(dir, &resolved.session, &crate::own_session(dir))
+        .unwrap_or_else(|_| pane_server(dir))
 }
 
 /// The two participants in one authorized cross-session delivery.
@@ -1689,6 +2036,12 @@ fn unidentified(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    if let Ok((target, server)) = resolve_on(&parsed.target, &crate::own_session(dir), dir)
+        && let Err(why) = admit_agent_address(dir, &server, &target, AddressMode::Initiate)
+    {
+        refuse_address(dir, &why, err)?;
+        return Ok(EXIT_FAILED);
+    }
     let helper = dir.join(SEND_HELPER);
     write!(err, "{NO_IDENTITY_WARNING}")?;
     let delivery = transport::deliver(
@@ -3999,5 +4352,39 @@ mod tests {
         std::fs::write(dir.join("meta"), bytes).expect("meta");
         assert_eq!(super::launch_id_at(&dir, "main", UUID), "", "non-UTF-8");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn stale_or_empty_actor_session_cannot_skip_a_role_requests_record_only_binding() {
+        for role in [false, true] {
+            let role_row = if role { "meta_agent=true\n" } else { "" };
+            let boss =
+                format!("session=role\nsession_id={UUID}\nlaunch_id.main=role-start\n{role_row}");
+            let work = format!("session=work\nsession_id={UUID_B}\nlaunch_id.main=work-start\n");
+            let root = sessions_root("legacy-role-record", &[("role", &boss), ("work", &work)]);
+            for recorded_name in ["", "before-rename"] {
+                let opening = format!(
+                    r#"{{"ts":"2026-10-24T00:00:00Z","actor":"boss","action":"ask","ref":"legacy","target":"wkr","actor_slot":"main","target_slot":"main","actor_session":"{recorded_name}","actor_session_id":"{UUID}","target_session":"work","target_session_id":"{UUID_B}","actor_launch_id":"role-start","target_launch_id":"work-start"}}"#
+                );
+                let request = crate::requests::states(format!("{opening}\n").as_bytes())
+                    .pop()
+                    .expect("opening");
+                for here in ["role", "work"] {
+                    for asker_side in [false, true] {
+                        assert_eq!(
+                            super::check_request_binding(
+                                &root.join(here),
+                                &request,
+                                None,
+                                asker_side
+                            )
+                            .is_err(),
+                            role,
+                            "actor_session={recorded_name:?}; ledger={here}, asker_side={asker_side}, role={role}"
+                        );
+                    }
+                }
+            }
+            std::fs::remove_dir_all(root.parent().expect("scratch root")).expect("cleanup");
+        }
     }
 }

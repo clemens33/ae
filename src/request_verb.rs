@@ -151,6 +151,17 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     };
+    let repair_line = match (verb, request.status, &request.accepted) {
+        (Verb::Withdraw, Status::Cancelled, _) => request.withdrawal.as_deref(),
+        (Verb::Accept, Status::Pending, Some(accepted)) => Some(accepted.line.as_slice()),
+        _ => None,
+    };
+    if let Err(why) =
+        tracked::check_request_binding(dir, &request, repair_line, verb == Verb::Withdraw)
+    {
+        tracked::refuse_address(dir, &why, err)?;
+        return Ok(EXIT_FAILED);
+    }
     match (verb, request.status, &request.accepted) {
         (Verb::Withdraw, Status::Pending, _) | (Verb::Accept, Status::Pending, None) => {
             let line = record(verb, &request, &id, &text, &me, dir, now);
@@ -515,7 +526,7 @@ const fn confirmation(verb: Verb) -> &'static str {
 /// that holds the id the request pinned for that side NOW — never a reused old
 /// name. `None` when both sides are this session, or when no session records
 /// the other side's id any more.
-fn other_ledger(
+pub(crate) fn other_ledger(
     dir: &Path,
     request: &Request,
     own_session: &str,
