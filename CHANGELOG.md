@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.128] - 2026-10-24
+- Reduce Telegram bridge outbound discovery work
+
 ## [v2026.10.127] - 2026-10-24
 - Use quota history for display pace
 
