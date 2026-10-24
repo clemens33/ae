@@ -267,6 +267,8 @@ pub enum Request {
     Help,
     /// `list` (or its `ls` spelling) with the filters its flags selected.
     List(ListArgs),
+    /// Read-only archive index; never reads the live tmux world.
+    ListEnded,
     /// `next` (or its `jump` spelling) — the attention navigator.
     Next {
         /// Everything after the subcommand, as typed.
@@ -881,6 +883,15 @@ impl Request {
         match args.first().map(String::as_str) {
             None | Some("-h" | "--help" | "help") => Self::Help,
             Some("-V" | "--version" | "version") => Self::Version,
+            Some("list" | "ls") if args.iter().any(|arg| arg == "--ended") => {
+                if args.len() == 2 {
+                    Self::ListEnded
+                } else {
+                    Self::UsageError(
+                        "--ended cannot be combined with live filters or --json".to_owned(),
+                    )
+                }
+            }
             Some("list" | "ls") => match ListArgs::parse(&args[1..]) {
                 Ok(parsed) => Self::List(parsed),
                 Err(UnknownFlag(token)) => Self::UsageError(token),
@@ -1508,6 +1519,7 @@ impl Request {
             Self::Version | Self::Help => Some(0),
             Self::UsageError(_) | Self::MissingOperand(_) => Some(2),
             Self::List(_)
+            | Self::ListEnded
             | Self::Next { .. }
             | Self::Orchestrator { .. }
             | Self::Brief { .. }
@@ -1667,6 +1679,7 @@ impl Request {
             | Self::Autoupgrade { .. }
             | Self::LaunchCandidate(_)
             | Self::List(_)
+            | Self::ListEnded
             | Self::MissingOperand(_)
             | Self::UsageError(_) => None,
         }

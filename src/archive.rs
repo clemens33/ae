@@ -1,11 +1,12 @@
-//! `ae archive preview [session]` — the read-only lifecycle tracer.
+//! Read-only archive preview and ended-session index.
 //!
 //! **This module WRITES NOTHING.** No archive, claim, lock, event, temp file,
 //! or live-state mutation. It reads a session's `meta`, `memo.tsv`,
 //! `events.jsonl` and `messages/*.txt`, and renders the exact digest `ae`
 //! would archive — the "preview" snapshot — to stdout, with the command's
 //! banner and any degradation notices to stderr. Archive publication and the
-//! publisher claim live elsewhere; this module is preview only.
+//! publisher claim live elsewhere. The ended index reads validated archive facts
+//! after proving the set of registered session incarnations.
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -14,6 +15,152 @@ use std::path::Path;
 use crate::event_text::{self, extract};
 use crate::meta;
 use crate::state::EXIT_FAILED;
+
+/// Read the archive index without inspecting tmux or making a session runnable.
+pub(crate) fn ended(root: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Result<u8> {
+    let archive = root.join("archive");
+    match store::require_real_root(&archive, false) {
+        Ok(store::RootState::Absent) => return Ok(0),
+        Ok(store::RootState::Present) => {}
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            return Ok(EXIT_FAILED);
+        }
+    }
+    let registered = match registered_incarnations(&root.join("sessions")) {
+        Ok(ids) => ids,
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    let entries = match store::read_dir(&archive) {
+        Ok(entries) => entries,
+        Err(why) => {
+            writeln!(err, "archive: cannot enumerate ended sessions: {why}")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    let mut rows = Vec::new();
+    for path in entries {
+        let Some(id) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if id.is_empty()
+            || canonical_uuid(id) != id
+            || registered.contains(id)
+            || !matches!(
+                store::symlink_meta(&store::claim_path(&archive, id)),
+                Err(why) if why.kind() == io::ErrorKind::NotFound
+            )
+        {
+            continue;
+        }
+        match store::symlink_meta(&path) {
+            Ok(node) if node.is_dir() && !node.file_type().is_symlink() => {}
+            _ => continue,
+        }
+        if let Err(why) = store::validate_tree(&path, id) {
+            writeln!(err, "archive: skipping {id}: {why}")?;
+            continue;
+        }
+        let bytes = match store::read_file(&path.join(store::META)) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                writeln!(err, "archive: skipping {id}: unreadable meta: {why}")?;
+                continue;
+            }
+        };
+        let reason = meta_get(&bytes, "reason");
+        let reason = match reason.as_str() {
+            "end" | "reboot" => reason,
+            _ => "unknown".to_owned(),
+        };
+        let work_dir = meta_get(&bytes, "source_work_dir");
+        let work_dir = if work_dir.is_empty() || work_dir == "-" {
+            "unknown".to_owned()
+        } else {
+            work_dir
+        };
+        rows.push((
+            id.to_owned(),
+            meta_get(&bytes, "source_session"),
+            meta_get(&bytes, "archived_at"),
+            reason,
+            work_dir,
+        ));
+    }
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    for (id, name, at, reason, dir) in rows {
+        let clean = |s: &str| {
+            s.chars()
+                .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+                .collect::<String>()
+        };
+        writeln!(
+            out,
+            "{id}\t{}\t{}\t{reason}\t{}",
+            clean(&name),
+            clean(&at),
+            clean(&dir)
+        )?;
+    }
+    Ok(0)
+}
+
+/// A failed registration census cannot prove that any archive is ended.
+fn registered_incarnations(root: &Path) -> Result<std::collections::BTreeSet<String>, String> {
+    match store::symlink_meta(root) {
+        Err(why) if why.kind() == io::ErrorKind::NotFound => {
+            return Ok(std::collections::BTreeSet::new());
+        }
+        Ok(node) if node.is_dir() && !node.file_type().is_symlink() => {}
+        _ => {
+            return Err(format!(
+                "archive: cannot prove registration root '{}'",
+                root.display()
+            ));
+        }
+    }
+    let paths = store::read_dir(root)
+        .map_err(|why| format!("archive: cannot enumerate registrations: {why}"))?;
+    let mut ids = std::collections::BTreeSet::new();
+    for path in paths {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        let fail = || {
+            format!(
+                "archive: registration '{name}' has unreadable or ambiguous incarnation; no ended rows shown"
+            )
+        };
+        let node = store::symlink_meta(&path).map_err(|_| fail())?;
+        if !node.is_dir() || node.file_type().is_symlink() {
+            return Err(fail());
+        }
+        let meta_path = path.join(store::META);
+        let node = store::symlink_meta(&meta_path).map_err(|_| fail())?;
+        if !node.is_file() || node.file_type().is_symlink() {
+            return Err(fail());
+        }
+        let bytes = store::read_file(&meta_path).map_err(|_| fail())?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| fail())?;
+        let found: Vec<_> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("session_id="))
+            .collect();
+        let [id] = found.as_slice() else {
+            return Err(fail());
+        };
+        let id = canonical_uuid(id);
+        if id.is_empty() {
+            return Err(fail());
+        }
+        ids.insert(id);
+    }
+    Ok(ids)
+}
 
 /// The canonical UUID grammar: 8-4-4-4-12 hex, lowercased;
 /// anything else is empty (not a UUID).
@@ -503,6 +650,7 @@ fn text_block(out: &mut String, text: &str, pad: &str) {
 }
 
 pub(crate) mod from;
+pub mod harness;
 pub(crate) mod purge;
 mod request_states;
 mod store;

@@ -566,6 +566,7 @@ pub(crate) fn archive_step(
         }
     } else {
         let ops = crate::archive::publish::Ops {
+            reason: crate::archive::publish::Reason::Reboot,
             push_outcome,
             push_ref,
             preserved,
@@ -1465,6 +1466,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("messages").join("m1.txt"), "hello\n").unwrap();
         let ops = crate::archive::publish::Ops {
+            reason: crate::archive::publish::Reason::Reboot,
             push_outcome: "-",
             push_ref: "-",
             preserved: "-",

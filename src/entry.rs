@@ -244,6 +244,7 @@ Usage:
   ae list [--running|--all|--stopped|--needs-attn|--active] [--json]
                          List sessions (running by default). 'ae list --help' has the
                          full filter set and what --json carries
+  ae list --ended        Read archived incarnations (including marked reboot archives)
   ae next [--attach]     Name the top session needing attention (--attach jumps to it)
   ae brief [name] [--all] [--since <dur>] [--seat <agent>]
                          Card one session or the fleet: goal, the latest note per memo
@@ -348,6 +349,8 @@ pub const LIST_HELP: &str = r"Usage: ae list [--running | --all | --stopped | --
   --json       machine-readable digest (schema_version, per-session
                needs_attention + attention reason, per-agent state); honours
                the filters above.
+  --ended      separate read-only archive index: UUID, name, archived-at, reason,
+               work dir; cannot combine with live filters or --json.
 ";
 
 /// `ae status` — CUT, and the arm is the refusal.

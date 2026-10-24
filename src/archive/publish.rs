@@ -28,11 +28,28 @@ use crate::state::EXIT_FAILED;
 /// The operation facts the caller hands the publisher — everything the core
 /// does NOT derive itself.
 pub(crate) struct Ops<'a> {
+    pub(crate) reason: Reason,
     pub(crate) push_outcome: &'a str,
     pub(crate) push_ref: &'a str,
     pub(crate) preserved: &'a str,
     pub(crate) workdir: &'a str,
     pub(crate) archived_at: &'a str,
+}
+
+/// The operation that produced this immutable recovery point.
+#[derive(Clone, Copy)]
+pub(crate) enum Reason {
+    End,
+    Reboot,
+}
+
+impl Reason {
+    const fn text(self) -> &'static str {
+        match self {
+            Self::End => "end",
+            Self::Reboot => "reboot",
+        }
+    }
 }
 
 /// Acquire the three source locks in the one fixed global order and return the
@@ -180,6 +197,7 @@ pub(crate) fn run(
         id_origin: &id_origin,
         roster: &roster,
         vol: &vol,
+        reason: ops.reason,
     };
     publish_under_claim(&root, &target, dir, &facts, &before, out, err)
 }
@@ -280,6 +298,7 @@ fn publish_under_claim(
 /// The already-read, already-validated facts staging needs, grouped so the
 /// staging entry stays under clippy's argument limit.
 struct StagedFacts<'a> {
+    reason: Reason,
     meta_bytes: &'a [u8],
     memo_bytes: &'a [u8],
     event_bytes: &'a [u8],
@@ -313,6 +332,15 @@ fn stage_and_validate(
         .map_err(|why| format!("archive: could not write memo.tsv: {why}"))?;
     write_file_0600(&payload.join(super::store::EVENTS), facts.event_bytes)
         .map_err(|why| format!("archive: could not write events.jsonl: {why}"))?;
+    let (record, notes) = super::harness::from_meta(facts.meta_bytes, facts.aid);
+    for note in notes {
+        let _ = writeln!(err, "archive: note: {note}");
+    }
+    write_file_0600(
+        &payload.join(super::harness::FILE),
+        &super::harness::encode(&record),
+    )
+    .map_err(|why| format!("archive: could not write harness.tsv: {why}"))?;
 
     // Messages: NEVER follow a symlinked or non-directory messages/ root.
     let messages_src = dir.join("messages");
@@ -395,7 +423,9 @@ fn compose_meta(facts: &StagedFacts) -> String {
     let _ = writeln!(out, "archive_id={}", facts.aid);
     let _ = writeln!(out, "archive_id_origin={}", facts.id_origin);
     let _ = writeln!(out, "archived_at={}", facts.vol.archived_at);
+    let _ = writeln!(out, "reason={}", facts.reason.text());
     let _ = writeln!(out, "source_session={}", g("session"));
+    let _ = writeln!(out, "source_work_dir={}", or_dash(&g("work_dir")));
     let source_id = if facts.id_origin == "session" {
         g("session_id")
     } else {
@@ -640,7 +670,7 @@ fn stage_messages(src: &Path, dst: &Path, err: &mut impl Write) -> Result<(), St
 
 #[cfg(test)]
 mod equivalence_tests {
-    use super::{Ops, live_matches_existing_archive, run};
+    use super::{Ops, Reason, live_matches_existing_archive, run};
     use std::path::{Path, PathBuf};
 
     const AID: &str = "33333333-3333-3333-3333-333333333333";
@@ -684,6 +714,7 @@ mod equivalence_tests {
 
     fn publish(dir: &Path) -> u8 {
         let ops = Ops {
+            reason: Reason::End,
             push_outcome: "-",
             push_ref: "-",
             preserved: "-",

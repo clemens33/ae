@@ -106,7 +106,14 @@ pub(super) fn is_direct_child(root: &Path, cand: &Path) -> bool {
 /// archive id, the version, a named source session, and the three counts a
 /// human-edited pair would disagree on.
 fn reject_unknown_top_level(path: &Path) -> Result<(), String> {
-    let allowed = [META, "digest.md", MEMO, EVENTS, "messages"];
+    let allowed = [
+        META,
+        "digest.md",
+        MEMO,
+        EVENTS,
+        "messages",
+        super::harness::FILE,
+    ];
     let top = read_dir(path).map_err(|why| {
         format!(
             "archive: cannot enumerate '{}' ({why}) — refusing an incompletely-read tree.",
@@ -127,23 +134,15 @@ fn reject_unknown_top_level(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
-    let dir_mode =
-        symlink_meta(path).map_err(|why| format!("archive: staged tree unreadable: {why}"))?;
-    if dir_mode.file_type().is_symlink() || !dir_mode.is_dir() {
-        return Err(format!(
-            "archive: '{}' is not a real directory.",
-            path.display()
-        ));
-    }
-    check_mode(&dir_mode, 0o700)
-        .map_err(|m| format!("archive: payload has mode {m}, expected 700."))?;
-
-    reject_unknown_top_level(path)?;
-
-    for name in [META, "digest.md", MEMO, EVENTS] {
-        let meta =
-            symlink_meta(&path.join(name)).map_err(|_| format!("archive: '{name}' is missing."))?;
+fn validate_members(path: &Path) -> Result<(), String> {
+    for name in [META, "digest.md", MEMO, EVENTS, super::harness::FILE] {
+        let meta = match symlink_meta(&path.join(name)) {
+            Ok(meta) => meta,
+            Err(why) if name == super::harness::FILE && why.kind() == io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(why) => return Err(format!("archive: '{name}' is missing or unreadable: {why}")),
+        };
         if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(format!("archive: '{name}' is not a regular file."));
         }
@@ -159,6 +158,23 @@ pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
             ));
         }
     }
+    Ok(())
+}
+
+pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
+    let dir_mode =
+        symlink_meta(path).map_err(|why| format!("archive: staged tree unreadable: {why}"))?;
+    if dir_mode.file_type().is_symlink() || !dir_mode.is_dir() {
+        return Err(format!(
+            "archive: '{}' is not a real directory.",
+            path.display()
+        ));
+    }
+    check_mode(&dir_mode, 0o700)
+        .map_err(|m| format!("archive: payload has mode {m}, expected 700."))?;
+
+    reject_unknown_top_level(path)?;
+    validate_members(path)?;
     let msgs = path.join("messages");
     let msgs_meta =
         symlink_meta(&msgs).map_err(|_| "archive: 'messages/' is missing.".to_owned())?;

@@ -3851,6 +3851,7 @@ pub fn run_with(
         } => archive::publish::run(
             dir,
             &archive::publish::Ops {
+                reason: archive::publish::Reason::End,
                 push_outcome,
                 push_ref,
                 preserved,
@@ -3938,6 +3939,14 @@ pub fn run_with(
         cli::Request::NetProbe { host, port } => netprobe::run(host, *port, out, err)?,
         cli::Request::CompactMemoBaseline { dir } => compact::memo_baseline_step(dir, out)?,
         cli::Request::CompactFindOutstanding { dir } => compact::find_outstanding_step(dir, out)?,
+        cli::Request::ListEnded => {
+            if let Some(root) = state_root() {
+                archive::ended(&root, out, err)?
+            } else {
+                writeln!(err, "{NO_STATE_ROOT}")?;
+                state::EXIT_FAILED
+            }
+        }
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // The warning goes to STDERR and the table still prints.

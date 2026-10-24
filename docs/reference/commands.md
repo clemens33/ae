@@ -372,6 +372,23 @@ bulk of the list and just noise for monitoring. Flags:
 | `--active` | only running sessions with recent activity (an ae event within the fixed 300 seconds / 5 minutes); alias: `--busy` |
 | `--json` | machine-readable digest (honours the filters above) |
 
+`ae list --ended` reads the archive separately: UUID, name, archived-at, reason and
+source work directory, newest first. Reboot archives are marked `reboot`; older
+archives without those facts show `unknown`. An archived incarnation still
+registered as a session is hidden; reusing its name with a new UUID does not hide
+the old archive. An unreadable or ambiguous registration refuses the entire index.
+Claimed archives and links are skipped; invalid trees are named on stderr.
+`--ended` cannot combine with live filters or `--json`. These rows are never
+start/stop targets; continuing an archive still requires explicit `--from`.
+
+New archives carry an inert 0600 `harness.tsv`, separate from resume metadata.
+It records roster slots only (orphan harness-id rows without a seat are omitted),
+preserving profile, binary, account-home states and current/prior tool-tagged UUIDs.
+`--from` never opens this record. A damaged id is reported instead of guessed;
+records exceeding the bounded reader (1 MiB or 1024 slots) are archived whole,
+with a note that client-record purge cannot read them. Foreign-tool prior stores
+are unproved; agy currently resolves its store from HOME at purge time.
+
 `AE_LIST_ACTIVE_SECS` and `AE_ATTN_REQUEST_SECS` are not honoured: the core owns
 `list` with fixed 300-second activity and 1800-second unanswered defaults. Restoring
 operator overrides is a recorded follow-up.

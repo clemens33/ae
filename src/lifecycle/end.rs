@@ -1603,6 +1603,7 @@ fn archive_step(
             let aid = archive::canonical_uuid(&meta_value(&bytes, "session_id"));
             let archived_at = Timestamp::now().to_string();
             let ops = archive::publish::Ops {
+                reason: archive::publish::Reason::End,
                 push_outcome: &git.outcome,
                 push_ref: if git.push_ref.is_empty() {
                     "-"

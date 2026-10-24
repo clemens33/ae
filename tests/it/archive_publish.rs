@@ -151,7 +151,10 @@ fn publishes_a_complete_archive_and_prints_the_bash_diagnostic() {
     let fields: Vec<&str> = line.split('\t').collect();
     assert_eq!(fields.len(), 3, "three tab-separated fields: {line:?}");
     assert_eq!(fields[0], target.to_string_lossy(), "field 1 is the target");
-    assert_eq!(fields[1], "5", "five files");
+    assert_eq!(
+        fields[1], "6",
+        "six files: the five of today plus harness.tsv"
+    );
     assert!(fields[2].parse::<u64>().is_ok(), "byte count parses");
 
     // The payload set and its modes.
@@ -160,6 +163,7 @@ fn publishes_a_complete_archive_and_prints_the_bash_diagnostic() {
         ("digest.md", 0o600),
         ("memo.tsv", 0o600),
         ("events.jsonl", 0o600),
+        ("harness.tsv", 0o600),
         ("messages", 0o700),
         ("messages/r1.ask.txt", 0o600),
     ] {
@@ -176,6 +180,8 @@ fn publishes_a_complete_archive_and_prints_the_bash_diagnostic() {
     assert!(meta.contains("archive_version=1"));
     assert!(meta.contains("source_session=demo"));
     assert!(meta.contains(&format!("archived_at={AT}")));
+    let reasons: Vec<&str> = meta.lines().filter(|l| l.starts_with("reason=")).collect();
+    assert_eq!(reasons, ["reason=end"], "an end publish says so, once");
     // No claim was left behind.
     assert!(
         !scratch
