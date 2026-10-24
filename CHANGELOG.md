@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.136] - 2026-10-24
+- Guard role sessions against outside agent contact
+
 ## [v2026.10.135] - 2026-10-24
 - Record seat incarnations in tracked requests
 
