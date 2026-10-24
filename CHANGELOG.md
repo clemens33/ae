@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.127] - 2026-10-24
+- Use quota history for display pace
+
 ## [v2026.10.126] - 2026-10-24
 - Add help output to every session helper
 - Reserve journal actor names for new seats
