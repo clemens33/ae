@@ -20,6 +20,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::events::SessionKey;
 use crate::requests::{Key, Pin, Request, Status, is_slot, states};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::store;
@@ -311,23 +312,14 @@ pub fn asker_home(
 
 /// Where the reply goes, with the asker's session name and the id the record
 /// pins: a legacy asker by [`route`]; a pinned one in the session holding its
-/// id now — its slot's pane there, else its display name in that session.
-///
-/// # Errors
-///
-/// [`asker_home`]'s refusal line.
+/// id now — its slot's pane there, else its display name in that session. The
+/// home is the one lookup already proved by admission.
 fn destination(
     dir: &Path,
     request: &Request,
-    id: &str,
     own_session: &str,
-) -> Result<(String, String, String), String> {
-    let home = asker_home(request, id, |want| {
-        dir.parent().and_then(Path::parent).map_or_else(
-            || Ok(Vec::new()),
-            |root| crate::lifecycle::sessions_with_id(root, want),
-        )
-    })?;
+    home: Option<(String, String)>,
+) -> (String, String, String) {
     // The asker's panes are enumerated on THAT session's recorded tmux server —
     // the same door `tracked::resolve` uses — never the ambient one.
     let roster = |search: &str| {
@@ -335,7 +327,7 @@ fn destination(
             .ok()
             .and_then(|server| transport::observe_slots(&server, search))
     };
-    Ok(match home {
+    match home {
         None => (
             route(request, own_session, roster),
             key_text(&request.from_session),
@@ -354,7 +346,84 @@ fn destination(
             });
             (found, home, want)
         }
+    }
+}
+
+/// The historical lifetime gate owns the one home lookup consumed by routing.
+/// No launch token is compared: reseats and conversation moves keep the seat.
+fn lifetime_home(
+    dir: &Path,
+    request: &Request,
+    id: &str,
+    own_session: &str,
+    own_id: &str,
+    container: &[u8],
+) -> Result<Option<(String, String)>, String> {
+    let unproven = || "the asker could not be re-proven".to_owned();
+    let check = |bytes: &[u8], session| match request.lifetime_in(bytes, session) {
+        crate::requests::Lifetime::Live => Ok(()),
+        crate::requests::Lifetime::Retired(end) => Err(format!("the request's {end} retired")),
+        crate::requests::Lifetime::Unproven => Err(unproven()),
+    };
+    let home = asker_home(request, id, |want| {
+        dir.parent().and_then(Path::parent).map_or_else(
+            || Ok(Vec::new()),
+            |root| crate::lifecycle::sessions_with_id(root, want),
+        )
     })
+    .map_err(|why| {
+        format!(
+            "{} ({})",
+            unproven(),
+            why.strip_prefix("Error: ").unwrap_or(&why)
+        )
+    })?;
+    // Slotless/external senders keep their existing event-only/name arm.
+    if key_text(&request.from_slot).is_empty() {
+        check(container, SessionKey::new(own_session, own_id))?;
+        return Ok(home);
+    }
+    let legacy_session = key_text(&request.from_session);
+    let asker_session = home.as_ref().map_or_else(
+        || {
+            if legacy_session.is_empty() {
+                own_session
+            } else {
+                &legacy_session
+            }
+        },
+        |(session, _)| session.as_str(),
+    );
+    let asker_dir = if asker_session == own_session {
+        dir.to_path_buf()
+    } else {
+        tracked::participant_dir(dir, asker_session).map_err(|_| unproven())?
+    };
+    let asker_id = if asker_session == own_session {
+        own_id.to_owned()
+    } else {
+        crate::meta::session_id_in(&asker_dir)
+    };
+    if matches!(request.from_session_id.pin(), Pin::Id(want) if asker_id != want) {
+        return Err(unproven());
+    }
+    check(container, SessionKey::new(own_session, own_id))?;
+    if asker_dir != dir {
+        let store::SourceRead::Ready(bytes) = store::open(&asker_dir).events_source() else {
+            return Err(unproven());
+        };
+        check(&bytes, SessionKey::new(asker_session, &asker_id))?;
+    }
+    // Residual: retirement after this admission, during deliver's send-lock or
+    // quiet wait, needs the delivery-cut proof owner in the next slice.
+    Ok(home)
+}
+
+struct Admitted {
+    parsed: Parsed,
+    request: Request,
+    verified: Verified,
+    home: Option<(String, String)>,
 }
 
 /// The destination re-proved just before delivery: a pinned asker is its slot
@@ -386,7 +455,7 @@ fn admit(
     me: &Replier,
     own_session: &str,
     err: &mut impl Write,
-) -> io::Result<Result<(Parsed, Request, Verified), u8>> {
+) -> io::Result<Result<Admitted, u8>> {
     let Ok(parsed) = parse(tail) else {
         write!(err, "{USAGE}")?;
         return Ok(Err(EXIT_USAGE));
@@ -395,7 +464,24 @@ fn admit(
         write!(err, "{}", tracked::refusal(ACTION))?;
         return Ok(Err(EXIT_FAILED));
     }
-    let Some(request) = find(dir, &parsed.id) else {
+    let container = match store::open(dir).events_source() {
+        store::SourceRead::Ready(bytes) => bytes,
+        store::SourceRead::Absent => Vec::new(),
+        store::SourceRead::Invalid(_) | store::SourceRead::Unreadable(_) => {
+            writeln!(
+                err,
+                "ae: reply {} REFUSED — the request could not be re-proven; NOTHING was typed.",
+                parsed.id
+            )?;
+            return Ok(Err(EXIT_FAILED));
+        }
+    };
+    let own_id = crate::meta::session_id_in(dir);
+    let Some(request) =
+        crate::requests::states_in(&container, SessionKey::new(own_session, &own_id))
+            .into_iter()
+            .find(|request| request.id == parsed.id.as_bytes())
+    else {
         writeln!(
             err,
             "Error: request id '{}' not found in {}",
@@ -411,7 +497,26 @@ fn admit(
         me,
         own_session,
     ) {
-        Ok(verified) => Ok(Ok((parsed, request, verified))),
+        Ok(verified) => {
+            let home =
+                match lifetime_home(dir, &request, &parsed.id, own_session, &own_id, &container) {
+                    Ok(home) => home,
+                    Err(reason) => {
+                        writeln!(
+                            err,
+                            "ae: reply {} REFUSED — {reason}; NOTHING was typed.",
+                            parsed.id
+                        )?;
+                        return Ok(Err(EXIT_FAILED));
+                    }
+                };
+            Ok(Ok(Admitted {
+                parsed,
+                request,
+                verified,
+                home,
+            }))
+        }
         Err(line) => {
             writeln!(err, "{line}")?;
             Ok(Err(EXIT_FAILED))
@@ -468,7 +573,12 @@ pub fn run(
 ) -> io::Result<u8> {
     let mut me = Replier::from_observed(observed, own_session);
     me.session_id = tracked::routing_id(dir, &me.slot, &me.session, own_session);
-    let (parsed, request, verified) = match admit(dir, tail, &me, own_session, err)? {
+    let Admitted {
+        parsed,
+        request,
+        verified,
+        home,
+    } = match admit(dir, tail, &me, own_session, err)? {
         Ok(admitted) => admitted,
         Err(code) => return Ok(code),
     };
@@ -488,14 +598,7 @@ pub fn run(
     } else {
         verified.sender.clone()
     };
-    let (reply_target, target_session, target_id) =
-        match destination(dir, &request, &parsed.id, own_session) {
-            Ok(found) => found,
-            Err(line) => {
-                writeln!(err, "{line}")?;
-                return Ok(EXIT_FAILED);
-            }
-        };
+    let (reply_target, target_session, target_id) = destination(dir, &request, own_session, home);
     let target_slot = key_text(&request.from_slot);
     let mut fields = EventFields {
         actor_session_id: &me.session_id,
@@ -1332,9 +1435,20 @@ mod tests {
             std::fs::write(dir.join("meta"), meta).unwrap();
         }
         let row = pinned(value(ID_A), Key::Absent);
-        let from =
-            |own: &str| super::destination(&root.join("sessions").join(own), &row, "ae-1", own);
-        let home = |to: &str| Ok((to.to_owned(), "home".to_owned(), ID_A.to_owned()));
+        // The one lookup the reply makes, then the home it hands to routing.
+        let found = super::asker_home(&row, "ae-1", |want| {
+            crate::lifecycle::sessions_with_id(&root, want)
+        });
+        assert_eq!(found, Ok(Some(("home".to_owned(), ID_A.to_owned()))));
+        let from = |own: &str| {
+            super::destination(
+                &root.join("sessions").join(own),
+                &row,
+                own,
+                found.clone().unwrap(),
+            )
+        };
+        let home = |to: &str| (to.to_owned(), "home".to_owned(), ID_A.to_owned());
         assert_eq!(from("home"), home("cl:lead"));
         assert_eq!(from("s"), home("@home:cl:lead"));
         let _ = std::fs::remove_dir_all(&root);

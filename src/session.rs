@@ -1529,7 +1529,16 @@ pub(crate) fn retired(request: &Event, retire: &Event, session: SessionKey<'_>) 
     let judged_here = request
         .target_identity()
         .is_some_and(|target| session.holds(target));
-    judged_here && request.actor_identity().matches(retired)
+    judged_here && retired_asker(request, retire, session)
+}
+
+/// The actor-seat comparison, also used by reply's authoritative asker-ledger
+/// check. Unlike the inbox fold, that check can judge the caller's own ledger.
+pub(crate) fn retired_asker(request: &Event, retire: &Event, session: SessionKey<'_>) -> bool {
+    retire
+        .target_slot
+        .value()
+        .is_some_and(|slot| request.actor_identity().matches(session.seat(slot)))
 }
 
 /// Whether `cancel` withdraws `request` — its own asker, taking it back.

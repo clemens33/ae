@@ -123,6 +123,7 @@ mod reseat_headroom_spec;
 mod reseatround_spec;
 mod restore;
 mod restore_spec;
+mod retiredeliv_spec;
 mod run;
 mod sanitize;
 mod scratch;

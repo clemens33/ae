@@ -259,6 +259,14 @@ pub enum Status {
     Retired,
 }
 
+/// Reply admission's historical seat lifetime, independent of reply/cancel
+/// status: a follow-up must not cross a retirement either.
+pub(crate) enum Lifetime {
+    Live,
+    Retired(&'static str),
+    Unproven,
+}
+
 impl Status {
     /// The token the table prints.
     #[must_use]
@@ -273,6 +281,46 @@ impl Status {
 }
 
 impl Request {
+    /// Judge only retire records AFTER this same newest opening, in ledger
+    /// append order. The caller supplies the session owning this ledger.
+    /// A non-strict newest opening refuses unless an older strict opening of
+    /// the same id with equal kind/ts/actor/target precedes it (legacy unpinned
+    /// only); the retire scan then starts at that older opening (superset window).
+    pub(crate) fn lifetime_in(&self, container: &[u8], session: SessionKey<'_>) -> Lifetime {
+        let events = ledger_events(container);
+        let Some(at) = events.iter().rposition(|event| {
+            matches!(event.action.as_str(), "ask" | "review")
+                && event.reference.as_deref().map(str::as_bytes) == Some(self.id.as_slice())
+        }) else {
+            return Lifetime::Unproven;
+        };
+        let opening = &events[at];
+        if opening.action.as_bytes() != self.kind
+            || opening.ts.to_string().as_bytes() != self.at
+            || opening.actor_identity() != self.asker_identity()
+            || opening.target_identity() != Some(self.askee_identity())
+        {
+            return Lifetime::Unproven;
+        }
+        for retire in events[at + 1..]
+            .iter()
+            .filter(|event| event.action == "retire")
+        {
+            if crate::session::retired(opening, retire, session) {
+                let target_retired = retire.target_slot.value().is_some_and(|slot| {
+                    opening
+                        .target_identity()
+                        .is_some_and(|target| target.matches(session.seat(slot)))
+                });
+                return Lifetime::Retired(if target_retired { "target" } else { "asker" });
+            }
+            if crate::session::retired_asker(opening, retire, session) {
+                return Lifetime::Retired("asker");
+            }
+        }
+        Lifetime::Live
+    }
+
     /// Whether `mode` shows this row to `viewer`.
     #[must_use]
     pub fn shown_to(&self, mode: Mode, viewer: &Viewer) -> bool {
@@ -2158,5 +2206,48 @@ mod tests {
             !half[0].shown_to(Mode::Mine, &viewer),
             "half a key is not a:lead"
         );
+    }
+
+    /// Frozen #218 2a addendum: each non-`Live` arm of [`Request::lifetime_in`] and the mutant it kills.
+    mod lifetime_tests {
+        use crate::events::SessionKey;
+        use crate::requests::{Lifetime, Status, states_in};
+
+        const OPEN: &str = r#"{"ts":"2026-10-24T10:00:00Z","actor":"lead","action":"ask","target":"w","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":"spawned.0","target_session":"s","summary":"q"}"#;
+
+        /// The listed row's status, and how `lifetime_in` judges it against `ledger`.
+        fn judged(opening: &str, ledger: &str) -> (Status, &'static str) {
+            let key = SessionKey::named("s");
+            let rows = states_in(format!("{opening}\n").as_bytes(), key);
+            let row = rows.first().expect("fixture: one listed request");
+            let judged = match row.lifetime_in(format!("{ledger}\n").as_bytes(), key) {
+                Lifetime::Live => "live",
+                Lifetime::Retired(end) => end,
+                Lifetime::Unproven => "unproven",
+            };
+            (row.status, judged)
+        }
+
+        #[test]
+        fn only_the_same_strict_opening_is_ever_judged_live() {
+            assert_eq!(judged(OPEN, OPEN), (Status::Pending, "live"), "control");
+            // Kills `else { return Lifetime::Live }` on the opening lookup.
+            let other = OPEN.replace("\"r1\"", "\"r2\"");
+            assert_eq!(judged(OPEN, &other).1, "unproven", "other ref trusted");
+            // Each kills deleting its own operand of the four-fact comparison.
+            for (fact, from, to) in [
+                ("kind", "\"ask\"", "\"review\""),
+                ("ts", "10:00:00Z", "10:00:01Z"),
+                ("actor", "\"main\"", "\"spawned.1\""),
+                ("target", "\"spawned.0\"", "\"spawned.1\""),
+            ] {
+                let copy = OPEN.replace(from, to);
+                assert_ne!(copy, OPEN, "fixture: {fact} unchanged");
+                assert_eq!(judged(OPEN, &copy).1, "unproven", "{fact} mismatch trusted");
+            }
+            // Lead ruling I1: an opening that is not a strict event is listed but never trusted.
+            let loose = OPEN.replace("2026-10-24T10:00:00Z", "2026-10-24 10:00:00");
+            assert_eq!(judged(&loose, &loose), (Status::Pending, "unproven"));
+        }
     }
 }
