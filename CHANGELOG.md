@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.120] - 2026-10-24
+- Fix sleeper fixture child cleanup
+- Isolate mutation Cargo artifacts within lane scratch
+- Expose seat runtime and account coverage in JSON listings
+- Stabilize restore fixture crash
+
 ## [v2026.10.119] - 2026-10-23
 - Limit concurrent effort restart fixtures
 - Refresh bundled list prices to litellm 82a4ef40
