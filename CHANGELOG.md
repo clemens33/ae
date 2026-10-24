@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.130] - 2026-10-24
+- Hold session writers through End archive teardown
+
 ## [v2026.10.129] - 2026-10-24
 - Add cached Telegram quota command
 
