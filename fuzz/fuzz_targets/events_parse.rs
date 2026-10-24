@@ -22,4 +22,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(value) = ae::json::parse(&text) {
         let _ = std::hint::black_box(ae::events::Event::from_json(&value));
     }
+    // The request reader retains strict opening facts from these same
+    // hostile records, including optional launch keys and damaged rows.
+    let _ = std::hint::black_box(ae::requests::states(data));
 });

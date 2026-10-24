@@ -122,6 +122,8 @@ valid click.
 
 NOTE — production also emits `chat`, `focus`, `refused`, `delivery-failed` and `telegram_autostart_refused`, which carry no seeds: `from_json` never branches on `action`, so they add zero coverage to THIS target — but a future target driving `ref_meaning` or `alert_meaning` would need them.
 
+`events_parse` also drives `requests::states` over the hostile journal bytes. The `seat-launch-keys` seed carries both optional seat-incarnation fields; the strict event reader rejects duplicate or non-string launch keys and preserves absent versus empty values. Older cores treat the new keys as unknown data.
+
 ### The two R15 readers
 
 `sanitize_field` and `request_id_select` are the seat-compact verb's readers

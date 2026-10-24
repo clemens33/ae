@@ -109,6 +109,8 @@ Additive facts that prove a pane's session across servers and tmux incarnations.
 - `caller_matches_live` — is this record from the incarnation that is here NOW?
 - `caller_matches_recorded_target` — is the responder the incarnation this request opened against?
 
+Every `ask` / `review` also records `actor_launch_id` and `target_launch_id` when that endpoint has a seat token. Each token must be present and unchanged across delivery in the endpoint's UUID-matching meta; slotless actors and missing or damaged tokens get no guessed or empty key. The same opening line is mirrored. The strict reader retains absent, empty and valued tokens distinctly, rejects wrong types and duplicate keys, and older cores ignore these additive keys. This records seat incarnations; it does not yet restrict who may address an orchestrator.
+
 ### Body file
 
 `body_file` is the path of the text a delivery stored under the session's `messages/` (`<ref>.<action>.<6 hex>.txt`, mode 0600), when it stored one: a `send` / `ask` / `review` / `interrupt` delivery, and a `reply` to `console:local`, which keeps its whole body (at most 65536 bytes) there. A string key, policed for duplicates like every known key; an older core steps over it as unknown data and keeps the record, summary included. `ae chat` reads it by NAME from its own session's `messages/`, never through the recorded directory, a link or a separator, and a body it cannot read shows as a named gap beside the 600-character summary.

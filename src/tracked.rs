@@ -1369,7 +1369,7 @@ pub(crate) fn stamp_caller<'a>(
 /// ```
 #[must_use]
 pub fn event_line(fields: &EventFields<'_>) -> String {
-    render_event_line(fields, false, None)
+    render_event_line(fields, false, None, None)
 }
 
 /// Render a delivered event, retaining submit uncertainty as an additive record
@@ -1380,7 +1380,12 @@ pub(crate) fn delivery_event_line(
     verification: crate::deliver::DeliveryVerification,
     cross_session: bool,
 ) -> String {
-    render_event_line(fields, cross_session, verification.unverifiable_marker())
+    render_event_line(
+        fields,
+        cross_session,
+        verification.unverifiable_marker(),
+        None,
+    )
 }
 
 /// Render the common event shape, optionally carrying delivery and route facts.
@@ -1388,6 +1393,7 @@ fn render_event_line(
     fields: &EventFields<'_>,
     cross_session: bool,
     unverifiable: Option<&str>,
+    launches: Option<(&str, &str)>,
 ) -> String {
     let mut members = vec![("ts", Value::Str(fields.ts.to_string()))];
     if let Some(reason) = unverifiable {
@@ -1423,6 +1429,13 @@ fn render_event_line(
     }
     if cross_session {
         members.push(("cross_session", Value::Bool(true)));
+    }
+    if let Some((actor, target)) = launches {
+        for (key, value) in [("actor_launch_id", actor), ("target_launch_id", target)] {
+            if !value.is_empty() {
+                members.push((key, Value::Str(value.to_owned())));
+            }
+        }
     }
     let mut line = Value::obj(members).render();
     line.push('\n');
@@ -1463,7 +1476,7 @@ fn render_unconfirmed_event_line(fields: &EventFields<'_>, cross_session: bool) 
         summary: &summary,
         ..*fields
     };
-    render_event_line(&fields, cross_session, None)
+    render_event_line(&fields, cross_session, None, None)
 }
 
 /// Refuse a resolved target outside `caller_session` unless the caller supplied
@@ -1689,6 +1702,71 @@ fn unidentified(
     delivery_code(&delivery, &helper, action, err)
 }
 
+/// A missing, damaged or foreign incarnation never becomes a guessed stamp.
+fn launch_id_at(dir: &Path, slot: &str, session_id: &str) -> String {
+    if !is_slot(slot) || session_id.is_empty() {
+        return String::new();
+    }
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        return String::new();
+    };
+    if meta::sole_value(&bytes, "session_id") != Some(session_id.as_bytes()) {
+        return String::new();
+    }
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return String::new();
+    };
+    let parsed = meta::Meta::parse(text);
+    parsed.launch_id(slot).unwrap_or_default().to_owned()
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "event-only opening retains the same explicit helper inputs"
+)]
+fn record_external_opening(
+    kind: Kind,
+    dir: &Path,
+    sender: &Sender,
+    parsed: &Parsed,
+    own_session: &str,
+    now: Timestamp,
+    req_id: &str,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let action = kind.action();
+    let caller_session = sender_session(sender, own_session);
+    let caller_id = routing_id(dir, &sender.slot, caller_session, own_session);
+    let caller_dir = target_meta_dir(dir, caller_session, own_session);
+    let actor_launch = launch_id_at(&caller_dir, &sender.slot, &caller_id);
+    let line = render_event_line(
+        &EventFields {
+            actor_session_id: &caller_id,
+            ..EventFields::new(
+                now,
+                &sender.display,
+                action,
+                &parsed.target,
+                req_id,
+                &sender.slot,
+                caller_session,
+                "",
+                "",
+                &parsed.body,
+                "",
+            )
+        },
+        false,
+        None,
+        Some((&actor_launch, "")),
+    );
+    if let Err(why) = store::open(dir).append_event(&line) {
+        writeln!(err, "ae: {action} {req_id} not recorded: {why}")?;
+        return Ok(EXIT_FAILED);
+    }
+    Ok(0)
+}
+
 /// Run a tracked request end to end; a request it opens prints its id, as
 /// `opened` says.
 ///
@@ -1722,34 +1800,16 @@ pub fn run(
     let Some(sender) = sender else {
         return unidentified(dir, action, &parsed, out, err);
     };
-    let caller_session = sender_session(sender, own_session);
-    let caller_id = routing_id(dir, &sender.slot, caller_session, own_session);
     let req_id = request_id(kind.id_prefix(), now, entropy);
     if is_external(&parsed.target) {
-        // An event-only sink: emit and exit, pasting nothing and storing
-        // nothing.
-        let line = event_line(&EventFields {
-            actor_session_id: &caller_id,
-            ..EventFields::new(
-                now,
-                &sender.display,
-                action,
-                &parsed.target,
-                &req_id,
-                &sender.slot,
-                caller_session,
-                "",
-                "",
-                &parsed.body,
-                "",
-            )
-        });
-        if let Err(why) = store::open(dir).append_event(&line) {
-            writeln!(err, "ae: {action} {req_id} not recorded: {why}")?;
-            return Ok(EXIT_FAILED);
-        }
-        return opened(out, &req_id, 0);
+        let code =
+            record_external_opening(kind, dir, sender, &parsed, own_session, now, &req_id, err)?;
+        return opened(out, &req_id, code);
     }
+    let caller_session = sender_session(sender, own_session);
+    let caller_id = routing_id(dir, &sender.slot, caller_session, own_session);
+    let caller_dir = target_meta_dir(dir, caller_session, own_session);
+    let mut actor_launch = launch_id_at(&caller_dir, &sender.slot, &caller_id);
     let (resolved, server, cross_session) =
         match admitted_route(kind, dir, &parsed, sender, own_session, now, err)? {
             Ok(route) => route,
@@ -1791,10 +1851,17 @@ pub fn run(
     // means afterwards.
     let target_id = routing_id(dir, &resolved.slot, &resolved.session, own_session);
     let meta_dir = target_meta_dir(dir, &resolved.session, own_session);
+    let mut target_launch = launch_id_at(&meta_dir, &resolved.slot, &target_id);
     let (delivery, outcome) = across_cut(&server, &resolved.pane, &meta_dir, || {
         deliver_request(&request, err)
     });
     let delivery = delivery?;
+    if actor_launch != launch_id_at(&caller_dir, &sender.slot, &caller_id) {
+        actor_launch.clear();
+    }
+    if target_launch != launch_id_at(&meta_dir, &resolved.slot, &target_id) {
+        target_launch.clear();
+    }
     let fields = stamp_target(
         &EventFields {
             actor_session_id: &caller_id,
@@ -1819,7 +1886,14 @@ pub fn run(
         caller: caller_session,
         target: &resolved.session,
     });
-    let code = record_tracked_delivery(dir, &fields, delivery, cross, err)?;
+    let code = record_tracked_delivery_with_launches(
+        dir,
+        &fields,
+        delivery,
+        cross,
+        Some((&actor_launch, &target_launch)),
+        err,
+    )?;
     opened(out, &req_id, code)
 }
 
@@ -1842,6 +1916,17 @@ pub(crate) fn record_tracked_delivery(
     fields: &EventFields<'_>,
     delivery: Result<crate::deliver::Delivered, crate::deliver::Failure>,
     cross_session: Option<CrossSession<'_>>,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    record_tracked_delivery_with_launches(dir, fields, delivery, cross_session, None, err)
+}
+
+fn record_tracked_delivery_with_launches(
+    dir: &Path,
+    fields: &EventFields<'_>,
+    delivery: Result<crate::deliver::Delivered, crate::deliver::Failure>,
+    cross_session: Option<CrossSession<'_>>,
+    launches: Option<(&str, &str)>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let action = fields.action;
@@ -1878,13 +1963,16 @@ pub(crate) fn record_tracked_delivery(
         body_file: &body_file,
         ..*fields
     };
-    let line = if unconfirmed && cross_session.is_some() {
-        cross_session_unconfirmed_event_line(&fields)
-    } else if unconfirmed {
-        unconfirmed_event_line(&fields)
-    } else {
-        delivery_event_line(&fields, verification, cross_session.is_some())
-    };
+    let summary = unconfirmed.then(|| unconfirmed_summary(fields.summary));
+    let line = render_event_line(
+        &EventFields {
+            summary: summary.as_deref().unwrap_or(fields.summary),
+            ..fields
+        },
+        cross_session.is_some(),
+        verification.unverifiable_marker(),
+        launches,
+    );
     if let Err(why) = append_delivery_event(dir, &line, cross_session) {
         if unconfirmed {
             writeln!(
@@ -3848,5 +3936,68 @@ mod tests {
         for text in torn {
             assert_eq!(super::uncompose_ask(&text, id), None, "{text:?}");
         }
+    }
+
+    /// A seat token is stamped only from ONE meta naming the asked
+    /// `session_id` once, and only from the slot's own single row: every gap
+    /// or damage stamps nothing, never a guess. Wrong implementations caught,
+    /// one per row: no slot grammar, no id check, a first-of-two `session_id`
+    /// or `launch_id` row trusted, another slot's row taken, an empty row
+    /// stamped, a lossy decode of a non-UTF-8 meta.
+    #[test]
+    fn a_launch_stamp_comes_only_from_one_matching_meta_and_the_slots_own_row() {
+        let good = format!("session_id={UUID}\nlaunch_id.main=tok\n");
+        let cases = [
+            ("good", good.clone(), "main", UUID, "tok"),
+            (
+                "not a slot",
+                format!("session_id={UUID}\nlaunch_id.worker.0x=tok\n"),
+                "worker.0x",
+                UUID,
+                "",
+            ),
+            ("no id asked", good.clone(), "main", "", ""),
+            ("other id", good, "main", UUID_B, ""),
+            (
+                "id twice",
+                format!("session_id={UUID}\nsession_id={UUID}\nlaunch_id.main=tok\n"),
+                "main",
+                UUID,
+                "",
+            ),
+            (
+                "row twice",
+                format!("session_id={UUID}\nlaunch_id.main=tok\nlaunch_id.main=tok\n"),
+                "main",
+                UUID,
+                "",
+            ),
+            (
+                "other slot",
+                format!("session_id={UUID}\nlaunch_id.worker.0=tok\n"),
+                "main",
+                UUID,
+                "",
+            ),
+            (
+                "empty row",
+                format!("session_id={UUID}\nlaunch_id.main=\n"),
+                "main",
+                UUID,
+                "",
+            ),
+            ("no meta", String::new(), "main", UUID, ""),
+        ];
+        for (label, body, slot, id, want) in cases {
+            let dir = meta_dir(&format!("launch-{label}"), &body);
+            assert_eq!(super::launch_id_at(&dir, slot, id), want, "{label}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        let dir = meta_dir("launch-bytes", "");
+        let mut bytes = format!("session_id={UUID}\nlaunch_id.main=tok\n").into_bytes();
+        bytes.extend_from_slice(b"note=\xff\n");
+        std::fs::write(dir.join("meta"), bytes).expect("meta");
+        assert_eq!(super::launch_id_at(&dir, "main", UUID), "", "non-UTF-8");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

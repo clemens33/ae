@@ -59,6 +59,10 @@ pub struct Event {
     pub actor_session_id: RoutingMember,
     /// The recipient's session `session_id`.
     pub target_session_id: RoutingMember,
+    /// The opening sender's seat incarnation, absent on legacy records.
+    pub actor_launch_id: RoutingMember,
+    /// The opening recipient's seat incarnation, absent on legacy records.
+    pub target_launch_id: RoutingMember,
     /// Whether this event was mirrored across two ae sessions.
     pub cross_session: bool,
     /// Canonical socket path of the admitted target server.
@@ -471,6 +475,8 @@ impl Event {
             target_session: RoutingMember::read(value, "target_session")?,
             actor_session_id: RoutingMember::read(value, "actor_session_id")?,
             target_session_id: RoutingMember::read(value, "target_session_id")?,
+            actor_launch_id: RoutingMember::read(value, "actor_launch_id")?,
+            target_launch_id: RoutingMember::read(value, "target_launch_id")?,
             cross_session: optional_bool(value, "cross_session")?,
             target_server: optional(value, "target_server")?,
             target_pane: optional(value, "target_pane")?,
@@ -663,7 +669,7 @@ pub(crate) fn is_session_id(text: &str) -> bool {
 }
 
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 21] = [
+const KNOWN_KEYS: [&str; 23] = [
     "ts",
     "actor",
     "action",
@@ -685,6 +691,8 @@ const KNOWN_KEYS: [&str; 21] = [
     "caller_session_uuid",
     "identity_gap",
     "body_file",
+    "actor_launch_id",
+    "target_launch_id",
 ];
 
 /// Refuse a record that names any KNOWN key twice.
@@ -1627,7 +1635,7 @@ mod tests {
 
     /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 21] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 23] = [
         "ts",
         "actor",
         "action",
@@ -1649,6 +1657,8 @@ mod tests {
         "caller_session_uuid",
         "identity_gap",
         "body_file",
+        "actor_launch_id",
+        "target_launch_id",
     ];
 
     #[test]
