@@ -413,6 +413,7 @@ struct Attempts {
 #[derive(Debug)]
 pub struct Inbox {
     state: PathBuf,
+    quota: Option<(PathBuf, PathBuf, PathBuf)>,
     knobs: Knobs,
     failures: u32,
     attempts: Option<Attempts>,
@@ -421,11 +422,19 @@ pub struct Inbox {
 }
 
 impl Inbox {
+    /// Bind the operator home, selected config and state root for stored quota reads.
+    #[must_use]
+    pub fn with_quota(mut self, home: PathBuf, config: PathBuf, ae_home: PathBuf) -> Self {
+        self.quota = Some((home, config, ae_home));
+        self
+    }
+
     /// Bind an inbox to the machine-global telegram state directory.
     #[must_use]
     pub fn new(state: impl Into<PathBuf>, knobs: Knobs) -> Self {
         Self {
             state: state.into(),
+            quota: None,
             knobs,
             failures: 0,
             attempts: None,
@@ -591,7 +600,7 @@ impl Inbox {
             date: message.date,
             from_id: message.from_id.clone(),
         };
-        self.execute(route, &origin, send, chat)
+        self.execute(route, &origin, send, chat, now)
     }
 
     /// Perform one decided route.
@@ -601,8 +610,27 @@ impl Inbox {
         origin: &Origin,
         send: &dyn Submit,
         chat: &dyn Chat,
+        now: i64,
     ) -> Handled {
         match route {
+            Route::Quota => {
+                let text = self.quota.as_ref().map_or_else(
+                    || "quota: unavailable".to_owned(),
+                    |(home, config, ae_home)| {
+                        let sessions = ae_home.join("sessions");
+                        let inputs = crate::quota::Inputs {
+                            home: Some(home),
+                            global: Some(config),
+                            local: None,
+                            sessions: Some(&sessions),
+                            now,
+                        };
+                        routing::render_quota(&crate::quota::view_stored(&inputs))
+                    },
+                );
+                chat.say(&text);
+                Handled::Routed
+            }
             Route::Answer(text) => {
                 chat.say(&text);
                 Handled::Routed
@@ -762,6 +790,10 @@ impl World for Vec<RunningSession> {
 }
 
 #[cfg(test)]
+#[path = "../../tests/it/tgquota_spec.rs"]
+mod tgquota_spec;
+
+#[cfg(test)]
 mod tests {
     #![allow(
         clippy::disallowed_methods,
@@ -786,7 +818,7 @@ mod tests {
     const CHAT_ID: &str = CHAT;
     const SENDER: &str = "42";
 
-    fn temp(tag: &str) -> PathBuf {
+    pub(super) fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ae-tg-inbound-{tag}-{}-{:?}",
             std::process::id(),
@@ -798,11 +830,11 @@ mod tests {
         dir
     }
 
-    fn policy() -> Policy {
+    pub(super) fn policy() -> Policy {
         Policy::new(CHAT_ID, vec![SENDER.to_owned()])
     }
 
-    fn message(text: &str) -> Message {
+    pub(super) fn message(text: &str) -> Message {
         Message {
             from_id: SENDER.to_owned(),
             chat_id: CHAT_ID.to_owned(),
@@ -813,11 +845,11 @@ mod tests {
         }
     }
 
-    struct Recorder {
+    pub(super) struct Recorder {
         /// Each ask: the chat's directory, the seat named (empty for the
         /// chat's router), the text and the request id.
-        delivered: Mutex<Vec<(PathBuf, String, String, String)>>,
-        said: Mutex<Vec<String>>,
+        pub(super) delivered: Mutex<Vec<(PathBuf, String, String, String)>>,
+        pub(super) said: Mutex<Vec<String>>,
         /// `None` delivers; `Some(refusal)` refuses with that classification.
         refuse: Option<Refusal>,
         /// What the chat platform answers for a CONFIRMED message.

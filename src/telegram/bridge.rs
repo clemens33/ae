@@ -401,7 +401,11 @@ fn spawn_inbound(
         stale_before: relay.since,
         ..knobs.inbound
     };
-    let mut inbox = Inbox::new(paths.state(), inbound);
+    let mut inbox = Inbox::new(paths.state(), inbound).with_quota(
+        paths.home.clone(),
+        paths.config.clone(),
+        paths.ae_home.clone(),
+    );
     let machine = Machine::under(paths.roots());
     let chat_submit = SharedChat {
         root: paths.ae_home.clone(),
@@ -501,8 +505,9 @@ fn pump(
 
 /// The slash commands the chat's `/` menu offers, and the whole of what
 /// [`register_commands`] publishes.
-const MENU: [(&str, &str); 4] = [
+const MENU: [(&str, &str); 5] = [
     ("list", "Running sessions and their agents"),
+    ("quota", "Cached quota by account"),
     (
         "use",
         "Pin plain messages to one agent (/use clear to unpin)",
@@ -923,16 +928,16 @@ mod tests {
             "the startup call must be setMyCommands: {:?}",
             seen[0].path
         );
-        // The four commands the reference documents, and no fifth: a menu entry
+        // The five commands the router implements, and no sixth: a menu entry
         // the router does not implement is a promise the chat cannot keep.
-        for command in ["list", "use", "session", "help"] {
+        for command in ["list", "use", "session", "quota", "help"] {
             assert!(
                 seen[0].body.contains(&format!(r#""command":"{command}""#)),
                 "{command} missing from the registered menu: {}",
                 seen[0].body
             );
         }
-        assert_eq!(super::MENU.len(), 4);
+        assert_eq!(super::MENU.len(), 5);
 
         let logged = String::from_utf8(err).unwrap();
         assert!(

@@ -2526,6 +2526,22 @@ pub(crate) fn view_cached(inputs: &Inputs<'_>, cache: &mut AgyCache) -> Vec<view
     compose(inputs, scopes, &legs, shown, &mut HistoryCache::default())
 }
 
+/// Stored evidence only: never asks a vendor. agy answers live in another process,
+/// so their absence here is not an in-flight ask or a failed PATH probe.
+pub(crate) fn view_stored(inputs: &Inputs<'_>) -> Vec<view::Scope> {
+    let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
+        return view::unavailable();
+    };
+    let scopes = configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs));
+    let legs = agy_legs(&scopes);
+    let shown = Some((
+        vec![placeholder(Status::Unknown)],
+        Some("not checked — this view never refreshes".to_owned()),
+        None,
+    ));
+    compose(inputs, scopes, &legs, shown, &mut HistoryCache::default())
+}
+
 /// [`view_cached`] that never runs the leg: the agy scopes show what `cache` holds, or the
 /// asking words. `flying` says an ask is already out; the home returned is the one a new
 /// ask is due for, which the caller runs off its own thread and settles into `cache`.

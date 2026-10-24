@@ -76,6 +76,7 @@ Every message is asked in **one session's shared chat** — admitted, capped at 
 ```
 /help                                       show this list
 /list                                       running sessions: name, session_id[:8], last activity
+/quota                                      cached quota by account, with resets and freshness
 /use <name|id-prefix> [seat]                select a session for plain messages
 /use                                        show the selection
 /use clear                                  drop the selection
@@ -88,7 +89,9 @@ Every message is asked in **one session's shared chat** — admitted, capped at 
 - `[seat]` must be one of the session's **lead pair** (`lead` or `claude:lead` alike); a worker is refused. With no seat the chat's own router chooses between the lead pair, as it does for a line typed in the chat.
 - An ask is recorded as the chat's own (`human:chat` on screen), so the seat answers it with the reply command it carries, and that answer is forwarded back here.
 
-**Command menu.** When inbound is enabled, the daemon registers the slash commands (`/list`, `/use`, `/session`, `/help`) with Telegram (`setMyCommands`) on startup, so they show up in the chat's `/` menu — no need to memorise the grammar. Best-effort: a registration failure is logged and ignored.
+**Command menu.** When inbound is enabled, the daemon registers the slash commands (`/list`, `/quota`, `/use`, `/session`, `/help`) with Telegram (`setMyCommands`) on startup, so they show up in the chat's `/` menu — no need to memorise the grammar. Best-effort: a registration failure is logged and ignored.
+
+`/quota` answers from locally held evidence, with effective usage, each window's reset and observation age, and stale or limit notes. It never refreshes vendor quota or calls a model. agy says `not checked`: asking it runs the agy CLI, which this view never does. Long replies end with the number of scopes not shown in full.
 
 **Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) only *after* an update is durably handled. Each ask's request id is derived from its Telegram update, so an update replayed after a crash finds its recorded ask and is not asked again. An authorized target that stays undeliverable gets a bounded give-up: after a bounded number of retries the daemon sends the text back to the chat and, *only once Telegram accepts that notice*, advances — so one dead pane can't stall the queue, and nothing is dropped without a delivered notice. Delivery is at least once, never exactly once; the windows that can repeat one message are listed in [the chat's Telegram section](../chat.md#telegram).
 

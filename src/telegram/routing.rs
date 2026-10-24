@@ -180,6 +180,8 @@ pub enum Route {
     },
     /// Clear the selection (`/use clear`).
     Unuse,
+    /// Read the explicitly bound quota stores; the decision itself does no I/O.
+    Quota,
     /// Answer the chat and change nothing else.
     Answer(String),
 }
@@ -219,6 +221,7 @@ pub fn decide(
     match command {
         "/help" | "" => Route::Answer(HELP.to_owned()),
         "/list" => Route::Answer(render_list(sessions, now)),
+        "/quota" => Route::Quota,
         "/use" => use_route(rest, sessions, sticky),
         "/session" => session_route(rest, sessions),
         other if other.starts_with('/') => {
@@ -235,6 +238,7 @@ const HELP: &str = "ae telegram — each message is asked in a session's shared 
      • @session <msg> (or @session:seat <msg>) → ask that session's chat once.\n\
      • Reply to any forwarded message → asks the chat it came from.\n\
      /list\n\
+     /quota — cached quota by account\n\
      /session <name|id-prefix> ask <seat> <msg>";
 
 /// What a plain message with nowhere to go is answered.
@@ -472,6 +476,99 @@ fn split_word(text: &str) -> (&str, &str) {
     match text.find(char::is_whitespace) {
         Some(at) => (&text[..at], text[at..].trim_start()),
         None => (text, ""),
+    }
+}
+
+/// Plain phone-sized quota blocks. Every field passes through the terminal text
+/// owner, and the reply reserves space for a counted omission before each block.
+#[must_use]
+pub fn render_quota(scopes: &[crate::quota::view::Scope]) -> String {
+    let mut text = "Quota · cached only".to_owned();
+    for (index, scope) in scopes.iter().enumerate() {
+        let mut block = QuotaBlock::default();
+        block.push("\n\n");
+        block.push(&scope.title);
+        for fact in [&scope.account, &scope.only].into_iter().flatten() {
+            block.push("\n");
+            block.push(fact);
+        }
+        for window in &scope.windows {
+            block.push("\n");
+            block.push(&window.name);
+            block.push(": ");
+            block.push(
+                window
+                    .counts
+                    .as_deref()
+                    .or(window.raw.as_deref())
+                    .unwrap_or("?"),
+            );
+            if window.counts.is_some() || window.raw.is_some() {
+                block.push(" effective used");
+            }
+            let note = crate::quota::view::note(window, true);
+            if !note.is_empty() {
+                block.push(" · ");
+                block.push(&note);
+            }
+            block.push("\nreset in ");
+            block.push(window.resets.as_deref().unwrap_or("?"));
+            block.push(" · seen ");
+            block.push(window.seen.as_deref().unwrap_or("?"));
+            if window.seen.is_some() && !window.stale {
+                block.push(" ago · fresh");
+            }
+            if block.cut {
+                break;
+            }
+        }
+        let remaining = scopes.len() - index;
+        let reserve = if remaining > 1 {
+            1 + quota_marker(remaining - 1).len()
+        } else {
+            0
+        };
+        if !block.cut && text.len() + block.text.len() + reserve <= QUOTA_BYTES {
+            text.push_str(&block.text);
+        } else {
+            let marker = quota_marker(remaining);
+            let room = QUOTA_BYTES.saturating_sub(text.len() + marker.len() + 1);
+            let end = block.text.floor_char_boundary(room);
+            text.push_str(&block.text[..end]);
+            text.push('\n');
+            text.push_str(&marker);
+            break;
+        }
+    }
+    text
+}
+
+const QUOTA_BYTES: usize = 3900;
+
+fn quota_marker(count: usize) -> String {
+    let noun = if count == 1 { "scope" } else { "scopes" };
+    format!("…({count} {noun} not shown in full; run ae quota)")
+}
+
+/// Retain only enough of one block to decide whether it fits. Neutralisation can
+/// expand a control scalar; cap after it as well, always at scalar boundaries.
+#[derive(Default)]
+struct QuotaBlock {
+    text: String,
+    cut: bool,
+}
+
+impl QuotaBlock {
+    fn push(&mut self, value: &str) {
+        if self.cut {
+            return;
+        }
+        let room = (QUOTA_BYTES + 1).saturating_sub(self.text.len());
+        let prefix = value.floor_char_boundary(room);
+        let clean = crate::board::terminal_text(&value[..prefix]).replace('\t', " ");
+        let end = clean.floor_char_boundary(room);
+        self.text.push_str(&clean[..end]);
+        self.cut = prefix < value.len() || end < clean.len();
     }
 }
 

@@ -147,7 +147,7 @@ fn is_calm(window: &Window) -> bool {
     matches!(window.level, Level::Headroom) && !window.stale && window.raw.is_some()
 }
 
-fn note(window: &Window, long: bool) -> String {
+pub(crate) fn note(window: &Window, long: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     match window.level {
         Level::Headroom => {}
