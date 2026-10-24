@@ -310,6 +310,13 @@ fn command_for<A: AsRef<std::ffi::OsStr>>(
     command
 }
 
+/// The children [`spawn`] starts are observed by tests alone.
+#[cfg(not(test))]
+fn note_spawn<'a>(_: &std::ffi::OsStr, _: impl Iterator<Item = &'a std::ffi::OsStr>) {}
+
+#[cfg(test)]
+pub(crate) use tests::{note_spawn, spawns_during};
+
 /// Run `program` with `args`; report whether it succeeded, and what it printed.
 fn spawn<A: AsRef<std::ffi::OsStr>>(
     program: &str,
@@ -319,6 +326,7 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     feed: Option<&[u8]>,
 ) -> Option<std::process::Output> {
     let mut command = command_for(program, args, envs, declares_utf8(program, streams));
+    note_spawn(command.get_program(), command.get_args());
     if matches!(streams, Streams::InheritStderr) {
         command.stderr(std::process::Stdio::inherit());
     }
@@ -2169,6 +2177,43 @@ pub(crate) fn spawn_detached(
 
 #[cfg(test)]
 mod tests {
+    thread_local! {
+        static SPAWNS: std::cell::RefCell<Option<Vec<Vec<String>>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Record one child [`super::spawn`] is about to start, its built argv
+    /// (`-u` included), when this thread is inside [`spawns_during`].
+    pub(crate) fn note_spawn<'a>(
+        program: &std::ffi::OsStr,
+        args: impl Iterator<Item = &'a std::ffi::OsStr>,
+    ) {
+        SPAWNS.with(|seen| {
+            if let Some(seen) = seen.borrow_mut().as_mut() {
+                let mut words = vec![program.to_string_lossy().into_owned()];
+                words.extend(args.map(|arg| arg.to_string_lossy().into_owned()));
+                seen.push(words);
+            }
+        });
+    }
+
+    /// Run `body`, returning what it returned and every child this thread's
+    /// [`super::spawn`] started meanwhile. Observes only: nothing is replaced.
+    pub(crate) fn spawns_during<T>(body: impl FnOnce() -> T) -> (T, Vec<Vec<String>>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                SPAWNS.with(|seen| seen.borrow_mut().take());
+            }
+        }
+        SPAWNS.with(|seen| *seen.borrow_mut() = Some(Vec::new()));
+        let reset = Reset;
+        let out = body();
+        let seen = SPAWNS.with(|seen| seen.borrow_mut().take().unwrap_or_default());
+        drop(reset);
+        (out, seen)
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn clipboard_mac_no_image_discards_script_output_and_returns_empty_success() {

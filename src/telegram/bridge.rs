@@ -221,6 +221,39 @@ impl World for Machine {
     }
 }
 
+/// Outbound discovery needs identities, not the journal-derived `/list` ages.
+/// Liveness is shared per typed server within this pass, never across passes.
+struct ForwardingMachine {
+    roots: Roots,
+}
+
+impl World for ForwardingMachine {
+    fn running(&self) -> Vec<RunningSession> {
+        // Use the same meta reader as Machine, including its symlink verdict.
+        let scan = inventory::durable_records_with(&self.roots, &mut |dir| {
+            crate::session::RecordSnapshot::read_meta_only(dir)
+        });
+        let mut servers = BTreeMap::new();
+        scan.records
+            .iter()
+            .filter_map(|record| {
+                let selector = record.server.entitles()?;
+                let names = servers
+                    .entry(selector.clone())
+                    .or_insert_with(|| {
+                        transport::session_names(&ServerId::Selected(selector.clone()))
+                    })
+                    .as_ref()?;
+                if !names.contains(&record.name) {
+                    return None;
+                }
+                let bytes = meta::read_bytes(&record.path).ok()?;
+                Some(session_facts(&record.name, &record.path, &bytes, None))
+            })
+            .collect()
+    }
+}
+
 /// One running session, assembled from the meta bytes that were just read.
 fn session_facts(name: &str, dir: &Path, bytes: &[u8], last_active: Option<i64>) -> RunningSession {
     let meta = Meta::parse(&String::from_utf8_lossy(bytes));
@@ -422,7 +455,9 @@ fn pump(
     // Keyed by state directory, so each session's cursor and scan position
     // survive between passes.
     let mut bridges: BTreeMap<PathBuf, Outbound> = BTreeMap::new();
-    let machine = Machine::under(paths.roots());
+    let machine = ForwardingMachine {
+        roots: paths.roots(),
+    };
     let mut told = false;
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -595,6 +630,10 @@ fn sleep_until(stop: &AtomicBool, total: Duration) {
         left -= slice;
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/it/bridgecpu_spec.rs"]
+mod bridgecpu_spec;
 
 #[cfg(test)]
 mod tests {
