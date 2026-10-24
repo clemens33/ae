@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.135] - 2026-10-24
+- Record seat incarnations in tracked requests
+
 ## [v2026.10.134] - 2026-10-24
 - Show live seats by account in quota settings
 
