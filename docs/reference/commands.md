@@ -1208,8 +1208,10 @@ is 2.4 judged percentage points per hour, empty in about 2 h 10 min, and `!` mea
 `RESETS`. That is a forecast, never a stop: it steers new work (lower effort, an account with more
 `EFFECTIVE` headroom), and only an exhausted, blocked or spend-capped window or a vendor usage
 limit removes a scope now. `<2.0%/h` is a bound: the window moved less than 2 points over the span,
-too little to state a rate or an ETA. `unknown` is a trusted row whose history is too short (a window needs a
-span of a third of its lookback: a fifth of the window, 30 min to 12 h). `-` is no verdict, and
+too little to state a rate or an ETA. `unknown` is a trusted row whose history is too short.
+Maturity is a third of the legacy lookback (a fifth of the window, clamped to
+30 min through 12 h), even when stored history extends the measured span.
+`-` is no verdict, and
 means one of: the row is not trusted (`unknown`, expired or clock-skewed; a `stale` row up to an
 hour old IS trusted), no reusable local history (agy) or no quota (opencode, muse, gemini, or a
 grok whose log holds no usable window), the account
@@ -1220,10 +1222,23 @@ a rollout the table does not show.
 Both ends of the span are judged under the CURRENT policy, so `manual_resets = n` spreads the
 usage over `1 + n` windows exactly as `EFFECTIVE` does and the ETA is the time to exhaust ALL
 declared capacity: `!` is then rare by design. Only the same window instance counts (a window
-reset restarts the span; a drop of half a point or less is vendor rounding). Codex history comes
-from the same 256 KiB rollout tail, at most 32 spaced readings per window; Claude keeps one
-reading, so its `PACE` is `unknown` until a persisted history exists. A burst can over-extrapolate
-a weekly ETA: read it as a trend, not a promise.
+reset restarts the span). Codex rollout history comes from the same 256 KiB tail,
+at most 32 spaced readings per window. With no stored history it retains the
+12-hour lookback and half-point rounding rule.
+
+Stored [quota history](../quota-history.md) joins those rollout points and gives
+Claude a PACE once enough samples exist. One matching stored point enables a
+lookback of a fifth of the window, clamped to 30 minutes through seven days:
+weekly history reaches 33 h 36 min, while its required maturity remains four
+hours. The combined run restarts when a reset timestamp is more than 120 seconds
+from the displayed endpoint's, or on a consecutive drop greater than two points,
+with a small allowance for floating point roundoff.
+Policy changes do not split it: both raw ends use the current policy. Its oldest
+eligible point and exact displayed endpoint survive thinning to at most 32
+points. That first stored point can therefore change a rollout's rate. Missing
+or short history still says `unknown`; a burst can over-extrapolate a weekly
+ETA, so read it as a trend, not a promise. The app holds stored evidence for up
+to 60 seconds; quota decisions and current row trust do not use that cache.
 
 At most three Codex rollout groups appear per scope, newest record observation first. A summary
 line counts hidden rollouts and reports the oldest known record observation among parsed hidden

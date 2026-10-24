@@ -2017,6 +2017,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         "src/quota/machine.rs",
         "src/quota/history.rs",
         "src/quota/history/store.rs",
+        "src/quota/pace_history_spec.rs",
         "src/watchdog_daemon.rs",
         "tests/it/quota.rs",
     ] {
@@ -2043,7 +2044,9 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     // `history.rs` the twelfth, a pure wire grammar and fold with its own
     // policy facts record that builds no level, reading or quota policy;
     // `history/store.rs` the thirteenth, bounded history file I/O that builds
-    // none of those quota values). Two
+    // none of those quota values; `pace_history_spec.rs` the fourteenth, the
+    // frozen #243 P2 acceptance spec of the history-fed PACE, a test-only
+    // module that builds no policy, level or reading). Two
     // descendants it cannot see: a module written INLINE inside
     // `src/quota.rs`, because the owner file is skipped whole, and a
     // `#[path]`-attributed module whose file lives outside this directory, which is scanned with the Outside needles and
@@ -2053,7 +2056,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         seen.iter()
             .filter(|name| name.starts_with("src/quota/"))
             .count(),
-        13,
+        14,
         "the quota directory gained or lost a file, and each one needs the \
          child scan: {seen:?}"
     );

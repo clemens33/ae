@@ -5,7 +5,8 @@ Each session's watchdog appends evidence under its own
 date. The existing quota cadence controls writes: quota off or a zero cadence
 writes nothing. A recovery refresh writes too when the cadence is enabled;
 it may share a collection timestamp with the normal pass in that cycle.
-History does not change quota output, advisories, checkpoint asks or PACE.
+History supplies display PACE; advisories and checkpoint asks use current quota
+facts and do not read history.
 
 The directory is 0700; date files and the nonblocking `.lock` are 0600. Broader
 existing permissions refuse access. A failure leaves quota accounting running
@@ -79,3 +80,43 @@ Links, nonregular, oversized and unreadable files refuse per file. File opens us
 no-follow flags and verify held/name inode identity. As with other local state
 doors, a same-user swap of a parent directory during access remains outside that
 proof; history is bounded evidence, not an adversarial-user audit log.
+
+## PACE from stored samples
+
+`ae quota`, `ae quota --profiles` and the quota dialog join raw samples by tool,
+canonical source, account home, bucket, qualifier and window length. Claude gains
+a rate once its watchdogs have collected enough history. Collection gaps can
+leave PACE unknown; the reader never invents missing observations or replaces
+the displayed endpoint.
+
+Stored samples join existing rollout points. With any matching stored point at
+or before the displayed observation, the union looks back a fifth of the window,
+clamped to 30 minutes through seven days (33 h 36 min for a weekly window).
+Maturity stays at the existing threshold: four hours for weekly, 20 minutes for
+a five-hour window. A reset timestamp more than 120 seconds from the displayed
+endpoint's resets the run, using the same instance tolerance as rollout PACE;
+nearby timestamps never chain that tolerance. Consecutive drops greater than
+2.0 percentage points (plus 1e-9 roundoff allowance) also restart the run.
+Different sources and accounts never join. Policy segment annotations in
+the history report remain data: PACE ignores them because both raw endpoints
+are judged under the current policy, including manual resets and credits.
+Rollout evidence still comes from the reader's already spaced tail; a boundary
+missing from those retained rollout points cannot be recovered by the union.
+
+After run and lookback filtering, selection keeps the oldest eligible point,
+the exact displayed endpoint and at most 30 interior points. Interior spacing
+is at least the greater of five minutes and lookback / 32; the two endpoints
+are exempt from neighbour spacing. Repeated producers never add usage. Stored
+points at or after the displayed timestamp cannot displace its value.
+
+Without matching stored evidence, rollout PACE retains its existing 12-hour
+lookback and 0.5-point rounding rule. The first matching stored point switches
+that window to the union rule, so its displayed rate can change at upgrade.
+USED, OBSERVED, status and current quota decisions remain unchanged.
+
+A command or one-shot dialog reads the bounded fleet once. The app Reader holds
+compact raw history for 60 seconds across its settings refreshes, including
+empty and failed reads; a different canonical state root or backward clock
+forces a new read. This adds at most 60 seconds of stored-evidence lag. Current
+row trust and policy are judged on every render. Workload and aligned rows are
+discarded from this cache; no two-second watchdog accounting tick reads history.

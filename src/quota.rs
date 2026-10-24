@@ -18,6 +18,10 @@ pub mod muse;
 mod pace;
 pub mod view;
 
+#[cfg(test)]
+#[path = "quota/pace_history_spec.rs"]
+mod pace_history_spec;
+
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
@@ -798,11 +802,12 @@ pub fn run_profiles(
     };
     let mut budget = Budget::local(QUOTA_MAX_BYTES);
     let audit = crate::usage::profile_seats(inputs, transcript_bytes, &mut budget);
-    let (observation, series) = observe_scopes_budget(
+    let (observation, mut series) = observe_scopes_budget(
         inputs,
         configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs)),
         &mut Budget::local(QUOTA_MAX_BYTES),
     );
+    HistoryCache::default().extend(inputs, &observation.groups, &mut series);
     let pace = pace::PaceTable::build(&observation.groups, &series, inputs.now);
     let mut tables = Vec::new();
     for (name, _) in &cfg.profiles {
@@ -2461,6 +2466,42 @@ impl Default for AgyCache {
     }
 }
 
+/// Display-only history, independent of the agy answer's five-minute TTL. The
+/// app Reader owns one cache; one-shot dialogs and commands own a fresh one.
+#[derive(Debug, Default)]
+pub(crate) struct HistoryCache {
+    held: Option<(Option<PathBuf>, i64, pace::HistorySet)>,
+}
+
+impl HistoryCache {
+    fn extend(&mut self, inputs: &Inputs<'_>, groups: &[Group], series: &mut pace::SeriesSet) {
+        let root = inputs
+            .state_root()
+            .and_then(|root| canonical_source(root.to_path_buf()).ok());
+        let fresh = self.held.as_ref().is_some_and(|(held, at, _)| {
+            *held == root && inputs.now >= *at && inputs.now.saturating_sub(*at) < 60
+        });
+        if !fresh {
+            let mut compact = pace::HistorySet::default();
+            if let Some(root) = root.as_deref() {
+                // read_fleet salvages per file, including unreadable files. Empty
+                // and failed reads are held for the same TTL as successful reads.
+                for sample in history::read_fleet(root, inputs.now).samples {
+                    compact.add(sample);
+                }
+            }
+            self.held = Some((root, inputs.now, compact));
+        }
+        if let Some((_, _, held)) = &self.held {
+            for group in groups {
+                if let Some(scope) = history_scope(group) {
+                    series.add_history(group, &scope, held);
+                }
+            }
+        }
+    }
+}
+
 /// Run the agy `leg` for `home`, asked at `asked_at`: its answer and the epoch it completed
 /// at. The app's reader calls this on a worker thread, never on its own.
 pub(crate) fn ask(leg: &AgyLeg, home: &Path, asked_at: i64) -> (AgyRun, i64) {
@@ -2482,16 +2523,17 @@ pub(crate) fn view_cached(inputs: &Inputs<'_>, cache: &mut AgyCache) -> Vec<view
         let (rows, hint) = attempt_rows(&answer, done_at);
         (rows, hint.map(str::to_owned), Some(done_at))
     });
-    compose(inputs, scopes, &legs, shown)
+    compose(inputs, scopes, &legs, shown, &mut HistoryCache::default())
 }
 
 /// [`view_cached`] that never runs the leg: the agy scopes show what `cache` holds, or the
 /// asking words. `flying` says an ask is already out; the home returned is the one a new
 /// ask is due for, which the caller runs off its own thread and settles into `cache`.
-pub(crate) fn view_held(
+pub(crate) fn view_held_cached(
     inputs: &Inputs<'_>,
     cache: &AgyCache,
     flying: bool,
+    history: &mut HistoryCache,
 ) -> (Vec<view::Scope>, Option<PathBuf>) {
     let Ok(cfg) = crate::config::read_identity(inputs.global, inputs.local) else {
         return (view::unavailable(), None);
@@ -2502,9 +2544,18 @@ pub(crate) fn view_held(
     let due = home.filter(|home| !flying && cache.due(home, inputs.now));
     let shown = home.and_then(|home| cache.shown(home, flying || due.is_some()));
     (
-        compose(inputs, scopes, &legs, shown),
+        compose(inputs, scopes, &legs, shown, history),
         due.map(Path::to_path_buf),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn view_held(
+    inputs: &Inputs<'_>,
+    cache: &AgyCache,
+    flying: bool,
+) -> (Vec<view::Scope>, Option<PathBuf>) {
+    view_held_cached(inputs, cache, flying, &mut HistoryCache::default())
 }
 
 /// The view facts of `scopes` with the agy scopes showing `shown`, judged at the later of
@@ -2514,11 +2565,12 @@ fn compose(
     scopes: Vec<Scope>,
     legs: &[Leg],
     shown: Option<Shown>,
+    history: &mut HistoryCache,
 ) -> Vec<view::Scope> {
     let done_at = shown.as_ref().and_then(|(_, _, done_at)| *done_at);
     let now = done_at.map_or(inputs.now, |done_at| inputs.now.max(done_at));
     let muse = muse_held(inputs, &scopes, now);
-    let (mut observation, series) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
+    let (mut observation, mut series) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
     if let Some((rows, hint, _)) = shown {
         replace_agy(&mut observation.groups, legs, rows, hint.as_deref());
     }
@@ -2526,6 +2578,7 @@ fn compose(
         replace_muse(&mut observation.groups, &spoken, rows, hint.as_deref());
     }
     // The same table `ae quota` draws its PACE column from, so one rate decides both.
+    history.extend(&Inputs { now, ..*inputs }, &observation.groups, &mut series);
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
     observation.quota_view_paced(&pace)
 }
@@ -2750,7 +2803,7 @@ fn run_with(
     } else {
         inputs.now
     };
-    let (mut observation, series) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
+    let (mut observation, mut series) = observe_scopes(&Inputs { now, ..*inputs }, scopes);
     if let Some(answer) = answer
         && let Some((rows, hint)) = agy_rows(&answer, now)
     {
@@ -2789,6 +2842,7 @@ fn run_with(
             }
         }
     }
+    HistoryCache::default().extend(&Inputs { now, ..*inputs }, &observation.groups, &mut series);
     let pace = pace::PaceTable::build(&observation.groups, &series, observation.now);
     let groups = observation.ordered_groups(&observation.rendered);
     let home = observation.home.as_deref().or(inputs.home);

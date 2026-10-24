@@ -314,6 +314,8 @@ pub(super) struct Reader {
     settings_session: Option<String>,
     /// The agy answer held between settings reads, so an open overlay asks once per TTL.
     agy: crate::quota::AgyCache,
+    /// Raw quota history held across the settings overlay's two-second refreshes.
+    history: crate::quota::HistoryCache,
     /// The one agy ask out on its own thread, landed by the next settings read.
     flight: Option<Flight>,
     /// The fleet's journals as last read.
@@ -388,6 +390,7 @@ impl Reader {
             read: None,
             settings_session: None,
             agy: crate::quota::AgyCache::default(),
+            history: crate::quota::HistoryCache::default(),
             flight: None,
             journals: Journals::default(),
             answered: BTreeSet::new(),
@@ -1070,7 +1073,12 @@ impl Reader {
                 sessions: Some(roots.sessions()),
                 now,
             };
-            let (quota, due) = crate::quota::view_held(&inputs, &self.agy, self.flight.is_some());
+            let (quota, due) = crate::quota::view_held_cached(
+                &inputs,
+                &self.agy,
+                self.flight.is_some(),
+                &mut self.history,
+            );
             if let Some(home) = due {
                 self.fly(home, now);
             }

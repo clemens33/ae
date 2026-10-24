@@ -63,13 +63,57 @@ impl Key {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Identity {
+    tool: String,
+    account: Option<PathBuf>,
+}
+
+impl Identity {
+    fn of(group: &Group) -> Self {
+        Self {
+            tool: group.tool.as_str().to_owned(),
+            account: group.home.clone(),
+        }
+    }
+}
+
+/// Compact raw evidence only: workload, producer and policy facts are not retained.
 #[derive(Debug, Default)]
-pub(crate) struct SeriesSet(BTreeMap<Key, Vec<Point>>);
+pub(crate) struct HistorySet(BTreeMap<(super::history::Scope, Key), Vec<Point>>);
+
+impl HistorySet {
+    pub(crate) fn add(&mut self, sample: super::history::Sample) {
+        let (Some(window), Ok(used)) = (sample.window_minutes, sample.raw.parse::<f64>()) else {
+            return;
+        };
+        if !used.is_finite() || used < 0.0 {
+            return;
+        }
+        let key = Key {
+            source: PathBuf::from(&sample.scope.source),
+            bucket: sample.bucket,
+            qualifier: sample.qualifier,
+            window_minutes: Some(window),
+        };
+        self.0.entry((sample.scope, key)).or_default().push(Point {
+            observed_at: sample.observed_at,
+            used,
+            resets_at: sample.resets_at,
+        });
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SeriesSet {
+    legacy: BTreeMap<Key, Vec<Point>>,
+    stored: BTreeMap<(Identity, Key), Vec<Point>>,
+}
 
 impl SeriesSet {
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.values().all(Vec::is_empty)
+        self.legacy.values().all(Vec::is_empty) && self.stored.values().all(Vec::is_empty)
     }
 
     /// Fold one rollout's series of `source` in, thinning the union again.
@@ -80,9 +124,28 @@ impl SeriesSet {
             qualifier: series.qualifier,
             window_minutes: Some(series.window_minutes),
         };
-        let held = self.0.entry(key).or_default();
+        let held = self.legacy.entry(key).or_default();
         held.extend(series.points);
         *held = thin(std::mem::take(held), series.window_minutes);
+    }
+
+    /// The parent projects canonical scope facts; this fold does no path resolution.
+    pub(crate) fn add_history(
+        &mut self,
+        group: &Group,
+        scope: &super::history::Scope,
+        history: &HistorySet,
+    ) {
+        let Some(source) = group.source.as_deref() else {
+            return;
+        };
+        for row in &group.rows {
+            let key = Key::of(source, row);
+            if let Some(points) = history.0.get(&(scope.clone(), key.clone())) {
+                self.stored
+                    .insert((Identity::of(group), key), points.clone());
+            }
+        }
     }
 }
 
@@ -94,6 +157,72 @@ fn lookback_secs(window_minutes: u32) -> i64 {
 /// The least observed span a rate needs: a third of the lookback.
 fn min_span_secs(window_minutes: u32) -> i64 {
     lookback_secs(window_minutes) / 3
+}
+
+fn history_lookback(window_minutes: u32) -> i64 {
+    (i64::from(window_minutes) * 60 / 5).clamp(30 * 60, 7 * 86400)
+}
+
+/// Find instance/drop boundaries before thinning, so discarded interior points cannot
+/// hide a restart. Policy changes do not cut: both raw ends use the current policy.
+fn history_run(endpoint: Point, union: &[Point], window_minutes: u32) -> Vec<Point> {
+    let mut older: Vec<Point> = union
+        .iter()
+        .copied()
+        .filter(|point| point.observed_at < endpoint.observed_at)
+        .collect();
+    older.sort_by(|left, right| {
+        left.observed_at
+            .cmp(&right.observed_at)
+            .then_with(|| right.used.total_cmp(&left.used))
+    });
+    older.dedup_by_key(|point| point.observed_at);
+    let mut run: Vec<Point> = Vec::new();
+    for point in older.into_iter().chain([endpoint]) {
+        // Anchor the shared instance tolerance to the shown row, never a chain.
+        if point.resets_at.abs_diff(endpoint.resets_at) > INSTANCE_SECS {
+            run.clear();
+            continue;
+        }
+        if run
+            .last()
+            .is_some_and(|last| last.used - point.used > 2.0 + 1e-9)
+        {
+            run.clear();
+        }
+        run.push(point);
+    }
+    let lookback = history_lookback(window_minutes);
+    run.retain(|point| endpoint.observed_at.saturating_sub(point.observed_at) <= lookback);
+    let Some(oldest) = run.first().copied() else {
+        return vec![endpoint];
+    };
+    let spacing = (lookback / i64::from(RETAINED)).max(MIN_SPACING_SECS);
+    let mut kept = vec![endpoint];
+    for point in run.into_iter().rev().skip(1) {
+        if point.observed_at == oldest.observed_at {
+            break;
+        }
+        if kept
+            .last()
+            .is_some_and(|last| last.observed_at.saturating_sub(point.observed_at) >= spacing)
+        {
+            kept.push(point);
+        }
+        if kept.len() == usize::from(RETAINED) - 1 {
+            break;
+        }
+    }
+    if oldest.observed_at != endpoint.observed_at {
+        kept.push(oldest);
+    }
+    kept.reverse();
+    kept
+}
+
+#[cfg(test)]
+pub(crate) fn select_history(endpoint: Point, union: &[Point], window_minutes: u32) -> Vec<Point> {
+    history_run(endpoint, union, window_minutes)
 }
 
 /// Keep at most [`RETAINED`] points, newest always, each at least `spacing`
@@ -173,6 +302,25 @@ impl Pace {
         history: &[Point],
         now: i64,
     ) -> (Self, Option<Basis>) {
+        let run = run_to(newest, history);
+        Self::from_run(
+            policy,
+            window_minutes,
+            newest,
+            &run,
+            lookback_secs(window_minutes),
+            now,
+        )
+    }
+
+    fn from_run(
+        policy: &Policy,
+        window_minutes: u32,
+        newest: Point,
+        run: &[Point],
+        lookback: i64,
+        now: i64,
+    ) -> (Self, Option<Basis>) {
         let derived = Derived::judge(policy, newest.used, Some(newest.observed_at));
         if matches!(
             derived.effective,
@@ -180,8 +328,6 @@ impl Pace {
         ) {
             return (Self::Absent, None);
         }
-        let run = run_to(newest, history);
-        let lookback = lookback_secs(window_minutes);
         let Some(oldest) = run
             .iter()
             .find(|point| newest.observed_at.saturating_sub(point.observed_at) <= lookback)
@@ -334,9 +480,10 @@ pub(crate) struct PaceTable(BTreeMap<Key, Verdict>);
 struct Gathered<'a> {
     /// The newest row of the key, trusted or not.
     winner: &'a Row,
+    group: &'a Group,
     /// The policy every trusted row of the key merges to.
     merged: Option<Reading>,
-    points: Vec<Point>,
+    points: Vec<(Identity, Point)>,
 }
 
 impl PaceTable {
@@ -357,11 +504,13 @@ impl PaceTable {
                     .entry(Key::of(source, row))
                     .or_insert_with(|| Gathered {
                         winner: row,
+                        group,
                         merged: None,
                         points: Vec::new(),
                     });
                 if beats(row, entry.winner) {
                     entry.winner = row;
+                    entry.group = group;
                 }
                 if !trusted(row, now) {
                     continue;
@@ -370,11 +519,14 @@ impl PaceTable {
                     continue;
                 };
                 if let Some(resets_at) = row.resets_at {
-                    entry.points.push(Point {
-                        observed_at: reading.observed_at,
-                        used: reading.used,
-                        resets_at,
-                    });
+                    entry.points.push((
+                        Identity::of(group),
+                        Point {
+                            observed_at: reading.observed_at,
+                            used: reading.used,
+                            resets_at,
+                        },
+                    ));
                 }
                 match entry.merged.as_mut() {
                     Some(merged) => {
@@ -453,9 +605,35 @@ impl Key {
             used,
             resets_at,
         };
-        let mut history = gathered.points.clone();
-        if let Some(held) = series.0.get(self) {
+        let identity = Identity::of(gathered.group);
+        let stored = series.stored.get(&(identity.clone(), self.clone()));
+        let backed = stored.is_some_and(|points| {
+            points
+                .iter()
+                .any(|point| point.observed_at <= newest.observed_at)
+        });
+        let mut history: Vec<Point> = gathered
+            .points
+            .iter()
+            .filter(|(scope, _)| !backed || *scope == identity)
+            .map(|(_, point)| *point)
+            .collect();
+        if let Some(held) = series.legacy.get(self) {
             history.extend(held.iter().copied());
+        }
+        if backed {
+            if let Some(held) = stored {
+                history.extend(held.iter().copied());
+            }
+            let run = history_run(newest, &history, window);
+            return shown(Pace::from_run(
+                &merged.policy,
+                window,
+                newest,
+                &run,
+                history_lookback(window),
+                now,
+            ));
         }
         shown(Pace::measured(
             &merged.policy,
