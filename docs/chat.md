@@ -180,9 +180,11 @@ also on palettes `a` and `b`).
 ## Links
 
 A web URL (`http://` or `https://`) or a repo-style path in a turn is a real
-terminal hyperlink: Cmd-click (Ctrl-click on Linux) opens it the way the
-terminal opens any link, and the text is underlined while a look is drawn. A
-path is one of
+terminal hyperlink: Cmd-click (Ctrl-click on Linux) opens it with mouse capture
+off. While ae or tmux captures the mouse, many terminals use Shift to bypass it:
+Ghostty: Shift+Cmd-click; Linux: Shift+Ctrl-click. A plain click goes to tmux or
+ae.
+The text is underlined while a look is drawn. A path is one of
 
 - `src/…`, `docs/…`, `tests/…` or `.local/…`, against the work dir the session's
   meta records,
@@ -214,8 +216,9 @@ OSC 8 must reach your terminal. Terminal.app has no hyperlinks. Inside tmux
 set -as terminal-features ',xterm*:hyperlinks'
 ```
 
-to `~/.tmux.conf` (the glob must match your `$TERM`). ae never writes that
-server option. Where the link is not forwarded the text is shown unchanged.
+to `~/.tmux.conf` (match `$TERM`; Ghostty's TERM is `xterm-ghostty`,
+which matches `xterm*`). After `set -as`, reattach with a new client to refresh
+capabilities. ae never writes the option; unforwarded links show plain text.
 Following a link inside ae (a reader pane, memos, request threads) is not part
 of this.
 
