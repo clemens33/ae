@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.137] - 2026-10-25
+- Add dedicated Accounts tab to Settings
+
 ## [v2026.10.136] - 2026-10-24
 - Guard role sessions against outside agent contact
 
