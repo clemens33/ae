@@ -743,8 +743,12 @@ pair — as the one renderer produces it now, with `<session>`, `<helpers>` and
 roster seat, `name · slot · lead` or `worker`, naming the rules it receives.
 Everything wraps to the pane. A session, config file or seat ae cannot render
 from shows a named `gap` instead of a guess: no records, an unreadable meta or
-config (the whole tab), an unknown slot. Accounts, the sixth tab (`6`), groups
-the existing live-seat snapshot by account. Its aligned columns keep session:agent,
+config (the whole tab), an unknown slot. Accounts, the sixth tab (`6`), summarizes
+the existing live-seat snapshot: total seats, activity, clients, models and
+model + effort, sorted by descending count then name. Unproved clients and models count as
+unknown. Unknown-liveness seats are counted separately and excluded from live
+totals; an incomplete snapshot marks the counts partial. The summary wraps to
+the pane width, above the seats grouped by account. Its aligned columns keep session:agent,
 profile, model, effort, observed activity and declared state distinct. Busy rows
 use the working color; unknown activity is dim, account gaps use the stale color.
 The text keeps its meaning with the theme off. Narrow panes clip each row with

@@ -32,6 +32,8 @@ use crate::quota::view::Tone;
 use crate::theme::{Look, Mark, Palette};
 use crate::time::Timestamp;
 
+mod accounts_summary;
+
 /// Everything one frame draws.
 #[derive(Debug, Clone, Copy)]
 pub struct Screen<'a> {
@@ -3068,11 +3070,6 @@ fn live_seat_rows(
         }
         line(&out)
     };
-    rows.push((String::new(), dim));
-    rows.push((line("Live seats by account"), head));
-    if width >= 80 {
-        rows.push((aligned(&labels.map(str::to_owned)), head));
-    }
     if let Some(at) = seats.groups.first().and_then(|group| group.observed_at) {
         rows.push((
             line(&format!(
@@ -3084,6 +3081,19 @@ fn live_seat_rows(
     }
     if seats.incomplete {
         rows.push((line("incomplete fleet snapshot"), paint.fg(|p| p.stale)));
+    }
+    rows.push((line("Live-seat summary"), head));
+    for summary in accounts_summary::lines(seats) {
+        rows.extend(
+            crate::console::wrap::wrap_in(&summary, usize::from(room), 0, 0)
+                .into_iter()
+                .map(|(gap, value)| (line(&format!("{}{value}", " ".repeat(gap))), text)),
+        );
+    }
+    rows.push((String::new(), dim));
+    rows.push((line("Live seats by account"), head));
+    if width >= 80 {
+        rows.push((aligned(&labels.map(str::to_owned)), head));
     }
     if seats.groups.is_empty() {
         rows.push((line("no live seats"), dim));
