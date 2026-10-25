@@ -346,7 +346,7 @@ fn console_items(
         let kind = if event.actor == tracked::CONSOLE_SINK {
             match event.action.as_str() {
                 action if action == tracked::Kind::Ask.action() => {
-                    let uncertain = text.starts_with(tracked::UNCONFIRMED_SUMMARY_PREFIX);
+                    let uncertain = super::submit::uncertain(event);
                     let mut gap = Some(OLD_CORE_GAP.to_owned());
                     if !key.is_empty() {
                         threads.insert(key, Thread::opened(event));

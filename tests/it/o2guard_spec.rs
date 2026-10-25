@@ -632,7 +632,13 @@ fn same_session_ordinary_and_owner_routes_still_land() {
         from_id,
     };
     let sent = ae::telegram::inbound::Submit::submit(&chat, &target, "k-owner", &origin);
-    if !matches!(sent, ae::telegram::inbound::Submitted::Sent { .. }) {
+    // The fixture's main seat runs gemini, whose input box ae does not model, so the
+    // submit lands but can never be verified: the owner route answers Unconfirmed.
+    let unconfirmed = matches!(
+        &sent,
+        ae::telegram::inbound::Submitted::Unconfirmed { seat, .. } if seat == "boss"
+    );
+    if !unconfirmed {
         wrong.push(format!("owner: {sent:?}"));
     }
     let (role, named) = (received(&orc), received(&ord));

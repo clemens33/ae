@@ -47,6 +47,8 @@ pub struct Event {
     pub reference: Option<String>,
     /// A truncated preview of the payload.
     pub summary: Option<String>,
+    /// Why submit could not be verified; presence, even empty, preserves doubt.
+    pub unverifiable: Option<String>,
     /// The sender's slot.
     pub actor_slot: RoutingMember,
     /// The sender's session.
@@ -469,6 +471,11 @@ impl Event {
             target: optional(value, "target")?,
             reference: optional(value, "ref")?,
             summary: optional(value, "summary")?,
+            unverifiable: match value.get("unverifiable") {
+                None => None,
+                Some(Value::Str(reason)) => Some(reason.clone()),
+                Some(_) => return Err(EventError::WrongType("unverifiable")),
+            },
             actor_slot: RoutingMember::read(value, "actor_slot")?,
             actor_session: RoutingMember::read(value, "actor_session")?,
             target_slot: RoutingMember::read(value, "target_slot")?,
@@ -669,13 +676,14 @@ pub(crate) fn is_session_id(text: &str) -> bool {
 }
 
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 23] = [
+const KNOWN_KEYS: [&str; 24] = [
     "ts",
     "actor",
     "action",
     "target",
     "ref",
     "summary",
+    "unverifiable",
     "actor_slot",
     "actor_session",
     "target_slot",
@@ -1635,13 +1643,14 @@ mod tests {
 
     /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 23] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 24] = [
         "ts",
         "actor",
         "action",
         "target",
         "ref",
         "summary",
+        "unverifiable",
         "actor_slot",
         "actor_session",
         "target_slot",

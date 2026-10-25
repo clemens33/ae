@@ -83,11 +83,14 @@ pub fn read_back(events: &[Event], id: &str, said: &str) -> Outcome {
     match own {
         None => Outcome::Unknown(id, said.trim_end().to_owned()),
         Some(event) if event.action == tracked::ABANDONED_ACTION => Outcome::NotDelivered(id),
-        Some(event) if tracked::summary_is_unconfirmed(event.summary.as_deref()) => {
-            Outcome::Uncertain(id)
-        }
+        Some(event) if uncertain(event) => Outcome::Uncertain(id),
         Some(_) => Outcome::Sent(id, None),
     }
+}
+
+/// The shared receipt doubt used by both submission and durable lane rows.
+pub(super) fn uncertain(event: &Event) -> bool {
+    event.unverifiable.is_some() || tracked::summary_is_unconfirmed(event.summary.as_deref())
 }
 
 /// The kept draft as promotion finds it: never acted on, only shown.
@@ -719,6 +722,109 @@ pub(in crate::console) mod tests {
             assert_eq!(draft(&dir), SourceRead::Ready(b"kept".to_vec()));
             let _ = fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn writer_receipts_keep_unverifiable_asks_uncertain_and_recoverable() {
+        use crate::deliver::{DeliveryVerification, Unverifiable};
+        use crate::events::Event;
+        use crate::tracked::{EventFields, delivery_event_line};
+
+        let fields = EventFields::new(
+            crate::time::Timestamp::parse("2026-09-30T06:00:00Z").unwrap(),
+            "console:local",
+            "ask",
+            "lead",
+            NEW,
+            "",
+            "s",
+            "main",
+            "s",
+            "q",
+            "",
+        );
+        let cases = [
+            (
+                DeliveryVerification::Verified,
+                Outcome::Sent(NEW.to_owned(), None),
+            ),
+            (
+                DeliveryVerification::Unverifiable(Unverifiable::Unmodelled),
+                Outcome::Uncertain(NEW.to_owned()),
+            ),
+            (
+                DeliveryVerification::Unverifiable(Unverifiable::CaptureUnreadable),
+                Outcome::Uncertain(NEW.to_owned()),
+            ),
+            (
+                DeliveryVerification::Unverifiable(Unverifiable::PaneUnparseable),
+                Outcome::Uncertain(NEW.to_owned()),
+            ),
+            (
+                DeliveryVerification::Unverifiable(Unverifiable::Unconfirmed),
+                Outcome::Uncertain(NEW.to_owned()),
+            ),
+        ];
+        for (n, (verification, want)) in cases.into_iter().enumerate() {
+            let line = delivery_event_line(&fields, verification, false);
+            let event = Event::parse_line(&line).unwrap();
+            assert_eq!(
+                super::read_back(std::slice::from_ref(&event), NEW, ""),
+                want
+            );
+            let items = super::lane::thread_items(&[event]);
+            assert!(
+                matches!(items[0].kind, super::lane::Kind::Asked { uncertain, .. }
+                if uncertain == (n != 0))
+            );
+            let dir = session(&format!("writer-{n}"), 0);
+            let got = run(&dir, b"recovery bytes", lands(&dir, &line, "")).unwrap();
+            assert_eq!(got, want);
+            assert_eq!(
+                draft(&dir),
+                if n == 0 {
+                    SourceRead::Absent
+                } else {
+                    SourceRead::Ready(b"recovery bytes".to_vec())
+                }
+            );
+            let cue = crate::console::input::outcome_line(&got, "lead");
+            assert_eq!(
+                cue,
+                if n == 0 {
+                    "sent"
+                } else {
+                    "uncertain: check lead pane (prefix H)"
+                }
+            );
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn damaged_unverifiable_receipts_never_claim_sent_or_clear_the_draft() {
+        let dir = session("damaged-receipt", 0);
+        for marker in [
+            "null",
+            "7",
+            "true",
+            "[]",
+            "{}",
+            "\"",
+            "\"\"",
+            "\"new-reason\"",
+            "\"unmodelled-input\",\"unverifiable\":\"other\"",
+        ] {
+            let line = ask(NEW, "q").replacen('{', &format!("{{\"unverifiable\":{marker},"), 1);
+            fs::write(dir.join("events.jsonl"), "").unwrap();
+            let got = run(&dir, b"keep me", lands(&dir, &line, "")).unwrap();
+            assert!(
+                matches!(got, Outcome::Uncertain(_) | Outcome::Unknown(..)),
+                "{marker}: {got:?}"
+            );
+            assert_eq!(draft(&dir), SourceRead::Ready(b"keep me".to_vec()));
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

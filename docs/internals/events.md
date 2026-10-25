@@ -117,6 +117,11 @@ At rollout, legacy role-opened requests without both launch keys refuse with a r
 
 `body_file` is the path of the text a delivery stored under the session's `messages/` (`<ref>.<action>.<6 hex>.txt`, mode 0600), when it stored one: a `send` / `ask` / `review` / `interrupt` delivery, and a `reply` to `console:local`, which keeps its whole body (at most 65536 bytes) there. A string key, policed for duplicates like every known key; an older core steps over it as unknown data and keeps the record, summary included. `ae chat` reads it by NAME from its own session's `messages/`, never through the recorded directory, a link or a separator, and a body it cannot read shows as a named gap beside the 600-character summary.
 
+`unverifiable` is a string reason why a delivery's submit could not be verified.
+Its presence, even an empty string, makes a console ask's receipt `Uncertain`
+and keeps its recovery draft. A wrong type or duplicate key invalidates the
+record; an older core steps over the additive key as unknown data.
+
 ## Actions
 
 | Action | Emitted by | Meaning |

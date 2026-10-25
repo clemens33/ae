@@ -316,6 +316,12 @@ Residuals: an Esc and an Enter that arrive in one terminal read are read as Alt+
 and a chat window started by an older core has Enter and `^J` as the same byte until
 `prefix h` reopens it (the window sets `-icrnl`, so Enter reads as CR and `^J` as LF).
 
+An ask whose submit could not be verified shows `uncertain: check … pane`,
+and keeps its recovery draft. Seats with no modelled input box (Gemini,
+Antigravity, Grok, OpenCode, unknown tools) show this on every send; the active
+composer stays ready for the next line. Telegram says `pasted … submit not
+confirmed`. Check the seat before resending: the message may already have arrived.
+
 Each writing process keeps its own recovery record, protected by a lifetime
 lock even while it browses. A live window's kept line stays in that window.
 When writing starts, a line from an earlier process is offered only if its
