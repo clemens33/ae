@@ -149,6 +149,8 @@ pub(crate) enum SettingsTab {
     Instructions,
     /// The keys help: `?` opens the overlay here.
     Keys,
+    /// The existing fleet snapshot, grouped by account.
+    Accounts,
 }
 
 /// The open settings overlay: its tab, how far its body scrolled, the body
@@ -622,7 +624,8 @@ impl Model {
                     SettingsTab::Config => SettingsTab::About,
                     SettingsTab::About => SettingsTab::Instructions,
                     SettingsTab::Instructions => SettingsTab::Keys,
-                    SettingsTab::Keys => SettingsTab::Quota,
+                    SettingsTab::Keys => SettingsTab::Accounts,
+                    SettingsTab::Accounts => SettingsTab::Quota,
                 })
             }
             Key::Digit(1) => self.show_settings_tab(SettingsTab::Quota),
@@ -630,6 +633,7 @@ impl Model {
             Key::Digit(3) => self.show_settings_tab(SettingsTab::About),
             Key::Digit(4) => self.show_settings_tab(SettingsTab::Instructions),
             Key::Digit(5) => self.show_settings_tab(SettingsTab::Keys),
+            Key::Digit(6) => self.show_settings_tab(SettingsTab::Accounts),
             Key::Up => self.settings_scroll_by(-1),
             Key::Down => self.settings_scroll_by(1),
             Key::PageUp => self.settings_page_by(false),

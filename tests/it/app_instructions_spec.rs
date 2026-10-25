@@ -153,10 +153,10 @@ fn instructions_fourth_title_is_clickable_at_width_40_and_held_read_never_blocks
     let opened = rig.settings(&pane);
     rig.held();
     let line = opened.lines().nth(1).expect("tab row");
-    let column = line
-        .find("Instructions")
-        .expect("R1 fourth tab at width 40");
-    rig.click(&pane, column + "Instructions".len() - 1, 1);
+    // Accounts-tab compact ring (b717ce77): the fourth title abbreviates to
+    // Instr at width 40; the wide body name stays Instructions.
+    let column = line.find("Instr").expect("R1 fourth tab at width 40");
+    rig.click(&pane, column + "Instr".len() - 1, 1);
     rig.wait(
         &pane,
         WAIT,
@@ -164,10 +164,10 @@ fn instructions_fourth_title_is_clickable_at_width_40_and_held_read_never_blocks
         |s| {
             s.contains("loading")
                 && reversed_text(rig.styled(&pane).lines().nth(1).unwrap_or_default())
-                    .contains("Instructions")
+                    .contains("Instr")
         },
     );
-    rig.tab(&pane, "4", "Instructions");
+    rig.tab(&pane, "4", "Instr");
     assert!(hold.path.exists(), "real settings read still held");
     assert!(!rig.screen(&pane).contains("PRIVATE-INSTRUCTION-RECEIPT"));
     rig.keys(&pane, "Escape");
@@ -176,7 +176,7 @@ fn instructions_fourth_title_is_clickable_at_width_40_and_held_read_never_blocks
     });
     drop(hold);
     rig.settings(&pane);
-    rig.tab(&pane, "4", "Instructions");
+    rig.tab(&pane, "4", "Instr");
     rig.wait(&pane, WAIT, "released Instructions header rendered", |s| {
         !s.contains("loading") && body(s).iter().any(|row| row.contains("session:"))
     });

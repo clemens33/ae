@@ -6418,10 +6418,19 @@ mod tests {
                 .trim_end()
                 .to_owned()
         };
-        // Two cells of margin, five titles of 32 cells, four gaps of three.
-        let wide = "  Quota   Config   About   Instructions   Keys";
-        assert_eq!(row(&mut app, 46), wide);
-        assert_eq!(row(&mut app, 45), "  Quota Config About Instructions Keys");
+        // Six titles: "Quota Config About Instructions Keys Accounts", 40
+        // cells: wide gaps of three while all fit, else the packed ring abbrevi-
+        // ates below the 47-cell single-space fit (Quota Config About Instr
+        // Keys Accts), so a selected sixth tab stays visible, wide labels kept.
+        let wide = "  Quota   Config   About   Instructions   Keys   Accounts";
+        let packed = "  Quota Config About Instr Keys Accts";
+        assert_eq!(row(&mut app, 46), packed);
+        assert_eq!(row(&mut app, 45), packed);
+        assert_eq!(row(&mut app, 57), wide);
+        assert_eq!(
+            row(&mut app, 47),
+            "  Quota Config About Instructions Keys Accounts"
+        );
     }
 
     /// R4(f)/I5: Enter queues its ask behind the frame that names it; a key
@@ -7485,8 +7494,13 @@ mod tests {
         );
         assert!(settings_key(&mut app, &Key::Text(b"5".to_vec()), at).is_some());
         assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Keys);
+        // digit 6: was swallowed (wildcard); now shows the sixth tab.
         assert!(settings_key(&mut app, &Key::Text(b"6".to_vec()), at).is_some());
-        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Keys);
+        assert_eq!(
+            app.model.settings().expect("open").tab,
+            SettingsTab::Accounts,
+            "digit 6 shows the sixth tab"
+        );
         assert!(settings_key(&mut app, &Key::Tab, at).expect("wraps"));
         assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Quota);
         assert!(settings_key(&mut app, &Key::Text(b"?".to_vec()), at).is_some());
@@ -10432,10 +10446,16 @@ mod tests {
         };
         let mut app = app(Some("api"));
         app.open_settings();
+        //Accounts-tab routing (human b717ce77): the seat pins read the dedicated
+        // tab; every assertion keeps its original spelling.
+        app.model
+            .show_settings_tab(crate::app::model::SettingsTab::Accounts);
         answer(&mut app, 1, Some(&["old:lead"][..]));
         assert!(framed(&mut app).contains("old:lead"), "own answer draws");
         app.close_settings();
         app.open_settings();
+        app.model
+            .show_settings_tab(crate::app::model::SettingsTab::Accounts);
         let kept = framed(&mut app);
         assert!(kept.contains("last updated"), "kept line: {kept}");
         assert!(kept.contains("old:lead"), "kept seat: {kept}");

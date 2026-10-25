@@ -488,7 +488,7 @@ fn question_opens_one_read_only_keys_overlay_with_every_existing_key() {
         "/close",
         "/open",
         "paste",
-        "1-5",
+        "1-6",
     ] {
         assert!(text.contains(key), "R4(d) help omits {key}: {text}");
     }

@@ -27,6 +27,12 @@ const FRESH: &str = "v2;2000000;60;lead:cl:working:%3:claude:Spec:xhigh:";
 const READS: &str = "observe_scopes fleet_rollouts view_held view_stored transport:: Command fs:: File:: observe_session_option SocketPaths";
 
 fn overlay(seats: LiveSeats, kept: Option<&str>, width: u16) -> Vec<String> {
+    mixed_body(SettingsTab::Accounts, seats, kept, width)
+}
+
+/// The real `settings_body` for one tab of the same fixture: the routing pins
+/// render each tab explicitly, never by concatenating bodies.
+fn mixed_body(tab: SettingsTab, seats: LiveSeats, kept: Option<&str>, width: u16) -> Vec<String> {
     let window = view::Window {
         name: "Weekly".into(),
         raw: Some("31%".into()),
@@ -52,7 +58,7 @@ fn overlay(seats: LiveSeats, kept: Option<&str>, width: u16) -> Vec<String> {
         ..SettingsBodies::default()
     };
     let paint = Paint::of(Some(&Look::read("on", "darcula", "on", "on")));
-    settings_body(SettingsTab::Quota, &bodies, paint, width, true)
+    settings_body(tab, &bodies, paint, width, true)
         .into_iter()
         .map(|(text, _)| text)
         .collect()
@@ -238,13 +244,37 @@ fn liveness_is_running_and_alive_only_with_unknown_kept_apart() {
     }
 }
 
-/// Wrong: omit the section, replace the quota windows, or draw it above them.
+/// Superseded by human b717ce77 (dedicated Accounts tab): quota windows live on
+/// Quota without a seat section, the seat snapshot lives on Accounts without
+/// quota windows. Replaces #242 s2 `live_seats_section_follows_existing_quota_windows`
+/// with the per-tab separation pins; receipt names both tests.
 #[test]
-fn live_seats_section_follows_existing_quota_windows() {
-    let rows = overlay(project_live_seats(&[], &[], false), None, 80);
-    let windows = rows.iter().position(|row| row.contains("Weekly"));
-    let section = rows.iter().position(|row| row.contains(SECTION));
-    assert!(windows.is_some() && section > windows, "{rows:?}");
+fn quota_and_accounts_tabs_do_not_mix_bodies() {
+    let quota = mixed_body(
+        SettingsTab::Quota,
+        project_live_seats(&[], &[], false),
+        None,
+        80,
+    );
+    assert!(
+        quota.iter().any(|row| row.contains("Weekly"))
+            && quota
+                .iter()
+                .all(|row| !row.contains(SECTION) && !row.contains(":lead")),
+        "{quota:?}"
+    );
+    let key = id(ToolKind::Claude, "/acct/.claude.json");
+    let accounts = mixed_body(
+        SettingsTab::Accounts,
+        project_live_seats(&[fact("s", "lead", Some(key.clone()))], &[key], false),
+        None,
+        80,
+    );
+    assert!(
+        accounts.iter().any(|row| row.contains("s:lead"))
+            && accounts.iter().all(|row| !row.contains("Weekly")),
+        "{accounts:?}"
+    );
 }
 
 /// Wrong: None keys merged into a configured scope of the same tool.

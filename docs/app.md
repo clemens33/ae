@@ -226,7 +226,7 @@ Browsing:
 | `,` | open Settings |
 | `?` | open Settings on its Keys tab, the list of every key |
 | Click the gear at the hint row's right end | open Settings, also while writing |
-| Click a Settings tab title | show that tab, like `Tab` and `1`-`5` |
+| Click a Settings tab title | show that tab, like `Tab` and `1`-`6` |
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `qq` | quit: the first `q` only arms (`q again to quit`), the second within 2 seconds quits |
 | `^C` | quit, at once; over a draft Esc kept it clears the draft first |
@@ -709,12 +709,12 @@ reader. Dragging over a link selects and copies the visible text, as ever.
 `,` opens the read-only Settings overlay over the whole pane, as does the
 gear (`*` with `icons = off`) at the hint row's right end — the gear also
 while writing, where `,` stays draft text; `Esc`, `q` or `,` closes it, `^C`
-quits. While open the overlay owns every key and click: `Tab`, `1`-`5` and a
+quits. While open the overlay owns every key and click: `Tab`, `1`-`6` and a
 click on a tab title switch tabs, a click on the drawn `Esc close` label or on
 the gear closes it like `Esc`, `j` / `k` and `↓` / `↑` scroll a line, the
 wheel three rows per notch, `PgUp` / `PgDn` a page, everything else is
 swallowed (every other click too), and a draft being written is kept untouched
-until it closes. Five
+until it closes. Six
 tabs: Keys lists what each of the seven marks means (`✖` dead, `⚠` needs you,
 `◌` unknown, `●` working, `◔` waiting on an agent, `✓` finished, `·` no current
 status; the `icons = off` letters when icons are off) and then every key of
@@ -743,8 +743,15 @@ pair — as the one renderer produces it now, with `<session>`, `<helpers>` and
 roster seat, `name · slot · lead` or `worker`, naming the rules it receives.
 Everything wraps to the pane. A session, config file or seat ae cannot render
 from shows a named `gap` instead of a guess: no records, an unreadable meta or
-config (the whole tab), an unknown slot.
-Quota shows the last values it read at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replaces them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. It reads again every refresh while open; config, about and instructions read
+config (the whole tab), an unknown slot. Accounts, the sixth tab (`6`), groups
+the existing live-seat snapshot by account. Its aligned columns keep session:agent,
+profile, model, effort, observed activity and declared state distinct. Busy rows
+use the working color; unknown activity is dim, account gaps use the stale color.
+The text keeps its meaning with the theme off. Narrow panes clip each row with
+an omission mark and omit the column header; the tab titles shorten to keep all
+six clickable. Unknown accounts, unknown liveness, an incomplete snapshot and
+the snapshot age remain visible. Quota contains the quota table alone.
+Quota and Accounts show retained values at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replace them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. The existing snapshots refresh while Settings is open; config, about and instructions read
 once per open. A torn config shows one honest row naming the file. The
 Instructions head states the residual below: this is today's render, not what
 a running seat was handed.

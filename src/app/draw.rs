@@ -2239,7 +2239,16 @@ fn tail(
 /// The overlay's title row.
 const SETTINGS_TITLE: &str = "Settings";
 /// The tabs in draw order.
-const SETTINGS_TABS: [&str; 5] = ["Quota", "Config", "About", "Instructions", "Keys"];
+const SETTINGS_TABS: [&str; 6] = [
+    "Quota",
+    "Config",
+    "About",
+    "Instructions",
+    "Keys",
+    "Accounts",
+];
+/// All six targets stay reachable on the smallest pane.
+const SETTINGS_SHORT_TABS: [&str; 6] = ["Quota", "Config", "About", "Instr", "Keys", "Accts"];
 /// The clickable close label, right-aligned on the title row.
 const SETTINGS_CLOSE: &str = "Esc close";
 /// Plain-text links; no OSC 8 in this slice.
@@ -2270,6 +2279,16 @@ pub(crate) fn paint_settings(
         SettingsTab::About => 2,
         SettingsTab::Instructions => 3,
         SettingsTab::Keys => 4,
+        SettingsTab::Accounts => 5,
+    };
+    let titles: usize = SETTINGS_TABS
+        .iter()
+        .map(|title| Span::raw(*title).width())
+        .sum();
+    let tabs = if usize::from(LEFT) + titles + SETTINGS_TABS.len() - 1 <= usize::from(width) {
+        &SETTINGS_TABS
+    } else {
+        &SETTINGS_SHORT_TABS
     };
     panel(
         buf,
@@ -2278,13 +2297,14 @@ pub(crate) fn paint_settings(
         &Panel {
             title: SETTINGS_TITLE,
             note: "",
-            tabs: &SETTINGS_TABS,
+            tabs,
             hits: &[
                 Hit::SettingsTab(SettingsTab::Quota),
                 Hit::SettingsTab(SettingsTab::Config),
                 Hit::SettingsTab(SettingsTab::About),
                 Hit::SettingsTab(SettingsTab::Instructions),
                 Hit::SettingsTab(SettingsTab::Keys),
+                Hit::SettingsTab(SettingsTab::Accounts),
             ],
             close: (SETTINGS_CLOSE, Hit::SettingsClose),
             selected,
@@ -2985,12 +3005,15 @@ fn settings_body(
             rows.extend(keys_body(paint));
             rows
         }
+        SettingsTab::Accounts => bodies.live_seats.as_ref().map_or_else(
+            || vec![("loading".to_owned(), dim)],
+            |seats| live_seat_rows(seats, paint, width),
+        ),
     };
-    if let (SettingsTab::Quota, Some(seats)) = (tab, &bodies.live_seats) {
-        body.extend(live_seat_rows(seats, paint, width));
-    }
-    // A kept quota body says how old it is, above it, in the stale tone.
-    if let (SettingsTab::Quota, Some(kept)) = (tab, &bodies.quota_kept) {
+    // Both snapshots keep their refresh verdict; seats also carry fleet age.
+    if matches!(tab, SettingsTab::Quota | SettingsTab::Accounts)
+        && let Some(kept) = &bodies.quota_kept
+    {
         body.insert(0, (clean(kept), paint.fg(|p| p.stale)));
     }
     body
@@ -3008,8 +3031,48 @@ fn live_seat_rows(
     let mut rows = Vec::new();
     let room = width.saturating_sub(LEFT);
     let line = |value: &str| fit(&clean(value).replace(['\n', '\r', '\t'], " "), "", room);
+    let fields = |row: &crate::quota::LiveRow| {
+        [
+            row.session_seat.clone(),
+            row.profile.clone(),
+            row.model.clone(),
+            row.effort.clone(),
+            format!("activity={}", row.activity),
+            format!("declared={}", row.declared),
+        ]
+        .map(|value| line(&value))
+    };
+    let labels = [
+        "session:agent",
+        "profile",
+        "model",
+        "effort",
+        "activity",
+        "declared",
+    ];
+    let mut columns = labels.map(drawn_cols);
+    for row in seats.groups.iter().flat_map(|group| &group.rows) {
+        for (column, value) in columns.iter_mut().zip(fields(row)) {
+            *column = (*column).max(drawn_cols(&value));
+        }
+    }
+    let aligned = |values: &[String; 6]| {
+        let mut out = String::new();
+        for (index, (value, column)) in values.iter().zip(columns).enumerate() {
+            out.push_str(value);
+            if index < columns.len() - 1 {
+                out.push_str(
+                    &" ".repeat(usize::from(column.saturating_sub(drawn_cols(value))) + 2),
+                );
+            }
+        }
+        line(&out)
+    };
     rows.push((String::new(), dim));
     rows.push((line("Live seats by account"), head));
+    if width >= 80 {
+        rows.push((aligned(&labels.map(str::to_owned)), head));
+    }
     if let Some(at) = seats.groups.first().and_then(|group| group.observed_at) {
         rows.push((
             line(&format!(
@@ -3020,7 +3083,7 @@ fn live_seat_rows(
         ));
     }
     if seats.incomplete {
-        rows.push((line("incomplete fleet snapshot"), dim));
+        rows.push((line("incomplete fleet snapshot"), paint.fg(|p| p.stale)));
     }
     if seats.groups.is_empty() {
         rows.push((line("no live seats"), dim));
@@ -3028,7 +3091,7 @@ fn live_seat_rows(
     for group in &seats.groups {
         rows.push((line(&group.heading), head));
         if let Some(gap) = &group.gap {
-            rows.push((line(gap), dim));
+            rows.push((line(gap), paint.fg(|p| p.stale)));
         }
         if group.unknown_liveness > 0 {
             rows.push((
@@ -3037,18 +3100,12 @@ fn live_seat_rows(
             ));
         }
         for row in &group.rows {
-            rows.push((
-                line(&format!(
-                    "{}  {}  {}  {}  activity={}  declared={}",
-                    row.session_seat,
-                    row.profile,
-                    row.model,
-                    row.effort,
-                    row.activity,
-                    row.declared
-                )),
-                text,
-            ));
+            let tone = match row.activity.as_str() {
+                "busy" => paint.fg(|p| p.working),
+                "unknown" => dim,
+                _ => text,
+            };
+            rows.push((aligned(&fields(row)), tone));
         }
     }
     rows
@@ -3113,7 +3170,7 @@ const READER_KEYS: [(&str, &str); 9] = [
     ("any other", "swallowed; nothing is typed or written"),
 ];
 const SETTINGS_KEYS: [(&str, &str); 10] = [
-    ("Tab 1-5", "show that tab"),
+    ("Tab 1-6", "show that tab"),
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
     ("?", "show these keys"),
@@ -3345,6 +3402,9 @@ fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line<'_>, max: u16) -> u16 
     }
     buf.set_line(x, y, line, max).0
 }
+
+#[cfg(test)]
+mod accounts_spec;
 
 #[cfg(test)]
 mod seatjoin_spec;
