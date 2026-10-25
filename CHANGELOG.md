@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.140] - 2026-10-25
+- Rename the settings Accounts tab to Clients
+
 ## [v2026.10.139] - 2026-10-25
 - Keep unverifiable chat submissions uncertain
 
