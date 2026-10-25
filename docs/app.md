@@ -743,7 +743,7 @@ pair — as the one renderer produces it now, with `<session>`, `<helpers>` and
 roster seat, `name · slot · lead` or `worker`, naming the rules it receives.
 Everything wraps to the pane. A session, config file or seat ae cannot render
 from shows a named `gap` instead of a guess: no records, an unreadable meta or
-config (the whole tab), an unknown slot. Accounts, the sixth tab (`6`), summarizes
+config (the whole tab), an unknown slot. Clients, the sixth tab (`6`), summarizes
 the existing live-seat snapshot: total seats, activity, clients, models and
 model + effort, sorted by descending count then name. Unproved clients and models count as
 unknown. Unknown-liveness seats are counted separately and excluded from live
@@ -755,7 +755,7 @@ The text keeps its meaning with the theme off. Narrow panes clip each row with
 an omission mark and omit the column header; the tab titles shorten to keep all
 six clickable. Unknown accounts, unknown liveness, an incomplete snapshot and
 the snapshot age remain visible. Quota contains the quota table alone.
-Quota and Accounts show retained values at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replace them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. The existing snapshots refresh while Settings is open; config, about and instructions read
+Quota and Clients show retained values at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replace them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. The existing snapshots refresh while Settings is open; config, about and instructions read
 once per open. A torn config shows one honest row naming the file. The
 Instructions head states the residual below: this is today's render, not what
 a running seat was handed.

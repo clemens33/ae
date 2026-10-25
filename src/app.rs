@@ -6418,18 +6418,18 @@ mod tests {
                 .trim_end()
                 .to_owned()
         };
-        // Six titles: "Quota Config About Instructions Keys Accounts", 40
+        // Six titles: "Quota Config About Instructions Keys Clients", 39
         // cells: wide gaps of three while all fit, else the packed ring abbrevi-
-        // ates below the 47-cell single-space fit (Quota Config About Instr
-        // Keys Accts), so a selected sixth tab stays visible, wide labels kept.
-        let wide = "  Quota   Config   About   Instructions   Keys   Accounts";
-        let packed = "  Quota Config About Instr Keys Accts";
-        assert_eq!(row(&mut app, 46), packed);
+        // ates below the 46-cell single-space fit (Quota Config About Instr
+        // Keys Clients), so a selected sixth tab stays visible, wide labels kept.
+        let wide = "  Quota   Config   About   Instructions   Keys   Clients";
+        let packed = "  Quota Config About Instr Keys Clients";
         assert_eq!(row(&mut app, 45), packed);
-        assert_eq!(row(&mut app, 57), wide);
+        assert_eq!(row(&mut app, 44), packed);
+        assert_eq!(row(&mut app, 56), wide);
         assert_eq!(
-            row(&mut app, 47),
-            "  Quota Config About Instructions Keys Accounts"
+            row(&mut app, 46),
+            "  Quota Config About Instructions Keys Clients"
         );
     }
 

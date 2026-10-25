@@ -2247,10 +2247,10 @@ const SETTINGS_TABS: [&str; 6] = [
     "About",
     "Instructions",
     "Keys",
-    "Accounts",
+    "Clients",
 ];
 /// All six targets stay reachable on the smallest pane.
-const SETTINGS_SHORT_TABS: [&str; 6] = ["Quota", "Config", "About", "Instr", "Keys", "Accts"];
+const SETTINGS_SHORT_TABS: [&str; 6] = ["Quota", "Config", "About", "Instr", "Keys", "Clients"];
 /// The clickable close label, right-aligned on the title row.
 const SETTINGS_CLOSE: &str = "Esc close";
 /// Plain-text links; no OSC 8 in this slice.

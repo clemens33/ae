@@ -603,13 +603,13 @@ fn settings_keys_tabs_and_all_three_close_keys_act_on_the_drawn_screen() {
         rig.tab(&pane, "Tab", "Keys");
         // Accounts-tab routing (b717ce77): the cycle visits the sixth tab
         // between Keys and the wrap to Quota.
-        rig.tab(&pane, "Tab", "Accounts");
+        rig.tab(&pane, "Tab", "Clients");
         rig.tab(&pane, "Tab", "Quota");
         for (key, tab) in [
             ("3", "About"),
             ("1", "Quota"),
             ("2", "Config"),
-            ("6", "Accounts"),
+            ("6", "Clients"),
         ] {
             rig.tab(&pane, key, tab);
         }
@@ -797,7 +797,7 @@ fn smallest_supported_settings_panel_keeps_title_tabs_and_a_close_hint() {
     assert!(screen.lines().nth(1).is_some_and(|line| {
         // Accounts-tab compact ring over a forty-column pane (b717ce77):
         // six abbreviated titles, required whole.
-        ["Quota", "Config", "About", "Instr", "Keys", "Accts"]
+        ["Quota", "Config", "About", "Instr", "Keys", "Clients"]
             .iter()
             .all(|tab| line.contains(tab))
     }));
