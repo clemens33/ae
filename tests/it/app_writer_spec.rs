@@ -486,7 +486,7 @@ fn outside_tmux_app_writes_home_as_console_local_and_keeps_the_five_open_cap() {
     rig.typed(&pane, "sixth");
     rig.key(&pane, "Enter");
     rig.wait(&pane, "shared admission enforces five open", |s| {
-        s.contains("5 requests open")
+        s.contains("cap-full")
     });
     assert_eq!(rig.asks().len(), 5);
     rig.free();

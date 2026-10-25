@@ -50,12 +50,14 @@ pub enum Kind {
     NeedsYou { seat: String },
     /// The human's console ask `id` to `to`; `uncertain` when its submit was
     /// not confirmed. `gap` is why the row shows its journal summary instead of
-    /// the stored whole text; `None` for the whole.
+    /// the stored whole text; `None` for the whole. `via` is where a relayed
+    /// ask came from, resolved at this read; `None` for an ordinary ask.
     Asked {
         to: String,
         id: String,
         uncertain: bool,
         gap: Option<String>,
+        via: Option<Via>,
     },
     /// A console ask ae gave up delivering.
     NotDelivered { to: String, id: String },
@@ -83,6 +85,40 @@ pub enum Kind {
     /// The seat console request `id` reached accepted it: the work is taken
     /// on and the answer still owed. Named by that seat, as [`Kind::Answer`] is.
     Accepted { seat: String, id: String },
+}
+
+/// Where a console ask's `relay_origin` points, as one read resolved it: audit
+/// only, never authority, and never the origin's UUID itself.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Via {
+    /// The one session whose meta `session_id` is the origin, by its name now.
+    Named(String),
+    /// A canonical origin that no single session records now.
+    Unavailable,
+    /// An origin that is not a canonical session id.
+    Unreadable,
+}
+
+impl Via {
+    /// What `origin` reads as with no session map at hand: its grammar alone.
+    #[must_use]
+    pub fn of_grammar(origin: &str) -> Self {
+        if crate::events::is_session_id(origin) {
+            Self::Unavailable
+        } else {
+            Self::Unreadable
+        }
+    }
+
+    /// The words a row wears for it.
+    #[must_use]
+    pub fn badge(&self) -> String {
+        match self {
+            Self::Named(name) => format!("via orchestrator {name}"),
+            Self::Unavailable => "via orchestrator (name unavailable)".to_owned(),
+            Self::Unreadable => "via orchestrator (origin unreadable)".to_owned(),
+        }
+    }
 }
 
 /// What the console could read of an admitted answer's stored body.
@@ -201,10 +237,32 @@ pub fn fold(
     skipped: usize,
     body: &dyn Fn(&Event) -> Body,
 ) -> Lane {
+    fold_via(
+        session,
+        seats,
+        events,
+        observation,
+        skipped,
+        body,
+        &Via::of_grammar,
+    )
+}
+
+/// [`fold`], with each relayed ask's origin resolved by `via`.
+#[must_use]
+pub fn fold_via(
+    session: &str,
+    seats: &[Seat],
+    events: &[Event],
+    observation: &board::Observation,
+    skipped: usize,
+    body: &dyn Fn(&Event) -> Body,
+    via: &dyn Fn(&str) -> Via,
+) -> Lane {
     let (mut items, other_say) = journal_items(session, seats, events);
     items.extend(standing_items(session, seats, events));
     let mut body_gaps = Vec::new();
-    let console = console_items(session, seats, events, body, &mut body_gaps);
+    let console = console_items(session, seats, events, body, via, &mut body_gaps);
     let prefix = format!("{session}:");
     for row in &observation.rows {
         let name = row.actor.strip_prefix(&prefix);
@@ -319,6 +377,7 @@ fn console_items(
     seats: &[Seat],
     events: &[Event],
     body: &dyn Fn(&Event) -> Body,
+    via: &dyn Fn(&str) -> Via,
     gaps: &mut Vec<String>,
 ) -> Vec<Item> {
     let mut threads: BTreeMap<&str, Thread<'_>> = BTreeMap::new();
@@ -365,6 +424,7 @@ fn console_items(
                         id,
                         uncertain,
                         gap,
+                        via: event.relay_origin.as_deref().map(via),
                     }
                 }
                 tracked::ABANDONED_ACTION => Kind::NotDelivered { to, id },
@@ -429,7 +489,8 @@ fn console_items(
 /// hands the plain-line router.
 #[must_use]
 pub(crate) fn thread_items(events: &[Event]) -> Vec<Item> {
-    console_items("", &[], events, &|_| Body::OldCore, &mut Vec::new())
+    let gaps = &mut Vec::new();
+    console_items("", &[], events, &|_| Body::OldCore, &Via::of_grammar, gaps)
 }
 
 /// Whether `/close` may withdraw console request `id`: the console's own ask
@@ -444,7 +505,8 @@ pub fn may_close(events: &[Event], id: &str) -> Result<(), String> {
         return Err("a close needs a request id".to_owned());
     }
     let mut open = None;
-    for item in console_items("", &[], events, &|_| Body::OldCore, &mut Vec::new()) {
+    let gaps = &mut Vec::new();
+    for item in console_items("", &[], events, &|_| Body::OldCore, &Via::of_grammar, gaps) {
         let still_open = open == Some(Ok(()));
         match item.kind {
             Kind::Asked { id: asked, .. } if asked == id => open = Some(Ok(())),

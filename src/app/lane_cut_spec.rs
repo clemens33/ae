@@ -16,6 +16,7 @@ fn assert_cut(token: &str, rest: &str) {
                 id: "q".to_owned(),
                 uncertain: false,
                 gap: None,
+                via: None,
             },
             body,
         ),

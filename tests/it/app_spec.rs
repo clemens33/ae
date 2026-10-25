@@ -1040,6 +1040,7 @@ fn draw_lane() -> Lane {
                     id: "r-1".to_owned(),
                     uncertain: false,
                     gap: None,
+                    via: None,
                 },
                 body: "ship it?".to_owned(),
                 record: None,

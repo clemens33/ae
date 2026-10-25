@@ -157,6 +157,7 @@ fn chat_wrap_every_visual_header_body_and_status_row_keeps_voice_bar_and_fits() 
             id: ID.to_owned(),
             uncertain: false,
             gap: None,
+            via: None,
         },
         body,
     );
@@ -359,6 +360,7 @@ fn chat_wrap_ask_answer_closed_and_unadmitted_headers_hide_request_ids_only() {
                 id: ID.to_owned(),
                 uncertain: false,
                 gap: None,
+                via: None,
             },
             "you → lead",
         ),
@@ -368,6 +370,7 @@ fn chat_wrap_ask_answer_closed_and_unadmitted_headers_hide_request_ids_only() {
                 id: ID.to_owned(),
                 uncertain: true,
                 gap: None,
+                via: None,
             },
             "you → lead · uncertain: check the lead pane",
         ),
@@ -532,7 +535,7 @@ fn chat_wrap_explicit_close_can_still_withdraw_an_older_own_ask() {
 }
 
 #[test]
-fn chat_wrap_outcomes_and_open_cap_refusal_keep_words_without_request_ids() {
+fn chat_wrap_outcomes_keep_words_and_cap_refusal_names_open_ids() {
     let cases = [
         (Outcome::Sent(ID.to_owned(), None), "sent"),
         (
@@ -575,7 +578,12 @@ fn chat_wrap_outcomes_and_open_cap_refusal_keep_words_without_request_ids() {
     )
     .expect_err("five-open cap");
     assert!(!delivered.get());
-    assert!(refused.contains("5 requests open"), "{refused}");
-    assert!(!refused.contains("ae-2026"), "{refused}");
+    assert!(refused.contains("cap-full"), "{refused}");
+    for index in 0..5 {
+        assert!(
+            refused.contains(&format!("ae-20261003T070000Z-{index:08x}")),
+            "{refused}"
+        );
+    }
     assert_eq!(saved.container(), before, "cap never delivers or appends");
 }

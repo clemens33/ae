@@ -289,6 +289,20 @@ pub(crate) fn admit_record_locked(
     admit_kept(held, dir, session, raw, owns, Kept::Instance(record), lock)
 }
 
+/// The owner's cap: below [`OPEN_CAP`] console asks open in `session`'s
+/// journal, or a refusal naming the limit and every open id, oldest first.
+fn owner_cap(events: &[Event], session: &str) -> Result<(), String> {
+    let open = lane::open_asks(events, session);
+    if open.len() < OPEN_CAP {
+        return Ok(());
+    }
+    Err(format!(
+        "cap-full: {}/{OPEN_CAP} console asks open; open ids: {}; owner /close can withdraw an ask",
+        open.len(),
+        open.join(", ")
+    ))
+}
+
 fn admit_kept(
     held: &mut crate::events::Held,
     dir: &Path,
@@ -303,13 +317,7 @@ fn admit_kept(
         .publish(raw)
         .map_err(|why| format!("the draft could not be kept ({why})"))?;
     let events = super::snapshot_in(held, dir)?;
-    let open = lane::open_asks(&events, session);
-    if open.len() >= OPEN_CAP {
-        let count = open.len();
-        return Err(format!(
-            "{count} requests open; /close withdraws the newest"
-        ));
-    }
+    owner_cap(&events, session)?;
     Ok(Admitted {
         dir: dir.to_owned(),
         draft: Some(draft),
@@ -351,13 +359,7 @@ pub(crate) fn admit_external(
     if recorded {
         return Ok(Admission::Recorded(read_back(&events, id, "")));
     }
-    let open = lane::open_asks(&events, session);
-    if open.len() >= OPEN_CAP {
-        let count = open.len();
-        return Err(format!(
-            "{count} requests open; /close withdraws the newest"
-        ));
-    }
+    owner_cap(&events, session)?;
     Ok(Admission::Fresh(Admitted {
         dir: dir.to_owned(),
         draft: None,
@@ -611,12 +613,11 @@ pub(in crate::console) mod tests {
         let dir = session("sixth", 5);
         append(&dir, &stale(&id(1)));
         let (raw, before) = (b"@colead first line\nsecond line".as_slice(), journal(&dir));
-        let full = "5 requests open; /close withdraws the newest".to_owned();
-        assert_eq!(
-            run(&dir, raw, never),
-            Err(full),
-            "a stale reply is not the answer"
-        );
+        let full = run(&dir, raw, never).expect_err("a stale reply is not the answer");
+        assert!(full.contains("cap-full"), "{full}");
+        for n in 1..=5 {
+            assert!(full.contains(&id(n)), "missing open id {}: {full}", id(n));
+        }
         let kept = (before.clone(), SourceRead::Ready(raw.to_vec()));
         assert_eq!((journal(&dir), draft(&dir)), kept);
         let owned = || Err("input owned by window @2".to_owned());
@@ -923,8 +924,7 @@ pub(in crate::console) mod tests {
         assert_eq!(a.join().unwrap(), Ok(Outcome::Sent(id(10), None)));
         let b = b.join().unwrap();
         assert!(
-            b.as_ref()
-                .is_err_and(|why| why.starts_with("5 requests open;")),
+            b.as_ref().is_err_and(|why| why.starts_with("cap-full:")),
             "{b:?}"
         );
         assert!(b_seen.try_recv().is_err(), "the second never delivered");

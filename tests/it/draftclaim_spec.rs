@@ -940,7 +940,7 @@ fn one_windows_sent_ask_never_clears_another_live_windows_kept_line() {
     rig.typed(&a, "dc-cap-kept");
     rig.key(&a, "Enter");
     rig.wait(&a, "GUARD shared admission enforces five open", |s| {
-        s.contains("5 requests open")
+        s.contains("cap-full")
     });
     assert_kept_drafts(&rig.tool.dir, &[b"dc-cap-kept"]);
     rig.clear(&a, "dc-cap-kept");

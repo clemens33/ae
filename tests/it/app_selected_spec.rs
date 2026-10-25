@@ -972,7 +972,7 @@ fn per_target_five_open_cap_and_both_close_forms_touch_only_that_journal() {
     rig.typed(&pane, "t-over-cap");
     rig.raw(&rig.s, &pane, "\r");
     rig.wait(&rig.s, &pane, "B2 T sixth ask refused", |s| {
-        s.contains("refused") && s.contains("5 requests open")
+        s.contains("refused") && s.contains("cap-full")
     });
     assert_eq!(rig.asks(&rig.t).len(), 5, "S count does not enter T cap");
     assert_eq!(rig.asks(&rig.s).len(), 1);

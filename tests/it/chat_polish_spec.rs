@@ -524,6 +524,7 @@ fn asked(id: &str, body: &str) -> Item {
             id: id.to_owned(),
             uncertain: false,
             gap: None,
+            via: None,
         },
         body: body.to_owned(),
         record: None,

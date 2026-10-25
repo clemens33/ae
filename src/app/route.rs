@@ -435,6 +435,7 @@ mod tests {
             id: id.to_owned(),
             uncertain: false,
             gap: None,
+            via: None,
         };
         let items = vec![
             item(asked("lead", "a")),

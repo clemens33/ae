@@ -49,6 +49,9 @@ pub struct Event {
     pub summary: Option<String>,
     /// Why submit could not be verified; presence, even empty, preserves doubt.
     pub unverifiable: Option<String>,
+    /// The emitting orchestrator session's `session_id`, as written: audit
+    /// only, never authority. Presence, even empty, is kept as written.
+    pub relay_origin: Option<String>,
     /// The sender's slot.
     pub actor_slot: RoutingMember,
     /// The sender's session.
@@ -476,6 +479,11 @@ impl Event {
                 Some(Value::Str(reason)) => Some(reason.clone()),
                 Some(_) => return Err(EventError::WrongType("unverifiable")),
             },
+            relay_origin: match value.get("relay_origin") {
+                None => None,
+                Some(Value::Str(origin)) => Some(origin.clone()),
+                Some(_) => return Err(EventError::WrongType("relay_origin")),
+            },
             actor_slot: RoutingMember::read(value, "actor_slot")?,
             actor_session: RoutingMember::read(value, "actor_session")?,
             target_slot: RoutingMember::read(value, "target_slot")?,
@@ -676,7 +684,7 @@ pub(crate) fn is_session_id(text: &str) -> bool {
 }
 
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 24] = [
+const KNOWN_KEYS: [&str; 25] = [
     "ts",
     "actor",
     "action",
@@ -684,6 +692,7 @@ const KNOWN_KEYS: [&str; 24] = [
     "ref",
     "summary",
     "unverifiable",
+    "relay_origin",
     "actor_slot",
     "actor_session",
     "target_slot",
@@ -1643,7 +1652,7 @@ mod tests {
 
     /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 24] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 25] = [
         "ts",
         "actor",
         "action",
@@ -1651,6 +1660,7 @@ mod tests {
         "ref",
         "summary",
         "unverifiable",
+        "relay_origin",
         "actor_slot",
         "actor_session",
         "target_slot",

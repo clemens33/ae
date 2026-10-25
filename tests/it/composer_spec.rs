@@ -289,7 +289,7 @@ fn chat_cap_refusal_keeps_the_draft_visible() {
     let pane = rig.open(false);
     rig.ready(&pane);
     rig.type_line(&pane, "sixth stays visible");
-    let screen = rig.wait(&pane, "cap refusal", |s| s.contains("5 requests open"));
+    let screen = rig.wait(&pane, "cap refusal", |s| s.contains("cap-full"));
     assert!(
         screen.contains("sixth stays visible"),
         "draft kept: {screen}"
@@ -333,6 +333,6 @@ fn app_cap_refusal_keeps_the_draft_visible() {
     rig.wait(&pane, "lane drawn", |s| s.contains("fixture words"));
     rig.write(&pane);
     rig.type_line(&pane, "app sixth stays");
-    let screen = rig.wait(&pane, "cap refusal", |s| s.contains("5 requests open"));
+    let screen = rig.wait(&pane, "cap refusal", |s| s.contains("cap-full"));
     assert!(screen.contains("app sixth stays"), "draft kept: {screen}");
 }

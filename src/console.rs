@@ -428,7 +428,21 @@ impl Console {
             _ => None,
         };
         let body = |event: &Event| self.body(event);
-        let mut lane = lane::fold(&self.name, &seats, &events, &observation, skipped, &body);
+        let origins = RefCell::new(BTreeMap::new());
+        let via = |origin: &str| {
+            let mut origins = origins.borrow_mut();
+            let known = origins.entry(origin.to_owned());
+            known.or_insert_with(|| self.origin(origin)).clone()
+        };
+        let mut lane = lane::fold_via(
+            &self.name,
+            &seats,
+            &events,
+            &observation,
+            skipped,
+            &body,
+            &via,
+        );
         let journal_read = read_gap.is_none();
         let settled = journal_read && self.staged.stage == Stage::Every;
         lane.coverage.extend(read_gap);
@@ -444,6 +458,24 @@ impl Console {
             settled,
             rebased,
         })
+    }
+
+    /// Where a relayed ask's `origin` points NOW: the one session in this
+    /// state root whose meta `session_id` it is, by name. Read afresh each
+    /// read, so a rename or a changed meta shows with no journal change.
+    fn origin(&self, origin: &str) -> lane::Via {
+        if !crate::events::is_session_id(origin) {
+            return lane::Via::Unreadable;
+        }
+        let Some(root) = self.dir.parent().and_then(Path::parent) else {
+            return lane::Via::Unavailable;
+        };
+        let names = lifecycle::sessions_with_id(root, origin).ok();
+        // None, several, or a name no session may go by: no one name to show.
+        match names.as_deref() {
+            Some([name]) if lifecycle::name_is_usable(root, name) => lane::Via::Named(name.clone()),
+            _ => lane::Via::Unavailable,
+        }
     }
 
     /// Only a positively read whole body is memoized. The store checks both

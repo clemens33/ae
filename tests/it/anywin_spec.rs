@@ -365,7 +365,7 @@ fn five_open_is_session_wide_across_both_composers_and_close_reopens_capacity() 
     rig.typed(&b, "aw-sixth");
     rig.key(&b, "Enter");
     rig.wait(&b, "shared five-open cap refuses a sixth ask", |s| {
-        s.contains("5 requests open") && rig.draft_row(s).contains("aw-sixth")
+        s.contains("cap-full") && rig.draft_row(s).contains("aw-sixth")
     });
     assert_eq!(rig.asks().len(), 5);
     rig.typed(&a, "/close");

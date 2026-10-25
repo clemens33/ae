@@ -644,9 +644,16 @@ pub(super) fn tag(kind: &Kind) -> String {
         Kind::Card { seat } => format!("DECISION {seat} · waiting-user"),
         Kind::NeedsYou { seat } => format!("NEEDS YOU {seat} · needs you in its pane"),
         Kind::Asked {
-            to, uncertain, gap, ..
+            to,
+            uncertain,
+            gap,
+            via,
+            ..
         } => {
             let mut tag = format!("you → {to}");
+            if let Some(via) = via {
+                let _ = write!(tag, " · {}", via.badge());
+            }
             if *uncertain {
                 let _ = write!(tag, " · uncertain: check the {to} pane");
             }
@@ -2184,6 +2191,7 @@ mod tests {
                 id: "id".to_owned(),
                 uncertain: false,
                 gap: None,
+                via: None,
             },
             Kind::NotDelivered {
                 to: "lead".to_owned(),
@@ -2219,6 +2227,7 @@ mod tests {
                 id,
                 uncertain: false,
                 gap: None,
+                via: None,
             },
             "closed" => Kind::Closed { id },
             _ => Kind::NotDelivered { to, id },
@@ -2528,6 +2537,7 @@ mod tests {
             id: "id".to_owned(),
             uncertain: false,
             gap: None,
+            via: None,
         };
         let got = printed.step(&lane(vec![item(kind, T, "q\n  r")], &["gap"]), 0, true);
         let want = "coverage incomplete: gap\n# 2026-09-30 +0200\n▌ 08:01:00 you → lead\n▌  q\n▌    r\n▌  sent id\n\n";
@@ -2580,6 +2590,7 @@ mod tests {
             id: id.to_owned(),
             uncertain: false,
             gap: None,
+            via: None,
         };
         assert_eq!(
             Style::PLAIN.head(&ask, "06:01:00"),

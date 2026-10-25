@@ -973,6 +973,7 @@ fn closed_app(asked: &str) -> (App, Receiver<Request>) {
             id: "ae-1".to_owned(),
             uncertain: false,
             gap: None,
+            via: None,
         },
         asked,
     );
@@ -1069,6 +1070,7 @@ fn an_accepted_turn_has_no_file_link() {
             id: "ae-1".to_owned(),
             uncertain: false,
             gap: None,
+            via: None,
         },
         "see src/a.rs",
     );

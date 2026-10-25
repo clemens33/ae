@@ -571,8 +571,8 @@ fn a_sixth_open_request_refuses_and_names_all_five_without_appending() {
     rig.ready(&pane, &mut output);
     output.clear();
     rig.type_line(&pane, "sixth independent request");
-    output.wait("cap refusal counts open asks without showing ids", |text| {
-        text.contains("5 requests open") && OPEN_IDS.iter().all(|id| !text.contains(id))
+    output.wait("cap refusal names all open asks", |text| {
+        text.contains("cap-full") && OPEN_IDS.iter().all(|id| text.contains(id))
     });
     assert_eq!(rig.tool.events(), before);
     // S1 migration: the cap refusal retains the chat's OWN record (inv. 1, 6).

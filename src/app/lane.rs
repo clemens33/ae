@@ -554,9 +554,16 @@ fn head(kind: &Kind, main: &str, through: bool) -> (String, String, Voice) {
         )),
         Kind::Inbound { from, to } => (from.clone(), format!("to {to}"), Voice::You),
         Kind::Asked {
-            to, uncertain, gap, ..
+            to,
+            uncertain,
+            gap,
+            via,
+            ..
         } => {
             let mut what = format!("to {to}");
+            if let Some(via) = via {
+                let _ = write!(what, " · {}", via.badge());
+            }
             if *uncertain {
                 let _ = write!(what, " · uncertain: check the {to} pane");
             } else if through {
@@ -1167,6 +1174,7 @@ mod tests {
                     id: s(),
                     uncertain: false,
                     gap: None,
+                    via: None,
                 },
                 None,
             ),
@@ -1176,6 +1184,7 @@ mod tests {
                     id: s(),
                     uncertain: false,
                     gap: Some("body missing".to_owned()),
+                    via: None,
                 },
                 Some(summary),
             ),
@@ -1312,6 +1321,7 @@ mod tests {
                 id: "q".to_owned(),
                 uncertain,
                 gap: gap.map(str::to_owned),
+                via: None,
             };
             item(kind, "body")
         };

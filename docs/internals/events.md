@@ -122,6 +122,16 @@ Its presence, even an empty string, makes a console ask's receipt `Uncertain`
 and keeps its recovery draft. A wrong type or duplicate key invalidates the
 record; an older core steps over the additive key as unknown data.
 
+`relay_origin` is the emitting orchestrator session's `session_id`, as written,
+on a `console:local` ask. It is audit data, never authority: the open-ask count,
+the cap and `/close` ignore it. `ae chat` and `ae app` badge the ask
+`via orchestrator <name>`, the name read at render time from the session whose
+meta `session_id` equals it; no such session, or more than one, reads
+`(name unavailable)`, and a value that is not a canonical UUID, the empty string
+included, reads `(origin unreadable)`. The UUID itself is never shown. Presence
+is kept as written; a wrong type or duplicate key invalidates the record, and an
+older core steps over the additive key as unknown data.
+
 ## Actions
 
 | Action | Emitted by | Meaning |
