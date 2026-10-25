@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.139] - 2026-10-25
+- Keep unverifiable chat submissions uncertain
+
 ## [v2026.10.138] - 2026-10-25
 - **app**: Summarize live seats on Accounts tab
 
