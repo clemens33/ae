@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.142] - 2026-10-27
+- Clarify cmd-click link gestures
+- Gate releases on the dependency audit
+- Turn orchestrator relay into a tracked chat ask
+
 ## [v2026.10.141] - 2026-10-25
 - Badge relayed console asks with their origin session
 
