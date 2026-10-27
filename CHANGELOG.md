@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.143] - 2026-10-27
+- Enable Ghostty hyperlinks on owned tmux servers
+
 ## [v2026.10.142] - 2026-10-27
 - Clarify cmd-click link gestures
 - Gate releases on the dependency audit
