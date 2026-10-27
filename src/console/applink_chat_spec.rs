@@ -58,9 +58,11 @@
 //! time — a shape-qualified path links whether or not it exists, and a click
 //! opens whatever the text names (the terminal decides); `..` is kept,
 //! un-normalised; a path whose text holds whitespace never links; tmux
-//! forwards a link only when the user's own `terminal-features` knows their
-//! terminal supports hyperlinks — ae never writes that server option, and a
-//! tmux that strips the sequence leaves the visible text unchanged.
+//! forwards a link only when `terminal-features` grants that terminal
+//! hyperlinks. ae adds `xterm-ghostty:hyperlinks` on its own servers and
+//! leaves every other entry alone; an attached client learns the feature at
+//! its next attach. A tmux that strips the sequence leaves the visible text
+//! unchanged.
 
 use std::path::Path;
 

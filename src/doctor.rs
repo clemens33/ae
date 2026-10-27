@@ -1355,7 +1355,19 @@ fn judge_server_bindings(
         };
         tables.push((entry.table.clone(), keys));
     }
-    match compare_bindings(&expected, &tables, own).as_slice() {
+    let mut problems = compare_bindings(&expected, &tables, own);
+    for op in crate::session_tmux::status_bindings_argv(server, &launcher, probe.menu_mouse()) {
+        if let Some((query, required)) = op.if_missing_line() {
+            let (ok, output) = crate::transport::run_tmux_op(&query);
+            if !ok {
+                return unreadable("show-options -sv terminal-features did not answer".to_owned());
+            }
+            if !output.lines().any(|line| line.trim() == required) {
+                problems.push(format!("terminal-features missing {required}"));
+            }
+        }
+    }
+    match problems.as_slice() {
         [] => BindingsStatus::Intact,
         problems => BindingsStatus::Broken(problems.to_vec()),
     }

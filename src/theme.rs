@@ -41,8 +41,8 @@ use crate::attention::Reason;
 ///
 /// True colour by hex: tmux maps an RGB value down to the closest entry of the
 /// 256-colour cube when the terminal does not report `RGB`, so one spelling
-/// serves both and `terminal-features` — a SERVER option, and therefore the
-/// user's — is never touched.
+/// serves both without the look changing `terminal-features`. Owned-server
+/// input setup separately adds `xterm-ghostty:hyperlinks`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     /// The name this palette is chosen by.

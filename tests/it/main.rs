@@ -91,6 +91,7 @@ mod install;
 mod keepconv_spec;
 mod launch_context_spec;
 mod lifecycle;
+mod linkfeat_spec;
 mod list_ended_spec;
 mod liveseats_spec;
 mod menu;

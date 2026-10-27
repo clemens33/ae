@@ -43,11 +43,12 @@
 //! Named residuals (accepted here, not closed): no filesystem check at draw
 //! time — a shape-qualified path links whether or not it exists, and a click
 //! opens whatever the text names (the terminal decides); `..` is kept,
-//! un-normalised; tmux forwards a link only when the user's own
-//! `terminal-features` knows their terminal supports hyperlinks — ae never
-//! writes that server option, and a tmux that strips the sequence leaves the
-//! visible text unchanged. Out of scope for r1: the Settings About tab's links
-//! stay plain text; the `ae doctor` hyperlinks row is a follow-up.
+//! un-normalised; tmux forwards a link only when `terminal-features` grants
+//! that terminal hyperlinks. ae adds `xterm-ghostty:hyperlinks` on its own
+//! servers and leaves every other entry alone; an attached client learns the
+//! feature at its next attach. A tmux that strips the sequence leaves the
+//! visible text unchanged. Out of scope: the Settings About tab's links stay
+//! plain text.
 
 use std::cell::RefCell;
 use std::path::Path;

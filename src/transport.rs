@@ -2136,6 +2136,17 @@ fn write_run(server: &ServerId, args: &[String]) -> bool {
 /// product code runs a tmux command that is not already a typed builder above.
 #[must_use]
 pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String) {
+    if let Some((query, required)) = argv.if_missing_line() {
+        let (ok, output) = run_tmux_op(&query);
+        if !ok {
+            return (false, output);
+        }
+        if output.lines().any(|line| line.trim() == required) {
+            return (true, String::new());
+        }
+        // Accepted race: two simultaneous first assertions may append one
+        // duplicate row. It is harmless; later reads see it and stop growth.
+    }
     match spawn(PROGRAM, argv.as_args(), &[], Streams::Captured, None) {
         Some(output) => (
             output.status.success(),

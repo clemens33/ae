@@ -440,8 +440,9 @@ restyle another session's strip.
 
 Every colour is a six-digit hex, and tmux down-converts RGB to the nearest
 256-colour entry when the terminal does not report `RGB`. So one spelling serves
-both, and `terminal-features` — a **server** option, and therefore yours — is
-never touched.
+both without the look changing `terminal-features`. On ae-owned servers, the
+input setup separately adds `xterm-ghostty:hyperlinks`, preserving existing
+entries; the user's own tmux is untouched.
 
 **Darcula** is the default, and every one of its tokens is the JetBrains IDE's
 own: the accents are its syntax colours, so a mark reads the way the code in the

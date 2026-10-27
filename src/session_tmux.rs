@@ -64,12 +64,21 @@ fn lead_pair_layout_if_unzoomed_command(pane: &str) -> String {
 }
 
 /// A tmux argv minted ONLY by this module's [`argv`] builder.
-pub(crate) struct TmuxArgv(Vec<String>);
+pub(crate) struct TmuxArgv(Vec<String>, Option<Vec<String>>);
+
+const GHOSTTY_HYPERLINKS: &str = "xterm-ghostty:hyperlinks";
 
 impl TmuxArgv {
     /// The argv for the transport door to spawn.
     pub(crate) fn as_args(&self) -> &[String] {
         &self.0
+    }
+
+    /// A plain query and complete line whose absence permits this write.
+    pub(crate) fn if_missing_line(&self) -> Option<(Self, &'static str)> {
+        self.1
+            .as_ref()
+            .map(|query| (Self(query.clone(), None), GHOSTTY_HYPERLINKS))
     }
 }
 
@@ -86,6 +95,8 @@ pub(crate) enum Split {
 
 /// One tmux command the launch operation runs.
 pub(crate) enum Op<'a> {
+    /// Append Ghostty's measured hyperlink capability only when absent.
+    EnsureHyperlinks,
     /// `new-session -d -s <name> -c <dir> -P -F '#{pane_id}'` — the session and
     /// its first pane, in one call, printing the pane id rather than asking for
     /// it afterwards.
@@ -259,6 +270,12 @@ pub(crate) enum Op<'a> {
 pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
     let mut args = server_args(server);
     match *op {
+        Op::EnsureHyperlinks => {
+            args.extend(
+                ["set-option", "-sa", "terminal-features", GHOSTTY_HYPERLINKS]
+                    .map(ToOwned::to_owned),
+            );
+        }
         Op::NewSession { name, work_dir } => {
             args.extend(crate::tmux::new_session_identity_args(name, work_dir));
         }
@@ -526,7 +543,12 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             args.extend(["-E", "-", "-t", pane].map(ToOwned::to_owned));
         }
     }
-    TmuxArgv(args)
+    let query = matches!(op, Op::EnsureHyperlinks).then(|| {
+        let mut query = server_args(server);
+        query.extend(["show-options", "-sv", "terminal-features"].map(ToOwned::to_owned));
+        query
+    });
+    TmuxArgv(args, query)
 }
 
 fn format_if(predicate: &str, yes: &str, no: &str) -> String {
@@ -854,6 +876,7 @@ pub(crate) fn status_bindings_argv(
                 bindings.push(argv(server, &Op::BindConsoleHotkey { key, shell: &shell }));
             }
             bindings.extend(view_return_bindings(server));
+            bindings.push(argv(server, &Op::EnsureHyperlinks));
             bindings
         }
     }
@@ -863,7 +886,7 @@ pub(crate) fn status_bindings_argv(
 /// session's view marker, every other client keeping the key.
 fn view_return_bindings(server: &ServerId) -> [TmuxArgv; 2] {
     crate::tmux::VIEW_RETURN_KEYS
-        .map(|key| TmuxArgv(crate::tmux::view_return_bind_args(server, key)))
+        .map(|key| TmuxArgv(crate::tmux::view_return_bind_args(server, key), None))
 }
 
 /// One key-table entry `ae doctor` expects on an ae-owned server.
@@ -1323,8 +1346,8 @@ mod tests {
         let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], true);
         assert_eq!(
             bindings.len(),
-            19,
-            "mouse-aware servers assert Down bindings, remove every stock right-click menu, and carry the wheel map, the reader and console hotkeys and the pane view's return keys"
+            20,
+            "mouse-aware servers assert Down bindings, remove every stock right-click menu, carry the wheel map, the reader and console hotkeys and the pane view's return keys, and append Ghostty hyperlinks once"
         );
         for (bound, key) in bindings[17..].iter().zip(crate::tmux::VIEW_RETURN_KEYS) {
             assert_eq!(
@@ -1464,8 +1487,8 @@ mod tests {
         let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
         assert_eq!(
             keyboard.len(),
-            19,
-            "keyboard-driven servers bind release, remove every stock right-click menu, and carry the wheel map, the reader and console hotkeys and the pane view's return keys"
+            20,
+            "keyboard-driven servers bind release, remove every stock right-click menu, carry the wheel map, the reader and console hotkeys and the pane view's return keys, and append Ghostty hyperlinks once"
         );
         assert_eq!(
             keyboard[0].as_args(),
@@ -1602,6 +1625,48 @@ mod tests {
             status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()], true).is_empty(),
             "an ambient server's root table belongs to its user"
         );
+    }
+
+    /// One hyperlinks operation on a selected server, on both menu capabilities.
+    /// It is not a key: `expected_status_bindings` stays the key identity.
+    /// The entry is its own argv word and contains no comma, because a comma
+    /// splits a `terminal-features` element. Ambient stays empty.
+    #[test]
+    fn the_selected_server_carries_one_ghostty_hyperlinks_op() {
+        const ENTRY: &str = "xterm-ghostty:hyperlinks";
+        let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
+        for menu_mouse in [true, false] {
+            let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], menu_mouse);
+            assert_eq!(bindings.len(), 20, "menu_mouse={menu_mouse}");
+            let hits: Vec<_> = bindings
+                .iter()
+                .filter(|binding| binding.as_args().iter().any(|word| word == ENTRY))
+                .collect();
+            assert_eq!(hits.len(), 1, "menu_mouse={menu_mouse}");
+            let op = hits[0].as_args();
+            assert!(
+                op.iter().all(|word| !word.contains(',')),
+                "a comma splits a terminal-features element: {op:?}"
+            );
+            assert!(
+                op.iter()
+                    .all(|word| word != "bind-key" && word != "unbind-key"),
+                "the feature is not a key binding: {op:?}"
+            );
+            assert!(
+                expected_status_bindings(menu_mouse)
+                    .iter()
+                    .all(|entry| entry.key != "terminal-features"),
+                "menu_mouse={menu_mouse}"
+            );
+        }
+        for menu_mouse in [true, false] {
+            assert!(
+                status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()], menu_mouse)
+                    .is_empty(),
+                "ambient is the user's server"
+            );
+        }
     }
 
     /// The context menu is centred on the CLIENT that asked for it, and the

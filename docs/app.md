@@ -693,16 +693,12 @@ anything else percent-encoded, so no record can end a link early, open a
 second one or smuggle a control into it.
 
 OSC 8 must reach your terminal. Terminal.app has no hyperlinks. Inside tmux
-(3.4 and later, ae's floor) tmux forwards a link only when its
-`terminal-features` say your terminal takes them; for most terminals add
-
-```
-set -as terminal-features ',xterm*:hyperlinks'
-```
-
-to `~/.tmux.conf` (match `$TERM`; Ghostty's TERM is `xterm-ghostty`,
-which matches `xterm*`). After `set -as`, reattach with a new client to refresh
-capabilities. ae never writes the option; unforwarded links show plain text.
+(3.4 and later, ae's floor), `terminal-features` must declare hyperlink support.
+On its own servers, ae adds `xterm-ghostty:hyperlinks` at launch and upgrade,
+including with `theme = off`, preserving existing entries. Detach and reattach
+once so an already-attached client learns the capability. Your own tmux is
+untouched. For other terminals, verify OSC 8 support and configure a matching
+`terminal-features` entry in your tmux setup; unforwarded links show plain text.
 Following a file link inside ae uses a plain click or
 [`r`](#reading-a-linked-file) on a marked turn; memos and request threads have no
 reader. Dragging over a link selects and copies the visible text, as ever.
