@@ -450,7 +450,7 @@ changelog:
 # published a version with no assets behind it, which is the half-done state
 # this ordering exists to prevent.
 
-# Full release pipeline: check → test → bump → bundles → changelog → tag → gh release
+# Full release pipeline: check → test → rust-deny → bump → bundles → changelog → tag → gh release
 # Usage: just release
 release:
     #!/usr/bin/env bash
@@ -510,13 +510,16 @@ release:
     # Gate 2: Tests
     just test
 
+    # Gate 3: Supply chain on every release; advisory DB needs network, so offline refuses before bump.
+    just rust-deny
+
     # Version
     VERSION=$(just bump)
     echo "Releasing v$VERSION"
     # Re-parse and compile after bump before any changelog or tag publication.
     cargo check --locked
 
-    # Gate 3: the artifacts themselves. Both platform halves and the
+    # Gate 4: the artifacts themselves. Both platform halves and the
     # release-level SHA256SUMS, built and proven HERE — this is what the release
     # gate guards. It runs BEFORE the tag deliberately: a failed
     # cross build or a musl binary that is not static costs a `git checkout` of

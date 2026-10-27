@@ -86,7 +86,7 @@ The loop, in order:
    out to another CLI, never a harness-internal subagent.
 4. Commit on green, after the review findings are answered. Plain message, no trailers,
    no AI attribution of any kind.
-5. `just release` — local, one machine: gates, CalVer bump, both bundles, tag, push,
+5. `just release` — local, one machine: check, test, rust-deny, CalVer bump, both bundles, tag, push,
    assets. Nothing waits on a runner.
 
 Prefer small vertical slices and fast iterations. Commit, release, push and roll out
@@ -236,7 +236,7 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. Refuses on an unpinned tool or a stale `fuzz/Cargo.lock`, ends on the cutover evidence line, and REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |
 | `just rust-build-release` / `bundles` | native release binary (native only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` (needs the musl cross toolchain) |
 | `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing, `apply=yes` runs five fixed `cargo clean -p ae` cleans, each proved by a `--dry-run` path check first. Refuses a redirected target dir, a non-root cwd, a linked tree, a process using the checkout or a dry run it cannot prove (a stdout line that is not an absolute path inside its tree, no single valid `Summary`). Own tree only, never during a gate (`docs/development.md`) |
-| `just release` | the whole release, locally. Pre-flight refuses before any state is written |
+| `just release` | the whole release, locally: check, test, rust-deny before the bump. Pre-flight refuses before any state is written |
 | `just rust-linux` / `rust-linux-smoke` | the gate on real Linux, native arm64, in a local container (read-only checkout, `ae-linux-arm64-*` cache volumes, non-root) / the x86_64 musl release bundle from `./dist` executed in an amd64 container |
 
 ## Session helpers

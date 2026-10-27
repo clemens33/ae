@@ -61,7 +61,7 @@ just rust-check       # Rust fmt, clippy, compile every fuzz target, nextest, do
 just rust-prune       # report stale ae build output here; apply=yes cleans it
 just version          # current AE_VERSION
 just bundles          # both platform bundles + release SHA256SUMS into ./dist
-just release          # full release pipeline (CalVer → bundles → tag → gh release)
+just release          # check → test → rust-deny → CalVer → bundles → tag → gh release
 just docs             # serve the docs site locally on http://localhost:8000
 just docs-build       # build the static site into ./site
 ```
@@ -296,21 +296,22 @@ recovered with `just bump-recover`.
 1. Pre-flight: clean working tree; on `main`; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
 3. `just test` (the Rust suite; minutes).
-4. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
-5. `just bundles` builds both halves into `dist/` and proves them.
-6. `git-cliff` → `CHANGELOG.md` + release-body.
-7. Commit, tag locally, write the notes file and check every asset, push the branch, then `gh release create --target <sha>` with the three assets and the changelog section as `--notes-file`.
+4. `just rust-deny` audits advisories, licenses, bans and sources (`cargo deny --locked check`). The advisory DB needs network; an offline release refuses here, before the bump.
+5. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
+6. `just bundles` builds both halves into `dist/` and proves them.
+7. `git-cliff` → `CHANGELOG.md` + release-body.
+8. Commit, tag locally, write the notes file and check every asset, push the branch, then `gh release create --target <sha>` with the three assets and the changelog section as `--notes-file`.
 
 **Why the order is what it is.** Everything that can refuse refuses in step 1, before a
 version file is written and long before a tag exists — an authenticated `gh` account is not
 the same thing as one that can push here, which is why the API is asked rather than the
 login trusted, and the branch is checked there rather than after five files have been
-rewritten. The bundles are built in step 5, still before anything is pushed.
+rewritten. The bundles are built in step 6, still before anything is pushed.
 
 **The remote tag is created by the release, not pushed ahead of it.** A `git push <tag>`
 that lands and a `gh release create` that then fails publishes a version with nothing behind
 it: `install` resolves the latest release, finds no `SHA256SUMS`, and the install one-liner
-is broken for everyone. So step 7 pushes only the branch and lets
+is broken for everyone. So step 8 pushes only the branch and lets
 `gh release create --target <sha>` create the tag object and the release in one call with
 the assets attached. If that call fails, the remote has no tag, the local one survives, and
 the retry command is printed; a re-run against an existing release uploads into it with

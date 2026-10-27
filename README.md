@@ -176,10 +176,10 @@ Requires [just](https://github.com/casey/just) and [rustup](https://rustup.rs), 
 just rust-setup       # pinned toolchain + dev tools (idempotent; installs nothing on a second run)
 just test             # the gate: format, lint, compile every fuzz target, tests (= just rust-check)
 just check            # lint (shellcheck) + format check (shfmt) for the installer
-just release          # check → test → CalVer bump → changelog → tag → gh release
+just release          # check → test → rust-deny → CalVer bump → changelog → tag → gh release
 ```
 
-Other lanes (`just rust-deny` supply chain, `just rust-mutants` do the tests discriminate) and the conventions: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#toolchain-pins)**.
+`just rust-deny` audits supply chain on every release; `just rust-mutants` asks whether the tests discriminate. Lanes and conventions: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#toolchain-pins)**.
 
 ## License
 
