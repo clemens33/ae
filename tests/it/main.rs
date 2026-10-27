@@ -115,6 +115,7 @@ mod quota_view_spec;
 mod reader;
 mod recovery_ladder_spec;
 mod refusal_rig;
+mod relay_chat_spec;
 mod relay_origin_spec;
 mod renametell_notice_spec;
 mod renametell_routing_spec;

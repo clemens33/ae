@@ -14,6 +14,9 @@ use crate::tracked;
 /// The most console asks one session holds open at once.
 pub const OPEN_CAP: usize = 5;
 
+/// The most a relay may leave open: it never takes the owner's last slot.
+pub const RELAY_CAP: usize = OPEN_CAP - 1;
+
 /// The first pane stamped with console `uuid` that is `live` (or dead), by
 /// window index then pane index — the order the session shows, never tmux's
 /// listing order. A live one is the console that owns the session's input.
@@ -289,18 +292,41 @@ pub(crate) fn admit_record_locked(
     admit_kept(held, dir, session, raw, owns, Kept::Instance(record), lock)
 }
 
-/// The owner's cap: below [`OPEN_CAP`] console asks open in `session`'s
-/// journal, or a refusal naming the limit and every open id, oldest first.
-fn owner_cap(events: &[Event], session: &str) -> Result<(), String> {
+/// The ONE cap: below `limit` console asks open in `session`'s journal, or a
+/// refusal naming the limit and every open id, oldest first. The owner's limit
+/// is [`OPEN_CAP`], a relay's [`RELAY_CAP`] over the same count.
+fn cap(events: &[Event], session: &str, limit: usize) -> Result<(), String> {
     let open = lane::open_asks(events, session);
-    if open.len() < OPEN_CAP {
+    if open.len() < limit {
         return Ok(());
     }
+    let relay = if limit < OPEN_CAP {
+        "; relay leaves one owner slot"
+    } else {
+        ""
+    };
     Err(format!(
-        "cap-full: {}/{OPEN_CAP} console asks open; open ids: {}; owner /close can withdraw an ask",
+        "cap-full: {}/{limit} console asks open; open ids: {}{relay}; owner /close can withdraw an ask",
         open.len(),
         open.join(", ")
     ))
+}
+
+/// A relay's admission, under the writer lease and admission lock its caller
+/// holds: `owns` re-proves, then the relay cap. It keeps no draft.
+///
+/// # Errors
+///
+/// Why nothing may be delivered.
+pub(crate) fn admit_relay(
+    held: &mut crate::events::Held,
+    dir: &Path,
+    session: &str,
+    owns: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    owns()?;
+    let events = super::snapshot_in(held, dir)?;
+    cap(&events, session, RELAY_CAP)
 }
 
 fn admit_kept(
@@ -317,7 +343,7 @@ fn admit_kept(
         .publish(raw)
         .map_err(|why| format!("the draft could not be kept ({why})"))?;
     let events = super::snapshot_in(held, dir)?;
-    owner_cap(&events, session)?;
+    cap(&events, session, OPEN_CAP)?;
     Ok(Admitted {
         dir: dir.to_owned(),
         draft: Some(draft),
@@ -359,7 +385,7 @@ pub(crate) fn admit_external(
     if recorded {
         return Ok(Admission::Recorded(read_back(&events, id, "")));
     }
-    owner_cap(&events, session)?;
+    cap(&events, session, OPEN_CAP)?;
     Ok(Admission::Fresh(Admitted {
         dir: dir.to_owned(),
         draft: None,

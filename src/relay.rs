@@ -1,33 +1,57 @@
-//! The orchestrator seat's privileged, unenveloped relay.
+//! The orchestrator seat's tracked relay into another session's chat.
 //!
-//! `relay <session[:agent]> <text…>` joins the remaining argv with one space,
-//! resolves the target on that session's recorded tmux server, and pastes the
-//! text verbatim. Bare text carries human authority, so this helper fails
+//! `relay <session[:agent]> <text…>` joins the remaining argv with one space
+//! and carries it as ONE chat ask of a lead-pair seat of that session (bare:
+//! its main seat) — the target chat's own ask, framed as the human's, whose
+//! opening records the orchestrator's session id as `relay_origin`. It fails
 //! closed unless tmux proves the caller is inside a session whose meta says
-//! exactly one `meta_agent=true`. Every attempt with a proven caller session is
-//! recorded only there; the target's ledger is never touched.
+//! exactly one `meta_agent=true`.
+//!
+//! One invocation, in this order. Every refusal before the claim records a
+//! ref-less `relay` row in the caller's journal alone and prints nothing on
+//! stdout. The claim — the exact text in the caller's `messages/` and one
+//! `relay-attempt` — is durable before any target key. Then the target chat's
+//! writer lease and admission lock are taken without waiting, and under them
+//! the caller, the target incarnation, the lead pair and the relay cap are
+//! proved again; the ask is carried by the console's own tracked path, which
+//! is the only writer in the target. Its request is read back, the locks are
+//! dropped, and the caller's journal gets one `relay-result` and at most one
+//! `ae:relay` chat echo. stdout is the receipt, three lines: the id,
+//! `outcome: sent|uncertain|not-delivered` and
+//! `request: pending|accepted|replied|cancelled|retired|absent|unknown`.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::config;
+use crate::console::{self, Console, lane::Seat, term};
 use crate::deliver;
+use crate::events::{Event, SessionKey};
 use crate::inventory::ServerId;
 use crate::meta;
-use crate::requests::is_slot;
+use crate::requests::{self, Status, is_slot};
 use crate::session_launch::name::is_session_name;
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
-use crate::store;
+use crate::store::{self, SourceRead};
 use crate::time::Timestamp;
 use crate::tmux::ObservedViewer;
-use crate::tracked::{self, EventFields};
+use crate::tracked::{self, EventFields, Kind, Receipt};
+use crate::{archive, lifecycle};
 
 /// The helper's argv contract.
 pub const USAGE: &str = "Usage: relay <session[:agent]> <text…>\n";
 
-/// The event action and recovery-body stem.
+/// A relay refused before it claimed anything: the legacy ref-less row.
 pub const ACTION: &str = "relay";
+
+/// The claim, durable before any target key.
+pub const ATTEMPT: &str = "relay-attempt";
+
+/// What the delivery did, recorded once the request is read back.
+pub const RESULT: &str = "relay-result";
+
+/// The actor of the caller's chat echo.
+pub const ECHO_ACTOR: &str = "ae:relay";
 
 /// Parsed relay argv.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,38 +90,77 @@ struct Caller {
     slot: String,
 }
 
+/// The caller and what its meta grants it: the role, the canonical
+/// `session_id` and the seat's `launch_id`, each empty when absent. Proved
+/// before the claim and proved equal again under the target's locks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Grant {
+    caller: Caller,
+    session_id: String,
+    launch: String,
+    role: meta::MetaAgentRole,
+}
+
+impl Grant {
+    fn of(dir: &Path, actual: Option<&(ObservedViewer, ServerId)>) -> Result<Self, &'static str> {
+        let (caller, bytes) = caller(dir, actual.map(|(viewer, server)| (viewer, server)))?;
+        let session_id = archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id"));
+        let launch = tracked::launch_id_at(&caller.dir, &caller.slot, &session_id);
+        Ok(Self {
+            caller,
+            session_id,
+            launch,
+            role: meta::meta_agent_role(&bytes),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Target {
     session: String,
     display: String,
 }
 
+impl Target {
+    fn agent(&self) -> &str {
+        self.display.split_once(':').map_or("", |(_, agent)| agent)
+    }
+}
+
+/// Everything proved before the claim: the target chat, its lead pair, the
+/// seat asked and the ask ready to carry.
+struct Prepared {
+    target: Target,
+    console: Console,
+    pair: Vec<Seat>,
+    seat: Seat,
+    carry: term::Carry,
+}
+
 /// Run one relay end to end.
 ///
-/// `dir` is the helper directory used to enter the core; `actual` is the
-/// caller identity and server read from the actual `$TMUX` socket.
+/// `dir` is the helper directory used to enter the core; `actual` reads the
+/// caller identity and server from the actual `$TMUX` socket, once before the
+/// claim and again under the target's locks.
 ///
 /// # Errors
 ///
-/// Only a failure to write `err`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the helper entry point's explicit authority and delivery inputs"
-)]
+/// Only a failure to write `out` or `err`.
 pub fn run(
     dir: &Path,
     tail: &[String],
-    actual: Option<(&ObservedViewer, &ServerId)>,
+    actual: impl Fn() -> Option<(ObservedViewer, ServerId)>,
     now: Timestamp,
-    defer: Duration,
+    entropy: u64,
+    out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let Ok(parsed) = parse(tail) else {
         write!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
     };
-    let (caller, caller_meta) = match caller(dir, actual) {
-        Ok(caller) => caller,
+    let grant = match Grant::of(dir, actual().as_ref()) {
+        Ok(grant) => grant,
         Err(reason) => {
             // With no proven caller there is no trustworthy session ledger to
             // write. The refusal itself still stays one line and fails closed.
@@ -105,93 +168,297 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     };
-    if meta::meta_agent_role(&caller_meta) != meta::MetaAgentRole::Role {
-        return refuse(
-            &caller,
-            &parsed,
-            "caller session is not an orchestrator",
-            now,
-            err,
-        );
-    }
-    if parsed.text.is_empty() {
-        return refuse(&caller, &parsed, "text is empty", now, err);
-    }
-    if parsed.text.len() as u64 > crate::deliver::notice::LIMIT {
-        return refuse(
-            &caller,
-            &parsed,
-            &format!(
-                "message is {} B; verbatim relay limit is {} B",
-                parsed.text.len(),
-                crate::deliver::notice::LIMIT
-            ),
-            now,
-            err,
-        );
-    }
-    let target = match target(&caller, &parsed.target) {
-        Ok(target) => target,
-        Err(reason) => return refuse(&caller, &parsed, &reason, now, err),
+    let caller = &grant.caller;
+    let prepared = match prepare(&grant, &parsed, now, entropy) {
+        Ok(prepared) => prepared,
+        Err(reason) => return refuse(caller, &parsed, &reason, now, err),
     };
-    let (resolved, server) =
-        match tracked::resolve_on(&target.display, &caller.session, &caller.dir) {
-            Ok(answer) => answer,
-            Err(why) => return refuse(&caller, &parsed, &why.message(), now, err),
-        };
+    let id = prepared.carry.id().to_owned();
+    if let Err(why) = claim(&grant, &prepared, &parsed, now) {
+        writeln!(
+            err,
+            "ae: relay REFUSED — the attempt could not be claimed ({why}). Nothing was sent."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    let Prepared {
+        target,
+        console,
+        pair,
+        seat,
+        carry,
+    } = prepared;
+    let again = || {
+        let now = Grant::of(dir, actual().as_ref())
+            .map_err(|why| format!("the orchestrator caller is unproven now ({why})"))?;
+        if now == grant {
+            Ok(())
+        } else {
+            Err("the orchestrator caller changed since the claim".to_owned())
+        }
+    };
+    let (receipt, request) = match term::admit_relay(&console, &pair, &seat.name, again) {
+        Err(why) => {
+            writeln!(err, "ae: relay {id} not delivered: {why}")?;
+            (Receipt::NotDelivered, read_back(&console, &id))
+        }
+        Ok(admitted) => {
+            let (said, receipt) = carry.run_typed();
+            err.write_all(said.as_bytes())?;
+            let request = read_back(&console, &id);
+            drop(admitted);
+            (receipt.unwrap_or(Receipt::NotDelivered), request)
+        }
+    };
+    let outcome = receipt.word();
+    let request = request.unwrap_or_else(|gap| {
+        let _ = writeln!(err, "ae: relay {id}: request read gap: {gap}");
+        "unknown"
+    });
+    let said = Said {
+        target: &target,
+        seat: &seat,
+        id: &id,
+        text: &parsed.text,
+    };
+    record(caller, &said, outcome, request, err)?;
+    writeln!(out, "{id}\noutcome: {outcome}\nrequest: {request}")?;
+    Ok(if receipt == Receipt::Sent {
+        0
+    } else {
+        EXIT_FAILED
+    })
+}
+
+/// What one relay said to whom, for the records that close it.
+struct Said<'a> {
+    target: &'a Target,
+    seat: &'a Seat,
+    id: &'a str,
+    text: &'a str,
+}
+
+/// The caller's closing records: one `relay-result` carrying the transport
+/// outcome, then the `ae:relay` chat echo unless one names this id already.
+/// Either failing is said on stderr; the receipt still prints.
+fn record(
+    caller: &Caller,
+    said: &Said<'_>,
+    outcome: &str,
+    request: &str,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    let id = said.id;
+    let summary = format!("{outcome}; request {request}");
     let fields = EventFields::new(
-        now,
+        Timestamp::now(),
         &caller.actor,
-        ACTION,
-        &target.display,
-        "",
+        RESULT,
+        &said.target.display,
+        id,
         &caller.slot,
         &caller.session,
-        &resolved.slot,
-        &target.session,
-        &parsed.text,
+        &said.seat.slot,
+        &said.target.session,
+        &summary,
         "",
     );
-    let request = deliver::Request {
-        dir: &caller.dir,
-        server: &server,
-        pane: &resolved.pane,
-        logged_target: &target.display,
-        target_session: &target.session,
-        pane_slot: &resolved.slot,
-        own_session: &caller.session,
-        action: ACTION,
-        reference: "",
-        actor: &caller.actor,
-        body: &parsed.text,
-        shape: deliver::Shape::Relay,
-        defer,
-        composed: crate::tool::Composed::NONE,
-    };
-    let delivery = deliver::deliver(&request, err)?;
-    match delivery {
-        Ok(delivered) => audit_landed(
-            &caller,
-            &fields,
-            &delivered.body_file,
-            delivered.verification,
-            false,
+    let line = tracked::event_line_with(&fields, "", &[("outcome", outcome)]);
+    let journal = store::open(&caller.dir);
+    let result = journal.append_event_decided(|read| console::snapshot(read).map(|_| line));
+    if let Err(why) = flatten(result) {
+        writeln!(
             err,
-        ),
-        Err(deliver::Failure::Unconfirmed {
-            body_file,
-            notice: false,
-            ..
-        }) => audit_landed(
-            &caller,
-            &fields,
-            &body_file,
-            deliver::DeliveryVerification::Verified,
-            true,
-            err,
-        ),
-        Err(failure) => audit_delivery_failure(&caller, &fields, &failure, err),
+            "ae: relay {id} ({outcome}): its result was not recorded: {why}"
+        )?;
     }
+    let echo = format!(
+        "routed to {}: {} ({outcome}), request {id}",
+        said.target.session,
+        console::excerpt(said.text)
+    );
+    let line = crate::state::event_line(Timestamp::now(), ECHO_ACTOR, "chat", id, &echo);
+    let echoed = journal.append_event_decided(|read| {
+        let events = console::snapshot(read)?;
+        let echoed = |event: &Event| {
+            event.action == "chat"
+                && event.actor == ECHO_ACTOR
+                && event.reference.as_deref() == Some(id)
+        };
+        if events.iter().any(echoed) {
+            return Err(String::new());
+        }
+        Ok(line)
+    });
+    match flatten(echoed) {
+        Err(why) if !why.is_empty() => {
+            writeln!(
+                err,
+                "ae: relay {id} ({outcome}): its chat echo was not recorded: {why}"
+            )
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Every proof before the claim, in order: the orchestrator role, a text with
+/// words, the caller's own session id, the target grammar, the target chat's
+/// incarnation and lead pair with the seat in it, and the exact framed ask
+/// within the paste bound.
+fn prepare(
+    grant: &Grant,
+    parsed: &Parsed,
+    now: Timestamp,
+    entropy: u64,
+) -> Result<Prepared, String> {
+    if grant.role != meta::MetaAgentRole::Role {
+        return Err("caller session is not an orchestrator".to_owned());
+    }
+    if parsed.text.trim().is_empty() {
+        return Err("text is empty".to_owned());
+    }
+    if grant.session_id.is_empty() {
+        return Err("caller session records no usable session id".to_owned());
+    }
+    let caller = &grant.caller;
+    let target = target(caller, &parsed.target)?;
+    let target_dir = caller
+        .dir
+        .parent()
+        .map(|root| root.join(&target.session))
+        .ok_or("target session could not be resolved")?;
+    let session = &target.session;
+    let bytes = meta::read_bytes(&target_dir)
+        .map_err(|_| format!("target session '{session}' meta could not be read"))?;
+    let uuid = archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id"));
+    if uuid.is_empty() {
+        return Err(format!(
+            "target session '{session}' records no usable session id"
+        ));
+    }
+    let console = Console::bound(session.clone(), target_dir.clone(), uuid);
+    let pair = console
+        .seats()
+        .and_then(term::pair_of)
+        .map_err(|why| format!("target session '{session}' has no lead pair ({why})"))?;
+    let Some(seat) = pair
+        .iter()
+        .find(|seat| seat.name == target.agent())
+        .cloned()
+    else {
+        let names: Vec<_> = pair.iter().map(|seat| seat.name.as_str()).collect();
+        return Err(format!(
+            "target must be a lead-pair seat ({})",
+            names.join(", ")
+        ));
+    };
+    let carry = term::Carry::relayed(
+        &console,
+        &seat.name,
+        parsed.text.clone(),
+        (now, entropy),
+        grant.session_id.clone(),
+    );
+    let id = carry.id();
+    let own = crate::own_session(&target_dir);
+    let label = Kind::Ask.reply_label();
+    let footer = tracked::reply_footer_command(&target_dir, &own, &seat.name, id, label);
+    let ask = tracked::compose(
+        Kind::Ask,
+        id,
+        tracked::CONSOLE_DISPLAY,
+        &parsed.text,
+        &footer,
+    );
+    let framed = deliver::framed_send(tracked::CONSOLE_DISPLAY, &ask).len();
+    if framed as u64 > deliver::notice::LIMIT {
+        return Err(format!(
+            "the relayed ask frames to {framed} B; the relay limit is {} B",
+            deliver::notice::LIMIT
+        ));
+    }
+    Ok(Prepared {
+        target,
+        console,
+        pair,
+        seat,
+        carry,
+    })
+}
+
+/// The claim: the exact text stored in the caller's `messages/`, then one
+/// `relay-attempt` under that id, appended only to a strictly whole journal
+/// that has never claimed it.
+fn claim(
+    grant: &Grant,
+    prepared: &Prepared,
+    parsed: &Parsed,
+    now: Timestamp,
+) -> Result<(), String> {
+    let caller = &grant.caller;
+    let id = prepared.carry.id();
+    let body_file = deliver::store_body(&caller.dir, id, ATTEMPT, &parsed.text)?;
+    let body_file = body_file.to_string_lossy();
+    let uuid = prepared.console.uuid();
+    let observed = tracked::observe_caller(&caller.dir);
+    let fields = EventFields {
+        actor_session_id: &grant.session_id,
+        target_session_id: uuid,
+        target_session_uuid: uuid,
+        identity_gap: observed.as_ref().err().map_or("", |gap| gap.name()),
+        ..EventFields::new(
+            now,
+            &caller.actor,
+            ATTEMPT,
+            &prepared.target.display,
+            id,
+            &caller.slot,
+            &caller.session,
+            &prepared.seat.slot,
+            &prepared.target.session,
+            &parsed.text,
+            &body_file,
+        )
+        .with_caller(observed.as_ref().ok())
+    };
+    let line = tracked::event_line_with(&fields, &grant.launch, &[]);
+    let decided = store::open(&caller.dir).append_event_decided(|read| {
+        let events = console::snapshot(read)?;
+        let claimed =
+            |event: &Event| event.action == ATTEMPT && event.reference.as_deref() == Some(id);
+        if events.iter().any(claimed) {
+            return Err(format!("{id} is already claimed"));
+        }
+        Ok(line)
+    });
+    flatten(decided)
+}
+
+fn flatten(decided: Result<Result<(), String>, store::Error>) -> Result<(), String> {
+    decided.map_err(|why| why.to_string())?
+}
+
+/// What the target's journal, read strictly and without a lock, says of
+/// request `id` in the claimed session: the word, or the read gap.
+fn read_back(console: &Console, id: &str) -> Result<&'static str, String> {
+    let read = store::read_source(&store::open(console.dir()).events_path());
+    let bytes = match &read {
+        SourceRead::Absent => return Ok("absent"),
+        SourceRead::Ready(bytes) => bytes.clone(),
+        SourceRead::Invalid(_) | SourceRead::Unreadable(_) => Vec::new(),
+    };
+    console::snapshot(read)?;
+    let states = requests::states_in(&bytes, SessionKey::new(console.name(), console.uuid()));
+    let Some(request) = states.iter().find(|request| request.id == id.as_bytes()) else {
+        return Ok("absent");
+    };
+    Ok(match request.status {
+        Status::Pending if request.accepted.is_some() => "accepted",
+        Status::Pending => "pending",
+        Status::Replied => "replied",
+        Status::Cancelled => "cancelled",
+        Status::Retired => "retired",
+    })
 }
 
 fn caller(
@@ -304,6 +571,9 @@ fn target_main(caller_dir: &Path, session: &str) -> Result<String, String> {
     Ok(main.name.clone())
 }
 
+/// A refusal before the claim: one ref-less `relay` row in the caller's
+/// journal when that journal is whole, the refusal on stderr, nothing on
+/// stdout.
 fn refuse(
     caller: &Caller,
     parsed: &Parsed,
@@ -325,8 +595,9 @@ fn refuse(
         &summary,
         "",
     ));
-    let audit = store::open(&caller.dir).append_event(&line);
-    match audit {
+    let audit =
+        store::open(&caller.dir).append_event_decided(|read| console::snapshot(read).map(|_| line));
+    match flatten(audit) {
         Ok(()) => writeln!(err, "ae: relay REFUSED — {reason}. Nothing was sent.")?,
         Err(why) => writeln!(
             err,
@@ -334,70 +605,6 @@ fn refuse(
         )?,
     }
     Ok(EXIT_FAILED)
-}
-
-fn audit_delivery_failure(
-    caller: &Caller,
-    fields: &EventFields<'_>,
-    failure: &deliver::Failure,
-    err: &mut impl Write,
-) -> io::Result<u8> {
-    let reason: String = match failure {
-        deliver::Failure::DeadPane => "target pane is not a running agent".to_owned(),
-        deliver::Failure::Storage => "recovery body could not be stored".to_owned(),
-        deliver::Failure::Lock => "target delivery lock was not acquired".to_owned(),
-        deliver::Failure::NoticeRefused { .. } => "verbatim relay limit was exceeded".to_owned(),
-        deliver::Failure::Abandoned { held } => held.describe(),
-        deliver::Failure::Paste { .. } => "paste failed".to_owned(),
-        deliver::Failure::NotComposed { .. } => "the pane was not composed".to_owned(),
-        deliver::Failure::Unproven { .. } => "the pane could not be proven a live agent".to_owned(),
-        deliver::Failure::Unconfirmed { .. } => "submit was not confirmed".to_owned(),
-    };
-    let summary = format!("refused: {reason}; {}", fields.summary);
-    let line = tracked::event_line(&EventFields {
-        summary: &summary,
-        body_file: failure.body_file(),
-        ..*fields
-    });
-    if let Err(why) = store::open(&caller.dir).append_event(&line) {
-        writeln!(err, "ae: relay attempt audit failed: {why}")?;
-    }
-    Ok(EXIT_FAILED)
-}
-
-fn audit_landed(
-    caller: &Caller,
-    fields: &EventFields<'_>,
-    body_file: &str,
-    verification: deliver::DeliveryVerification,
-    unconfirmed: bool,
-    err: &mut impl Write,
-) -> io::Result<u8> {
-    let fields = EventFields {
-        body_file,
-        ..*fields
-    };
-    let line = if unconfirmed {
-        tracked::unconfirmed_event_line(&fields)
-    } else {
-        tracked::delivery_event_line(&fields, verification, false)
-    };
-    if let Err(why) = store::open(&caller.dir).append_event(&line) {
-        writeln!(
-            err,
-            "ae: relay to {} reached the pane but its caller audit was not emitted: {why}",
-            fields.target
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    if unconfirmed {
-        writeln!(
-            err,
-            "ae: relay to {} was audited unconfirmed; retry only if peek shows the text still in the input box.",
-            fields.target
-        )?;
-    }
-    Ok(0)
 }
 
 #[cfg(test)]
@@ -431,6 +638,28 @@ mod tests {
         );
         assert_eq!(parse(&words(&["target"])), Err(Usage));
         assert_eq!(parse(&[]), Err(Usage));
+    }
+
+    #[test]
+    fn r6_read_back_uses_the_claimed_session_for_retirement() {
+        let dir = std::env::temp_dir().join(format!("ae-relay-retire-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("owned journal directory");
+        let uuid = "0199c0de-aaaa-4890-abcd-ef0123456789";
+        let other = "0199c0de-bbbb-4890-abcd-ef0123456789";
+        let mut got = Vec::new();
+        for (name, target_id) in [("work", uuid), ("renamed", uuid), ("work", other)] {
+            let console =
+                crate::console::Console::bound(name.to_owned(), dir.clone(), uuid.to_owned());
+            let ask = format!(
+                r#"{{"ts":"2026-10-27T10:00:00Z","actor":"console:local","action":"ask","target":"peer","ref":"q","target_slot":"worker.0","target_session":"work","target_session_id":"{target_id}"}}"#
+            );
+            let retire = r#"{"ts":"2026-10-27T10:00:01Z","actor":"ae","action":"retire","target":"peer","target_slot":"worker.0"}"#;
+            std::fs::write(dir.join("events.jsonl"), format!("{ask}\n{retire}\n"))
+                .expect("journal");
+            got.push(super::read_back(&console, "q"));
+        }
+        std::fs::remove_dir_all(&dir).expect("remove owned journal directory");
+        assert_eq!(got, [Ok("retired"), Ok("retired"), Ok("pending")]);
     }
 
     #[test]

@@ -55,7 +55,7 @@ pub const HELPERS: [Helper; 27] = [
     },
     Helper {
         name: "relay",
-        usage: "Usage: relay <session[:agent]> <text…>\nRelay bare human instructions from an orchestrator session.\n",
+        usage: "Usage: relay <session[:agent]> <text…>\nRelay an explicit human instruction from an orchestrator session as a chat ask.\n",
         entry: crate::cli::RELAY,
         prefix: &[],
     },

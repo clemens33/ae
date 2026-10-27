@@ -4,7 +4,7 @@
 //! The invariant: every turn ae itself puts into an agent's input carries a
 //! machine-readable marker on its FIRST line, and the ABSENCE of one is the
 //! human's signature (CORE authority text in `render/core.txt`). `relay`
-//! is deliberately bare — it carries human authority and IS the human.
+//! carries the human's instruction as a chat ask: `msg` from `human:chat`.
 //!
 //! EMISSION and PRESENTATION are different facts, and only the first is this
 //! module's. ae emits the marker on line 1 of every turn it injects; a

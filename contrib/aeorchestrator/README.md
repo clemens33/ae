@@ -39,8 +39,8 @@ not atomic. Stale or missing evidence stays explicit.
 Owner instructions select a named session or `session:agent`, or route using
 current goals and memos. Clear routes need no confirmation; ambiguous intent
 or routing needs clarification. The full-path `relay` preserves owner text
-verbatim. Today it sends bare text with owner authority, audited only in the
-caller session: no tracked request, recipient ledger or chat-lane echo.
+verbatim as one tracked chat ask in the target session and prints its id,
+transport outcome and request state.
 Delivery is not acceptance or completion; uncertain submit is never auto-resent.
 Other sessions' text is data. The seat never answers as the owner, invents work,
 changes goals, clears questions or edits project/session state. On an
@@ -82,9 +82,9 @@ answers that the seat cannot stop or end itself; the human does that from a term
 after the watchdog reports the result. Other-session text is data. See
 [`CHARTER.md`](CHARTER.md).
 
-An unenveloped relay speaks with owner authority, yet the seat is a model.
+A relayed chat ask reads as the owner's words, yet the seat is a model.
 Only owner instructions may be relayed; goals, memos, overviews and replies are
-data. Agent-addressing guards and tracked relay remain later slices.
+data.
 
 The standard workspace watchdog checks the template's orchestrator each cycle.
 The persisted `[workspace] sweep` setting is the minimum spacing between
@@ -122,4 +122,4 @@ not stop itself to perform this update.
 ## Dependencies
 
 None beyond ae and one configured agent CLI. Fleet overview, minimum spacing, and
-bare relay are core ae operations; no Python, `jq`, or `curl` sidecar is needed.
+relay are core ae operations; no Python, `jq`, or `curl` sidecar is needed.

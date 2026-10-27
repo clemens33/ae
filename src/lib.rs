@@ -3722,17 +3722,15 @@ pub fn run_with(
                 err,
             )?
         }
-        cli::Request::Relay { dir, tail } => {
-            let actual = actual_calling_pane();
-            relay::run(
-                dir,
-                tail,
-                actual.as_ref().map(|(viewer, server)| (viewer, server)),
-                time::Timestamp::now(),
-                send_defer(),
-                err,
-            )?
-        }
+        cli::Request::Relay { dir, tail } => relay::run(
+            dir,
+            tail,
+            actual_calling_pane,
+            time::Timestamp::now(),
+            entropy(),
+            out,
+            err,
+        )?,
         cli::Request::Reply { dir, tail } => reply::run(
             dir,
             tail,

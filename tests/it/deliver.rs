@@ -843,31 +843,6 @@ impl RelayCaller {
         self.run_from(&self.dir, target, text)
     }
 
-    fn run_with_env(
-        &self,
-        target: &str,
-        text: &str,
-        envs: &[(&str, &str)],
-    ) -> (Option<i32>, String) {
-        let mut command = ae();
-        command
-            .env("TMUX", format!("{},0,0", self.sock.display()))
-            .env("TMUX_PANE", &self.pane)
-            .arg(ae::cli::RELAY)
-            .arg(&self.dir)
-            .args([target, text]);
-        for (key, value) in envs {
-            command.env(key, value);
-        }
-        let out = command
-            .output()
-            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
-        (
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
-    }
-
     fn run_from(&self, helper_dir: &Path, target: &str, text: &str) -> (Option<i32>, String) {
         let out = ae()
             .env("TMUX", format!("{},0,0", self.sock.display()))
@@ -951,40 +926,6 @@ fn relay_refuses_a_foreign_caller_that_renamed_into_the_privileged_session_name(
 }
 
 #[test]
-fn an_orchestrator_relay_crosses_to_the_target_server_bare_and_audits_only_the_caller() {
-    let target = Rig::new("relay", "claude", 0);
-    let caller = RelayCaller::new(&target, "allowed", true);
-    let body = "Human says:\nship this\texactly";
-    let named = format!("{}:tui", target.session);
-    let (code, stderr) = caller.run(&target.session, body);
-    assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
-    let submitted = target.submitted();
-    assert_eq!(submitted, body, "relay is byte-exact bare text");
-    assert!(
-        !submitted.contains("⟦ae:msg from"),
-        "no peer envelope may downgrade the human-authority relay: {submitted:?}"
-    );
-    assert!(target.events().is_empty(), "target ledger stays untouched");
-    let events = caller.events();
-    assert!(
-        events.contains(&format!(
-            "\"actor\":\"orchestrator\",\"action\":\"relay\",\"target\":\"{named}\""
-        )),
-        "{events}"
-    );
-    assert!(
-        events.contains("\"summary\":\"Human says:\\nship this\\texactly\""),
-        "the full, unflattened text is audited: {events}"
-    );
-    let body_file = events
-        .split("\"body_file\":\"")
-        .nth(1)
-        .and_then(|tail| tail.split('"').next())
-        .unwrap_or_default();
-    assert_eq!(std::fs::read_to_string(body_file).unwrap_or_default(), body);
-}
-
-#[test]
 fn a_non_orchestrator_relay_is_refused_audited_at_the_caller_and_invisible_to_the_target() {
     let target = Rig::new("relaydeny", "claude", 0);
     let caller = RelayCaller::new(&target, "denied", false);
@@ -1009,33 +950,6 @@ fn a_non_orchestrator_relay_is_refused_audited_at_the_caller_and_invisible_to_th
         "the refused full text is audited: {events}"
     );
     assert!(!events.contains("⟦ae:msg from"), "{events}");
-}
-
-#[test]
-fn an_oversize_relay_names_the_byte_cap_and_never_becomes_a_notice() {
-    let target = Rig::new("relaybig", "claude", 0);
-    let caller = RelayCaller::new(&target, "big", true);
-    let named = format!("{}:tui", target.session);
-    assert_eq!(deliver::notice::LIMIT, 8_192);
-    let body = "x".repeat(8_193);
-    let (code, stderr) = caller.run(&named, &body);
-    assert_eq!(code, Some(1));
-    assert_eq!(
-        stderr,
-        format!(
-            "ae: relay REFUSED — message is {} B; verbatim relay limit is {} B. Nothing was sent.\n",
-            body.len(),
-            deliver::notice::LIMIT
-        )
-    );
-    assert!(target.submitted().is_empty());
-    assert!(target.events().is_empty());
-    assert!(
-        !caller.dir.join("messages").exists(),
-        "oversize relay never enters the file-and-notice path"
-    );
-    assert!(caller.events().contains(&body), "full refusal audit");
-    assert!(!caller.session.is_empty());
 }
 
 /// A MULTI-LINE body reaches a modelled TUI byte for byte, and the recovery
@@ -1499,43 +1413,6 @@ fn a_draft_under_a_watchers_eye_names_both_halves() {
     );
 }
 
-/// An orchestrator relay to a busy target abandons with the named half, and
-/// the caller audit carries the same clause — the target stays untouched.
-#[test]
-fn an_orchestrator_relay_to_a_busy_target_audits_which_half_held() {
-    let target = Rig::new("relaybusy", "claude", 0);
-    assert!(
-        target
-            .tmux(&["send-keys", "-t", &target.pane, "-l", "half a question"])
-            .0
-    );
-    let seen = (0..100).any(|_| {
-        deliver::input_busy(&target.server(), &target.pane, InputModel::BorderDelimited) || {
-            std::thread::sleep(Duration::from_millis(50));
-            false
-        }
-    });
-    assert!(seen, "a draft in the box reads OCCUPIED");
-    let caller = RelayCaller::new(&target, "busy", true);
-    let named = format!("{}:tui", target.session);
-    let (code, stderr) = caller.run_with_env(&named, "human words", &[("AE_SEND_DEFER_SEC", "1")]);
-    assert_eq!(code, Some(1), "{stderr}");
-    assert!(
-        stderr.contains(
-            "ABANDONED — target stayed busy (composer occupied: 13 content cells on 1 row);"
-        ),
-        "{stderr}"
-    );
-    assert!(target.submitted().is_empty());
-    assert!(target.events().is_empty(), "target ledger stays untouched");
-    let events = caller.events();
-    assert!(events.contains("\"action\":\"relay\""), "{events}");
-    assert!(
-        events.contains("refused: target stayed busy (composer occupied); human words"),
-        "the caller audit carries the holding half: {events}"
-    );
-}
-
 /// A body over the notice limit is NOT pasted: a pointer to the sender-owned
 /// record crosses the pane instead, and only after the visible input rows
 /// prove the exact staged bytes.
@@ -1816,23 +1693,22 @@ fn a_paste_that_fails_after_the_load_leaves_no_buffer_behind() {
     );
 }
 
-/// The paste-and-Enter SINK has four entry shapes and its guards are NOT
+/// The paste-and-Enter SINK has three entry shapes and its guards are NOT
 /// uniform. This table is the CURRENT TRUTH, gaps included — it is not a
 /// refactor plan, and it must not be "fixed" into one:
 ///
 /// | shape            | pane-alive (proof currency)    | Unproven ->                  | target-lock | quiet-gate | composed+proof | submit-verify |
 /// |------------------|--------------------------------|------------------------------|-------------|------------|----------------|---------------|
 /// | Send             | pre-lock ONLY                  | DELIVER (standing fail-open) | yes         | YES        | no             | modelled / Unknown |
-/// | Relay            | pre-lock ONLY                  | DELIVER                      | yes         | YES        | no             | same |
 /// | Interrupt        | pre-lock ONLY                  | DELIVER                      | yes         | no         | no             | same |
 /// | Launch, modelled | pre-lock ONLY (inherited gap)  | DELIVER (inherited)          | yes         | no         | no (the CALLER's `InputModel` owns it) | modelled |
 /// | Launch, unmodel  | pre-lock + under-lock re-proof | REFUSE (`Failure::Unproven`) | yes         | no         | YES (probe, liveness, composed screen) | Unknown |
 ///
 /// PINNED AS THEY ARE: Interrupt is quiet-ungated; Launch skips the quiet
 /// gate; and pane-alive is PROOF-CURRENT ONLY FOR AN UNMODELLED LAUNCH — Send,
-/// Relay, Interrupt and a modelled Launch prove liveness once, BEFORE the lock
+/// Interrupt and a modelled Launch prove liveness once, BEFORE the lock
 /// and never again (inherited, not fixed here). Unproven (a shell foreground
-/// ae cannot attribute to a live agent) DELIVERS on those four rows and
+/// ae cannot attribute to a live agent) DELIVERS on those rows and
 /// REFUSES at the under-lock Launch. A modelled pane's readiness answers
 /// through `InputModel` in its caller, never here. LIVE below: pane-alive for
 /// every shape and both models, the quiet asymmetry, the composed asymmetry.
@@ -1903,12 +1779,6 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
             held: deliver::DeferHeld::ComposerOccupied
         })
     ));
-    assert!(matches!(
-        send(Shape::Relay, Composed::NONE, short),
-        Err(Failure::Abandoned {
-            held: deliver::DeferHeld::ComposerOccupied
-        })
-    ));
     assert!(
         send(Shape::Launch, Composed::NONE, short).is_ok(),
         "Launch skips the quiet gate"
@@ -1935,7 +1805,7 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
             .0,
         "the agent dies and its pane drops to a shell"
     );
-    for shape in [Shape::Send, Shape::Relay, Shape::Interrupt, Shape::Launch] {
+    for shape in [Shape::Send, Shape::Interrupt, Shape::Launch] {
         assert!(
             matches!(send(shape, Composed::NONE, short), Err(Failure::DeadPane)),
             "{shape:?} must refuse a dead pane"
@@ -2511,7 +2381,6 @@ fn human_prompts_stop_every_paste_shape_before_the_first_key() {
         let server = rig.server();
         for shape in [
             deliver::Shape::Send,
-            deliver::Shape::Relay,
             deliver::Shape::Interrupt,
             deliver::Shape::Launch,
         ] {

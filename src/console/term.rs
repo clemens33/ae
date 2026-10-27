@@ -650,6 +650,8 @@ pub(crate) struct Carry {
     id: String,
     now: time::Timestamp,
     entropy: u64,
+    /// The relaying orchestrator's session id, recorded on the opening.
+    origin: Option<String>,
 }
 
 impl Carry {
@@ -678,6 +680,22 @@ impl Carry {
             id: tracked::request_id(tracked::Kind::Ask.id_prefix(), now, entropy),
             now,
             entropy,
+            origin: None,
+        }
+    }
+
+    /// The ask an orchestrator relays to `seat`, under the request id it
+    /// claimed; its opening records `origin` as `relay_origin`.
+    pub(crate) fn relayed(
+        console: &Console,
+        seat: &str,
+        body: String,
+        minted: (time::Timestamp, u64),
+        origin: String,
+    ) -> Self {
+        Self {
+            origin: Some(origin),
+            ..Self::minted(console, seat, body, minted)
         }
     }
 
@@ -701,13 +719,24 @@ impl Carry {
     /// Carry the ask through the helpers' own tracked path, as the console,
     /// and say what the path wrote to its error stream.
     pub(crate) fn run(self) -> String {
+        self.run_typed().0
+    }
+
+    /// [`Carry::run`], and what the delivery did to the seat's input: `None`
+    /// when it never began.
+    pub(crate) fn run_typed(self) -> (String, Option<tracked::Receipt>) {
         let sender = tracked::Sender {
             display: tracked::CONSOLE_SINK.to_owned(),
             slot: String::new(),
             session: self.session,
         };
         let (tail, mut said) = ([self.seat, self.body], Vec::new());
-        let run = tracked::run(
+        let mut receipt = None;
+        let extra = tracked::Extra {
+            origin: self.origin.as_deref(),
+            receipt: Some(&mut receipt),
+        };
+        let run = tracked::run_with(
             tracked::Kind::Ask,
             &self.dir,
             &tail,
@@ -716,14 +745,69 @@ impl Carry {
             self.now,
             self.entropy,
             crate::send_defer(),
+            extra,
             &mut std::io::sink(),
             &mut said,
         );
         if let Err(why) = run {
             said.extend(why.to_string().bytes());
         }
-        String::from_utf8_lossy(&said).into_owned()
+        (String::from_utf8_lossy(&said).into_owned(), receipt)
     }
+}
+
+/// The writer lease and admission lock a relay holds on its target's chat
+/// from its admission through its read-back.
+pub(crate) struct RelayAdmitted {
+    _lease: std::fs::File,
+    _admission: std::fs::File,
+}
+
+/// Admit one relayed ask of `seat` into `console`'s session: the writer lease
+/// and the admission lock, both without waiting, then, under them, the
+/// incarnation the relay claimed — meta and tmux stamp both `console`'s uuid
+/// on the recorded server — `pair` still the lead pair with `seat` in it,
+/// `caller` re-proving the orchestrator, and the relay cap.
+///
+/// # Errors
+///
+/// Why nothing may be delivered.
+pub(crate) fn admit_relay(
+    console: &Console,
+    pair: &[Seat],
+    seat: &str,
+    caller: impl FnOnce() -> Result<(), String>,
+) -> Result<RelayAdmitted, String> {
+    let (lease, admission) = send_locks(console)?;
+    let owns = || {
+        caller()?;
+        let bytes = meta::read_bytes(&console.dir).map_err(|_| "the target meta did not answer")?;
+        if archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id")) != console.uuid {
+            return Err("the target session was replaced".to_owned());
+        }
+        let name = console.name();
+        let server =
+            tracked::named_server(console.dir(), name, name).map_err(|why| why.message())?;
+        let stamp = transport::observe_session_option(&server, name, theme::SESSION_ID_OPTION);
+        if stamp.as_deref().map(archive::canonical_uuid).as_deref() != Some(console.uuid.as_str()) {
+            return Err("the target session's tmux stamp is not the claimed one".to_owned());
+        }
+        still(pair, console.seats())?;
+        if !pair.iter().any(|lead| lead.name == seat) {
+            return Err(format!("{seat} is no longer a lead-pair seat"));
+        }
+        Ok(())
+    };
+    submit::admit_relay(
+        &mut console.held.borrow_mut(),
+        &console.dir,
+        &console.name,
+        owns,
+    )?;
+    Ok(RelayAdmitted {
+        _lease: lease,
+        _admission: admission,
+    })
 }
 
 /// A console that takes input from its terminal.

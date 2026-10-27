@@ -68,8 +68,6 @@ const LOCK_WAIT: Duration = Duration::from_mins(2);
 pub enum Shape {
     /// `send`, and the tracked requests behind it.
     Send,
-    /// The orchestrator seat's privileged, unenveloped human-authority relay.
-    Relay,
     /// `interrupt`.
     Interrupt,
     /// A spawn's BRIEF, pasted into a freshly launched TUI.
@@ -327,11 +325,6 @@ pub(crate) fn deliver_checked(
         return Ok(Err(Failure::DeadPane));
     }
     let framed = frame(request);
-    if relay_oversize_refused(request, &framed, err)? {
-        return Ok(Err(Failure::NoticeRefused {
-            body_file: String::new(),
-        }));
-    }
     // Publish the exact recoverable pane text BEFORE locking or submitting it.
     let body_file = match store_body(request.dir, request.reference, request.action, &framed) {
         Ok(path) => path.display().to_string(),
@@ -422,7 +415,6 @@ fn address_check(
 fn unconfirmed_line(request: &Request<'_>, body_file: &str) -> String {
     let (what, next) = match request.shape {
         Shape::Send => ("send", ""),
-        Shape::Relay => ("relay", ""),
         Shape::Interrupt => ("interrupt message", " Re-send."),
         Shape::Launch => ("spawn brief", " Re-send."),
         Shape::Context => ("notice", ""),
@@ -532,38 +524,16 @@ fn escape_then_reread(
     Ok(Ok(()))
 }
 
-/// Refuse an oversize relay before its body reaches the recovery-notice path.
-fn relay_oversize_refused(
-    request: &Request<'_>,
-    framed: &str,
-    err: &mut impl Write,
-) -> io::Result<bool> {
-    // A relay promises exact bare text. A pointer would change the text and
-    // expose the orchestrator to the target.
-    if request.shape != Shape::Relay || framed.len() as u64 <= notice::LIMIT {
-        return Ok(false);
-    }
-    writeln!(
-        err,
-        "ae: relay to {} REFUSED — message is {} B; verbatim relay limit is {} B. Nothing was sent.",
-        request.logged_target,
-        framed.len(),
-        notice::LIMIT
-    )?;
-    Ok(true)
-}
-
 /// What an unbindable caller's envelope says.
 pub const UNVERIFIED: &str = "unverified";
 
 /// The message as it reaches the pane. Every ae-originated turn is marked on
 /// its first line by [`crate::provenance`], with the verb that names its own
-/// authority; `relay` alone stays bare because it carries human authority.
+/// authority.
 fn frame(request: &Request<'_>) -> String {
     let actor = envelope_actor(request);
     match request.shape {
-        Shape::Send => crate::provenance::first_line(&crate::provenance::peer(actor), request.body),
-        Shape::Relay => request.body.to_owned(),
+        Shape::Send => framed_send(actor, request.body),
         Shape::Interrupt => {
             crate::provenance::first_line(&crate::provenance::interrupt(actor), request.body)
         }
@@ -572,6 +542,13 @@ fn frame(request: &Request<'_>) -> String {
         }
         Shape::Context => crate::provenance::first_line(&crate::provenance::ctx(), request.body),
     }
+}
+
+/// A [`Shape::Send`] turn from `actor` as it reaches the pane: what a caller
+/// that must refuse rather than fall back to a recovery notice measures
+/// against [`notice::LIMIT`] before it commits to anything.
+pub(crate) fn framed_send(actor: &str, body: &str) -> String {
+    crate::provenance::first_line(&crate::provenance::peer(actor), body)
 }
 
 /// The name the envelope and the notice head carry — the verified sender, or
@@ -589,10 +566,6 @@ fn dead_pane_line(request: &Request<'_>) -> String {
     match request.shape {
         Shape::Send => format!(
             "ae: send to {} REFUSED — target pane is a shell, not a running agent (the agent process is gone). Nothing pasted; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send.",
-            request.logged_target
-        ),
-        Shape::Relay => format!(
-            "ae: relay to {} REFUSED — target pane is a shell, not a running agent. Nothing was sent.",
             request.logged_target
         ),
         Shape::Interrupt => format!(
@@ -765,7 +738,7 @@ pub(crate) fn observe_pane_liveness(
     }
 }
 
-/// ORDINARY delivery's policy (the pre-lock check, Send, Relay, Interrupt):
+/// ORDINARY delivery's policy (the pre-lock check, Send, Interrupt):
 /// only a PROVEN dead pane refuses. `Unproven` keeps the standing fail-open,
 /// because a transient process-snapshot failure must not refuse every
 /// delivery.
@@ -1373,7 +1346,7 @@ fn reconfirm_composed(server: &ServerId, pane: &str, composed: Composed) -> bool
         .is_some_and(|capture| region::composed_ui(&capture, composed))
 }
 
-/// The Send/Relay quiet gate: a busy target (or a human's attention on it)
+/// The Send quiet gate: a busy target (or a human's attention on it)
 /// abandons after the deferral, with nothing pasted. Every other shape
 /// proceeds — and so does an unmodelled target, whose composer half never
 /// holds. The line names WHICH half held: a draft wants waiting, while the
@@ -1386,7 +1359,7 @@ fn quiet_or_abandoned(
     guard: Option<&crate::tracked::AddressGuard<'_>>,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
-    if !matches!(request.shape, Shape::Send | Shape::Relay | Shape::Context) {
+    if !matches!(request.shape, Shape::Send | Shape::Context) {
         return Ok(Ok(()));
     }
     if let Some(snapshot) = wait_for_quiet(request, model, tool, guard, err)? {
@@ -1606,7 +1579,7 @@ fn submit(
             Some(SubmitState::StillStaged) | None => {}
         }
     }
-    if matches!(request.shape, Shape::Send | Shape::Relay | Shape::Context) {
+    if matches!(request.shape, Shape::Send | Shape::Context) {
         writeln!(
             err,
             "ae: submit UNCONFIRMED to pane {pane} ({diagnostic}) — message may not have sent."
@@ -2338,11 +2311,6 @@ mod tests {
             frame(&request("cl:lead", "task", Shape::Launch)),
             "⟦ae:brief from cl:lead⟧\ntask",
             "a spawn brief is marked as the task contract it is"
-        );
-        assert_eq!(
-            frame(&request("orchestrator", "human words", Shape::Relay)),
-            "human words",
-            "relay is the one privileged unenveloped sender"
         );
         assert_eq!(
             frame(&request("watchdog", "session goal now: g", Shape::Context)),
@@ -3102,14 +3070,13 @@ mod tests {
         );
     }
 
-    /// Plumbing: the four shapes that predate the notice print their
+    /// Plumbing: the three remaining shapes that predate the notice print their
     /// unconfirmed line byte-identically to c46d012c's entry points.
     #[test]
-    fn the_four_older_shapes_keep_their_unconfirmed_lines() {
+    fn the_three_older_shapes_keep_their_unconfirmed_lines() {
         let said = "UNCONFIRMED — submit not verified; body preserved at /m/b.txt.";
         let cases = [
             (Shape::Send, format!("ae: send to worker {said}")),
-            (Shape::Relay, format!("ae: relay to worker {said}")),
             (
                 Shape::Interrupt,
                 format!("ae: interrupt message to worker {said} Re-send."),

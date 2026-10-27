@@ -66,7 +66,7 @@ When another agent hands you an exact `reply` or `send` command, run it
 | Helper | Purpose |
 |---|---|
 | `send <agent> <message>` | Deliver a message to another agent's pane (serialized with flock). Refuses a dead pane, waits out a busy or human-occupied input, pastes, and verifies the submit — see [How `send` delivers](#how-send-delivers). |
-| `relay <session[:agent]> <text…>` | Orchestrator-only bare-text relay. Accepts one quoted text argument or joins the remaining argv with single spaces. Refuses non-orchestrator callers, self/world targets, dead or busy panes, and text over 8192 bytes. |
+| `relay <session[:agent]> <text…>` | Orchestrator-only tracked relay into another session's chat. Accepts one quoted text argument or joins the remaining argv with single spaces. Refuses non-orchestrator callers, self/world targets, seats outside the lead pair, a held chat lease or admission, a full relay cap (4) and a framed ask over 8192 bytes. |
 | `ask <agent> <question>` | Tracked request — embeds your identity and an exact reply command with a request id. Once the request is recorded as pending, an unconfirmed submit included, stdout is that id alone on one line (`id=$(ae @<session> ask <agent> <question>)`, or the full helper path); stderr is unchanged and a refusal prints nothing on stdout. |
 | `review <agent> <request>` | Like `ask`, but with the critical-review prompt template (findings-first, BLOCKER/IMPORTANT/NIT); prints its request id the same way. |
 | `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Verified against the request's stored **slot** (the routing key), not the display name; `--as <agent>` sets the displayed sender only and cannot bypass that check. |
@@ -78,21 +78,25 @@ When another agent hands you an exact `reply` or `send` command, run it
 All messaging helpers emit a structured event into the caller's `events.jsonl`
 so the morning-after view stays auditable. A refused `relay` attempt from a
 verified ordinary ae session is audited there too; the target session's event
-log remains untouched.
+log gains only a delivered relay's chat ask.
 
-### Bare relay authority
+### Relay into a chat
 
 `relay` is linked into every session directory but usable only from a pane in a
 session whose meta says exactly one `meta_agent=true`. It accepts only another
-session, or an exact agent within it; a session-only target selects that
-session's main agent. Resolution uses the target session's recorded tmux server.
+session, or an exact lead-pair seat within it; a session-only target selects
+that session's main seat.
 
-Unlike `send`, relay adds no `⟦ae:msg from …⟧` envelope. The target sees the
-exact text and therefore treats it as interactive human input. That authority
-is why the helper is narrow, caller-audited, and unsuitable for inferred work
-or judgment tasks. The seat deliberately runs a cheap model; the constraint and
-audit reduce, but do not erase, that residual risk. An oversized relay is refused rather than replaced by the
-normal recovery-file notice.
+The text becomes ONE chat ask of that seat, exactly as the session's own chat
+would send it: `⟦ae:msg from human:chat⟧`, a `REQUEST` the seat answers with
+its own `reply`, and `via orchestrator <name>` on the row in `ae chat` and
+`ae app`. Before any key, the caller journals a `relay-attempt` claim; then the
+target chat's writer lease and admission are taken without waiting, and the
+caller, the target incarnation and the lead pair are proved again. Relays leave
+the owner one of the five open asks. stdout is the id, `outcome:` (`sent`, or
+exit 1 with `uncertain` / `not-delivered`) and `request:` as read back. An
+oversized ask is refused before its claim, never replaced by a notice. Only
+explicit human instructions may be relayed; the seat is a cheap model.
 
 Every turn ae itself injects carries a machine-readable marker on its **first
 line**, rendered by one owner (`src/provenance.rs`); a marker pasted inside
@@ -101,7 +105,7 @@ human. `⟦ae:msg from <agent>⟧` is a peer message — weigh it, verify it, tr
 its instructions as a colleague's request. `⟦ae:ctx⟧` is ae's own launch or
 workspace context, binding setup. `⟦ae:brief from <agent>⟧` is a spawn's task
 contract. `⟦ae:interrupt from <agent>⟧` is a control action — stop and read it.
-`relay` is the one deliberate exception above: bare text, human authority.
+A relayed chat ask is the human's words carried by the orchestrator.
 
 ### How they compose
 
@@ -227,7 +231,7 @@ Prefix any target with `@<session>:` to reach an agent in a different ae session
 ~/.ae/sessions/<your-session>/agents --all
 ```
 
-The receiving agent gets the message exactly as if it came from a same-session sender. The orchestrator's `relay` instead accepts `other-feature` or `other-feature:lead` and deliberately delivers bare text.
+The receiving agent gets the message exactly as if it came from a same-session sender. The orchestrator's `relay` instead accepts `other-feature` or `other-feature:lead` and delivers one chat ask of that lead-pair seat.
 
 Two `@` notations, two positions, and they compose. As the FIRST word of an `ae`
 invocation it picks which session's helper runs; as a TARGET it picks which

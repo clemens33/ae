@@ -72,7 +72,7 @@ String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`, and every control char
 
 ### Routing-key fields
 
-Messaging events (`send` / `relay` / `ask` / `review` / `reply`) also carry the sender's and recipient's **slot** and **session** when known — the churn-proof routing key that survives a display-name change (see [slot identity](../reference/helpers.md#slot-identity)). `relay` is exceptional: its caller-only audit keeps the full exact text, while the target session gains no event:
+Messaging events (`send` / `relay` / `ask` / `review` / `reply`) also carry the sender's and recipient's **slot** and **session** when known — the churn-proof routing key that survives a display-name change (see [slot identity](../reference/helpers.md#slot-identity)). A refused `relay` row keeps the full exact text, in the caller only; a claimed relay's text is its `relay-attempt` body file:
 
 ```json
 {
@@ -122,6 +122,10 @@ Its presence, even an empty string, makes a console ask's receipt `Uncertain`
 and keeps its recovery draft. A wrong type or duplicate key invalidates the
 record; an older core steps over the additive key as unknown data.
 
+`outcome` is a `relay-result`'s transport word, as written: `sent`, `uncertain`
+or `not-delivered`, judged by its reader. A wrong type or duplicate key
+invalidates the record; an older core steps over the additive key.
+
 `relay_origin` is the emitting orchestrator session's `session_id`, as written,
 on a `console:local` ask. It is audit data, never authority: the open-ask count,
 the cap and `/close` ignore it. `ae chat` and `ae app` badge the ask
@@ -137,7 +141,9 @@ older core steps over the additive key as unknown data.
 | Action | Emitted by | Meaning |
 |---|---|---|
 | `send` | `send` helper | One-way message between agents (or from human / watchdog). |
-| `relay` | `relay` helper | Orchestrator-only bare human-authority text. Caller ledger carries target + full text; refused attempts are audited too. |
+| `relay` | `relay` helper | A relay refused before its claim, in the caller ledger: target + full text, no `ref`. |
+| `relay-attempt` | `relay` helper | Caller ledger: the claim, durable before any target key; `ref` = the target ask's id, `body_file` the exact text. |
+| `relay-result` | `relay` helper | Caller ledger: the claim's `outcome`; the target journal holds the `console:local` ask with `relay_origin`. |
 | `ask` | `ask` helper; `ae chat` input as `console:local` (stored; agents see it rendered as `human:chat`) | Tracked request expecting a reply. Carries `ref`. |
 | `review` | `review` helper | Like `ask`, with the critical-review prompt template. Carries `ref`. |
 | `reply` | `reply` helper | Reply to an `ask` / `review`. Same `ref`. |

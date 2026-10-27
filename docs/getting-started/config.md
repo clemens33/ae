@@ -198,7 +198,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `opencode_go_key_file` | Path of a file holding an OpenCode Console key with usage access, separate from the key opencode uses for model calls (`~/`, `$HOME/` or absolute), which lets `ae quota` show the Go subscription's windows. Absent means ae reads no Go quota; see [OpenCode Go quota](#opencode-go-quota). Global config only | none |
 | `copilot_token_file` | Path of a private file holding your GitHub token (`~/`, `$HOME/` or absolute). Opts into the display-only premium allowance; see [GitHub Copilot quota](#github-copilot-quota). Global config only | none |
 | `muse_quota` | `on` lets `ae quota` ask Muse for its allowance with one model call (about 32K input tokens), held for 30 minutes; `off` or absent asks nothing; see [Muse quota](#muse-quota). Global config only | `off` |
-| `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
+| `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the `relay` helper into other sessions' chats | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
 | `fleet_order` | The order your sessions are drawn in on the fleet strip, and the sessions pinned to the top of the app's sidebar, as a comma-separated list of session names; global config only | creation order |
@@ -211,7 +211,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `chat`    | `off` launches without the [chat](../chat.md) as the session's first window; `app` runs [`ae app`](../app.md) in that window instead; any value other than `on` / `off` / `app` opens the chat and prints one note. The orchestrator's own session never gets one | `on` |
 
 Set `orchestrator = true` only in the dedicated overview seat. It authorizes
-unenveloped `relay` delivery, whose target treats the text as human input.
+`relay`, whose chat ask the target seat reads as the human's (`human:chat`).
 
 `fleet_order` is how you choose where a session sits on the second status
 line, instead of taking the order tmux happened to create the sessions in —

@@ -1544,6 +1544,10 @@ fn as_bytes_count(value: usize) -> u64 {
 }
 
 #[cfg(test)]
+#[path = "telegram/relay_o3_spec.rs"]
+mod relay_o3_spec;
+
+#[cfg(test)]
 mod tests {
     #![allow(
         clippy::disallowed_methods,

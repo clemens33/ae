@@ -364,7 +364,7 @@ pub fn reply_command_for(
     }
 }
 
-fn reply_footer_command(
+pub(crate) fn reply_footer_command(
     dir: &Path,
     session: &str,
     target_name: &str,
@@ -1702,7 +1702,18 @@ pub(crate) fn stamp_caller<'a>(
 /// ```
 #[must_use]
 pub fn event_line(fields: &EventFields<'_>) -> String {
-    render_event_line(fields, false, None, None)
+    render_event_line(fields, false, None, None, &[])
+}
+
+/// [`event_line`] plus the sender's launch binding and `extra` string members,
+/// each written only when nonempty: the relay audit's own records.
+#[must_use]
+pub(crate) fn event_line_with(
+    fields: &EventFields<'_>,
+    actor_launch: &str,
+    extra: &[(&'static str, &str)],
+) -> String {
+    render_event_line(fields, false, None, Some((actor_launch, "")), extra)
 }
 
 /// Render a delivered event, retaining submit uncertainty as an additive record
@@ -1718,6 +1729,7 @@ pub(crate) fn delivery_event_line(
         cross_session,
         verification.unverifiable_marker(),
         None,
+        &[],
     )
 }
 
@@ -1727,6 +1739,7 @@ fn render_event_line(
     cross_session: bool,
     unverifiable: Option<&str>,
     launches: Option<(&str, &str)>,
+    extra: &[(&'static str, &str)],
 ) -> String {
     let mut members = vec![("ts", Value::Str(fields.ts.to_string()))];
     if let Some(reason) = unverifiable {
@@ -1755,7 +1768,10 @@ fn render_event_line(
         ("identity_gap", fields.identity_gap),
         ("summary", summary.as_str()),
         ("body_file", fields.body_file),
-    ] {
+    ]
+    .into_iter()
+    .chain(extra.iter().copied())
+    {
         if !value.is_empty() {
             members.push((key, Value::Str(value.to_owned())));
         }
@@ -1809,7 +1825,7 @@ fn render_unconfirmed_event_line(fields: &EventFields<'_>, cross_session: bool) 
         summary: &summary,
         ..*fields
     };
-    render_event_line(&fields, cross_session, None, None)
+    render_event_line(&fields, cross_session, None, None, &[])
 }
 
 /// Refuse a resolved target outside `caller_session` unless the caller supplied
@@ -2056,7 +2072,7 @@ fn unidentified(
 }
 
 /// A missing, damaged or foreign incarnation never becomes a guessed stamp.
-fn launch_id_at(dir: &Path, slot: &str, session_id: &str) -> String {
+pub(crate) fn launch_id_at(dir: &Path, slot: &str, session_id: &str) -> String {
     if !is_slot(slot) || session_id.is_empty() {
         return String::new();
     }
@@ -2112,6 +2128,7 @@ fn record_external_opening(
         false,
         None,
         Some((&actor_launch, "")),
+        &[],
     );
     if let Err(why) = store::open(dir).append_event(&line) {
         writeln!(err, "ae: {action} {req_id} not recorded: {why}")?;
@@ -2139,6 +2156,92 @@ pub fn run(
     now: Timestamp,
     entropy: u64,
     defer: std::time::Duration,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    run_with(
+        kind,
+        dir,
+        tail,
+        sender,
+        own_session,
+        now,
+        entropy,
+        defer,
+        Extra::default(),
+        out,
+        err,
+    )
+}
+
+/// What a delivery did to the target's input, as the typed result says: the
+/// relay's transport outcome, apart from whether a request was recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Receipt {
+    /// The submit was proved: the input box read clear after Enter.
+    Sent,
+    /// Text may have reached the input and its submit is unproved.
+    Uncertain,
+    /// Nothing was submitted.
+    NotDelivered,
+}
+
+impl Receipt {
+    /// The word a relay prints and journals for it.
+    pub(crate) const fn word(self) -> &'static str {
+        match self {
+            Self::Sent => "sent",
+            Self::Uncertain => "uncertain",
+            Self::NotDelivered => "not-delivered",
+        }
+    }
+
+    fn of(delivery: &Result<crate::deliver::Delivered, crate::deliver::Failure>) -> Self {
+        use crate::deliver::{DeliveryVerification, Failure};
+        match delivery {
+            Ok(delivered) => match delivered.verification {
+                DeliveryVerification::Verified => Self::Sent,
+                DeliveryVerification::Unverifiable(_) => Self::Uncertain,
+            },
+            Err(Failure::Unconfirmed { notice: false, .. } | Failure::Paste { .. }) => {
+                Self::Uncertain
+            }
+            Err(_) => Self::NotDelivered,
+        }
+    }
+}
+
+/// What a relay adds to [`run`]: the origin its opening records and the slot
+/// its receipt lands in. Left `None`, the slot means the delivery never began.
+#[derive(Default)]
+pub(crate) struct Extra<'a> {
+    /// The relaying orchestrator's canonical session id, recorded on the
+    /// opening as `relay_origin`.
+    pub(crate) origin: Option<&'a str>,
+    /// Set to [`Receipt::Uncertain`] as the delivery begins, then to what its
+    /// typed result says; an I/O error in between keeps it uncertain.
+    pub(crate) receipt: Option<&'a mut Option<Receipt>>,
+}
+
+/// [`run`] with a relay's [`Extra`].
+///
+/// # Errors
+///
+/// Only a failure to write `out` or `err`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the frozen helper's inputs, spelled out rather than bundled"
+)]
+pub(crate) fn run_with(
+    kind: Kind,
+    dir: &Path,
+    tail: &[String],
+    sender: Option<&Sender>,
+    own_session: &str,
+    now: Timestamp,
+    entropy: u64,
+    defer: std::time::Duration,
+    extra: Extra<'_>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -2206,7 +2309,7 @@ pub fn run(
     let meta_dir = target_meta_dir(dir, &resolved.session, own_session);
     let mut target_launch = launch_id_at(&meta_dir, &resolved.slot, &target_id);
     let (delivery, outcome) = across_cut(&server, &resolved.pane, &meta_dir, || {
-        deliver_request(&request, err)
+        deliver_receipted(&request, extra.receipt, err)
     });
     let delivery = delivery?;
     if actor_launch != launch_id_at(&caller_dir, &sender.slot, &caller_id) {
@@ -2239,15 +2342,33 @@ pub fn run(
         caller: caller_session,
         target: &resolved.session,
     });
+    let relay_origin = extra.origin.map(|origin| ("relay_origin", origin));
     let code = record_tracked_delivery_with_launches(
         dir,
         &fields,
         delivery,
         cross,
         Some((&actor_launch, &target_launch)),
+        relay_origin.as_slice(),
         err,
     )?;
     opened(out, &req_id, code)
+}
+
+/// [`deliver_request`], leaving in `receipt` what became of the input:
+/// uncertain once delivery begins, then what the typed result says.
+fn deliver_receipted(
+    request: &crate::deliver::Request<'_>,
+    receipt: Option<&mut Option<Receipt>>,
+    err: &mut impl Write,
+) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
+    let Some(slot) = receipt else {
+        return deliver_request(request, err);
+    };
+    *slot = Some(Receipt::Uncertain);
+    let delivery = deliver_request(request, err)?;
+    *slot = Some(Receipt::of(&delivery));
+    Ok(delivery)
 }
 
 /// The asker's handle on what it opened: on exit 0 the request is recorded,
@@ -2271,7 +2392,7 @@ pub(crate) fn record_tracked_delivery(
     cross_session: Option<CrossSession<'_>>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    record_tracked_delivery_with_launches(dir, fields, delivery, cross_session, None, err)
+    record_tracked_delivery_with_launches(dir, fields, delivery, cross_session, None, &[], err)
 }
 
 fn record_tracked_delivery_with_launches(
@@ -2280,6 +2401,7 @@ fn record_tracked_delivery_with_launches(
     delivery: Result<crate::deliver::Delivered, crate::deliver::Failure>,
     cross_session: Option<CrossSession<'_>>,
     launches: Option<(&str, &str)>,
+    extra: &[(&'static str, &str)],
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let action = fields.action;
@@ -2325,6 +2447,7 @@ fn record_tracked_delivery_with_launches(
         cross_session.is_some(),
         verification.unverifiable_marker(),
         launches,
+        extra,
     );
     if let Err(why) = append_delivery_event(dir, &line, cross_session) {
         if unconfirmed {

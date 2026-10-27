@@ -52,6 +52,9 @@ pub struct Event {
     /// The emitting orchestrator session's `session_id`, as written: audit
     /// only, never authority. Presence, even empty, is kept as written.
     pub relay_origin: Option<String>,
+    /// A relay result's transport outcome, as written; its grammar is the
+    /// consumer's. Presence, even empty, is kept as written.
+    pub outcome: Option<String>,
     /// The sender's slot.
     pub actor_slot: RoutingMember,
     /// The sender's session.
@@ -484,6 +487,11 @@ impl Event {
                 Some(Value::Str(origin)) => Some(origin.clone()),
                 Some(_) => return Err(EventError::WrongType("relay_origin")),
             },
+            outcome: match value.get("outcome") {
+                None => None,
+                Some(Value::Str(outcome)) => Some(outcome.clone()),
+                Some(_) => return Err(EventError::WrongType("outcome")),
+            },
             actor_slot: RoutingMember::read(value, "actor_slot")?,
             actor_session: RoutingMember::read(value, "actor_session")?,
             target_slot: RoutingMember::read(value, "target_slot")?,
@@ -684,7 +692,7 @@ pub(crate) fn is_session_id(text: &str) -> bool {
 }
 
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 25] = [
+const KNOWN_KEYS: [&str; 26] = [
     "ts",
     "actor",
     "action",
@@ -693,6 +701,7 @@ const KNOWN_KEYS: [&str; 25] = [
     "summary",
     "unverifiable",
     "relay_origin",
+    "outcome",
     "actor_slot",
     "actor_session",
     "target_slot",
@@ -1652,7 +1661,7 @@ mod tests {
 
     /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 25] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 26] = [
         "ts",
         "actor",
         "action",
@@ -1661,6 +1670,7 @@ mod tests {
         "summary",
         "unverifiable",
         "relay_origin",
+        "outcome",
         "actor_slot",
         "actor_session",
         "target_slot",
@@ -1679,6 +1689,26 @@ mod tests {
         "actor_launch_id",
         "target_launch_id",
     ];
+
+    #[test]
+    fn relay_outcome_is_retained_as_a_string_with_grammar_left_to_its_consumer() {
+        let base = r#"{"ts":"2026-10-25T13:00:00Z","actor":"boss","action":"relay-result""#;
+        let legacy = Event::parse_line(&format!("{base}}}")).expect("old schema");
+        for word in ["sent", "uncertain", "not-delivered", "", "future-outcome"] {
+            let event = Event::parse_line(&format!("{base},\"outcome\":\"{word}\"}}"))
+                .expect("string grammar belongs to consumer");
+            assert_ne!(
+                event, legacy,
+                "present outcome {word:?} must survive parsing"
+            );
+        }
+        for bad in ["null", "5", "true", "[]", "{}"] {
+            assert_eq!(
+                Event::parse_line(&format!("{base},\"outcome\":{bad}}}")),
+                Err(EventError::WrongType("outcome"))
+            );
+        }
+    }
 
     #[test]
     fn a_body_file_is_a_string_key_or_the_record_is_malformed() {

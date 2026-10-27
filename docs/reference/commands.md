@@ -1778,8 +1778,8 @@ the card verbatim — including the full `needs you:` reasons — then relays th
 human's answer to that session's lead.
 
 One quoted text argument works; otherwise remaining argv are joined with single
-spaces. The delivery is bare human-authority text, audited with target and full
-text only in the orchestrator session. Free text without a leading target is
+spaces. The delivery is one chat ask of the target's lead-pair seat, framed as the
+human's (`human:chat`), claimed in the orchestrator session before any key. Free text without a leading target is
 routed only when exactly one session goal or latest memo topic matches; an
 ambiguous or missing match prompts for the target and sends nothing. It never
 dispatches work, changes goals, clears questions, edits project or session

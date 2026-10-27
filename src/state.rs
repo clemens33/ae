@@ -345,9 +345,8 @@ pub fn summary_of(reason: &str) -> String {
 pub fn summary_for(action: &str, text: &str) -> String {
     match action {
         "chat" => text.chars().take(CHAT_SUMMARY_CAP).collect(),
-        // Relay is deliberately exceptional: its caller-only audit is the
-        // durable record of the exact bare text sent with human authority.
-        // Delivery caps that text by bytes before this renderer sees it.
+        // A relay refused before its claim: its caller-only row is the
+        // durable record of the exact text it refused.
         "relay" => text.to_owned(),
         _ => summary_of(text),
     }
