@@ -81,7 +81,7 @@ path = "tests/it/main.rs"
 [dependencies]
 # #251 owner ruling: inert Markdown; no HTML emitter, CLI, SIMD or serde.
 # Only TABLES | STRIKETHROUGH are enabled by the mapper at runtime.
-pulldown-cmark = { version = "=0.13.4", default-features = false }
+pulldown-cmark = { version = "=0.13.5", default-features = false }
 # `default-features = false` drops ureq's `gzip` (flate2) and leaves `json`
 # (serde/serde_json) off — we parse Telegram's replies with `crate::json`, which
 # already bounds nesting at MAX_DEPTH and keeps oversized integers verbatim.

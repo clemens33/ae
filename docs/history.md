@@ -819,6 +819,11 @@ and webpki-roots `1.0.9` → `1.0.10` (2026-10-19) for RUSTSEC-2026-0346,
 RUSTSEC-2026-0347, RUSTSEC-2026-0348, RUSTSEC-2026-0349, RUSTSEC-2026-0382 and
 RUSTSEC-2026-0381; the TLS graph remains **EXEMPTED, not audited**.
 
+2026-10-28 security-fix exception to the 14-day age rule: bumped pulldown-cmark
+`0.13.4` → `0.13.5` (published 2026-10-21) for RUSTSEC-2026-0414; ae enables
+TABLES|STRIKETHROUGH only, not WIKILINKS, so it is unaffected, and the bump is made
+because the deny lane gates releases.
+
 **Std replaces crates since our MSRV** — use these, never the crate equivalents:
 `std::process::ExitCode`/`Termination` (1.61) over raw `exit()`, `std::io::IsTerminal`
 (1.70) over atty/is-terminal, `core::error::Error` (1.81) for no-std-shaped error trees.
@@ -892,13 +897,15 @@ exempted version — replace the exemption the moment one is possible.
 
 ### Inert Markdown reader (#251, owner ruling 2026-10-21)
 
-The linked-file reader uses `pulldown-cmark =0.13.4`, exact-pinned with
-`default-features = false`. It was published 2026-05-20; 0.13.5 (2026-10-21)
-was younger than the required fourteen days at selection. Only tables and
-strikethrough are enabled at runtime. No HTML emitter, syntax colouring,
+The linked-file reader uses `pulldown-cmark =0.13.5`, exact-pinned with
+`default-features = false`. 0.13.4 (published 2026-05-20) was selected because
+0.13.5 (2026-10-21) was younger than the required fourteen days; the pin moved
+to 0.13.5 for RUSTSEC-2026-0414 (exponential events under `ENABLE_WIKILINKS`,
+which ae does not enable), which the release deny lane blocks on. Only tables
+and strikethrough are enabled at runtime. No HTML emitter, syntax colouring,
 network fetch, URI opener, external viewer or tui-markdown is introduced.
 
-The resolved graph adds exactly pulldown-cmark 0.13.4 (CommonMark events),
+The resolved graph adds exactly pulldown-cmark 0.13.5 (CommonMark events),
 memchr 2.8.3 (byte scanning) and unicase 2.10.0 (reference matching), reusing
 bitflags 2.13.2. Their MIT/Apache-2.0 licenses already fit deny.toml. Exact
 versions have no imported cargo-vet coverage; their three named exemptions
