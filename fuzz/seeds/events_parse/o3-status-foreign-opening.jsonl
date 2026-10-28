@@ -1,0 +1,3 @@
+{"ts":"2026-10-27T13:00:00Z","actor":"orch","action":"relay-attempt","ref":"o3-status","summary":"hello","actor_slot":"main","actor_session":"orch","actor_session_id":"0199c0de-bbbb-4890-abcd-ef0123456789","target":"lead","target_slot":"main","target_session":"home","target_session_id":"0199c0de-cccc-4890-abcd-ef0123456789"}
+{"ts":"2026-10-27T13:00:01Z","actor":"orch","action":"relay-result","ref":"o3-status","outcome":"sent"}
+{"ts":"2026-10-27T13:00:00Z","actor":"console:local","action":"ask","target":"lead","ref":"o3-status","relay_origin":"0199c0de-aaaa-4890-abcd-ef0123456789","target_slot":"main","target_session":"home","target_session_id":"0199c0de-cccc-4890-abcd-ef0123456789"}

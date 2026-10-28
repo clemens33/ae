@@ -66,7 +66,7 @@ When another agent hands you an exact `reply` or `send` command, run it
 | Helper | Purpose |
 |---|---|
 | `send <agent> <message>` | Deliver a message to another agent's pane (serialized with flock). Refuses a dead pane, waits out a busy or human-occupied input, pastes, and verifies the submit — see [How `send` delivers](#how-send-delivers). |
-| `relay <session[:agent]> <text…>` | Orchestrator-only tracked relay into another session's chat. Accepts one quoted text argument or joins the remaining argv with single spaces. Refuses non-orchestrator callers, self/world targets, seats outside the lead pair, a held chat lease or admission, a full relay cap (4) and a framed ask over 8192 bytes. |
+| `relay <session[:agent]> <text…>` | Orchestrator-only tracked relay into another session's chat. Accepts one quoted text argument or joins the remaining argv with single spaces. Refuses non-orchestrator callers, self/world targets, seats outside the lead pair, a held chat lease or admission, a full relay cap (4) and a framed ask over 8192 bytes. `relay --status <request-id>` reads one back. |
 | `ask <agent> <question>` | Tracked request — embeds your identity and an exact reply command with a request id. Once the request is recorded as pending, an unconfirmed submit included, stdout is that id alone on one line (`id=$(ae @<session> ask <agent> <question>)`, or the full helper path); stderr is unchanged and a refusal prints nothing on stdout. |
 | `review <agent> <request>` | Like `ask`, but with the critical-review prompt template (findings-first, BLOCKER/IMPORTANT/NIT); prints its request id the same way. |
 | `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Verified against the request's stored **slot** (the routing key), not the display name; `--as <agent>` sets the displayed sender only and cannot bypass that check. |
@@ -97,6 +97,14 @@ the owner one of the five open asks. stdout is the id, `outcome:` (`sent`, or
 exit 1 with `uncertain` / `not-delivered`) and `request:` as read back. An
 oversized ask is refused before its claim, never replaced by a notice. Only
 explicit human instructions may be relayed; the seat is a cheap model.
+
+`relay --status <request-id>` reads one of the caller's own relays back and
+never sends: `outcome:` as recorded (`uncertain` when no result was), the
+target found by its recorded session id, so a rename is followed and a
+replacement refused, `request:` there and each admitted answer whole. Exit 0 is
+a whole read; exit 1 names a gap in it now: a damaged claim or opening, a
+target gone or ambiguous, an answer body that is not whole. It writes nothing in
+the target and adds only a missing receipt or reply echo to the caller's chat.
 
 Every turn ae itself injects carries a machine-readable marker on its **first
 line**, rendered by one owner (`src/provenance.rs`); a marker pasted inside

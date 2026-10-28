@@ -145,7 +145,7 @@ pub(crate) const ASK_OVER_GAP: &str = "full text not shown: stored message over 
 pub(crate) const OLD_CORE_GAP: &str = "body missing (old core)";
 
 /// Why a row shows its summary instead of `body`; `None` for the whole.
-fn body_gap(body: &Body) -> Option<String> {
+pub(crate) fn body_gap(body: &Body) -> Option<String> {
     Some(match body {
         Body::Whole(_) => return None,
         Body::OldCore => OLD_CORE_GAP.to_owned(),
@@ -491,6 +491,31 @@ fn console_items(
 pub(crate) fn thread_items(events: &[Event]) -> Vec<Item> {
     let gaps = &mut Vec::new();
     console_items("", &[], events, &|_| Body::OldCore, &Via::of_grammar, gaps)
+}
+
+/// Every reply the chat admits as an answer to console request `id` in
+/// `session`, oldest first: the index of its record in `events` and the seat
+/// that answered. The same admission draws the lane; no body is read.
+#[must_use]
+pub(crate) fn answers(session: &str, events: &[Event], id: &str) -> Vec<(usize, String)> {
+    let gaps = &mut Vec::new();
+    let items = console_items(
+        session,
+        &[],
+        events,
+        &|_| Body::OldCore,
+        &Via::of_grammar,
+        gaps,
+    );
+    items
+        .into_iter()
+        .filter_map(|item| match item.kind {
+            Kind::Answer {
+                seat, id: answered, ..
+            } if answered == id => item.record.map(|at| (at, seat)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Whether `/close` may withdraw console request `id`: the console's own ask

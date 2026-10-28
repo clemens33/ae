@@ -19,6 +19,9 @@
 //! `ae:relay` chat echo. stdout is the receipt, three lines: the id,
 //! `outcome: sent|uncertain|not-delivered` and
 //! `request: pending|accepted|replied|cancelled|retired|absent|unknown`.
+//!
+//! `relay --status <id>` reads one claimed relay back and never delivers. It
+//! writes nothing in the target, only the caller's missing echoes.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -39,7 +42,11 @@ use crate::tracked::{self, EventFields, Kind, Receipt};
 use crate::{archive, lifecycle};
 
 /// The helper's argv contract.
-pub const USAGE: &str = "Usage: relay <session[:agent]> <text…>\n";
+pub const USAGE: &str =
+    "Usage: relay <session[:agent]> <text…>\n       relay --status <request-id>\n";
+
+/// The flag that reads a relay back instead of sending one.
+const STATUS_FLAG: &str = "--status";
 
 /// A relay refused before it claimed anything: the legacy ref-less row.
 pub const ACTION: &str = "relay";
@@ -155,6 +162,16 @@ pub fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    match tail {
+        [flag, id] if flag == STATUS_FLAG => {
+            return status(dir, id, actual().as_ref(), now, out, err);
+        }
+        [flag, ..] if flag.starts_with('-') => {
+            write!(err, "{USAGE}")?;
+            return Ok(EXIT_USAGE);
+        }
+        _ => {}
+    }
     let Ok(parsed) = parse(tail) else {
         write!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
@@ -272,33 +289,70 @@ fn record(
             "ae: relay {id} ({outcome}): its result was not recorded: {why}"
         )?;
     }
+    let line = receipt_echo(&said.target.session, said.text, outcome, id);
+    match echo(&journal, id, line, |summary| {
+        summary.starts_with(RECEIPT_ECHO)
+    }) {
+        Err(why) => writeln!(
+            err,
+            "ae: relay {id} ({outcome}): its chat echo was not recorded: {why}"
+        ),
+        Ok(()) => Ok(()),
+    }
+}
+
+/// How a receipt echo's summary begins.
+const RECEIPT_ECHO: &str = "routed to ";
+
+/// How a reply echo's summary begins, before the answer's body nonce.
+const REPLY_ECHO: &str = "reply ";
+
+/// The caller's receipt echo of relay `id` to `session`.
+fn receipt_echo(session: &str, text: &str, outcome: &str, id: &str) -> String {
     let echo = format!(
-        "routed to {}: {} ({outcome}), request {id}",
-        said.target.session,
-        console::excerpt(said.text)
+        "{RECEIPT_ECHO}{session}: {} ({outcome}), request {id}",
+        console::excerpt(text)
     );
-    let line = crate::state::event_line(Timestamp::now(), ECHO_ACTOR, "chat", id, &echo);
-    let echoed = journal.append_event_decided(|read| {
+    crate::state::event_line(Timestamp::now(), ECHO_ACTOR, "chat", id, &echo)
+}
+
+/// Append echo `line` of relay `id` unless the journal, read strictly under its
+/// lock, already holds an echo of `id` whose summary `same` recognises.
+fn echo(
+    journal: &store::SessionStore,
+    id: &str,
+    line: String,
+    same: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    let decided = journal.append_event_decided(|read| {
         let events = console::snapshot(read)?;
-        let echoed = |event: &Event| {
-            event.action == "chat"
-                && event.actor == ECHO_ACTOR
-                && event.reference.as_deref() == Some(id)
-        };
-        if events.iter().any(echoed) {
+        if events
+            .iter()
+            .filter_map(|event| echo_of(event, id))
+            .any(&same)
+        {
             return Err(String::new());
         }
         Ok(line)
     });
-    match flatten(echoed) {
-        Err(why) if !why.is_empty() => {
-            writeln!(
-                err,
-                "ae: relay {id} ({outcome}): its chat echo was not recorded: {why}"
-            )
-        }
+    match flatten(decided) {
+        Err(why) if !why.is_empty() => Err(why),
         _ => Ok(()),
     }
+}
+
+/// The summary of `event` when it is an echo of relay `id`.
+fn echo_of<'a>(event: &'a Event, id: &str) -> Option<&'a str> {
+    let echo = event.action == "chat"
+        && event.actor == ECHO_ACTOR
+        && event.reference.as_deref() == Some(id);
+    echo.then(|| event.summary.as_deref().unwrap_or(""))
+}
+
+/// The body nonce a reply echo's summary names.
+fn echoed_nonce(summary: &str) -> Option<&str> {
+    let nonce = summary.strip_prefix(REPLY_ECHO)?.split(' ').next()?;
+    console::is_body_nonce(nonce).then_some(nonce)
 }
 
 /// Every proof before the claim, in order: the orchestrator role, a text with
@@ -441,24 +495,285 @@ fn flatten(decided: Result<Result<(), String>, store::Error>) -> Result<(), Stri
 /// What the target's journal, read strictly and without a lock, says of
 /// request `id` in the claimed session: the word, or the read gap.
 fn read_back(console: &Console, id: &str) -> Result<&'static str, String> {
+    let (bytes, _) = target_journal(console)?;
+    Ok(request_in(console, &bytes, id))
+}
+
+/// The target's journal, read strictly and without a lock: bytes and records.
+fn target_journal(console: &Console) -> Result<(Vec<u8>, Vec<Event>), String> {
     let read = store::read_source(&store::open(console.dir()).events_path());
     let bytes = match &read {
-        SourceRead::Absent => return Ok("absent"),
         SourceRead::Ready(bytes) => bytes.clone(),
-        SourceRead::Invalid(_) | SourceRead::Unreadable(_) => Vec::new(),
+        _ => Vec::new(),
     };
-    console::snapshot(read)?;
-    let states = requests::states_in(&bytes, SessionKey::new(console.name(), console.uuid()));
+    Ok((bytes, console::snapshot(read)?))
+}
+
+/// The state of request `id` in the target journal `bytes` of `console`.
+fn request_in(console: &Console, bytes: &[u8], id: &str) -> &'static str {
+    let states = requests::states_in(bytes, SessionKey::new(console.name(), console.uuid()));
     let Some(request) = states.iter().find(|request| request.id == id.as_bytes()) else {
-        return Ok("absent");
+        return "absent";
     };
-    Ok(match request.status {
+    match request.status {
         Status::Pending if request.accepted.is_some() => "accepted",
         Status::Pending => "pending",
         Status::Replied => "replied",
         Status::Cancelled => "cancelled",
         Status::Retired => "retired",
+    }
+}
+
+/// One relay as its orchestrator's own journal claimed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claim {
+    /// The target's name when the relay ran: shown, never followed.
+    pub target_session: String,
+    /// The target's `session_id` when the relay ran: its identity.
+    pub target_uuid: String,
+    pub target_slot: String,
+    pub text: String,
+    /// The recorded outcome; `None`, read as uncertain, when none was.
+    pub outcome: Option<&'static str>,
+}
+
+/// Relay `id` as the journal of the orchestrator whose `session_id` is
+/// `origin` claims it: one `relay-attempt` of that origin, at most one
+/// `relay-result` with a known outcome. A ref-less `relay` refusal never
+/// matches.
+///
+/// # Errors
+///
+/// No such claim, or an ambiguous one.
+pub fn claimed(events: &[Event], id: &str, origin: &str) -> Result<Claim, String> {
+    let of_id = |action: &'static str| {
+        let of =
+            move |event: &&Event| event.action == action && event.reference.as_deref() == Some(id);
+        events.iter().filter(of)
+    };
+    let mut attempts = of_id(ATTEMPT);
+    let (Some(attempt), None) = (attempts.next().filter(|_| !id.is_empty()), attempts.next())
+    else {
+        return Err(format!("relay {id} is not claimed exactly once here"));
+    };
+    if origin.is_empty() || attempt.actor_session_id.value() != Some(origin) {
+        return Err(format!("relay {id} was claimed by another orchestrator"));
+    }
+    let uuid = attempt.target_session_id.value();
+    let uuid = uuid.filter(|uuid| crate::events::is_session_id(uuid));
+    let slot = attempt.target_slot.value().filter(|slot| is_slot(slot));
+    let session = attempt.target_session.value().unwrap_or_default();
+    let (Some(uuid), Some(slot)) = (uuid, slot) else {
+        return Err(format!("the claim of relay {id} names no usable target"));
+    };
+    let mut results = of_id(RESULT);
+    let outcome = match (results.next(), results.next()) {
+        (None, _) => None,
+        (Some(result), None) => [Receipt::Sent, Receipt::Uncertain, Receipt::NotDelivered]
+            .into_iter()
+            .map(Receipt::word)
+            .find(|word| result.outcome.as_deref() == Some(*word))
+            .map(Some)
+            .ok_or_else(|| format!("relay {id} records an unknown outcome"))?,
+        (Some(_), Some(_)) => return Err(format!("relay {id} has more than one result")),
+    };
+    Ok(Claim {
+        target_session: session.to_owned(),
+        target_uuid: uuid.to_owned(),
+        target_slot: slot.to_owned(),
+        text: attempt.summary.clone().unwrap_or_default(),
+        outcome,
     })
+}
+
+/// Where in the target's `events` the one console ask opening relay `id`
+/// sits, bound to `claim`: relayed by `origin`, to its seat, and every session
+/// stamp it carries, at least one, the claimed one. `None` when the target has
+/// no opening: a relay that crashed before its ask was recorded.
+///
+/// # Errors
+///
+/// A duplicated, foreign or mis-stamped opening.
+pub fn opening(
+    events: &[Event],
+    id: &str,
+    origin: &str,
+    claim: &Claim,
+) -> Result<Option<usize>, String> {
+    let mut asks = events.iter().enumerate().filter(|(_, event)| {
+        event.actor == tracked::CONSOLE_SINK
+            && event.action == Kind::Ask.action()
+            && event.reference.as_deref() == Some(id)
+    });
+    let Some((at, ask)) = asks.next() else {
+        return Ok(None);
+    };
+    let pane = ask.target_session_uuid.as_deref().filter(|s| !s.is_empty());
+    let routed = ask.target_session_id.value().filter(|s| !s.is_empty());
+    let uuid = Some(claim.target_uuid.as_str());
+    // At least one session stamp, and every one the claimed session.
+    let bound = asks.next().is_none()
+        && !origin.is_empty()
+        && ask.relay_origin.as_deref() == Some(origin)
+        && ask.target_slot.value() == Some(claim.target_slot.as_str())
+        && pane.or(routed) == uuid
+        && routed.or(pane) == uuid;
+    if !bound {
+        return Err(format!("request {id} is not this relay's one opening"));
+    }
+    Ok(Some(at))
+}
+
+/// An admitted answer, read whole.
+struct Answer {
+    seat: String,
+    ts: Timestamp,
+    nonce: String,
+    body: String,
+}
+
+/// What `relay --status` read: the claim, then what its target says so far,
+/// up to `gap`, the first read after the claim that failed.
+struct Found {
+    caller: PathBuf,
+    claim: Claim,
+    request: &'static str,
+    answers: Vec<Answer>,
+    gap: Option<String>,
+}
+
+/// `relay --status <id>`: print what relay `id` became and repair the
+/// caller's missing echoes. rc0 for a complete read whatever the outcome, rc1
+/// for a gap in what it reads now, which repairs nothing, or an echo it could
+/// not write.
+fn status(
+    dir: &Path,
+    id: &str,
+    actual: Option<&(ObservedViewer, ServerId)>,
+    now: Timestamp,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let read = Grant::of(dir, actual).map_err(str::to_owned);
+    let found = match read.and_then(|grant| read_status(&grant, id)) {
+        Ok(found) => found,
+        Err(gap) => {
+            writeln!(err, "ae: relay --status {id} REFUSED — {gap}.")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    let outcome = found.claim.outcome.unwrap_or(Receipt::Uncertain.word());
+    let request = found.request;
+    write!(out, "{id}\noutcome: {outcome}\nrequest: {request}\n")?;
+    writeln!(out, "read: {now}")?;
+    if found.claim.outcome.is_none() {
+        writeln!(err, "ae: relay {id}: no result recorded, so uncertain")?;
+    }
+    for Answer { seat, ts, body, .. } in &found.answers {
+        let body = crate::board::terminal_text(body);
+        let end = if body.ends_with('\n') { "" } else { "\n" };
+        write!(out, "reply from {seat} at {ts}:\n{body}{end}")?;
+    }
+    if let Some(gap) = &found.gap {
+        writeln!(err, "ae: relay {id}: read gap: {gap}")?;
+        return Ok(EXIT_FAILED);
+    }
+    if let Err(why) = repair(&found, id, outcome) {
+        writeln!(err, "ae: relay {id}: an echo was not recorded: {why}")?;
+        return Ok(EXIT_FAILED);
+    }
+    Ok(0)
+}
+
+/// Every strict read of `relay --status`, in order: the role and the caller's
+/// own claim of `id`, without which nothing is said, then its target.
+fn read_status(grant: &Grant, id: &str) -> Result<Found, String> {
+    if grant.role != meta::MetaAgentRole::Role {
+        return Err("caller session is not an orchestrator".to_owned());
+    }
+    let caller = &grant.caller;
+    let journal = store::read_source(&store::open(&caller.dir).events_path());
+    let events = console::snapshot(journal).map_err(|why| format!("its own journal: {why}"))?;
+    let claim = claimed(&events, id, &grant.session_id)?;
+    let mut found = Found {
+        caller: caller.dir.clone(),
+        claim,
+        request: "unknown",
+        answers: Vec::new(),
+        gap: None,
+    };
+    found.gap = read_target(&mut found, id, &grant.session_id).err();
+    Ok(found)
+}
+
+/// The target of `found`'s claim, by the session id it recorded: the one
+/// opening, then the request state and each admitted answer whole.
+fn read_target(found: &mut Found, id: &str, origin: &str) -> Result<(), String> {
+    let console = bound_target(&found.caller, &found.claim.target_uuid)?;
+    let (bytes, events) =
+        target_journal(&console).map_err(|why| format!("the target journal: {why}"))?;
+    if opening(&events, id, origin, &found.claim)?.is_none() {
+        found.request = "absent";
+        return Ok(());
+    }
+    found.request = request_in(&console, &bytes, id);
+    for (at, seat) in console::lane::answers(console.name(), &events, id) {
+        let reply = &events[at];
+        let body = match console::body_for(console.dir(), reply) {
+            console::lane::Body::Whole(body) => body,
+            gap => {
+                let why = console::lane::body_gap(&gap).unwrap_or_default();
+                return Err(format!("the reply from {seat} cannot be read whole: {why}"));
+            }
+        };
+        let Some(nonce) = console::stored_nonce(reply) else {
+            return Err(format!("the reply from {seat} names no stored body"));
+        };
+        let (ts, nonce) = (reply.ts, nonce.to_owned());
+        found.answers.push(Answer {
+            seat,
+            ts,
+            nonce,
+            body,
+        });
+    }
+    Ok(())
+}
+
+/// The one session that holds `uuid` now; never the relay's recorded name.
+fn bound_target(caller_dir: &Path, uuid: &str) -> Result<Console, String> {
+    let root = caller_dir.parent().and_then(Path::parent);
+    let root = root.ok_or("target session could not be resolved")?;
+    let names = lifecycle::sessions_with_id(root, uuid)
+        .map_err(|why| format!("cannot enumerate sessions to find {uuid} ({why})"))?;
+    let [name] = names.as_slice() else {
+        let held = names.len();
+        return Err(format!(
+            "{held} sessions hold the target session id {uuid}, not one"
+        ));
+    };
+    let dir = lifecycle::sessions_dir(root).join(name);
+    Ok(Console::bound(name.clone(), dir, uuid.to_owned()))
+}
+
+/// The receipt echo, then one echo per answer keyed by its body nonce, each
+/// written only where the journal, read under its lock, has none.
+fn repair(found: &Found, id: &str, outcome: &str) -> Result<(), String> {
+    let journal = store::open(&found.caller);
+    let claim = &found.claim;
+    let line = receipt_echo(&claim.target_session, &claim.text, outcome, id);
+    echo(&journal, id, line, |summary| {
+        summary.starts_with(RECEIPT_ECHO)
+    })?;
+    for answer in &found.answers {
+        let (nonce, excerpt) = (answer.nonce.as_str(), console::excerpt(&answer.body));
+        let summary = format!("{REPLY_ECHO}{nonce} from {}: {excerpt}", answer.seat);
+        let line = crate::state::event_line(Timestamp::now(), ECHO_ACTOR, "chat", id, &summary);
+        echo(&journal, id, line, |summary| {
+            echoed_nonce(summary) == Some(nonce)
+        })?;
+    }
+    Ok(())
 }
 
 fn caller(

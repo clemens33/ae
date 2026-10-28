@@ -704,7 +704,7 @@ pub(crate) fn lead_pair_at(dir: &Path) -> Result<bool, String> {
 /// elsewhere. The file is read at most [`reply::CONSOLE_BODY_CAP`] bytes, and
 /// an ask's is the delivered envelope, so only [`tracked::uncompose_ask`]'s
 /// answer is the whole text.
-fn body_for(dir: &Path, event: &Event) -> lane::Body {
+pub(crate) fn body_for(dir: &Path, event: &Event) -> lane::Body {
     const CAP: u64 = reply::CONSOLE_BODY_CAP as u64;
     let Some(recorded) = event.body_file.as_deref().map(Path::new) else {
         return lane::Body::OldCore;
@@ -755,14 +755,33 @@ use chatperf_spec::count_body_read;
 /// `<id>.<action>.<six lowercase hex>.txt` — the name `deliver::store_body`
 /// publishes a request's ask or reply under.
 fn is_body_name(id: &str, action: &str, name: &str) -> bool {
+    body_nonce(id, action, name).is_some()
+}
+
+/// The six lowercase hex of body file `name` of request `id`'s `action`: the
+/// nonce that tells one stored body of a request from another.
+pub(crate) fn body_nonce<'a>(id: &str, action: &str, name: &'a str) -> Option<&'a str> {
     let hex = name
         .strip_prefix(id)
         .and_then(|rest| rest.strip_prefix('.'))
         .and_then(|rest| rest.strip_prefix(action))
         .and_then(|rest| rest.strip_prefix('.'))
         .and_then(|rest| rest.strip_suffix(".txt"));
+    hex.filter(|hex| !id.is_empty() && is_body_nonce(hex))
+}
+
+/// The body nonce of the stored body `event` names.
+pub(crate) fn stored_nonce(event: &Event) -> Option<&str> {
+    let name = Path::new(event.body_file.as_deref()?)
+        .file_name()?
+        .to_str()?;
+    body_nonce(event.reference.as_deref()?, &event.action, name)
+}
+
+/// Whether `text` is a body nonce: six lowercase hex.
+pub(crate) fn is_body_nonce(text: &str) -> bool {
     let lower_hex = |byte: u8| matches!(byte, b'0'..=b'9' | b'a'..=b'f');
-    !id.is_empty() && hex.is_some_and(|hex| hex.len() == 6 && hex.bytes().all(lower_hex))
+    text.len() == 6 && text.bytes().all(lower_hex)
 }
 
 /// `/close [id]`: one `cancel` for the console's own request `which`, or the

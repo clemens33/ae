@@ -262,7 +262,7 @@ pre-grammar name is normalised, and the refusal prints the path spelling that wo
 | Helper | Purpose |
 |---|---|
 | `send [--cross-session] <agent> <msg>` | Deliver to the same session; another session needs `--cross-session`. Refuses a dead pane, defers on busy/human input, verifies the submit |
-| `relay <session[:agent]> <text…>` | Orchestrator-only: one tracked chat ask, as `human:chat`, of a lead-pair seat of another session (bare = main); linked everywhere, refused unless the caller session records `meta_agent=true`. stdout: `<id>`, `outcome: sent\|uncertain\|not-delivered`, `request: <state>\|absent\|unknown` |
+| `relay <session[:agent]> <text…>` | Orchestrator-only: one tracked chat ask, as `human:chat`, of a lead-pair seat of another session (bare = main); linked everywhere, refused unless the caller session records `meta_agent=true`. stdout: `<id>`, `outcome: sent\|uncertain\|not-delivered`, `request: <state>\|absent\|unknown`. `relay --status <id>` reads one back by id and never resends |
 | `ask [--cross-session] <agent> <question>` | Tracked request in the same session; another session needs `--cross-session` |
 | `review [--cross-session] <agent> <request>` | Critical review request in the same session; another session needs `--cross-session` |
 | `reply <request-id> <msg>` | Reply to a logged ask/review. Verified against the request's stored slot |
@@ -297,6 +297,9 @@ that chat's zero-wait lease and admission and a relay cap of four. The link is p
 session but works only when the caller pane belongs to the orchestrator seat (`meta_agent=true`).
 Its `relay-attempt` claim is durable in the caller session before any target key, its
 `relay-result` and one `ae:relay` chat echo after. Never inferred or judgment work.
+`relay --status <id>` reads that claim back: its outcome, the target found by its recorded session
+id (a rename followed, a replacement refused), the request state and each admitted answer whole.
+Exit 1 names a current gap. It writes nothing in the target, only missing echoes in the caller.
 
 **Call a helper by its FULL PATH, or — for a session whose name fits the current grammar —
 as `ae @<session> <helper> …`.** A BARE name is refused: no `/` in `argv[0]` and no marker

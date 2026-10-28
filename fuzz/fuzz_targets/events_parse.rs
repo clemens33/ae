@@ -34,4 +34,17 @@ fuzz_target!(|data: &[u8]| {
         let repair = text.lines().last().map(str::as_bytes);
         let _ = std::hint::black_box(ae::requests::bound_opening(pair, &id, repair));
     }
+    // `relay --status` folds one claim, then its opening, from these rows;
+    // the first row's id and origin drive both.
+    let events: Vec<_> = text
+        .lines()
+        .filter_map(|line| ae::events::Event::parse_line(line).ok())
+        .collect();
+    if let Some(first) = events.first()
+        && let (Some(id), Some(origin)) = (&first.reference, first.actor_session_id.value())
+        && let Ok(claim) = ae::relay::claimed(&events, id, origin)
+        && let Ok(Some(at)) = ae::relay::opening(&events, id, origin, &claim)
+    {
+        assert_eq!(events[at].reference.as_ref(), Some(id));
+    }
 });
