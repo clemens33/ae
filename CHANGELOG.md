@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.148] - 2026-10-28
+- Re-ask the absence probe once past the settle
+
 ## [v2026.10.147] - 2026-10-28
 - Space Markdown blocks in the ae app reader
 

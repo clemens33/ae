@@ -1,6 +1,6 @@
 # ae — agentic engineering
 
-[![Release: 2026.10.147](https://img.shields.io/badge/release-2026.10.147-blue.svg)](https://github.com/clemens33/ae/releases)
+[![Release: 2026.10.148](https://img.shields.io/badge/release-2026.10.148-blue.svg)](https://github.com/clemens33/ae/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![tmux](https://img.shields.io/badge/requires-tmux%20%3E%3D%203.4-1BB91F.svg)](https://github.com/tmux/tmux)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Linux%20x86__64-lightgrey.svg)](#install)
