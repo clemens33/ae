@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.151] - 2026-10-28
+- Pin the justfile fuzz target list to the fuzz manifest bins and the README table
+- Rewrite the seatproof spawn fixture's launch id under the meta lock
+
 ## [v2026.10.150] - 2026-10-28
 - Preserve a seat's manual model and effort across restarts
 
