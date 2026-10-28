@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.144] - 2026-10-28
+- Add relay --status to read a relay outcome and repair its local echo
+- Bump pulldown-cmark to 0.13.5 for RUSTSEC-2026-0414
+
 ## [v2026.10.143] - 2026-10-27
 - Enable Ghostty hyperlinks on owned tmux servers
 
