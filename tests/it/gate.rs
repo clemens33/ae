@@ -5523,6 +5523,88 @@ fn every_fuzz_target_source_is_a_declared_bin_the_gate_check_cannot_skip() {
     assert!(!fuzz_inventory_ok("[package]\nname = \"ae-fuzz\"\n", &[]));
 }
 
+/// Each way the justfile's `FUZZ_TARGETS` and the fuzz README's `## Targets`
+/// table (first column) disagree with the fuzz manifest's `[[bin]]` names, one
+/// line per entry naming its list. The lists are compared as sets; a name
+/// twice in any one of them (the manifest included) is reported by name.
+fn fuzz_list_problems(manifest: &str, justfile: &str, readme: &str) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let Some(bins) = manifest_bins(manifest) else {
+        return vec!["manifest: a [[bin]] block lacks its name or path".to_owned()];
+    };
+    let bins: Vec<String> = bins.into_iter().map(|(name, _)| name).collect();
+    let just = justfile
+        .lines()
+        .find_map(|line| line.strip_prefix("FUZZ_TARGETS := \""))
+        .and_then(|rest| rest.split_once('"'))
+        .map_or("", |(names, _)| names);
+    let just: Vec<String> = just.split_whitespace().map(str::to_owned).collect();
+    let rows: Vec<String> = readme
+        .lines()
+        .skip_while(|line| *line != "## Targets")
+        .skip(1)
+        .take_while(|line| !line.starts_with("## "))
+        .filter_map(|line| line.strip_prefix("| `")?.split_once('`'))
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    let lists = [("manifest", &bins), ("justfile", &just), ("README", &rows)];
+    let mut problems = Vec::new();
+    for (label, names) in lists {
+        let mut seen = BTreeSet::new();
+        for name in names.iter().filter(|name| !seen.insert(*name)) {
+            problems.push(format!("{name}: duplicated in {label}"));
+        }
+    }
+    let wanted: BTreeSet<_> = bins.iter().collect();
+    for (label, names) in &lists[1..] {
+        let have: BTreeSet<_> = names.iter().collect();
+        for name in wanted.difference(&have) {
+            problems.push(format!("{name}: missing from {label}"));
+        }
+        for name in have.difference(&wanted) {
+            problems.push(format!("{name}: unknown in {label}"));
+        }
+    }
+    problems
+}
+
+#[test]
+fn the_fuzz_target_lists_in_justfile_manifest_and_readme_name_the_same_targets() {
+    let problems = fuzz_list_problems(
+        &read(&root().join("fuzz/Cargo.toml")),
+        &read(&root().join("justfile")),
+        &read(&root().join("fuzz/README.md")),
+    );
+    assert!(
+        problems.is_empty(),
+        "fuzz/Cargo.toml [[bin]] names (manifest), justfile FUZZ_TARGETS and the fuzz/README.md \
+         Targets table (README) must be one set: just rust-fuzz takes only FUZZ_TARGETS, so a \
+         target missing there is refused or skipped without a word (#273): {problems:#?}"
+    );
+
+    let m = "[package]\nname = \"ae-fuzz\"\n\n[[bin]]\nname = \"a\"\npath = \"fuzz_targets/a.rs\"\n\n[[bin]]\nname = \"b\"\npath = \"fuzz_targets/b.rs\"\n";
+    let r = "## Targets\n\n| Target | Parser |\n|---|---|\n| `a` | x |\n| `b` | y |\n\n## Next\n\n| `z` | no target |\n";
+    let check = |m: &str, names: &str, r: &str| {
+        fuzz_list_problems(m, &format!("FUZZ_TARGETS := \"{names}\"\n"), r)
+    };
+    assert!(check(m, "a b", r).is_empty());
+    // RED — a target the justfile does not list: `rust-fuzz target=b` refuses.
+    assert_eq!(check(m, "a", r), ["b: missing from justfile"]);
+    // RED — a listed name no bin declares, and one listed twice.
+    assert_eq!(check(m, "a b c", r), ["c: unknown in justfile"]);
+    assert_eq!(check(m, "a b b", r), ["b: duplicated in justfile"]);
+    // RED — the README table swaps one name, and lists another twice.
+    let swapped = check(m, "a b", &r.replace("`b`", "`c`"));
+    assert_eq!(swapped, ["b: missing from README", "c: unknown in README"]);
+    let dup = check(m, "a b", &r.replace("`b`", "`a`"));
+    assert_eq!(dup, ["a: duplicated in README", "b: missing from README"]);
+    // RED — a bin declared twice, and a [[bin]] block with no path: named, not an empty list.
+    let dup = check(&m.replace("\"b\"", "\"a\""), "a", r);
+    assert_eq!(dup, ["a: duplicated in manifest", "b: unknown in README"]);
+    let bad = check(&m.replace("path = \"fuzz_targets/b.rs\"\n", ""), "a b", r);
+    assert_eq!(bad, ["manifest: a [[bin]] block lacks its name or path"]);
+}
+
 /// The `paths` filter one trigger of a workflow lists, in order.
 fn trigger_paths(workflow: &str, trigger: &str) -> Vec<String> {
     let header = format!("  {trigger}:");
