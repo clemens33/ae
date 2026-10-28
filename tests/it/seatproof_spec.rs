@@ -491,23 +491,16 @@ fn a_spawn_keeps_its_created_identity_through_readiness_and_the_linger_enter() {
                 text.contains("seat.spawned.0=fresh"),
                 "capture preceded seat creation"
             );
-            let old = ae::meta::Meta::parse(&text)
+            ae::meta::Meta::parse(&text)
                 .launch_id(SLOT)
-                .expect("created launch")
-                .to_owned();
-            fs::write(
-                w.meta(),
-                text.replace(
-                    &format!("launch_id.{SLOT}={old}"),
-                    &format!("launch_id.{SLOT}=tok-replaced"),
-                ),
-            )
-            .expect("replace created seat");
+                .expect("created launch");
+            ae::meta::rewrite(&w.dir(), &format!("launch_id.{SLOT}"), Some("tok-replaced"))
+                .expect("replace created seat");
             w.resume();
         }
         let output = finish(child);
         let err = String::from_utf8_lossy(&output.stderr);
-        assert!(err.contains("REFUSED"), "stale spawn brief: {err}");
+        assert!(err.contains("REFUSED"), "stale spawn brief ({cut}): {err}");
         assert_eq!(w.count("refused"), 1, "spawn guard audit: {}", w.events());
         assert_eq!(
             read(out.with_extension("enters")).lines().count(),
