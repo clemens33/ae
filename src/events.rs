@@ -691,6 +691,46 @@ pub(crate) fn is_session_id(text: &str) -> bool {
     !text.is_empty() && crate::archive::canonical_uuid(text) == text
 }
 
+/// The journal schema a record was written under, read off its
+/// `schema_version` member. Descriptive metadata only: no reader routes on it,
+/// and the member is not part of [`Event`], so it never changes a record's
+/// meaning or its equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaVersion {
+    /// A readable version. An absent member, and `0`, are `V(0)`: a record
+    /// written before the field existed. ae writes `1`.
+    V(u32),
+    /// Present but not one integer in `0..=u32::MAX`: a wrong type, a float, a
+    /// negative or too large number, the key twice, or not an object at all.
+    Unreadable,
+}
+
+/// Read the schema version of one record. Never an error: a record is not
+/// refused for what this says.
+///
+/// ```
+/// use ae::events::{SchemaVersion, schema_version};
+///
+/// let v = |text| schema_version(&ae::json::parse(text).unwrap());
+/// assert_eq!(v(r#"{"ts":"t"}"#), SchemaVersion::V(0));
+/// assert_eq!(v(r#"{"schema_version":1}"#), SchemaVersion::V(1));
+/// assert_eq!(v(r#"{"schema_version":"1"}"#), SchemaVersion::Unreadable);
+/// ```
+#[must_use]
+pub fn schema_version(record: &Value) -> SchemaVersion {
+    let Value::Obj(fields) = record else {
+        return SchemaVersion::Unreadable;
+    };
+    let mut members = fields.iter().filter(|(key, _)| key == "schema_version");
+    match (members.next(), members.next()) {
+        (None, _) => SchemaVersion::V(0),
+        (Some((_, Value::Num(n))), None) => {
+            u32::try_from(*n).map_or(SchemaVersion::Unreadable, SchemaVersion::V)
+        }
+        _ => SchemaVersion::Unreadable,
+    }
+}
+
 /// Every key this schema defines.
 const KNOWN_KEYS: [&str; 26] = [
     "ts",

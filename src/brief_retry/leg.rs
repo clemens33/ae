@@ -545,7 +545,7 @@ mod tests {
         // fail HERE rather than quietly reshape a brief's audit trail. Only the
         // clock is a substitution.
         let expected = format!(
-            "{{\"ts\":\"2026-09-11T04:23:20Z\",\"actor\":\"lead\",\"action\":\"{GAVE_UP_ACTION}\",\"target\":\"scribe\",\"ref\":\"spawn-spawned.1\",\"target_slot\":\"spawned.1\",\"summary\":\"delivery was attempted twice (attempts 1, age 600s); the brief is preserved at undelivered.scribe.txt\"}}"
+            "{{\"ts\":\"2026-09-11T04:23:20Z\",\"actor\":\"lead\",\"action\":\"{GAVE_UP_ACTION}\",\"target\":\"scribe\",\"ref\":\"spawn-spawned.1\",\"target_slot\":\"spawned.1\",\"summary\":\"delivery was attempted twice (attempts 1, age 600s); the brief is preserved at undelivered.scribe.txt\",\"schema_version\":1}}"
         );
         assert_eq!(line.trim_end(), expected, "the give-up event line");
         // The record is gone, and nothing else was written to the ledger.

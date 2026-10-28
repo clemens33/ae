@@ -57,7 +57,8 @@ Every event has these keys; `target`, `ref`, and `summary` are optional and omit
   "action":  "done",                        // event type — see below
   "target":  "coworker",                    // bare name of the recipient when applicable
   "ref":     "ae-20260519T072100Z-abc123",  // polysemous — see action table
-  "summary": "action-specific payload view" // optional; usually flattened and truncated
+  "summary": "action-specific payload view", // optional; usually flattened and truncated
+  "schema_version": 1                        // journal schema, written last; absent reads as v0
 }
 ```
 
@@ -224,7 +225,27 @@ The hidden `ae-monitor` window has an `_events` pane running the `events-tail` h
 
 ## Schema stability
 
-Adding new optional keys is fine — readers ignore unknown ones. Renaming or removing keys is breaking; ae has no schema versioning so a breaking change requires a separate migration story. As of this writing, the keys above are the stable surface.
+Adding new optional keys is fine — readers ignore unknown ones. Renaming or removing keys is breaking and needs its own migration story, not a version bump. The keys above are the stable surface.
+
+### Schema version
+
+Every record ae appends ends in `"schema_version":1`. A record without it is **v0**, written before the field existed. Existing records are never migrated: a resume's trim only drops older lines (re-terminating each kept one with LF) and the archive copies bytes. One journal therefore holds v0 and v1 side by side, and every reader, ae's or a bridge's, accepts both.
+
+- **One writer.** The store's two append functions stamp each complete LF-terminated record that is one JSON object without the member, by inserting it before the closing brace; every other byte passes through unchanged (torn tail, blank or non-object line, a record that already has it). A mirror repair copies a persisted original into the other ledger verbatim, unstamped, so both ledgers keep the same bytes.
+- **Absent or `0` is v0.** One integer in `0..=4294967295` is that version. A string, float, negative, larger number, `null`, array, object, a repeated key or a non-object line reads *unreadable*. None of these costs the record: `schema_version` is not part of `Event`, no ae reader routes on it, and its presence or value never changes what a record means or whether a strict reader accepts the journal (`events::schema_version` is the reference reader).
+- **A newer number is read, not rejected.** Within a version, changes are additive. A consumer that meets a version it does not know keeps reading the keys it knows and reports the version as unsupported instead of guessing.
+- **Not the digest's number.** `ae list --json` has its own `schema_version` (the snapshot's shape, currently 2); the two move independently.
+
+## Consuming the stream: snapshot + cursor
+
+An external consumer reads two things and writes nothing: a **snapshot** for where things stand and the **journal from a cursor** for what happened since. Mutations go through the session helpers (`send`, `ask`, `reply`, `state`, …), which verify their caller and write the journal themselves. There is no socket and no daemon.
+
+- **Snapshot.** `ae list --json` (the [digest](../reference/commands.md)) carries `generated_at` and per-field epochs. `generated_at` stamps when the document was built, not when each fact was observed: watchdog facts may be up to one interval *ahead* of it and others come from earlier samples, each under its own freshness rule. A fact ae cannot prove reads `unknown`. There is no per-fact observed-at and no journal cursor in the digest.
+- **Cursor.** A position is the file's identity plus a byte offset just past the last *complete* LF-terminated record; never count a torn tail, the next append finishes it. `events::Cursor{generation, offset}` is the in-process form (generation 0 today). To follow, keep the bytes already consumed and prove on each read that the file still starts with exactly those (`events::Held`). Identity alone proves nothing: a same-inode rewrite keeps the inode.
+- **Resync from a fresh snapshot** when the file is shorter than the offset, its identity changed, or the prefix differs. A resume trims an over-long journal by writing a new file and leaves a short one alone, so identity changes only when a trim succeeds; decide from the identity, size and prefix evidence, never from "a resume happened". A trim re-terminates every kept line with LF, so retained CRLF framing is not preserved.
+- **Weak consumers.** One that keeps no prefix can compare a tail hash or suffix, but that only *detects* some rewrites; a match cannot show the bytes before it are unchanged. Treat it as incomplete detection: when continuity cannot be proven, take a fresh snapshot and replay, or accept that records may be missing and claim no continuity.
+- **No atomicity.** The two are read at different instants. Read the cursor, then the snapshot, then replay from the cursor, and expect the replay to repeat facts the snapshot already shows.
+- **Position, not key.** A record is identified by its byte range in a known file, never by `ts` and `ref`: `ts` has one-second precision and `ref` is polysemous (above), shared by `ask`, `accept` and `reply` on one request. Because the snapshot carries no cursor, overlap cannot be removed by a key. Refold from the journal, or apply an explicitly idempotent projection (for example the newest declared `state` per actor); never a blanket last-record-wins fold.
 
 ## Disk footprint
 

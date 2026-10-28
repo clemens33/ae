@@ -204,6 +204,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "event_stamp"
+path = "fuzz_targets/event_stamp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "board_claude"
 path = "fuzz_targets/board_claude.rs"
 test = false

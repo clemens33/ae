@@ -10,7 +10,7 @@ For background context and roadmap, see [issue #1 — Chat bridge for ae session
 
 Four pieces of substrate, shipped and stable:
 
-1. **`events.jsonl`** — append-only JSON-lines stream of everything that happens in a session. See [events.md](events.md) for the full schema. Bridges read this.
+1. **`events.jsonl`** — append-only JSON-lines stream of everything that happens in a session. See [events.md](events.md) for the full schema and for how to follow it ([schema version](events.md#schema-version), [snapshot + cursor](events.md#consuming-the-stream-snapshot--cursor)). Bridges read this.
 2. **`AE_SENDER_OVERRIDE`** — env var that lets a non-pane caller identify itself when invoking `send` / `ask` / `review`. Bridges set this when writing back.
 3. **Allow-listed external-actor target prefixes** — `telegram:*` and `discord:*` are treated as event-only sinks: `send` emits the event and exits without touching tmux. Bridges read those events and forward them to the chat platform.
 4. **`session_id`** — stable UUID per ae session, stored in `~/.ae/sessions/<name>/meta` as `session_id=<uuid>`. Survives a rename. Bridges bind to this rather than the human-readable name.

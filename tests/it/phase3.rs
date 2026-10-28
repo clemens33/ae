@@ -1830,6 +1830,8 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // world is a line in a review, not a diff nobody read.
             "src/rename.rs".to_owned(),
             "src/render.rs".to_owned(),
+            // Frozen cfg(test) repair spec: reads its own isolated ledger fixtures.
+            "src/request_verb/o8snap_spec.rs".to_owned(),
             // The git branch read: `HEAD` under the session's own work tree,
             // plus the `.git` pointer file a worktree uses instead of a
             // directory.

@@ -3234,6 +3234,7 @@ mod tests {
         const NEW: &str = "33333333-3333-4333-8333-333333333333";
         const ROWS: &str = "effort.main=old\neffort.main\neffort.main=duplicate\r\n";
         const LINE: &str = "{\"ts\":\"2023-11-14T22:13:20Z\",\"actor\":\"watchdog\",\"action\":\"effort-discarded\",\"target\":\"lead\",\"target_slot\":\"main\",\"target_session\":\"fixture\",\"target_session_id\":\"11111111-1111-4111-8111-111111111111\",\"ref\":\"\",\"summary\":\"off\"}";
+        const STAMPED_LINE: &str = "{\"ts\":\"2023-11-14T22:13:20Z\",\"actor\":\"watchdog\",\"action\":\"effort-discarded\",\"target\":\"lead\",\"target_slot\":\"main\",\"target_session\":\"fixture\",\"target_session_id\":\"11111111-1111-4111-8111-111111111111\",\"ref\":\"\",\"summary\":\"off\",\"schema_version\":1}";
 
         fn original() -> String {
             format!(
@@ -3291,14 +3292,14 @@ mod tests {
                 std::fs::read_to_string(scratch.0.join("meta")).expect("published"),
                 old.replace(ROWS, "")
             );
-            assert_eq!(journal(&scratch), format!("{LINE}\n"));
+            assert_eq!(journal(&scratch), format!("{STAMPED_LINE}\n"));
             assert!(matches!(
                 discard_effort(&scratch.0, &proof(), LINE),
                 Discard::Moved
             ));
             assert_eq!(
                 journal(&scratch),
-                format!("{LINE}\n"),
+                format!("{STAMPED_LINE}\n"),
                 "a stale retry writes nothing"
             );
         }
@@ -3366,7 +3367,7 @@ mod tests {
                 std::fs::read(scratch.0.join("meta")).expect("published"),
                 original().replace(ROWS, "").as_bytes()
             );
-            assert_eq!(journal(&scratch), format!("{LINE}\n"));
+            assert_eq!(journal(&scratch), format!("{STAMPED_LINE}\n"));
         }
 
         #[test]
@@ -3384,7 +3385,7 @@ mod tests {
                     .any(|line| line.split('=').next() == Some("effort.main"))
             );
             assert!(next.contains("effort.spawned.0=foreign\n"));
-            assert_eq!(journal(&scratch), format!("{LINE}\n"));
+            assert_eq!(journal(&scratch), format!("{STAMPED_LINE}\n"));
         }
 
         #[test]

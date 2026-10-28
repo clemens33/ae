@@ -369,7 +369,7 @@ fn write_new(
     }
     let here = key.name;
     if let Some((other, other_dir)) = mirror
-        && let Err(gap) = copy_into(verb, request, &other, &other_dir, line)
+        && let Err(gap) = copy_into(verb, request, &other, &other_dir, line, Origin::Composed)
     {
         writeln!(err, "{word}: {id} recorded in {here}; {}", gap.says(&other))?;
         return Ok(EXIT_FAILED);
@@ -395,7 +395,7 @@ fn repair(
     let (Some((other, other_dir)), Ok(line)) = (mirror, String::from_utf8(line)) else {
         return already(verb, id, out, err);
     };
-    match copy_into(verb, request, &other, &other_dir, &line) {
+    match copy_into(verb, request, &other, &other_dir, &line, Origin::Original) {
         Ok(true) => {
             writeln!(out, "{word}: {id} copy completed in {other}")?;
             Ok(0)
@@ -449,6 +449,16 @@ impl CopyGap {
     }
 }
 
+/// Whose bytes a copied line is.
+#[derive(Clone, Copy)]
+enum Origin {
+    /// Composed by this very verb: the ledger's door stamps it, as it did the
+    /// first copy.
+    Composed,
+    /// A persisted record being repaired into the other ledger: its bytes stay.
+    Original,
+}
+
 /// Append `line` to the other participant's ledger when its copy of the
 /// request is still due there, re-read under its lock: `Ok(true)` when it was
 /// written, `Ok(false)` when that copy is absent or already past this verb. A
@@ -460,11 +470,12 @@ fn copy_into(
     other: &str,
     other_dir: &Path,
     line: &str,
+    origin: Origin,
 ) -> Result<bool, CopyGap> {
     let id = &lossy(&request.id);
     let other_id = crate::meta::session_id_in(other_dir);
     let key = SessionKey::new(other, &other_id);
-    let appended = store::open(other_dir).append_event_decided(|read| {
+    let decide = |read| {
         let bytes = readable(read)?;
         match find(&bytes, key, id) {
             Some(copy) if !same_opening(request, &copy) => return Err(Refused::Diverged),
@@ -475,7 +486,12 @@ fn copy_into(
             return Err(Refused::NoEffect);
         }
         Ok(line.to_owned())
-    });
+    };
+    let ledger = store::open(other_dir);
+    let appended = match origin {
+        Origin::Composed => ledger.append_event_decided(decide),
+        Origin::Original => ledger.append_event_decided_verbatim(decide),
+    };
     match appended {
         Ok(Ok(())) => Ok(true),
         Ok(Err(Refused::Moved(_))) => Ok(false),
@@ -577,6 +593,9 @@ fn lossy(bytes: &[u8]) -> String {
 fn key_text(key: &Key) -> String {
     key.value().map(lossy).unwrap_or_default()
 }
+
+#[cfg(test)]
+mod o8snap_spec;
 
 #[cfg(test)]
 mod tests {

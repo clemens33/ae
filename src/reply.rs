@@ -1426,7 +1426,7 @@ mod tests {
             assert_eq!(
                 events[1],
                 format!(
-                    "{{\"ts\":\"2026-09-30T12:01:00Z\",\"actor\":\"lead\",\"action\":\"reply\",\"target\":\"{sink}\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"s\",\"actor_session_id\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"caller_server\":\"/tmp/ae\",\"caller_pane\":\"%3\",\"caller_session_uuid\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"summary\":\"the answer\"}}"
+                    "{{\"ts\":\"2026-09-30T12:01:00Z\",\"actor\":\"lead\",\"action\":\"reply\",\"target\":\"{sink}\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"s\",\"actor_session_id\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"caller_server\":\"/tmp/ae\",\"caller_pane\":\"%3\",\"caller_session_uuid\":\"1b4e28ba-2fa1-11d2-883f-0016d3cc4321\",\"summary\":\"the answer\",\"schema_version\":1}}"
                 )
             );
             assert_eq!(stored(&dir), 0);

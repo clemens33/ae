@@ -579,7 +579,7 @@ fn assert_base_receipts(rig: &Rig, pane: &str, out: &str, err: &str, memory: boo
         "R5 no archive: base move summary byte-identical"
     );
     let expected_record = format!(
-        "{{\"ts\":\"{}\",\"actor\":\"lead\",\"action\":\"reseat\",\"target\":\"scout\",\"target_slot\":\"spawned.0\",\"target_pane\":\"{pane}\",\"caller_pane\":\"{}\",\"summary\":\"{summary}\"}}",
+        "{{\"ts\":\"{}\",\"actor\":\"lead\",\"action\":\"reseat\",\"target\":\"scout\",\"target_slot\":\"spawned.0\",\"target_pane\":\"{pane}\",\"caller_pane\":\"{}\",\"summary\":\"{summary}\",\"schema_version\":1}}",
         events[0].ts, rig.main_pane
     );
     let raw_record = journal

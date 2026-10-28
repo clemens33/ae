@@ -100,6 +100,7 @@ mod monitor;
 mod nativeview_alias;
 mod o2guard_p2_spec;
 mod o2guard_spec;
+mod o8snap_spec;
 mod parity;
 mod phase2;
 mod phase3;

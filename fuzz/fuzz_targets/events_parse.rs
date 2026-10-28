@@ -21,6 +21,23 @@ fuzz_target!(|data: &[u8]| {
     }
     if let Ok(value) = ae::json::parse(&text) {
         let _ = std::hint::black_box(ae::events::Event::from_json(&value));
+        // `schema_version` is descriptive metadata: reading it is total, and
+        // the member's presence, absence or value changes no field of the
+        // record and no error the record earns.
+        let _ = std::hint::black_box(ae::events::schema_version(&value));
+        if let ae::json::Value::Obj(fields) = &value {
+            let bare = ae::json::Value::Obj(
+                fields
+                    .iter()
+                    .filter(|(key, _)| key != "schema_version")
+                    .cloned()
+                    .collect(),
+            );
+            assert_eq!(
+                ae::events::Event::from_json(&value),
+                ae::events::Event::from_json(&bare)
+            );
+        }
     }
     // The request reader retains strict opening facts from these same
     // hostile records, including optional launch keys and damaged rows.

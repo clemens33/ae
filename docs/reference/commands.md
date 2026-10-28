@@ -458,7 +458,8 @@ is when the goal was last set (age it for staleness); `branch` is the
 session's live git branch (from the watchdog's status segment, with a git
 fallback) — together with `name`, `origin` and `mode` they give a consumer
 (e.g. the orchestrator) the session's context without any manual bookkeeping.
-`schema_version` lets consumers gate on shape. `attention_rank` is the numeric
+`schema_version` lets consumers gate on the digest's shape (the journal has its own,
+separate number: [events.md](../internals/events.md#schema-version)). `attention_rank` is the numeric
 severity (`dead` 6, `stale` 5, `waiting-user` 4, `blocked`/`limit` 3, `throttled` 2;
 rank 1 is retired). `needs_attention` is true only for a reason that needs you, so a
 session whose only reason is `stale` reads `false`. `unanswered`, when present, is the

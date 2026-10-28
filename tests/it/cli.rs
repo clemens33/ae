@@ -1652,7 +1652,9 @@ fn goal_set_and_clear_rewrite_meta_and_announce_and_fail_loudly_without_a_meta()
     );
     let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
     assert!(
-        events.contains("\"actor\":\"human\",\"action\":\"goal\",\"summary\":\"ship it\"}"),
+        events.contains(
+            "\"actor\":\"human\",\"action\":\"goal\",\"summary\":\"ship it\",\"schema_version\":1}"
+        ),
         "{events}"
     );
 
@@ -1673,7 +1675,7 @@ fn goal_set_and_clear_rewrite_meta_and_announce_and_fail_loudly_without_a_meta()
             .lines()
             .nth(1)
             .unwrap()
-            .contains("\"summary\":\"goal cleared\"}"),
+            .contains("\"summary\":\"goal cleared\",\"schema_version\":1}"),
         "{events}"
     );
     assert!(
@@ -1827,7 +1829,7 @@ fn memo_add_appends_the_tsv_record_and_announces_and_fails_loudly_when_it_cannot
     let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
     assert!(
         events.contains(
-            "\"actor\":\"human\",\"action\":\"memo\",\"ref\":\"p2\",\"summary\":\"one line\"}"
+            "\"actor\":\"human\",\"action\":\"memo\",\"ref\":\"p2\",\"summary\":\"one line\",\"schema_version\":1}"
         ),
         "{events}"
     );
@@ -2194,12 +2196,14 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     );
     assert!(
         lines[0].contains(
-            "\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"done\",\"summary\":\"all green\"}"
+            "\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"done\",\"summary\":\"all green\",\"schema_version\":1}"
         ),
         "{container}"
     );
     assert!(
-        lines[1].contains("\"actor\":\"lead\",\"action\":\"done\",\"summary\":\"all green\"}"),
+        lines[1].contains(
+            "\"actor\":\"lead\",\"action\":\"done\",\"summary\":\"all green\",\"schema_version\":1}"
+        ),
         "{container}"
     );
 
@@ -2989,7 +2993,7 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
     );
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"worker\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"trask\",\"target_slot\":\"worker.0\",\"target_session\":\"trask\",\"summary\":\"the question\",\"body_file\":\"{body_file}\"}}"
+            "\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"worker\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"trask\",\"target_slot\":\"worker.0\",\"target_session\":\"trask\",\"summary\":\"the question\",\"body_file\":\"{body_file}\",\"schema_version\":1}}"
         )),
         "{}",
         events[0]
@@ -3285,7 +3289,7 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
         events[0].contains(
             "\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"telegram:42\",\"ref\":\"ae-"
         ) && events[0].ends_with(
-            "\"actor_slot\":\"main\",\"actor_session\":\"tridn\",\"summary\":\"hello\"}"
+            "\"actor_slot\":\"main\",\"actor_session\":\"tridn\",\"summary\":\"hello\",\"schema_version\":1}"
         ),
         "{}",
         events[0]
@@ -3394,7 +3398,7 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
     );
     assert!(
         events[1].ends_with(&format!(
-            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"renamed\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"{session}\",\"target_slot\":\"main\",\"target_session\":\"{session}\",\"summary\":\"the answer\",\"body_file\":\"{body_file}\"}}"
+            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"renamed\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"{session}\",\"target_slot\":\"main\",\"target_session\":\"{session}\",\"summary\":\"the answer\",\"body_file\":\"{body_file}\",\"schema_version\":1}}"
         )),
         "{}",
         events[1]
@@ -3690,7 +3694,7 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
     let last = fx.events().pop().unwrap_or_default();
     assert!(
         last.ends_with(&format!(
-            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{bridged}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"summary\":\"hello\"}}"
+            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{bridged}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"summary\":\"hello\",\"schema_version\":1}}"
         )),
         "{last}"
     );
@@ -3758,7 +3762,7 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
     assert_eq!(stored, "⟦ae:msg from lead⟧\nhello there");
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from lead⟧ hello there\",\"body_file\":\"{body_file}\"}}"
+            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from lead⟧ hello there\",\"body_file\":\"{body_file}\",\"schema_version\":1}}"
         )),
         "a plain send carries no routing members, as the frozen emitter writes it: {}",
         events[0]
@@ -4161,7 +4165,7 @@ fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to
     );
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"lead\",\"action\":\"cancel\",\"target\":\"worker\",\"ref\":\"ae-9\",\"actor_slot\":\"main\",\"actor_session\":\"trss\",\"target_slot\":\"worker.0\",\"target_session\":\"trss\",\"summary\":\"withdrawn\",\"body_file\":\"{body_file}\"}}"
+            "\"actor\":\"lead\",\"action\":\"cancel\",\"target\":\"worker\",\"ref\":\"ae-9\",\"actor_slot\":\"main\",\"actor_session\":\"trss\",\"target_slot\":\"worker.0\",\"target_session\":\"trss\",\"summary\":\"withdrawn\",\"body_file\":\"{body_file}\",\"schema_version\":1}}"
         )),
         "{}",
         events[0]
@@ -4257,7 +4261,7 @@ fn send_refuses_exactly_records_nothing_on_a_failed_delivery_and_names_the_gap_a
     let last = fx.events().pop().unwrap_or_default();
     assert!(
         last.ends_with(
-            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"telegram:42\",\"summary\":\"hi\"}"
+            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"telegram:42\",\"summary\":\"hi\",\"schema_version\":1}"
         ),
         "{last}"
     );
@@ -4321,7 +4325,7 @@ fn a_chat_send_keeps_its_lines_and_its_own_cap_on_the_pane_and_at_the_sink() {
     let last = fx.events().pop().unwrap_or_default();
     let kept = 3500 - payload.chars().count() - 1;
     let expected = format!(
-        "\"actor\":\"lead\",\"action\":\"chat\",\"target\":\"telegram:42\",\"summary\":\"first {line}\\nsecond\\tline {line}\\nthird\\n{}\"}}",
+        "\"actor\":\"lead\",\"action\":\"chat\",\"target\":\"telegram:42\",\"summary\":\"first {line}\\nsecond\\tline {line}\\nthird\\n{}\",\"schema_version\":1}}",
         "y".repeat(kept)
     );
     assert!(

@@ -1051,7 +1051,7 @@ impl SessionStore {
     ///
     /// [`Error`] — which step failed, on which path.
     pub fn append_event(&self, line: &str) -> Result<(), Error> {
-        append_locked(&self.events_path(), line.as_bytes())
+        append_locked(&self.events_path(), stamp_event_records(line).as_bytes())
     }
 
     /// Append the event line `decide` chooses from the container as it stands
@@ -1065,14 +1065,42 @@ impl SessionStore {
         &self,
         decide: impl FnOnce(SourceRead) -> Result<String, R>,
     ) -> Result<Result<(), R>, Error> {
+        self.decided(decide, true)
+    }
+
+    /// [`Self::append_event_decided`] without the schema stamp: a persisted
+    /// original copied into another ledger keeps its bytes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::append_event_decided`].
+    pub(crate) fn append_event_decided_verbatim<R>(
+        &self,
+        decide: impl FnOnce(SourceRead) -> Result<String, R>,
+    ) -> Result<Result<(), R>, Error> {
+        self.decided(decide, false)
+    }
+
+    fn decided<R>(
+        &self,
+        decide: impl FnOnce(SourceRead) -> Result<String, R>,
+        stamp: bool,
+    ) -> Result<Result<(), R>, Error> {
         let path = self.events_path();
         let lock_path = lock_path(&path);
         let _held = lock(&lock_path, LOCK_WAIT)
             .map_err(|why| Error::Lock(lock_path.display().to_string(), why))?;
         match decide(read_source(&path)) {
-            Ok(line) => append(&path, line.as_bytes())
-                .map(Ok)
-                .map_err(|why| Error::Append(path.display().to_string(), why)),
+            Ok(line) => {
+                let bytes = if stamp {
+                    stamp_event_records(&line)
+                } else {
+                    std::borrow::Cow::Borrowed(line.as_str())
+                };
+                append(&path, bytes.as_bytes())
+                    .map(Ok)
+                    .map_err(|why| Error::Append(path.display().to_string(), why))
+            }
             Err(refused) => Ok(Err(refused)),
         }
     }
@@ -1379,6 +1407,52 @@ impl StampHold {
             meta.is_file() && (meta.dev(), meta.ino()) == (self.node.dev, self.node.ino)
         })
     }
+}
+
+/// Stamp every COMPLETE (LF-terminated) record of `body` that is one JSON
+/// object without a `schema_version` member, by inserting `"schema_version":1`
+/// before its closing brace. Every other byte — separators, blank lines, an
+/// unterminated tail, a record that is not an object, one already stamped —
+/// passes through unchanged.
+#[doc(hidden)]
+#[must_use]
+pub fn stamp_event_records(body: &str) -> std::borrow::Cow<'_, str> {
+    let mut out: Option<String> = None;
+    let mut done = 0;
+    for segment in body.split_inclusive('\n') {
+        let end = done + segment.len();
+        if let Some(record) = segment.strip_suffix('\n')
+            && let Some((close, comma)) = stamp_point(record)
+        {
+            let copy = out.get_or_insert_with(|| body[..done].to_owned());
+            copy.push_str(&record[..close]);
+            copy.push_str(if comma { "," } else { "" });
+            copy.push_str("\"schema_version\":1");
+            copy.push_str(&record[close..]);
+            copy.push('\n');
+        } else if let Some(copy) = out.as_mut() {
+            copy.push_str(segment);
+        }
+        done = end;
+    }
+    out.map_or(std::borrow::Cow::Borrowed(body), std::borrow::Cow::Owned)
+}
+
+/// Where `"schema_version":1` goes in `record` (one LF-less line): the byte
+/// offset of the object's closing brace, and whether a comma must precede the
+/// member. `None` for anything but one JSON object that has no such member
+/// once its keys are decoded.
+fn stamp_point(record: &str) -> Option<(usize, bool)> {
+    const BLANKS: [char; 4] = [' ', '\t', '\r', '\n'];
+    let crate::json::Value::Obj(fields) = crate::json::parse(record).ok()? else {
+        return None;
+    };
+    if fields.iter().any(|(key, _)| key == "schema_version") {
+        return None;
+    }
+    let core = record.trim_end_matches(BLANKS);
+    core.ends_with('}')
+        .then(|| (core.len() - 1, !fields.is_empty()))
 }
 
 /// Append `bytes` to `path` under `<path>.lock`: the lock is the file's own
