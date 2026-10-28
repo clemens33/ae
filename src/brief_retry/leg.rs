@@ -279,7 +279,15 @@ fn fly(flight: &Flight<'_>, out: &mut impl Write, err: &mut impl Write) -> std::
         defer: crate::deliver::DEFAULT_DEFER,
         composed: flight.composed,
     };
-    let outcome = crate::deliver::deliver(&request, err)?;
+    // Bound to the RECORD's incarnation: a successor is refused, never briefed.
+    let record = (&*flight.record.slot, &*flight.record.launch_id);
+    let outcome = match crate::tracked::admit_leg(&request, record, err)? {
+        Some(guard) => crate::deliver::deliver_checked(&request, Some(&guard), false, err)?,
+        None => Err(crate::deliver::refused(
+            "",
+            crate::deliver::Stage::BeforeInput,
+        )),
+    };
     let age = flight.now.epoch().saturating_sub(flight.record.created);
     match outcome {
         Ok(delivered) => {
@@ -344,6 +352,9 @@ const fn outcome_of(failure: &crate::deliver::Failure) -> Outcome {
         | crate::deliver::Failure::NotComposed { .. } => Outcome::Rearm,
         crate::deliver::Failure::Unconfirmed { .. } => {
             Outcome::GiveUp("submit unconfirmed; the brief may be staged unsent")
+        }
+        crate::deliver::Failure::Refused { .. } => {
+            Outcome::GiveUp("its seat is no longer the one the brief was recorded for")
         }
         _ => Outcome::GiveUp("delivery failed in a way that proves nothing about what was pasted"),
     }

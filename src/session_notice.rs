@@ -384,7 +384,8 @@ pub fn run(
         .filter(|value| *value > 0)
         .unwrap_or(crate::watchdog_daemon::DEFAULT_INTERVAL_SECS.cast_signed());
     let bound = interval.saturating_mul(2);
-    let Some(pre) = judge(dir, &resolved.slot, own_session, bound).1 else {
+    let (judged, owed) = judge(dir, &resolved.slot, own_session, bound);
+    let Some(pre) = owed else {
         return Ok(0);
     };
     if pre.give_up.is_some() {
@@ -410,6 +411,12 @@ pub fn run(
         defer: DEFER,
         composed: crate::tool::Composed::NONE,
     };
+    // Bound to the seat this run JUDGED: a successor is never told its notice.
+    let launch = Some(judged.launch_id.as_str()).filter(|id| *id != "-");
+    let judged = (resolved.slot.as_str(), launch.unwrap_or_default());
+    let Some(guard) = crate::tracked::admit_leg(&request, judged, err)? else {
+        return Ok(EXIT_FAILED);
+    };
     let mut attempted = None;
     let mut fault = None;
     let compose = || {
@@ -429,7 +436,7 @@ pub fn run(
             }
         }
     };
-    let outcome = crate::deliver::deliver_composed(&request, compose, err)?;
+    let outcome = crate::deliver::deliver_composed_checked(&request, Some(&guard), compose, err)?;
     if let Some(why) = fault {
         writeln!(
             err,

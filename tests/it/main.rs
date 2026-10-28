@@ -134,6 +134,7 @@ mod run;
 mod sanitize;
 mod scratch;
 mod seat_relaunch;
+mod seatproof_spec;
 mod session_launch;
 mod shape;
 mod shorthelper;

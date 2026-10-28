@@ -448,7 +448,12 @@ fn refused_before_paste(action: &str, failure: &deliver::Failure) -> Option<&'st
         deliver::Failure::Lock => Some("target lock held"),
         deliver::Failure::NoticeRefused { .. } => Some("notice not composed"),
         deliver::Failure::NotComposed { .. } => Some("input box left"),
-        deliver::Failure::Abandoned { .. }
+        deliver::Failure::Refused {
+            stage: deliver::Stage::BeforeInput,
+            ..
+        } => Some("seat not current"),
+        deliver::Failure::Refused { .. }
+        | deliver::Failure::Abandoned { .. }
         | deliver::Failure::Paste { .. }
         | deliver::Failure::Unconfirmed { .. } => None,
     }

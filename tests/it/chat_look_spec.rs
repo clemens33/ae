@@ -1088,6 +1088,8 @@ if ((grep { $_ eq 'list-panes' } @ARGV) && $format =~ /ae_console/) { print "%99
 elsif ((grep { $_ eq 'list-panes' } @ARGV) && $format =~ /ae_agent/) { print "%5 | lead\n"; }
 elsif (grep { $_ eq 'show-options' } @ARGV) { print "0199c0de-aaaa-4890-abcd-ef0123456789\n"; }
 elsif ($format =~ /ae_slot/) { print "main | one | lead | 0199c0de-aaaa-4890-abcd-ef0123456789 | $ENV{LOOK_SOCK}\n"; }
+elsif ($format eq '#{session_id} | #{session_created}') { print "\$1 | 1\n"; }
+elsif ($format eq '#{session_name}') { print "one\n"; }
 elsif ($format =~ /t\/f\//) { print $ENV{LOOK_ZONE}, "\n"; }
 elsif ($format =~ /ae_palette|ae_theme|ae_icons/) { print $ENV{LOOK_ANSWER}, "\n"; }
 elsif ($format =~ /pane_width/) { print "80 | 24 | 0\n"; }

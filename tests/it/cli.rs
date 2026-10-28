@@ -2632,7 +2632,7 @@ impl Tracked {
             std::fs::write(
                 fixture.dir.join("meta"),
                 format!(
-                    "session={session}\ntmux_server_kind=socket\ntmux_server={}\n",
+                    "session={session}\nseat.main=lead\nseat.worker.0=worker\ntmux_server_kind=socket\ntmux_server={}\n",
                     fixture.sock.display()
                 ),
             )
@@ -2842,7 +2842,7 @@ exit 0
             std::fs::write(
                 dir.join("meta"),
                 format!(
-                    "session={session}\ntmux_server_kind=socket\ntmux_server={}\n",
+                    "session={session}\nseat.main={agent}\ntmux_server_kind=socket\ntmux_server={}\n",
                     self.sock.display()
                 ),
             )
@@ -3363,6 +3363,7 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
         fx.tmux(&["set-option", "-p", "-t", &fx.main, "@ae_agent", "renamed"])
             .0
     );
+    assert!(ae::meta::rewrite(&fx.dir, "seat.main", Some("renamed")).is_ok());
     let replied = fx.run(
         ae::cli::REPLY,
         Some(&fx.worker),

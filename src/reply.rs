@@ -1185,7 +1185,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("meta"),
-            "session_id=1b4e28ba-2fa1-11d2-883f-0016d3cc4321\n",
+            "session_id=1b4e28ba-2fa1-11d2-883f-0016d3cc4321\nseat.worker.0=w\nseat.main=lead\n",
         )
         .unwrap();
         let ts = Timestamp::parse("2026-08-27T07:11:12Z").unwrap();
@@ -1208,6 +1208,7 @@ mod tests {
         };
         tracked::queue_observe(Ok(held.clone()));
         tracked::queue_observe(Ok(held.clone()));
+        tracked::fixture_address("worker.0", "w");
         tracked::set_test_resolve(resolved.clone(), ServerId::Ambient);
         tracked::set_test_delivery(Ok(delivered()));
         let sender = Sender {
@@ -1240,6 +1241,7 @@ mod tests {
             slot: "main".to_owned(),
             ..resolved
         };
+        tracked::fixture_address("main", "lead");
         tracked::set_test_resolve(asker, ServerId::Ambient);
         tracked::set_test_delivery(Ok(crate::deliver::Delivered {
             body_file: String::new(),

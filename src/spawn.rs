@@ -486,7 +486,7 @@ fn run_spawn_inner(
             facts,
             &pane,
             slot,
-            &parsed.name,
+            (&parsed.name, &staged.launch_id),
             &brief,
             actor,
             tool,
@@ -1229,6 +1229,8 @@ enum BriefRecovery {
     /// an unproven pane, so a send could execute the brief in a shell: do NOT
     /// send, inspect the seat first.
     Inspect,
+    /// The seat this spawn created is no longer current: no retry is armed.
+    Superseded,
 }
 
 /// The brief refusal a dead seat gets, quoted by the reason and the recovery.
@@ -1292,7 +1294,7 @@ fn deliver_brief(
     facts: &Facts,
     pane: &str,
     slot: &str,
-    name: &str,
+    (name, launch): (&str, &str),
     brief: &str,
     actor: &str,
     kind: ToolKind,
@@ -1329,7 +1331,11 @@ fn deliver_brief(
         defer: deliver::DEFAULT_DEFER,
         composed,
     };
-    let outcome = deliver::deliver(&request, err)?;
+    // Bound to the incarnation this spawn CREATED, captured before readiness.
+    let Some(guard) = tracked::admit_leg(&request, (slot, launch), err)? else {
+        return Ok(Some(superseded(deliver::Stage::BeforeInput, "")));
+    };
+    let outcome = deliver::deliver_checked(&request, Some(&guard), false, err)?;
     let body_file = match &outcome {
         Ok(delivered) => delivered.body_file.clone(),
         Err(failure) => failure.body_file().to_owned(),
@@ -1351,6 +1357,9 @@ fn deliver_brief(
                 BriefRecovery::Inspect,
             ),
             deliver::Failure::DeadPane => (BRIEF_REFUSED_DEAD.to_owned(), BriefRecovery::Retire),
+            deliver::Failure::Refused { stage, .. } => {
+                return Ok(Some(superseded(*stage, &body_file)));
+            }
             // The paste was ACCEPTED by the box; only its Enter went
             // unconfirmed. That is positive evidence the pane was live.
             deliver::Failure::Unconfirmed { notice: false, .. } => (
@@ -1376,6 +1385,9 @@ fn deliver_brief(
     // A booting TUI can swallow the post-paste Enter, leaving the brief staged
     // in the input box.
     std::thread::sleep(LINGER_SETTLE);
+    if !guard.check_at(deliver::Stage::Entered, err)? {
+        return Ok(Some(superseded(deliver::Stage::Entered, &body_file)));
+    }
     let head: String = brief.chars().take(LINGER_PREFIX).collect();
     if let Some(screen) = transport::capture_pane(&facts.server, pane) {
         let tail: Vec<&str> = screen.lines().rev().take(6).collect();
@@ -1384,6 +1396,17 @@ fn deliver_brief(
         }
     }
     Ok(None)
+}
+
+/// The refusal for a brief whose created seat stopped being current.
+fn superseded(stage: deliver::Stage, body_file: &str) -> BriefRefusal {
+    BriefRefusal {
+        reason: format!(
+            "brief REFUSED — the seat this spawn created is no longer current; {}. Body preserved at {body_file}",
+            stage.clause()
+        ),
+        recovery: BriefRecovery::Superseded,
+    }
 }
 
 /// One undelivered brief, and everything its record would need.
@@ -1409,6 +1432,10 @@ struct Undelivered<'a> {
 fn record_for_retry(undelivered: &Undelivered<'_>, recovery: BriefRecovery) -> Option<String> {
     if recovery == BriefRecovery::Retire {
         return Some("the seat is gone".to_owned());
+    }
+    // A record would read the CURRENT launch and hand this brief to a successor.
+    if recovery == BriefRecovery::Superseded {
+        return Some("its seat is no longer the one this spawn created".to_owned());
     }
     let launch_id = crate::meta::read_bytes(undelivered.dir)
         .ok()
@@ -1484,7 +1511,7 @@ fn report_undelivered(
             )?;
             writeln!(err, "ae:   {}/peek {name}", dir.display())?;
         }
-        BriefRecovery::Resend => {}
+        BriefRecovery::Resend | BriefRecovery::Superseded => {}
     }
     // THE RETRY NOTICE, and it must not promise what is not on record. When a
     // record was written, a hand re-send would deliver the brief TWICE, so the

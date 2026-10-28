@@ -1143,23 +1143,46 @@ fn the_queued_phrase_in_a_codex_box_is_still_a_draft() {
     );
 }
 
-/// A capture that disappears after paste cannot prove the message submitted.
-/// It is an explicit caveat rather than a fabricated confirmed delivery.
+/// A TUI that exits after paste leaves an unprovable seat. Refuse before
+/// Enter, preserve the body and never fabricate a confirmed delivery.
 #[test]
-fn an_unreadable_submit_capture_is_reported_as_unverifiable_not_confirmed() {
+fn a_pane_that_vanishes_after_paste_is_refused_before_enter() {
     let rig = Rig::with_mode("capture-lost", "claude", 0, "vanish");
     let (code, stderr) = rig.run(ae::cli::SEND, &["tui", "capture vanished"], &[]);
 
-    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("REFUSED") && stderr.contains("no Enter was sent"),
+        "{stderr}"
+    );
     assert!(
         rig.submitted().is_empty(),
         "the vanished pane received no Enter"
     );
+    assert_eq!(rig.enter_count(), 0, "no Enter reached the vanished pane");
+    let events = rig.events();
+    assert_eq!(
+        events
+            .lines()
+            .filter(|line| line.contains("\"action\":\"refused\""))
+            .count(),
+        1,
+        "{events}"
+    );
     assert!(
-        rig.events()
-            .contains("\"unverifiable\":\"unreadable-capture\""),
-        "the success caveat is durable: {}",
-        rig.events()
+        !events.contains("\"action\":\"send\"") && !events.contains("unverifiable"),
+        "{events}"
+    );
+    let body_file = stderr
+        .split("body preserved at ")
+        .nth(1)
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .unwrap_or_default();
+    assert_eq!(
+        std::fs::read_to_string(body_file.trim_end_matches('.')).unwrap_or_default(),
+        "⟦ae:msg from tui⟧\ncapture vanished"
     );
 }
 

@@ -236,6 +236,27 @@ pub enum Failure {
         /// `delivery-abandoned` diagnostic, an interrupt as `delivery-failed`.
         notice: bool,
     },
+    /// The seat was not the current one it was bound to: one `refused` audit, no key after `stage`.
+    Refused { body_file: String, stage: Stage },
+}
+
+/// How far a delivery got when its address was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    BeforeInput,
+    Pasted,
+    Entered,
+}
+
+impl Stage {
+    /// The refusal line's account of the pane.
+    pub(crate) const fn clause(self) -> &'static str {
+        match self {
+            Self::BeforeInput => "NOTHING further was typed",
+            Self::Pasted => "the text was pasted but no Enter was sent",
+            Self::Entered => "submission unconfirmed, no further input",
+        }
+    }
 }
 
 impl fmt::Debug for Failure {
@@ -271,6 +292,11 @@ impl fmt::Debug for Failure {
                 .field("body_file", body_file)
                 .field("notice", notice)
                 .finish(),
+            Self::Refused { body_file, stage } => formatter
+                .debug_struct("Refused")
+                .field("body_file", body_file)
+                .field("stage", stage)
+                .finish(),
         }
     }
 }
@@ -285,7 +311,8 @@ impl Failure {
             | Self::Paste { body_file }
             | Self::NotComposed { body_file }
             | Self::Unproven { body_file }
-            | Self::Unconfirmed { body_file, .. } => body_file,
+            | Self::Unconfirmed { body_file, .. }
+            | Self::Refused { body_file, .. } => body_file,
         }
     }
 }
@@ -342,7 +369,7 @@ pub(crate) fn deliver_checked(
         return Ok(Err(Failure::Lock));
     }
     if !address_check(guard, err)? {
-        return Ok(Err(Failure::Storage));
+        return Ok(Err(refused(&body_file, Stage::BeforeInput)));
     }
     let prepared = notice::prepare(
         input.model,
@@ -363,7 +390,7 @@ pub(crate) fn deliver_checked(
         )?;
         return Ok(Err(Failure::NoticeRefused { body_file }));
     };
-    if let Err(failure) = quiet_or_abandoned(request, input.model, tool, guard, err)? {
+    if let Err(failure) = quiet_or_abandoned(request, input.model, tool, guard, &body_file, err)? {
         return Ok(Err(failure));
     }
     // Every other shape reads for a human-only prompt BEFORE its first key.
@@ -377,7 +404,7 @@ pub(crate) fn deliver_checked(
         return Ok(Err(failure));
     }
     if !address_check(guard, err)? {
-        return Ok(Err(Failure::Storage));
+        return Ok(Err(refused(&body_file, Stage::BeforeInput)));
     }
     // Safe now: cancel, then paste — all by `-t` target, never by selection.
     let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
@@ -387,7 +414,7 @@ pub(crate) fn deliver_checked(
         return Ok(Err(failure));
     }
     if !address_check(guard, err)? {
-        return Ok(Err(Failure::Storage));
+        return Ok(Err(refused(&body_file, Stage::BeforeInput)));
     }
     match submit(request, input, &mode, &body_file, &framed, guard, err)? {
         Ok(verification) => Ok(Ok(Delivered {
@@ -409,6 +436,14 @@ fn address_check(
     err: &mut impl Write,
 ) -> io::Result<bool> {
     guard.map_or(Ok(true), |guard| guard.check(err))
+}
+
+/// The failure a refused address check leaves: its line and audit are written.
+pub(crate) fn refused(body_file: &str, stage: Stage) -> Failure {
+    Failure::Refused {
+        body_file: body_file.to_owned(),
+        stage,
+    }
 }
 
 /// The line naming an unconfirmed delivery and where its body is.
@@ -439,6 +474,17 @@ pub fn deliver_composed(
     compose: impl FnOnce() -> Option<String>,
     err: &mut impl Write,
 ) -> io::Result<Option<Result<Delivered, Failure>>> {
+    deliver_composed_checked(request, None, compose, err)
+}
+
+/// [`deliver_composed`] bound to `guard`, the seat its caller judged, re-proven
+/// at the quiet gate, the paste and every Enter.
+pub(crate) fn deliver_composed_checked(
+    request: &Request<'_>,
+    guard: Option<&crate::tracked::AddressGuard<'_>>,
+    compose: impl FnOnce() -> Option<String>,
+    err: &mut impl Write,
+) -> io::Result<Option<Result<Delivered, Failure>>> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
     let (input, tool) = target_input(request, &probe.command);
     if refuses_as_dead(pane_liveness_at(
@@ -457,7 +503,7 @@ pub fn deliver_composed(
         )?;
         return Ok(None);
     };
-    if quiet_or_abandoned(request, input.model, tool, None, err)?.is_err() {
+    if quiet_or_abandoned(request, input.model, tool, guard, "", err)?.is_err() {
         return Ok(None);
     }
     let Some(body) = compose() else {
@@ -488,8 +534,11 @@ pub fn deliver_composed(
     ) else {
         return Ok(Some(Err(Failure::NoticeRefused { body_file })));
     };
+    if !address_check(guard, err)? {
+        return Ok(Some(Err(refused(&body_file, Stage::BeforeInput))));
+    }
     let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
-    let submitted = submit(&request, input, &mode, &body_file, &framed, None, err)?;
+    let submitted = submit(&request, input, &mode, &body_file, &framed, guard, err)?;
     Ok(Some(submitted.map(|verification| Delivered {
         body_file,
         framed,
@@ -950,7 +999,8 @@ fn wait_for_quiet(
         if held.composer_held() && !flushed && !held.viewed() {
             flushed = true;
             let budget = request.defer.saturating_sub(started.elapsed());
-            let _ = flush_staged_chip(request.server, request.pane, model, budget, guard, err)?;
+            let chip = (model, budget, Stage::BeforeInput);
+            let _ = flush_staged_chip(request.server, request.pane, chip, guard, err)?;
         }
         if started.elapsed() >= request.defer {
             return Ok(Some(snapshot));
@@ -1125,12 +1175,12 @@ fn staged_chip_present(server: &ServerId, pane: &str, model: InputModel) -> bool
 fn flush_staged_chip(
     server: &ServerId,
     pane: &str,
-    model: InputModel,
-    budget: Duration,
+    (model, budget, stage): (InputModel, Duration, Stage),
     guard: Option<&crate::tracked::AddressGuard<'_>>,
     err: &mut impl Write,
 ) -> io::Result<Option<SubmitState>> {
     let started = Instant::now();
+    let proven = |err: &mut _| guard.map_or(Ok(true), |guard| guard.check_at(stage, err));
     let mut previous = transport::capture_screen(server, pane, Styling::Plain);
     loop {
         std::thread::sleep(VERIFY_POLL);
@@ -1138,12 +1188,13 @@ fn flush_staged_chip(
         if pane_settled(previous.as_deref(), current.as_deref()) {
             break;
         }
-        if started.elapsed() >= budget {
+        // A capture that stopped answering may be a retired pane: stop waiting.
+        if started.elapsed() >= budget || (current.is_none() && !proven(err)?) {
             return Ok(None);
         }
         previous = current;
     }
-    if !address_check(guard, err)? {
+    if !proven(err)? {
         return Ok(None);
     }
     Ok(match still_staged(server, pane, model) {
@@ -1357,12 +1408,17 @@ fn quiet_or_abandoned(
     model: InputModel,
     tool: Option<ToolKind>,
     guard: Option<&crate::tracked::AddressGuard<'_>>,
+    body_file: &str,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
     if !matches!(request.shape, Shape::Send | Shape::Context) {
         return Ok(Ok(()));
     }
     if let Some(snapshot) = wait_for_quiet(request, model, tool, guard, err)? {
+        // Re-prove first: a retired pane is refused, never abandoned.
+        if !address_check(guard, err)? {
+            return Ok(Err(refused(body_file, Stage::BeforeInput)));
+        }
         if let Some(prompt) = snapshot.prompt.clone() {
             let read = PromptRead::Drawn(prompt);
             if let Some(held) = prompt_refusal(request, false, &read, err)? {
@@ -1382,7 +1438,7 @@ fn quiet_or_abandoned(
         }));
     }
     if !address_check(guard, err)? {
-        return Ok(Err(Failure::Storage));
+        return Ok(Err(refused(body_file, Stage::BeforeInput)));
     }
     Ok(Ok(()))
 }
@@ -1559,22 +1615,28 @@ fn submit(
             }));
         }
     }
-    match submit_staged(server, pane, model) {
-        SubmitState::Submitted => return Ok(Ok(DeliveryVerification::Verified)),
-        SubmitState::Unknown(reason) => {
+    let may_press = |stage| guard.is_none_or(|guard| guard.check_at(stage, err).unwrap_or(false));
+    match submit_staged_with(server, pane, model, may_press) {
+        Ok(SubmitState::Submitted) => return Ok(Ok(DeliveryVerification::Verified)),
+        Ok(SubmitState::Unknown(reason)) => {
             return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
         }
-        SubmitState::StillStaged => {}
+        Ok(SubmitState::StillStaged) => {}
+        Err(stage) => return Ok(Err(refused(body_file, stage))),
     }
     // The box took the paste. If it still holds exactly an ae-staged chip, the
     // harness refused the TURN (Muse's "turn-submit backlog full"): the same
     // bounded retry the quiet gate uses, so a spawn's brief lands without an
     // interrupt.
     if staged_chip_present(server, pane, model) {
-        match flush_staged_chip(server, pane, model, request.defer, guard, err)? {
+        let chip = (model, request.defer, Stage::Entered);
+        match flush_staged_chip(server, pane, chip, guard, err)? {
             Some(SubmitState::Submitted) => return Ok(Ok(DeliveryVerification::Verified)),
             Some(SubmitState::Unknown(reason)) => {
                 return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
+            }
+            _ if guard.is_some_and(crate::tracked::AddressGuard::refused) => {
+                return Ok(Err(refused(body_file, Stage::Entered)));
             }
             Some(SubmitState::StillStaged) | None => {}
         }
@@ -1615,18 +1677,32 @@ fn settle_for(model: InputModel) -> Duration {
 /// verdict have ONE owner.
 #[must_use]
 pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> SubmitState {
+    submit_staged_with(server, pane, model, |_| true).unwrap_or(SubmitState::StillStaged)
+}
+
+/// [`submit_staged`] asking `may_press` before EVERY Enter; `Err` names the stage refused.
+fn submit_staged_with(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+    mut may_press: impl FnMut(Stage) -> bool,
+) -> Result<SubmitState, Stage> {
     std::thread::sleep(settle_for(model));
+    if !may_press(Stage::Pasted) {
+        return Err(Stage::Pasted);
+    }
     let _ = transport::send_key(server, pane, Key::Enter);
     for retry in 0..=VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
         match verified(still_staged(server, pane, model), retry) {
-            Verified::Done(state) => return state,
-            Verified::PressAgain => {
+            Verified::Done(state) => return Ok(state),
+            Verified::PressAgain if may_press(Stage::Entered) => {
                 let _ = transport::send_key(server, pane, Key::Enter);
             }
+            Verified::PressAgain => return Err(Stage::Entered),
         }
     }
-    SubmitState::StillStaged
+    Ok(SubmitState::StillStaged)
 }
 
 /// What the verification does after one read: settle on a verdict, or press

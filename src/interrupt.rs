@@ -152,9 +152,9 @@ pub fn run(
             &resolved,
             tracked::AddressMode::Initiate,
         ) {
-            Ok(guard) => guard,
+            Ok(guard) => guard.acting(actor),
             Err(why) => {
-                tracked::refuse_address(dir, &why, err)?;
+                tracked::refuse_as(dir, actor, &why, deliver::Stage::BeforeInput, err)?;
                 return Ok(EXIT_FAILED);
             }
         };

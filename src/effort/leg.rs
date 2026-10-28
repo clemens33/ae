@@ -701,14 +701,14 @@ impl Ctx<'_> {
             "",
             &told,
         ));
-        self.notice(&seat.entry, &words, err)?;
+        self.notice(&seat.entry, &seat.bytes, &words, err)?;
         let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&seat.bytes));
         for other in meta
             .roster()
             .iter()
             .filter(|other| other.slot != self.slot && eligible(&other.slot))
         {
-            self.notice(other, &told, err)?;
+            self.notice(other, &seat.bytes, &told, err)?;
         }
         Ok(())
     }
@@ -728,10 +728,11 @@ impl Ctx<'_> {
         )
     }
 
-    /// ONE `⟦ae:ctx⟧` line to the seat `to`, never retried.
+    /// ONE `⟦ae:ctx⟧` line to `to`, never retried, only while `bytes` still names its seat.
     fn notice(
         &self,
         to: &crate::meta::RosterEntry,
+        bytes: &[u8],
         text: &str,
         err: &mut impl Write,
     ) -> io::Result<()> {
@@ -756,7 +757,14 @@ impl Ctx<'_> {
             defer: Duration::from_secs(10),
             composed: crate::tool::Composed::NONE,
         };
-        crate::deliver::deliver_composed(&request, || Some(text.to_owned()), err).map(|_| ())
+        let launch = crate::meta::sole_value(bytes, &format!("launch_id.{}", to.slot))
+            .and_then(|row| std::str::from_utf8(row).ok())
+            .unwrap_or_default();
+        let Some(guard) = crate::tracked::admit_leg(&request, (&to.slot, launch), err)? else {
+            return Ok(());
+        };
+        let text = || Some(text.to_owned());
+        crate::deliver::deliver_composed_checked(&request, Some(&guard), text, err).map(|_| ())
     }
 }
 

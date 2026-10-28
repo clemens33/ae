@@ -14,6 +14,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::deliver::Stage;
 use crate::inventory::ServerId;
 use crate::json::Value;
 use crate::meta;
@@ -1099,6 +1100,22 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
+pub(crate) fn fixture_address(slot: &str, agent: &str) {
+    set_test_address_observation(
+        crate::tmux::ObservedViewer {
+            slot: Some(slot.into()),
+            session: Some("s".into()),
+            agent: Some(agent.into()),
+            ..crate::tmux::ObservedViewer::default()
+        },
+        crate::tmux::SessionIdentity {
+            id: "$0".into(),
+            created: "1".into(),
+        },
+    );
+}
+
 /// What happens to the world while the injected delivery is in flight.
 #[cfg(test)]
 pub(crate) fn set_during_delivery(act: impl FnOnce() + 'static) {
@@ -1118,6 +1135,40 @@ pub(crate) fn set_test_delivery(
 }
 
 #[cfg(test)]
+thread_local! {
+    static TEST_ADDRESS: std::cell::RefCell<
+        Option<(crate::tmux::ObservedViewer, crate::tmux::SessionIdentity)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Inject only tmux's two answers about the target pane; the seat policy stays real.
+#[cfg(test)]
+pub(crate) fn set_test_address_observation(
+    viewer: crate::tmux::ObservedViewer,
+    physical: crate::tmux::SessionIdentity,
+) {
+    TEST_ADDRESS.with(|slot| *slot.borrow_mut() = Some((viewer, physical)));
+}
+
+/// The target pane's stamps and its physical session, as tmux answers now.
+fn address_observation(
+    server: &ServerId,
+    pane: &str,
+) -> (
+    Option<crate::tmux::ObservedViewer>,
+    Option<crate::tmux::SessionIdentity>,
+) {
+    #[cfg(test)]
+    if let Some((viewer, physical)) = TEST_ADDRESS.with(|slot| slot.borrow().clone()) {
+        return (Some(viewer), Some(physical));
+    }
+    (
+        transport::observe_viewer(server, pane),
+        transport::observe_pane_session_identity(server, pane),
+    )
+}
+
+#[cfg(test)]
 fn take_test_resolve() -> Option<(Resolved, ServerId)> {
     TEST_RESOLVE.with(|slot| slot.borrow_mut().take())
 }
@@ -1133,6 +1184,7 @@ pub(crate) fn clear_test_hooks() {
     TEST_RESOLVE.with(|slot| *slot.borrow_mut() = None);
     TEST_DELIVER.with(|slot| *slot.borrow_mut() = None);
     DURING_DELIVERY.with(|slot| *slot.borrow_mut() = None);
+    TEST_ADDRESS.with(|slot| *slot.borrow_mut() = None);
 }
 
 /// Delivery used by ask/review/reply so tests can inject a completed paste.
@@ -1163,10 +1215,13 @@ pub(crate) fn deliver_addressed(
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
     let mode = address_mode(request.actor);
     match admit_agent_address(request.dir, request.server, target, mode) {
-        Ok(guard) => crate::deliver::deliver_checked(request, Some(&guard), false, err),
+        Ok(guard) => {
+            let guard = guard.acting(request.actor);
+            crate::deliver::deliver_checked(request, Some(&guard), false, err)
+        }
         Err(why) => {
-            refuse_address(request.dir, &why, err)?;
-            Ok(Err(crate::deliver::Failure::Storage))
+            refuse_as(request.dir, request.actor, &why, Stage::BeforeInput, err)?;
+            Ok(Err(crate::deliver::refused("", Stage::BeforeInput)))
         }
     }
 }
@@ -1234,6 +1289,8 @@ pub(crate) enum AddressMode<'a> {
     Initiate,
     Reply(&'a str),
     Owner,
+    /// ae's own leg, bound to the slot and launch it captured: only the seat proof applies.
+    Leg(&'a str, &'a str),
 }
 
 // lib::speaks_as_reserved rejects helper overrides in both console:/human:
@@ -1257,17 +1314,139 @@ fn proven_caller(
     Ok((viewer, server, caller_dir, uuid))
 }
 
+/// Why an address was refused: a role's keeps O2's owner routes, a seat's is ordinary.
+#[derive(Debug, Clone)]
+pub(crate) enum Refusal {
+    Role(String),
+    Seat(String),
+}
+
+impl<T: AsRef<str> + ?Sized> From<&T> for Refusal {
+    fn from(reason: &T) -> Self {
+        Self::Role(reason.as_ref().to_owned())
+    }
+}
+
+impl From<&Refusal> for Refusal {
+    fn from(reason: &Refusal) -> Self {
+        reason.clone()
+    }
+}
+
+/// The current seat a stamped pane holds; an empty `launch` is a legacy row (Q1a).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seat {
+    slot: String,
+    name: String,
+    launch: String,
+}
+
+impl Seat {
+    /// Names the seat an address was BOUND to, never its successor.
+    fn label(&self) -> String {
+        let Self { slot, name, launch } = self;
+        let launch = Some(launch.as_str()).filter(|l| !l.is_empty());
+        format!(
+            "seat {name} ({slot}, launch {})",
+            launch.unwrap_or("legacy")
+        )
+    }
+
+    fn replaced(&self) -> Refusal {
+        Refusal::Seat(format!("{} was replaced", self.label()))
+    }
+}
+
+/// The seat a pane claims, proven CURRENT from one meta snapshot; `None` is an observed
+/// raw pane (Q2a). A gap or duplicate is unproven; a refusal names `bound`.
+fn current_seat(
+    bytes: &[u8],
+    target: &Resolved,
+    (viewer, physical): (Option<&crate::tmux::ObservedViewer>, bool),
+    expected: Option<&Seat>,
+    bound: Option<&Seat>,
+) -> Result<Option<Seat>, Refusal> {
+    let stamped = viewer.and_then(|v| v.slot.as_deref()).unwrap_or_default();
+    let name = viewer.and_then(|v| v.agent.as_deref()).unwrap_or_default();
+    let slot = Some(stamped)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&target.slot);
+    if slot.is_empty() && expected.is_none() {
+        // A raw pane binds its OBSERVED physical session, never absence.
+        return match (viewer, physical) {
+            (Some(_), true) => Ok(None),
+            _ => Err(Refusal::Seat(format!(
+                "target pane {} could not be proven: it or its physical tmux session is unreadable",
+                target.pane
+            ))),
+        };
+    }
+    let shown = Some(name)
+        .filter(|n| !n.is_empty())
+        .unwrap_or(&target.agent);
+    let who = bound.map_or_else(|| format!("seat {shown} ({slot})"), Seat::label);
+    let says = |what: &str| Refusal::Seat(format!("{who} {what}"));
+    let unproven = |why: &str| says(&format!("could not be proven: {why}"));
+    let row = |key: &str| {
+        (
+            meta::sole_value(bytes, key),
+            meta::first_value(bytes, key).is_some(),
+        )
+    };
+    if viewer.is_none() || name.is_empty() || !is_slot(stamped) {
+        return Err(unproven("its pane stamps are unreadable or incomplete"));
+    }
+    if !target.slot.is_empty() && target.slot != stamped {
+        return Err(unproven("its pane stamp names another slot"));
+    }
+    if !physical {
+        return Err(unproven("its physical tmux session is unreadable"));
+    }
+    if bytes.is_empty() {
+        return Err(says("is retired: its session record is gone"));
+    }
+    if row("session_id") == (None, true) {
+        return Err(unproven("duplicate session_id rows"));
+    }
+    match row(&format!("seat.{slot}")) {
+        (None, false) => return Err(says("is retired: its roster row is gone")),
+        (None, true) => return Err(unproven("duplicate seat rows")),
+        (Some(holder), _) if holder != name.as_bytes() => return Err(says("was replaced")),
+        _ => {}
+    }
+    let launch = match row(&format!("launch_id.{slot}")) {
+        (None, false) => "",
+        (Some(token), _) if !token.is_empty() => {
+            std::str::from_utf8(token).map_err(|_| unproven("damaged launch row"))?
+        }
+        _ => return Err(unproven("damaged or duplicate launch rows")),
+    };
+    match expected {
+        Some(want) if (want.slot.as_str(), want.launch.as_str()) != (slot, launch) => {
+            Err(want.replaced())
+        }
+        _ => Ok(Some(Seat {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            launch: launch.to_owned(),
+        })),
+    }
+}
+
+/// A snapshot's `session_id` AS WRITTEN: the one row's raw bytes, and whether any row exists.
+type SessionIdRow = (Option<Vec<u8>>, bool);
+
 /// Reusable under-lock proof. An aborted guard never becomes live again.
 pub(crate) struct AddressGuard<'a> {
     dir: &'a Path,
     server: &'a ServerId,
-    target: &'a Resolved,
+    target: Resolved,
     mode: AddressMode<'a>,
+    actor: &'a str,
     stamp: (
         Option<crate::tmux::SessionIdentity>,
-        String,
-        String,
-        String,
+        SessionIdRow,
+        Option<Seat>,
         meta::MetaAgentRole,
     ),
     aborted: std::cell::Cell<bool>,
@@ -1278,33 +1457,65 @@ pub(crate) struct AddressGuard<'a> {
 pub(crate) fn admit_agent_address<'a>(
     dir: &'a Path,
     server: &'a ServerId,
-    target: &'a Resolved,
+    target: &Resolved,
     mode: AddressMode<'a>,
-) -> Result<AddressGuard<'a>, String> {
-    let (meta_dir, bytes) = address_meta(dir, &target.session)?;
+) -> Result<AddressGuard<'a>, Refusal> {
+    admit(dir, server, target, mode, None)
+}
+
+/// [`admit_agent_address`] naming `bound`, the seat a guard or a leg bound, in refusals.
+fn admit<'a>(
+    dir: &'a Path,
+    server: &'a ServerId,
+    target: &Resolved,
+    mode: AddressMode<'a>,
+    bound: Option<&Seat>,
+) -> Result<AddressGuard<'a>, Refusal> {
+    let (_, bytes) = address_meta(dir, &target.session).map_err(Refusal::Role)?;
     let role = meta::meta_agent_role(&bytes);
-    let viewer = transport::observe_viewer(server, &target.pane).unwrap_or_default();
-    let uuid = meta::session_id_in(&meta_dir);
-    let slot = viewer.slot.unwrap_or_default();
-    let token = launch_id_at(&meta_dir, &slot, &uuid);
-    let physical = transport::observe_pane_session_identity(server, &target.pane);
+    let (viewer, physical) = address_observation(server, &target.pane);
+    let expected = match mode {
+        AddressMode::Leg(slot, launch) => Some(Seat {
+            slot: slot.to_owned(),
+            name: target.agent.clone(),
+            launch: launch.to_owned(),
+        }),
+        _ => None,
+    };
+    let observed = (viewer.as_ref(), physical.is_some());
+    let named = bound.or(expected.as_ref());
+    let seat =
+        current_seat(&bytes, target, observed, expected.as_ref(), named).map_err(|refusal| {
+            match refusal {
+                Refusal::Seat(why) if role != meta::MetaAgentRole::Absent => Refusal::Role(why),
+                refusal => refusal,
+            }
+        });
+    let viewer = viewer.unwrap_or_default();
+    // The same snapshot's id AS WRITTEN; two rows stamp apart from none.
+    let sid = (
+        meta::sole_value(&bytes, "session_id").map(<[u8]>::to_vec),
+        meta::first_value(&bytes, "session_id").is_some(),
+    );
     if role != meta::MetaAgentRole::Absent {
         let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
         let meta::ServerSelector::Positive(selector) = parsed.server_selector() else {
-            return Err("orchestrator role server unproven".to_owned());
+            return Err("orchestrator role server unproven".into());
         };
         if !crate::SocketPaths::asking(transport::observe_socket_path)
             .proven_same(server, &ServerId::Selected(selector))
             || meta::sole_value(&bytes, "session") != Some(target.session.as_bytes())
         {
-            return Err("orchestrator role target identity changed".to_owned());
+            return Err("orchestrator role target identity changed".into());
         }
     }
 
-    if role != meta::MetaAgentRole::Absent && !matches!(mode, AddressMode::Owner) {
+    if role != meta::MetaAgentRole::Absent
+        && !matches!(mode, AddressMode::Owner | AddressMode::Leg(..))
+    {
         let fail = "orchestrator role refuses unproven/outside initiation; use its pane, ae chat, ae app or Telegram";
         if role == meta::MetaAgentRole::Damaged {
-            return Err(fail.to_owned());
+            return Err(fail.into());
         }
         let (_, actual, caller_dir, _) = proven_caller(dir).map_err(|_| fail)?;
         correlate_uuid(&viewer.session_uuid, &bytes).map_err(|_| fail)?;
@@ -1317,7 +1528,8 @@ pub(crate) fn admit_agent_address<'a>(
                 &crate::own_session(&caller_dir),
                 None,
                 false,
-            )?;
+            )
+            .map_err(Refusal::Role)?;
         } else {
             let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
             let caller_identity = transport::observe_pane_session_identity(&actual, &pane);
@@ -1325,49 +1537,105 @@ pub(crate) fn admit_agent_address<'a>(
                 || physical.is_none()
                 || physical != caller_identity
             {
-                return Err(fail.to_owned());
+                return Err(fail.into());
             }
         }
     }
     Ok(AddressGuard {
         dir,
         server,
-        target,
+        target: target.clone(),
         mode,
-        stamp: (physical, uuid, slot, token, role),
+        actor: "",
+        stamp: (physical, sid, seat?, role),
         aborted: std::cell::Cell::new(false),
     })
 }
 
-impl AddressGuard<'_> {
+impl<'a> AddressGuard<'a> {
+    /// The actor a refusal is audited as when no caller pane is proven.
+    pub(crate) const fn acting(mut self, actor: &'a str) -> Self {
+        self.actor = actor;
+        self
+    }
+
     /// Re-prove at every first-key/wait boundary; journal exactly one refusal.
     pub(crate) fn check(&self, err: &mut impl Write) -> io::Result<bool> {
+        self.check_at(Stage::BeforeInput, err)
+    }
+
+    /// [`Self::check`] before a key that follows typed input: `stage` says how far it got.
+    pub(crate) fn check_at(&self, stage: Stage, err: &mut impl Write) -> io::Result<bool> {
         if self.aborted.get() {
             return Ok(false);
         }
-        let fresh = admit_agent_address(self.dir, self.server, self.target, self.mode.clone());
+        let bound = self.stamp.2.as_ref();
+        let fresh = admit(
+            self.dir,
+            self.server,
+            &self.target,
+            self.mode.clone(),
+            bound,
+        );
+        let who = bound.map_or_else(|| format!("target pane {}", self.target.pane), Seat::label);
         let reason = match fresh {
             Ok(now) if now.stamp == self.stamp => return Ok(true),
-            Ok(now) if now.stamp.0.is_none() => {
-                "target physical session identity became unreadable".to_owned()
+            Ok(now)
+                if now.stamp.3 != meta::MetaAgentRole::Absent || self.stamp.3 != now.stamp.3 =>
+            {
+                "role or target seat binding changed during delivery".into()
             }
-            Ok(_) => "role or target seat binding changed during delivery".to_owned(),
+            Ok(now) => match bound {
+                Some(seat) if now.stamp.2.as_ref() != Some(seat) => seat.replaced(),
+                _ => Refusal::Seat(format!(
+                    "{who} could not be proven: its physical session or session id changed"
+                )),
+            },
             Err(reason) => reason,
         };
         self.aborted.set(true);
-        refuse_address(self.dir, &reason, err)?;
+        refuse_as(self.dir, self.actor, &reason, stage, err)?;
         Ok(false)
+    }
+
+    /// Whether a check already refused: nothing more may be typed.
+    pub(crate) fn refused(&self) -> bool {
+        self.aborted.get()
     }
 }
 
-pub(crate) fn refuse_address(dir: &Path, reason: &str, err: &mut impl Write) -> io::Result<()> {
-    let reason = format!(
-        "ae: delivery REFUSED — {reason}; nothing further typed. Report through your own lead; owner routes for an orchestrator role: pane, ae chat, ae app, Telegram."
-    );
-    if let Ok((viewer, _, caller_dir, _)) = proven_caller(dir) {
+pub(crate) fn refuse_address(
+    dir: &Path,
+    reason: impl Into<Refusal>,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    refuse_as(dir, "", &reason.into(), Stage::BeforeInput, err)
+}
+
+/// The ONE refusal line and audit; a seat refusal is audited as its request's `actor`.
+pub(crate) fn refuse_as(
+    dir: &Path,
+    actor: &str,
+    why: &Refusal,
+    stage: Stage,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    let reason = match why {
+        Refusal::Role(reason) => format!(
+            "ae: delivery REFUSED — {reason}; nothing further typed. Report through your own lead; owner routes for an orchestrator role: pane, ae chat, ae app, Telegram."
+        ),
+        Refusal::Seat(reason) => format!("ae: delivery REFUSED — {reason}; {}.", stage.clause()),
+    };
+    let helper = matches!(why, Refusal::Seat(_)) && !actor.is_empty();
+    let ledger = match proven_caller(dir) {
+        Ok((viewer, _, caller_dir, _)) => Some((caller_dir, viewer.agent)),
+        Err(_) => helper.then(|| (dir.to_path_buf(), None)),
+    };
+    if let Some((caller_dir, agent)) = ledger {
+        let agent = agent.as_deref().unwrap_or("unknown");
         let line = event_line(&EventFields::new(
             Timestamp::now(),
-            viewer.agent.as_deref().unwrap_or("unknown"),
+            if helper { actor } else { agent },
             "refused",
             "",
             "",
@@ -1383,6 +1651,33 @@ pub(crate) fn refuse_address(dir: &Path, reason: &str, err: &mut impl Write) -> 
         }
     }
     writeln!(err, "{reason}")
+}
+
+/// Admit ae's own leg against the seat it captured: `None` once its refusal is written.
+/// Residual (F, slice 2c): the watchdog and auto-reseat `send` helper paths
+/// still prove only the CURRENT seat; their expected-seat channel is 2c.
+pub(crate) fn admit_leg<'a>(
+    request: &crate::deliver::Request<'a>,
+    (slot, launch): (&'a str, &'a str),
+    err: &mut impl Write,
+) -> io::Result<Option<AddressGuard<'a>>> {
+    let target = Resolved {
+        pane: request.pane.to_owned(),
+        agent: request.logged_target.to_owned(),
+        slot: request.pane_slot.to_owned(),
+        session: request.target_session.to_owned(),
+    };
+    match admit_agent_address(
+        request.dir,
+        request.server,
+        &target,
+        AddressMode::Leg(slot, launch),
+    ) {
+        Ok(guard) => Ok(Some(guard.acting(request.actor))),
+        Err(why) => {
+            refuse_as(request.dir, request.actor, &why, Stage::BeforeInput, err).map(|()| None)
+        }
+    }
 }
 
 /// Live binding and the pure fold are shared by reply and both record-only verbs,
@@ -1509,7 +1804,7 @@ pub(crate) fn refuse_role_entry(dir: &Path, err: &mut impl Write) -> io::Result<
         .map(|row| row.name.clone())
         .unwrap_or_default();
     let route = resolve_on(&main, &session, dir)
-        .map_err(|e| e.message())
+        .map_err(|e| Refusal::Role(e.message()))
         .and_then(|(target, server)| {
             admit_agent_address(dir, &server, &target, AddressMode::Initiate).map(|_| ())
         });
@@ -1857,7 +2152,7 @@ pub fn refuse_cross_session(
         resolved,
         address_mode(actor),
     ) {
-        refuse_address(dir, &why, err)?;
+        refuse_as(dir, actor, &why, Stage::BeforeInput, err)?;
         return Ok(true);
     }
     if allowed || resolved.session.is_empty() || resolved.session == caller_session {
@@ -3981,7 +4276,7 @@ mod tests {
     )]
     fn ask_run_stamps_target_on_the_production_writer() {
         super::clear_test_hooks();
-        let dir = meta_dir("askrun", &format!("session_id={UUID}\n"));
+        let dir = meta_dir("askrun/s", &format!("session_id={UUID}\nseat.worker.0=w\n"));
         // The name the target was resolved by is another session's by the
         // time the paste returns: the pin is the one admitted before it.
         let renamed = dir.join("meta");
@@ -3992,6 +4287,7 @@ mod tests {
         let held = triple("/tmp/ae", "%9", UUID);
         super::queue_observe(Ok(held.clone()));
         super::queue_observe(Ok(held.clone()));
+        super::fixture_address("worker.0", "w");
         super::set_test_resolve(
             Resolved {
                 pane: "%9".to_owned(),
@@ -4053,10 +4349,11 @@ mod tests {
     )]
     fn ask_run_records_a_failed_leg_and_does_not_broadcast_it() {
         super::clear_test_hooks();
-        let dir = meta_dir("askgap", &format!("session_id={UUID}\n"));
+        let dir = meta_dir("askgap/s", &format!("session_id={UUID}\nseat.worker.0=w\n"));
         let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
         super::queue_observe(Err(CorrelationGap::Unreadable));
         super::queue_observe(Err(CorrelationGap::Unreadable));
+        super::fixture_address("worker.0", "w");
         super::set_test_resolve(
             Resolved {
                 pane: "%9".to_owned(),
@@ -4117,10 +4414,11 @@ mod tests {
     )]
     fn ask_run_records_a_changed_identity_and_keeps_it_off_stderr() {
         super::clear_test_hooks();
-        let dir = meta_dir("askchg", &format!("session_id={UUID}\n"));
+        let dir = meta_dir("askchg/s", &format!("session_id={UUID}\nseat.worker.0=w\n"));
         let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
         super::queue_observe(Ok(triple("/tmp/ae", "%9", UUID)));
         super::queue_observe(Ok(triple("/tmp/ae", "%8", UUID)));
+        super::fixture_address("worker.0", "w");
         super::set_test_resolve(
             Resolved {
                 pane: "%9".to_owned(),
@@ -4181,10 +4479,14 @@ mod tests {
     )]
     fn ask_run_treats_a_no_session_outcome_as_no_gap_and_no_stderr() {
         super::clear_test_hooks();
-        let dir = meta_dir("asknone", &format!("session_id={UUID}\n"));
+        let dir = meta_dir(
+            "asknone/s",
+            &format!("session_id={UUID}\nseat.worker.0=w\n"),
+        );
         let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
         super::queue_observe(Err(CorrelationGap::NoSession));
         super::queue_observe(Err(CorrelationGap::NoSession));
+        super::fixture_address("worker.0", "w");
         super::set_test_resolve(
             Resolved {
                 pane: "%9".to_owned(),
@@ -4244,10 +4546,14 @@ mod tests {
         delivery: Result<crate::deliver::Delivered, crate::deliver::Failure>,
     ) -> (u8, String, String, std::path::PathBuf) {
         super::clear_test_hooks();
-        let dir = meta_dir(tag, &format!("session_id={UUID}\n"));
+        let dir = meta_dir(
+            &format!("{tag}/s"),
+            &format!("session_id={UUID}\nseat.worker.0=w\n"),
+        );
         let held = triple("/tmp/ae", "%9", UUID);
         super::queue_observe(Ok(held.clone()));
         super::queue_observe(Ok(held));
+        super::fixture_address("worker.0", "w");
         super::set_test_resolve(
             Resolved {
                 pane: "%9".to_owned(),
