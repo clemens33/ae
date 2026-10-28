@@ -125,7 +125,7 @@ fn assert_kept(rig: &Rig, pane: &str, expected_flags: &[&str]) {
         "harness_session_prior.spawned.0=",
         "observed_model.spawned.0=",
         "observed_model_pin.spawned.0=",
-        "effort.spawned.0=",
+        "\neffort.spawned.0=",
     ] {
         assert!(
             !rig.meta().contains(row),

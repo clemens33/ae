@@ -1134,11 +1134,35 @@ fn agent_entries(
             let tool =
                 crate::tool::ToolKind::from_binary_name(slot.binary.as_deref().unwrap_or_default());
             let model_drift = if tool.adapter().model.observes() {
-                match meta.observed_model(&slot.slot) {
-                    Some(observed) if meta.observed_model_pin(&slot.slot) != Some(observed) => {
-                        crate::model_drift::ModelDrift::Observed(observed.to_owned())
+                use crate::meta::Rows;
+                // The cell says what the next resume will do with the record,
+                // by the very decision `_run` takes, and names damage loudly.
+                let mut cell = match meta.observed_record(&slot.slot) {
+                    Rows::Valid(pair)
+                        if pair.model_pin.as_deref() != Some(pair.model.as_str())
+                            || pair.effort.is_some_and(|(drawn, pin)| drawn != pin) =>
+                    {
+                        let shown = pair.effort.map_or_else(
+                            || pair.model.clone(),
+                            |(drawn, _)| format!("{} ({})", pair.model, drawn.word()),
+                        );
+                        let refused = crate::state_root().and_then(|root| {
+                            let dir = root.join("sessions").join(session);
+                            crate::run::observed_not_applied(&dir, &slot.slot)
+                        });
+                        refused.map_or(shown.clone(), |why| format!("{shown} (not applied: {why})"))
                     }
-                    _ => crate::model_drift::ModelDrift::Quiet,
+                    Rows::Damaged(why) => format!("observed record damaged ({why})"),
+                    _ => String::new(),
+                };
+                if let Rows::Damaged(why) = meta.launch_baseline(&slot.slot) {
+                    let sep = if cell.is_empty() { "" } else { "; " };
+                    cell = format!("{cell}{sep}launch baseline damaged ({why})");
+                }
+                if cell.is_empty() {
+                    crate::model_drift::ModelDrift::Quiet
+                } else {
+                    crate::model_drift::ModelDrift::Observed(cell)
                 }
             } else {
                 crate::model_drift::ModelDrift::Unknown

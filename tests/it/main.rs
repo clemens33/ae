@@ -96,6 +96,7 @@ mod list_ended_spec;
 mod liveseats_spec;
 mod menu;
 mod migrate;
+mod modelpersist_spec;
 mod monitor;
 mod nativeview_alias;
 mod o2guard_p2_spec;

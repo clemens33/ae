@@ -612,7 +612,7 @@ mod effort_resume_spec {
         assert!(meta.contains("client.main=selected\n"));
         assert!(meta.contains("profile.main=custom\n"));
         assert!(meta.contains(&format!("harness_session.main={CONV}\n")));
-        assert!(meta.contains("effort.main="));
+        assert!(meta.contains("\neffort.main="));
         let notice = String::from_utf8_lossy(&output.stderr);
         assert!(
             notice.contains("effort high")
@@ -660,7 +660,7 @@ mod effort_resume_spec {
             assert!(
                 !std::fs::read_to_string(rig.dir.join("meta"))
                     .expect("after run")
-                    .contains("effort.main")
+                    .contains("\neffort.main=")
             );
             let records = discards(&rig);
             assert_eq!(records.len(), 1);
@@ -713,7 +713,7 @@ mod effort_resume_spec {
             );
             let text = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
             assert!(
-                !text.contains("effort.main"),
+                !text.contains("\neffort.main="),
                 "old override cleared: {text}"
             );
             assert_eq!(discards(&rig).len(), 1);
@@ -747,7 +747,7 @@ mod effort_resume_spec {
         assert!(
             !std::fs::read_to_string(path)
                 .expect("meta")
-                .contains("effort.main")
+                .contains("\neffort.main=")
         );
         assert_eq!(discards(&rig)[0].summary.as_deref(), Some("fresh"));
     }
@@ -778,7 +778,7 @@ mod effort_resume_spec {
             assert!(
                 std::fs::read_to_string(rig.dir.join("meta"))
                     .expect("meta")
-                    .contains("effort.main")
+                    .contains("\neffort.main=")
             );
         }
     }
@@ -826,7 +826,7 @@ mod effort_resume_spec {
             assert!(
                 std::fs::read_to_string(rig.dir.join("meta"))
                     .expect("meta")
-                    .contains("effort.main")
+                    .contains("\neffort.main=")
             );
         }
     }
@@ -2057,14 +2057,23 @@ fn a_resume_fallback_on_a_capture_tool_publishes_a_fresh_capture_floor() {
     );
 
     // A re-run with a pending id is a no-op, byte for byte — the floor
-    // included.
+    // included — except the identity row written for each new tool start.
     let (argv, _) = rig.exec();
     assert!(
         !argv.iter().any(|word| word == "resume"),
         "still a fresh start: {argv:?}"
     );
     let again = std::fs::read_to_string(&meta).expect("the meta");
-    assert_eq!(again, settled, "a re-run with a pending id is a no-op");
+    let except_start = |text: &str| -> String {
+        text.split_inclusive('\n')
+            .filter(|line| !line.starts_with("launched.main="))
+            .collect()
+    };
+    assert_eq!(
+        except_start(&again),
+        except_start(&settled),
+        "a re-run changes only its start identity row"
+    );
 }
 
 #[test]

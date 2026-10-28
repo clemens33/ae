@@ -4317,6 +4317,12 @@ fn meta_document(
                 effort.push('\n');
             }
         }
+        // The observed record likewise, so parse doubt never turns a damaged
+        // record into a valid one; the launch baseline is never carried.
+        for line in crate::meta::observed_claims(&prior_meta, &agent.slot) {
+            effort.push_str(&String::from_utf8_lossy(line));
+            effort.push('\n');
+        }
         if !agent.launch_id.is_empty() {
             row(&format!("launch_id.{}", agent.slot), &agent.launch_id);
         }
@@ -4339,18 +4345,13 @@ fn meta_document(
         // later resume applies. This document is the WHOLE meta, so a row not
         // enumerated here is deleted by the first resume — before it could
         // ever be honored.
-        for key in [
-            format!("{}{}", crate::meta::OBSERVED_MODEL_PREFIX, agent.slot),
-            format!("{}{}", crate::meta::OBSERVED_MODEL_PIN_PREFIX, agent.slot),
-            format!(
-                "{}{}",
-                crate::meta::HARNESS_SESSION_PRIOR_PREFIX,
-                agent.slot
-            ),
-        ] {
-            if let Some(value) = sole_preserved(&key) {
-                row(&key, &value);
-            }
+        let key = format!(
+            "{}{}",
+            crate::meta::HARNESS_SESSION_PRIOR_PREFIX,
+            agent.slot
+        );
+        if let Some(value) = sole_preserved(&key) {
+            row(&key, &value);
         }
         // The seat-dir row carries from the RAW prior bytes, judged before any
         // parse: a present-but-unusable row refuses the whole rebuild, and the
@@ -5788,6 +5789,34 @@ mod tests {
                 !fresh.contains("effort."),
                 "a new conversation inherits no override"
             );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn observed_resume_rebuild_carries_a_damaged_record_byte_for_byte() {
+            let rows = "observed_model.main=Opus 5.5\nobserved_model_pin.main=fable\nobserved_effort.main=high\nobserved_effort.main\nobserved_effort_pin.main=xhigh\nobserved_effort_pin.main=max\r\n";
+            let prior =
+                format!("seat.main=lead\nprofile.main=fable5\n{rows}launched.main=main:L1:7\n");
+            let (root, dir, env, shape, launching, watchdog) = resume_parts(&prior);
+            let rebuilt =
+                meta_document(&env, &shape, &launching, watchdog, None).expect("resume document");
+            let carried: String = rebuilt
+                .split_inclusive('\n')
+                .filter(|line| line.starts_with("observed_"))
+                .collect();
+            assert_eq!(carried, rows, "parse doubt never repairs a record");
+            let damaged = crate::meta::observed_pair(rebuilt.as_bytes(), "main");
+            assert_eq!(damaged, crate::meta::Rows::Damaged("duplicate"));
+            assert!(
+                !rebuilt.contains("launched."),
+                "the baseline is never carried"
+            );
+            // A value that is not UTF-8 is carried lossy, and stays damaged.
+            let hostile = b"seat.main=lead\nobserved_model.main=\xff\nobserved_model_pin.main=x\n";
+            std::fs::write(dir.join("meta"), hostile).expect("hostile raw meta");
+            let rebuilt = meta_document(&env, &shape, &launching, watchdog, None).expect("resume");
+            let damaged = crate::meta::observed_pair(rebuilt.as_bytes(), "main");
+            assert_eq!(damaged, crate::meta::Rows::Damaged("invalid"), "{rebuilt}");
             let _ = std::fs::remove_dir_all(root);
         }
 

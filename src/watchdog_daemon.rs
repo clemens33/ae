@@ -5429,7 +5429,7 @@ impl Cycle<'_> {
         capture: &str,
         tool: crate::tool::ToolKind,
         slot: &str,
-        pin: Option<&str>,
+        pins: &crate::model_drift::Pins,
     ) {
         if !tool.adapter().model.observes() {
             return;
@@ -5448,12 +5448,11 @@ impl Cycle<'_> {
         };
         let _ = crate::model_drift::observe(
             self.meta_dir,
-            slot,
-            &entry.name,
+            (slot, &entry.name),
             tool,
             capture,
             launch_id,
-            pin,
+            pins,
         );
     }
 
@@ -5462,17 +5461,16 @@ impl Cycle<'_> {
     ///
     /// Read ONCE per pane per cycle: the durable drift row and the picker's
     /// drift mark are two questions about the same pin.
-    fn seat_pin(&self, slot: &str, tool: crate::tool::ToolKind) -> Option<String> {
-        if !tool.adapter().model.observes() {
-            return None;
-        }
+    fn seat_pin(&self, slot: &str, tool: crate::tool::ToolKind) -> crate::model_drift::Pins {
         let profile = self
             .roster
             .iter()
-            .find(|entry| entry.slot == slot)?
-            .profile
-            .as_deref()?;
-        self.profile_model_pin(profile, tool)
+            .find(|entry| entry.slot == slot)
+            .and_then(|entry| entry.profile.as_deref());
+        match profile {
+            Some(profile) if tool.adapter().model.observes() => self.profile_pins(profile, tool),
+            _ => crate::model_drift::Pins::default(),
+        }
     }
 
     /// What this cycle will SHOW for one seat's model, holding the last proven
@@ -5538,12 +5536,12 @@ impl Cycle<'_> {
 
     /// The profile's model flag value, from the same config files `_run`
     /// reads. An unreadable config is `None`, never a guess.
-    fn profile_model_pin(&self, profile: &str, tool: crate::tool::ToolKind) -> Option<String> {
+    fn profile_pins(&self, profile: &str, tool: crate::tool::ToolKind) -> crate::model_drift::Pins {
         let root = crate::state_root();
         let global = root
             .as_deref()
             .map(|root| crate::doors::config_file(crate::shape::current(), root));
-        crate::launch_cmd::profile_model_pin(
+        crate::launch_cmd::profile_pins(
             global.as_deref(),
             self.local_config.as_deref(),
             profile,
@@ -5846,8 +5844,9 @@ impl Cycle<'_> {
             // Model drift rides the SAME capture, under the seat's launch
             // guard, and shares this cycle's one reading of the profile pin
             // with the picker's own drift mark.
-            let pin = self.seat_pin(&slot, tool);
-            self.note_model(&capture, tool, &slot, pin.as_deref());
+            let pins = self.seat_pin(&slot, tool);
+            let pin = pins.model.clone();
+            self.note_model(&capture, tool, &slot, &pins);
             let throttle = throttle_class(&capture, agent_bin.as_deref().unwrap_or_default());
             let throttle_quota = self.throttle_quota(&carry.quota, &slot, now, throttle.is_some());
             let own_room = self.own_room(&carry.quota, &slot, pin.as_deref(), now);

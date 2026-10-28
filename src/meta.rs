@@ -81,6 +81,29 @@ const SEAT_WORK_DIR_NON_UTF8: &str = "not UTF-8";
 /// writes neither.
 pub const OBSERVED_MODEL_PREFIX: &str = "observed_model.";
 pub const OBSERVED_MODEL_PIN_PREFIX: &str = "observed_model_pin.";
+/// The effort the pane drew beside that model (`observed_effort.`) and the
+/// profile's effort level then (`observed_effort_pin.`): with the model pair,
+/// ONE identity of four rows. A record with neither is the legacy two-row
+/// shape, which follows the model on the profile's own effort.
+pub const OBSERVED_EFFORT_PREFIX: &str = "observed_effort.";
+pub const OBSERVED_EFFORT_PIN_PREFIX: &str = "observed_effort_pin.";
+/// What `_run` exec'd on the CURRENT tool start: the start
+/// (`<slot>:<launch_id>:<tool pid>`), its model flag value and its effort level
+/// (`-` for none). One identity, rewritten by every start; a pane still drawing
+/// it proves no human choice.
+pub const LAUNCHED_PREFIX: &str = "launched.";
+pub const LAUNCHED_MODEL_PREFIX: &str = "launched_model.";
+pub const LAUNCHED_EFFORT_PREFIX: &str = "launched_effort.";
+/// Both families, the observed pair's own two rows first.
+const OBSERVED_FAMILY: [&str; 7] = [
+    OBSERVED_MODEL_PREFIX,
+    OBSERVED_MODEL_PIN_PREFIX,
+    OBSERVED_EFFORT_PREFIX,
+    OBSERVED_EFFORT_PIN_PREFIX,
+    LAUNCHED_PREFIX,
+    LAUNCHED_MODEL_PREFIX,
+    LAUNCHED_EFFORT_PREFIX,
+];
 /// `schema=<n>` — the identity schema the writer used.
 const SCHEMA_KEY: &str = "schema";
 /// The VERSION of the core a session is pinned to, and the shape its meta is
@@ -437,6 +460,9 @@ pub struct Meta {
     observed_models: Vec<(String, String)>,
     /// `observed_model_pin.<slot>` rows, same rule.
     observed_model_pins: Vec<(String, String)>,
+    /// Every row of the observed and launch-baseline families, duplicates
+    /// included, for [`observed_pair`] and [`launched`] to judge.
+    observed_raw: String,
     /// `harness_session_prior.<slot>` rows, kept RAW until the accessor splits
     /// them; the family is this parser's own, so it never doubts the roster.
     harness_session_priors: Vec<(String, String)>,
@@ -511,6 +537,15 @@ impl Meta {
             if raw.starts_with(crate::effort::META_PREFIX) {
                 meta.effort_rows.push(raw.to_owned());
                 continue;
+            }
+            // So is the observed family, CR included, for its one reader.
+            let claimed = raw_key(raw.as_bytes());
+            if OBSERVED_FAMILY
+                .iter()
+                .any(|prefix| claimed.starts_with(prefix.as_bytes()))
+            {
+                meta.observed_raw.push_str(raw);
+                meta.observed_raw.push('\n');
             }
             // One trailing carriage return is line ENDING, not value: a CRLF
             // meta would otherwise put an invisible byte on the end of a path.
@@ -729,6 +764,11 @@ impl Meta {
                     self.set_metadata(Metadata::Client, slot, key, value, line, true);
                 } else if let Some(slot) = key.strip_prefix(SEAT_WORK_DIR_PREFIX) {
                     self.set_metadata(Metadata::WorkDir, slot, key, value, line, true);
+                } else if OBSERVED_FAMILY[2..]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))
+                {
+                    // RAW: `observed_pair` and `launched` are their one reader.
                 } else if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
                     self.note_legacy(slot, line);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
@@ -1149,6 +1189,18 @@ impl Meta {
     #[must_use]
     pub fn observed_model_pin(&self, slot: &str) -> Option<&str> {
         observed_row(&self.observed_model_pins, OBSERVED_MODEL_PIN_PREFIX, slot)
+    }
+
+    /// The seat's whole observed record, judged by [`observed_pair`].
+    #[must_use]
+    pub fn observed_record(&self, slot: &str) -> Rows<ObservedPair> {
+        observed_pair(self.observed_raw.as_bytes(), slot)
+    }
+
+    /// The seat's launch baseline, judged by [`launched`].
+    #[must_use]
+    pub fn launch_baseline(&self, slot: &str) -> Rows<Launched> {
+        launched(self.observed_raw.as_bytes(), slot)
     }
 
     /// The conversations this seat has ABANDONED, oldest first — the raw
@@ -1986,11 +2038,16 @@ fn observed_row<'a>(rows: &'a [(String, String)], prefix: &str, slot: &str) -> O
 }
 
 /// The bounded value grammar both observed-model rows share, on the writer and
-/// the reader: nonempty, at most 256 bytes, no control bytes. A model reaches
-/// a launch command, so a value that fails this is never a model.
+/// the reader: nonempty, at most 256 bytes, no control bytes and no U+FFFD,
+/// which is what a lossy read makes of a byte that was not UTF-8. A model
+/// reaches a launch command, so a value that fails this is never a model.
 #[must_use]
 fn is_observed_row_value(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+    !value.is_empty()
+        && value.len() <= 256
+        && !value
+            .chars()
+            .any(|c| c.is_control() || c == char::REPLACEMENT_CHARACTER)
 }
 
 /// One predecessor element, split into the tool that OWNS the conversation and
@@ -2210,6 +2267,11 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
         (format!("{LAUNCH_TIME_PREFIX}{slot}"), None),
         (format!("{OBSERVED_MODEL_PREFIX}{slot}"), None),
         (format!("{OBSERVED_MODEL_PIN_PREFIX}{slot}"), None),
+        (format!("{OBSERVED_EFFORT_PREFIX}{slot}"), None),
+        (format!("{OBSERVED_EFFORT_PIN_PREFIX}{slot}"), None),
+        (format!("{LAUNCHED_PREFIX}{slot}"), None),
+        (format!("{LAUNCHED_MODEL_PREFIX}{slot}"), None),
+        (format!("{LAUNCHED_EFFORT_PREFIX}{slot}"), None),
     ];
     match &move_to.conversation {
         Conversation::Fresh { id, capture_floor } => {
@@ -2862,13 +2924,231 @@ fn rewrite_rows(dir: &Path, rows: &[(&str, Option<&str>)]) -> Result<(), Rewrite
     })
 }
 
-/// Publish or clear one seat's observed-model pair as ONE atomic, guarded
-/// rewrite.
-///
-/// The two rows are one identity: `observed: Some((model, pin))` writes the
-/// model and sets (`pin = Some`) or removes (`pin = None`) the pin row in the
-/// same replacement; `observed: None` removes both. No reader can meet half
-/// the pair.
+/// A seat's record family as its raw rows say it, never guessed or repaired.
+/// `Damaged` names the class a report shows: such rows are IGNORED for apply
+/// and never deleted on that doubt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rows<T> {
+    /// No row of the family.
+    Absent,
+    /// Every row present, sole and well-formed.
+    Valid(T),
+    /// `duplicate`, `invalid` or `partial`.
+    Damaged(&'static str),
+}
+
+/// The observed record: the label the pane drew, the profile's model pin then,
+/// and — unless it is the legacy two-row shape — the drawn effort with the
+/// profile's effort level then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedPair {
+    /// `observed_model.<slot>`.
+    pub model: String,
+    /// `observed_model_pin.<slot>`, absent when the profile pinned no model.
+    pub model_pin: Option<String>,
+    /// `observed_effort.<slot>` and `observed_effort_pin.<slot>`.
+    pub effort: Option<(crate::effort::Level, crate::effort::Level)>,
+}
+
+/// What `_run` exec'd on the current tool start: the start, its model flag
+/// value and its effort level, each `None` where the command set none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launched {
+    /// `launched.<slot>`: `<slot>:<launch_id>:<tool pid>`.
+    pub start: String,
+    /// `launched_model.<slot>`, `-` for none.
+    pub model: Option<String>,
+    /// `launched_effort.<slot>`, `-` for none.
+    pub effort: Option<crate::effort::Level>,
+}
+
+/// Each key's one value, `None` when absent; a repeated key is a duplicate
+/// and a bare claim (no `=`) a row with no usable value.
+fn sole_rows<'a>(text: &'a [u8], keys: &[String]) -> Result<Vec<Option<&'a str>>, &'static str> {
+    keys.iter()
+        .map(|key| {
+            let mut found = raw_lines(text).filter(|line| raw_key(line) == key.as_bytes());
+            match (found.next(), found.next()) {
+                (_, Some(_)) => Err("duplicate"),
+                (None, None) => Ok(None),
+                (Some(line), None) => line[key.len()..]
+                    .strip_prefix(b"=")
+                    .and_then(|value| std::str::from_utf8(value).ok())
+                    .filter(|value| is_observed_row_value(value))
+                    .map(Some)
+                    .ok_or("invalid"),
+            }
+        })
+        .collect()
+}
+
+/// Every raw line of a seat's four observed rows, bare and CR included, in
+/// order: the resume rebuild carries them as written, damage included.
+pub(crate) fn observed_claims<'a>(bytes: &'a [u8], slot: &str) -> Vec<&'a [u8]> {
+    raw_lines(bytes)
+        .filter(|line| {
+            OBSERVED_FAMILY[..4]
+                .iter()
+                .any(|prefix| raw_key(line) == format!("{prefix}{slot}").as_bytes())
+        })
+        .collect()
+}
+
+/// The ONE reader of a seat's four observed rows.
+#[must_use]
+pub fn observed_pair(text: &[u8], slot: &str) -> Rows<ObservedPair> {
+    use crate::effort::Level;
+    let keys = [
+        OBSERVED_MODEL_PREFIX,
+        OBSERVED_MODEL_PIN_PREFIX,
+        OBSERVED_EFFORT_PREFIX,
+        OBSERVED_EFFORT_PIN_PREFIX,
+    ]
+    .map(|prefix| format!("{prefix}{slot}"));
+    let rows = match sole_rows(text, &keys) {
+        Ok(rows) => rows,
+        Err(why) => return Rows::Damaged(why),
+    };
+    let effort = match (rows[2], rows[3]) {
+        (None, None) => None,
+        (Some(drawn), Some(pin)) => match (Level::parse(drawn), Level::parse(pin)) {
+            (Some(drawn), Some(pin)) => Some((drawn, pin)),
+            _ => return Rows::Damaged("invalid"),
+        },
+        _ => return Rows::Damaged("partial"),
+    };
+    match (rows[0], rows[1]) {
+        (None, None) if effort.is_none() => Rows::Absent,
+        (Some(model), pin) => Rows::Valid(ObservedPair {
+            model: model.to_owned(),
+            model_pin: pin.map(str::to_owned),
+            effort,
+        }),
+        _ => Rows::Damaged("partial"),
+    }
+}
+
+/// The ONE reader of a seat's three launch-baseline rows.
+#[must_use]
+pub fn launched(text: &[u8], slot: &str) -> Rows<Launched> {
+    let keys = [
+        LAUNCHED_PREFIX,
+        LAUNCHED_MODEL_PREFIX,
+        LAUNCHED_EFFORT_PREFIX,
+    ]
+    .map(|prefix| format!("{prefix}{slot}"));
+    let rows = match sole_rows(text, &keys) {
+        Ok(rows) => rows,
+        Err(why) => return Rows::Damaged(why),
+    };
+    let [Some(start), Some(model), Some(effort)] = rows[..] else {
+        return if rows.iter().all(Option::is_none) {
+            Rows::Absent
+        } else {
+            Rows::Damaged("partial")
+        };
+    };
+    let shaped = start
+        .strip_prefix(slot)
+        .and_then(|rest| rest.strip_prefix(':')?.rsplit_once(':'))
+        .is_some_and(|(launch, pid)| {
+            !launch.is_empty() && !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit())
+        });
+    let effort = match effort {
+        "-" => None,
+        word => match crate::effort::Level::parse(word) {
+            Some(level) => Some(level),
+            None => return Rows::Damaged("invalid"),
+        },
+    };
+    if !shaped {
+        return Rows::Damaged("invalid");
+    }
+    Rows::Valid(Launched {
+        start: start.to_owned(),
+        model: (model != "-").then(|| model.to_owned()),
+        effort,
+    })
+}
+
+/// One guarded change to a seat's observed record and launch baseline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ObservedEdit {
+    Keep,
+    /// All four observed rows go; `drop_launched` also removes the baseline.
+    Retire {
+        drop_launched: bool,
+    },
+    /// The observed record is rewritten whole (a legacy pair drops the effort
+    /// rows); `drop_launched` also removes the current baseline.
+    Record {
+        pair: ObservedPair,
+        drop_launched: bool,
+    },
+    /// The pane left the launch baseline: only it goes.
+    DropLaunched,
+    /// A tool start's own baseline replaces whatever stood.
+    Launch(Launched),
+}
+
+/// The rows one [`ObservedEdit`] sets (`Some`) or removes (`None`); `None`
+/// for [`ObservedEdit::Keep`].
+fn edit_rows(slot: &str, edit: ObservedEdit) -> Option<Vec<(String, Option<String>)>> {
+    let key = |prefix: &str| format!("{prefix}{slot}");
+    let pair_keys = [
+        OBSERVED_MODEL_PREFIX,
+        OBSERVED_MODEL_PIN_PREFIX,
+        OBSERVED_EFFORT_PREFIX,
+        OBSERVED_EFFORT_PIN_PREFIX,
+    ];
+    let launched_keys = [
+        LAUNCHED_PREFIX,
+        LAUNCHED_MODEL_PREFIX,
+        LAUNCHED_EFFORT_PREFIX,
+    ];
+    let set = |prefixes: &[&str], values: Vec<Option<String>>| -> Vec<_> {
+        prefixes
+            .iter()
+            .map(|prefix| key(prefix))
+            .zip(values)
+            .collect()
+    };
+    let (mut rows, drop_launched) = match edit {
+        ObservedEdit::Keep => return None,
+        ObservedEdit::Retire { drop_launched } => (set(&pair_keys, vec![None; 4]), drop_launched),
+        ObservedEdit::DropLaunched => (Vec::new(), true),
+        ObservedEdit::Record {
+            pair,
+            drop_launched,
+        } => {
+            let (drawn, pin) = pair.effort.map_or((None, None), |(drawn, pin)| {
+                (Some(drawn.word().to_owned()), Some(pin.word().to_owned()))
+            });
+            let values = vec![Some(pair.model), pair.model_pin, drawn, pin];
+            (set(&pair_keys, values), drop_launched)
+        }
+        ObservedEdit::Launch(launched) => {
+            let values = vec![
+                Some(launched.start),
+                Some(launched.model.unwrap_or_else(|| "-".to_owned())),
+                Some(
+                    launched
+                        .effort
+                        .map_or("-", crate::effort::Level::word)
+                        .to_owned(),
+                ),
+            ];
+            (set(&launched_keys, values), false)
+        }
+    };
+    if drop_launched {
+        rows.extend(set(&launched_keys, vec![None; 3]));
+    }
+    Some(rows)
+}
+
+/// Apply ONE [`ObservedEdit`], decided from the meta as it stands under the
+/// lock, as one atomic guarded rewrite: no reader meets half a record.
 ///
 /// The compare-and-swap guard is the shape `capture::commit_inner` uses: under
 /// the meta lock, the slot must still name `agent`, still hold `tool`, and its
@@ -2882,22 +3162,17 @@ fn rewrite_rows(dir: &Path, rows: &[(&str, Option<&str>)]) -> Result<(), Rewrite
 ///
 /// [`RewriteError::NotWritten`] when the rows are not well-formed, the guard
 /// does not hold, or the lock, read, write, sync or rename failed.
-pub(crate) fn record_observed_model(
+pub(crate) fn rewrite_observed(
     dir: &Path,
     slot: &str,
     agent: &str,
     tool: crate::tool::ToolKind,
     launch_id: &str,
-    observed: Option<(&str, Option<&str>)>,
+    decide: impl FnOnce(&[u8]) -> ObservedEdit,
 ) -> Result<(), RewriteError> {
     let refused = |why: &str| {
         RewriteError::NotWritten(io::Error::new(io::ErrorKind::InvalidInput, why.to_owned()))
     };
-    if let Some((model, pin)) = observed
-        && (!is_observed_row_value(model) || pin.is_some_and(|pin| !is_observed_row_value(pin)))
-    {
-        return Err(refused("the observed model rows are not well-formed"));
-    }
     if launch_id.is_empty() {
         return Err(refused("the seat records no launch id to guard the write"));
     }
@@ -2927,15 +3202,33 @@ pub(crate) fn record_observed_model(
     if recorded_launch.as_deref() != Some(launch_id) {
         return Err(refused("the seat was re-created after the observation"));
     }
-    let model_key = format!("{OBSERVED_MODEL_PREFIX}{slot}");
-    let pin_key = format!("{OBSERVED_MODEL_PIN_PREFIX}{slot}");
+    let Some(rows) = edit_rows(slot, decide(current.as_bytes())) else {
+        return Ok(());
+    };
+    if rows.iter().any(|(_, value)| {
+        value
+            .as_deref()
+            .is_some_and(|value| !is_observed_row_value(value))
+    }) {
+        return Err(refused("the observed model rows are not well-formed"));
+    }
     let mut next = current.clone();
-    if let Some((model, pin)) = observed {
-        next = rewritten(&next, &model_key, Some(model));
-        next = rewritten(&next, &pin_key, pin);
-    } else {
-        next = rewritten(&next, &model_key, None);
-        next = rewritten(&next, &pin_key, None);
+    for (key, value) in &rows {
+        // A sole `key=` row is rewritten IN PLACE, so a start never reorders
+        // the meta; every other claim — a repeat, a bare or CR-ended key — is
+        // removed first and replaced by ONE.
+        let claims = raw_lines(next.as_bytes()).filter(|line| raw_key(line) == key.as_bytes());
+        let in_place = matches!(claims.collect::<Vec<_>>().as_slice(), [line]
+            if line.starts_with(format!("{key}=").as_bytes()));
+        if value.is_none() || !in_place {
+            next = next
+                .split_inclusive('\n')
+                .filter(|line| raw_key(line.trim_end_matches('\n').as_bytes()) != key.as_bytes())
+                .collect();
+        }
+        if value.is_some() {
+            next = rewritten(&next, key, value.as_deref());
+        }
     }
     if next == current {
         return Ok(());
@@ -3907,74 +4200,151 @@ mod tests {
 
     #[test]
     fn the_observed_pair_is_published_and_cleared_as_one_guarded_identity() {
+        use super::{ObservedEdit, ObservedPair, Rows};
+        use crate::effort::Level;
         let dir = std::env::temp_dir().join(format!("ae-meta-observed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
         std::fs::write(
             dir.join("meta"),
-            "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nlaunch_id.main=L1\n",
+            "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nlaunch_id.main=L1\nobserved_effort.main=max\nobserved_effort.main\nlaunched.main\r\n",
         )
         .expect("meta");
-
-        super::record_observed_model(
-            &dir,
-            "main",
-            "lead",
-            crate::tool::ToolKind::Claude,
-            "L1",
-            Some(("Opus 5", Some("fable"))),
-        )
-        .expect("publish");
+        let pair = ObservedPair {
+            model: "Opus 5".to_owned(),
+            model_pin: Some("fable".to_owned()),
+            effort: Some((Level::High, Level::Xhigh)),
+        };
+        let write = |agent: &str, tool, launch: &str, edit: ObservedEdit| {
+            super::rewrite_observed(&dir, "main", agent, tool, launch, |_| edit)
+        };
+        let record = || ObservedEdit::Record {
+            pair: pair.clone(),
+            drop_launched: false,
+        };
+        let claude = crate::tool::ToolKind::Claude;
+        write("lead", claude, "L1", record()).expect("publish");
         let text = std::fs::read_to_string(dir.join("meta")).unwrap();
-        assert!(text.contains("observed_model.main=Opus 5\n"), "{text}");
-        assert!(text.contains("observed_model_pin.main=fable\n"), "{text}");
+        assert_eq!(
+            super::observed_pair(text.as_bytes(), "main"),
+            Rows::Valid(pair.clone()),
+            "a duplicated row is replaced by ONE: {text}"
+        );
 
         // The same observation again is a no-op, byte for byte.
-        let before = std::fs::read_to_string(dir.join("meta")).unwrap();
-        super::record_observed_model(
-            &dir,
-            "main",
-            "lead",
-            crate::tool::ToolKind::Claude,
-            "L1",
-            Some(("Opus 5", Some("fable"))),
-        )
-        .expect("no-op");
-        assert_eq!(std::fs::read_to_string(dir.join("meta")).unwrap(), before);
+        write("lead", claude, "L1", record()).expect("no-op");
+        assert_eq!(std::fs::read_to_string(dir.join("meta")).unwrap(), text);
 
         // A stale launch id, a renamed seat and another tool cannot write.
         for (agent, tool, launch) in [
-            ("lead", crate::tool::ToolKind::Claude, "L2"),
-            ("other", crate::tool::ToolKind::Claude, "L1"),
+            ("lead", claude, "L2"),
+            ("other", claude, "L1"),
             ("lead", crate::tool::ToolKind::Codex, "L1"),
         ] {
             assert!(
-                super::record_observed_model(
-                    &dir,
-                    "main",
-                    agent,
-                    tool,
-                    launch,
-                    Some(("Opus 5", Some("fable")))
-                )
-                .is_err(),
+                write(agent, tool, launch, record()).is_err(),
                 "{agent}/{tool:?}/{launch}"
             );
         }
 
-        // Clearing removes both rows in one replacement.
-        super::record_observed_model(
-            &dir,
-            "main",
-            "lead",
-            crate::tool::ToolKind::Claude,
-            "L1",
-            None,
-        )
-        .expect("clear");
+        // A baseline is three rows; a retire that drops it removes all seven.
+        let baseline = super::Launched {
+            start: "main:L1:42".to_owned(),
+            model: None,
+            effort: Some(Level::Xhigh),
+        };
+        write("lead", claude, "L1", ObservedEdit::Launch(baseline.clone())).expect("launch");
         let text = std::fs::read_to_string(dir.join("meta")).unwrap();
-        assert!(!text.contains("observed_model"), "{text}");
+        assert!(text.contains("launched_model.main=-\n"), "{text}");
+        assert_eq!(
+            super::launched(text.as_bytes(), "main"),
+            Rows::Valid(baseline.clone())
+        );
+        // The same start again is byte for byte; a new one rewrites IN PLACE.
+        write("lead", claude, "L1", ObservedEdit::Launch(baseline.clone())).expect("again");
+        assert_eq!(std::fs::read_to_string(dir.join("meta")).unwrap(), text);
+        let next = super::Launched {
+            start: "main:L1:43".to_owned(),
+            ..baseline
+        };
+        write("lead", claude, "L1", ObservedEdit::Launch(next.clone())).expect("next start");
+        let moved = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert_eq!(moved, text.replace("main:L1:42", "main:L1:43"), "in place");
+        // A bare CR claim beside a valid row is replaced too, by ONE.
+        std::fs::write(dir.join("meta"), format!("{moved}launched_effort.main\r\n")).unwrap();
+        write("lead", claude, "L1", ObservedEdit::Launch(next.clone())).expect("repair");
+        let repaired = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert_eq!(
+            super::launched(repaired.as_bytes(), "main"),
+            Rows::Valid(next)
+        );
+        let retire = ObservedEdit::Retire {
+            drop_launched: true,
+        };
+        write("lead", claude, "L1", retire).expect("clear");
+        let text = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert!(
+            !text.contains("observed_") && !text.contains("launched"),
+            "{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_damaged_record_or_baseline_is_named_by_its_class() {
+        use super::{Rows, launched, observed_pair};
+        let pair = |rows: &str| observed_pair(rows.as_bytes(), "main");
+        let base = |rows: &str| launched(rows.as_bytes(), "main");
+        let model = "observed_model.main=Opus 5.5\nobserved_model_pin.main=fable\n";
+        assert!(
+            matches!(pair(model), Rows::Valid(_)),
+            "the legacy two-row record"
+        );
+        for (rows, class) in [
+            (format!("{model}observed_effort.main=high\n"), "partial"),
+            (
+                "observed_effort.main=high\nobserved_effort_pin.main=xhigh\n".to_owned(),
+                "partial",
+            ),
+            (
+                format!("{model}observed_effort.main=bogus\nobserved_effort_pin.main=xhigh\n"),
+                "invalid",
+            ),
+            (
+                format!("{model}observed_model.main=Fable 5.1\n"),
+                "duplicate",
+            ),
+            ("observed_model.main=\n".to_owned(), "invalid"),
+            (format!("{model}observed_model_pin.main\n"), "duplicate"),
+        ] {
+            assert_eq!(pair(&rows), Rows::Damaged(class), "{rows}");
+        }
+        // A bare claim is a row with no value, kept raw by the parse too.
+        let claimed = format!("{model}observed_effort.main\nobserved_effort_pin.main=xhigh\n");
+        assert_eq!(pair(&claimed), Rows::Damaged("invalid"));
+        let parsed = super::Meta::parse(&claimed);
+        assert_eq!(parsed.observed_record("main"), Rows::Damaged("invalid"));
+        // A CR-ended value and a lossy U+FFFD are damage to BOTH readers.
+        for rows in [
+            model.replace("5.5\n", "5.5\r\n"),
+            model.replace("5.5", "\u{fffd}"),
+        ] {
+            assert_eq!(pair(&rows), Rows::Damaged("invalid"), "{rows:?}");
+            let parsed = super::Meta::parse(&rows);
+            assert_eq!(parsed.observed_record("main"), Rows::Damaged("invalid"));
+        }
+        let good = "launched.main=main:L1:42\nlaunched_model.main=fable\nlaunched_effort.main=-\n";
+        assert!(matches!(base(good), Rows::Valid(_)));
+        assert_eq!(base(""), Rows::Absent);
+        for (rows, class) in [
+            ("launched.main=main:L1:42\n".to_owned(), "partial"),
+            (good.replace("main:L1:42", "other:L1:42"), "invalid"),
+            (good.replace("main:L1:42", "main:L1:pid"), "invalid"),
+            (good.replace("effort.main=-", "effort.main=huge"), "invalid"),
+            (format!("{good}launched.main=main:L2:7\n"), "duplicate"),
+        ] {
+            assert_eq!(base(&rows), Rows::Damaged(class), "{rows}");
+        }
     }
 
     /// One fallback meta: the seat, its binary, its launch id, the

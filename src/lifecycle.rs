@@ -1745,23 +1745,25 @@ fn observe_models_before_stop(
             ));
             continue;
         }
-        let pin = entry.profile.as_deref().and_then(|profile| {
-            crate::launch_cmd::profile_model_pin(
-                (!global.is_empty()).then(|| Path::new(&global)),
-                local.as_deref(),
-                profile,
-                tool,
-            )
-        });
+        let pins = entry
+            .profile
+            .as_deref()
+            .map_or_else(Default::default, |profile| {
+                crate::launch_cmd::profile_pins(
+                    (!global.is_empty()).then(|| Path::new(&global)),
+                    local.as_deref(),
+                    profile,
+                    tool,
+                )
+            });
         let capture = transport::capture_pane(server, &pane.pane_id).unwrap_or_default();
         if let Err(why) = crate::model_drift::observe(
             dir,
-            &entry.slot,
-            &entry.name,
+            (&entry.slot, &entry.name),
             tool,
             &capture,
             &launch_id,
-            pin.as_deref(),
+            &pins,
         ) {
             uncovered.push(format!("seat {}: {why}", entry.slot));
         }

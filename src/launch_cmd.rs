@@ -384,25 +384,30 @@ pub(crate) fn model_flag_value(cmd: &str, tool: ToolKind) -> Option<String> {
     sole_model_flag(&command, tool).ok().map(|flag| flag.value)
 }
 
-/// The model flag value a resolved profile pins on this machine, if any.
+/// The model flag value and effort level a resolved profile pins on this
+/// machine, each where its command proves exactly one.
 ///
 /// Reads the selected config files exactly as `_run` reads them, then the
 /// profile's command. A missing profile, an unreadable config or an unlexable
-/// command is `None`, never a guess.
+/// command pins nothing, never a guess.
 #[must_use]
-pub(crate) fn profile_model_pin(
+pub(crate) fn profile_pins(
     global: Option<&Path>,
     local: Option<&Path>,
     profile: &str,
     tool: ToolKind,
-) -> Option<String> {
-    if model_flag_names(tool).is_empty() {
-        return None;
-    }
-    let cfg = crate::config::read_identity(global, local).ok()?;
-    let home = crate::doors::home();
-    let command = cfg.command(profile, home.as_deref()).ok()??;
-    model_flag_value(command.as_str(), tool)
+) -> crate::model_drift::Pins {
+    let command = crate::config::read_identity(global, local)
+        .ok()
+        .and_then(|cfg| cfg.command(profile, crate::doors::home().as_deref()).ok()?);
+    command.map_or_else(crate::model_drift::Pins::default, |command| {
+        crate::model_drift::Pins {
+            model: (!model_flag_names(tool).is_empty())
+                .then(|| model_flag_value(command.as_str(), tool))
+                .flatten(),
+            effort: effort_flag(command.as_str(), tool).ok(),
+        }
+    })
 }
 
 /// Why a seat's observed model cannot be FOLLOWED into a configured pin value.
@@ -523,8 +528,9 @@ fn model_skeleton(cmd: &str, tool: ToolKind) -> Option<(Vec<String>, String)> {
 /// The operator's own `[profiles]` block IS the display-label-to-flag-value
 /// table: ae never invents a spelling, it finds one the operator already wrote.
 /// A candidate must differ from the SEAT's own command in the model flag's
-/// value ALONE, which preserves the account, the effort and every other word by
-/// construction, and its pin must satisfy the label under this tool's own
+/// value and its effort level ALONE, which preserves the account and every
+/// other word by construction — the effort the seat resumes on is its own
+/// record's, never a candidate's — and its pin must satisfy the label under this tool's own
 /// [`crate::tool::PinMatch`]. The tie-break is over distinct pin VALUES and
 /// never over profile labels, so an alias pair carrying one value is not a
 /// disagreement; two values are answered only when exactly one names a version.
@@ -551,11 +557,19 @@ pub(crate) fn followed_pin_in(
         return Err(FollowRefusal::AlreadyPinned);
     }
     let mut values: Vec<String> = Vec::new();
+    let seat_level = effort_flag(seat_command, tool).ok();
     for (profile, _) in &cfg.profiles {
         let Ok(Some(command)) = cfg.command(profile, home) else {
             continue;
         };
-        let Some((skeleton, pin)) = model_skeleton(command.as_str(), tool) else {
+        let command = match seat_level {
+            Some(level) => match replace_effort_flag(command.as_str(), tool, level) {
+                Ok(text) => text,
+                Err(_) => continue,
+            },
+            None => command.as_str().to_owned(),
+        };
+        let Some((skeleton, pin)) = model_skeleton(&command, tool) else {
             continue;
         };
         if skeleton != seat_skeleton || !crate::model_drift::satisfies(&pin, observed, pin_match) {
@@ -585,7 +599,7 @@ pub(crate) fn followed_pin_in(
 
 /// [`followed_pin_in`] for a caller holding PATHS and the seat's already
 /// resolved command, reading the identity config through the one owner exactly
-/// as [`profile_model_pin`] does.
+/// as [`profile_pins`] does.
 pub(crate) fn followed_pin(
     global: Option<&Path>,
     local: Option<&Path>,
@@ -2202,8 +2216,8 @@ mod tests {
         // The ACCOUNT rule holds in BOTH directions — this is what keeps a
         // personal seat off a work profile and the work seat off a personal one,
         // so the conversation and the quota window cannot move. EFFORT is
-        // preserved rather than voted on, so a row that changes it is not a
-        // candidate either.
+        // the seat's own: a candidate's is ignored, and only its model value
+        // is taken.
         assert_eq!(
             follow(&[FABLEX, MICOPUS], CLAUDE_SEAT, ToolKind::Claude, "Opus 5"),
             Err(FollowRefusal::NoCandidate),
@@ -2218,8 +2232,8 @@ mod tests {
         );
         assert_eq!(
             follow(&[FABLEX, OPUS5H], CLAUDE_SEAT, ToolKind::Claude, "Opus 5"),
-            Err(FollowRefusal::NoCandidate),
-            "effort is PRESERVED, never voted on"
+            Ok("claude-opus-5".to_owned()),
+            "the candidate's effort is ignored, never voted on"
         );
     }
 

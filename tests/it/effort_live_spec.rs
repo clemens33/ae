@@ -587,7 +587,7 @@ fn unchanged(seat: &Seat, pid: Option<u32>) {
         seat.rig.events()
     );
     assert!(records(&seat.rig, "effort-applied").is_empty());
-    assert!(!seat.rig.meta().contains("effort.main="));
+    assert!(!seat.rig.meta().contains("\neffort.main="));
 }
 
 #[test]
@@ -684,7 +684,7 @@ fn watchdog_down_and_recovery_keep_pane_profile_account_model_and_conversation()
         );
         quota(&seat, 74.9, 0.0);
         until(rig, || records(rig, "effort-restored").len() == 1);
-        assert!(!rig.meta().contains("effort.main="));
+        assert!(!rig.meta().contains("\neffort.main="));
         assert_eq!(rig.meta_row("harness_session.main"), CONV);
         assert_eq!(rig.meta_row("profile.main"), "fake-effort-base");
         assert_eq!(rig.launched().lines().count(), 3, "one down + one up only");
@@ -709,7 +709,7 @@ fn manual_change_after_move_yields_instead_of_restoring_over_the_human() {
     sweeps(rig);
     assert_eq!(rig.tool_pid(&rig.main_pane, seat.tool), pid);
     assert!(records(rig, "effort-restored").is_empty());
-    assert!(!rig.meta().contains("effort.main="));
+    assert!(!rig.meta().contains("\neffort.main="));
     assert_eq!(rig.meta_row("profile.main"), "fake-effort-base");
 }
 
@@ -778,7 +778,7 @@ fn fallback_new_conversation_fails_clears_and_never_claims_applied_or_retries() 
     until(rig, || !records(rig, "effort-failed").is_empty());
     sweeps(rig);
     assert!(records(rig, "effort-applied").is_empty());
-    assert!(!rig.meta().contains("effort.main="));
+    assert!(!rig.meta().contains("\neffort.main="));
     assert_eq!(records(rig, "effort-reserved").len(), 1);
     assert_eq!(
         rig.launched().lines().count(),
@@ -814,7 +814,7 @@ fn a_new_pid_with_same_conversation_but_source_effort_is_failed_not_applied() {
         records(rig, "effort-applied").is_empty(),
         "PID + exact id alone cannot be a receipt"
     );
-    assert!(!rig.meta().contains("effort.main="));
+    assert!(!rig.meta().contains("\neffort.main="));
     sweeps(rig);
     assert_eq!(records(rig, "effort-reserved").len(), 1);
     assert_eq!(rig.launched().lines().count(), 2);
@@ -998,7 +998,7 @@ fn crash_after_reservation_before_respawn_fails_without_a_second_stop() {
             "reconcile never restarts"
         );
         assert!(records(rig, "effort-applied").is_empty());
-        assert!(!rig.meta().contains("effort.main="));
+        assert!(!rig.meta().contains("\neffort.main="));
         assert_eq!(rig.launched().lines().count(), 1);
     }
 }
@@ -1154,7 +1154,7 @@ fn wrong_model(tool: &'static str) {
     );
     assert!(records(rig, "effort-restored").is_empty());
     assert!(
-        !rig.meta().contains("effort.main="),
+        !rig.meta().contains("\neffort.main="),
         "failed down cannot retain replay ownership"
     );
     assert_eq!(records(rig, "effort-failed").len(), 1);
@@ -1244,5 +1244,5 @@ fn r3_up_with_record_already_cleared_is_unproven_never_failed_or_restored() {
         "reconciliation never stops the seat"
     );
     assert_eq!(rig.launched().lines().count(), 1);
-    assert!(!rig.meta().contains("effort.main="));
+    assert!(!rig.meta().contains("\neffort.main="));
 }

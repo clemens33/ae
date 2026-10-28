@@ -573,8 +573,9 @@ fn parse_claude_identity(line: &str) -> HarnessIdentity {
 /// manual choice is never followed. STANDING OBLIGATION, like a toolchain pin —
 /// add the label when a new claude model ships, or it stays silently
 /// unfollowable.
-const CLAUDE_MODELS: [&str; 7] = [
+const CLAUDE_MODELS: [&str; 8] = [
     "Fable 5.1",
+    "Haiku 5.5",
     "Opus 4.8",
     "Opus 5 (1M context)",
     "Opus 5",

@@ -282,6 +282,9 @@ pub struct Facts {
     pub sessions: Vec<SessionFacts>,
     /// Every seat of a LIVE session, in session then roster order.
     pub seats: Vec<SeatFacts>,
+    /// `<session>:<agent>` and the class of each damaged observed record or
+    /// launch baseline, live or stopped.
+    pub damaged_records: Vec<String>,
     /// The input-map verdict per ae-owned server that answered — empty when
     /// none did, which reads as one neutral row, never a warning.
     pub bindings: Vec<BindingsFacts>,
@@ -348,6 +351,9 @@ pub fn report(facts: &Facts) -> Report {
     reseat_cover_rows(&facts.reseat_cover, &mut out);
     session_rows(facts, &mut out);
     seat_identity_rows(&facts.seats, &mut out);
+    for damaged in &facts.damaged_records {
+        out.push(Level::Warn, "seat-records", damaged);
+    }
     bindings_rows(facts, &mut out);
     out
 }
@@ -947,6 +953,10 @@ fn reseat_cover_facts(
 
 /// Read every fact the report needs.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one read per fact, in the order the report prints them"
+)]
 pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts {
     let roots = crate::inventory::Roots::under(root);
     let config = global.map_or_else(|| root.join("config"), Path::to_path_buf);
@@ -1055,6 +1065,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         worktrees_dir: roots.worktrees().to_owned(),
         sessions,
         seats,
+        damaged_records: damaged_records(root),
         bindings,
         reseat_cover,
         boot: crate::doors::boot_time(crate::shape::current()),
@@ -1137,6 +1148,30 @@ fn seat_facts(root: &Path, sessions: &[SessionFacts]) -> Vec<SeatFacts> {
                 profile: row.profile.clone().unwrap_or_default(),
                 observed,
             });
+        }
+    }
+    out
+}
+
+/// Every seat whose observed record or launch baseline is damaged: such rows
+/// are ignored for apply and kept, so this is where a human learns of them.
+fn damaged_records(root: &Path) -> Vec<String> {
+    use crate::meta::Rows;
+    let mut out = Vec::new();
+    for (session, dir) in discovered(root) {
+        let bytes = crate::meta::read_bytes(&dir).unwrap_or_default();
+        for row in crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes)).roster() {
+            let seat = format!("{session}:{} ({})", row.name, row.slot);
+            if let Rows::Damaged(why) = crate::meta::observed_pair(&bytes, &row.slot) {
+                out.push(format!(
+                    "{seat}: observed model record damaged ({why}) — ignored and kept"
+                ));
+            }
+            if let Rows::Damaged(why) = crate::meta::launched(&bytes, &row.slot) {
+                out.push(format!(
+                    "{seat}: launch baseline damaged ({why}) — ignored and kept"
+                ));
+            }
         }
     }
     out
@@ -1735,6 +1770,7 @@ mod tests {
             worktrees_dir: PathBuf::from("/home/me/.ae/worktrees"),
             sessions: Vec::new(),
             seats: Vec::new(),
+            damaged_records: Vec::new(),
             bindings: Vec::new(),
             reseat_cover: ReseatCover::Off,
         }

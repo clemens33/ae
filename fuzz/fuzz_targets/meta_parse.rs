@@ -18,6 +18,13 @@ fuzz_target!(|data: &[u8]| {
     // with comes off the same hostile document, so it is driven from it here.
     let parsed = ae::meta::Meta::parse(&text);
     for slot in ["main", "worker.0", "spawned.1"] {
+        // The observed record and the launch baseline are judged per row
+        // family from the RAW bytes: presence, duplication, partial families
+        // and value grammar, through both readers and the parsed accessors.
+        let _ = std::hint::black_box(ae::meta::observed_pair(data, slot));
+        let _ = std::hint::black_box(ae::meta::launched(data, slot));
+        let _ = std::hint::black_box(parsed.observed_record(slot));
+        let _ = std::hint::black_box(parsed.launch_baseline(slot));
         let _ = std::hint::black_box(parsed.launch_id(slot));
         let _ = std::hint::black_box(parsed.effort(slot));
         let _ = std::hint::black_box(parsed.done_confirmations_pin());

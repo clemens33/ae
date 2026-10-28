@@ -1,0 +1,6 @@
+seat.main=lead
+agent_bin.main=claude
+launch_id.main=L1
+launched.main=main:L1:7
+launched_effort.main=xhigh
+launched.main=main:L1:8

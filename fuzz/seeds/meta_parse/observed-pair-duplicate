@@ -1,0 +1,7 @@
+seat.main=lead
+agent_bin.main=claude
+launch_id.main=L1
+observed_model.main=Opus 5.5
+observed_effort.main=high
+observed_effort.main=max
+observed_effort_pin.main=xhigh

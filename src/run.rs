@@ -64,6 +64,11 @@ pub struct Plan {
     effort: Option<EffortStep>,
     /// What a resume says about an effort move it replays.
     effort_notice: Option<String>,
+    /// This start's launch baseline; `None` for a tool whose model ae does not
+    /// observe.
+    launch: Option<LaunchBaseline>,
+    /// Why the observed record is not applied on this start, journaled once.
+    refusal: Option<String>,
 }
 
 /// An effort discard `run` writes after the print gate: the facts its proof
@@ -474,6 +479,7 @@ pub fn run(
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
+    record_launch(dir, slot, &plan, err)?;
     let why = exec(&plan);
     // Reached only because the exec did NOT happen, so this seat has not been
     // launched after all: take the marker back rather than leave a seat that
@@ -623,9 +629,11 @@ fn build_with_snapshot(
     };
     // A resumed seat honors a recorded manual model; a fresh one never does —
     // a new conversation starts from the profile, exactly as before.
-    let model_notice = (mode == Mode::Resume)
-        .then(|| apply_observed_model(dir, slot, &mut seat))
-        .flatten();
+    let (model_notice, refusal) = if mode == Mode::Resume {
+        apply_observed_model(dir, slot, &mut seat)
+    } else {
+        (None, None)
+    };
     let ctx = crate::render::seat_context_document(
         dir,
         &seat.session,
@@ -663,6 +671,19 @@ fn build_with_snapshot(
     let exact =
         mode == Mode::Resume && resumable(seat.tool, &seat.harness_session, &identity.effective);
     let (effort, effort_notice) = effort_on_resume(dir, slot, &mut seat, exact)?;
+    let launch = seat
+        .tool
+        .adapter()
+        .model
+        .observes()
+        .then(|| LaunchBaseline {
+            session: seat.session.clone(),
+            agent: seat.agent.clone(),
+            tool: seat.recorded_tool,
+            launch_id: seat.launch_id.clone(),
+            model: crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool),
+            effort: crate::launch_cmd::effort_flag(seat.command.as_str(), seat.tool).ok(),
+        });
     let composed = compose(dir, slot, &seat, &ctx, mode, exact)?;
     let words = crate::words::split_words(&composed.cmd, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
@@ -687,6 +708,8 @@ fn build_with_snapshot(
         fresh: composed.fresh,
         effort,
         effort_notice,
+        launch,
+        refusal,
     })
 }
 
@@ -873,153 +896,273 @@ fn discard_said(slot: &str, why: Dropped, outcome: &crate::meta::Discard) -> Str
     format!("ae: seat {slot}: effort record {what}; resuming on the profile")
 }
 
-/// Honor a recorded manual model on a resumed seat, or say why it cannot be.
+/// What a resume does with a seat's observed record — PURE, so `ae list` says
+/// the very answer `_run` acts on.
+enum ResumePair {
+    /// Nothing recorded, or the profile already launches the recorded pair.
+    Nothing,
+    /// The record no longer applies: retired, and the notice says why.
+    Retire(String),
+    /// The record stands but is not applied: the clause, and the notice.
+    Refused(String, String),
+    /// The rewritten command, and the notice.
+    Apply(String, String),
+}
+
+/// Decide a recorded manual model AND effort for a resumed seat, WHOLE: both
+/// apply or neither does.
 ///
-/// The two rows are an observed model and the profile's own model flag value
-/// at the time it was observed. The pin decides recency without timestamps:
+/// The recorded pins decide recency without timestamps:
 ///
-/// - recorded pin == the profile's model now, and the tool's adapter declares
-///   an observation replayable: the human's manual choice is newer than any
-///   profile edit, so the model flag is REWRITTEN to the observed value.
-/// - recorded pin == the profile's model now, but the adapter is report-only:
-///   the scraped text is a display name, not a value drawn from the flag's own
-///   vocabulary, so the LABEL is never replayed. ae FOLLOWS it instead through
-///   the operator's own `[profiles]` block — the configured pin that label
-///   satisfies is a value the operator already wrote, and
-///   [`crate::launch_cmd::followed_pin`] applies THAT. Every refusal leaves the
-///   resume byte-identical to what it was and says which refusal it was.
-/// - recorded pin differs (including "the profile pins no model now"): the
-///   profile edit is newer. Both rows are retired and the profile wins.
-/// - no recorded pin: the profile pins no model. Nothing is rewritten (ae never
-///   APPENDS a model flag) and the row is retained for the report; the notice
-///   says so.
-///
-/// The returned line is printed before the exec, where the existing
-/// config-home notice goes. `None` means nothing to say.
-fn apply_observed_model(dir: &Path, slot: &str, seat: &mut Seat) -> Option<String> {
-    let observed = seat.observed_model.clone()?;
+/// - both pins == the profile's now: the human's choice is newer than any
+///   profile edit. A replayable adapter's model value is replayed; a
+///   report-only adapter's display LABEL never is — ae FOLLOWS it through the
+///   operator's own `[profiles]` block ([`crate::launch_cmd::followed_pin`]).
+///   The effort is rewritten in the seat's own effort setting.
+/// - either pin differs (including "the profile pins no model now"): the
+///   profile edit is newer. The record retires and the profile wins.
+/// - no recorded model pin: ae never APPENDS a model flag; the record is kept
+///   for the report, and so is it when the profile's effort setting is
+///   unusable, which is judged before any edit.
+fn resume_pair(slot: &str, seat: &Seat) -> ResumePair {
+    use crate::meta::Rows;
+    let pair = match &seat.observed {
+        Rows::Absent => return ResumePair::Nothing,
+        Rows::Damaged(why) => {
+            return ResumePair::Refused(
+                format!("the observed record is damaged ({why})"),
+                format!(
+                    "ae: seat {slot}: the observed model record is damaged ({why}) — ignored and kept; resuming on the profile."
+                ),
+            );
+        }
+        Rows::Valid(pair) => pair,
+    };
+    let observed = &pair.model;
+    let shown = pair.effort.map_or_else(
+        || observed.clone(),
+        |(drawn, _)| format!("{observed} ({})", drawn.word()),
+    );
     // TOOL PROVENANCE, before anything else. An observation says WHAT ran, never
     // which harness ran it, so a profile edited from one tool to another passes
-    // every later gate holding the PREDECESSOR's model. The VALUE cannot settle
-    // it — a replayable id is a bare word in both vocabularies, so `gpt-6-astra`
-    // clears the bare-id guard on its way into another adapter's flag — but the
-    // recorded binary can: the comparison `read_seat` already makes for a command
-    // snapshot, made for the observation. It fails CLOSED, since a binary ae
-    // cannot classify reads as the same `Unknown` on both sides.
-    //
-    // The retirement must name the tool the META records, because
-    // `meta::record_observed_model` reads `agent_bin` to prove the slot has not
-    // moved to another seat and would otherwise REFUSE the write while the notice
-    // below claimed a removal. The two are equal in the vocabulary arm, so one
-    // spelling serves both.
-    let retire_foreign = |under: &str| {
-        let _ = crate::meta::record_observed_model(
-            dir,
-            slot,
-            &seat.agent,
-            seat.recorded_tool,
-            &seat.launch_id,
-            None,
-        );
-        Some(format!(
+    // every later gate holding the PREDECESSOR's model. The recorded binary
+    // settles it, failing CLOSED. The VOCABULARY asks the same of the one thing
+    // a rebuild cannot erase: a replaying adapter observed its own flag's
+    // spelling, a report-only one a label from a CLOSED list.
+    let foreign = |under: &str| {
+        ResumePair::Retire(format!(
             "ae: seat {slot}: observed model {observed} was retired — it was observed under {under}, and the profile now launches {}. Resuming on the profile.",
             seat.tool.as_str()
         ))
     };
     if seat.recorded_tool != seat.tool {
-        return retire_foreign(seat.recorded_tool.as_str());
+        return foreign(seat.recorded_tool.as_str());
     }
-    // VOCABULARY — the same question asked of the one thing a rebuild cannot
-    // erase. The meta rebuild behind `ae start` rewrites `agent_bin` from the NEW
-    // profile while CARRYING the observation, so a flip reaches `_run` with both
-    // sides already agreeing. The VALUE still names the harness that drew it, and
-    // the ADAPTER says which vocabulary that is rather than a tool name: one that
-    // REPLAYS was observed in its own flag's spelling, one that does not as a
-    // display label from a CLOSED list. An adapter ae does not observe at all is
-    // held to the same bar. Neither direction depends on a label happening to
-    // carry a character an argv word would not.
-    if crate::harness_state::is_claude_model_label(&observed) == seat.tool.adapter().model.replays()
+    if crate::harness_state::is_claude_model_label(observed) == seat.tool.adapter().model.replays()
     {
-        return retire_foreign("another harness");
+        return foreign("another harness");
     }
-    let Some(recorded_pin) = seat.observed_model_pin.clone() else {
-        return Some(format!(
-            "ae: seat {slot}: observed model {observed} is REPORT ONLY — the profile pins no model, so ae will not add one; the manual choice is not applied."
-        ));
-    };
-    let current = crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool);
-    if current.as_deref() != Some(recorded_pin.as_str()) {
-        // The operator edited the profile after the observation. Retire the
-        // pair under the seat's own launch guard; a refusal leaves it for the
-        // watchdog to reconcile on the next cycle.
-        let _ = crate::meta::record_observed_model(
-            dir,
-            slot,
-            &seat.agent,
-            seat.tool,
-            &seat.launch_id,
-            None,
+    let refused = |why: String| {
+        let notice = format!(
+            "ae: seat {slot}: observed choice {shown} is REPORT ONLY — {why} — so ae will not apply it; resuming on the profile. Configure a profile that pins this model, or set it in the profile."
         );
+        ResumePair::Refused(why, notice)
+    };
+    let Some(recorded_pin) = pair.model_pin.as_deref() else {
+        return refused("the profile pins no model, so ae will not add one".to_owned());
+    };
+    let command = seat.command.as_str();
+    let current = crate::launch_cmd::model_flag_value(command, seat.tool);
+    let effort = match pair.effort {
+        None => None,
+        Some((drawn, pin)) => match crate::launch_cmd::effort_flag(command, seat.tool) {
+            Ok(now) => Some((drawn, pin, now)),
+            Err(refusal) => {
+                return refused(format!(
+                    "the profile's effort setting is unusable ({})",
+                    refusal.word()
+                ));
+            }
+        },
+    };
+    if current.as_deref() != Some(recorded_pin) || effort.is_some_and(|(_, pin, now)| pin != now) {
         let now = current.as_deref().unwrap_or("no model");
-        return Some(format!(
-            "ae: seat {slot}: observed model {observed} was retired — the profile now pins {now}, and the newer profile edit wins. Resuming on the profile."
+        return ResumePair::Retire(format!(
+            "ae: seat {slot}: observed choice {shown} was retired — the profile now pins {now}, and the newer profile edit wins. Resuming on the profile."
         ));
     }
-    if current.as_deref() == Some(observed.as_str()) {
-        return None;
+    let tool = seat.tool;
+    let moves = !crate::model_drift::satisfies(recorded_pin, observed, tool.adapter().pin_match);
+    let level = effort.and_then(|(drawn, _, now)| (drawn != now).then_some(drawn));
+    if !moves && level.is_none() {
+        return ResumePair::Nothing;
     }
-    // A replayable adapter draws the flag's OWN vocabulary, so the label IS the
-    // value. A report-only one draws a display label, which never becomes an
-    // argv word — ae follows it by finding the configured pin that label
-    // satisfies, a spelling the operator already wrote in `[profiles]`.
-    let apply = if seat.tool.adapter().model.replays() {
-        Ok(observed.clone())
+    let (mut text, mut value) = (command.to_owned(), recorded_pin.to_owned());
+    if moves {
+        (text, value) = match with_model(seat, observed) {
+            Ok(applied) => applied,
+            Err(why) => return refused(why),
+        };
+    }
+    if let Some(level) = level {
+        text = match crate::launch_cmd::replace_effort_flag(&text, tool, level) {
+            Ok(text) => text,
+            Err(refusal) => {
+                return refused(format!("effort {} ({})", level.word(), refusal.word()));
+            }
+        };
+    }
+    let effort = level.map_or_else(String::new, |level| format!(" at effort {}", level.word()));
+    ResumePair::Apply(
+        text,
+        format!(
+            "ae: seat {slot}: resuming on {value}{effort}, the observed choice {shown} (profile pins {recorded_pin}) — the manual choice is preserved."
+        ),
+    )
+}
+
+/// The seat's command on the observed model, and the value it now pins: a
+/// replaying adapter's own id, or for a report-only one the value FOLLOWED
+/// through the operator's own `[profiles]` block. `Err` is the refusal clause.
+fn with_model(seat: &Seat, observed: &str) -> Result<(String, String), String> {
+    let tool = seat.tool;
+    let value = if tool.adapter().model.replays() {
+        observed.to_owned()
     } else {
         crate::launch_cmd::followed_pin(
             seat.identity_global.as_deref(),
             seat.identity_local.as_deref(),
-            seat.tool,
+            tool,
             seat.command.as_str(),
-            &observed,
+            observed,
         )
+        .map_err(|refusal| refusal.why(observed))?
     };
-    let value = match apply {
-        Ok(value) => value,
-        Err(refusal) => {
-            return Some(format!(
-                "ae: seat {slot}: observed model {observed} is REPORT ONLY — {} — so ae will not apply it; resuming on the profile pin {recorded_pin}. Configure a profile that pins this model, or set it in the profile.",
-                refusal.why(&observed)
-            ));
-        }
-    };
-    // A replayed value must be a bare harness id. An observation carries NO tool
-    // provenance and the meta rebuild rewrites `agent_bin` from the new profile,
-    // so a profile edited from one tool to another that keeps the same pin passes
-    // the recency gate with the PREDECESSOR tool's label in hand — and a display
-    // label must never reach an argv word, whichever adapter receives it.
+    // A replayed value must be a bare harness id: a display label must
+    // never reach an argv word, whichever adapter receives it.
     if !crate::launch_cmd::is_bare_flag_value(&value) {
-        return Some(format!(
-            "ae: seat {slot}: observed model {observed} is REPORT ONLY — {} — so ae will not apply it; resuming on the profile pin {recorded_pin}.",
-            crate::launch_cmd::FollowRefusal::NotAFlagValue.why(&observed)
+        return Err(crate::launch_cmd::FollowRefusal::NotAFlagValue.why(observed));
+    }
+    let text = crate::launch_cmd::replace_model_flag(seat.command.as_str(), tool, &value)?;
+    Ok((text, value))
+}
+
+/// Honor a recorded manual model and effort on a resumed seat, or say why it
+/// cannot be: [`resume_pair`] decides, this retires a stale record under the
+/// seat's own launch guard and rewrites the command.
+///
+/// Returns the line printed before the exec, and the clause a refusal is
+/// journaled with once this start runs; `None` means nothing to say.
+fn apply_observed_model(
+    dir: &Path,
+    slot: &str,
+    seat: &mut Seat,
+) -> (Option<String>, Option<String>) {
+    match resume_pair(slot, seat) {
+        ResumePair::Nothing => (None, None),
+        ResumePair::Retire(notice) => {
+            // Under the tool the META records: the writer reads `agent_bin` to
+            // prove the slot has not moved to another seat.
+            let _ = crate::meta::rewrite_observed(
+                dir,
+                slot,
+                &seat.agent,
+                seat.recorded_tool,
+                &seat.launch_id,
+                |_| crate::meta::ObservedEdit::Retire {
+                    drop_launched: false,
+                },
+            );
+            (Some(notice), None)
+        }
+        ResumePair::Refused(why, notice) => (Some(notice), Some(why)),
+        ResumePair::Apply(text, notice) => {
+            seat.command = seat.command.with_text(text);
+            (Some(notice), None)
+        }
+    }
+}
+
+/// Why this seat's observed record would NOT be applied by its next resume,
+/// for `ae list` — the same decision, read only.
+pub(crate) fn observed_not_applied(dir: &Path, slot: &str) -> Option<String> {
+    let seat = read_seat(dir, slot, None).ok()?;
+    match resume_pair(slot, &seat) {
+        ResumePair::Refused(why, _) => Some(why),
+        _ => None,
+    }
+}
+
+/// The launch baseline this start publishes, and who it is guarded by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaunchBaseline {
+    session: String,
+    agent: String,
+    tool: ToolKind,
+    launch_id: String,
+    model: Option<String>,
+    effort: Option<crate::effort::Level>,
+}
+
+/// The journal action of a start that resumed WITHOUT the observed record.
+pub const FOLLOW_REFUSED: &str = "model-follow-refused";
+/// The journal action of a start whose launch baseline could not be written.
+pub const BASELINE_FAILED: &str = "launch-baseline-failed";
+
+/// Publish this start's launch baseline and journal a refused record, both
+/// keyed by the start, BEFORE the exec — and never in its way: a write that
+/// fails is said and journaled, and the seat launches anyway.
+fn record_launch(dir: &Path, slot: &str, plan: &Plan, err: &mut impl Write) -> std::io::Result<()> {
+    let Some(base) = &plan.launch else {
+        return Ok(());
+    };
+    // `_run` execs in place, so this pid IS the tool's.
+    let start = format!("{slot}:{}:{}", base.launch_id, std::process::id());
+    let written =
+        crate::meta::rewrite_observed(dir, slot, &base.agent, base.tool, &base.launch_id, |_| {
+            crate::meta::ObservedEdit::Launch(crate::meta::Launched {
+                start: start.clone(),
+                model: base.model.clone(),
+                effort: base.effort,
+            })
+        });
+    let session_id = crate::meta::read_bytes(dir).map_or_else(
+        |_| String::new(),
+        |bytes| {
+            let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+            meta.session_id().unwrap_or_default().to_owned()
+        },
+    );
+    let seat = crate::effort::DiscardSeat {
+        session: &base.session,
+        session_id: &session_id,
+        slot,
+        agent: &base.agent,
+    };
+    let now = crate::time::Timestamp::now();
+    let mut lines = Vec::new();
+    if let Err(why) = written {
+        let why = why.cause().to_string();
+        writeln!(
+            err,
+            "ae: seat {slot}: could not record this start's launch baseline ({why}) — launching anyway"
+        )?;
+        err.flush()?;
+        lines.push(crate::effort::line(
+            now,
+            &seat,
+            BASELINE_FAILED,
+            &start,
+            &why,
         ));
     }
-    match crate::launch_cmd::replace_model_flag(seat.command.as_str(), seat.tool, &value) {
-        Ok(rewritten) => {
-            seat.command = seat.command.with_text(rewritten);
-            Some(if value == observed {
-                format!(
-                    "ae: seat {slot}: resuming on the observed model {observed} (profile pins {recorded_pin}) — the manual choice is preserved."
-                )
-            } else {
-                format!(
-                    "ae: seat {slot}: resuming on {value}, the configured pin the observed model {observed} names (profile pins {recorded_pin}) — the manual choice is preserved."
-                )
-            })
-        }
-        Err(why) => Some(format!(
-            "ae: seat {slot}: manual model {observed} could NOT be preserved ({why}) — resuming on the profile pin {recorded_pin}. The observation is retained."
-        )),
+    if let Some(why) = &plan.refusal {
+        lines.push(crate::effort::line(now, &seat, FOLLOW_REFUSED, &start, why));
     }
+    for line in lines {
+        let _ = crate::store::open(dir).append_event(&format!("{line}\n"));
+    }
+    Ok(())
 }
 
 struct ConfigHomeIdentity {
@@ -1745,11 +1888,9 @@ pub(crate) struct Seat {
     config_home_base: crate::meta::RecordedConfigHomeBase,
     /// The agent's NAME — the identity the meta guard compares.
     pub(crate) agent: String,
-    /// The model this seat was positively observed running, where a retained
-    /// row records one.
-    observed_model: Option<String>,
-    /// The profile's model flag value recorded beside that observation.
-    observed_model_pin: Option<String>,
+    /// The model (and effort) this seat was positively observed running, with
+    /// the profile's pins beside it, as the retained rows record it.
+    observed: crate::meta::Rows<crate::meta::ObservedPair>,
     /// The EXACT config pair this read handed [`crate::config::read_identity`],
     /// so the FOLLOW lookup asks the one config owner the same question this
     /// seat's own command was resolved by. Not `config_files`, which keeps the
@@ -1940,8 +2081,7 @@ pub(crate) fn read_seat(
         config_home,
         config_home_base,
         agent: name,
-        observed_model: parsed_meta.observed_model(slot).map(str::to_owned),
-        observed_model_pin: parsed_meta.observed_model_pin(slot).map(str::to_owned),
+        observed: crate::meta::observed_pair(&bytes, slot),
         identity_global,
         identity_local,
         recorded_tool,
@@ -2549,6 +2689,8 @@ mod tests {
             fresh: None,
             effort: None,
             effort_notice: None,
+            launch: None,
+            refusal: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -2699,12 +2841,112 @@ mod tests {
             fresh: None,
             effort: None,
             effort_notice: None,
+            launch: None,
+            refusal: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
             "{}",
             plan.render()
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds and inspects a real session directory"
+    )]
+    fn a_failed_launch_baseline_write_is_said_journaled_and_never_blocks_the_start() {
+        let dir = std::env::temp_dir().join(format!("ae-run-baseline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        // A FOLLOWED start: the saved pair, and the previous start's baseline.
+        let meta = "schema=2\nsession_id=11111111-1111-4111-8111-111111111111\nseat.main=lead\nprofile.main=base\nagent_bin.main=claude\nlaunch_id.main=L1\n\
+                    observed_model.main=Opus 5.5\nobserved_model_pin.main=fable\nobserved_effort.main=high\nobserved_effort_pin.main=xhigh\n\
+                    launched.main=main:L1:1\nlaunched_model.main=fable\nlaunched_effort.main=xhigh\n";
+        std::fs::write(dir.join("meta"), meta).expect("meta");
+        let followed = ["claude", "--model", "claude-opus-5-5", "--effort", "high"];
+        let plan = |launch_id: &str| Plan {
+            mode: Mode::Resume,
+            tool: ToolKind::Claude,
+            clear: false,
+            unset: Vec::new(),
+            set: Vec::new(),
+            argv: followed.map(str::to_owned).to_vec(),
+            config_home_row: None,
+            config_home_base_row: None,
+            config_home_notice: None,
+            model_notice: None,
+            resume_notice: None,
+            fresh: None,
+            effort: None,
+            effort_notice: None,
+            launch: Some(LaunchBaseline {
+                session: "s".to_owned(),
+                agent: "lead".to_owned(),
+                tool: ToolKind::Claude,
+                launch_id: launch_id.to_owned(),
+                model: Some("claude-opus-5-5".to_owned()),
+                effort: Some(crate::effort::Level::High),
+            }),
+            refusal: None,
+        };
+        // A guard that no longer holds is the failure: said, journaled ONCE,
+        // and Ok, so `run` goes on to exec the plan it built.
+        let failing = plan("L2");
+        let mut err = Vec::new();
+        record_launch(&dir, "main", &failing, &mut err).expect("never in the start's way");
+        assert_eq!(failing.argv, followed, "the followed pair still launches");
+        let said = String::from_utf8(err).expect("utf-8");
+        assert!(said.contains("launching anyway"), "{said}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("meta")).expect("meta"),
+            meta
+        );
+        let journal = std::fs::read_to_string(dir.join("events.jsonl")).expect("journal");
+        let events: Vec<_> = journal
+            .lines()
+            .map(|line| crate::events::Event::parse_line(line).expect("event"))
+            .collect();
+        assert_eq!(events.len(), 1, "{journal}");
+        assert_eq!(events[0].action, BASELINE_FAILED);
+        assert_eq!(events[0].actor, crate::watchdog::WATCHDOG_ACTOR);
+        let start = format!("main:L2:{}", std::process::id());
+        assert_eq!(events[0].reference.as_deref(), Some(start.as_str()));
+        // The next cycle sees the followed pair under the OLD baseline: the
+        // saved pair stands.
+        let border = "─".repeat(64);
+        let frame = format!("{border}\n❯\n{border}\n  🧠 Opus 5.5 (high)  📁 ae\n");
+        let pins = crate::model_drift::Pins {
+            model: Some("fable".to_owned()),
+            effort: Some(crate::effort::Level::Xhigh),
+        };
+        crate::model_drift::observe(
+            &dir,
+            ("main", "lead"),
+            ToolKind::Claude,
+            &frame,
+            "L1",
+            &pins,
+        )
+        .expect("one cycle");
+        let after = std::fs::read(dir.join("meta")).expect("meta");
+        assert!(
+            matches!(crate::meta::observed_pair(&after, "main"), crate::meta::Rows::Valid(pair) if pair.model == "Opus 5.5"),
+            "{}",
+            String::from_utf8_lossy(&after)
+        );
+        // The seat's own guard publishes all three rows, and says nothing.
+        let mut err = Vec::new();
+        record_launch(&dir, "main", &plan("L1"), &mut err).expect("published");
+        assert!(err.is_empty());
+        let text = std::fs::read(dir.join("meta")).expect("meta");
+        let baseline = crate::meta::launched(&text, "main");
+        assert!(
+            matches!(&baseline, crate::meta::Rows::Valid(row) if row.start == format!("main:L1:{}", std::process::id())),
+            "{baseline:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2959,8 +3201,13 @@ mod tests {
             config_home: crate::meta::RecordedConfigHome::Missing,
             config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
             agent: "lead".to_owned(),
-            observed_model: observed.map(str::to_owned),
-            observed_model_pin: pin.map(str::to_owned),
+            observed: observed.map_or(crate::meta::Rows::Absent, |model| {
+                crate::meta::Rows::Valid(crate::meta::ObservedPair {
+                    model: model.to_owned(),
+                    model_pin: pin.map(str::to_owned),
+                    effort: None,
+                })
+            }),
             identity_global: None,
             identity_local: None,
             recorded_tool: tool,
@@ -3040,7 +3287,9 @@ mod tests {
             Some("gpt-6-astra"),
             Some("gpt-5.6-sol"),
         );
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("preserved"), "{notice}");
         assert_eq!(
             seat.command.as_str(),
@@ -3063,7 +3312,9 @@ mod tests {
         // `claude-opus-5`, and THAT is what the resume runs.
         let dir = std::env::temp_dir().join(format!("ae-run-model-follow-{}", std::process::id()));
         let mut seat = following_seat("one", FOLLOW_ONE, "Opus 5 (1M context)");
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("preserved"), "{notice}");
         assert!(notice.contains("claude-opus-5"), "{notice}");
         assert_eq!(
@@ -3107,7 +3358,9 @@ mod tests {
                 Some("fable"),
             )
         };
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("was retired"), "{notice}");
         let after = std::fs::read_to_string(dir.join("meta")).expect("the meta");
         assert!(
@@ -3130,7 +3383,9 @@ mod tests {
             seat.recorded_tool, seat.tool,
             "the rebuild left them agreeing"
         );
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("was retired"), "{notice}");
         assert!(
             notice.contains("observed under another harness"),
@@ -3155,7 +3410,9 @@ mod tests {
             ("two", FOLLOW_TWO, "ambiguous (claude-opus-5, opus-5)"),
         ] {
             let mut seat = following_seat(tag, config, "Opus 5 (1M context)");
-            let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+            let notice = apply_observed_model(&dir, "main", &mut seat)
+                .0
+                .expect("a notice");
             assert!(notice.contains("REPORT ONLY"), "{notice}");
             assert!(notice.contains(want), "{notice}");
             assert!(!notice.contains("preserved"), "{notice}");
@@ -3187,7 +3444,9 @@ mod tests {
                 Some("grok-4.6"),
             )
         };
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("was retired"), "{notice}");
         assert!(notice.contains("observed under codex"), "{notice}");
         assert!(notice.contains("now launches grok"), "{notice}");
@@ -3203,7 +3462,9 @@ mod tests {
                 Some("fable"),
             )
         };
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("was retired"), "{notice}");
         assert_eq!(
             seat.command.as_str(),
@@ -3225,7 +3486,9 @@ mod tests {
             Some("Sonnet 9 (preview)"),
             Some("fable"),
         );
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("REPORT ONLY"), "{notice}");
         assert!(notice.contains("display label"), "{notice}");
         assert_eq!(
@@ -3244,7 +3507,9 @@ mod tests {
             Some("gpt-6-astra"),
             Some("gpt-5.6-sol"),
         );
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("retired"), "{notice}");
         assert_eq!(
             seat.command.as_str(),
@@ -3257,7 +3522,9 @@ mod tests {
     fn a_pinless_profile_reports_the_observation_without_appending_a_flag() {
         let dir = std::env::temp_dir().join(format!("ae-run-model-pinless-{}", std::process::id()));
         let mut seat = model_seat("codex --yolo", ToolKind::Codex, Some("gpt-6-astra"), None);
-        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        let notice = apply_observed_model(&dir, "main", &mut seat)
+            .0
+            .expect("a notice");
         assert!(notice.contains("REPORT ONLY"), "{notice}");
         assert_eq!(seat.command.as_str(), "codex --yolo");
     }
@@ -3271,7 +3538,7 @@ mod tests {
             Some("gpt-5.6-sol"),
             Some("gpt-5.6-sol"),
         );
-        assert!(apply_observed_model(&dir, "main", &mut seat).is_none());
+        assert!(apply_observed_model(&dir, "main", &mut seat).0.is_none());
         assert_eq!(
             seat.command.as_str(),
             "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"

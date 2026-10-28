@@ -4,7 +4,7 @@
 //! ONE observer decision, ONE guarded writer, two callers — the watchdog every
 //! cycle (the fast, reporting path) and `ae stop` under its lifecycle lock (the
 //! durable cut that must carry the property). Both hand the same decision to
-//! [`crate::meta::record_observed_model`].
+//! [`crate::meta::rewrite_observed`].
 //!
 //! A tool whose live model ae cannot read (a pane grammar it does not model, or
 //! an unmeasured store) proves nothing here: its seats see no rows and are
@@ -12,7 +12,9 @@
 
 use std::path::Path;
 
+use crate::effort::Level;
 use crate::harness_state::{HarnessIdentity, current_identity};
+use crate::meta::{Launched, ObservedEdit, ObservedPair, Rows};
 use crate::tool::{PinMatch, ToolKind};
 
 /// The `ae list` drift cell for one seat.
@@ -172,11 +174,90 @@ fn family_version_equivalent(pin: &str, model: &str) -> bool {
     pin.version.is_empty() || pin.version == model.version
 }
 
+/// What a profile pins this cycle, each where its command proves exactly one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Pins {
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<Level>,
+}
+
+/// The pair decision over one proved frame (`model`, and `effort` where drawn)
+/// against the start's launch baseline, the observed record and the profile's
+/// pins. First match wins:
+///
+/// 1. the pane still shows what this start launched: no human choice — a
+///    refused resume, a profile edited while running and an ae-owned effort
+///    level all look like this, so nothing is recorded or re-pinned;
+/// 2. a damaged baseline and a frame at the pins: undecidable, kept;
+/// 3. the frame equals the record: never re-pinned (an edit since is the
+///    resume's to retire), and a baseline goes because the pane left it;
+/// 4. the frame satisfies the pins: the record retires (a damaged one stays),
+///    and so does a baseline the pane has left;
+/// 5. otherwise the frame is recorded under the pins, replacing even a damaged
+///    record — new evidence, not cleanup.
+///
+/// A baseline that pins no model never proves equality, so effort alone never
+/// holds a choice back.
+pub(crate) fn decide_pair(
+    (model, effort): (&str, Option<Level>),
+    pins: &Pins,
+    pin_match: PinMatch,
+    pair: &Rows<ObservedPair>,
+    launched: &Rows<Launched>,
+) -> ObservedEdit {
+    let model_at = |pin: Option<&str>| pin.is_some_and(|pin| satisfies(pin, model, pin_match));
+    let effort_at = |pin: Option<Level>| pin.is_none() || effort.is_none() || effort == pin;
+    let baseline = match launched {
+        Rows::Valid(baseline) => Some(baseline),
+        _ => None,
+    };
+    if baseline.is_some_and(|base| model_at(base.model.as_deref()) && effort_at(base.effort)) {
+        return ObservedEdit::Keep;
+    }
+    let at_pins = model_at(pins.model.as_deref()) && effort_at(pins.effort);
+    if at_pins && matches!(launched, Rows::Damaged(_)) {
+        return ObservedEdit::Keep;
+    }
+    if let Rows::Valid(record) = pair
+        && record.model == model
+        && record.effort.map_or_else(
+            || effort_at(pins.effort),
+            |(drawn, _)| effort.is_none_or(|effort| effort == drawn),
+        )
+    {
+        return if baseline.is_some() {
+            ObservedEdit::DropLaunched
+        } else {
+            ObservedEdit::Keep
+        };
+    }
+    // A frame drawing no effort never proves a return to a recorded one.
+    let unproved = effort.is_none() && matches!(pair, Rows::Valid(r) if r.effort.is_some());
+    if at_pins {
+        return if unproved || matches!(pair, Rows::Damaged(_)) {
+            ObservedEdit::Keep
+        } else {
+            ObservedEdit::Retire {
+                drop_launched: baseline.is_some(),
+            }
+        };
+    }
+    ObservedEdit::Record {
+        pair: ObservedPair {
+            model: model.to_owned(),
+            model_pin: pins.model.clone(),
+            effort: effort.zip(pins.effort),
+        },
+        drop_launched: baseline.is_some(),
+    }
+}
+
 /// Observe one captured pane and publish what it proves.
 ///
 /// Best-effort by construction: the watchdog swallows the error (the next
 /// cycle retries), and `ae stop` turns it into one warning line without ever
-/// failing the stop.
+/// failing the stop. Decided once lock-free, and again under the lock only
+/// when something would change.
 ///
 /// # Errors
 ///
@@ -184,33 +265,35 @@ fn family_version_equivalent(pin: &str, model: &str) -> bool {
 /// guard that no longer holds.
 pub(crate) fn observe(
     dir: &Path,
-    slot: &str,
-    agent: &str,
+    seat: (&str, &str),
     tool: ToolKind,
     capture: &str,
     launch_id: &str,
-    pin: Option<&str>,
+    pins: &Pins,
 ) -> Result<(), String> {
-    match decide(
-        &current_identity(capture, tool),
-        pin,
-        tool.adapter().pin_match,
-    ) {
-        Decision::Silent => Ok(()),
-        Decision::Retire => {
-            crate::meta::record_observed_model(dir, slot, agent, tool, launch_id, None)
-                .map_err(|why| why.cause().to_string())
-        }
-        Decision::Record { model, pin } => crate::meta::record_observed_model(
-            dir,
-            slot,
-            agent,
-            tool,
-            launch_id,
-            Some((&model, pin.as_deref())),
+    let (slot, agent) = seat;
+    let identity = current_identity(capture, tool);
+    let Some(model) = identity.model else {
+        return Ok(());
+    };
+    let frame = (
+        model.as_str(),
+        identity.effort.as_deref().and_then(Level::parse),
+    );
+    let decide = |bytes: &[u8]| {
+        decide_pair(
+            frame,
+            pins,
+            tool.adapter().pin_match,
+            &crate::meta::observed_pair(bytes, slot),
+            &crate::meta::launched(bytes, slot),
         )
-        .map_err(|why| why.cause().to_string()),
+    };
+    if crate::meta::read_bytes(dir).is_ok_and(|bytes| decide(&bytes) == ObservedEdit::Keep) {
+        return Ok(());
     }
+    crate::meta::rewrite_observed(dir, slot, agent, tool, launch_id, decide)
+        .map_err(|why| why.cause().to_string())
 }
 
 #[cfg(test)]
@@ -349,24 +432,187 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_false_row_self_heals_on_the_next_observation() {
+    fn the_pair_table_takes_the_first_match() {
+        use super::{Pins, decide_pair};
+        use crate::effort::Level::{High, Max, Xhigh};
+        use crate::meta::{Launched, ObservedEdit, ObservedPair, Rows};
+        let pins = Pins {
+            model: Some("fable".to_owned()),
+            effort: Some(Xhigh),
+        };
+        let launched = |model: Option<&str>, effort| {
+            Rows::Valid(Launched {
+                start: "main:L1:7".to_owned(),
+                model: model.map(str::to_owned),
+                effort,
+            })
+        };
+        let opus_high = ObservedPair {
+            model: "Opus 5.5".to_owned(),
+            model_pin: Some("fable".to_owned()),
+            effort: Some((High, Xhigh)),
+        };
+        let record = |drop_launched| ObservedEdit::Record {
+            pair: opus_high.clone(),
+            drop_launched,
+        };
+        let legacy = Rows::Valid(ObservedPair {
+            effort: None,
+            ..opus_high.clone()
+        });
+        let retire = |drop_launched| ObservedEdit::Retire { drop_launched };
+        let opus = ("Opus 5.5", Some(High));
+        let fable = ("Fable 5.1", Some(Xhigh));
+        let cases = [
+            // 1. the pane still shows this start's launch: a refused or edited
+            //    start, an ae-owned level.
+            (
+                opus,
+                Rows::Absent,
+                launched(Some("claude-opus-5-5"), Some(High)),
+                ObservedEdit::Keep,
+            ),
+            // ...but a baseline with no model never proves equality.
+            (opus, Rows::Absent, launched(None, Some(High)), record(true)),
+            // 2. damaged baseline, frame at the pins: undecidable.
+            (
+                fable,
+                Rows::Valid(opus_high.clone()),
+                Rows::Damaged("invalid"),
+                ObservedEdit::Keep,
+            ),
+            // 3. the frame is the record: never re-pinned; a left baseline goes.
+            (
+                opus,
+                Rows::Valid(opus_high.clone()),
+                launched(Some("fable"), Some(Xhigh)),
+                ObservedEdit::DropLaunched,
+            ),
+            (
+                opus,
+                Rows::Valid(opus_high.clone()),
+                Rows::Absent,
+                ObservedEdit::Keep,
+            ),
+            // 4. back at both pins: retired with a left baseline; damage stays.
+            (
+                fable,
+                Rows::Valid(opus_high.clone()),
+                launched(Some("claude-opus-5-5"), Some(High)),
+                retire(true),
+            ),
+            (
+                fable,
+                Rows::Damaged("partial"),
+                Rows::Absent,
+                ObservedEdit::Keep,
+            ),
+            // A frame drawing no effort proves no return to a recorded one;
+            // a legacy model-only record still retires on the model.
+            (
+                ("Fable 5.1", None),
+                Rows::Valid(opus_high.clone()),
+                Rows::Absent,
+                ObservedEdit::Keep,
+            ),
+            (("Fable 5.1", None), legacy, Rows::Absent, retire(false)),
+            // 5. new evidence replaces even a damaged record.
+            (
+                opus,
+                Rows::Damaged("duplicate"),
+                Rows::Absent,
+                record(false),
+            ),
+            (opus, Rows::Absent, Rows::Damaged("partial"), record(false)),
+        ];
+        for (frame, pair, baseline, want) in cases {
+            let got = decide_pair(frame, &pins, PinMatch::FamilyVersion, &pair, &baseline);
+            assert_eq!(got, want, "{frame:?} {pair:?} {baseline:?}");
+        }
+        // Another effort on the recorded model is a new choice.
+        let edit = decide_pair(
+            ("Opus 5.5", Some(Max)),
+            &pins,
+            PinMatch::FamilyVersion,
+            &Rows::Valid(opus_high.clone()),
+            &Rows::Absent,
+        );
+        assert!(matches!(edit, ObservedEdit::Record { .. }), "{edit:?}");
+    }
+
+    #[test]
+    fn a_followed_pair_left_for_the_pins_and_chosen_again_is_recorded_anew() {
+        let dir = std::env::temp_dir().join(format!("ae-drift-round-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        // A followed start: the baseline is the recorded pair, not the pins.
+        std::fs::write(
+            dir.join("meta"),
+            "schema=2\nseat.main=lead\nprofile.main=base\nagent_bin.main=claude\nlaunch_id.main=L1\n\
+             observed_model.main=Opus 5.5\nobserved_model_pin.main=fable\n\
+             observed_effort.main=high\nobserved_effort_pin.main=xhigh\n\
+             launched.main=main:L1:7\nlaunched_model.main=claude-opus-5-5\nlaunched_effort.main=high\n",
+        )
+        .expect("meta");
+        let pins = super::Pins {
+            model: Some("fable".to_owned()),
+            effort: Some(crate::effort::Level::Xhigh),
+        };
+        let border = "─".repeat(64);
+        let frame = |drawn: &str| {
+            format!("{border}\n❯\n{border}\n  🧠 {drawn}  📁 ae\n  ⏵⏵ bypass permissions on\n")
+        };
+        let observe = |drawn: &str| {
+            let capture = frame(drawn);
+            super::observe(
+                &dir,
+                ("main", "lead"),
+                crate::tool::ToolKind::Claude,
+                &capture,
+                "L1",
+                &pins,
+            )
+            .expect("observe");
+            std::fs::read_to_string(dir.join("meta")).expect("read")
+        };
+        let text = observe("Opus 5.5 (high)");
+        assert!(text.contains("launched.main="), "the launch itself: {text}");
+        let text = observe("Fable 5.1 (xhigh)");
+        assert!(
+            !text.contains("observed_") && !text.contains("launched"),
+            "at the pins, the record and the left baseline go: {text}"
+        );
+        let text = observe("Opus 5.5 (high)");
+        assert!(
+            text.contains("observed_model.main=Opus 5.5\n")
+                && text.contains("observed_effort.main=high\n"),
+            "the same pair chosen again is a new choice: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_return_to_both_pins_retires_the_record_on_the_next_observation() {
         let live = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
         let dir = std::env::temp_dir().join(format!("ae-drift-heal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
         std::fs::write(
             dir.join("meta"),
-            "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nlaunch_id.main=L1\nobserved_model.main=Fable 5.1\nobserved_model_pin.main=fable\n",
+            "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nlaunch_id.main=L1\nobserved_model.main=Opus 5.5\nobserved_model_pin.main=fable\n",
         )
         .expect("meta");
+        let pins = super::Pins {
+            model: Some("fable".to_owned()),
+            effort: Some(crate::effort::Level::Xhigh),
+        };
         super::observe(
             &dir,
-            "main",
-            "lead",
+            ("main", "lead"),
             crate::tool::ToolKind::Claude,
             live,
             "L1",
-            Some("fable"),
+            &pins,
         )
         .expect("observe");
         let text = std::fs::read_to_string(dir.join("meta")).expect("read");
