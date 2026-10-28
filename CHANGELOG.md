@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.150] - 2026-10-28
+- Preserve a seat's manual model and effort across restarts
+
 ## [v2026.10.149] - 2026-10-28
 - Stamp journal records with schema_version, document the snapshot-plus-cursor contract
 
