@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.149] - 2026-10-28
+- Stamp journal records with schema_version, document the snapshot-plus-cursor contract
+
 ## [v2026.10.148] - 2026-10-28
 - Re-ask the absence probe once past the settle
 
