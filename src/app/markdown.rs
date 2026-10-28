@@ -55,6 +55,7 @@ pub struct Rendered {
     cells: usize,
     notes: usize,
     refusal: Option<&'static str>,
+    gap: bool,
 }
 
 impl Rendered {
@@ -92,7 +93,15 @@ impl Rendered {
         self.refusal
     }
 
+    /// Ask for one blank row before the next row: never first, never last.
+    fn separate(&mut self) {
+        self.gap = true;
+    }
+
     fn push(&mut self, mut row: Row, cells: usize) -> bool {
+        if std::mem::take(&mut self.gap) && !self.rows.is_empty() && !self.push(Row::default(), 0) {
+            return false;
+        }
         let why = if self.rows.len() >= MAX_ROWS {
             Some("too large to render (rows limit)")
         } else if cells > MAX_CELLS.saturating_sub(self.cells) {
@@ -249,6 +258,7 @@ impl Document {
             } else if !mapped.layout(&mut out, width) {
                 return out;
             }
+            out.separate();
         }
         out
     }
@@ -371,6 +381,84 @@ enum Item {
     Line(Row, usize, bool),
     Table(Table),
     Rule(usize),
+    Gap,
+}
+
+/// One container's sibling state: a loose scope blank-separates its blocks.
+struct Scope {
+    loose: bool,
+    seen: bool,
+}
+
+impl Scope {
+    fn of(loose: bool) -> Self {
+        Self { loose, seen: false }
+    }
+}
+
+enum Open {
+    List(usize, bool),
+    Item(usize, bool),
+    Quote,
+}
+
+/// A blank line of the list's own quote depth lies between `from` and `to`.
+fn blank_between(src: &str, from: usize, to: usize, quotes: usize) -> bool {
+    let end = src.get(..from).map_or(0, |s| s.trim_end().len());
+    src.get(end..to).is_some_and(|gap| {
+        let middle = gap.matches('\n').count().saturating_sub(1);
+        gap.split('\n').skip(1).take(middle).any(|line| {
+            line.matches('>').count() == quotes
+                && line.chars().all(|ch| ch == '>' || ch.is_whitespace())
+        })
+    })
+}
+
+/// pulldown-cmark exposes no tightness: a list is loose when a blank line separates
+/// two of its items or two blocks directly inside one item (`CommonMark` 5.3).
+fn loose_lists(src: &str, events: &Events) -> Vec<bool> {
+    let mut loose = Vec::new();
+    let mut open = Vec::new();
+    let mut leaf = 0;
+    for (event, range) in events {
+        let apart = match open.last_mut() {
+            Some(Open::List(at, seen)) if matches!(event, Event::Start(Tag::Item)) => {
+                std::mem::replace(seen, true).then_some(*at)
+            }
+            Some(Open::Item(at, first)) if matches!(event, Event::Start(_) | Event::Rule) => {
+                loose[*at] |= matches!(event, Event::Start(Tag::Paragraph));
+                (!std::mem::replace(first, false)).then_some(*at)
+            }
+            _ => None,
+        };
+        if let Some(at) = apart {
+            let quotes = open.iter().filter(|o| matches!(o, Open::Quote)).count();
+            loose[at] |= blank_between(src, leaf, range.start, quotes);
+        }
+        match event {
+            Event::Start(Tag::List(_)) => {
+                open.push(Open::List(loose.len(), false));
+                loose.push(false);
+            }
+            Event::Start(Tag::Item) => {
+                if let Some(Open::List(at, _)) = open.last() {
+                    open.push(Open::Item(*at, true));
+                }
+            }
+            Event::Start(Tag::BlockQuote(_)) => open.push(Open::Quote),
+            Event::End(TagEnd::List(_) | TagEnd::Item | TagEnd::BlockQuote(_)) => {
+                open.pop();
+            }
+            Event::Start(_) => {}
+            _ => {
+                leaf = leaf.max(range.end);
+                if let Some(Open::Item(_, first)) = open.last_mut() {
+                    *first = false;
+                }
+            }
+        }
+    }
+    loose
 }
 
 struct Table {
@@ -399,6 +487,10 @@ impl Mapped {
             }
             Item::Rule(line) => out.wrap(&"-".repeat(width), &[], line, width, 0, false),
             Item::Table(table) => table.layout(out),
+            Item::Gap => {
+                out.separate();
+                true
+            }
         })
     }
     fn table_mut(&mut self) -> Option<&mut Table> {
@@ -477,6 +569,8 @@ struct Mapper<'a> {
     saved: Vec<Marks>,
     links: Vec<(String, bool, bool)>,
     lists: Vec<Option<u64>>,
+    scopes: Vec<Scope>,
+    loose: std::vec::IntoIter<bool>,
     quotes: usize,
     prefix: String,
     hang: usize,
@@ -494,6 +588,8 @@ impl<'a> Mapper<'a> {
             saved: Vec::new(),
             links: Vec::new(),
             lists: Vec::new(),
+            scopes: Vec::new(),
+            loose: loose_lists(&doc.source, &block.events).into_iter(),
             quotes: 0,
             prefix: String::new(),
             hang: 0,
@@ -508,6 +604,20 @@ impl<'a> Mapper<'a> {
                 self.code,
             ));
             self.prefix = " ".repeat(self.hang);
+        }
+    }
+    fn gap(&mut self) {
+        self.flush();
+        self.out.items.push(Item::Gap);
+    }
+    /// A block starts. `set_off` blocks (code, table, quote, rule, heading) always
+    /// get a blank row before them; the rest only after a sibling in a loose scope.
+    fn block(&mut self, set_off: bool) {
+        if set_off || self.scopes.last().is_some_and(|s| s.seen && s.loose) {
+            self.gap();
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.seen = true;
         }
     }
     fn indent(&mut self) {
@@ -542,10 +652,15 @@ impl<'a> Mapper<'a> {
                 Event::Start(tag) => {
                     match tag {
                         Tag::Paragraph | Tag::Heading { .. } | Tag::CodeBlock(_) => {
+                            self.block(!matches!(tag, Tag::Paragraph));
                             self.flush();
                             self.row.line = self.doc.line(range.start);
                         }
+                        Tag::HtmlBlock => self.block(false),
                         Tag::Item => {
+                            self.block(false);
+                            self.scopes
+                                .push(Scope::of(self.scopes.last().is_some_and(|s| s.loose)));
                             self.flush();
                             self.row.line = self.doc.line(range.start);
                             let bullet = match self.lists.last_mut() {
@@ -563,12 +678,20 @@ impl<'a> Mapper<'a> {
                             self.hang = cells(&self.prefix);
                         }
                         Tag::BlockQuote(_) => {
+                            self.block(true);
+                            self.scopes.push(Scope::of(true));
                             self.quotes += 1;
                             self.marks.quote = true;
                             self.indent();
                         }
-                        Tag::List(start) => self.lists.push(*start),
+                        Tag::List(start) => {
+                            self.block(false);
+                            self.scopes
+                                .push(Scope::of(self.loose.next().unwrap_or(false)));
+                            self.lists.push(*start);
+                        }
                         Tag::Table(align) => {
+                            self.block(true);
                             self.flush();
                             self.out.items.push(Item::Table(Table {
                                 rows: Vec::new(),
@@ -632,19 +755,29 @@ impl<'a> Mapper<'a> {
                     TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::HtmlBlock => {
                         self.flush();
                         self.marks.heading = None;
+                        if matches!(tag, TagEnd::Heading(_)) {
+                            self.gap();
+                        }
                     }
                     TagEnd::CodeBlock => {
                         self.flush();
+                        self.gap();
                         self.code = false;
                         self.marks.code_block = false;
                     }
-                    TagEnd::Item => self.flush(),
+                    TagEnd::Item => {
+                        self.flush();
+                        self.scopes.pop();
+                    }
                     TagEnd::List(_) => {
                         self.lists.pop();
+                        self.scopes.pop();
                         self.indent();
                     }
                     TagEnd::BlockQuote(_) => {
                         self.flush();
+                        self.gap();
+                        self.scopes.pop();
                         self.quotes = self.quotes.saturating_sub(1);
                         self.marks.quote = self.quotes > 0;
                         self.indent();
@@ -671,7 +804,10 @@ impl<'a> Mapper<'a> {
                             row.push(std::mem::take(&mut self.row));
                         }
                     }
-                    TagEnd::Table => self.indent(),
+                    TagEnd::Table => {
+                        self.gap();
+                        self.indent();
+                    }
                     _ => {}
                 },
                 Event::Text(text) if self.code => {
@@ -718,8 +854,10 @@ impl<'a> Mapper<'a> {
                 Event::SoftBreak => self.add(" ", self.marks),
                 Event::HardBreak => self.flush(),
                 Event::Rule => {
+                    self.block(true);
                     self.flush();
                     self.out.items.push(Item::Rule(self.doc.line(range.start)));
+                    self.gap();
                 }
                 _ => {}
             }

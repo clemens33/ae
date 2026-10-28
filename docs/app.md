@@ -542,7 +542,8 @@ shows as `�`), a tab expands and a line wraps to the column with its
 continuation rows two cells in. A line over 2000 characters ends in `…`.
 
 Markdown files (`.md` or `.markdown`, case-insensitive) open rendered: headings,
-nested lists, emphasis, code, quotes, rules and tables. Link targets remain dim
+nested lists, emphasis, code, quotes, rules and tables. One blank row separates
+blocks, but not the items of a tight list. Link targets remain dim
 text, images show as `[image: alt](target)`, and HTML stays literal. Nothing is
 fetched or opened. `m` switches between rendered and raw Markdown without another
 read; switching or resizing keeps the top source block in view. Other files keep
