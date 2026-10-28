@@ -72,8 +72,28 @@ pub fn probe_absence(server: &ServerId, name: &str) -> tmux::Absence {
     if !addressable(server) {
         return tmux::Absence::Unreachable;
     }
-    let (succeeded, stdout, stderr) = run_captured(PROGRAM, &tmux::list_sessions_args(server));
-    tmux::read_absence(succeeded, &stdout, &stderr, name)
+    settled_read(
+        || {
+            let (succeeded, stdout, stderr) =
+                run_captured(PROGRAM, &tmux::list_sessions_args(server));
+            tmux::read_absence(succeeded, &stdout, &stderr, name)
+        },
+        || std::thread::sleep(KILL_VERIFY_SETTLE),
+    )
+}
+
+/// One absence read, asked again ONCE past `settle` when it was `Unreachable`:
+/// the last session's death leaves the server mid-exit, and a client that
+/// connected before the exit finished reads `server exited unexpectedly`,
+/// which proves nothing. The second read crosses the same proof, so a server
+/// still unreachable stays `Unreachable`; no other first answer is re-asked.
+fn settled_read(mut read: impl FnMut() -> tmux::Absence, settle: impl FnOnce()) -> tmux::Absence {
+    let first = read();
+    if first != tmux::Absence::Unreachable {
+        return first;
+    }
+    settle();
+    read()
 }
 
 /// Whether `server`'s SOCKET is not there at all — the server-level question,
@@ -2223,6 +2243,27 @@ mod tests {
         let seen = SPAWNS.with(|seen| seen.borrow_mut().take().unwrap_or_default());
         drop(reset);
         (out, seen)
+    }
+
+    #[test]
+    fn an_unreachable_first_read_is_asked_again_once_past_the_settle_and_no_other_is() {
+        use crate::tmux::Absence::{Listed, Proven, SocketMissing, Unreachable};
+        let run = |first, second| {
+            let log = std::cell::RefCell::new(Vec::new());
+            let mut answers = [first, second].into_iter();
+            let read = || {
+                log.borrow_mut().push("read");
+                answers.next().expect("at most two reads")
+            };
+            let seen = super::settled_read(read, || log.borrow_mut().push("settle"));
+            (seen, log.into_inner())
+        };
+        for s in [Proven, Listed, SocketMissing, Unreachable] {
+            assert_eq!(run(Unreachable, s), (s, ["read", "settle", "read"].into()));
+        }
+        for first in [Listed, Proven, SocketMissing] {
+            assert_eq!(run(first, Unreachable), (first, vec!["read"]));
+        }
     }
 
     #[cfg(target_os = "macos")]

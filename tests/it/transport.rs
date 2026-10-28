@@ -653,3 +653,18 @@ fn sc_017p_the_list_route_answers_each_seat_from_the_live_panes_and_the_publishe
          a work tree this fixture does not have"
     );
 }
+
+#[test]
+fn a_probe_that_lands_mid_exit_is_asked_again_past_the_settle() {
+    // A listener that accepts ONE client and closes: tmux reads `server exited
+    // unexpectedly` first, then the stale socket's `no server running`.
+    let scratch = scratch("settle");
+    require_tmux(&scratch);
+    let socket = scratch.join("t.sock");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("listener");
+    std::thread::spawn(move || drop(listener.accept()));
+    let server = ServerId::Selected(Selector::Socket(socket));
+    let seen = ae::transport::probe_absence(&server, "gone");
+    assert_eq!(seen, ae::tmux::Absence::Proven);
+}
