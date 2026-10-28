@@ -13,8 +13,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::entry::{EXIT_FAILED, EXIT_USAGE, PROFILE_CATALOG, Profile};
 
+mod roles;
+
+use roles::{Pick, Role};
+
 /// Public command grammar.
-pub const USAGE: &str = "Usage: ae init [--yes] [--lead <profile>] [--colead <profile>|--solo] \
+pub const USAGE: &str = "Usage: ae init [--yes] \
+     [--lead <profile>|--lead-harness <h> --lead-model <m> --lead-effort <e>] \
+     [--colead <profile>|--colead-harness <h> --colead-model <m> --colead-effort <e>|--solo] \
      [--orchestrator <profile>|--no-orchestrator] [--palette <darcula|a|b>] [--force]\n";
 
 const SUPPORTED: [&str; 6] = ["claude", "codex", "grok", "agy", "opencode", "gemini"];
@@ -31,9 +37,25 @@ struct Args {
     yes: bool,
     force: bool,
     lead: Option<String>,
+    lead_parts: Parts,
     colead: SeatArg,
+    colead_parts: Parts,
     orchestrator: SeatArg,
     palette: Option<String>,
+}
+
+/// The harness, model and effort flags of one role; each is its own choice.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Parts {
+    harness: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+impl Parts {
+    fn any(&self) -> bool {
+        self.harness.is_some() || self.model.is_some() || self.effort.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -50,12 +72,55 @@ struct Discovery {
     path: Option<PathBuf>,
 }
 
+/// One roster seat: a catalog profile by name, or a harness/model/effort pick
+/// that renders its own profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Seat {
+    Profile(String),
+    Pick(Pick),
+}
+
+impl Seat {
+    fn name(&self) -> String {
+        match self {
+            Self::Profile(name) => name.clone(),
+            Self::Pick(pick) => pick.name(),
+        }
+    }
+
+    fn pick(&self) -> Option<&Pick> {
+        match self {
+            Self::Pick(pick) => Some(pick),
+            Self::Profile(_) => None,
+        }
+    }
+
+    /// The executable the seat launches.
+    fn harness(&self) -> &str {
+        match self {
+            Self::Pick(pick) => pick.harness.name,
+            Self::Profile(name) => PROFILE_CATALOG
+                .iter()
+                .find(|profile| profile.name == name)
+                .map_or("", |profile| profile.harness),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Choices {
-    lead: String,
-    colead: Option<String>,
-    orchestrator: Option<String>,
+    lead: Seat,
+    colead: Option<Seat>,
+    orchestrator: Option<Seat>,
     palette: String,
+}
+
+impl Choices {
+    fn seats(&self) -> impl Iterator<Item = &Seat> {
+        std::iter::once(&self.lead)
+            .chain(&self.colead)
+            .chain(&self.orchestrator)
+    }
 }
 
 fn parse(tail: &[String]) -> Result<Args, String> {
@@ -79,15 +144,24 @@ fn parse(tail: &[String]) -> Result<Args, String> {
                 args.orchestrator = SeatArg::Disabled;
                 rest = after;
             }
-            "--lead" | "--colead" | "--orchestrator" | "--palette" => {
+            "--lead" | "--colead" | "--orchestrator" | "--palette" | "--lead-harness"
+            | "--lead-model" | "--lead-effort" | "--colead-harness" | "--colead-model"
+            | "--colead-effort" => {
                 let Some((value, tail)) = after.split_first() else {
                     return Err(word.clone());
                 };
                 if value.starts_with('-') {
                     return Err(word.clone());
                 }
+                let (lead, colead) = (&mut args.lead_parts, &mut args.colead_parts);
                 let slot = match word.as_str() {
                     "--lead" if args.lead.is_none() => &mut args.lead,
+                    "--lead-harness" if lead.harness.is_none() => &mut lead.harness,
+                    "--lead-model" if lead.model.is_none() => &mut lead.model,
+                    "--lead-effort" if lead.effort.is_none() => &mut lead.effort,
+                    "--colead-harness" if colead.harness.is_none() => &mut colead.harness,
+                    "--colead-model" if colead.model.is_none() => &mut colead.model,
+                    "--colead-effort" if colead.effort.is_none() => &mut colead.effort,
                     "--palette" if args.palette.is_none() => &mut args.palette,
                     "--colead" if args.colead == SeatArg::Unset => {
                         args.colead = SeatArg::Profile(value.clone());
@@ -106,6 +180,12 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             }
             _ => return Err(word.clone()),
         }
+    }
+    if args.lead.is_some() && args.lead_parts.any() {
+        return Err("--lead-*".to_owned());
+    }
+    if args.colead != SeatArg::Unset && args.colead_parts.any() {
+        return Err("--colead-*".to_owned());
     }
     Ok(args)
 }
@@ -144,40 +224,74 @@ fn profile(found: &[Discovery], name: &str) -> Option<&'static Profile> {
 fn default_choices(found: &[Discovery]) -> Option<Choices> {
     let claude = is_found(found, "claude");
     let codex = is_found(found, "codex");
-    let (lead, colead, orchestrator) = if claude && codex {
-        ("fablex", Some("astrax"), Some("gpt56solx"))
-    } else if claude {
-        ("fablex", Some("opusx"), Some("fablex"))
-    } else if codex {
-        ("astrax", Some("solx"), Some("gpt56solx"))
+    let profile_seat = |name: &str| Seat::Profile(name.to_owned());
+    let (lead, colead, orchestrator) = if claude || codex {
+        let pick = |role, harness| {
+            Pick::resolve(role, harness, None, None, None)
+                .ok()
+                .map(Seat::Pick)
+        };
+        let lead = pick(Role::Lead, if claude { "claude" } else { "codex" })?;
+        let colead = pick(Role::Colead, if codex { "codex" } else { "claude" })?;
+        let orchestrator = if codex {
+            profile_seat("gpt61solx")
+        } else {
+            lead.clone()
+        };
+        (lead, Some(colead), Some(orchestrator))
     } else {
         let extras: Vec<&str> = EXTRA_ORDER
             .into_iter()
             .filter_map(|(tool, profile)| is_found(found, tool).then_some(profile))
             .collect();
         let lead = *extras.first()?;
-        (lead, extras.get(1).copied(), Some(lead))
+        (
+            profile_seat(lead),
+            extras.get(1).map(|name| profile_seat(name)),
+            Some(profile_seat(lead)),
+        )
     };
     Some(Choices {
-        lead: lead.to_owned(),
-        colead: colead.map(str::to_owned),
-        orchestrator: orchestrator.map(str::to_owned),
+        lead,
+        colead,
+        orchestrator,
         palette: "darcula".to_owned(),
     })
 }
 
+/// A role's pick from its flags; what they leave out is filled from the table.
+fn pick_seat(role: Role, current: Option<&Seat>, parts: &Parts) -> Result<Seat, String> {
+    let fallback = current
+        .and_then(Seat::pick)
+        .map_or(role.defaults().0, |pick| pick.harness.name);
+    Pick::resolve(
+        role,
+        fallback,
+        parts.harness.as_deref(),
+        parts.model.as_deref(),
+        parts.effort.as_deref(),
+    )
+    .map(Seat::Pick)
+}
+
 fn apply_args(mut choices: Choices, args: &Args, found: &[Discovery]) -> Result<Choices, String> {
     if let Some(lead) = &args.lead {
-        choices.lead.clone_from(lead);
+        choices.lead = Seat::Profile(lead.clone());
+    } else if args.lead_parts.any() {
+        choices.lead = pick_seat(Role::Lead, Some(&choices.lead), &args.lead_parts)?;
     }
     match &args.colead {
+        SeatArg::Unset if args.colead_parts.any() => {
+            let seat = pick_seat(Role::Colead, choices.colead.as_ref(), &args.colead_parts)?;
+            choices.colead = Some(seat);
+        }
         SeatArg::Unset => {}
-        SeatArg::Profile(profile) => choices.colead = Some(profile.clone()),
+        SeatArg::Profile(profile) => choices.colead = Some(Seat::Profile(profile.clone())),
         SeatArg::Disabled => choices.colead = None,
     }
     match &args.orchestrator {
         SeatArg::Unset => {}
-        SeatArg::Profile(profile) => choices.orchestrator = Some(profile.clone()),
+        SeatArg::Profile(profile) => choices.orchestrator = Some(Seat::Profile(profile.clone())),
         SeatArg::Disabled => choices.orchestrator = None,
     }
     if let Some(palette) = &args.palette {
@@ -188,16 +302,16 @@ fn apply_args(mut choices: Choices, args: &Args, found: &[Discovery]) -> Result<
 }
 
 fn validate_choices(choices: &Choices, found: &[Discovery]) -> Result<(), String> {
-    for selected in [
-        Some(choices.lead.as_str()),
-        choices.colead.as_deref(),
-        choices.orchestrator.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if !crate::config::is_agent_name(selected) || profile(found, selected).is_none() {
-            return Err(selected.to_owned());
+    for seat in choices.seats() {
+        let (usable, offender) = match seat {
+            Seat::Profile(name) => (
+                crate::config::is_agent_name(name) && profile(found, name).is_some(),
+                name.as_str(),
+            ),
+            Seat::Pick(pick) => (is_found(found, pick.harness.name), pick.harness.name),
+        };
+        if !usable {
+            return Err(offender.to_owned());
         }
     }
     if !matches!(choices.palette.as_str(), "darcula" | "a" | "b") {
@@ -206,12 +320,19 @@ fn validate_choices(choices: &Choices, found: &[Discovery]) -> Result<(), String
     Ok(())
 }
 
+fn provider(found: &[Discovery], seat: &Seat) -> Option<&'static str> {
+    match seat {
+        Seat::Profile(name) => profile(found, name).and_then(|item| item.provider),
+        Seat::Pick(pick) => Some(pick.harness.provider),
+    }
+}
+
 fn notes(found: &[Discovery], choices: &Choices) -> Vec<String> {
     let found_count = found.iter().filter(|item| item.path.is_some()).count();
     let mut notes = Vec::new();
-    if let Some(colead) = choices.colead.as_deref() {
-        let lead_provider = profile(found, &choices.lead).and_then(|item| item.provider);
-        let colead_provider = profile(found, colead).and_then(|item| item.provider);
+    if let Some(colead) = &choices.colead {
+        let lead_provider = provider(found, &choices.lead);
+        let colead_provider = provider(found, colead);
         match (lead_provider, colead_provider) {
             (Some(lead), Some(colead)) if lead == colead => {
                 notes.push(
@@ -276,16 +397,16 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
         if section == "[roster]" {
             if line == "lead = fable5" {
                 output.push_str("lead = ");
-                output.push_str(&choices.lead);
+                output.push_str(&choices.lead.name());
                 output.push('\n');
                 if let Some(colead) = &choices.colead {
                     output.push_str("colead = ");
-                    output.push_str(colead);
+                    output.push_str(&colead.name());
                     output.push('\n');
                 }
                 if let Some(orchestrator) = &choices.orchestrator {
                     output.push_str("orchestrator = ");
-                    output.push_str(orchestrator);
+                    output.push_str(&orchestrator.name());
                     output.push('\n');
                 }
                 continue;
@@ -318,6 +439,9 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
         }
         output.push_str(line);
         output.push('\n');
+        if line == "[profiles]" {
+            push_picks(&mut output, choices);
+        }
         if section == "[workspace]" && line == "watchdog = true" {
             output.push_str("palette = ");
             output.push_str(&choices.palette);
@@ -325,6 +449,21 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
         }
     }
     output
+}
+
+/// One generated profile line per distinct pick, ahead of the catalog ones.
+fn push_picks(output: &mut String, choices: &Choices) {
+    let mut seen: Vec<String> = Vec::new();
+    for pick in choices.seats().filter_map(Seat::pick) {
+        if seen.contains(&pick.name()) {
+            continue;
+        }
+        if seen.is_empty() {
+            output.push_str("# ae init picks: harness, model and effort per role; edit freely.\n");
+        }
+        let _ = writeln!(output, "{} = \"{}\"", pick.name(), pick.command());
+        seen.push(pick.name());
+    }
 }
 
 fn catalog_client_line(line: &str) -> Option<&str> {
@@ -370,32 +509,36 @@ fn prompt_choices(
     input: &mut impl Read,
     out: &mut impl Write,
 ) -> io::Result<bool> {
+    match prompt_all(args, choices, found, input, out) {
+        Err(why) if why.kind() == io::ErrorKind::InvalidData => Ok(false),
+        done => done,
+    }
+}
+
+fn prompt_all(
+    args: &Args,
+    choices: &mut Choices,
+    found: &[Discovery],
+    input: &mut impl Read,
+    out: &mut impl Write,
+) -> io::Result<bool> {
     if args.lead.is_none() {
-        let default = choices.lead.clone();
-        write!(out, "Lead profile [{default}]: ")?;
-        out.flush()?;
-        let Some(answer) = read_answer(input)? else {
+        let current = Some(&choices.lead);
+        let Some(seat) = prompt_role(Role::Lead, &args.lead_parts, current, found, input, out)?
+        else {
             return Ok(false);
         };
-        if !answer.is_empty() {
-            choices.lead = answer;
-        }
+        choices.lead = seat;
     }
     if args.colead == SeatArg::Unset {
-        let default = choices.colead.as_deref().unwrap_or("solo");
-        write!(out, "Colead profile [{default}] (or 'solo'): ")?;
-        out.flush()?;
-        let Some(answer) = read_answer(input)? else {
-            return Ok(false);
-        };
-        if answer == "solo" {
-            choices.colead = None;
-        } else if !answer.is_empty() {
-            choices.colead = Some(answer);
-        }
+        let current = choices.colead.as_ref();
+        choices.colead = prompt_role(Role::Colead, &args.colead_parts, current, found, input, out)?;
     }
     if args.orchestrator == SeatArg::Unset {
-        let default = choices.orchestrator.as_deref().unwrap_or("none");
+        let default = choices
+            .orchestrator
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), Seat::name);
         write!(out, "Orchestrator profile [{default}] (or 'none'): ")?;
         out.flush()?;
         let Some(answer) = read_answer(input)? else {
@@ -404,7 +547,7 @@ fn prompt_choices(
         if answer == "none" {
             choices.orchestrator = None;
         } else if !answer.is_empty() {
-            choices.orchestrator = Some(answer);
+            choices.orchestrator = Some(Seat::Profile(answer));
         }
     }
     if args.palette.is_none() {
@@ -419,6 +562,93 @@ fn prompt_choices(
         }
     }
     Ok(validate_choices(choices, found).is_ok())
+}
+
+/// One prompt: Enter takes `default`; a missing or unlisted answer is `InvalidData`.
+fn ask(
+    input: &mut impl Read,
+    out: &mut impl Write,
+    label: &str,
+    default: &str,
+    options: &[&str],
+    solo: bool,
+) -> io::Result<String> {
+    let tail = if solo { " or 'solo'" } else { "" };
+    write!(out, "{label} [{default}] ({}{tail}): ", options.join(", "))?;
+    out.flush()?;
+    let mut answer = read_answer(input)?.ok_or(io::ErrorKind::InvalidData)?;
+    if answer.is_empty() {
+        default.clone_into(&mut answer);
+    }
+    if options.contains(&answer.as_str()) || (solo && answer == "solo") {
+        Ok(answer)
+    } else {
+        Err(io::ErrorKind::InvalidData.into())
+    }
+}
+
+/// A role's harness, then its model, then its effort; a flag settles its own
+/// step, and `None` is `solo`. Each default is recomputed for what was just
+/// chosen, so a harness change never carries the old model or effort across.
+fn prompt_role(
+    role: Role,
+    parts: &Parts,
+    current: Option<&Seat>,
+    found: &[Discovery],
+    input: &mut impl Read,
+    out: &mut impl Write,
+) -> io::Result<Option<Seat>> {
+    let kept = current.and_then(Seat::pick);
+    let mut say = |step: &str, default: &str, options: &[&str], solo: bool| {
+        ask(
+            input,
+            out,
+            &format!("{role:?} {step}"),
+            default,
+            options,
+            solo,
+        )
+    };
+    let mut harness = parts.harness.clone();
+    if harness.is_none() && parts.model.is_none() {
+        let options: Vec<&str> = SUPPORTED
+            .into_iter()
+            .filter(|tool| is_found(found, tool))
+            .collect();
+        let default = current.map_or("solo", Seat::harness);
+        let answer = say("harness", default, &options, role == Role::Colead)?;
+        let extra = EXTRA_ORDER.into_iter().find(|(tool, _)| *tool == answer);
+        if answer == "solo" || extra.is_some() {
+            // Neither has a model or effort, so a flagged one would be dropped.
+            if parts.any() {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            return Ok(extra.map(|(_, name)| Seat::Profile(name.to_owned())));
+        }
+        harness = Some(answer);
+    }
+    let resolve = |model: Option<&str>, effort: Option<&str>| {
+        Pick::resolve(role, role.defaults().0, harness.as_deref(), model, effort)
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+    };
+    let mut model = parts.model.clone();
+    if model.is_none() {
+        let base = resolve(None, None)?;
+        let default = kept
+            .filter(|pick| pick.harness == base.harness)
+            .unwrap_or(&base);
+        let options: Vec<&str> = base.harness.models.iter().map(|row| row.id).collect();
+        model = Some(say("model", default.model.id, &options, false)?);
+    }
+    let mut effort = parts.effort.clone();
+    if effort.is_none() {
+        let base = resolve(model.as_deref(), None)?;
+        let default = kept
+            .filter(|pick| pick.model == base.model)
+            .unwrap_or(&base);
+        effort = Some(say("effort", default.effort, base.model.efforts, false)?);
+    }
+    resolve(model.as_deref(), effort.as_deref()).map(|pick| Some(Seat::Pick(pick)))
 }
 
 fn read_answer(input: &mut impl Read) -> io::Result<Option<String>> {
@@ -793,6 +1023,27 @@ pub fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
+    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    run_with(
+        path,
+        tail,
+        &discover(),
+        interactive.then(|| std::io::stdin().lock()).as_mut(),
+        out,
+        err,
+    )
+}
+
+/// [`run`] with the discovery and the terminal injected: `terminal` is the
+/// input to prompt on, or `None` when stdin is not a terminal.
+fn run_with(
+    path: &Path,
+    tail: &[String],
+    found: &[Discovery],
+    mut terminal: Option<&mut impl Read>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
     let args = match parse(tail) {
         Ok(args) => args,
         Err(word) => {
@@ -801,9 +1052,8 @@ pub fn run(
             return Ok(EXIT_USAGE);
         }
     };
-    let found = discover();
-    print_discovery(&found, out)?;
-    let Some(defaults) = default_choices(&found) else {
+    print_discovery(found, out)?;
+    let Some(defaults) = default_choices(found) else {
         writeln!(
             err,
             "no supported harness on PATH; ae launches: {}",
@@ -811,24 +1061,20 @@ pub fn run(
         )?;
         return Ok(EXIT_FAILED);
     };
-    let mut choices = match apply_args(defaults, &args, &found) {
+    let mut choices = match apply_args(defaults, &args, found) {
         Ok(choices) => choices,
         Err(value) => {
-            writeln!(err, "ae init: profile or palette is unavailable: {value}")?;
+            writeln!(
+                err,
+                "ae init: selection is unavailable or unsupported: {value}"
+            )?;
             write!(err, "{USAGE}")?;
             return Ok(EXIT_USAGE);
         }
     };
-    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    if interactive
+    if let Some(input) = terminal.as_deref_mut()
         && !args.yes
-        && !prompt_choices(
-            &args,
-            &mut choices,
-            &found,
-            &mut std::io::stdin().lock(),
-            out,
-        )?
+        && !prompt_choices(&args, &mut choices, found, input, out)?
     {
         writeln!(
             err,
@@ -837,11 +1083,11 @@ pub fn run(
         return Ok(EXIT_FAILED);
     }
     let now = crate::time::Timestamp::now();
-    let proposal = render(&found, &choices, now);
-    for note in notes(&found, &choices) {
+    let proposal = render(found, &choices, now);
+    for note in notes(found, &choices) {
         writeln!(out, "note: {note}")?;
     }
-    if !interactive && !args.yes {
+    if terminal.is_none() && !args.yes {
         writeln!(out, "\nProposed config for {}:\n{proposal}", path.display())?;
         writeln!(
             err,
@@ -904,10 +1150,16 @@ mod tests {
         let cases = [
             (
                 vec!["claude", "codex", "grok"],
-                ("fablex", Some("astrax"), Some("gpt56solx")),
+                ("opus55-high", Some("sol61-xhigh"), Some("gpt61solx")),
             ),
-            (vec!["claude"], ("fablex", Some("opusx"), Some("fablex"))),
-            (vec!["codex"], ("astrax", Some("solx"), Some("gpt56solx"))),
+            (
+                vec!["claude"],
+                ("opus55-high", Some("opus55-xhigh"), Some("opus55-high")),
+            ),
+            (
+                vec!["codex"],
+                ("sol61-high", Some("sol61-xhigh"), Some("gpt61solx")),
+            ),
             (vec!["grok", "agy"], ("grok46", Some("agy"), Some("grok46"))),
             (vec!["grok"], ("grok46", None, Some("grok46"))),
             (vec!["agy"], ("agy", None, Some("agy"))),
@@ -920,13 +1172,18 @@ mod tests {
         ];
         for (tools, expected) in cases {
             let choices = default_choices(&found(&tools)).expect("a supported harness");
+            let name = |seat: &Option<Seat>| seat.as_ref().map(Seat::name);
             assert_eq!(
                 (
-                    choices.lead.as_str(),
-                    choices.colead.as_deref(),
-                    choices.orchestrator.as_deref()
+                    choices.lead.name(),
+                    name(&choices.colead),
+                    name(&choices.orchestrator)
                 ),
-                expected,
+                (
+                    expected.0.to_owned(),
+                    expected.1.map(str::to_owned),
+                    expected.2.map(str::to_owned)
+                ),
                 "{tools:?}"
             );
         }
@@ -947,20 +1204,22 @@ mod tests {
         assert!(text.contains("\nclaude = claude\n"));
         assert!(text.contains("\ngrok = grok\n"));
         assert!(!text.contains("\ncodex = codex\n"));
-        assert!(text.contains("\nlead = fablex\ncolead = opusx\norchestrator = fablex\n"));
+        assert!(
+            text.contains(
+                "\nlead = opus55-high\ncolead = opus55-xhigh\norchestrator = opus55-high\n"
+            )
+        );
         assert!(text.contains("grok46 = \"grok"));
         assert!(!text.contains("astrax = \"codex"));
         assert!(text.contains("palette = darcula\n"));
-        for selected in [
-            Some(choices.lead.as_str()),
-            choices.colead.as_deref(),
-            choices.orchestrator.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            assert!(text.contains(&format!("{selected} = \"")), "{selected}");
+        for seat in choices.seats() {
+            assert!(text.contains(&format!("{} = \"", seat.name())), "{seat:?}");
         }
+        assert_eq!(
+            text.matches("\nopus55-high = ").count(),
+            1,
+            "one line per distinct pick"
+        );
 
         let solo_found = found(&["gemini"]);
         let solo = default_choices(&solo_found).expect("solo defaults");
@@ -1010,7 +1269,7 @@ mod tests {
             &discovered,
         )
         .expect("available override");
-        assert_eq!(choices.lead, "grok46");
+        assert_eq!(choices.lead, Seat::Profile("grok46".to_owned()));
         assert_eq!(choices.colead, None);
         assert_eq!(choices.orchestrator, None);
         assert_eq!(choices.palette, "b");
@@ -1053,6 +1312,275 @@ mod tests {
         let overlong = format!("{}\n", "x".repeat(MAX_ANSWER_BYTES + 1));
         assert!(read_answer(&mut overlong.as_bytes()).is_ok_and(|answer| answer.is_none()));
         assert!(read_answer(&mut "partial".as_bytes()).is_ok_and(|answer| answer.is_none()));
+    }
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    fn prompted(tools: &[&str], script: &str) -> (Choices, String, bool) {
+        let discovered = found(tools);
+        let mut choices = default_choices(&discovered).expect("defaults");
+        let mut out = Vec::new();
+        let accepted = prompt_choices(
+            &Args::default(),
+            &mut choices,
+            &discovered,
+            &mut script.as_bytes(),
+            &mut out,
+        )
+        .expect("scripted terminal");
+        (
+            choices,
+            String::from_utf8_lossy(&out).into_owned(),
+            accepted,
+        )
+    }
+
+    #[test]
+    fn a_harness_change_recomputes_the_model_and_effort_defaults() {
+        let (choices, out, accepted) =
+            prompted(&["claude", "codex"], "codex\n\n\nclaude\n\n\n\n\n");
+        assert!(accepted, "{out}");
+        assert_eq!(choices.lead.name(), "sol61-high");
+        assert_eq!(
+            choices.colead.as_ref().map(Seat::name).as_deref(),
+            Some("opus55-xhigh")
+        );
+        assert!(out.contains("Lead model [gpt-6.1-sol]"), "{out}");
+        assert!(out.contains("Colead model [claude-opus-5-5]"), "{out}");
+        assert!(
+            out.contains("Colead effort [xhigh] (low, medium, high, xhigh, max)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn solo_skips_the_colead_model_and_effort_and_a_flag_skips_its_own_step() {
+        let (choices, out, accepted) = prompted(&["claude", "codex"], "\n\n\nsolo\n\n\n");
+        assert!(accepted && choices.colead.is_none(), "{out}");
+        assert!(
+            !out.contains("Colead model") && !out.contains("Colead effort"),
+            "{out}"
+        );
+
+        let discovered = found(&["claude", "codex"]);
+        let args = parse(&words(&[
+            "--lead-model",
+            "claude-sonnet-5-5",
+            "--colead",
+            "solx",
+        ]))
+        .expect("flags");
+        let mut choices = apply_args(default_choices(&discovered).expect("d"), &args, &discovered)
+            .expect("applied");
+        let mut out = Vec::new();
+        let script = "medium\n\n\n";
+        assert!(
+            prompt_choices(
+                &args,
+                &mut choices,
+                &discovered,
+                &mut script.as_bytes(),
+                &mut out
+            )
+            .expect("scripted")
+        );
+        let out = String::from_utf8_lossy(&out);
+        assert!(
+            !out.contains("Lead harness") && !out.contains("Lead model"),
+            "{out}"
+        );
+        assert!(!out.contains("Colead"), "{out}");
+        assert_eq!(choices.lead.name(), "sonnet55-medium");
+    }
+
+    #[test]
+    fn invalid_overlong_and_eof_answers_exit_one_and_write_nothing() {
+        let discovered = found(&["claude", "codex"]);
+        let scratch = Scratch::new("bad-answers");
+        let path = scratch.0.join("config");
+        let overlong = "x".repeat(MAX_ANSWER_BYTES + 1);
+        for script in [
+            "bogus\n",
+            "codex\nmodel-x\n",
+            "codex\n\nultra-x\n",
+            "",
+            overlong.as_str(),
+        ] {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = run_with(
+                &path,
+                &[],
+                &discovered,
+                Some(&mut script.as_bytes()),
+                &mut out,
+                &mut err,
+            )
+            .expect("streams");
+            assert_eq!(code, EXIT_FAILED, "{script:?}");
+            assert!(!path.exists(), "{script:?}");
+            assert!(String::from_utf8_lossy(&err).contains("config was not written"));
+        }
+    }
+
+    #[test]
+    fn a_flagged_component_is_never_dropped_by_a_table_less_or_solo_terminal_choice() {
+        let discovered = found(&["claude", "codex", "grok"]);
+        let scratch = Scratch::new("flagged-then-table-less");
+        let path = scratch.0.join("config");
+        let cases: [(&[&str], &str); 3] = [
+            (&["--lead-effort", "low", "--colead", "solx"], "grok\n"),
+            (&["--colead-effort", "low", "--lead", "fablex"], "grok\n"),
+            (&["--colead-effort", "low", "--lead", "fablex"], "solo\n"),
+        ];
+        for (flags, script) in cases {
+            let mut tail = words(&["--no-orchestrator", "--palette", "a"]);
+            tail.extend(words(flags));
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = run_with(
+                &path,
+                &tail,
+                &discovered,
+                Some(&mut script.as_bytes()),
+                &mut out,
+                &mut err,
+            )
+            .expect("streams");
+            assert_eq!(code, EXIT_FAILED, "{flags:?} {script:?}");
+            assert!(!path.exists(), "{flags:?} {script:?}");
+        }
+    }
+
+    #[test]
+    fn role_flags_refuse_conflicts_and_unsupported_values_before_any_write() {
+        let discovered = found(&["claude", "codex"]);
+        let scratch = Scratch::new("refusals");
+        let path = scratch.0.join("config");
+        let cases: &[&[&str]] = &[
+            &["--lead-harness", "claude", "--lead-effort", "ultra"],
+            &["--lead-model", "gpt-6-luna", "--lead-effort", "ultra"],
+            &[
+                "--colead-harness",
+                "claude",
+                "--colead-model",
+                "gpt-6.1-sol",
+            ],
+            &["--lead-harness", "grok"],
+            &["--lead", "fablex", "--lead-effort", "low"],
+            &["--colead-effort", "low", "--colead", "solx"],
+            &["--colead-model", "gpt-6.1-sol", "--solo"],
+            &["--solo", "--colead-model", "gpt-6.1-sol"],
+            &["--lead-model", "claude-opus-5-5", "--lead-model", "fable"],
+            &["--lead-effort"],
+        ];
+        for flags in cases {
+            let mut tail = words(&["--yes"]);
+            tail.extend(words(flags));
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = run_with(
+                &path,
+                &tail,
+                &discovered,
+                None::<&mut &[u8]>,
+                &mut out,
+                &mut err,
+            )
+            .expect("streams");
+            assert_eq!(code, EXIT_USAGE, "{flags:?}");
+            assert!(String::from_utf8_lossy(&err).contains(USAGE), "{flags:?}");
+            assert!(!path.exists(), "{flags:?}");
+        }
+        let lone = found(&["claude"]);
+        let args = parse(&words(&["--colead-harness", "codex"])).expect("shape");
+        assert_eq!(
+            apply_args(default_choices(&lone).expect("d"), &args, &lone),
+            Err("codex".to_owned())
+        );
+    }
+
+    #[test]
+    fn rendered_picks_parse_resolve_and_dedupe() {
+        let discovered = found(&["claude", "codex"]);
+        let args = parse(&words(&[
+            "--lead-effort",
+            "low",
+            "--colead-harness",
+            "claude",
+        ]))
+        .expect("flags");
+        let choices = apply_args(default_choices(&discovered).expect("d"), &args, &discovered)
+            .expect("applied");
+        let text = render(
+            &discovered,
+            &choices,
+            crate::time::Timestamp::from_epoch(1_788_825_600),
+        );
+        let config = crate::config::parse_identity(&text).expect("ordinary INI");
+        for role in ["lead", "colead", "orchestrator"] {
+            let (_, profile) = config
+                .roster
+                .iter()
+                .find(|(name, _)| name == role)
+                .expect("role");
+            assert!(
+                matches!(config.command(profile, None), Ok(Some(_))),
+                "{role}"
+            );
+        }
+        let lead = text
+            .lines()
+            .find(|line| line.starts_with("opus55-low = "))
+            .expect("lead line");
+        assert_eq!(
+            lead,
+            "opus55-low = \"claude --permission-mode bypassPermissions --model claude-opus-5-5 --effort low\""
+        );
+        assert!(text.contains("\nopus55-xhigh = \"claude "), "{text}");
+
+        let claude_only = found(&["claude"]);
+        let choices = default_choices(&claude_only).expect("d");
+        let text = render(
+            &claude_only,
+            &choices,
+            crate::time::Timestamp::from_epoch(1_788_825_600),
+        );
+        assert_eq!(text.matches("\nopus55-high = ").count(), 1);
+        assert!(text.contains("orchestrator = opus55-high\n"));
+
+        let args = parse(&words(&["--lead-effort", "low"])).expect("flags");
+        let choices = apply_args(
+            default_choices(&claude_only).expect("d"),
+            &args,
+            &claude_only,
+        )
+        .expect("applied");
+        let text = render(
+            &claude_only,
+            &choices,
+            crate::time::Timestamp::from_epoch(1_788_825_600),
+        );
+        let config = crate::config::parse_identity(&text).expect("ordinary INI");
+        for (role, effort) in [
+            ("lead", "low"),
+            ("colead", "xhigh"),
+            ("orchestrator", "high"),
+        ] {
+            let (_, profile) = config
+                .roster
+                .iter()
+                .find(|(name, _)| name == role)
+                .expect("role");
+            let resolved = config
+                .command(profile, None)
+                .expect("resolves")
+                .expect("defined");
+            let command = resolved.as_str();
+            assert!(
+                command.ends_with(&format!("--effort {effort}")),
+                "{role}: {command}"
+            );
+        }
     }
 
     #[test]

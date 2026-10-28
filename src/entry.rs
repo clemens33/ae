@@ -79,6 +79,11 @@ pub const PROFILE_CATALOG: &[Profile] = &[
         provider: Some("OpenAI"),
     },
     Profile {
+        name: "gpt61solx",
+        harness: "codex",
+        provider: Some("OpenAI"),
+    },
+    Profile {
         name: "grok46",
         harness: "grok",
         provider: Some("xAI"),
@@ -150,6 +155,7 @@ opusx = "claude --permission-mode bypassPermissions --model claude-opus-5 --effo
 astrax = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
 solx = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 gpt56solx = "codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -a never"
+gpt61solx = "codex -m gpt-6.1-sol -c model_reasoning_effort=xhigh -a never"
 agy = "agy --dangerously-skip-permissions"
 gemini = "gemini"
 

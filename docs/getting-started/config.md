@@ -1,6 +1,6 @@
 # Configuration
 
-Run `ae init` to discover supported harness executables on `PATH` and propose `~/.ae/config`.
+Run `ae init` to discover supported harness executables on `PATH` and propose `~/.ae/config`, with a harness, model and effort picked per role.
 It never runs a harness or checks login/model access. A first session launch still auto-creates
 the broad default when the file is absent. Per-project overrides go in `.ae/config` inside your
 project directory (the project file shadows the global file key by key).

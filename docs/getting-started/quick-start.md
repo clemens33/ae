@@ -8,7 +8,7 @@ ae init
 ae my-app
 ```
 
-`ae init` discovers supported harness executables and proposes a roster before the first session.
+`ae init` discovers supported harness executables and proposes a roster before the first session, with a separate harness, model and effort for the lead and the colead.
 If you skip it, the first launch still creates the broad default config. Session names are
 explicit, so the same directory can host distinct sessions.
 

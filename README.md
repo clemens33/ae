@@ -48,7 +48,7 @@ ae init
 ae my-app
 ```
 
-`ae init` discovers supported harnesses on `PATH` without running them, then proposes the lead, colead and orchestrator profiles (`ae init --yes` in a non-interactive shell). Session names are explicit; a directory never silently decides one. Detach with `Ctrl+b d` -- agents keep running in the background.
+`ae init` discovers supported harnesses on `PATH` without running them, then lets you pick each role's harness, model and effort separately (defaults: lead Claude Code `claude-opus-5-5` high, colead Codex `gpt-6.1-sol` xhigh; `ae init --yes` in a non-interactive shell). Session names are explicit; a directory never silently decides one. Detach with `Ctrl+b d` -- agents keep running in the background.
 
 ## What you can do
 

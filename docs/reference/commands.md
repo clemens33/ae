@@ -60,7 +60,8 @@ ae orchestrator --settings
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
-ae init [--yes] [--lead <profile>] [--colead <profile>|--solo]
+ae init [--yes] [--lead <profile>|--lead-harness <h> --lead-model <m> --lead-effort <e>]
+        [--colead <profile>|--colead-harness <h> --colead-model <m> --colead-effort <e>|--solo]
         [--orchestrator <profile>|--no-orchestrator] [--palette <p>] [--force]
                        Discover harnesses and propose or write the global config
 ae rename [old] <new>  Rename a running session; its watchdog tells each running seat the
@@ -143,15 +144,35 @@ tool (`claude = claude`, for example), followed by the unchanged profiles availa
 clients. Add `config_home` only to a second Claude or Codex client; see the
 [second-account recipe](../getting-started/config.md#multiple-identities-of-one-cli).
 
-The default roster is derived from the found harnesses:
+The lead and the colead each choose a harness, a model of that harness and an effort of that
+model, as three separate choices; the pick renders one `[profiles]` line named
+`<model code>-<effort>` (`opus55-high`, `sol61-xhigh`) and binds the role to it. The default
+roster is derived from the found harnesses:
 
 | Found set | Lead | Colead | Orchestrator |
 |---|---|---|---|
-| Claude + Codex, with or without others | `fablex` | `astrax` | `gpt56solx` |
-| Claude, without Codex | `fablex` | `opusx` | `fablex` |
-| Codex, without Claude | `astrax` | `solx` | `gpt56solx` |
+| Claude + Codex, with or without others | `claude-opus-5-5` high | `gpt-6.1-sol` xhigh | `gpt61solx` |
+| Claude, without Codex | `claude-opus-5-5` high | `claude-opus-5-5` xhigh | the default lead pick |
+| Codex, without Claude | `gpt-6.1-sol` high | `gpt-6.1-sol` xhigh | `gpt61solx` |
 | Neither; Grok + agy, with or without others | `grok46` | `agy` | `grok46` |
 | Neither; other combinations | first found | second found, or solo | first found |
+
+Models and efforts are a dated table in `src/init/roles.rs`, not a live probe (init runs no
+child). Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `fable`, each with
+`low` to `max`; that is `claude --help`'s vocabulary for the harness, not a check that a given
+model accepts each level. Codex, as `codex` 0.165.0 listed its model cache: `gpt-6.1-sol`,
+`gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol` take `low` to `max` and `ultra`; `gpt-6-luna` stops
+at `max`. Grok, agy, OpenCode and Gemini have no table and keep their one catalog profile. A
+model not in the table is refused; write its profile by hand in the config.
+
+`--lead-harness/--lead-model/--lead-effort` (and `--colead-*`) set one choice each; a model
+alone names its harness, a missing model is the harness's first, a missing effort is the role's
+(lead `high`, colead `xhigh`). `--lead <profile>` and `--colead <profile>` still bind a catalog
+profile and cannot be combined with that role's trio; nor can `--solo` with `--colead-*`. An
+unknown or unsupported harness, model or effort, or a pair the table does not hold (a Codex
+model on Claude, `ultra` on Claude or `gpt-6-luna`), exits 2 and writes nothing. On a terminal
+each role asks harness, model, effort in turn (a harness change recomputes the other defaults;
+answer `solo` at the colead's harness to drop it), skipping any step a flag settled.
 
 The fallback order is `grok46`, `agy`, `opencode`, `gemini`. Known xAI + Google choices satisfy
 the provider-diversity note; OpenCode and Gemini proposals keep provider status unverified.

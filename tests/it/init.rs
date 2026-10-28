@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 
 use super::cli::{OwnedScratch, ae};
 
+#[path = "initroles_spec.rs"]
+mod initroles_spec;
+
 struct Rig {
     scratch: OwnedScratch,
     config: PathBuf,
@@ -117,7 +120,7 @@ fn init_discovers_claude_and_codex_then_writes_the_selected_checkout_config() {
     assert!(written.contains("\nclaude = claude\n"));
     assert!(written.contains("\ncodex = codex\n"));
     assert!(!written.contains("\ngrok = grok\n"));
-    assert!(written.contains("lead = fablex\ncolead = astrax\norchestrator = gpt56solx\n"));
+    initroles_spec::assert_defaults(&written);
     assert!(written.contains("palette = darcula\n"));
     assert!(ae::config::read_identity(Some(&rig.config), None).is_ok());
     assert!(

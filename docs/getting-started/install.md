@@ -35,8 +35,11 @@ ae init
 ```
 
 The command only resolves executable files on `PATH`; it does not run a harness, inspect login
-state, access the network, or infer model availability. In a non-interactive shell use
-`ae init --yes` to accept the proposed defaults.
+state, access the network, or infer model availability. It asks for the lead's and the
+colead's harness, model and effort in turn (Enter takes the default: lead Claude Code
+`claude-opus-5-5` at `high`, colead Codex `gpt-6.1-sol` at `xhigh`); both stay editable in
+`~/.ae/config`. In a non-interactive shell use `ae init --yes`, or the `--lead-*` and
+`--colead-*` harness, model and effort flags.
 
 ## Build from source
 
