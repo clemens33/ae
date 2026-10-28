@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.146] - 2026-10-28
+- Refuse peer delivery to a retired or replaced seat
+
 ## [v2026.10.145] - 2026-10-28
 - Let ae init choose harness, model and effort per role
 
