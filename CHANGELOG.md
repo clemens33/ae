@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.158] - 2026-10-29
+- Tell a seat at launch that its previous conversation was not resumed (#250 O6 S2)
+
 ## [v2026.10.157] - 2026-10-29
 - Read OpenCode 2 session exports on the board; OpenCode 1 export is no longer read (#276 A)
 
