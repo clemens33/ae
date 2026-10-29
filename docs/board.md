@@ -14,8 +14,8 @@ first start. Claude Code, Codex, Grok, Muse, Antigravity and OpenCode seats read
 today; every other seat renders an explicit coverage row, never a silent subset.
 OpenCode is the one seat without a transcript file: its conversation lives in
 SQLite, which ae never opens, so the board runs the CLI's own
-`opencode export <sessionID>` through the existing process door and reads the
-one JSON document it prints on stdout. One export runs per OpenCode
+`opencode session export <sessionID>` through the existing process door and
+reads the one JSON document it prints on stdout. One export runs per OpenCode
 conversation — the current one and each recorded predecessor — per board read;
 a failed or unusable export is a coverage row, never a silent gap.
 
@@ -43,7 +43,7 @@ offsets — the message id is immutable and repeats across exports.
 ## What it never reads
 
 - The OpenCode SQLite store at all — not its `credential` table, not its
-  `message`/`session` tables: the board reads only the `opencode export`
+  `message`/`session` tables: the board reads only the `opencode session export`
   stdout the CLI itself prints
 - Any `auth.json` or token file
 - Live `~/.ae` session state beyond the roster (meta only)
@@ -217,17 +217,24 @@ records keeps every row's name; `created_at` is second-precision UTC. The
 truncated sibling clips `content` past ~4 K chars and names it in
 `truncated_fields`; a clipped reply renders and counts once per seat.
 
-OpenCode reads one `opencode export <sessionID>` document per conversation —
-the current one and each recorded predecessor — and never the SQLite store.
-The capture goes through a scratch FILE, never a pipe: `opencode export` exits
-before its stdout pipe drains (measured on 1.18.31, 2026-09-18: 131072 of
-3949726 bytes through a pipe, the whole document to a regular file), so a pipe
-capture would truncate the document and cover the whole conversation as
-unreadable. Human rows are `role == "user"` messages; row identity is the
-message id; `time.created` is integer milliseconds. A body is the message's
-`text` parts joined in order, trimmed, empties dropped; a message with no
-`text` part drops silently, and a message that cannot be named or stamped is
-counted into the same coverage vocabulary the other seats use. A whole export
+OpenCode 2 is required. The board reads one `opencode session export
+<sessionID>` document per conversation — the current one and each recorded
+predecessor — and never the SQLite store. OpenCode 1's `opencode export
+<sessionID>` is no longer run and its JSON is not read: a V1 host's OpenCode
+seats show a coverage row instead of turns (V1 behaviour on the new command is
+unverified), so migrate that host to OpenCode 2; other hosts' migration status
+is unverified. The capture goes through a scratch FILE, never a pipe: the V1
+`opencode export` exited before its stdout pipe drained (measured on 1.18.31,
+2026-09-18: 131072 of 3949726 bytes through a pipe, the whole document to a
+regular file), so a pipe capture would truncate the document and cover the
+whole conversation as unreadable; V2 pipe truncation is unmeasured and the file
+capture stays. Human rows are `type == "user"` messages, whose body is the
+message's `text`; with `--assistant`, `type == "assistant"` messages join their
+`content` parts of `type == "text"`. Row identity is the message `id`;
+`time.created` is integer milliseconds. Bodies are trimmed, empties dropped;
+other string types (`idle`, `agent-switched`, …) skip silently, and a message
+with no string `type`, or one that cannot be named or stamped, is counted into
+the same coverage vocabulary the other seats use. A whole export
 over 16 MiB is refused, and at most 4096 rows come out of one — both covered
 as `export exceeds the read budget`, the row cap naming what was left unread.
 The door hands the reader at most one byte more than that cap; the child's

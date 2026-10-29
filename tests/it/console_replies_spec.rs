@@ -727,12 +727,8 @@ fn opencode_replies_fail_closed_until_export_order_is_proven() {
     );
     let id = "ses_00000000000000000000000000";
     let messages = [
-        format!(
-            r#"{{"info":{{"id":"msg_user","sessionID":"{id}","role":"user","time":{{"created":1789549200000}}}},"parts":[{{"type":"text","text":"opencode pane question"}}]}}"#
-        ),
-        format!(
-            r#"{{"info":{{"id":"msg_reply","sessionID":"{id}","role":"assistant","time":{{"created":1789549260000}}}},"parts":[{{"type":"text","text":"unclassified opencode reply"}}]}}"#
-        ),
+        r#"{"id":"msg_user","type":"user","time":{"created":1789549200000},"text":"opencode pane question"}"#.to_owned(),
+        r#"{"id":"msg_reply","type":"assistant","time":{"created":1789549260000},"content":[{"type":"text","text":"unclassified opencode reply"}]}"#.to_owned(),
     ];
     let export = super::board::export_doc(id, &messages);
     super::board::fake_opencode(&rig.root, &super::board::exporting(&export));

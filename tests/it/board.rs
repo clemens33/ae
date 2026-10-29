@@ -1890,10 +1890,15 @@ pub(super) fn export_doc(id: &str, messages: &[String]) -> String {
 }
 
 fn oc_message(id: &str, role: &str, created: &str, parts: &[String]) -> String {
-    format!(
-        r#"{{"info":{{"id":"{id}","sessionID":"{OC_SID}","role":"{role}","time":{{"created":{created}}}}},"parts":[{}]}}"#,
-        parts.join(",")
-    )
+    let body = if role == "user" {
+        let part = ae::json::parse(&parts[0]).expect("synthetic text part");
+        let mut escaped = String::new();
+        ae::json::escape_into(part.get_str("text").expect("text string"), &mut escaped);
+        format!(r#""text":"{escaped}""#)
+    } else {
+        format!(r#""content":[{}]"#, parts.join(","))
+    };
+    format!(r#"{{"id":"{id}","type":"{role}","time":{{"created":{created}}},{body}}}"#)
 }
 
 fn oc_text(text: &str) -> String {
@@ -1957,6 +1962,46 @@ fn empty_bin(root: &Path) -> PathBuf {
     let bin = root.join("no-opencode");
     std::fs::create_dir_all(&bin).expect("empty bin dir");
     bin
+}
+
+#[test]
+fn opencode_v2_export_argv_and_text_are_observable_at_the_cli() {
+    let root = rig("oc-v2-argv");
+    let export = export_doc(OC_SID, &[
+        r#"{"id":"msg_user","type":"user","time":{"created":1789549200500},"text":"V2 question"}"#.to_owned(),
+        r#"{"id":"msg_reply","type":"assistant","time":{"created":1789549201500},"content":[{"type":"reasoning","text":"V2_SECRET_REASONING"},{"type":"text","text":"V2 answer"}]}"#.to_owned(),
+    ]);
+    let guard = format!(
+        "#!/bin/sh\nprintf x >> \"$0.calls\"\n[ \"$#\" -eq 3 ] && [ \"$1\" = session ] && [ \"$2\" = export ] && [ \"$3\" = {OC_SID} ] || exit 23\n"
+    );
+    fake_opencode(&root, &(guard + &exporting(&export)));
+    plant_session(&root, "oc", &oc_roster("main", "lead", OC_SID));
+    let (code, out, err) = run_with_path(
+        &root,
+        &fake_bin(&root),
+        &["board", "oc", "--assistant", "--json"],
+    );
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        std::fs::read(fake_bin(&root).join("opencode.calls")).expect("export invocation"),
+        b"x",
+        "one invocation, no fallback/retry"
+    );
+    let rows: Vec<_> = out
+        .lines()
+        .filter_map(|line| {
+            let value = ae::json::parse(line).expect("JSON output");
+            assert_ne!(value.get_str("kind"), Some("coverage"), "{out}");
+            (value.get_str("kind") == Some("row")).then_some(value)
+        })
+        .collect();
+    assert_eq!(rows.len(), 2, "{out}");
+    assert_eq!(rows[0].get_str("body"), Some("V2 question"));
+    assert_eq!(rows[1].get_str("body"), Some("V2 answer"));
+    assert_eq!(rows[0].get_str("role"), Some("human"));
+    assert_eq!(rows[1].get_str("role"), Some("assistant"));
+    assert!(!out.contains("V2_SECRET_REASONING"), "{out}");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -2239,7 +2284,7 @@ fn an_opencode_predecessor_reads_through_its_own_export() {
     fake_opencode(
         &root,
         &format!(
-            "#!/bin/sh\ncase \"$2\" in\n  {OC_SID}) cat <<'JSON'\n{current}\nJSON\n  ;;\n  {prior_id}) cat <<'JSON'\n{prior}\nJSON\n  ;;\nesac\n"
+            "#!/bin/sh\ncase \"$3\" in\n  {OC_SID}) cat <<'JSON'\n{current}\nJSON\n  ;;\n  {prior_id}) cat <<'JSON'\n{prior}\nJSON\n  ;;\nesac\n"
         ),
     );
     plant_session(
@@ -2339,7 +2384,7 @@ fn an_export_larger_than_a_pipe_buffer_reads_whole_through_the_shipped_binary() 
     // doors lexical guard `the_opencode_leg_captures_through_a_file_never_a_pipe`
     // is that pin.
     let root = rig("oc-large");
-    let messages: Vec<String> = (0..700)
+    let messages: Vec<String> = (0..900)
         .map(|n| {
             oc_message(
                 &format!("msg_{n}"),
@@ -2360,7 +2405,7 @@ fn an_export_larger_than_a_pipe_buffer_reads_whole_through_the_shipped_binary() 
     let (code, stdout, stderr) = run_with_path(&root, &fake_bin(&root), &["board", "oc"]);
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
-        stdout.contains("  turn 699\n"),
+        stdout.contains("  turn 899\n"),
         "the document's end was read whole"
     );
     assert!(!stdout.contains("coverage incomplete"), "{stdout}");

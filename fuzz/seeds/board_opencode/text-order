@@ -1,0 +1,1 @@
+{"info":{"id":"ses_fuzzseatsession00000000000"},"messages":[{"id":"msg_a","type":"assistant","time":{"created":1789549201500},"content":[{"type":"text","text":"first "},{"type":"reasoning","text":"never"},{"type":"text","text":"last"}]}]}

@@ -105,12 +105,19 @@ pub(crate) fn is_opencode_session_id(value: &str) -> bool {
     })
 }
 
-/// The SECOND fixed spelling of the `opencode` leg: `export <id>`. `None` when
-/// `id` fails [`is_opencode_session_id`], so the door can never be handed an
-/// argv built from an invalid name.
+/// The SECOND fixed spelling of the `opencode` leg: `OpenCode` 2's
+/// `session export <id>` (V1's `export <id>` is no longer run). `None` when `id`
+/// fails [`is_opencode_session_id`], so the door can never be handed an argv
+/// built from an invalid name.
 #[must_use]
 pub(crate) fn opencode_export_argv(id: &str) -> Option<OpenCodeArgv> {
-    is_opencode_session_id(id).then(|| OpenCodeArgv(vec!["export".to_owned(), id.to_owned()]))
+    is_opencode_session_id(id).then(|| {
+        OpenCodeArgv(vec![
+            "session".to_owned(),
+            "export".to_owned(),
+            id.to_owned(),
+        ])
+    })
 }
 
 /// The argv that captures one target: `_capture-sid <dir> <slot> <pane>`.
@@ -3454,7 +3461,11 @@ mod tests {
         let id = "ses_00000000000000000000000000";
         assert_eq!(
             opencode_export_argv(id).map(|argv| argv.as_args().to_vec()),
-            Some(vec!["export".to_owned(), id.to_owned()])
+            Some(vec![
+                "session".to_owned(),
+                "export".to_owned(),
+                id.to_owned()
+            ])
         );
         for bad in [
             "",

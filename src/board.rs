@@ -1213,7 +1213,7 @@ fn observe_generation(
         });
     };
     // OpenCode keeps its conversation in SQLite, which the board never opens:
-    // the export leg runs the CLI (`opencode export <id>`) and the pure reader
+    // the export leg runs the CLI (`opencode session export <id>`) and the pure reader
     // takes its bytes. No file, no follow seed — D1 reads it once per board
     // and `follow_seat` covers it after that. String dispatch, as `reader_for`
     // does: the adapter's own name, never a `ToolKind::` arm.

@@ -1,19 +1,22 @@
-//! The `OpenCode` board reader: one `opencode export` JSON document in, rows out.
+//! The `OpenCode` board reader: one `opencode session export` JSON document in, rows out.
 //!
 //! PURE: no I/O, no env, no clock. `OpenCode` keeps its conversations in `SQLite`,
 //! which ae never opens, so the board reads them through the CLI's own export
-//! instead: ONE JSON document (`{info, messages:[{info, parts:[…]}]}`), never
-//! JSONL — no splitter, no byte offsets. Measured shape (opencode 1.18.31,
-//! 2026-09-18, shapes only): message ids are `msg_` + an opaque run, immutable
-//! and stable across two exports; `time.created` is epoch MILLISECONDS; `text`
-//! parts carry the prose, and a `reasoning` part carries a `text` field TOO —
-//! never read. Reading rules: `role == "user"` is a human turn; with
-//! `--assistant`, `role == "assistant"` is a reply; a body is the message's
-//! `text` parts joined in order, trimmed, empties dropped. One row per message
-//! whose body survives. Row identity is the message's own id, because the
-//! export is regenerated per read: `file = "opencode:<session>#<message>"`,
-//! `offset = 0`. The ae-turn filter is the board's ONE `hidden` pass, after
-//! this reader — this reader emits every human row and never hides one itself.
+//! instead: ONE JSON document (`{info, messages:[{id, time, type, …}]}`), never
+//! JSONL — no splitter, no byte offsets. `OpenCode` 2 ONLY: V1's `export` command
+//! and its `info.role` / `parts` shape are not read (measured 2.2.1, 2026-10-29,
+//! shapes only). Message ids are `msg_` + an opaque run, stable across exports
+//! and a resume; `time.created` is epoch MILLISECONDS. Reading rules:
+//! `type == "user"` is a human turn whose body is the message's `text`; with
+//! `--assistant`, `type == "assistant"` is a reply whose body is the `content`
+//! parts of `type == "text"`, joined in order (a reasoning part is never read).
+//! Bodies are trimmed, empties dropped. Any other STRING type (`idle`,
+//! `agent-switched`, …) is skipped silently; a message with no string `type` is
+//! damage and counted. One row per message whose body survives. Row identity is
+//! the message's own id, because the export is regenerated per read:
+//! `file = "opencode:<session>#<message>"`, `offset = 0`. The ae-turn filter is
+//! the board's ONE `hidden` pass, after this reader — this reader emits every
+//! human row and never hides one itself.
 
 use super::{Coverage, Role, Row};
 use crate::json::Value;
@@ -33,7 +36,7 @@ pub(crate) const EXPORT_CAP: usize = 16 * 1024 * 1024;
 /// the stop are named in the coverage line.
 pub(crate) const ROW_CAP: usize = 4_096;
 
-/// Read one whole `opencode export` document: the document's bytes, the
+/// Read one whole `opencode session export` document: the document's bytes, the
 /// conversation id the caller asked for, and the seat's row identity triple.
 /// Genuine human turns come back; with `assistant` the model's replies ride
 /// beside them, `text` parts only. Every refusal is a [`Coverage`] with a
@@ -61,6 +64,7 @@ pub fn read(
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_id: 0,
+        missing_type: 0,
         missing_ts: 0,
     };
     if export.len() > EXPORT_CAP {
@@ -111,6 +115,7 @@ struct Sink<'a> {
     rows: Vec<Row>,
     coverage: Vec<Coverage>,
     missing_id: u64,
+    missing_type: u64,
     missing_ts: u64,
 }
 
@@ -140,6 +145,14 @@ impl Sink<'_> {
             };
             self.cover(&format!("{} {noun} {verb} an id", self.missing_id));
         }
+        if self.missing_type > 0 {
+            let (noun, verb) = if self.missing_type == 1 {
+                ("message", "lacks")
+            } else {
+                ("messages", "lack")
+            };
+            self.cover(&format!("{} {noun} {verb} a type", self.missing_type));
+        }
         if self.missing_ts > 0 {
             let noun = if self.missing_ts == 1 {
                 "message"
@@ -156,29 +169,29 @@ impl Sink<'_> {
         }
     }
 
-    /// One message: classify by `info.role`, name it by `info.id`, stamp it
-    /// from `info.time.created` (millis), and join its `text` parts. A message
-    /// this read would not emit is skipped silently; one it would emit but
-    /// cannot name or stamp is counted.
+    /// One message: classify by `type`, name it by `id`, stamp it from
+    /// `time.created` (millis) and take its text. A message this read would not
+    /// emit is skipped silently; one it would emit but cannot name or stamp is
+    /// counted, and so is one with no string `type` to classify it by.
     fn push_message(&mut self, message: &Value) {
-        let Some(info) = message.get("info") else {
-            self.missing_id += 1;
-            return;
-        };
-        let role = match info.get_str("role") {
+        let role = match message.get_str("type") {
             Some("user") => Role::Human,
             Some("assistant") if self.assistant => Role::Assistant,
-            _ => return,
+            Some(_) => return,
+            None => {
+                self.missing_type += 1;
+                return;
+            }
         };
-        let Some(id) = info.get_str("id").filter(|id| !id.is_empty()) else {
+        let Some(id) = message.get_str("id").filter(|id| !id.is_empty()) else {
             self.missing_id += 1;
             return;
         };
-        let Some(micros) = created_micros(info) else {
+        let Some(micros) = created_micros(message) else {
             self.missing_ts += 1;
             return;
         };
-        let body = join_text_parts(message).trim().to_owned();
+        let body = message_text(message, role).trim().to_owned();
         if body.is_empty() {
             return;
         }
@@ -195,21 +208,24 @@ impl Sink<'_> {
     }
 }
 
-/// `info.time.created` in micros: the export's native integer MILLISECONDS
-/// scaled to the board's clock. A missing, non-integer or unspellable moment
-/// is damage and counts, exactly like an absent timestamp elsewhere.
-fn created_micros(info: &Value) -> Option<i64> {
-    let Value::Num(ms) = info.get("time")?.get("created")? else {
+/// `time.created` in micros: the export's native integer MILLISECONDS scaled to
+/// the board's clock. A missing, non-integer or unspellable moment is damage and
+/// counts, exactly like an absent timestamp elsewhere.
+fn created_micros(message: &Value) -> Option<i64> {
+    let Value::Num(ms) = message.get("time")?.get("created")? else {
         return None;
     };
     ms.checked_mul(1_000)
 }
 
-/// The body: every `type == "text"` part's `text`, in order, and nothing else.
-/// `reasoning` parts carry a `text` field too and are NEVER read; `tool` and
-/// `step-*` parts are never read.
-fn join_text_parts(message: &Value) -> String {
-    let Some(Value::Arr(parts)) = message.get("parts") else {
+/// The body: a user message's `text`, or an assistant message's `content` parts
+/// with `type == "text"`, in order, and nothing else. Any other part (reasoning,
+/// tool) is NEVER read, and neither role reads the other's field.
+fn message_text(message: &Value, role: Role) -> String {
+    if role == Role::Human {
+        return message.get_str("text").unwrap_or_default().to_owned();
+    }
+    let Some(Value::Arr(parts)) = message.get("content") else {
         return String::new();
     };
     let mut joined = String::new();
@@ -263,17 +279,20 @@ mod tests {
         )
     }
 
-    /// One message with a raw `parts` array.
+    /// One V2 assistant message; user bodies are separate top-level text.
     fn message(id: &str, role: &str, created: &str, parts: &[String]) -> String {
         format!(
-            r#"{{"info":{{"id":"{id}","sessionID":"{SID}","role":"{role}","time":{{"created":{created}}}}},"parts":[{}]}}"#,
+            r#"{{"id":"{id}","type":"{role}","time":{{"created":{created}}},"content":[{}]}}"#,
             parts.join(",")
         )
     }
 
-    /// A user message whose body is one text part.
     fn user(id: &str, created: &str, text: &str) -> String {
-        message(id, "user", created, &[text_part(text)])
+        let mut escaped = String::new();
+        crate::json::escape_into(text, &mut escaped);
+        format!(
+            r#"{{"id":"{id}","type":"user","time":{{"created":{created}}},"text":"{escaped}"}}"#
+        )
     }
 
     fn document(messages: &[String]) -> String {
@@ -292,19 +311,8 @@ mod tests {
     }
 
     #[test]
-    fn the_user_turn_joins_its_text_parts_and_scales_millis_to_micros() {
-        let line = message(
-            "msg_human",
-            "user",
-            &MS.to_string(),
-            &[
-                text_part("first "),
-                reasoning_part("chain of thought"),
-                tool_part(),
-                step_part("step-start"),
-                text_part("second"),
-            ],
-        );
+    fn the_user_turn_reads_text_and_scales_millis_to_micros() {
+        let line = user("msg_human", &MS.to_string(), "  first second  ");
         let (rows, coverage) = read_doc(&document(&[line]), false);
         assert!(coverage.is_empty());
         assert_eq!(rows.len(), 1);
@@ -327,7 +335,8 @@ mod tests {
             &[
                 reasoning_part("hidden reasoning words"),
                 tool_part(),
-                text_part("visible reply"),
+                text_part("visible "),
+                text_part("reply"),
                 step_part("step-finish"),
             ],
         );
@@ -399,16 +408,11 @@ mod tests {
 
     #[test]
     fn per_message_damage_is_counted_and_the_rest_still_reads() {
-        let no_info = r#"{"parts":[{"type":"text","text":"lost"}]}"#;
-        let no_id = r#"{"info":{"role":"user","time":{"created":1789549200500}},"parts":[{"type":"text","text":"lost"}]}"#;
-        let no_ts = message("msg_nots", "user", "null", &[text_part("lost")]);
-        let float_ts = message("msg_float", "user", "1.5", &[text_part("lost")]);
-        let huge_ts = message(
-            "msg_huge",
-            "user",
-            &i64::MAX.to_string(),
-            &[text_part("lost")],
-        );
+        let no_info = r#"{"text":"lost"}"#;
+        let no_id = r#"{"type":"user","time":{"created":1789549200500},"text":"lost"}"#;
+        let no_ts = user("msg_nots", "null", "lost");
+        let float_ts = user("msg_float", "1.5", "lost");
+        let huge_ts = user("msg_huge", &i64::MAX.to_string(), "lost");
         let good = user("msg_good", &MS.to_string(), "kept");
         let (rows, coverage) = read_doc(
             &document(&[
@@ -425,7 +429,11 @@ mod tests {
         assert_eq!(rows[0].body, "kept");
         assert_eq!(
             reasons(&coverage),
-            ["2 messages lack an id", "3 messages without a timestamp"]
+            [
+                "1 message lacks an id",
+                "1 message lacks a type",
+                "3 messages without a timestamp"
+            ]
         );
     }
 
@@ -434,11 +442,22 @@ mod tests {
         let lines: Vec<String> = (0..ROW_CAP + 3)
             .map(|n| user(&format!("msg_{n}"), &MS.to_string(), "words"))
             .collect();
-        let (rows, coverage) = read_doc(&document(&lines), false);
+        let mut damaged = vec![
+            r#"{"type":"user"}"#.to_owned(),
+            r#"{"type":null}"#.to_owned(),
+            r#"{"type":"user","id":"msg_nots"}"#.to_owned(),
+        ];
+        damaged.extend(lines);
+        let (rows, coverage) = read_doc(&document(&damaged), false);
         assert_eq!(rows.len(), ROW_CAP);
         assert_eq!(
             reasons(&coverage),
-            ["export exceeds the read budget — 3 messages unread"]
+            [
+                "1 message lacks an id",
+                "1 message lacks a type",
+                "1 message without a timestamp",
+                "export exceeds the read budget — 3 messages unread",
+            ]
         );
     }
 
@@ -497,5 +516,132 @@ mod tests {
             ],
             "each id keeps its own body across a reorder"
         );
+    }
+    #[test]
+    fn v2_completed_and_resumed_exports_keep_six_stable_text_turns() {
+        // R3 oracle: 1+1 completed, 3+3 resumed, two shared ids.
+        let first = [
+            user("msg_h1", "1789549200500", "question one"),
+            message(
+                "msg_a1",
+                "assistant",
+                "1789549201500",
+                &[text_part("answer one")],
+            ),
+            r#"{"type":"idle"}"#.to_owned(),
+        ];
+        let mut resumed = first.to_vec();
+        resumed.extend([
+            r#"{"type":"agent-switched"}"#.to_owned(),
+            r#"{"type":"model-switched"}"#.to_owned(),
+            user("msg_h2", "1789549202500", "question two"),
+            message(
+                "msg_a2",
+                "assistant",
+                "1789549203500",
+                &[text_part("answer two")],
+            ),
+            r#"{"type":"idle"}"#.to_owned(),
+            user("msg_h3", "1789549204500", "question three"),
+            message(
+                "msg_a3",
+                "assistant",
+                "1789549205500",
+                &[text_part("answer three")],
+            ),
+            r#"{"type":"idle"}"#.to_owned(),
+        ]);
+        for (messages, count) in [(&first[..], 2), (&resumed[..], 6)] {
+            for assistant in [false, true] {
+                let (rows, coverage) = read_doc(&document(messages), assistant);
+                assert!(coverage.is_empty(), "{coverage:?}");
+                assert_eq!(rows.len(), if assistant { count } else { count / 2 });
+            }
+        }
+        let (mut old, _) = read_doc(&document(&first), true);
+        let (new, _) = read_doc(&document(&resumed), true);
+        old.extend(new);
+        let rows = collect(old);
+        let bodies: Vec<_> = rows.iter().map(|row| row.body.as_str()).collect();
+        assert_eq!(
+            bodies,
+            [
+                "question one",
+                "answer one",
+                "question two",
+                "answer two",
+                "question three",
+                "answer three"
+            ]
+        );
+        for (row, id) in rows
+            .iter()
+            .zip(["msg_h1", "msg_a1", "msg_h2", "msg_a2", "msg_h3", "msg_a3"])
+        {
+            assert_eq!(row.file, format!("opencode:{SID}#{id}"));
+        }
+    }
+
+    #[test]
+    fn damaged_types_are_counted_but_valid_unknown_types_are_silent() {
+        let bad = [r"{}", r#"{"type":null}"#, r#"{"type":7}"#, "false", "[]"];
+        for raw in bad {
+            let (rows, coverage) = read_doc(&document(&[raw.to_owned()]), true);
+            assert!(rows.is_empty());
+            assert_eq!(reasons(&coverage), ["1 message lacks a type"], "{raw}");
+        }
+        let all = bad.map(str::to_owned);
+        let (_, coverage) = read_doc(&document(&all), false);
+        assert_eq!(reasons(&coverage), ["5 messages lack a type"]);
+        let unknown = ["idle", "agent-switched", "model-switched", "future-event"]
+            .map(|kind| format!(r#"{{"type":"{kind}","text":"never read"}}"#));
+        let (rows, coverage) = read_doc(&document(&unknown), true);
+        assert!(rows.is_empty() && coverage.is_empty());
+        let disabled = r#"{"type":"assistant"}"#.to_owned();
+        let (rows, coverage) = read_doc(&document(&[disabled]), false);
+        assert!(rows.is_empty() && coverage.is_empty());
+    }
+
+    #[test]
+    fn v2_uses_only_the_role_specific_text_location() {
+        let cases = [
+            (
+                r#""type":"user","text":"kept user","content":[{"type":"text","text":"decoy"}]"#,
+                "kept user",
+            ),
+            (
+                r#""type":"assistant","text":"decoy","content":[{"type":"text","text":"kept reply"}]"#,
+                "kept reply",
+            ),
+            (
+                r#""type":"assistant","content":[{"type":"text","text":9},{"type":"reasoning","text":"secret"},{"type":"text","text":"kept"}]"#,
+                "kept",
+            ),
+            (
+                r#""type":"user","text":9,"content":[{"type":"text","text":"decoy"}]"#,
+                "",
+            ),
+            (r#""type":"assistant","text":"decoy","content":{}"#, ""),
+            (
+                r#""type":"assistant","content":[],"error":{"message":"never a reply"}"#,
+                "",
+            ),
+            (
+                r#""type":"assistant","content":[{"type":"reasoning","text":"secret"}]"#,
+                "",
+            ),
+        ];
+        for (fields, want) in cases {
+            let raw = format!(r#"{{"id":"msg_body","time":{{"created":1789549200500}},{fields}}}"#);
+            let (rows, coverage) = read_doc(&document(&[raw]), true);
+            assert!(coverage.is_empty(), "{fields}: {coverage:?}");
+            let bodies: Vec<_> = rows.iter().map(|row| row.body.as_str()).collect();
+            let expected: Vec<_> = if want.is_empty() { vec![] } else { vec![want] };
+            assert_eq!(bodies, expected, "{fields}");
+        }
+        let old = r#"{"info":{"id":"msg_v1","role":"user","time":{"created":1789549200500}},"parts":[{"type":"text","text":"unsupported"}]}"#;
+        let (rows, coverage) = read_doc(&document(&[old.to_owned()]), true);
+        assert!(rows.is_empty());
+        assert_eq!(reasons(&coverage), ["1 message lacks a type"]);
     }
 }
