@@ -333,6 +333,10 @@ could not be read. A seat on its usage limit keeps `needs you (usage limit)` and
 labels the declaration `declared:` so the words never read as the limit's. `observed:input ready` is an empty input box and says nothing about
 the task, so `finished · observed:input ready` is normal. `ae list --json` keeps the
 protocol words (`done`, `idle`, `waiting-agent`, ...) unchanged.
+A running seat's `conv:` cell says what its current tool start did with its
+conversation: `new`, `unproven`, `lost(<cause>)`, `unrecorded` (no record of this
+start) or `unknown`; no cell is a proven current resume. The id column reads `pending`
+until the id is captured; JSON adds a `conversation` object and keeps `session_id` `-`.
 Each session's indented detail line ends with three lifecycle ages:
 `created` is the first launch, `started` is the latest launch or resume, and
 `active` is the newest ae event. Legacy sessions derive creation from the
@@ -442,7 +446,8 @@ script or agent; no `jq` is required to produce it. The filters
         {"ref": "claude:lead", "alias": "claude", "name": "lead",
          "session_id": "e795c9e9", "alive": true, "observed": "idle", "state": "blocked",
          "reason": "blocked", "client": "unknown", "account": null,
-         "runtime": {"model": "unknown", "effort": "unknown"}}
+         "runtime": {"model": "unknown", "effort": "unknown"},
+         "conversation": null}
       ],
       "coverage": {"joined_live_seats": 0, "live_seats": 1, "unknown_seats": 0}
     }

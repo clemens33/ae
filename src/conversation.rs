@@ -74,6 +74,64 @@ pub enum Verdict {
     Unknown(Why),
 }
 
+impl Cause {
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::NoId => "no-id",
+            Self::NotFound => "not-found",
+            Self::Unreadable => "unreadable",
+        }
+    }
+}
+
+impl Start {
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Resumed => "resumed",
+            Self::Unproven => "unproven",
+            Self::New => "new",
+            Self::Lost(_) => "lost",
+        }
+    }
+}
+
+impl Verdict {
+    /// The `ae list` cell: silence is a proven current resume and nothing else.
+    #[must_use]
+    pub fn cell(&self) -> Option<String> {
+        let word = match self {
+            Self::Current(record) => match record.start {
+                Start::Resumed => return None,
+                Start::Lost(cause) => format!("lost({})", cause.word()),
+                start => start.word().to_owned(),
+            },
+            Self::Unknown(Why::Unrecorded) => "unrecorded".to_owned(),
+            Self::Unknown(_) => "unknown".to_owned(),
+        };
+        Some(format!(" · conv:{word}"))
+    }
+
+    /// Why the running start's choice is unknown, `None` when it is current.
+    #[must_use]
+    pub const fn why(&self) -> Option<&'static str> {
+        let Self::Unknown(why) = self else {
+            return None;
+        };
+        Some(match why {
+            Why::Unrecorded => "unrecorded",
+            Why::Incomplete => "incomplete",
+            Why::Damaged => "damaged",
+            Why::NoLiveStart => "no-live-start",
+            Why::Stale => "stale",
+            Why::LaunchedMismatch => "launched-mismatch",
+            Why::LaunchedDamaged => "launched-damaged",
+            Why::Conflict => "conflict",
+        })
+    }
+}
+
 const ACTIONS: [(Start, &str); 6] = [
     (Start::Resumed, "conversation-resumed"),
     (Start::Unproven, "conversation-unproven"),
@@ -134,6 +192,21 @@ pub fn decode(event: &Event) -> Option<Result<Record, Damage>> {
         Ok(record)
     } else {
         Err(Damage)
+    })
+}
+
+/// Whether `events` hold a conversation record, damaged or not, whose ref
+/// begins with a start of `slot`'s `launch_id`: what makes a process read worth
+/// taking.
+#[must_use]
+pub fn attributable(events: &[Event], slot: &str, launch_id: &str) -> bool {
+    let prefix = format!("{slot}:{launch_id}:");
+    events.iter().any(|event| {
+        decode(event).is_some()
+            && event
+                .reference
+                .as_deref()
+                .is_some_and(|raw| raw.starts_with(&prefix))
     })
 }
 
@@ -232,13 +305,9 @@ pub fn said(record: &Record, who: &str) -> Option<String> {
         || "no conversation id was recorded".to_owned(),
         |prior| format!("{} was not resumed", short(prior)),
     );
-    let word = match cause {
-        Cause::NoId => "no-id",
-        Cause::NotFound => "not-found",
-        Cause::Unreadable => "unreadable",
-    };
     Some(format!(
-        "{who} start chose a fresh conversation; {what} ({word})"
+        "{who} start chose a fresh conversation; {what} ({})",
+        cause.word()
     ))
 }
 

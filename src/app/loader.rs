@@ -624,6 +624,7 @@ impl Reader {
             world,
             panes,
             sockets,
+            ..
         } = crate::world_read(&self.root, &mut |dir| journals.snapshot(dir));
         let records: BTreeMap<&Path, _> = snapshot
             .sessions

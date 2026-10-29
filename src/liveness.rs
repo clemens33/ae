@@ -1057,6 +1057,7 @@ mod tests {
     fn pane(dead: Option<bool>, slot: Option<&str>, command: Option<&str>) -> ObservedPane {
         ObservedPane {
             pane_id: None,
+            pid: None,
             dead,
             slot: slot.map(ToOwned::to_owned),
             command: command.map(ToOwned::to_owned),

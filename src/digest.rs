@@ -97,6 +97,9 @@ pub struct AgentEntry {
     pub account: Option<Account>,
     /// Fresh roster-fact model and effort. JSON only.
     pub runtime: crate::harness_state::HarnessIdentity,
+    /// What the running tool start did with its conversation; `None` where no
+    /// start can run. Filled by `ae list` alone.
+    pub conversation: Option<crate::conversation::Verdict>,
 }
 
 /// A recorded identity's quota join key, not a vendor login identity.
@@ -215,6 +218,16 @@ impl AgentEntry {
         }
     }
 
+    /// The TABLE's session id: [`Self::display_session_id`], except that a
+    /// literal `pending` row says so. JSON keeps the dash.
+    #[must_use]
+    pub(crate) fn table_session_id(&self) -> &str {
+        match self.session_id.as_deref() {
+            Some(PENDING_SESSION_ID) => PENDING_SESSION_ID,
+            _ => self.display_session_id(),
+        }
+    }
+
     /// This agent as object.
     #[must_use]
     pub fn to_json(&self) -> Value {
@@ -286,8 +299,41 @@ impl AgentEntry {
                 ),
             ]),
         ));
+        fields.push((
+            "conversation".to_owned(),
+            self.conversation
+                .as_ref()
+                .map_or(Value::Null, conversation_json),
+        ));
         Value::Obj(fields)
     }
+}
+
+/// The additive `conversation` member: the choice when current, else why not.
+fn conversation_json(verdict: &crate::conversation::Verdict) -> Value {
+    use crate::conversation::Verdict;
+    let record = match verdict {
+        Verdict::Current(record) => Some(record),
+        Verdict::Unknown(_) => None,
+    };
+    let cause = record.and_then(|record| match record.start {
+        crate::conversation::Start::Lost(cause) => Some(cause.word()),
+        _ => None,
+    });
+    let current = if record.is_some() { "yes" } else { "unknown" };
+    let fields = [
+        ("start", record.map(|record| record.start.word())),
+        ("cause", cause),
+        ("prior", record.and_then(|record| record.prior.as_deref())),
+        ("current", Some(current)),
+        ("why", verdict.why()),
+    ];
+    Value::Obj(
+        fields
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.map_or(Value::Null, Value::str)))
+            .collect(),
+    )
 }
 
 /// Which sources settled each optional digest member.
@@ -939,7 +985,7 @@ mod tests {
             r#""needs_attention":true,"attention":"blocked","attention_rank":3,"#,
             r#""agents":[{"ref":"claude:lead","alias":"claude","name":"lead","#,
             r#""session_id":"e795c9e9","alive":true,"observed":"idle","state":"blocked","reason":"blocked","#,
-            r#""client":"unknown","account":null,"runtime":{"model":"unknown","effort":"unknown"}}],"#,
+            r#""client":"unknown","account":null,"runtime":{"model":"unknown","effort":"unknown"},"conversation":null}],"#,
             r#""coverage":{"joined_live_seats":0,"live_seats":1,"unknown_seats":0}"#,
             r#"}],"inventory_complete":true}"#
         );
@@ -1291,7 +1337,8 @@ mod tests {
                 "reason",
                 "client",
                 "account",
-                "runtime"
+                "runtime",
+                "conversation"
             ]),
             "every documented agent member is present: {value}"
         );

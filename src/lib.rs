@@ -621,6 +621,9 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         if matches!(&request, cli::Request::List(options) if options.json) {
             enrich_list_json(&read.snapshot, &mut read.world, &read.panes);
         }
+        if matches!(&request, cli::Request::List(_)) {
+            enrich_list_conversation(&read.snapshot, &mut read.world, &read.pids);
+        }
         return run_with(args, Some(&read.world), out, err);
     }
     run_with(args, None, out, err)
@@ -669,6 +672,45 @@ fn enrich_list_json(
                     .collect()
             });
         session::enrich_list_json(entry, roster, fact.as_deref(), panes.as_deref(), world.now);
+    }
+}
+
+/// Each seat's conversation verdict, for `ae list` alone: at most ONE process
+/// read for the whole listing, and only when some seat's journal could name
+/// its running start.
+fn enrich_list_conversation(
+    snapshot: &liveness::Snapshot,
+    world: &mut listing::World,
+    pids: &SeatPids,
+) {
+    let table = std::cell::OnceCell::new();
+    let table = || table.get_or_init(procs::snapshot).as_deref();
+    for (classified, entry) in snapshot.sessions.iter().zip(&mut world.sessions) {
+        let Some(record) = classified.candidate.durable.as_ref() else {
+            continue;
+        };
+        let Some(meta) = record.snapshot.meta.as_ref() else {
+            continue;
+        };
+        let seats = pids.get(&record.path);
+        for agent in &mut entry.agents {
+            let Some(seat) = meta.roster().iter().find(|seat| seat.name == agent.name) else {
+                continue;
+            };
+            let pid = seats
+                .and_then(|seats| seats.get(&seat.slot))
+                .copied()
+                .flatten();
+            agent.conversation = session::conversation_of(
+                meta,
+                record.snapshot.events.as_ref(),
+                &seat.slot,
+                entry.status,
+                agent.alive,
+                pid,
+                &table,
+            );
+        }
     }
 }
 
@@ -3469,8 +3511,14 @@ pub(crate) struct WorldRead {
     pub(crate) snapshot: liveness::Snapshot,
     pub(crate) world: listing::World,
     pub(crate) panes: ListedPanes,
+    pub(crate) pids: SeatPids,
     pub(crate) sockets: SocketPaths,
 }
+
+/// Each Running record's listed pane pid per slot by its state directory;
+/// `None` where more than one pane carries the slot.
+pub(crate) type SeatPids =
+    std::collections::BTreeMap<std::path::PathBuf, std::collections::BTreeMap<String, Option<u32>>>;
 
 /// Each Running record's panes by its state directory: `None` when the read
 /// listed none (no recorded server, no meta, or tmux did not answer).
@@ -3520,7 +3568,7 @@ pub(crate) fn world_read(
             hook(root);
         }
     });
-    let (runtimes, panes) = observed_runtimes(&snapshot);
+    let (runtimes, panes, pids) = observed_runtimes(&snapshot);
     let world = listing::Presentation::enter(&snapshot).world_with(
         time::Timestamp::now(),
         session::DEFAULT_UNANSWERED_SECS,
@@ -3530,6 +3578,7 @@ pub(crate) fn world_read(
         snapshot,
         world,
         panes,
+        pids,
         sockets,
     }
 }
@@ -3538,8 +3587,11 @@ pub(crate) fn world_read(
 /// order, and each Running record's panes it listed. Each server holding a
 /// Running record is asked ONCE (`list-panes -a`), the branch riding on that
 /// same format.
-fn observed_runtimes(snapshot: &liveness::Snapshot) -> (Vec<session::SessionRuntime>, ListedPanes) {
+fn observed_runtimes(
+    snapshot: &liveness::Snapshot,
+) -> (Vec<session::SessionRuntime>, ListedPanes, SeatPids) {
     let mut panes = ListedPanes::new();
+    let mut pids = SeatPids::new();
     let mut asked: Vec<(inventory::ServerId, Option<tmux::ServerPanes>)> = Vec::new();
     let runtimes = snapshot
         .sessions
@@ -3569,6 +3621,17 @@ fn observed_runtimes(snapshot: &liveness::Snapshot) -> (Vec<session::SessionRunt
                 .as_ref()
                 .and_then(|answer| answer.session(&record.name));
             runtime.branch = session.and_then(|rows| rows.branch.clone());
+            if let Some(rows) = session {
+                let seats = pids.entry(record.path.clone()).or_default();
+                for pane in &rows.panes {
+                    if let Some(slot) = &pane.slot {
+                        seats
+                            .entry(slot.clone())
+                            .and_modify(|held| *held = None)
+                            .or_insert(pane.pid);
+                    }
+                }
+            }
             *listed = record
                 .snapshot
                 .meta
@@ -3581,7 +3644,7 @@ fn observed_runtimes(snapshot: &liveness::Snapshot) -> (Vec<session::SessionRunt
             runtime
         })
         .collect();
-    (runtimes, panes)
+    (runtimes, panes, pids)
 }
 
 /// What tmux says RIGHT NOW of each roster seat of session `name` on `server`;
@@ -4248,7 +4311,7 @@ mod tests {
             ],
             incomplete: Vec::new(),
         };
-        let (runtimes, panes) = super::observed_runtimes(&snapshot);
+        let (runtimes, panes, _) = super::observed_runtimes(&snapshot);
         let statuses: Vec<Status> = runtimes.iter().map(|runtime| runtime.status).collect();
         assert_eq!(statuses, [Status::Running, Status::Stopped]);
         let listed = std::path::PathBuf::from("/ae-no-such-root/up");

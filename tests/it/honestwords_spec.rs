@@ -346,7 +346,8 @@ fn honestwords_list_labels_declarations_and_observation_independently() {
                 "reason",
                 "client",
                 "account",
-                "runtime"
+                "runtime",
+                "conversation"
             ]
         );
     }

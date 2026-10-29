@@ -106,6 +106,8 @@ mod o4jump_pure_spec;
 mod o4jump_spec;
 mod o6life_s1a_run_spec;
 mod o6life_s1a_spec;
+mod o6list_live_spec;
+mod o6list_spec;
 mod o8snap_spec;
 mod parity;
 mod phase2;

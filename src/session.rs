@@ -1168,6 +1168,7 @@ fn agent_entries(
                 crate::model_drift::ModelDrift::Unknown
             };
             let mut entry = AgentEntry {
+                conversation: None,
                 reference: reference.clone(),
                 // Schema 2 keeps publishing `alias`; for a v2 row that is the profile.
                 alias: slot.profile.clone().unwrap_or_default(),
@@ -1312,6 +1313,57 @@ fn agent_entries(
         })
         .collect();
     (agents, crate::wait_on::session_end(&links))
+}
+
+/// What `slot`'s running tool start did with its conversation, for `ae list`.
+/// `None` only when no start can run: a stopped session or a proven-dead seat.
+/// `table` is asked at most once, and only when the journal holds a record
+/// that could name this seat's start; `pane_pid` is the pane's root, under
+/// which [`crate::autotrust::start_of`] finds the tool.
+#[must_use]
+pub fn conversation_of<'t>(
+    meta: &Meta,
+    read: Option<&SessionRead>,
+    slot: &str,
+    status: Status,
+    alive: Option<bool>,
+    pane_pid: Option<u32>,
+    table: &dyn Fn() -> Option<&'t [crate::procs::Proc]>,
+) -> Option<crate::conversation::Verdict> {
+    use crate::conversation::{self, Verdict, Why};
+    if status == Status::Stopped || alive == Some(false) {
+        return None;
+    }
+    let seat = meta.roster().iter().find(|seat| seat.slot == slot)?;
+    // An unidentified seat is never `Unrecorded`: nothing proves which start
+    // a record would have to name.
+    let Some((read, launch)) = read
+        .filter(|read| !read.lost_records())
+        .zip(meta.launch_id(slot))
+    else {
+        return Some(Verdict::Unknown(Why::Incomplete));
+    };
+    let baseline = meta.launch_baseline(slot);
+    let launched = match &baseline {
+        crate::meta::Rows::Valid(launched) => Some(Ok(launched.start.as_str())),
+        crate::meta::Rows::Absent => None,
+        crate::meta::Rows::Damaged(_) => Some(Err(())),
+    };
+    let live = pane_pid
+        .filter(|_| status == Status::Running && alive == Some(true))
+        .filter(|_| conversation::attributable(&read.events, slot, launch))
+        .and_then(|pid| {
+            let tool = seat.binary.as_deref()?;
+            crate::autotrust::start_of(table()?, pid, (slot, launch), tool)
+        });
+    Some(conversation::current(
+        &read.events,
+        true,
+        slot,
+        launch,
+        launched,
+        live.as_deref(),
+    ))
 }
 
 /// Enrich explicit JSON listings without changing activity or durable reads.

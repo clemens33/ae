@@ -403,7 +403,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // It sits between the reference and the semantic fields, and it is
             // the SAME helper the digest consumes so the two surfaces cannot
             // drift.
-            push_padded(&mut out, agent.display_session_id(), ID_WIDTH);
+            push_padded(&mut out, agent.table_session_id(), ID_WIDTH);
             // Per-agent HEALTH is deliberately NOT a column here.
             // The verdict cell. A standing usage limit or unreachable failure
             // REPLACES the declared state here — the pane fact is what needs the
@@ -470,6 +470,13 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                 crate::model_drift::ModelDrift::Unknown => out.push_str(" · drift:unknown"),
             }
             effort_cell(agent.effort.as_ref(), &mut out);
+            if let Some(cell) = agent
+                .conversation
+                .as_ref()
+                .and_then(crate::conversation::Verdict::cell)
+            {
+                out.push_str(&cell);
+            }
             // WHY a seat is quiet without being idle, so the human reads it off
             // the line instead of opening the pane.
             if let Some(reason) = agent.own_work.and_then(crate::session::OwnWork::reason) {
