@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.155] - 2026-10-29
+- Journal which conversation each tool start chose (#250 O6 S1a)
+
 ## [v2026.10.154] - 2026-10-29
 - Render chat-lane turns with the reader's inert Markdown subset in ae app (#270)
 
