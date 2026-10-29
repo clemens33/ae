@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.159] - 2026-10-29
+- Create a session from the cwd on first use and land in the app (#230 O7 S3)
+
 ## [v2026.10.158] - 2026-10-29
 - Tell a seat at launch that its previous conversation was not resumed (#250 O6 S2)
 
