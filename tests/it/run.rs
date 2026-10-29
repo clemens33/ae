@@ -1666,7 +1666,7 @@ fn assert_fresh_row(rig: &Rig, tool: &str, banned: &[&str], recorded: Option<&st
         }
         assert!(
             said.contains(&format!("no proven {tool} conversation"))
-                && said.contains("starting a fresh one")
+                && said.contains(&format!("starting a fresh {tool} conversation"))
                 && said.contains(minted)
                 && !said.contains("instead of"),
             "{tool}: the notice names the fresh start and its id: {said}"
@@ -1681,9 +1681,8 @@ fn assert_fresh_row(rig: &Rig, tool: &str, banned: &[&str], recorded: Option<&st
             "{tool} names no session: {argv:?}"
         );
         assert!(
-            said.contains(&format!(
-                "no proven {tool} conversation — starting a fresh one"
-            )),
+            said.contains(&format!("no proven {tool} conversation"))
+                && said.contains(&format!("starting a fresh {tool} conversation")),
             "{tool}: the fresh start is named: {said}"
         );
         assert!(
@@ -1760,7 +1759,8 @@ fn a_fallback_with_a_failed_record_launches_without_the_unrecorded_id() {
             );
         } else {
             assert!(
-                said.contains("starting fresh anyway") && said.contains("starting a fresh one"),
+                said.contains("starting fresh anyway")
+                    && said.contains(&format!("starting a fresh {tool} conversation")),
                 "still fresh, still said: {said}"
             );
         }
@@ -2140,7 +2140,7 @@ fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
     // is why the marker exists: no second conversation is created beside a
     // live one, and the fresh one is named.
     let (argv, said) = rig.exec();
-    assert!(said.contains(ae::run::RESUMING), "{said}");
+    assert!(!said.contains(ae::run::RESUMING), "{said}");
     // Claude takes the fresh-start fallback, so its notice fires.
     assert!(said.contains("no proven claude conversation"), "{said}");
     let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));

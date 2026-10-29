@@ -24,6 +24,7 @@ mod clipboard;
 mod compact;
 pub mod config;
 pub mod console;
+pub mod conversation;
 pub mod deliver;
 pub mod digest;
 pub mod doctor;

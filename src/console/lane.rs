@@ -608,6 +608,19 @@ fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>,
                 other_say += 1;
                 continue;
             }
+        } else if let Some(Ok(record)) = crate::conversation::decode(event) {
+            // A lost conversation, from the decoded record and never its
+            // summary: history, so it stays where it happened.
+            let slot = record.start_key.split(':').next().unwrap_or_default();
+            let named = seats
+                .iter()
+                .find(|seat| seat.slot == slot)
+                .map_or(to.as_str(), |seat| seat.name.as_str());
+            if let Some(said) = crate::conversation::said(&record, named) {
+                let who = "ae".to_owned();
+                items.push(item(Kind::Said { who }, micros(event), &said));
+            }
+            continue;
         } else {
             continue;
         };

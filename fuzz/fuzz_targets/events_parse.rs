@@ -64,4 +64,34 @@ fuzz_target!(|data: &[u8]| {
     {
         assert_eq!(events[at].reference.as_ref(), Some(id));
     }
+    // `_run`'s conversation choices: a decoded record spells its own `ref`
+    // back. The currency fold takes its seat, baseline, live start and
+    // completeness from the hostile rows too: any ref's first token, or none.
+    for event in &events {
+        if let Some(Ok(record)) = ae::conversation::decode(event) {
+            let spelled = ae::conversation::reference(&record);
+            assert_eq!(event.reference.as_deref(), Some(spelled.as_str()));
+        }
+    }
+    let keys: Vec<&str> = events
+        .iter()
+        .filter_map(|e| e.reference.as_deref()?.split(' ').next())
+        .collect();
+    let pick = |n: usize| keys.get(n % (keys.len() + 1)).copied();
+    let bits = data.iter().fold(0usize, |h, b| {
+        h.wrapping_mul(31).wrapping_add(usize::from(*b))
+    });
+    let mut seat = pick(bits >> 8).unwrap_or("main").split(':');
+    let (slot, launch) = (seat.next().unwrap_or(""), seat.next().unwrap_or(""));
+    let launched = [
+        None,
+        Some(Err(())),
+        pick(bits >> 2).map(Ok),
+        pick(bits >> 4).map(Ok),
+    ][(bits >> 6) % 4];
+    let live = pick(bits >> 4);
+    let verdict = ae::conversation::current(&events, bits % 2 == 0, slot, launch, launched, live);
+    if let ae::conversation::Verdict::Current(record) = verdict {
+        assert!(bits % 2 == 0 && Some(record.start_key.as_str()) == live);
+    }
 });

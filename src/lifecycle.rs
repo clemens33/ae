@@ -271,12 +271,17 @@ pub(crate) fn dir_exists(path: &Path) -> bool {
 
 /// Whether `path` exists at all, following symlinks.
 pub(crate) fn path_exists(path: &Path) -> bool {
+    path_metadata(path).is_ok()
+}
+
+/// [`path_exists`] with its error kept: a resume probe must tell an absent
+/// conversation from one it could not look for.
+pub(crate) fn path_metadata(path: &Path) -> std::io::Result<fs::Metadata> {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: the archive plan asks whether a session's memory files are present before calling a target unarchivable"
+        reason = "a door: the archive plan asks whether a session's memory files are present before calling a target unarchivable, and a resume probe whether a tool's conversation is"
     )]
-    let meta = fs::metadata(path);
-    meta.is_ok()
+    fs::metadata(path)
 }
 
 // ---- `_stop` ---------------------------------------------------------------

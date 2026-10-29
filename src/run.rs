@@ -7,6 +7,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::conversation::{Cause, Probe, Start};
 use crate::launch;
 use crate::tool::{ContextChannel, ResumeForm, StoreProbe, ToolKind};
 
@@ -70,6 +71,10 @@ pub struct Plan {
     /// Why the observed record is not applied on this start, journaled once.
     refusal: Option<String>,
 }
+
+/// What `run` journals about this start's conversation, and for which seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Choice(crate::conversation::Record, String, String);
 
 /// An effort discard `run` writes after the print gate: the facts its proof
 /// re-checks under the meta lock, and what its record says.
@@ -390,8 +395,8 @@ pub fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
-    let mut plan = match build_with_snapshot(dir, slot, command_snapshot) {
-        Ok(plan) => plan,
+    let (mut plan, mut choice) = match build_with_snapshot(dir, slot, command_snapshot) {
+        Ok(built) => built,
         Err(why) => {
             writeln!(err, "ae: {why}")?;
             err.flush()?;
@@ -439,11 +444,11 @@ pub fn run(
             err.flush()?;
             return Ok(EXIT_FAILED);
         }
-    } else {
-        // Said on every resume: a human who arrow-upped the pane's command
-        // gets an answer to "did that just start a second conversation?", and a
-        // resumed pane says why it is not empty. It survives on screen only
-        // until the tool draws over it.
+    } else if plan.fresh.is_none() {
+        // Said on every exact resume (a fallback says what it started instead):
+        // a human who arrow-upped the pane's command gets an answer to "did
+        // that just start a second conversation?", and a resumed pane says why
+        // it is not empty. It survives on screen only until the tool draws over it.
         writeln!(err, "{RESUMING}")?;
         err.flush()?;
     }
@@ -455,6 +460,10 @@ pub fn run(
     // never names an id the pane is not opening. A seat with nothing to name
     // still starts fresh, and still says so.
     let recorded = record_resume(dir, slot, &plan, err)?;
+    if plan.fresh.is_some() && recorded.is_err() {
+        // No meta row holds the fresh id, so the record names none.
+        launch::PENDING.clone_into(&mut choice.0.id);
+    }
     let mut unnamed = false;
     if let Some(fresh) = plan.fresh.as_ref()
         && let Err(why) = recorded
@@ -479,6 +488,7 @@ pub fn run(
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
+    record_choice(dir, slot, &choice, err)?;
     record_launch(dir, slot, &plan, err)?;
     let why = exec(&plan);
     // Reached only because the exec did NOT happen, so this seat has not been
@@ -540,6 +550,50 @@ fn record_resume(
         err.flush()?;
     }
     Ok(recorded)
+}
+
+/// Journal the conversation this start chose; a failed append is said and
+/// never blocks the start.
+fn record_choice(
+    dir: &Path,
+    slot: &str,
+    choice: &Choice,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    let Choice(record, session, agent) = choice;
+    let summary = crate::conversation::said(record, agent)
+        .unwrap_or_else(|| format!("{agent} start chose {}", record.id));
+    let session_id = meta_session_id(dir);
+    let seat = crate::effort::DiscardSeat {
+        session,
+        session_id: &session_id,
+        slot,
+        agent,
+    };
+    let action = crate::conversation::action(record.start);
+    let reference = crate::conversation::reference(record);
+    let line = crate::effort::line(
+        crate::time::Timestamp::now(),
+        &seat,
+        action,
+        &reference,
+        &summary,
+    );
+    if let Err(why) = crate::store::open(dir).append_event(&format!("{line}\n")) {
+        writeln!(
+            err,
+            "ae: seat {slot}: could not journal the conversation decision ({why}) — launching anyway"
+        )?;
+        err.flush()?;
+    }
+    Ok(())
+}
+
+/// The meta `session_id`, or empty when the meta cannot be read.
+fn meta_session_id(dir: &Path) -> String {
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    meta.session_id().unwrap_or_default().to_owned()
 }
 
 /// Create the start marker DURABLY, or say why it could not be.
@@ -613,14 +667,14 @@ fn exec_with(
 /// seat, a profile this machine does not configure, or a command line the
 /// direct exec cannot run.
 pub fn build(dir: &Path, slot: &str) -> Result<Plan, String> {
-    build_with_snapshot(dir, slot, None)
+    build_with_snapshot(dir, slot, None).map(|(plan, _)| plan)
 }
 
 fn build_with_snapshot(
     dir: &Path,
     slot: &str,
     command_snapshot: Option<&str>,
-) -> Result<Plan, String> {
+) -> Result<(Plan, Choice), String> {
     let mut seat = read_seat(dir, slot, command_snapshot)?;
     let mode = if crate::lifecycle::path_exists(&started_marker(dir, slot)) {
         Mode::Resume
@@ -666,10 +720,17 @@ fn build_with_snapshot(
                 identity.current.shown()
             )
         });
-    // ONE probe: the compose and the effort decision must agree on whether the
-    // recorded conversation is the one this launch keeps.
-    let exact =
-        mode == Mode::Resume && resumable(seat.tool, &seat.harness_session, &identity.effective);
+    // ONE probe: the compose, the effort decision and the journaled choice
+    // must agree on whether the recorded conversation is the one this launch keeps.
+    let probe = (mode == Mode::Resume).then(|| {
+        probe_in(
+            seat.tool,
+            &seat.harness_session,
+            &identity.effective,
+            working_dir().as_deref(),
+        )
+    });
+    let exact = matches!(probe, Some(Probe::Found | Probe::Unprobed));
     let (effort, effort_notice) = effort_on_resume(dir, slot, &mut seat, exact)?;
     let launch = seat
         .tool
@@ -685,6 +746,8 @@ fn build_with_snapshot(
             effort: crate::launch_cmd::effort_flag(seat.command.as_str(), seat.tool).ok(),
         });
     let composed = compose(dir, slot, &seat, &ctx, mode, exact)?;
+    let choice = choice(&seat, slot, probe, composed.fresh.as_ref());
+    let resume_notice = crate::conversation::notice(slot, &choice.0, seat.tool.as_str());
     let words = crate::words::split_words(&composed.cmd, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
     if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {
@@ -693,7 +756,7 @@ fn build_with_snapshot(
     } else {
         reconcile_config_home(&mut prefix, seat.tool, &current, &identity);
     }
-    Ok(Plan {
+    let plan = Plan {
         mode,
         tool: seat.tool,
         clear: prefix.clear,
@@ -704,13 +767,43 @@ fn build_with_snapshot(
         config_home_base_row: identity.new_base_row,
         config_home_notice,
         model_notice,
-        resume_notice: composed.notice,
+        resume_notice,
         fresh: composed.fresh,
         effort,
         effort_notice,
         launch,
         refusal,
-    })
+    };
+    Ok((plan, choice))
+}
+
+/// What this start chose, from the ONE probe's verdict: `None` is a create.
+/// The key is this process, the tool `exec` is about to become.
+fn choice(seat: &Seat, slot: &str, probe: Option<Probe>, fresh: Option<&FreshRecord>) -> Choice {
+    let recorded = seat.harness_session.as_str();
+    let minted = fresh
+        .and_then(|fresh| fresh.minted.as_deref())
+        .unwrap_or_default();
+    let (start, prior, id) = match probe {
+        None => (Start::New, None, recorded),
+        Some(Probe::Found) => (Start::Resumed, None, recorded),
+        Some(Probe::Unprobed) => (Start::Unproven, None, recorded),
+        Some(Probe::NoId) => (Start::Lost(Cause::NoId), None, minted),
+        Some(Probe::NotFound) => (Start::Lost(Cause::NotFound), Some(recorded), minted),
+        Some(Probe::Unreadable) => (Start::Lost(Cause::Unreadable), Some(recorded), minted),
+    };
+    let record = crate::conversation::Record {
+        start,
+        start_key: format!("{slot}:{}:{}", seat.launch_id, std::process::id()),
+        prior: prior.map(ToOwned::to_owned),
+        id: if launch::id_probeable(id) {
+            id
+        } else {
+            launch::PENDING
+        }
+        .to_owned(),
+    };
+    Choice(record, seat.session.clone(), seat.agent.clone())
 }
 
 /// The seat's effort record on this launch ([`crate::effort::on_resume`]),
@@ -1126,13 +1219,7 @@ fn record_launch(dir: &Path, slot: &str, plan: &Plan, err: &mut impl Write) -> s
                 effort: base.effort,
             })
         });
-    let session_id = crate::meta::read_bytes(dir).map_or_else(
-        |_| String::new(),
-        |bytes| {
-            let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
-            meta.session_id().unwrap_or_default().to_owned()
-        },
-    );
+    let session_id = meta_session_id(dir);
     let seat = crate::effort::DiscardSeat {
         session: &base.session,
         session_id: &session_id,
@@ -1331,7 +1418,6 @@ fn prove_implicit_store(
 struct Composed {
     cmd: String,
     fresh: Option<FreshRecord>,
-    notice: Option<String>,
 }
 
 /// Drop the `--session-id` pair a fallback composed, for a seat whose fresh
@@ -1396,25 +1482,11 @@ fn compose(
             read_id: seat.harness_session.clone(),
             minted: minted.clone(),
         });
-        let fresh_start_form = matches!(
-            seat.tool.adapter().resume.form,
-            ResumeForm::ExactOnly { .. } | ResumeForm::StrippedExact { .. }
-        );
-        let notice = (!exact && fresh_start_form).then(|| {
-            let mint = minted
-                .as_deref()
-                .map_or_else(String::new, |id| format!(" (--session-id {id})"));
-            format!(
-                "ae: seat {slot}: no proven {} conversation — starting a fresh one{mint}",
-                seat.tool.as_str()
-            )
-        });
         // A resume carries no inline first message: codex's is delivered once
         // its UI returns, and no other tool has one.
         return Ok(Composed {
             cmd: launch::build_launch_command(&cmd, ""),
             fresh,
-            notice,
         });
     }
     let pre = launch::inject_session_id(seat.command.as_str(), &seat.harness_session);
@@ -1459,7 +1531,6 @@ fn compose(
     Ok(Composed {
         cmd: launch::build_launch_command(&injected.cmd, &prompt_text),
         fresh: None,
-        notice: None,
     })
 }
 
@@ -1487,32 +1558,48 @@ fn resume_keeps_context(tool: ToolKind, exact: bool) -> bool {
 
 /// Should this seat be resumed with the id its meta records? Asked from the
 /// pane's own working directory.
+#[cfg(test)]
 fn resumable(tool: ToolKind, id: &str, config_home: &crate::launch_cmd::Resolved) -> bool {
     resumable_in(tool, id, config_home, working_dir().as_deref())
 }
 
-/// [`resumable`] keyed by `work_dir`: the ONE store probe, which `ae reseat`
-/// asks with the seat's RECORDED working copy before it keeps a conversation.
+/// [`probe_in`] as the yes/no a resume composes from: an unprobed store is
+/// resumed on trust, as before.
 pub(crate) fn resumable_in(
     tool: ToolKind,
     id: &str,
     config_home: &crate::launch_cmd::Resolved,
     work_dir: Option<&Path>,
 ) -> bool {
+    matches!(
+        probe_in(tool, id, config_home, work_dir),
+        Probe::Found | Probe::Unprobed
+    )
+}
+
+/// The ONE store probe, keyed by `work_dir`, which `ae reseat` asks with the
+/// seat's RECORDED working copy before it keeps a conversation. A read error
+/// is [`Probe::Unreadable`], never proof the conversation is gone.
+pub(crate) fn probe_in(
+    tool: ToolKind,
+    id: &str,
+    config_home: &crate::launch_cmd::Resolved,
+    work_dir: Option<&Path>,
+) -> Probe {
     if !launch::id_probeable(id) {
-        return false;
+        return Probe::NoId;
     }
     match tool.adapter().resume.probe {
         // Claude keeps a transcript per conversation at a path derived from the
         // working directory, so the file's existence IS the answer.
         StoreProbe::ProjectTranscript => {
             let crate::launch_cmd::Resolved::Path(home) = config_home else {
-                return true;
+                return Probe::Unprobed;
             };
             let Some(cwd) = work_dir else {
-                return false;
+                return Probe::Unreadable;
             };
-            crate::lifecycle::path_exists(
+            regular_file(
                 &home
                     .join("projects")
                     .join(crate::carry::project_key(cwd))
@@ -1522,54 +1609,81 @@ pub(crate) fn resumable_in(
         // Codex records under dated directories, so the id is searched for.
         StoreProbe::DatedRollouts => {
             let crate::launch_cmd::Resolved::Path(home) = config_home else {
-                return true;
+                return Probe::Unprobed;
             };
-            contains_id(&home.join("sessions"), id, 4)
+            scan(&home.join("sessions"), id, 4, true)
         }
         // agy keeps ONE SQLite file per conversation, named for the id, in one
         // flat directory (measured 2026-09-04) — so the file's existence is the
         // answer, with no walk and no guess.
         StoreProbe::ConversationDatabase => {
             let Some(home) = env_lookup("HOME") else {
-                return false;
+                return Probe::Unreadable;
             };
-            crate::lifecycle::path_exists(
+            regular_file(
                 &Path::new(&home)
                     .join(crate::session_launch::capture::AGY_CONVERSATIONS)
                     .join(format!("{id}.db")),
             )
         }
-        StoreProbe::RecordedId => true,
+        StoreProbe::RecordedId => Probe::Unprobed,
     }
 }
 
-/// Is there a `*<id>*.jsonl` anywhere within `depth` levels of `root`?
-fn contains_id(root: &Path, id: &str, depth: usize) -> bool {
+/// A store node proves a conversation only as a REGULAR file, links followed:
+/// a directory or a dangling link at its name holds none.
+fn regular_file(path: &Path) -> Probe {
+    match crate::lifecycle::path_metadata(path) {
+        Ok(meta) if meta.is_file() => Probe::Found,
+        Ok(_) => Probe::NotFound,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Probe::NotFound,
+        Err(_) => Probe::Unreadable,
+    }
+}
+
+/// Is there a regular `*<id>*.jsonl` file within `depth` levels of `root`? A
+/// missing top `root` is an empty store; any other failed read, at any level,
+/// is [`Probe::Unreadable`] unless a match turns up elsewhere.
+fn scan(root: &Path, id: &str, depth: usize, top: bool) -> Probe {
     if depth == 0 {
-        return false;
+        return Probe::NotFound;
     }
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the resume probe reads the TOOL's own session store, which is the only evidence that a conversation exists"
     )]
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return false;
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(why) if top && why.kind() == std::io::ErrorKind::NotFound => return Probe::NotFound,
+        Err(_) => return Probe::Unreadable,
     };
-    for entry in entries.flatten() {
+    let mut found = Probe::NotFound;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            found = Probe::Unreadable;
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
         let log = Path::new(&name)
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"));
-        if log && name.contains(id) {
-            return true;
-        }
-        if entry.file_type().is_ok_and(|kind| kind.is_dir())
-            && contains_id(&entry.path(), id, depth - 1)
-        {
-            return true;
+        let here = if log && name.contains(id) {
+            regular_file(&entry.path())
+        } else {
+            Probe::NotFound
+        };
+        let below = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => scan(&entry.path(), id, depth - 1, false),
+            Ok(_) => Probe::NotFound,
+            Err(_) => Probe::Unreadable,
+        };
+        match (here, below) {
+            (Probe::Found, _) | (_, Probe::Found) => return Probe::Found,
+            (Probe::Unreadable, _) | (_, Probe::Unreadable) => found = Probe::Unreadable,
+            _ => {}
         }
     }
-    false
+    found
 }
 
 /// Canonicalize a config home before it becomes or is compared with seat
