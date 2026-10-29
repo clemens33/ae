@@ -69,6 +69,9 @@ mod journals;
 mod lane;
 #[cfg(test)]
 mod lane_spec;
+#[cfg(test)]
+#[path = "app/linkhint_spec.rs"]
+mod linkhint_spec;
 mod loader;
 pub mod markdown;
 #[cfg(test)]
@@ -349,6 +352,15 @@ impl ReaderPane {
     }
 }
 
+/// What a press on a link cell does when its un-dragged release lands there.
+#[derive(Debug)]
+enum Press {
+    /// Open this file occurrence in the reader.
+    File(draw::FileHit),
+    /// Show the hint that names the terminal's link modifier.
+    Web,
+}
+
 /// A drag that began in a selectable region, from its press until its copy is
 /// shipped or it is cleared.
 #[derive(Debug)]
@@ -562,8 +574,8 @@ struct App {
     last_input: Option<Instant>,
     /// The drag in progress, or the highlight it left.
     select: Option<Held>,
-    /// File press bound to its frame, pointer and panel epoch until release.
-    read_press: Option<(draw::FileHit, Position, u64)>,
+    /// A link press bound to its pointer and panel epoch until release.
+    read_press: Option<(Press, Position, u64)>,
     /// The cells of the frame on screen, before any highlight.
     shot: Buffer,
     /// The last frame left a hint it did not draw: draw again.
@@ -2343,7 +2355,7 @@ impl App {
             self.held = None;
             if self.file_list(&hit).is_some() {
                 self.read_press = Some((
-                    hit,
+                    Press::File(hit),
                     Position::new(mouse.column, mouse.row),
                     self.model.epoch(),
                 ));
@@ -2352,7 +2364,13 @@ impl App {
             }
             true
         } else {
-            self.click(mouse)
+            let web = self.layout.link_at(mouse);
+            let acted = self.click(mouse);
+            if web {
+                let at = Position::new(mouse.column, mouse.row);
+                self.read_press = Some((Press::Web, at, self.model.epoch()));
+            }
+            acted
         };
         self.arm(mouse, before, fresh);
         acted
@@ -2514,10 +2532,17 @@ impl App {
             && at == Position::new(mouse.column, mouse.row)
             && epoch == self.model.epoch()
         {
-            if let Some(files) = self.file_list(&hit) {
-                self.read_file(files, hit.link.index, hit.link.base);
-            } else {
-                self.changed_read();
+            match hit {
+                Press::File(hit) => {
+                    if let Some(files) = self.file_list(&hit) {
+                        self.read_file(files, hit.link.index, hit.link.base);
+                    } else {
+                        self.changed_read();
+                    }
+                }
+                Press::Web => {
+                    self.flash = Some((link::open_hint().to_owned(), Instant::now()));
+                }
             }
             return true;
         }

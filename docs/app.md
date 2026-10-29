@@ -516,7 +516,7 @@ chat column, read-only, with the sidebar still live. Wrapped links and wide
 characters work on every covered cell. A press changes no mark or draft; dragging
 selects text instead. Another press, key, wheel notch or changed view cancels the
 pending click. A stale link says `refused: read: the view changed`. Web links keep
-the ordinary turn-mark toggle; Cmd/Ctrl-click stays with the terminal.
+the ordinary turn-mark toggle and show the link hint ([Links](#links)).
 
 `r` on a marked turn (`[` / `]`, or a click outside a file link) opens its first
 file link. Both paths use the same list over every displayed part, including
@@ -573,7 +573,8 @@ is read; the panel shows the bytes it read. A terminal that reports Cmd-click as
 an ordinary press lets ae handle it. Closed-ask excerpts stop at 80 characters:
 any file token touching the synthetic `…` is omitted from the reader list and
 click cells, even a path ending exactly at character 80 when more text follows.
-Its legacy terminal hyperlink remains; those cells keep the turn-mark toggle.
+Its legacy terminal hyperlink remains; those cells keep the turn-mark toggle and
+show the link hint.
 
 ## Long turns
 
@@ -665,10 +666,26 @@ only after the frame that shows it.
 ## Links
 
 A web URL (`http://` or `https://`) or a repo-style path in a turn is a real
-terminal hyperlink: Cmd-click (Ctrl-click on Linux) opens it with mouse capture
-off. While ae or tmux captures the mouse, many terminals use Shift to bypass it:
-Ghostty: Shift+Cmd-click; Linux: Shift+Ctrl-click. A plain click goes to ae; in
-the app, a plain click on a marked turn's link does not open the terminal link.
+terminal hyperlink. ae never opens one itself, and ae and tmux hold the mouse,
+so a plain click goes to ae and the terminal never sees it. Clicking a web link
+(or a file link the reader does not open, such as a clipped excerpt path) keeps
+the turn-mark toggle and, on release, says `Shift+Cmd+click to open link` (macOS) or
+`Ctrl+click or Shift+click to open link` (elsewhere) on the hint row for five
+seconds; a drag still selects text. To open it, hold the modifier your
+terminal reserves for links: Shift bypasses the mouse capture where the
+terminal needs it.
+
+| Terminal | Open a link while ae holds the mouse |
+|---|---|
+| Ghostty, macOS | Shift+Cmd+click. `mouse-shift-capture` defaults to `false`, so Shift is not sent to ae (verified on Ghostty 1.3.1). No option makes a plain Cmd+click work under mouse reporting; `mouse-reporting = false` would stop ae's own clicks |
+| Ghostty, Linux | Shift+Ctrl+click: the same `mouse-shift-capture` logic, and Ghostty's link modifier is Ctrl on Linux (its config docs, not tried here), so the hint's "Ctrl+click or Shift+click" alone does not open it |
+| GNOME Terminal / VTE | Ctrl+click (measured on Ubuntu's default terminal) |
+| iTerm2 | Option+Cmd+click (vendor docs, not verified here) |
+| WezTerm | Shift+click (vendor docs, not verified here) |
+| Kitty | Ctrl+Shift+click (vendor docs, not verified here) |
+| Alacritty | Shift+Cmd+click on macOS, Shift+Ctrl+click elsewhere (vendor docs, not verified here) |
+| Windows Terminal | Ctrl+click (vendor docs, not verified here) |
+
 The text is underlined while a look is drawn. A path is one of
 
 - `src/…`, `docs/…`, `tests/…` or `.local/…`, against the work dir the session's

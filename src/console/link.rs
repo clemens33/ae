@@ -56,6 +56,19 @@ pub fn is_safe_url(url: &str) -> bool {
     !url.is_empty() && url.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
 }
 
+/// The hint row line for a plain click on a link ae does not open itself: the
+/// terminal opens it only with a modifier, because ae or tmux holds the mouse.
+/// Shift bypasses that capture; the platform's link modifier then opens the
+/// link. Fixed at compile time; nothing is read from the environment.
+#[must_use]
+pub fn open_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Shift+Cmd+click to open link"
+    } else {
+        "Ctrl+click or Shift+click to open link"
+    }
+}
+
 /// The characters, besides whitespace, a token may start after.
 const OPENERS: &str = "([{<\"'`*=";
 

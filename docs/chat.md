@@ -180,10 +180,10 @@ also on palettes `a` and `b`).
 ## Links
 
 A web URL (`http://` or `https://`) or a repo-style path in a turn is a real
-terminal hyperlink: Cmd-click (Ctrl-click on Linux) opens it with mouse capture
-off. While ae or tmux captures the mouse, many terminals use Shift to bypass it:
-Ghostty: Shift+Cmd-click; Linux: Shift+Ctrl-click. A plain click goes to tmux or
-ae.
+terminal hyperlink. While ae or tmux captures the mouse a plain click goes to
+tmux or ae, not to the terminal; the modifier that reaches the terminal differs
+per terminal (Ghostty on macOS: Shift+Cmd+click; Ubuntu's default terminal:
+Ctrl+click), see the table under [Links in the app](app.md#links).
 The text is underlined while a look is drawn. A path is one of
 
 - `src/…`, `docs/…`, `tests/…` or `.local/…`, against the work dir the session's

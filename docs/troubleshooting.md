@@ -216,6 +216,19 @@ socket in another is reported once. `ae <session>` or `ae upgrade` reasserts the
 checkout) asserted the map last — reassert to take it back; `a foreign command`
 means no ae at all bound that key.
 
+## A link in `ae app` does not open on click
+
+A plain click never opens a link: `ae app` and tmux hold the mouse, so the click
+goes to ae, which opens no URL. On a web link it toggles the turn mark and, on
+release, shows `Shift+Cmd+click to open link` (macOS) or
+`Ctrl+click or Shift+click to open link` on the hint row. Hold the modifier your
+terminal reserves for links (Ghostty on macOS Shift+Cmd+click, Ubuntu's default
+terminal Ctrl+click; the table under [Links](app.md#links) has the rest). A file
+link in a turn opens ae's reader on a plain click instead. If the modifier click
+does nothing either, the terminal never got the link: Terminal.app has no
+hyperlinks, and inside tmux `terminal-features` must declare them
+(see [Links](app.md#links)).
+
 ## Using fish or zsh
 
 Fine. `ae` is a native Rust binary; your interactive shell does not need to be bash as

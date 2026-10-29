@@ -286,6 +286,16 @@ impl Layout {
         })
     }
 
+    /// Whether `mouse` is on a link cell a press does not read itself: a run
+    /// the backend wraps in OSC 8, under `file`'s guards, off every file hit.
+    pub(super) fn link_at(&self, mouse: Mouse) -> bool {
+        let at = Position::new(mouse.column, mouse.row);
+        self.file(mouse).is_none()
+            && self.grab(mouse).is_none()
+            && matches!(self.hit(mouse), Some(Hit::Turn(_)))
+            && (self.links.iter()).any(|run| Rect::new(run.x, run.y, run.width, 1).contains(at))
+    }
+
     fn record(&mut self, buf: &Buffer, area: Rect, target: Hit) {
         self.targets.push((area.intersection(buf.area), target));
     }
