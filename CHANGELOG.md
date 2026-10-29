@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.153] - 2026-10-29
+- Show an open-link hint on a plain click on a link in ae app (#271)
+
 ## [v2026.10.152] - 2026-10-29
 - Add prefix O to jump to the orchestrator and back, keeping the client identity
 
