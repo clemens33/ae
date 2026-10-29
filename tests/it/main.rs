@@ -104,6 +104,7 @@ mod o2guard_p2_spec;
 mod o2guard_spec;
 mod o4jump_pure_spec;
 mod o4jump_spec;
+mod o6ctx_spec;
 mod o6life_s1a_run_spec;
 mod o6life_s1a_spec;
 mod o6list_live_spec;

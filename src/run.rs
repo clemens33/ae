@@ -7,7 +7,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::conversation::{Cause, Probe, Start};
+use crate::conversation::{Probe, Start};
 use crate::launch;
 use crate::tool::{ContextChannel, ResumeForm, StoreProbe, ToolKind};
 
@@ -745,6 +745,7 @@ fn build_with_snapshot(
             model: crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool),
             effort: crate::launch_cmd::effort_flag(seat.command.as_str(), seat.tool).ok(),
         });
+    let ctx = told_context(dir, slot, &seat, probe, ctx);
     let composed = compose(dir, slot, &seat, &ctx, mode, exact)?;
     let choice = choice(&seat, slot, probe, composed.fresh.as_ref());
     let resume_notice = crate::conversation::notice(slot, &choice.0, seat.tool.as_str());
@@ -777,6 +778,28 @@ fn build_with_snapshot(
     Ok((plan, choice))
 }
 
+/// `ctx` ending with the seat's loss line, when this start passed over its
+/// conversation: the context it already carries, from the same table the
+/// journaled choice reads. Only the orchestrator's main seat is told the fleet.
+fn told_context(dir: &Path, slot: &str, seat: &Seat, probe: Option<Probe>, ctx: String) -> String {
+    let (start, prior) = crate::conversation::chosen(probe, &seat.harness_session);
+    let who = if slot == "main"
+        && crate::meta::read_bytes(dir).is_ok_and(|bytes| {
+            crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role
+        }) {
+        crate::conversation::Told::Orchestrator
+    } else {
+        crate::conversation::Told::Seat {
+            session: &seat.session,
+            agent: &seat.agent,
+        }
+    };
+    match crate::conversation::told(start, prior, who) {
+        Some(line) => format!("{ctx} {line}"),
+        None => ctx,
+    }
+}
+
 /// What this start chose, from the ONE probe's verdict: `None` is a create.
 /// The key is this process, the tool `exec` is about to become.
 fn choice(seat: &Seat, slot: &str, probe: Option<Probe>, fresh: Option<&FreshRecord>) -> Choice {
@@ -784,13 +807,11 @@ fn choice(seat: &Seat, slot: &str, probe: Option<Probe>, fresh: Option<&FreshRec
     let minted = fresh
         .and_then(|fresh| fresh.minted.as_deref())
         .unwrap_or_default();
-    let (start, prior, id) = match probe {
-        None => (Start::New, None, recorded),
-        Some(Probe::Found) => (Start::Resumed, None, recorded),
-        Some(Probe::Unprobed) => (Start::Unproven, None, recorded),
-        Some(Probe::NoId) => (Start::Lost(Cause::NoId), None, minted),
-        Some(Probe::NotFound) => (Start::Lost(Cause::NotFound), Some(recorded), minted),
-        Some(Probe::Unreadable) => (Start::Lost(Cause::Unreadable), Some(recorded), minted),
+    let (start, prior) = crate::conversation::chosen(probe, recorded);
+    let id = if matches!(start, Start::Lost(_)) {
+        minted
+    } else {
+        recorded
     };
     let record = crate::conversation::Record {
         start,

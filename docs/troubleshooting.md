@@ -198,7 +198,8 @@ the machine sleeps, the session is resumed, the process is killed with the pane 
 launched beside — and the watchdog closes that gap: every cycle it takes one look at each
 seat still pending and registers whatever it finds. The next tick is the retry. A seat that
 stays pending across several cycles means codex never wrote an id worth finding; resume then
-falls back to a fresh conversation.
+falls back to a fresh conversation. That start's context tells the seat so, in a line starting
+`CONVERSATION:`, and points it at `ae brief <session> --seat <agent>` to recover state.
 
 ## Pane shows `(null)` agent label
 

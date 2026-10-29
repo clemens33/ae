@@ -1559,7 +1559,8 @@ fn session_id_of(argv: &[String]) -> Option<&str> {
 }
 
 /// A fallback's fresh start renders exactly like a Create of the same seat:
-/// with no recorded prompt the two are byte-identical for the same id. Same
+/// with no recorded prompt the two are byte-identical for the same id once
+/// the one lost-conversation notice is removed from its context. Same
 /// rig (the context embeds its paths); `recorded` is the harness row the
 /// fixture holds — `None` for a pending seat — restored afterwards.
 fn assert_fresh_is_create(rig: &Rig, recorded: Option<&str>) {
@@ -1577,9 +1578,26 @@ fn assert_fresh_is_create(rig: &Rig, recorded: Option<&str>) {
             .unwrap_or_else(|why| panic!("restore the row: {why:?}"));
     }
     rig.started();
+    let (prior, cause) = match recorded {
+        Some(_) => ("0199c0de", "not-found"),
+        None => ("(no recorded id)", "no-id"),
+    };
+    let notice = format!(
+        " CONVERSATION: your previous conversation {prior} was not resumed ({cause}); \
+         this start opened a fresh one. Recover state with: ae brief 'fixture' --seat 'lead'"
+    );
+    let told: usize = planned
+        .iter()
+        .map(|word| word.matches(&notice).count())
+        .sum();
+    assert_eq!(told, 1, "a lost start tells the seat once: {planned:?}");
+    let stripped: Vec<String> = planned
+        .iter()
+        .map(|word| word.replacen(&notice, "", 1))
+        .collect();
     assert_eq!(
-        created, planned,
-        "a fresh start is a Create with no first message"
+        created, stripped,
+        "a fresh start is a Create with no first message, plus the lost-conversation notice"
     );
 }
 

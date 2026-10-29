@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::events::Event;
-use crate::launch::{PENDING, id_probeable};
+use crate::launch::{PENDING, id_probeable, shell_quote};
 use crate::launch_cmd::Resolved;
 use crate::tool::ToolKind;
 
@@ -143,6 +143,61 @@ const ACTIONS: [(Start, &str); 6] = [
         "conversation-lost-unreadable",
     ),
 ];
+
+/// What a start chose from its store probe (`None` is a create) and the id
+/// a loss passed over: the one table the journaled record and the seat's
+/// notice share.
+#[must_use]
+pub fn chosen(probe: Option<Probe>, recorded: &str) -> (Start, Option<&str>) {
+    match probe {
+        None => (Start::New, None),
+        Some(Probe::Found) => (Start::Resumed, None),
+        Some(Probe::Unprobed) => (Start::Unproven, None),
+        Some(Probe::NoId) => (Start::Lost(Cause::NoId), None),
+        Some(Probe::NotFound) => (Start::Lost(Cause::NotFound), Some(recorded)),
+        Some(Probe::Unreadable) => (Start::Lost(Cause::Unreadable), Some(recorded)),
+    }
+}
+
+/// Who a loss is told to: a seat, pointed at its own brief, or the
+/// orchestrator's main seat, pointed at the fleet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Told<'a> {
+    Seat { session: &'a str, agent: &'a str },
+    Orchestrator,
+}
+
+/// The line a seat's context ends with when its start passed over its
+/// conversation, `None` for every other choice. A session name carrying a
+/// control character gets no command, an unusable agent name no `--seat`.
+#[must_use]
+pub fn told(start: Start, prior: Option<&str>, who: Told<'_>) -> Option<String> {
+    let Start::Lost(cause) = start else {
+        return None;
+    };
+    let recover = match who {
+        Told::Orchestrator => {
+            " Re-read fleet state (ae list, ae brief --all) and tell the owner.".to_owned()
+        }
+        Told::Seat { session, .. } if session.chars().any(char::is_control) => String::new(),
+        Told::Seat { session, agent } => {
+            let seat = if crate::config::is_agent_name(agent) {
+                format!(" --seat {}", shell_quote(agent))
+            } else {
+                String::new()
+            };
+            format!(
+                " Recover state with: ae brief {}{seat}",
+                shell_quote(session)
+            )
+        }
+    };
+    Some(format!(
+        "CONVERSATION: your previous conversation {} was not resumed ({}); this start opened a fresh one.{recover}",
+        prior.map_or("(no recorded id)", short),
+        cause.word()
+    ))
+}
 
 /// The tool's own store probe: [`crate::run::probe_in`], the one owner.
 #[must_use]
