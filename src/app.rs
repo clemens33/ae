@@ -4781,6 +4781,18 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             app.open_reader();
             Some(true)
         }
+        model::Act::Orchestrator => {
+            let live: Vec<(String, String)> = (app.world.sessions.iter())
+                .filter(|entry| entry.status == Status::Running)
+                .filter_map(|entry| Some((entry.name.clone(), app.ids.get(&entry.name)?.clone())))
+                .collect();
+            let act = app.model.toggle_orchestrator(&app.fleet, &live);
+            apply(app, &act, origin)
+        }
+        model::Act::Notice(line) => {
+            app.flash = Some((line.clone(), Instant::now()));
+            Some(true)
+        }
         model::Act::None => Some(false),
     }
 }

@@ -708,6 +708,7 @@ fn app_key_name(key: AppKey) -> String {
         AppKey::Copy => "Copy".to_owned(),
         AppKey::Peek => "Peek".to_owned(),
         AppKey::Read => "Read".to_owned(),
+        AppKey::Orchestrator => "Orchestrator".to_owned(),
         AppKey::Top => "Top".to_owned(),
         AppKey::Bottom => "Bottom".to_owned(),
         AppKey::Mode => "Mode".to_owned(),
@@ -733,6 +734,7 @@ fn app_browse_keys_decode_table() {
         (b'g', "Top"),
         (b'G', "Bottom"),
         (b'm', "Mode"),
+        (b'O', "Orchestrator"),
     ] {
         let got: Vec<String> = browse_keys(&text(byte))
             .iter()

@@ -240,7 +240,9 @@ pub(crate) enum Op<'a> {
     SetReaderCloseHook { reader: &'a str },
     /// Bind the reader toggle to mnemonic `prefix v` on an ae-owned server.
     BindReaderHotkey { shell: &'a str },
-    /// Bind one console key (`prefix h` toggle, `prefix H` jump) on an ae-owned server.
+    /// Bind one prefix key to a background shell on an ae-owned server: the
+    /// console keys (`prefix h` toggle, `prefix H` jump) and the orchestrator
+    /// jump (`prefix O`).
     BindConsoleHotkey { key: &'a str, shell: &'a str },
     /// `last-window -t <session>:` — the console toggle's way back.
     LastWindow { session: &'a str },
@@ -871,15 +873,23 @@ pub(crate) fn status_bindings_argv(
                     shell: &reader_hotkey,
                 },
             ));
-            for (key, jump) in [("h", false), ("H", true)] {
-                let shell = hotkey_console_shell(launcher, jump);
-                bindings.push(argv(server, &Op::BindConsoleHotkey { key, shell: &shell }));
-            }
+            bindings.extend(prefix_hotkeys(server, launcher));
             bindings.extend(view_return_bindings(server));
             bindings.push(argv(server, &Op::EnsureHyperlinks));
             bindings
         }
     }
+}
+
+/// The prefix keys that run a background verb for the pressing client: the
+/// chat's `h` / `H` and the orchestrator jump's `O`.
+fn prefix_hotkeys(server: &ServerId, launcher: &[String]) -> [TmuxArgv; 3] {
+    let bind = |key, shell: String| argv(server, &Op::BindConsoleHotkey { key, shell: &shell });
+    [
+        bind("h", hotkey_console_shell(launcher, false)),
+        bind("H", hotkey_console_shell(launcher, true)),
+        bind("O", crate::tmux::hotkey_jump_shell(launcher)),
+    ]
 }
 
 /// The `ae app` pane view's return keys: root-table binds gated on the
@@ -1010,6 +1020,10 @@ pub(crate) fn interpret_pane_id(succeeded: bool, stdout: &str) -> Option<String>
     let id = stdout.trim();
     (id.starts_with('%') && id.len() > 1).then(|| id.to_owned())
 }
+
+#[cfg(test)]
+#[path = "session_tmux/o4jump_bind_spec.rs"]
+mod o4jump_bind_spec;
 
 #[cfg(test)]
 #[path = "../tests/it/aeinstance_p1_launcher.rs"]
@@ -1346,10 +1360,10 @@ mod tests {
         let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], true);
         assert_eq!(
             bindings.len(),
-            20,
-            "mouse-aware servers assert Down bindings, remove every stock right-click menu, carry the wheel map, the reader and console hotkeys and the pane view's return keys, and append Ghostty hyperlinks once"
+            21,
+            "mouse-aware servers assert Down bindings, remove every stock right-click menu, carry the wheel map, the reader, console and orchestrator-jump hotkeys and the pane view's return keys, and append Ghostty hyperlinks once"
         );
-        for (bound, key) in bindings[17..].iter().zip(crate::tmux::VIEW_RETURN_KEYS) {
+        for (bound, key) in bindings[18..].iter().zip(crate::tmux::VIEW_RETURN_KEYS) {
             assert_eq!(
                 bound.as_args(),
                 crate::tmux::view_return_bind_args(&server, key)
@@ -1484,11 +1498,28 @@ mod tests {
             ],
             "the reader hotkey rides the same launcher boundary as the picker"
         );
+        assert_eq!(
+            bindings[17].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "prefix",
+                "O",
+                "run-shell",
+                "-b",
+                "'/opt/ae' '_orchestrator-jump' '--client' #{q:client_name} --client-pid '#{client_pid}' \
+                 --server-pid '#{pid}' --server-start '#{start_time}' \
+                 --from '#{session_id}' '#{window_id}' '#{pane_id}'",
+            ],
+            "the orchestrator jump captures every fact of the press as a live format"
+        );
         let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
         assert_eq!(
             keyboard.len(),
-            20,
-            "keyboard-driven servers bind release, remove every stock right-click menu, carry the wheel map, the reader and console hotkeys and the pane view's return keys, and append Ghostty hyperlinks once"
+            21,
+            "keyboard-driven servers bind release, remove every stock right-click menu, carry the wheel map, the reader, console and orchestrator-jump hotkeys and the pane view's return keys, and append Ghostty hyperlinks once"
         );
         assert_eq!(
             keyboard[0].as_args(),
@@ -1637,7 +1668,7 @@ mod tests {
         let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
         for menu_mouse in [true, false] {
             let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], menu_mouse);
-            assert_eq!(bindings.len(), 20, "menu_mouse={menu_mouse}");
+            assert_eq!(bindings.len(), 21, "menu_mouse={menu_mouse}");
             let hits: Vec<_> = bindings
                 .iter()
                 .filter(|binding| binding.as_args().iter().any(|word| word == ENTRY))
@@ -1910,6 +1941,7 @@ mod tests {
                 entry("prefix", "v", false, true),
                 entry("prefix", "h", false, true),
                 entry("prefix", "H", false, true),
+                entry("prefix", "O", false, true),
                 entry("root", "F12", false, false),
                 entry("root", "C-]", false, false),
                 entry("root", "MouseUp1Status", true, false),
@@ -1931,6 +1963,7 @@ mod tests {
                 entry("prefix", "v", false, true),
                 entry("prefix", "h", false, true),
                 entry("prefix", "H", false, true),
+                entry("prefix", "O", false, true),
                 entry("root", "F12", false, false),
                 entry("root", "C-]", false, false),
             ]

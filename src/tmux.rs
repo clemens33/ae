@@ -1633,6 +1633,19 @@ pub(crate) fn hotkey_console_shell(launcher: &[String], jump: bool) -> String {
     hotkey_verb_shell(launcher, &verb)
 }
 
+/// The `prefix O` orchestrator jump's shell, on the same launcher boundary:
+/// every fact of the press is a live format, so the verb reads the client, the
+/// server and the view the key was pressed in, never a guess made later. The
+/// ids are single-quoted because a session id's `$` is shell syntax.
+#[must_use]
+pub(crate) fn hotkey_jump_shell(launcher: &[String]) -> String {
+    let fixed = hotkey_verb_shell(launcher, &[crate::cli::ORCHESTRATOR_JUMP, "--client"]);
+    format!(
+        "{fixed} --client-pid '#{{client_pid}}' --server-pid '#{{pid}}' \
+         --server-start '#{{start_time}}' --from '#{{session_id}}' '#{{window_id}}' '#{{pane_id}}'"
+    )
+}
+
 fn hotkey_verb_shell(launcher: &[String], verb: &[&str]) -> String {
     let mut argv = launcher.to_vec();
     argv.extend(verb.iter().map(|word| (*word).to_owned()));

@@ -26,11 +26,12 @@ test-group = 'app-writers'
 # covered the day it lands, and the other slots stay free for the rest of the
 # suite. This is a scheduling fact, not a retry: no test is skipped, retried or
 # weakened, and the waits themselves still fail if a client never renders.
+# `o4jump_spec` is the same class: real attached clients jumped between sessions.
 [test-groups.tmux-clients]
 max-threads = 3
 
 [[profile.default.overrides]]
-filter = 'test(/^menu::/)'
+filter = 'test(/^(menu|o4jump_spec)::/)'
 test-group = 'tmux-clients'
 
 # The `reseat` module drives a REAL tmux server too, but the resource it is

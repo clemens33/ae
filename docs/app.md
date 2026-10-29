@@ -202,6 +202,7 @@ Browsing:
 | `1`-`9` | select the Nth session of the list, counted by position (no number is drawn) |
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
+| `O` | select the orchestrator and remember where from; pressed on the orchestrator, select that session again. A session replaced under its name, or no orchestrator running, refuses with a line and changes nothing |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |

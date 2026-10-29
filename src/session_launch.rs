@@ -73,6 +73,21 @@ pub(crate) enum ExpectedState {
     StoppedSession,
 }
 
+/// Re-prove a captured server: it answers with the same pid and start time.
+pub(crate) fn prove_server(
+    server: &ServerId,
+    server_pid: &str,
+    server_start: &str,
+) -> Result<(), String> {
+    let Some(observed) = transport::observe_server_identity(server) else {
+        return Err("the invoking tmux server no longer answers".to_owned());
+    };
+    if observed.pid != server_pid || observed.start != server_start {
+        return Err("the invoking tmux server was replaced".to_owned());
+    }
+    Ok(())
+}
+
 /// The fixed clicker and role expectation carried into the launch lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExpectedLaunch {
@@ -134,12 +149,7 @@ impl ExpectedLaunch {
     /// still-attached clicker why it refused, but a forged or replaced client
     /// may never receive a message.
     pub(crate) fn check_attachment(&self) -> Result<(), String> {
-        let Some(server) = transport::observe_server_identity(&self.server) else {
-            return Err("the invoking tmux server no longer answers".to_owned());
-        };
-        if server.pid != self.server_pid || server.start != self.server_start {
-            return Err("the invoking tmux server was replaced".to_owned());
-        }
+        prove_server(&self.server, &self.server_pid, &self.server_start)?;
         let Some(client) = transport::observe_menu_client(&self.server, &self.client) else {
             return Err("the invoking client is no longer attached".to_owned());
         };

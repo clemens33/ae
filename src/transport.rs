@@ -1345,6 +1345,16 @@ pub fn open_seat_via(
     Some(run(PROGRAM, &args))
 }
 
+/// One tmux leg of the orchestrator jump (`crate::jump`, which builds every
+/// argv it passes): whether tmux ran it and what it printed.
+#[must_use]
+pub(crate) fn run_jump(server: &ServerId, args: &[String]) -> (bool, String) {
+    if !addressable(server) {
+        return (false, String::new());
+    }
+    run(PROGRAM, args)
+}
+
 /// The screen of a proven target as plain text: whether tmux ran the capture and
 /// what it printed, or `None` when the pane fails its grammar and nothing ran.
 #[must_use]

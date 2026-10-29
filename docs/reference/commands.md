@@ -695,6 +695,16 @@ ae session on the same tmux server, click the `≡` menu glyph (`=` with icons
 off) at the bottom-left, before the session list, or its `+N` overflow count, or
 press `<prefix> a` (default `C-b a`), to open it.
 
+`<prefix> O` (capital o, default `C-b O`) jumps the client that pressed it to the
+orchestrator's lead pane; pressed there, it takes that same client back to the exact
+session, window and pane it left, followed by session id across a rename. Each client
+keeps its own way back, as the `@ae_return_<client pid>` option on the orchestrator
+session. A pane that has gone or moved returns to its session only, and says so; a
+session that has gone refuses and moves nothing; with no orchestrator running it says
+so and starts none. No other client changes session, but a client viewing the same
+session can see its current window or pane change, as with `◆` and the picker: tmux
+keeps one current window per session. Exit 0 means the landing was observed.
+
 The final bottom-right status range is settings: exactly one blank, bare `⚙`, and one blank
 (` * ` with icons off). The whole three-cell range highlights and accepts clicks. It never renders
 a version. Either mouse button opens one menu at that

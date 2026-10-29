@@ -370,3 +370,10 @@ path = "fuzz_targets/unreach_fold.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "jump_return"
+path = "fuzz_targets/jump_return.rs"
+test = false
+doc = false
+bench = false

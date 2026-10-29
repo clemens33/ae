@@ -36,6 +36,8 @@ pub enum Key {
     Read,
     /// `m`: switch Markdown mode in the reader.
     Mode,
+    /// `O`: to the orchestrator, and from it back to where it was pressed.
+    Orchestrator,
     /// `g`, Home: the top of what is read.
     Top,
     /// `G`, End: the bottom of what is read.
@@ -72,6 +74,7 @@ fn letter(byte: u8) -> Option<Key> {
         b'k' => Some(Key::Up),
         b'i' => Some(Key::Compose),
         b'o' => Some(Key::Open),
+        b'O' => Some(Key::Orchestrator),
         b'n' => Some(Key::SeatNext),
         b'p' => Some(Key::SeatPrev),
         b'q' => Some(Key::Quit),
@@ -108,6 +111,10 @@ pub enum Act {
     Peek,
     /// Open the reader on the marked turn's first file link.
     Read,
+    /// `O` pressed: the App answers with [`Model::toggle_orchestrator`].
+    Orchestrator,
+    /// A refusal to show; nothing changed.
+    Notice(String),
     Quit,
 }
 
@@ -228,6 +235,8 @@ pub struct Model {
     turn: Option<u64>,
     /// How many times what the panels show has changed: a session, an overlay.
     epoch: u64,
+    /// Where `O` left from: the session's name and its recorded uuid.
+    prior: Option<(String, String)>,
 }
 
 impl Model {
@@ -305,9 +314,49 @@ impl Model {
             Key::Copy => Act::Copy,
             Key::Peek => Act::Peek,
             Key::Read => Act::Read,
+            Key::Orchestrator => Act::Orchestrator,
             Key::Quit => Act::Quit,
             Key::Top | Key::Bottom | Key::Tab | Key::Compose | Key::Mode => Act::None,
         }
+    }
+
+    /// `O`: select the orchestrator and remember where from, or from the
+    /// orchestrator select that session again. `live` names the running,
+    /// published sessions with their recorded uuid; a session not there, or
+    /// there under another uuid, is no target, and a refusal changes nothing.
+    pub fn toggle_orchestrator(&mut self, fleet: &Fleet, live: &[(String, String)]) -> Act {
+        let uuid = |name: &str| {
+            live.iter()
+                .find(|(session, uuid)| {
+                    session == name
+                        && !uuid.is_empty()
+                        && crate::archive::canonical_uuid(uuid) == *uuid
+                })
+                .map(|(_, uuid)| uuid.clone())
+        };
+        let row = |name: &str| fleet.rows.iter().position(|row| row.name == name);
+        let orchestrator = crate::orchestrator::ORCHESTRATOR_SESSION;
+        let Some(at) = row(orchestrator).filter(|_| uuid(orchestrator).is_some()) else {
+            return Act::Notice("no orchestrator running".to_owned());
+        };
+        if self.selected.as_deref() != Some(orchestrator) {
+            let from = self
+                .selected
+                .clone()
+                .and_then(|name| uuid(&name).map(|id| (name, id)));
+            let act = self.select(fleet, Some(at));
+            self.prior = from;
+            return act;
+        }
+        let Some((name, id)) = self.prior.clone() else {
+            return Act::Notice("nothing to return to".to_owned());
+        };
+        let Some(back) = row(&name).filter(|_| uuid(&name).as_ref() == Some(&id)) else {
+            return Act::Notice(format!("{name}, where O left from, is gone"));
+        };
+        let act = self.select(fleet, Some(back));
+        self.prior = None;
+        act
     }
 
     /// A selection key: the list follows the selection again, which redraws
@@ -654,6 +703,7 @@ impl Model {
             | Key::Copy
             | Key::Peek
             | Key::Read
+            | Key::Orchestrator
             | Key::Mode
             | Key::Top
             | Key::Bottom => Act::None,

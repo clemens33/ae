@@ -150,6 +150,11 @@ pub const SESSION_MENU: &str = "_session-menu";
 /// Internal — the server-global `prefix h` and `prefix H` bindings run it.
 pub const CONSOLE_TOGGLE: &str = "_console";
 
+/// The orchestrator jump and return: `_orchestrator-jump --client <name>
+/// --client-pid <pid> --server-pid <pid> --server-start <t> --from <$s> <@w> <%p>`.
+/// Internal — the server-global `prefix O` binding runs it.
+pub const ORCHESTRATOR_JUMP: &str = "_orchestrator-jump";
+
 /// The pane reader toggle: `_reader [--client <name>]`. Internal — the
 /// server-global `prefix v` binding runs it, and a shell inside a pane may run
 /// it with `$TMUX_PANE` instead of a client.
@@ -281,6 +286,11 @@ pub enum Request {
     },
     /// `_console [--jump] [--client <name>]` — the console toggle and jump, as typed.
     ConsoleToggle {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_orchestrator-jump …` — the `prefix O` jump and return, as typed.
+    OrchestratorJump {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
@@ -1395,6 +1405,9 @@ impl Request {
             Some(CONSOLE_TOGGLE) => Self::ConsoleToggle {
                 tail: args[1..].to_vec(),
             },
+            Some(ORCHESTRATOR_JUMP) => Self::OrchestratorJump {
+                tail: args[1..].to_vec(),
+            },
             Some(COMPACT) => Self::Compact {
                 tail: args[1..].to_vec(),
             },
@@ -1598,6 +1611,7 @@ impl Request {
             | Self::SessionMenu { .. }
             | Self::Reader { .. }
             | Self::ConsoleToggle { .. }
+            | Self::OrchestratorJump { .. }
             | Self::Compact { .. }
             | Self::ManifestRender { .. }
             | Self::Context { .. } => None,
@@ -1662,6 +1676,7 @@ impl Request {
             | Self::Next { .. }
             | Self::Orchestrator { .. }
             | Self::ConsoleToggle { .. }
+            | Self::OrchestratorJump { .. }
             | Self::Reader { .. }
             | Self::Launch { .. }
             | Self::Watchdog { .. }

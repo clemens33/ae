@@ -2133,11 +2133,12 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 19] = [
+const BROWSE_KEYS: [(&str, &str); 20] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
     ("oo", "open seat; twice in 2 s"),
+    ("O", "orchestrator, and back to where you were"),
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("z", "show / hide stopped sessions"),

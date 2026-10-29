@@ -217,6 +217,20 @@ pub fn select_args_via(
         slot = seat.slot,
         name = seat.name,
     );
+    Some(guarded_move_args(server, session_id, pane, &guard, client))
+}
+
+/// ONE direct `if-shell` (one format layer, never a menu's `##`) whose `guard`
+/// holds at `pane` before anything moves; then, with `client`, the switch to
+/// `session_id` and the select deferred in `run-shell -C` past the session's
+/// switch-in hook and guarded again there. Prints [`Landing`]'s markers.
+pub(crate) fn guarded_move_args(
+    server: &ServerId,
+    session_id: &str,
+    pane: &str,
+    guard: &str,
+    client: Option<&str>,
+) -> Vec<String> {
     let select =
         format!("select-window -t {pane} ; select-pane -t {pane} ; display-message -p {SELECTED}");
     let then = match client {
@@ -231,12 +245,37 @@ pub fn select_args_via(
         "if-shell".to_owned(),
         "-F".to_owned(),
         "-t".to_owned(),
-        pane.clone(),
-        guard,
+        pane.to_owned(),
+        guard.to_owned(),
         then,
         format!("display-message -p {MOVED}"),
     ]);
-    Some(args)
+    args
+}
+
+/// What a guarded move printed. Only tmux's word: whether the client really
+/// stands there is a separate read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Landing {
+    /// Both guards held and the select ran.
+    Selected,
+    /// The client was handed over, the second guard failed: nothing selected.
+    Switched,
+    /// The first guard failed: nothing moved.
+    Moved,
+    /// tmux failed or printed something else.
+    Unknown,
+}
+
+impl Landing {
+    pub(crate) fn read(succeeded: bool, stdout: &str) -> Self {
+        match (succeeded, stdout.trim_end()) {
+            (true, SELECTED) => Self::Selected,
+            (true, SWITCHED) => Self::Switched,
+            (true, MOVED) => Self::Moved,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 /// The one tmux argv that reads `target`'s screen as plain text with `lines` of
@@ -340,10 +379,10 @@ pub fn copy_args(server: &ServerId, client: Option<&str>) -> Vec<String> {
 
 /// What the select prints when the guard held, and when it did not.
 const SELECTED: &str = "ae-open:selected";
-const MOVED: &str = "ae-open:moved";
+pub(crate) const MOVED: &str = "ae-open:moved";
 /// What a handed-over client's select prints when the seat's second proof,
 /// after the switch, failed: the client moved, the seat was not selected.
-const SWITCHED: &str = "ae-open:switched";
+pub(crate) const SWITCHED: &str = "ae-open:switched";
 
 /// The chat's line for a finished select of `name`.
 #[must_use]
