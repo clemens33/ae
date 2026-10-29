@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.157] - 2026-10-29
+- Read OpenCode 2 session exports on the board; OpenCode 1 export is no longer read (#276 A)
+
 ## [v2026.10.156] - 2026-10-29
 - Show what the current tool start did with its conversation in ae list (#250 O6 S1b)
 
