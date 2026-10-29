@@ -117,6 +117,20 @@ pub fn files(text: &str, base: &Base) -> Vec<FileRef> {
         .collect()
 }
 
+/// Every link of `text` in order, each with its file target when it is a file
+/// link: [`scan`] and [`files`] in one walk, for a caller that places links
+/// itself.
+#[must_use]
+pub fn found(text: &str, base: &Base) -> Vec<(Link, Option<FileRef>)> {
+    walk(text, base)
+        .into_iter()
+        .map(|(link, target)| {
+            let file = target.map(|target| file_ref(&link, &target));
+            (link, file)
+        })
+        .collect()
+}
+
 fn file_ref(link: &Link, target: &Target) -> FileRef {
     FileRef {
         start: link.start,

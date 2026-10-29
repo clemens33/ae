@@ -14,6 +14,50 @@ pub const MAX_COLUMNS: usize = 32;
 pub const MAX_TABLE_WIDTH: usize = 240;
 pub const MAX_DEPTH: usize = 32;
 
+/// How many rows and cells one layout may charge before it refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budget {
+    pub rows: usize,
+    pub cells: usize,
+}
+
+impl Budget {
+    /// The file reader's bound.
+    pub const READER: Self = Self {
+        rows: MAX_ROWS,
+        cells: MAX_CELLS,
+    };
+    /// One chat-lane turn's bound.
+    pub const LANE: Self = Self {
+        rows: 2_000,
+        cells: 200_000,
+    };
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self::READER
+    }
+}
+
+/// Layout modes that leave the mapping itself alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Opts {
+    /// A soft line break ends the row (a chat report), where `CommonMark`
+    /// joins it with a space (a file).
+    pub soft_break_row: bool,
+}
+
+/// Where a row's piece sits in [`Rendered::lines`]: the line, the byte it
+/// starts at, its length and the blank cells drawn before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cut {
+    pub line: usize,
+    pub from: usize,
+    pub len: usize,
+    pub gap: usize,
+}
+
 /// Independent semantic attributes, combined for nested inline spans.
 #[allow(
     clippy::struct_excessive_bools,
@@ -46,12 +90,15 @@ struct Row {
     text: String,
     marks: Vec<(usize, Marks)>,
     line: usize,
+    cut: Option<Cut>,
 }
 
 /// Output owns only budgeted rows; a global refusal discards all of them.
 #[derive(Debug, Default)]
 pub struct Rendered {
     rows: Vec<Row>,
+    lines: Vec<String>,
+    budget: Budget,
     cells: usize,
     notes: usize,
     refusal: Option<&'static str>,
@@ -92,6 +139,50 @@ impl Rendered {
     pub fn refusal(&self) -> Option<&'static str> {
         self.refusal
     }
+    /// The cells the rows charged against the budget.
+    #[must_use]
+    pub fn cells(&self) -> usize {
+        self.cells
+    }
+    /// The displayed, unwrapped lines the rows were cut from.
+    #[must_use]
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+    /// Where `row`'s piece sits in [`Rendered::lines`]; `None` for a blank
+    /// separator row.
+    #[must_use]
+    pub fn cut(&self, row: usize) -> Option<Cut> {
+        self.rows.get(row).and_then(|r| r.cut)
+    }
+    /// The blanks that end `row`: a code row's padding to its width.
+    #[must_use]
+    pub fn pad(&self, row: usize) -> usize {
+        let blanks = |r: &Row| r.text.len() - r.text.trim_end_matches(' ').len();
+        self.rows.get(row).map_or(0, blanks)
+    }
+    /// The mark changes along `row`, by byte offset into its text.
+    #[must_use]
+    pub fn runs(&self, row: usize) -> &[(usize, Marks)] {
+        self.rows.get(row).map_or(&[], |r| r.marks.as_slice())
+    }
+    /// Bytes this value keeps allocated, counting capacity: the rows, their
+    /// text and mark runs, and the displayed lines.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let rows: usize = self
+            .rows
+            .iter()
+            .map(|r| r.text.capacity() + r.marks.capacity() * size_of::<(usize, Marks)>())
+            .sum();
+        let lines: usize = self.lines.iter().map(String::capacity).sum();
+        size_of::<Self>()
+            + self.rows.capacity() * size_of::<Row>()
+            + self.lines.capacity() * size_of::<String>()
+            + rows
+            + lines
+    }
 
     /// Ask for one blank row before the next row: never first, never last.
     fn separate(&mut self) {
@@ -102,15 +193,16 @@ impl Rendered {
         if std::mem::take(&mut self.gap) && !self.rows.is_empty() && !self.push(Row::default(), 0) {
             return false;
         }
-        let why = if self.rows.len() >= MAX_ROWS {
+        let why = if self.rows.len() >= self.budget.rows {
             Some("too large to render (rows limit)")
-        } else if cells > MAX_CELLS.saturating_sub(self.cells) {
+        } else if cells > self.budget.cells.saturating_sub(self.cells) {
             Some("too large to render (cells limit)")
         } else {
             None
         };
         if let Some(why) = why {
             self.rows.clear();
+            self.lines.clear();
             self.cells = 0;
             self.notes = 0;
             self.refusal = Some(why);
@@ -182,8 +274,15 @@ impl Document {
     }
 
     pub(crate) fn layout(&self, width: usize) -> Rendered {
+        self.layout_in(width, &Budget::READER, Opts::default())
+    }
+
+    pub(crate) fn layout_in(&self, width: usize, budget: &Budget, opts: Opts) -> Rendered {
         let width = width.clamp(1, 4096);
-        let mut out = Rendered::default();
+        let mut out = Rendered {
+            budget: *budget,
+            ..Rendered::default()
+        };
         for block in &self.blocks {
             let mut depth = 0usize;
             let mut deepest = 0;
@@ -211,7 +310,7 @@ impl Document {
             let mapped = if deepest > MAX_DEPTH || columns > MAX_COLUMNS {
                 Mapped::default()
             } else {
-                Mapper::new(self, block).map()
+                Mapper::new(self, block, opts).map()
             };
             let reason = if deepest > MAX_DEPTH {
                 Some("nested deeper than 32".to_owned())
@@ -269,6 +368,12 @@ pub fn render(source: &str, width: usize) -> Rendered {
     Document::parse(source).layout(width)
 }
 
+/// [`render`] under another budget and layout mode.
+#[must_use]
+pub fn render_with(source: &str, width: usize, budget: &Budget, opts: Opts) -> Rendered {
+    Document::parse(source).layout_in(width, budget, opts)
+}
+
 fn clean(text: &str) -> String {
     terminal_text(text).replace('\t', "    ")
 }
@@ -296,6 +401,8 @@ impl Rendered {
         hang: usize,
         code: bool,
     ) -> bool {
+        let logical = self.lines.len();
+        self.lines.push(text.to_owned());
         let lead = text.len() - text.trim_start_matches(' ').len();
         let mut rest = if code { text } else { &text[lead..] };
         let mut gap = if code {
@@ -320,6 +427,12 @@ impl Rendered {
             let offset = text.len() - rest.len();
             let mut row = Row {
                 line,
+                cut: Some(Cut {
+                    line: logical,
+                    from: offset,
+                    len: piece.len(),
+                    gap,
+                }),
                 ..Row::default()
             };
             row.add(&" ".repeat(gap), Marks::default());
@@ -355,7 +468,9 @@ impl Rendered {
         if code {
             // Charge padding before allocating it; marks include every pad cell.
             let count = col.max(width);
-            if count > MAX_CELLS.saturating_sub(self.cells) || self.rows.len() >= MAX_ROWS {
+            if count > self.budget.cells.saturating_sub(self.cells)
+                || self.rows.len() >= self.budget.rows
+            {
                 return self.push(row, count);
             }
             row.add(
@@ -552,6 +667,13 @@ impl Table {
                 );
             }
             let count = cells(&row.text);
+            row.cut = Some(Cut {
+                line: out.lines.len(),
+                from: 0,
+                len: row.text.len(),
+                gap: 0,
+            });
+            out.lines.push(row.text.clone());
             if !out.push(row, count) {
                 return false;
             }
@@ -575,13 +697,15 @@ struct Mapper<'a> {
     prefix: String,
     hang: usize,
     code: bool,
+    opts: Opts,
 }
 
 impl<'a> Mapper<'a> {
-    fn new(doc: &'a Document, block: &'a Block) -> Self {
+    fn new(doc: &'a Document, block: &'a Block, opts: Opts) -> Self {
         Self {
             doc,
             block,
+            opts,
             out: Mapped::default(),
             row: Row::default(),
             marks: Marks::default(),
@@ -851,6 +975,7 @@ impl<'a> Mapper<'a> {
                         }
                     }
                 }
+                Event::SoftBreak if self.opts.soft_break_row => self.flush(),
                 Event::SoftBreak => self.add(" ", self.marks),
                 Event::HardBreak => self.flush(),
                 Event::Rule => {

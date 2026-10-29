@@ -14,7 +14,7 @@
 //! seat writes nothing either: it hands one tmux client to the seat's pane,
 //! through the chat's own proof (`term::prove_open`).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
@@ -69,6 +69,13 @@ mod journals;
 mod lane;
 #[cfg(test)]
 mod lane_spec;
+mod lanemd;
+#[cfg(test)]
+#[path = "app/lanemd_app_spec.rs"]
+mod lanemd_app_spec;
+#[cfg(test)]
+#[path = "app/lanemd_spec.rs"]
+mod lanemd_cache_spec;
 #[cfg(test)]
 #[path = "app/linkhint_spec.rs"]
 mod linkhint_spec;
@@ -533,6 +540,9 @@ struct App {
     /// The open reader's file, and the generation the next open mints.
     reader: ReaderPane,
     reader_generation: u64,
+    /// The cache that draws agent turns through Markdown, shared by the
+    /// frame and the keys that read a turn's links.
+    md: RefCell<lanemd::Cache>,
     /// The row order the last fleet read chose, applied when the next frame
     /// is drawn: until then keys and clicks resolve against the order the
     /// human sees.
@@ -681,6 +691,7 @@ impl App {
             peek_generation: 0,
             reader: ReaderPane::default(),
             reader_generation: 0,
+            md: RefCell::default(),
             pending: None,
             server,
             pane,
@@ -979,6 +990,12 @@ impl App {
         self.reader.jump = true;
     }
 
+    /// The cache and lane width a turn's links are read with, the ones the last
+    /// frame drew it with.
+    fn md(&self) -> (&RefCell<lanemd::Cache>, usize) {
+        (&self.md, usize::from(self.layout.lane_width))
+    }
+
     /// `r`: open the reader on the first file link of the marked turn, read as
     /// the displayed lane parts, in the session's link base. A refusal is said
     /// on the hint row, opens nothing and asks the reader thread nothing.
@@ -995,7 +1012,7 @@ impl App {
             .keys()
             .iter()
             .position(|key| *key == lane::key(&item))
-            .map(|at| lane::read_links(&self.lane.items, at, &base).1)
+            .map(|at| lane::read_links(&self.lane.items, at, &base, Some(self.md())).1)
             .unwrap_or_default();
         self.read_file(found, 0, base);
     }
@@ -1042,7 +1059,8 @@ impl App {
         if self.fold_key(self.lane.items.get(at)?) != hit.fold {
             return None;
         }
-        let (fingerprint, files) = lane::read_links(&self.lane.items, at, &hit.link.base);
+        let (fingerprint, files) =
+            lane::read_links(&self.lane.items, at, &hit.link.base, Some(self.md()));
         (fingerprint == hit.link.fingerprint && files.get(hit.link.index) == Some(&hit.link.file))
             .then_some(files)
     }
@@ -3353,6 +3371,7 @@ impl App {
             open: &open,
             sent: &sent,
             dest: dest.as_ref().map(draw::Dest::of),
+            md: Some(&self.md),
         };
         let mut drawn = draw::draw_with_layout(&screen, wait, buf);
         let cards = drawn

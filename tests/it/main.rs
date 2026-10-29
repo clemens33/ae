@@ -89,6 +89,7 @@ mod imgpaste_spec;
 mod init;
 mod install;
 mod keepconv_spec;
+mod lanemd_chat_spec;
 mod launch_context_spec;
 mod lifecycle;
 mod linkfeat_spec;

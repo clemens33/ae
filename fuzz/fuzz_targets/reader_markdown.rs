@@ -32,4 +32,26 @@ fuzz_target!(|data: &[u8]| {
     if r.refusal().is_some() {
         assert_eq!(r.rows(), 0);
     }
+    // The chat lane's mode: its own budget, and every row is its cut's blank gap
+    // and the exact slice of a displayed line it names, less trailing blanks.
+    let opts = markdown::Opts {
+        soft_break_row: true,
+    };
+    let lane = markdown::render_with(&source, width, &markdown::Budget::LANE, opts);
+    assert!(lane.rows() <= markdown::Budget::LANE.rows);
+    assert!(lane.cells() <= markdown::Budget::LANE.cells);
+    for row in 0..lane.rows() {
+        let text = lane.text(row).unwrap_or_default();
+        match lane.cut(row) {
+            Some(cut) => {
+                let piece =
+                    (lane.lines().get(cut.line)).and_then(|l| l.get(cut.from..cut.from + cut.len));
+                assert!(piece.is_some());
+                let drawn = format!("{}{}", " ".repeat(cut.gap), piece.unwrap_or_default());
+                assert_eq!(text, drawn.trim_end_matches(' '));
+            }
+            None => assert!(text.trim().is_empty()),
+        }
+    }
+    assert!(lane.retained_bytes() >= lane.lines().iter().map(String::len).sum::<usize>());
 });

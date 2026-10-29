@@ -6,13 +6,17 @@
 //! wrapped by the chat's own `wrap` and every field neutralised by
 //! `terminal_text`.
 
+use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+use std::rc::Rc;
 
 use ratatui_core::style::{Modifier, Style};
 use ratatui_core::text::{Line, Span};
 
 use super::draw::Paint;
+use super::lanemd;
+use super::markdown::Rendered;
 use crate::board::{clock_text, terminal_text};
 use crate::console::card::{Part, Role};
 use crate::console::lane::{Item, Kind, Lane, OLD_CORE_GAP};
@@ -112,15 +116,29 @@ pub(super) fn tail(
     tail_with(lane, width, paint, &show, need, visited)
 }
 
-/// The newest `need` rows of `lane` or more, as [`rows`] draws them: turns
-/// from the newest back, whole, then coverage rows from the last back, until
-/// `need` rows stand. `visited` gets the index of each item whose body this
-/// call wrapped, in the order it wrapped them.
+/// [`tail_in`] with every turn plain.
+#[cfg(test)]
 pub(super) fn tail_with(
     lane: &Lane,
     width: usize,
     paint: Paint,
     show: &Show<'_>,
+    need: usize,
+    visited: Option<&mut Vec<usize>>,
+) -> Tail {
+    tail_in(lane, width, paint, (show, None), need, visited)
+}
+
+/// The newest `need` rows of `lane` or more, as [`rows`] draws them: turns
+/// from the newest back, whole, then coverage rows from the last back, until
+/// `need` rows stand. `visited` gets the index of each item whose body this
+/// call wrapped, in the order it wrapped them. With a cache in `md`, an agent's
+/// turn is drawn through Markdown.
+pub(super) fn tail_in(
+    lane: &Lane,
+    width: usize,
+    paint: Paint,
+    (show, md): (&Show<'_>, Option<&RefCell<lanemd::Cache>>),
     need: usize,
     mut visited: Option<&mut Vec<usize>>,
 ) -> Tail {
@@ -150,12 +168,12 @@ pub(super) fn tail_with(
         if let Some(visited) = visited.as_deref_mut() {
             visited.push(at);
         }
-        let body = body_rows(
+        let body = body_drawn(
             item,
             closed.as_ref(),
             (width, show.base),
             paint,
-            bullet(show.icons),
+            (bullet(show.icons), md),
         );
         let foldable = show.open.is_some() && fold::foldable(body.len(), 1);
         let open = show.open.is_none_or(|open| open.get(at) == Some(&true));
@@ -326,17 +344,63 @@ fn file_refs(text: &str, base: &link::Base, cut: bool) -> Vec<link::FileRef> {
         .collect()
 }
 
-/// All displayed file occurrences, before folding, clipping or scrolling.
+/// One part of a turn drawn through Markdown: its role, the mark that leads
+/// its first row and its rendered rows.
+type Md<'a> = (Role, &'a str, Rc<Rendered>);
+
+/// The parts of an eligible `item` rendered at lane `width`, a gap left out,
+/// or `None` when the turn draws plain: it is not an agent's, a part refuses
+/// or the turn goes over its caps. An option's rows hang under its mark.
+fn markdown<'a>(
+    item: &Item,
+    parts: &'a [(Role, String)],
+    (width, bullet): (usize, &'a str),
+    md: &RefCell<lanemd::Cache>,
+) -> Option<Vec<Md<'a>>> {
+    if !lanemd::eligible(&item.kind) {
+        return None;
+    }
+    let jobs: Vec<(Role, &str, &str)> = (parts.iter())
+        .filter(|(role, _)| *role != Role::Gap)
+        .map(|(role, text)| match role {
+            Role::Option { label } => match text.split_at_checked(*label) {
+                Some((mark, words)) if *label > 0 => (*role, mark, words),
+                _ => (*role, bullet, text.as_str()),
+            },
+            _ => (*role, "", text.as_str()),
+        })
+        .collect();
+    let asked: Vec<_> = (jobs.iter())
+        .map(|(_, mark, words)| (*words, width.saturating_sub(2 + mark.chars().count())))
+        .collect();
+    let drawn = lanemd::turn(md, &asked)?;
+    drawn.iter().all(|part| part.rows() > 0).then(|| {
+        (jobs.into_iter().zip(drawn))
+            .map(|((role, mark, _), part)| (role, mark, part))
+            .collect()
+    })
+}
+
+/// All displayed file occurrences, before folding, clipping or scrolling. `md`
+/// is the cache and lane width the turn is drawn with, if it is drawn through
+/// Markdown.
 pub(super) fn read_links(
     items: &[Item],
     at: usize,
     base: &link::Base,
+    md: Option<(&RefCell<lanemd::Cache>, usize)>,
 ) -> (u64, Vec<link::FileRef>) {
     let Some(item) = items.get(at) else {
         return (0, Vec::new());
     };
     let closed = closing(items, at);
     let parts = parts(item, closed.as_ref());
+    if let Some(drawn) = md.and_then(|(md, width)| markdown(item, &parts, (width, "- "), md)) {
+        let files = (drawn.iter())
+            .flat_map(|(_, _, part)| lanemd::refs(part, base))
+            .collect();
+        return (fingerprint(item, &parts), files);
+    }
     let files = parts
         .iter()
         .flat_map(|(role, text)| {
@@ -421,10 +485,7 @@ fn body_rows(
             (line, links, files)
         };
         match role {
-            Role::Gap => rows.push(plain(Line::from(vec![
-                Span::raw(" ".repeat(2)),
-                Span::styled(String::new(), paint.fg(|p| p.text)),
-            ]))),
+            Role::Gap => rows.push(gap(paint)),
             Role::Text | Role::Evidence => {
                 let hue = if role == Role::Evidence {
                     paint.fg(|p| p.dim)
@@ -459,6 +520,77 @@ fn body_rows(
             }
         }
         index += refs.len();
+    }
+    rows
+}
+
+/// [`body_rows`], through Markdown where `md` holds a cache and the turn
+/// renders whole.
+fn body_drawn(
+    item: &Item,
+    closed: Option<&Closing>,
+    (width, base): (usize, &link::Base),
+    paint: Paint,
+    (bullet, md): (&str, Option<&RefCell<lanemd::Cache>>),
+) -> Vec<Drawn> {
+    let parts = parts(item, closed);
+    match md.and_then(|md| markdown(item, &parts, (width, bullet), md)) {
+        Some(drawn) => {
+            let stamp = fingerprint(item, &parts);
+            markdown_rows(item, (&parts, drawn), (stamp, base), paint)
+        }
+        None => body_rows(item, closed, (width, base), paint, bullet),
+    }
+}
+
+/// The empty row between two blocks of a decision card.
+fn gap(paint: Paint) -> Drawn {
+    plain(Line::from(vec![
+        Span::raw(" ".repeat(2)),
+        Span::styled(String::new(), paint.fg(|p| p.text)),
+    ]))
+}
+
+/// `item`'s body rows with its `drawn` parts through Markdown, a gap and the
+/// order of `parts` kept; `stamp` is the turn's fingerprint.
+fn markdown_rows(
+    item: &Item,
+    (parts, drawn): (&[(Role, String)], Vec<Md<'_>>),
+    (stamp, base): (u64, &link::Base),
+    paint: Paint,
+) -> Vec<Drawn> {
+    let (mut rows, mut index) = (Vec::new(), 0);
+    let mut drawn = drawn.into_iter();
+    for (role, _) in parts {
+        let Some((role, mark, part)) = (*role != Role::Gap).then(|| drawn.next()).flatten() else {
+            rows.push(gap(paint));
+            continue;
+        };
+        let hue = paint.fg(|p| {
+            if role == Role::Evidence {
+                p.dim
+            } else {
+                p.text
+            }
+        });
+        let lead = lanemd::Lead {
+            mark,
+            hang: mark.chars().count(),
+        };
+        for row in lanemd::rows(&part, &lead, paint, hue, base) {
+            let files = row.files.into_iter().map(|(column, cells, ordinal, file)| {
+                let read = ReadLink {
+                    turn: key(item),
+                    fingerprint: stamp,
+                    index: index + ordinal,
+                    file,
+                    base: base.clone(),
+                };
+                (column, cells, read)
+            });
+            rows.push((row.line, row.links, files.collect()));
+        }
+        index += lanemd::refs(&part, base).len();
     }
     rows
 }

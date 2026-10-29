@@ -130,7 +130,12 @@ fn app_shows_thirty_rows_whole_and_thirty_one_as_first_24_plus_seven_more() {
 
 #[test]
 fn short_app_preserves_blank_rows_tab_spacing_and_trailing_newline() {
-    let (_, shown) = frame(&mut app("one\n\n\ttwo\n"));
+    let mut app = app("one\n\n\ttwo\n");
+    Rc::make_mut(&mut app.lane).items[0].kind = Kind::Inbound {
+        from: "human:chat".into(),
+        to: "lead".into(),
+    };
+    let (_, shown) = frame(&mut app);
     assert!(shown.contains("  one\n\n       two\n"));
 }
 

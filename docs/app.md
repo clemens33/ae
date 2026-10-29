@@ -550,6 +550,20 @@ fetched or opened. `m` switches between rendered and raw Markdown without anothe
 read; switching or resizing keeps the top source block in view. Other files keep
 their raw view, where `m` does nothing.
 
+The chat lane draws what an agent wrote through the same Markdown: an assistant
+turn, a seat's line, a whole answer and each part of a decision card, with the
+reader's headings, lists, quotes, code, rules and tables. A line break in the
+source stays a row break there, where the reader joins it. A card keeps its
+labels, bullets and hanging rows, and its option words are rendered. Your own
+lines, ae's notices, journal summaries and a turn that is only a flattened
+summary stay plain. A turn is drawn whole or not at all: if any part of it
+cannot be rendered, or it is over 64 KiB of source, 2000 rows or 200,000 cells,
+or the column is under 20 cells wide, the turn shows the text it always did,
+unmarked. A file path in a rendered turn is as clickable and as readable with
+`r` as before, in the order it is drawn. Link targets stay text and OSC 8 is
+unchanged. A drag copies what is drawn, and `y` copies the turn's source. `ae
+chat` prints the same bytes as ever.
+
 Markdown headers add `rendered` or `raw` before `rows A-B/N`. Other files keep
 `Read · <path>[:line] · rows A-B/N`. Raw lines are numbered in a gutter. Any
 `:line` link opens raw, jumps with three rows of context above the line and

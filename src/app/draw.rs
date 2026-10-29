@@ -214,6 +214,8 @@ pub(crate) struct Layout {
     /// column: the backend wraps exactly these cells in OSC 8.
     pub(crate) links: Vec<super::backend::Run>,
     files: Vec<(Rect, FileHit)>,
+    /// The cells the lane's rows drew in, for the keys that read its links.
+    pub(super) lane_width: u16,
 }
 
 impl Layout {
@@ -370,6 +372,7 @@ impl Layout {
         bars: &[usize],
         (shown, y0): (Range<usize>, u16),
     ) {
+        self.lane_width = room;
         self.selectable(
             buf,
             select::Panel::Lane,
@@ -581,6 +584,9 @@ pub(crate) struct Wait<'a> {
     pub(crate) sent: &'a [bool],
     /// The seat a line written now would reach, for the composer's address.
     pub(crate) dest: Option<Dest<'a>>,
+    /// The cache that draws agent turns through Markdown; with none the
+    /// lane draws them plain.
+    pub(super) md: Option<&'a std::cell::RefCell<super::lanemd::Cache>>,
 }
 
 /// Where the composer's line would land: the seat the router picked, or the
@@ -1904,7 +1910,8 @@ fn lane_tail(
     };
     let (room, need) = size;
     let lane = ctx.screen.lane;
-    super::lane::tail_with(lane, usize::from(room), ctx.paint, &show, need, None)
+    let shown = (&show, ctx.wait.md);
+    super::lane::tail_in(lane, usize::from(room), ctx.paint, shown, need, None)
 }
 
 /// A turn's fingerprint and the rows it spans.
@@ -2703,7 +2710,7 @@ fn read_place(index: usize, count: usize) -> String {
     format!(" · {place} of {count} links")
 }
 
-fn markdown_style(mark: super::markdown::Marks, paint: Paint) -> Style {
+pub(super) fn markdown_style(mark: super::markdown::Marks, paint: Paint) -> Style {
     let mut style = if mark.target || mark.note {
         paint.fg(|p| p.dim)
     } else if mark.heading.is_some() {
