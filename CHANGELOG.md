@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.152] - 2026-10-29
+- Add prefix O to jump to the orchestrator and back, keeping the client identity
+
 ## [v2026.10.151] - 2026-10-28
 - Pin the justfile fuzz target list to the fuzz manifest bins and the README table
 - Rewrite the seatproof spawn fixture's launch id under the meta lock
