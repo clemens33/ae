@@ -226,8 +226,9 @@ pub const HELP: &str = r"ae - agentic engineering: tmux multi-agent workspace
 
 Usage:
   ae                     Restore crashed sessions, then open the app on every recorded
-                         session (running or stopped) when both ends are a terminal;
-                         else attach to the ae tmux server (list from inside it)
+                         session (running or stopped) when both ends are a terminal,
+                         or create one from the cwd when none is recorded; else attach
+                         to the ae tmux server (list from inside it)
   ae --no-attach         Restore, then print the attach command instead of attaching
   ae --tmux              The tmux view: restore and attach (list from inside it), never the app
   ae <name>              Start, resume or reattach a named session, then open the app on
@@ -473,6 +474,38 @@ pub fn near_miss_refusal(name: &str) -> Option<String> {
     Some(format!(
         "Error: '{name}' looks like a mistyped ae command, not a new session name. Did you mean: ae {command}? No session was created; pick another name to create one."
     ))
+}
+
+/// The session a first use creates, named from `base`, the last component of
+/// the canonical cwd: every character outside `[A-Za-z0-9_-]` becomes `-`, runs
+/// of `-` collapse, leading characters are dropped until `[A-Za-z0-9]`, and the
+/// rest is cut to 124 bytes; nothing left is `ae`. A word the entry answers
+/// itself, a near-miss word and `orchestrator` take `-1`, so the name stays
+/// addressable and always satisfies the session grammar.
+#[must_use]
+pub fn first_use_name(base: &str) -> String {
+    let mut name = String::new();
+    for ch in base.chars() {
+        let ch = if ch.is_ascii_alphanumeric() || ch == '_' {
+            ch
+        } else {
+            '-'
+        };
+        if ch != '-' || !name.ends_with('-') {
+            name.push(ch);
+        }
+    }
+    let mut name = name
+        .trim_start_matches(|ch: char| !ch.is_ascii_alphanumeric())
+        .to_owned();
+    name.truncate(124);
+    if name.is_empty() {
+        name.push_str("ae");
+    }
+    if ROUTED_VERBS.contains(&name.as_str()) || near_miss_command(&name).is_some() {
+        name.push_str("-1");
+    }
+    name
 }
 
 /// The ambient facts an invocation carries — every one of them resolved from a
@@ -885,6 +918,49 @@ mod tests {
         DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, ROUTED_VERBS, Route, TMUX_NO_ATTACH,
         is_direct_child_name, name_is_routed_verb, near_miss_refusal, route, routed_verb_refusal,
     };
+
+    /// A first-use name is the sanitised basename and always a legal session
+    /// name; a word the entry answers takes `-1`.
+    #[test]
+    fn a_first_use_name_is_the_sanitised_basename_and_always_a_legal_session_name() {
+        use super::first_use_name;
+        for (base, want) in [
+            ("My Project.v2", "My-Project-v2"),
+            ("my-app", "my-app"),
+            ("a  b", "a-b"),
+            ("a__b", "a__b"),
+            ("proj--x", "proj-x"),
+            ("a-_-b", "a-_-b"),
+            ("_hidden", "hidden"),
+            (".config", "config"),
+            ("-x", "x"),
+            ("__init__", "init__"),
+            ("héllo", "h-llo"),
+            ("7zip", "7zip"),
+            ("", "ae"),
+            ("...", "ae"),
+            ("日本語", "ae"),
+        ] {
+            assert_eq!(first_use_name(base), want, "{base:?}");
+        }
+        assert_eq!(first_use_name(&"a".repeat(200)), "a".repeat(124));
+        assert_eq!(first_use_name(&"ab".repeat(70)), "ab".repeat(62));
+        for verb in ROUTED_VERBS {
+            assert_eq!(first_use_name(verb), format!("{verb}-1"), "{verb}");
+        }
+        for word in ["lists", "sessions", "agents", "seat", "boards"] {
+            assert_eq!(first_use_name(word), format!("{word}-1"), "{word}");
+        }
+        assert_eq!(first_use_name("Lists"), "Lists", "exact and case-sensitive");
+        for byte in 0u8..128 {
+            let ch = char::from(byte);
+            let name = first_use_name(&format!("{ch}{ch}x{ch}"));
+            assert!(
+                crate::session_launch::name::is_session_name(&name),
+                "{byte}: {name:?}"
+            );
+        }
+    }
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()

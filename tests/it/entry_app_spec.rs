@@ -11,7 +11,7 @@
 //!   calling pane is a SEAT pane (`@ae_agent`), which keeps `ae list`; a chat
 //!   pane (`@ae_console`) is not a seat pane; an unreadable pane fails closed
 //!   to `ae list`;
-//! * everything else — no terminal, `--no-attach`, no recorded session, a
+//! * everything else — no terminal, `--no-attach`, no recorded session on a pipe, a
 //!   caller session ae does not record — keeps the pre-change entry;
 //! * `ae --tmux` is bare `ae` with the view fixed to today's (attach outside,
 //!   list inside) and `--tmux --no-attach` is a usage error, in either order;
@@ -389,8 +389,8 @@ fn a_recorded_session_lands_outside_tmux_in_the_app_running_or_stopped() {
     );
 }
 
-/// Zero recorded sessions is today's refusal, not a first-use app: the entry
-/// creates nothing, resumes nothing and draws no frame.
+/// Zero recorded sessions on a PIPE is today's refusal (a terminal is first
+/// use, `entry_first_use_spec`): nothing created or resumed, no frame.
 #[test]
 fn no_recorded_session_keeps_todays_refusal() {
     let rig = Rig::split("empty");
@@ -400,19 +400,14 @@ fn no_recorded_session_keeps_todays_refusal() {
         "the entry's server holds no session at all"
     );
 
-    let gate = rig.scratch.join("go");
-    let rc = rig.scratch.join("rc");
-    let pane = rig.pane("host", &gated(&command(&[], &rc, true), &gate));
-    std::fs::write(&gate, "").expect("release the pane");
-    let screen = rig.wait(&pane, "an empty state root refuses", |screen| {
-        screen.contains("no running ae session")
-    });
+    let piped = rig.run(&[], "piped");
+    let screen = String::from_utf8_lossy(&piped.stderr);
     assert!(
         screen.contains("ae: no running ae session. Start one with: ae <name>"),
         "today's refusal, verbatim:\n{screen}"
     );
     assert!(!app_frame(&screen), "no recording draws no app:\n{screen}");
-    assert_eq!(wait_for_rc(&rc), "1", "the refusal exits 1");
+    assert_eq!(piped.code, Some(1), "the refusal exits 1");
     assert!(rig.recorded().is_empty(), "the refusal created nothing");
 }
 

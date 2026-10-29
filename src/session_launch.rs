@@ -5409,7 +5409,7 @@ pub(crate) fn recorded_origin_conflict(dir: &Path, requested: &str) -> Option<(S
     clippy::disallowed_methods,
     reason = "a door: --dir and explicit-origin resume checks resolve canonical directories — see clippy.toml"
 )]
-fn canonical_directory(path: &Path) -> Option<PathBuf> {
+pub(crate) fn canonical_directory(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path)
         .ok()
         .filter(|resolved| dir_exists(resolved))

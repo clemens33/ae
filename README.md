@@ -59,7 +59,7 @@ ae my-feature --solo           # lead only, no colead
 ae                             # open the app on every recorded session; ae --tmux attaches tmux instead
 ```
 
-Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held, then opens the app on a terminal, else attaches ([details](docs/reference/commands.md#tmux-server)).
+Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held, then opens the app on a terminal (creating a session from the current directory on first use), else attaches ([details](docs/reference/commands.md#tmux-server)).
 
 **Ask your agent to bring in help:** just tell it what you need -- it knows how to spawn others and coordinate. *"Get a second agent to review the changes in src/"* or *"Spin up a pair programmer to help refactor auth."* Agents pick descriptive names, show up in their own tmux windows, and talk to each other directly.
 

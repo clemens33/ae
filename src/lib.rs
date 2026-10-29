@@ -1797,9 +1797,9 @@ fn run_entry(
                 }
                 seat.inside_tmux |= flags.inside_tmux;
                 seat.no_autostart |= flags.no_autostart;
-                return run_launch(&seat, &launch, false, out, err);
+                return run_launch(&seat, &launch, false, None, out, err);
             }
-            return run_launch(preamble, &user, true, out, err);
+            return run_launch(preamble, &user, true, None, out, err);
         }
     };
     err.flush()?;
@@ -1891,6 +1891,11 @@ fn run_bare_attach(
             Ok(code) => Ok(code.max(failed)),
             Err(Error::Io(why)) => error::with_status(failed, Err(why)).map_err(Error::from),
         };
+    }
+    // No recorded session on a terminal: the first use, whatever else the
+    // server holds.
+    if app && let Some(code) = run_first_use(preamble, out, err)? {
+        return Ok(code.max(failed));
     }
     if transport::session_names(server).is_some_and(|names| !names.is_empty()) {
         if attach {
@@ -2084,10 +2089,13 @@ fn run_archive_preview(
 /// The launch fall-through: the prelude the glue ran, then `_launch`. `land`
 /// lets a named line on a terminal open the app on its session instead of
 /// attaching ([`named_lands`]); the orchestrator seat passes false.
+/// `first_use` is the directory bare `ae` made the session from: the landing
+/// then says so ([`run_first_use`]).
 fn run_launch(
     preamble: &entry::Preamble,
     user: &[String],
     land: bool,
+    first_use: Option<&std::path::Path>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
@@ -2128,7 +2136,7 @@ fn run_launch(
         return Ok(entry::EXIT_FAILED);
     }
     if land && named_lands(preamble, &plan) {
-        return run_named_landing(preamble, &plan, hint, user, out, err);
+        return run_named_landing(preamble, &plan, hint, user, first_use, out, err);
     }
     run_dispatch(&preamble.launch_argv(user), out, err)
 }
@@ -2168,12 +2176,14 @@ fn landing_name(name: &str) -> bool {
 /// `ae <name>` on a terminal: the ONE launch, headless — create from the cwd,
 /// resume in the stored working copy, or leave a running session as it is —
 /// then the app with `<name>` as its home. An explicit `--dir` that
-/// contradicts the recorded origin is refused first, as usage.
+/// contradicts the recorded origin is refused first, as usage. A first use
+/// says what it made, once, between the launch and the app.
 fn run_named_landing(
     preamble: &entry::Preamble,
     plan: &session_launch::Plan,
     name: &str,
     user: &[String],
+    first_use: Option<&std::path::Path>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
@@ -2196,9 +2206,40 @@ fn run_named_landing(
     if code != 0 {
         return Ok(code);
     }
+    if let Some(dir) = first_use {
+        writeln!(
+            err,
+            "first use: created session {name} in {}; old view: ae {name} --tmux",
+            dir.display()
+        )?;
+    }
     out.flush()?;
     err.flush()?;
     run_dispatch(&["app".to_owned(), name.to_owned()], out, err)
+}
+
+/// Bare `ae` on a terminal with no recorded session: [`run_launch`] of a
+/// session named after the canonical cwd ([`entry::first_use_name`]) with that
+/// directory as its origin, then the app on it. `None` when the cwd cannot be
+/// resolved to a path ae can pass on: today's refusal stands.
+fn run_first_use(
+    preamble: &entry::Preamble,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    let Some(dir) = session_launch::canonical_directory(&preamble.cwd) else {
+        return Ok(None);
+    };
+    let Some(path) = dir.to_str() else {
+        return Ok(None);
+    };
+    let base = dir.file_name().unwrap_or_default().to_string_lossy();
+    let user = [
+        entry::first_use_name(&base),
+        "--dir".to_owned(),
+        path.to_owned(),
+    ];
+    run_launch(preamble, &user, true, Some(&dir), out, err).map(Some)
 }
 
 /// The two lines an unsafe session path is refused with.

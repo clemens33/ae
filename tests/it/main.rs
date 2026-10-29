@@ -77,6 +77,7 @@ mod effort_resume_spec;
 mod effort_spec;
 mod entry;
 mod entry_app_spec;
+mod entry_first_use_spec;
 mod entry_name_app_spec;
 mod fixtures;
 mod floor;
