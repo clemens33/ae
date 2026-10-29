@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.154] - 2026-10-29
+- Render chat-lane turns with the reader's inert Markdown subset in ae app (#270)
+
 ## [v2026.10.153] - 2026-10-29
 - Show an open-link hint on a plain click on a link in ae app (#271)
 
