@@ -1,0 +1,5 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"done","summary":"older finish"}
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"state","ref":"waiting-agent","summary":"waiting on review","wait_on":"colead"}
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"blocked","summary":"stuck on a service"}
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"target-moved","target":"lead","target_slot":"main","target_session":"s","ref":"1","summary":"[unconfirmed] target blocked; refused pre-paste: dead pane"}
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"state","ref":"waiting-agent","summary":"still waiting, chased twice","wait_on":"colead"}

@@ -1,0 +1,6 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"done","summary":"older finish"}
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"state","ref":"waiting-agent","summary":"waiting on review","wait_on":"colead"}
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"memo","ref":"goal","summary":"outbound chatter"}
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"done","summary":"proof again"}
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"ask","target":"colead","target_slot":"worker.0","target_session":"s","ref":"0199c0de-aaaa-4890-abcd-ef0123456789","summary":"re-check"}
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"done","summary":"new finish"}

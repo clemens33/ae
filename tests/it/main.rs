@@ -160,6 +160,7 @@ mod telegram;
 mod transport;
 mod trustmiss_spec;
 mod usage;
+mod waiton_moved_spec;
 mod waiton_spec;
 mod watchdog_glue;
 mod watchdog_spacing_spec;

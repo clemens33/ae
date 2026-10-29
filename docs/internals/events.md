@@ -157,6 +157,7 @@ older core steps over the additive key as unknown data.
 | `focus` | `focus` helper | tmux focus switch (informational). |
 | `interrupt` | `interrupt` helper | Cancel signal sent. |
 | `nudge` | watchdog | Stale-agent status check. |
+| `target-moved` | watchdog | A `waiting-agent --on B` seat was told B declared `done`/`blocked` or was retired. `target` = the waiter, `ref` = the decimal ordinal of B's transition within that wait, summary fixed `target done\|blocked\|retired` (B's reason is never journaled). One per ordinal; an `[unconfirmed]` or pre-paste-refused attempt counts toward `undelivered_max`. Ends no declaration; `src/wait_on.rs::moved` folds it. |
 | `alert` | watchdog / ae internal | Attention required (dead, max-nudges, persistent throttle, missing pane). |
 | `throttled` | watchdog | First cycle of an upstream throttle streak. |
 | `limit` | watchdog | First cycle of a vendor usage-limit episode; one per episode. Reads as `attn:limit` (rank 3). |

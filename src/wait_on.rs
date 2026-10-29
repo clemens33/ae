@@ -1,5 +1,6 @@
 //! The typed wait target a `waiting-agent` declaration may name with
-//! `--on`, and the ONE fold that follows those targets inside a session.
+//! `--on`, the ONE fold that follows those targets inside a session and the
+//! one that reads what a followed seat did since the wait began ([`moved`]).
 //!
 //! PURE. The target is checked against the existing name grammars and
 //! nothing else: ae never asks whether it exists here, never infers one from
@@ -8,7 +9,12 @@
 //! ceiling exemption and the drawn words read.
 
 use crate::config::is_agent_name;
+use crate::events::Event;
 use crate::session_launch::name::is_session_name;
+use crate::time::Timestamp;
+use crate::watchdog::{
+    TARGET_MOVED_ACTION, WATCHDOG_ACTOR, ends_quiet, event_is_actor, event_is_addressed_to,
+};
 
 /// A declared wait target: its spelling as declared and what it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,11 +115,16 @@ impl Target {
         }
     }
 
-    /// The seat's words: the target as declared, `(not found)` when
-    /// [`Self::missing`] proved it.
+    /// The seat's words: the target as declared, `(target done)` when it
+    /// moved after the wait began, else `(not found)` when [`Self::missing`]
+    /// proved it.
     #[must_use]
-    pub fn words(&self, missing: bool) -> String {
-        let gap = if missing { " (not found)" } else { "" };
+    pub fn words(&self, missing: bool, moved: Option<Class>) -> String {
+        let gap = match (moved, missing) {
+            (Some(class), _) => format!(" (target {})", class.word()),
+            (None, true) => " (not found)".to_owned(),
+            (None, false) => String::new(),
+        };
         format!("waiting on {}{gap}", self.label)
     }
 
@@ -308,4 +319,215 @@ impl Facts {
             })
             .collect()
     }
+}
+
+/// What a followed seat did after the wait on it began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    Done,
+    Blocked,
+    Retired,
+}
+
+impl Class {
+    /// The word a surface draws: `done`, `blocked` or `retired`.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Blocked => "blocked",
+            Self::Retired => "retired",
+        }
+    }
+
+    /// The fixed journal summary of a move into this class.
+    #[must_use]
+    pub fn summary(self) -> String {
+        format!("target {}", self.word())
+    }
+
+    /// The class a fixed [`Self::summary`] names.
+    fn of_summary(clause: &str) -> Option<Self> {
+        [Self::Done, Self::Blocked, Self::Retired]
+            .into_iter()
+            .find(|class| clause.strip_prefix("target ") == Some(class.word()))
+    }
+}
+
+/// A same-session wait target that moved inside the waiter's current wait.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub class: Class,
+    /// Transitions into done or blocked, or a retire, since the wait began.
+    pub ordinal: u32,
+    /// The newest ordinal a `target-moved` record of the waiter books.
+    pub booked: u32,
+    /// Refused deliveries of this ordinal.
+    pub attempts: u32,
+    /// The target still stands in `class`.
+    pub current: bool,
+    /// When the newest transition was recorded.
+    pub at: Timestamp,
+    /// The newest transition's summary, verbatim; empty for a retire.
+    pub reason: String,
+}
+
+/// The running count of one wait.
+#[derive(Default)]
+struct Run {
+    ordinal: u32,
+    booked: u32,
+    attempts: u32,
+    last: Option<(Class, Timestamp, String)>,
+}
+
+impl Run {
+    fn edge(&mut self, class: Class, event: &Event, reason: String) {
+        self.ordinal = self.ordinal.saturating_add(1);
+        self.attempts = 0;
+        self.last = Some((class, event.ts, reason));
+    }
+
+    /// Book one watchdog record addressed to the waiter: a delivery books its
+    /// ordinal, a refused or abandoned one counts an attempt of it.
+    fn book(&mut self, event: &Event) {
+        let Ok(number) = event.reference.as_deref().unwrap_or_default().parse() else {
+            return;
+        };
+        let summary = event.summary.as_deref().unwrap_or_default();
+        let fixed = summary.rsplit("; ").next().and_then(Class::of_summary);
+        let refused = match event.action.as_str() {
+            TARGET_MOVED_ACTION if summary.contains(crate::send::REFUSED_PRE_PASTE) => true,
+            TARGET_MOVED_ACTION => {
+                self.booked = self.booked.max(number);
+                false
+            }
+            crate::tracked::ABANDONED_ACTION => fixed.is_some(),
+            _ => false,
+        };
+        if refused && number == self.ordinal {
+            self.attempts = self.attempts.saturating_add(1);
+        }
+    }
+}
+
+/// The slot a `retire` record freed when it retired the seat called `name`.
+fn retired_slot<'e>(event: &'e Event, name: &str) -> Option<&'e str> {
+    (event.action == "retire" && event.target.as_deref() == Some(name))
+        .then(|| event.target_slot.value())
+        .flatten()
+}
+
+/// Where the waiter's continuous wait on `target` begins: the first of the
+/// unbroken `waiting-agent` declarations on it that end the journal.
+fn epoch_start(
+    events: &[Event],
+    session: &str,
+    waiter: (&str, &str, &str),
+    target: &Target,
+) -> Option<usize> {
+    let mut start = None;
+    for (index, event) in events.iter().enumerate().rev() {
+        if event.declared_state().is_none() || !event_is_actor(event, session, waiter.0, waiter.1) {
+            continue;
+        }
+        let on = event
+            .wait_on
+            .as_deref()
+            .and_then(|raw| Target::parse(raw, session));
+        if event.declared_state() != Some("waiting-agent")
+            || !on.is_some_and(|on| on.kind() == target.kind())
+        {
+            break;
+        }
+        start = Some(index);
+    }
+    start
+}
+
+/// What the same-session seat `target` names did since `waiter`'s current
+/// wait on it began, or `None` when nothing yet: the ONE fold the watchdog
+/// and `ae list` both read. `waiter` and `seats` are `(slot, reference, name)`.
+///
+/// One forward pass in append order runs the target's state through the
+/// existing quiet table ([`ends_quiet`]): its own `done` or `blocked`
+/// declaration is terminal, any other declaration or an INBOUND record that
+/// ends that quiet makes it active again, its own outbound records never do.
+/// A move INTO a terminal state from another is a transition; a retire is one
+/// only from active. The counts start over at the waiter's first declaration
+/// of this continuous wait, so a proof re-declaration keeps an owed move. The
+/// target's slot comes from `seats`, else from the newest `retire` naming it.
+#[must_use]
+pub fn moved(
+    events: &[Event],
+    session: &str,
+    waiter: (&str, &str, &str),
+    target: &Target,
+    seats: &[(&str, &str, &str)],
+) -> Option<Moved> {
+    let Kind::Seat(name) = target.kind() else {
+        return None;
+    };
+    if name == waiter.2 {
+        return None;
+    }
+    let start = epoch_start(events, session, waiter, target)?;
+    let roster = seats.iter().find(|seat| seat.2 == name);
+    let slot = roster.map(|seat| seat.0).or_else(|| {
+        events
+            .iter()
+            .rev()
+            .find_map(|event| retired_slot(event, name))
+    });
+    let (key, reference) = (
+        slot.unwrap_or_default(),
+        roster.map_or(name.as_str(), |seat| seat.1),
+    );
+    let mut state: Option<Class> = None;
+    let mut run = Run::default();
+    for (index, event) in events.iter().enumerate() {
+        if index == start {
+            run = Run::default();
+        } else if event.actor == WATCHDOG_ACTOR {
+            if index > start && event_is_addressed_to(event, session, waiter.0, waiter.1) {
+                run.book(event);
+            }
+        } else if event_is_actor(event, session, key, reference) {
+            let Some(declared) = event.declared_state() else {
+                continue;
+            };
+            let next = match declared {
+                "done" => Some(Class::Done),
+                "blocked" => Some(Class::Blocked),
+                _ => None,
+            };
+            if let Some(class) = next
+                && state != next
+            {
+                run.edge(class, event, event.summary.clone().unwrap_or_default());
+            }
+            state = next;
+        } else if slot.is_some() && retired_slot(event, name) == slot {
+            if state.is_none() {
+                run.edge(Class::Retired, event, String::new());
+                state = Some(Class::Retired);
+            }
+        } else if let Some(class) = state
+            && class != Class::Retired
+            && event_is_addressed_to(event, session, key, reference)
+            && ends_quiet(class.word(), event, false, &[])
+        {
+            state = None;
+        }
+    }
+    let (class, at, reason) = run.last?;
+    Some(Moved {
+        class,
+        ordinal: run.ordinal,
+        booked: run.booked,
+        attempts: run.attempts,
+        current: state == Some(class),
+        at,
+        reason,
+    })
 }

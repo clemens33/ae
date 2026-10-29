@@ -212,6 +212,7 @@ impl Journal {
             done_progress,
             wait_progress: progress,
             wait_ends_elsewhere: false,
+            target_moved: None,
             descendancy: ae::procs::Descendancy::Present,
             launch_attempt: ae::tmux::Evidence::Silent,
             outstanding_alert: None,

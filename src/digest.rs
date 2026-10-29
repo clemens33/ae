@@ -130,6 +130,8 @@ pub enum Declaration {
         overdue: bool,
         /// The world proved `on` absent ([`crate::wait_on::Target::missing`]).
         missing: bool,
+        /// Where `on` stands after moving ([`crate::wait_on::moved`]).
+        moved: Option<crate::wait_on::Class>,
     },
 }
 
@@ -167,33 +169,45 @@ const PENDING_SESSION_ID: &str = "pending";
 /// Frozen's short-id width, in CHARACTERS, 3158).
 const SHORT_SESSION_ID_CHARS: usize = 8;
 
+/// A current typed wait: target, proven absent, overdue age, where it moved.
+pub(crate) type TypedWait<'a> = (
+    &'a crate::wait_on::Target,
+    bool,
+    Option<String>,
+    Option<crate::wait_on::Class>,
+);
+
 impl AgentEntry {
     /// A CURRENT typed wait: its target, whether the world proved it absent,
-    /// and past the ceiling it is exempt from, how long it is overdue.
+    /// past the ceiling it is exempt from, how long it is overdue, and where it
+    /// moved.
     #[must_use]
-    pub(crate) fn typed_wait(
-        &self,
-        now: Timestamp,
-    ) -> Option<(&crate::wait_on::Target, bool, Option<String>)> {
+    pub(crate) fn typed_wait(&self, now: Timestamp) -> Option<TypedWait<'_>> {
         let Some(Declaration::Made {
             on: Some(on),
             at,
             overdue,
             missing,
+            moved,
             ..
         }) = &self.declaration
         else {
             return None;
         };
         let age = at.map(|at| now.epoch().saturating_sub(at));
-        Some((on, *missing, overdue.then(|| crate::brief::age(age))))
+        Some((
+            on,
+            *missing,
+            overdue.then(|| crate::brief::age(age)),
+            *moved,
+        ))
     }
 
     /// [`Self::typed_wait`] in one cell's words.
     #[must_use]
     pub(crate) fn wait_words(&self, now: Timestamp) -> Option<String> {
-        let (on, missing, overdue) = self.typed_wait(now)?;
-        let mut words = on.words(missing);
+        let (on, missing, overdue, moved) = self.typed_wait(now)?;
+        let mut words = on.words(missing, moved);
         if let Some(age) = overdue {
             words.push_str(" · overdue ");
             words.push_str(&age);

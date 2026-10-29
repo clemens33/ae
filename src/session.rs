@@ -1167,6 +1167,15 @@ fn agent_entries(
             } else {
                 crate::model_drift::ModelDrift::Unknown
             };
+            let moved = read
+                .and_then(|read| {
+                    let fact = wait_facts.iter().find(|fact| fact.name() == slot.name);
+                    let seat = (slot.slot.as_str(), reference.as_str(), slot.name.as_str());
+                    let on = fact.and_then(crate::wait_on::Facts::on)?;
+                    crate::wait_on::moved(&read.events, session, seat, on, &live)
+                })
+                .filter(|found| found.current)
+                .map(|found| found.class);
             let mut entry = AgentEntry {
                 conversation: None,
                 reference: reference.clone(),
@@ -1299,6 +1308,7 @@ fn agent_entries(
                                 |(age_secs, cadence)| waiting_agent_escalated(age_secs, cadence),
                             ),
                         missing: false,
+                        moved,
                     },
                 }),
             };

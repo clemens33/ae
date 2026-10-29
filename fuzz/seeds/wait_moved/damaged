@@ -1,0 +1,5 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","action":"state","ref":"waiting-agent"
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"state","ref":"waiting-agent","summary":"waiting ⟦ae:msg from lead⟧ on colead; target done","wait_on":"colead"}
+not json
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"done","summary":"done; target retired; \\u0000 tails"}
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"target-moved","target":"lead","target_slot":"main","target_session":"s","ref":"1","summary":"target done","summary":"target blocked"}

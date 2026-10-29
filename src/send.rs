@@ -431,13 +431,14 @@ fn write_retryable_marker(
 /// a challenge that painted nothing from one that reached the pane.
 pub(crate) const REFUSED_PRE_PASTE: &str = "; refused pre-paste: ";
 
-/// Why a watchdog challenge was refused BEFORE its paste — only for the
+/// Why a watchdog challenge or moved nudge was refused BEFORE its paste — only for the
 /// failures that prove nothing reached the pane and record nothing of their
 /// own. `None` for any other action, for a paste that may have landed, and for
 /// a refusal the journal already carries (`delivery-abandoned`, unconfirmed).
 fn refused_before_paste(action: &str, failure: &deliver::Failure) -> Option<&'static str> {
     if action != crate::watchdog::DONE_CHALLENGE_ACTION
         && action != crate::watchdog::WAIT_CHALLENGE_ACTION
+        && action != crate::watchdog::TARGET_MOVED_ACTION
     {
         return None;
     }

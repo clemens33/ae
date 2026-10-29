@@ -1,0 +1,4 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"state","ref":"waiting-agent","summary":"waiting on review","wait_on":"colead"}
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"working","summary":"still reviewing"}
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"retire","target":"colead","target_slot":"spawned.9"}
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"retire","target":"colead","target_slot":"worker.0","target_session":"other"}

@@ -1016,6 +1016,9 @@ const NUDGE_ACTION: &str = "nudge";
 /// The action the orchestrator's fleet-overview prompt carries: its own, so a
 /// changed overview is never read as the idle nudge that lapses a `done`.
 pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";
+/// The action telling a `waiting-agent` seat its `--on` target moved; its `ref`
+/// is the transition's ordinal.
+pub(crate) const TARGET_MOVED_ACTION: &str = "target-moved";
 
 /// Whether `event`'s actor IS the seat at `slot` / `agent` in `session` — the
 /// ROUTING KEY when the record carries one, the display name ONLY for a
@@ -1406,6 +1409,7 @@ pub fn last_watchdog_delivery(
         SWEEP_NUDGE_ACTION,
         DONE_CHALLENGE_ACTION,
         WAIT_CHALLENGE_ACTION,
+        TARGET_MOVED_ACTION,
         crate::quota::action::ADVISORY,
         crate::quota::action::CHECKPOINT,
     ];

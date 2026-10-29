@@ -1,0 +1,4 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"state","ref":"waiting-agent","summary":"waiting on review","wait_on":"colead"}
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"blocked","summary":"stuck on a service"}
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"delivery-abandoned","target":"lead","target_slot":"main","target_session":"s","ref":"1","summary":"refused: pane busy; target blocked"}
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"delivery-abandoned","target":"lead","target_slot":"main","target_session":"s","ref":"1","summary":"refused: notice not proven on screen, nothing submitted (pointer may remain staged in the pane); target blocked"}

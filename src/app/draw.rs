@@ -1539,7 +1539,7 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
             .iter()
             .find(|seat| seat.name == agent.name && agent.state == "waiting-agent")
             .and_then(|seat| seat.typed_wait(ctx.screen.now))
-            .map(|(on, _, _)| on.words(false));
+            .map(|(on, _, _, moved)| on.words(false, moved));
         let seat = Seat {
             name: &agent.name,
             mark: agent.mark(),
@@ -1696,12 +1696,12 @@ fn declaration_row(
     } else {
         crate::digest::Declaration::Unreadable.words(ctx.screen.now)
     };
-    if let Some((on, missing, overdue)) = agent
+    if let Some((on, missing, overdue, moved)) = agent
         .typed_wait(ctx.screen.now)
         .filter(|_| entry.agent_state_is_exact())
     {
         let notes = [
-            missing.then(|| format!("{} (not found)", on.label())),
+            (missing && moved.is_none()).then(|| format!("{} (not found)", on.label())),
             overdue.map(|age| format!("overdue {age}")),
         ];
         for note in notes.into_iter().flatten().rev() {

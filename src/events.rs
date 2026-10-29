@@ -626,7 +626,7 @@ pub(crate) fn unreachable_word(event: &Event) -> bool {
 pub(crate) fn landed(event: &Event) -> bool {
     let pasted = match event.action.as_str() {
         "send" | "ask" | "review" | "reply" | "relay" | "nudge" | "done-challenge"
-        | "wait-challenge" => true,
+        | "wait-challenge" | "target-moved" => true,
         "interrupt" => event
             .body_file
             .as_deref()

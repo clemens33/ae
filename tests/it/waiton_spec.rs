@@ -878,6 +878,7 @@ mod source_seam {
             done_progress: DoneProgress::None,
             wait_progress: progress,
             wait_ends_elsewhere: external,
+            target_moved: None,
             descendancy: ae::procs::Descendancy::Present,
             launch_attempt: ae::tmux::Evidence::Silent,
             outstanding_alert: None,

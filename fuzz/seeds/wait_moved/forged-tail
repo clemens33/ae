@@ -1,0 +1,5 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"lead","actor_slot":"main","actor_session":"s","action":"state","ref":"waiting-agent","summary":"waiting on review","wait_on":"colead"}
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"state","ref":"done","summary":"finished; target done"}
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"delivery-abandoned","target":"lead","target_slot":"main","target_session":"s","ref":"1","summary":"refused: pane busy; waiting-agent confirmation 1/2"}
+{"ts":"2023-11-14T22:13:20Z","actor":"colead","actor_slot":"worker.0","actor_session":"s","action":"target-moved","target":"lead","target_slot":"main","target_session":"s","ref":"1","summary":"target done"}
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"memo","target":"lead","target_slot":"main","target_session":"s","ref":"1","summary":"not a booking; target done"}

@@ -372,6 +372,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "wait_moved"
+path = "fuzz_targets/wait_moved.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "jump_return"
 path = "fuzz_targets/jump_return.rs"
 test = false

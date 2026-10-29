@@ -129,6 +129,8 @@ rig owns a socket under a short `/tmp` path and tears down in a `Drop`, so a lea
 repository TEXT — they prove a rule is written, never that it holds at run time, and each
 says so in its own doc comment).
 
+**A wake-up is not a verdict.** A `target-moved` nudge tells a waiting seat that its `--on` target declared `done`/`blocked` or was retired; it is the target's record, not a PASS and not a closed request. After a FAIL, re-check by a new tracked `review`/`ask`, never by reading the wake-up as the answer.
+
 ## The second protocol — reviewing a CLAIM, a CRITERION, or a body of EVIDENCE
 
 The protocol above reads a diff against an invariant. This one is for the other half of the
