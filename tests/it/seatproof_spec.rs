@@ -33,6 +33,8 @@ sub draw {
     my $text=$buf; $text =~ s/[\r\n]/ /g;
     print "\e[H\e[2J\e[?2004h✻ Crunched for 1s · done 4:01 PM\r\n$border\r\n\e[1m❯\e[0m $text\r\n$border\r\n🧠 fake-model ~/x\r\n⏵⏵ bypass permissions on\r\n$ghost";
 }
+# The spawn's bootstrap Enter starts this process; only later Enters submit a brief.
+open(my $ready, '>', "$out.ready") or die; close($ready);
 draw(); while (sysread(STDIN, my $ch, 1)) {
     open(my $wire, '>>', "$out.wire") or die; binmode($wire); print $wire $ch; close($wire);
     $buf .= $ch;
@@ -68,8 +70,10 @@ if (!$after && grep { $_ eq 'capture-pane' } @ARGV) {
 }
 # tmux returning proves input was queued, not consumed. Keep the helper behind
 # the agent's on-disk revocation before its next guarded submit stage.
+# Test readiness BEFORE real tmux: the bootstrap Enter itself can start the agent.
+my $linger = $after eq 'linger' && -e $ENV{SEATPROOF_LINGER_READY};
 if (($after eq 'paste' && grep { $_ eq 'paste-buffer' } @ARGV) ||
-    ($after eq 'enter' && $ARGV[-1] eq 'Enter' && grep { $_ eq 'send-keys' } @ARGV)) {
+    (($after eq 'enter' || $linger) && $ARGV[-1] eq 'Enter' && grep { $_ eq 'send-keys' } @ARGV)) {
     system {$ENV{SEATPROOF_TMUX}} $ENV{SEATPROOF_TMUX}, @ARGV;
     fail('revocation input failed') if $? != 0;
     my $end=time()+90;
@@ -509,15 +513,15 @@ fn a_spawn_keeps_its_created_identity_through_readiness_and_the_linger_enter() {
             Some(0)
         );
         let out = w.rig.scratch.join("spawn");
-        if cut == "linger" {
-            World::arm("linger", SLOT, &out);
-        }
         let mut cmd = w.rig.command(Some(&w.main));
         cmd.args(["@s", "spawn", "fresh", "--using", "fake", "--", BODY])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if cut == "ready" {
             w.barrier(&mut cmd);
+        } else {
+            w.arm_barrier(&mut cmd, "linger", SLOT, &out);
+            cmd.env("SEATPROOF_LINGER_READY", out.with_extension("ready"));
         }
         let child = cmd.spawn().expect("real spawn");
         if cut == "ready" {
@@ -535,6 +539,9 @@ fn a_spawn_keeps_its_created_identity_through_readiness_and_the_linger_enter() {
             w.resume();
         }
         let output = finish(child);
+        if cut == "linger" {
+            w.acknowledged();
+        }
         let err = String::from_utf8_lossy(&output.stderr);
         assert!(err.contains("REFUSED"), "stale spawn brief ({cut}): {err}");
         assert_eq!(w.count("refused"), 1, "spawn guard audit: {}", w.events());
@@ -622,7 +629,13 @@ fn live_reseated_legacy_and_unstamped_raw_targets_keep_receiving_new_messages() 
             "live {arm} refused: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(read(&w.out).contains(BODY), "no live {arm} message");
+        wait(
+            &format!(
+                "live {arm} message; helper stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            || read(&w.out).contains(BODY),
+        );
         assert_eq!(w.count("refused"), 0);
     }
 }
