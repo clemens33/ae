@@ -65,9 +65,9 @@ pub fn via(
 }
 
 /// What an exec restart runs: the link, `app`, the human's `operands` as typed,
-/// then the handed-over `view` behind [`handover::FLAG`] — only when `target`
-/// is newer than `own`, because an older core may not know the flag. A
-/// rollback starts with a fresh view.
+/// then the handed-over `view` behind [`handover::FLAG`], or [`super::OWN`]
+/// when there is none — only when `target` is newer than `own`, because an
+/// older core may not know either flag. A rollback starts with a fresh view.
 #[must_use]
 pub fn exec_argv(
     link: &Path,
@@ -77,8 +77,11 @@ pub fn exec_argv(
     own: &str,
 ) -> Vec<String> {
     let newer = crate::install::compare_versions(target, own) == Some(Ordering::Greater);
-    let carrier =
-        (view.filter(|_| newer).into_iter()).flat_map(|text| [handover::FLAG.to_owned(), text]);
+    let carrier = match view.filter(|_| newer) {
+        Some(text) => vec![handover::FLAG.to_owned(), text],
+        None if newer => vec![super::OWN.to_owned()],
+        None => Vec::new(),
+    };
     [link.display().to_string(), "app".to_owned()]
         .into_iter()
         .chain(operands.iter().cloned())
@@ -325,7 +328,8 @@ mod tests {
     }
 
     /// The exec argv: the link, `app`, the operands as typed, and the view
-    /// only for a newer target — an older one, or none, starts fresh.
+    /// only for a newer target — an older one, or none, starts fresh. A newer
+    /// target with no view is told the start is ae's own instead.
     #[test]
     fn the_exec_hands_on_the_operands_and_the_view_only_to_a_newer_core() {
         let link = Path::new("/h/.local/bin/ae");
@@ -337,7 +341,9 @@ mod tests {
         let older = exec_argv(link, &typed, view(), "2026.10.40", "2026.10.59");
         assert_eq!(older, ["/h/.local/bin/ae", "app", "web"]);
         let bare = exec_argv(link, &[], None, "2026.10.99", "2026.10.59");
-        assert_eq!(bare, ["/h/.local/bin/ae", "app"]);
+        assert_eq!(bare, ["/h/.local/bin/ae", "app", "--app-own"]);
+        let plain = exec_argv(link, &typed, None, "2026.10.40", "2026.10.59");
+        assert_eq!(plain, ["/h/.local/bin/ae", "app", "web"], "an older core");
         let unparsed = exec_argv(link, &[], view(), "next", "2026.10.59");
         assert_eq!(unparsed, ["/h/.local/bin/ae", "app"], "no order, no view");
     }

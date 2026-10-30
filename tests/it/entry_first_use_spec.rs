@@ -282,7 +282,14 @@ impl Rig {
     /// Quit the app drawn in `pane` and hand back the exit code it left.
     fn quit(&self, pane: &Pane) -> String {
         self.pane_tmux(&["send-keys", "-t", &pane.id, "q", "q"]);
-        pane.code()
+        let code = pane.code();
+        // ae's own landing never says the hand-typed `ae app` hint (#230 O7 S4).
+        let said = std::fs::read_to_string(&pane.err).unwrap_or_default();
+        assert!(
+            !said.contains("plain ae opens the app"),
+            "a landing says no hint: {said:?}"
+        );
+        code
     }
 }
 

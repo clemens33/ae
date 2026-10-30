@@ -345,7 +345,14 @@ impl Rig {
     /// Quit the app drawn in `pane` and hand back the exit code it left.
     fn quit(&self, pane: &str, rc: &Path) -> String {
         self.pane_tmux(&["send-keys", "-t", pane, "q", "q"]);
-        wait_for_rc(rc)
+        let code = wait_for_rc(rc);
+        // ae's own landing never says the hand-typed `ae app` hint (#230 O7 S4).
+        let shown = self.screen(pane);
+        assert!(
+            !shown.contains("plain ae opens the app"),
+            "a landing says no hint:\n{shown}"
+        );
+        code
     }
 }
 

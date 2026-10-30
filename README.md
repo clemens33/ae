@@ -65,7 +65,7 @@ Outside tmux, bare `ae` first resumes the sessions a crashed tmux server held, t
 
 **Check on agents without attaching:**
 ```bash
-ae app [session]               # the fleet as a terminal UI beside the selected chat
+ae app [session]               # the explicit form of plain ae: the fleet as a terminal UI (prints a one-line hint)
 ae chat [session] [--follow]
                                # the human lane: lead-pair turns, bridge asks, say lines, cards,
                                # every seat that needs you; /open <seat> shows its pane

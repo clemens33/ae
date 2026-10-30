@@ -1845,7 +1845,7 @@ fn run_bare_attach(
             if app && caller_pane_lands(preamble) {
                 out.flush()?;
                 err.flush()?;
-                return run_dispatch(&["app".to_owned()], out, err);
+                return run_dispatch(&own_app_argv(None), out, err);
             }
             return run_dispatch(&["list".to_owned()], out, err);
         }
@@ -1887,7 +1887,7 @@ fn run_bare_attach(
     if app && !current_world(&preamble.home).1.sessions.is_empty() {
         err.flush()?;
         error::with_status(failed, out.flush())?;
-        return match run_dispatch(&["app".to_owned()], out, err) {
+        return match run_dispatch(&own_app_argv(None), out, err) {
             Ok(code) => Ok(code.max(failed)),
             Err(Error::Io(why)) => error::with_status(failed, Err(why)).map_err(Error::from),
         };
@@ -2141,6 +2141,16 @@ fn run_launch(
     run_dispatch(&preamble.launch_argv(user), out, err)
 }
 
+/// The argv of an app start ae makes itself, which says no hint.
+fn own_app_argv(name: Option<&str>) -> Vec<String> {
+    let session = name.into_iter().map(ToOwned::to_owned);
+    ["app".to_owned()]
+        .into_iter()
+        .chain(session)
+        .chain([app::OWN.to_owned()])
+        .collect()
+}
+
 /// Whether a named line opens the app: a name it may land on, no `--tmux` and
 /// no `--no-attach`, both streams a terminal, and the caller outside tmux or on
 /// a pane of the launch server that is no seat. The app's home is the NAMED
@@ -2215,7 +2225,7 @@ fn run_named_landing(
     }
     out.flush()?;
     err.flush()?;
-    run_dispatch(&["app".to_owned(), name.to_owned()], out, err)
+    run_dispatch(&own_app_argv(Some(name)), out, err)
 }
 
 /// Bare `ae` on a terminal with no recorded session: [`run_launch`] of a

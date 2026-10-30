@@ -27,6 +27,8 @@ use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
 use ratatui_core::style::Color;
 
+#[path = "app_hint_spec.rs"]
+mod hint;
 #[path = "app_instructions_spec.rs"]
 mod instructions;
 #[path = "app_typing_spec.rs"]

@@ -47,7 +47,8 @@ ae chat [session] [--follow] [--all]
                        chat asks and replies, live decision cards, and every
                        seat that needs you; /open <seat> selects its pane
 ae app [session]       The fleet as a terminal UI: sessions in a sidebar, the selected
-                       one's Agents, and its chat; typing asks at home
+                       one's Agents, and its chat; typing asks at home. Plain ae opens
+                       it; a hand-typed ae app prints a one-line hint saying so
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
@@ -131,9 +132,10 @@ See [Chat](../chat.md) for input, replies, coverage, and the follow view.
 ## `ae app`
 
 `ae app [session]` draws the fleet as a terminal UI beside the selected session's
-chat; it needs a terminal on stdin and stdout. Bare `ae` opens it on a terminal
-([tmux server](#tmux-server)). `[workspace] chat = app` runs it in
-the `chat` window. See [App](../app.md) for the layout, keys and ownership.
+chat; it needs a terminal on stdin and stdout. Plain `ae` is the way in
+([tmux server](#tmux-server)); a hand-typed `ae app` that opens prints
+`ae app: plain ae opens the app` on stderr, which ae's own starts never do.
+`[workspace] chat = app` runs it in the `chat` window. See [App](../app.md) for the layout, keys and ownership.
 
 ## `ae init`
 

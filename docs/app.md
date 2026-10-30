@@ -1,7 +1,7 @@
 # The app
 
-`ae app [session]` draws the fleet as a terminal UI: every session in a
-sidebar, the selected session's Agents beside it, and the selected
+Plain `ae` opens the app; `ae app [session]` is its explicit command. The app
+draws the fleet as a terminal UI: every session in a sidebar, the selected session's Agents beside it, and the selected
 session's chat on the right. It is a second view of the data [the chat](chat.md)
 already reads, through the same owners, and it writes nothing into any session
 but the asks you type into the selected one; opening a seat only moves a tmux
@@ -9,8 +9,11 @@ client ([Opening a seat](#opening-a-seat)). `ae chat` is unchanged beside it.
 
 It needs a terminal on both stdin and stdout. Without one it prints
 `ae app draws a terminal UI; use ae chat to print the lane` on stderr and exits 1.
+A hand-typed `ae app` that opens prints one stderr line first, `ae app: plain ae
+opens the app`. ae's own starts never do: the landings of plain `ae` and `ae
+<name>`, the `chat = app` window, and a restart into a newer core.
 
-Plain `ae` opens it too: on a terminal, with at least one recorded session,
+Plain `ae` opens it: on a terminal, with at least one recorded session,
 running or stopped, bare `ae` restores what a crashed tmux server held and then
 lands here, creating and resuming nothing; inside ae's tmux server it lands in
 the current pane unless that pane is a seat's, which keeps `ae list`. With no

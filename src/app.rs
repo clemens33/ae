@@ -121,6 +121,13 @@ mod livepeek_spec;
 /// What `ae app` says, on stderr, when it has no terminal to draw on.
 pub const NO_TERMINAL: &str = "ae app draws a terminal UI; use ae chat to print the lane\n";
 
+/// What a hand-typed `ae app` that opens the app says on stderr, once.
+pub const HINT: &str = "ae app: plain ae opens the app";
+
+/// The internal argument an app start ae makes itself carries, never shown in
+/// the usage text: it says no [`HINT`]. A session name can never be it.
+pub const OWN: &str = "--app-own";
+
 /// The usage text.
 pub const USAGE: &str = "Usage: ae app [session]\n\n  session   the home session, selected first (default: the session this pane belongs to)\n";
 
@@ -4070,7 +4077,12 @@ fn draw_frame<W: Write>(
     reason = "the one loop: its setup, then draw, show, drain"
 )]
 pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
-    let Some((session, handed)) = operands(tail) else {
+    let Some(Operands {
+        session,
+        own,
+        handed,
+    }) = operands(tail)
+    else {
         write!(err, "{USAGE}")?;
         return Ok(crate::entry::EXIT_USAGE);
     };
@@ -4098,6 +4110,11 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     };
     let (wake, wakes) = mpsc::channel();
     let (caller, pane) = (doors::caller_server(), doors::calling_pane_id());
+    let hint = !(own || handed.is_some()) && {
+        let at = caller.as_ref().zip(pane.as_deref());
+        let stamp = at.and_then(|(server, pane)| transport::observe_pane_console(server, pane));
+        says_hint(at.is_some(), stamp.as_deref())
+    };
     let (keep, landed) = handed_on(handed);
     let own = (caller.clone(), pane.clone());
     let reader = reader_of(&root, home.clone(), own, landed);
@@ -4109,6 +4126,10 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             return Ok(crate::EXIT_UNAVAILABLE);
         }
     };
+    if hint {
+        // Best effort: a stderr that cannot be written must not stop an app that opened before.
+        let _ = writeln!(err, "{HINT}");
+    }
     let tty = match tty::Tty::start() {
         Ok(tty) => tty,
         Err(why) => {
@@ -4261,19 +4282,47 @@ fn step<W: Write>(
     Ok(Step::Stay(true))
 }
 
-/// `ae app`'s operands: the home session as typed, and the view an exec
-/// restart handed on behind [`handover::FLAG`], last. `None` is a usage error.
-fn operands(tail: &[String]) -> Option<(Option<String>, Option<String>)> {
-    let session = |name: &String| (!name.starts_with('-')).then(|| name.clone());
-    match tail {
-        [] => Some((None, None)),
-        [name] => Some((Some(session(name)?), None)),
-        [flag, text] if flag == handover::FLAG => Some((None, Some(text.clone()))),
-        [name, flag, text] if flag == handover::FLAG => {
-            Some((Some(session(name)?), Some(text.clone())))
-        }
-        _ => None,
-    }
+/// `ae app`'s operands.
+struct Operands {
+    /// The home session as typed.
+    session: Option<String>,
+    /// [`OWN`] was given: an app start ae made itself.
+    own: bool,
+    /// The view an exec restart handed on behind [`handover::FLAG`].
+    handed: Option<String>,
+}
+
+/// `ae app`'s operands: the home session, then [`OWN`] once, then the view an
+/// exec restart handed on behind [`handover::FLAG`], last. `None` is a usage
+/// error.
+fn operands(tail: &[String]) -> Option<Operands> {
+    let (session, rest) = match tail.split_first() {
+        Some((name, rest)) if !name.starts_with('-') => (Some(name.clone()), rest),
+        _ => (None, tail),
+    };
+    let (own, rest) = match rest.split_first() {
+        Some((flag, more)) if flag == OWN => (true, more),
+        _ => (false, rest),
+    };
+    let handed = match rest {
+        [] => None,
+        [flag, text] if flag == handover::FLAG => Some(text.clone()),
+        _ => return None,
+    };
+    Some(Operands {
+        session,
+        own,
+        handed,
+    })
+}
+
+/// Whether a start that no marker or carrier calls ae's own says [`HINT`],
+/// given whether it runs in a tmux pane and that pane's `@ae_console` stamp,
+/// `None` when tmux did not answer ([`upgrade::via`] reads it the same way). A
+/// stamped pane is a chat window, ae's own start; a silent tmux is doubt, and
+/// doubt says nothing.
+fn says_hint(in_pane: bool, stamp: Option<&str>) -> bool {
+    !in_pane || stamp == Some("")
 }
 
 /// How `ae app` ends, its terminal put back first: restarted into the core
@@ -9024,9 +9073,76 @@ mod tests {
     fn the_app_takes_a_session_and_an_internal_view_last() {
         let words = |words: &[&str]| words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
         for tail in [&["-h"][..], &["-w", "--app-view", "x"], &["web", "x"]] {
-            assert_eq!(super::operands(&words(tail)), None, "{tail:?}");
+            assert!(super::operands(&words(tail)).is_none(), "{tail:?}");
         }
         assert!(!super::USAGE.contains("--app-view"), "internal");
+        assert!(!super::USAGE.contains(super::OWN), "internal");
+    }
+
+    /// The own marker comes once, after the session and before the carrier;
+    /// anywhere else is a usage error, and no session name can be it.
+    #[test]
+    fn the_own_marker_is_taken_once_after_the_session_and_before_the_carrier() {
+        let words = |words: &[&str]| words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        let read = |tail: &[&str]| {
+            super::operands(&words(tail)).map(|got| (got.session, got.own, got.handed))
+        };
+        let (own, view) = (super::OWN, crate::app::handover::FLAG);
+        let some = |session: Option<&str>, own, handed: Option<&str>| {
+            Some((session.map(str::to_owned), own, handed.map(str::to_owned)))
+        };
+        assert_eq!(read(&[]), some(None, false, None));
+        assert_eq!(read(&["web"]), some(Some("web"), false, None));
+        assert_eq!(read(&[own]), some(None, true, None));
+        assert_eq!(read(&["web", own]), some(Some("web"), true, None));
+        assert_eq!(read(&[view, "x"]), some(None, false, Some("x")));
+        assert_eq!(read(&[own, view, "x"]), some(None, true, Some("x")));
+        assert_eq!(
+            read(&["web", own, view, "x"]),
+            some(Some("web"), true, Some("x"))
+        );
+        for tail in [
+            &[own, own][..],
+            &["web", own, own],
+            &[own, "web"],
+            &[view, "x", own],
+            &["web", view, "x", own],
+            &["web", "web", own],
+            &["web", own, view],
+        ] {
+            assert!(read(tail).is_none(), "{tail:?}");
+        }
+        assert!(!crate::session_launch::name::is_session_name(own));
+    }
+
+    /// Only a start nothing marks as ae's own says the hint: not in a chat
+    /// window (a stamped pane), and not when tmux does not answer.
+    #[test]
+    fn only_a_start_in_no_chat_window_says_the_hint() {
+        assert!(super::says_hint(false, None), "no tmux pane");
+        assert!(super::says_hint(true, Some("")), "an unstamped pane");
+        assert!(!super::says_hint(true, Some("uuid")), "a chat window");
+        assert!(!super::says_hint(true, None), "tmux is silent: doubt");
+    }
+
+    /// Every argv ae builds for an app start of its own reads as one: the
+    /// landings' marker, an exec restart's carrier with a view or without.
+    #[test]
+    fn every_argv_ae_builds_for_its_own_start_reads_as_own() {
+        let link = std::path::Path::new("/h/.local/bin/ae");
+        let landing = [crate::own_app_argv(None), crate::own_app_argv(Some("web"))];
+        let typed = vec!["web".to_owned()];
+        let (newer, older) = ("2026.10.99", "2026.10.59");
+        let exec = [
+            super::upgrade::exec_argv(link, &typed, None, newer, older),
+            super::upgrade::exec_argv(link, &[], None, newer, older),
+            super::upgrade::exec_argv(link, &typed, Some("v1|x".to_owned()), newer, older),
+        ];
+        for argv in landing.iter().chain(&exec) {
+            let at = argv.iter().position(|word| word == "app").expect("app");
+            let got = super::operands(&argv[at + 1..]).expect("the grammar takes it");
+            assert!(got.own || got.handed.is_some(), "{argv:?}");
+        }
     }
 
     /// U3: every key read stamps the quiet window a restart waits out; an

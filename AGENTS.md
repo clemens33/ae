@@ -100,7 +100,9 @@ before it moves the command link, reports and skips stopped unplaceable sessions
 unreferenced versions. A seat's pane line names the command link when installed and stays runnable across the upgrade.
 A running installed `ae app` follows the link itself once idle: in its session's chat window tmux
 respawns its pane, any other app execs the linked core in place (same pid, its shell kept); a
-chat window whose proof fails only hints.
+chat window whose proof fails only hints. ae's own app starts carry the internal `--app-own`
+marker (the landings, an exec restart with no view), a view carrier, or a stamped chat pane; only a
+human-typed `ae app` prints its one-line stderr hint.
 A publish is `$HOME`-pinned, so a checkout run whose state root differs
 REFUSES `ae upgrade` before downloading anything.
 Live upgrade probes therefore go in a sandboxed `$HOME`, never `ae-dev`. Why:
