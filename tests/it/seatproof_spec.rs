@@ -52,14 +52,33 @@ draw(); while (sysread(STDIN, my $ch, 1)) {
 "#;
 const TMUX_BARRIER: &str = r#"#!/usr/bin/perl
 use strict; use warnings; use Fcntl qw(O_CREAT O_EXCL O_WRONLY); my $root=$ENV{SEATPROOF_BARRIER};
+my $after=$ENV{SEATPROOF_AFTER_INPUT}//'';
+sub fail {
+    open(my $failed, '>', "$root/revocation-failed") or die; print $failed @_; close($failed);
+    die @_;
+}
 if (($ENV{SEATPROOF_FAULT}//'') eq 'physical' && $ARGV[-1] eq '#{session_id} | #{session_created}' && grep { $_ eq $ENV{SEATPROOF_PANE} } @ARGV) {
     open(my $seen, '>', "$root/physical-failed") or die; close($seen); exit 1;
 }
-if (grep { $_ eq 'capture-pane' } @ARGV) {
+if (!$after && grep { $_ eq 'capture-pane' } @ARGV) {
     if (sysopen(my $seen, "$root/seen", O_CREAT|O_EXCL|O_WRONLY, 0600)) {
         close($seen); my $end=time()+90;
         while (!-e "$root/go") { die 'barrier deadline' if time()>$end; select(undef,undef,undef,.01); }
     }
+}
+# tmux returning proves input was queued, not consumed. Keep the helper behind
+# the agent's on-disk revocation before its next guarded submit stage.
+if (($after eq 'paste' && grep { $_ eq 'paste-buffer' } @ARGV) ||
+    ($after eq 'enter' && $ARGV[-1] eq 'Enter' && grep { $_ eq 'send-keys' } @ARGV)) {
+    system {$ENV{SEATPROOF_TMUX}} $ENV{SEATPROOF_TMUX}, @ARGV;
+    fail('revocation input failed') if $? != 0;
+    my $end=time()+90;
+    while (!-e $ENV{SEATPROOF_CHANGED}) {
+        fail('revocation acknowledgement deadline') if time()>$end;
+        select(undef,undef,undef,.01);
+    }
+    open(my $seen, '>', "$root/revocation-seen") or die; close($seen);
+    exit 0;
 }
 exec {$ENV{SEATPROOF_TMUX}} $ENV{SEATPROOF_TMUX}, @ARGV;
 die 'exec tmux';
@@ -212,6 +231,24 @@ impl World {
     fn arm(event: &str, slot: &str, out: &Path) {
         fs::write(out.with_extension("arm"), format!("{event}\n{slot}\n"))
             .expect("causal transition");
+    }
+    fn arm_barrier(&self, cmd: &mut Runner, event: &str, slot: &str, out: &Path) {
+        Self::arm(event, slot, out);
+        self.barrier(cmd);
+        cmd.env("SEATPROOF_AFTER_INPUT", event)
+            .env("SEATPROOF_CHANGED", out.with_extension("changed"));
+    }
+    fn acknowledged(&self) {
+        let barrier = self.rig.scratch.join("barrier");
+        assert!(
+            !barrier.join("revocation-failed").exists(),
+            "fixture handshake failed: {}",
+            read(barrier.join("revocation-failed"))
+        );
+        assert!(
+            barrier.join("revocation-seen").exists(),
+            "fixture never acknowledged revocation"
+        );
     }
     fn barrier(&self, cmd: &mut Runner) {
         let path = cmd
@@ -391,11 +428,10 @@ fn a_real_retire_during_the_quiet_gate_gives_an_ordinary_audited_refusal() {
 fn revocation_after_a_paste_or_first_enter_suppresses_the_next_submit_key() {
     for event in ["paste", "enter"] {
         let w = World::new(&format!("sp-{event}"));
-        World::arm(event, SLOT, &w.out);
-        let output = w
-            .command("send", true, false)
-            .output()
-            .expect("causal send");
+        let mut cmd = w.command("send", true, false);
+        w.arm_barrier(&mut cmd, event, SLOT, &w.out);
+        let output = cmd.output().expect("causal send");
+        w.acknowledged();
         let word = if event == "paste" {
             "no Enter was sent"
         } else {
@@ -529,7 +565,7 @@ fn context_notices_audit_precompose_and_postcompose_revocation_without_claiming_
         if cut == "quiet" {
             w.barrier(&mut cmd);
         } else {
-            World::arm("paste", "main", &target);
+            w.arm_barrier(&mut cmd, "paste", "main", &target);
         }
         let child = cmd.spawn().expect("notice leg");
         if cut == "quiet" {
@@ -540,6 +576,9 @@ fn context_notices_audit_precompose_and_postcompose_revocation_without_claiming_
             w.resume();
         }
         let output = finish(child);
+        if cut == "paste" {
+            w.acknowledged();
+        }
         w.refuse(&output, "replaced");
         assert!(
             w.events()
