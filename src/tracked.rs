@@ -486,6 +486,11 @@ pub enum ResolveError {
         /// The session searched.
         session: String,
     },
+    /// The named session's agent roster could not be read, even after a re-ask.
+    RosterUnreadable {
+        /// The session whose roster could not be read.
+        session: String,
+    },
     /// The target session records no usable tmux server (its selector is
     /// Missing/Ambiguous, or its meta is unreadable).
     UnresolvableServer {
@@ -511,6 +516,9 @@ impl ResolveError {
             }
             Self::NotFound { target, session } => {
                 format!("Error: agent '{target}' not found in session '{session}'")
+            }
+            Self::RosterUnreadable { session } => {
+                format!("Error: agent roster unreadable in session '{session}' — retry")
             }
             Self::UnresolvableServer { session } => format!(
                 "Error: session '{session}' records no usable tmux server — refresh or migrate the session, then retry"
@@ -666,7 +674,13 @@ pub fn resolve_on(
             if explicit && !transport::session_exists(&server, &session) {
                 return Err(ResolveError::SessionNotFound(session));
             }
-            let roster = transport::observe_agents(&server, &session).unwrap_or_default();
+            // A failed read proves no absence. Re-ask once on the same server;
+            // a positive roster (even empty) is authoritative on the first read.
+            let roster = transport::observe_agents(&server, &session)
+                .or_else(|| transport::observe_agents(&server, &session))
+                .ok_or_else(|| ResolveError::RosterUnreadable {
+                    session: session.clone(),
+                })?;
             let (pane, agent) = pick(&roster, &target, &session, own_session)?;
             (server, pane.to_owned(), agent)
         }

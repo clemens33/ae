@@ -40,7 +40,10 @@ while (sysread(STDIN, my $ch, 1)) {
         open(my $log, '>>', $out) or die; binmode($log);
         print $log $buf, "\0"; close($log); $buf = ''; draw(''); next;
     }
-    draw($buf);
+    # Publish a paste only after its terminator, as the delivery fixture does.
+    # An unfinished escape prefix must not corrupt the composer frame either.
+    my $paste_prefix = $buf =~ /\e(?:\[|\[2|\[20|\[200)?\z/;
+    draw($buf) if !$pasting && !$paste_prefix;
 }
 "#;
 
@@ -268,6 +271,142 @@ fn request_writers_stamp_both_routing_ids_for_ask_and_review() {
     }
 }
 
+// Fault the resolver's roster only; every other tmux read/write remains real.
+const ROSTER_FAULT: &str = r#"#!/usr/bin/perl
+use strict; use warnings;
+if (@ARGV >= 6 && join("\0", @ARGV[-6..-1]) eq join("\0", 'list-panes', '-s', '-t', '=old', '-F', '#{pane_id} | #{@ae_agent}')) {
+    my $count = 0;
+    if (open(my $seen, '<', $ENV{ROSTER_CALLS})) { $count++ while <$seen>; close($seen); }
+    open(my $seen, '>>', $ENV{ROSTER_CALLS}) or die; print $seen "roster\n"; close($seen);
+    my $mode = $ENV{ROSTER_FAULT};
+    exit 1 if $mode eq 'persistent' || ($mode eq 'transient' && $count == 0);
+    exit 0 if $mode eq 'empty';
+    if ($mode eq 'other') { print "%999 | other\n"; exit 0; }
+    if ($mode eq 'ambiguous') { print "%998 | colead\n%999 | colead\n"; exit 0; }
+}
+exec {$ENV{ROSTER_REAL_TMUX}} $ENV{ROSTER_REAL_TMUX}, @ARGV;
+die 'exec real tmux';
+"#;
+
+fn roster_command(rig: &Rig, pane: &str, mode: &str) -> (Runner, PathBuf) {
+    let mut command = rig.command(Some(pane));
+    command.args(["@old", "ask", "colead", "roster-recovery-body"]);
+    let path = command
+        .get_envs()
+        .find(|(key, _)| *key == "PATH")
+        .and_then(|(_, value)| value)
+        .expect("isolated PATH")
+        .to_owned();
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("tmux"))
+        .find(|path| path.is_file())
+        .expect("real tmux before installing shim")
+        .canonicalize()
+        .expect("absolute real tmux");
+    let bin = rig.scratch.join(format!("roster-{mode}"));
+    fs::create_dir_all(&bin).expect("roster shim directory");
+    let shim = bin.join("tmux");
+    fs::write(&shim, ROSTER_FAULT).expect("roster shim");
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("executable shim");
+    let calls = bin.join("calls");
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&path));
+    command
+        .env("PATH", std::env::join_paths(paths).expect("shim PATH"))
+        .env("ROSTER_CALLS", &calls)
+        .env("ROSTER_FAULT", mode)
+        .env("ROSTER_REAL_TMUX", real);
+    (command, calls)
+}
+
+fn roster_calls(path: &std::path::Path) -> usize {
+    fs::read_to_string(path)
+        .expect("roster fault was reached")
+        .lines()
+        .count()
+}
+
+#[test]
+fn transient_roster_read_failure_reasks_once_and_delivers_to_the_same_pane() {
+    let rig = Rig::new("roster-transient");
+    let panes = rig.create("old", A);
+    let control = rig.ask("old", &panes[0], "ask", "colead");
+    let before = fs::read_to_string(rig.dir("old").join("events.jsonl")).expect("control event");
+    let route = format!(r#""target_pane":"{}""#, panes[1]);
+    assert!(
+        before
+            .lines()
+            .any(|line| line.contains(&control) && line.contains(&route))
+    );
+    let (mut command, calls) = roster_command(&rig, &panes[0], "transient");
+    let output = command.output().expect("faulted roster helper");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "calls={}: {output:?}",
+        roster_calls(&calls)
+    );
+    assert_eq!(roster_calls(&calls), 2, "one failed read, one real re-ask");
+    let id = String::from_utf8(output.stdout).expect("request id");
+    assert!(
+        ae::tracked::is_request_id(id.trim()),
+        "missing request id: {id:?}"
+    );
+    let events = fs::read_to_string(rig.dir("old").join("events.jsonl")).expect("recovery event");
+    assert!(
+        events
+            .lines()
+            .any(|line| line.contains(id.trim()) && line.contains(&route)),
+        "recovery changed target: {events}"
+    );
+}
+
+#[test]
+fn persistent_roster_read_failure_refuses_as_unreadable_after_two_reads() {
+    let rig = Rig::new("roster-persistent");
+    let panes = rig.create("old", A);
+    let (mut command, calls) = roster_command(&rig, &panes[0], "persistent");
+    let output = command.output().expect("faulted roster helper");
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        err.contains("roster") && err.contains("unreadable") && !err.contains("not found"),
+        "calls={}: a failed observation is not absence: {err}",
+        roster_calls(&calls)
+    );
+    assert_eq!(roster_calls(&calls), 2, "no third read");
+    assert!(rig.received(A, "colead").is_empty());
+    assert!(rig.received(A, "lead").is_empty());
+}
+
+#[test]
+fn positive_roster_absence_and_ambiguity_are_not_retried() {
+    for mode in ["empty", "other", "ambiguous"] {
+        let rig = Rig::new(mode);
+        let panes = rig.create("old", A);
+        let (mut command, calls) = roster_command(&rig, &panes[0], mode);
+        let output = command.output().expect("positive roster helper");
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{mode}: {output:?}");
+        let expected = if mode == "ambiguous" {
+            "ambiguous name"
+        } else {
+            "agent 'colead' not found"
+        };
+        assert!(
+            err.contains(expected) && !err.contains("unreadable"),
+            "{mode}: {err}"
+        );
+        assert_eq!(
+            roster_calls(&calls),
+            1,
+            "{mode}: authoritative read is final"
+        );
+        assert!(rig.received(A, "colead").is_empty());
+        assert!(rig.received(A, "lead").is_empty());
+    }
+}
+
 #[test]
 fn mine_and_inbox_keep_a_pending_request_after_live_rename() {
     let rig = Rig::new("views");
@@ -294,6 +433,10 @@ fn ask_and_review_reply_through_the_new_helper_after_live_rename() {
         let reply = rig.helper("new", "reply", &[&id, "answer"], Some(&panes[1]));
         let all = rig.helper("new", "requests", &["all"], None);
         assert_eq!(reply.0, Some(0), "R1 {verb} reply stranded: {reply:?}");
+        assert!(
+            !reply.2.contains("UNCONFIRMED") && !reply.2.contains("recorded as pending"),
+            "R1 {verb} reply submit was not verified: {reply:?}"
+        );
         assert!(
             rig.received(A, "lead")
                 .iter()
