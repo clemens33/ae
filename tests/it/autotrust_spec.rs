@@ -1947,7 +1947,16 @@ mod unreach {
                 None
             };
             rig.start();
-            std::thread::sleep(Duration::from_secs(6));
+            if case == "panel-input" {
+                wait_for("fresh client snapshot after reservation", || {
+                    rig.root.join("input-checked").is_file()
+                });
+                wait_for("post-reservation client input hold", || {
+                    rig.count("auto-dismiss-failed") == 1
+                });
+            } else {
+                std::thread::sleep(Duration::from_secs(6));
+            }
             assert!(rig.wire().is_empty(), "{case}: zero keys");
             assert_eq!(rig.count("auto-dismiss"), 0);
             if case == "lock" || case == "panel-moves" {
