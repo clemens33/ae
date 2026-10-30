@@ -191,11 +191,25 @@ fn run_inner(
     match action {
         Action::Status => status(&server, &target, &meta_dir, out),
         Action::Start => {
-            let caller = Caller::of(actor, START_ACTION, caller_server.as_ref(), &pane, &target);
+            let caller =
+                match Caller::of(actor, START_ACTION, caller_server.as_ref(), &pane, &target) {
+                    Ok(caller) => caller,
+                    Err(why) => {
+                        writeln!(err, "{why}")?;
+                        return Ok(EXIT_FAILED);
+                    }
+                };
             start(&server, &target, &meta_dir, &knobs, &caller, out, err)
         }
         Action::Stop => {
-            let caller = Caller::of(actor, STOP_ACTION, caller_server.as_ref(), &pane, &target);
+            let caller =
+                match Caller::of(actor, STOP_ACTION, caller_server.as_ref(), &pane, &target) {
+                    Ok(caller) => caller,
+                    Err(why) => {
+                        writeln!(err, "{why}")?;
+                        return Ok(EXIT_FAILED);
+                    }
+                };
             stop(root, &server, &target, &meta_dir, &caller, out, err)
         }
     }
@@ -215,19 +229,19 @@ impl<'a> Caller<'a> {
         caller_server: Option<&ServerId>,
         pane: &'a str,
         target: &str,
-    ) -> Self {
+    ) -> Result<Self, &'static str> {
         if let Some(actor) = override_actor {
-            return Self {
+            return Ok(Self {
                 action,
                 actor: actor.to_owned(),
                 pane: "",
-            };
+            });
         }
-        Self {
+        Ok(Self {
             action,
-            actor: actor_of(caller_server, pane, target),
+            actor: actor_of(caller_server, pane, target)?,
             pane,
-        }
+        })
     }
 
     /// One audit record for a start/stop that REACHED its decision, through the
@@ -252,20 +266,27 @@ impl<'a> Caller<'a> {
 
 /// The calling pane's ae stamp (bare at home, qualified abroad), or the
 /// human spelling every other audit uses when no agent called.
-fn actor_of(caller_server: Option<&ServerId>, pane: &str, target: &str) -> String {
-    if pane.is_empty() {
-        return "human".to_owned();
-    }
-    let Some(server) = caller_server else {
-        return "human".to_owned();
-    };
-    let Some(owner) = transport::observe_pane_owner(server, pane) else {
-        return "human".to_owned();
+fn actor_of(
+    caller_server: Option<&ServerId>,
+    pane: &str,
+    target: &str,
+) -> Result<String, &'static str> {
+    // The explicit --pane remains the source of this existing read, even when
+    // TMUX_PANE is absent (a tmux binding with an explicit pane argument).
+    let Some(owner) =
+        crate::CallerRead::observe(caller_server, Some(pane), transport::reask_pane_owner)
+            .require()?
+    else {
+        return Ok("human".to_owned());
     };
     if owner.agent.is_empty() {
-        return "human".to_owned();
+        return Ok("human".to_owned());
     }
-    spell_caller(&owner.session, &owner.agent, owner.session == target)
+    Ok(spell_caller(
+        &owner.session,
+        &owner.agent,
+        owner.session == target,
+    ))
 }
 
 /// Bare at home, routing-qualified abroad: a bare name always means own agent.
@@ -927,7 +948,7 @@ mod tests {
         assert!(
             ["", "%9"]
                 .iter()
-                .all(|pane| actor_of(None, pane, "s") == "human")
+                .all(|pane| actor_of(None, pane, "s").as_deref() == Ok("human"))
         );
     }
 

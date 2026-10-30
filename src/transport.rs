@@ -1090,6 +1090,22 @@ pub fn observe_pane_owner(
     crate::watchdog_glue::interpret_pane_owner(succeeded, &stdout)
 }
 
+/// Watchdog start/stop's existing caller-owner read, with one failed command
+/// re-asked. Kill proofs and other plain owner observations retain one read.
+pub(crate) fn reask_pane_owner(
+    server: &ServerId,
+    pane: &str,
+) -> Option<crate::watchdog_glue::PaneOwner> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = observation_read(
+        &crate::watchdog_glue::pane_owner_args(server, pane),
+        &mut true,
+    );
+    crate::watchdog_glue::interpret_pane_owner(succeeded, &stdout)
+}
+
 /// Kill one pane by exact id.
 #[must_use]
 pub fn kill_pane(server: &ServerId, pane: &str) -> bool {

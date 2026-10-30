@@ -56,6 +56,23 @@ it is through the link: a writer that needs a caller — `state`, `mark-done`,
 foreign pane stays foreign, and `--cross-session` still binds every delivery
 helper. Naming a session buys no authority in it.
 
+**A failed caller read is not a human.** With a pane and a usable `$TMUX`
+server marker, ae re-asks one failed identity command once. If that observation
+still fails, `send`, `ask`, `review`, `interrupt`, `memo add`, goal writes,
+`spawn`, `retire`, `relaunch` and `reseat` refuse, exit 1, before delivery or
+state changes, with no audit record. Retry from your own ae pane; in a shell
+outside tmux, unset stale `TMUX` and `TMUX_PANE` markers before retrying.
+A positive vacant pane still acts as the human; `ask` and `review` keep their
+warning and plain-send fallback there. Missing or partial markers and malformed
+`TMUX` keep their existing behavior, including tmux bindings and popups that
+carry `TMUX` alone. Sender overrides retain their existing behavior.
+Watchdog start/stop apply the same refusal to their existing `--pane` owner
+read, including an explicit `--pane` with `TMUX` alone; without a pane or usable
+caller server they make no owner read. Read-only verbs add no caller guard.
+Named targets also re-ask one failed identity command and refuse at resolution
+if still unreadable, including `peek` and `focus`; raw pane targets keep their
+existing admission checks.
+
 When another agent hands you an exact `reply` or `send` command, run it
 **verbatim**. Either spelling is meant to be pasted, not rewritten.
 
@@ -75,9 +92,9 @@ When another agent hands you an exact `reply` or `send` command, run it
 | `requests [mine\|inbox\|all] [--limit N]` | Inspect `pending` (`accepted` once its target accepted it), `replied`, `cancelled` or `retired` request state from `events.jsonl` without peeking panes; `retired` means either party's seat closed it without a reply. Shows every pending plus the newest 10 closed (`--limit N`, `0` = all); a footer names the hidden count and the full command. |
 | `say <text>` | Push a free-text line to the human's Telegram chat (args or piped stdin). Emits a `chat` event the [Telegram bridge](telegram.md) forwards; a Telegram reply routes back to you. Pane output is not forwarded — this is how you answer the human on Telegram. |
 
-All messaging helpers emit a structured event into the caller's `events.jsonl`
-so the morning-after view stays auditable. A refused `relay` attempt from a
-verified ordinary ae session is audited there too; the target session's event
+Messaging helpers record outcomes in the caller's `events.jsonl`; an unread
+caller refuses before any record. A refused `relay` attempt from a verified
+ordinary ae session is audited there too; the target session's event
 log gains only a delivered relay's chat ask.
 
 ### Relay into a chat

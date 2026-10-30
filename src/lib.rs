@@ -3152,10 +3152,12 @@ fn run_goal(
         }
         Ok(goal::Command::Write(write)) => write,
     };
+    let Some(mut viewer) = writing_viewer(dir, err)? else {
+        return Ok(state::EXIT_FAILED);
+    };
     if tracked::refuse_role_entry(dir, err)? {
         return Ok(state::EXIT_FAILED);
     }
-    let mut viewer = calling_viewer(dir);
     viewer.session_id = tracked::routing_id(dir, &viewer.slot, &viewer.session, &own_session(dir));
     match goal::run(dir, &viewer, &write, time::Timestamp::now()) {
         Ok((line, changed)) => {
@@ -3191,11 +3193,9 @@ fn run_tracked(
             session: String::new(),
         })
     } else {
-        let own_session = own_session(dir);
-        let viewer = actual_calling_pane()
-            .as_ref()
-            .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
-            .unwrap_or_default();
+        let Some(viewer) = writing_viewer(dir, err)? else {
+            return Ok(state::EXIT_FAILED);
+        };
         let known = viewer.is_known();
         known.then_some(tracked::Sender {
             display: viewer.display,
@@ -3318,7 +3318,10 @@ fn run_memo(
         }
         Ok(memo::Command::Add(add)) => add,
     };
-    match memo::run(dir, &calling_viewer(dir), &add, time::Timestamp::now()) {
+    let Some(viewer) = writing_viewer(dir, err)? else {
+        return Ok(state::EXIT_FAILED);
+    };
+    match memo::run(dir, &viewer, &add, time::Timestamp::now()) {
         Ok(()) => Ok(0),
         Err(failure) => {
             writeln!(err, "{}", failure.message())?;
@@ -3350,9 +3353,76 @@ fn calling_pane() -> Option<tmux::ObservedViewer> {
 /// socket inherited by the invoking pane. [`doors::caller_server`] is the one
 /// parser for that marker; an absent or untypeable marker fails closed.
 pub(crate) fn actual_calling_pane() -> Option<(tmux::ObservedViewer, inventory::ServerId)> {
-    let pane = doors::calling_pane_id()?;
-    let server = doors::caller_server()?;
-    transport::reask_viewer(&server, &pane).map(|viewer| (viewer, server))
+    // Legacy readers and boundaries that already refuse an absent proof retain
+    // their Option contract. Writers without a sender override must use the
+    // typed observation below.
+    match observe_calling_pane() {
+        CallerRead::Read(observed) => Some(observed),
+        CallerRead::Outside | CallerRead::Unread => None,
+    }
+}
+
+/// One owner for absence by design, a positive answer (vacant included), and a
+/// failed observation. Only the last refuses a writer that permits humans.
+pub(crate) enum CallerRead<T> {
+    Outside,
+    Read(T),
+    Unread,
+}
+
+impl<T> CallerRead<T> {
+    /// Reuse the surface's existing read and its bounded retry policy. Missing
+    /// either marker is OUTSIDE: tmux bindings and popups carry TMUX alone.
+    pub(crate) fn observe(
+        server: Option<&inventory::ServerId>,
+        pane: Option<&str>,
+        read: impl FnOnce(&inventory::ServerId, &str) -> Option<T>,
+    ) -> Self {
+        match (server, pane.filter(|pane| !pane.is_empty())) {
+            (Some(server), Some(pane)) => match read(server, pane) {
+                Some(answer) => Self::Read(answer),
+                None => Self::Unread,
+            },
+            _ => Self::Outside,
+        }
+    }
+
+    /// A writer may treat OUTSIDE as human, never a failed read. The Result
+    /// forces that decision before the caller can default a vacant identity.
+    pub(crate) fn require(self) -> std::result::Result<Option<T>, &'static str> {
+        match self {
+            Self::Outside => Ok(None),
+            Self::Read(answer) => Ok(Some(answer)),
+            Self::Unread => Err(
+                "Error: could not detect current agent identity; retry from your own ae pane, or unset stale TMUX and TMUX_PANE markers in a shell outside tmux",
+            ),
+        }
+    }
+}
+
+/// Observe only the caller's own server/pane pair, with #285's one re-ask.
+pub(crate) fn observe_calling_pane() -> CallerRead<(tmux::ObservedViewer, inventory::ServerId)> {
+    let pane = doors::calling_pane_id();
+    let server = doors::caller_server();
+    CallerRead::observe(server.as_ref(), pane.as_deref(), |server, pane| {
+        transport::reask_viewer(server, pane).map(|viewer| (viewer, server.clone()))
+    })
+}
+
+/// Refuse UNREAD before invoking any helper writer. The returned viewer IS
+/// the observation to use for the action; never re-read it into human later.
+fn writing_viewer(dir: &std::path::Path, err: &mut impl Write) -> Result<Option<requests::Viewer>> {
+    match observe_calling_pane().require() {
+        Ok(answer) => Ok(Some(
+            answer
+                .map(|(pane, _)| requests::Viewer::from_pane(&pane, &own_session(dir)))
+                .unwrap_or_default(),
+        )),
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            Ok(None)
+        }
+    }
 }
 
 /// `session=` in `<dir>/meta`, empty-or-missing folded to `None`.
@@ -3805,38 +3875,49 @@ pub fn run_with(
         cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
         cli::Request::Interrupt { dir, tail } => {
             let own_session = own_session(dir);
-            let viewer = actual_calling_pane()
-                .as_ref()
-                .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
-                .unwrap_or_default();
-            interrupt::run(
-                dir,
-                tail,
-                &viewer.display,
-                &viewer.session,
-                &own_session,
-                time::Timestamp::now(),
-                err,
-            )?
+            if let Some(viewer) = writing_viewer(dir, err)? {
+                interrupt::run(
+                    dir,
+                    tail,
+                    &viewer.display,
+                    &viewer.session,
+                    &own_session,
+                    time::Timestamp::now(),
+                    err,
+                )?
+            } else {
+                state::EXIT_FAILED
+            }
         }
         cli::Request::Send { dir, tail } => {
             let own_session = own_session(dir);
-            let viewer = actual_calling_pane()
-                .as_ref()
-                .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
-                .unwrap_or_default();
-            send::run(
-                dir,
-                tail,
-                &send_env(),
-                &viewer.display,
-                &viewer.session,
-                &own_session,
-                time::Timestamp::now(),
-                send_defer(),
-                out,
-                err,
-            )?
+            let env = send_env();
+            let viewer = if env.sender_override.is_some() {
+                Some(
+                    actual_calling_pane()
+                        .as_ref()
+                        .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
+                        .unwrap_or_default(),
+                )
+            } else {
+                writing_viewer(dir, err)?
+            };
+            if let Some(viewer) = viewer {
+                send::run(
+                    dir,
+                    tail,
+                    &env,
+                    &viewer.display,
+                    &viewer.session,
+                    &own_session,
+                    time::Timestamp::now(),
+                    send_defer(),
+                    out,
+                    err,
+                )?
+            } else {
+                state::EXIT_FAILED
+            }
         }
         cli::Request::Relay { dir, tail } => relay::run(
             dir,
@@ -3915,16 +3996,20 @@ pub fn run_with(
         }
         cli::Request::Relaunch { dir, tail } => {
             if let Some(root) = state_root() {
-                seat_relaunch::run(
-                    &root,
-                    dir,
-                    tail,
-                    &calling_viewer(dir).display,
-                    &own_session(dir),
-                    time::Timestamp::now(),
-                    out,
-                    err,
-                )?
+                if let Some(viewer) = writing_viewer(dir, err)? {
+                    seat_relaunch::run(
+                        &root,
+                        dir,
+                        tail,
+                        &viewer.display,
+                        &own_session(dir),
+                        time::Timestamp::now(),
+                        out,
+                        err,
+                    )?
+                } else {
+                    state::EXIT_FAILED
+                }
             } else {
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE
@@ -3938,25 +4023,24 @@ pub fn run_with(
                 EXIT_UNAVAILABLE
             }
         }
-        cli::Request::Spawn { dir, .. } if tracked::refuse_role_entry(dir, err)? => {
-            state::EXIT_FAILED
+        cli::Request::Spawn { dir, tail } => {
+            if let Some(viewer) = writing_viewer(dir, err)? {
+                if tracked::refuse_role_entry(dir, err)? {
+                    state::EXIT_FAILED
+                } else {
+                    spawn::run_spawn(dir, tail, &viewer.display, time::Timestamp::now(), out, err)?
+                }
+            } else {
+                state::EXIT_FAILED
+            }
         }
-        cli::Request::Spawn { dir, tail } => spawn::run_spawn(
-            dir,
-            tail,
-            &calling_viewer(dir).display,
-            time::Timestamp::now(),
-            out,
-            err,
-        )?,
-        cli::Request::Retire { dir, tail } => spawn::run_retire(
-            dir,
-            tail,
-            &calling_viewer(dir).display,
-            time::Timestamp::now(),
-            out,
-            err,
-        )?,
+        cli::Request::Retire { dir, tail } => {
+            if let Some(viewer) = writing_viewer(dir, err)? {
+                spawn::run_retire(dir, tail, &viewer.display, time::Timestamp::now(), out, err)?
+            } else {
+                state::EXIT_FAILED
+            }
+        }
         // The three whole lifecycle operations.
         cli::Request::End { tail } => {
             if let Some(root) = state_root() {

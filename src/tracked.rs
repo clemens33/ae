@@ -491,6 +491,12 @@ pub enum ResolveError {
         /// The session whose roster could not be read.
         session: String,
     },
+    /// The roster proved a named target's pane, but its identity could not be
+    /// observed even after the one re-ask.
+    TargetUnreadable {
+        /// The resolved agent name.
+        target: String,
+    },
     /// The target session records no usable tmux server (its selector is
     /// Missing/Ambiguous, or its meta is unreadable).
     UnresolvableServer {
@@ -519,6 +525,9 @@ impl ResolveError {
             }
             Self::RosterUnreadable { session } => {
                 format!("Error: agent roster unreadable in session '{session}' — retry")
+            }
+            Self::TargetUnreadable { target } => {
+                format!("Error: could not read target agent '{target}' identity — retry")
             }
             Self::UnresolvableServer { session } => format!(
                 "Error: session '{session}' records no usable tmux server — refresh or migrate the session, then retry"
@@ -644,13 +653,13 @@ pub fn resolve_on(
     if let Some(hit) = take_test_resolve() {
         return Ok(hit);
     }
-    let (server, pane, agent) = match lookup(target, own_session)? {
+    let (server, pane, agent, named) = match lookup(target, own_session)? {
         Lookup::Pane(pane) => {
             // A raw pane id is an unambiguous address on its own server, so there
             // is nothing to enumerate and no name to collide: the recorded server
             // only lets its stamps be read, and an unusable one leaves them empty
-            // (stamps are simply empty when they cannot be read) rather than
-            // refusing. No mis-route is possible, so this never fails.
+            // rather than refusing here. Admission and delivery still prove
+            // whether that address can take a turn.
             let server = pane_server(dir);
             let observed = transport::observe_viewer(&server, &pane).unwrap_or_default();
             let agent = match (observed.agent, observed.session) {
@@ -660,7 +669,7 @@ pub fn resolve_on(
                 (Some(agent), _) => agent,
                 (None, _) => String::new(),
             };
-            (server, pane, agent)
+            (server, pane, agent, false)
         }
         Lookup::Named {
             session,
@@ -682,10 +691,16 @@ pub fn resolve_on(
                     session: session.clone(),
                 })?;
             let (pane, agent) = pick(&roster, &target, &session, own_session)?;
-            (server, pane.to_owned(), agent)
+            (server, pane.to_owned(), agent, true)
         }
     };
-    let observed = transport::observe_viewer(&server, &pane).unwrap_or_default();
+    let observed = match transport::reask_viewer(&server, &pane) {
+        Some(observed) => observed,
+        None if named => return Err(ResolveError::TargetUnreadable { target: agent }),
+        // A raw address has no roster proof. Preserve its existing admission
+        // and gone-pane diagnostic, rather than naming it as a lost agent.
+        None => crate::tmux::ObservedViewer::default(),
+    };
     Ok((
         Resolved {
             pane,

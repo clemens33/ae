@@ -402,7 +402,7 @@ struct Caller {
 /// can run anything.
 fn caller_of(session: &str) -> Result<Caller, String> {
     let pane = crate::doors::calling_pane_id();
-    let Some((viewer, _)) = crate::actual_calling_pane() else {
+    let Some((viewer, _)) = crate::observe_calling_pane().require()? else {
         return Ok(Caller {
             pane,
             display: String::new(),

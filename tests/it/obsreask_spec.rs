@@ -615,7 +615,7 @@ fn a_caller_read_failing_once_keeps_an_accept() {
 }
 
 // Kills: a re-ask per refusing surface: `send` and `ask` read this same caller, and a failed
-// read at base journals `human`, marks the turn `unverified` and drops a request to a plain send.
+// read twice refuses both since #292; it no longer journals `human` or drops to a plain send.
 #[test]
 fn a_caller_read_failing_once_keeps_the_sender_of_a_delivery() {
     for verb in ["send", "ask"] {
