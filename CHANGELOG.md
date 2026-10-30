@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.164] - 2026-10-30
+- Preserve roster read failures and stabilize rename reply fixtures
+
 ## [v2026.10.163] - 2026-10-30
 - Name plain ae as the entry and hint a hand-typed ae app (#230 O7 S4)
 
