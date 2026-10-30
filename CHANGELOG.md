@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.169] - 2026-10-30
+- Re-ask a failed caller or guarded target tmux observation once (#285)
+
 ## [v2026.10.168] - 2026-10-30
 - Order the spawn linger guard behind its revocation and wait for the control receipt (#290)
 
