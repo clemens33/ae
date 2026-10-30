@@ -275,9 +275,25 @@ impl Rig {
             .0,
             "the session starts"
         );
-        let (_, panes) = rig.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"]);
-        let main_pane = panes.lines().next().unwrap_or_default().to_owned();
-        assert!(!main_pane.is_empty(), "{panes}");
+        // Wait for a successful pane read (#293); a failed client read is
+        // not evidence that the pane is missing.
+        // Match the rig's other 200 x 50 ms waits, with a wall-clock bound.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let main_pane = loop {
+            let (ok, panes) = rig.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"]);
+            let pane = panes.lines().next().unwrap_or_default();
+            if ok && !pane.is_empty() {
+                break pane.to_owned();
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "Rig::new({tag}): no main pane in session {session} on {} within 10 s; \
+                 list-panes succeeded={ok}, stdout={panes:?}",
+                rig.sock.display()
+            );
+            std::thread::sleep(remaining.min(Duration::from_millis(50)));
+        };
         for (option, value) in [("@ae_agent", "lead"), ("@ae_slot", "main")] {
             assert!(
                 rig.tmux(&["set-option", "-p", "-t", &main_pane, option, value])
