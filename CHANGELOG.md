@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.165] - 2026-10-30
+- Make workspace Delegation guidance profile-neutral (#280)
+- Stop the mutants watcher fixture racing its own kill
+
 ## [v2026.10.164] - 2026-10-30
 - Preserve roster read failures and stabilize rename reply fixtures
 
