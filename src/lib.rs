@@ -3352,7 +3352,7 @@ fn calling_pane() -> Option<tmux::ObservedViewer> {
 pub(crate) fn actual_calling_pane() -> Option<(tmux::ObservedViewer, inventory::ServerId)> {
     let pane = doors::calling_pane_id()?;
     let server = doors::caller_server()?;
-    transport::observe_viewer(&server, &pane).map(|viewer| (viewer, server))
+    transport::reask_viewer(&server, &pane).map(|viewer| (viewer, server))
 }
 
 /// `session=` in `<dir>/meta`, empty-or-missing folded to `None`.

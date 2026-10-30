@@ -249,10 +249,26 @@ pub fn deliver(
 /// The calling pane's identity readings, from the AMBIENT server.
 #[must_use]
 pub fn observe_viewer(server: &ServerId, pane: &str) -> Option<tmux::ObservedViewer> {
+    viewer_observation(server, pane, &mut false)
+}
+
+/// The caller or guarded target's viewer observation, with one failed tmux
+/// command re-asked. Positive answers, including vacant stamps, are final.
+#[must_use]
+pub(crate) fn reask_viewer(server: &ServerId, pane: &str) -> Option<tmux::ObservedViewer> {
+    viewer_observation(server, pane, &mut true)
+}
+
+/// One budget follows the observation through every native-view leg.
+fn viewer_observation(
+    server: &ServerId,
+    pane: &str,
+    reask: &mut bool,
+) -> Option<tmux::ObservedViewer> {
     if !addressable(server) {
         return None;
     }
-    let (succeeded, stdout) = run(PROGRAM, &tmux::viewer_args(server, pane));
+    let (succeeded, stdout) = observation_read(&tmux::viewer_args(server, pane), reask);
     let viewer = tmux::interpret_viewer(succeeded, &stdout)?;
     let Some(view) = viewer
         .session
@@ -261,10 +277,21 @@ pub fn observe_viewer(server: &ServerId, pane: &str) -> Option<tmux::ObservedVie
     else {
         return Some(viewer);
     };
-    let home = home_of(server, view, pane)?;
-    let (succeeded, stdout) = run(PROGRAM, &tmux::viewer_args(server, &home.target));
+    let home = home_of(server, view, pane, reask)?;
+    let (succeeded, stdout) = observation_read(&tmux::viewer_args(server, &home.target), reask);
     tmux::interpret_viewer(succeeded, &stdout)
         .filter(|viewer| viewer.session.as_deref() == Some(home.name.as_str()))
+}
+
+/// Re-ask only a failed COMMAND, once across the whole observation. Parsing
+/// and identity comparisons stay outside this rule: a positive refusal must
+/// never be re-read into a pass. No settle is added under the send-lock.
+fn observation_read(args: &[String], reask: &mut bool) -> (bool, String) {
+    let first = run(PROGRAM, args);
+    if !first.0 && std::mem::take(reask) {
+        return run(PROGRAM, args);
+    }
+    first
 }
 
 /// The real session a native view stands in for, proven for one pane.
@@ -280,11 +307,11 @@ struct Home {
 /// The real session the native view `view` recorded, when `pane` is one of
 /// its panes; `None` on any gap — never the view. tmux answers a pinned read
 /// for a pane outside the session too, so membership is read, not assumed.
-fn home_of(server: &ServerId, view: &str, pane: &str) -> Option<Home> {
-    let (succeeded, stdout) = run(PROGRAM, &tmux::view_of_args(server, view));
+fn home_of(server: &ServerId, view: &str, pane: &str, reask: &mut bool) -> Option<Home> {
+    let (succeeded, stdout) = observation_read(&tmux::view_of_args(server, view), reask);
     let id = succeeded.then(|| tmux::view_of_value(&stdout)).flatten()?;
     let target = tmux::pinned_pane_target(&id, pane)?;
-    let (succeeded, stdout) = run(PROGRAM, &tmux::view_membership_args(server, &id));
+    let (succeeded, stdout) = observation_read(&tmux::view_membership_args(server, &id), reask);
     let name = tmux::view_member_name(succeeded, &stdout, &id, pane)?;
     Some(Home { id, name, target })
 }
@@ -1156,7 +1183,7 @@ pub fn observe_pane_place(server: &ServerId, pane: &str) -> Option<(String, Stri
     if !tmux::is_view_session(&place.0) {
         return Some(place);
     }
-    let home = home_of(server, &place.0, pane)?;
+    let home = home_of(server, &place.0, pane, &mut false)?;
     let (succeeded, stdout) = run(PROGRAM, &tmux::pane_place_args(server, &home.target));
     tmux::interpret_pane_place(succeeded, &stdout).filter(|(session, _)| *session == home.name)
 }
@@ -1247,22 +1274,42 @@ pub fn observe_pane_session_identity(
     server: &ServerId,
     pane: &str,
 ) -> Option<tmux::SessionIdentity> {
+    pane_session_observation(server, pane, &mut false)
+}
+
+/// The guarded target's physical-session observation, re-asking at most one
+/// failed command, including the name and native-view legs.
+#[must_use]
+pub(crate) fn reask_pane_session_identity(
+    server: &ServerId,
+    pane: &str,
+) -> Option<tmux::SessionIdentity> {
+    pane_session_observation(server, pane, &mut true)
+}
+
+fn pane_session_observation(
+    server: &ServerId,
+    pane: &str,
+    reask: &mut bool,
+) -> Option<tmux::SessionIdentity> {
     if !addressable(server) {
         return None;
     }
-    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_session_identity_args(server, pane));
+    let (succeeded, stdout) =
+        observation_read(&tmux::pane_session_identity_args(server, pane), reask);
     let identity = tmux::interpret_pane_session_identity(succeeded, &stdout)?;
     // The format carries no name, so the session it answered for is named
     // by its own id before it is believed.
-    let (succeeded, stdout) = run(PROGRAM, &tmux::session_name_of_args(server, &identity.id));
+    let (succeeded, stdout) =
+        observation_read(&tmux::session_name_of_args(server, &identity.id), reask);
     let session = tmux::interpret_session_option(succeeded, &stdout)?;
     if !tmux::is_view_session(&session) {
         return Some(identity);
     }
-    let home = home_of(server, &session, pane)?;
-    let (succeeded, stdout) = run(
-        PROGRAM,
+    let home = home_of(server, &session, pane, reask)?;
+    let (succeeded, stdout) = observation_read(
         &tmux::pane_session_identity_args(server, &home.target),
+        reask,
     );
     tmux::interpret_pane_session_identity(succeeded, &stdout).filter(|seen| seen.id == home.id)
 }

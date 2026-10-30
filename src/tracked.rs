@@ -1177,8 +1177,8 @@ fn address_observation(
         return (Some(viewer), Some(physical));
     }
     (
-        transport::observe_viewer(server, pane),
-        transport::observe_pane_session_identity(server, pane),
+        transport::reask_viewer(server, pane),
+        transport::reask_pane_session_identity(server, pane),
     )
 }
 
