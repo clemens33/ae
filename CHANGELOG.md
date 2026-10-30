@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.167] - 2026-10-30
+- Order seatproof revocation tests behind the persisted rewrite (#289)
+- Wait for the dialog to close before the next menu key (#291)
+
 ## [v2026.10.166] - 2026-10-30
 - Offer Activity and Memos dialogs on every ae app card menu (#230 O7 S6a)
 - Fuzz the auto reseat episode fold (#278)
