@@ -384,3 +384,10 @@ path = "fuzz_targets/jump_return.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "autoreseat_episode"
+path = "fuzz_targets/autoreseat_episode.rs"
+test = false
+doc = false
+bench = false

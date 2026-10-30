@@ -1,0 +1,31 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:21Z","actor":"lead","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:22Z","actor":"lead","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:23Z","actor":"lead","action":"auto-reseat-done","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:24Z","actor":"lead","action":"alert-cleared","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:25Z","actor":"lead","action":"auto-reseat-headroom","target":"scout","target_slot":"spawned.0","target_session":"seat-session","summary":"headroom 96% weekly"}
+{"ts":"2023-11-14T22:13:26Z","actor":"lead","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:21Z","actor":"human","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:22Z","actor":"human","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:23Z","actor":"human","action":"auto-reseat-done","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:24Z","actor":"human","action":"alert-cleared","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:25Z","actor":"human","action":"auto-reseat-headroom","target":"scout","target_slot":"spawned.0","target_session":"seat-session","summary":"headroom 96% weekly"}
+{"ts":"2023-11-14T22:13:26Z","actor":"human","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:21Z","actor":"Watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:22Z","actor":"Watchdog","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:23Z","actor":"Watchdog","action":"auto-reseat-done","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:24Z","actor":"Watchdog","action":"alert-cleared","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:25Z","actor":"Watchdog","action":"auto-reseat-headroom","target":"scout","target_slot":"spawned.0","target_session":"seat-session","summary":"headroom 96% weekly"}
+{"ts":"2023-11-14T22:13:26Z","actor":"Watchdog","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:21Z","actor":"watchdog ","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:22Z","actor":"watchdog ","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:23Z","actor":"watchdog ","action":"auto-reseat-done","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:24Z","actor":"watchdog ","action":"alert-cleared","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:25Z","actor":"watchdog ","action":"auto-reseat-headroom","target":"scout","target_slot":"spawned.0","target_session":"seat-session","summary":"headroom 96% weekly"}
+{"ts":"2023-11-14T22:13:26Z","actor":"watchdog ","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:21Z","actor":"claude:watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:22Z","actor":"claude:watchdog","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:23Z","actor":"claude:watchdog","action":"auto-reseat-done","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:24Z","actor":"claude:watchdog","action":"alert-cleared","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:25Z","actor":"claude:watchdog","action":"auto-reseat-headroom","target":"scout","target_slot":"spawned.0","target_session":"seat-session","summary":"headroom 96% weekly"}
+{"ts":"2023-11-14T22:13:26Z","actor":"claude:watchdog","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}

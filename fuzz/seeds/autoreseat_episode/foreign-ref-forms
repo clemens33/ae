@@ -1,0 +1,25 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"auto-reseat-headroom","target":"scout","target_slot":"spawned.0","target_session":"seat-session","summary":"headroom 96% weekly"}
+{"ts":"2023-11-14T22:13:21Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"1700000000"}
+{"ts":"2023-11-14T22:13:22Z","actor":"watchdog","action":"auto-reseat-held","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"1700000000","summary":"observed-choice: x"}
+{"ts":"2023-11-14T22:13:23Z","actor":"watchdog","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"1700000000"}
+{"ts":"2023-11-14T22:13:24Z","actor":"watchdog","action":"auto-reseat-failed","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"1700000000"}
+{"ts":"2023-11-14T22:13:21Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20+00:00"}
+{"ts":"2023-11-14T22:13:22Z","actor":"watchdog","action":"auto-reseat-held","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20+00:00","summary":"observed-choice: x"}
+{"ts":"2023-11-14T22:13:23Z","actor":"watchdog","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20+00:00"}
+{"ts":"2023-11-14T22:13:24Z","actor":"watchdog","action":"auto-reseat-failed","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20+00:00"}
+{"ts":"2023-11-14T22:13:21Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14t22:13:20z"}
+{"ts":"2023-11-14T22:13:22Z","actor":"watchdog","action":"auto-reseat-held","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14t22:13:20z","summary":"observed-choice: x"}
+{"ts":"2023-11-14T22:13:23Z","actor":"watchdog","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14t22:13:20z"}
+{"ts":"2023-11-14T22:13:24Z","actor":"watchdog","action":"auto-reseat-failed","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14t22:13:20z"}
+{"ts":"2023-11-14T22:13:21Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"x-foreign"}
+{"ts":"2023-11-14T22:13:22Z","actor":"watchdog","action":"auto-reseat-held","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"x-foreign","summary":"observed-choice: x"}
+{"ts":"2023-11-14T22:13:23Z","actor":"watchdog","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"x-foreign"}
+{"ts":"2023-11-14T22:13:24Z","actor":"watchdog","action":"auto-reseat-failed","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"x-foreign"}
+{"ts":"2023-11-14T22:13:21Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:22Z","actor":"watchdog","action":"auto-reseat-held","target":"scout","target_slot":"spawned.0","target_session":"seat-session","summary":"observed-choice: x"}
+{"ts":"2023-11-14T22:13:23Z","actor":"watchdog","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:24Z","actor":"watchdog","action":"auto-reseat-failed","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:25Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:26Z","actor":"watchdog","action":"auto-reseat-refused","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:27Z","actor":"watchdog","action":"auto-reseat-headroom-cleared","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}

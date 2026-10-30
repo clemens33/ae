@@ -1,0 +1,13 @@
+{"ts":"2023-11-14T22:13:20Z","actor":"watchdog","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:21Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:22Z","actor":"lead","action":"spawn","target":"scout","target_slot":"spawned.9","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:23Z","actor":"lead","action":"spawn","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:24Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:20Z"}
+{"ts":"2023-11-14T22:13:25Z","actor":"watchdog","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:26Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:25Z"}
+{"ts":"2023-11-14T22:13:27Z","actor":"human","action":"spawn","target":"@seat-session:scout"}
+{"ts":"2023-11-14T22:13:28Z","actor":"watchdog","action":"auto-reseat-headroom","target":"scout","target_slot":"spawned.0","target_session":"seat-session","summary":"headroom 96% weekly"}
+{"ts":"2023-11-14T22:13:29Z","actor":"watchdog","action":"spawn","target":"renamed","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:30Z","actor":"watchdog","action":"limit","target":"scout","target_slot":"spawned.0","target_session":"seat-session"}
+{"ts":"2023-11-14T22:13:31Z","actor":"other","action":"spawn","target":"scout","target_slot":"spawned.0","target_session":"seat-session","target_session_id":"not-a-uuid"}
+{"ts":"2023-11-14T22:13:32Z","actor":"watchdog","action":"auto-reseat","target":"scout","target_slot":"spawned.0","target_session":"seat-session","ref":"2023-11-14T22:13:30Z"}
