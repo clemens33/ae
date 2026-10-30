@@ -2064,7 +2064,8 @@ pub struct Prior<'a> {
     /// The recorded `agent_bin` this conversation belongs to, where the element
     /// carries one.
     pub tool: Option<&'a str>,
-    /// The conversation id — always a lowercase UUID.
+    /// The conversation id — a lowercase UUID, or an `OpenCode` `ses_` id under
+    /// the exact tag `opencode`.
     pub id: &'a str,
 }
 
@@ -2097,15 +2098,23 @@ pub fn prior_parts(element: &str) -> Option<Prior<'_>> {
     match element.split_once(PRIOR_TAG) {
         // Split at the FIRST tag byte, and the tool grammar admits none of its
         // own, so one element can never split two ways.
-        Some((tool, id)) => (is_prior_tool(tool) && uuid(id)).then_some(Prior {
-            tool: Some(tool),
-            id,
-        }),
+        Some((tool, id)) => (is_prior_tool(tool) && (uuid(id) || opencode_prior(tool, id)))
+            .then_some(Prior {
+                tool: Some(tool),
+                id,
+            }),
         None => uuid(element).then_some(Prior {
             tool: None,
             id: element,
         }),
     }
+}
+
+/// Whether `id` is an `OpenCode` session id owned by the tag `tool`: only the
+/// exact tag `opencode` can own one, so a bare or wrapper-tagged `ses_` id is
+/// never inferred to belong to it.
+fn opencode_prior(tool: &str, id: &str) -> bool {
+    tool == "opencode" && crate::session_launch::capture::is_opencode_session_id(id)
 }
 
 /// One element, written: `tool:id` where `tool` can be tagged, else the bare id.
@@ -2146,8 +2155,8 @@ pub fn priors_tagged(raw: &[&str], tool: &str) -> Option<String> {
 /// The predecessor list `raw` with `id` appended, tagged as `tool`'s — oldest
 /// first, the oldest evicted once [`PRIOR_MAX`] is exceeded.
 ///
-/// Every element is `tool:uuid` or a legacy bare UUID (the grammar
-/// [`crate::session_launch::capture::is_lowercase_uuid`] owns), and a list
+/// Every element is `tool:uuid`, `opencode:ses_…` or a legacy bare UUID (the
+/// grammar [`crate::session_launch::capture::is_lowercase_uuid`] owns), and a list
 /// carrying anything unusable is not carried forward: the row restarts from
 /// `id` alone rather than refusing, because a hand-edited predecessor list
 /// must not make a session unresumable. The kept elements are tagged on the
@@ -2156,7 +2165,7 @@ pub fn priors_tagged(raw: &[&str], tool: &str) -> Option<String> {
 /// `None` means `id` itself is unusable; nothing is recorded.
 #[must_use]
 pub(crate) fn prior_with(raw: &[&str], id: &str, tool: &str) -> Option<String> {
-    if !crate::session_launch::capture::is_lowercase_uuid(id) {
+    if !crate::session_launch::capture::is_lowercase_uuid(id) && !opencode_prior(tool, id) {
         return None;
     }
     let mut ids: Vec<String> = if raw.len() <= PRIOR_MAX
@@ -3967,6 +3976,32 @@ mod tests {
         assert_eq!(super::priors_tagged(&[A], ""), None);
         assert_eq!(super::priors_tagged(&["not-a-uuid"], "codex"), None);
         assert_eq!(super::priors_tagged(&five, "codex"), None);
+    }
+
+    #[test]
+    fn opencode_predecessor_writer_round_trips_and_survives_mixed_bounded_appends() {
+        const OC: &str = "ses_e7961d6d8ffe4C1tKWN8vrHCv1";
+        const U: &str = "11111111-1111-4111-8111-111111111111";
+        let oc = format!("opencode:{OC}");
+        let first = super::prior_with(&[], OC, "opencode").expect("record OpenCode predecessor");
+        assert_eq!(first, oc);
+        let parsed = super::prior_parts(&first).expect("reader accepts writer bytes");
+        assert_eq!((parsed.tool, parsed.id), (Some("opencode"), OC));
+        let mixed = super::prior_with(&[&oc, U], U, "codex").expect("mixed row");
+        assert_eq!(mixed, format!("{oc},codex:{U},codex:{U}"));
+        let meta = super::Meta::parse(&format!("harness_session_prior.main={mixed}\n"));
+        let raw = meta.harness_session_prior("main");
+        assert_eq!(raw.len(), 3);
+        assert!(raw.iter().all(|part| super::prior_parts(part).is_some()));
+        let oldest = format!("claude:{U}");
+        assert_eq!(
+            super::prior_with(&[&oldest, &oc, U, U], U, "codex"),
+            Some(format!("{oc},codex:{U},codex:{U},codex:{U}"))
+        );
+        assert_eq!(super::prior_with(&["damaged"], OC, "opencode"), Some(oc));
+        for tool in ["", "codex", "opencode-wrapper", "/tmp/opencode"] {
+            assert_eq!(super::prior_with(&[], OC, tool), None, "{tool:?}");
+        }
     }
 
     /// The document a reseat moves: one fully-recorded seat beside a second

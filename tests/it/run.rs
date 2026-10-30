@@ -1195,11 +1195,14 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
 
     // opencode: the context is a FILE named by an environment variable, so the
     // `env` prefix ae composed becomes a real environment delta and the argv
-    // holds nothing but the tool.
+    // holds the tool, its existing flags and exactly one standalone flag.
     let rig = Rig::new("opencode");
     rig.seat("opencode", "");
     let argv = rig.planned_argv();
-    assert_eq!(argv, [rig.tool("opencode"), "--flag".to_owned()]);
+    assert_eq!(
+        argv,
+        [rig.tool("opencode"), "--flag".into(), "--standalone".into()]
+    );
     let plan = rig.plan();
     assert!(plan.contains("OPENCODE_CONFIG"), "{plan}");
     assert!(

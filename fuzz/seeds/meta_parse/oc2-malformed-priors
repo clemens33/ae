@@ -1,0 +1,6 @@
+schema=4
+seat.main=lead
+agent_bin.main=opencode
+harness_session_prior.main=opencode:ses_,codex:ses_A1,opencode:ses_a/b,opencode:opencode:ses_A1,OPENCODE:ses_A1
+harness_session_prior.worker.0=opencode:ses_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABC
+harness_session_prior.spawned.1=ses_A1,opencode:ses_a_b,opencode:pending,opencode:ses_é

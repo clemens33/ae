@@ -1206,11 +1206,10 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         // is never provably the seat's own — an unproven seat starts fresh.
         form: ResumeForm::ExactOnly { exact: "--session" },
         probe: StoreProbe::RecordedId,
-        // `--variant` is a `run` flag only, not the TUI's: effort never differs.
-        keep: KeepSpec::Measured {
-            model_flags: &["--model", "-m"],
-            effort: false,
-        },
+        // MEASURED on opencode 2.2.1 (2026-10-29, `.local/oc2/route3-results.txt`):
+        // a configured model does not move a resumed session off the model it
+        // stored, so a model change never keeps the conversation.
+        keep: KeepSpec::Unmeasured,
     },
     carry: CarrySpec::NotPortable,
     capture: CaptureSpec::SessionList,
@@ -2091,10 +2090,7 @@ mod tests {
                     resume: ResumeSpec {
                         form: ResumeForm::ExactOnly { exact: "--session" },
                         probe: StoreProbe::RecordedId,
-                        keep: KeepSpec::Measured {
-                            model_flags: &["--model", "-m"],
-                            effort: false
-                        },
+                        keep: KeepSpec::Unmeasured,
                     },
                     carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::SessionList,

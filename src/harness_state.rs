@@ -701,6 +701,38 @@ fn current_muse_identity(capture: &str) -> HarnessIdentity {
     }
 }
 
+/// `OpenCode` 2's welcome screen parks its version token (`2.2.1`) on the
+/// screen's last row, past the ceiling at tall sizes (measured 120x40: 14 rows
+/// below the edge). The token is ignored ONLY on that measured layout: the last
+/// ink row is a lone version token, one ink row (the hint row) sits between it
+/// and the bottom-most edge, and a wordmark of at least three `█▀▄` rows is
+/// drawn above the box. A version token alone proves nothing.
+fn opencode_welcome_layout(rows: &[Cow<'_, str>], edge: usize, last: usize) -> bool {
+    let version = rows[last].split('.').collect::<Vec<_>>();
+    let token = version.len() > 1
+        && version
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+    let hint_rows = rows[edge + 1..last]
+        .iter()
+        .filter(|row| !row.is_empty())
+        .count();
+    let top = rows[..edge]
+        .iter()
+        .rposition(|row| !row.starts_with('┃'))
+        .map_or(0, |index| index + 1);
+    let mut run = 0;
+    let wordmark = rows[..top].iter().any(|row| {
+        let drawn = !row.is_empty()
+            && row
+                .chars()
+                .all(|cell| matches!(cell, '█' | '▀' | '▄' | ' '));
+        run = if drawn { run + 1 } else { 0 };
+        run >= 3
+    });
+    token && hint_rows == 1 && wordmark
+}
+
 /// opencode's composer status row `mode · model · effort`, drawn directly
 /// above the bottom-most `╹▀` heavy edge, which must itself sit within the
 /// measured slack of the screen's last ink. The ceiling alone is not the
@@ -709,14 +741,18 @@ fn current_muse_identity(capture: &str) -> HarnessIdentity {
 /// ceiling is refused. What protects the live frame is that the edge must be
 /// the BOTTOM-MOST one and sit at that position, not the bound itself.
 fn current_opencode_identity(capture: &str) -> HarnessIdentity {
-    let rows = raw_lines(capture);
+    // A styled capture reads as the text `capture-pane -p` would have printed.
+    let plain = crate::deliver::region::plain_text(capture);
+    let rows = raw_lines(&plain);
     let Some(edge) = rows.iter().rposition(|row| is_box_edge(row, HEAVY_EDGE)) else {
         return HarnessIdentity::default();
     };
     let Some(last) = last_ink(&rows) else {
         return HarnessIdentity::default();
     };
-    if last.saturating_sub(edge) > OPENCODE_MAX_BOTTOM_SLACK {
+    if last.saturating_sub(edge) > OPENCODE_MAX_BOTTOM_SLACK
+        && !opencode_welcome_layout(&rows, edge, last)
+    {
         return HarnessIdentity::default();
     }
     let Some(status) = edge.checked_sub(1).and_then(|index| rows.get(index)) else {

@@ -46,6 +46,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::ResolvedCommand;
 use crate::effort::Level;
+use crate::json::Value;
 use crate::tool::{EffortSpec, ToolKind};
 
 /// Split `cmd` at its binary word, or `None` when it is malformed or carries
@@ -1005,6 +1006,115 @@ pub(crate) fn prefix_mentions(command: &SimpleCommand, variable: &str) -> bool {
         index += 1;
     }
     false
+}
+
+/// An `opencode` profile command as `OpenCode` 2 runs it: its root command
+/// rejects `--agent`, `--model` and `-m`, so the selection travels as an inline
+/// config layer (which outranks a project `opencode.json`, measured 2026-10-29)
+/// and the rest of the command runs `--standalone`, on this seat's own config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenCodeLaunch {
+    /// The `OPENCODE_CONFIG_CONTENT` body; none for a bare command.
+    pub(crate) inline: Option<String>,
+    /// Its words before the executable; ae's own `env` leads a profile with none.
+    pub(crate) prefix: String,
+    /// From the executable on, minus its agent and model words, `--standalone` last.
+    pub(crate) runtime: String,
+}
+
+/// Why one word after the executable has no `OpenCode` 2 translation.
+fn opencode_refused_word(word: &str) -> Option<&'static str> {
+    match word {
+        "--" => return Some("a `--` operand separator"),
+        "mini" => return Some("the word `mini`"),
+        _ => {}
+    }
+    let name = word.split_once('=').map_or(word, |(name, _)| name);
+    match name {
+        "--variant" => Some("--variant (a `run` flag, not the TUI's)"),
+        "--server" => Some("--server (ae launches standalone)"),
+        _ if word.starts_with("--standalone") && word != "--standalone" => {
+            Some("an attached --standalone form")
+        }
+        _ if word.starts_with("-m") && word != "-m" => {
+            Some("an attached -m value (write `-m VALUE`)")
+        }
+        _ => None,
+    }
+}
+
+/// The ONE value of the `names` flag, `None` when absent.
+fn opencode_flag(command: &SimpleCommand, names: &[&str]) -> Result<Option<String>, String> {
+    match sole_flag(command, names) {
+        Ok(flag)
+            if flag.value.is_empty()
+                || flag.value.contains(|c: char| c.is_control() || c == '$') =>
+        {
+            Err(format!(
+                "{} has an empty, control-character or `$` value",
+                flag.name
+            ))
+        }
+        Ok(flag) => Ok(Some(flag.value)),
+        Err(ModelFlagError::Absent) => Ok(None),
+        Err(other) => Err(format!("{}: {}", names[0], other.line())),
+    }
+}
+
+/// Translate one profile command for `OpenCode` 2, or say why ae will not launch
+/// it: nothing is guessed, and a refusal writes and runs nothing.
+pub(crate) fn opencode_launch(cmd: &str) -> Result<OpenCodeLaunch, String> {
+    let command =
+        lex_simple_command(cmd).map_err(|why| format!("the profile command has {why}"))?;
+    for variable in ["OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT"] {
+        if prefix_mentions(&command, variable) {
+            return Err(format!(
+                "the profile command sets or unsets {variable}, which ae owns"
+            ));
+        }
+    }
+    let operands = command
+        .word_values
+        .iter()
+        .skip(command.binary_index + 1)
+        .map(String::as_str);
+    if let Some(why) = operands.clone().find_map(opencode_refused_word) {
+        return Err(format!("the profile command carries {why}"));
+    }
+    let standalone = operands.filter(|word| *word == "--standalone").count();
+    if standalone > 1 {
+        return Err("the profile command carries --standalone more than once".to_owned());
+    }
+    let agent = opencode_flag(&command, &["--agent"])?;
+    let model = opencode_flag(&command, &["--model", "-m"])?;
+    if model.is_some() && agent.is_none() {
+        return Err(
+            "--model needs an explicit `--agent <name>`: OpenCode 2 reads the model from its agent"
+                .to_owned(),
+        );
+    }
+    let at = launch_binary(&command).span.0;
+    let (head, _) = split_flag_pairs(&cmd[at..], &["--agent", "--model", "-m"]);
+    let inline = agent.map(|agent| {
+        let mut fields = vec![("default_agent", Value::str(&agent))];
+        if let Some(model) = &model {
+            let selected = Value::obj([("model", Value::str(model))]);
+            fields.push(("model", Value::str(model)));
+            fields.push(("agents", Value::obj([(agent, selected)])));
+        }
+        Value::obj(fields).render()
+    });
+    let runtime = format!(
+        "{head}{}",
+        if standalone == 1 { "" } else { " --standalone" }
+    );
+    let own = command.word_values.first().is_none_or(|word| word != "env");
+    let prefix = format!("{}{}", if own { "env " } else { "" }, &cmd[..at]);
+    Ok(OpenCodeLaunch {
+        inline,
+        prefix,
+        runtime,
+    })
 }
 
 /// The config home a resolved launch command will give its tool.

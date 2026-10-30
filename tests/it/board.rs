@@ -1972,7 +1972,7 @@ fn opencode_v2_export_argv_and_text_are_observable_at_the_cli() {
         r#"{"id":"msg_reply","type":"assistant","time":{"created":1789549201500},"content":[{"type":"reasoning","text":"V2_SECRET_REASONING"},{"type":"text","text":"V2 answer"}]}"#.to_owned(),
     ]);
     let guard = format!(
-        "#!/bin/sh\nprintf x >> \"$0.calls\"\n[ \"$#\" -eq 3 ] && [ \"$1\" = session ] && [ \"$2\" = export ] && [ \"$3\" = {OC_SID} ] || exit 23\n"
+        "#!/bin/sh\nprintf x >> \"$0.calls\"\n[ \"$#\" -eq 4 ] && [ \"$1\" = session ] && [ \"$2\" = export ] && [ \"$3\" = {OC_SID} ] && [ \"$4\" = --standalone ] || exit 23\n"
     );
     fake_opencode(&root, &(guard + &exporting(&export)));
     plant_session(&root, "oc", &oc_roster("main", "lead", OC_SID));

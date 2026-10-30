@@ -275,11 +275,13 @@ pub fn inject_session_id(cmd: &str, session_id: &str) -> String {
 /// must be told about a degraded injection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Injected {
-    /// The command to launch.
+    /// The command to launch; empty when [`Self::refusal`] is set.
     pub cmd: String,
-    /// A warning line for stderr — the opencode arm that could not publish its
-    /// context files and launches without them.
+    /// A warning line for stderr about a degraded but still runnable launch.
     pub warning: Option<String>,
+    /// Why ae will not launch the seat (a parse refusal writes nothing): no command
+    /// stands in for the one that was refused.
+    pub refusal: Option<String>,
 }
 
 /// Inject the rendered context on the channel this tool actually has — the
@@ -314,6 +316,7 @@ pub fn inject_ae_context_with_brief(
         ContextChannel::SystemPromptFlag(flag) => Injected {
             cmd: format!("{cmd} {flag} '{}'", single_quote_escape(ctx)),
             warning: None,
+            refusal: None,
         },
         ContextChannel::DeveloperInstructions => {
             let slot_arg = if slot.is_empty() {
@@ -332,6 +335,7 @@ pub fn inject_ae_context_with_brief(
             Injected {
                 cmd: format!("{cmd} -c '{}'", single_quote_escape(&value)),
                 warning: None,
+                refusal: None,
             }
         }
         ContextChannel::UserTurn { flag } => {
@@ -346,31 +350,47 @@ pub fn inject_ae_context_with_brief(
                     |flag| format!("{cmd} {flag} '{turn}'"),
                 ),
                 warning: None,
+                refusal: None,
             }
         }
         // No wait-suffix here: "this is context only" exists because gemini and
         // grok receive a USER TURN.
-        ContextChannel::ConfigFile => match opencode_context_files(meta_dir, slot, ctx) {
-            Ok(config) => Injected {
-                cmd: format!(
-                    "env OPENCODE_CONFIG={} {cmd}",
-                    shell_quote(&config.display().to_string())
-                ),
+        // OpenCode 2 takes no agent or model flag: the profile command is
+        // translated to an inline selection layer plus a standalone runtime,
+        // and either failing refuses the launch. A seat with no context, or
+        // one the shared server's config would steer, is never the fallback.
+        ContextChannel::ConfigFile => {
+            let refuse = |why: String| Injected {
+                cmd: String::new(),
                 warning: None,
-            },
-            // Launch anyway rather than not at all, and say so: a contextless
-            // agent is recoverable, a missing one is not.
-            Err(_) => Injected {
-                cmd: cmd.to_owned(),
-                warning: Some(format!(
-                    "ae: could not write opencode context for '{}' — launching without ae context",
-                    if slot.is_empty() { "main" } else { slot }
-                )),
-            },
-        },
+                refusal: Some(why),
+            };
+            match crate::launch_cmd::opencode_launch(cmd) {
+                Err(why) => refuse(why),
+                Ok(launch) => match opencode_context_files(meta_dir, slot, ctx) {
+                    Ok(config) => {
+                        let inline = launch.inline.map_or_else(String::new, |json| {
+                            format!(" OPENCODE_CONFIG_CONTENT={}", shell_quote(&json))
+                        });
+                        Injected {
+                            cmd: format!(
+                                "{}OPENCODE_CONFIG={}{inline} {}",
+                                launch.prefix,
+                                shell_quote(&config.display().to_string()),
+                                launch.runtime
+                            ),
+                            warning: None,
+                            refusal: None,
+                        }
+                    }
+                    Err(why) => refuse(format!("could not write the ae context: {why}")),
+                },
+            }
+        }
         ContextChannel::None => Injected {
             cmd: cmd.to_owned(),
             warning: None,
+            refusal: None,
         },
     }
 }
@@ -818,7 +838,9 @@ mod tests {
             "{}",
             opencode.cmd
         );
-        assert!(opencode.cmd.ends_with(" opencode"), "{}", opencode.cmd);
+        let tail = " opencode --standalone";
+        assert!(opencode.cmd.ends_with(tail), "{}", opencode.cmd);
+        assert_eq!(opencode.cmd.matches("--standalone").count(), 1);
         let published = std::fs::read_to_string(dir.join("opencode.spawned.4.md")).unwrap();
         assert_eq!(published, format!("{ctx}\n"));
         let config = std::fs::read_to_string(dir.join("opencode.spawned.4.json")).unwrap();
@@ -1029,7 +1051,8 @@ mod tests {
         let pointer = argv[1]
             .strip_prefix("OPENCODE_CONFIG=")
             .expect("the env prefix");
-        assert_eq!(argv.last().map(String::as_str), Some("opencode"));
+        assert_eq!(argv[argv.len() - 2..], ["opencode", "--standalone"]);
+        assert_eq!(argv.iter().filter(|arg| *arg == "--standalone").count(), 1);
         let published =
             std::fs::read_to_string(dir.join("opencode.spawned.4.md")).expect("the payload file");
         assert_eq!(
@@ -1215,21 +1238,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unpublishable_opencode_context_degrades_the_launch_instead_of_failing_it() {
+    fn an_unpublishable_opencode_context_refuses_without_a_contextless_command() {
         let dir = scratch("oc-fail");
         // A DIRECTORY where the context file must go: publication cannot win.
         std::fs::create_dir_all(dir.join("opencode.spawned.0.md")).unwrap();
         assert!(opencode_context_files(&dir, "spawned.0", "ctx").is_err());
         let injected = inject_ae_context("opencode", &dir, "spawned.0", "ctx", "");
-        assert_eq!(injected.cmd, "opencode", "launched anyway, contextless");
-        assert!(
-            injected
-                .warning
-                .as_deref()
-                .is_some_and(|line| line.contains("launching without ae context")),
-            "and it says so: {:?}",
-            injected.warning
-        );
+        assert!(injected.cmd.is_empty(), "no executable fallback");
+        assert_eq!(injected.warning, None, "refusal is not a warning");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

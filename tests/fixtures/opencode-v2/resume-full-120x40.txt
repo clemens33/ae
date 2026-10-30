@@ -1,0 +1,24 @@
+ • AE_OC2_LOCAL_STUB_DONE  • AE_OC2_LOCAL_STUB_DONE  • AE_OC2_LOCAL_STUB_DONE +
+
+  ┃
+  ┃  Local stub UI probe. Return one token. Do not call tools.
+  ┃
+
+     AE_OC2_LOCAL_STUB_DONE
+
+     Build · Probe · 7.0s · 0.1 tok/s
+
+
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Probe Local deterministic probe · max
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /…/U…/ckriech/projects/.tmp/ae-oc2-j49bs7s6/project  2 (0%)  ctrl+p commands
+

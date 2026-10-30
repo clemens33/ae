@@ -3149,7 +3149,7 @@ mod tests {
         }
 
         #[test]
-        fn opencode_model_measured_variant_not_normalized_other_rows_unmeasured() {
+        fn opencode_model_changes_cannot_keep_a_stored_model_other_rows_unmeasured() {
             let keep = Keep {
                 from_binary: "opencode",
                 to_binary: "opencode",
@@ -3160,8 +3160,8 @@ mod tests {
                 ..baseline()
             };
             assert!(
-                keeps(&keep),
-                "OpenCode measured model resume is independent of observed-model support"
+                !keeps(&keep),
+                "V2 resumes the stored model, not the requested one"
             );
             assert!(!keeps(&Keep {
                 to_command: "opencode --model provider/new --agent build --variant high",

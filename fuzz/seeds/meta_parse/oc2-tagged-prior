@@ -1,0 +1,5 @@
+schema=4
+seat.main=lead
+agent_bin.main=opencode
+harness_session.main=ses_a
+harness_session_prior.main=opencode:ses_e7961d6d8ffe4C1tKWN8vrHCv1

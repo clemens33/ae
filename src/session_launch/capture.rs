@@ -80,7 +80,8 @@ impl OpenCodeArgv {
     }
 }
 
-/// The only `opencode` command ae runs: its own session list, as JSON.
+/// The only `opencode` command ae runs: its own session list, as JSON. Both
+/// legs end in `--standalone`, the store the seat's own standalone TUI writes.
 fn opencode_list_argv() -> OpenCodeArgv {
     OpenCodeArgv(vec![
         "session".to_owned(),
@@ -89,6 +90,7 @@ fn opencode_list_argv() -> OpenCodeArgv {
         "json".to_owned(),
         "-n".to_owned(),
         OPENCODE_LIST_LIMIT.to_owned(),
+        "--standalone".to_owned(),
     ])
 }
 
@@ -116,6 +118,7 @@ pub(crate) fn opencode_export_argv(id: &str) -> Option<OpenCodeArgv> {
             "session".to_owned(),
             "export".to_owned(),
             id.to_owned(),
+            "--standalone".to_owned(),
         ])
     })
 }
@@ -3452,7 +3455,15 @@ mod tests {
     fn the_opencode_argv_is_fixed() {
         assert_eq!(
             opencode_list_argv().as_args(),
-            ["session", "list", "--format", "json", "-n", "20"]
+            [
+                "session",
+                "list",
+                "--format",
+                "json",
+                "-n",
+                "20",
+                "--standalone"
+            ]
         );
     }
 
@@ -3464,7 +3475,8 @@ mod tests {
             Some(vec![
                 "session".to_owned(),
                 "export".to_owned(),
-                id.to_owned()
+                id.to_owned(),
+                "--standalone".to_owned()
             ])
         );
         for bad in [

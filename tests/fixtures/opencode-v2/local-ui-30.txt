@@ -1,0 +1,40 @@
+ • AE_OC2_LOCAL_STUB_DONE        • AE_OC2_LOCAL_STUB_DONE        ⠧ New session                   +
+
+  ┃
+  ┃  Local stub UI probe. Return one token. Do not call tools.
+  ┃
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Probe Local deterministic probe · max
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ■■■■⬝⬝⬝⬝ esc interrupt                                                            shift+tab agents  ctrl+p commands
+

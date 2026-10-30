@@ -1536,7 +1536,11 @@ fn compose(
         );
         let form = if exact { resume_form } else { fallback_form };
         let cmd = if resume_keeps_context(seat.tool, exact) {
-            launch::inject_ae_context(&form, dir, slot, ctx, &seat.launch_id).cmd
+            let injected = launch::inject_ae_context(&form, dir, slot, ctx, &seat.launch_id);
+            if let Some(why) = injected.refusal {
+                return Err(format!("seat {slot}: {why}"));
+            }
+            injected.cmd
         } else {
             form
         };
@@ -1590,6 +1594,9 @@ fn compose(
     } else {
         launch::inject_ae_context(&pre, dir, slot, ctx, &seat.launch_id)
     };
+    if let Some(why) = injected.refusal {
+        return Err(format!("seat {slot}: {why}"));
+    }
     let prompt_text = if folded {
         // Folded: no second positional, or the brief ships twice.
         String::new()
@@ -1904,6 +1911,8 @@ fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), 
             match word.value.as_str() {
                 "-i" => {
                     prefix.clear = true;
+                    // `env` consumes a shell prefix's assignments, and its `-i` discards them.
+                    prefix.assign.clear();
                     rest.next();
                 }
                 "-u" => {
@@ -1914,6 +1923,7 @@ fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), 
                             return Err("an `env -u` with no name in a launch command".to_owned());
                         }
                     }
+                    prefix.assign.retain(|a| prefix.unset.last() != Some(&a.0));
                 }
                 // On the VALUE, because `env` reads its own argv after the
                 // shell has unquoted it — and because `launch_binary` does.
@@ -2833,6 +2843,35 @@ mod tests {
             )]
         );
         assert_eq!(argv, ["claude", "--session-id", "x"]);
+    }
+
+    #[test]
+    fn env_options_apply_before_later_explicit_assignments() {
+        let mut failures = Vec::new();
+        for (cmd, clear, unset, assigned) in [
+            ("A=1 B=2 opencode", false, "", "A=1 B=2"),
+            ("A=1 env -u UNUSED B=2 opencode", false, "UNUSED", "A=1 B=2"),
+            ("A=1 env A=2 B=3 opencode", false, "", "A=1 A=2 B=3"),
+            ("A=1 env -i B=2 opencode", true, "", "B=2"),
+            ("A=1 env -u A B=2 opencode", false, "A", "B=2"),
+            ("A=1 env -u A A=2 B=3 opencode", false, "A", "A=2 B=3"),
+            ("A=1 env -i -u A A=2 B=3 opencode", true, "A", "A=2 B=3"),
+        ] {
+            let words = crate::words::split_words(cmd, &|_| None).expect("valid prefix");
+            let (prefix, argv) = peel_env(words).expect("real environment delta");
+            let values: Vec<_> = prefix
+                .assign
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            if values.join(" ") != assigned {
+                failures.push((cmd, values, assigned));
+            }
+            assert_eq!(prefix.clear, clear, "{cmd}");
+            assert_eq!(prefix.unset.join(" "), unset, "{cmd}");
+            assert_eq!(argv, ["opencode"], "{cmd}");
+        }
+        assert!(failures.is_empty(), "{failures:?}");
     }
 
     #[test]
