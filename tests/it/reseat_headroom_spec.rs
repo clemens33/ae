@@ -195,7 +195,7 @@ fn auto_records(rig: &Rig) -> Vec<Event> {
         .collect()
 }
 
-fn watch(rig: &Rig) -> super::cli::OwnedChild {
+pub(super) fn watch(rig: &Rig) -> super::cli::OwnedChild {
     let trace = rig.scratch.join("headroom-quota-trace");
     std::fs::write(&trace, "").expect("fresh per-spawn observation barrier");
     let send = rig.dir.join("send");
@@ -244,7 +244,7 @@ fn until(rig: &Rig, condition: impl Fn() -> bool) {
 
 /// Await two more completed observations from THIS daemon start, so absence
 /// assertions cannot outrun its following seat/action phase.
-fn sweeps(rig: &Rig) {
+pub(super) fn sweeps(rig: &Rig) {
     let observed = || {
         std::fs::read_to_string(rig.scratch.join("headroom-quota-trace"))
             .unwrap_or_default()
@@ -1989,7 +1989,7 @@ fn phase2_derivation_uses_the_recorded_client_and_excludes_the_source_profile() 
 }
 
 #[test]
-fn phase2_derivation_ignores_a_followed_model_and_uses_the_recorded_pin() {
+fn phase2_a_current_followed_model_holds_without_moving_to_the_recorded_pin() {
     let rig = Rig::new("hr2recordedpin");
     family_config(
         &rig,
@@ -2009,9 +2009,10 @@ fn phase2_derivation_ignores_a_followed_model_and_uses_the_recorded_pin() {
         quota(&rig, home, &[("weekly_all", used)], 0);
     }
     let pane = family_source(&rig);
-    family_row(&rig, "observed_model.spawned.0", "Sonnet 5");
+    family_row(&rig, "observed_model.spawned.0", "Sonnet 5.5");
     family_row(&rig, "observed_model_pin.spawned.0", "opus");
-    family_move(&rig, &pane, false, "fake-twin", "twin");
+    let key = family_open(&rig, &pane, false);
+    super::autochoice_spec::trigger_and_assert_held(&rig, &pane, key);
 }
 
 #[test]

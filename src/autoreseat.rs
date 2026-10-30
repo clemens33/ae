@@ -32,8 +32,8 @@
 //! account reads more than [`REARM_GAP`] below the threshold, or at a move. A
 //! limit outranks it: a seat on its limit is the limit path's alone.
 //!
-//! The folds compare action words, the seat's identity, whole `ref` values and
-//! whole hold summaries by equality. They never split or parse either.
+//! The folds compare action words, the seat's identity and whole `ref` values
+//! by equality, and hold summaries whole or by the observed-choice prefix.
 
 use std::path::Path;
 
@@ -89,6 +89,9 @@ pub enum CauseClass {
     NoCandidate,
     /// The seat may not be moved by auto reseat at all.
     Ineligible,
+    /// The human's observed model or effort choice stands, and a move would
+    /// drop it (#269): a hold until the human chooses.
+    ObservedChoice,
     /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
@@ -106,6 +109,7 @@ impl CauseClass {
             Self::Lock => "lock",
             Self::NoCandidate => "no-candidate",
             Self::Ineligible => "ineligible",
+            Self::ObservedChoice => "observed-choice",
             Self::Other => "other",
         }
     }
@@ -113,7 +117,7 @@ impl CauseClass {
     /// Whether the cause may pass on a retry: the record is a hold, not a refusal.
     #[must_use]
     pub const fn transient(self) -> bool {
-        matches!(self, Self::Busy | Self::Lock)
+        matches!(self, Self::Busy | Self::Lock | Self::ObservedChoice)
     }
 
     /// `summary` led by the class: `<class>: <summary>`.
@@ -903,6 +907,9 @@ pub struct Episode {
     pub held: bool,
     /// The summary of the newest hold, whole.
     last_hold: Option<String>,
+    /// Some hold of this key named an observed choice, so the key tells the
+    /// human once however often it is tried; no later hold unsays it.
+    pub choice_held: bool,
 }
 
 impl Episode {
@@ -964,6 +971,7 @@ impl Episode {
             terminal: None,
             held: false,
             last_hold: None,
+            choice_held: false,
         }
     }
 
@@ -982,6 +990,11 @@ impl Episode {
             HELD_ACTION if ours => {
                 self.open = None;
                 self.held = true;
+                let lead = CauseClass::ObservedChoice.lead("");
+                self.choice_held |= event
+                    .summary
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with(&lead));
                 self.last_hold.clone_from(&event.summary);
             }
             DONE_ACTION => self.close(Outcome::Done, event.ts),
@@ -1304,6 +1317,28 @@ impl HoldReason {
     #[must_use]
     pub fn record(self) -> String {
         self.class().lead(self.summary())
+    }
+}
+
+/// The hold an observed choice names, without its class: what a move would
+/// drop, or why ae could not tell. A damaged record is never named a choice.
+#[must_use]
+pub(crate) fn observed_summary(hold: &crate::run::ObservedHold) -> String {
+    use crate::run::ObservedHold;
+    let dropped = "an automatic move would drop it";
+    match hold {
+        ObservedHold::Standing { shown } => {
+            format!("held: observed choice {shown} stands — {dropped}")
+        }
+        ObservedHold::ReportOnly { shown, why } => {
+            format!("held: observed choice {shown} stands, report only ({why}) — {dropped}")
+        }
+        ObservedHold::Damaged(why) => {
+            format!("held: the observed record is damaged ({why}) — correct it or choose by hand")
+        }
+        ObservedHold::Unjudged(why) => {
+            format!("held: the observed record could not be judged ({why})")
+        }
     }
 }
 
@@ -1892,6 +1927,11 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
                      turn to resume only if no nudge reached its pane"
                 ),
             },
+        ),
+        Ending::Held(CauseClass::ObservedChoice, why) => format!(
+            "{agent} not moved — {}. Next: {hand}, or switch its pane back to the profile's model \
+             and effort; until then ae does not move it.",
+            CauseClass::ObservedChoice.details(why)
         ),
         Ending::Held(class, why) => {
             let why = class.details(why);

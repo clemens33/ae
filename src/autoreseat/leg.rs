@@ -31,6 +31,13 @@ const SUMMARY_CHARS: usize = 160;
 /// A tool or model the records do not name.
 const UNKNOWN: &str = "unknown";
 
+/// The observed-choice hold a no-candidate ending names instead, so a seat held
+/// for its human's choice is never told it has nowhere to go (#269).
+fn observed_ending(dir: &Path, slot: &str) -> Option<String> {
+    let hold = crate::run::observed_standing(dir, slot)?;
+    Some(CauseClass::ObservedChoice.lead(&super::observed_summary(&hold)))
+}
+
 /// The argv, proven before anything is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Argv {
@@ -669,6 +676,8 @@ pub(crate) fn run(
         super::spawner(&events, &argv.session, &argv.slot, &agent),
     );
     let notice = |ending| super::notice(&argv.session, &agent, &ending);
+    // An observed-choice hold is told once per key, however often it is tried.
+    let retold = |class| class == CauseClass::ObservedChoice && found.choice_held;
     let threshold = settings
         .headroom_at
         .filter(|_| found.trigger == Trigger::Headroom);
@@ -677,9 +686,12 @@ pub(crate) fn run(
         declared => {
             let list = listed(dir, &bytes, seat, declared.unwrap_or_default());
             if list.is_empty() {
-                Err((
-                    CauseClass::NoCandidate,
-                    ineligible_record(Ineligible::Unmapped),
+                Err(observed_ending(dir, &argv.slot).map_or_else(
+                    || {
+                        let why = ineligible_record(Ineligible::Unmapped);
+                        (CauseClass::NoCandidate, why)
+                    },
+                    |why| (CauseClass::ObservedChoice, why),
                 ))
             } else if found.trigger == Trigger::Headroom && threshold.is_none() {
                 Err((
@@ -696,12 +708,14 @@ pub(crate) fn run(
         Err((class, summary)) => {
             let summary = tagged(&summary, &cause);
             let code = close(&argv, &agent, now, (HELD_ACTION, &summary), err)?;
-            tell(
-                &argv,
-                now,
-                told,
-                &notice(super::Ending::Held(class, &summary)),
-            );
+            if !retold(class) {
+                tell(
+                    &argv,
+                    now,
+                    told,
+                    &notice(super::Ending::Held(class, &summary)),
+                );
+            }
             return Ok(code);
         }
     };
@@ -720,6 +734,14 @@ pub(crate) fn run(
     let choice = super::choose_with(&judged, now.epoch(), threshold);
     let named = |pick: &str| format!("{pick}{}", choice.provenance.word());
     let Some((pick, tier)) = choice.pick else {
+        if let Some(why) = observed_ending(dir, &argv.slot).map(|why| tagged(&why, &cause)) {
+            let code = close(&argv, &agent, now, (HELD_ACTION, &why), err)?;
+            if !found.choice_held {
+                let ending = super::Ending::Held(CauseClass::ObservedChoice, &why);
+                tell(&argv, now, told, &notice(ending));
+            }
+            return Ok(code);
+        }
         let why = tagged(&no_candidate(&choice.skipped), &cause);
         let code = close(&argv, &agent, now, (REFUSED_ACTION, &why), err)?;
         let ending = super::Ending::Refused(CauseClass::NoCandidate, &why);
@@ -786,11 +808,14 @@ pub(crate) fn run(
                 cause: &cause,
             }))
         }
+        Ended::Refused(class) if retold(class) => String::new(),
         Ended::Refused(class) if class.transient() => notice(super::Ending::Held(class, &summary)),
         Ended::Refused(class) => notice(super::Ending::Refused(class, &summary)),
         Ended::Failed => notice(super::Ending::Failed(CauseClass::Other, &summary)),
     };
-    tell(&argv, now, told, &text);
+    if !text.is_empty() {
+        tell(&argv, now, told, &text);
+    }
     Ok(if matches!(ended, Ended::Moved { .. }) {
         0
     } else {
@@ -1228,17 +1253,20 @@ pub(crate) fn trigger(
         orchestrator: crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role,
     };
     let events = crate::watchdog_daemon::read_events(dir);
+    let unlisted = std::cell::Cell::new(false);
     // Read only once the plan reaches the chooser.
     let gather = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
         let latched = super::latched_identities(meta.roster(), &events, own_session, slot);
-        candidates(
+        let judged = candidates(
             &listed(dir, &bytes, row, list),
             |to| crate::reseat::resolved(dir, to),
             left,
             observed(),
             &latched,
             now.epoch(),
-        )
+        );
+        unlisted.set(judged.is_empty());
+        judged
     };
     let argv = |key| Argv {
         session: own_session.to_owned(),
@@ -1246,7 +1274,28 @@ pub(crate) fn trigger(
         slot: slot.to_owned(),
         key,
     };
-    match plan(&settings, &seat, &sight, &events, gather, now) {
+    let planned = plan(&settings, &seat, &sight, &events, gather, now);
+    // A no-candidate ending of a due episode names a held choice instead (#269),
+    // once per key: the episode `plan` judged, chosen as it chose it.
+    let due = || match settings.headroom_at.filter(|_| !sight.limited) {
+        None => super::episode(&events, own_session, slot, &row.name),
+        Some(_) => super::headroom_episode(&events, own_session, slot, &row.name),
+    };
+    let ended = matches!(planned, Plan::Refuse { .. })
+        || (matches!(planned, Plan::Decline(_)) && unlisted.get());
+    if let Some(found) = due().filter(|_| ended)
+        && let Some(why) = observed_ending(dir, slot)
+    {
+        if found.choice_held {
+            return decline(err, "its observed choice is already held");
+        }
+        let why = tagged(&why, found.cause());
+        let code = close(&argv(found.key), &row.name, now, (HELD_ACTION, &why), err)?;
+        let ending = super::Ending::Held(CauseClass::ObservedChoice, &why);
+        tell_ending(dir, (own_session, slot, &row.name), found.key, now, &ending);
+        return Ok(code);
+    }
+    match planned {
         Plan::Decline(why) => decline(err, &why),
         Plan::Refuse { key, why } => {
             let argv = argv(key);

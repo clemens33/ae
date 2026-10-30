@@ -1912,7 +1912,7 @@ fn carry_attempt(tag: &str, source: Option<&[u8]>, target: Option<&[u8]>) -> (Ri
         writeln!(
             text,
             "work_dir={}\nharness_session.spawned.0={CARRIED}\ncapture_floor.spawned.0=100\n\
-             launch_time.spawned.0=111\nobserved_model.spawned.0=Opus 5\n\
+             launch_time.spawned.0=111\n\
              config_home.spawned.0={}",
             work.display(),
             from.display()

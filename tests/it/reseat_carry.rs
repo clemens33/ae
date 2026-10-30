@@ -144,7 +144,7 @@ fn planted_seat_in(rig: &Rig, liveness: Liveness, work: &Path, key: &str) -> Str
     let _ = writeln!(
         text,
         "work_dir={}\nharness_session.spawned.0={ID}\ncapture_floor.spawned.0=100\n\
-         launch_time.spawned.0=111\nobserved_model.spawned.0=Opus 5\n\
+         launch_time.spawned.0=111\n\
          config_home.spawned.0={}",
         work.display(),
         account(rig, "a").display()

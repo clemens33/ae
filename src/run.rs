@@ -1207,6 +1207,53 @@ pub(crate) fn observed_not_applied(dir: &Path, slot: &str) -> Option<String> {
     }
 }
 
+/// Why an AUTOMATIC move must not replace this seat's observed choice (#269):
+/// the resume's own judgement of the record, typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ObservedHold {
+    /// The next resume would apply it: the choice as the notice shows it.
+    Standing { shown: String },
+    /// The record stands, but the resume would not apply it, and why.
+    ReportOnly { shown: String, why: String },
+    /// The rows are damaged: uncertainty, never a choice ae claims to know.
+    Damaged(&'static str),
+    /// Rows exist, but the seat could not be read to judge them.
+    Unjudged(String),
+}
+
+/// The hold [`resume_pair`] implies for `seat`; `None` when nothing stands, the
+/// profile already launches it, or a profile edit or another tool retired it.
+pub(crate) fn observed_hold(slot: &str, seat: &Seat) -> Option<ObservedHold> {
+    let crate::meta::Rows::Valid(pair) = &seat.observed else {
+        return match seat.observed {
+            crate::meta::Rows::Damaged(why) => Some(ObservedHold::Damaged(why)),
+            _ => None,
+        };
+    };
+    let shown = pair.effort.map_or_else(
+        || pair.model.clone(),
+        |(drawn, _)| format!("{} ({})", pair.model, drawn.word()),
+    );
+    match resume_pair(slot, seat) {
+        ResumePair::Nothing | ResumePair::Retire(_) => None,
+        ResumePair::Refused(why, _) => Some(ObservedHold::ReportOnly { shown, why }),
+        ResumePair::Apply(..) => Some(ObservedHold::Standing { shown }),
+    }
+}
+
+/// [`observed_hold`] over the records in `dir`. A seat with no observed rows is
+/// never resolved, so the common case reads no config.
+pub(crate) fn observed_standing(dir: &Path, slot: &str) -> Option<ObservedHold> {
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    if crate::meta::observed_pair(&bytes, slot) == crate::meta::Rows::Absent {
+        return None;
+    }
+    match read_seat(dir, slot, None) {
+        Ok(seat) => observed_hold(slot, &seat),
+        Err(why) => Some(ObservedHold::Unjudged(why)),
+    }
+}
+
 /// The launch baseline this start publishes, and who it is guarded by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LaunchBaseline {
@@ -2252,6 +2299,9 @@ fn working_dir() -> Option<PathBuf> {
     let cwd = std::env::current_dir();
     cwd.ok()
 }
+
+#[cfg(test)]
+mod autochoice_spec;
 
 #[cfg(test)]
 mod tests {

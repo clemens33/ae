@@ -5653,6 +5653,10 @@ impl Cycle<'_> {
             Err(_) => return None,
         };
         let row = self.roster.iter().find(|row| row.slot == slot)?;
+        // A move the human's observed choice holds is never forecast (#269).
+        if crate::run::observed_standing(self.meta_dir, slot).is_some() {
+            return None;
+        }
         let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
         let list = crate::autoreseat::leg::listed(self.meta_dir, &bytes, row, declared);
         if list.is_empty() {
@@ -5707,6 +5711,9 @@ impl Cycle<'_> {
             .is_some_and(|row| {
                 let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
                 !crate::autoreseat::leg::listed(self.meta_dir, &bytes, row, &[]).is_empty()
+                    // A held choice reaches the trigger, which names the hold
+                    // rather than "no candidate" (#269).
+                    || crate::run::observed_standing(self.meta_dir, slot).is_some()
             })
     }
 

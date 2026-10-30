@@ -109,6 +109,9 @@ struct Parsed {
     agent: String,
     profile: String,
     stop: StopPolicy,
+    /// The watchdog's move, which must not drop an observed choice (#269). A
+    /// human's `--using` is a new choice and clears it.
+    automatic: bool,
 }
 
 /// Which frames the stop may end a running tool on.
@@ -173,6 +176,7 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
         agent: (*agent).to_owned(),
         profile,
         stop,
+        automatic: false,
     })
 }
 
@@ -1094,6 +1098,7 @@ pub(crate) fn restart_in_place(
         agent: agent.to_owned(),
         profile: crate::lifecycle::meta_value(&locked, &format!("profile.{}", target.slot)),
         stop: StopPolicy::Proven,
+        automatic: false,
     };
     match stop_running_tool(dir, &target, &locked, &parsed, hook, err)? {
         Stop::Stopped(_) => {}
@@ -1167,6 +1172,7 @@ pub(crate) fn run_as_watchdog(
         agent: agent.to_owned(),
         profile: profile.to_owned(),
         stop: StopPolicy::Proven,
+        automatic: true,
     };
     let caller = Caller {
         pane: crate::doors::calling_pane_id(),
@@ -1342,6 +1348,15 @@ fn run_parsed(
     // What the records say NOW, under the lock: the stop reads the working copy
     // from it, and the audit line reads the conversation the predecessor holds.
     let locked = crate::meta::read_bytes(&dir).unwrap_or_default();
+    // THE ONE AUTOMATIC GATE, under the lock and before anything is checked,
+    // copied or stopped: the persisted record at this read decides. A later
+    // observation written under the meta lock alone is not seen (named residual).
+    if parsed.automatic
+        && let Some(hold) = crate::run::observed_standing(&dir, &target.slot)
+    {
+        writeln!(err, "Error: {}", crate::autoreseat::observed_summary(&hold))?;
+        return Ok(Ended::Refused(CauseClass::ObservedChoice));
+    }
     let prior = crate::lifecycle::meta_value(&locked, &format!("harness_session.{}", target.slot));
     // DOES THE SEAT KEEP ITS CONVERSATION? From the records under the lock. A
     // kept move stays in its account, which a carry never does.

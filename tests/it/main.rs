@@ -38,6 +38,7 @@ mod archive_from;
 mod archive_harness_spec;
 mod archive_publish;
 mod archive_purge;
+mod autochoice_spec;
 mod autoreseat;
 mod autotrust_spec;
 mod board;
