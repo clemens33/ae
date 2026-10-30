@@ -1059,6 +1059,14 @@ fn incarnation_mismatch_empty_and_unreadable_sources_render_honest_gaps() {
         );
         thread::sleep(Duration::from_millis(25));
         rig.send_keys(&pane, &["Escape"]);
-        thread::sleep(Duration::from_millis(50));
+        let gap = format!(
+            "{}: unavailable (meta: identity mismatch)",
+            item.to_ascii_lowercase()
+        );
+        let closed = rig.wait_until(&pane, Duration::from_secs(2), |s| !s.contains(&gap));
+        assert!(
+            !closed.contains(&gap),
+            "{item} dialog did not close after Escape:\n{closed}"
+        );
     }
 }
