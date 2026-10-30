@@ -1,9 +1,11 @@
 //! The session menu `ae app` opens on a card — `m` on the selection, a right
 //! press on any card — offering Start on a stopped session and Stop on a
-//! running one, and the Stop question its `Stop…` asks. Pure: what a
-//! card offers, what a key or press does, and how both are drawn. The app
-//! proves and acts.
+//! running one, the Stop question its `Stop…` asks, and the read-only
+//! Activity and Memos dialogs every card offers. Pure: what a card offers,
+//! what a key or press does, and how all of it is drawn. The app proves and
+//! acts; the reader thread reads.
 
+use std::cell::Cell;
 use std::time::Instant;
 
 use ratatui_core::buffer::Buffer;
@@ -18,9 +20,12 @@ use crate::console::input::Key;
 use crate::digest::Status;
 use crate::event_text::clip_head;
 use crate::lifecycle::StopExpectation;
+use crate::session_menu::{self, CellRow};
 
 /// The Stop question's text width: its longest fixed line.
 const QUESTION_INNER: u16 = 48;
+/// The fewest cells a dialog's text keeps before the window is too small.
+const DIALOG_INNER_MIN: u16 = 12;
 /// The question's two buttons, in their drawn order.
 const BUTTONS: [(Choice, &str); 2] = [(Choice::Cancel, "[ Cancel ]"), (Choice::Stop, "[ Stop ]")];
 
@@ -82,8 +87,8 @@ impl Card {
     pub(super) fn items(&self) -> &'static [Item] {
         match (self.orchestrator, self.stopped) {
             (true, _) => &[],
-            (false, true) => &[Item::Start],
-            (false, false) => &[Item::Stop],
+            (false, true) => &[Item::Start, Item::Activity, Item::Memos],
+            (false, false) => &[Item::Stop, Item::Activity, Item::Memos],
         }
     }
 
@@ -100,6 +105,10 @@ pub(super) enum Item {
     Start,
     /// The Stop question.
     Stop,
+    /// The session's recent activity, read-only.
+    Activity,
+    /// The session's latest memo per topic, read-only.
+    Memos,
 }
 
 impl Item {
@@ -108,6 +117,17 @@ impl Item {
         match self {
             Self::Start => "Start",
             Self::Stop => "Stop",
+            Self::Activity => "Activity",
+            Self::Memos => "Memos",
+        }
+    }
+
+    /// The dialog this item opens: `None` for the two that act.
+    pub(super) fn dialog(self) -> Option<Dialog> {
+        match self {
+            Self::Start | Self::Stop => None,
+            Self::Activity => Some(Dialog::Activity),
+            Self::Memos => Some(Dialog::Memos),
         }
     }
 
@@ -116,6 +136,35 @@ impl Item {
             (Self::Start, _) => "s  Start",
             (Self::Stop, true) => "s  Stop…",
             (Self::Stop, false) => "s  Stop...",
+            (Self::Activity, true) => "a  Activity…",
+            (Self::Activity, false) => "a  Activity...",
+            (Self::Memos, true) => "o  Memos…",
+            (Self::Memos, false) => "o  Memos...",
+        }
+    }
+}
+
+/// A read-only dialog over a session's records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Dialog {
+    Activity,
+    Memos,
+}
+
+impl Dialog {
+    /// Its title word.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Activity => "Activity",
+            Self::Memos => "Memos",
+        }
+    }
+
+    /// The fixed columns the tmux session menu aligns this dialog's rows by.
+    fn caps(self) -> &'static [usize] {
+        match self {
+            Self::Activity => session_menu::ACTIVITY_FIXED_CAPS,
+            Self::Memos => session_menu::MEMO_FIXED_CAPS,
         }
     }
 }
@@ -125,6 +174,7 @@ impl Item {
 pub(super) enum Modal {
     Menu(Menu),
     Question(Question),
+    Records(Records),
 }
 
 /// A card's menu.
@@ -135,6 +185,16 @@ pub(super) struct Menu {
     pub(super) focus: usize,
     /// When a frame showing it whole was written; `None` until then.
     pub(super) shown_at: Option<Instant>,
+    /// The dialog read out for this menu: the menu stays on screen until the
+    /// rows land, and takes no second item meanwhile.
+    pub(super) reading: Option<Asked>,
+}
+
+/// The read a menu waits on: its generation and the dialog it will open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Asked {
+    pub(super) generation: u64,
+    pub(super) dialog: Dialog,
 }
 
 impl Menu {
@@ -143,7 +203,16 @@ impl Menu {
             card,
             focus: 0,
             shown_at: None,
+            reading: None,
         }
+    }
+
+    /// The step an item takes: none while a dialog read is out.
+    fn act(&self, item: Item) -> Step {
+        if self.reading.is_some() {
+            return Step::Kept;
+        }
+        Step::Act(item)
     }
 
     /// One key, or one `byte` of the typed run `key` is.
@@ -151,18 +220,77 @@ impl Menu {
         let items = self.card.items();
         let by = match (key, byte) {
             (Key::Text(_), b's') => {
-                return items.first().map_or(Step::Kept, |&item| Step::Act(item));
+                return items.first().map_or(Step::Kept, |&item| self.act(item));
+            }
+            (Key::Text(_), b'a') => {
+                return (items.iter().find(|item| **item == Item::Activity))
+                    .map_or(Step::Kept, |&item| self.act(item));
+            }
+            (Key::Text(_), b'o') => {
+                return (items.iter().find(|item| **item == Item::Memos))
+                    .map_or(Step::Kept, |&item| self.act(item));
             }
             (Key::Text(_), b'm' | b'q') => return Step::Close,
             (Key::Text(_), b'j') | (Key::Down | Key::Tab, _) => 1,
             (Key::Text(_), b'k') | (Key::Up, _) => items.len().saturating_sub(1),
             (Key::Enter, _) => {
-                return (items.get(self.focus)).map_or(Step::Kept, |&item| Step::Act(item));
+                return (items.get(self.focus)).map_or(Step::Kept, |&item| self.act(item));
             }
             _ => return Step::Kept,
         };
         let to = (self.focus + by) % items.len().max(1);
         refocus(&mut self.focus, to)
+    }
+}
+
+/// A dialog over the rows the tmux session menu's own folds made of a
+/// session's records, scrolled by the keys.
+#[derive(Debug)]
+pub(super) struct Records {
+    dialog: Dialog,
+    name: String,
+    rows: Vec<CellRow>,
+    /// The first row drawn, and how many rows the last frame had room for:
+    /// [`paint_records`] writes both, so a key scrolls within what was drawn.
+    top: Cell<usize>,
+    room: Cell<usize>,
+    /// When a frame showing it whole was written; `None` until then.
+    pub(super) shown_at: Option<Instant>,
+}
+
+impl Records {
+    pub(super) fn new(dialog: Dialog, name: &str, rows: Vec<CellRow>) -> Self {
+        Self {
+            dialog,
+            name: name.to_owned(),
+            rows,
+            top: Cell::new(0),
+            room: Cell::new(0),
+            shown_at: None,
+        }
+    }
+
+    /// One key, or one `byte` of the typed run `key` is: the rows scroll, `q`
+    /// closes.
+    fn input(&mut self, key: &Key, byte: u8) -> Step {
+        let (top, room) = (self.top.get(), self.room.get().max(1));
+        let last = self.rows.len().saturating_sub(room);
+        let to = match (key, byte) {
+            (Key::Text(_), b'q') => return Step::Close,
+            (Key::Text(_), b'j') | (Key::Down | Key::Tab, _) => top + 1,
+            (Key::Text(_), b'k') | (Key::Up, _) => top.saturating_sub(1),
+            (Key::PageDown, _) => top + room,
+            (Key::PageUp, _) => top.saturating_sub(room),
+            (Key::Home, _) => 0,
+            (Key::End, _) => last,
+            _ => return Step::Kept,
+        }
+        .min(last);
+        if to == top {
+            return Step::Kept;
+        }
+        self.top.set(to);
+        Step::Moved
     }
 }
 
@@ -250,6 +378,7 @@ impl Modal {
         match self {
             Self::Menu(menu) => menu.shown_at,
             Self::Question(question) => question.shown_at,
+            Self::Records(records) => records.shown_at,
         }
     }
 
@@ -259,6 +388,7 @@ impl Modal {
         let shown = match self {
             Self::Menu(menu) => &mut menu.shown_at,
             Self::Question(question) => &mut question.shown_at,
+            Self::Records(records) => &mut records.shown_at,
         };
         shown.get_or_insert(at);
     }
@@ -268,6 +398,7 @@ impl Modal {
         match self {
             Self::Menu(_) => "menu",
             Self::Question(_) => "Stop question",
+            Self::Records(_) => "dialog",
         }
     }
 
@@ -284,6 +415,7 @@ impl Modal {
             let step = match self {
                 Self::Menu(menu) => menu.input(key, *byte),
                 Self::Question(question) => question.input(key, *byte),
+                Self::Records(records) => records.input(key, *byte),
             };
             if step.ends() {
                 return step;
@@ -301,7 +433,7 @@ impl Modal {
         match (self, right, hit) {
             (_, false, Some(Hit::Modal)) => Step::Kept,
             (Self::Menu(menu), false, Some(Hit::Item(at))) => {
-                (menu.card.items().get(*at)).map_or(Step::Kept, |item| Step::Act(*item))
+                (menu.card.items().get(*at)).map_or(Step::Kept, |item| menu.act(*item))
             }
             (Self::Question(_), false, Some(Hit::Item(at))) => match BUTTONS.get(*at) {
                 Some((Choice::Stop, _)) => Step::Affirm,
@@ -326,6 +458,7 @@ pub(super) fn paint(
     match modal {
         Modal::Menu(menu) => paint_menu(menu, paint, icons, buf, layout),
         Modal::Question(question) => paint_question(question, paint, buf, layout),
+        Modal::Records(records) => paint_records(records, paint, buf, layout),
     }
 }
 
@@ -380,7 +513,8 @@ fn paint_menu(
         let row = y + 1 + cells(place);
         let style = if place == menu.focus {
             paint.selected()
-        } else if card.refusal().is_some() {
+        } else if card.refusal().is_some() && items.get(place).is_some_and(|i| i.dialog().is_none())
+        {
             paint.fg(|p| p.dim)
         } else {
             paint.fg(|p| p.text)
@@ -392,6 +526,80 @@ fn paint_menu(
         let row = y + 1 + cells(items.len());
         let line = clip_head(&why, usize::from(inner));
         put(buf, x + 2, row, &line, inner, paint.fg(|p| p.dim));
+    }
+    Ok(())
+}
+
+/// The dialog, centred over the frame above its keys row: the rows the tmux
+/// session menu's dialog aligns, at this window's width, scrolled from the
+/// first row the keys left. A frame too small for it paints nothing.
+fn paint_records(
+    records: &Records,
+    paint: Paint,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+) -> Result<(), String> {
+    let area = buf.area;
+    let lines: Vec<String> = session_menu::aligned_lines(
+        &records.rows,
+        records.dialog.caps(),
+        usize::from(area.width),
+    )
+    .iter()
+    .map(|line| terminal_text(line))
+    .collect();
+    let title = format!(
+        " {} · {} ",
+        records.dialog.word(),
+        terminal_text(&records.name)
+    );
+    let room = usize::from(area.height.saturating_sub(5));
+    if room < 2 || area.width < DIALOG_INNER_MIN + 4 {
+        return Err(format!(
+            "too small for the {} dialog (needs {}x7, now {}x{})",
+            records.dialog.word(),
+            DIALOG_INNER_MIN + 4,
+            area.width,
+            area.height
+        ));
+    }
+    let across = lines.iter().map(|line| width(line)).max().unwrap_or(0);
+    let inner = across.max(width(&title)).min(area.width - 4);
+    // A longer dialog gives its last row to the scroll line.
+    let scrolls = lines.len() > room;
+    let shown = if scrolls { room - 1 } else { lines.len() };
+    let top = records.top.get().min(lines.len().saturating_sub(shown));
+    records.top.set(top);
+    records.room.set(shown);
+    let (wide, high) = (inner + 4, cells(shown + usize::from(scrolls)) + 2);
+    let x = (area.width - wide) / 2;
+    let rect = Rect::new(x, (area.height - 1 - high) / 2, wide, high);
+    boxed(buf, rect, &clip_head(&title, usize::from(inner)), paint);
+    layout.overlay(buf, rect, Hit::Modal);
+    let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
+    for (place, (row, line)) in records
+        .rows
+        .iter()
+        .zip(&lines)
+        .skip(top)
+        .take(shown)
+        .enumerate()
+    {
+        let style = if matches!(row, CellRow::Gap(_)) {
+            dim
+        } else {
+            text
+        };
+        put(buf, x + 2, rect.y + 1 + cells(place), line, inner, style);
+    }
+    if scrolls {
+        let line = format!(
+            "{}-{} of {} · j/k scroll · q closes",
+            top + 1,
+            top + shown,
+            lines.len()
+        );
+        put(buf, x + 2, rect.bottom() - 2, &line, inner, dim);
     }
     Ok(())
 }

@@ -446,7 +446,9 @@ fn captured_question(app: &mut App, deadline: i64) -> crate::lifecycle::StopExpe
     }
     let card = match app.modal.take().expect("actual painted menu") {
         Modal::Menu(menu) => menu.card,
-        Modal::Question(_) => panic!("m unexpectedly constructed a question"),
+        Modal::Question(_) | Modal::Records(_) => {
+            panic!("m unexpectedly constructed a question")
+        }
     };
     let expect = crate::lifecycle::StopExpectation {
         session_id: "$7".to_owned(),
@@ -604,7 +606,9 @@ fn unattended_question(app: &mut App, deadline: i64) {
     keyed(app, b"m", Instant::now());
     let card = match app.modal.take().expect("actual painted menu") {
         Modal::Menu(menu) => menu.card,
-        Modal::Question(_) => panic!("m unexpectedly constructed a question"),
+        Modal::Question(_) | Modal::Records(_) => {
+            panic!("m unexpectedly constructed a question")
+        }
     };
     let expect = crate::lifecycle::StopExpectation {
         session_id: "$7".to_owned(),

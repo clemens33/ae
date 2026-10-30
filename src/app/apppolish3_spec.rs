@@ -230,8 +230,8 @@ fn z_expands_and_collapses_and_hidden_navigation_never_selects_stopped() {
     assert_eq!(app.model.selected(), Some("old-a"));
     assert_eq!(
         app.layout.cards["old-a"].items(),
-        &[menu::Item::Start],
-        "same existing Start item"
+        &[menu::Item::Start, menu::Item::Activity, menu::Item::Memos],
+        "Start stays first; the read-only dialogs follow"
     );
     assert!(app.layout.cards["old-a"].refusal().is_none());
     keys(&mut app, b"z");

@@ -411,11 +411,30 @@ drawn.
 While browsing, `m` opens a menu on the selected session's card; a right press
 opens it on the card under the pointer, also while writing or held; the draft
 or the held reason is still there when it closes. It offers `Start` on a stopped
-session and `Stop…` (`Stop...` with `icons = off`) on a running one, and nothing
-on the orchestrator. `s` or a click acts, `Enter` chooses, and `Esc`, `^C`, `m`,
-a right press or a press outside close it. Opening it selects nothing. Browsing,
-`s` does the menu's one item at once on the selected session: it starts a stopped
-session, and on a running one asks the Stop question below.
+session and `Stop…` (`Stop...` with `icons = off`) on a running one, then
+`Activity…` and `Memos…` on either, and nothing on the orchestrator. `s`, `a`
+or `o` or a click acts, `Enter` chooses, and `Esc`, `^C`, `m`, a right press or
+a press outside close it. Opening it selects nothing. Browsing, `s` does the
+menu's first item at once on the selected session: it starts a stopped session,
+and on a running one asks the Stop question below.
+
+`Activity…` and `Memos…` open the same two read-only dialogs the tmux session
+menu draws, with the same rows: the newest 30 curated journal records
+(`state`, `done`, `goal`, `spawn`, `retire`, `relaunch`, `reseat`, `ask`,
+`review`, `reply`, the watchdog's start and stop for non-`ae:` actors and the
+effort records), or the latest memo per topic in `ae brief`'s order, at most 30.
+They work on running and stopped sessions, inside tmux or not, and also on a
+card the menu refuses to act on. The loader reads the rows once, off the
+draw loop; the menu stays up, with `reading Activity of <name>…` on the hint
+row, until they land, and a menu closed before then drops the answer. The rows
+belong to the incarnation the card drew: a running session's live
+`@ae_session_uuid` must equal the record's `session_id`, a stopped one is
+proved by the card's own `session_id`. When that proof, the events or the memo
+file is missing, damaged or another incarnation's, the dialog names the gap
+(`activity|memos: unavailable (…)`) and shows no row. Every drawn cell is
+neutralised first. `j` / `k`, `↓` / `↑`, `Tab`, `PgDn` / `PgUp`, `Home` and
+`End` scroll a dialog taller than the window, `q`, `Esc` or `^C` close it, and a
+window too small for it (16×7) closes it with a hint.
 
 The menu acts on the card as that frame drew it. A card in an
 unknown state, on another tmux server, or whose record names no single

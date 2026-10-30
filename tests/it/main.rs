@@ -12,6 +12,7 @@ mod app_composer_spec;
 mod app_copy_spec;
 mod app_live;
 mod app_loop_pin_spec;
+mod app_menu_activity_memos_spec;
 mod app_mode;
 mod app_mouse_spec;
 mod app_open_hook_spec;

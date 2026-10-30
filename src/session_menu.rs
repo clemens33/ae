@@ -98,10 +98,10 @@ const DIALOG_COLUMN_SEP: &str = " · ";
 
 /// Activity's fixed columns: age (uncapped — the age grammar peaks at three
 /// cells), actor, kind. The last column is always text on a client budget.
-const ACTIVITY_FIXED_CAPS: &[usize] = &[usize::MAX, ACTIVITY_ACTOR_CELLS, ACTIVITY_KIND_CELLS];
+pub const ACTIVITY_FIXED_CAPS: &[usize] = &[usize::MAX, ACTIVITY_ACTOR_CELLS, ACTIVITY_KIND_CELLS];
 
 /// Memos' fixed columns: age, topic.
-const MEMO_FIXED_CAPS: &[usize] = &[usize::MAX, MEMO_TOPIC_CELLS];
+pub const MEMO_FIXED_CAPS: &[usize] = &[usize::MAX, MEMO_TOPIC_CELLS];
 
 /// Board's fixed columns: age, seat. The preview composes at render time,
 /// with its marker room reserved through the final width.
@@ -620,7 +620,8 @@ pub enum MetaSource {
 impl MetaSource {
     /// Classify one session's meta: the node first, then the bytes, then the
     /// roster and the identity from those SAME bytes.
-    fn read(dir: &Path) -> Self {
+    #[must_use]
+    pub fn read(dir: &Path) -> Self {
         match crate::store::read_source(&crate::store::open(dir).meta_path()) {
             crate::store::SourceRead::Absent => Self::Absent,
             crate::store::SourceRead::Invalid(reason) => Self::Unreadable(reason),
@@ -1274,9 +1275,45 @@ fn resolve_fixed_widths(
     fixed
 }
 
+/// The live `@ae_session_uuid` of `session` on `server`: the one read of the
+/// identity half of the incarnation proof, for the tmux menu and the app's
+/// card dialogs alike.
+#[must_use]
+pub fn live_identity(server: &ServerId, session: &str) -> crate::tmux::OptionReading {
+    crate::transport::observe_option_reading(server, session, crate::theme::SESSION_ID_OPTION)
+}
+
+/// Whether the live identity option and the meta read from the state
+/// directory name ONE incarnation — the only state under which the session's
+/// event container or memo file may be read at all.
+#[must_use]
+pub fn correlated(option: &crate::tmux::OptionReading, meta: &MetaSource) -> bool {
+    matches!(
+        (option, meta),
+        (
+            crate::tmux::OptionReading::Set(value),
+            MetaSource::Parsed { uuid, .. }
+        ) if crate::archive::canonical_uuid(value) == *uuid && !uuid.is_empty()
+    )
+}
+
 /// Aligned labels for the survivors: fixed columns clipped to their shared
 /// widths through the one cutter, text to its client budget, gaps as-is,
 /// present columns joined with [`DIALOG_COLUMN_SEP`].
+///
+/// The labels are the tmux dialog's own: `ae app` draws a dialog's rows
+/// through this one renderer at its window's width, so the two surfaces
+/// cannot align the same fold differently.
+#[must_use]
+pub fn aligned_lines(
+    survivors: &[CellRow],
+    fixed_caps: &[usize],
+    client_width: usize,
+) -> Vec<String> {
+    render_survivors(survivors, fixed_caps, client_width)
+}
+
+/// [`aligned_lines`]' renderer.
 fn render_survivors(
     survivors: &[CellRow],
     fixed_caps: &[usize],
@@ -1860,23 +1897,12 @@ fn read_sources(
         );
         return None;
     };
-    let option = crate::transport::observe_option_reading(
-        &server,
-        &captured.session_id,
-        crate::theme::SESSION_ID_OPTION,
-    );
+    let option = live_identity(&server, &captured.session_id);
     let dir = crate::lifecycle::sessions_dir(root).join(&captured.session);
     let meta = MetaSource::read(&dir);
     // The event container is read ONLY under a proven correlation: without it,
     // no event is attributable to this session incarnation.
-    let correlated = matches!(
-        (&option, &meta),
-        (
-            crate::tmux::OptionReading::Set(value),
-            MetaSource::Parsed { uuid, .. }
-        ) if crate::archive::canonical_uuid(value) == *uuid && !uuid.is_empty()
-    );
-    let events = if correlated {
+    let events = if correlated(&option, &meta) {
         crate::store::open(&dir).events_source()
     } else {
         crate::store::SourceRead::Absent

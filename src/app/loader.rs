@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use super::handover::{self, View};
 use super::journals::Journals;
+use super::menu::Dialog;
 use super::peek::{self, Body};
 use super::{REFRESH, facts_of, filedoor, fleet, proven_pane, reader};
 use crate::console::input::Reading;
@@ -24,6 +25,7 @@ use crate::console::{self, Console, Panes, Reach, term};
 use crate::digest::Status;
 use crate::inventory::{FailedSource, ServerId};
 use crate::listing::World;
+use crate::session_menu::{self, CellRow};
 use crate::time::Timestamp;
 use crate::{theme, tmux, transport};
 
@@ -31,6 +33,8 @@ use crate::{theme, tmux, transport};
 mod peek_spec;
 #[cfg(test)]
 mod read_spec;
+#[cfg(test)]
+mod records_spec;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -50,6 +54,8 @@ pub(super) enum Request {
     Peek(Option<Box<PeekAsk>>),
     /// The reader opened on this file, or closed (`None`): read once.
     Read(Option<Box<ReadAsk>>),
+    /// A card menu's Activity… or Memos… chosen, or abandoned (`None`): read once.
+    Records(Option<Box<RecordsAsk>>),
 }
 
 /// What an open peek panel asks the reader to capture, every refresh: the
@@ -82,6 +88,26 @@ pub(super) struct ReadAsk {
     pub(super) links: usize,
     /// Where the path may be read: the session's work dir and the viewer's home.
     pub(super) base: Base,
+}
+
+/// What a card menu's Activity… or Memos… asks the reader to read, once: the
+/// card as the frame drew it. The reader folds the rows through the tmux
+/// session menu's own folds, under the same identity rule, and the answer
+/// carries the generation back.
+#[derive(Clone)]
+pub(super) struct RecordsAsk {
+    /// The ask's generation: its answer carries it back.
+    pub(super) generation: u64,
+    pub(super) dialog: Dialog,
+    pub(super) session: String,
+    /// The `session_id` the card was drawn from.
+    pub(super) uuid: String,
+    /// The session's record directory.
+    pub(super) dir: PathBuf,
+    /// The card drew a running session: its identity is the live tmux option,
+    /// as the tmux menu reads it. A stopped session has none, so the card's
+    /// own incarnation stands in for it.
+    pub(super) live: bool,
 }
 
 /// What a writer proved at its entry, proved again by each fleet read.
@@ -160,6 +186,12 @@ pub(super) enum Answer {
     Read {
         generation: u64,
         body: reader::Body,
+    },
+    /// The rows a card menu's dialog shows, or the gap that stands in their
+    /// place, read for `generation`.
+    Records {
+        generation: u64,
+        rows: Vec<CellRow>,
     },
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
@@ -257,6 +289,7 @@ enum Job {
     View(String),
     Settings,
     Read(Box<ReadAsk>),
+    Records(Box<RecordsAsk>),
     Peek(Box<PeekAsk>),
     Wait(Instant),
 }
@@ -312,6 +345,8 @@ pub(super) struct Reader {
     peek: Option<(Box<PeekAsk>, Option<Instant>)>,
     /// The open reader's ask while it is unread: one shot, gone once answered.
     read: Option<Box<ReadAsk>>,
+    /// A card menu's dialog ask while it is unread: one shot, gone once answered.
+    records: Option<Box<RecordsAsk>>,
     /// The session the open overlay's instructions tab is for: the selection
     /// when it opened, never retargeted while it stays open.
     settings_session: Option<String>,
@@ -392,6 +427,7 @@ impl Reader {
             settings_full: false,
             peek: None,
             read: None,
+            records: None,
             settings_session: None,
             agy: crate::quota::AgyCache::default(),
             history: crate::quota::HistoryCache::default(),
@@ -446,6 +482,7 @@ impl Reader {
                 Job::View(name) => self.view_answers(&name),
                 Job::Settings => vec![self.settings()],
                 Job::Read(ask) => vec![self.read(&ask)],
+                Job::Records(ask) => vec![self.records(&ask)],
                 Job::Peek(ask) => vec![self.peek(&ask)],
                 Job::Wait(until) => {
                     match asks.recv_timeout(until.saturating_duration_since(Instant::now())) {
@@ -518,6 +555,7 @@ impl Reader {
             }
             Request::Peek(ask) => self.peek = ask.map(|ask| (ask, None)),
             Request::Read(ask) => self.read = ask,
+            Request::Records(ask) => self.records = ask,
         }
     }
 
@@ -564,6 +602,9 @@ impl Reader {
         }
         if let Some(ask) = &self.read {
             return Job::Read(ask.clone());
+        }
+        if let Some(ask) = &self.records {
+            return Job::Records(ask.clone());
         }
         if let Some((ask, last)) = &self.peek
             && last.is_none_or(|at| at + peek::PEEK_EVERY <= now)
@@ -1073,6 +1114,54 @@ impl Reader {
         Answer::Read {
             generation: ask.generation,
             body,
+        }
+    }
+
+    /// The rows a card menu's dialog shows, read once: the live identity
+    /// option (a stopped session's card stands in for it), the meta, and — only
+    /// when those two name one incarnation — the events or the memos, folded by
+    /// the tmux session menu's own `activity_cells` and `memo_cells`. A gap is
+    /// a row, never a guess. The ask is gone once it is answered.
+    fn records(&mut self, ask: &RecordsAsk) -> Answer {
+        let option = if ask.live {
+            match crate::session_launch::recorded_server_resolved(&ask.dir) {
+                Some(server) => session_menu::live_identity(&server, &ask.session),
+                None => tmux::OptionReading::Unknown,
+            }
+        } else {
+            match ask.uuid.as_str() {
+                "" => tmux::OptionReading::Vacant,
+                uuid => tmux::OptionReading::Set(uuid.to_owned()),
+            }
+        };
+        let meta = session_menu::MetaSource::read(&ask.dir);
+        let proven = session_menu::correlated(&option, &meta);
+        let store = crate::store::open(&ask.dir);
+        let now = Timestamp::now();
+        let rows = match ask.dialog {
+            Dialog::Memos => {
+                let memo = if proven {
+                    store.memo_source()
+                } else {
+                    crate::store::SourceRead::Absent
+                };
+                session_menu::memo_cells(&option, &meta, &memo, now)
+            }
+            Dialog::Activity => {
+                let events = if proven {
+                    store.events_source()
+                } else {
+                    crate::store::SourceRead::Absent
+                };
+                session_menu::activity_cells(&option, &meta, &events, now)
+            }
+        };
+        if (self.records.as_ref()).is_some_and(|held| held.generation == ask.generation) {
+            self.records = None;
+        }
+        Answer::Records {
+            generation: ask.generation,
+            rows,
         }
     }
 

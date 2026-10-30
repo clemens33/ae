@@ -39,10 +39,11 @@ use crate::console::{self, Console, shell, submit, term, toggle};
 use crate::digest::{SessionEntry, Status};
 use crate::inventory::ServerId;
 use crate::listing::World;
+use crate::session_menu::CellRow;
 use crate::time::Timestamp;
 use crate::{doors, theme, tmux, transport};
 
-use loader::{Answer, Binding, PeekAsk, ReadAsk, Request, Wake};
+use loader::{Answer, Binding, PeekAsk, ReadAsk, RecordsAsk, Request, Wake};
 use peek::Body;
 
 #[cfg(test)]
@@ -547,6 +548,9 @@ struct App {
     /// The open reader's file, and the generation the next open mints.
     reader: ReaderPane,
     reader_generation: u64,
+    /// The generation the next Activity… or Memos… read mints; answers pin to
+    /// the menu that asked.
+    records_generation: u64,
     /// The cache that draws agent turns through Markdown, shared by the
     /// frame and the keys that read a turn's links.
     md: RefCell<lanemd::Cache>,
@@ -698,6 +702,7 @@ impl App {
             peek_generation: 0,
             reader: ReaderPane::default(),
             reader_generation: 0,
+            records_generation: 0,
             md: RefCell::default(),
             pending: None,
             server,
@@ -789,6 +794,7 @@ impl App {
                 body,
             } => self.peeked(generation, at, body),
             Answer::Read { generation, body } => self.read_landed(generation, body),
+            Answer::Records { generation, rows } => self.records_landed(generation, rows),
             Answer::Pressure { name, id, pressure } => {
                 self.pressures.insert(name, (id, pressure));
             }
@@ -3664,16 +3670,31 @@ impl App {
         match step {
             menu::Step::Kept => return false,
             menu::Step::Moved => {}
-            menu::Step::Close => self.modal = None,
+            menu::Step::Close => self.close_modal(),
             menu::Step::Act(item) => self.act(item),
             menu::Step::Affirm => self.affirm(),
         }
         true
     }
 
-    /// `item` of the open menu: its card's refusal, else Start or the Stop
-    /// question. The menu closes either way.
+    /// Take the open modal down. A menu still waiting for its dialog's rows
+    /// tells the reader to drop the read.
+    fn close_modal(&mut self) {
+        let waiting =
+            matches!(&self.modal, Some(menu::Modal::Menu(menu)) if menu.reading.is_some());
+        self.modal = None;
+        if waiting && let Some(ask) = &self.ask {
+            let _ = ask.send(Request::Records(None));
+        }
+    }
+
+    /// `item` of the open menu: a dialog is asked of the reader; else its
+    /// card's refusal, else Start or the Stop question. The menu closes
+    /// either way, but for a dialog, which it waits on.
     fn act(&mut self, item: menu::Item) {
+        if let Some(dialog) = item.dialog() {
+            return self.ask_records(item, dialog);
+        }
         let Some(menu::Modal::Menu(menu)) = self.modal.take() else {
             return;
         };
@@ -3692,6 +3713,59 @@ impl App {
                 Ok(question) => self.modal = Some(menu::Modal::Question(question)),
                 Err(line) => self.tell(&name, line),
             },
+            menu::Item::Activity | menu::Item::Memos => {}
+        }
+    }
+
+    /// The menu's Activity… or Memos…: the reader reads the rows, under the
+    /// identity the card drew; the menu stays until they land. A read-only
+    /// item takes the card's refusals as they are: the fold names its own
+    /// gaps, never fills them. A record directory ae cannot read is told.
+    fn ask_records(&mut self, item: menu::Item, dialog: menu::Dialog) {
+        let Some(menu::Modal::Menu(menu)) = &mut self.modal else {
+            return;
+        };
+        if menu.reading.is_some() {
+            return;
+        }
+        let card = menu.card.clone();
+        let Some(dir) = self.dirs.get(&card.name).cloned() else {
+            self.modal = None;
+            let word = item.word();
+            let why = "ae read no record directory for it";
+            return self.tell(&card.name, format!("refused: {word} {}: {why}", card.name));
+        };
+        let generation = self.records_generation.wrapping_add(1);
+        self.records_generation = generation;
+        menu.reading = Some(menu::Asked { generation, dialog });
+        let line = format!("reading {} of {}…", item.word(), card.name);
+        self.flash = Some((line, Instant::now()));
+        let ask = Box::new(RecordsAsk {
+            generation,
+            dialog,
+            session: card.name,
+            uuid: card.uuid,
+            dir,
+            live: !card.stopped,
+        });
+        if let Some(tx) = &self.ask {
+            let _ = tx.send(Request::Records(Some(ask)));
+        }
+    }
+
+    /// The rows a dialog was asked for. Only the menu that asked takes them:
+    /// an answer for a closed menu, or for an older ask, is dropped.
+    fn records_landed(&mut self, generation: u64, rows: Vec<CellRow>) {
+        let Some(menu::Modal::Menu(menu)) = &self.modal else {
+            return;
+        };
+        let Some(asked) = menu.reading.filter(|asked| asked.generation == generation) else {
+            return;
+        };
+        let records = menu::Records::new(asked.dialog, &menu.card.name, rows);
+        self.modal = Some(menu::Modal::Records(records));
+        if (self.flash.as_ref()).is_some_and(|(line, _)| line.starts_with("reading ")) {
+            self.flash = None;
         }
     }
 
@@ -4921,6 +4995,7 @@ mod tests {
     use crate::tmux;
     mod flight;
     mod menu_acceptance;
+    mod menu_records;
     mod menu_units;
 
     pub(in crate::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
@@ -7204,6 +7279,7 @@ mod tests {
                 | loader::Request::Writing(_)
                 | loader::Request::Peek(_)
                 | loader::Request::Read(_)
+                | loader::Request::Records(_)
                 | loader::Request::Settings { .. } => None,
             })
             .collect();
@@ -7441,6 +7517,7 @@ mod tests {
                     | loader::Request::Writing(_)
                     | loader::Request::Peek(_)
                     | loader::Request::Read(_)
+                    | loader::Request::Records(_)
                     | loader::Request::Settings { .. } => None,
                 })
                 .collect()
@@ -7470,6 +7547,7 @@ mod tests {
                 | loader::Request::Reread(_)
                 | loader::Request::Peek(_)
                 | loader::Request::Read(_)
+                | loader::Request::Records(_)
                 | loader::Request::Writing(_) => None,
             })
             .collect()
@@ -7503,6 +7581,7 @@ mod tests {
                     loader::Request::Reread(_)
                     | loader::Request::Peek(_)
                     | loader::Request::Read(_)
+                    | loader::Request::Records(_)
                     | loader::Request::Writing(_) => String::new(),
                 })
                 .collect()
