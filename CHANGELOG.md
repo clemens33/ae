@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.161] - 2026-10-30
+- Hold an automatic reseat while the human's observed model or effort choice stands (#269)
+
 ## [v2026.10.160] - 2026-10-29
 - Tell a waiting-agent seat when the agent it waits on declares done, blocked or is retired (#277)
 
