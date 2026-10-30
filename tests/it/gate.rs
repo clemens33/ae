@@ -1829,21 +1829,23 @@ echo "$?" >"$AE_FAKE_W/hog.status"
 "#;
 
 /// `kid.sh <pidfile> <bytes>`: publish the pid, hold that much memory in this
-/// very process, say so in `<pidfile>.ready`, then stay until the release file
-/// appears or a minute passes.
+/// very process, then stay until the release file appears or a minute passes.
+/// Publish `<pidfile>.ready` only on release: an eligible over-ceiling child
+/// must be killed before it can publish readiness, without a scheduling race.
 const WATCH_KID_SH: &str = r#"echo $$ >"$1.tmp" && mv "$1.tmp" "$1"
 printf -v x '%*s' "$2" ''
-: >"$1.ready"
 i=0
 while [ ! -e "$AE_FAKE_W/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
+if [ -e "$AE_FAKE_W/release" ]; then : >"$1.ready"; fi
 "#;
 
 /// The fake `cargo` for the #222 watcher pin: it links a test binary `ae-hog`
 /// into `<intermediate root>/debug/deps/` (resolved as [`ROOTS_CARGO`] does),
-/// runs it over the 32 MB ceiling below a fake `cargo-mutants`, waits up to
-/// 15 s for the lane's receipt, and records `dead <status>` when `root.sh`
-/// already saw the binary end, else `alive` — read from that status, never from
-/// a pid. Only then does it release the binary and wait for its own
+/// runs it over the 32 MB ceiling below a fake `cargo-mutants`, and waits for
+/// readiness or the exact child's saved status before waiting up to 15 s for
+/// the lane's receipt. It records `dead <status>` when `root.sh` already saw
+/// the binary end, else `alive` — read from that status, never from a pid.
+/// Only then does it release the binary and wait for its own
 /// `cargo-mutants` child, so no fixture process outlives it and nothing is ever
 /// signalled by a pid that may have been reused.
 const WATCHED_CARGO: &str = r#"case "$1" in mutants) ;; *) exit 0 ;; esac
@@ -1854,7 +1856,7 @@ mkdir -p "$b/debug/deps" && ln -sf /bin/bash "$b/debug/deps/ae-hog" || exit 97
 cm=$!
 trap 'touch "$W/release"; wait "$cm" 2>/dev/null' EXIT
 i=0
-until [ -e "$W/hog.pid.ready" ]; do i=$((i + 1)); [ "$i" -lt 300 ] || exit 3; sleep 0.2; done
+until [ -e "$W/hog.pid.ready" ] || [ -e "$W/hog.status" ]; do i=$((i + 1)); [ "$i" -lt 300 ] || exit 3; sleep 0.2; done
 i=0
 while [ ! -s mutants.out/ae-rss-kills.log ] && [ "$i" -lt 75 ]; do i=$((i + 1)); sleep 0.2; done
 sleep 1
@@ -1868,6 +1870,8 @@ exit 0
 /// lands in the caller's `mutants.out`. The lane base has no space: the
 /// watcher reads the first argv word, so a spaced base blinds it, today and
 /// after (a named residual, not this pin's subject).
+/// Readiness is held until teardown release: a real kill must be observable
+/// even when the child cannot publish its allocation-ready marker first.
 #[test]
 fn the_mutants_watcher_sees_a_test_binary_in_the_lanes_own_build_root() {
     use std::os::unix::fs::symlink;
@@ -1896,7 +1900,16 @@ fn the_mutants_watcher_sees_a_test_binary_in_the_lanes_own_build_root() {
         ("CARGO_BUILD_BUILD_DIR", text(caller.as_path())),
     ];
     let (outcome, _, stderr) = rooted_lane(base, &lane_base, WATCHED_CARGO, &env, &["mutants"]);
-    assert!(matches!(outcome, ExitOutcome::Code(0)), "{stderr}");
+    let ready = watch.join("hog.pid.ready").exists();
+    let status = std::fs::read_to_string(watch.join("hog.status")).unwrap_or_default();
+    assert!(
+        matches!(outcome, ExitOutcome::Code(0)),
+        "ready={ready}, hog.status={status:?}: {stderr}"
+    );
+    assert!(
+        !ready,
+        "the child published readiness before its kill: {stderr}"
+    );
     assert_eq!(
         std::fs::read_to_string(base.join("record")).unwrap_or_default(),
         "dead 137\n",
@@ -1909,8 +1922,20 @@ fn the_mutants_watcher_sees_a_test_binary_in_the_lanes_own_build_root() {
         "no receipt in the caller's mutants.out: {stderr}"
     );
     let lanes = text(lane_base.as_path());
+    let pid = read(&watch.join("hog.pid"));
     for line in receipt.lines() {
-        let binary = line.split_whitespace().nth(3).unwrap_or_default();
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(fields.get(1).copied(), Some(pid.trim()), "{line:?}");
+        // The receipt truncates KiB to whole MiB, so a kill just over 32 MiB
+        // legitimately records 32, even though the watcher's comparison is >.
+        assert!(
+            fields
+                .get(2)
+                .and_then(|rss| rss.parse::<u32>().ok())
+                .is_some_and(|rss| rss >= 32),
+            "{line:?}"
+        );
+        let binary = fields.get(3).copied().unwrap_or_default();
         assert!(
             binary.starts_with(&format!("{lanes}/ae-rust-test."))
                 && binary.ends_with("/debug/deps/ae-hog"),
