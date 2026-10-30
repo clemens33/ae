@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.163] - 2026-10-30
+- Name plain ae as the entry and hint a hand-typed ae app (#230 O7 S4)
+
 ## [v2026.10.162] - 2026-10-30
 - Run OpenCode 2 profiles in standalone mode with per-seat inline config (#276)
 
