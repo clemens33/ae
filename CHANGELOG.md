@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.170] - 2026-10-30
+- Wait for the rig first pane instead of trusting one list-panes read (#293)
+- Wait for the post-reservation input hold record instead of a fixed sleep (#294)
+
 ## [v2026.10.169] - 2026-10-30
 - Re-ask a failed caller or guarded target tmux observation once (#285)
 
