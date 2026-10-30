@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.168] - 2026-10-30
+- Order the spawn linger guard behind its revocation and wait for the control receipt (#290)
+
 ## [v2026.10.167] - 2026-10-30
 - Order seatproof revocation tests behind the persisted rewrite (#289)
 - Wait for the dialog to close before the next menu key (#291)
