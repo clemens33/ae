@@ -3623,6 +3623,36 @@ fn buildtune_profile<'a>(
     values
 }
 
+/// The only dev-profile package overrides: the test-only parser crates of the
+/// source view (docs/history.md section 11), `opt-level = 3` and no other key.
+const BUILDTUNE_OPTIMISED_DEPS: [&str; 3] = ["proc-macro2", "syn", "unicode-ident"];
+
+/// Every `[profile.dev.package.*]` table is one of [`BUILDTUNE_OPTIMISED_DEPS`],
+/// each present once, holding `opt-level = 3` alone. A wildcard, another
+/// package, a second key or another level is refused, and so is a package
+/// override written as a `package` key inside `[profile.dev]` or
+/// `[profile.debugging]`, which the table scan would not see.
+fn buildtune_package_overrides_ok(manifest: &str) -> bool {
+    let tables: Vec<&str> = manifest
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+        .filter(|line| line.starts_with("[profile.dev.package."))
+        .collect();
+    let optimised = std::collections::BTreeMap::from([("opt-level", "3")]);
+    tables.len() == BUILDTUNE_OPTIMISED_DEPS.len()
+        && BUILDTUNE_OPTIMISED_DEPS.iter().all(|name| {
+            let table = format!("[profile.dev.package.{name}]");
+            tables.contains(&table.as_str()) && buildtune_profile(manifest, &table) == optimised
+        })
+        && ["[profile.dev]", "[profile.debugging]"]
+            .iter()
+            .all(|table| {
+                !buildtune_profile(manifest, table)
+                    .keys()
+                    .any(|key| key.starts_with("package"))
+            })
+}
+
 fn buildtune_profiles_ok(manifest: &str) -> bool {
     let dev = buildtune_profile(manifest, "[profile.dev]");
     let debugging = buildtune_profile(manifest, "[profile.debugging]");
@@ -3636,15 +3666,16 @@ fn buildtune_profiles_ok(manifest: &str) -> bool {
     dev.get("debug") == Some(&"\"line-tables-only\"")
         && debugging.get("inherits") == Some(&"\"dev\"")
         && debugging.get("debug") == Some(&"\"full\"")
-        && !manifest
-            .lines()
-            .any(|line| line.trim().starts_with("[profile.dev.package."))
+        && buildtune_package_overrides_ok(manifest)
         && release == release_contract
 }
 
 #[test]
 fn buildtune_profiles_keep_line_tables_full_debug_opt_in_and_release_contract() {
     let good = "[profile.dev]\ndebug = \"line-tables-only\"\n\
+                [profile.dev.package.proc-macro2]\nopt-level = 3\n\
+                [profile.dev.package.syn]\nopt-level = 3\n\
+                [profile.dev.package.unicode-ident]\nopt-level = 3\n\
                 [profile.debugging]\ninherits = \"dev\"\ndebug = \"full\"\n\
                 [profile.release]\nstrip = \"symbols\"\nlto = \"thin\"\n\
                 codegen-units = 1\npanic = \"abort\"\n";
@@ -3661,10 +3692,56 @@ fn buildtune_profiles_keep_line_tables_full_debug_opt_in_and_release_contract() 
             "the profile guard accepted broken input: {bad}"
         );
     }
+    // The same breaks, made in the real manifest text: each is the shipped
+    // Cargo.toml with ONE edit, and the edit must land, or the control is vacuous.
+    let manifest = read(&root().join("Cargo.toml"));
     assert!(
-        buildtune_profiles_ok(&read(&root().join("Cargo.toml"))),
+        buildtune_profiles_ok(&manifest),
         "dev needs line tables, debugging needs full info including deps, release stays unchanged"
     );
+    let syn = "[profile.dev.package.syn]\nopt-level = 3\n";
+    for (what, edit) in [
+        (
+            "a wildcard override",
+            manifest.replace(
+                syn,
+                &format!("{syn}\n[profile.dev.package.\"*\"]\nopt-level = 3\n"),
+            ),
+        ),
+        (
+            "another package",
+            manifest.replace(
+                syn,
+                &format!("{syn}\n[profile.dev.package.ureq]\nopt-level = 3\n"),
+            ),
+        ),
+        (
+            "a second key",
+            manifest.replace(syn, "[profile.dev.package.syn]\nopt-level = 3\ndebug = 0\n"),
+        ),
+        (
+            "another level",
+            manifest.replace(syn, "[profile.dev.package.syn]\nopt-level = 2\n"),
+        ),
+        ("a missing table", manifest.replace(syn, "")),
+        (
+            "a quoted package name",
+            manifest.replace(syn, "[profile.dev.package.\"syn\"]\nopt-level = 3\n"),
+        ),
+        (
+            "an override as a dotted key",
+            manifest.replace(
+                "[profile.dev]\ndebug = \"line-tables-only\"\n",
+                "[profile.dev]\ndebug = \"line-tables-only\"\npackage.\"*\".debug = 0\n",
+            ),
+        ),
+    ] {
+        assert_ne!(edit, manifest, "the edit for {what} changed nothing");
+        assert!(
+            !buildtune_profiles_ok(&edit),
+            "the profile guard accepted {what} in the real manifest"
+        );
+    }
 }
 
 /// Observe the real guard call sites, with only the external Cargo executable

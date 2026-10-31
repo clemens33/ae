@@ -921,6 +921,18 @@ exhaustion uses the existing whole-document raw reader with the reason in its
 header (lead R4 interpretation). The reader_markdown fuzz target exercises
 this parser consumer before the rendered reader is enabled.
 
+### Test-only syn source view (human GO ae-20261031T191739Z-04ad8acc, 2026-10-31)
+
+`proc-macro2 =1.0.107` (`span-locations`) and `syn =3.0.6` (`full`, `parsing`,
+`printing`, `visit`; default features off) are `[dev-dependencies]` ONLY, for the
+source view in `tests/it/support/source_view.rs`, which replaces its hand-written
+lexer and item table. Both packages were already in `Cargo.lock`; the normal and
+build graphs are unchanged on every target and feature mode, and nothing under
+`src/` links them. The dev profile optimises proc-macro2, syn and unicode-ident
+(`opt-level` only, named tables in `Cargo.toml`) so the suites that read the view
+stay fast. Their cargo-vet exemptions encode accepted risk, not audits; revisit on a
+version change, an advisory, or any move of either crate into `[dependencies]`.
+
 
 ---
 

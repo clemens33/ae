@@ -231,6 +231,23 @@ disallowed_types = "deny"
 [profile.dev]
 debug = "line-tables-only"
 
+# TEST-ONLY PARSER SPEED: the source view (tests/it/support/source_view.rs)
+# lexes and parses every production file with proc-macro2 and syn, and the
+# suites read that view hundreds of times. Unoptimised, those two crates (and
+# the unicode-ident table they read) make the dev profile's suites many times
+# slower than the hand lexer they replaced. These three NAMED tables raise
+# `opt-level` only: no `debug`, no `"*"`, so the DEV DEBUGINFO note above
+# stands (dependencies keep `file:line` frames, and `[profile.debugging]`
+# below still wins on `debug` because they never set it).
+[profile.dev.package.proc-macro2]
+opt-level = 3
+
+[profile.dev.package.syn]
+opt-level = 3
+
+[profile.dev.package.unicode-ident]
+opt-level = 3
+
 # OPT-IN full debuginfo for a human with a debugger:
 #   cargo build --profile debugging
 #   cargo nextest run --cargo-profile debugging
