@@ -2278,20 +2278,51 @@ fn the_fuzz_lane_bounds_every_duration_it_hands_libfuzzer() {
 /// and an arch parameter that would silently promise `x86_64` evidence the
 /// dropped amd64 path could never deliver. The smoke recipe must keep proving
 /// the RELEASED musl bundle without growing a per-release download pin.
+///
+/// The gate body lives ONCE, in `_linux-gate`, and two thin recipes hand it an
+/// image and a bus: `rust-linux` (Ubuntu 24.04, no bus) and `rust-linux-26`
+/// (Ubuntu 26.04 with a user bus whose systemd never answers, so tmux 3.6's
+/// `StartTransientUnit` waits out its 1 s timeout before every pane child execs).
+/// A lane that cannot prove its bus stalls would pass whatever the tests do, so
+/// the stall is a PROVEN fact, set up and checked before anything is built, and
+/// a mismatch between the host's source and the mount is fatal.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered rule list over one recipe"
+)]
 fn linux_lanes_ok(justfile: &str) -> bool {
-    let lines = recipe_text(justfile, "rust-linux:");
+    let lines = recipe_text(justfile, "_linux-gate flavor image bus:");
     let contains = |needle: &str| lines.iter().any(|line| line.contains(needle));
-    // The recipe takes NO parameter: an arch flag would promise amd64 evidence
-    // the QEMU path cannot produce (the smoke covers the bundle instead).
+    // The recipes take NO arch parameter: an arch flag would promise amd64
+    // evidence the QEMU path cannot produce (the smoke covers the bundle
+    // instead). The shared body names no amd64 either.
     if !recipe_text(justfile, "rust-linux arch=").is_empty()
         || lines.iter().any(|line| line.contains("amd64"))
     {
         return false;
     }
-    // The base image is a digest pin, and the build's FROM is that pin — never
-    // a tag a remote can move under us.
+    // Two thin entry points, each handing the body its own pinned image and
+    // bus: the 24.04 lane never grows a bus and the 26.04 lane never loses its.
+    let has_line = |wanted: &str| justfile.lines().any(|line| line == wanted);
+    if !has_line("rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"off\")")
+        || !has_line("rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"stall\")")
+    {
+        return false;
+    }
+    // Both base images are digest pins, and the build's FROM is the one the
+    // caller handed in — never a tag a remote can move under us.
     if !justfile.contains("LINUX_IMAGE := \"ubuntu:24.04@sha256:")
-        || !contains("FROM {{ LINUX_IMAGE }}")
+        || !justfile.contains("LINUX_IMAGE_26 := \"ubuntu:26.04@sha256:")
+        || !contains("FROM {{ image }}")
+    {
+        return false;
+    }
+    // The daemon probe and the volume ownership one-shot run that same image.
+    if lines
+        .iter()
+        .filter(|line| line.contains("docker run") && line.contains("--label ae.lane=linux"))
+        .filter(|line| !line.contains("--init"))
+        .any(|line| !line.contains("{{ image }}"))
     {
         return false;
     }
@@ -2306,7 +2337,7 @@ fn linux_lanes_ok(justfile: &str) -> bool {
     // several mounts on one line.
     if lines
         .iter()
-        .map(|line| line.matches("ae-linux-arm64-").count())
+        .map(|line| line.matches("ae-{{ flavor }}-arm64-").count())
         .sum::<usize>()
         < 4
     {
@@ -2364,6 +2395,55 @@ fn linux_lanes_ok(justfile: &str) -> bool {
         (Some(clean), Some(test)) if clean < test => {}
         _ => return false,
     }
+    // The lane's exit status is the REAL `just test`'s: the container ends on
+    // it, the status is captured, and the recipe exits with it.
+    if !contains("just test' || rc=$?") || !contains("exit \"$rc\"") {
+        return false;
+    }
+    // The mounted checkout is the tree the host saw: the host records HEAD, tree
+    // and the count of dirty paths, passes them in, and the container compares
+    // them through a git config of its own scoped to those commands, before
+    // anything runs. A dirty tree is identified by HEAD and that count only, so
+    // exact-tree evidence needs a clean checkout.
+    if !contains("-e AE_LANE_HEAD=")
+        || !contains("-e AE_LANE_TREE=")
+        || !contains("-e AE_LANE_DIRTY=")
+    {
+        return false;
+    }
+    // The bus: handed in as data, set up and PROVEN to stall before the first
+    // build step, fatal when the proof does not hold. The proof is a real method
+    // call to the very name tmux asks, and it must end in a reply timeout
+    // (`NoReply`) after at least two seconds: an immediate ServiceUnknown (no
+    // stall at all), a connection error or any other slow failure cannot pass.
+    if !contains("-e AE_LANE_BUS={{ bus }}") {
+        return false;
+    }
+    // Each needle must appear AFTER the one before it, so the order is the rule:
+    // the fatal source check, then the service file, the daemon, the address, a reset
+    // clock, the call and its timeout, the error kind it must end in, the
+    // elapsed bound and the exit that makes the proof fatal, and only then the
+    // first build step and the suite.
+    let mut at = 0;
+    for needle in [
+        "GIT_CONFIG_GLOBAL=",
+        "|| exit 3",
+        "Name=org.freedesktop.systemd1",
+        "dbus-daemon --session --fork",
+        "export DBUS_SESSION_BUS_ADDRESS=",
+        "SECONDS=0",
+        "dbus-send --session --print-reply --dest=org.freedesktop.systemd1",
+        "--reply-timeout=2500",
+        "*DBus.Error.NoReply*) ;; *) exit 4 ;; esac",
+        "\"$SECONDS\" -lt 2 ]; then exit 4; fi",
+        "/stage/rustup-init",
+        "just test",
+    ] {
+        match container[at..].find(needle) {
+            Some(found) => at += found + needle.len(),
+            None => return false,
+        }
+    }
     // The smoke runs the RELEASED bundle from ./dist, verified against the
     // manifest `just bundles` wrote — it fetches nothing, so it never needs a
     // per-release digest pin, and a missing bundle names its builder.
@@ -2378,34 +2458,114 @@ fn linux_lanes_ok(justfile: &str) -> bool {
             .any(|line| line.contains("https://") || line.contains("curl"))
 }
 
+/// The container body's source-identity check, bus prelude and gate steps are
+/// separate pieces so a red below removes or moves exactly one of them.
+const LINUX_IDENT: &str = concat!(
+    "        gitcfg=\"$(mktemp)\"\n",
+    "        GIT_CONFIG_GLOBAL=\"$gitcfg\" git rev-parse HEAD\n",
+    "        [ \"$got\" = \"$AE_LANE_HEAD\" ] || exit 3\n",
+);
+const LINUX_BUS: &str = concat!(
+    "        printf \"Name=org.freedesktop.systemd1\\n\" > \"$svc\"\n",
+    "        dbus-daemon --session --fork --address=unix:path=/tmp/ae-lane-bus\n",
+    "        export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/ae-lane-bus\n",
+    "        SECONDS=0\n",
+    "        err=\"$(dbus-send --session --print-reply --dest=org.freedesktop.systemd1 --reply-timeout=2500 /org/freedesktop/systemd1 org.freedesktop.DBus.Peer.Ping 2>&1 || true)\"\n",
+    "        case \"$err\" in *DBus.Error.NoReply*) ;; *) exit 4 ;; esac\n",
+    "        if [ \"$SECONDS\" -lt 2 ]; then exit 4; fi\n",
+);
+const LINUX_BUILD: &str = concat!(
+    "        /stage/rustup-init -y\n",
+    "        just rust-setup\n",
+    "        cargo clean --locked -p ae\n",
+    "        just test' || rc=$?\n",
+);
+
+/// The synthetic `justfile` the Linux lane guard is proved against: both pins,
+/// both thin entry points, the shared body with its identity check, bus prelude
+/// and gate steps, and the smoke.
+fn linux_lanes_green() -> String {
+    format!(
+        "{}{}{}{}{}{}{}",
+        concat!(
+            "LINUX_IMAGE := \"ubuntu:24.04@sha256:008173\"\n",
+            "LINUX_IMAGE_26 := \"ubuntu:26.04@sha256:6a0611\"\n",
+            "RUSTUP_VERSION := \"1.29.1\"\n",
+            "test: rust-check\n",
+            "rust-check: rust-fmt-check rust-test\n",
+            "release:\n",
+            "    just test\n",
+            "\n",
+            "rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"off\")\n",
+            "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"stall\")\n",
+            "_linux-gate flavor image bus:\n",
+            "    daemon_arch=\"$(docker run --rm --label ae.lane=linux {{ image }} uname -m)\"\n",
+            "    for v in cargo rustup target; do docker volume create \"ae-{{ flavor }}-arm64-$v\" >/dev/null; done\n",
+            "    curl -o \"$lane/rustup-init\" https://static.rust-lang.org/rustup/archive/{{ RUSTUP_VERSION }}/rustup-init\n",
+            "    repo=\"$PWD\"\n",
+            "    mounts=(-v \"$repo:$repo:ro\")\n",
+            "    docker build --build-arg UID=\"$(id -u)\" -t ae-{{ flavor }}-arm64 - <<'DOCKERFILE'\n",
+            "    FROM {{ image }}\n",
+            "    USER \"$UID\"\n",
+            "    DOCKERFILE\n",
+            "    docker run --rm --init \"${mounts[@]}\" -v \"ae-{{ flavor }}-arm64-cargo:/c\" \\\n",
+            "        -v \"ae-{{ flavor }}-arm64-rustup:/r\" -v \"ae-{{ flavor }}-arm64-target:/t\" -e NEXTEST_PROFILE=linux \\\n",
+            "        -e AE_LANE_HEAD=\"$head\" -e AE_LANE_TREE=\"$tree\" -e AE_LANE_DIRTY=\"$dirty\" -e AE_LANE_BUS={{ bus }} \\\n",
+            "        ae-{{ flavor }}-arm64 \\\n",
+            "        bash -c 'set -euo pipefail\n",
+        ),
+        LINUX_IDENT,
+        LINUX_BUS,
+        LINUX_BUILD,
+        "    echo \"==> ae-linux gate: rc=$rc\"\n    exit \"$rc\"\n\n",
+        concat!(
+            "rust-linux-smoke:\n",
+            "    version=\"$(just version)\"\n",
+            "    line=\"$(grep -F \" ae-$version-linux-x86_64-musl.tar.gz\" dist/SHA256SUMS)\"\n",
+            "    [ -f \"dist/ae-$version-linux-x86_64-musl.tar.gz\" ] || { echo \"run: just bundles\" >&2; exit 1; }\n",
+            "    out=\"$(docker run --rm --platform linux/amd64 ae-smoke /run/ae-core --version)\"\n",
+            "    [ \"$out\" = \"ae $version\" ]\n",
+        ),
+        "",
+    )
+}
+
+/// Whether the gate chain stays free of the on-demand container lanes: `just
+/// test`, the checks under it, the advisory `pre` and the release must never
+/// reach `rust-linux` or `rust-linux-26`, because a container lane is hours on
+/// a cold cache and needs Docker and a lock.
+fn linux_lanes_stay_on_demand(justfile: &str) -> bool {
+    let header_clean = |prefix: &str| {
+        justfile
+            .lines()
+            .filter(|line| line.starts_with(prefix))
+            .all(|line| !line.contains("rust-linux"))
+    };
+    [
+        "test:",
+        "rust-check:",
+        "rust-test:",
+        "pre:",
+        "check:",
+        "release:",
+    ]
+    .iter()
+    .all(|prefix| {
+        header_clean(prefix)
+            && recipe_text(justfile, prefix)
+                .iter()
+                .all(|line| !line.contains("rust-linux"))
+    })
+}
+
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one planted mutation per guard, listed flat so each line names its rule"
+)]
 fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
-    let green = concat!(
-        "LINUX_IMAGE := \"ubuntu:24.04@sha256:008173\"\n",
-        "RUSTUP_VERSION := \"1.29.1\"\n",
-        "rust-linux:\n",
-        "    for v in cargo rustup target; do docker volume create \"ae-linux-arm64-$v\" >/dev/null; done\n",
-        "    curl -o \"$lane/rustup-init\" https://static.rust-lang.org/rustup/archive/{{ RUSTUP_VERSION }}/rustup-init\n",
-        "    repo=\"$PWD\"\n",
-        "    mounts=(-v \"$repo:$repo:ro\")\n",
-        "    docker build --build-arg UID=\"$(id -u)\" -t ae-linux-arm64 - <<'DOCKERFILE'\n",
-        "    FROM {{ LINUX_IMAGE }}\n",
-        "    USER \"$UID\"\n",
-        "    DOCKERFILE\n",
-        "    docker run --rm --init \"${mounts[@]}\" -v \"ae-linux-arm64-cargo:/c\" \\\n",
-        "        -v \"ae-linux-arm64-rustup:/r\" -v \"ae-linux-arm64-target:/t\" -e NEXTEST_PROFILE=linux \\\n",
-        "        ae-linux-arm64 \\\n",
-        "        bash -c 'just rust-setup\n",
-        "        cargo clean --locked -p ae\n",
-        "        just test'\n",
-        "\n",
-        "rust-linux-smoke:\n",
-        "    version=\"$(just version)\"\n",
-        "    line=\"$(grep -F \" ae-$version-linux-x86_64-musl.tar.gz\" dist/SHA256SUMS)\"\n",
-        "    [ -f \"dist/ae-$version-linux-x86_64-musl.tar.gz\" ] || { echo \"run: just bundles\" >&2; exit 1; }\n",
-        "    out=\"$(docker run --rm --platform linux/amd64 ae-smoke /run/ae-core --version)\"\n",
-        "    [ \"$out\" = \"ae $version\" ]\n",
-    );
+    let green = linux_lanes_green();
+    let green = green.as_str();
     assert!(
         linux_lanes_ok(green),
         "the synthetic green lane must satisfy every rule, so each red below is one rule"
@@ -2432,8 +2592,8 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
     // RED — the gate steps inlined into the recipe: a second copy of the gate
     // drifts from `just test` and the pin block stops being the one source.
     assert!(!linux_lanes_ok(&green.replace(
-        "bash -c 'just rust-setup\n        cargo clean --locked -p ae\n        just test'",
-        "bash -c 'cargo fmt --all --check && cargo nextest run'"
+        "        just rust-setup\n        cargo clean --locked -p ae\n        just test' || rc=$?\n",
+        "        cargo fmt --all --check && cargo nextest run' || rc=$?\n"
     )));
     // RED — no --init: the gate's bash is PID 1 and swallows signals and orphans.
     assert!(!linux_lanes_ok(&green.replace(
@@ -2449,7 +2609,7 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
     // RED — volumes without the arch they serve, or a build without the host
     // uid: the run cannot write its own cache, or shares it with a foreign arch.
     assert!(!linux_lanes_ok(
-        &green.replace("ae-linux-arm64-", "ae-linux-")
+        &green.replace("ae-{{ flavor }}-arm64-", "ae-linux-")
     ));
     assert!(!linux_lanes_ok(&green.replace(
         "docker build --build-arg UID=\"$(id -u)\"",
@@ -2457,9 +2617,10 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
     )));
     // RED — an arch parameter is back: it would promise amd64 evidence the
     // dropped QEMU path cannot produce.
-    assert!(!linux_lanes_ok(
-        &green.replace("rust-linux:\n", "rust-linux arch=\"arm64\":\n")
-    ));
+    assert!(!linux_lanes_ok(&green.replace(
+        "rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"off\")",
+        "rust-linux arch=\"arm64\": (_linux-gate \"linux\" LINUX_IMAGE \"off\")"
+    )));
     // RED — a smoke that downloads a pinned release: the digest goes stale at
     // every release and the pin becomes a lie.
     assert!(!linux_lanes_ok(&green.replace(
@@ -2473,16 +2634,191 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
     ));
     // RED — the clean after the gate: the suite already ran on stale binaries.
     assert!(!linux_lanes_ok(&green.replace(
-        "        cargo clean --locked -p ae\n        just test'",
-        "        just test'\n        cargo clean --locked -p ae"
+        "        cargo clean --locked -p ae\n        just test' || rc=$?\n",
+        "        just test' || rc=$?\n        cargo clean --locked -p ae\n"
     )));
     // RED — the clean on the host side: it must run inside the container.
-    assert!(!linux_lanes_ok(&green.replace(
-        "        bash -c 'just rust-setup\n        cargo clean --locked -p ae",
-        "        cargo clean --locked -p ae\n        bash -c 'just rust-setup"
-    )));
+    assert!(!linux_lanes_ok(
+        &green
+            .replace("        cargo clean --locked -p ae\n", "")
+            .replace(
+                "        bash -c 'set -euo pipefail\n",
+                "        cargo clean --locked -p ae\n        bash -c 'set -euo pipefail\n"
+            )
+    ));
+
+    // The rules below are the 26.04 lane's. Each new guard is proved by one
+    // planted mutation, named when it is rejected, so a run shows WHICH unsafe
+    // edit each guard caught and none passes by being unable to fail.
+    let rejected = |name: &str, mutated: String| {
+        assert!(!linux_lanes_ok(&mutated), "guard failed to reject: {name}");
+        println!("rejected: {name}");
+    };
+    let wrapper = "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"stall\")";
+    rejected(
+        "26.04 base image pinned by tag",
+        green.replace(
+            "LINUX_IMAGE_26 := \"ubuntu:26.04@sha256:6a0611\"",
+            "LINUX_IMAGE_26 := \"ubuntu:26.04\"",
+        ),
+    );
+    rejected(
+        "26.04 pin missing",
+        green.replace("LINUX_IMAGE_26 := \"ubuntu:26.04@sha256:6a0611\"\n", ""),
+    );
+    rejected(
+        "rust-linux-26 wired to the 24.04 image",
+        green.replace(
+            wrapper,
+            "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE \"stall\")",
+        ),
+    );
+    rejected(
+        "rust-linux-26 loses its stalling bus",
+        green.replace(
+            wrapper,
+            "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"off\")",
+        ),
+    );
+    rejected(
+        "rust-linux gains the bus",
+        green.replace(
+            "rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"off\")",
+            "rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"stall\")",
+        ),
+    );
+    rejected(
+        "26.04 lane shares the 24.04 caches",
+        green.replace(
+            wrapper,
+            "rust-linux-26: (_linux-gate \"linux\" LINUX_IMAGE_26 \"stall\")",
+        ),
+    );
+    rejected(
+        "build FROM a fixed image instead of the caller's",
+        green.replace("    FROM {{ image }}\n", "    FROM ubuntu:26.04\n"),
+    );
+    rejected(
+        "daemon probe runs a different image",
+        green.replace("{{ image }} uname -m", "ubuntu:24.04 uname -m"),
+    );
+    rejected(
+        "no source identity handed in",
+        green.replace(" -e AE_LANE_TREE=\"$tree\"", ""),
+    );
+    rejected(
+        "no source identity check in the container",
+        green.replace(LINUX_IDENT, ""),
+    );
+    rejected(
+        "source mismatch is not fatal",
+        green.replace("|| exit 3", "|| true"),
+    );
+    rejected(
+        "bus kind not handed in",
+        green.replace(" -e AE_LANE_BUS={{ bus }}", ""),
+    );
+    rejected("no bus prelude at all", green.replace(LINUX_BUS, ""));
+    rejected(
+        "no stalling service file",
+        green.replace(
+            "        printf \"Name=org.freedesktop.systemd1\\n\" > \"$svc\"\n",
+            "",
+        ),
+    );
+    rejected(
+        "no stall proof call",
+        green.replace(
+            "        err=\"$(dbus-send --session --print-reply --dest=org.freedesktop.systemd1 --reply-timeout=2500 /org/freedesktop/systemd1 org.freedesktop.DBus.Peer.Ping 2>&1 || true)\"\n",
+            "",
+        ),
+    );
+    rejected(
+        "proof is a signal, not a method call",
+        green.replace("dbus-send --session --print-reply ", "dbus-send --session "),
+    );
+    rejected(
+        "proof accepts any failure, not the reply timeout",
+        green.replace("DBus.Error.NoReply", "DBus.Error"),
+    );
+    rejected(
+        "proof drops its timeout",
+        green.replace(" --reply-timeout=2500", ""),
+    );
+    rejected(
+        "proof drops its elapsed bound",
+        green.replace("        if [ \"$SECONDS\" -lt 2 ]; then exit 4; fi\n", ""),
+    );
+    rejected(
+        "proof does not reset its clock",
+        green.replace("        SECONDS=0\n", ""),
+    );
+    rejected("proof outcome never fatal", green.replace("exit 4", "true"));
+    rejected(
+        "wrong error kind passes the proof",
+        green.replace("*) exit 4 ;; esac", "*) true ;; esac"),
+    );
+    rejected(
+        "too-fast failure passes the proof",
+        green.replace("then exit 4; fi", "then true; fi"),
+    );
+    rejected(
+        "bus set up after the suite",
+        green.replace(LINUX_BUS, "").replace(
+            "        just test' || rc=$?\n",
+            &format!("        just test' || rc=$?\n{LINUX_BUS}"),
+        ),
+    );
+    rejected(
+        "bus set up after the toolchain bootstrap",
+        green.replace(LINUX_BUS, "").replace(
+            "        just rust-setup\n",
+            &format!("        just rust-setup\n{LINUX_BUS}"),
+        ),
+    );
+    rejected(
+        "suite status swallowed",
+        green.replace("just test' || rc=$?", "just test' || true"),
+    );
+    rejected(
+        "recipe exits with something else than the suite status",
+        green.replace("exit \"$rc\"", "exit 0"),
+    );
 
     assert!(linux_lanes_ok(&read(&root().join("justfile"))));
+}
+
+#[test]
+fn the_container_lanes_stay_out_of_the_gate_chain() {
+    let green = linux_lanes_green();
+    assert!(linux_lanes_stay_on_demand(&green));
+    for (name, mutated) in [
+        (
+            "test depends on the 26.04 lane",
+            green.replace("test: rust-check\n", "test: rust-check rust-linux-26\n"),
+        ),
+        (
+            "rust-check depends on the lane",
+            green.replace(
+                "rust-check: rust-fmt-check rust-test\n",
+                "rust-check: rust-fmt-check rust-test rust-linux\n",
+            ),
+        ),
+        (
+            "release runs the lane",
+            green.replace(
+                "release:\n    just test\n",
+                "release:\n    just rust-linux-26\n",
+            ),
+        ),
+    ] {
+        assert!(
+            !linux_lanes_stay_on_demand(&mutated),
+            "guard failed to reject: {name}"
+        );
+        println!("rejected: {name}");
+    }
+    assert!(linux_lanes_stay_on_demand(&read(&root().join("justfile"))));
 }
 
 /// The joined, comment-free text the portability rules read.

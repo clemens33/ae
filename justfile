@@ -1151,13 +1151,17 @@ VET_VERSION := "0.10.2"
 # like every other dev tool.
 GIT_CLIFF_VERSION := "2.13.1"
 
-# The local Linux gate (`just rust-linux`) fetches two binaries onto the host and
-# runs everything else inside a container. The base image is pinned by its
-# MANIFEST DIGEST — --platform selects the arm64/amd64 variant out of the same
-# list — and both fetched binaries are digest-checked on the way in. rustup-init
-# comes from the VERSIONED archive URL, never the moving dist one, so the
-# digests below keep holding.
+# The local Linux gates (`just rust-linux`, `just rust-linux-26`) fetch two
+# binaries onto the host and run everything else inside a container. Each base
+# image is pinned by its MANIFEST DIGEST — --platform selects the arm64/amd64
+# variant out of the same list — and both fetched binaries are digest-checked on
+# the way in. rustup-init comes from the VERSIONED archive URL, never the moving
+# dist one, so the digests below keep holding.
 LINUX_IMAGE := "ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3"
+# Ubuntu 26.04 is the second validated Linux host: it ships tmux 3.6, which asks
+# the session bus for a systemd transient scope whenever it spawns or respawns a
+# pane child, and uutils coreutils in place of GNU's. Only `just rust-linux-26` uses it.
+LINUX_IMAGE_26 := "ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c"
 RUSTUP_VERSION := "1.29.1"
 LINUX_JUST_SHA_ARM64 := "f225044a81adea6e0b3a8b9370aaf374e6af76c8735ae263ac993df55fd137ec"
 LINUX_RUSTUP_SHA_ARM64 := "15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433"
@@ -1975,14 +1979,17 @@ rust-build-release:
 
 # ── Linux container gate (local; CI stays off) ───────────────────────
 
-# THE GATE ON REAL LINUX, on this machine, NATIVE arm64. `just rust-linux` runs
-# the whole gate (`just rust-setup`, then `just test`) inside a local Linux
-# container. An amd64 gate was tried and DROPPED (under QEMU user emulation
+# THE GATE ON REAL LINUX, on this machine, NATIVE arm64. `just rust-linux` (Ubuntu
+# 24.04) and `just rust-linux-26` (Ubuntu 26.04, behind a stalling session bus,
+# below) run the whole gate (`just rust-setup`, then `just test`) inside a local
+# Linux container. Both are ON DEMAND: `just test`, `just pre` and `just release`
+# never reach them. An amd64 gate was tried and DROPPED (under QEMU user emulation
 # rust-setup cannot build cargo-nextest — aws-lc-sys's cc segfaults — and six
 # more tools would compile at ~6x); the smoke below still proves the shipped
 # amd64 bundle under QEMU. The checkout is bound READ-ONLY, so a run cannot
 # touch the live tree, and CARGO_HOME, RUSTUP_HOME and CARGO_TARGET_DIR
-# live in named volumes (`ae-linux-arm64-*`), so the host target/ is never
+# live in named volumes (`ae-linux-arm64-*`, `ae-linux26-arm64-*` for the 26.04
+# lane, which never shares a cache with the 24.04 one), so the host target/ is never
 # written and a warm run skips the toolchain and the seven tool builds. The
 # target volume is shared by EVERY checkout, so the container rebuilds the
 # `ae` package from the mounted tree before the gate (#190) while the
@@ -1992,18 +1999,41 @@ rust-build-release:
 # Every container, volume and image this recipe makes carries the
 # `ae.lane=linux` label, and the volumes are caches: nothing here removes one
 # (remove by name, e.g. `docker volume rm ae-linux-arm64-cargo
-# ae-linux-arm64-rustup ae-linux-arm64-target`, for a cold run). The recipe
-# itself takes no lock; on a shared machine the batch rule serialises test
-# lanes outside it.
-rust-linux:
+# ae-linux-arm64-rustup ae-linux-arm64-target`, for a cold run). The recipes
+# themselves take no lock; on a shared machine the batch rule serialises test
+# lanes outside them.
+#
+# The host records HEAD, the tree id and the count of dirty paths, and the
+# container compares all three on the mounted checkout before anything runs
+# (exit 3 on a mismatch): a lane run is evidence for the tree it names. A dirty
+# tree is identified by HEAD and that count only, never by its content, so exact
+# evidence needs a clean checkout.
+#
+# `just rust-linux-26` adds a STALLING session bus. A private dbus-daemon is the
+# session bus and the activation of org.freedesktop.systemd1 never completes, so
+# tmux 3.6 waits out its transient-scope timeout at every pane child spawn or
+# respawn, as it does on a host whose user manager answers slowly. The lane PROVES the stall
+# before it builds anything: a method call to that name must end in a reply
+# timeout (NoReply) after at least two seconds, else the run stops with exit 4.
+# This is an arm64 lane. The x86_64 proof of Ubuntu 26.04 is a human run on an
+# x86_64 host; nothing here claims it.
+# The gate on Ubuntu 24.04, native arm64, in a local container.
+rust-linux: (_linux-gate "linux" LINUX_IMAGE "off")
+
+# The gate on Ubuntu 26.04 behind a stalling session bus, native arm64.
+rust-linux-26: (_linux-gate "linux26" LINUX_IMAGE_26 "stall")
+
+# The one body behind both lanes: `flavor` names the image and the cache
+# volumes, `image` is the pinned base, `bus` is off or stall.
+_linux-gate flavor image bus:
     #!/usr/bin/env bash
     set -euo pipefail
     # The gate is a NATIVE arm64 container. On a non-arm64 daemon the fetched
     # aarch64 binaries would die in a cryptic exec format error, so the daemon
     # is probed first and anything else refuses with the reason.
-    daemon_arch="$(docker run --rm --label ae.lane=linux {{ LINUX_IMAGE }} uname -m)"
+    daemon_arch="$(docker run --rm --label ae.lane=linux {{ image }} uname -m)"
     if [ "$daemon_arch" != aarch64 ]; then
-        echo "Error: rust-linux runs a native arm64 container; this Docker daemon is $daemon_arch; on a Linux host, just test is already the Linux gate" >&2
+        echo "Error: the {{ flavor }} lane runs a native arm64 container; this Docker daemon is $daemon_arch; on a Linux host, just test is already the Linux gate" >&2
         exit 1
     fi
     sums() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -2027,8 +2057,8 @@ rust-linux:
     # idempotent, and the chown runs only on a volume that is not already the
     # invoking uid, so a warm run never walks its tree again.
     for v in cargo rustup target; do
-        docker volume create --label ae.lane=linux "ae-linux-arm64-$v" >/dev/null
-        docker run --rm --label ae.lane=linux -v "ae-linux-arm64-$v:/own" {{ LINUX_IMAGE }} \
+        docker volume create --label ae.lane=linux "ae-{{ flavor }}-arm64-$v" >/dev/null
+        docker run --rm --label ae.lane=linux -v "ae-{{ flavor }}-arm64-$v:/own" {{ image }} \
             sh -c "[ \"\$(stat -c %u /own)\" = $uid ] || chown -R $uid:$uid /own"
     done
     # The image builds from an EMPTY context — the Dockerfile arrives on stdin —
@@ -2036,12 +2066,12 @@ rust-linux:
     # The in-container uid comes from the HOST: without the build arg the recipe
     # would rebuild as the default 1000, which ubuntu 24.04 already ships as the
     # `ubuntu` user — the run then cannot write its own volumes (rc=1 in seconds).
-    docker build --build-arg UID="$(id -u)" -t ae-linux-arm64 - <<'DOCKERFILE'
-    FROM {{ LINUX_IMAGE }}
+    docker build --build-arg UID="$(id -u)" -t ae-{{ flavor }}-arm64 - <<'DOCKERFILE'
+    FROM {{ image }}
     LABEL ae.lane=linux
     RUN apt-get update \
             && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                build-essential tmux git perl procps ca-certificates locales \
+                build-essential tmux git perl procps ca-certificates locales dbus \
             && rm -rf /var/lib/apt/lists/*
     # en_US.UTF-8 serves the collation arm (the non-C locale test is
     # INCONCLUSIVE without it). The run sets no LANG, so every run proves the
@@ -2068,8 +2098,13 @@ rust-linux:
     # first — gitignored). The host's own target/ is shadowed and never written;
     # a fresh worktree without one gets an empty directory to mount over.
     mkdir -p "$repo/target"
-    mounts+=(-v "ae-linux-arm64-target:$repo/target")
-    echo "==> ae-linux gate: started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    mounts+=(-v "ae-{{ flavor }}-arm64-target:$repo/target")
+    # The tree the container is about to test, as the host sees it. The container
+    # compares these three before it runs anything.
+    head="$(git rev-parse HEAD)"
+    tree="$(git rev-parse "HEAD^{tree}")"
+    dirty="$(git status --porcelain | wc -l | tr -d '[:space:]')"
+    echo "==> ae-{{ flavor }} gate: started $(date -u +%Y-%m-%dT%H:%M:%SZ) head=$head tree=$tree dirty=$dirty bus={{ bus }}"
     start=$SECONDS
     rc=0
     # --init: without it the bash below is PID 1 — the kernel drops SIGTERM to
@@ -2081,17 +2116,48 @@ rust-linux:
     docker run --rm --init --label ae.lane=linux --cpus 4 --memory 8g \
         -v "$lane:/stage:ro" \
         "${mounts[@]}" \
-        -v "ae-linux-arm64-cargo:/home/ae/.cargo" \
-        -v "ae-linux-arm64-rustup:/home/ae/.rustup" \
+        -v "ae-{{ flavor }}-arm64-cargo:/home/ae/.cargo" \
+        -v "ae-{{ flavor }}-arm64-rustup:/home/ae/.rustup" \
         -e HOME=/home/ae \
         -e CARGO_HOME=/home/ae/.cargo -e RUSTUP_HOME=/home/ae/.rustup \
         -e CARGO_BUILD_JOBS=4 \
         -e NEXTEST_TEST_THREADS=4 \
         -e NEXTEST_PROFILE=linux \
+        -e AE_LANE_HEAD="$head" -e AE_LANE_TREE="$tree" -e AE_LANE_DIRTY="$dirty" \
+        -e AE_LANE_BUS={{ bus }} \
         -w "$repo" \
-        ae-linux-arm64 \
+        ae-{{ flavor }}-arm64 \
         bash -c 'set -euo pipefail
             export PATH="/stage:/home/ae/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            # Source identity first: the checkout mounted here must be the tree
+            # the host recorded. git gets a config of its own that trusts this
+            # directory (a bind mount can show a foreign owner); it is scoped to
+            # these commands, so the suite keeps the environment it had.
+            gitcfg="$(mktemp)"
+            printf "[safe]\n\tdirectory = %s\n" "$PWD" > "$gitcfg"
+            got_head="$(GIT_CONFIG_GLOBAL="$gitcfg" git rev-parse HEAD)"
+            got_tree="$(GIT_CONFIG_GLOBAL="$gitcfg" git rev-parse "HEAD^{tree}")"
+            got_dirty="$(GIT_CONFIG_GLOBAL="$gitcfg" git status --porcelain | wc -l | tr -d "[:space:]")"
+            echo "==> mounted source: head=$got_head tree=$got_tree dirty=$got_dirty"
+            [ "$got_head" = "$AE_LANE_HEAD" ] && [ "$got_tree" = "$AE_LANE_TREE" ] && [ "$got_dirty" = "$AE_LANE_DIRTY" ] || exit 3
+            # The stalling bus, set up and proven BEFORE the first build step. The
+            # service file names the systemd1 activation that never completes; the
+            # daemon is the only bus this run sees; the proof is a method call to
+            # that very name, which must end in a reply timeout after at least two
+            # seconds. Anything else (an immediate unknown-service error, a refused
+            # connection, a slow failure of another kind) is not the stall: exit 4.
+            if [ "$AE_LANE_BUS" = stall ]; then
+                svc="$(mktemp -d)"
+                mkdir -p "$svc/dbus-1/services"
+                printf "[D-BUS Service]\nName=org.freedesktop.systemd1\nExec=/bin/sleep 30\n" > "$svc/dbus-1/services/org.freedesktop.systemd1.service"
+                XDG_DATA_HOME="$svc" dbus-daemon --session --fork --address=unix:path=/tmp/ae-lane-bus
+                export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/ae-lane-bus
+                SECONDS=0
+                err="$(dbus-send --session --print-reply --dest=org.freedesktop.systemd1 --reply-timeout=2500 /org/freedesktop/systemd1 org.freedesktop.DBus.Peer.Ping 2>&1 || true)"
+                echo "==> stalling bus proof after ${SECONDS}s: $err"
+                case "$err" in *DBus.Error.NoReply*) ;; *) exit 4 ;; esac
+                if [ "$SECONDS" -lt 2 ]; then exit 4; fi
+            fi
             # Idempotent bootstrap: rustup proxies land in the cargo volume and no
             # default toolchain is set — rust-toolchain.toml, read by rust-setup,
             # decides what is installed. A warm run re-probes and installs nothing.
@@ -2102,7 +2168,7 @@ rust-linux:
             # the gate could test the wrong tree build. Deps stay warm.
             cargo clean --locked -p ae
             just test' || rc=$?
-    echo "==> ae-linux gate: rc=$rc wall=$((SECONDS - start))s"
+    echo "==> ae-{{ flavor }} gate: rc=$rc wall=$((SECONDS - start))s"
     exit "$rc"
 
 # THE x86_64 MUSL RELEASE BUNDLE EXECUTES ON REAL LINUX. `just bundles` can only

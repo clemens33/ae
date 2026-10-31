@@ -77,11 +77,30 @@ runs non-root as the invoking uid, and everything it creates carries the
 digest-pinned in the justfile. The target volume is shared by every checkout, so
 the container rebuilds the `ae` package from the mounted tree
 (`cargo clean --locked -p ae`) before the gate runs — without it, one checkout
-could test another's build (#190). `just rust-linux-smoke` executes the x86_64 musl
+could test another's build (#190). Before anything runs, the container compares
+the mounted checkout with what the host recorded — HEAD, tree id and the count of
+dirty paths — and stops with exit 3 on a mismatch, so a lane run is evidence for
+the tree it names. For a dirty tree that identity is HEAD plus the count only,
+never the content, so exact evidence needs a clean checkout. `just rust-linux-smoke` executes the x86_64 musl
 bundle from `./dist` in an amd64 container — the run proof `just bundles` cannot
 make on an arm64 macOS host, where its byte search is the degraded form. (An amd64 GATE
 was tried and dropped: under QEMU user emulation `rust-setup` cannot build
 cargo-nextest, whose aws-lc-sys build script segfaults.)
+
+**Ubuntu 26.04, behind a stalling session bus.** `just rust-linux-26` is the same
+gate on a digest-pinned Ubuntu 26.04 image, with its own cache volumes
+(`ae-linux26-arm64-*`; it never shares a cache with the 24.04 lane). 26.04 ships
+tmux 3.6, which asks the session bus for a systemd transient scope whenever it
+spawns or respawns a pane child; where the user manager answers slowly, each of
+those waits out that timeout and timing-sensitive tests surface. The lane reproduces that on purpose: a private
+`dbus-daemon` is the only session bus, and the activation of
+`org.freedesktop.systemd1` never completes. The stall is PROVEN before the first
+build step: a method call to that name must end in a reply timeout (`NoReply`)
+after at least two seconds, otherwise the run stops with exit 4, so a green run
+cannot silently have run without it. The 24.04 lane runs with no bus at all. Both
+lanes are on demand: `just test`, `just pre` and `just release` never run them. The
+lane is arm64 only; the x86_64 proof of Ubuntu 26.04 is a human run on x86_64
+hardware, and nothing here claims it.
 
 ## Tests
 
