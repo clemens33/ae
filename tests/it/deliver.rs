@@ -30,7 +30,11 @@ use ae::tool::{Composed, InputModel};
 
 use super::cli::ae;
 use super::phase2::run_tmux;
-use super::support::{SETUP_WAIT, first_pane};
+use super::support::{SETUP_WAIT, first_pane, observe};
+
+/// The bound of the shell witness. A passing run spends almost none of it, and
+/// a slow exec must not be a new way to fail.
+const SHELL_WAIT: Duration = Duration::from_mins(1);
 
 /// The fake TUI.
 const FAKE_TUI: &str = r#"#!/usr/bin/perl
@@ -384,6 +388,27 @@ impl Rig {
         let mut args = ae::tmux::server_args(&self.server());
         args.extend(tail.iter().map(|arg| (*arg).to_owned()));
         run_tmux(&args, &self.scratch)
+    }
+
+    /// Wait until the pane really runs a shell. `respawn-pane` returns before
+    /// its child has exec'd, so the pane can still read `tmux`, and a delivery
+    /// sees a live pane with a blank composer rather than a dead one. Only
+    /// `pane_current_command` is read, never the frame the refusal is decided
+    /// on, and the names are written out because the product's classifier
+    /// also calls an empty command a shell.
+    fn wait_for_shell(&self) {
+        observe(
+            |args| self.tmux(args),
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                &self.pane,
+                "#{pane_current_command}",
+            ],
+            Instant::now() + SHELL_WAIT,
+            |command| matches!(command.trim(), "sh" | "bash" | "dash" | "zsh" | "fish"),
+        );
     }
 
     /// Wait until the pane has drawn something — perl's start-up, not the
@@ -1491,6 +1516,7 @@ fn a_dead_agent_pane_is_refused_before_the_body_store() {
             .0,
         "the agent dies and its pane drops to a shell"
     );
+    rig.wait_for_shell();
     let (code, stderr) = rig.run(ae::cli::SEND, &["tui", "would execute"], &[]);
     assert_eq!(code, Some(1), "{stderr}");
     assert_eq!(
@@ -1649,6 +1675,7 @@ fn a_message_interrupt_to_a_dead_pane_is_refused() {
         rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, "exec sh"])
             .0
     );
+    rig.wait_for_shell();
     let (code, stderr) = rig.run(ae::cli::INTERRUPT, &["tui", "would", "execute"], &[]);
     assert_eq!(code, Some(1), "{stderr}");
     assert_eq!(
@@ -1831,6 +1858,7 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
             .0,
         "the agent dies and its pane drops to a shell"
     );
+    rig.wait_for_shell();
     for shape in [Shape::Send, Shape::Interrupt, Shape::Launch] {
         assert!(
             matches!(send(shape, Composed::NONE, short), Err(Failure::DeadPane)),
@@ -1947,6 +1975,7 @@ fn a_seat_dead_to_shell_after_step_1_is_refused_pre_paste() {
                 .0,
             "the agent dies to a shell under the lock"
         );
+        rig.wait_for_shell();
         prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
     });
     assert!(
