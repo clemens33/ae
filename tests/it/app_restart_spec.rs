@@ -2,7 +2,7 @@
 //! Same-binary bridge pins carrier consumption; TWO-real-build proof is a
 //! separate required freeze receipt. No future-only API: assertion RED on base.
 
-use super::{InstalledRig, UUID, WAIT};
+use super::{InstalledRig, UUID, WAIT, WITNESS_WAIT};
 use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
@@ -87,6 +87,10 @@ impl Hand {
 
     fn wait(&self, why: &str, met: impl Fn(&str) -> bool) -> String {
         self.rig.wait(&self.pane, WAIT, why, met)
+    }
+
+    fn witness(&self, why: &str, met: impl Fn(&str) -> bool) -> String {
+        self.rig.wait(&self.pane, WITNESS_WAIT, why, met)
     }
 
     fn keys(&self, keys: &str) {
@@ -329,7 +333,15 @@ fn a_carrier_that_landed_in_another_core_suppresses_a_restart_loop() {
     hand.wait("wrong-core guard hints and stays usable", |s| {
         s.contains(&hint)
     });
-    std::thread::sleep(Duration::from_secs(12));
+    let later = crate::calver::after(&crate::calver::newer());
+    let hops = quote(&hand.path("hops").display().to_string());
+    hand.next(&later, &format!("printf 'hop\\n' >> {hops}"), 0o755);
+    let hint = format!("ae {later} installed - restart ae app to use it");
+    // Only a fresh core read names it, and the loop asks for a restart with
+    // that read before it draws it.
+    hand.witness("a later core read is refused the same way", |s| {
+        s.contains(&hint)
+    });
     assert_eq!(hand.receipt("hops"), "hop\n", "one exec only");
     hand.keys("C-c");
     hand.wait("guarded app remains interactive", |s| {
@@ -353,7 +365,12 @@ fn a_stamped_chat_with_refused_restart_proof_never_falls_back_to_exec() {
     hand.recorder(&newer);
     let hint = format!("ae {newer} installed - restart ae app to use it");
     hand.wait("refused chat stays hint-only", |s| s.contains(&hint));
-    std::thread::sleep(Duration::from_secs(12));
+    let later = crate::calver::after(&newer);
+    hand.recorder(&later);
+    let hint = format!("ae {later} installed - restart ae app to use it");
+    // Only a fresh core read names it, and the loop asks for a restart with
+    // that read before it draws it.
+    hand.witness("a later core read stays hint-only", |s| s.contains(&hint));
     assert!(
         !hand.path("entry").exists(),
         "chat proof refusal must not exec"
