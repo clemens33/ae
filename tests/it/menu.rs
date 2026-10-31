@@ -16,7 +16,7 @@ use ae::tmux::{PickerPane, PickerSession, display_menu_for_client_args};
 
 use super::cli::{OwnedChild, ae, helper_by_name};
 use super::phase2::{run_tmux, tmux_present};
-use super::support::{SETUP_WAIT, try_first_pane};
+use super::support::{SETUP_WAIT, observe, try_first_pane};
 
 /// How long a poll waits for tmux (or a child process) to catch up before the
 /// arm fails. These polls await an external process, they are not speed
@@ -434,12 +434,12 @@ fn stage(socket: &Path, main: &Path) -> Staged {
         "both clients must watch the SAME pane: {clients}"
     );
 
-    let panes = tmux(
-        socket,
-        main,
+    let panes = observe(
+        |args| tmux(socket, main, args),
         &["list-panes", "-t", "hub", "-F", "#{pane_id}"],
-    )
-    .1;
+        Instant::now() + SETUP_WAIT,
+        |panes| panes.lines().count() == 2,
+    );
     let ids: Vec<String> = panes.lines().map(|line| line.trim().to_owned()).collect();
     assert_eq!(ids.len(), 2, "two panes in hub: {panes:?}");
     let hub_id = tmux(
