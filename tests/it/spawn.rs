@@ -19,10 +19,11 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::cli::ae;
 use super::phase2::run_tmux;
+use super::support::{SETUP_WAIT, first_pane};
 
 /// A claude-shaped fake agent.
 const FAKE_CLAUDE: &str = r#"#!/usr/bin/perl
@@ -224,9 +225,11 @@ impl Rig {
             .0,
             "the session starts"
         );
-        let (_, panes) = rig.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"]);
-        let main_pane = panes.lines().next().unwrap_or_default().to_owned();
-        assert!(!main_pane.is_empty(), "{panes}");
+        let main_pane = first_pane(
+            |args| rig.tmux(args),
+            &["-s", "-t", &session],
+            Instant::now() + SETUP_WAIT,
+        );
         assert!(
             rig.tmux(&["set-option", "-p", "-t", &main_pane, "@ae_agent", "lead"])
                 .0

@@ -24,10 +24,11 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::cli::ae;
 use super::phase2::run_tmux;
+use super::support::{SETUP_WAIT, try_first_pane};
 
 /// The fake agent: it records the argv and working directory it was launched
 /// with, logs everything the pane sends it, and EXITS on demand.
@@ -276,24 +277,19 @@ impl Rig {
             "the session starts"
         );
         // Wait for a successful pane read (#293); a failed client read is
-        // not evidence that the pane is missing.
-        // Match the rig's other 200 x 50 ms waits, with a wall-clock bound.
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let main_pane = loop {
-            let (ok, panes) = rig.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"]);
-            let pane = panes.lines().next().unwrap_or_default();
-            if ok && !pane.is_empty() {
-                break pane.to_owned();
-            }
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            assert!(
-                !remaining.is_zero(),
-                "Rig::new({tag}): no main pane in session {session} on {} within 10 s; \
-                 list-panes succeeded={ok}, stdout={panes:?}",
+        // not evidence that the pane is missing. The shared setup bound keeps
+        // the 10 s wall clock; the context below names this rig.
+        let main_pane = try_first_pane(
+            |args| rig.tmux(args),
+            &["-s", "-t", &session],
+            Instant::now() + SETUP_WAIT,
+        )
+        .unwrap_or_else(|why| {
+            panic!(
+                "Rig::new({tag}): no main pane in session {session} on {} within {SETUP_WAIT:?}; {why}",
                 rig.sock.display()
-            );
-            std::thread::sleep(remaining.min(Duration::from_millis(50)));
-        };
+            )
+        });
         for (option, value) in [("@ae_agent", "lead"), ("@ae_slot", "main")] {
             assert!(
                 rig.tmux(&["set-option", "-p", "-t", &main_pane, option, value])

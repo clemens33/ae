@@ -21,7 +21,7 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ae::deliver;
 use ae::inventory::ServerId;
@@ -30,6 +30,7 @@ use ae::tool::{Composed, InputModel};
 
 use super::cli::ae;
 use super::phase2::run_tmux;
+use super::support::{SETUP_WAIT, first_pane};
 
 /// The fake TUI.
 const FAKE_TUI: &str = r#"#!/usr/bin/perl
@@ -340,9 +341,11 @@ impl Rig {
             .0,
             "the fake TUI pane starts"
         );
-        let (_, panes) = rig.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"]);
-        let pane = panes.lines().next().unwrap_or_default().to_owned();
-        assert!(!pane.is_empty(), "{panes}");
+        let pane = first_pane(
+            |args| rig.tmux(args),
+            &["-s", "-t", &session],
+            Instant::now() + SETUP_WAIT,
+        );
         assert!(
             rig.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"])
                 .0

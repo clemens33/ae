@@ -160,6 +160,8 @@ mod shorthelper;
 )]
 mod sidecompact_spec;
 mod spawn;
+mod support;
+mod support_spec;
 mod teardown;
 mod telegram;
 mod transport;

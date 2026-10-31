@@ -22,11 +22,12 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::cli::{OwnedScratch, ae, bounded};
 use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
 use super::phase2::run_tmux;
+use super::support::{SETUP_WAIT, first_pane};
 #[path = "lifecycle_endrecord_spec.rs"]
 mod endrecord_spec;
 #[path = "lifecycle_guard_spec.rs"]
@@ -85,9 +86,11 @@ impl Rig {
                 .0,
             "the session starts"
         );
-        let (_, panes) = rig.tmux(&["list-panes", "-s", "-t", &name, "-F", "#{pane_id}"]);
-        let main_pane = panes.lines().next().unwrap_or_default().to_owned();
-        assert!(!main_pane.is_empty(), "{panes}");
+        let main_pane = first_pane(
+            |args| rig.tmux(args),
+            &["-s", "-t", &name],
+            Instant::now() + SETUP_WAIT,
+        );
         assert!(
             rig.tmux(&["set-option", "-p", "-t", &main_pane, "@ae_agent", "lead"])
                 .0

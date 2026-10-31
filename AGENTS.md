@@ -50,7 +50,9 @@ src/app/            — `ae app`; src/app.rs is the coordinator (loop, frame, ke
 tests/it/           — the one integration-test target. The behaviours of the retired bash
                       suites are pinned here as Rust tests.
                       doors.rs = capability boundary; gate.rs = justfile/install guards;
-                      parity.rs = the one child-process door. Unit tests sit beside the code
+                      parity.rs = the one child-process door; support.rs = the status-checked
+                      tmux observations fixtures wait on (a failed read is never a pane).
+                      Unit tests sit beside the code
 tests/fixtures/     — frozen inputs the suites read (session shapes, list goldens)
 install             — the bootstrap: download a bundle, prove it against the release
                       manifest, extract, `ae-core _install --from <tmp>`. 83 lines; the only
