@@ -3879,7 +3879,7 @@ pub(crate) fn stamp_client_session_hook(
 /// session's canonical `uuid` in its FIRST window, live or not — the hook
 /// itself falls back to the lead whenever that pane is dead or gone.
 fn window_zero_chat<'a>(panes: &'a [tmux::WindowPane], uuid: &str) -> Option<&'a String> {
-    if uuid.is_empty() || crate::archive::canonical_uuid(uuid) != uuid {
+    if !crate::archive::is_canonical_uuid(uuid) {
         return None;
     }
     let first = panes.iter().map(|pane| pane.window_index).min()?;

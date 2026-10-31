@@ -20,8 +20,8 @@ use super::store::{
     write_file_0600,
 };
 use super::{
-    GitFacts, Sources, Volatiles, canonical_uuid, event_facts, fingerprint, memo_rows, memo_topics,
-    meta_get, or_dash, roster, roster_slots,
+    GitFacts, Sources, Volatiles, canonical_uuid, event_facts, fingerprint, is_canonical_uuid,
+    memo_rows, memo_topics, meta_get, or_dash, roster, roster_slots,
 };
 use crate::state::EXIT_FAILED;
 
@@ -128,7 +128,7 @@ pub(crate) fn end_snapshot(
 
 /// Read a complete strict End archive for a captured UUID, without source locks.
 pub(crate) fn completed_end(dir: &Path, id: &str) -> Option<Vec<u8>> {
-    if id.is_empty() || canonical_uuid(id) != id {
+    if !is_canonical_uuid(id) {
         return None;
     }
     let root = archive_root_of(dir)?;

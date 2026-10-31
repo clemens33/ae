@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use crate::json::Value;
 use crate::quota::{Bounded, Budget};
 use crate::tool::{
-    BoardFollow, BoardId, BoardLocator, BoardParser, BoardSpec, BoardStream, RepliesLeg, ToolKind,
+    BoardFollow, BoardLocator, BoardParser, BoardSpec, BoardStream, RepliesLeg, ToolKind,
     UsageSource,
 };
 
@@ -1505,14 +1505,7 @@ fn locate_seat(
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
 ) -> Result<(PathBuf, std::fs::Metadata), String> {
-    let recorded = entry.harness_session.as_deref();
-    let proven = match stream.id {
-        BoardId::Canonical => crate::usage::valid_id(recorded),
-        BoardId::LowercaseUuid => recorded
-            .filter(|id| crate::session_launch::capture::is_lowercase_uuid(id))
-            .map(str::to_owned),
-    };
-    let Some(id) = proven else {
+    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
         return Err("invalid or missing conversation id".to_owned());
     };
     match stream.locator {

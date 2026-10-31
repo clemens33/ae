@@ -162,7 +162,7 @@ pub fn target(facts: &Facts<'_>) -> Result<Target, Refusal> {
 
 /// Whether `uuid` is a canonical session uuid, never an empty one.
 fn canonical(uuid: &str) -> bool {
-    !uuid.is_empty() && crate::archive::canonical_uuid(uuid) == uuid
+    crate::archive::is_canonical_uuid(uuid)
 }
 
 /// Whether `text` is `sigil` followed by one or more ASCII digits.

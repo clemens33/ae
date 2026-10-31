@@ -2273,7 +2273,7 @@ pub const VIEW_UUID_OPTION: &str = "@ae_view_uuid";
 /// the same tmux invocation; `None` when `uuid` is not a canonical UUID.
 #[must_use]
 pub fn with_view_uuid(mut args: Vec<String>, view: &str, uuid: &str) -> Option<Vec<String>> {
-    if uuid.is_empty() || crate::archive::canonical_uuid(uuid) != uuid {
+    if !crate::archive::is_canonical_uuid(uuid) {
         return None;
     }
     let scope = format!("{}:", session_target(view));

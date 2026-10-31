@@ -14,7 +14,7 @@
 //! text that [`Handover::render`] could have written, except that the
 //! `overview` view token an older core wrote reads as `agents`, the one view.
 
-use crate::archive::canonical_uuid;
+use crate::archive::is_canonical_uuid;
 use crate::config::is_agent_name;
 use crate::session_launch::name::is_session_name;
 
@@ -194,7 +194,7 @@ pub fn parse(text: &str) -> Option<Handover> {
     let list_top = list_top.map(usize::try_from).transpose().ok()?;
     let view = View {
         session: is_session_name(session).then(|| (*session).to_owned())?,
-        id: (!id.is_empty() && canonical_uuid(id) == *id).then(|| (*id).to_owned())?,
+        id: is_canonical_uuid(id).then(|| (*id).to_owned())?,
         focus,
         sidebar: small(sidebar)?,
         list: small(list)?,

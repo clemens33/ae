@@ -556,7 +556,7 @@ pub fn parse_intent(data: &[u8]) -> Result<Intent, String> {
         .find_map(|(key, value)| (*key == "work_nonce").then(|| (*value).to_owned()));
     if nonce
         .as_deref()
-        .is_some_and(|nonce| nonce.is_empty() || crate::archive::canonical_uuid(nonce) != nonce)
+        .is_some_and(|nonce| !crate::archive::is_canonical_uuid(nonce))
     {
         return Err("rename intent carries a non-canonical work_nonce".to_owned());
     }
@@ -1896,7 +1896,7 @@ fn witness_bytes_valid(bytes: &[u8]) -> bool {
     };
     text.strip_prefix(WITNESS_PREFIX)
         .and_then(|line| line.strip_suffix('\n'))
-        .is_some_and(|inner| crate::archive::canonical_uuid(inner) == inner)
+        .is_some_and(crate::archive::is_canonical_uuid)
 }
 
 /// How much of a witness file is ever read: our own bytes are 54. Anything
@@ -3899,6 +3899,24 @@ fn is_symlink(path: &Path) -> bool {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn r3c_empty_witness_nonce_is_foreign_and_preserved() {
+        // An empty nonce is not a UUID. Catches the destructive consumer,
+        // not just its predicate: foreign witness bytes must survive.
+        let root = scratch("r3c-empty-witness");
+        let original = b"ae rename witness \n";
+        let work = cell(&root, "foreign", Some(original));
+        let refused = write_witness(&work, NONCE_UUID);
+        assert_eq!(
+            std::fs::read(work.join(WITNESS_FILE_NAME)).expect("witness read"),
+            original,
+            "a malformed witness is never replaced"
+        );
+        let reason = refused.expect_err("an empty witness nonce is foreign");
+        assert!(reason.contains("did not write"), "{reason}");
+        std::fs::remove_dir_all(root).expect("scratch cleanup");
+    }
 
     #[test]
     fn effort_resume_rename_owner_preserves_raw_claims_and_conversation_identity() {

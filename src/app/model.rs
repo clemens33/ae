@@ -327,11 +327,7 @@ impl Model {
     pub fn toggle_orchestrator(&mut self, fleet: &Fleet, live: &[(String, String)]) -> Act {
         let uuid = |name: &str| {
             live.iter()
-                .find(|(session, uuid)| {
-                    session == name
-                        && !uuid.is_empty()
-                        && crate::archive::canonical_uuid(uuid) == *uuid
-                })
+                .find(|(session, uuid)| session == name && crate::archive::is_canonical_uuid(uuid))
                 .map(|(_, uuid)| uuid.clone())
         };
         let row = |name: &str| fleet.rows.iter().position(|row| row.name == name);

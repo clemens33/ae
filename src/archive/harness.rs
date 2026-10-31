@@ -296,7 +296,7 @@ pub fn parse(bytes: &[u8], expected_archive_id: &str) -> Result<Record, String> 
         .next()
         .and_then(|s| s.strip_prefix("archive_id\t"))
         .ok_or("harness: missing archive id")?;
-    if aid.is_empty() || super::canonical_uuid(aid) != aid || aid != expected_archive_id {
+    if !super::is_canonical_uuid(aid) || aid != expected_archive_id {
         return Err("harness: archive id mismatch or noncanonical UUID".to_owned());
     }
     let mut record = Record {

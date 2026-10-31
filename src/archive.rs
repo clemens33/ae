@@ -46,8 +46,7 @@ pub(crate) fn ended(root: &Path, out: &mut impl Write, err: &mut impl Write) -> 
         let Some(id) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if id.is_empty()
-            || canonical_uuid(id) != id
+        if !is_canonical_uuid(id)
             || registered.contains(id)
             || !matches!(
                 store::symlink_meta(&store::claim_path(&archive, id)),
@@ -177,6 +176,14 @@ pub(crate) fn canonical_uuid(value: &str) -> String {
         }
     }
     value.to_ascii_lowercase()
+}
+
+/// Whether `value` already is a canonical UUID: the ONE owner of that grammar.
+/// [`canonical_uuid`] answers empty for anything else, so comparing its answer
+/// with the input passes an empty string; ask this instead.
+#[must_use]
+pub(crate) fn is_canonical_uuid(value: &str) -> bool {
+    !value.is_empty() && canonical_uuid(value) == value
 }
 
 /// Whether `path` is a regular file, following symlinks (a symlink to a regular
@@ -1067,4 +1074,34 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
     banner(&mut banner_text, &aid, &name, &raw_id, files, bytes);
     err.write_all(banner_text.as_bytes())?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod r3c_id_spec {
+    #[test]
+    fn r3c_canonical_uuid_predicate_requires_exact_nonempty_uuid() {
+        // Expected values come from 8-4-4-4-12 lowercase ASCII hex grammar.
+        // Agreement with capture is an extra check, never the oracle.
+        for (id, expected) in [
+            ("", false),
+            ("not-a-uuid", false),
+            ("0199c0de-1234-4890-abcd-ef0123456789", true),
+            ("00000000-0000-0000-0000-000000000000", true),
+            ("0199C0DE-1234-4890-abcd-ef0123456789", false),
+            ("0199c0de-1234-4890-abcd-ef012345678", false),
+            ("0199c0de-1234-4890-abcd-ef01234567890", false),
+            ("0199c0de-1234-4890-abcd-ef0123456789-1", false),
+            ("0199c0de1234-4890-abcd-ef0123456789", false),
+            ("0199c0de-1234-4890-abcd-ef012345678g", false),
+            (" 0199c0de-1234-4890-abcd-ef0123456789", false),
+            ("0199c0de-1234-4890-abcd-ef0123456789\n", false),
+        ] {
+            assert_eq!(super::is_canonical_uuid(id), expected, "{id:?}");
+            assert_eq!(
+                crate::session_launch::capture::is_lowercase_uuid(id),
+                expected,
+                "capture grammar: {id:?}"
+            );
+        }
+    }
 }

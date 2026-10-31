@@ -52,8 +52,7 @@ pub const CONSOLE_DRAFT_CAP: u64 = 65_536;
 #[must_use]
 pub fn console_draft_instance(name: &str) -> Option<&str> {
     let instance = name.strip_prefix(CONSOLE_DRAFT)?.strip_prefix('.')?;
-    (instance.len() == 36 && crate::archive::canonical_uuid(instance) == instance)
-        .then_some(instance)
+    crate::archive::is_canonical_uuid(instance).then_some(instance)
 }
 
 /// The console's admission lock, beside the journal's and never it.

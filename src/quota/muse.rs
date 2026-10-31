@@ -11,7 +11,7 @@
 //! measured usage limit keeps its reset instant and none of the message
 //! ([`limit`]).
 
-use crate::archive::canonical_uuid;
+use crate::archive::is_canonical_uuid;
 use crate::json::{self, Value};
 use crate::time::Timestamp;
 
@@ -210,7 +210,7 @@ pub fn limit(bytes: &[u8]) -> Option<i64> {
         .get_str("reason")?
         .strip_prefix(LIMIT_HEAD)?
         .split_once("]: ")?;
-    if request.is_empty() || canonical_uuid(request) != request {
+    if !is_canonical_uuid(request) {
         return None;
     }
     let reset = after.strip_prefix(LIMIT_MID)?.strip_suffix(LIMIT_TAIL)?;

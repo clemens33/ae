@@ -648,7 +648,7 @@ fn parse_windows(text: &str) -> Option<Vec<Pressured>> {
 
 /// The canonical UUID `text` is, exactly.
 fn uuid(text: &str) -> Option<String> {
-    (!text.is_empty() && crate::archive::canonical_uuid(text) == text).then(|| text.to_owned())
+    crate::archive::is_canonical_uuid(text).then(|| text.to_owned())
 }
 
 /// `text`, kept when `valid`.

@@ -688,7 +688,7 @@ fn identity<'a>(
 /// UUID spelling meta's `session_id` row carries, and nothing else.
 #[must_use]
 pub(crate) fn is_session_id(text: &str) -> bool {
-    !text.is_empty() && crate::archive::canonical_uuid(text) == text
+    crate::archive::is_canonical_uuid(text)
 }
 
 /// The journal schema a record was written under, read off its

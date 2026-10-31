@@ -509,7 +509,7 @@ fn profile_retired(
         }
         let id = event
             .reference
-            .filter(|id| crate::archive::canonical_uuid(id) == *id);
+            .filter(|id| crate::archive::is_canonical_uuid(id));
         let entry = RosterEntry {
             slot: slot.unwrap_or("?").to_owned(),
             name: name.to_owned(),
@@ -1163,9 +1163,8 @@ fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
 }
 
 pub(crate) fn valid_id(id: Option<&str>) -> Option<String> {
-    let id = id?;
-    let canonical = crate::archive::canonical_uuid(id);
-    (canonical == id).then_some(canonical)
+    id.filter(|id| crate::archive::is_canonical_uuid(id))
+        .map(str::to_owned)
 }
 
 fn epoch(time: SystemTime) -> Option<i64> {
@@ -1334,7 +1333,7 @@ fn add_retired(
         let fields = event.summary.as_deref().and_then(retired_fields);
         let reference = event
             .reference
-            .filter(|id| crate::archive::canonical_uuid(id) == *id);
+            .filter(|id| crate::archive::is_canonical_uuid(id));
         let Some((tool, profile, config_home, config_home_base)) = fields else {
             seats.push(unlocated_retired(&name, slot.as_deref().unwrap_or("?")));
             continue;
@@ -1989,5 +1988,24 @@ fn hourly_code(coverage: &Coverage) -> u8 {
     match coverage {
         Coverage::Truncated => 8,
         _ => 16,
+    }
+}
+
+#[cfg(test)]
+mod r3c_id_spec {
+    #[test]
+    fn r3c_valid_id_refuses_empty_and_preserves_uuid_grammar() {
+        assert_eq!(super::valid_id(None), None);
+        for id in [
+            "",
+            "not-a-uuid",
+            "0199C0DE-1234-4890-abcd-ef0123456789",
+            "0199c0de-1234-4890-abcd-ef012345678",
+            "../0199c0de-1234-4890-abcd-ef0123456789",
+        ] {
+            assert_eq!(super::valid_id(Some(id)), None, "{id:?}");
+        }
+        let id = "0199c0de-1234-4890-abcd-ef0123456789";
+        assert_eq!(super::valid_id(Some(id)).as_deref(), Some(id));
     }
 }

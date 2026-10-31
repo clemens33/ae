@@ -1874,7 +1874,7 @@ pub fn run_retire(
     let reference = retired_identity
         .as_ref()
         .and_then(|entry| entry.harness_session.as_deref())
-        .filter(|id| crate::archive::canonical_uuid(id) == *id)
+        .filter(|id| crate::archive::is_canonical_uuid(id))
         .unwrap_or("");
     let summary = retired_identity.as_ref().map_or_else(String::new, |entry| {
         let config_home = match &entry.config_home {

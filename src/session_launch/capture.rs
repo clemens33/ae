@@ -797,25 +797,11 @@ fn keep_recorded(config_home: &Path, facts: &Facts, recorded: &str) -> Option<St
 /// The refusal `_register-sid` prints for a missing seat.
 pub const REGISTER_SID_USAGE: &str = "Usage: _register-sid <meta-dir> <slot> [<session-id>]";
 
-/// Whether `value` is a lowercase 8-4-4-4-12 hex UUID — the Muse session-id
-/// grammar, shared with the board's Muse seat.
+/// Whether `value` is a lowercase 8-4-4-4-12 hex UUID. One grammar, owned by
+/// [`crate::archive::is_canonical_uuid`].
 #[must_use]
 pub(crate) fn is_lowercase_uuid(value: &str) -> bool {
-    let groups = [8, 4, 4, 4, 12];
-    let mut parts = value.split('-');
-    for width in groups {
-        let Some(part) = parts.next() else {
-            return false;
-        };
-        if part.len() != width
-            || !part
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return false;
-        }
-    }
-    parts.next().is_none()
+    crate::archive::is_canonical_uuid(value)
 }
 
 /// Poll for the self-registered id, verify it against the rollout carrying

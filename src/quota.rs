@@ -5425,7 +5425,7 @@ pub(crate) fn find_codex_rollout(
 }
 
 fn codex_rollout_dirs(root: &Path, id: &str) -> Option<Vec<PathBuf>> {
-    if crate::archive::canonical_uuid(id) != id || id.as_bytes().get(14) != Some(&b'7') {
+    if !crate::archive::is_canonical_uuid(id) || id.as_bytes().get(14) != Some(&b'7') {
         return None;
     }
     let millis = u64::from_str_radix(&format!("{}{}", id.get(..8)?, id.get(9..13)?), 16).ok()?;

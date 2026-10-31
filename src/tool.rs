@@ -480,23 +480,9 @@ pub(crate) enum BoardFollow {
     HoldOpenAssistantTurn,
 }
 
-/// Which proof a recorded conversation id must pass before any path work.
-/// They differ on the empty id, which a predecessor row can hold:
-/// [`Self::Canonical`] lets it through, a defect of `usage::valid_id` kept
-/// here as it stands, not a contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoardId {
-    /// Equal to its own canonical UUID spelling.
-    Canonical,
-    /// A lowercase UUID.
-    LowercaseUuid,
-}
-
 /// A conversation the board reads as a line stream through its one door.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BoardStream {
-    /// The proof its recorded id must pass.
-    pub(crate) id: BoardId,
     /// Where the stream lives.
     pub(crate) locator: BoardLocator,
     /// The format of the stream.
@@ -917,7 +903,6 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         source: UsageSource::ClaudeTranscripts,
     },
     board: BoardSpec::Stream(BoardStream {
-        id: BoardId::Canonical,
         locator: BoardLocator::ProjectTranscripts,
         parser: BoardParser::Claude,
         replies_leg: None,
@@ -999,7 +984,6 @@ const CODEX: ToolAdapter = ToolAdapter {
         source: UsageSource::CodexRollout,
     },
     board: BoardSpec::Stream(BoardStream {
-        id: BoardId::Canonical,
         locator: BoardLocator::RolloutScan,
         parser: BoardParser::Codex,
         replies_leg: None,
@@ -1153,7 +1137,6 @@ const AGY: ToolAdapter = ToolAdapter {
         source: UsageSource::Unsupported,
     },
     board: BoardSpec::Stream(BoardStream {
-        id: BoardId::LowercaseUuid,
         locator: BoardLocator::SharedHistoryFile,
         parser: BoardParser::Agy,
         replies_leg: Some(RepliesLeg::AgyBrain),
@@ -1238,7 +1221,6 @@ const GROK: ToolAdapter = ToolAdapter {
         source: UsageSource::Unsupported,
     },
     board: BoardSpec::Stream(BoardStream {
-        id: BoardId::Canonical,
         locator: BoardLocator::UpdatesScan,
         parser: BoardParser::Grok,
         replies_leg: None,
@@ -1309,7 +1291,6 @@ const MUSE: ToolAdapter = ToolAdapter {
         source: UsageSource::Unsupported,
     },
     board: BoardSpec::Stream(BoardStream {
-        id: BoardId::LowercaseUuid,
         locator: BoardLocator::SessionFileScan,
         parser: BoardParser::Muse,
         replies_leg: None,
@@ -1896,7 +1877,6 @@ mod tests {
                         source: UsageSource::ClaudeTranscripts,
                     },
                     board: BoardSpec::Stream(BoardStream {
-                        id: BoardId::Canonical,
                         locator: BoardLocator::ProjectTranscripts,
                         parser: BoardParser::Claude,
                         replies_leg: None,
@@ -1975,7 +1955,6 @@ mod tests {
                         source: UsageSource::CodexRollout,
                     },
                     board: BoardSpec::Stream(BoardStream {
-                        id: BoardId::Canonical,
                         locator: BoardLocator::RolloutScan,
                         parser: BoardParser::Codex,
                         replies_leg: None,
@@ -2112,7 +2091,6 @@ mod tests {
                         source: UsageSource::Unsupported,
                     },
                     board: BoardSpec::Stream(BoardStream {
-                        id: BoardId::LowercaseUuid,
                         locator: BoardLocator::SharedHistoryFile,
                         parser: BoardParser::Agy,
                         replies_leg: Some(RepliesLeg::AgyBrain),
@@ -2179,7 +2157,6 @@ mod tests {
                         source: UsageSource::Unsupported,
                     },
                     board: BoardSpec::Stream(BoardStream {
-                        id: BoardId::Canonical,
                         locator: BoardLocator::UpdatesScan,
                         parser: BoardParser::Grok,
                         replies_leg: None,
@@ -2240,7 +2217,6 @@ mod tests {
                         source: UsageSource::Unsupported,
                     },
                     board: BoardSpec::Stream(BoardStream {
-                        id: BoardId::LowercaseUuid,
                         locator: BoardLocator::SessionFileScan,
                         parser: BoardParser::Muse,
                         replies_leg: None,
