@@ -9,9 +9,10 @@
 //! device) keep failing.
 
 use std::process::{Output, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::cli::{OwnedScratch, Runner, ae, bounded};
+use super::support::{SETUP_WAIT, first_pane};
 
 /// Generous: every case ends on its first write, while a follow that never
 /// notices its reader left polls on forever.
@@ -263,9 +264,7 @@ fn fleet_stop(tag: &str, names: &[&str]) -> (Output, usize) {
             tmux(&["-f", "/dev/null", "new-session", "-d", "-s", name, "sh"]).0,
             "{name} starts"
         );
-        let (_, panes) = tmux(&["list-panes", "-s", "-t", name, "-F", "#{pane_id}"]);
-        let pane = panes.lines().next().unwrap_or_default().to_owned();
-        assert!(!pane.is_empty(), "{name}: {panes}");
+        let pane = first_pane(tmux, &["-s", "-t", name], Instant::now() + SETUP_WAIT);
         assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "lead"]).0);
         let dir = home.join("sessions").join(name);
         std::fs::create_dir_all(&dir).expect("a session dir");

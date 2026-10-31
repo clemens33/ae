@@ -46,12 +46,11 @@ impl PurgeRig {
             .0,
             "private server starts"
         );
-        let (_, panes) = rig.tmux(&["list-panes", "-t", &rig.name, "-F", "#{pane_id}"]);
-        panes
-            .lines()
-            .next()
-            .expect("main pane")
-            .clone_into(&mut rig.pane);
+        rig.pane = first_pane(
+            |args| rig.tmux(args),
+            &["-t", &rig.name],
+            Instant::now() + SETUP_WAIT,
+        );
         std::fs::write(
             rig.dir.join("meta"),
             format!(
