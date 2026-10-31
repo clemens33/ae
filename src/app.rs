@@ -7758,6 +7758,52 @@ mod tests {
         assert_eq!(masked.custom, None, "the empty winner masks the global");
     }
 
+    /// `spawn_instructions` is resolved apart from `instructions`, by the render
+    /// owner's winner rule: an empty winner of one key masks only that key.
+    #[test]
+    fn resolve_instructions_resolves_spawn_instructions_apart_with_its_own_mask() {
+        let root = Root::new("instr-spawn");
+        let (global, overlay) = (root.0.join("global"), root.0.join("overlay"));
+        std::fs::write(
+            &global,
+            "[prompt]\ninstructions = common\nspawn_instructions = from global\n",
+        )
+        .expect("global");
+        std::fs::write(
+            &overlay,
+            "[prompt]\nspawn_instructions = \"\"\"\nfrom\nsession\n\"\"\"\n",
+        )
+        .expect("overlay");
+        let tail = format!(
+            "work_dir=/w\nconfig={}\nlocal_config={}\n",
+            global.display(),
+            overlay.display()
+        );
+        let dir = session(&root, "api", &tail);
+        let protocol = ready(&dir, "api");
+        let spawn = protocol
+            .spawn
+            .as_ref()
+            .expect("spawn instructions in force");
+        assert_eq!(
+            (spawn.source, spawn.file.as_str(), spawn.text.as_str()),
+            (
+                settings::ConfigSource::Session,
+                overlay.to_str().expect("utf-8"),
+                "from\nsession"
+            )
+        );
+        assert_eq!(
+            protocol.custom.as_ref().map(|custom| custom.text.as_str()),
+            Some("common"),
+            "the other key is untouched"
+        );
+        std::fs::write(&overlay, "[prompt]\nspawn_instructions = \"\"\n").expect("overlay");
+        let masked = ready(&dir, "api");
+        assert_eq!(masked.spawn, None, "the empty winner masks the global");
+        assert!(masked.custom.is_some(), "and masks only its own key");
+    }
+
     /// What cannot be rendered from is named: no records, a meta that cannot
     /// be read, a torn config (the whole tab) and a slot that is no slot (the
     /// one seat); a seat's work dir and name are no gap, the tab shows neither.

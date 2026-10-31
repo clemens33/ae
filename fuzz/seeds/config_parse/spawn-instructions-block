@@ -1,0 +1,8 @@
+[profiles]
+idle = "sleep 600"
+
+[prompt]
+spawn_instructions = """
+SPEND POLICY: choose the cheapest profile.
+second line, raw, verbatim
+"""

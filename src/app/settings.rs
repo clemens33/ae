@@ -80,7 +80,8 @@ pub(crate) struct AboutFacts {
     pub(crate) server: String,
 }
 
-/// The `[prompt] instructions` in force for a session and where they come from.
+/// A `[prompt]` text in force for a session and where it comes from: the
+/// `instructions`, or the `spawn_instructions`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CustomInstructions {
     /// `Global` (the meta-recorded file) or `Session` (its local overlay).
@@ -106,6 +107,9 @@ pub(crate) struct Protocol {
     /// The config files the launch layering reads, global first.
     pub(crate) files: Vec<String>,
     pub(crate) custom: Option<CustomInstructions>,
+    /// The `[prompt] spawn_instructions` in force: whole in the lead pair, a
+    /// pointer in a worker.
+    pub(crate) spawn: Option<CustomInstructions>,
     /// The rule text each audience gets, once, with its seat facts as markers.
     pub(crate) rules: Vec<GenericRule>,
     pub(crate) seats: Vec<SeatLine>,
@@ -312,13 +316,17 @@ pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> Instr
             return gap(why);
         }
     }
-    let custom = crate::render::prompt_instructions(&files).and_then(|(at, text)| {
-        Some(CustomInstructions {
-            source: *sources.get(at)?,
-            file: files.get(at)?.display().to_string(),
-            text,
+    let in_force = |won: Option<(usize, String)>| {
+        won.and_then(|(at, text)| {
+            Some(CustomInstructions {
+                source: *sources.get(at)?,
+                file: files.get(at)?.display().to_string(),
+                text,
+            })
         })
-    });
+    };
+    let custom = in_force(crate::render::prompt_instructions(&files));
+    let spawn = in_force(crate::render::spawn_instructions(&files));
     let session = value("session");
     let session = if session.is_empty() {
         name.to_owned()
@@ -349,6 +357,7 @@ pub(crate) fn resolve_instructions(meta_dir: Option<&Path>, name: &str) -> Instr
             .map(|file| file.display().to_string())
             .collect(),
         custom,
+        spawn,
         rules: crate::render::generic_rules(dir, &files),
         seats,
     })

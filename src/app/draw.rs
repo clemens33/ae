@@ -3351,6 +3351,23 @@ fn instructions_body(view: &InstructionsView, width: u16, paint: Paint) -> Vec<(
         };
         out.extend(rows(&format!("none in {named}"), dim));
     }
+    // Drawn only when the key is in force, so a config without it reads as before.
+    if let Some(spawn) = &protocol.spawn {
+        out.push((String::new(), text));
+        out.extend(rows(
+            "Spawn instructions ([prompt] spawn_instructions)",
+            head,
+        ));
+        out.extend(rows(
+            &format!("source: {} {}", spawn.source.word(), spawn.file),
+            dim,
+        ));
+        out.extend(rows(
+            "The lead pair and a seat ae cannot classify get this text whole; every other seat gets one line pointing at the same section of workspace.md.",
+            dim,
+        ));
+        out.extend(rows(&spawn.text, text));
+    }
     for rule in &protocol.rules {
         out.push((String::new(), text));
         out.extend(rows(&format!("Rules for {}", rule.audience.word()), head));
@@ -3542,6 +3559,7 @@ mod tests {
                 session: "api".to_owned(),
                 files: vec!["/g".to_owned()],
                 custom,
+                spawn: None,
                 rules: vec![GenericRule {
                     audience: Audience::Workers,
                     owner: Some(hostile.clone()),
@@ -3607,6 +3625,72 @@ mod tests {
         tight.text.clone_from(&fit);
         let filled = lines(ready(Some(tight), Ok(&[])));
         assert!(filled.iter().any(|row| row.0 == fit));
+    }
+
+    /// The spawn block draws only when `spawn_instructions` is in force, after
+    /// the custom instructions and before the rules; a config without the key
+    /// draws exactly the rows it drew before.
+    #[test]
+    fn instructions_rows_draw_the_spawn_block_only_when_the_key_is_in_force() {
+        use crate::app::settings::{
+            ConfigSource, CustomInstructions, InstructionsView, Protocol, SeatLine,
+        };
+        let protocol = |spawn| {
+            InstructionsView::Ready(Protocol {
+                session: "api".to_owned(),
+                files: vec!["/g".to_owned()],
+                custom: None,
+                spawn,
+                rules: Vec::new(),
+                seats: vec![SeatLine {
+                    name: "lead".to_owned(),
+                    slot: "main".to_owned(),
+                    role: "lead",
+                    receives: Ok(&[]),
+                }],
+            })
+        };
+        let paint = Paint::of(None);
+        let rows = |view| -> Vec<String> {
+            instructions_body(&view, 120, paint)
+                .into_iter()
+                .map(|(line, _)| line)
+                .collect()
+        };
+        let before = rows(protocol(None));
+        assert!(
+            !before
+                .iter()
+                .any(|line| line.contains("Spawn instructions")),
+            "{before:?}"
+        );
+        let after = rows(protocol(Some(CustomInstructions {
+            source: ConfigSource::Session,
+            file: "/s".to_owned(),
+            text: "pick \u{1b}[31mcheap".to_owned(),
+        })));
+        let at = after
+            .iter()
+            .position(|line| line == "Spawn instructions ([prompt] spawn_instructions)")
+            .expect("the spawn heading");
+        assert_eq!(after[at + 1], "source: session /s");
+        // The explanation wraps to the panel; the text row ends the block.
+        let text_at = after
+            .iter()
+            .position(|line| line == "pick \u{fffd}[31mcheap")
+            .expect("the neutralised text");
+        let explained = after[at + 2..text_at]
+            .iter()
+            .flat_map(|line| line.split_whitespace())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            explained.contains("pointing at the same section of workspace.md"),
+            "{explained}"
+        );
+        let mut without: Vec<String> = after[..at - 1].to_vec();
+        without.extend(after[text_at + 1..].iter().cloned());
+        assert_eq!(without, before, "the block is the only difference");
     }
 
     /// Every write is bounds-checked, so no size panics: a populated screen

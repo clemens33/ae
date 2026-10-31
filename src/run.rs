@@ -70,6 +70,17 @@ pub struct Plan {
     launch: Option<LaunchBaseline>,
     /// Why the observed record is not applied on this start, journaled once.
     refusal: Option<String>,
+    /// Set only for a worker whose context points at `workspace.md`: the target
+    /// a real start makes true before the tool launches.
+    reference: Option<SpawnReference>,
+}
+
+/// What a worker's spawn pointer needs of `workspace.md`: the session and the
+/// config files whose winning `spawn_instructions` its context was rendered from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpawnReference {
+    session: String,
+    config_files: Vec<PathBuf>,
 }
 
 /// What `run` journals about this start's conversation, and for which seat.
@@ -408,6 +419,18 @@ pub fn run(
         out.flush()?;
         return Ok(0);
     }
+    // The pointer in a worker's context must resolve BEFORE the tool starts: a
+    // target that cannot be made true refuses the start, nothing else written.
+    if let Some(reference) = &plan.reference
+        && let Err(why) =
+            crate::render::ensure_spawn_reference(dir, &reference.config_files, || {
+                crate::rename::manifest_over(dir, &reference.session, &reference.config_files)
+            })
+    {
+        writeln!(err, "ae: seat {slot}: {why} — refusing to start")?;
+        err.flush()?;
+        return Ok(EXIT_FAILED);
+    }
     if let Some(value) = plan.config_home_row.as_deref()
         && let Err(why) =
             crate::meta::record_config_home(dir, slot, value, plan.config_home_base_row.as_deref())
@@ -696,6 +719,7 @@ fn build_with_snapshot(
         &seat.config_files,
         seat.dir_source,
     );
+    let reference = spawn_reference(dir, slot, &seat);
     let current = crate::launch_cmd::config_home_resolution(&seat.command, seat.tool, &env_lookup);
     let canonical_current = canonical_config_home(&current.home);
     let canonical_base = canonical_config_home(&current.base);
@@ -774,8 +798,22 @@ fn build_with_snapshot(
         effort_notice,
         launch,
         refusal,
+        reference,
     };
     Ok((plan, choice))
+}
+
+/// A worker's context holds a POINTER to the spend policy in `workspace.md`, so
+/// its real start proves the target first. The one slot classification decides
+/// who is a worker; a seat with no pointer in its context needs no target.
+fn spawn_reference(dir: &Path, slot: &str, seat: &Seat) -> Option<SpawnReference> {
+    let meta_bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    (crate::render::seat_role(&meta_bytes, slot) == crate::render::SeatRole::Worker
+        && crate::render::spawn_instructions(&seat.config_files).is_some())
+    .then(|| SpawnReference {
+        session: seat.session.clone(),
+        config_files: seat.config_files.clone(),
+    })
 }
 
 /// `ctx` ending with the seat's loss line, when this start passed over its
@@ -2915,6 +2953,7 @@ mod tests {
             effort_notice: None,
             launch: None,
             refusal: None,
+            reference: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -3067,6 +3106,7 @@ mod tests {
             effort_notice: None,
             launch: None,
             refusal: None,
+            reference: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
@@ -3114,6 +3154,7 @@ mod tests {
                 effort: Some(crate::effort::Level::High),
             }),
             refusal: None,
+            reference: None,
         };
         // A guard that no longer holds is the failure: said, journaled ONCE,
         // and Ok, so `run` goes on to exec the plan it built.

@@ -222,20 +222,24 @@ pub(crate) fn is_config_key(s: &str) -> bool {
     bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// One logical line of INI text, with a `[prompt] instructions = """` block
-/// already resolved to its value.
+/// One logical line of INI text, with a `[prompt] instructions = """` or
+/// `[prompt] spawn_instructions = """` block already resolved to its value.
 #[derive(Debug)]
 pub(crate) enum ConfigLine<'a> {
     /// A line that is not a block: its 1-based number and its raw text.
     Plain(usize, &'a str),
-    /// A resolved instruction block: the verbatim value (the newline after the
-    /// opener dropped, inner newlines kept, no trailing newline).
+    /// A resolved `instructions` block: the verbatim value (the newline after
+    /// the opener dropped, inner newlines kept, no trailing newline).
     Instructions(String),
+    /// A resolved `spawn_instructions` block, resolved the same way.
+    SpawnInstructions(String),
 }
 
-/// The one key that accepts a `"""` block, spelled `prompt.instructions`.
+/// The two keys that accept a `"""` block, spelled `prompt.instructions` and
+/// `prompt.spawn_instructions`.
 const BLOCK_SECTION: &str = "prompt";
 const BLOCK_KEY: &str = "instructions";
+const SPAWN_BLOCK_KEY: &str = "spawn_instructions";
 
 /// The `key = """` opener: a config key whose whole value is exactly three
 /// double quotes.
@@ -258,9 +262,10 @@ fn block_closer(line: &str) -> bool {
 /// Walk one selected config file line by line, resolving `"""` blocks.
 ///
 /// The block is the ONE extension to the line reader, accepted for
-/// `prompt.instructions` alone. Every reader of a selected INI file routes
-/// through this iterator, so a block body is never parsed as keys, sections or
-/// comments and the opener on any other key is refused once, at the parser.
+/// `prompt.instructions` and `prompt.spawn_instructions` alone. Every reader
+/// of a selected INI file routes through this iterator, so a block body is
+/// never parsed as keys, sections or comments and the opener on any other key
+/// is refused once, at the parser.
 pub(crate) fn config_lines<'a>(
     file: &'a Path,
     text: &'a str,
@@ -294,18 +299,22 @@ impl<'a> Iterator for ConfigLines<'a> {
         let Some(key) = block_opener(trimmed) else {
             return Some(Ok(ConfigLine::Plain(self.line, raw)));
         };
-        if self.section != BLOCK_SECTION || key != BLOCK_KEY {
-            let key = if self.section.is_empty() {
-                key.to_owned()
-            } else {
-                format!("{}.{key}", self.section)
-            };
-            return Some(Err(ConfigError::InstructionBlock {
-                file: self.file.to_owned(),
-                key,
-                line: self.line,
-            }));
-        }
+        let finish: fn(String) -> ConfigLine<'a> = match (self.section.as_str(), key) {
+            (BLOCK_SECTION, BLOCK_KEY) => ConfigLine::Instructions,
+            (BLOCK_SECTION, SPAWN_BLOCK_KEY) => ConfigLine::SpawnInstructions,
+            _ => {
+                let key = if self.section.is_empty() {
+                    key.to_owned()
+                } else {
+                    format!("{}.{key}", self.section)
+                };
+                return Some(Err(ConfigError::InstructionBlock {
+                    file: self.file.to_owned(),
+                    key,
+                    line: self.line,
+                }));
+            }
+        };
         let opening = self.line;
         let mut value = String::new();
         let mut first = true;
@@ -318,7 +327,7 @@ impl<'a> Iterator for ConfigLines<'a> {
             };
             self.line += 1;
             if block_closer(inner) {
-                return Some(Ok(ConfigLine::Instructions(value)));
+                return Some(Ok(finish(value)));
             }
             if !first {
                 value.push('\n');
@@ -857,7 +866,7 @@ impl fmt::Display for ConfigError {
             } => write!(f, "Error: [clients] {client}: {reason}"),
             Self::InstructionBlock { file, key, line } => write!(
                 f,
-                "Error: {}:{line}: '{key}' cannot carry a \"\"\" block — prompt.instructions is the only key that accepts one.",
+                "Error: {}:{line}: '{key}' cannot carry a \"\"\" block — prompt.instructions and prompt.spawn_instructions are the only keys that accept one.",
                 file.display()
             ),
             Self::UnterminatedInstructionBlock { file, line } => write!(
@@ -2650,9 +2659,43 @@ mod tests {
             .into_iter()
             .find_map(|line| match line {
                 ConfigLine::Instructions(value) => Some(value),
-                ConfigLine::Plain(..) => None,
+                ConfigLine::Plain(..) | ConfigLine::SpawnInstructions(_) => None,
             })
             .expect("one instruction block")
+    }
+
+    /// Every resolved block in `text`, as (spawn?, value) in file order.
+    fn blocks_of(text: &str) -> Vec<(bool, String)> {
+        lines_of(text)
+            .into_iter()
+            .filter_map(|line| match line {
+                ConfigLine::Instructions(value) => Some((false, value)),
+                ConfigLine::SpawnInstructions(value) => Some((true, value)),
+                ConfigLine::Plain(..) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_block_key_resolves_to_its_own_variant_and_keeps_its_own_bytes() {
+        let text = concat!(
+            "[prompt]\n",
+            "spawn_instructions = \"\"\"\n",
+            "[workspace]\n",
+            "main = not-a-key\n",
+            "\"\"\"\n",
+            "instructions = \"\"\"\n",
+            "everyone\n",
+            "\"\"\"\n",
+        );
+        assert_eq!(
+            blocks_of(text),
+            [
+                (true, "[workspace]\nmain = not-a-key".to_owned()),
+                (false, "everyone".to_owned()),
+            ],
+            "a block body is never parsed as INI, and each opener picks its own variant"
+        );
     }
 
     #[test]
@@ -2753,6 +2796,16 @@ mod tests {
             ("[workspace]\nmain = \"\"\"\n\"\"\"\n", "workspace.main", 2),
             ("[prompt]\nnotes = \"\"\"\n\"\"\"\n", "prompt.notes", 2),
             ("instructions = \"\"\"\n\"\"\"\n", "instructions", 1),
+            (
+                "spawn_instructions = \"\"\"\n\"\"\"\n",
+                "spawn_instructions",
+                1,
+            ),
+            (
+                "[workspace]\nspawn_instructions = \"\"\"\n\"\"\"\n",
+                "workspace.spawn_instructions",
+                2,
+            ),
         ] {
             let err = config_lines(Path::new("<config>"), text)
                 .collect::<Result<Vec<_>, _>>()
@@ -2766,8 +2819,9 @@ mod tests {
                 "{err}"
             );
             assert!(
-                err.to_string().contains("prompt.instructions"),
-                "the refusal says which key accepts a block: {err}"
+                err.to_string().contains("prompt.instructions")
+                    && err.to_string().contains("prompt.spawn_instructions"),
+                "the refusal says which keys accept a block: {err}"
             );
         }
     }

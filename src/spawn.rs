@@ -222,6 +222,7 @@ impl Facts {
 
     /// Rewrite `workspace.md` from the live panes.
     fn regenerate_manifest(&self, dir: &Path) {
+        let files = self.config_files();
         let document = crate::render::manifest_document(
             dir,
             &self.session,
@@ -229,9 +230,11 @@ impl Facts {
             &self.origin,
             &self.mode,
             &self.main_pane,
-            &self.config_files(),
+            &files,
         );
-        let _ = std::fs::write(dir.join("workspace.md"), document);
+        // A failed write stays ignored here as it always was; with a spawn
+        // policy in force the seat's `_run` refuses to start on a stale target.
+        let _ = crate::render::write_manifest(&dir.join("workspace.md"), &document, &files);
     }
 }
 

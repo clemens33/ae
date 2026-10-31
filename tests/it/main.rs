@@ -88,6 +88,11 @@ mod git;
 mod goquota_spec;
 mod honeststatus_spec;
 mod honestwords_spec;
+#[allow(
+    clippy::expect_used,
+    reason = "the frozen spec uses expect in its fixtures and its bytes stay as nav froze them"
+)]
+mod hy_policy_spec;
 mod imgpaste_spec;
 mod init;
 mod install;

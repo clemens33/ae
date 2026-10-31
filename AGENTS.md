@@ -463,7 +463,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | Session name `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, checked before any side effect. A word the entry ROUTES is refused on top of that grammar, at the two places a name is CREATED — an explicit launch and a rename — so the class closes rather than the word a slice happened to add; the picker's own resume is exempt because it addresses a session that already exists, and the canonical orchestrator is exempt because that seat IS the session of its word. A NEAR-MISS word — a routed verb plus `s` (`lists`, `boards`) or one of `agent`/`agents`/`seat`/`seats`/`session`/`sessions`, exact and case-sensitive, no edit distance — is refused too (exit 2, nothing written, `Did you mean: ae <verb>` or `ae list`), but only where a NEW name comes into being: a launch that finds no session record, and a rename into the word; a session of that name that already exists still resumes, stops, ends, lists and renames to itself as before | `src/session_launch/name.rs::is_session_name` is the grammar; `src/entry.rs::ROUTED_VERBS` is the set and `::name_is_routed_verb` the one predicate both sites ask; `::near_miss_refusal` is the near-miss set and its one text, asked by `src/session_launch.rs::launch` right after `preflight_meta_present` and by `src/rename.rs::run` |
 | Agent name `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; it reaches a system prompt, so it is an allowlist. Creation also refuses ae-owned journal actors; recorded seats keep working | `src/config.rs::is_agent_name` is the grammar; `::is_reserved_actor` is the creation-only set, asked by `src/spawn.rs::run_spawn_inner` and `src/session_launch.rs::launch` |
 | That name is re-validated at the interpolation site, fail-quiet | `src/render.rs::context_document` |
-| Every seat gets the short CORE; workers get its WORKER card, leadership keeps its detailed doctrine. Owner and role share one slot classification; fallback `seat.main` is validated before interpolation, slotless/unknown slots get neither owner nor card | `src/render.rs::seat_context_document`, `src/render/{core,worker}.txt` |
+| Every seat gets the short CORE; workers get its WORKER card, leadership keeps its detailed doctrine. Owner and role share one slot classification; fallback `seat.main` is validated before interpolation, slotless/unknown slots get neither owner nor card. `[prompt] instructions` lands whole on every seat; `[prompt] spawn_instructions` (resolved apart, same global/local masking) lands whole on the lead pair and on a slot the classification cannot place, and a worker carries one pointer line to the `## Spawn instructions` section of `workspace.md`, which holds the full text from the same winning value | `src/render.rs::seat_context_document`, `::spawn_instructions`, `::seat_role`, `src/render/{core,worker}.txt` |
 | Dispatch is on `argv[0]`'s basename; no `/` means exit 2, never a guess | `src/shim.rs` |
 | `current_exe()` has exactly ONE caller | `src/shape.rs::resolved_exe` |
 | `launch.<slot>.started` decides create-vs-resume, before the exec | `src/run.rs` |
@@ -520,8 +520,8 @@ Role doctrine: [docs/gatekeeping.md](docs/gatekeeping.md) before gating or revie
 ## Config
 
 INI-style, one regex parser, `src/config.rs`. No TOML/YAML/JSON parsing. Do not extend it — the ONE
-exception is the `"""` block for `[prompt] instructions` shown above: raw multi-line text for that
-one key, and nothing else.
+exception is the `"""` block for `[prompt] instructions` and `[prompt] spawn_instructions` shown
+above: raw multi-line text for those two keys, and nothing else.
 
 ```toml
 [clients]
@@ -578,5 +578,11 @@ instructions = "Custom instructions injected into agent system prompts"
 # instructions = """
 # SPEND POLICY: keep replies short.
 # Cite the file for every claim.
+# """
+# spawn_instructions takes the same two forms but lands whole only on the lead pair; a worker
+# carries one pointer to the "Spawn instructions" section of workspace.md. Use it for text only
+# a seat that may spawn needs, such as profile and spend rules.
+# spawn_instructions = """
+# SPEND POLICY: prefer the cheap profile.
 # """
 ```

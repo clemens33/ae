@@ -562,6 +562,9 @@ fn config_entries(files: &[PathBuf]) -> Vec<(String, String)> {
                 crate::config::ConfigLine::Instructions(value) => {
                     ("prompt.instructions".to_owned(), value)
                 }
+                crate::config::ConfigLine::SpawnInstructions(value) => {
+                    ("prompt.spawn_instructions".to_owned(), value)
+                }
                 crate::config::ConfigLine::Plain(_, line) => {
                     let line = line.trim_matches(is_ini_space);
                     if line.is_empty() {
@@ -742,7 +745,15 @@ pub fn manifest_document(
     } else {
         manifest_without_quota()
     };
-    expand(
+    // The spend policy's home moves with the key: the template's one sentence
+    // that names it is rewritten only when the section below exists.
+    let spawn = spawn_instructions(config_files);
+    let template = if spawn.is_some() {
+        template.replace(POLICY_HOME, POLICY_HOME_WITH_SPAWN)
+    } else {
+        template
+    };
+    let mut document = expand(
         &template,
         &[
             ("sess", session),
@@ -755,7 +766,12 @@ pub fn manifest_document(
             ("sessions_dir", dir_display.as_str()),
             ("available_aliases", profile_inventory(&entries).as_str()),
         ],
-    )
+    );
+    // Appended AFTER the fill: operator text is never scanned for markers.
+    if let Some((_, text)) = spawn {
+        document.push_str(&spawn_section(&text));
+    }
+    document
 }
 
 /// An explicit seat's directory block: caller-prepared, user-managed.
@@ -896,6 +912,24 @@ pub(crate) fn seat_context_document(
         ctx.push_str(" --- Workspace instructions: ");
         ctx.push_str(&instructions);
     }
+    // The spend policy: whole for the lead pair and for a slot the
+    // classification cannot place (an unplaceable seat is never starved of
+    // policy), one pointer line for a worker. `workspace.md` holds the same
+    // winning text under the heading the pointer names.
+    if let Some((_, spawn)) = spawn_instructions(config_files) {
+        ctx.push_str(" --- ");
+        ctx.push_str(SPAWN_HEADING);
+        ctx.push_str(": ");
+        if worker {
+            let _ = write!(
+                ctx,
+                "read the \"{SPAWN_HEADING}\" section of {} before any spawn.",
+                dir.join("workspace.md").display()
+            );
+        } else {
+            ctx.push_str(&spawn);
+        }
+    }
     ctx
 }
 
@@ -1017,6 +1051,18 @@ pub(crate) fn seat_role(meta_bytes: &[u8], slot: &str) -> SeatRole {
 /// at all, and the last row in it. The winner decides even when empty, so a
 /// local `instructions = ""` masks a global text and the answer is `None`.
 pub(crate) fn prompt_instructions(config_files: &[PathBuf]) -> Option<(usize, String)> {
+    winning_prompt_row(config_files, "prompt.instructions")
+}
+
+/// The `[prompt] spawn_instructions` in force, and the index of the file whose
+/// row wins. Resolved apart from `instructions` with the same masking rule: an
+/// empty local value masks a global text, and the other key is never consulted.
+pub(crate) fn spawn_instructions(config_files: &[PathBuf]) -> Option<(usize, String)> {
+    winning_prompt_row(config_files, "prompt.spawn_instructions")
+}
+
+/// The one winner rule behind both `[prompt]` text keys.
+fn winning_prompt_row(config_files: &[PathBuf], wanted: &str) -> Option<(usize, String)> {
     config_files
         .iter()
         .enumerate()
@@ -1025,10 +1071,74 @@ pub(crate) fn prompt_instructions(config_files: &[PathBuf]) -> Option<(usize, St
             config_entries(std::slice::from_ref(file))
                 .into_iter()
                 .rev()
-                .find(|(key, _)| key == "prompt.instructions")
+                .find(|(key, _)| key == wanted)
                 .map(|(_, text)| (at, text))
         })
         .filter(|(_, text)| !text.is_empty())
+}
+
+/// The heading a worker's pointer names and `workspace.md` carries.
+const SPAWN_HEADING: &str = "Spawn instructions";
+
+/// The tail `workspace.md` ends with when `[prompt] spawn_instructions` is in
+/// force: the full text, under the heading the pointer names.
+fn spawn_section(text: &str) -> String {
+    format!("\n## {SPAWN_HEADING}\n\n{text}\n")
+}
+
+/// The manifest sentence that names where the spend policy lives, and what it
+/// reads when `[prompt] spawn_instructions` is in force.
+const POLICY_HOME: &str = "(the `[prompt] instructions` in ~/.ae/config)";
+const POLICY_HOME_WITH_SPAWN: &str = "(the `Spawn instructions` section at the end of this file and the `[prompt] instructions` in ~/.ae/config)";
+
+/// Make `workspace.md` in `dir` hold the section a worker's pointer names
+/// before that worker starts: when the file already ends with it nothing is
+/// written, otherwise the canonical manifest `render` returns is published.
+///
+/// Nothing is read or written when no `spawn_instructions` is in force. The
+/// publication is atomic: a worker may read the file while it is replaced.
+///
+/// # Errors
+///
+/// The reason, naming `workspace.md`, when the file cannot be replaced.
+pub(crate) fn ensure_spawn_reference(
+    dir: &Path,
+    config_files: &[PathBuf],
+    render: impl FnOnce() -> String,
+) -> Result<(), String> {
+    let Some((_, text)) = spawn_instructions(config_files) else {
+        return Ok(());
+    };
+    let path = dir.join("workspace.md");
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the worker's pointer target, read once to prove it holds the section — see clippy.toml"
+    )]
+    let held = std::fs::read_to_string(&path).is_ok_and(|now| now.ends_with(&spawn_section(&text)));
+    if held {
+        return Ok(());
+    }
+    crate::session_launch::assets::publish_document(&path, &render()).map_err(|why| {
+        format!(
+            "could not refresh {}: {why}; the pointer to its Spawn instructions section would dangle",
+            path.display()
+        )
+    })
+}
+
+/// Write `document` as the session's `workspace.md`. When `spawn_instructions`
+/// is in force the publication is atomic, because a worker reads that file; the
+/// plain write is kept otherwise.
+pub(crate) fn write_manifest(
+    path: &Path,
+    document: &str,
+    config_files: &[PathBuf],
+) -> std::io::Result<()> {
+    if spawn_instructions(config_files).is_some() {
+        crate::session_launch::assets::publish_document(path, document)
+    } else {
+        std::fs::write(path, document)
+    }
 }
 
 /// The legacy context shape: identical inputs, inherited provenance.
@@ -1130,14 +1240,14 @@ pub fn run_manifest(
     match parsed.out.as_deref() {
         Some("-") => write!(out, "{document}")?,
         Some(path) => {
-            if let Err(reason) = std::fs::write(path, &document) {
+            if let Err(reason) = write_manifest(Path::new(path), &document, &parsed.files()) {
                 writeln!(err, "ae: _manifest-render: {path}: {reason}")?;
                 return Ok(1);
             }
         }
         None => {
             let path = dir.join("workspace.md");
-            if let Err(reason) = std::fs::write(&path, &document) {
+            if let Err(reason) = write_manifest(&path, &document, &parsed.files()) {
                 writeln!(err, "ae: _manifest-render: {}: {reason}", path.display())?;
                 return Ok(1);
             }
@@ -1873,6 +1983,134 @@ mod tests {
         let config = write(&dir, "config", "[prompt]\ninstructions = be brief\n");
         let document = context_document(&dir, "s", "/w", "main", &[config]);
         assert!(document.ends_with(" --- Workspace instructions: be brief"));
+    }
+
+    /// `[prompt] spawn_instructions` follows `instructions`: whole for the lead
+    /// pair and an unplaceable slot, one pointer line for a worker.
+    #[test]
+    fn spawn_instructions_are_whole_for_leads_and_a_pointer_for_workers() {
+        let dir = scratch("spawn-ctx");
+        std::fs::write(dir.join("meta"), "mode=local\nseat.main=lead\n").unwrap();
+        let config = write(
+            &dir,
+            "config",
+            "[prompt]\ninstructions = common\nspawn_instructions = pick cheap\n",
+        );
+        let files = [config];
+        for slot in ["main", "", "bogus"] {
+            let document = context_document(&dir, "s", "/w", slot, &files);
+            assert!(
+                document.ends_with(
+                    " --- Workspace instructions: common --- Spawn instructions: pick cheap"
+                ),
+                "{slot:?}: {document}"
+            );
+        }
+        let worker = context_document(&dir, "s", "/w", "spawned.1", &files);
+        let pointer = format!(
+            " --- Spawn instructions: read the \"Spawn instructions\" section of {}/workspace.md before any spawn.",
+            dir.display()
+        );
+        assert!(
+            worker.ends_with(&format!(" --- Workspace instructions: common{pointer}")),
+            "{worker}"
+        );
+        assert!(!worker.contains("pick cheap"), "{worker}");
+    }
+
+    /// The manifest names the section as the spend policy's home, and only when
+    /// the section exists; the sentence it rewrites must still be in the template.
+    #[test]
+    fn the_manifest_names_the_spawn_section_only_when_one_exists() {
+        assert!(
+            MANIFEST_TEMPLATE.contains(super::POLICY_HOME),
+            "the sentence the replace rewrites moved: the replace would silently do nothing"
+        );
+        let dir = scratch("spawn-manifest");
+        std::fs::write(dir.join("meta"), "mode=local\n").unwrap();
+        let plain = write(&dir, "plain", "[prompt]\ninstructions = common\n");
+        let scoped = write(
+            &dir,
+            "scoped",
+            "[prompt]\ninstructions = common\nspawn_instructions = ${sess} cheap\n",
+        );
+        let without = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[plain]);
+        assert!(without.contains(super::POLICY_HOME), "{without}");
+        assert!(!without.contains("## Spawn instructions"), "{without}");
+        let with = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[scoped]);
+        assert!(with.contains(super::POLICY_HOME_WITH_SPAWN), "{with}");
+        assert!(!with.contains(super::POLICY_HOME), "{with}");
+        assert!(
+            with.ends_with("\n## Spawn instructions\n\n${sess} cheap\n"),
+            "operator text is appended unexpanded: {with}"
+        );
+    }
+
+    /// No policy: nothing is read or written, even when the target cannot be.
+    /// A policy already published: nothing is written. A stale target: the
+    /// canonical text is published, and a target that cannot be replaced is
+    /// refused by name.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the pointer target it published"
+    )]
+    fn the_pointer_target_is_made_true_only_when_a_policy_needs_it() {
+        let dir = scratch("spawn-ensure");
+        let plain = write(&dir, "plain", "[prompt]\ninstructions = common\n");
+        let scoped = write(&dir, "scoped", "[prompt]\nspawn_instructions = cheap\n");
+        std::fs::create_dir(dir.join("workspace.md")).unwrap();
+        let unreached = || -> String { unreachable!("no policy: the manifest is never rendered") };
+        assert_eq!(
+            super::ensure_spawn_reference(&dir, std::slice::from_ref(&plain), unreached),
+            Ok(())
+        );
+        let why = super::ensure_spawn_reference(&dir, std::slice::from_ref(&scoped), || {
+            "doc\n".to_owned()
+        })
+        .unwrap_err();
+        assert!(why.contains("workspace.md"), "{why}");
+        std::fs::remove_dir(dir.join("workspace.md")).unwrap();
+
+        std::fs::write(
+            dir.join("workspace.md"),
+            "old\n## Spawn instructions\n\nold\n",
+        )
+        .unwrap();
+        super::ensure_spawn_reference(&dir, std::slice::from_ref(&scoped), || {
+            "doc\n\n## Spawn instructions\n\ncheap\n".to_owned()
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("workspace.md")).unwrap(),
+            "doc\n\n## Spawn instructions\n\ncheap\n",
+            "a stale section is replaced by the canonical manifest"
+        );
+        super::ensure_spawn_reference(&dir, std::slice::from_ref(&scoped), unreached).unwrap();
+    }
+
+    /// With a policy in force the manifest is replaced, never written through:
+    /// a symlinked target is swapped for a file and its old target is untouched.
+    /// Without one the plain write follows the link, as it always did.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test lstats the symlinked target it writes through or replaces"
+    )]
+    fn the_manifest_is_published_atomically_only_with_a_policy_in_force() {
+        let dir = scratch("spawn-write");
+        let plain = write(&dir, "plain", "[prompt]\ninstructions = common\n");
+        let scoped = write(&dir, "scoped", "[prompt]\nspawn_instructions = cheap\n");
+        let real = write(&dir, "real", "old\n");
+        let target = dir.join("workspace.md");
+        std::os::unix::fs::symlink(&real, &target).unwrap();
+        super::write_manifest(&target, "plain write\n", &[plain]).unwrap();
+        assert!(std::fs::symlink_metadata(&target).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "plain write\n");
+        super::write_manifest(&target, "published\n", &[scoped]).unwrap();
+        assert!(!std::fs::symlink_metadata(&target).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "published\n");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "plain write\n");
     }
 
     #[test]

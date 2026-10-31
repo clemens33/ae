@@ -601,7 +601,8 @@ every line is raw text — a `[section]` header, a `key = value` line and a `#`
 comment are all just text, and no escapes are interpreted. A raw line that is
 exactly `"""` cannot appear inside the block, because that line closes it; no
 escape exists. The single-line form above stays valid and unchanged, and the
-block is accepted for `prompt.instructions` alone.
+block is accepted for `prompt.instructions` and `prompt.spawn_instructions`
+alone.
 
 ```toml
 [prompt]
@@ -614,6 +615,34 @@ Cite the file for every claim.
 Every harness receives the value on its own channel — a system-prompt flag, a
 developer-instructions value, an initial user turn, or a generated config file —
 so the newlines and quotes reach the agent's system prompt verbatim.
+
+### Text only a seat that may spawn needs
+
+`instructions` lands whole on every seat. A long policy that only a seat choosing
+profiles needs, such as spend and profile rules, goes in `spawn_instructions`
+instead; it takes the same single-line and `"""` block forms.
+
+```toml
+[prompt]
+instructions = "Cite the file for every claim."
+spawn_instructions = """
+SPEND POLICY: chores go to the cheap profile.
+"""
+```
+
+- The lead pair (`main`, and `worker.0` of a lead-pair layout) and a seat whose slot ae
+  cannot classify get the whole text, after `instructions`.
+- Every other seat gets one line instead, naming the `## Spawn instructions` section of
+  the session's `workspace.md`, which holds the same text. A worker that may spawn reads
+  that section before it does.
+- The two keys resolve apart. Each follows the same layering: the last config file that
+  declares the key wins, even when empty, so a local `spawn_instructions = ""` masks a
+  global text.
+- `instructions` keeps its meaning: with no `spawn_instructions` in any config, every
+  seat's context and `workspace.md` are unchanged.
+- A running seat holds the text of its own launch; `workspace.md` is rewritten at the next
+  launch, rename, spawn or doctor repair. Edit the config, then restart the seats that
+  should see the change.
 
 ## Watchdog defaults
 

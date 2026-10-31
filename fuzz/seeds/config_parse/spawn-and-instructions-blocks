@@ -1,0 +1,11 @@
+[prompt]
+instructions = """
+every seat
+"""
+spawn_instructions = """
+[workspace]
+main = not-a-key
+# not a comment
+"""
+[workspace]
+main = lead

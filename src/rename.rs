@@ -2539,6 +2539,13 @@ fn manifest_inputs(dir: &Path) -> ManifestInputs {
 
 /// Render the canonical expected manifest for the renamed session.
 fn expected_manifest(dir: &Path, name: &str) -> String {
+    manifest_over(dir, name, &manifest_inputs(dir).config_files)
+}
+
+/// The canonical manifest of session `name` from the facts in `dir`'s meta,
+/// layered over `config_files`. A worker's start renders over the very files its
+/// context was rendered from, so the pointer and its target share one winner.
+pub(crate) fn manifest_over(dir: &Path, name: &str, config_files: &[PathBuf]) -> String {
     let inputs = manifest_inputs(dir);
     crate::render::manifest_document(
         dir,
@@ -2547,7 +2554,7 @@ fn expected_manifest(dir: &Path, name: &str) -> String {
         &inputs.origin,
         &inputs.mode,
         &inputs.main_pane,
-        &inputs.config_files,
+        config_files,
     )
 }
 
