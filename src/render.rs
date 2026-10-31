@@ -2859,7 +2859,7 @@ mod tests {
             "Never widen scope, spawn agents or take over another file without authorization.",
             "Ask your owner for human decisions; use waiting-agent, not waiting-user.",
             "For behavior changes, demonstrate the required failing test before fixing; for research/docs, report applicable checks without manufacturing a failure.",
-            "Run the brief's verification.",
+            "Run your assigned verification.",
             "Return Outcome / Changed / Verified (command/result) / Risks / Need, with artifact paths, through its supplied command: at most 20 lines.",
             "Then declare done; never self-retire.",
             "If authorized to spawn, review and retire your workers before finishing.",
