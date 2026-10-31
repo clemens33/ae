@@ -1102,10 +1102,30 @@ mod tests {
         // The ONE action the turn exists to cause, spelled out rather than
         // referred to — codex creates no rollout until a user turn lands.
         assert!(turn.contains("/meta/_register-sid spawned.0"), "{turn}");
-        // And nothing else: the bare `Go` it replaced made codex invent work.
+        // Registration must finish the setup turn. An imperative WAIT made a
+        // live codex call a blocking sleep tool instead of ending its turn.
+        // Ban wait/await wording throughout this fixed-path turn. This pins
+        // wording only; live smoke must prove the model ends without sleeping.
+        let after_registration = turn
+            .split_once("/meta/_register-sid spawned.0 once")
+            .expect("the registration command is explicit")
+            .1
+            .to_ascii_lowercase();
         assert!(
-            turn.contains("do not start any work until a task arrives"),
-            "{turn}"
+            !turn.to_ascii_lowercase().contains("wait"),
+            "registration must not invite waiting: {turn}"
+        );
+        assert!(
+            after_registration.contains("end this turn"),
+            "registration must end the setup turn: {turn}"
+        );
+        assert!(
+            after_registration.contains("do not call any other tools"),
+            "no tool may keep the setup turn alive after registration: {turn}"
+        );
+        assert!(
+            after_registration.contains("do not start any work"),
+            "registration must not invite invented work: {turn}"
         );
         assert!(!turn.starts_with("Go"), "{turn}");
         // An empty slot leaves the command bare rather than trailing a space.

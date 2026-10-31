@@ -1237,10 +1237,40 @@ fn codex_gets_a_marked_passive_inline_first_turn() {
         "{}",
         argv[3]
     );
-    // The turn stays (codex-cli 0.153.2 writes no rollout without one) and it
-    // is PASSIVE — the reason is pinned at `launch::initial_prompt_for`.
+    // The turn stays (codex-cli 0.153.2 writes no rollout without one), then
+    // ends after registration. WAIT must not invite a blocking tool call.
+    // This proves wording reaches argv; live smoke proves model behaviour.
     assert!(argv[4].contains("/_register-sid main"), "{}", argv[4]);
-    assert!(argv[4].contains("do not start any work"), "{}", argv[4]);
+    // The fixture's path may contain wait/await; only instruction text is banned.
+    let session_path = rig.dir.display().to_string();
+    let wording = argv[4]
+        .replace(session_path.as_str(), "<session>")
+        .to_ascii_lowercase();
+    let after_registration = argv[4]
+        .split_once("/_register-sid main once")
+        .expect("the planned turn carries the registration command")
+        .1
+        .to_ascii_lowercase();
+    assert!(
+        !wording.contains("wait"),
+        "the planned setup turn must not invite waiting: {}",
+        argv[4]
+    );
+    assert!(
+        after_registration.contains("end this turn"),
+        "the planned setup turn must end after registration: {}",
+        argv[4]
+    );
+    assert!(
+        after_registration.contains("do not call any other tools"),
+        "the planned setup turn must call no tool after registration: {}",
+        argv[4]
+    );
+    assert!(
+        after_registration.contains("do not start any work"),
+        "the planned setup turn must not invite invented work: {}",
+        argv[4]
+    );
     let ctx = ae::provenance::ctx();
     assert_eq!(argv[4].lines().next(), Some(ctx.as_str()), "{}", argv[4]);
     assert_eq!(argv.len(), 5, "{argv:?}");
