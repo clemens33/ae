@@ -2085,13 +2085,11 @@ fn restart_verbose(rig: &mut Rig) {
     tail.push(&rig.session);
     tail.push(&command);
     assert!(rig.tmux(&tail).0, "the verbose server starts");
-    let (_, panes) = rig.tmux(&["list-panes", "-s", "-t", &rig.session, "-F", "#{pane_id}"]);
-    panes
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .clone_into(&mut rig.pane);
-    assert!(!rig.pane.is_empty(), "{panes}");
+    rig.pane = first_pane(
+        |args| rig.tmux(args),
+        &["-s", "-t", &rig.session],
+        Instant::now() + SETUP_WAIT,
+    );
     assert!(
         rig.tmux(&["set-option", "-p", "-t", &rig.pane, "@ae_slot", "main"])
             .0
@@ -2960,10 +2958,12 @@ fn human_bare_interrupt_holds_the_actual_target_lock_across_sessions() {
                 rig.tmux(&["new-session", "-d", "-s", caller, "exec sleep 600"])
                     .0
             );
-            let pane = rig
-                .tmux(&["list-panes", "-t", caller, "-F", "#{pane_id}"])
-                .1;
-            let pane = pane.trim();
+            let pane = first_pane(
+                |args| rig.tmux(args),
+                &["-t", caller],
+                Instant::now() + SETUP_WAIT,
+            );
+            let pane = pane.as_str();
             assert!(
                 rig.tmux(&["set-option", "-p", "-t", pane, "@ae_agent", "caller"])
                     .0
