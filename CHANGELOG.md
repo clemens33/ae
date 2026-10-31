@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.171] - 2026-10-31
+- Refuse a caller whose tmux read failed instead of journaling a human (#292)
+
 ## [v2026.10.170] - 2026-10-30
 - Wait for the rig first pane instead of trusting one list-panes read (#293)
 - Wait for the post-reservation input hold record instead of a fixed sleep (#294)
