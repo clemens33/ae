@@ -162,7 +162,23 @@ rustix = { version = "=1.1.5", default-features = false, features = [
 # The fake Telegram server the outbound gate runs against is a `std::net`
 # TcpListener in the test module itself: a test double that needed a dependency
 # would be a second network stack to trust.
+#
+# The text guards' source view (tests/it/support/source_view.rs) reads every
+# src/ file with syn instead of a hand-written table of gated item shapes.
+# TEST-ONLY: a dev-dependency never reaches a product build, and both crates are
+# already in the lock as proc-macro dependencies (strum_macros, thiserror-impl),
+# so no crate is new. proc-macro2's `span-locations` is what gives a syntax node
+# its byte range; syn is the 3.x line thiserror-impl already locks.
 [dev-dependencies]
+proc-macro2 = { version = "=1.0.107", default-features = false, features = [
+  "span-locations",
+] }
+syn = { version = "=3.0.6", default-features = false, features = [
+  "full",
+  "parsing",
+  "printing",
+  "visit",
+] }
 
 [lints.rust]
 # The hard line. Not "warn": there is no scoped exception worth having in a

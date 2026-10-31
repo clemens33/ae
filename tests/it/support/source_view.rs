@@ -13,26 +13,16 @@
 //! crate roots by rustc's own file rule, so a file is test-only because it is
 //! registered by test code alone, never because of what it is called.
 //!
-//! BOUNDED SYNTAX. This is a lexer plus a finite table of gated item shapes
-//! calibrated against the registrations that exist in `src/`, not a Rust
-//! parser. A shape outside the table is a [`Failure`] at its `#[cfg(test)]`
-//! line; adding a shape is a review, never a fallback. What the table reads:
+//! SYNTAX. `syn` (a dev-dependency) lexes and parses each file; it drops comments,
+//! so a comment is what lies between two tokens. A `#[cfg(test)]` is cut only on
+//! a node [`Walk`] lists: items and their members, variants, fields, arms, an `if`
+//! or block, a macro statement. A gate anywhere else (a macro body included, which
+//! `syn` leaves opaque), an inner one, and a file `syn` cannot read are a
+//! [`Failure`]: adding a node is a review, never a fallback.
 //!
-//! | after `#[cfg(test)]` (and any attribute run, `pub`, `pub(..)`)  | ends at |
-//! |---|---|
-//! | `mod NAME;` (a registration) / `mod NAME { .. }` | `;` / the matching `}` |
-//! | `fn`, `struct`, `enum`, `union`, `trait` | first depth-0 `{ .. }`, or `;` |
-//! | `impl` | first depth-0 `{ .. }` |
-//! | `const`, `static`, `type`, `use` | first depth-0 `;` |
-//! | `NAME! ( .. )` / `[ .. ]` / `{ .. }` (`include!`, `thread_local!`) | the group, plus `;` for `( )` and `[ ]` |
-//! | `if .. { .. }` with `else if` / `else` | the last `}` |
-//! | enum variant `PATH`, `PATH( .. )`, `PATH { .. }` | the `,` |
-//! | struct field or initialiser `NAME: ..` | the depth-0 `,` |
-//! | match arm `PATH [group] => ..` | `{ .. }` plus optional `,`, else the `,` |
-//!
-//! Attributes: `cfg(test)` gates; `cfg(not(test))` does not; `cfg_attr` is
-//! read only when every attribute it adds is `allow`, `expect`, `warn`, `deny`
-//! or `forbid`; any other `cfg(..)` that mentions `test` is refused.
+//! Attributes: `cfg(test)` gates; `cfg(not(test))` does not; `cfg_attr` is read
+//! only when every attribute it adds is `allow`, `expect`, `warn`, `deny` or
+//! `forbid`; any other `cfg(..)` that mentions `test` is refused.
 
 #![allow(
     clippy::disallowed_methods,
@@ -43,8 +33,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::ops::Range;
 use std::path::Path;
 use std::sync::OnceLock;
+
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
+use syn::{AttrStyle, Attribute, Expr, ExprLit, ItemMod, Lit, Meta, MetaNameValue};
 
 /// A file the view could not read or classify, and where.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,138 +114,104 @@ fn line_at(text: &str, at: usize) -> usize {
     1 + text.bytes().take(at).filter(|byte| *byte == b'\n').count()
 }
 
-fn is_ident(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
+/// A file that does not lex or parse proves no `#[cfg(test)]` gates a known
+/// item: blame the last one before the error (at the end, when the error has
+/// no place), else the error's own line.
+fn unparsed(file: &str, text: &str, span: proc_macro2::Span, why: &str) -> Failure {
+    let at = Some(span.byte_range().start).filter(|at| *at > 0);
+    let gate = text
+        .get(..at.unwrap_or(text.len()))
+        .and_then(|head| head.rfind("cfg(test)"));
+    let own = span.start().line;
+    let line = gate.map_or(own, |gate| line_at(text, gate));
+    fail(
+        file,
+        line,
+        format!("the file does not lex or parse (line {own}): {why}"),
+    )
 }
 
-/// The index after the nested block comment opening at `at`.
-fn block_end(b: &[u8], at: usize) -> Option<usize> {
-    let (mut depth, mut i) = (1_usize, at + 2);
-    while i < b.len() {
-        match (b.get(i), b.get(i + 1)) {
-            (Some(b'/'), Some(b'*')) => {
-                depth += 1;
-                i += 2;
-            }
-            (Some(b'*'), Some(b'/')) => {
-                depth -= 1;
-                i += 2;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => i += 1,
+/// One pass over a file's tokens. `syn` drops comments, so a comment is what
+/// sits between two tokens; a literal is a string or character token; every
+/// attribute is kept, macro bodies included, with the offset of its `#`.
+#[derive(Default)]
+struct Lexed {
+    spans: Vec<Span>,
+    attrs: Vec<(usize, bool, TokenStream)>,
+    /// The end of the last token.
+    cursor: usize,
+}
+
+impl Lexed {
+    fn token(&mut self, text: &str, range: Range<usize>, literal: bool) {
+        let gap = text.get(self.cursor..range.start).unwrap_or_default();
+        let start = self.cursor + gap.len() - gap.trim_start().len();
+        let end = self.cursor + gap.trim_end().len();
+        if start < end {
+            self.spans.push(Span {
+                start,
+                end,
+                region: Region::Comment,
+            });
         }
-    }
-    None
-}
-
-/// The index after the closing `quote` of a literal whose body starts at `from`.
-fn quoted_end(b: &[u8], from: usize, quote: u8) -> Option<usize> {
-    let mut i = from;
-    while let Some(&byte) = b.get(i) {
-        if byte == b'\\' {
-            i += 2;
-        } else if byte == quote {
-            return Some(i + 1);
-        } else {
-            i += 1;
+        if literal {
+            // A `b` or `c` prefix stays outside the literal, a raw `r` inside.
+            let prefix = matches!(text.as_bytes().get(range.start), Some(b'b' | b'c'));
+            let start = range.start + usize::from(prefix);
+            self.spans.push(Span {
+                start,
+                end: range.end,
+                region: Region::Literal,
+            });
         }
+        self.cursor = range.end;
     }
-    None
-}
 
-/// The number of `#` of a raw string whose `r` is at `at`, if one opens there.
-fn raw_open(b: &[u8], at: usize) -> Option<usize> {
-    let before = |back: usize| at.checked_sub(back).and_then(|i| b.get(i)).copied();
-    let lone_prefix = matches!(before(1), Some(b'b' | b'c')) && !before(2).is_some_and(is_ident);
-    if before(1).is_some_and(is_ident) && !lone_prefix {
-        return None;
-    }
-    let hashes = b[at + 1..].iter().take_while(|byte| **byte == b'#').count();
-    (b.get(at + 1 + hashes) == Some(&b'"')).then_some(hashes)
-}
-
-/// The index after the closing `"` and `hashes` `#` of a raw string body at `from`.
-fn raw_end(b: &[u8], from: usize, hashes: usize) -> Option<usize> {
-    (from..b.len()).find_map(|i| {
-        let closes =
-            b.get(i) == Some(&b'"') && (1..=hashes).all(|step| b.get(i + step) == Some(&b'#'));
-        closes.then_some(i + 1 + hashes)
-    })
-}
-
-/// The end of the character literal opening at `at`, or `None` for a lifetime.
-fn char_end(text: &str, at: usize) -> Option<usize> {
-    let b = text.as_bytes();
-    if b.get(at + 1) == Some(&b'\\') {
-        let skipped = text.get(at + 2..)?.chars().next()?.len_utf8();
-        let mut i = at + 2 + skipped;
-        while b
-            .get(i)
-            .is_some_and(|byte| *byte != b'\'' && *byte != b'\n')
-        {
-            i += 1;
-        }
-        return (b.get(i) == Some(&b'\'')).then_some(i + 1);
-    }
-    let one = text.get(at + 1..)?.chars().next()?;
-    let after = at + 1 + one.len_utf8();
-    (one != '\'' && one != '\n' && b.get(after) == Some(&b'\'')).then_some(after + 1)
-}
-
-/// Every comment and every string or character literal of `text`.
-fn spans(file: &str, text: &str) -> Result<Vec<Span>, Failure> {
-    let b = text.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    let unterminated = |what: &str, at: usize| fail(file, line_at(text, at), what);
-    while let Some(&byte) = b.get(i) {
-        let (end, region) = match byte {
-            b'/' if b.get(i + 1) == Some(&b'/') => (
-                b[i..]
-                    .iter()
-                    .position(|c| *c == b'\n')
-                    .map_or(b.len(), |p| i + p),
-                Region::Comment,
-            ),
-            b'/' if b.get(i + 1) == Some(&b'*') => (
-                block_end(b, i).ok_or_else(|| unterminated("unterminated block comment", i))?,
-                Region::Comment,
-            ),
-            b'"' => (
-                quoted_end(b, i + 1, b'"')
-                    .ok_or_else(|| unterminated("unterminated string literal", i))?,
-                Region::Literal,
-            ),
-            b'r' if raw_open(b, i).is_some() => {
-                let hashes = raw_open(b, i).unwrap_or(0);
-                (
-                    raw_end(b, i + 2 + hashes, hashes)
-                        .ok_or_else(|| unterminated("unterminated raw string literal", i))?,
-                    Region::Literal,
-                )
-            }
-            b'\'' => {
-                let Some(end) = char_end(text, i) else {
-                    i += 1;
-                    continue;
-                };
-                (end, Region::Literal)
-            }
-            _ => {
-                i += 1;
+    fn walk(&mut self, text: &str, tokens: TokenStream) {
+        let trees: Vec<TokenTree> = tokens.into_iter().collect();
+        for (at, tree) in trees.iter().enumerate() {
+            let range = tree.span().byte_range();
+            // A doc comment is tokens that all span the comment: it stays a gap.
+            if range.len() > 1 && text.get(range.clone()).is_some_and(|s| s.starts_with('/')) {
                 continue;
             }
-        };
-        out.push(Span {
-            start: i,
-            end,
-            region,
-        });
-        i = end;
+            match tree {
+                TokenTree::Group(group) => {
+                    self.token(text, group.span_open().byte_range(), false);
+                    self.walk(text, group.stream());
+                    self.token(text, group.span_close().byte_range(), false);
+                }
+                TokenTree::Literal(_) => {
+                    let digit = text
+                        .as_bytes()
+                        .get(range.start)
+                        .is_some_and(u8::is_ascii_digit);
+                    self.token(text, range, !digit);
+                }
+                TokenTree::Punct(pound) if pound.as_char() == '#' => {
+                    let inner = matches!(trees.get(at + 1), Some(TokenTree::Punct(bang)) if bang.as_char() == '!');
+                    if let Some(TokenTree::Group(body)) = trees.get(at + 1 + usize::from(inner))
+                        && body.delimiter() == Delimiter::Bracket
+                    {
+                        self.attrs.push((range.start, inner, body.stream()));
+                    }
+                    self.token(text, range, false);
+                }
+                _ => self.token(text, range, false),
+            }
+        }
     }
-    Ok(out)
+}
+
+/// Lex `text`: its tokens, and what [`Lexed`] found in them.
+fn lexed(file: &str, text: &str) -> Result<(TokenStream, Lexed), Failure> {
+    let tokens = text
+        .parse::<TokenStream>()
+        .map_err(|err| unparsed(file, text, err.span(), &err.to_string()))?;
+    let mut lexed = Lexed::default();
+    lexed.walk(text, tokens.clone());
+    lexed.token(text, text.len()..text.len(), false);
+    Ok((tokens, lexed))
 }
 
 /// Replace `start..end` with spaces, keeping newlines, so offsets and lines hold.
@@ -280,546 +242,239 @@ fn into_text(file: &str, bytes: Vec<u8>) -> Result<String, Failure> {
 
 /// `text` with every comment (line, doc, nested block) blanked to spaces.
 pub(crate) fn without_comments(file: &str, text: &str) -> Result<String, Failure> {
-    blanked(file, text, &spans(file, text)?, |region| {
-        region == Region::Comment
-    })
+    let (_, lexed) = lexed(file, text)?;
+    blanked(file, text, &lexed.spans, |region| region == Region::Comment)
 }
 
 /// `text` with every string and character literal blanked to spaces, quotes
 /// included, one space per byte.
 pub(crate) fn blank_literals(file: &str, text: &str) -> Result<String, Failure> {
-    blanked(file, text, &spans(file, text)?, |region| {
-        region == Region::Literal
-    })
+    let (_, lexed) = lexed(file, text)?;
+    blanked(file, text, &lexed.spans, |region| region == Region::Literal)
 }
 
 // ---- the classifier ----------------------------------------------------------
 
-enum AttrClass {
-    Gate,
-    Path(String),
-    Plain,
+fn mentions_test(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|tree| match tree {
+        TokenTree::Ident(word) => word == "test",
+        TokenTree::Group(group) => mentions_test(group.stream()),
+        _ => false,
+    })
 }
 
-/// A run of attributes, `#[..] #[..]`, and what it says about the item after it.
-struct Run {
-    start: usize,
-    end: usize,
-    gate: bool,
-    /// Where the gate attribute starts: the line every failure about the gated
-    /// item names.
-    gate_at: usize,
-    path: Option<String>,
+/// Whether the attribute `body` gates (`Ok(true)`); `cfg(not(test))` does not;
+/// `cfg_attr` is read only when every attribute it adds is a lint; any other
+/// `cfg(..)` that mentions `test` is refused.
+fn gates(body: &TokenStream) -> Result<bool, String> {
+    let norm: String = body.to_string().split_whitespace().collect();
+    if norm.starts_with("cfg_attr(")
+        && let Some(TokenTree::Group(args)) = body.clone().into_iter().nth(1)
+    {
+        let (mut part, mut head) = (0_usize, true);
+        for tree in args.stream() {
+            if matches!(&tree, TokenTree::Punct(comma) if comma.as_char() == ',') {
+                (part, head) = (part + 1, true);
+            } else {
+                let lint = matches!(&tree, TokenTree::Ident(name)
+                    if ["allow", "expect", "warn", "deny", "forbid"].iter().any(|l| name == l));
+                if part > 0 && head && !lint {
+                    return Err(format!(
+                        "a cfg_attr that may change cfg or path (`{tree}`); only \
+                         allow, expect, warn, deny and forbid are read"
+                    ));
+                }
+                head = false;
+            }
+        }
+    } else if norm.starts_with("cfg(")
+        && !matches!(norm.as_str(), "cfg(test)" | "cfg(not(test))")
+        && mentions_test(body.clone())
+    {
+        return Err(format!("an unrecognised cfg mentioning test: {norm}"));
+    }
+    Ok(norm == "cfg(test)")
 }
 
-struct Scan<'a> {
+fn is_gate(attr: &Attribute) -> bool {
+    matches!(&attr.meta, Meta::List(list)
+        if matches!(attr.style, AttrStyle::Outer) && list.path.is_ident("cfg") && list.tokens.to_string() == "test")
+}
+
+/// The walk over one file's syntax tree: the registrations, and the span of
+/// every outermost `#[cfg(test)]` node. Only the nodes a gate may sit on are
+/// listed; a gate anywhere else is a failure ([`classify`]).
+struct Walk<'a> {
     file: &'a str,
     text: &'a str,
-    /// `text` with comments and literals blanked: what structure is read from.
-    s: &'a [u8],
+    /// `text` with comments and literals blanked.
+    structural: &'a [u8],
+    gated: bool,
+    nest: Vec<Nest>,
     cuts: Vec<(usize, usize)>,
     regs: Vec<Registration>,
+    failure: Option<Failure>,
 }
 
-/// Words that start a statement or expression, never a variant, field or arm.
-const NOT_AN_ELEMENT: [&str; 9] = [
-    "let", "match", "for", "while", "loop", "return", "break", "continue", "move",
-];
-
-impl Scan<'_> {
-    fn fail(&self, at: usize, what: impl Into<String>) -> Failure {
-        fail(self.file, line_at(self.text, at), what)
+impl Walk<'_> {
+    /// The node's bytes, with the `,` that follows a variant, field or arm.
+    fn range(&self, node: &impl Spanned) -> (usize, usize) {
+        let span = node.span().byte_range();
+        let rest = self.structural.get(span.end..).unwrap_or_default();
+        let comma = rest.iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b',');
+        let skipped = rest
+            .iter()
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .count();
+        (span.start, span.end + if comma { skipped + 1 } else { 0 })
     }
 
-    fn at(&self, i: usize) -> u8 {
-        self.s.get(i).copied().unwrap_or(0)
-    }
-
-    fn ws(&self, mut i: usize) -> usize {
-        while self.at(i).is_ascii_whitespace() {
-            i += 1;
+    /// A node carrying `attrs`: cut when it is gated, walked as gated inside.
+    fn scoped<N: Spanned>(&mut self, attrs: &[Attribute], node: &N, walk: impl FnOnce(&mut Self)) {
+        let gate = attrs.iter().any(is_gate);
+        if gate && !self.gated {
+            let cut = self.range(node);
+            self.cuts.push(cut);
         }
-        i
+        let outer = self.gated;
+        self.gated |= gate;
+        walk(self);
+        self.gated = outer;
     }
 
-    /// The identifier at `at` past any space, and the index after it.
-    fn word(&self, at: usize) -> (&str, usize) {
-        let start = self.ws(at);
-        let mut end = start;
-        while is_ident(self.at(end)) {
-            end += 1;
-        }
-        (self.text.get(start..end).unwrap_or(""), end)
-    }
-
-    /// The index after the delimiter group opening at `open`, kinds matched.
-    fn group_end(&self, open: usize, limit: usize) -> Option<usize> {
-        let mut stack = Vec::new();
-        for i in open..limit.min(self.s.len()) {
-            match self.at(i) {
-                b'(' => stack.push(b')'),
-                b'[' => stack.push(b']'),
-                b'{' => stack.push(b'}'),
-                close @ (b')' | b']' | b'}') => {
-                    if stack.pop() != Some(close) {
-                        return None;
-                    }
-                    if stack.is_empty() {
-                        return Some(i + 1);
-                    }
-                }
-                _ => {}
+    /// The `#[path = ".."]` of a module, which must be one plain relative literal.
+    fn path_attr(&mut self, attrs: &[Attribute]) -> Option<String> {
+        let attr = attrs.iter().rfind(|attr| attr.path().is_ident("path"))?;
+        let value = match &attr.meta {
+            Meta::NameValue(MetaNameValue {
+                value:
+                    Expr::Lit(ExprLit {
+                        lit: Lit::Str(lit), ..
+                    }),
+                ..
+            }) if !lit.token().to_string().contains('\\') && !lit.value().starts_with('/') => {
+                Some(lit.value())
             }
-        }
-        None
-    }
-
-    /// The first depth-0 byte of `from..limit` in `ends`; groups are skipped.
-    fn scan_to(
-        &self,
-        from: usize,
-        limit: usize,
-        ends: &[u8],
-        forbid: &[u8],
-    ) -> Result<usize, &'static str> {
-        let mut i = from;
-        while i < limit {
-            let byte = self.at(i);
-            if ends.contains(&byte) {
-                return Ok(i);
-            }
-            let arrow =
-                byte == b'>' && matches!(i.checked_sub(1).map(|p| self.at(p)), Some(b'-' | b'='));
-            if forbid.contains(&byte) && !arrow {
-                return Err(if byte == b';' {
-                    "a `;` ends the statement before its `,`"
-                } else {
-                    "an angle bracket may hold a `,` this view cannot see"
-                });
-            }
-            match byte {
-                b'(' | b'[' | b'{' => {
-                    i = self.group_end(i, limit).ok_or("an unbalanced delimiter")?;
-                    continue;
-                }
-                b')' | b']' | b'}' => return Err("an unmatched closing delimiter"),
-                _ => {}
-            }
-            i += 1;
-        }
-        Err("the item never ends")
-    }
-
-    /// The position after `pub` and `pub(..)`, if present.
-    fn visibility(&self, at: usize) -> usize {
-        let (word, end) = self.word(at);
-        if word != "pub" {
-            return at;
-        }
-        let open = self.ws(end);
-        if self.at(open) == b'(' {
-            self.group_end(open, self.s.len()).unwrap_or(open)
-        } else {
-            end
-        }
-    }
-
-    /// The attributes starting at `at` (`#[` or `#![`).
-    fn run(&self, at: usize) -> Result<Run, Failure> {
-        let mut run = Run {
-            start: at,
-            end: at,
-            gate: false,
-            gate_at: at,
-            path: None,
+            _ => None,
         };
-        let mut j = at;
-        loop {
-            let inner = self.at(j + 1) == b'!';
-            let open = if inner { j + 2 } else { j + 1 };
-            let end = self
-                .group_end(open, self.s.len())
-                .ok_or_else(|| self.fail(j, "an attribute never closes"))?;
-            let body = self.s.get(open + 1..end - 1).unwrap_or_default();
-            let norm: String = body
-                .iter()
-                .filter(|byte| !byte.is_ascii_whitespace())
-                .map(|byte| char::from(*byte))
-                .collect();
-            match self.attribute(j, &norm, (open + 1, end - 1))? {
-                AttrClass::Gate if inner => {
-                    return Err(self.fail(j, "an inner #![cfg(test)] gates the whole file"));
-                }
-                AttrClass::Gate if !run.gate => (run.gate, run.gate_at) = (true, j),
-                AttrClass::Path(path) => run.path = Some(path),
-                AttrClass::Gate | AttrClass::Plain => {}
-            }
-            run.end = end;
-            let next = self.ws(end);
-            if inner || self.at(next) != b'#' || self.at(next + 1) != b'[' {
-                return Ok(run);
-            }
-            j = next;
+        if value.is_none() && self.failure.is_none() {
+            let line = line_at(self.text, attr.pound_token.span.byte_range().start);
+            self.failure = Some(fail(
+                self.file,
+                line,
+                "a #[path] that is not one plain relative string literal",
+            ));
         }
+        value
+    }
+}
+
+/// One `fn` per node kind a gate may sit on: its items, their members, enum
+/// variants, fields (declared or initialised), match arms, an `if` statement
+/// and a macro statement.
+macro_rules! gate_sites {
+    ($($visit:ident($node:ident)),* $(,)?) => {$(
+        fn $visit(&mut self, node: &'ast syn::$node) {
+            self.scoped(&node.attrs, node, |walk| visit::$visit(walk, node));
+        }
+    )*};
+}
+
+impl<'ast> Visit<'ast> for Walk<'_> {
+    gate_sites! {
+        visit_item_const(ItemConst), visit_item_enum(ItemEnum), visit_item_extern_crate(ItemExternCrate),
+        visit_item_fn(ItemFn), visit_item_foreign_mod(ItemForeignMod), visit_item_impl(ItemImpl),
+        visit_item_macro(ItemMacro), visit_item_static(ItemStatic), visit_item_struct(ItemStruct),
+        visit_item_trait(ItemTrait), visit_item_trait_alias(ItemTraitAlias), visit_item_type(ItemType),
+        visit_item_union(ItemUnion), visit_item_use(ItemUse),
+        visit_impl_item_const(ImplItemConst), visit_impl_item_fn(ImplItemFn),
+        visit_impl_item_macro(ImplItemMacro), visit_impl_item_type(ImplItemType),
+        visit_trait_item_const(TraitItemConst), visit_trait_item_fn(TraitItemFn),
+        visit_trait_item_macro(TraitItemMacro), visit_trait_item_type(TraitItemType),
+        visit_foreign_item_fn(ForeignItemFn), visit_foreign_item_static(ForeignItemStatic),
+        visit_foreign_item_type(ForeignItemType), visit_foreign_item_macro(ForeignItemMacro),
+        visit_variant(Variant), visit_field(Field), visit_field_value(FieldValue), visit_arm(Arm),
+        visit_expr_block(ExprBlock), visit_expr_if(ExprIf), visit_stmt_macro(StmtMacro),
     }
 
-    /// What one attribute (whitespace removed, literals blanked) says.
-    fn attribute(&self, at: usize, norm: &str, body: (usize, usize)) -> Result<AttrClass, Failure> {
-        if norm == "cfg(test)" {
-            return Ok(AttrClass::Gate);
-        }
-        if norm == "cfg(not(test))" {
-            return Ok(AttrClass::Plain);
-        }
-        if let Some(args) = norm
-            .strip_prefix("cfg_attr(")
-            .and_then(|rest| rest.strip_suffix(')'))
-        {
-            return self.conditional(at, args);
-        }
-        if norm.starts_with("cfg(") && words(norm).any(|word| word == "test") {
-            return Err(self.fail(at, format!("an unrecognised cfg mentioning test: {norm}")));
-        }
-        if norm.starts_with("path=") {
-            let written = self.text.get(body.0..body.1).unwrap_or("");
-            let value = written
-                .split('"')
-                .nth(1)
-                .filter(|value| !value.contains('\\') && !value.starts_with('/'))
-                .ok_or_else(|| {
-                    self.fail(
-                        at,
-                        "a #[path] that is not one plain relative string literal",
-                    )
-                })?;
-            return Ok(AttrClass::Path(value.to_owned()));
-        }
-        Ok(AttrClass::Plain)
-    }
-
-    /// `cfg_attr(PREDICATE, ATTR, ..)`: read only when every ATTR is a lint.
-    fn conditional(&self, at: usize, args: &str) -> Result<AttrClass, Failure> {
-        let mut depth = 0_usize;
-        let mut parts = vec![String::new()];
-        for ch in args.chars() {
-            match ch {
-                '(' | '[' | '{' => depth += 1,
-                ')' | ']' | '}' => depth = depth.saturating_sub(1),
-                ',' if depth == 0 => {
-                    parts.push(String::new());
-                    continue;
-                }
-                _ => {}
-            }
-            if let Some(last) = parts.last_mut() {
-                last.push(ch);
-            }
-        }
-        for part in parts.iter().skip(1) {
-            let name: String = part.chars().take_while(|c| is_ident(*c as u8)).collect();
-            if !matches!(
-                name.as_str(),
-                "allow" | "expect" | "warn" | "deny" | "forbid"
-            ) {
-                return Err(self.fail(
-                    at,
-                    format!(
-                        "a cfg_attr that may change cfg or path (`{name}`); only \
-                         allow, expect, warn, deny and forbid are read"
-                    ),
-                ));
-            }
-        }
-        Ok(AttrClass::Plain)
-    }
-
-    /// Walk `from..to`, finding attribute runs and module registrations.
-    /// `in_gate` is true inside a `#[cfg(test)]` module body.
-    fn region(
-        &mut self,
-        (from, to): (usize, usize),
-        nest: &mut Vec<Nest>,
-        in_gate: bool,
-    ) -> Result<(), Failure> {
-        let mut i = from;
-        while i < to {
-            let byte = self.at(i);
-            let attribute = byte == b'#'
-                && (self.at(i + 1) == b'[' || (self.at(i + 1) == b'!' && self.at(i + 2) == b'['));
-            if attribute {
-                i = self.attributed(i, to, nest, in_gate)?;
-            } else if is_ident(byte) {
-                let (word, end) = self.word(i);
-                let module = if word == "mod" {
-                    self.module(end, (i, i), None, in_gate, nest, to)?
-                } else {
-                    None
-                };
-                i = module.unwrap_or(end);
+    fn visit_item_mod(&mut self, node: &'ast ItemMod) {
+        self.scoped(&node.attrs, node, |walk| {
+            let path_attr = walk.path_attr(&node.attrs);
+            let name = node.ident.to_string();
+            if node.content.is_some() {
+                walk.nest.push(Nest { name, path_attr });
+                visit::visit_item_mod(walk, node);
+                walk.nest.pop();
             } else {
-                i += 1;
-            }
-        }
-        Ok(())
-    }
-
-    /// An attribute run at `at`, and the item it gates or decorates.
-    fn attributed(
-        &mut self,
-        at: usize,
-        to: usize,
-        nest: &mut Vec<Nest>,
-        in_gate: bool,
-    ) -> Result<usize, Failure> {
-        let run = self.run(at)?;
-        if self.at(at + 1) == b'!' {
-            return Ok(run.end);
-        }
-        let head = self.visibility(self.ws(run.end));
-        let (word, end) = self.word(head);
-        let word_at = self.ws(head);
-        let gates = run.gate && !in_gate;
-        if word == "mod" {
-            let blame = if gates { run.gate_at } else { word_at };
-            if let Some(after) = self.module(
-                end,
-                (word_at, blame),
-                run.path.clone(),
-                in_gate || run.gate,
-                nest,
-                to,
-            )? {
-                if gates {
-                    self.cuts.push((run.start, after));
-                }
-                return Ok(after);
-            }
-        }
-        if gates {
-            let after = self.gated_item(run.gate_at, head, to)?;
-            self.cuts.push((run.start, after));
-            return Ok(after);
-        }
-        Ok(run.end)
-    }
-
-    /// `mod NAME;` or `mod NAME { .. }` after the keyword (ending at `kw_end`).
-    /// `at` is the keyword and the position a failure blames. Returns the index
-    /// after the whole item, or `None` when this `mod` is neither shape.
-    fn module(
-        &mut self,
-        kw_end: usize,
-        (kw_at, blame): (usize, usize),
-        path_attr: Option<String>,
-        gated: bool,
-        nest: &mut Vec<Nest>,
-        to: usize,
-    ) -> Result<Option<usize>, Failure> {
-        let (name, end) = self.word(kw_end);
-        let name = name.to_owned();
-        if name.is_empty() {
-            return Ok(None);
-        }
-        let after = self.ws(end);
-        match self.at(after) {
-            b';' => {
-                self.regs.push(Registration {
+                walk.regs.push(Registration {
                     name,
-                    line: line_at(self.text, kw_at),
+                    line: line_at(walk.text, node.mod_token.span.byte_range().start),
                     path_attr,
-                    gated,
-                    nesting: nest.clone(),
+                    gated: walk.gated,
+                    nesting: walk.nest.clone(),
                 });
-                Ok(Some(after + 1))
             }
-            b'{' => {
-                let close = self
-                    .group_end(after, to)
-                    .ok_or_else(|| self.fail(blame, "an inline module never closes"))?;
-                nest.push(Nest { name, path_attr });
-                let walked = self.region((after + 1, close - 1), nest, gated);
-                nest.pop();
-                walked?;
-                Ok(Some(close))
-            }
-            _ => Ok(None),
-        }
+        });
     }
-
-    /// The end of the item a `#[cfg(test)]` at `gate_at` gates, starting at `from`.
-    fn gated_item(&self, gate_at: usize, from: usize, to: usize) -> Result<usize, Failure> {
-        let bad = |why: &str| {
-            self.fail(
-                gate_at,
-                format!("an item after #[cfg(test)] this view does not read: {why}"),
-            )
-        };
-        let mut at = from;
-        loop {
-            let (word, end) = self.word(at);
-            let next = self.word(end).0;
-            let qualifier = matches!(word, "unsafe" | "async" | "default" | "extern")
-                || (word == "const" && matches!(next, "fn" | "unsafe" | "async" | "extern"));
-            if !qualifier {
-                break;
-            }
-            at = end;
-        }
-        let (word, end) = self.word(at);
-        let to_end = |ends: &[u8]| self.scan_to(end, to, ends, b"").map_err(&bad);
-        let closed = |open: usize| {
-            self.group_end(open, to)
-                .ok_or_else(|| bad("an unbalanced delimiter"))
-        };
-        match word {
-            "fn" | "struct" | "enum" | "union" | "trait" => {
-                let stop = to_end(b"{;")?;
-                if self.at(stop) == b';' {
-                    Ok(stop + 1)
-                } else {
-                    closed(stop)
-                }
-            }
-            "impl" => closed(to_end(b"{")?),
-            "const" | "static" | "type" | "use" => Ok(to_end(b";")? + 1),
-            "if" => self.gated_if(end, to, &bad),
-            "" if self.at(end) == b'{' => closed(end),
-            "" => Err(bad("nothing readable follows")),
-            _ if self.at(self.ws(end)) == b'!' && self.at(self.ws(end) + 1) != b'=' => {
-                let open = self.ws(self.ws(end) + 1);
-                if !matches!(self.at(open), b'(' | b'[' | b'{') {
-                    return Err(bad("a macro call without a delimited argument"));
-                }
-                let after = closed(open)?;
-                let semi = self.ws(after);
-                Ok(if self.at(open) != b'{' && self.at(semi) == b';' {
-                    semi + 1
-                } else {
-                    after
-                })
-            }
-            _ => self.gated_element(at, to, &bad),
-        }
-    }
-
-    /// `if COND { .. } else if COND { .. } else { .. }`, from after the `if`.
-    fn gated_if(
-        &self,
-        mut at: usize,
-        to: usize,
-        bad: &dyn Fn(&str) -> Failure,
-    ) -> Result<usize, Failure> {
-        loop {
-            let open = self.scan_to(at, to, b"{", b"").map_err(bad)?;
-            let end = self
-                .group_end(open, to)
-                .ok_or_else(|| bad("an unbalanced block"))?;
-            let (word, after) = self.word(end);
-            if word != "else" {
-                return Ok(end);
-            }
-            let (next, after_next) = self.word(after);
-            if next == "if" {
-                at = after_next;
-                continue;
-            }
-            let block = self.ws(after);
-            if self.at(block) != b'{' {
-                return Err(bad("an `else` that is neither `else if` nor a block"));
-            }
-            return self
-                .group_end(block, to)
-                .ok_or_else(|| bad("an unbalanced block"));
-        }
-    }
-
-    /// An enum variant, a struct field or initialiser, or a match arm.
-    fn gated_element(
-        &self,
-        at: usize,
-        to: usize,
-        bad: &dyn Fn(&str) -> Failure,
-    ) -> Result<usize, Failure> {
-        let (first, mut end) = self.word(at);
-        if NOT_AN_ELEMENT.contains(&first) || first == "else" {
-            return Err(bad("a statement, not a variant, field or arm"));
-        }
-        let mut segments = 1;
-        while self.at(end) == b':' && self.at(end + 1) == b':' {
-            let (word, after) = self.word(end + 2);
-            if word.is_empty() {
-                return Err(bad("a path that stops after `::`"));
-            }
-            (end, segments) = (after, segments + 1);
-        }
-        let mut at_tail = self.ws(end);
-        let grouped = matches!(self.at(at_tail), b'(' | b'{');
-        if grouped {
-            let after = self
-                .group_end(at_tail, to)
-                .ok_or_else(|| bad("an unbalanced delimiter"))?;
-            at_tail = self.ws(after);
-        }
-        let until_comma = |from: usize| {
-            self.scan_to(from, to, b",", b";<>")
-                .map(|stop| stop + 1)
-                .map_err(bad)
-        };
-        match self.at(at_tail) {
-            b',' => Ok(at_tail + 1),
-            b':' if !grouped && segments == 1 && self.at(at_tail + 1) != b':' => {
-                until_comma(at_tail + 1)
-            }
-            b'=' if self.at(at_tail + 1) == b'>' => {
-                let body = self.ws(at_tail + 2);
-                if self.at(body) != b'{' {
-                    return until_comma(body);
-                }
-                let close = self
-                    .group_end(body, to)
-                    .ok_or_else(|| bad("an unbalanced arm body"))?;
-                let comma = self.ws(close);
-                Ok(if self.at(comma) == b',' {
-                    comma + 1
-                } else {
-                    close
-                })
-            }
-            _ => Err(bad("not a calibrated variant, field or match arm")),
-        }
-    }
-}
-
-/// The identifiers of `text`.
-fn words(text: &str) -> impl Iterator<Item = &str> {
-    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-        .filter(|word| !word.is_empty())
 }
 
 /// Classify one file: its production text and its module registrations, or the
 /// file and line the view could not read. `file` only names diagnostics.
 pub(crate) fn classify(file: &str, text: &str) -> Result<Classified, Failure> {
-    let spans = spans(file, text)?;
-    let structural = blanked(file, text, &spans, |_| true)?;
-    let mut scan = Scan {
+    let (tokens, lexed) = lexed(file, text)?;
+    let tree = syn::parse2::<syn::File>(tokens)
+        .map_err(|err| unparsed(file, text, err.span(), &err.to_string()))?;
+    let structural = blanked(file, text, &lexed.spans, |_| true)?;
+    let mut gated_at = Vec::new();
+    for (at, inner, body) in lexed.attrs {
+        match gates(&body) {
+            Err(why) => return Err(fail(file, line_at(text, at), why)),
+            Ok(true) if inner => {
+                let why = "an inner #![cfg(test)] gates the whole file";
+                return Err(fail(file, line_at(text, at), why));
+            }
+            Ok(true) => gated_at.push(at),
+            Ok(false) => {}
+        }
+    }
+    let mut walk = Walk {
         file,
         text,
-        s: structural.as_bytes(),
+        structural: structural.as_bytes(),
+        gated: false,
+        nest: Vec::new(),
         cuts: Vec::new(),
         regs: Vec::new(),
+        failure: None,
     };
-    scan.region((0, structural.len()), &mut Vec::new(), false)?;
-    let Scan { cuts, regs, .. } = scan;
+    walk.visit_file(&tree);
+    if let Some(failure) = walk.failure {
+        return Err(failure);
+    }
+    // A gate no listed node owns is a gate this view cannot place.
+    if let Some(at) = gated_at.into_iter().find(|at| {
+        !walk
+            .cuts
+            .iter()
+            .any(|(start, end)| (start..end).contains(&at))
+    }) {
+        let why = "a #[cfg(test)] on a node this view does not read";
+        return Err(fail(file, line_at(text, at), why));
+    }
     let mut bytes = text.as_bytes().to_vec();
-    for span in spans.iter().filter(|span| span.region == Region::Comment) {
+    for span in lexed
+        .spans
+        .iter()
+        .filter(|span| span.region == Region::Comment)
+    {
         blank_range(&mut bytes, span.start, span.end);
     }
-    for (start, end) in cuts {
+    for (start, end) in walk.cuts {
         blank_range(&mut bytes, start, end);
     }
     Ok(Classified {
         production: into_text(file, bytes)?,
-        registrations: regs,
+        registrations: walk.regs,
     })
 }
 

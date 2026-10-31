@@ -6,11 +6,13 @@ version = 4
 name = "ae"
 version = "2026.10.173"
 dependencies = [
+ "proc-macro2",
  "pulldown-cmark",
  "ratatui-core",
  "ring",
  "rustix",
  "rustls",
+ "syn 3.0.6",
  "ureq",
 ]
 
