@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.172] - 2026-10-31
+- Add a verification plan to the brief contract
+- Say the worker runs the verification its brief assigns
+
 ## [v2026.10.171] - 2026-10-31
 - Refuse a caller whose tmux read failed instead of journaling a human (#292)
 
