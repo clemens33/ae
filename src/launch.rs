@@ -533,8 +533,10 @@ fn publish(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 /// The wording is the other half of the measurement. An imperative with no
 /// object — a bare `Go` — makes codex invent work for itself, so the turn names
 /// the ONE action it exists to cause, the `_register-sid` handshake, and then
-/// tells the agent to wait. It is the user-turn twin of `WAIT_SUFFIX`, which
-/// does the same job for the tools whose whole context arrives as a turn.
+/// tells the agent to end the turn. It never says wait: a measured codex took
+/// "then WAIT" literally and called its `sleep` tool for 12 hours, so the setup
+/// turn never ended and the seat read busy. `WAIT_SUFFIX` does the passive job
+/// for the tools whose whole context arrives as a turn.
 ///
 /// The command is spelled out here rather than referred to, because a turn that
 /// points at the system prompt is a turn the agent has to go looking for.
@@ -556,8 +558,8 @@ fn register_sid(meta_dir: &Path, slot: &str) -> String {
 /// The turn is ae's own, so it opens with the [`crate::provenance::ctx`] marker
 /// on its first line: an agent that was never told the grammar still reads it
 /// as context, not as a human's typing. It names the ONE action it exists to
-/// cause — the `_register-sid` handshake — and then tells the agent to wait; it
-/// is the user-turn twin of `WAIT_SUFFIX`.
+/// cause — the `_register-sid` handshake — and then tells the agent to end the
+/// turn with no further tool call.
 #[must_use]
 pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String {
     if tool.adapter().launch.initial_turn != InitialTurn::RegisterSessionId {
@@ -566,7 +568,7 @@ pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String
     crate::provenance::first_line(
         &crate::provenance::ctx(),
         &format!(
-            "ae: this is your workspace context, delivered at start. Run {} once so this session can resume, then WAIT — do not start any work until a task arrives from the human or a peer.",
+            "ae: this is your workspace context, delivered at start. Run {} once so this session can resume, then end this turn. Do not call any other tools and do not start any work until a task arrives from the human or a peer.",
             register_sid(meta_dir, slot)
         ),
     )
