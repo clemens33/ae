@@ -230,15 +230,11 @@ impl Rig {
                 .0,
             "the controller pane starts"
         );
-        let (_, panes) = self.tmux(&[
-            "list-panes",
-            "-t",
-            &format!("={controller}"),
-            "-F",
-            "#{pane_id}",
-        ]);
-        let controller_pane = panes.lines().next().unwrap_or_default().to_owned();
-        assert!(!controller_pane.is_empty(), "the controller pane has an id");
+        let controller_pane = first_pane(
+            |args| self.tmux(args),
+            &["-t", &format!("={controller}")],
+            Instant::now() + SETUP_WAIT,
+        );
         let mut client = String::new();
         for _ in 0..100 {
             let (_, clients) =
@@ -2313,9 +2309,12 @@ fn a_bare_stop_from_a_non_ae_tmux_pane_has_no_inferred_target() {
         rig.tmux(&["new-session", "-d", "-s", "foreign", "sh"]).0,
         "the non-ae session starts"
     );
-    let (_, panes) = rig.tmux(&["list-panes", "-t", "=foreign", "-F", "#{pane_id}"]);
-    let pane = panes.lines().next().unwrap_or_default();
-    assert!(!pane.is_empty(), "the non-ae pane: {panes}");
+    let pane = first_pane(
+        |args| rig.tmux(args),
+        &["-t", "=foreign"],
+        Instant::now() + SETUP_WAIT,
+    );
+    let pane = pane.as_str();
 
     let (code, out, err) = rig.run_inside(pane, &["stop"]);
 
@@ -2333,8 +2332,12 @@ fn a_bare_stop_from_a_non_ae_tmux_pane_has_no_inferred_target() {
 fn a_bare_stop_without_a_usable_tmux_marker_does_not_claim_it_is_outside_tmux() {
     let rig = AmbientRig::new("stopnotmux");
     assert!(rig.tmux(&["new-session", "-d", "-s", "foreign", "sh"]).0);
-    let (_, panes) = rig.tmux(&["list-panes", "-t", "=foreign", "-F", "#{pane_id}"]);
-    let pane = panes.lines().next().unwrap_or_default();
+    let pane = first_pane(
+        |args| rig.tmux(args),
+        &["-t", "=foreign"],
+        Instant::now() + SETUP_WAIT,
+    );
+    let pane = pane.as_str();
 
     // The marker is absent, or names no socket, while a real pane is inherited.
     for marker in [&[][..], &[("TMUX", "relative,1,0")][..]] {
@@ -2366,12 +2369,13 @@ fn a_bare_stop_with_no_pane_id_names_that_before_the_usage() {
 fn an_empty_pane_flag_is_not_blamed_on_the_environment() {
     let rig = AmbientRig::new("stopemptyflag");
     assert!(rig.tmux(&["new-session", "-d", "-s", "foreign", "sh"]).0);
-    let (_, panes) = rig.tmux(&["list-panes", "-t", "=foreign", "-F", "#{pane_id}"]);
-
-    let (code, out, err) = rig.run_inside(
-        panes.lines().next().unwrap_or_default(),
-        &["stop", "--pane="],
+    let pane = first_pane(
+        |args| rig.tmux(args),
+        &["-t", "=foreign"],
+        Instant::now() + SETUP_WAIT,
     );
+
+    let (code, out, err) = rig.run_inside(&pane, &["stop", "--pane="]);
 
     assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
     assert_eq!(err, stop_gap("no usable pane id was given"));
@@ -2382,8 +2386,12 @@ fn an_empty_pane_flag_is_not_blamed_on_the_environment() {
 fn a_bare_stop_from_a_session_with_an_unusable_server_record_says_so() {
     let rig = AmbientRig::new("stopbadrec");
     rig.plant("ambold", "tmux_server_kind=ambiguous\ntmux_server=work\n");
-    let (_, panes) = rig.tmux(&["list-panes", "-t", "=ambold", "-F", "#{pane_id}"]);
-    let pane = panes.lines().next().unwrap_or_default();
+    let pane = first_pane(
+        |args| rig.tmux(args),
+        &["-t", "=ambold"],
+        Instant::now() + SETUP_WAIT,
+    );
+    let pane = pane.as_str();
 
     let (code, out, err) = rig.run_inside(pane, &["stop"]);
 
@@ -2986,9 +2994,11 @@ fn a_supervisor_that_never_started_is_recorded_as_a_failed_stop() {
 fn stop_all_from_inside_a_target_prompts_on_a_terminal() {
     let rig = AmbientRig::new("stpall");
     rig.plant("stpone", "");
-    let (_, panes) = rig.tmux(&["list-panes", "-t", "stpone", "-F", "#{pane_id}"]);
-    let pane = panes.lines().next().unwrap_or_default().to_owned();
-    assert!(!pane.is_empty(), "the caller's pane: {panes}");
+    let pane = first_pane(
+        |args| rig.tmux(args),
+        &["-t", "stpone"],
+        Instant::now() + SETUP_WAIT,
+    );
     assert!(
         rig.tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "lead"])
             .0
@@ -3065,8 +3075,11 @@ fn stop_all_from_inside_a_target_prompts_on_a_terminal() {
 fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
     let rig = AmbientRig::new("stpntty");
     rig.plant("stptwo", "");
-    let (_, panes) = rig.tmux(&["list-panes", "-t", "stptwo", "-F", "#{pane_id}"]);
-    let pane = panes.lines().next().unwrap_or_default().to_owned();
+    let pane = first_pane(
+        |args| rig.tmux(args),
+        &["-t", "stptwo"],
+        Instant::now() + SETUP_WAIT,
+    );
     assert!(
         rig.tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "lead"])
             .0
