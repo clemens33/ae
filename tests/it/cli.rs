@@ -633,20 +633,23 @@ fn isolated(mut command: Runner, dir: &std::path::Path) -> Runner {
 /// root [`OwnedScratch::root`] did not make is one no reaper will ever find.
 #[test]
 fn no_test_file_rolls_its_own_scratch_root() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it");
     let banned = [
         concat!("format!(\"", "/tmp/"),
         concat!("temp_dir()", ".join("),
     ];
     let mut scanned = 0;
     let mut found = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("tests/it").flatten() {
-        let text = std::fs::read_to_string(entry.path()).expect("a test source");
+    // The shared loader walks `tests/it` recursively (a submodule directory is
+    // a test source too) and fails by name on a file it cannot read.
+    for (path, text) in crate::support::source_view::tree()
+        .iter()
+        .filter(|(path, _)| path.starts_with("tests/it/"))
+    {
         let squashed: String = text.split_whitespace().collect();
         scanned += 1;
         for pattern in banned {
             if squashed.contains(pattern) {
-                found.push(format!("{}: {pattern}", entry.file_name().display()));
+                found.push(format!("{path}: {pattern}"));
             }
         }
     }
