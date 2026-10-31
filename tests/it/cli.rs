@@ -16,7 +16,7 @@ use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
 use crate::phase2::run_tmux;
-use crate::support::{SETUP_WAIT, first_pane};
+use crate::support::{SETUP_WAIT, first_pane, observe};
 use ae::tool::ToolKind;
 
 /// ae's own doors that a hermetic run must NOT inherit.
@@ -2611,7 +2611,12 @@ impl Tracked {
                 ])
                 .0
         );
-        let (_, panes) = fixture.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"]);
+        let panes = observe(
+            |args| fixture.tmux(args),
+            &["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"],
+            Instant::now() + SETUP_WAIT,
+            |panes| panes.lines().count() == 2,
+        );
         let ids: Vec<&str> = panes.lines().collect();
         assert_eq!(ids.len(), 2, "{panes}");
         let (main, worker) = (ids[0].to_owned(), ids[1].to_owned());
