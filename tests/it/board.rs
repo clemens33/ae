@@ -455,6 +455,82 @@ fn the_codex_passive_launch_turn_is_hidden_not_rendered() {
 }
 
 #[test]
+fn legacy_codex_setup_stays_hidden_and_closes_the_reply_window() {
+    let root = rig("cdx-old");
+    let store = root.join("codex");
+    let session = root.join("sessions").join("ship");
+    // Frozen body shipped before codex-wait (91b61c5e). Codex omits the ctx
+    // marker in its store. Never generate this historical fixture with the
+    // current initial_prompt_for: that would hide a compatibility regression.
+    let legacy = format!(
+        "ae: this is your workspace context, delivered at start. Run {}/_register-sid main once so this session can resume, then WAIT — do not start any work until a task arrives from the human or a peer.",
+        session.display()
+    );
+    let extended = format!("{legacy} and one more word");
+    plant_rollout(
+        &store,
+        &[
+            codex_user("2026-09-16T09:00:00Z", "human question before setup"),
+            codex_assistant(
+                "2026-09-16T09:00:01Z",
+                r#"[{"type":"output_text","text":"real reply before setup"}]"#,
+            ),
+            codex_user("2026-09-16T09:00:02Z", &legacy),
+            codex_assistant(
+                "2026-09-16T09:00:03Z",
+                r#"[{"type":"output_text","text":"setup acknowledgement"}]"#,
+            ),
+            codex_user("2026-09-16T09:00:04Z", &extended),
+            codex_assistant(
+                "2026-09-16T09:00:05Z",
+                r#"[{"type":"output_text","text":"reply to extended human copy"}]"#,
+            ),
+        ],
+    );
+    plant_session(
+        &root,
+        "ship",
+        &codex_roster("main", "lead", CODEX_ID, &store),
+    );
+    let sessions = [SessionInput {
+        name: "ship".to_owned(),
+        path: session,
+    }];
+    let observation = board::observe(
+        &Inputs {
+            home: Some(&root),
+            sessions: &sessions,
+            replies: board::Replies::ToHuman,
+        },
+        None,
+    );
+    assert!(observation.coverage.is_empty(), "the fixture is readable");
+    assert_eq!(
+        observation.hidden,
+        [board::Hidden {
+            actor: "ship:lead".to_owned(),
+            count: 1,
+        }],
+        "the historical setup stays hidden"
+    );
+    assert_eq!(
+        observation
+            .rows
+            .iter()
+            .map(|row| row.body.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "human question before setup",
+            "real reply before setup",
+            extended.as_str(),
+            "reply to extended human copy",
+        ],
+        "setup closes the reply window; an extended human copy stays visible"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn the_board_respells_no_provenance_marker() {
     let source = include_str!("../../src/board.rs");
     assert!(
