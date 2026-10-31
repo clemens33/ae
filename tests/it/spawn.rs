@@ -25,6 +25,10 @@ use super::cli::ae;
 use super::phase2::run_tmux;
 use super::support::{SETUP_WAIT, first_pane};
 
+/// How long a delivery may take to reach its body store. A slow machine spends
+/// this; a passing run does not.
+const BRIEF_STORED_WAIT: Duration = Duration::from_mins(1);
+
 /// A claude-shaped fake agent.
 const FAKE_CLAUDE: &str = r#"#!/usr/bin/perl
 use strict;
@@ -462,6 +466,33 @@ impl Rig {
             held.push(file);
         }
         held
+    }
+
+    /// Wait, bounded, for `deliver` to publish `slot`'s brief. It stores the
+    /// body after the readiness proof and the pre-lock liveness check and then
+    /// takes the target lock, reading the pane nowhere between. The final name
+    /// is linked only once the body is whole.
+    fn wait_for_stored_brief(&self, slot: &str) {
+        let messages = self.dir.join("messages");
+        let stem = format!("spawn-{slot}.spawn.");
+        let stored = || {
+            std::fs::read_dir(&messages).is_ok_and(|entries| {
+                entries.flatten().any(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    name.starts_with(&stem) && name.ends_with(".txt")
+                })
+            })
+        };
+        let until = Instant::now() + BRIEF_STORED_WAIT;
+        while !stored() {
+            assert!(
+                Instant::now() < until,
+                "{slot}'s brief was never stored under {}",
+                messages.display()
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
 
     fn enable_muse_profile(&self) {
@@ -1174,9 +1205,8 @@ fn a_pane_that_leaves_its_composed_box_under_the_lock_refuses_the_brief() {
             )
         });
         wait_for_path(&control.composed, "the composed frame");
-        // The pre-lock proof needs two captures 500 ms apart and starts only
-        // once the fake process is the pane's command; this is ~3x its cost.
-        std::thread::sleep(Duration::from_secs(3));
+        // Only the under-lock check is left to see the frame change.
+        rig.wait_for_stored_brief("spawned.0");
         assert!(std::fs::write(&control.switch, "").is_ok(), "the switch");
         wait_for_path(&control.switched, "the boot frame");
         locks.clear();
@@ -1228,9 +1258,9 @@ fn a_dead_agent_with_a_stale_composer_cannot_take_the_brief() {
             )
         });
         wait_for_path(&control.composed, "the composed frame");
-        // Let the pre-lock proof and the pre-lock liveness check pass, so the
-        // delivery is already waiting on the lock when the agent dies.
-        std::thread::sleep(Duration::from_secs(3));
+        // The pre-lock proof and the pre-lock liveness check have passed, so
+        // the agent dies with the delivery past both.
+        rig.wait_for_stored_brief("spawned.0");
         assert!(std::fs::write(&control.exit, "").is_ok(), "the exit");
         let pane = wait_for_agent_gone(&rig, "spawned.0", "opencode");
         let screen = rig.tmux(&["capture-pane", "-p", "-t", &pane]).1;
@@ -1291,7 +1321,7 @@ fn an_unreadable_meta_with_a_stale_composer_cannot_take_the_brief() {
             )
         });
         wait_for_path(&control.composed, "the composed frame");
-        std::thread::sleep(Duration::from_secs(3));
+        rig.wait_for_stored_brief("spawned.0");
         // The agent dies AND the seat's recorded binary goes away: the pane is
         // a shell ae cannot attribute, with the composer still drawn.
         assert!(std::fs::write(&control.exit, "").is_ok(), "the exit");
