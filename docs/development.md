@@ -54,6 +54,8 @@ just check            # shellcheck + shfmt (diff mode)
 just format           # shfmt -w
 just test             # compile every fuzz target + unit + integration
 just test             # the whole test surface (= just rust-check)
+just pre              # ADVISORY: fmt + clippy + unit + guard tests, NOT the gate
+just lane-lock status # the gate lane lock: claim <name> [secs] | release <name> | status
 just check            # shellcheck + shfmt over install, the one bash file
 just install          # checkout-mode immutable versioned install
 just rust-setup       # install pinned Rust toolchain and dev tools
@@ -92,6 +94,22 @@ asks the harder question: whether those tests would ever go red. The `menu` modu
 real tmux server and real attached clients, so `.config/nextest.toml` keeps all of it in one
 small test-group: parallel load can starve a client the test is waiting on, and the group
 bounds that contention without weakening a single assertion.
+
+**`just pre` is advisory, not the gate.** It runs `rust-fmt-check`, `rust-lint`, the unit tests
+(library and bin) and the `doors`, `floor` and `gate` guard modules of `tests/it` through the
+lane's filtered arm, so a format, lint or guard failure shows in minutes less than the gate
+needs to reach it. It skips the rest of `tests/it`, the fuzz compile and the doctests, retries
+nothing, and a green `just pre` is never cited as a green gate: only `just test` is.
+
+**The lane lock.** One machine runs one gate at a time. `just lane-lock claim <name> [secs]`
+takes the lock (waiting up to `secs`, printing the holder every 30 s), `release <name>` gives it
+back, `status` names the holder and its age. The lock is the main checkout's
+`.local/locks/gate` directory, taken by an atomic `mkdir` and holding one `owner` line
+(`<name> <UTC timestamp>`); `.local/locks/next` is the queue (empty = anyone). Resolved from a
+linked worktree, so every checkout meets the same lock, and the same protocol as the hand-typed
+one, so a holder on either spelling blocks the other. `release` refuses any owner but `<name>`
+and leaves the lock intact. Nothing here steals or clears a lock: one that looks abandoned
+(`status` says `suspect`) is reported, and the holder, the lead or a human clears it by hand.
 
 `just rust-fuzz-check` also runs in CI, using the gate's target cache. A cold registry
 fetches the independent fuzz graph; `libfuzzer-sys` builds C++ even under `cargo check`,

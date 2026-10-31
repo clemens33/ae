@@ -84,7 +84,9 @@ README.md  VISION.md  AGENTS.md  CLAUDE.md (@AGENTS.md)
 The loop, in order:
 
 1. `just test` — THE GATE. Exactly `just rust-check` (fmt-check + lint + fuzz compile + test).
-   There is no fast/slow split; run the whole thing. The lane sizes its threads and build jobs
+   There is no per-commit fast/slow split; run the whole thing. `just pre` (fmt + clippy + unit +
+   guard tests) is ADVISORY: it learns early that a format, lint or guard check will fail, is NOT
+   the gate and is never cited as it. The lane sizes its threads and build jobs
    from `jobs-budget` when installed and runs cargo niced (docs/development.md).
 2. `just check` — only when you touched `install` (shellcheck + shfmt).
 3. Cross-model review BEFORE the commit, for anything significant. Route it through ae
@@ -236,6 +238,8 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 |---|---|
 | `just rust-setup` | bootstrap: toolchain + pinned tools. Idempotent, and CI asserts it |
 | `just test` / `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test` |
+| `just pre` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
+| `just lane-lock claim <name> [secs]` / `release <name>` / `status` | the gate lane lock, one gate per machine: an atomic `mkdir` of the MAIN checkout's `.local/locks/gate` (resolved from a linked worktree), an `owner` line, the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held) |
 | `just check` | the bash lane: shellcheck + shfmt over `install` |
 | `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt` |
 | `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |

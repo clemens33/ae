@@ -86,6 +86,187 @@ format:
 # Run all tests — THE GATE
 test: rust-check
 
+# ADVISORY pre-check, NOT the gate and never citable as it: a red gate costs
+# minutes to learn that a format, lint or guard check failed, and this learns
+# the same three in a fraction of that. It is `rust-fmt-check` + `rust-lint` + the
+# unit tests (library and bin) + the guard modules of the integration target,
+# `doors` (capability boundary), `floor` (tmux floor boundary) and `gate`
+# (justfile/install hazards). A green `just pre` says nothing about the rest of
+# `tests/it`, the fuzz compile or the doctests; only `just test` does. No retries.
+# `-E` is nextest's filterset; the lane skips doctests for a filtered run.
+
+# Advisory fast pre-check (fmt + clippy + unit + guard tests). NOT THE GATE
+pre: rust-fmt-check rust-lint _pre-test
+
+_pre-test:
+    just _tmux-isolated test -E 'kind(lib) | kind(bin) | (binary(it) & test(/^(doors|floor|gate)::/))'
+
+# ── Lane lock ────────────────────────────────────────────────────────
+
+# One machine runs one gate at a time, so a slice takes the LANE LOCK before it
+# runs `just test` and gives it back after. This recipe is that protocol, byte
+# for byte what the hand-typed version did, so a holder on one spelling blocks
+# a claimant on the other: the lock is the directory `<main checkout>/.local/locks/gate`,
+# taken by an atomic `mkdir` and recording its holder as one `owner` line,
+# `<name> <UTC timestamp>`; `<main checkout>/.local/locks/next` is the queue, a file naming
+# the one slice that may claim next (empty = anyone). The main checkout is
+# resolved from `git rev-parse --git-common-dir`, so a linked worktree meets the
+# same lock. `.local` is untracked: claim creates what it needs.
+#
+# claim <name> [wait-secs]  take it, or with a wait poll every 30 s up to that
+#                           many seconds, printing the holder; 0 = try once. Exit 1 when not taken.
+# release <name>            give it back. Refused, lock untouched, when the owner line
+#                           is not <name> (or not readable, or the directory holds anything
+#                           but `owner`). It never removes a lock it cannot prove is yours.
+# status                    who holds it and how long; exit 0 free, 1 held.
+#
+# NEVER AUTO-STEAL, NEVER AUTO-BREAK. A lock whose holder is gone is REPORTED
+# ("suspect") and left standing: a human or the lead clears it, by hand, after
+# asking the holder. A stale-lock cleanup once removed an ACTIVE gate. Age alone
+# cannot prove a holder dead, so nothing here acts on it. The queue check and the
+# `mkdir` are two steps, as they were by hand: `next` is a courtesy, `mkdir` is the lock.
+
+# Claim, release or inspect the gate lane lock: claim NAME [WAIT-SECS] | release NAME | status
+[no-exit-message]
+lane-lock verb name="" wait="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    verb="$1"
+    name="${2:-}"
+    wait="${3:-0}"
+    poll=30
+    suspect_secs=3600
+    usage() { echo "usage: just lane-lock claim <name> [wait-secs] | release <name> | status" >&2; exit 2; }
+    refuse() { echo "lane-lock: refused: $*" >&2; exit 1; }
+    case "$verb" in
+        claim | release) [[ -n "$name" ]] || usage ;;
+        status) ;;
+        *) usage ;;
+    esac
+    if [[ -n "$name" && ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
+        echo "lane-lock: refused: a lock name is [A-Za-z0-9][A-Za-z0-9_.-]{0,63}, got '$name'" >&2
+        exit 2
+    fi
+    [[ "$wait" =~ ^[0-9]{1,6}$ ]] || { echo "lane-lock: refused: wait is whole seconds, got '$wait'" >&2; exit 2; }
+    common="$(git rev-parse --git-common-dir 2>/dev/null)" || refuse "not inside a git checkout"
+    common="$(cd -P "$common" && pwd -P)"
+    [[ "${common##*/}" == .git ]] || refuse "the git common dir $common is not <checkout>/.git"
+    root="${common%/.git}"
+    locks="$root/.local/locks"
+    gate="$locks/gate"
+    owner_file="$gate/owner"
+    next_file="$locks/next"
+    # Seconds since the UTC timestamp $1, or nothing when it does not parse. BSD date first, then GNU.
+    age_of() {
+        local since
+        since="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null || true)"
+        [[ "$since" =~ ^[0-9]+$ ]] || return 0
+        echo $(( $(date +%s) - since ))
+    }
+    span() {
+        local s=$1
+        (( s >= 0 )) || s=0
+        if (( s >= 3600 )); then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+        elif (( s >= 60 )); then printf '%dm%02ds' $((s / 60)) $((s % 60))
+        else printf '%ds' "$s"; fi
+    }
+    # Fills h_line (the owner line, "" when unrecorded), h_name, h_age (seconds, "" when unknown).
+    read_holder() {
+        local ts
+        h_line=""
+        h_name=""
+        h_age=""
+        if [[ -f "$owner_file" && ! -L "$owner_file" ]]; then
+            h_line="$(head -n 1 "$owner_file" 2>/dev/null || true)"
+        fi
+        h_name="${h_line%% *}"
+        if [[ "$h_line" == *" "* ]]; then
+            ts="${h_line#* }"
+            h_age="$(age_of "${ts%% *}")"
+        fi
+    }
+    # One line naming the holder. Needs read_holder first.
+    holder_words() {
+        if [[ -z "$h_name" ]]; then
+            echo "held, but no owner recorded (a claim is mid-write, or one died before writing it)"
+        elif [[ -n "$h_age" ]]; then
+            echo "held by $h_line (age $(span "$h_age"))"
+        else
+            echo "held by $h_line (age unknown)"
+        fi
+    }
+    case "$verb" in
+        status)
+            if [[ ! -e "$gate" && ! -L "$gate" ]]; then
+                echo "gate: free"
+                state=0
+            else
+                if [[ -d "$gate" && ! -L "$gate" ]]; then
+                    read_holder
+                    echo "gate: $(holder_words)"
+                    if [[ -z "$h_name" ]]; then
+                        echo "suspect: nobody is recorded as holding it"
+                    elif [[ -n "$h_age" ]] && (( h_age > suspect_secs )); then
+                        echo "suspect: held longer than $(span "$suspect_secs"); the holder may be gone"
+                    fi
+                else
+                    echo "gate: $gate exists and is not a directory"
+                    echo "suspect: not a lock this protocol made"
+                fi
+                echo "lane-lock does not clear a lock: ask the holder, then the lead or a human removes it by hand"
+                state=1
+            fi
+            if [[ -s "$next_file" ]]; then echo "next: $(cat "$next_file")"; else echo "next: none"; fi
+            exit "$state"
+            ;;
+        release)
+            [[ -d "$gate" && ! -L "$gate" ]] || refuse "no gate lock is held, nothing to release"
+            read_holder
+            [[ -n "$h_name" ]] || refuse "the gate has no owner line, so it is not provably $name's; lock left intact"
+            [[ "$h_name" == "$name" ]] || refuse "the gate is $(holder_words), not $name's; lock left intact"
+            extra=""
+            for entry in "$gate"/* "$gate"/.[!.]* "$gate"/..?*; do
+                [[ -e "$entry" || -L "$entry" ]] || continue
+                [[ "${entry##*/}" == owner ]] || extra="$extra ${entry##*/}"
+            done
+            [[ -z "$extra" ]] || refuse "the gate holds more than its owner line ($extra ); lock left intact"
+            rm "$owner_file"
+            rmdir "$gate"
+            echo "lane-lock: released by $name"
+            ;;
+        claim)
+            mkdir -p "$locks"
+            start="$(date +%s)"
+            while :; do
+                if [[ ! -s "$next_file" || "$(cat "$next_file")" == "$name" ]]; then
+                    if err="$(mkdir "$gate" 2>&1)"; then
+                        printf '%s %s\n' "$name" "$(date -u +%FT%TZ)" >"$owner_file"
+                        echo "lane-lock: claimed by $name"
+                        [[ ! -s "$next_file" ]] || echo "note: $next_file still names $(cat "$next_file"); the lead clears it"
+                        exit 0
+                    fi
+                    [[ -e "$gate" || -L "$gate" ]] || refuse "could not create $gate: $err"
+                    if [[ -d "$gate" && ! -L "$gate" ]]; then
+                        read_holder
+                        [[ "$h_name" != "$name" ]] || refuse "$name already holds the gate ($h_line); release it first, or this is another session on the same name"
+                        why="gate $(holder_words)"
+                    else
+                        why="$gate exists and is not a directory"
+                    fi
+                else
+                    why="queue: next is $(cat "$next_file"), not $name"
+                fi
+                left=$(( wait - ($(date +%s) - start) ))
+                if (( left <= 0 )); then
+                    echo "lane-lock: not claimed: $why" >&2
+                    exit 1
+                fi
+                echo "lane-lock: waiting, ${left}s left: $why" >&2
+                if (( left < poll )); then sleep "$left"; else sleep "$poll"; fi
+            done
+            ;;
+    esac
+
 # ── Version ──────────────────────────────────────────────────────────
 
 # Show current version. Since slice Z3 the crate is the ONLY place a version

@@ -5763,3 +5763,291 @@ fn the_contract_names_every_lane_the_gate_runs() {
     // RED — no such row.
     assert!(!gate_row_ok("| `just test` | the gate |\n", justfile));
 }
+
+// ── `just pre` and the lane lock ─────────────────────────────────────────
+
+/// `just pre` is a convenience in front of the gate, never part of it: `test`
+/// and `rust-check` keep exactly the dependencies they had, `pre` runs only
+/// the three checks it names through the lane's filtered arm, retries nothing,
+/// and the contract says in plain words that it is advisory.
+#[test]
+fn the_advisory_pre_check_stays_out_of_the_gate_and_the_contract_says_so() {
+    let justfile = read(&root().join("justfile"));
+    assert_eq!(recipe_deps(&justfile, "test"), ["rust-check"]);
+    assert_eq!(
+        recipe_deps(&justfile, "rust-check"),
+        [
+            "rust-fmt-check",
+            "rust-lint",
+            "rust-fuzz-check",
+            "rust-test"
+        ],
+        "the gate is exactly what it was; `pre` is not a member of it"
+    );
+    assert_eq!(
+        recipe_deps(&justfile, "pre"),
+        ["rust-fmt-check", "rust-lint", "_pre-test"]
+    );
+    let body = recipe_text(&justfile, "_pre-test:").join(" ");
+    assert!(
+        body.starts_with("just _tmux-isolated test -E '"),
+        "the unit and guard tests run through the lane's filtered arm: {body}"
+    );
+    for module in ["doors", "floor", "gate"] {
+        assert!(body.contains(module), "the guard module {module} is run");
+    }
+    assert!(
+        !body.contains("retries") && !body.contains("retry"),
+        "a pre-check never retries: {body}"
+    );
+
+    let agents = read(&root().join("AGENTS.md"));
+    let row = agents
+        .lines()
+        .find(|line| line.starts_with("| `just pre` |"))
+        .unwrap_or_default();
+    assert!(
+        row.contains("ADVISORY") && row.contains("NOT the gate"),
+        "the AGENTS.md lanes table must call `just pre` advisory and not the gate: {row:?}"
+    );
+    let development = read(&root().join("docs/development.md"));
+    assert!(
+        development
+            .lines()
+            .any(|line| line.contains("`just pre`") && line.to_lowercase().contains("advisory")),
+        "docs/development.md must call `just pre` advisory"
+    );
+}
+
+/// The capture files of one child, named so concurrent callers never share one.
+fn next_capture_tag() -> usize {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One command in `cwd` with the fixture's own `HOME` and git config:
+/// `(exit code, stdout, stderr)`.
+fn run_in(scratch: &Path, cwd: &Path, program: &str, args: &[&str]) -> (i32, String, String) {
+    let mut invocation = Invocation::new(program)
+        .env("HOME", scratch)
+        .env("GIT_CONFIG_GLOBAL", scratch.join("gitconfig"));
+    for arg in args {
+        invocation = invocation.arg(arg);
+    }
+    let tag = next_capture_tag();
+    let io = scratch.join("io");
+    let (out, err) = (io.join(format!("{tag}.out")), io.join(format!("{tag}.err")));
+    let status = raw::run(&invocation, cwd, &out, &err)
+        .unwrap_or_else(|why| panic!("{program} must be runnable: {why}"));
+    let code = match status.outcome() {
+        ExitOutcome::Code(code) => code,
+        ExitOutcome::Signalled => -1,
+    };
+    (
+        code,
+        std::fs::read_to_string(out).unwrap_or_default(),
+        std::fs::read_to_string(err).unwrap_or_default(),
+    )
+}
+
+/// A scratch main checkout holding the REAL justfile and a linked worktree of
+/// it: `(scratch owner, main, linked)`. The lock root is the main checkout's.
+fn lane_lock_checkouts() -> (super::cli::OwnedScratch, PathBuf, PathBuf) {
+    let scratch = super::cli::OwnedScratch::root("gate", "lanelock");
+    let (main, linked) = (scratch.join("main"), scratch.join("linked"));
+    assert!(std::fs::create_dir_all(&main).is_ok(), "a main checkout");
+    assert!(
+        std::fs::create_dir_all(scratch.join("io")).is_ok(),
+        "captures"
+    );
+    assert!(
+        std::fs::copy(root().join("justfile"), main.join("justfile")).is_ok(),
+        "the fixture carries the real justfile"
+    );
+    for words in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["add", "justfile"],
+        vec![
+            "-c",
+            "user.email=lock@example.invalid",
+            "-c",
+            "user.name=Lock",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        vec!["worktree", "add", "-q", "../linked", "-b", "linked"],
+    ] {
+        let (code, _, err) = run_in(&scratch, &main, "git", &words);
+        assert_eq!(code, 0, "git {words:?} must succeed: {err}");
+    }
+    (scratch, main, linked)
+}
+
+/// `just lane-lock <args>` in `cwd`.
+fn lane_lock(scratch: &Path, cwd: &Path, args: &[&str]) -> (i32, String, String) {
+    let mut words = vec!["lane-lock"];
+    words.extend_from_slice(args);
+    run_in(scratch, cwd, "just", &words)
+}
+
+/// The claim is one atomic `mkdir`, so a worktree meets the main checkout's
+/// lock; only the recorded owner releases it, by exact name; nothing in the
+/// recipe clears a lock it did not write.
+#[test]
+fn the_lane_lock_is_one_lock_for_every_checkout_and_only_its_owner_releases_it() {
+    let (scratch, main, linked) = lane_lock_checkouts();
+    let owner = main.join(".local/locks/gate/owner");
+    let (code, out, _) = lane_lock(&scratch, &main, &["status"]);
+    assert_eq!((code, out.contains("gate: free")), (0, true), "{out}");
+
+    let (code, out, err) = lane_lock(&scratch, &main, &["claim", "alpha"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let recorded = read(&owner);
+    assert!(
+        recorded.starts_with("alpha 20") && recorded.trim_end().ends_with('Z'),
+        "the owner line is `<name> <UTC timestamp>`: {recorded:?}"
+    );
+
+    // From the linked worktree: the same lock, refused, nothing written there.
+    let (code, _, err) = lane_lock(&scratch, &linked, &["claim", "beta"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("alpha"), "the holder is named: {err}");
+    let (code, _, err) = lane_lock(&scratch, &linked, &["claim", "alpha"]);
+    assert_eq!(
+        code, 1,
+        "a second claim on the owner's own name is refused: {err}"
+    );
+    assert!(err.contains("already holds"), "{err}");
+    assert!(
+        !linked.join(".local").exists(),
+        "the worktree has no lock root of its own"
+    );
+
+    // Release is the owner's, by exact name.
+    for impostor in ["beta", "alph", "alpha2"] {
+        let (code, _, err) = lane_lock(&scratch, &linked, &["release", impostor]);
+        assert_eq!(code, 1, "{impostor} must not release alpha's lock: {err}");
+        assert!(err.contains("lock left intact"), "{err}");
+        assert_eq!(read(&owner), recorded, "the lock is untouched");
+    }
+    let (code, out, _) = lane_lock(&scratch, &linked, &["status"]);
+    assert_eq!(code, 1);
+    assert!(
+        out.contains("held by alpha"),
+        "status names the owner: {out}"
+    );
+
+    let (code, out, err) = lane_lock(&scratch, &linked, &["release", "alpha"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(!main.join(".local/locks/gate").exists(), "released");
+    let (code, _, err) = lane_lock(&scratch, &main, &["release", "alpha"]);
+    assert_eq!(code, 1, "nothing is held, so nothing is released: {err}");
+}
+
+/// The queue file is honoured, a lock taken by hand holds off the recipe and
+/// the reverse, and a lock that looks abandoned is REPORTED and left standing.
+#[test]
+fn the_lane_lock_keeps_the_hand_protocol_and_reports_a_stale_lock_without_touching_it() {
+    let (scratch, main, _linked) = lane_lock_checkouts();
+    let locks = main.join(".local/locks");
+    let (gate, owner) = (locks.join("gate"), locks.join("gate/owner"));
+
+    // `next` names the one slice that may claim.
+    assert!(std::fs::create_dir_all(&locks).is_ok());
+    assert!(std::fs::write(locks.join("next"), "gamma\n").is_ok());
+    let (code, _, err) = lane_lock(&scratch, &main, &["claim", "alpha"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("next is gamma") && !gate.exists(), "{err}");
+    let (code, out, err) = lane_lock(&scratch, &main, &["claim", "gamma"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(
+        read(&locks.join("next")),
+        "gamma\n",
+        "the queue file is the lead's"
+    );
+    assert_eq!(lane_lock(&scratch, &main, &["release", "gamma"]).0, 0);
+    assert!(std::fs::write(locks.join("next"), "").is_ok());
+
+    // Recipe holder, then hand claimant: the second `mkdir` is refused.
+    assert_eq!(lane_lock(&scratch, &main, &["claim", "alpha"]).0, 0);
+    assert!(
+        std::fs::create_dir(&gate).is_err(),
+        "the hand protocol meets the recipe's lock"
+    );
+    assert_eq!(lane_lock(&scratch, &main, &["release", "alpha"]).0, 0);
+
+    // Hand holder, long gone by its timestamp: reported, never cleared.
+    assert!(std::fs::create_dir(&gate).is_ok());
+    let hand = "hand 2000-01-01T00:00:00Z\n";
+    assert!(std::fs::write(&owner, hand).is_ok());
+    let (code, _, err) = lane_lock(&scratch, &main, &["claim", "alpha", "1"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("held by hand") && err.contains("waiting"),
+        "{err}"
+    );
+    let (code, out, _) = lane_lock(&scratch, &main, &["status"]);
+    assert_eq!(code, 1);
+    assert!(
+        out.contains("held by hand") && out.contains("suspect"),
+        "{out}"
+    );
+    let (code, _, err) = lane_lock(&scratch, &main, &["release", "alpha"]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(read(&owner), hand, "a stale lock is never touched");
+
+    // A gate with no owner line (a claim mid-write, or one that died).
+    assert!(std::fs::remove_file(&owner).is_ok());
+    for args in [["claim", "alpha"], ["release", "alpha"]] {
+        let (code, _, err) = lane_lock(&scratch, &main, &args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(err.contains("no owner"), "{args:?} says why: {err}");
+        assert!(
+            gate.is_dir(),
+            "{args:?} must leave the ownerless gate standing"
+        );
+    }
+    let (_, out, _) = lane_lock(&scratch, &main, &["status"]);
+    assert!(out.contains("suspect"), "{out}");
+
+    // More than the owner line in the gate: release refuses rather than `rm -rf`.
+    assert!(std::fs::write(&owner, "alpha 2000-01-01T00:00:00Z\n").is_ok());
+    assert!(std::fs::write(gate.join("junk"), "x").is_ok());
+    let (code, _, err) = lane_lock(&scratch, &main, &["release", "alpha"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(gate.join("junk").exists() && owner.exists(), "{err}");
+}
+
+/// Two claimants at the same instant: one `mkdir` wins, every round.
+#[test]
+fn two_simultaneous_lane_lock_claims_have_exactly_one_winner() {
+    let (scratch, main, linked) = lane_lock_checkouts();
+    for round in 0..8 {
+        let start = std::sync::Barrier::new(2);
+        let (first, second) = std::thread::scope(|scope| {
+            let race = |cwd: &Path, name: &'static str| {
+                let (scratch, start) = (&scratch, &start);
+                let cwd = cwd.to_path_buf();
+                scope.spawn(move || {
+                    start.wait();
+                    (name, lane_lock(scratch, &cwd, &["claim", name]).0)
+                })
+            };
+            let (a, b) = (race(&main, "left"), race(&linked, "right"));
+            (a.join().unwrap_or(("", -1)), b.join().unwrap_or(("", -1)))
+        });
+        let winners: Vec<&str> = [first, second]
+            .into_iter()
+            .filter(|(_, code)| *code == 0)
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(winners.len(), 1, "round {round}: {first:?} {second:?}");
+        let recorded = read(&main.join(".local/locks/gate/owner"));
+        assert!(
+            recorded.starts_with(winners[0]),
+            "round {round}: {recorded:?}"
+        );
+        assert_eq!(lane_lock(&scratch, &main, &["release", winners[0]]).0, 0);
+    }
+}
