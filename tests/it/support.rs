@@ -10,6 +10,21 @@
 //! Nothing here owns a socket, a scratch root or a child: a Rig keeps its setup
 //! and its lifetime, and passes this module only the closure that reaches its
 //! tmux server.
+//!
+//! `source_view` is the other thing a guard shares: what it may be shown of the
+//! source text.
+
+pub(crate) mod source_view;
+// The spec is installed byte for byte as its author froze it, so the two lints
+// it trips under `-D warnings` are allowed here, at its registration, and
+// nowhere else.
+#[allow(
+    clippy::manual_let_else,
+    clippy::err_expect,
+    reason = "frozen spec installed byte-identical; it spells its refusals as a `match` and \
+              `.err().expect(..)`"
+)]
+mod source_view_spec;
 
 use std::fmt;
 use std::time::{Duration, Instant};

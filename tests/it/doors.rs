@@ -23,11 +23,12 @@
 )]
 
 use std::collections::BTreeSet;
-use std::fs;
 use std::ops::Range;
 use std::path::Path;
 
 use ae::json::{self, Value};
+
+use crate::support::source_view;
 
 /// One of reviewer4's round-4 injections against the parity harness, byte for
 /// byte.
@@ -37,32 +38,37 @@ const RAW_STATUS_JUDGEMENT: &str = "        let output = command.output()?;
         }
 ";
 
-/// Every `.rs` file in the crate, for a guard that must see the whole tree.
-fn rust_sources() -> Vec<std::path::PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut found = Vec::new();
-    walk(&root.join("src"), &mut found);
-    walk(&root.join("tests"), &mut found);
+/// The `src/` files whose WHOLE text (tests included) holds `needle`, sorted.
+/// The text is the shared loader's, so a file that cannot be read fails the
+/// test by name instead of dropping out of the scan.
+fn src_holders(needle: &str) -> Vec<String> {
+    let mut found: Vec<String> = source_view::tree()
+        .iter()
+        .filter(|(path, text)| path.starts_with("src/") && text.contains(needle))
+        .map(|(path, _)| path.clone())
+        .collect();
     found.sort();
-    assert!(
-        found.len() > 5,
-        "the source walk found {} files; a guard that scans nothing passes forever",
-        found.len()
-    );
     found
+}
+
+/// One file of the shared tree, whole.
+fn tree_text(path: &str) -> &'static str {
+    source_view::tree()
+        .iter()
+        .find(|(name, _)| name == path)
+        .map_or_else(
+            || panic!("{path} was not loaded"),
+            |(_, text)| text.as_str(),
+        )
+}
+
+/// `text` with comments, then literals, blanked to spaces: the offsets stay the
+/// source's own and nothing a body search reads is prose or a string. A lexical
+/// fault fails by `file:line`.
+fn structural(file: &str, text: &str) -> String {
+    source_view::without_comments(file, text)
+        .and_then(|code| source_view::blank_literals(file, &code))
+        .unwrap_or_else(|failure| panic!("{failure}"))
 }
 
 /// Every file clippy reports a `std::process::Command` in — asked SEMANTICALLY.
@@ -171,19 +177,7 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
 /// it chooses the binary (`git`) so a caller only chooses arguments.
 #[test]
 fn run_git_has_exactly_one_product_caller() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut holders: Vec<String> = rust_sources()
-        .into_iter()
-        .filter(|p| p.starts_with(root.join("src")))
-        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_git(")))
-        .map(|p| {
-            p.strip_prefix(root)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    holders.sort();
+    let holders = src_holders("run_git(");
 
     // Control FIRST: a scan that matched nothing would pass this vacuously.
     assert!(
@@ -201,19 +195,7 @@ fn run_git_has_exactly_one_product_caller() {
 /// the watchdog's per-cycle process-table snapshot.
 #[test]
 fn run_ps_has_exactly_one_product_caller() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut holders: Vec<String> = rust_sources()
-        .into_iter()
-        .filter(|p| p.starts_with(root.join("src")))
-        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_ps(")))
-        .map(|p| {
-            p.strip_prefix(root)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    holders.sort();
+    let holders = src_holders("run_ps(");
 
     // Control FIRST: a scan that matched nothing would pass this vacuously.
     assert!(
@@ -232,19 +214,7 @@ fn run_ps_has_exactly_one_product_caller() {
 /// opener anywhere else is a review, not a diff.
 #[test]
 fn the_board_streaming_door_has_exactly_one_product_site() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut holders: Vec<String> = rust_sources()
-        .into_iter()
-        .filter(|p| p.starts_with(root.join("src")))
-        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("stream_transcript(")))
-        .map(|p| {
-            p.strip_prefix(root)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    holders.sort();
+    let holders = src_holders("stream_transcript(");
 
     // Control FIRST: a scan that matched nothing would pass this vacuously.
     assert!(
@@ -259,8 +229,7 @@ fn the_board_streaming_door_has_exactly_one_product_site() {
 
     // And the site opens exactly once: a second `File::open` in the same file
     // is the same bypass one file over.
-    let board = fs::read_to_string(root.join("src/board.rs"))
-        .unwrap_or_else(|err| panic!("the board module is readable: {err}"));
+    let board = tree_text("src/board.rs");
     assert_eq!(
         board.matches("File::open").count(),
         1,
@@ -273,19 +242,7 @@ fn the_board_streaming_door_has_exactly_one_product_site() {
 /// one question ae asks `sysctl`.
 #[test]
 fn run_sysctl_has_exactly_one_product_caller() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut holders: Vec<String> = rust_sources()
-        .into_iter()
-        .filter(|p| p.starts_with(root.join("src")))
-        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_sysctl(")))
-        .map(|p| {
-            p.strip_prefix(root)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    holders.sort();
+    let holders = src_holders("run_sysctl(");
 
     // Control FIRST: a scan that matched nothing would pass this vacuously.
     assert!(
@@ -303,22 +260,14 @@ fn run_sysctl_has_exactly_one_product_caller() {
 /// and its child's streams are never pipes that could block ae past a deadline.
 #[test]
 fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut holders: Vec<_> = rust_sources()
-        .into_iter()
-        .filter(|p| p.starts_with(root.join("src")))
-        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_agy_quota")))
-        .collect();
-    holders.sort();
+    let holders = src_holders("run_agy_quota");
     // A scan that found nothing fails here too: the expected list is not empty.
     assert_eq!(
         holders,
-        [root.join("src/quota.rs"), root.join("src/transport.rs")],
+        ["src/quota.rs", "src/transport.rs"],
         "the agy process leg gained (or lost) a product holder"
     );
-    let text = fs::read_to_string(root.join("src/transport.rs"))
-        .expect("the transport source is readable");
-    let code = strip_literals(&strip_comments(&text));
+    let code = structural("src/transport.rs", tree_text("src/transport.rs"));
     let body = &code[body_of(&code, "fn spawn_until")];
     assert_eq!(
         body.matches("Stdio::null()").count(),
@@ -335,18 +284,12 @@ fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
 /// the one process door: it chooses the binary and every argument.
 #[test]
 fn run_clipboard_image_has_exactly_one_product_caller() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut holders: Vec<_> = rust_sources()
-        .into_iter()
-        .filter(|p| p.starts_with(root.join("src")))
-        .filter(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("run_clipboard_image(")))
-        .collect();
-    holders.sort();
+    let holders = src_holders("run_clipboard_image(");
     // Control FIRST: a scan that matched nothing would pass this vacuously.
     assert!(!holders.is_empty(), "empty scan did not run");
     assert_eq!(
         holders,
-        [root.join("src/clipboard.rs"), root.join("src/transport.rs")],
+        ["src/clipboard.rs", "src/transport.rs"],
         "the clipboard process leg gained (or lost) a product holder"
     );
 }
@@ -359,10 +302,7 @@ fn run_clipboard_image_has_exactly_one_product_caller() {
 /// output at exit, so the wiring itself is what is pinned.
 #[test]
 fn the_opencode_leg_captures_through_a_file_never_a_pipe() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let text = fs::read_to_string(root.join("src/transport.rs"))
-        .expect("the transport source is readable");
-    let code = strip_literals(&strip_comments(&text));
+    let code = structural("src/transport.rs", tree_text("src/transport.rs"));
     let body = &code[body_of(&code, "fn run_opencode")];
     assert!(
         body.contains("CapturedToFile"),
@@ -387,22 +327,7 @@ fn the_opencode_leg_captures_through_a_file_never_a_pipe() {
 /// wire the weaker evidence somewhere else.
 #[test]
 fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let holders = |needle: &str| {
-        let mut found: Vec<String> = rust_sources()
-            .into_iter()
-            .filter(|p| p.starts_with(root.join("src")))
-            .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains(needle)))
-            .map(|p| {
-                p.strip_prefix(root)
-                    .unwrap_or(&p)
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        found.sort();
-        found
-    };
+    let holders = src_holders;
 
     // Control first, both ways: a needle that matches nothing passes forever,
     // and one that matches everything says nothing.
@@ -473,9 +398,7 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     // EXPECTED to hold these primitives, so the COUNT is the guard: a later
     // refactor that adds another `classify_absence(` / `probe_absence(` /
     // `boot_time(` anywhere but the one shared composition goes RED here.
-    let count_in = |file: &str, needle: &str| {
-        fs::read_to_string(root.join(file)).map_or(0, |text| text.matches(needle).count())
-    };
+    let count_in = |file: &str, needle: &str| tree_text(file).matches(needle).count();
     for needle in ["classify_absence(", "probe_absence(", "boot_time("] {
         assert_eq!(
             count_in("src/lifecycle/end.rs", needle),
@@ -496,10 +419,7 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
 
     // And the two verbs that still refuse on the strict proof alone.
     for (file, operation) in [("src/compact.rs", "compact"), ("src/lifecycle.rs", "stop")] {
-        let path = root.join(file);
-        let Ok(code) = fs::read_to_string(&path) else {
-            continue;
-        };
+        let code = tree_text(file);
         assert!(
             !code.contains("classify_absence(")
                 && !code.contains("probe_absence(")
@@ -517,15 +437,16 @@ const CFG_ATTR_EXEMPTION: &str = "#[cfg_attr(all(), allow(clippy::disallowed_typ
 const EXPECT_EXEMPTION: &str =
     "#[expect(clippy::disallowed_types, reason = \"review exemption red proof\")]";
 
-/// How many times `text` relaxes the disallowed-types lint.
-fn lint_relaxations(text: &str) -> usize {
+/// How many times `text` (the source of `file`) relaxes the disallowed-types
+/// lint.
+fn lint_relaxations(file: &str, text: &str) -> usize {
     // Assembled from halves so this file's own source does not contain the
     // needles.
     let relaxations = [
         concat!("allow(clippy::", "disallowed_types"),
         concat!("expect(clippy::", "disallowed_types"),
     ];
-    let code = strip_literals(&strip_comments(text));
+    let code = structural(file, text);
     let dense: String = code.split_whitespace().collect();
     relaxations
         .iter()
@@ -538,7 +459,7 @@ fn the_exemption_counter_sees_the_forms_that_beat_its_last_version() {
     // Control first, as always: a counter that could never answer 1 would report
     // every door as absent.
     assert_eq!(
-        lint_relaxations("#[allow(clippy::disallowed_types)] fn door() {}"),
+        lint_relaxations("fixture", "#[allow(clippy::disallowed_types)] fn door() {}"),
         1,
         "the counter cannot see a plain allow"
     );
@@ -548,7 +469,7 @@ fn the_exemption_counter_sees_the_forms_that_beat_its_last_version() {
         ("expect", EXPECT_EXEMPTION),
     ] {
         assert_eq!(
-            lint_relaxations(&format!("{exemption}\nfn door() {{}}")),
+            lint_relaxations("fixture", &format!("{exemption}\nfn door() {{}}")),
             1,
             "{shape}: the exemption that beat the last version is still invisible"
         );
@@ -556,12 +477,18 @@ fn the_exemption_counter_sees_the_forms_that_beat_its_last_version() {
 
     // And prose is still not a door.
     assert_eq!(
-        lint_relaxations("// a comment mentioning #[allow(clippy::disallowed_types)]\nfn f() {}"),
+        lint_relaxations(
+            "fixture",
+            "// a comment mentioning #[allow(clippy::disallowed_types)]\nfn f() {}"
+        ),
         0,
         "a mention in a comment counted as a door"
     );
     assert_eq!(
-        lint_relaxations("//! residual 4: a second #[expect(clippy::disallowed_types)] reopens it"),
+        lint_relaxations(
+            "fixture",
+            "//! residual 4: a second #[expect(clippy::disallowed_types)] reopens it"
+        ),
         0,
         "a mention in module docs counted as a door"
     );
@@ -573,19 +500,11 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // resolves TYPES: UFCS, `as` aliases and re-imports are all the same type to
     // it. That is what makes it close the CLASS, where a filter over method
     // names closed one spelling of it.
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut inventory = Vec::new();
-    for file in rust_sources() {
-        let text =
-            fs::read_to_string(&file).unwrap_or_else(|err| panic!("{}: {err}", file.display()));
-        let count = lint_relaxations(&text);
+    for (file, text) in source_view::tree() {
+        let count = lint_relaxations(file, text);
         if count > 0 {
-            let named = file
-                .strip_prefix(root)
-                .unwrap_or(&file)
-                .to_string_lossy()
-                .into_owned();
-            inventory.push((named, count));
+            inventory.push((file.clone(), count));
         }
     }
 
@@ -638,7 +557,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     );
 
     // And the harness's one door is the pinned one, not somewhere else in the file.
-    let code = strip_literals(&strip_comments(&harness_source()));
+    let code = harness_code();
     let wiring = body_of(&code, "mod raw");
     let token = concat!("clippy::", "disallowed_types");
     let at = code
@@ -658,7 +577,7 @@ fn a_child_process_is_run_in_exactly_one_place_and_is_wrapped_there() {
     // `std::process::Command::output(&mut command)` — semantically identical,
     // matching none of them. Adding `::output` to the list would have closed
     // that spelling, not the class.
-    let code = strip_literals(&strip_comments(&harness_source()));
+    let code = harness_code();
     let wiring = body_of(&code, "mod raw");
 
     let mut sites = Vec::new();
@@ -687,77 +606,9 @@ fn a_child_process_is_run_in_exactly_one_place_and_is_wrapped_there() {
     );
 }
 
-/// The harness's own source — the file this guard protects.
-fn harness_source() -> String {
-    // `expect` is relaxed only inside `#[test]` bodies (clippy.toml); these are
-    // helpers beside them, so they panic explicitly.
-    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/parity.rs"))
-        .unwrap_or_else(|err| panic!("the harness source is readable: {err}"))
-}
-
-/// `source` with line and block comments removed, string literals intact.
-fn strip_comments(source: &str) -> String {
-    let src: Vec<char> = source.chars().collect();
-    let mut out = String::with_capacity(source.len());
-    let mut index = 0;
-    while index < src.len() {
-        let current = src[index];
-        let next = src.get(index + 1).copied();
-        if current == '/' && next == Some('/') {
-            while index < src.len() && src[index] != '\n' {
-                index += 1;
-            }
-        } else if current == '/' && next == Some('*') {
-            index += 2;
-            while index < src.len() && !(src[index] == '*' && src.get(index + 1) == Some(&'/')) {
-                index += 1;
-            }
-            index = src.len().min(index + 2);
-            out.push(' ');
-        } else if current == '"'
-            || (current == 'r' && matches!(next, Some('"' | '#')))
-            || (current == '\'' && is_char_literal(&src, index))
-        {
-            // A literal is copied through whole: `//` inside one is not a
-            // comment, and this pass is only about the comments.
-            let end = literal_end(&src, index);
-            out.extend(&src[index..end]);
-            index = end;
-        } else {
-            out.push(current);
-            index += 1;
-        }
-    }
-    out
-}
-
-/// `code` with the CONTENTS of string and char literals blanked out.
-pub(crate) fn strip_literals(code: &str) -> String {
-    let src: Vec<char> = code.chars().collect();
-    let mut out = String::with_capacity(code.len());
-    let mut index = 0;
-    while index < src.len() {
-        let current = src[index];
-        let next = src.get(index + 1).copied();
-        if current == '"'
-            || (current == 'r' && matches!(next, Some('"' | '#')))
-            || (current == '\'' && is_char_literal(&src, index))
-        {
-            let end = literal_end(&src, index);
-            for blanked in &src[index..end] {
-                // One space per BYTE, so a non-ASCII literal cannot shift an
-                // offset the other view is about to be indexed by.
-                for _ in 0..blanked.len_utf8() {
-                    out.push(' ');
-                }
-            }
-            index = end;
-        } else {
-            out.push(current);
-            index += 1;
-        }
-    }
-    out
+/// The harness's own source — the file this guard protects — structural.
+fn harness_code() -> String {
+    structural("tests/it/parity.rs", tree_text("tests/it/parity.rs"))
 }
 
 /// The half-open byte range of the brace-delimited body that follows `header`.
@@ -801,123 +652,17 @@ fn squashed(chunk: &str) -> String {
     text.chars().take(96).collect()
 }
 
-/// Whether the `'` at `index` opens a char literal rather than a lifetime.
-fn is_char_literal(src: &[char], index: usize) -> bool {
-    src.get(index + 1) == Some(&'\\') || src.get(index + 2) == Some(&'\'')
-}
-
-/// The index just past the literal starting at `index`.
-fn literal_end(src: &[char], index: usize) -> usize {
-    let mut cursor = index;
-    if src[cursor] == 'r' {
-        cursor += 1;
-        let mut hashes = 0;
-        while src.get(cursor) == Some(&'#') {
-            hashes += 1;
-            cursor += 1;
-        }
-        if src.get(cursor) != Some(&'"') {
-            return index + 1;
-        }
-        cursor += 1;
-        while cursor < src.len() {
-            if src[cursor] == '"' && (1..=hashes).all(|step| src.get(cursor + step) == Some(&'#')) {
-                return cursor + hashes + 1;
-            }
-            cursor += 1;
-        }
-        return src.len();
-    }
-    let quote = src[cursor];
-    cursor += 1;
-    while cursor < src.len() {
-        if src[cursor] == '\\' {
-            cursor += 2;
-            continue;
-        }
-        if src[cursor] == quote {
-            return cursor + 1;
-        }
-        cursor += 1;
-    }
-    src.len()
-}
-
-/// Every `src/**.rs` production half: comment lines dropped, then the cut
-/// `phase2::product_head` owns (gated registrations and items removed, the
-/// first gated test body cuts), so a fixture is never mistaken for a product
-/// line. A file its parent declares `#[cfg(test)] mod name;` is test-only and
-/// left out whole.
+/// Every `src/**.rs` production half, from the shared source view
+/// ([`source_view::product`]): comments and every `#[cfg(test)]` item blanked
+/// in place, files registered by test code alone left out, a file the view
+/// cannot classify a failure naming `file:line`. Nothing is cut at a first
+/// gate, so production after a test module is scanned too.
 fn product_halves() -> Vec<(String, String)> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = Vec::new();
-    for path in rust_sources() {
-        let Ok(relative) = path.strip_prefix(root) else {
-            continue;
-        };
-        let name = relative.to_string_lossy().replace('\\', "/");
-        if !name.starts_with("src/") {
-            continue;
-        }
-        let text = fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("{name} must be readable: {err}"));
-        let code = text
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        files.push((name, code));
-    }
-    let test_only = test_only_files(&files);
-    let halves: Vec<(String, String)> = files
-        .into_iter()
-        .filter(|(name, _)| !test_only.contains(name))
-        .map(|(name, code)| (name, crate::phase2::product_head(&code)))
-        .collect();
-    assert!(
-        halves.len() > 5,
-        "the source walk found {} product halves; a guard that scans nothing passes forever",
-        halves.len()
-    );
-    halves
-}
-
-/// The files `files` declare as `#[cfg(test)] mod name;`: a parent `a/b.rs`
-/// owns `a/b/name.rs`; `lib.rs`, `main.rs` and `mod.rs` own `name.rs` beside them.
-fn test_only_files(files: &[(String, String)]) -> BTreeSet<String> {
-    files
+    source_view::product()
+        .files
         .iter()
-        .flat_map(|(name, code)| {
-            let base = match name.rsplit_once('/') {
-                Some((dir, "lib.rs" | "main.rs" | "mod.rs")) => dir.to_owned(),
-                _ => name.trim_end_matches(".rs").to_owned(),
-            };
-            crate::phase2::test_only_modules(code)
-                .into_iter()
-                .map(move |module| format!("{base}/{module}.rs"))
-        })
+        .map(|file| (file.path.clone(), file.text.clone()))
         .collect()
-}
-
-#[test]
-fn a_cfg_test_module_registration_names_its_child_file_at_any_depth() {
-    let decl = |name: &str| {
-        (
-            name.to_owned(),
-            "#[cfg(test)]\nmod spec;\nmod live;\n".to_owned(),
-        )
-    };
-    let files = [
-        decl("src/lib.rs"),
-        decl("src/app.rs"),
-        decl("src/board/follow.rs"),
-    ];
-    assert_eq!(
-        test_only_files(&files),
-        BTreeSet::from(
-            ["src/spec.rs", "src/app/spec.rs", "src/board/follow/spec.rs"].map(str::to_owned)
-        ),
-    );
 }
 
 #[test]
@@ -936,21 +681,28 @@ fn the_door_scan_reaches_app_registrations_and_leaves_test_only_files_out() {
             .all(|(name, _)| name != "src/app/fleet_spec.rs"),
         "a registered test-only spec file is not product"
     );
+    assert!(
+        source_view::product()
+            .test_only
+            .iter()
+            .any(|name| name == "src/app/fleet_spec.rs"),
+        "and the view names it as test-only, rather than not finding it at all"
+    );
 }
 
 /// The bodies of production functions, with braces inside literals ignored.
 /// This is enough structure for the mutation guard below to associate a
 /// direct filesystem operation with the session container that it targets.
 fn function_bodies(code: &str) -> Vec<&str> {
-    let structural = strip_literals(code);
+    let blanked = structural("product half", code);
     let mut bodies = Vec::new();
-    for (start, _) in structural.match_indices("fn ") {
-        let Some(open_offset) = structural[start..].find('{') else {
+    for (start, _) in blanked.match_indices("fn ") {
+        let Some(open_offset) = blanked[start..].find('{') else {
             continue;
         };
         let open = start + open_offset;
         let mut depth = 0usize;
-        for (offset, byte) in structural[open..].bytes().enumerate() {
+        for (offset, byte) in blanked[open..].bytes().enumerate() {
             if byte == b'{' {
                 depth += 1;
             } else if byte == b'}' {
@@ -1131,12 +883,12 @@ fn tool_variant_tokens_follow_spelling_not_the_current_enum() {
 }
 
 /// Lexical tripwire for direct, uppercase-first `ToolKind::Variant` spellings
-/// in each production half (the cut `phase2::product_head` owns: gated
-/// registrations and items removed, a gated test body cuts, registered test-only
-/// files left out), less the exact-count `TOOL_BRANCH_DEBT` rows. Aliases,
-/// glob-imported variants, indirect decisions, strings and code after a cut are
-/// outside what this source-text check can prove; it does not establish semantic
-/// ownership.
+/// in each production half (the view `source_view` owns: every `#[cfg(test)]`
+/// item and comment blanked in place, files registered by test code alone left
+/// out, production after a test module still scanned), less the exact-count
+/// `TOOL_BRANCH_DEBT` rows. Aliases, glob-imported variants, indirect decisions
+/// and strings are outside what this source-text check can prove; it does not
+/// establish semantic ownership.
 #[test]
 fn per_tool_branches_live_only_in_the_adapter_rows() {
     let halves = product_halves();
@@ -1149,8 +901,8 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
         );
     assert!(
         tool_variant_tokens(adapter).next().is_some(),
-        "src/tool.rs has no ToolKind variant tokens after the phase2::product_head cut; \
-         verify the cut and adapter spelling"
+        "src/tool.rs has no ToolKind variant tokens in its production view; \
+         verify the view and adapter spelling"
     );
     let needles: BTreeSet<_> = halves
         .iter()
@@ -1193,8 +945,8 @@ fn a_live_session_file_is_named_in_exactly_one_place() {
     // derives every lock from them, so a production line anywhere else that
     // writes one out is the drift this guard exists to catch. The literals are
     // unterminated on purpose: `"events.jsonl.lock"` is caught by the same
-    // check as `"events.jsonl"`. Fixtures are not production — the scan cuts
-    // each file at its first `#[cfg(test)]`.
+    // check as `"events.jsonl"`. Fixtures are not production — the scan is
+    // shown each file with its `#[cfg(test)]` items blanked.
     for (name, code) in product_halves() {
         // `src/archive/store.rs` names an ARCHIVE's members. They coincide with
         // the live names today and are deliberately independent: an archive is

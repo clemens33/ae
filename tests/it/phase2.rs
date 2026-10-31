@@ -31,7 +31,7 @@ use ae::time::Timestamp;
 use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
-use crate::doors::strip_literals;
+use crate::support::source_view;
 
 const NOW: Timestamp = Timestamp::from_epoch(1_780_000_000);
 
@@ -1186,256 +1186,26 @@ fn criterion_20_a_real_ownership_marker_round_trips_through_the_product_reader()
 
 // ---- criterion 14, asked of the whole crate rather than one file ----------
 
-/// The non-test source of every module in `src/`, comments stripped.
+/// The product text of every module under `src/`, from the shared source view:
+/// comments and `#[cfg(test)]` items blanked in place, files registered by test
+/// code alone left out, a file the view cannot classify a failure naming
+/// `file:line`. Names are root-relative, `src/session.rs`.
 fn product_source() -> Vec<(String, String)> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let Ok(entries) = fs::read_dir(&src) else {
-        panic!("src/ must be readable");
-    };
-    let mut modules: Vec<(String, String)> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .map(|path| {
-            let Ok(text) = fs::read_to_string(&path) else {
-                panic!("{} must be readable", path.display());
-            };
-            let code: String = text
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("//"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let module = product_head(&code);
-            let name = path
-                .file_name()
-                .map(|leaf| leaf.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (name, module)
-        })
-        .collect();
-    modules.sort();
-    modules
-}
-
-/// The product half of `code` (comment lines already stripped): the text up to
-/// the first `#[cfg(test)]` that opens a test body, with every gated
-/// registration or single item before it (`mod x;`, a fn, const, use, enum
-/// variant, match arm, `if let` block, ...) removed, so the product code after
-/// it is still scanned. This is the ONE cut rule of two guards, `criterion_14`
-/// below and `doors.rs` `product_halves`. A shape it does not read, or any
-/// doubt, cuts.
-pub(crate) fn product_head(code: &str) -> String {
-    walk(code).0
-}
-
-/// The modules `code` declares as `#[cfg(test)] mod name;`: test-only files.
-pub(crate) fn test_only_modules(code: &str) -> Vec<String> {
-    walk(code).1
-}
-
-fn walk(code: &str) -> (String, Vec<String>) {
-    const GATE: &str = "#[cfg(test)]";
-    let structural = strip_literals(code);
-    let (mut head, mut modules) = (String::new(), Vec::new());
-    let (mut kept, mut pos) = (0, 0);
-    while pos < structural.len() {
-        let line_end = structural[pos..]
-            .find('\n')
-            .map_or(structural.len(), |len| pos + len + 1);
-        let trimmed = structural[pos..line_end].trim_start();
-        if trimmed.starts_with(GATE) {
-            head.push_str(&code[kept..pos]);
-            let after = line_end - trimmed.len() + GATE.len();
-            let Some((end, module)) = gated_end(&structural, after) else {
-                return (head, modules);
-            };
-            modules.extend(module.map(str::to_owned));
-            (kept, pos) = (end, end);
-        } else {
-            pos = line_end;
-        }
-    }
-    head.push_str(&code[kept..]);
-    (head, modules)
-}
-
-#[derive(PartialEq)]
-enum Kind {
-    /// `mod name;`: skipped only when bodiless.
-    Module,
-    /// fn, impl, struct, enum, trait: ends at `;` or its closing brace.
-    Body,
-    /// const, static, type, use: ends at `;` only.
-    Semi,
-    /// A variant, arm, field or statement: also ends at `,`.
-    Other,
-}
-
-/// Where the item a `#[cfg(test)]` at `from` gates ends in `s` (literals
-/// blanked), plus its name when it is a `mod name;` registration. `None` when
-/// the item is no shape read here or never closes: the caller cuts.
-fn gated_end(s: &str, from: usize) -> Option<(usize, Option<&str>)> {
-    let b = s.as_bytes();
-    let mut at = skip_space(b, from);
-    while s.get(at..)?.starts_with("#[") {
-        at = skip_space(b, group_end(b, at + 1, b'[', b']')?);
-    }
-    let kind = loop {
-        let (word, end) = word_at(s, at);
-        let qualifier = matches!(word, "unsafe" | "async" | "extern" | "default")
-            || (word == "const"
-                && matches!(word_at(s, end).0, "fn" | "unsafe" | "async" | "extern"));
-        if qualifier {
-            at = end;
-            continue;
-        }
-        match word {
-            "pub" => {
-                at = end;
-                let open = skip_space(b, at);
-                if b.get(open) == Some(&b'(') {
-                    at = group_end(b, open, b'(', b')')?;
-                }
-            }
-            "mod" => break Kind::Module,
-            "fn" | "impl" | "struct" | "enum" | "trait" | "union" => break Kind::Body,
-            "const" | "static" | "type" | "use" => break Kind::Semi,
-            _ => break Kind::Other,
-        }
-    };
-    if kind == Kind::Module {
-        let (name, end) = word_at(s, word_at(s, at).1);
-        let semi = skip_space(b, end);
-        return (b.get(semi) == Some(&b';') && !name.is_empty()).then(|| (semi + 1, Some(name)));
-    }
-    let mut depth = 0_usize;
-    while at < b.len() {
-        match b[at] {
-            b'/' if b.get(at + 1) == Some(&b'/') => {
-                at = s[at..].find('\n').map_or(b.len(), |len| at + len);
-                continue;
-            }
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' => depth = depth.checked_sub(1)?,
-            b'}' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 && kind != Kind::Semi {
-                    let (word, end) = word_at(s, at + 1);
-                    if kind == Kind::Other && word == "else" {
-                        at = end;
-                        continue;
-                    }
-                    return Some((at + 1, None));
-                }
-            }
-            b';' if depth == 0 => return Some((at + 1, None)),
-            b',' if depth == 0 && kind == Kind::Other => return Some((at + 1, None)),
-            _ => {}
-        }
-        at += 1;
-    }
-    None
-}
-
-fn skip_space(b: &[u8], at: usize) -> usize {
-    (at..b.len())
-        .find(|&i| !b[i].is_ascii_whitespace())
-        .unwrap_or(b.len())
-}
-
-/// The identifier at `at` past any space, and the index after it.
-fn word_at(s: &str, at: usize) -> (&str, usize) {
-    let b = s.as_bytes();
-    let start = skip_space(b, at);
-    let end = (start..b.len())
-        .find(|&i| !(b[i].is_ascii_alphanumeric() || b[i] == b'_'))
-        .unwrap_or(b.len());
-    (&s[start..end], end)
-}
-
-/// The index after the `close` that matches the `open` at `at`.
-fn group_end(b: &[u8], at: usize, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0_usize;
-    for (index, &byte) in b.iter().enumerate().skip(at) {
-        if byte == open {
-            depth += 1;
-        } else if byte == close {
-            depth = depth.checked_sub(1)?;
-            if depth == 0 {
-                return Some(index + 1);
-            }
-        }
-    }
-    None
-}
-
-#[test]
-fn the_product_cut_removes_gated_items_and_stops_at_a_body() {
-    let skipped = [
-        "#[cfg(test)]\n#[path = \"../tests/it/x.rs\"]\npub(crate) mod testonly_spec;\n",
-        "#[cfg(test)]\nconst TESTONLY: [u8; 2] = [1; 2];\n",
-        "#[cfg(test)]\npub(crate) use tests::{testonly, b};\n",
-        "    #[cfg(test)]\n    #[must_use]\n    pub(crate) const fn testonly(&self) -> bool {\n        \
-         let s = \"}{;//\"; // } stray brace\n        true\n    }\n",
-        "#[cfg(test)]\nfn testonly<A, B>(a: A) -> B\nwhere\n    A: Into<B>,\n    B: Default,\n{\n    a.into()\n}\n",
-        "#[cfg(test)]\nimpl Testonly {\n    fn f() {}\n}\n",
-        "    #[cfg(test)]\n    Testonly(String),\n",
-        "    #[cfg(test)]\n    Testonly { a: u8, b: Vec<(u8, u8)> },\n",
-        "        #[cfg(test)]\n        Self::Testonly(base) => base,\n",
-        "        #[cfg(test)]\n        Self::Testonly => {\n            1\n        }\n",
-        "#[cfg(test)]\nif let Some(hit) = testonly() {\n    return hit;\n} else if x {\n    y;\n} else {\n    z;\n}\n",
-        "#[cfg(test)]\nthread_local! {\n    static TESTONLY: u8 = 1;\n}\n",
-    ];
-    for gated in skipped {
-        let code = format!("fn before() {{}}\n{gated}fn after() {{}}\n");
-        let head = product_head(&code);
-        assert!(
-            head.contains("fn before() {}") && head.contains("fn after() {}"),
-            "the product around a gated item is kept: {gated}"
-        );
-        assert!(
-            !head.to_lowercase().contains("testonly"),
-            "and the gated item is removed: {gated}\n{head}"
-        );
-    }
-    let cut = [
-        "#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n",
-        "#[cfg(test)]\n#[allow(\n    clippy::x,\n)]\nmod tests {\n    fn t() {}\n}\n",
-        "#[cfg(test)]\npub(in crate::console) mod tests {\n}\n",
-        "#[cfg(test)]\nfn testonly() {\n    never_closes();\n",
-        "#[cfg(test)]\n}\n",
-    ];
-    for gated in cut {
-        let code = format!("fn before() {{}}\n{gated}fn after() {{}}\n");
-        assert_eq!(
-            product_head(&code),
-            "fn before() {}\n",
-            "doubt cuts: {gated}"
-        );
-    }
-    for whole in [
-        "fn only() {}\n",
-        "let s = \"#[cfg(test)]\";\nfn only() {}\n",
-    ] {
-        assert_eq!(
-            product_head(whole),
-            whole,
-            "no gate at a line start: {whole}"
-        );
-    }
-    assert_eq!(
-        test_only_modules("#[cfg(test)]\nmod a_spec;\npub mod b;\n#[cfg(test)]\nmod tests {\n}\n"),
-        ["a_spec"],
-        "only a bodiless gated registration names a test-only file"
-    );
+    source_view::product()
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file.text.clone()))
+        .collect()
 }
 
 /// The last ungated `mod name;` registration of `src/app.rs`, which sits past
-/// its first `#[cfg(test)]` and was hidden when that gate cut the file.
+/// its first `#[cfg(test)]`: the independent reference the view must reach.
 pub(crate) fn last_ungated_app_registration() -> String {
-    let Ok(text) = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"))
+    let Some((_, text)) = source_view::tree()
+        .iter()
+        .find(|(name, _)| name == "src/app.rs")
     else {
-        panic!("src/app.rs must be readable");
+        panic!("src/app.rs was not loaded");
     };
     let lines: Vec<&str> = text.lines().collect();
     let Some(last) = lines.windows(2).rev().find_map(|pair| {
@@ -1452,7 +1222,7 @@ fn the_scan_reaches_the_app_registrations_after_its_spec_block() {
     let last = last_ungated_app_registration();
     let visible = product_source()
         .into_iter()
-        .find_map(|(name, code)| (name == "app.rs").then_some(code));
+        .find_map(|(name, code)| (name == "src/app.rs").then_some(code));
     assert!(
         visible.is_some_and(|code| code.lines().any(|line| line == last)),
         "the scan must reach {last:?}"
@@ -1479,22 +1249,22 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     // for a whole review cycle.
     let modules = product_source();
     assert!(
-        modules.iter().any(|(name, _)| name == "liveness.rs")
-            && modules.iter().any(|(name, _)| name == "listing.rs"),
+        modules.iter().any(|(name, _)| name == "src/liveness.rs")
+            && modules.iter().any(|(name, _)| name == "src/listing.rs"),
         "the scan reached the phase-2 modules"
     );
 
     assert_eq!(
         sites(concat!("Meta", "::read(")),
-        vec![("session.rs".to_owned(), 1)],
+        vec![("src/session.rs".to_owned(), 1)],
         "the meta is opened in exactly one place"
     );
     assert_eq!(
         sites(concat!("SessionRead", "::open(")),
         vec![
-            ("rename.rs".to_owned(), 2),
-            ("restore.rs".to_owned(), 1),
-            ("session.rs".to_owned(), 1),
+            ("src/rename.rs".to_owned(), 2),
+            ("src/restore.rs".to_owned(), 1),
+            ("src/session.rs".to_owned(), 1),
         ],
         "and so is the event stream — plus the stopped rename's two ledger \
          reads (its own source log and one peer-log probe), which go through \
@@ -1505,10 +1275,10 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     assert_eq!(
         sites(concat!("RecordSnapshot", "::read(")),
         vec![
-            ("console.rs".to_owned(), 1),
-            ("inventory.rs".to_owned(), 1),
-            ("lib.rs".to_owned(), 1),
-            ("session.rs".to_owned(), 1),
+            ("src/console.rs".to_owned(), 1),
+            ("src/inventory.rs".to_owned(), 1),
+            ("src/lib.rs".to_owned(), 1),
+            ("src/session.rs".to_owned(), 1),
         ],
         "the one reader is called from discovery, from the convenience wrapper \
          that exists for callers who genuinely want a fresh read, from the \
@@ -1521,14 +1291,14 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
 
     let Some((_, listing)) = product_source()
         .into_iter()
-        .find(|(name, _)| name == "listing.rs")
+        .find(|(name, _)| name == "src/listing.rs")
     else {
-        panic!("listing.rs must be scanned");
+        panic!("src/listing.rs must be scanned");
     };
     // The projection moved into `Presentation::world` when phase 3 made the
     // boundary a production type; the obligation did not move with it.
     let Some((_, projection)) = listing.split_once("pub fn world(") else {
-        panic!("the projection must be in listing.rs");
+        panic!("the projection must be in src/listing.rs");
     };
     for read in [
         concat!("entry_", "for("),

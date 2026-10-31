@@ -51,7 +51,9 @@ tests/it/           — the one integration-test target. The behaviours of the r
                       suites are pinned here as Rust tests.
                       doors.rs = capability boundary; gate.rs = justfile/install guards;
                       parity.rs = the one child-process door; support.rs = the status-checked
-                      tmux observations fixtures wait on (a failed read is never a pane).
+                      tmux observations fixtures wait on (a failed read is never a pane);
+                      support/source_view.rs = the one source view a text guard reads (all
+                      production text of a file, or a failure naming file:line).
                       Unit tests sit beside the code
 tests/fixtures/     — frozen inputs the suites read (session shapes, list goldens)
 install             — the bootstrap: download a bundle, prove it against the release
@@ -179,7 +181,7 @@ Other rules of the loop:
   `tests/it/doors.rs` pins the exact per-file counts, so a new door is a review, not a diff.
   Same for the world-reading methods in `clippy.toml`'s `disallowed-methods`: each lives at a
   named door carrying its reason. A new caller of an existing door moves neither inventory:
-  `tests/it/phase3.rs` is the FILE-level world-read inventory, `tests/it/doors.rs` counts
+  `tests/it/phase3_probe_spec.rs` is the FILE-level world-read inventory, `tests/it/doors.rs` counts
   disallowed-TYPES relaxation SITES per file, so reads in an already-listed file add no file
   and calls through an existing door add no site.
 - No clap, serde, anyhow, thiserror, chrono or nix. Adding any runtime dependency is a
@@ -419,7 +421,7 @@ no variable of its own: lstat, canonicalize and metadata proving a recorded work
 is a directory, fail-closed — on the OptionalRoot branch a dangling link refuses as present-invalid
 rather than reading as absent (Required reports dangling as Absent, still refused). Zero `Command`,
 so the process inventory is unchanged; `src/doors.rs` was already vectored, so the
-`tests/it/phase3.rs` world-read inventory is unchanged too.
+`tests/it/phase3_probe_spec.rs` world-read inventory is unchanged too.
 
 In the core `AE_VERSION` is scoped to `upgrade` alone; `install` reads it too, as the CalVer
 target. `AE_CORE_BIN` and `AE_NEXT_HOME` are dead in both shapes.

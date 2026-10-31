@@ -4,39 +4,31 @@
 //! the INPUT/RENDERED separation, the marker grammar over hostile bytes, and
 //! the grep pin on the new module's rendering sites.
 
-#![allow(
-    clippy::disallowed_methods,
-    reason = "this reads the crate's own source for the grep pin; the capability boundary is \
-              about what PRODUCT code may reach"
-)]
-
-use std::path::Path;
-
+use crate::support::source_view;
 use ae::event_text::display_cell;
+
 use ae::sanitize::{
     Budgeted, Field, LedgerRef, NameStatus, check_name, invalid_marker, name_marker, omit_marker,
     over_cap_marker, prepare_body, sanitize, select_ids, utf8_skip_reason,
 };
 
-/// The product half of the new module — everything above the unit tests,
-/// code lines only (comments and doctests may DISCUSS the banned tokens;
-/// only code may not USE them). The grep pin scans this, never the tests.
+/// The product half of the new module — every production byte of the file,
+/// code only (comments and doctests may DISCUSS the banned tokens; only code
+/// may not USE them), from the shared source view. The grep pin scans this,
+/// never the tests, and production after the unit tests is scanned too.
 fn product_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sanitize.rs");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("{} must be readable: {err}", path.display()));
-    let (product, _) = text
-        .split_once("#[cfg(test)]")
-        .unwrap_or_else(|| panic!("{} must carry unit tests", path.display()));
+    let product = source_view::product()
+        .files
+        .iter()
+        .find(|file| file.path == "src/sanitize.rs")
+        .unwrap_or_else(|| panic!("src/sanitize.rs must be a product file"))
+        .text
+        .clone();
     assert!(
         product.contains("pub fn sanitize"),
         "the guard must see the module it guards"
     );
     product
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('/'))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[test]
