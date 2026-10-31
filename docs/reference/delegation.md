@@ -112,9 +112,15 @@ result the lead consumes immediately.
 
 **Brief** (what the spawner sends): objective; scope (files, base commit,
 absolute worktree path, expected HEAD); edit/commit/push authority; non-goals;
-rulings, including decided mechanisms; verification command; proof and reply
-shape; stop condition; cap. Name the pain and invariant; leave unspecified
-implementation open.
+rulings, including decided mechanisms; verification plan (defined below); proof
+and reply shape; stop condition; cap. Name the pain and invariant; leave
+unspecified implementation open.
+
+Verification plan: named checkpoint and candidate; required commands; who runs
+them; reviewer's independent checks; runtime/resource owner; evidence path and
+what invalidates it. Reuse a run only where repo policy explicitly permits. A
+seat change alone is no new checkpoint; changed inputs or a required gate may
+need a new run. Never omit a task or shipping gate.
 
 **Result** (what the worker replies): `Outcome / Changed / Verified (command +
 result) / Risks / Need from spawner`. No raw logs unless asked.
