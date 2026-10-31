@@ -5286,7 +5286,7 @@ pub(crate) fn attach_on(
         None
     };
     let same_server = caller_server.is_some_and(|caller| {
-        let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+        let mut sockets = crate::fleet_read::SocketPaths::live();
         sockets.proven_same(caller, server)
     });
     match attach_action(inside, same_server, caller_session.as_deref(), session) {

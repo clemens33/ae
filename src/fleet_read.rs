@@ -18,7 +18,26 @@ pub(crate) struct SocketPaths {
 }
 
 impl SocketPaths {
+    /// A cache that asks tmux.
+    pub(crate) const fn live() -> Self {
+        Self {
+            resolve: transport::observe_socket_path,
+            seen: Vec::new(),
+        }
+    }
+
+    /// [`Self::live`] already knowing what the CALLER server answered its own
+    /// batched read, so the picker's stopped scan does not ask the same server
+    /// twice.
+    pub(crate) fn for_caller(caller: &inventory::ServerId, socket: Option<String>) -> Self {
+        Self {
+            resolve: transport::observe_socket_path,
+            seen: vec![(caller.clone(), socket)],
+        }
+    }
+
     /// A cache that asks `resolve`.
+    #[cfg(test)]
     pub(crate) const fn asking(resolve: fn(&inventory::ServerId) -> Option<String>) -> Self {
         Self {
             resolve,
@@ -26,8 +45,8 @@ impl SocketPaths {
         }
     }
 
-    /// A cache already knowing what the CALLER server answered its own batched
-    /// read, so the picker's stopped scan does not ask the same server twice.
+    /// [`Self::for_caller`] with `resolve` in tmux's place.
+    #[cfg(test)]
     pub(crate) fn primed(
         resolve: fn(&inventory::ServerId) -> Option<String>,
         caller: &inventory::ServerId,
@@ -228,7 +247,7 @@ pub(crate) fn world_read(
     // ae`; tmux's own socket answer is the only proof that lets us query it
     // once without losing the durable record's preferred spelling.
     let entitled = inventory::entitled_servers(None, &scan.records);
-    let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+    let mut sockets = SocketPaths::live();
     let entitled = sockets.deduplicated(entitled);
     let default_recorded = scan.records.iter().any(|record| {
         record.server.entitles() == Some(&meta::Selector::Name(crate::instance::own_server_name()))

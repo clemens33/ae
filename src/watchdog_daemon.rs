@@ -3373,7 +3373,7 @@ fn watchdog_presence(meta_dir: &Path, table: Option<&[procs::Proc]>) -> Watchdog
 /// to at all. One read, one rule, both questions.
 struct AdoptionBackend<'a> {
     server: &'a crate::inventory::ServerId,
-    sockets: &'a crate::SocketPaths,
+    sockets: &'a crate::fleet_read::SocketPaths,
     proven: &'a [crate::inventory::DiscoveredSession],
 }
 
@@ -3422,7 +3422,7 @@ fn enumerate_adoption(
     // META ONLY: the picker's read. Identities and the `placed` rule, never a
     // session's journal — nothing here is derived from events.
     let scan = crate::inventory::durable_meta_records(&crate::inventory::Roots::under(&root));
-    let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+    let mut sockets = crate::fleet_read::SocketPaths::live();
     // Warm the cache ONLY for a spelling that is not already ours: two records
     // naming the same server the same way need no tmux probe to be equivalent.
     for candidate in &scan.records {
@@ -5384,7 +5384,7 @@ impl Cycle<'_> {
         }
     }
 
-    /// Read the fleet through [`crate::current_world`], enrich it through the
+    /// Read the fleet through [`crate::fleet_read::current_world`], enrich it through the
     /// same card collector as `ae brief --all`, then touch the watchdog-owned
     /// checkpoint without advancing the last-delivered hash.
     fn overview(&self, now: i64, err: &mut impl Write) -> Option<OverviewReading> {
@@ -5395,7 +5395,7 @@ impl Cycle<'_> {
             );
             return None;
         };
-        let (_, world) = crate::current_world(&root);
+        let (_, world) = crate::fleet_read::current_world(&root);
         let sessions = crate::inventory::Roots::under(&root);
         let cards: Vec<crate::brief::Card> = world
             .sessions
@@ -12088,7 +12088,7 @@ mod tests {
     fn the_adoption_backend_refuses_every_server_but_its_own() {
         use crate::inventory::Discovery as _;
 
-        let sockets = crate::SocketPaths::asking(|_| None);
+        let sockets = crate::fleet_read::SocketPaths::asking(|_| None);
         let mine = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
         let proven = [crate::inventory::DiscoveredSession {
             name: "peer".to_owned(),

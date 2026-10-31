@@ -1531,7 +1531,7 @@ fn admit<'a>(
         let meta::ServerSelector::Positive(selector) = parsed.server_selector() else {
             return Err("orchestrator role server unproven".into());
         };
-        if !crate::SocketPaths::asking(transport::observe_socket_path)
+        if !crate::fleet_read::SocketPaths::live()
             .proven_same(server, &ServerId::Selected(selector))
             || meta::sole_value(&bytes, "session") != Some(target.session.as_bytes())
         {
@@ -1560,7 +1560,7 @@ fn admit<'a>(
             )
             .map_err(Refusal::Role)?;
         } else {
-            let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+            let mut sockets = crate::fleet_read::SocketPaths::live();
             let caller_identity = transport::observe_pane_session_identity(&actual, &pane);
             if !sockets.proven_same(&actual, server)
                 || physical.is_none()

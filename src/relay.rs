@@ -833,7 +833,7 @@ pub(crate) fn physical_session(
         return Err("caller session is not the recorded one");
     };
     let recorded_server = ServerId::Selected(selector);
-    let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+    let mut sockets = crate::fleet_read::SocketPaths::live();
     if !sockets.proven_same(actual_server, &recorded_server) {
         return Err("caller session is not the recorded one");
     }

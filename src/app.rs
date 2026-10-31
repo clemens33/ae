@@ -3789,7 +3789,7 @@ impl App {
         let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
             return Err(Refusal::NoTmux.why());
         };
-        let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+        let mut sockets = crate::fleet_read::SocketPaths::live();
         let recorded = crate::session_launch::recorded_server_resolved(dir);
         if !recorded.is_some_and(|recorded| sockets.proven_same(server, &recorded)) {
             return Err(Refusal::Elsewhere(name.clone()).why());
@@ -4064,7 +4064,7 @@ fn proven_pane(
     dir: &Path,
     seat: Result<&SeatRef, Refusal>,
 ) -> Result<open::Target, Refusal> {
-    let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+    let mut sockets = crate::fleet_read::SocketPaths::live();
     let recorded = crate::session_launch::recorded_server_resolved(dir);
     if !recorded.is_some_and(|recorded| sockets.proven_same(server, &recorded)) {
         return Err(Refusal::Elsewhere(session.to_owned()));

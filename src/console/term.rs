@@ -532,7 +532,7 @@ fn read_standing(
     session: &str,
     pair: &[String],
 ) -> Standing {
-    let (_, world) = crate::current_world(root);
+    let (_, world) = crate::fleet_read::current_world(root);
     let entry = world.sessions.iter().find(|entry| entry.name == session);
     let agents = entry.map(|entry| entry.agents.as_slice());
     let takes = pair

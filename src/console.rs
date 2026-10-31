@@ -627,7 +627,7 @@ pub(crate) fn needs_in(
             .and_then(|meta| meta.server_selector().entitles().cloned())
             .map(inventory::ServerId::Selected)
             .zip(meta)
-            .and_then(|(server, meta)| crate::observed_agents(&server, name, meta)),
+            .and_then(|(server, meta)| crate::fleet_read::observed_agents(&server, name, meta)),
     };
     let runtime_read = agents.is_some();
     let mut runtime = session::SessionRuntime::new(if runtime_read {

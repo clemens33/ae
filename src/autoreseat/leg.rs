@@ -759,7 +759,7 @@ pub(crate) fn run(
         .or_else(|| pin(&profile))
         .unwrap_or_else(unknown);
     let model_after = pin(&pick).unwrap_or_else(unknown);
-    let (_, world) = crate::current_world(root);
+    let (_, world) = crate::fleet_read::current_world(root);
     let mut said = Vec::new();
     let ended = crate::reseat::run_as_watchdog(
         root,

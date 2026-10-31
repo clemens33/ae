@@ -1295,10 +1295,10 @@ fn bindings_servers(
 /// One row per server: two spellings tmux proves are one socket keep the
 /// first (recorded servers precede the default, so a record keeps its own
 /// spelling). Unprovable equivalence keeps both rows — truthful. The proof is
-/// the fleet's own [`crate::SocketPaths`], no second notion.
+/// the fleet's own [`crate::fleet_read::SocketPaths`], no second notion.
 fn dedupe_servers(
     servers: Vec<crate::inventory::ServerId>,
-    sockets: &mut crate::SocketPaths,
+    sockets: &mut crate::fleet_read::SocketPaths,
 ) -> Vec<crate::inventory::ServerId> {
     let mut distinct: Vec<crate::inventory::ServerId> = Vec::new();
     for server in servers {
@@ -1325,7 +1325,7 @@ fn bindings_facts(
 ) -> Vec<BindingsFacts> {
     let declared = crate::doors::declared_server(crate::shape::current());
     let servers = bindings_servers(sessions, crate::doors::launch_target(declared.as_ref()));
-    let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+    let mut sockets = crate::fleet_read::SocketPaths::live();
     let servers = dedupe_servers(servers, &mut sockets);
     let mut out = Vec::new();
     for server in &servers {
@@ -2526,17 +2526,17 @@ mod tests {
         let named = ServerId::Selected(Selector::Name("ae".to_owned()));
         let socket = ServerId::Selected(Selector::Socket("/private/tmp/tmux-501/ae".into()));
         let elsewhere = ServerId::Selected(Selector::Name("elsewhere".to_owned()));
-        let mut proven = crate::SocketPaths::asking(observed);
+        let mut proven = crate::fleet_read::SocketPaths::asking(observed);
         assert_eq!(
             dedupe_servers(vec![named.clone(), socket.clone()], &mut proven),
             vec![named.clone()]
         );
-        let mut proven = crate::SocketPaths::asking(observed);
+        let mut proven = crate::fleet_read::SocketPaths::asking(observed);
         assert_eq!(
             dedupe_servers(vec![socket.clone(), named.clone()], &mut proven),
             vec![socket]
         );
-        let mut unproven = crate::SocketPaths::asking(observed);
+        let mut unproven = crate::fleet_read::SocketPaths::asking(observed);
         assert_eq!(
             dedupe_servers(vec![named.clone(), elsewhere.clone()], &mut unproven),
             vec![named, elsewhere]

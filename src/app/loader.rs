@@ -660,13 +660,13 @@ impl Reader {
         answers.extend(self.owned());
         let now = Timestamp::now();
         let journals = &mut self.journals;
-        let crate::WorldRead {
+        let crate::fleet_read::WorldRead {
             snapshot,
             world,
             panes,
             sockets,
             ..
-        } = crate::world_read(&self.root, &mut |dir| journals.snapshot(dir));
+        } = crate::fleet_read::world_read(&self.root, &mut |dir| journals.snapshot(dir));
         let records: BTreeMap<&Path, _> = snapshot
             .sessions
             .iter()
@@ -1324,8 +1324,8 @@ pub(super) fn sole_uuid(dir: &Path) -> Option<String> {
 fn fleet_live_facts(
     snapshot: &crate::liveness::Snapshot,
     world: &World,
-    panes: &crate::ListedPanes,
-    sockets: &crate::SocketPaths,
+    panes: &crate::fleet_read::ListedPanes,
+    sockets: &crate::fleet_read::SocketPaths,
     server: Option<&ServerId>,
     picker: Option<&[crate::tmux::PickerSession]>,
 ) -> Vec<crate::quota::LiveSeatFact> {
@@ -1378,7 +1378,11 @@ fn fleet_live_facts(
 fn live_session(
     entry: &crate::digest::SessionEntry,
     roster: &[crate::meta::RosterEntry],
-    proof: (&crate::SocketPaths, Option<&ServerId>, Option<&ServerId>),
+    proof: (
+        &crate::fleet_read::SocketPaths,
+        Option<&ServerId>,
+        Option<&ServerId>,
+    ),
     fact: Option<&str>,
     panes: Option<&[crate::tmux::WatchPane]>,
     now: Timestamp,
@@ -1428,7 +1432,8 @@ mod tests {
             panic!("new socket read");
         };
         for (answer, expected) in [("/tmp/ae", Some("Spec")), ("/tmp/other", None)] {
-            let sockets = crate::SocketPaths::primed(no_read, &recorded, Some(answer.into()));
+            let sockets =
+                crate::fleet_read::SocketPaths::primed(no_read, &recorded, Some(answer.into()));
             let facts = super::live_session(
                 &entry,
                 meta.roster(),

@@ -791,7 +791,7 @@ fn is_own_session(dir: &Path) -> Result<(), String> {
     let Some(caller_server) = crate::doors::caller_server() else {
         return Err("no calling tmux server, so $TMUX_PANE has no server identity".to_owned());
     };
-    let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+    let mut sockets = crate::fleet_read::SocketPaths::live();
     if !sockets.proven_same(&caller_server, &server) {
         return Err(format!(
             "the calling tmux server is not the server {own} records"

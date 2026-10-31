@@ -254,7 +254,7 @@ pub(super) mod chatperf;
 
 /// Oracle uses today's FULL world route and today's fresh fold, never cache.
 fn full_fleet(root: &Path) -> FleetRead {
-    let (snapshot, world) = crate::current_world(root);
+    let (snapshot, world) = crate::fleet_read::current_world(root);
     let dirs = snapshot
         .sessions
         .iter()

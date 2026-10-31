@@ -623,7 +623,7 @@ impl StopExpectation {
             ));
         };
         let recorded = ServerId::Selected(selector);
-        let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+        let mut sockets = crate::fleet_read::SocketPaths::live();
         if !sockets.proven_same(&self.server, &recorded) {
             return ExpectCheck::Refused(format!(
                 "'{name}' is recorded on a different tmux server than the one it was confirmed on"
@@ -1127,7 +1127,7 @@ fn caller_resolution(
     let Some(recorded) = recorded else {
         return Err(CallerGap::NotAnAeSession(session));
     };
-    let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+    let mut sockets = crate::fleet_read::SocketPaths::live();
     if sockets.proven_same(caller_server, &recorded) {
         Ok(session)
     } else {

@@ -124,9 +124,6 @@ pub use error::{Error, Result};
 pub use fleet_read::current_world;
 #[cfg(debug_assertions)]
 pub use fleet_read::set_after_classify_hook;
-pub(crate) use fleet_read::{
-    ListedPanes, SeatPids, SocketPaths, WorldRead, observed_agents, world_read,
-};
 
 /// The crate version, as recorded in `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -624,7 +621,7 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     }
     let wants_world = request_needs_world(&request);
     if wants_world && let Some(root) = state_root() {
-        let mut read = world_read(&root, &mut session::RecordSnapshot::read);
+        let mut read = fleet_read::world_read(&root, &mut session::RecordSnapshot::read);
         if matches!(&request, cli::Request::List(options) if options.json) {
             enrich_list_json(&read.snapshot, &mut read.world, &read.panes);
         }
@@ -640,7 +637,7 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
 fn enrich_list_json(
     snapshot: &liveness::Snapshot,
     world: &mut listing::World,
-    listed: &ListedPanes,
+    listed: &fleet_read::ListedPanes,
 ) {
     debug_assert_eq!(snapshot.sessions.len(), world.sessions.len());
     // Presentation preserves classified order, including same-name records.
@@ -688,7 +685,7 @@ fn enrich_list_json(
 fn enrich_list_conversation(
     snapshot: &liveness::Snapshot,
     world: &mut listing::World,
-    pids: &SeatPids,
+    pids: &fleet_read::SeatPids,
 ) {
     let table = std::cell::OnceCell::new();
     let table = || table.get_or_init(procs::snapshot).as_deref();
@@ -868,8 +865,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         let scan = inventory::durable_meta_records(&inventory::Roots::under(root));
         // The caller's own socket answer came from the batched read, so the
         // cache never asks the same server twice.
-        let mut sockets =
-            SocketPaths::primed(transport::observe_socket_path, &server, read.socket.clone());
+        let mut sockets = fleet_read::SocketPaths::for_caller(&server, read.socket.clone());
         let mut servers = vec![server.clone()];
         for record in &scan.records {
             if let Some(selector) = record.server.entitles() {
@@ -1449,7 +1445,7 @@ struct PickerStoppedBackend<'a> {
     server: &'a inventory::ServerId,
     names: Option<&'a [String]>,
     live: &'a [tmux::PickerSession],
-    sockets: &'a SocketPaths,
+    sockets: &'a fleet_read::SocketPaths,
 }
 
 impl inventory::Discovery for PickerStoppedBackend<'_> {
@@ -1775,7 +1771,7 @@ fn both_terminal() -> bool {
 /// Whether the caller's tmux server is proven to be `server`.
 fn on_launch_server(preamble: &entry::Preamble, server: &inventory::ServerId) -> bool {
     preamble.caller_server.as_ref().is_some_and(|caller| {
-        let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+        let mut sockets = fleet_read::SocketPaths::live();
         sockets.proven_same(caller, server)
     })
 }
@@ -2925,7 +2921,7 @@ fn run_next(
     let caller_server = doors::caller_server();
     let inside = doors::inside_tmux(caller_server.as_ref(), err)?;
     let same_server = caller_server.as_ref().is_some_and(|caller| {
-        let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+        let mut sockets = fleet_read::SocketPaths::live();
         sockets.proven_same(caller, &server)
     });
     if inside
@@ -4371,7 +4367,7 @@ mod tests {
             durable_record("no-selector", crate::meta::ServerSelector::Missing),
             durable_record("ambiguous", crate::meta::ServerSelector::Ambiguous),
         ]);
-        let mut sockets = super::SocketPaths::asking(fake_socket);
+        let mut sockets = crate::fleet_read::SocketPaths::asking(fake_socket);
         let mut servers = vec![calling.clone()];
         for record in &scan.records {
             if let Some(selector) = record.server.entitles() {
@@ -4408,7 +4404,7 @@ mod tests {
             "on-caller",
             crate::meta::ServerSelector::Positive(crate::meta::Selector::Name("ae".to_owned())),
         )]);
-        let mut sockets = super::SocketPaths::asking(fake_socket);
+        let mut sockets = crate::fleet_read::SocketPaths::asking(fake_socket);
         let _ = sockets.deduplicated(vec![
             calling.clone(),
             inventory::ServerId::Selected(crate::meta::Selector::Name("ae".to_owned())),
@@ -4463,7 +4459,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("events.jsonl")).expect("a hostile journal shape");
 
         let calling = caller_server();
-        let mut sockets = super::SocketPaths::asking(fake_socket);
+        let mut sockets = crate::fleet_read::SocketPaths::asking(fake_socket);
         let _ = sockets.deduplicated(vec![
             calling.clone(),
             inventory::ServerId::Selected(crate::meta::Selector::Name("ae".to_owned())),
