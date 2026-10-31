@@ -3688,17 +3688,19 @@ fn buildtune_force_warn_children_override_incremental_without_changing_scope() {
         (
             "doors::the_capability_boundary_holds_against_any_lint_relaxation",
             "force-warn-guard",
+            ["--all-targets"].as_slice(),
             "clippy::disallowed_types",
             "the force-warn probe reported no `Command` anywhere",
         ),
         (
             "phase3::criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones",
             "world-read-guard",
+            ["--lib", "--bins"].as_slice(),
             "clippy::disallowed_methods",
-            "the force-warn probe found no world-reading call anywhere",
+            "clippy world-read probe failed: no compiler messages",
         ),
     ];
-    for (test, target, lint, rejection) in cases {
+    for (test, target, scope, lint, rejection) in cases {
         let capture = scratch.join(format!("{target}-capture"));
         let out = scratch.join(format!("{target}-out"));
         let err = scratch.join(format!("{target}-err"));
@@ -3726,13 +3728,12 @@ fn buildtune_force_warn_children_override_incremental_without_changing_scope() {
         );
         let isolated_target = root().join("target").join(target);
         // This pins the full guard argv; intentional scope changes update this contract.
-        assert_eq!(
-            &lines[1..],
-            [
-                "clippy",
-                "--quiet",
-                "--locked",
-                "--all-targets",
+        // The Command guard asks ALL targets; the world-read guard asks the
+        // product `--lib --bins` only, so no `cfg(test)` item is compiled.
+        let expected: Vec<&str> = ["clippy", "--quiet", "--locked"]
+            .into_iter()
+            .chain(scope.iter().copied())
+            .chain([
                 "--all-features",
                 "--message-format=json",
                 "--target-dir",
@@ -3742,7 +3743,11 @@ fn buildtune_force_warn_children_override_incremental_without_changing_scope() {
                 "--",
                 "--force-warn",
                 lint,
-            ],
+            ])
+            .collect();
+        assert_eq!(
+            &lines[1..],
+            expected.as_slice(),
             "the isolated force-warn lint scope is unchanged"
         );
     }

@@ -10,6 +10,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt::Write as _;
 
 use ae::attention::Reason;
@@ -1597,90 +1598,169 @@ fn criterion_10_a_non_c_locale_collates_these_names_differently_and_output_does_
 
 // ---- criterion 3: the access boundary, asked of the compiler ------------
 
-/// Every `(file, line)` where this crate may read the outside world, as CLIPPY
-/// reports it under `--force-warn`.
+// The frozen, independently derived inventory and the controls of the two pure
+// seams below. The real guard compares against it. The file is installed
+// byte for byte as its author froze it, so the two lints it trips under
+// `-D warnings` are allowed here, at its registration, and nowhere else.
+#[allow(
+    clippy::doc_markdown,
+    clippy::expect_used,
+    reason = "frozen spec installed byte-identical; its doc line names a path and its \
+              shared `rejected` helper is no #[test] fn, so the tests-only relaxation \
+              does not reach it"
+)]
+#[path = "phase3_probe_spec.rs"]
+mod probe_spec;
+
+/// The lint the probe forces, in the one spelling clippy's JSON carries it in.
+const WORLD_READ_LINT: &str = "clippy::disallowed_methods";
+
+/// How every failure of the probe starts, so a reader sees which guard spoke.
+const PROBE_FAILED: &str = "clippy world-read probe failed:";
+
+/// The arguments of the nested `cargo clippy` that asks the compiler where this
+/// crate may read the outside world. It selects the PRODUCT targets only —
+/// `--lib --bins`, never `--all-targets` — so nothing under `cfg(test)` is ever
+/// compiled and no test-only spec can appear in the answer. `--all-features`
+/// and `--locked` keep the product graph the lane's; the lint is forced, so an
+/// `allow` of any shape cannot hide a site from it.
+pub(crate) fn world_read_probe_args(target_dir: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "clippy",
+        "--quiet",
+        "--locked",
+        "--lib",
+        "--bins",
+        "--all-features",
+        "--message-format=json",
+        "--target-dir",
+    ]
+    .map(OsString::from)
+    .into();
+    args.push(target_dir.into());
+    args.extend(["--", "--force-warn", WORLD_READ_LINT].map(OsString::from));
+    args
+}
+
+/// The last lines of the child's stderr, so a failure names what the compiler said.
+fn stderr_tail(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().rev().take(12).collect();
+    lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
+}
+
+/// Every `(file, line)` where the probe says this crate may read the outside
+/// world, or the reason the probe's evidence cannot be trusted. A run that did
+/// not exit 0, a line that is not a decodable cargo record, a boundary message
+/// whose locations are unusable, a stream without a single compiler message and
+/// a stream without a single site are all REFUSED; none reads as a smaller
+/// inventory.
+pub(crate) fn decode_world_reading_sites(
+    outcome: ExitOutcome,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Vec<(String, usize)>, String> {
+    match outcome {
+        ExitOutcome::Code(0) => {}
+        ExitOutcome::Code(code) => {
+            return Err(format!(
+                "{PROBE_FAILED} exit code {code}; stderr: {}",
+                stderr_tail(stderr)
+            ));
+        }
+        ExitOutcome::Signalled => {
+            return Err(format!(
+                "{PROBE_FAILED} killed by signal; stderr: {}",
+                stderr_tail(stderr)
+            ));
+        }
+    }
+    let mut messages = 0_usize;
+    let mut sites = Vec::new();
+    for (index, line) in stdout.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let number = index + 1;
+        let Some(value) = json::parse(line)
+            .ok()
+            .filter(|value| value.get_str("reason").is_some())
+        else {
+            return Err(format!(
+                "{PROBE_FAILED} could not decode stdout line {number} as a cargo record"
+            ));
+        };
+        if value.get_str("reason") != Some("compiler-message") {
+            continue;
+        }
+        messages += 1;
+        let Some(message) = value.get("message") else {
+            return Err(format!(
+                "{PROBE_FAILED} could not decode the compiler message at stdout line {number}"
+            ));
+        };
+        if message.get("code").and_then(|code| code.get_str("code")) != Some(WORLD_READ_LINT) {
+            continue;
+        }
+        let malformed =
+            || format!("{PROBE_FAILED} malformed boundary span at stdout line {number}");
+        let Some(json::Value::Arr(spans)) = message.get("spans") else {
+            return Err(malformed());
+        };
+        if spans.is_empty() {
+            return Err(malformed());
+        }
+        for span in spans {
+            let (Some(file), Some(json::Value::Num(line_no))) =
+                (span.get_str("file_name"), span.get("line_start"))
+            else {
+                return Err(malformed());
+            };
+            let Ok(line_no) = usize::try_from(*line_no) else {
+                return Err(malformed());
+            };
+            sites.push((file.to_owned(), line_no));
+        }
+    }
+    if messages == 0 {
+        return Err(format!(
+            "{PROBE_FAILED} no compiler messages on stdout; the probe did not run"
+        ));
+    }
+    if sites.is_empty() {
+        return Err(format!(
+            "{PROBE_FAILED} no world-reading sites reported; a guard that scans nothing \
+             passes forever"
+        ));
+    }
+    sites.sort();
+    sites.dedup();
+    Ok(sites)
+}
+
+/// Every `(file, line)` where PRODUCT code may read the outside world, as
+/// CLIPPY reports it under `--force-warn` for the lib and bin targets.
 fn world_reading_sites() -> Vec<(String, usize)> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let scratch = super::cli::OwnedScratch::root("p3", "clippy");
     let (out, err) = (scratch.join("out"), scratch.join("err"));
-    let invocation = Invocation::new(cargo)
-        .env("CARGO_INCREMENTAL", "0")
-        .arg("clippy")
-        .arg("--quiet")
-        .arg("--locked")
-        .arg("--all-targets")
-        .arg("--all-features")
-        .arg("--message-format=json")
-        .arg("--target-dir")
-        .arg(
-            manifest
-                .join("target")
-                .join("world-read-guard")
-                .display()
-                .to_string(),
-        )
-        .arg("--")
-        .arg("--force-warn")
-        .arg("clippy::disallowed_methods");
-    let status = raw::run(&invocation, manifest, &out, &err);
-    assert!(status.is_ok(), "this guard needs cargo and clippy on PATH");
+    let target_dir = manifest.join("target").join("world-read-guard");
+    let invocation = world_read_probe_args(&target_dir).into_iter().fold(
+        Invocation::new(cargo).env("CARGO_INCREMENTAL", "0"),
+        Invocation::arg,
+    );
+    let status = raw::run(&invocation, manifest, &out, &err)
+        .unwrap_or_else(|why| panic!("this guard needs cargo and clippy on PATH: {why}"));
 
-    let stdout = std::fs::read_to_string(&out).unwrap_or_default();
-    let _ = std::fs::remove_file(&out);
-    let _ = std::fs::remove_file(&err);
-    let mut sites = Vec::new();
-    for line in stdout.lines() {
-        if !line.starts_with('{') {
-            continue;
-        }
-        let Ok(value) = json::parse(line) else {
-            continue;
-        };
-        if value.get_str("reason") != Some("compiler-message") {
-            continue;
-        }
-        let Some(message) = value.get("message") else {
-            continue;
-        };
-        let is_boundary = message.get_str("code_text") == Some("clippy::disallowed_methods")
-            || message.get("code").and_then(|code| code.get_str("code"))
-                == Some("clippy::disallowed_methods");
-        if is_boundary && let Some(json::Value::Arr(spans)) = message.get("spans") {
-            for span in spans {
-                let (Some(file), Some(json::Value::Num(line_no))) =
-                    (span.get_str("file_name"), span.get("line_start"))
-                else {
-                    continue;
-                };
-                if let Ok(line_no) = usize::try_from(*line_no) {
-                    sites.push((file.to_owned(), line_no));
-                }
-            }
-        }
-    }
-    sites.sort();
-    sites.dedup();
-    sites
-}
-
-/// Whether `line` in `file` is PRODUCT code rather than a test module.
-fn is_product_line(file: &str, line: usize) -> bool {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return false;
-    };
-    // THE CUT IS THE TEST MODULE, NOT THE FIRST `#[cfg(test)]`. A module that
-    // gates an individual ITEM on `#[cfg(test)]` — `src/telegram.rs` gates its
-    // loopback egress seam that way, near the top of the file — would put every
-    // line after that item on the test side of an "up to the first marker" cut,
-    // hiding every product door below it. That is the one thing this test
-    // exists to prevent.
-    let Some(module) = text.find("\nmod tests {") else {
-        return true;
-    };
-    let cut = text[..module].rfind("#[cfg(test)]").unwrap_or(module);
-    text[..cut].lines().count() >= line
+    let stdout = std::fs::read(&out)
+        .map_err(|why| why.to_string())
+        .and_then(|bytes| String::from_utf8(bytes).map_err(|why| why.to_string()))
+        .unwrap_or_else(|why| panic!("{PROBE_FAILED} cannot read its stdout: {why}"));
+    let stderr = std::fs::read(&err)
+        .unwrap_or_else(|why| panic!("{PROBE_FAILED} cannot read its stderr: {why}"));
+    let stderr = String::from_utf8_lossy(&stderr);
+    decode_world_reading_sites(status.outcome(), &stdout, &stderr)
+        .unwrap_or_else(|why| panic!("{why}"))
 }
 
 #[test]
@@ -1698,208 +1778,23 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     // premise ever closed an unlisted safe-std route, and reading them as
     // covering the enumeration is what let an earlier version of this file call
     // a name list a boundary.
-    let sites = world_reading_sites();
-    assert!(
-        !sites.is_empty(),
-        "the force-warn probe found no world-reading call anywhere; it did not run"
-    );
-
-    let mut product: Vec<String> = sites
-        .iter()
-        .filter(|(file, line)| file.starts_with("src/") && is_product_line(file, *line))
-        .map(|(file, _)| file.clone())
+    //
+    // THE INVENTORY IS WHAT THE COMPILER BUILDS WITHOUT `cfg(test)`: the lib
+    // and bin targets, asked of clippy, and nothing else. There is no text cut
+    // over source files, so a read after an inline test module is still a
+    // product read and a read in a registered test-only spec is never one. A
+    // probe that failed, or that left a line undecoded, is refused by name in
+    // `decode_world_reading_sites` and never reads as a smaller list.
+    let mut product: Vec<String> = world_reading_sites()
+        .into_iter()
+        .map(|(file, _)| file)
         .collect();
     product.sort();
     product.dedup();
 
     assert_eq!(
         product,
-        vec![
-            // The cfg(test) floor spec lists its owned HOME to prove refusal created no locks/state.
-            "src/../tests/it/aeinstance_p2_upgrade.rs".to_owned(),
-            // The livepeek frozen acceptance spec's owned fixtures: session
-            // dirs and journals it writes and reads back under its own Root.
-            "src/../tests/it/app_livepeek_spec.rs".to_owned(),
-            // Frozen cfg(test) chatperf aliases; not production read doors.
-            "src/../tests/it/chatperf_console_spec.rs".to_owned(),
-            "src/../tests/it/chatperf_strict_spec.rs".to_owned(),
-            "src/app/../../tests/it/chatperf_files_spec.rs".to_owned(),
-            // The in-app reader's ONE file door: a file a lane links, read for
-            // the reader panel from the loader thread only, judged by its
-            // canonical path against the session's work dir and the viewer's
-            // home, its regular-file gate and its one bounded open.
-            "src/app/filedoor.rs".to_owned(),
-            // THE terminal door of `ae app`: rustix termios takes raw mode,
-            // restores the saved mode and reads the window size, on the
-            // terminal the app was started in and nowhere else.
-            "src/app/tty.rs".to_owned(),
-            // The read-only archive-preview tracer's own reads: the `-f`-gated
-            // meta/memo reads, the messages/*.txt selection glob, and the
-            // fingerprint/size stats.
-            "src/archive.rs".to_owned(),
-            // The archive PUBLISHER's reads: the coherent snapshot of
-            // meta/memo/events under their locks, the messages/*.txt staging
-            // classification, the staged-tree validation stats, and the
-            // directory `fsync` that makes the rename durable. This is the ONE
-            // shared archive store that publish, inherit (`--from`) and purge
-            // all read the world through — so this single file, not three, is
-            // the inventoried reader for all of them.
-            "src/archive/store.rs".to_owned(),
-            // The bounded, non-following reads of hostile `upgrade.check` and
-            // `upgrade.log` state. Policy itself stays behind config.rs's door.
-            "src/autoupgrade.rs".to_owned(),
-            // The message board's ONE streaming door: it opens only the
-            // transcript usage's locator lstat-checked (same dev+inode,
-            // length not shrunk) and streams it line by line under the
-            // board-wide 1 MiB per-line cap. Every later reader reuses it.
-            "src/board.rs".to_owned(),
-            // the bounded, non-following read of a seat's undelivered-brief
-            // retry record — the one source a retried brief is built from.
-            "src/brief_retry.rs".to_owned(),
-            // The account carry's three doors: every store node classified
-            // with lstat before it is read, written or descended; one
-            // classified sidecar directory enumerated; and the conversation's
-            // own bytes read, which it copies opaquely and never parses.
-            "src/carry.rs".to_owned(),
-            // Compact's own door: the stored request body a handover reply
-            // names, read after its regular-file gate. An arbitrary path, not a
-            // session file, which is why it is compact's and not the store's.
-            "src/compact.rs".to_owned(),
-            // The minimal `[workspace]` config reader: the INI read
-            // behind compact's roster and purge-policy resolution.
-            "src/config.rs".to_owned(),
-            // `ae doctor`'s ONE own door: the `command -v` resolution of the
-            // hard dependencies — the `PATH` variable, and the executable bit
-            // of each candidate.
-            "src/doctor.rs".to_owned(),
-            // THE ENTRY'S ENVIRONMENT DOORS: `HOME`, `PWD`,
-            // `AE_HOME`, `CONFIG_FILE`, the `AE_TMUX_SERVER` pair,
-            // `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, the `<cwd>/.ae/config`
-            // read, and the strict worker-dir classifier (lstat +
-            // canonicalize + metadata proving a recorded target or root is
-            // a directory, fail-closed, under one allow site).
-            "src/doors.rs".to_owned(),
-            "src/events.rs".to_owned(),
-            // OpenCode Go usage door: key-file custody, the shared cache and
-            // lock, and the HTTPS GET. quota.rs stays credential-free and
-            // calls through this module.
-            "src/go_usage.rs".to_owned(),
-            // `ae init` classifies the selected config with lstat and reads a
-            // regular existing file before writing an exclusive proposal,
-            // backup, or atomic replacement. PATH discovery stays behind
-            // doctor.rs's existing resolver door.
-            "src/init.rs".to_owned(),
-            // THE INSTALLER'S OWN DOORS: the bundle members read to
-            // be hashed, the `lstat` that classifies every member and every
-            // publication destination WITHOUT following a link, the journal
-            // read that a rollback replays, and the enumeration of a
-            // transaction-private tree whose 0555 members have to be re-moded
-            // before they can be removed. Registered deliberately: this is the
-            // only module that writes into `~/.ae/versions`, and the only one
-            // that hashes anything at all.
-            "src/install.rs".to_owned(),
-            "src/inventory.rs".to_owned(),
-            "src/lib.rs".to_owned(),
-            // The three whole lifecycle operations (B move 4) and their own
-            // doors, one per file and each for a decision the operation cannot
-            // make without looking:
-            "src/lifecycle.rs".to_owned(),
-            "src/lifecycle/compaction.rs".to_owned(),
-            "src/lifecycle/end.rs".to_owned(),
-            "src/meta.rs".to_owned(),
-            // The upgrade's version-directory sweep: it enumerates
-            // `<home>/versions` to find the directories no session records any
-            // more. Its session enumeration and its meta reads are the
-            // `lifecycle.rs` and `meta.rs` doors, not new ones.
-            "src/migrate.rs".to_owned(),
-            // The orchestrator sweep's ONE own door: its state file, which is
-            // also the watchdog's heartbeat.
-            "src/monitor.rs".to_owned(),
-            // `ae quota` reads only bounded, lstat-checked client cache files
-            // and the dated directory names needed to locate an ae-recorded
-            // Codex rollout id. It neither reads credentials nor starts a
-            // client process.
-            "src/quota.rs".to_owned(),
-            // Own-session quota history appends and bounded read-only fleet files.
-            "src/quota/history/store.rs".to_owned(),
-            // The two document renders' own reads (A.2c): the INI config behind
-            // the profile inventory and `prompt.instructions`, and the `[[ -f
-            // ]]` that decides whether a parent archive's digest is still on
-            // machine. Its meta reads are `meta.rs`'s inventoried door, not new
-            // ones here. Registered deliberately — a render that reaches the
-            // world is a line in a review, not a diff nobody read.
-            "src/rename.rs".to_owned(),
-            "src/render.rs".to_owned(),
-            // Frozen cfg(test) repair spec: reads its own isolated ledger fixtures.
-            "src/request_verb/o8snap_spec.rs".to_owned(),
-            // The git branch read: `HEAD` under the session's own work tree,
-            // plus the `.git` pointer file a worktree uses instead of a
-            // directory.
-            "src/run.rs".to_owned(),
-            "src/session.rs".to_owned(),
-            // The LAUNCH operation's own reads (B move 3): the `.ending.<name>`
-            // tombstone lstats (a dangling link is a standing tombstone, so
-            // never `metadata`), the origin/work-dir existence gates, the
-            // canonicalise behind the explicit-origin resume guard, the
-            // `--copy` mode's recursive tree walk, and the resume-time
-            // events.jsonl retention read. Its meta and config reads are
-            // `meta.rs`'s and `config.rs`'s inventoried doors, not new ones
-            // here. Registered deliberately.
-            "src/session_launch.rs".to_owned(),
-            // The post-launch session-id capture's reads, for every capture
-            // tool: the `codex.<slot>.sid` file codex's own
-            // `_register-sid` wrote, the day-partitioned `~/.codex/sessions`
-            "src/session_launch/capture.rs".to_owned(),
-            // THE INSTALL SELF-VALIDATION: the three `lstat`s that
-            // prove the version directory's members are regular non-symlink
-            // files, and the manifest read that proves the directory is the one
-            // `install` published. `symlink_metadata`, never `metadata` — a
-            // member that is a link to a mutable file outside the immutable
-            // directory passes every follow-test and is then EXECUTED as ours.
-            "src/shape.rs".to_owned(),
-            // The live session store's doors, and every read of a live
-            // session's files: the `[[ -f ]]` gate and the read behind
-            // `memo read`/`memo tail`, and the event container's existence test
-            // and quiet read. Each gate comes BEFORE its open on purpose — a
-            // FIFO opened without one blocks the reader for good.
-            "src/store.rs".to_owned(),
-            // The LOCAL-mode teardown's own reads: the `lstat` that
-            // proves the session dir is a real direct child and never a link,
-            // and the sessions-root `fsync` that makes the rename-to-tombstone
-            // and its removal durable.
-            "src/teardown.rs".to_owned(),
-            // The outbound Telegram bridge's own reads: the event log's
-            // identity and length, the log body read from the cursor, the
-            // durable cursor itself, and the two reads behind the credentials —
-            // the INI config and the bot-token file. Registered deliberately,
-            // and it is the door with the highest stakes on this list: what it
-            // reads is a secret, and where it sends the result is the public
-            // internet.
-            "src/telegram.rs".to_owned(),
-            // The bridge LIFECYCLE's own reads: the INI config it decides
-            // intent from and rewrites, the two state files `status` reports
-            // on, the autostart-refusal record, and the config's own mode so an
-            // atomic rewrite does not re-permission it. The credential check is
-            // `telegram.rs`'s inventoried door, not a second one here — the
-            // lifecycle asks the DAEMON'S loader whether a start can work, so
-            // there is one reader of the token and it is the one with the
-            // custody rules. Registered deliberately: a command that can start a
-            // daemon holding a secret is not one to gain a quiet new read.
-            "src/telegram_lifecycle.rs".to_owned(),
-            // The clipboard leg's env doors: CHECKOUT-only `AE_TEST_CLIPBOARD_TOOL`
-            // and `WAYLAND_DISPLAY`, read only by `run_clipboard_image`.
-            "src/transport.rs".to_owned(),
-            // `ae usage` reads only bounded, lstat-checked session metadata,
-            // retire events and agent-owned transcripts selected from the
-            // recorded seat identity. Price overrides use config.rs's one
-            // bounded selected-INI reader rather than opening them here.
-            "src/usage.rs".to_owned(),
-            "src/watchdog_daemon.rs".to_owned(),
-            // The watchdog PANE's own pidfile read: the ownership check
-            // that decides whether this daemon may still remove its own
-            // registration.
-            "src/watchdog_glue.rs".to_owned(),
-        ],
+        probe_spec::expected_production_files(),
         "the set of places product code can reach the twelve named entry points changed"
     );
 }
