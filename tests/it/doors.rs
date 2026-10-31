@@ -1073,28 +1073,72 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
 
 /// DEBT, not design: production tool decisions outside `src/tool.rs` that this
 /// guard first saw once its cut reached past `quota.rs:45`. A row is keyed by
-/// file, needle and EXACT count, never a file skip: a fifth branch fails, and
+/// file, needle and EXACT count, never a file skip: an extra branch fails, and
 /// so does a removed branch whose row stays. Slice `toolrows` moves each
 /// branch into an adapter row and deletes its row here.
-const TOOL_BRANCH_DEBT: [(&str, &str, usize); 2] = [
+const TOOL_BRANCH_DEBT: [(&str, &str, usize); 3] = [
     // `model_family` and its family helper: model-scoped quota windows are
     // Claude-only today (slice toolrows).
     ("src/quota.rs", "ToolKind::Claude", 2),
     // The agy quota leg: the spoken-groups filter and the home-inheriting
     // leg (slice toolrows).
     ("src/quota.rs", "ToolKind::Agy", 2),
+    // Muse quota leg debt (slice toolrows), seven distinct decisions:
+    // muse_home: select the opted-in scope's config home.
+    // muse_legs: select scopes the Muse leg may speak for.
+    // replace_muse: replace placeholders for the scopes that leg spoke for.
+    // configured_scopes_with: attach unusable-config notes only to Muse scopes.
+    // absorb_resolved (asks): admit the paid leg only when Muse is opted in.
+    // absorb_resolved (identity): use the config home as the keychain account identity.
+    // leg_hint: show a Muse hint only after its leg spoke.
+    ("src/quota.rs", "ToolKind::Muse", 7),
 ];
 
-/// Lexical guard for direct `ToolKind::Variant` decisions in each production
-/// half (the cut `phase2::product_head` owns: gated registrations and items
-/// removed, a gated test body cuts, registered test-only files left out), less
-/// the exact-count `TOOL_BRANCH_DEBT` rows. Aliases, glob-imported variants,
-/// and code after a cut are outside what this source-text check can prove.
+/// Contiguous `ToolKind::UppercaseFirst` tokens, without an enum vocabulary
+/// that could omit a current or future variant. Lowercase associated functions
+/// are not variant decisions; the full token keeps variant prefixes distinct.
+fn tool_variant_tokens(code: &str) -> impl Iterator<Item = &str> {
+    code.match_indices("ToolKind::").filter_map(|(at, prefix)| {
+        if code[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        {
+            return None;
+        }
+        let rest = &code[at + prefix.len()..];
+        if !rest.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
+            return None;
+        }
+        let len = rest
+            .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
+            .unwrap_or(rest.len());
+        Some(&code[at..at + prefix.len() + len])
+    })
+}
+
+#[test]
+fn tool_variant_tokens_follow_spelling_not_the_current_enum() {
+    assert_eq!(
+        tool_variant_tokens(
+            "ToolKind::Muse ToolKind::MuseExtra crate::tool::ToolKind::Zeta \
+             ToolKind::from_binary_name ToolKind::from_known_binary_name \
+             OtherToolKind::Muse ToolKind::"
+        )
+        .collect::<Vec<_>>(),
+        ["ToolKind::Muse", "ToolKind::MuseExtra", "ToolKind::Zeta"]
+    );
+}
+
+/// Lexical tripwire for direct, uppercase-first `ToolKind::Variant` spellings
+/// in each production half (the cut `phase2::product_head` owns: gated
+/// registrations and items removed, a gated test body cuts, registered test-only
+/// files left out), less the exact-count `TOOL_BRANCH_DEBT` rows. Aliases,
+/// glob-imported variants, indirect decisions, strings and code after a cut are
+/// outside what this source-text check can prove; it does not establish semantic
+/// ownership.
 #[test]
 fn per_tool_branches_live_only_in_the_adapter_rows() {
-    let variants = [
-        "Claude", "Codex", "Gemini", "Agy", "Grok", "OpenCode", "Unknown",
-    ];
     let halves = product_halves();
     let adapter = halves
         .iter()
@@ -1103,18 +1147,24 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
             || panic!("the adapter source was not scanned"),
             |(_, code)| code,
         );
+    assert!(
+        tool_variant_tokens(adapter).next().is_some(),
+        "src/tool.rs has no ToolKind variant tokens after the phase2::product_head cut; \
+         verify the cut and adapter spelling"
+    );
+    let needles: BTreeSet<_> = halves
+        .iter()
+        .flat_map(|(_, code)| tool_variant_tokens(code))
+        // Retain debt needles even if their last source occurrence disappears.
+        .chain(TOOL_BRANCH_DEBT.iter().map(|(_, needle, _)| *needle))
+        .collect();
     for (file, _, _) in TOOL_BRANCH_DEBT {
         assert!(
             halves.iter().any(|(name, _)| name == file),
             "debt row names {file}, which was not scanned"
         );
     }
-    for variant in variants {
-        let needle = format!("ToolKind::{variant}");
-        assert!(
-            adapter.contains(&needle),
-            "the adapter does not own {needle}; the guard would miss that variant"
-        );
+    for needle in needles {
         for (name, code) in &halves {
             if name == "src/tool.rs" {
                 continue;
@@ -1124,7 +1174,9 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
                 .find(|(file, debt, _)| file == name && *debt == needle)
                 .map_or(0, |row| row.2);
             assert_eq!(
-                code.matches(&needle).count(),
+                tool_variant_tokens(code)
+                    .filter(|token| *token == needle)
+                    .count(),
                 owed,
                 "{name} branches on {needle} other than its {owed} debt row(s); \
                  production tool decisions belong in src/tool.rs"
