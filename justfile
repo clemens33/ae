@@ -1547,6 +1547,53 @@ _tmux-isolated lane *args:
 rust-test:
     just _tmux-isolated test
 
+# ON-DEMAND live smoke of ae's adapter rows against the REAL harness binaries and
+# logins (docs/development.md, "Live harness smoke"). It spends a few short model
+# turns per tool, so it is NEVER a dependency of `test`, `pre`, `rust-check`,
+# mutants or CI: both tests are `#[ignore]`d and need AE_HARNESS_SMOKE=1, which
+# only this recipe sets. `just harness-smoke` drives AE_HARNESS_SMOKE_TOOLS;
+# `just harness-smoke control` runs the hanging-shim control, which spends nothing.
+harness-smoke mode="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "${1:-}" in
+        "") filter='test(=harness_smoke::live_harness_smoke)' ;;
+        control) filter='test(=harness_smoke::live_harness_smoke_hang_control)' ;;
+        *) echo "usage: just harness-smoke [control]" >&2; exit 2 ;;
+    esac
+    # The suite's runners register their scratch under TMUX_TMPDIR, so a run needs one. It is
+    # this run's own; a run killed before its Drop leaves registered roots, and this trap kills
+    # their private servers and removes them, then the lane.
+    base="${AE_TEST_TMPDIR:-/tmp}"
+    lane="$(mktemp -d "$base/ae-hs-lane.XXXXXX")"
+    cleanup() {
+        local entry root
+        for entry in "$lane"/.ae-parity-fixtures/*/*; do
+            [[ -L "$entry" ]] || continue
+            root="$(readlink "$entry")"
+            case "$root" in
+                "$base"/ae-it-*/hs.*)
+                    env -u TMUX -u TMUX_PANE tmux -S "$root/sock" kill-server >/dev/null 2>&1 || true
+                    rm -rf "$root"
+                    ;;
+            esac
+        done
+        rm -rf "$lane"
+    }
+    trap cleanup EXIT
+    export TMUX_TMPDIR="$lane"
+    # Lane sizing, as `_tmux-isolated` does it: an explicit CARGO_BUILD_JOBS wins untouched,
+    # otherwise jobs-budget (one positive integer of at most three digits, else ignored) says
+    # how many cores are free now. One smoke test runs at a time, and cargo runs niced.
+    if [[ -z "${CARGO_BUILD_JOBS:-}" ]] && command -v jobs-budget >/dev/null 2>&1; then
+        budget="$(jobs-budget 2>/dev/null || true)"
+        if [[ "$budget" =~ ^[1-9][0-9]{0,2}$ ]]; then
+            export CARGO_BUILD_JOBS="$budget"
+        fi
+    fi
+    export NEXTEST_TEST_THREADS=1
+    AE_HARNESS_SMOKE=1 nice -n 10 cargo nextest run --locked --run-ignored only --no-capture -E "binary(it) & $filter"
+
 # Coverage is a REPORT, not a gate. It becomes a gate the day a threshold is
 # ratified, and not before.
 

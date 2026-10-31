@@ -6262,3 +6262,223 @@ fn a_stalled_lane_lock_release_cannot_remove_the_lock_the_recipe_gave_to_the_nex
 fn a_stalled_lane_lock_release_cannot_remove_the_lock_a_hand_release_gave_to_the_next_holder() {
     stalled_release_meets_a_new_holder("stallh", true);
 }
+
+// ── the on-demand live harness smoke ─────────────────────────────────────
+
+/// The words that mean "run ignored tests" or "open the live smoke's gate".
+const SMOKE_REACH: [&str; 3] = ["run-ignored", "--ignored", "AE_HARNESS_SMOKE"];
+
+/// Every way the live harness smoke is reachable from somewhere it must not be,
+/// or runs without what makes it safe, as plain sentences.
+///
+/// `just harness-smoke` spends real model turns on real logins, so the only way
+/// into it is typing it: the recipe is nobody's dependency, nothing else in the
+/// justfile or the workflows runs ignored tests or sets the gate variable, and
+/// the recipe itself runs the locked, ignored-only, exact-name selection.
+fn harness_smoke_leaks(justfile: &str, others: &[(&str, &str)]) -> Vec<String> {
+    let mut leaks = Vec::new();
+    let body = recipe_text(justfile, "harness-smoke ").join(" ");
+    if body.is_empty() {
+        leaks.push("the `harness-smoke` recipe is missing".to_owned());
+    }
+    for needed in [
+        "AE_HARNESS_SMOKE=1",
+        "TMUX_TMPDIR",
+        "jobs-budget",
+        "NEXTEST_TEST_THREADS=1",
+        "nice -n 10 cargo nextest run",
+        "--locked",
+        "--run-ignored only",
+        "--no-capture",
+        "binary(it)",
+        "test(=harness_smoke::live_harness_smoke)",
+        "test(=harness_smoke::live_harness_smoke_hang_control)",
+    ] {
+        if !body.is_empty() && !body.contains(needed) {
+            leaks.push(format!("the recipe lost `{needed}`"));
+        }
+    }
+    // The justfile minus that recipe: header, indented body and blank lines.
+    let mut rest = Vec::new();
+    let mut inside = false;
+    for line in justfile.lines() {
+        if line.starts_with("harness-smoke ") {
+            inside = true;
+            continue;
+        }
+        if inside && (line.starts_with([' ', '\t']) || line.is_empty()) {
+            continue;
+        }
+        inside = false;
+        rest.push(line);
+    }
+    let live = |line: &str| !line.trim_start().starts_with('#');
+    for line in rest.iter().copied().filter(|line| live(line)) {
+        for word in SMOKE_REACH.iter().copied().chain(["harness-smoke"]) {
+            if line.contains(word) {
+                leaks.push(format!(
+                    "the justfile reaches the smoke outside its recipe: {line:?}"
+                ));
+            }
+        }
+    }
+    for (name, text) in others {
+        for line in text.lines().filter(|line| live(line)) {
+            for word in SMOKE_REACH.iter().copied().chain(["harness-smoke"]) {
+                if line.contains(word) {
+                    leaks.push(format!("{name} reaches the smoke: {line:?}"));
+                }
+            }
+        }
+    }
+    leaks
+}
+
+/// What the live smoke's test file must keep: exactly two ignored tests, each
+/// opening with the gate check, no process door of its own, and no tmux read
+/// that files a pane's text under the scratch.
+fn harness_smoke_source_leaks(text: &str) -> Vec<String> {
+    let mut leaks = Vec::new();
+    let ignored = text.matches("#[ignore = \"live:").count();
+    if ignored != 2 {
+        leaks.push(format!(
+            "{ignored} live ignored tests, not exactly the two named"
+        ));
+    }
+    for name in ["live_harness_smoke", "live_harness_smoke_hang_control"] {
+        let body = text
+            .split_once(&format!("fn {name}() {{"))
+            .map_or("", |(_, rest)| rest);
+        if !body.trim_start().starts_with("if !gated() {") {
+            leaks.push(format!("`{name}` does not open with the gate check"));
+        }
+    }
+    if !text.contains("value == Some(\"1\")") {
+        leaks.push("the gate variable is no longer compared exactly to `1`".to_owned());
+    }
+    for door in [
+        "std::process::Command",
+        "run_tmux",
+        "capture_tmux",
+        "Invocation::new",
+    ] {
+        let code: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if code.contains(door) {
+            leaks.push(format!(
+                "the smoke names `{door}`; it reuses the cli doors and reads panes in memory"
+            ));
+        }
+    }
+    leaks
+}
+
+#[test]
+fn the_live_harness_smoke_is_reachable_only_by_typing_its_recipe() {
+    let justfile = read(&root().join("justfile"));
+    let rust = read(&root().join(".github/workflows/rust.yml"));
+    let release = read(&root().join(".github/workflows/release.yml"));
+    let mutants = read(&root().join(".cargo/mutants.toml"));
+    let nextest = read(&root().join(".config/nextest.toml"));
+    let leaks = harness_smoke_leaks(
+        &justfile,
+        &[
+            ("rust.yml", &rust),
+            ("release.yml", &release),
+            ("mutants.toml", &mutants),
+            ("nextest.toml", &nextest),
+        ],
+    );
+    assert!(leaks.is_empty(), "{leaks:#?}");
+    for gate in ["test", "rust-check", "pre", "rust-test"] {
+        assert!(
+            !recipe_deps(&justfile, gate)
+                .iter()
+                .any(|dep| dep.contains("harness")),
+            "`{gate}` must not depend on the live smoke"
+        );
+    }
+    let source = read(&root().join("tests/it/harness_smoke.rs"));
+    let leaks = harness_smoke_source_leaks(&source);
+    assert!(leaks.is_empty(), "{leaks:#?}");
+}
+
+#[test]
+fn the_live_harness_smoke_guards_catch_every_way_of_reaching_it() {
+    let good = "test: rust-check\n\
+                harness-smoke mode=\"\":\n    \
+                export TMUX_TMPDIR=lane\n    command -v jobs-budget\n    export NEXTEST_TEST_THREADS=1\n    \
+                AE_HARNESS_SMOKE=1 nice -n 10 cargo nextest run --locked --run-ignored only --no-capture \
+                -E \"binary(it) & test(=harness_smoke::live_harness_smoke) test(=harness_smoke::live_harness_smoke_hang_control)\"\n\
+                rust-test:\n    just _tmux-isolated test\n";
+    assert!(
+        harness_smoke_leaks(good, &[]).is_empty(),
+        "{:?}",
+        harness_smoke_leaks(good, &[])
+    );
+
+    // A gate recipe that depends on it.
+    let wired = good.replace("test: rust-check", "test: rust-check harness-smoke");
+    assert!(!harness_smoke_leaks(&wired, &[]).is_empty());
+    // Another recipe that runs ignored tests.
+    let ignored = good.replace(
+        "just _tmux-isolated test",
+        "cargo nextest run --run-ignored all",
+    );
+    assert!(!harness_smoke_leaks(&ignored, &[]).is_empty());
+    // A workflow that names the recipe or sets the gate variable.
+    assert!(!harness_smoke_leaks(good, &[("ci", "      - run: just harness-smoke")]).is_empty());
+    assert!(!harness_smoke_leaks(good, &[("ci", "  AE_HARNESS_SMOKE: 1")]).is_empty());
+    // A comment naming it is not a reach.
+    assert!(harness_smoke_leaks(good, &[("ci", "# just harness-smoke is on demand")]).is_empty());
+    // A recipe that lost its safety words, or is gone.
+    assert!(!harness_smoke_leaks(&good.replace("--locked ", ""), &[]).is_empty());
+    // The lane sizing: no nice, no jobs-budget, no single test thread.
+    assert!(!harness_smoke_leaks(&good.replace("nice -n 10 ", ""), &[]).is_empty());
+    assert!(!harness_smoke_leaks(&good.replace("jobs-budget", "true"), &[]).is_empty());
+    assert!(!harness_smoke_leaks(&good.replace("NEXTEST_TEST_THREADS=1", "X=1"), &[]).is_empty());
+    assert!(
+        !harness_smoke_leaks(
+            &good.replace("--run-ignored only", "--run-ignored all"),
+            &[]
+        )
+        .is_empty()
+    );
+    assert!(!harness_smoke_leaks("test: rust-check\n", &[]).is_empty());
+
+    let source = "#[test]\n#[ignore = \"live: a\"]\nfn live_harness_smoke() {\n    if !gated() {\n        return;\n    }\n}\n\
+                  #[test]\n#[ignore = \"live: b\"]\nfn live_harness_smoke_hang_control() {\n    if !gated() {\n        return;\n    }\n}\n\
+                  fn opens(value: Option<&str>) -> bool { value == Some(\"1\") }\n";
+    assert!(
+        harness_smoke_source_leaks(source).is_empty(),
+        "{:?}",
+        harness_smoke_source_leaks(source)
+    );
+    // A third ignored test, an ungated body, a loosened gate and a process door.
+    assert!(!harness_smoke_source_leaks(&format!("{source}#[ignore = \"live: c\"]\n")).is_empty());
+    assert!(
+        !harness_smoke_source_leaks(&source.replacen(
+            "if !gated() {",
+            "let x = 1; if !gated() {",
+            1
+        ))
+        .is_empty()
+    );
+    assert!(
+        !harness_smoke_source_leaks(&source.replace("value == Some(\"1\")", "value.is_some()"))
+            .is_empty()
+    );
+    assert!(
+        !harness_smoke_source_leaks(&format!(
+            "{source}fn x() {{ std::process::Command::new(\"ls\"); }}\n"
+        ))
+        .is_empty()
+    );
+    assert!(
+        !harness_smoke_source_leaks(&format!("{source}fn x() {{ run_tmux(&[], p); }}\n"))
+            .is_empty()
+    );
+}

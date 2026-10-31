@@ -87,6 +87,7 @@ mod floor;
 mod gate;
 mod git;
 mod goquota_spec;
+mod harness_smoke;
 mod honeststatus_spec;
 mod honestwords_spec;
 #[allow(

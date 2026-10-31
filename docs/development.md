@@ -204,6 +204,62 @@ Every guard in those three is exercised against deliberately broken input as wel
 real file. A rule that matches nothing is indistinguishable from a clean tree, so the red
 cases are the half that makes a green run mean something.
 
+### Live harness smoke
+
+Every other test drives a fake tool. Vendors change their TUI, argv and session stores weekly, so
+ae's adapter rows (input readiness, frame classifier, id capture, exact resume) can break silently
+and the first witness is a live seat. `just harness-smoke` asks the REAL binaries, with their real
+logins, on demand. It is **never part of the gate**: not a dependency of `test`, `pre`,
+`rust-check`, mutants or CI. The two tests behind it (`tests/it/harness_smoke.rs`) are
+`#[ignore]`d and need `AE_HARNESS_SMOKE=1`, which only the recipe sets; `tests/it/gate.rs` pins
+that no other recipe or workflow can reach them.
+
+Per tool, through the public verbs, in a scratch world (private tmux socket, scratch `AE_HOME` and
+`CONFIG_FILE`, never the `ae` server, `~/.ae` or `ae-dev`; the real `HOME` carries the logins):
+`bin` → `version` → `launch` → `ready` (a quiet input frame: the classifier says idle, or it is a
+fresh claude start before its first turn, which the classifier cannot judge; any other frame it has
+no verdict for, such as a running compaction, is not quiet) → `id` (session id captured) → `turn1`
+(sent only into a quiet frame; one delivered turn, answered) → `idle` (the classifier proves a
+finished turn) → `stop` → `resume` (same id, journal says resumed) →
+`turn2` (a recall turn: the resumed conversation must still hold turn1's answer). `stop` needs the
+product's strict absence proof; `resume` needs a NEW parsed `conversation-resumed` decision for the
+same id in ae's journal (`conversation-unproven` for a tool whose store has no probe, where the
+recall turn is the proof). A tool reads `PASS` only when every step passed; `FAIL(step)`,
+`LIMIT(step)` (a vendor usage line) and `SKIP(step)` (not installed, or no frame grammar to
+observe) name the step. Nothing is green by omission. Exit status is non-zero on any FAIL.
+
+Spend: this runner sends two short turns per tool, never retried, on the cheapest model each; ae's
+own launch turn (codex's registration turn, on create and on resume) comes on top. The report
+counts both: `runner=` is what this runner sent, `ae=` the launch/resume ATTEMPTS that carry ae's
+own turn (an upper bound: its delivery is not observed, and a tool that was absent or never
+launched counts none). Knobs: `AE_HARNESS_SMOKE_TOOLS` (default `claude,codex,muse,opencode`;
+`agy`, `grok`, `gemini` are opt-in; an unknown, empty or repeated name refuses before any state is
+created), `AE_HARNESS_SMOKE_<TOOL>_CMD` (the profile command), `AE_HARNESS_SMOKE_CLAUDE_HOME` (the
+claude login, for example `~/.claude-p`), `AE_HARNESS_SMOKE_STEP_SECS`, `_TOOL_SECS`,
+`_TOTAL_SECS` (a tool started late gets only what is left of the total), `AE_HARNESS_SMOKE_REPORT`
+(a directory for the TSV report; asked for and unwritable is a failure). Raw tool output is never
+printed or kept: a version is reduced to its numeric token and a refused verb to its exit code.
+`just harness-smoke control` runs the hang control: a `claude` shim that answers `--version` and
+then hangs must read `FAIL(ready)` inside its bound; it spends nothing and ignores every command
+and login override, so it can never reach a real binary. The recipe runs one test at a time,
+niced, sized by `jobs-budget`.
+
+Bounds. Each step has a deadline (`ready` gets three minutes while the watchdog runs: a tool that
+opens on a folder-trust block, claude, is answered by the watchdog's 60 s cycle); each tool has a hard outer bound (its driver runs on its own
+thread, and on expiry the run is cancelled, so an abandoned worker can start no launch, send or
+resume afterwards); the whole run has a total bound after which the remaining tools read `SKIP`.
+Cleanup of the private tmux server and the scratch is synchronous and is measured and reported,
+not promised to be instantaneous.
+
+Housekeeping. The work directory is one fixed canonical path under an exclusive lock, so a
+vendor's trust list gains one entry, not one per run; a second run refuses while the lock stands,
+and a stale lock is reported and cleared by hand, never stolen. The vendors write to their real
+config: claude records the folder trust in `<config_home>/.claude.json` (ae's `auto_trust` answers
+the modal) and the conversation under `<config_home>/projects/`; codex writes a rollout under
+`~/.codex/sessions/`. The conversations a run leaves are NAMED in the report, never purged. Pane
+text is read in memory and only decides; the report carries fixed words, versions and ids, never a
+transcript, a token or a credentials path.
+
 ## Build disk
 
 Version churn dominates what `target/` keeps. The package version is part of every ae unit's
