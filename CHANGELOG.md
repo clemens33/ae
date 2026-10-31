@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.10.173] - 2026-10-31
+- Make the adapter guard see every ToolKind variant
+- Read a fixture pane only from a successful tmux read
+- Ask the compiler for product world reads only
+- Read the cli fixture panes from a successful tmux read
+- Read the deliver fixture panes from a successful tmux read
+- Read the lifecycle fixture panes from a successful tmux read
+- Read the purgeguard and pipequiet fixture panes from a successful tmux read
+- Wait for the keepalive client before reading the watcher pane
+- Read the relaunch foreign-session pane from a successful tmux read
+- Read the menu fixture panes from a successful tmux read
+- Wait for exactly two cli fixture panes through the status-checked read
+- Wait for exactly two hub panes through the status-checked read
+- Declare board reader and refusal in the adapter row
+- Wait for the stored brief instead of a fixed three seconds in the spawn lock tests
+- Locate and follow a seat from its adapter row
+- One honest source view for the text guards
+- Scan tests/it recursively in the scratch-root guard
+- Refuse an empty id with one UUID predicate
+- Witness the published prompt verdict before the autotrust absence asserts
+- Witness a later core read before the app upgrade absence asserts
+- Witness a later core read before the app restart absence asserts
+- Witness the respawned shell before the dead pane refusals
+
 ## [v2026.10.172] - 2026-10-31
 - Add a verification plan to the brief contract
 - Say the worker runs the verification its brief assigns
