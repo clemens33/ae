@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use super::cli::ae;
 use super::phase2::run_tmux;
-use super::support::{SETUP_WAIT, try_first_pane};
+use super::support::{SETUP_WAIT, first_pane, try_first_pane};
 
 /// The fake agent: it records the argv and working directory it was launched
 /// with, logs everything the pane sends it, and EXITS on demand.
@@ -835,8 +835,11 @@ fn a_seat_of_another_session_is_refused_because_relaunch_is_own_session_only() {
             .0,
         "the second session starts"
     );
-    let (_, panes) = rig.tmux(&["list-panes", "-s", "-t", "rlother", "-F", "#{pane_id}"]);
-    let pane = panes.lines().next().unwrap_or_default().to_owned();
+    let pane = first_pane(
+        |args| rig.tmux(args),
+        &["-s", "-t", "rlother"],
+        Instant::now() + SETUP_WAIT,
+    );
     for (option, value) in [
         ("@ae_agent", "w9"),
         ("@ae_slot", "worker.1"),
