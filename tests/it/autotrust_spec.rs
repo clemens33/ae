@@ -248,8 +248,16 @@ fn text(path: impl AsRef<Path>) -> String {
 fn write(path: impl AsRef<Path>, body: impl AsRef<[u8]>) {
     assert!(fs::write(path, body).is_ok(), "setup: fixture write");
 }
+/// The bound of a witness standing where a fixed sleep stood. A passing run
+/// spends none of it, and a slow machine must not be a new way to fail.
+const WITNESS_WAIT: Duration = Duration::from_mins(1);
+
 fn wait_for(what: &str, ready: impl Fn() -> bool) {
-    let end = Instant::now() + Duration::from_secs(15);
+    wait_within(what, Duration::from_secs(15), ready);
+}
+
+fn wait_within(what: &str, within: Duration, ready: impl Fn() -> bool) {
+    let end = Instant::now() + within;
     while Instant::now() < end {
         if ready() {
             return;
@@ -522,6 +530,15 @@ impl Rig {
     }
     fn count(&self, action: &str) -> usize {
         self.events().iter().filter(|e| e.action == action).count()
+    }
+    /// A cycle that reached the human-prompt bound has ended. `@ae_agents` says
+    /// `prompt` only from that cycle on, and the daemon publishes it after the
+    /// cycle's effects, so every key the cycle owed has been sent.
+    fn prompt_cycle_closed(&self) {
+        wait_within("a published prompt verdict", WITNESS_WAIT, || {
+            self.tmux(&["show-options", "-qv", "-t", "s", ae::theme::AGENTS_OPTION])
+                .contains(":prompt:")
+        });
     }
     fn named(&self) {
         wait_for("named human prompt", || self.count("human-prompt") > 0);
@@ -1037,7 +1054,7 @@ fn a_frozen_modal_without_a_live_harness_or_unique_slot_never_receives_a_key() {
             }
         }
         rig.start();
-        std::thread::sleep(Duration::from_secs(6));
+        rig.prompt_cycle_closed();
         if case == "shell" {
             assert!(
                 text(rig.root.join("attempts")).is_empty(),
@@ -1050,6 +1067,7 @@ fn a_frozen_modal_without_a_live_harness_or_unique_slot_never_receives_a_key() {
             );
         }
         assert_eq!(rig.count("auto-trust"), 0);
+        assert_eq!(rig.count("human-prompt"), 1, "{case}: named at the bound");
     }
 }
 
@@ -1907,7 +1925,18 @@ mod unreach {
                 _ => append(&rig, "damaged journal line\n"),
             }
             rig.start();
-            std::thread::sleep(Duration::from_secs(5));
+            rig.prompt_cycle_closed();
+            assert_eq!(
+                rig.count("human-prompt"),
+                2,
+                "{case}: named again at the bound"
+            );
+            if case == "ledger" {
+                assert!(
+                    text(rig.root.join("watch.err")).contains("the journal holds a damaged line"),
+                    "the damage is what stopped the answer"
+                );
+            }
             assert!(rig.wire().is_empty(), "{case}: zero keys");
             assert_eq!(
                 rig.count("auto-dismiss-reserved"),
@@ -1934,7 +1963,7 @@ mod unreach {
             write(rig.root.join("alternate-frame"), EMPTY);
             let locks = rig.root.join("sessions/.locks");
             fs::create_dir_all(&locks).expect("lock directory");
-            let held = if case == "lock" {
+            let mut held = if case == "lock" {
                 Some(
                     ae::store::lock(
                         &locks.join(format!("send-lock-{}", rig.pane.replace('%', "_"))),
@@ -1947,15 +1976,33 @@ mod unreach {
                 None
             };
             rig.start();
-            if case == "panel-input" {
-                wait_for("fresh client snapshot after reservation", || {
-                    rig.root.join("input-checked").is_file()
-                });
-                wait_for("post-reservation client input hold", || {
-                    rig.count("auto-dismiss-failed") == 1
-                });
-            } else {
-                std::thread::sleep(Duration::from_secs(6));
+            match case {
+                "panel-input" => {
+                    wait_for("fresh client snapshot after reservation", || {
+                        rig.root.join("input-checked").is_file()
+                    });
+                    wait_for("post-reservation client input hold", || {
+                        rig.count("auto-dismiss-failed") == 1
+                    });
+                }
+                "panel-proof" => {
+                    wait_within("the changed start stopping the key", WITNESS_WAIT, || {
+                        rig.count("auto-dismiss-failed") == 1
+                    });
+                }
+                "panel-moves" => {
+                    wait_within(
+                        "two captures of the moving panel under the lock",
+                        WITNESS_WAIT,
+                        || {
+                            text(rig.root.join("panel-captures"))
+                                .parse::<u32>()
+                                .is_ok_and(|captures| captures >= 2)
+                        },
+                    );
+                    rig.prompt_cycle_closed();
+                }
+                _ => rig.prompt_cycle_closed(),
             }
             assert!(rig.wire().is_empty(), "{case}: zero keys");
             assert_eq!(rig.count("auto-dismiss"), 0);
@@ -1971,6 +2018,11 @@ mod unreach {
                     rig.root.join("input-checked").is_file(),
                     "fresh client snapshot was supplied after reservation"
                 );
+            }
+            if case == "lock" {
+                // The foreign sender was all that held the Escape back.
+                drop(held.take());
+                completed(&rig);
             }
             rig.stop();
             drop(held);
