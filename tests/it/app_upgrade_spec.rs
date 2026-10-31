@@ -28,6 +28,9 @@ mod standalone_restart;
 
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);
+/// The bound of a witness standing where a fixed sleep stood. A passing run
+/// spends none of it, and a slow machine must not be a new way to fail.
+const WITNESS_WAIT: Duration = Duration::from_mins(1);
 
 fn pane(id: &str, console: Option<&str>, agent: Option<&str>) -> WindowPane {
     WindowPane {
@@ -497,6 +500,7 @@ fn installed_app_busy_with_draft_never_restarts_and_shows_busy_hint() {
     rig.wait(&pane, WAIT, "draft content entered", |s| {
         s.contains("draft content")
     });
+    let typed = Instant::now();
 
     // Repoint link to newer version
     let newer = crate::calver::newer();
@@ -510,8 +514,20 @@ fn installed_app_busy_with_draft_never_restarts_and_shows_busy_hint() {
         "shows busy hint while draft is present",
         |screen| screen.contains(&busy),
     );
-    // Hold >= REFRESH + 5s (10s) after hint appears before asserting no restart
-    std::thread::sleep(Duration::from_secs(10));
+    // Only past the 5 s quiet window is the draft what holds the restart, so
+    // the next core is linked after the last key has aged out.
+    std::thread::sleep((typed + Duration::from_secs(5)).saturating_duration_since(Instant::now()));
+    let later = crate::calver::after(&newer);
+    rig.repoint_link(&later);
+    let busy = format!("ae {later} installed - restarts when idle");
+    // Only a fresh core read names it, and the loop asks for a restart with
+    // that read before it draws it.
+    rig.wait(
+        &pane,
+        WITNESS_WAIT,
+        "a core read past the quiet window, still held by the draft",
+        |screen| screen.contains(&busy),
+    );
     assert!(
         !rig.restarted_log.exists(),
         "busy app must never restart while draft exists"
@@ -615,8 +631,17 @@ fn auto_upgrade_disabled_hints_only() {
         "shows hint only when auto_upgrade is disabled",
         |screen| screen.contains(&hint),
     );
-    // Hold >= REFRESH + 5s (10s) after hint appears before asserting no restart
-    std::thread::sleep(Duration::from_secs(10));
+    let later = crate::calver::after(&newer);
+    rig.repoint_link(&later);
+    let hint = format!("ae {later} installed - restart ae app to use it");
+    // Only a fresh core read names it, and the loop asks for a restart with
+    // that read before it draws it.
+    rig.wait(
+        &pane,
+        WITNESS_WAIT,
+        "a later core read, hint only too",
+        |screen| screen.contains(&hint),
+    );
     assert!(
         !rig.restarted_log.exists(),
         "must not restart when auto_upgrade is disabled"
