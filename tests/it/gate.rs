@@ -5828,9 +5828,23 @@ fn next_capture_tag() -> usize {
 /// One command in `cwd` with the fixture's own `HOME` and git config:
 /// `(exit code, stdout, stderr)`.
 fn run_in(scratch: &Path, cwd: &Path, program: &str, args: &[&str]) -> (i32, String, String) {
+    run_in_env(scratch, cwd, program, args, &[])
+}
+
+/// [`run_in`] with extra environment variables.
+fn run_in_env(
+    scratch: &Path,
+    cwd: &Path,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (i32, String, String) {
     let mut invocation = Invocation::new(program)
         .env("HOME", scratch)
         .env("GIT_CONFIG_GLOBAL", scratch.join("gitconfig"));
+    for (key, value) in env {
+        invocation = invocation.env(key, value);
+    }
     for arg in args {
         invocation = invocation.arg(arg);
     }
@@ -5852,8 +5866,9 @@ fn run_in(scratch: &Path, cwd: &Path, program: &str, args: &[&str]) -> (i32, Str
 
 /// A scratch main checkout holding the REAL justfile and a linked worktree of
 /// it: `(scratch owner, main, linked)`. The lock root is the main checkout's.
-fn lane_lock_checkouts() -> (super::cli::OwnedScratch, PathBuf, PathBuf) {
-    let scratch = super::cli::OwnedScratch::root("gate", "lanelock");
+/// `tag` keeps concurrent tests of one process on separate roots.
+fn lane_lock_checkouts(tag: &str) -> (super::cli::OwnedScratch, PathBuf, PathBuf) {
+    let scratch = super::cli::OwnedScratch::root("gate", &format!("lanelock.{tag}"));
     let (main, linked) = (scratch.join("main"), scratch.join("linked"));
     assert!(std::fs::create_dir_all(&main).is_ok(), "a main checkout");
     assert!(
@@ -5886,9 +5901,19 @@ fn lane_lock_checkouts() -> (super::cli::OwnedScratch, PathBuf, PathBuf) {
 
 /// `just lane-lock <args>` in `cwd`.
 fn lane_lock(scratch: &Path, cwd: &Path, args: &[&str]) -> (i32, String, String) {
+    lane_lock_env(scratch, cwd, args, &[])
+}
+
+/// [`lane_lock`] with extra environment variables.
+fn lane_lock_env(
+    scratch: &Path,
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (i32, String, String) {
     let mut words = vec!["lane-lock"];
     words.extend_from_slice(args);
-    run_in(scratch, cwd, "just", &words)
+    run_in_env(scratch, cwd, "just", &words, env)
 }
 
 /// The claim is one atomic `mkdir`, so a worktree meets the main checkout's
@@ -5896,7 +5921,7 @@ fn lane_lock(scratch: &Path, cwd: &Path, args: &[&str]) -> (i32, String, String)
 /// recipe clears a lock it did not write.
 #[test]
 fn the_lane_lock_is_one_lock_for_every_checkout_and_only_its_owner_releases_it() {
-    let (scratch, main, linked) = lane_lock_checkouts();
+    let (scratch, main, linked) = lane_lock_checkouts("owner");
     let owner = main.join(".local/locks/gate/owner");
     let (code, out, _) = lane_lock(&scratch, &main, &["status"]);
     assert_eq!((code, out.contains("gate: free")), (0, true), "{out}");
@@ -5949,7 +5974,7 @@ fn the_lane_lock_is_one_lock_for_every_checkout_and_only_its_owner_releases_it()
 /// the reverse, and a lock that looks abandoned is REPORTED and left standing.
 #[test]
 fn the_lane_lock_keeps_the_hand_protocol_and_reports_a_stale_lock_without_touching_it() {
-    let (scratch, main, _linked) = lane_lock_checkouts();
+    let (scratch, main, _linked) = lane_lock_checkouts("hand");
     let locks = main.join(".local/locks");
     let (gate, owner) = (locks.join("gate"), locks.join("gate/owner"));
 
@@ -5981,12 +6006,16 @@ fn the_lane_lock_keeps_the_hand_protocol_and_reports_a_stale_lock_without_touchi
     assert!(std::fs::create_dir(&gate).is_ok());
     let hand = "hand 2000-01-01T00:00:00Z\n";
     assert!(std::fs::write(&owner, hand).is_ok());
+    // A leading zero is not a whole number of seconds: bash would read `08` as octal.
+    for wait in ["08", "010", "00", "1x"] {
+        let (code, _, err) = lane_lock(&scratch, &main, &["claim", "alpha", wait]);
+        assert_eq!(code, 2, "wait {wait:?}: {err}");
+        assert!(err.contains("whole seconds"), "{err}");
+    }
     let (code, _, err) = lane_lock(&scratch, &main, &["claim", "alpha", "1"]);
     assert_eq!(code, 1, "{err}");
-    assert!(
-        err.contains("held by hand") && err.contains("waiting"),
-        "{err}"
-    );
+    // Whether a "waiting" line precedes it depends on how long the first attempt took.
+    assert!(err.contains("held by hand"), "the holder is named: {err}");
     let (code, out, _) = lane_lock(&scratch, &main, &["status"]);
     assert_eq!(code, 1);
     assert!(
@@ -6022,7 +6051,7 @@ fn the_lane_lock_keeps_the_hand_protocol_and_reports_a_stale_lock_without_touchi
 /// Two claimants at the same instant: one `mkdir` wins, every round.
 #[test]
 fn two_simultaneous_lane_lock_claims_have_exactly_one_winner() {
-    let (scratch, main, linked) = lane_lock_checkouts();
+    let (scratch, main, linked) = lane_lock_checkouts("race");
     for round in 0..8 {
         let start = std::sync::Barrier::new(2);
         let (first, second) = std::thread::scope(|scope| {
@@ -6050,4 +6079,91 @@ fn two_simultaneous_lane_lock_claims_have_exactly_one_winner() {
         );
         assert_eq!(lane_lock(&scratch, &main, &["release", winners[0]]).0, 0);
     }
+}
+
+/// A release that stalls after its owner check cannot outlive its lock. With no
+/// exclusion between releases, a second release by the same name finishes while
+/// the first is stalled, another slice claims, and the first then removes THAT
+/// slice's lock. An `rm` shim stalls the first release at the removal of its
+/// owner line, deterministically; the second must be refused until it is done.
+#[test]
+fn a_stalled_lane_lock_release_cannot_remove_the_next_holders_lock() {
+    let (scratch, main, _linked) = lane_lock_checkouts("stall");
+    let shim = scratch.join("shim");
+    assert!(std::fs::create_dir_all(&shim).is_ok(), "a shim directory");
+    let body = "#!/bin/sh\n\
+        case \"$1\" in */owner) : >\"$AE_PAUSED\"; n=0\n\
+        while [ ! -e \"$AE_GO\" ] && [ \"$n\" -lt 2400 ]; do sleep 0.05; n=$((n + 1)); done ;; esac\n\
+        exec /bin/rm \"$@\"\n";
+    assert!(std::fs::write(shim.join("rm"), body).is_ok(), "the rm shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            std::fs::set_permissions(shim.join("rm"), std::fs::Permissions::from_mode(0o755))
+                .is_ok(),
+            "an executable rm shim"
+        );
+    }
+    let path = format!(
+        "{}:{}",
+        shim.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (paused, go) = (scratch.join("paused"), scratch.join("go"));
+    let env = [
+        ("PATH", path.as_str()),
+        ("AE_PAUSED", paused.to_str().unwrap_or_default()),
+        ("AE_GO", go.to_str().unwrap_or_default()),
+    ];
+    assert_eq!(lane_lock(&scratch, &main, &["claim", "alpha"]).0, 0);
+    let owner = main.join(".local/locks/gate/owner");
+    let recorded = read(&owner);
+
+    let (first, second) = std::thread::scope(|scope| {
+        let stalled = scope.spawn(|| lane_lock_env(&scratch, &main, &["release", "alpha"], &env));
+        for _ in 0..1200 {
+            if paused.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // The first release has passed its owner check and is stalled at `rm`.
+        let second = lane_lock(&scratch, &main, &["release", "alpha"]);
+        let held = std::fs::read_to_string(&owner).unwrap_or_default();
+        assert!(
+            std::fs::write(&go, "").is_ok(),
+            "let the stalled release go"
+        );
+        (
+            stalled.join().unwrap_or((-1, String::new(), String::new())),
+            (second, held),
+        )
+    });
+    let (second, held) = second;
+    assert!(
+        paused.exists(),
+        "the first release reached its removal: {first:?}"
+    );
+    assert_eq!(
+        second.0, 1,
+        "a release overlapping another is refused: {second:?}"
+    );
+    assert_eq!(
+        held, recorded,
+        "the lock stood untouched while the first release stalled"
+    );
+    assert_eq!(first.0, 0, "the stalled release completes: {first:?}");
+    assert!(!main.join(".local/locks/gate").exists(), "released");
+    assert!(
+        !main.join(".local/locks/gate.release").exists(),
+        "the release exclusion is dropped"
+    );
+
+    // The slice that claims next keeps its lock against a late release by alpha.
+    assert_eq!(lane_lock(&scratch, &main, &["claim", "beta"]).0, 0);
+    let beta = read(&owner);
+    let (code, _, err) = lane_lock(&scratch, &main, &["release", "alpha"]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(read(&owner), beta, "beta's lock is untouched");
 }

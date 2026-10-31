@@ -108,7 +108,9 @@ back, `status` names the holder and its age. The lock is the main checkout's
 (`<name> <UTC timestamp>`); `.local/locks/next` is the queue (empty = anyone). Resolved from a
 linked worktree, so every checkout meets the same lock, and the same protocol as the hand-typed
 one, so a holder on either spelling blocks the other. `release` refuses any owner but `<name>`
-and leaves the lock intact. Nothing here steals or clears a lock: one that looks abandoned
+and leaves the lock intact; releases take turns through a `gate.release` directory beside `gate`
+that exists only for the instant of a release (one that outlives it died holding it: `rmdir` it
+by hand). Nothing here steals or clears a lock: one that looks abandoned
 (`status` says `suspect`) is reported, and the holder, the lead or a human clears it by hand.
 
 `just rust-fuzz-check` also runs in CI, using the gate's target cache. A cold registry

@@ -118,6 +118,8 @@ _pre-test:
 # release <name>            give it back. Refused, lock untouched, when the owner line
 #                           is not <name> (or not readable, or the directory holds anything
 #                           but `owner`). It never removes a lock it cannot prove is yours.
+#                           Releases take turns through the short-lived directory `gate.release`
+#                           beside `gate`, so a stalled release cannot outlive its lock.
 # status                    who holds it and how long; exit 0 free, 1 held.
 #
 # NEVER AUTO-STEAL, NEVER AUTO-BREAK. A lock whose holder is gone is REPORTED
@@ -147,7 +149,8 @@ lane-lock verb name="" wait="0":
         echo "lane-lock: refused: a lock name is [A-Za-z0-9][A-Za-z0-9_.-]{0,63}, got '$name'" >&2
         exit 2
     fi
-    [[ "$wait" =~ ^[0-9]{1,6}$ ]] || { echo "lane-lock: refused: wait is whole seconds, got '$wait'" >&2; exit 2; }
+    # Whole seconds without a leading zero: bash would read 08 as an invalid octal number.
+    [[ "$wait" =~ ^(0|[1-9][0-9]{0,5})$ ]] || { echo "lane-lock: refused: wait is whole seconds without a leading zero, got '$wait'" >&2; exit 2; }
     common="$(git rev-parse --git-common-dir 2>/dev/null)" || refuse "not inside a git checkout"
     common="$(cd -P "$common" && pwd -P)"
     [[ "${common##*/}" == .git ]] || refuse "the git common dir $common is not <checkout>/.git"
@@ -220,6 +223,25 @@ lane-lock verb name="" wait="0":
             exit "$state"
             ;;
         release)
+            [[ -d "$gate" && ! -L "$gate" ]] || refuse "no gate lock is held, nothing to release"
+            # Releases are serialized, through the removal. Without that, two releases by one
+            # name can both pass the owner check; the first stalls, the second finishes, another
+            # slice claims, and the first then removes THAT slice's lock. `mkdir` is the mutex
+            # (no flock on macOS); it is held for the instant of a release, a claim never takes it
+            # (the gate directory itself keeps a claim out), and a hand-typed release is as before.
+            mutex="$locks/gate.release"
+            tries=0
+            until err="$(mkdir "$mutex" 2>&1)"; do
+                [[ -e "$mutex" ]] || refuse "could not create $mutex: $err"
+                tries=$((tries + 1))
+                (( tries <= 20 )) || refuse "another release holds $mutex (it is held for the instant of a release); if none is running, it died holding it: ask, then remove that directory by hand and retry"
+                sleep 0.1
+            done
+            trap 'rmdir "$mutex" 2>/dev/null || true' EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+            trap 'exit 129' HUP
+            # The gate may have gone, or changed hands, while this release waited.
             [[ -d "$gate" && ! -L "$gate" ]] || refuse "no gate lock is held, nothing to release"
             read_holder
             [[ -n "$h_name" ]] || refuse "the gate has no owner line, so it is not provably $name's; lock left intact"
