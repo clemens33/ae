@@ -7,6 +7,8 @@
 # --test-threads still overrides it for one run.
 [profile.default]
 test-threads = 8
+# Finish the run after failures so one red gate reports every failing test.
+fail-fast = false
 
 # Writer acceptance starts two or three real app panes per fixture and holds
 # their read/dispatch boundaries. Keep concurrent fixtures small enough that
@@ -100,4 +102,6 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # test-group and per-test overrides, still apply as under `linux`.
 [profile.mutants]
 test-threads = 2
+# Stop at the first failure: a caught mutant needs no remaining tests.
+fail-fast = true
 slow-timeout = { period = "30s", terminate-after = 2, grace-period = "0s" }
