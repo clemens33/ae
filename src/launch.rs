@@ -568,10 +568,26 @@ pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String
     crate::provenance::first_line(
         &crate::provenance::ctx(),
         &format!(
-            "ae: this is your workspace context, delivered at start. Run {} once so this session can resume, then end this turn. Do not call any other tools and do not start any work until a task arrives from the human or a peer.",
+            "ae: this is your workspace context, delivered at start. Run {} once so this session can resume, {PASSIVE_TAIL}",
             register_sid(meta_dir, slot)
         ),
     )
+}
+
+const PASSIVE_TAIL: &str = "then end this turn. Do not call any other tools and do not start any work until a task arrives from the human or a peer.";
+
+/// How the turn ended before codex took "WAIT" literally; journals keep that
+/// text for ever, so the board still has to recognise it.
+const RETIRED_PASSIVE_TAIL: &str =
+    "then WAIT — do not start any work until a task arrives from the human or a peer.";
+
+/// Is `body` the passive turn `current`, or its retired form?
+#[must_use]
+pub fn is_passive_body(body: &str, current: &str) -> bool {
+    body == current
+        || current
+            .strip_suffix(PASSIVE_TAIL)
+            .is_some_and(|head| body.strip_suffix(RETIRED_PASSIVE_TAIL) == Some(head))
 }
 
 /// The spawn turn: the registration handshake and the task, for codex alone.

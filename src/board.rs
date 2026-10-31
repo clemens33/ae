@@ -144,7 +144,7 @@ fn hidden(row: &Row, passive: Option<&str>) -> bool {
     }
     let first = row.body.lines().next().unwrap_or_default();
     crate::provenance::is_ae_turn(first)
-        || passive.is_some_and(|turn| row.body == turn)
+        || passive.is_some_and(|turn| crate::launch::is_passive_body(&row.body, turn))
         // #171: a harness whose store wraps ae turns consults the wrapper
         // recognizer; the capability owner names which (#171 measured Claude).
         || (row.source.board_has_paste_wrapper() && claude::is_wrapped_ae_turn(&row.body))
