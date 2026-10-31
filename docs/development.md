@@ -108,10 +108,15 @@ back, `status` names the holder and its age. The lock is the main checkout's
 (`<name> <UTC timestamp>`); `.local/locks/next` is the queue (empty = anyone). Resolved from a
 linked worktree, so every checkout meets the same lock, and the same protocol as the hand-typed
 one, so a holder on either spelling blocks the other. `release` refuses any owner but `<name>`
-and leaves the lock intact; releases take turns through a `gate.release` directory beside `gate`
-that exists only for the instant of a release (one that outlives it died holding it: `rmdir` it
-by hand). Nothing here steals or clears a lock: one that looks abandoned
-(`status` says `suspect`) is reported, and the holder, the lead or a human clears it by hand.
+and leaves the lock intact, and works inside the directory it checked: a release that stalls
+cannot remove the lock of whoever claimed after it, however the first lock was released (this
+recipe or the hand protocol), because the directory it stands in is gone. One tiny window is
+named and accepted: a claim creates the `gate` directory before it writes its `owner` line, so
+a release whose last identity check and final `rmdir` straddle the lock being released by
+someone else and re-claimed could remove that still-empty new directory. The hand protocol
+retires once the recipe is the only spelling. Nothing here steals or
+clears a lock: one that looks abandoned (`status` says `suspect`) is reported, and the holder,
+the lead or a human clears it by hand.
 
 `just rust-fuzz-check` also runs in CI, using the gate's target cache. A cold registry
 fetches the independent fuzz graph; `libfuzzer-sys` builds C++ even under `cargo check`,

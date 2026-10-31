@@ -118,8 +118,8 @@ _pre-test:
 # release <name>            give it back. Refused, lock untouched, when the owner line
 #                           is not <name> (or not readable, or the directory holds anything
 #                           but `owner`). It never removes a lock it cannot prove is yours.
-#                           Releases take turns through the short-lived directory `gate.release`
-#                           beside `gate`, so a stalled release cannot outlive its lock.
+#                           It works inside the directory it checked, so a release that stalls
+#                           cannot remove the lock of whoever claims after it.
 # status                    who holds it and how long; exit 0 free, 1 held.
 #
 # NEVER AUTO-STEAL, NEVER AUTO-BREAK. A lock whose holder is gone is REPORTED
@@ -166,6 +166,9 @@ lane-lock verb name="" wait="0":
         [[ "$since" =~ ^[0-9]+$ ]] || return 0
         echo $(( $(date +%s) - since ))
     }
+    # The inode of directory $1. `ls -di` is the one spelling BSD and GNU share (`stat` differs).
+    # shellcheck disable=SC2012
+    inode_of() { ls -di "$1" | awk '{print $1}'; }
     span() {
         local s=$1
         (( s >= 0 )) || s=0
@@ -224,36 +227,29 @@ lane-lock verb name="" wait="0":
             ;;
         release)
             [[ -d "$gate" && ! -L "$gate" ]] || refuse "no gate lock is held, nothing to release"
-            # Releases are serialized, through the removal. Without that, two releases by one
-            # name can both pass the owner check; the first stalls, the second finishes, another
-            # slice claims, and the first then removes THAT slice's lock. `mkdir` is the mutex
-            # (no flock on macOS); it is held for the instant of a release, a claim never takes it
-            # (the gate directory itself keeps a claim out), and a hand-typed release is as before.
-            mutex="$locks/gate.release"
-            tries=0
-            until err="$(mkdir "$mutex" 2>&1)"; do
-                [[ -e "$mutex" ]] || refuse "could not create $mutex: $err"
-                tries=$((tries + 1))
-                (( tries <= 20 )) || refuse "another release holds $mutex (it is held for the instant of a release); if none is running, it died holding it: ask, then remove that directory by hand and retry"
-                sleep 0.1
-            done
-            trap 'rmdir "$mutex" 2>/dev/null || true' EXIT
-            trap 'exit 130' INT
-            trap 'exit 143' TERM
-            trap 'exit 129' HUP
-            # The gate may have gone, or changed hands, while this release waited.
-            [[ -d "$gate" && ! -L "$gate" ]] || refuse "no gate lock is held, nothing to release"
+            # ANCHORED TO THE DIRECTORY ENTERED HERE, never to the path. A release can stall between
+            # its owner check and its removal while the lock is released (by this recipe or by the
+            # hand-typed protocol, which takes no part in anything below) and another slice claims
+            # the same path. Standing inside the directory it checked, the stalled release meets a
+            # directory that is gone: its relative `rm owner` finds nothing and it stops before the
+            # path `rmdir`. A tiny window remains and is accepted: between the last identity check
+            # and `rmdir`, a gate could be removed and re-made empty, and the claim writes its
+            # owner line only after its own `mkdir`.
+            cd -P "$gate" 2>/dev/null || refuse "could not enter $gate"
+            entered="$(inode_of .)"
+            owner_file=owner
             read_holder
             [[ -n "$h_name" ]] || refuse "the gate has no owner line, so it is not provably $name's; lock left intact"
             [[ "$h_name" == "$name" ]] || refuse "the gate is $(holder_words), not $name's; lock left intact"
             extra=""
-            for entry in "$gate"/* "$gate"/.[!.]* "$gate"/..?*; do
+            for entry in ./* ./.[!.]* ./..?*; do
                 [[ -e "$entry" || -L "$entry" ]] || continue
                 [[ "${entry##*/}" == owner ]] || extra="$extra ${entry##*/}"
             done
             [[ -z "$extra" ]] || refuse "the gate holds more than its owner line ($extra ); lock left intact"
-            rm "$owner_file"
-            rmdir "$gate"
+            err="$(rm owner 2>&1)" || refuse "the owner line could not be removed ($err); the gate this release checked is gone or changed, so nothing else was removed"
+            [[ "$(inode_of "$gate" 2>/dev/null)" == "$entered" ]] || refuse "the owner line is removed, but $gate is no longer the directory this release entered; left alone"
+            rmdir "$gate" || refuse "the owner line is removed, but $gate could not be removed"
             echo "lane-lock: released by $name"
             ;;
         claim)

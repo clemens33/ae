@@ -6081,18 +6081,18 @@ fn two_simultaneous_lane_lock_claims_have_exactly_one_winner() {
     }
 }
 
-/// A release that stalls after its owner check cannot outlive its lock. With no
-/// exclusion between releases, a second release by the same name finishes while
-/// the first is stalled, another slice claims, and the first then removes THAT
-/// slice's lock. An `rm` shim stalls the first release at the removal of its
-/// owner line, deterministically; the second must be refused until it is done.
-#[test]
-fn a_stalled_lane_lock_release_cannot_remove_the_next_holders_lock() {
-    let (scratch, main, _linked) = lane_lock_checkouts("stall");
+/// A release that stalls after its owner check cannot touch the NEXT holder's
+/// lock. Whoever releases alpha meanwhile (this recipe, or the hand-typed
+/// protocol, which takes no part in anything the recipe does), and whoever
+/// claims after that, the stalled release resumes against the directory it
+/// entered, finds that directory gone, and removes nothing. An `rm` shim stalls
+/// it at the removal of its owner line, deterministically.
+fn stalled_release_meets_a_new_holder(tag: &str, released_by_hand: bool) {
+    let (scratch, main, _linked) = lane_lock_checkouts(tag);
     let shim = scratch.join("shim");
     assert!(std::fs::create_dir_all(&shim).is_ok(), "a shim directory");
     let body = "#!/bin/sh\n\
-        case \"$1\" in */owner) : >\"$AE_PAUSED\"; n=0\n\
+        case \"$1\" in owner | */owner) : >\"$AE_PAUSED\"; n=0\n\
         while [ ! -e \"$AE_GO\" ] && [ \"$n\" -lt 2400 ]; do sleep 0.05; n=$((n + 1)); done ;; esac\n\
         exec /bin/rm \"$@\"\n";
     assert!(std::fs::write(shim.join("rm"), body).is_ok(), "the rm shim");
@@ -6117,10 +6117,12 @@ fn a_stalled_lane_lock_release_cannot_remove_the_next_holders_lock() {
         ("AE_GO", go.to_str().unwrap_or_default()),
     ];
     assert_eq!(lane_lock(&scratch, &main, &["claim", "alpha"]).0, 0);
-    let owner = main.join(".local/locks/gate/owner");
-    let recorded = read(&owner);
+    let (gate, owner) = (
+        main.join(".local/locks/gate"),
+        main.join(".local/locks/gate/owner"),
+    );
 
-    let (first, second) = std::thread::scope(|scope| {
+    let (first, meanwhile) = std::thread::scope(|scope| {
         let stalled = scope.spawn(|| lane_lock_env(&scratch, &main, &["release", "alpha"], &env));
         for _ in 0..1200 {
             if paused.exists() {
@@ -6129,41 +6131,57 @@ fn a_stalled_lane_lock_release_cannot_remove_the_next_holders_lock() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         // The first release has passed its owner check and is stalled at `rm`.
-        let second = lane_lock(&scratch, &main, &["release", "alpha"]);
-        let held = std::fs::read_to_string(&owner).unwrap_or_default();
+        // Alpha's lock is released by someone else, and beta claims it.
+        let released = if released_by_hand {
+            // "confirm the owner line starts alpha, rm owner, rmdir gate"
+            let line = std::fs::read_to_string(&owner).unwrap_or_default();
+            line.starts_with("alpha")
+                && std::fs::remove_file(&owner).is_ok()
+                && std::fs::remove_dir(&gate).is_ok()
+        } else {
+            lane_lock(&scratch, &main, &["release", "alpha"]).0 == 0
+        };
+        let claimed = lane_lock(&scratch, &main, &["claim", "beta"]).0 == 0;
+        let beta = std::fs::read_to_string(&owner).unwrap_or_default();
         assert!(
             std::fs::write(&go, "").is_ok(),
             "let the stalled release go"
         );
         (
             stalled.join().unwrap_or((-1, String::new(), String::new())),
-            (second, held),
+            (released, claimed, beta),
         )
     });
-    let (second, held) = second;
+    let (released, claimed, beta) = meanwhile;
     assert!(
         paused.exists(),
         "the first release reached its removal: {first:?}"
     );
-    assert_eq!(
-        second.0, 1,
-        "a release overlapping another is refused: {second:?}"
-    );
-    assert_eq!(
-        held, recorded,
-        "the lock stood untouched while the first release stalled"
-    );
-    assert_eq!(first.0, 0, "the stalled release completes: {first:?}");
-    assert!(!main.join(".local/locks/gate").exists(), "released");
+    assert!(released, "alpha's lock was released meanwhile");
     assert!(
-        !main.join(".local/locks/gate.release").exists(),
-        "the release exclusion is dropped"
+        claimed && beta.starts_with("beta "),
+        "beta claimed: {beta:?}"
+    );
+    assert_ne!(first.0, 0, "the stalled release removed nothing: {first:?}");
+    assert_eq!(read(&owner), beta, "beta's lock is untouched: {first:?}");
+    assert_eq!(
+        lane_lock(&scratch, &main, &["claim", "gamma"]).0,
+        1,
+        "gamma cannot claim while beta holds the lock"
     );
 
-    // The slice that claims next keeps its lock against a late release by alpha.
-    assert_eq!(lane_lock(&scratch, &main, &["claim", "beta"]).0, 0);
-    let beta = read(&owner);
+    // A late release by alpha, run to completion, still finds beta's lock.
     let (code, _, err) = lane_lock(&scratch, &main, &["release", "alpha"]);
     assert_eq!(code, 1, "{err}");
-    assert_eq!(read(&owner), beta, "beta's lock is untouched");
+    assert_eq!(read(&owner), beta);
+}
+
+#[test]
+fn a_stalled_lane_lock_release_cannot_remove_the_lock_the_recipe_gave_to_the_next_holder() {
+    stalled_release_meets_a_new_holder("stallr", false);
+}
+
+#[test]
+fn a_stalled_lane_lock_release_cannot_remove_the_lock_a_hand_release_gave_to_the_next_holder() {
+    stalled_release_meets_a_new_holder("stallh", true);
 }
