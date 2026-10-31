@@ -16,6 +16,7 @@ use ae::tmux::{PickerPane, PickerSession, display_menu_for_client_args};
 
 use super::cli::{OwnedChild, ae, helper_by_name};
 use super::phase2::{run_tmux, tmux_present};
+use super::support::{SETUP_WAIT, try_first_pane};
 
 /// How long a poll waits for tmux (or a child process) to catch up before the
 /// arm fails. These polls await an external process, they are not speed
@@ -1549,16 +1550,12 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
     );
     let client = nested_client(&socket, &scratch, "viewed", "viewer");
     let viewed_right_pane = select_client_right_pane(&socket, &scratch, "viewed", &client);
-    let clicked_pane = tmux(
-        &socket,
-        &scratch,
-        &["list-panes", "-t", "clicked", "-F", "#{pane_id}"],
+    let clicked_pane = try_first_pane(
+        |args| tmux(&socket, &scratch, args),
+        &["-t", "clicked"],
+        Instant::now() + SETUP_WAIT,
     )
-    .1
-    .lines()
-    .next()
-    .unwrap_or_else(|| panic!("clicked session has a pane"))
-    .to_owned();
+    .unwrap_or_else(|why| panic!("clicked session has a pane: {why}"));
 
     let option = |session: &str| picker_marker(&socket, &scratch, session);
     let open_and_choose = |key: &str| {
@@ -5807,16 +5804,12 @@ fn stage_status_menu_target(socket: &Path, main: &Path) -> (String, String) {
     .find_map(|line| line.strip_suffix("|viewed"))
     .unwrap_or_else(|| panic!("the viewed client has a name"))
     .to_owned();
-    let clicked_pane = tmux(
-        socket,
-        main,
-        &["list-panes", "-t", "clicked", "-F", "#{pane_id}"],
+    let clicked_pane = try_first_pane(
+        |args| tmux(socket, main, args),
+        &["-t", "clicked"],
+        Instant::now() + SETUP_WAIT,
     )
-    .1
-    .lines()
-    .next()
-    .unwrap_or_else(|| panic!("the clicked session has a pane"))
-    .to_owned();
+    .unwrap_or_else(|why| panic!("the clicked session has a pane: {why}"));
     (client, clicked_pane)
 }
 
@@ -6894,20 +6887,17 @@ fn stage_legacy_running_session_with_pane(
         .0,
         "the legacy state-root marker"
     );
-    let pane = main_pane
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            tmux(
-                socket,
-                scratch,
-                &["list-panes", "-t", session, "-F", "#{pane_id}"],
+    let pane = main_pane.map_or_else(
+        || {
+            try_first_pane(
+                |args| tmux(socket, scratch, args),
+                &["-t", session],
+                Instant::now() + SETUP_WAIT,
             )
-            .1
-            .lines()
-            .next()
-            .map(ToOwned::to_owned)
-        })
-        .unwrap_or_else(|| panic!("the legacy session has a pane"));
+            .unwrap_or_else(|why| panic!("the legacy session has a pane: {why}"))
+        },
+        ToOwned::to_owned,
+    );
     let dir = root.join("sessions").join(session);
     assert!(fs::create_dir_all(&dir).is_ok());
     let meta = format!(
@@ -8111,16 +8101,12 @@ fn a_legacy_session_replaced_across_a_server_restart_stays_vacant() {
     // ownership pair, and the recorded main pane is made to match the new
     // session's pane, exactly the collision membership alone cannot see.
     replace_server(&socket, &scratch, "legacy");
-    let reused_pane = tmux(
-        &socket,
-        &scratch,
-        &["list-panes", "-t", "legacy", "-F", "#{pane_id}"],
+    let reused_pane = try_first_pane(
+        |args| tmux(&socket, &scratch, args),
+        &["-t", "legacy"],
+        Instant::now() + SETUP_WAIT,
     )
-    .1
-    .lines()
-    .next()
-    .unwrap_or_else(|| panic!("the replacement has a pane"))
-    .to_owned();
+    .unwrap_or_else(|why| panic!("the replacement has a pane: {why}"));
     let meta = fixture_text(&dir.join("meta"));
     fs::write(
         dir.join("meta"),
