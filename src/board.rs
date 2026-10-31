@@ -28,7 +28,10 @@ use std::path::{Path, PathBuf};
 
 use crate::json::Value;
 use crate::quota::{Bounded, Budget};
-use crate::tool::{BoardParser, BoardSpec, ToolKind, UsageSource};
+use crate::tool::{
+    BoardFollow, BoardId, BoardLocator, BoardParser, BoardSpec, BoardStream, RepliesLeg, ToolKind,
+    UsageSource,
+};
 
 /// Who speaks in a board row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1212,50 +1215,57 @@ fn observe_generation(
             },
         });
     };
-    // OpenCode keeps its conversation in SQLite, which the board never opens:
-    // the export leg runs the CLI (`opencode session export <id>`) and the pure reader
-    // takes its bytes. No file, no follow seed — D1 reads it once per board
-    // and `follow_seat` covers it after that. String dispatch: the adapter's
-    // own name, never a `ToolKind::` arm.
-    if tool.adapter().name == "opencode" {
-        let (seat_rows, seat_coverage) =
-            read_opencode(&actor, entry, tool, replies == Replies::All);
-        let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) =
-            seat_rows.into_iter().partition(|row| !hidden(row, None));
-        for row in &mut seat_rows {
-            row.generation = generation;
+    let stream = match tool.adapter().board {
+        BoardSpec::Stream(stream) => stream,
+        BoardSpec::Unsupported { reason } => {
+            cover(reason.to_owned());
+            return Vec::new();
         }
-        rows.append(&mut seat_rows);
-        for item in seat_coverage {
-            cover(item.reason);
+        // OpenCode keeps its conversation in SQLite, which the board never opens:
+        // the export leg runs the CLI (`opencode session export <id>`) and the pure reader
+        // takes its bytes. No file, no follow seed — D1 reads it once per board
+        // and `follow_seat` covers it after that.
+        BoardSpec::Export { .. } => {
+            let (seat_rows, seat_coverage) =
+                read_opencode(&actor, entry, tool, replies == Replies::All);
+            let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) =
+                seat_rows.into_iter().partition(|row| !hidden(row, None));
+            for row in &mut seat_rows {
+                row.generation = generation;
+            }
+            rows.append(&mut seat_rows);
+            for item in seat_coverage {
+                cover(item.reason);
+            }
+            return hidden_rows;
         }
-        return hidden_rows;
-    }
-    let (path, metadata) = match locate_seat(entry, home) {
+    };
+    let (path, metadata) = match locate_seat(stream, tool, entry, home) {
         Ok(located) => located,
         Err(reason) => {
             cover(reason);
             return Vec::new();
         }
     };
-    // The agy transcript leg runs before the history READ (never before its
+    // The replies leg runs before the history READ (never before its
     // locate, so an invalid id still refuses exactly once): it reports
     // whether assistant rows were produced, and the history stream binds
     // that verdict. With the flag off the leg never runs, and a read for the
     // replies to the human skips it: the transcript carries no human turn to
     // attribute a reply to.
-    let (mut leg_rows, leg_coverage) = if replies == Replies::All && tool.adapter().name == "agy" {
-        read_agy_transcript(&actor, entry, home, tool)
-    } else {
-        (Vec::new(), Vec::new())
+    let (mut leg_rows, leg_coverage) = match stream.replies_leg {
+        Some(RepliesLeg::AgyBrain) if replies == Replies::All => {
+            read_agy_transcript(&actor, entry, home, tool)
+        }
+        Some(RepliesLeg::AgyBrain) | None => (Vec::new(), Vec::new()),
     };
     let file = file_identity(&path, &metadata);
     let binding = Binding::default()
         .for_seat(entry.harness_session.as_deref().unwrap_or_default())
         .with_replies(replies)
         .with_assistant_rows_found(!leg_rows.is_empty());
-    let read = read_located(&path, &metadata, &binding, tool, |feed| {
-        reader_for(tool)(feed, &binding, &actor, &file, tool)
+    let read = read_located(&path, &metadata, &binding, stream.follow, |feed| {
+        reader_for(stream.parser)(feed, &binding, &actor, &file, tool)
     });
     let (mut seat_rows, mut seat_coverage, commit, hold) = match read {
         Ok(read) => read,
@@ -1325,7 +1335,7 @@ fn read_agy_transcript(
     let (path, metadata, truncated) = found;
     let binding = Binding::default().for_seat(id).with_assistant(true);
     let file = format!("agy:{id}");
-    let read = read_located(&path, &metadata, &binding, tool, |feed| {
+    let read = read_located(&path, &metadata, &binding, BoardFollow::Tail, |feed| {
         agy_transcript::read_fed(feed, &binding, actor, &file, tool, truncated)
     });
     match read {
@@ -1353,10 +1363,10 @@ fn read_located(
     path: &Path,
     metadata: &std::fs::Metadata,
     binding: &Binding,
-    tool: ToolKind,
+    follow: BoardFollow,
     read: impl FnOnce(Feed<'_>) -> (Vec<Row>, Vec<Coverage>),
 ) -> Result<Located, DoorError> {
-    let hold = holds(binding, tool);
+    let hold = holds(binding, follow);
     let mut run = grok::OpenRun::new();
     let mut door: Option<Result<Commit, DoorError>> = None;
     let (rows, coverage) = read(&mut |each| {
@@ -1429,32 +1439,28 @@ fn read_opencode(
 /// One harness reader: the door's lines in, rows and coverage out.
 pub(crate) type Reader = fn(Feed<'_>, &Binding, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
 
-/// The reader for one transcript stream, chosen by its tool: ONE dispatch for
+/// The reader for one transcript stream, chosen by its row: ONE dispatch for
 /// the one-shot read and the follow's reassembled batches alike.
-pub(crate) fn reader_for(source: ToolKind) -> Reader {
-    match source.adapter().board {
-        BoardSpec::Stream(stream) => match stream.parser {
-            BoardParser::Claude => claude::read_fed,
-            BoardParser::Codex => codex::read_fed,
-            BoardParser::Agy => agy::read_fed,
-            BoardParser::Grok => grok::read_fed,
-            BoardParser::Muse => muse::read_fed,
-        },
-        // Never reached: neither kind locates a file, and only a located seat
-        // is read.
-        BoardSpec::Export | BoardSpec::Unsupported { .. } => claude::read_fed,
+pub(crate) fn reader_for(parser: BoardParser) -> Reader {
+    match parser {
+        BoardParser::Claude => claude::read_fed,
+        BoardParser::Codex => codex::read_fed,
+        BoardParser::Agy => agy::read_fed,
+        BoardParser::Grok => grok::read_fed,
+        BoardParser::Muse => muse::read_fed,
     }
 }
 
 /// [`reader_for`] over a buffered read: its held lines replayed, its own
 /// binding.
 pub(crate) fn read_buffered(
+    parser: BoardParser,
     source: ToolKind,
     streamed: &Streamed,
     actor: &str,
     file: &str,
 ) -> (Vec<Row>, Vec<Coverage>) {
-    reader_for(source)(
+    reader_for(parser)(
         &mut |each| streamed.replay(each),
         &streamed.binding,
         actor,
@@ -1491,97 +1497,91 @@ fn lstat_regular(candidate: &Path) -> Result<Option<std::fs::Metadata>, String> 
 }
 
 /// THE seat locator, one owner for the one-shot read and every follow poll:
-/// resolve the harness's own store, then its current transcript. The returned
-/// reason IS the coverage row's text.
+/// prove the recorded id before any path, resolve the store the row names,
+/// then its current transcript. The returned reason IS the coverage row's text.
 fn locate_seat(
+    stream: BoardStream,
+    tool: ToolKind,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
 ) -> Result<(PathBuf, std::fs::Metadata), String> {
-    let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
-    let source = tool.adapter().usage.source;
-    if matches!(source, UsageSource::CodexRollout) {
-        let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
-            return Err("invalid or missing conversation id".to_owned());
-        };
-        let root = crate::usage::source_for(entry, UsageSource::CodexRollout, home)?;
-        let mut budget = Budget::new();
-        return match crate::quota::find_codex_rollout(&root, &id, &mut budget) {
-            Ok(Bounded::Ready(Some(rollout))) => {
-                Ok((rollout.path().to_owned(), rollout.metadata().clone()))
-            }
-            Ok(Bounded::Ready(None)) => Err("rollout not found".to_owned()),
-            Ok(Bounded::Truncated) => Err("rollout scan truncated".to_owned()),
-            Err(error) => Err(error.to_string()),
-        };
-    }
-    if tool.adapter().name == "grok" {
-        let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
-            return Err("invalid or missing conversation id".to_owned());
-        };
-        let Some(home) = home else {
-            return Err("legacy config home unavailable".to_owned());
-        };
-        let Some(dir) = tool.adapter().quota.default_home else {
-            return Err("unsupported tool".to_owned());
-        };
-        let mut budget = Budget::new();
-        return match locate_grok_updates(&home.join(dir).join("sessions"), &id, &mut budget)? {
-            Some(found) => Ok((found.path, found.metadata)),
-            None => Err("transcript not found".to_owned()),
-        };
-    }
-    if tool.adapter().name == "muse" {
-        let id = entry.harness_session.as_deref().unwrap_or_default();
-        if !crate::session_launch::capture::is_lowercase_uuid(id) {
-            return Err("invalid or missing conversation id".to_owned());
-        }
-        let Some(home) = home else {
-            return Err("legacy config home unavailable".to_owned());
-        };
-        let mut budget = Budget::new();
-        let Some(path) =
-            crate::session_launch::capture::find_muse_session_file(home, id, &mut budget)?
-        else {
-            return Err("transcript not found".to_owned());
-        };
-        return match lstat_regular(&path)? {
-            Some(metadata) => Ok((path, metadata)),
-            None => Err("transcript not found".to_owned()),
-        };
-    }
-    if tool.adapter().name == "agy" {
-        // ONE history file per home carries every agy conversation, so the
-        // reader — not the locator — separates this seat's turns. The home
-        // names the store; the literal lives in tool.rs's adapter row alone.
-        let id = entry.harness_session.as_deref().unwrap_or_default();
-        if !crate::session_launch::capture::is_lowercase_uuid(id) {
-            return Err("invalid or missing conversation id".to_owned());
-        }
-        let Some(home) = home else {
-            return Err("legacy config home unavailable".to_owned());
-        };
-        let Some(dir) = tool.adapter().quota.default_home else {
-            return Err("unsupported tool".to_owned());
-        };
-        let path = home.join(dir).join("history.jsonl");
-        return match lstat_regular(&path)? {
-            Some(metadata) => Ok((path, metadata)),
-            None => Err("transcript not found".to_owned()),
-        };
-    }
-    if !matches!(source, UsageSource::ClaudeTranscripts) {
-        return Err(unsupported_reason(tool).to_owned());
-    }
-    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
+    let recorded = entry.harness_session.as_deref();
+    let proven = match stream.id {
+        BoardId::Canonical => crate::usage::valid_id(recorded),
+        BoardId::LowercaseUuid => recorded
+            .filter(|id| crate::session_launch::capture::is_lowercase_uuid(id))
+            .map(str::to_owned),
+    };
+    let Some(id) = proven else {
         return Err("invalid or missing conversation id".to_owned());
     };
-    let store = crate::usage::source_for(entry, UsageSource::ClaudeTranscripts, home)?;
-    let mut budget = Budget::new();
-    let located = crate::usage::locate_claude_parent(&store, &id, &mut budget)
-        .map_err(|failure| locate_reason(&failure))?;
-    match located {
-        Some(transcript) => Ok((transcript.path, transcript.metadata)),
-        None => Err("transcript not found".to_owned()),
+    match stream.locator {
+        BoardLocator::RolloutScan => {
+            let root = crate::usage::source_for(entry, UsageSource::CodexRollout, home)?;
+            let mut budget = Budget::new();
+            match crate::quota::find_codex_rollout(&root, &id, &mut budget) {
+                Ok(Bounded::Ready(Some(rollout))) => {
+                    Ok((rollout.path().to_owned(), rollout.metadata().clone()))
+                }
+                Ok(Bounded::Ready(None)) => Err("rollout not found".to_owned()),
+                Ok(Bounded::Truncated) => Err("rollout scan truncated".to_owned()),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        BoardLocator::UpdatesScan => {
+            let Some(home) = home else {
+                return Err("legacy config home unavailable".to_owned());
+            };
+            let Some(dir) = tool.adapter().quota.default_home else {
+                return Err("unsupported tool".to_owned());
+            };
+            let mut budget = Budget::new();
+            match locate_grok_updates(&home.join(dir).join("sessions"), &id, &mut budget)? {
+                Some(found) => Ok((found.path, found.metadata)),
+                None => Err("transcript not found".to_owned()),
+            }
+        }
+        BoardLocator::SessionFileScan => {
+            let Some(home) = home else {
+                return Err("legacy config home unavailable".to_owned());
+            };
+            let mut budget = Budget::new();
+            let Some(path) =
+                crate::session_launch::capture::find_muse_session_file(home, &id, &mut budget)?
+            else {
+                return Err("transcript not found".to_owned());
+            };
+            match lstat_regular(&path)? {
+                Some(metadata) => Ok((path, metadata)),
+                None => Err("transcript not found".to_owned()),
+            }
+        }
+        // ONE history file per home carries every conversation, so the reader
+        // — not the locator — separates this seat's turns. The home names the
+        // store; the literal lives in tool.rs's adapter row alone.
+        BoardLocator::SharedHistoryFile => {
+            let Some(home) = home else {
+                return Err("legacy config home unavailable".to_owned());
+            };
+            let Some(dir) = tool.adapter().quota.default_home else {
+                return Err("unsupported tool".to_owned());
+            };
+            let path = home.join(dir).join("history.jsonl");
+            match lstat_regular(&path)? {
+                Some(metadata) => Ok((path, metadata)),
+                None => Err("transcript not found".to_owned()),
+            }
+        }
+        BoardLocator::ProjectTranscripts => {
+            let store = crate::usage::source_for(entry, UsageSource::ClaudeTranscripts, home)?;
+            let mut budget = Budget::new();
+            let located = crate::usage::locate_claude_parent(&store, &id, &mut budget)
+                .map_err(|failure| locate_reason(&failure))?;
+            match located {
+                Some(transcript) => Ok((transcript.path, transcript.metadata)),
+                None => Err("transcript not found".to_owned()),
+            }
+        }
     }
 }
 
@@ -1660,13 +1660,13 @@ pub fn follow_poll_selected(
     follow.step(snapshots)
 }
 
-/// The follow read-once bit: only an `--assistant` follow of an agy seat
-/// whose transcript store exists reads replies once. The probe is lazy — a
-/// flag-off or non-agy follow never stats the transcript path — and the
-/// truth table lives in its own test, because two of the three `false` arms
+/// The follow read-once bit: only an `--assistant` follow of a seat with a
+/// replies leg whose transcript store exists reads replies once. The probe is
+/// lazy — a flag-off or leg-less follow never stats the transcript path — and
+/// the truth table lives in its own test, because two of the three `false` arms
 /// are silent through the follow output and no poll observes the bit itself.
-fn agy_read_once(assistant: bool, is_agy: bool, store_present: impl FnOnce() -> bool) -> bool {
-    assistant && is_agy && store_present()
+fn agy_read_once(assistant: bool, has_leg: bool, store_present: impl FnOnce() -> bool) -> bool {
+    assistant && has_leg && store_present()
 }
 
 /// One seat's polled snapshot: locate, then read exactly the tail the held
@@ -1683,18 +1683,29 @@ fn follow_seat(
     let actor = format!("{}:{}", session.name, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
     let passive = passive_turn(tool, &session.path, &entry.slot);
-    // D1: an export per tick is a child process per seat per tick, and an
-    // export has no append or offset semantics to follow — the one-shot read
-    // stands, and this steady line says why no poll revisits it.
-    if tool.adapter().name == "opencode" {
-        return follow::Snapshot {
-            actor,
-            located: Err("opencode: read once, not followed".to_owned()),
-            streamed: None,
-            passive,
-        };
-    }
-    let (path, metadata) = match locate_seat(entry, home) {
+    let stream = match tool.adapter().board {
+        BoardSpec::Stream(stream) => stream,
+        BoardSpec::Unsupported { reason } => {
+            return follow::Snapshot {
+                actor,
+                located: Err(reason.to_owned()),
+                streamed: None,
+                passive,
+            };
+        }
+        // D1: an export per tick is a child process per seat per tick, and an
+        // export has no append or offset semantics to follow — the one-shot read
+        // stands, and this steady line says why no poll revisits it.
+        BoardSpec::Export { steady } => {
+            return follow::Snapshot {
+                actor,
+                located: Err(steady.to_owned()),
+                streamed: None,
+                passive,
+            };
+        }
+    };
+    let (path, metadata) = match locate_seat(stream, tool, entry, home) {
         Ok(located) => located,
         Err(reason) => {
             return follow::Snapshot {
@@ -1711,7 +1722,7 @@ fn follow_seat(
     // it singular, and an empty store's first pass already said "no records".
     let read_once = agy_read_once(
         replies == Replies::All,
-        tool.adapter().name == "agy",
+        stream.replies_leg.is_some(),
         || {
             matches!(
                 locate_agy_transcript(
@@ -1742,6 +1753,7 @@ fn follow_seat(
         located: Ok(follow::Loaded {
             file: file_identity(&path, &metadata),
             source: tool,
+            stream,
             observed,
         }),
         streamed,
@@ -1792,15 +1804,6 @@ fn locate_grok_updates(
     Ok(found)
 }
 
-/// The phase (or ruling) behind a harness the board cannot read yet.
-fn unsupported_reason(tool: ToolKind) -> &'static str {
-    // OpenCode is read through its export leg and never reaches this fallback.
-    match tool.adapter().board {
-        BoardSpec::Unsupported { reason } => reason,
-        BoardSpec::Stream(_) | BoardSpec::Export => "unknown tool: out of scope",
-    }
-}
-
 /// The locate failure, in usage's own vocabulary.
 fn locate_reason(failure: &crate::usage::Coverage) -> String {
     match failure {
@@ -1818,6 +1821,17 @@ fn door_reason(failure: DoorError) -> &'static str {
         DoorError::Unreadable => "transcript unreadable",
         DoorError::Changed => "transcript changed during read",
         DoorError::NotRegular => "transcript is not a regular file",
+    }
+}
+
+/// The stream row of a tool a test drives through the follow.
+#[cfg(test)]
+pub(crate) fn stream_row(tool: ToolKind) -> BoardStream {
+    match tool.adapter().board {
+        BoardSpec::Stream(stream) => stream,
+        BoardSpec::Export { .. } | BoardSpec::Unsupported { .. } => {
+            panic!("{tool:?} declares no stream")
+        }
     }
 }
 
@@ -2039,21 +2053,20 @@ fn seed(
     }
 }
 
-/// The follow hold for a grok `--assistant` stream ending mid-turn: the open
+/// The follow hold for an `--assistant` stream ending mid-turn: the open
 /// run's first-chunk offset, where the commit point holds so the next poll
-/// re-reads the whole turn. `None` everywhere else — other tools, the flag
-/// off, or no open run — and the stream's own commit stands. String dispatch:
-/// no `ToolKind::` arms.
-pub(crate) fn hold_at(streamed: &Streamed, source: ToolKind) -> Option<u64> {
-    if !holds(&streamed.binding, source) {
+/// re-reads the whole turn. `None` everywhere else — a row that does not hold,
+/// the flag off, or no open run — and the stream's own commit stands.
+pub(crate) fn hold_at(streamed: &Streamed, follow: BoardFollow) -> Option<u64> {
+    if !holds(&streamed.binding, follow) {
         return None;
     }
     grok::open_run_start(streamed)
 }
 
-/// Whether a read can hold mid-turn: grok with `--assistant`.
-fn holds(binding: &Binding, source: ToolKind) -> bool {
-    binding.assistant && source.adapter().name == "grok"
+/// Whether a read can hold mid-turn: a row that says so, with `--assistant`.
+fn holds(binding: &Binding, follow: BoardFollow) -> bool {
+    binding.assistant && matches!(follow, BoardFollow::HoldOpenAssistantTurn)
 }
 
 /// The source file's identity: path plus dev+inode, so a replaced file is a
@@ -2073,7 +2086,7 @@ fn json_u64(value: u64) -> Value {
 mod tests {
     use super::{
         Binding, Coverage, DoorError, FNV_BASIS, LINE_CAP, LineBody, Role, Row, Splitter, collect,
-        format_micros, read_located, stream_transcript_seeded,
+        format_micros, read_located, stream_row, stream_transcript_seeded,
     };
     use crate::tool::ToolKind;
     use std::path::{Path, PathBuf};
@@ -2442,7 +2455,7 @@ mod tests {
             &path,
             &metadata,
             &Binding::default(),
-            ToolKind::Claude,
+            stream_row(ToolKind::Claude).follow,
             |feed| {
                 endings.push(feed(&mut |line| seen.push(line.offset)));
                 endings.push(feed(&mut |line| seen.push(line.offset)));
@@ -2465,7 +2478,7 @@ mod tests {
             &path,
             &metadata,
             &Binding::default(),
-            ToolKind::Claude,
+            stream_row(ToolKind::Claude).follow,
             |_| (Vec::new(), Vec::new()),
         );
         assert_eq!(unfed.map(|(.., commit, _)| commit.committed).ok(), Some(4));
@@ -2482,7 +2495,7 @@ mod tests {
                 &gone,
                 &metadata,
                 &Binding::default(),
-                ToolKind::Claude,
+                stream_row(ToolKind::Claude).follow,
                 |feed| {
                     if fed {
                         feed(&mut |_| {});
@@ -2511,7 +2524,8 @@ mod tests {
             (true, ToolKind::Claude, None),
         ] {
             let binding = Binding::default().with_assistant(assistant);
-            let read = read_located(&path, &metadata, &binding, tool, |feed| {
+            let follow = stream_row(tool).follow;
+            let read = read_located(&path, &metadata, &binding, follow, |feed| {
                 feed(&mut |_| {});
                 (Vec::new(), Vec::new())
             });

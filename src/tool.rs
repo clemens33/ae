@@ -447,11 +447,64 @@ pub(crate) enum BoardParser {
     Muse,
 }
 
+/// Where a seat's stream lives. Each names a store shape; the path work stays
+/// with the board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoardLocator {
+    /// The parent transcript under the recorded project store.
+    ProjectTranscripts,
+    /// A rollout found by its id under the recorded sessions root.
+    RolloutScan,
+    /// `updates.jsonl` under the fixed home's session directories.
+    UpdatesScan,
+    /// A dated `session.jsonl` under the fixed home.
+    SessionFileScan,
+    /// One history file in the fixed home, shared by every conversation.
+    SharedHistoryFile,
+}
+
+/// A second source that carries the replies the stream does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RepliesLeg {
+    /// The agy brain transcript: read once, before the history read.
+    AgyBrain,
+}
+
+/// What a follow does at the end of a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoardFollow {
+    /// Commits what it read.
+    Tail,
+    /// With assistant replies on, holds an unfinished assistant turn at its
+    /// first chunk and replays it whole.
+    HoldOpenAssistantTurn,
+}
+
+/// Which proof a recorded conversation id must pass before any path work.
+/// They differ on the empty id, which a predecessor row can hold:
+/// [`Self::Canonical`] lets it through, a defect of `usage::valid_id` kept
+/// here as it stands, not a contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoardId {
+    /// Equal to its own canonical UUID spelling.
+    Canonical,
+    /// A lowercase UUID.
+    LowercaseUuid,
+}
+
 /// A conversation the board reads as a line stream through its one door.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BoardStream {
+    /// The proof its recorded id must pass.
+    pub(crate) id: BoardId,
+    /// Where the stream lives.
+    pub(crate) locator: BoardLocator,
     /// The format of the stream.
     pub(crate) parser: BoardParser,
+    /// The second source, if replies have one.
+    pub(crate) replies_leg: Option<RepliesLeg>,
+    /// What a follow does at the end of the stream.
+    pub(crate) follow: BoardFollow,
 }
 
 /// How the board reads this harness's conversation, or why it does not.
@@ -463,7 +516,10 @@ pub(crate) enum BoardSpec {
     /// A file the board streams and can follow.
     Stream(BoardStream),
     /// A snapshot the harness's own CLI exports. No file, nothing to follow.
-    Export,
+    Export {
+        /// The steady coverage row a follow reports.
+        steady: &'static str,
+    },
     /// The board does not read this harness; `reason` is the coverage row.
     Unsupported {
         /// The coverage row's text.
@@ -861,7 +917,11 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         source: UsageSource::ClaudeTranscripts,
     },
     board: BoardSpec::Stream(BoardStream {
+        id: BoardId::Canonical,
+        locator: BoardLocator::ProjectTranscripts,
         parser: BoardParser::Claude,
+        replies_leg: None,
+        follow: BoardFollow::Tail,
     }),
     compact: CompactSpec::Guided {
         command: "/compact",
@@ -939,7 +999,11 @@ const CODEX: ToolAdapter = ToolAdapter {
         source: UsageSource::CodexRollout,
     },
     board: BoardSpec::Stream(BoardStream {
+        id: BoardId::Canonical,
+        locator: BoardLocator::RolloutScan,
         parser: BoardParser::Codex,
+        replies_leg: None,
+        follow: BoardFollow::Tail,
     }),
     compact: CompactSpec::Bare {
         command: "/compact",
@@ -1089,7 +1153,11 @@ const AGY: ToolAdapter = ToolAdapter {
         source: UsageSource::Unsupported,
     },
     board: BoardSpec::Stream(BoardStream {
+        id: BoardId::LowercaseUuid,
+        locator: BoardLocator::SharedHistoryFile,
         parser: BoardParser::Agy,
+        replies_leg: Some(RepliesLeg::AgyBrain),
+        follow: BoardFollow::Tail,
     }),
     compact: CompactSpec::Unsupported {
         reason: "agy exposes no compaction command",
@@ -1170,7 +1238,11 @@ const GROK: ToolAdapter = ToolAdapter {
         source: UsageSource::Unsupported,
     },
     board: BoardSpec::Stream(BoardStream {
+        id: BoardId::Canonical,
+        locator: BoardLocator::UpdatesScan,
         parser: BoardParser::Grok,
+        replies_leg: None,
+        follow: BoardFollow::HoldOpenAssistantTurn,
     }),
     compact: CompactSpec::Guided {
         command: "/compact",
@@ -1237,7 +1309,11 @@ const MUSE: ToolAdapter = ToolAdapter {
         source: UsageSource::Unsupported,
     },
     board: BoardSpec::Stream(BoardStream {
+        id: BoardId::LowercaseUuid,
+        locator: BoardLocator::SessionFileScan,
         parser: BoardParser::Muse,
+        replies_leg: None,
+        follow: BoardFollow::Tail,
     }),
     compact: CompactSpec::Bare {
         command: "/compact",
@@ -1329,7 +1405,9 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::Unsupported,
     },
-    board: BoardSpec::Export,
+    board: BoardSpec::Export {
+        steady: "opencode: read once, not followed",
+    },
     compact: CompactSpec::Bare {
         command: "/compact",
     },
@@ -1818,7 +1896,11 @@ mod tests {
                         source: UsageSource::ClaudeTranscripts,
                     },
                     board: BoardSpec::Stream(BoardStream {
+                        id: BoardId::Canonical,
+                        locator: BoardLocator::ProjectTranscripts,
                         parser: BoardParser::Claude,
+                        replies_leg: None,
+                        follow: BoardFollow::Tail,
                     }),
                     compact: CompactSpec::Guided {
                         command: "/compact"
@@ -1893,7 +1975,11 @@ mod tests {
                         source: UsageSource::CodexRollout,
                     },
                     board: BoardSpec::Stream(BoardStream {
+                        id: BoardId::Canonical,
+                        locator: BoardLocator::RolloutScan,
                         parser: BoardParser::Codex,
+                        replies_leg: None,
+                        follow: BoardFollow::Tail,
                     }),
                     compact: CompactSpec::Bare {
                         command: "/compact"
@@ -2026,7 +2112,11 @@ mod tests {
                         source: UsageSource::Unsupported,
                     },
                     board: BoardSpec::Stream(BoardStream {
+                        id: BoardId::LowercaseUuid,
+                        locator: BoardLocator::SharedHistoryFile,
                         parser: BoardParser::Agy,
+                        replies_leg: Some(RepliesLeg::AgyBrain),
+                        follow: BoardFollow::Tail,
                     }),
                     compact: CompactSpec::Unsupported {
                         reason: "agy exposes no compaction command",
@@ -2089,7 +2179,11 @@ mod tests {
                         source: UsageSource::Unsupported,
                     },
                     board: BoardSpec::Stream(BoardStream {
+                        id: BoardId::Canonical,
+                        locator: BoardLocator::UpdatesScan,
                         parser: BoardParser::Grok,
+                        replies_leg: None,
+                        follow: BoardFollow::HoldOpenAssistantTurn,
                     }),
                     compact: CompactSpec::Guided {
                         command: "/compact"
@@ -2146,7 +2240,11 @@ mod tests {
                         source: UsageSource::Unsupported,
                     },
                     board: BoardSpec::Stream(BoardStream {
+                        id: BoardId::LowercaseUuid,
+                        locator: BoardLocator::SessionFileScan,
                         parser: BoardParser::Muse,
+                        replies_leg: None,
+                        follow: BoardFollow::Tail,
                     }),
                     compact: CompactSpec::Bare {
                         command: "/compact"
@@ -2209,7 +2307,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
                     },
-                    board: BoardSpec::Export,
+                    board: BoardSpec::Export {
+                        steady: "opencode: read once, not followed",
+                    },
                     compact: CompactSpec::Bare {
                         command: "/compact"
                     },

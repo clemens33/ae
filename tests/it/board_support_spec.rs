@@ -98,6 +98,41 @@ fn r3_support_and_id_refusals_precede_store_work() {
 }
 
 #[test]
+fn r3_empty_predecessors_preserve_existing_id_grammar_difference() {
+    // Characterization of the known valid_id empty-sentinel defect, not an
+    // intended grammar difference. Follow-up fixes valid_id, flips this pin,
+    // and collapses BoardId; this refactor preserves existing behavior.
+    // Mutation caught: merging the two existing ID predicates because their
+    // nonempty languages agree. Raw predecessor lists retain empty elements.
+    // Current empty ID rows normalize to None; empty predecessors become Some("").
+    let root = rig("r3-empty-prior");
+    for bin in ["claude", "codex", "grok", "muse", "agy"] {
+        plant_session(
+            &root,
+            "matrix",
+            &r3_roster(bin, None, "harness_session_prior.main=,bad\n"),
+        );
+        let observed = r3_observe(&root, None, board::Replies::All);
+        assert!(observed.rows.is_empty() && observed.seeds.is_empty());
+        let empty_reason = if matches!(bin, "muse" | "agy") {
+            "predecessor 2: invalid or missing conversation id"
+        } else {
+            "predecessor 2: legacy config home unavailable"
+        };
+        assert_eq!(
+            r3_reasons(&observed),
+            [
+                "invalid or missing conversation id",
+                "predecessor 1: invalid or missing conversation id",
+                empty_reason,
+            ],
+            "{bin}: preserve current empty-predecessor behavior"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one config-provenance matrix keeps all planted decoys and independently expected outcomes visible together"

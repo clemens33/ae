@@ -27,6 +27,7 @@ mod tests {
             located: Ok(Loaded {
                 file: "synthetic#1:7".to_owned(),
                 source: ToolKind::Claude,
+                stream: crate::board::stream_row(ToolKind::Claude),
                 observed: seen,
             }),
             streamed,

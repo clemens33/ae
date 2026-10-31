@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use super::{Coverage, Observation, Role, SeatSeed, Streamed, read_buffered};
-use crate::tool::ToolKind;
+use crate::tool::{BoardStream, ToolKind};
 
 /// The follow's poll cadence: the driver sleeps this between polls.
 pub(crate) const POLL_SECS: u64 = 5;
@@ -43,8 +43,10 @@ impl Located {
 pub(crate) struct Loaded {
     /// Row identity of the file: path plus dev+inode.
     pub(crate) file: String,
-    /// Which harness wrote it; picks the reader.
+    /// Which harness wrote it; names its rows.
     pub(crate) source: ToolKind,
+    /// The row that located it; picks the reader and the hold.
+    pub(crate) stream: BoardStream,
     /// The lstat facts this poll's arms decide on.
     pub(crate) observed: Located,
 }
@@ -243,7 +245,13 @@ impl Follow {
         {
             return false;
         }
-        let (_, seat_coverage) = read_buffered(loaded.source, streamed, actor, &loaded.file);
+        let (_, seat_coverage) = read_buffered(
+            loaded.stream.parser,
+            loaded.source,
+            streamed,
+            actor,
+            &loaded.file,
+        );
         self.steady(
             actor,
             seat_coverage.into_iter().map(|item| item.reason).collect(),
@@ -302,8 +310,13 @@ impl Follow {
                 None => {}
                 Some(Err(reason)) => self.failed(&actor, &loaded, &arm, reason, &mut coverage),
                 Some(Ok(streamed)) => {
-                    let (mut seat_rows, seat_coverage) =
-                        read_buffered(loaded.source, &streamed, &actor, &loaded.file);
+                    let (mut seat_rows, seat_coverage) = read_buffered(
+                        loaded.stream.parser,
+                        loaded.source,
+                        &streamed,
+                        &actor,
+                        &loaded.file,
+                    );
                     // The window of replies to the human continues from where the
                     // last poll ended it; a first sight or a rescan starts shut.
                     let mut window = false;
@@ -328,7 +341,7 @@ impl Follow {
                     // its first chunk, so the next poll re-reads and joins
                     // the whole turn. The one-shot prints it as-is.
                     let mut committed = streamed.committed;
-                    if let Some(start) = super::hold_at(&streamed, loaded.source) {
+                    if let Some(start) = super::hold_at(&streamed, loaded.stream.follow) {
                         seat_rows
                             .retain(|row| !(row.role == Role::Assistant && row.offset == start));
                         committed = start;
@@ -430,6 +443,7 @@ mod tests {
         Loaded {
             file: format!("f#{}:{}", observed.identity.0, observed.identity.1),
             source: ToolKind::Claude,
+            stream: crate::board::stream_row(ToolKind::Claude),
             observed,
         }
     }
@@ -500,6 +514,7 @@ mod tests {
             actor: actor.to_owned(),
             located: Ok(Loaded {
                 source: ToolKind::Grok,
+                stream: crate::board::stream_row(ToolKind::Grok),
                 ..loaded(observed)
             }),
             streamed: Some(Ok(splitter.finish().with_assistant(assistant))),
@@ -952,6 +967,7 @@ mod tests {
             actor: "s:lead".to_owned(),
             located: Ok(Loaded {
                 source,
+                stream: crate::board::stream_row(source),
                 ..loaded(observed)
             }),
             streamed: Some(Ok(splitter.finish().with_replies(replies))),
