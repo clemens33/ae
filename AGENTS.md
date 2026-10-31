@@ -30,7 +30,9 @@ reasoning, the retired rules and every measurement narrative are in
 src/                — Rust sources. main.rs thin (argv in, exit code out); lib.rs and the
                       modules beside it, grouped by domain (some a file, some a file plus a
                       directory of submodules), hold everything testable. theme.rs is PURE:
-                      the palettes, the seven marks and every tmux format ae draws a session with
+                      the palettes, the seven marks and every tmux format ae draws a session with.
+                      tool.rs::BoardSpec is the board's one per-tool read decision
+                      (stream, export or unsupported)
 src/app/            — `ae app`; src/app.rs is the coordinator (loop, frame, keys, the one
                       write). loader.rs the one background reader; journals.rs its
                       parsed-journal cache; backend.rs the one writer of its escapes;
@@ -469,7 +471,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |
 | A seat's pane launch line stays runnable across upgrades: installed names the command link, checkout the absolute core | `src/run.rs::pane_head` |
 | Every session meta carries `meta_version=<N>`; the chain steps N->N+1 and runs wherever the core touches a session. A meta with no row but `schema=2` IS version 2 — the pre-chain shape — and is stamped in place, never refused; only a meta with NEITHER key is refused, at resume, and merely REPORTED at stop and end, which must never be blocked. A publish migrates and repoints every placeable session before it moves the command link; stopped unplaceable sessions are reported and skipped untouched. It then deletes every `versions/<V>` no meta records | `src/migrate.rs` (`placed` owns the rule for the chain and for `ae list` alike), called from `src/install.rs::publish_steps`, `src/session_launch.rs`, `src/lifecycle.rs` and `src/lifecycle/end.rs` |
-| A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files`; grammar in `src/archive.rs::canonical_uuid` |
+| A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files` normalizes with `src/archive.rs::canonical_uuid`; `src/archive.rs::is_canonical_uuid` owns the canonical UUID predicate |
 | A monitor sweep may act only on the CALLER'S own session (`$TMUX_PANE`) — the ONE named exception is the watchdog's publication of a single display fact, `theme::FLEET_STRIP_OPTION`, into a same-server ae session with no live watchdog; sweeps stay own-session | `src/monitor.rs`; the exception is `src/watchdog_daemon.rs::adoption_writes` |
 | Every tmux format uses a printable pipe separator, never a control byte — tmux 3.4 octal-escapes those. Each format literal is written out; `SLOTS_FORMAT` deliberately uses an unspaced pipe. Every `#{&&:…}`/`#{||:…}` is binary, nested, because tmux 3.4 reads only the first two operands | `src/tmux.rs` (`FIELD_SEPARATOR` is the parser delimiter) + the control-char-free test over every format constant, read tree-wide by `tests/it/floor.rs::no_tmux_format_literal_in_src_carries_a_control_character` + `tests/it/floor.rs::every_tmux_conjunction_in_src_is_binary` |
 | Every tmux client whose output ae reads is UTF-8 (`-u`): tmux prints `_` for each non-ASCII character and control byte to a client it does not judge UTF-8, and outside tmux it judges that from the locale alone (#187). The human's own terminal (`focus`, `attach`) keeps its locale | `src/transport.rs::declares_utf8`, applied in `::spawn`; the rule is pinned by `::tests::only_a_tmux_leg_that_ae_reads_is_started_as_a_utf8_client`, its wiring by `::tests::spawn_hands_a_captured_tmux_leg_u_before_its_words` |
