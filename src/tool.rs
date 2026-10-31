@@ -431,6 +431,46 @@ pub(crate) struct UsageSpec {
     pub(crate) source: UsageSource,
 }
 
+/// Which reader turns one line stream into board rows. Each is a format, and
+/// the reader itself stays with the board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoardParser {
+    /// Claude Code transcript records.
+    Claude,
+    /// Codex rollout records.
+    Codex,
+    /// The agy history file.
+    Agy,
+    /// Grok `updates.jsonl` records.
+    Grok,
+    /// Muse `session.jsonl` records.
+    Muse,
+}
+
+/// A conversation the board reads as a line stream through its one door.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BoardStream {
+    /// The format of the stream.
+    pub(crate) parser: BoardParser,
+}
+
+/// How the board reads this harness's conversation, or why it does not.
+///
+/// Values only: a row names no board code, so this module never depends on the
+/// board, and usage support decides nothing here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoardSpec {
+    /// A file the board streams and can follow.
+    Stream(BoardStream),
+    /// A snapshot the harness's own CLI exports. No file, nothing to follow.
+    Export,
+    /// The board does not read this harness; `reason` is the coverage row.
+    Unsupported {
+        /// The coverage row's text.
+        reason: &'static str,
+    },
+}
+
 /// How ae treats a harness's live model alongside its model flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelSpec {
@@ -712,6 +752,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) quota: QuotaSpec,
     /// Local usage discovery behaviour.
     pub(crate) usage: UsageSpec,
+    /// How the board reads this harness.
+    pub(crate) board: BoardSpec,
 }
 
 const CLAUDE: ToolAdapter = ToolAdapter {
@@ -818,6 +860,9 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::ClaudeTranscripts,
     },
+    board: BoardSpec::Stream(BoardStream {
+        parser: BoardParser::Claude,
+    }),
     compact: CompactSpec::Guided {
         command: "/compact",
     },
@@ -893,6 +938,9 @@ const CODEX: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::CodexRollout,
     },
+    board: BoardSpec::Stream(BoardStream {
+        parser: BoardParser::Codex,
+    }),
     compact: CompactSpec::Bare {
         command: "/compact",
     },
@@ -945,6 +993,9 @@ const GEMINI: ToolAdapter = ToolAdapter {
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
+    },
+    board: BoardSpec::Unsupported {
+        reason: "gemini: out of scope",
     },
     compact: CompactSpec::Bare {
         command: "/compress",
@@ -1037,6 +1088,9 @@ const AGY: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::Unsupported,
     },
+    board: BoardSpec::Stream(BoardStream {
+        parser: BoardParser::Agy,
+    }),
     compact: CompactSpec::Unsupported {
         reason: "agy exposes no compaction command",
     },
@@ -1115,6 +1169,9 @@ const GROK: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::Unsupported,
     },
+    board: BoardSpec::Stream(BoardStream {
+        parser: BoardParser::Grok,
+    }),
     compact: CompactSpec::Guided {
         command: "/compact",
     },
@@ -1179,6 +1236,9 @@ const MUSE: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::Unsupported,
     },
+    board: BoardSpec::Stream(BoardStream {
+        parser: BoardParser::Muse,
+    }),
     compact: CompactSpec::Bare {
         command: "/compact",
     },
@@ -1269,6 +1329,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::Unsupported,
     },
+    board: BoardSpec::Export,
     compact: CompactSpec::Bare {
         command: "/compact",
     },
@@ -1319,6 +1380,9 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
+    },
+    board: BoardSpec::Unsupported {
+        reason: "unknown tool: out of scope",
     },
     compact: CompactSpec::Unsupported {
         reason: "unknown tool",
@@ -1753,6 +1817,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::ClaudeTranscripts,
                     },
+                    board: BoardSpec::Stream(BoardStream {
+                        parser: BoardParser::Claude,
+                    }),
                     compact: CompactSpec::Guided {
                         command: "/compact"
                     },
@@ -1825,6 +1892,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::CodexRollout,
                     },
+                    board: BoardSpec::Stream(BoardStream {
+                        parser: BoardParser::Codex,
+                    }),
                     compact: CompactSpec::Bare {
                         command: "/compact"
                     },
@@ -1876,6 +1946,9 @@ mod tests {
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
+                    },
+                    board: BoardSpec::Unsupported {
+                        reason: "gemini: out of scope",
                     },
                     compact: CompactSpec::Bare {
                         command: "/compress"
@@ -1952,6 +2025,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
                     },
+                    board: BoardSpec::Stream(BoardStream {
+                        parser: BoardParser::Agy,
+                    }),
                     compact: CompactSpec::Unsupported {
                         reason: "agy exposes no compaction command",
                     },
@@ -2012,6 +2088,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
                     },
+                    board: BoardSpec::Stream(BoardStream {
+                        parser: BoardParser::Grok,
+                    }),
                     compact: CompactSpec::Guided {
                         command: "/compact"
                     },
@@ -2066,6 +2145,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
                     },
+                    board: BoardSpec::Stream(BoardStream {
+                        parser: BoardParser::Muse,
+                    }),
                     compact: CompactSpec::Bare {
                         command: "/compact"
                     },
@@ -2127,6 +2209,7 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
                     },
+                    board: BoardSpec::Export,
                     compact: CompactSpec::Bare {
                         command: "/compact"
                     },
@@ -2184,6 +2267,9 @@ mod tests {
                 },
                 usage: UsageSpec {
                     source: UsageSource::Unsupported,
+                },
+                board: BoardSpec::Unsupported {
+                    reason: "unknown tool: out of scope",
                 },
                 compact: CompactSpec::Unsupported {
                     reason: "unknown tool",

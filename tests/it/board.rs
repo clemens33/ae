@@ -2576,3 +2576,5 @@ fn observe_ignores_a_supplied_snapshot_bound_elsewhere() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+include!("board_support_spec.rs");

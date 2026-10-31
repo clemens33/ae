@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use crate::json::Value;
 use crate::quota::{Bounded, Budget};
-use crate::tool::{ToolKind, UsageSource};
+use crate::tool::{BoardParser, BoardSpec, ToolKind, UsageSource};
 
 /// Who speaks in a board row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1215,8 +1215,8 @@ fn observe_generation(
     // OpenCode keeps its conversation in SQLite, which the board never opens:
     // the export leg runs the CLI (`opencode session export <id>`) and the pure reader
     // takes its bytes. No file, no follow seed — D1 reads it once per board
-    // and `follow_seat` covers it after that. String dispatch, as `reader_for`
-    // does: the adapter's own name, never a `ToolKind::` arm.
+    // and `follow_seat` covers it after that. String dispatch: the adapter's
+    // own name, never a `ToolKind::` arm.
     if tool.adapter().name == "opencode" {
         let (seat_rows, seat_coverage) =
             read_opencode(&actor, entry, tool, replies == Replies::All);
@@ -1432,15 +1432,17 @@ pub(crate) type Reader = fn(Feed<'_>, &Binding, &str, &str, ToolKind) -> (Vec<Ro
 /// The reader for one transcript stream, chosen by its tool: ONE dispatch for
 /// the one-shot read and the follow's reassembled batches alike.
 pub(crate) fn reader_for(source: ToolKind) -> Reader {
-    if matches!(source.adapter().usage.source, UsageSource::CodexRollout) {
-        return codex::read_fed;
-    }
-    // String dispatch, as `unsupported_reason` does: literals live in tool.rs.
-    match source.adapter().name {
-        "agy" => agy::read_fed,
-        "grok" => grok::read_fed,
-        "muse" => muse::read_fed,
-        _ => claude::read_fed,
+    match source.adapter().board {
+        BoardSpec::Stream(stream) => match stream.parser {
+            BoardParser::Claude => claude::read_fed,
+            BoardParser::Codex => codex::read_fed,
+            BoardParser::Agy => agy::read_fed,
+            BoardParser::Grok => grok::read_fed,
+            BoardParser::Muse => muse::read_fed,
+        },
+        // Never reached: neither kind locates a file, and only a located seat
+        // is read.
+        BoardSpec::Export | BoardSpec::Unsupported { .. } => claude::read_fed,
     }
 }
 
@@ -1792,12 +1794,10 @@ fn locate_grok_updates(
 
 /// The phase (or ruling) behind a harness the board cannot read yet.
 fn unsupported_reason(tool: ToolKind) -> &'static str {
-    // String dispatch, never `ToolKind::` arms: production tool literals live
-    // in `src/tool.rs` alone (`per_tool_branches_live_only_in_the_adapter_rows`).
     // OpenCode is read through its export leg and never reaches this fallback.
-    match tool.adapter().name {
-        "gemini" => "gemini: out of scope",
-        _ => "unknown tool: out of scope",
+    match tool.adapter().board {
+        BoardSpec::Unsupported { reason } => reason,
+        BoardSpec::Stream(_) | BoardSpec::Export => "unknown tool: out of scope",
     }
 }
 
@@ -2042,8 +2042,8 @@ fn seed(
 /// The follow hold for a grok `--assistant` stream ending mid-turn: the open
 /// run's first-chunk offset, where the commit point holds so the next poll
 /// re-reads the whole turn. `None` everywhere else — other tools, the flag
-/// off, or no open run — and the stream's own commit stands. String dispatch,
-/// as `reader_for` does: no `ToolKind::` arms.
+/// off, or no open run — and the stream's own commit stands. String dispatch:
+/// no `ToolKind::` arms.
 pub(crate) fn hold_at(streamed: &Streamed, source: ToolKind) -> Option<u64> {
     if !holds(&streamed.binding, source) {
         return None;
