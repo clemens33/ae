@@ -375,7 +375,7 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             // Its definition and its platform table.
             "src/doors.rs".to_owned(),
             // The fleet listing's discovery.
-            "src/lib.rs".to_owned(),
+            "src/fleet_read.rs".to_owned(),
             // The shared gate.
             "src/lifecycle/end.rs".to_owned(),
             "src/session_launch.rs".to_owned(),
