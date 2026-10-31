@@ -71,8 +71,8 @@ slow-timeout = { period = "5s", terminate-after = 2 }
 # The Linux container lane runs the WHOLE suite with a bound: fail-fast off, so
 # one run lists every Linux-only failure instead of hiding the ~1830 tests
 # behind the first two, and a hard terminate-after for the three menu-client
-# waits that hung in a container until #187 (the host's slowest menu test is
-# 7.7 s, so 30 s x 2 is generous). Per nexte.st/config per-test-overrides, a
+# waits that hung in a container until #187 (30 s x 2).
+# Per nexte.st/config per-test-overrides, a
 # selected profile's overrides are checked FIRST and profile.default.overrides
 # SECOND, per setting — so the default profile's test-group overrides
 # (tmux-clients, tmux-seats, tmux-spawn-unit) still apply under linux, and the
@@ -92,7 +92,7 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # turns a loop bound into an unbounded allocation drives its test to GBs of RSS
 # in seconds, and on macOS no rlimit can stop it (`ulimit -v` is EINVAL, `-d`
 # limits sbrk only). So: at most TWO tests at once, and each one is killed
-# after 60 s (30 s x 2; the host's slowest test is 7.7 s). nextest sends SIGTERM
+# after 60 s (30 s x 2). nextest sends SIGTERM
 # there and SIGKILL a grace period later (10 s unless named), so the grace is
 # zero: a test that handles SIGTERM must not outlive the bound. The lane may
 # TIGHTEN the thread count with NEXTEST_TEST_THREADS but clamps anything wider
