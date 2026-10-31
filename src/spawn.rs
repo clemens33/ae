@@ -2317,23 +2317,43 @@ mod tests {
         fn pane_cwd(&self, pane: &str) -> String {
             use std::time::{Duration, Instant};
 
-            // Opening a window does not prove tmux can already observe its
-            // shell's cwd. Wait for the witness, never for the expected path:
-            // the caller must still reject a wrong, non-empty cwd immediately.
+            // The bound of the shell witness. A passing run spends almost none
+            // of it, and a slow exec must not be a new way to fail.
+            const SHELL_WAIT: Duration = Duration::from_mins(1);
+
+            // Opening a window returns before its child has exec'd, and tmux 3.6
+            // puts a systemd round trip (StartTransientUnit, up to 1 s) ahead of
+            // the child's chdir and exec. Until then the pane reads `tmux` in
+            // the SERVER's directory: a real, non-empty cwd, and the wrong one.
+            // Wait for the witness, never for the expected path: chdir precedes
+            // exec, so once the probe reads a shell the cwd is settled, and the
+            // caller still rejects a wrong cwd at once. The names are written
+            // out because the product's classifier also calls an empty command
+            // a shell.
             let server = self.server();
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + SHELL_WAIT;
             loop {
-                if let Some(cwd) = crate::transport::observe_pane_current_path(&server, pane) {
+                let probe = crate::transport::observe_pane_probe(&server, pane);
+                let settled = probe.as_ref().is_some_and(|probe| {
+                    probe.pid.is_some()
+                        && matches!(
+                            probe.command.trim(),
+                            "sh" | "bash" | "dash" | "zsh" | "fish"
+                        )
+                });
+                if settled
+                    && let Some(cwd) = crate::transport::observe_pane_current_path(&server, pane)
+                {
                     return cwd;
                 }
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    let probe = crate::transport::observe_pane_probe(&server, pane);
                     let pid = probe.as_ref().and_then(|probe| probe.pid);
                     let command = probe.as_ref().map(|probe| probe.command.as_str());
                     let dead = crate::transport::observe_pane_dead(&server, pane);
+                    let path = crate::transport::observe_pane_current_path(&server, pane);
                     panic!(
-                        "pane cwd unavailable after 3s: pane={pane} path=None \
+                        "pane cwd unsettled after {SHELL_WAIT:?}: pane={pane} path={path:?} \
                          pane_probe_observed={} pane_pid={pid:?} pane_dead={dead:?} \
                          pane_current_command={command:?}",
                         probe.is_some()
@@ -2435,7 +2455,8 @@ mod tests {
             .expect("pane")
             .pane
             .clone();
-        // The pane's cwd, read directly; unobserved after 3s hard-fails.
+        // The pane's cwd, read directly once its shell is up; unsettled after
+        // the shell-witness bound hard-fails.
         let cwd = rig.pane_cwd(&pane);
         assert_eq!(cwd, canon.to_str().unwrap());
     }

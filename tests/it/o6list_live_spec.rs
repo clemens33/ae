@@ -55,10 +55,15 @@ fn list_uses_child_tool_pid_one_snapshot_and_unknown_for_failed_external_proof()
     scratch.add_tmux_server(root.join("sock"));
     let bin = root.join("bin");
     fs::create_dir_all(&bin).expect("private bin");
-    // Preserve macOS platform signing; ps sees the symlink's tool name on both hosts.
-    std::os::unix::fs::symlink("/bin/sleep", bin.join("codex")).expect("native fixture");
+    // A symlink keeps macOS platform signing, and ps sees its name as the tool's
+    // on both hosts. The target is perl, not sleep: a multi-call coreutils
+    // (uutils on Ubuntu 26.04) refuses to run under a name that is not its own.
+    std::os::unix::fs::symlink("/usr/bin/perl", bin.join("codex")).expect("native fixture");
     for name in ["fixture", "other"] {
-        let command = format!("set -m; '{}' 600; :", bin.join("codex").display());
+        let command = format!(
+            "set -m; '{}' -e 'sleep 600'; :",
+            bin.join("codex").display()
+        );
         tmux(
             &root,
             &[
