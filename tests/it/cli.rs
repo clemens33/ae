@@ -10,10 +10,13 @@
               PRODUCT code may reach"
 )]
 
+use std::time::Instant;
+
 use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
 use crate::phase2::run_tmux;
+use crate::support::{SETUP_WAIT, first_pane};
 use ae::tool::ToolKind;
 
 /// ae's own doors that a hermetic run must NOT inherit.
@@ -2785,8 +2788,11 @@ exit 0
             ])
             .0
         );
-        let (_, panes) = self.tmux(&["list-panes", "-s", "-t", session, "-F", "#{pane_id}"]);
-        let pane = panes.lines().next().unwrap_or_default().to_owned();
+        let pane = first_pane(
+            |args| self.tmux(args),
+            &["-s", "-t", session],
+            Instant::now() + SETUP_WAIT,
+        );
         assert!(
             self.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"])
                 .0
@@ -2830,8 +2836,11 @@ exit 0
             ])
             .0
         );
-        let (_, panes) = self.tmux(&["list-panes", "-s", "-t", session, "-F", "#{pane_id}"]);
-        let pane = panes.lines().next().unwrap_or_default().to_owned();
+        let pane = first_pane(
+            |args| self.tmux(args),
+            &["-s", "-t", session],
+            Instant::now() + SETUP_WAIT,
+        );
         assert!(
             self.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"])
                 .0
