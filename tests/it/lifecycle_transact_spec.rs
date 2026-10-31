@@ -18,6 +18,7 @@
 //! the session name, the archive path and the live dir.
 
 use super::super::cli::git_in;
+use super::super::support::try_observe;
 use super::guard_spec::{
     CURSOR_LOCK, INSTANCE, MUTATION, Tree, end, half_ended, hold_for, keepalive, obstruct_teardown,
     put, tree,
@@ -493,15 +494,17 @@ fn watcher(rig: &Rig) -> String {
         attach.as_str(),
     ];
     assert!(rig.tmux(&start).0, "the watching client starts");
-    for _ in 0..200 {
-        let (_, clients) = rig.tmux(&["list-clients", "-F", "#{session_name}"]);
-        if clients.lines().any(|s| s == "keepalive") {
-            let (_, panes) = rig.tmux(&["list-panes", "-t", "=watch", "-F", "#{pane_id}"]);
-            return panes.lines().next().unwrap_or_default().to_owned();
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!("no client attached to keepalive");
+    // One 5 s budget for both reads. The client is the witness: the watch
+    // pane exists from `new-session`, and existing is not attached.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    try_observe(
+        |args| rig.tmux(args),
+        &["list-clients", "-F", "#{session_name}"],
+        deadline,
+        |clients| clients.lines().any(|s| s == "keepalive"),
+    )
+    .unwrap_or_else(|why| panic!("no client attached to keepalive: {why}"));
+    first_pane(|args| rig.tmux(args), &["-t", "=watch"], deadline)
 }
 
 fn noticed(rig: &Rig, pane: &str, needles: &[&str]) -> bool {
