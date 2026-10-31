@@ -4324,6 +4324,13 @@ pub fn run_with(
 }
 
 #[cfg(test)]
+#[path = "fleet_read/socket_spec.rs"]
+mod socket_spec;
+#[cfg(test)]
+#[path = "fleet_read/world_spec.rs"]
+mod world_spec;
+
+#[cfg(test)]
 mod tests {
 
     #[test]

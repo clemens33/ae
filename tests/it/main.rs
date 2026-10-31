@@ -82,6 +82,7 @@ mod entry_app_spec;
 mod entry_first_use_spec;
 mod entry_name_app_spec;
 mod fixtures;
+mod fleet_read_spec;
 mod floor;
 mod gate;
 mod git;
