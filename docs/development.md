@@ -90,7 +90,7 @@ cargo-nextest, whose aws-lc-sys build script segfaults.)
 the unit tests and the single `tests/it` integration target, and `cargo test --doc` for the
 doctests. `just test` is that same command — there is no inner-loop/gate split any more,
 because the whole suite now costs what one scoped bash domain used to. `just rust-mutants`
-asks the harder question: whether those tests would ever go red. The `menu` module drives a
+asks the harder question: whether those tests would ever go red (see Mutation testing below). The `menu` module drives a
 real tmux server and real attached clients, so `.config/nextest.toml` keeps all of it in one
 small test-group: parallel load can starve a client the test is waiting on, and the group
 bounds that contention without weakening a single assertion.
@@ -259,6 +259,80 @@ the modal) and the conversation under `<config_home>/projects/`; codex writes a 
 `~/.codex/sessions/`. The conversations a run leaves are NAMED in the report, never purged. Pane
 text is read in memory and only decides; the report carries fixed words, versions and ids, never a
 transcript, a token or a credentials path.
+
+## Mutation testing
+
+A green suite says the tests pass, not that they would ever go red. `just rust-mutants` is
+the lane that asks. It is a LOCAL lane, never a gate and never a score: the workflow in CI
+(diff-bounded per push, full lane by manual dispatch) is unchanged and is not part of the
+rules below. No percentage, ratio or threshold of mutants is ever cited, reported or
+enforced; a result is the list of survivors and what each one turned out to be.
+
+**A product slice mutates its own diff before the freeze.** A slice that changes `src/`
+runs the lane over exactly its COMMITTED diff, under the lane lock like the gate, and
+answers every survivor in its freeze report:
+
+```bash
+git status --short                 # must print nothing: if it does, stop and commit first
+base=<sha>                         # the pre-slice commit the brief records; the report names it
+git merge-base --is-ancestor "$base" HEAD   # exit 0, or stop
+git diff "$base" HEAD -- src > "$PWD/.local/<slice>/slice.diff"
+cargo mutants --list --in-diff "$PWD/.local/<slice>/slice.diff" > "$PWD/.local/<slice>/mutants.list"
+wc -l < "$PWD/.local/<slice>/mutants.list"   # the count, before the cost
+just rust-mutants --in-diff "$PWD/.local/<slice>/slice.diff"
+```
+
+Run the lines one at a time and stop at a nonzero exit: a failed listing is not a count of
+zero. The base is the recorded pre-slice commit, never a guess: `git merge-base main HEAD`
+is a fork point, which is `HEAD` on `main` or after the slice has landed (the slice's own
+diff disappears) and reaches back over earlier slices on a stacked branch, so use it only
+after proving it equals the recorded commit. `mutation: nothing run (<why>)` is for a slice
+whose diff really holds no mutatable `src/` code; a slice that could not be run (no
+recorded base, no lane) reports an explicit verification gap instead, never a clean line.
+
+* **Budget.** Provisional until a run on the current lane is measured, and no archived run
+  measures it. The archive (September and October 2026, 54 runs, 2821 mutants) mixes scopes
+  and settings: 34 runs, 1660 mutants, ran the whole suite (four or eight test threads, or
+  the nextest default) and cost on average 40 s per caught mutant (median 10 s), 425 s per
+  survivor (median 314 s), 3 s per unviable one, after a baseline test run of 193 to 661 s
+  (median 312 s); the other 20 runs, 1161 mutants, filtered the tests to the code they
+  mutated and cost 126 s per mutant on average. A survivor costs about one whole test run
+  of its lane, so the cost follows the number of survivors more than the number of
+  mutants. A slice's provisional budget is 40 mutants, about an hour with its baseline
+  run. A larger diff is cut to the code that carries the slice's logic (`-f <file>`,
+  `-F <regex>`, or `--shard k/n` with `--sharding round-robin` for a spread over the diff)
+  and the freeze names what was not run; the lead may raise the budget. A later shard of
+  the same tree may pass `--baseline=skip` once an earlier shard's baseline passed. `-F`
+  does not filter struct-field mutants (cargo-mutants 27.1): they ride along from every
+  selected file, so trust the `--list` count, not the regex. `just rust-mutants` writes its
+  arguments back into a shell line, so a regex is quoted twice: `-F "'(a|b)'"`.
+* **Survivors.** Each survivor in the diff is answered in the freeze report, one line:
+  killed by a test the slice added (name it), or named equivalent (say why no behaviour
+  differs), or dead code (and removed), or timeout or unviable. A timeout is not a kill.
+  A mutant the RSS watcher killed (`mutants.out/ae-rss-kills.log`) reads as caught but is
+  memory growth, and is reported as that.
+* **Added tests** come from the requirement or the invariant, never from what the code
+  says (the test-oracle rule), and each is shown to fail on its mutant. Run that mutant
+  alone, and only if `--list` with the same arguments selects exactly one mutant; `-F`
+  cannot isolate a struct-field mutant, so for those, and whenever the count is not one,
+  apply the mutant's patch (`cargo mutants --list --diff`) by hand in a throwaway scratch
+  tree and run the named test there. Inspect the outcome and the test's own failure: it
+  survived before the test, and the new test fails on it. A survivor is never answered by
+  weakening or deleting a test.
+* **Known gap.** `--in-diff` selects source mutants only: a weakened test, or a change to
+  anything that shapes how tests run, is invisible to it. A slice that changes tests reads
+  that diff by eye, and a slice with no `src/` change has nothing to mutate.
+
+**A campaign is a scoped, budgeted look at code that has never been mutated.** The lead
+orders it; it is not part of any slice. Scope is a fixed set of functions in three to six
+files, chosen by blast radius and by the absence of earlier mutation evidence, counted with
+`--list` first and sized to the wall cap (3 hours unless the lead raises it; about 100
+mutants plus their baselines is the provisional size, on the same terms as the slice
+budget). It runs sharded under the lane lock, one claim per shard. Every survivor is triaged
+on one line in a `triage.md` beside the run as equivalent (why), test gap (where, and the
+oracle that would kill it), dead code, or timeout/unviable, and a reviewer on another
+provider spot-checks the equivalent claims. A test gap is closed by a fix round that adds
+tests only. A product bug found on the way stops the campaign and becomes its own slice.
 
 ## Build disk
 
