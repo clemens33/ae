@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.1] - 2026-11-01
+- State mutation workflow triggers and manual full lane
+- Name the live capture floor fallback owner
+- Drop stale nextest timing claims
+- Align process door comments with the inventory
+- Name canonical UUID and board dispatch owners
+- Report all gate failures and preserve mutation fail-fast
+- Witness the pane shell before reading its cwd; run the list fixture under perl (#297)
+- Add advisory just pre and the lane-lock recipe
+- Serialize lane-lock releases and reject leading-zero waits
+- Anchor lane-lock release to the directory it checked
+- Add [prompt] spawn_instructions, pointer line for workers
+- Freeze fleet read transcripts
+- Move SocketPaths into fleet_read
+- Read the source view with syn instead of a hand-written item table
+- Optimise the source view's parser crates in the dev profile
+- Move the fleet world read into fleet_read
+- Point fleet consumers at fleet_read
+- Add the on-demand live harness smoke (just harness-smoke)
+- Require Codex registration turns to end
+- End the codex registration turn instead of telling it to wait
+- Preserve historical Codex setup turns
+- Keep hiding the retired codex setup turn on the board
+- The global config is not its own local override from HOME
+- Mark a seat whose pane runs a different harness than its records
+- Show the configured client beside the model on each Agents row
+- State the mutation doctrine for product slices and campaigns
+- Satisfy clippy in list_harness_spec
+- Make the claim an exclusive create of the owner line
+- Add an on-demand Ubuntu 26.04 arm64 Linux lane behind a proven stalling session bus
+- Split rust-linux-26 into a validated-host arm and a stalling-bus arm
+- Drop slice names and the fixed lane-lock hazard from the Linux lane notes
+- Split AGENTS.md into a startup contract and docs/reference/contract.md; reword the simplicity promise; guard the split
+- Pin that the live smoke gives the token as two whole halves
+- Give the live smoke token as two whole halves
+- Pin the arithmetic oracle for the live smoke (red)
+- Ask the live smoke for a sum instead of a joined word
+- Pin that a status row carrying the digits is never the answer (red)
+- Count only a row that is the answer alone
+- Pin that a ready timeout keeps a neutralised, bounded last frame (red)
+- Keep the last pane frame of a ready timeout in the report directory
+- Pin that every readiness wait publishes its last frame, an outer cut included (red)
+- Publish a readiness wait's frames as seen so an outer cut and the pre-send wait keep one
+- Pin the placeholder, the last good frame and a cut that no later pass can erase (red)
+- Publish a placeholder when a readiness wait begins and freeze the frame at the outer cut
+- Pin that answer and idle waits keep their last frame too (red)
+- Every wait on the pane keeps its last frame, the answer and idle waits too
+- Say a failed pane wait, not a ready timeout, where the kept frame is described
+- Pin that claude's clock-stamped answer row, as drawn live, is the answer (red)
+- Accept claude's clock-stamped answer row and the equation that gives the sum
+
 ## [v2026.10.173] - 2026-10-31
 - Make the adapter guard see every ToolKind variant
 - Read a fixture pane only from a successful tmux read
