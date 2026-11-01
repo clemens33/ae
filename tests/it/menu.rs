@@ -7959,6 +7959,13 @@ fn the_delegated_root_draws_declared_state_on_direct_terminal_bytes() {
     let project = scratch.join("project");
     let config = scratch.join("config");
     write_state_fixture_config(&project, &config);
+    // The chat pane reaches every client and prints this declaration itself, so
+    // DIRECTBYTES on the bystander's record names the menu only without a chat.
+    let without_chat = format!("{}chat = off\n", fixture_text(&config));
+    assert!(
+        fs::write(&config, without_chat).is_ok(),
+        "the chat-off config"
+    );
     let session = "state-direct";
     launch_ae_session(&socket, &scratch, &root, &project, &config, session);
     let own_id = listing_id(&socket, &scratch, session);
