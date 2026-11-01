@@ -39,6 +39,9 @@ mod peek_spec;
 mod read_spec;
 #[cfg(test)]
 mod records_spec;
+mod stats;
+#[cfg(test)]
+mod stats_spec;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -62,6 +65,8 @@ pub(super) enum Request {
     Records(Option<Box<RecordsAsk>>),
     /// An End just handed to its owner: watch for its result.
     Ending(Box<EndingAsk>),
+    /// The Statistics tab was first shown under this overlay generation.
+    Stats { generation: u64 },
 }
 
 /// What an open peek panel asks the reader to capture, every refresh: the
@@ -204,6 +209,11 @@ pub(super) enum Answer {
         name: String,
         line: String,
     },
+    /// One finished statistics scan for `generation`.
+    Stats {
+        generation: u64,
+        view: Box<crate::stats::View>,
+    },
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
     Pressure {
@@ -302,6 +312,8 @@ enum Job {
     Read(Box<ReadAsk>),
     Records(Box<RecordsAsk>),
     Peek(Box<PeekAsk>),
+    /// One step of the statistics scan.
+    Stats,
     Wait(Instant),
 }
 
@@ -371,6 +383,10 @@ pub(super) struct Reader {
     flight: Option<Flight>,
     /// The fleet's journals as last read.
     journals: Journals,
+    /// The open overlay's statistics scan, one source per job.
+    stats: Option<stats::Scan>,
+    /// The last fleet read proved every durable record.
+    scanned: bool,
     /// Sessions whose last stage read was answered: one still staging is due
     /// again at once, one whose read failed waits its tier.
     answered: BTreeSet<String>,
@@ -447,6 +463,8 @@ impl Reader {
             history: crate::quota::HistoryCache::default(),
             flight: None,
             journals: Journals::default(),
+            stats: None,
+            scanned: false,
             answered: BTreeSet::new(),
             pressure: BTreeMap::new(),
         }
@@ -498,6 +516,7 @@ impl Reader {
                 Job::Read(ask) => vec![self.read(&ask)],
                 Job::Records(ask) => vec![self.records(&ask)],
                 Job::Peek(ask) => vec![self.peek(&ask)],
+                Job::Stats => self.stats_step().into_iter().collect(),
                 Job::Wait(until) => {
                     match asks.recv_timeout(until.saturating_duration_since(Instant::now())) {
                         Ok(request) => self.take(request),
@@ -574,7 +593,13 @@ impl Reader {
                 self.endings.retain(|held| held.name != ask.name);
                 self.endings.push(*ask);
             }
+            Request::Stats { .. } => {}
         }
+    }
+
+    /// One step of the statistics scan.
+    fn stats_step(&mut self) -> Option<Answer> {
+        None
     }
 
     /// Whether session `name` has a console to read through.

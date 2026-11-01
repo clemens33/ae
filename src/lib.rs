@@ -98,6 +98,9 @@ pub mod shape;
 pub mod shim;
 pub mod spawn;
 pub mod state;
+pub mod stats;
+#[cfg(test)]
+mod stats_fixture;
 pub mod store;
 pub mod teardown;
 pub mod telegram;

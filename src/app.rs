@@ -107,6 +107,8 @@ mod select_spec;
 mod settings;
 #[cfg(test)]
 mod stablesplit_spec;
+#[cfg(test)]
+mod stats_spec;
 mod tty;
 pub mod upgrade;
 #[cfg(test)]
@@ -786,6 +788,7 @@ impl App {
                     self.settings_bodies.live_seats = Some(seats);
                 }
             }
+            Answer::Stats { .. } => {}
             Answer::Core(seen) => self.upgrade = seen,
             Answer::Handover { view, at } => {
                 self.keep = (!self.touched).then_some(Keep { view, at });
@@ -1235,6 +1238,9 @@ impl App {
             };
         }
     }
+
+    /// Ask the reader for statistics.
+    fn ask_stats(&mut self) {}
 
     /// Close the overlay and tell the reader to stop reading for it. It
     /// always tells: the model may already hold the close the key caused.
@@ -5024,7 +5030,7 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             app.show();
             Some(true)
         }
-        model::Act::Redraw => Some(true),
+        model::Act::Redraw | model::Act::StatsScope => Some(true),
         model::Act::Compose => {
             app.write(true);
             Some(true)
@@ -7382,6 +7388,7 @@ mod tests {
                 | loader::Request::Read(_)
                 | loader::Request::Records(_)
                 | loader::Request::Ending(_)
+                | loader::Request::Stats { .. }
                 | loader::Request::Settings { .. } => None,
             })
             .collect();
@@ -7621,6 +7628,7 @@ mod tests {
                     | loader::Request::Read(_)
                     | loader::Request::Records(_)
                     | loader::Request::Ending(_)
+                    | loader::Request::Stats { .. }
                     | loader::Request::Settings { .. } => None,
                 })
                 .collect()
@@ -7652,6 +7660,7 @@ mod tests {
                 | loader::Request::Read(_)
                 | loader::Request::Records(_)
                 | loader::Request::Ending(_)
+                | loader::Request::Stats { .. }
                 | loader::Request::Writing(_) => None,
             })
             .collect()
@@ -7687,6 +7696,7 @@ mod tests {
                     | loader::Request::Read(_)
                     | loader::Request::Records(_)
                     | loader::Request::Ending(_)
+                    | loader::Request::Stats { .. }
                     | loader::Request::Writing(_) => String::new(),
                 })
                 .collect()
@@ -7790,6 +7800,8 @@ mod tests {
             SettingsTab::Accounts,
             "digit 6 shows the sixth tab"
         );
+        assert!(settings_key(&mut app, &Key::Tab, at).expect("statistics"));
+        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Statistics);
         assert!(settings_key(&mut app, &Key::Tab, at).expect("wraps"));
         assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Quota);
         assert!(settings_key(&mut app, &Key::Text(b"?".to_vec()), at).is_some());

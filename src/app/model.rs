@@ -95,6 +95,8 @@ fn letter(byte: u8) -> Option<Key> {
 pub enum Act {
     None,
     Redraw,
+    /// The Statistics tab's scope flips; the body lives in the App.
+    StatsScope,
     Select(String),
     Compose,
     /// Open the focused seat's pane.
@@ -158,6 +160,8 @@ pub(crate) enum SettingsTab {
     Keys,
     /// The existing fleet snapshot, grouped by account.
     Accounts,
+    /// Recorded worker spawns, from retained journals.
+    Statistics,
 }
 
 /// The open settings overlay: its tab, how far its body scrolled, the body
@@ -670,7 +674,7 @@ impl Model {
                     SettingsTab::About => SettingsTab::Instructions,
                     SettingsTab::Instructions => SettingsTab::Keys,
                     SettingsTab::Keys => SettingsTab::Accounts,
-                    SettingsTab::Accounts => SettingsTab::Quota,
+                    SettingsTab::Accounts | SettingsTab::Statistics => SettingsTab::Quota,
                 })
             }
             Key::Digit(1) => self.show_settings_tab(SettingsTab::Quota),

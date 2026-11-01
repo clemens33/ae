@@ -125,6 +125,21 @@ pub(crate) enum InstructionsView {
     Ready(Protocol),
 }
 
+/// Which scope the Statistics tab shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum StatsScope {
+    #[default]
+    All,
+    ThisSession,
+}
+
+/// The Statistics tab's body: both scopes once read, and which one is shown.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct StatsBody {
+    pub(crate) scope: StatsScope,
+    pub(crate) view: Option<Box<crate::stats::View>>,
+}
+
 /// Everything the overlay draws. Cold until the first answer lands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettingsBodies {
@@ -140,6 +155,7 @@ pub(crate) struct SettingsBodies {
     pub(crate) config: ConfigView,
     pub(crate) about: Option<AboutFacts>,
     pub(crate) instructions: InstructionsView,
+    pub(crate) stats: StatsBody,
 }
 
 impl Default for SettingsBodies {
@@ -151,6 +167,7 @@ impl Default for SettingsBodies {
             config: ConfigView::Loading,
             about: None,
             instructions: InstructionsView::Loading,
+            stats: StatsBody::default(),
         }
     }
 }

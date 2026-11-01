@@ -2302,7 +2302,7 @@ pub(crate) fn paint_settings(
         SettingsTab::About => 2,
         SettingsTab::Instructions => 3,
         SettingsTab::Keys => 4,
-        SettingsTab::Accounts => 5,
+        SettingsTab::Accounts | SettingsTab::Statistics => 5,
     };
     let titles: usize = SETTINGS_TABS
         .iter()
@@ -3032,6 +3032,7 @@ fn settings_body(
             || vec![("loading".to_owned(), dim)],
             |seats| live_seat_rows(seats, paint, width),
         ),
+        SettingsTab::Statistics => Vec::new(),
     };
     // Both snapshots keep their refresh verdict; seats also carry fleet age.
     if matches!(tab, SettingsTab::Quota | SettingsTab::Accounts)
@@ -3456,6 +3457,8 @@ mod accounts_spec;
 
 #[cfg(test)]
 mod seatjoin_spec;
+#[cfg(test)]
+mod stats_spec;
 
 #[cfg(test)]
 mod tests {
