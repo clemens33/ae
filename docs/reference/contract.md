@@ -8,6 +8,8 @@ src/                — Rust sources. main.rs thin (argv in, exit code out); lib
                       directory of submodules), hold everything testable. theme.rs is PURE:
                       the palettes, the seven marks and every tmux format ae draws a session with.
                       birth.rs is the worker birth family: its journal wire and one reader.
+                      stats.rs is the Statistics tab's pure fold over journal bytes, fuzzed as
+                      `stats_fold`; src/app/loader/stats.rs is its stepped, bounded read.
                       tool.rs::BoardSpec is the board's one per-tool read decision
                       (stream, export or unsupported). fleet_read.rs owns one fleet read:
                       the socket proof cache, discovery and the snapshot's assembly

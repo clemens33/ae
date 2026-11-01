@@ -546,6 +546,8 @@ struct App {
     quota_failed: bool,
     /// The generation the next open mints; answers pin to the open one.
     settings_generation: u64,
+    /// The open generation that already asked for statistics.
+    stats_asked: Option<u64>,
     /// The open peek panel's captures, and the generation the next open mints.
     peek: PeekPane,
     peek_generation: u64,
@@ -702,6 +704,7 @@ impl App {
             quota_at: None,
             quota_failed: false,
             settings_generation: 0,
+            stats_asked: None,
             peek: PeekPane::default(),
             peek_generation: 0,
             reader: ReaderPane::default(),
@@ -788,7 +791,7 @@ impl App {
                     self.settings_bodies.live_seats = Some(seats);
                 }
             }
-            Answer::Stats { .. } => {}
+            Answer::Stats { generation, view } => self.stats_landed(generation, view),
             Answer::Core(seen) => self.upgrade = seen,
             Answer::Handover { view, at } => {
                 self.keep = (!self.touched).then_some(Keep { view, at });
@@ -1239,8 +1242,40 @@ impl App {
         }
     }
 
-    /// Ask the reader for statistics.
-    fn ask_stats(&mut self) {}
+    /// What the overlay owes before its frame.
+    fn settings_due(&mut self) {
+        self.spell_kept();
+        self.ask_stats();
+    }
+
+    /// Ask the reader for statistics, once an open, on the first frame the
+    /// tab shows: no other tab, and no later frame, reads a journal for it.
+    fn ask_stats(&mut self) {
+        let shown = self.model.settings().filter(|open| {
+            open.tab == model::SettingsTab::Statistics && self.stats_asked != Some(open.generation)
+        });
+        if let Some(open) = shown {
+            self.stats_asked = Some(open.generation);
+            if let Some(ask) = &self.ask {
+                let _ = ask.send(Request::Stats {
+                    generation: open.generation,
+                });
+            }
+        }
+    }
+
+    /// A finished scan, for the open it was asked for and no other.
+    fn stats_landed(&mut self, generation: u64, view: Box<crate::stats::View>) {
+        if self.model.settings_generation(generation) {
+            self.settings_bodies.stats.view = Some(view);
+        }
+    }
+
+    /// Show the other scope of the read already held.
+    fn flip_stats_scope(&mut self) {
+        let stats = &mut self.settings_bodies.stats;
+        stats.scope = stats.scope.flip();
+    }
 
     /// Close the overlay and tell the reader to stop reading for it. It
     /// always tells: the model may already hold the close the key caused.
@@ -3416,7 +3451,7 @@ impl App {
             self.model
                 .clamp_scroll(self.layout.max_scroll, self.layout.page_rows);
         }
-        self.spell_kept();
+        self.settings_due();
         if let Some(open) = self.model.settings() {
             self.layout.strip_for_settings();
             draw::paint_settings(
@@ -4889,9 +4924,7 @@ fn settings_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
     for key in model::browse_keys(key) {
         // The overlay branch returns no Quit, Select or Compose; a close
         // shows as the state it leaves behind, told below.
-        if app.model.key(key, &app.fleet, app.can_compose()) == model::Act::Redraw {
-            redraw = true;
-        }
+        redraw |= settings_act(app, key);
     }
     if !app.model.settings_open() {
         app.close_settings();
@@ -5005,15 +5038,25 @@ fn settings_byte(app: &mut App, byte: u8) -> bool {
     }
     let mut redraw = false;
     for key in model::browse_keys(&Key::Text(vec![byte])) {
-        if app.model.key(key, &app.fleet, app.can_compose()) == model::Act::Redraw {
-            redraw = true;
-        }
+        redraw |= settings_act(app, key);
     }
     if !app.model.settings_open() {
         app.close_settings();
         redraw = true;
     }
     redraw
+}
+
+/// One decoded key with the overlay open: whether it changed the screen.
+fn settings_act(app: &mut App, key: model::Key) -> bool {
+    match app.model.key(key, &app.fleet, app.can_compose()) {
+        model::Act::Redraw => true,
+        model::Act::StatsScope => {
+            app.flip_stats_scope();
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Carry out a browse action from either keys or a frame's mouse target.
@@ -5030,7 +5073,11 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             app.show();
             Some(true)
         }
-        model::Act::Redraw | model::Act::StatsScope => Some(true),
+        model::Act::Redraw => Some(true),
+        model::Act::StatsScope => {
+            app.flip_stats_scope();
+            Some(true)
+        }
         model::Act::Compose => {
             app.write(true);
             Some(true)
@@ -6705,19 +6752,24 @@ mod tests {
                 .trim_end()
                 .to_owned()
         };
-        // Six titles: "Quota Config About Instructions Keys Clients", 39
-        // cells: wide gaps of three while all fit, else the packed ring abbrevi-
-        // ates below the 46-cell single-space fit (Quota Config About Instr
-        // Keys Clients), so a selected sixth tab stays visible, wide labels kept.
-        let wide = "  Quota   Config   About   Instructions   Keys   Clients";
-        let packed = "  Quota Config About Instr Keys Clients";
-        assert_eq!(row(&mut app, 45), packed);
-        assert_eq!(row(&mut app, 44), packed);
-        assert_eq!(row(&mut app, 56), wide);
-        assert_eq!(
-            row(&mut app, 46),
-            "  Quota Config About Instructions Keys Clients"
-        );
+        // Seven titles: 31 compact cells or 49 full cells, plus LEFT=2.
+        // Six gaps need 6 cells packed or 18 cells wide: boundaries 51/57/69.
+        let compact = "  Quota Conf About Instr Keys Cli Stats";
+        let compact_wide = "  Quota   Conf   About   Instr   Keys   Cli   Stats";
+        let full = "  Quota Config About Instructions Keys Clients Statistics";
+        let full_wide = "  Quota   Config   About   Instructions   Keys   Clients   Statistics";
+        for width in [40, 44, 45, 46, 50] {
+            assert_eq!(row(&mut app, width), compact, "width {width}");
+        }
+        for width in [51, 56] {
+            assert_eq!(row(&mut app, width), compact_wide, "width {width}");
+        }
+        for width in [57, 68] {
+            assert_eq!(row(&mut app, width), full, "width {width}");
+        }
+        for width in [69, 70] {
+            assert_eq!(row(&mut app, width), full_wide, "width {width}");
+        }
     }
 
     /// R4(f)/I5: Enter queues its ask behind the frame that names it; a key
@@ -7801,7 +7853,10 @@ mod tests {
             "digit 6 shows the sixth tab"
         );
         assert!(settings_key(&mut app, &Key::Tab, at).expect("statistics"));
-        assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Statistics);
+        assert_eq!(
+            app.model.settings().expect("open").tab,
+            SettingsTab::Statistics
+        );
         assert!(settings_key(&mut app, &Key::Tab, at).expect("wraps"));
         assert_eq!(app.model.settings().expect("open").tab, SettingsTab::Quota);
         assert!(settings_key(&mut app, &Key::Text(b"?".to_vec()), at).is_some());

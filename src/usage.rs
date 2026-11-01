@@ -1151,6 +1151,44 @@ fn read_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<RegularRea
     Ok(Some((bytes, metadata.modified().ok())))
 }
 
+/// A session meta for the statistics scan, under the same cap every reader of
+/// one uses.
+pub(crate) fn meta_bytes(
+    path: &Path,
+    budget: &mut Budget,
+) -> Result<Vec<u8>, crate::stats::SourceGap> {
+    bounded_bytes(path, SESSION_META_MAX_BYTES, budget)
+}
+
+/// One bounded whole file for the statistics scan, with [`read_regular`]'s own
+/// checks: a link or special file never opens, and the file read is the file
+/// checked. A file over `cap` and a spent budget both truncate there, so the
+/// size tells them apart.
+pub(crate) fn bounded_bytes(
+    path: &Path,
+    cap: u64,
+    budget: &mut Budget,
+) -> Result<Vec<u8>, crate::stats::SourceGap> {
+    use crate::stats::SourceGap;
+    match read_regular(path, cap, budget) {
+        Ok(Some((bytes, _))) => Ok(bytes),
+        Ok(None) => Err(SourceGap::Missing),
+        Err(Coverage::Truncated) => {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "a door: usage lstat names why a bounded read stopped"
+            )]
+            let size = std::fs::symlink_metadata(path).map(|meta| meta.len());
+            Err(if size.is_ok_and(|size| size > cap) {
+                SourceGap::Oversized
+            } else {
+                SourceGap::Budget
+            })
+        }
+        Err(_) => Err(SourceGap::Unreadable),
+    }
+}
+
 #[cfg(unix)]
 fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt as _;

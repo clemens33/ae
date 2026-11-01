@@ -133,6 +133,16 @@ pub(crate) enum StatsScope {
     ThisSession,
 }
 
+impl StatsScope {
+    /// The other scope.
+    pub(crate) const fn flip(self) -> Self {
+        match self {
+            Self::All => Self::ThisSession,
+            Self::ThisSession => Self::All,
+        }
+    }
+}
+
 /// The Statistics tab's body: both scopes once read, and which one is shown.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct StatsBody {

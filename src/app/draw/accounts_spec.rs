@@ -188,7 +188,7 @@ fn digit_six_and_tab_cycle_reach_accounts_keeping_one_through_five() {
         "digit 6"
     );
     assert!(m.settings_generation(7), "generation pinned across switch");
-    for _ in 0..5 {
+    for _ in 0..6 {
         let _ = m.key(Key::Tab, &fl, false);
     }
     assert_eq!(

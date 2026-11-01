@@ -510,7 +510,7 @@ fn is_settings(screen: &str) -> bool {
         .next()
         .is_some_and(|line| line.contains("Settings"))
         && screen.lines().nth(1).is_some_and(|line| {
-            ["Quota", "Config", "About"]
+            ["Quota", "Conf", "About"]
                 .iter()
                 .all(|tab| line.contains(tab))
         })

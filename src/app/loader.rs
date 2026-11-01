@@ -329,6 +329,10 @@ pub(super) struct SettingsPaths {
 }
 
 /// Everything the reader holds between reads.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts of one reader's state, no flag pair names a mode"
+)]
 pub(super) struct Reader {
     root: PathBuf,
     home: Option<String>,
@@ -576,6 +580,7 @@ impl Reader {
             Request::Reread(name) => drop(self.rereads.insert(name)),
             Request::Writing(binding) => self.writing = binding,
             Request::Settings { open, generation } => {
+                self.stats = None;
                 if open {
                     self.settings = Some((generation, None));
                     self.settings_full = false;
@@ -593,13 +598,31 @@ impl Reader {
                 self.endings.retain(|held| held.name != ask.name);
                 self.endings.push(*ask);
             }
-            Request::Stats { .. } => {}
+            Request::Stats { generation } => {
+                if matches!(self.settings, Some((open, _)) if open == generation) {
+                    self.stats = Some(self.stats_scan(generation));
+                }
+            }
         }
     }
 
-    /// One step of the statistics scan.
+    /// A scan of what this reader knows now, for the overlay's session.
+    fn stats_scan(&self, generation: u64) -> stats::Scan {
+        let this = (self.settings_session.as_ref())
+            .and_then(|name| self.ids.get(name))
+            .filter(|id| crate::archive::is_canonical_uuid(id))
+            .cloned();
+        let (root, dirs) = (self.root.clone(), self.dirs.clone());
+        stats::Scan::new(root, dirs, self.scanned, generation, this)
+    }
+
+    /// One step of the statistics scan: the answer when it is the last.
     fn stats_step(&mut self) -> Option<Answer> {
-        None
+        let scan = self.stats.as_mut()?;
+        let view = Box::new(scan.step()?);
+        let generation = scan.generation();
+        self.stats = None;
+        Some(Answer::Stats { generation, view })
     }
 
     /// Whether session `name` has a console to read through.
@@ -670,6 +693,9 @@ impl Reader {
             .find(|(_, due)| due.is_some_and(|due| due <= now))
         {
             return name.clone().map_or(Job::Fleet, Job::View);
+        }
+        if self.stats.is_some() {
+            return Job::Stats;
         }
         let until = candidates
             .iter()
@@ -770,6 +796,7 @@ impl Reader {
         );
         let lost = |source: &FailedSource| !matches!(source, FailedSource::Server(_));
         read.scanned = !snapshot.incomplete.iter().any(lost);
+        self.scanned = read.scanned;
         self.fleet_at = Some(Instant::now());
         self.dirs.clone_from(&read.dirs);
         self.ids.clone_from(&read.ids);

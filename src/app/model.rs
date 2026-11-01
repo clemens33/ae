@@ -674,7 +674,8 @@ impl Model {
                     SettingsTab::About => SettingsTab::Instructions,
                     SettingsTab::Instructions => SettingsTab::Keys,
                     SettingsTab::Keys => SettingsTab::Accounts,
-                    SettingsTab::Accounts | SettingsTab::Statistics => SettingsTab::Quota,
+                    SettingsTab::Accounts => SettingsTab::Statistics,
+                    SettingsTab::Statistics => SettingsTab::Quota,
                 })
             }
             Key::Digit(1) => self.show_settings_tab(SettingsTab::Quota),
@@ -683,6 +684,14 @@ impl Model {
             Key::Digit(4) => self.show_settings_tab(SettingsTab::Instructions),
             Key::Digit(5) => self.show_settings_tab(SettingsTab::Keys),
             Key::Digit(6) => self.show_settings_tab(SettingsTab::Accounts),
+            Key::Digit(7) => self.show_settings_tab(SettingsTab::Statistics),
+            Key::Mode
+                if self
+                    .settings
+                    .is_some_and(|open| open.tab == SettingsTab::Statistics) =>
+            {
+                Act::StatsScope
+            }
             Key::Up => self.settings_scroll_by(-1),
             Key::Down => self.settings_scroll_by(1),
             Key::PageUp => self.settings_page_by(false),

@@ -337,7 +337,7 @@ fn is_settings(screen: &str) -> bool {
         .next()
         .is_some_and(|line| line.contains("Settings"))
         && screen.lines().nth(1).is_some_and(|line| {
-            ["Quota", "Config", "About"]
+            ["Quota", "Conf", "About"]
                 .iter()
                 .all(|name| line.contains(name))
         })
@@ -412,7 +412,7 @@ fn settings_mouse_tabs_show_their_bodies_with_icons_and_theme_on_or_off() {
         rig.wait(&pane, WAIT, "minimum tab frame drawn", |s| {
             is_settings(s) && s.lines().count() == 8
         });
-        rig.tab(&pane, "Config", "session:");
+        rig.tab(&pane, "Conf", "session:");
         rig.tab(&pane, "About", "tmux");
     }
 }

@@ -10,11 +10,51 @@
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::event_text::{self, extract};
 use crate::meta;
 use crate::state::EXIT_FAILED;
+
+/// One kept archive as a retained-evidence reader sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeptArchive {
+    pub(crate) id: String,
+    pub(crate) path: PathBuf,
+    /// A publisher or a purge holds its claim: its tree is not settled.
+    pub(crate) claimed: bool,
+}
+
+/// Every kept archive under `root`, sorted, unvalidated: a candidate that is no
+/// directory stays listed so that [`validated_journal`] refuses it.
+pub(crate) fn kept_archives(root: &Path) -> Result<Vec<KeptArchive>, String> {
+    let archive = root.join("archive");
+    if matches!(
+        store::require_real_root(&archive, false)?,
+        store::RootState::Absent
+    ) {
+        return Ok(Vec::new());
+    }
+    let entries = store::read_dir(&archive).map_err(|why| why.to_string())?;
+    let mut kept: Vec<KeptArchive> = entries
+        .into_iter()
+        .filter_map(|path| {
+            let id = path.file_name()?.to_str()?.to_owned();
+            is_canonical_uuid(&id).then_some(())?;
+            let claim = store::symlink_meta(&store::claim_path(&archive, &id));
+            let claimed = !matches!(claim, Err(why) if why.kind() == io::ErrorKind::NotFound);
+            Some(KeptArchive { id, path, claimed })
+        })
+        .collect();
+    kept.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(kept)
+}
+
+/// The journal of the archive at `path`, once its whole tree proves valid.
+pub(crate) fn validated_journal(path: &Path, id: &str) -> Result<PathBuf, String> {
+    store::validate_tree(path, id)?;
+    Ok(path.join(crate::store::EVENTS))
+}
 
 /// Read the archive index without inspecting tmux or making a session runnable.
 pub(crate) fn ended(root: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Result<u8> {

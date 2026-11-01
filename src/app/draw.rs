@@ -33,6 +33,7 @@ use crate::theme::{Look, Mark, Palette};
 use crate::time::Timestamp;
 
 mod accounts_summary;
+mod stats_body;
 
 /// Everything one frame draws.
 #[derive(Debug, Clone, Copy)]
@@ -2262,16 +2263,17 @@ fn tail(
 /// The overlay's title row.
 const SETTINGS_TITLE: &str = "Settings";
 /// The tabs in draw order.
-const SETTINGS_TABS: [&str; 6] = [
+const SETTINGS_TABS: [&str; 7] = [
     "Quota",
     "Config",
     "About",
     "Instructions",
     "Keys",
     "Clients",
+    "Statistics",
 ];
-/// All six targets stay reachable on the smallest pane.
-const SETTINGS_SHORT_TABS: [&str; 6] = ["Quota", "Config", "About", "Instr", "Keys", "Clients"];
+/// All seven targets stay reachable on the smallest pane.
+const SETTINGS_SHORT_TABS: [&str; 7] = ["Quota", "Conf", "About", "Instr", "Keys", "Cli", "Stats"];
 /// The clickable close label, right-aligned on the title row.
 const SETTINGS_CLOSE: &str = "Esc close";
 /// Plain-text links; no OSC 8 in this slice.
@@ -2302,7 +2304,8 @@ pub(crate) fn paint_settings(
         SettingsTab::About => 2,
         SettingsTab::Instructions => 3,
         SettingsTab::Keys => 4,
-        SettingsTab::Accounts | SettingsTab::Statistics => 5,
+        SettingsTab::Accounts => 5,
+        SettingsTab::Statistics => 6,
     };
     let titles: usize = SETTINGS_TABS
         .iter()
@@ -2328,6 +2331,7 @@ pub(crate) fn paint_settings(
                 Hit::SettingsTab(SettingsTab::Instructions),
                 Hit::SettingsTab(SettingsTab::Keys),
                 Hit::SettingsTab(SettingsTab::Accounts),
+                Hit::SettingsTab(SettingsTab::Statistics),
             ],
             close: (SETTINGS_CLOSE, Hit::SettingsClose),
             selected,
@@ -3032,7 +3036,7 @@ fn settings_body(
             || vec![("loading".to_owned(), dim)],
             |seats| live_seat_rows(seats, paint, width),
         ),
-        SettingsTab::Statistics => Vec::new(),
+        SettingsTab::Statistics => stats_body::rows(&bodies.stats, paint, width),
     };
     // Both snapshots keep their refresh verdict; seats also carry fleet age.
     if matches!(tab, SettingsTab::Quota | SettingsTab::Accounts)
@@ -3201,8 +3205,9 @@ const READER_KEYS: [(&str, &str); 9] = [
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; nothing is typed or written"),
 ];
-const SETTINGS_KEYS: [(&str, &str); 10] = [
-    ("Tab 1-6", "show that tab"),
+const SETTINGS_KEYS: [(&str, &str); 11] = [
+    ("Tab 1-7", "show that tab"),
+    ("m", "Statistics: all retained or this session"),
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
     ("?", "show these keys"),

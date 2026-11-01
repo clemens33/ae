@@ -804,7 +804,7 @@ reader. Dragging over a link selects and copies the visible text, as ever.
 `,` opens the read-only Settings overlay over the whole pane, as does the
 gear (`*` with `icons = off`) at the hint row's right end — the gear also
 while writing, where `,` stays draft text; `Esc`, `q` or `,` closes it, `^C`
-quits. While open the overlay owns every key and click: `Tab`, `1`-`6` and a
+quits. While open the overlay owns every key and click: `Tab`, `1`-`7` and a
 click on a tab title switch tabs, a click on the drawn `Esc close` label or on
 the gear closes it like `Esc`, `j` / `k` and `↓` / `↑` scroll a line, the
 wheel three rows per notch, `PgUp` / `PgDn` a page, everything else is
@@ -848,8 +848,32 @@ profile, model, effort, observed activity and declared state distinct. Busy rows
 use the working color; unknown activity is dim, account gaps use the stale color.
 The text keeps its meaning with the theme off. Narrow panes clip each row with
 an omission mark and omit the column header; the tab titles shorten to keep all
-six clickable. Unknown accounts, unknown liveness, an incomplete snapshot and
+seven clickable. Unknown accounts, unknown liveness, an incomplete snapshot and
 the snapshot age remain visible. Quota contains the quota table alone.
+
+Statistics, the seventh tab (`7`), counts recorded worker spawns from the
+journals retained in this state root: live sessions and validated kept
+archives, read by the one background reader, one source per job, on the first
+frame the tab shows and once per open. `m` switches the same read between All
+retained and This session, the session Settings opened on; a session with no
+session id shows nothing rather than borrow All retained. One spawn is one
+`worker-birth` certificate, or one linked `spawn` whose certificate is lost,
+keyed by session id and birth id, so a journal seen live and archived, or under
+two names, counts once; a resume, a relaunch or a reseat writes none. A `spawn`
+with no link is legacy: one spawn of unknown route, and the total is then a
+lower bound. Harness, Client, Model + effort and Joint show the configured launch
+selection as resolved at spawn. `none set` is no flag in the command, never a
+claim about the model the harness chose; `direct` is no `[clients]` label, a
+route and not an account; `unproved` is a command that proves neither a value
+nor an absence; `unknown` is no trusted record. No current meta or profile fills
+a cell. `Coverage: complete` means every source was read and every record
+trusted; otherwise `Partial` names the range, and each gap names its source: a
+missing, oversized, invalid or claimed source, a malformed or damaged record, a
+lost certificate, a conflict. An unproved flag and a live seat with no birth are
+notes, not gaps in coverage. One scan reads at most 512 sources, 256 MiB, and
+4 MiB of a journal, and says so past either. It keeps no store: a purge or a
+removed archive removes those spawns from the count.
+
 Quota and Clients show retained values at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replace them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. The existing snapshots refresh while Settings is open; config, about and instructions read
 once per open. A torn config shows one honest row naming the file. The
 Instructions head states the residual below: this is today's render, not what

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::stats::{LIMITS, Limits, Scan};
 use super::{Answer, Job, Reader, Request};
@@ -366,17 +366,21 @@ fn loader_cancels_within_one_source_step_and_never_leaks_a_generation() {
     assert_eq!(generation, 2);
     assert_eq!(view.all.total, 2);
     assert!(matches!(view.this, ThisSession::Ready(_)));
+    let now = Instant::now();
     reader.settings = Some((
         2,
         Some(
-            Instant::now()
-                .checked_sub(Duration::from_secs(3))
+            now.checked_sub(super::super::REFRESH)
                 .expect("fixture clock exceeds refresh interval"),
         ),
     ));
     assert!(reader.stats.is_none(), "completed scan removed");
     assert!(
-        !matches!(reader.next(Instant::now()), Job::Stats),
+        matches!(reader.next(now), Job::Settings),
+        "quota refresh is due"
+    );
+    assert!(
+        !matches!(reader.next(now), Job::Stats),
         "quota cadence never restarts stats"
     );
 }
@@ -408,7 +412,7 @@ fn a_pending_stats_scan_yields_to_existing_view_look_and_fleet_work() {
     reader.rereads.clear();
     reader.settings = None;
     assert!(
-        matches!(reader.next(now + Duration::from_secs(3)), Job::Fleet),
+        matches!(reader.next(now + super::super::REFRESH), Job::Fleet),
         "statistics never starves a due fleet read"
     );
 }

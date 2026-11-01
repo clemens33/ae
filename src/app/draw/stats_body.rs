@@ -1,0 +1,146 @@
+//! The Statistics tab's rows: one scope of a read already finished.
+
+use ratatui_core::style::{Modifier, Style};
+
+use super::{LEFT, Paint, drawn_cols, fit};
+use crate::app::settings::{StatsBody, StatsScope};
+use crate::board::terminal_text;
+use crate::console::wrap::wrap_in;
+use crate::stats::{Cell, Row, Scoped, ThisSession};
+
+/// A row's cells, as one label.
+const CELL_JOIN: &str = " · ";
+/// What every number on this tab counts.
+const EVIDENCE: &str = "Evidence: configured launch selection, resolved at spawn";
+const NONE_SET: &str = "none set is no flag, not no model.";
+const DIRECT: &str = "direct has no [clients] label: a route, not an account.";
+const RETENTION: &str = "Counts retained records in this state root. A purge or a removed archive removes them. No store is kept.";
+
+/// The rows of `body` at `width`.
+pub(super) fn rows(body: &StatsBody, paint: Paint, width: u16) -> Vec<(String, Style)> {
+    let dim = paint.fg(|p| p.dim);
+    let Some(view) = &body.view else {
+        return vec![("loading".to_owned(), dim)];
+    };
+    let mut page = Page {
+        rows: Vec::new(),
+        text: paint.fg(|p| p.text),
+        dim,
+        room: width.saturating_sub(LEFT),
+    };
+    let (title, shown) = match (body.scope, &view.this) {
+        (StatsScope::All, _) => ("All retained  ·  m: This session", Some(&view.all)),
+        (StatsScope::ThisSession, ThisSession::Ready(scoped)) => {
+            ("This session  ·  m: All retained", Some(&**scoped))
+        }
+        (StatsScope::ThisSession, ThisSession::NoUuid) => {
+            ("This session  ·  m: All retained", None)
+        }
+    };
+    page.sentence(title, page.text.add_modifier(Modifier::BOLD));
+    match shown {
+        Some(scoped) => page.scoped(scoped),
+        None => page.sentence("This session has no session id: nothing to show", dim),
+    }
+    page.rows
+}
+
+/// The rows so far, and how they are drawn.
+struct Page {
+    rows: Vec<(String, Style)>,
+    text: Style,
+    dim: Style,
+    room: u16,
+}
+
+impl Page {
+    /// `line`, whole: a row that does not fit wraps.
+    fn sentence(&mut self, line: &str, style: Style) {
+        let wrapped = wrap_in(&terminal_text(line), usize::from(self.room), 0, 0);
+        self.rows.extend(
+            wrapped
+                .into_iter()
+                .map(|(lead, row)| (format!("{:lead$}{row}", ""), style)),
+        );
+    }
+
+    fn scoped(&mut self, scoped: &Scoped) {
+        let (text, dim) = (self.text, self.dim);
+        let total = scoped.total;
+        let range = scoped
+            .range
+            .as_ref()
+            .map(|(from, to)| format!("{from} .. {to}"));
+        self.sentence(&format!("Recorded worker spawns: {total}"), text);
+        self.sentence(
+            &format!(
+                "{}  ·  sources {} / {}",
+                range.as_deref().unwrap_or("no dated record"),
+                scoped.sources_read,
+                scoped.sources_total
+            ),
+            dim,
+        );
+        self.sentence(EVIDENCE, dim);
+        self.sentence(
+            &format!(
+                "Configured model: {} / {total} · effort: {} / {total}",
+                scoped.model_known, scoped.effort_known
+            ),
+            text,
+        );
+        if scoped.partial() {
+            let covers = range.as_deref().unwrap_or("nothing read");
+            self.sentence(&format!("Partial: covers {covers}"), text);
+        } else {
+            self.sentence("Coverage: complete", dim);
+        }
+        for gap in &scoped.gaps {
+            self.sentence(&gap.line(), dim);
+        }
+        if scoped.legacy > 0 {
+            let legacy = scoped.legacy;
+            self.sentence(&format!("Legacy spawns: {legacy}, a lower bound."), dim);
+        }
+        for (heading, table) in [
+            ("Harness", &scoped.harness),
+            ("Client", &scoped.client),
+            ("Model + effort", &scoped.model_effort),
+            ("Joint", &scoped.joint),
+        ] {
+            self.rows.push((String::new(), dim));
+            self.table(heading, table);
+        }
+        self.rows.push((String::new(), dim));
+        for note in [NONE_SET, DIRECT, RETENTION] {
+            self.sentence(note, dim);
+        }
+    }
+
+    /// One table: a label clips, and its count is always the last thing drawn.
+    fn table(&mut self, heading: &str, table: &[Row]) {
+        self.rows
+            .push((heading.to_owned(), self.text.add_modifier(Modifier::BOLD)));
+        let labels: Vec<String> = table.iter().map(label).collect();
+        let widest = labels.iter().map(|label| drawn_cols(label)).max();
+        for (row, label) in table.iter().zip(labels) {
+            let count = row.count.to_string();
+            let spare = u16::try_from(count.len() + 1).unwrap_or(self.room);
+            let room = self.room.saturating_sub(spare);
+            let clipped = fit(&label, "", room);
+            let pad = widest
+                .unwrap_or(0)
+                .min(room)
+                .saturating_sub(drawn_cols(&clipped));
+            let pad = usize::from(pad);
+            self.rows
+                .push((format!("{clipped}{:pad$} {count}", ""), self.text));
+        }
+    }
+}
+
+/// A row's cells as one label, safe to draw.
+fn label(row: &Row) -> String {
+    let words: Vec<&str> = row.cells.iter().map(Cell::word).collect();
+    terminal_text(&words.join(CELL_JOIN))
+}
