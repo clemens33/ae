@@ -23,9 +23,10 @@
 //! wrong reads FAIL naming the step. Never green by omission.
 //!
 //! WHY the answer cannot be forged by an echo. Turn 1 asks for the sum of two
-//! random four-digit numbers; the sum never occurs in the prompt, so the sum, as a
-//! whole run of digits, on a row AFTER the row echoing the prompt's marker is the
-//! model's answer. Turn 2 (after the resume) asks which number it replied with; its
+//! random four-digit numbers; the sum never occurs in the prompt, so a row that is
+//! the sum ALONE (bullet or box decoration aside, never a status row that merely
+//! holds the digits) AFTER the row echoing the prompt's marker is the model's
+//! answer. Turn 2 (after the resume) asks which number it replied with; its
 //! prompt holds no number, so a blank or stale conversation cannot pass, and
 //! ae's metadata and journal alone cannot pass either.
 //!
@@ -452,14 +453,15 @@ fn letters(mut seed: u64, len: usize) -> String {
     out
 }
 
-/// Whether `token` is on a row AFTER the last row echoing `marker`: the model's
-/// answer, not the echoed prompt. With no echo to anchor on, a token that was
-/// absent before the send (`baseline` zero) and is present now is the answer.
+/// Whether the answer `token`, ALONE on a row, stands AFTER the last row echoing
+/// `marker`: the model's answer, not the echoed prompt and not a status row that
+/// happens to hold the same digits. With no echo to anchor on, an answer row that
+/// was absent before the send (`baseline` zero) and is present now is the answer.
 fn answered(capture: &str, marker: &str, token: &str, baseline: usize) -> bool {
     let rows: Vec<&str> = capture.lines().collect();
     match rows.iter().rposition(|row| row.contains(marker)) {
-        Some(at) => rows[at + 1..].iter().any(|row| holds(row, token)),
-        None => baseline == 0 && holds(capture, token),
+        Some(at) => rows[at + 1..].iter().any(|row| is_answer_row(row, token)),
+        None => baseline == 0 && answer_rows(capture, token) > 0,
     }
 }
 
@@ -493,28 +495,24 @@ fn turn2_prompt(marker: &str) -> String {
     )
 }
 
-/// How often `token` stands in `capture` as a whole run: not glued to a letter or a
-/// digit on either side, so 6912 is not found inside 16912.
-fn count(capture: &str, token: &str) -> usize {
-    capture
-        .match_indices(token)
-        .filter(|&(at, _)| {
-            let before = capture[..at].chars().next_back();
-            let after = capture[at + token.len()..].chars().next();
-            !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
-        })
-        .count()
+/// Whether `row` is the answer `token` and nothing else: only whitespace, a bullet, a
+/// prompt mark or a box edge around it, and at most a closing full stop. A status or
+/// footer row that merely holds the same digits ("6912 tokens", a context count) is
+/// not an answer, and neither is a number glued to other text.
+fn is_answer_row(row: &str, token: &str) -> bool {
+    const DECORATION: &[char] = &[
+        '•', '●', '⏺', '◦', '○', '▪', '▌', '│', '┃', '>', '❯', '›', '|', '*',
+    ];
+    let bare = row.trim_matches(|c: char| c.is_whitespace() || DECORATION.contains(&c));
+    bare.strip_suffix('.').unwrap_or(bare) == token
 }
 
-/// Whether `row` holds `token` as a whole run.
-fn holds(row: &str, token: &str) -> bool {
-    count(row, token) > 0
-}
-
-/// How many rows of `capture` are the answer `token` and nothing else. (Skeleton: the
-/// whole-run count; the answer-shaped rule follows.)
+/// How many rows of `capture` are the answer `token` and nothing else.
 fn answer_rows(capture: &str, token: &str) -> usize {
-    count(capture, token)
+    capture
+        .lines()
+        .filter(|row| is_answer_row(row, token))
+        .count()
 }
 
 /// The version a tool printed, reduced to the ONE shape that cannot carry a path
