@@ -26,14 +26,16 @@ pub(crate) struct KeptArchive {
 }
 
 /// Every kept archive under `root`, sorted, unvalidated: a candidate that is no
-/// directory stays listed so that [`validated_journal`] refuses it.
+/// directory stays listed so that [`validated_journal`] refuses it. Only a root
+/// proved absent is an empty history; one that cannot be read is an error, never
+/// the same answer.
 pub(crate) fn kept_archives(root: &Path) -> Result<Vec<KeptArchive>, String> {
     let archive = root.join("archive");
-    if matches!(
-        store::require_real_root(&archive, false)?,
-        store::RootState::Absent
-    ) {
-        return Ok(Vec::new());
+    match store::symlink_meta(&archive) {
+        Ok(node) if node.is_dir() => {}
+        Ok(_) => return Err(format!("'{}' is no directory", archive.display())),
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(why) => return Err(why.to_string()),
     }
     let entries = store::read_dir(&archive).map_err(|why| why.to_string())?;
     let mut kept: Vec<KeptArchive> = entries
