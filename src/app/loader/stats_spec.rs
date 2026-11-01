@@ -11,6 +11,16 @@ use crate::stats::{Reason, SourceGap, ThisSession, View};
 use crate::stats_fixture as f;
 
 static SERIAL: AtomicU64 = AtomicU64::new(0);
+fn archive_content(session: &str) -> (String, String) {
+    (
+        format!(
+            "archive_id={session}\narchive_version=1\nsource_session=old-name\nhandover_count=0\nmemo_topic_count=0\npending_request_count=0\n"
+        ),
+        format!(
+            "- Archive ID: {session}\n## Handover (0)\n## Memo topics (0)\n## Unresolved requests (0)\n"
+        ),
+    )
+}
 struct Scratch(PathBuf);
 impl Scratch {
     fn new(tag: &str) -> Self {
@@ -36,12 +46,7 @@ impl Scratch {
             std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
                 .expect("archive directory mode");
         }
-        let meta = format!(
-            "archive_id={session}\narchive_version=1\nsource_session=old-name\nhandover_count=0\nmemo_topic_count=0\npending_request_count=0\n"
-        );
-        let digest = format!(
-            "- Archive ID: {session}\n## Handover (0)\n## Memo topics (0)\n## Unresolved requests (0)\n"
-        );
+        let (meta, digest) = archive_content(session);
         for (name, body) in [
             ("meta", meta.as_bytes()),
             ("digest.md", digest.as_bytes()),
@@ -415,4 +420,151 @@ fn a_pending_stats_scan_yields_to_existing_view_look_and_fleet_work() {
         matches!(reader.next(now + super::super::REFRESH), Job::Fleet),
         "statistics never starves a due fleet read"
     );
+}
+
+#[test]
+fn archive_meta_and_digest_each_obey_the_content_cap_before_the_journal_counts() {
+    for member in ["meta", "digest.md"] {
+        let root = Scratch::new("archive-content-cap");
+        let dir = root.archived(f::S, &cert(1));
+        let (meta, digest) = archive_content(f::S);
+        let mut padded = if member == "meta" { meta } else { digest };
+        padded.push_str(&" ".repeat(1024 - padded.len()));
+        assert_eq!(
+            padded.len(),
+            1024,
+            "valid matching headers plus inert padding"
+        );
+        std::fs::write(dir.join(member), padded).expect("own fixture member, mode preserved");
+        let normal = drain(&mut Scan::new(
+            root.0.clone(),
+            BTreeMap::new(),
+            true,
+            1,
+            None,
+        ));
+        assert_eq!(
+            normal.all.total, 1,
+            "{member}: padded archive is otherwise valid"
+        );
+        assert!(normal.all.gaps.is_empty(), "{member}: {normal:?}");
+        let capped = drain(&mut Scan::limited(
+            root.0.clone(),
+            BTreeMap::new(),
+            true,
+            2,
+            None,
+            Limits {
+                journal: 512,
+                ..LIMITS
+            },
+        ));
+        assert_eq!(
+            capped.all.total, 0,
+            "{member}: refused validation cannot count its journal"
+        );
+        assert_eq!((capped.all.sources_read, capped.all.sources_total), (0, 1));
+        assert!(
+            capped
+                .all
+                .gaps
+                .iter()
+                .any(|gap| gap.source.as_deref() == Some(f::S)
+                    && gap.reason == Reason::Source(SourceGap::Oversized))
+        );
+        assert!(capped.all.partial());
+        assert!(capped.all.balanced());
+    }
+}
+
+#[test]
+fn archive_validation_meta_digest_and_journal_draw_on_one_byte_budget() {
+    let root = Scratch::new("archive-content-budget");
+    let journal = cert(1);
+    root.archived(f::S, &journal);
+    let (meta, digest) = archive_content(f::S);
+    let meta_size = u64::try_from(meta.len()).expect("small fixture");
+    let digest_size = u64::try_from(digest.len()).expect("small fixture");
+    let journal_size = u64::try_from(journal.len()).expect("small fixture");
+    let entire = meta_size + digest_size + journal_size;
+    for (bytes, total) in [
+        (meta_size - 1, 0),
+        (meta_size, 0),
+        (meta_size + digest_size, 0),
+        (entire - 1, 0),
+        (entire, 1),
+    ] {
+        let view = drain(&mut Scan::limited(
+            root.0.clone(),
+            BTreeMap::new(),
+            true,
+            1,
+            None,
+            Limits { bytes, ..LIMITS },
+        ));
+        assert_eq!(view.all.total, total, "budget {bytes} of {entire}");
+        assert_eq!((view.all.sources_read, view.all.sources_total), (total, 1));
+        if total == 0 {
+            assert!(
+                view.all
+                    .gaps
+                    .iter()
+                    .any(|gap| gap.source.as_deref() == Some(f::S)
+                        && gap.reason == Reason::Source(SourceGap::Budget)),
+                "{view:?}"
+            );
+            assert!(view.all.partial());
+        } else {
+            assert!(
+                view.all.gaps.is_empty(),
+                "exact byte reserve is accepted: {view:?}"
+            );
+            assert!(!view.all.partial());
+        }
+        assert!(view.all.balanced());
+    }
+}
+
+#[test]
+fn archive_validation_content_charges_survive_the_next_source_step() {
+    let root = Scratch::new("archive-shared-budget");
+    let first = cert(1);
+    let second = f::birth(
+        f::T,
+        2,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    );
+    root.archived(f::S, &first);
+    root.archived(f::T, second.as_bytes());
+    let (meta_s, digest_s) = archive_content(f::S);
+    let (meta_t, digest_t) = archive_content(f::T);
+    let entire = u64::try_from(
+        meta_s.len() + digest_s.len() + first.len() + meta_t.len() + digest_t.len() + second.len(),
+    )
+    .expect("small fixture");
+    for (bytes, total) in [(entire - 1, 1), (entire, 2)] {
+        let view = drain(&mut Scan::limited(
+            root.0.clone(),
+            BTreeMap::new(),
+            true,
+            1,
+            None,
+            Limits { bytes, ..LIMITS },
+        ));
+        assert_eq!(view.all.total, total, "byte budget spans archive steps");
+        assert_eq!((view.all.sources_read, view.all.sources_total), (total, 2));
+        if total == 1 {
+            assert!(
+                view.all
+                    .gaps
+                    .iter()
+                    .any(|gap| gap.source.as_deref() == Some(f::T)
+                        && gap.reason == Reason::Source(SourceGap::Budget)),
+                "second source refused: {view:?}"
+            );
+        } else {
+            assert!(view.all.gaps.is_empty(), "{view:?}");
+        }
+        assert!(view.all.balanced());
+    }
 }

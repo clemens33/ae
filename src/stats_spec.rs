@@ -717,3 +717,128 @@ fn model_and_effort_numerators_follow_their_own_flag_state() {
         assert_sums(&view.all);
     }
 }
+
+fn live_notes(view: &View, source: &str) -> u64 {
+    view.all
+        .gaps
+        .iter()
+        .filter(|gap| gap.reason == Reason::LiveNoBirth && gap.source.as_deref() == Some(source))
+        .map(|gap| gap.count)
+        .sum()
+}
+
+#[test]
+fn routine_addressed_events_and_orphan_facts_do_not_prove_a_live_birth() {
+    let meta = format!("session_id={}\nseat.spawned.0=scout\n", f::S);
+    for (label, bytes) in [
+        ("empty", String::new()),
+        (
+            "said",
+            f::event(
+                "said",
+                ",\"target_slot\":\"spawned.0\",\"summary\":\"hello\"",
+            ),
+        ),
+        (
+            "resume",
+            f::event("resume", ",\"target_slot\":\"spawned.0\""),
+        ),
+        (
+            "retire",
+            f::event("retire", ",\"target_slot\":\"spawned.0\""),
+        ),
+        (
+            "orphan fact",
+            f::fact(f::S, 1, "brief-failed", ",\"target_slot\":\"spawned.0\""),
+        ),
+    ] {
+        let view = stats::fold(
+            vec![Source::live("own", meta.as_bytes(), Ok(bytes.into_bytes()))],
+            Some(f::S),
+        );
+        assert_eq!(view.all.total, 0, "{label}");
+        assert_eq!(live_notes(&view, "own"), 1, "{label} proves no birth");
+        assert!(!view.all.partial(), "a live-seat note costs no coverage");
+        assert_sums(&view.all);
+    }
+}
+
+#[test]
+fn only_own_birth_or_spawn_with_matching_name_and_optional_slot_proves_a_seat() {
+    let meta = format!("session_id={}\nseat.spawned.0=scout\n", f::S);
+    let cert = f::birth(
+        f::S,
+        1,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    );
+    let damaged = cert.replace("\"birth_effort\":\"high\"", "\"birth_effort\":7");
+    let newer = cert.replace("\"birth_v\":1", "\"birth_v\":2");
+    for (shape, record) in [
+        ("certificate", cert),
+        ("damaged certificate", damaged),
+        ("newer certificate", newer),
+        ("linked spawn", f::link(1)),
+        ("legacy spawn", f::legacy(f::PRIVATE)),
+    ] {
+        let no_slot = record.replace(",\"target_slot\":\"spawned.0\"", "");
+        let same_slot = no_slot.replace(
+            "\"target\":\"scout\"",
+            "\"target\":\"scout\",\"target_slot\":\"spawned.0\"",
+        );
+        let wrong_slot = same_slot.replace(
+            "\"target_slot\":\"spawned.0\"",
+            "\"target_slot\":\"spawned.7\"",
+        );
+        let old_name = same_slot.replace("\"target\":\"scout\"", "\"target\":\"retired-worker\"");
+        let no_name = same_slot.replace(",\"target\":\"scout\"", "");
+        for (identity, bytes, notes) in [
+            ("name and slot", same_slot, 0),
+            ("name without slot", no_slot, 0),
+            ("same name, wrong slot", wrong_slot, 1),
+            ("reused slot, old name", old_name, 1),
+            ("slot without name", no_name, 1),
+        ] {
+            let view = stats::fold(
+                vec![Source::live("own", meta.as_bytes(), Ok(bytes.into_bytes()))],
+                Some(f::S),
+            );
+            assert_eq!(view.all.total, 1, "{shape}, {identity}");
+            assert_eq!(live_notes(&view, "own"), notes, "{shape}, {identity}");
+            assert_sums(&view.all);
+            assert!(!format!("{view:?}").contains(f::PRIVATE));
+        }
+    }
+}
+
+#[test]
+fn another_live_source_or_archive_cannot_prove_the_current_live_seat() {
+    let meta = format!("session_id={}\nseat.spawned.0=scout\n", f::S);
+    let cert = f::birth(
+        f::S,
+        1,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    );
+    for archive in [false, true] {
+        let sources = || {
+            let other = if archive {
+                Source::archive(f::S, Ok(cert.as_bytes().to_vec()))
+            } else {
+                source("other-live", f::S, cert.as_bytes())
+            };
+            vec![Source::live("own", meta.as_bytes(), Ok(Vec::new())), other]
+        };
+        let view = stats::fold(sources(), Some(f::S));
+        assert_eq!(view.all.total, 1, "historical count is still retained");
+        assert_eq!(
+            live_notes(&view, "own"),
+            1,
+            "own journal has no birth evidence"
+        );
+        assert!(!view.all.partial());
+        let reversed = stats::fold(sources().into_iter().rev().collect(), Some(f::S));
+        assert_eq!(
+            view, reversed,
+            "source-local proof is enumeration independent"
+        );
+    }
+}
