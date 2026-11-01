@@ -100,11 +100,10 @@ fn seat_lines(text: &str) -> Vec<(String, String)> {
     let mut seats = Vec::new();
     for line in text.lines() {
         if !line.starts_with(' ') {
-            session = line
-                .split_whitespace()
+            line.split_whitespace()
                 .next()
                 .unwrap_or_default()
-                .to_owned();
+                .clone_into(&mut session);
         } else if line.contains(" · observed:") {
             seats.push((session.clone(), line.to_owned()));
         }
@@ -241,10 +240,10 @@ fn list_marks_a_seat_whose_pane_runs_another_harness_and_never_guesses() {
     );
 }
 
-fn proc(pid: u32, ppid: u32, comm: &str) -> ae::procs::Proc {
+fn proc(id: u32, parent: u32, comm: &str) -> ae::procs::Proc {
     ae::procs::Proc {
-        pid,
-        ppid,
+        pid: id,
+        ppid: parent,
         comm: comm.to_owned(),
     }
 }
