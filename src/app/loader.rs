@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
+pub(super) use self::ending::EndingAsk;
 use super::handover::{self, View};
 use super::journals::Journals;
 use super::menu::Dialog;
@@ -29,6 +30,7 @@ use crate::session_menu::{self, CellRow};
 use crate::time::Timestamp;
 use crate::{theme, tmux, transport};
 
+mod ending;
 #[cfg(test)]
 mod peek_spec;
 #[cfg(test)]
@@ -56,6 +58,8 @@ pub(super) enum Request {
     Read(Option<Box<ReadAsk>>),
     /// A card menu's Activity… or Memos… chosen, or abandoned (`None`): read once.
     Records(Option<Box<RecordsAsk>>),
+    /// An End just handed to its owner: watch for its result.
+    Ending(Box<EndingAsk>),
 }
 
 /// What an open peek panel asks the reader to capture, every refresh: the
@@ -192,6 +196,11 @@ pub(super) enum Answer {
     Records {
         generation: u64,
         rows: Vec<CellRow>,
+    },
+    /// What became of the End the app handed over for session `name`.
+    Ended {
+        name: String,
+        line: String,
     },
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
@@ -347,6 +356,8 @@ pub(super) struct Reader {
     read: Option<Box<ReadAsk>>,
     /// A card menu's dialog ask while it is unread: one shot, gone once answered.
     records: Option<Box<RecordsAsk>>,
+    /// The Ends handed to their owners and not heard of yet.
+    endings: Vec<EndingAsk>,
     /// The session the open overlay's instructions tab is for: the selection
     /// when it opened, never retargeted while it stays open.
     settings_session: Option<String>,
@@ -428,6 +439,7 @@ impl Reader {
             peek: None,
             read: None,
             records: None,
+            endings: Vec::new(),
             settings_session: None,
             agy: crate::quota::AgyCache::default(),
             history: crate::quota::HistoryCache::default(),
@@ -556,6 +568,10 @@ impl Reader {
             Request::Peek(ask) => self.peek = ask.map(|ask| (ask, None)),
             Request::Read(ask) => self.read = ask,
             Request::Records(ask) => self.records = ask,
+            Request::Ending(ask) => {
+                self.endings.retain(|held| held.name != ask.name);
+                self.endings.push(*ask);
+            }
         }
     }
 
@@ -733,6 +749,30 @@ impl Reader {
         self.rows = read.fleet.rows.iter().map(|row| row.name.clone()).collect();
         self.evict();
         answers.push(Answer::Fleet(read));
+        answers.extend(self.ended());
+        answers
+    }
+
+    /// What each pending End's records say now, carried by the fleet read: no
+    /// pending End, no read. A watch that told or was replaced is over.
+    fn ended(&mut self) -> Vec<Answer> {
+        let mut answers = Vec::new();
+        self.endings.retain(|ask| {
+            let events = crate::store::open(&ask.dir).events_source();
+            let gone = !crate::lifecycle::dir_exists(&ask.dir);
+            let uuid = sole_uuid(&ask.dir);
+            match ending::seen(ask, &events, gone, uuid.as_deref(), ask.asked.elapsed()) {
+                ending::Seen::Pending => true,
+                ending::Seen::Replaced => false,
+                ending::Seen::Told(line) => {
+                    answers.push(Answer::Ended {
+                        name: ask.name.clone(),
+                        line,
+                    });
+                    false
+                }
+            }
+        });
         answers
     }
 

@@ -17,6 +17,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -154,7 +155,7 @@ impl Rig {
         let dir = self.dir(name);
         fs::create_dir_all(&dir).unwrap();
         let mut meta = format!(
-            "session_id={uuid}\nmode=local\nwork_dir={}\nseat.main=lead\nprofile.main=cl\n\
+            "schema=2\nmeta_version=4\nsession={name}\nsession_id={uuid}\nmode=local\nwork_dir={}\nseat.main=lead\nprofile.main=cl\n\
              agent_bin.main=sh\ntmux_server_kind=socket\ntmux_server={}\n",
             self.root.display(),
             self.sock.display(),
@@ -170,11 +171,29 @@ impl Rig {
                 name,
                 "-n",
                 "main",
+                "-x",
+                "160",
+                "-y",
+                "50",
                 "sh",
                 "-c",
                 "while :; do sleep 1; done",
             ]);
             self.must_tmux(&["set-option", "-t", &format!("={name}:"), "@ae_session", "1"]);
+            self.must_tmux(&[
+                "set-environment",
+                "-t",
+                &format!("={name}"),
+                "AE_SESSION",
+                "1",
+            ]);
+            self.must_tmux(&[
+                "set-option",
+                "-t",
+                &format!("={name}:"),
+                "@ae_attn_rank",
+                "0",
+            ]);
             self.must_tmux(&[
                 "set-option",
                 "-t",
@@ -192,7 +211,7 @@ impl Rig {
                 &format!("v2;4102444800;60;lead:cl:working:{pane}:claude:Opus 4.7:high:"),
             ]);
             let pid = self.must_tmux(&["display-message", "-p", "-t", &pane, "#{pane_pid}"]);
-            meta.push_str(&format!("pane.main={pane}\npid.main={pid}\n"));
+            write!(meta, "pane.main={pane}\npid.main={pid}\n").unwrap();
         }
         fs::write(dir.join("meta"), meta).unwrap();
         fs::write(
@@ -839,7 +858,7 @@ fn missing_server(rig: &Rig) -> String {
     let meta = fs::read_to_string(&path)
         .unwrap()
         .replace(&rig.sock.display().to_string(), &missing);
-    fs::write(path, format!("{meta}created=1700000000\n")).unwrap();
+    fs::write(path, format!("{meta}started=1700000000\n")).unwrap();
     missing
 }
 
@@ -864,7 +883,7 @@ fn reboot_proof_is_rechecked_under_lock_before_a_stopped_end_writes() {
         let path = rig.dir("alpha").join("meta");
         let meta = fs::read_to_string(&path)
             .unwrap()
-            .replace("created=1700000000", "created=1800000000");
+            .replace("started=1700000000", "started=1800000000");
         fs::write(path, meta).unwrap();
         let before = snapshot(&rig.dir("alpha"));
         lock.unlock().unwrap();
@@ -916,7 +935,7 @@ fn reboot_end_question_explains_the_proof_and_keeps_cancel_default() {
     rig.plant("alpha", UUID, false);
     missing_server(&rig);
     rig.plant("running", OTHER, true);
-    let pane = rig.app_boot("running", false, Some(1700003600));
+    let pane = rig.app_boot("running", false, Some(1_700_003_600));
     rig.key(&pane, "z");
     rig.wait(&pane, "reboot stopped card revealed", |s| {
         s.contains("alpha")

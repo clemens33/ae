@@ -70,7 +70,8 @@ fn keyboard_menu_is_for_painted_selection_and_has_only_this_release_actions() {
         screen.contains("api"),
         "question/menu must name painted target"
     );
-    for future in ["Pin", "Unpin", "Resume", "End…", "End..."] {
+    assert!(screen.contains("End..."), "End action absent: {screen}");
+    for future in ["Pin", "Unpin", "Resume"] {
         assert!(
             !screen.contains(future),
             "future placeholder {future}: {screen}"
@@ -446,7 +447,7 @@ fn captured_question(app: &mut App, deadline: i64) -> crate::lifecycle::StopExpe
     }
     let card = match app.modal.take().expect("actual painted menu") {
         Modal::Menu(menu) => menu.card,
-        Modal::Question(_) | Modal::Records(_) => {
+        Modal::Question(_) | Modal::End(_) | Modal::Records(_) => {
             panic!("m unexpectedly constructed a question")
         }
     };
@@ -606,7 +607,7 @@ fn unattended_question(app: &mut App, deadline: i64) {
     keyed(app, b"m", Instant::now());
     let card = match app.modal.take().expect("actual painted menu") {
         Modal::Menu(menu) => menu.card,
-        Modal::Question(_) | Modal::Records(_) => {
+        Modal::Question(_) | Modal::End(_) | Modal::Records(_) => {
             panic!("m unexpectedly constructed a question")
         }
     };

@@ -1,6 +1,6 @@
 //! The session menu `ae app` opens on a card — `m` on the selection, a right
 //! press on any card — offering Start on a stopped session and Stop on a
-//! running one, the Stop question its `Stop…` asks, and the read-only
+//! running one, the questions its `Stop…` and `End…` ask, and the read-only
 //! Activity and Memos dialogs every card offers. Pure: what a card offers,
 //! what a key or press does, and how all of it is drawn. The app proves and
 //! acts; the reader thread reads.
@@ -20,14 +20,19 @@ use crate::console::input::Key;
 use crate::digest::Status;
 use crate::event_text::clip_head;
 use crate::lifecycle::StopExpectation;
+use crate::lifecycle::end::EndExpectation;
 use crate::session_menu::{self, CellRow};
 
 /// The Stop question's text width: its longest fixed line.
 const QUESTION_INNER: u16 = 48;
+/// A question's line about the app ending inside its own session.
+const HOME_LINE: &str = "This app runs in it: this app closes.";
 /// The fewest cells a dialog's text keeps before the window is too small.
 const DIALOG_INNER_MIN: u16 = 12;
 /// The question's two buttons, in their drawn order.
 const BUTTONS: [(Choice, &str); 2] = [(Choice::Cancel, "[ Cancel ]"), (Choice::Stop, "[ Stop ]")];
+/// The End question's two buttons, in their drawn order.
+const END_BUTTONS: [(Choice, &str); 2] = [(Choice::Cancel, "[ Cancel ]"), (Choice::End, "[ End ]")];
 
 /// What a frame drew of one session's card, frozen with it: a menu opened on
 /// that frame acts on this and on nothing a later read changed.
@@ -42,8 +47,7 @@ pub(super) struct Card {
     pub(super) refused: Option<String>,
     /// The session is stopped: the card offers Start, not Stop.
     pub(super) stopped: bool,
-    /// This app's own pane is in it: known once the Stop question read the
-    /// clients.
+    /// This app's own pane is in it: known once a question read it.
     pub(super) home: bool,
     /// The orchestrator: its menu offers nothing.
     pub(super) orchestrator: bool,
@@ -87,8 +91,8 @@ impl Card {
     pub(super) fn items(&self) -> &'static [Item] {
         match (self.orchestrator, self.stopped) {
             (true, _) => &[],
-            (false, true) => &[Item::Start, Item::Activity, Item::Memos],
-            (false, false) => &[Item::Stop, Item::Activity, Item::Memos],
+            (false, true) => &[Item::Start, Item::Activity, Item::Memos, Item::End],
+            (false, false) => &[Item::Stop, Item::Activity, Item::Memos, Item::End],
         }
     }
 
@@ -109,6 +113,8 @@ pub(super) enum Item {
     Activity,
     /// The session's latest memo per topic, read-only.
     Memos,
+    /// The End question.
+    End,
 }
 
 impl Item {
@@ -119,13 +125,14 @@ impl Item {
             Self::Stop => "Stop",
             Self::Activity => "Activity",
             Self::Memos => "Memos",
+            Self::End => "End",
         }
     }
 
-    /// The dialog this item opens: `None` for the two that act.
+    /// The dialog this item opens: `None` for the ones that act.
     pub(super) fn dialog(self) -> Option<Dialog> {
         match self {
-            Self::Start | Self::Stop => None,
+            Self::Start | Self::Stop | Self::End => None,
             Self::Activity => Some(Dialog::Activity),
             Self::Memos => Some(Dialog::Memos),
         }
@@ -140,6 +147,8 @@ impl Item {
             (Self::Activity, false) => "a  Activity...",
             (Self::Memos, true) => "o  Memos…",
             (Self::Memos, false) => "o  Memos...",
+            (Self::End, true) => "e  End…",
+            (Self::End, false) => "e  End...",
         }
     }
 }
@@ -174,6 +183,7 @@ impl Dialog {
 pub(super) enum Modal {
     Menu(Menu),
     Question(Question),
+    End(EndQuestion),
     Records(Records),
 }
 
@@ -228,6 +238,10 @@ impl Menu {
             }
             (Key::Text(_), b'o') => {
                 return (items.iter().find(|item| **item == Item::Memos))
+                    .map_or(Step::Kept, |&item| self.act(item));
+            }
+            (Key::Text(_), b'e') => {
+                return (items.iter().find(|item| **item == Item::End))
                     .map_or(Step::Kept, |&item| self.act(item));
             }
             (Key::Text(_), b'm' | b'q') => return Step::Close,
@@ -334,6 +348,45 @@ impl Question {
     }
 }
 
+/// The End question, with everything its answer proves captured. Inside tmux
+/// or not, this modal is the confirmation: no tmux client is asked or named.
+#[derive(Debug)]
+pub(super) struct EndQuestion {
+    pub(super) card: Card,
+    /// The whole expectation the End owner proves under its lock.
+    pub(super) expect: EndExpectation,
+    pub(super) focus: Choice,
+    /// When a frame showing it whole was written; `None` until then.
+    pub(super) shown_at: Option<Instant>,
+}
+
+impl EndQuestion {
+    /// The question `card`'s End… asks, `expect` captured: Cancel focused,
+    /// not yet on screen.
+    pub(super) fn new(card: Card, expect: EndExpectation) -> Self {
+        Self {
+            card,
+            expect,
+            focus: Choice::Cancel,
+            shown_at: None,
+        }
+    }
+
+    /// One key, or one `byte` of the typed run `key` is.
+    fn input(&mut self, key: &Key, byte: u8) -> Step {
+        let to = match (key, byte, self.focus) {
+            (Key::Text(_), b'y', _) | (Key::Enter, _, Choice::End) => return Step::Affirm,
+            (Key::Text(_), b'n' | b'q', _) | (Key::Enter, _, Choice::Cancel) => return Step::Close,
+            (Key::Text(_), b'e', _) | (Key::Left | Key::Right | Key::Tab, _, Choice::Cancel) => {
+                Choice::End
+            }
+            (Key::Text(_), b'c', _) | (Key::Left | Key::Right | Key::Tab, _, _) => Choice::Cancel,
+            _ => return Step::Kept,
+        };
+        refocus(&mut self.focus, to)
+    }
+}
+
 /// Move `focus` to `to`: `Kept` when it is there already.
 fn refocus<T: PartialEq>(focus: &mut T, to: T) -> Step {
     if *focus == to {
@@ -343,11 +396,12 @@ fn refocus<T: PartialEq>(focus: &mut T, to: T) -> Step {
     Step::Moved
 }
 
-/// The question's two answers.
+/// A question's answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Choice {
     Cancel,
     Stop,
+    End,
 }
 
 /// What one key or press did to the modal.
@@ -361,7 +415,7 @@ pub(super) enum Step {
     Close,
     /// The menu item, activated.
     Act(Item),
-    /// The question answered Stop.
+    /// The question answered Stop or End.
     Affirm,
 }
 
@@ -378,6 +432,7 @@ impl Modal {
         match self {
             Self::Menu(menu) => menu.shown_at,
             Self::Question(question) => question.shown_at,
+            Self::End(question) => question.shown_at,
             Self::Records(records) => records.shown_at,
         }
     }
@@ -388,6 +443,7 @@ impl Modal {
         let shown = match self {
             Self::Menu(menu) => &mut menu.shown_at,
             Self::Question(question) => &mut question.shown_at,
+            Self::End(question) => &mut question.shown_at,
             Self::Records(records) => &mut records.shown_at,
         };
         shown.get_or_insert(at);
@@ -398,6 +454,7 @@ impl Modal {
         match self {
             Self::Menu(_) => "menu",
             Self::Question(_) => "Stop question",
+            Self::End(_) => "End question",
             Self::Records(_) => "dialog",
         }
     }
@@ -415,6 +472,7 @@ impl Modal {
             let step = match self {
                 Self::Menu(menu) => menu.input(key, *byte),
                 Self::Question(question) => question.input(key, *byte),
+                Self::End(question) => question.input(key, *byte),
                 Self::Records(records) => records.input(key, *byte),
             };
             if step.ends() {
@@ -435,13 +493,19 @@ impl Modal {
             (Self::Menu(menu), false, Some(Hit::Item(at))) => {
                 (menu.card.items().get(*at)).map_or(Step::Kept, |item| menu.act(*item))
             }
-            (Self::Question(_), false, Some(Hit::Item(at))) => match BUTTONS.get(*at) {
-                Some((Choice::Stop, _)) => Step::Affirm,
-                Some((Choice::Cancel, _)) => Step::Close,
-                None => Step::Kept,
-            },
+            (Self::Question(_), false, Some(Hit::Item(at))) => answered(BUTTONS.get(*at)),
+            (Self::End(_), false, Some(Hit::Item(at))) => answered(END_BUTTONS.get(*at)),
             _ => Step::Close,
         }
+    }
+}
+
+/// What a press on a question's button `at` does.
+fn answered(at: Option<&(Choice, &str)>) -> Step {
+    match at {
+        Some((Choice::Stop | Choice::End, _)) => Step::Affirm,
+        Some((Choice::Cancel, _)) => Step::Close,
+        None => Step::Kept,
     }
 }
 
@@ -458,6 +522,7 @@ pub(super) fn paint(
     match modal {
         Modal::Menu(menu) => paint_menu(menu, paint, icons, buf, layout),
         Modal::Question(question) => paint_question(question, paint, buf, layout),
+        Modal::End(question) => paint_end_question(question, paint, buf, layout),
         Modal::Records(records) => paint_records(records, paint, buf, layout),
     }
 }
@@ -611,7 +676,6 @@ fn paint_question(
     buf: &mut Buffer,
     layout: &mut Layout,
 ) -> Result<(), String> {
-    let area = buf.area;
     let inner = QUESTION_INNER;
     let name = terminal_text(&question.card.name);
     let mut lines = vec![
@@ -622,12 +686,65 @@ fn paint_question(
         ),
     ];
     if question.card.home {
-        lines.push("This app runs in it: this app closes.".to_owned());
+        lines.push(HOME_LINE.to_owned());
     }
+    let asked = Asking {
+        word: "Stop",
+        name: &name,
+        lines: &lines,
+        buttons: &BUTTONS,
+        focus: question.focus,
+    };
+    paint_asking(&asked, paint, buf, layout)
+}
+
+/// The End question, centred over the frame above its keys row: what the
+/// frozen plan will do, in the words it was frozen with.
+fn paint_end_question(
+    question: &EndQuestion,
+    paint: Paint,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+) -> Result<(), String> {
+    let name = terminal_text(&question.card.name);
+    let mut lines = question.expect.lines();
+    if question.card.home {
+        lines.push(HOME_LINE.to_owned());
+    }
+    let asked = Asking {
+        word: "End",
+        name: &name,
+        lines: &lines,
+        buttons: &END_BUTTONS,
+        focus: question.focus,
+    };
+    paint_asking(&asked, paint, buf, layout)
+}
+
+/// One question to draw: its verb, the session it names, its lines and its
+/// buttons with the one focused.
+struct Asking<'a> {
+    word: &'a str,
+    name: &'a str,
+    lines: &'a [String],
+    buttons: &'a [(Choice, &'a str); 2],
+    focus: Choice,
+}
+
+/// A question's box, lines and buttons. `Err` names what did not fit.
+fn paint_asking(
+    asked: &Asking,
+    paint: Paint,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+) -> Result<(), String> {
+    let area = buf.area;
+    let inner = QUESTION_INNER;
+    let (word, lines) = (asked.word, asked.lines);
     let (wide, height) = (inner + 4, cells(lines.len()) + 4);
     if area.width < wide || area.height <= height {
         return Err(format!(
-            "too small for the Stop question (needs {wide}x{}, now {}x{})",
+            "too small for the {word} question (needs {wide}x{}, now {}x{})",
             height + 1,
             area.width,
             area.height
@@ -635,7 +752,10 @@ fn paint_question(
     }
     let x = (area.width - wide) / 2;
     let rect = Rect::new(x, (area.height - 1 - height) / 2, wide, height);
-    let title = format!(" Stop {}? ", clip_head(&name, usize::from(inner - 8)));
+    let title = format!(
+        " {word} {}? ",
+        clip_head(asked.name, usize::from(inner - 8))
+    );
     boxed(buf, rect, &title, paint);
     layout.overlay(buf, rect, Hit::Modal);
     let text = paint.fg(|p| p.text);
@@ -643,14 +763,15 @@ fn paint_question(
         put(buf, x + 2, rect.y + 1 + cells(place), line, inner, text);
     }
     let row = rect.bottom() - 2;
-    let span: u16 = BUTTONS
+    let span: u16 = asked
+        .buttons
         .iter()
         .map(|(_, label)| width(label) + 3)
         .sum::<u16>()
         - 3;
     let mut at = x + 2 + (inner - span) / 2;
-    for (place, (choice, label)) in BUTTONS.iter().enumerate() {
-        let style = if question.focus == *choice {
+    for (place, (choice, label)) in asked.buttons.iter().enumerate() {
+        let style = if asked.focus == *choice {
             paint.selected()
         } else {
             text

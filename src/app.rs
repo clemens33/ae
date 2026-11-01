@@ -43,7 +43,7 @@ use crate::session_menu::CellRow;
 use crate::time::Timestamp;
 use crate::{doors, theme, tmux, transport};
 
-use loader::{Answer, Binding, PeekAsk, ReadAsk, RecordsAsk, Request, Wake};
+use loader::{Answer, Binding, EndingAsk, PeekAsk, ReadAsk, RecordsAsk, Request, Wake};
 use peek::Body;
 
 #[cfg(test)]
@@ -795,6 +795,7 @@ impl App {
             } => self.peeked(generation, at, body),
             Answer::Read { generation, body } => self.read_landed(generation, body),
             Answer::Records { generation, rows } => self.records_landed(generation, rows),
+            Answer::Ended { name, line } => self.tell(&name, line),
             Answer::Pressure { name, id, pressure } => {
                 self.pressures.insert(name, (id, pressure));
             }
@@ -3689,8 +3690,8 @@ impl App {
     }
 
     /// `item` of the open menu: a dialog is asked of the reader; else its
-    /// card's refusal, else Start or the Stop question. The menu closes
-    /// either way, but for a dialog, which it waits on.
+    /// card's refusal, else Start or the Stop or End question. The menu
+    /// closes either way, but for a dialog, which it waits on.
     fn act(&mut self, item: menu::Item) {
         if let Some(dialog) = item.dialog() {
             return self.ask_records(item, dialog);
@@ -3712,6 +3713,13 @@ impl App {
             menu::Item::Stop => match self.question(card) {
                 Ok(question) => self.modal = Some(menu::Modal::Question(question)),
                 Err(line) => self.tell(&name, line),
+            },
+            menu::Item::End => match self.end_question(card) {
+                Ok(question) => self.modal = Some(menu::Modal::End(question)),
+                Err(why) => {
+                    let line = format!("refused: End {name}: {why}; nothing ended");
+                    self.tell(&name, line);
+                }
             },
             menu::Item::Activity | menu::Item::Memos => {}
         }
@@ -3890,6 +3898,88 @@ impl App {
         Ok(menu::Question::new(card, expect))
     }
 
+    /// The End question: the modal is the confirmation, inside tmux or not,
+    /// so what tmux and the record say of the session is frozen in it from
+    /// the server the record names, for the owner to prove under the lock.
+    fn end_question(&self, mut card: menu::Card) -> Result<menu::EndQuestion, String> {
+        let root = (self.root.as_ref()).ok_or("ae app has no state root to end under")?;
+        let (_, server) = self.recorded(&card.name, &card.uuid)?;
+        let deadline = Timestamp::now().epoch() + crate::session_menu::CONFIRM_WINDOW_SECS;
+        let expect = crate::lifecycle::end::EndExpectation::unattended(
+            root,
+            &card.name,
+            &card.uuid,
+            server.clone(),
+            card.stopped,
+            deadline,
+        )?;
+        if let Some(live) = expect.live_id() {
+            if card.stopped {
+                return Err("it was started since the menu was drawn".to_owned());
+            }
+            if card.id.as_ref().is_some_and(|painted| painted != live) {
+                return Err("its tmux session was replaced since the menu was drawn".to_owned());
+            }
+            card.home = self.runs_in(&server, live);
+        }
+        Ok(menu::EndQuestion::new(card, expect))
+    }
+
+    /// Whether this app's own pane is in the tmux session `id` on `server`.
+    fn runs_in(&self, server: &ServerId, id: &str) -> bool {
+        let (Some(own), Some(pane)) = (&self.server, &self.pane) else {
+            return false;
+        };
+        crate::fleet_read::SocketPaths::live().proven_same(own, server)
+            && transport::observe_pane_session_identity(own, pane)
+                .is_some_and(|session| session.id == id)
+    }
+
+    /// The End question answered End: its deadline and the record proven once
+    /// more against what it froze, never captured again, then the owner,
+    /// detached. The journal's length is taken first: the reader believes only
+    /// what is written past it, and only of the incarnation that was asked.
+    fn end(&self, question: &menu::EndQuestion) -> Result<String, String> {
+        let (expect, name) = (&question.expect, &question.card.name);
+        if Timestamp::now().epoch() > expect.deadline() {
+            return Err("the question expired - ask again".to_owned());
+        }
+        let root = (self.root.as_ref()).ok_or("ae app has no state root to end under")?;
+        let (dir, server) = self.recorded(name, expect.uuid())?;
+        if server != *expect.server() {
+            return Err("it is recorded on a different tmux server than the one the question was asked about".to_owned());
+        }
+        let position = match crate::store::open(&dir).events_source() {
+            crate::store::SourceRead::Absent => 0,
+            crate::store::SourceRead::Ready(bytes) => bytes.len(),
+            crate::store::SourceRead::Invalid(why) | crate::store::SourceRead::Unreadable(why) => {
+                return Err(format!("ae cannot read its journal: {why}"));
+            }
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let detach = |argv: &crate::lifecycle::DetachedArgv| (self.detach)(argv);
+        let code = crate::lifecycle::end::end_confirmed_via(
+            root, expect, name, detach, &mut out, &mut err,
+        )
+        .map_err(|why| why.to_string())?;
+        out.extend(err);
+        let line = String::from_utf8_lossy(&out).trim().to_owned();
+        if code != 0 {
+            return Err(line);
+        }
+        let ask = Box::new(EndingAsk {
+            name: name.clone(),
+            dir,
+            uuid: expect.uuid().to_owned(),
+            position,
+            asked: Instant::now(),
+        });
+        if let Some(tx) = &self.ask {
+            let _ = tx.send(Request::Ending(ask));
+        }
+        Ok(line)
+    }
+
     /// Start `card`'s stopped session outside tmux: the session resumed by name
     /// with nothing attached, detached from this app, once its record still
     /// names the incarnation the card was drawn from. No client moves.
@@ -3937,17 +4027,25 @@ impl App {
         Ok(format!("Starting '{}'.", card.name))
     }
 
-    /// The question answered Stop: its deadline, the record and the asking
+    /// A question answered yes. Stop: its deadline, the record and the asking
     /// client proven once more against what it froze, never captured again,
-    /// then the one guarded Stop owner, detached.
+    /// then the one guarded Stop owner, detached. End: [`App::end`].
     fn affirm(&mut self) {
-        let Some(menu::Modal::Question(question)) = self.modal.take() else {
-            return;
-        };
-        let name = question.card.name.clone();
-        let line = (self.stop(&question))
-            .unwrap_or_else(|why| format!("refused: Stop {name}: {why}; nothing stopped"));
-        self.tell(&name, line);
+        match self.modal.take() {
+            Some(menu::Modal::Question(question)) => {
+                let name = question.card.name.clone();
+                let line = (self.stop(&question))
+                    .unwrap_or_else(|why| format!("refused: Stop {name}: {why}; nothing stopped"));
+                self.tell(&name, line);
+            }
+            Some(menu::Modal::End(question)) => {
+                let name = question.card.name.clone();
+                let line = (self.end(&question))
+                    .unwrap_or_else(|why| format!("refused: End {name}: {why}; nothing ended"));
+                self.tell(&name, line);
+            }
+            _ => {}
+        }
     }
 
     /// [`App::affirm`]'s proofs, then the owner's own line.
@@ -7281,6 +7379,7 @@ mod tests {
                 | loader::Request::Peek(_)
                 | loader::Request::Read(_)
                 | loader::Request::Records(_)
+                | loader::Request::Ending(_)
                 | loader::Request::Settings { .. } => None,
             })
             .collect();
@@ -7519,6 +7618,7 @@ mod tests {
                     | loader::Request::Peek(_)
                     | loader::Request::Read(_)
                     | loader::Request::Records(_)
+                    | loader::Request::Ending(_)
                     | loader::Request::Settings { .. } => None,
                 })
                 .collect()
@@ -7549,6 +7649,7 @@ mod tests {
                 | loader::Request::Peek(_)
                 | loader::Request::Read(_)
                 | loader::Request::Records(_)
+                | loader::Request::Ending(_)
                 | loader::Request::Writing(_) => None,
             })
             .collect()
@@ -7583,6 +7684,7 @@ mod tests {
                     | loader::Request::Peek(_)
                     | loader::Request::Read(_)
                     | loader::Request::Records(_)
+                    | loader::Request::Ending(_)
                     | loader::Request::Writing(_) => String::new(),
                 })
                 .collect()

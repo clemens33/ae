@@ -677,6 +677,21 @@ fn server_value_word(server: &ServerId) -> String {
     }
 }
 
+/// The server an `--expect-server-kind` and `--expect-server` pair names. An
+/// ambient server is whichever one the caller happened to be in, so it names
+/// nothing a later process can prove.
+fn server_from_words(kind: &str, value: &str) -> Option<ServerId> {
+    match (kind, value) {
+        ("name", name) if !name.is_empty() => {
+            Some(ServerId::Selected(Selector::Name(name.to_owned())))
+        }
+        ("socket", path) if Path::new(path).is_absolute() => {
+            Some(ServerId::Selected(Selector::Socket(PathBuf::from(path))))
+        }
+        _ => None,
+    }
+}
+
 /// What proving a [`StopExpectation`] under the lifecycle lock found.
 enum ExpectCheck {
     /// The target is the confirmed one, and this is the id it answers to.
@@ -1445,19 +1460,11 @@ fn split_expectation(
             "an --expect-* identity is incomplete; all ten fields travel together.".to_owned(),
         );
     };
-    let server = match (server_kind.as_str(), server_value.as_str()) {
-        ("name", name) if !name.is_empty() => ServerId::Selected(Selector::Name(name.to_owned())),
-        ("socket", path) if Path::new(path).is_absolute() => {
-            ServerId::Selected(Selector::Socket(PathBuf::from(path)))
-        }
-        // An ambient server is whichever one the caller happened to be in, so
-        // it names nothing a later process can prove.
-        _ => {
-            return Err(
-                "--expect-server-kind is 'name' with a name, or 'socket' with an absolute path."
-                    .to_owned(),
-            );
-        }
+    let Some(server) = server_from_words(&server_kind, &server_value) else {
+        return Err(
+            "--expect-server-kind is 'name' with a name, or 'socket' with an absolute path."
+                .to_owned(),
+        );
     };
     let Ok(deadline) = deadline.parse::<i64>() else {
         return Err("--expect-deadline is not an epoch second.".to_owned());

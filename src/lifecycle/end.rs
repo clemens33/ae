@@ -22,7 +22,8 @@ use crate::transport;
 use super::{
     ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, claims, confirm_on_client,
     dir_exists, handoff_clients_before_kill, kill_verified, lock, meta_value, name_is_usable,
-    path_exists, recorded_server, server_of, sessions_dir, views_gone, worktrees_dir,
+    path_exists, recorded_server, server_from_words, server_kind_word, server_of,
+    server_value_word, sessions_dir, views_gone, worktrees_dir,
 };
 
 /// The usage line.
@@ -77,7 +78,7 @@ struct Plan {
 }
 
 /// One prompt-time plan carried across the tmux and detached-process handoffs.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct ConfirmedPlan {
     name: String,
     plan: Plan,
@@ -304,6 +305,361 @@ impl Plan {
     }
 }
 
+/// What the human confirmed in `ae app`'s End… question, for the one literal
+/// session that question named.
+///
+/// The app's modal IS the confirmation, inside tmux or not, so no client is
+/// named or needed. Nothing here is believed when it is captured: it travels
+/// with the operation to the one process that holds the target's lifecycle
+/// lock, which proves all of it before its first write.
+#[derive(Debug, Clone)]
+pub(crate) struct EndExpectation {
+    /// ae's own identity for the session's state directory.
+    uuid: String,
+    /// The server the record named when the question was asked.
+    server: ServerId,
+    /// That server's process, proven for a live target only: a stopped
+    /// session's server may be another process, or none, and that is no
+    /// change to what was confirmed.
+    identity: Option<crate::tmux::ServerIdentity>,
+    /// The epoch second after which the answer is stale. Carried, never
+    /// renewed: a supervisor that starts late is as stale as its answer.
+    deadline: i64,
+    /// The plan and the tmux reading the question rendered.
+    confirmed: ConfirmedPlan,
+    /// The server is gone and the boot-time proof held when the question
+    /// asked, so the question said so: the flag of invariant (b). The proof
+    /// itself is never carried, only re-proven.
+    assume_stopped: bool,
+    /// The session's mode commits and pushes its work on the way out.
+    pushes: bool,
+}
+
+impl EndExpectation {
+    /// What `name`'s End… question freezes from one resolution of its plan
+    /// and tmux reading, or why it may not be asked. `stopped` is what the
+    /// card drew: only a stopped card may rest on the boot-time proof.
+    pub(crate) fn unattended(
+        root: &Path,
+        name: &str,
+        uuid: &str,
+        server: ServerId,
+        stopped: bool,
+        deadline: i64,
+    ) -> Result<Self, String> {
+        let dir = sessions_dir(root).join(name);
+        let plan = resolve_plan(root, name, None);
+        if plan.action == Action::Unavailable {
+            return Err(format!("it cannot be archived: {}", plan.detail));
+        }
+        let (tmux, identity, assume_stopped) = match sight(&server, name) {
+            TmuxSight::Live { id, created } => {
+                let identity = transport::observe_server_identity(&server)
+                    .ok_or("the tmux server its record names did not answer")?;
+                (FrozenTmux::Live { id, created }, Some(identity), false)
+            }
+            TmuxSight::Absent => (FrozenTmux::Absent, None, false),
+            TmuxSight::Unknown if stopped && boot_proved_stopped(&dir, &server, name) => {
+                (FrozenTmux::Unknown, None, true)
+            }
+            TmuxSight::Unknown => {
+                return Err(format!(
+                    "its tmux server did not answer; if it is stopped: ae end --assume-stopped {name}"
+                ));
+            }
+        };
+        let bytes = meta::read_bytes(&dir).unwrap_or_default();
+        Ok(Self {
+            uuid: uuid.to_owned(),
+            server,
+            identity,
+            deadline,
+            confirmed: ConfirmedPlan {
+                name: name.to_owned(),
+                plan,
+                from_default: true,
+                tmux,
+            },
+            assume_stopped,
+            pushes: matches!(meta_value(&bytes, "mode").as_str(), "git" | "full"),
+        })
+    }
+
+    /// The `session_id` the question was asked about.
+    pub(crate) fn uuid(&self) -> &str {
+        &self.uuid
+    }
+
+    /// The server the question was asked about.
+    pub(crate) fn server(&self) -> &ServerId {
+        &self.server
+    }
+
+    /// The epoch second the answer goes stale.
+    pub(crate) fn deadline(&self) -> i64 {
+        self.deadline
+    }
+
+    /// The tmux session id the answer may kill, when one is live.
+    pub(crate) fn live_id(&self) -> Option<&str> {
+        match &self.confirmed.tmux {
+            FrozenTmux::Live { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// What ending it will do, as the question says it, from the frozen plan.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        let plan = &self.confirmed.plan;
+        let mut lines = vec![
+            match plan.action {
+                Action::Purge => "NO archive, and any archive of it is DELETED.",
+                Action::Nothing => "Nothing to archive; its state is deleted.",
+                Action::Keep | Action::Unavailable => "Archives it, then deletes its state.",
+            }
+            .to_owned(),
+        ];
+        lines.push(
+            if plan.purge {
+                "Its agents' conversation files are DELETED."
+            } else {
+                "Its agents' conversation files are kept."
+            }
+            .to_owned(),
+        );
+        if self.pushes {
+            lines.push("Commits and pushes its work first.".to_owned());
+        }
+        if self.assume_stopped {
+            lines.push("Server gone; proven stopped by the host reboot.".to_owned());
+        }
+        lines
+    }
+
+    /// The detached owner's exact argv, on `core`.
+    fn argv(&self, core: String) -> DetachedArgv {
+        let name = &self.confirmed.name;
+        let mut command = vec![
+            core,
+            crate::cli::END.to_owned(),
+            "--supervise".to_owned(),
+            name.clone(),
+        ];
+        push_confirmed(&mut command, &self.confirmed);
+        if self.assume_stopped {
+            command.push("--assume-stopped".to_owned());
+        }
+        let (pid, start) = self
+            .identity
+            .as_ref()
+            .map_or(("", ""), |found| (found.pid.as_str(), found.start.as_str()));
+        command.extend([
+            format!("--expect-uuid={}", self.uuid),
+            format!("--expect-server-kind={}", server_kind_word(&self.server)),
+            format!("--expect-server={}", server_value_word(&self.server)),
+            format!("--expect-server-pid={pid}"),
+            format!("--expect-server-start={start}"),
+            format!("--expect-deadline={}", self.deadline),
+        ]);
+        DetachedArgv(command)
+    }
+
+    /// Prove the expectation against the world, under the caller's lock.
+    ///
+    /// Reads only: a target this cannot prove comes out of the operation byte
+    /// for byte as it went in. The ordinary end re-proves its tmux reading and
+    /// plan after the migration; a confirmed one proves both here, first.
+    fn check(&self, root: &Path, dir: &Path, name: &str, now: i64) -> Result<(), String> {
+        if now > self.deadline {
+            return Err(format!(
+                "the confirmation for '{name}' expired before it could be applied"
+            ));
+        }
+        if now < self.deadline - crate::session_menu::CONFIRM_WINDOW_SECS {
+            return Err(format!(
+                "the confirmation for '{name}' is stamped in the future"
+            ));
+        }
+        // THE RAW META, never a migrated one.
+        let Ok(bytes) = meta::read_bytes(dir) else {
+            return Err(format!("ae cannot read the metadata of '{name}'"));
+        };
+        // EXACTLY ONE row: a doubled identity does not say which was confirmed.
+        let uuid = meta::sole_value(&bytes, "session_id")
+            .map(|value| archive::canonical_uuid(&String::from_utf8_lossy(value)));
+        if uuid.as_deref() != Some(self.uuid.as_str()) {
+            return Err(format!(
+                "the state directory of '{name}' was replaced since it was confirmed"
+            ));
+        }
+        let ServerSelector::Positive(selector) = server_of(&bytes) else {
+            return Err(format!(
+                "'{name}' has no positive server record, so ae cannot prove what was confirmed"
+            ));
+        };
+        // A server that is gone answers nothing, so its spelling is all that
+        // can match; a live one may be spelled two ways.
+        let recorded = ServerId::Selected(selector);
+        if recorded != self.server
+            && !crate::fleet_read::SocketPaths::live().proven_same(&self.server, &recorded)
+        {
+            return Err(format!(
+                "'{name}' is recorded on a different tmux server than the one it was confirmed on"
+            ));
+        }
+        if let Some(identity) = &self.identity
+            && transport::observe_server_identity(&self.server).as_ref() != Some(identity)
+        {
+            return Err(format!(
+                "the tmux server was replaced since '{name}' was confirmed"
+            ));
+        }
+        self.check_tmux(dir, name)?;
+        let purge = (!self.confirmed.from_default).then_some(self.confirmed.plan.purge);
+        if resolve_plan(root, name, purge) != self.confirmed.plan {
+            return Err(format!(
+                "what '{name}' would do changed between the confirmation and now"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The tmux half of [`Self::check`]. An unreachable server earns nothing
+    /// by itself, so it passes only what the question asked on that same
+    /// footing, with the flag, and with the boot-time proof holding NOW.
+    fn check_tmux(&self, dir: &Path, name: &str) -> Result<(), String> {
+        let seen = sight(&self.server, name);
+        if seen == TmuxSight::Unknown {
+            let proved = self.confirmed.tmux == FrozenTmux::Unknown
+                && self.assume_stopped
+                && boot_proved_stopped(dir, &self.server, name);
+            if proved {
+                return Ok(());
+            }
+            return Err(format!(
+                "the tmux server of '{name}' did not answer, so ae cannot prove what was confirmed"
+            ));
+        }
+        match reprove(name, &self.confirmed.tmux, &seen) {
+            Reproof::Proceed => Ok(()),
+            Reproof::Refuse(first) => Err(first),
+        }
+    }
+}
+
+/// The `--expect-*=` words of one `_end` argv, as typed: all six, or none.
+#[derive(Default)]
+struct ExpectWords {
+    uuid: Option<String>,
+    kind: Option<String>,
+    server: Option<String>,
+    pid: Option<String>,
+    start: Option<String>,
+    deadline: Option<String>,
+}
+
+impl ExpectWords {
+    /// Lift one `--expect-*=value` word.
+    fn take(&mut self, flag: &str) -> Result<(), String> {
+        let (key, value) = flag.split_once('=').unwrap_or((flag, ""));
+        let slot = match key {
+            "--expect-uuid" => &mut self.uuid,
+            "--expect-server-kind" => &mut self.kind,
+            "--expect-server" => &mut self.server,
+            "--expect-server-pid" => &mut self.pid,
+            "--expect-server-start" => &mut self.start,
+            "--expect-deadline" => &mut self.deadline,
+            _ => return Err(format!("Error: unknown flag '{flag}'.")),
+        };
+        if !flag.contains('=') {
+            return Err(format!("Error: {key} requires a value."));
+        }
+        if slot.replace(value.to_owned()).is_some() {
+            return Err(format!("Error: {key} may be given only once."));
+        }
+        Ok(())
+    }
+
+    /// Whether any word was given.
+    fn any(&self) -> bool {
+        [
+            &self.uuid,
+            &self.kind,
+            &self.server,
+            &self.pid,
+            &self.start,
+            &self.deadline,
+        ]
+        .iter()
+        .any(|slot| slot.is_some())
+    }
+
+    /// The expectation these words and `args` name, proven well formed: it
+    /// belongs to a supervisor with exactly one carried plan, for its operand.
+    fn build(self, args: &Args) -> Result<EndExpectation, String> {
+        let incomplete = || "Error: an --expect-* identity is incomplete; all six travel together.";
+        let uuid = self.uuid.ok_or_else(incomplete)?;
+        let kind = self.kind.ok_or_else(incomplete)?;
+        let server = self.server.ok_or_else(incomplete)?;
+        let pid = self.pid.ok_or_else(incomplete)?;
+        let start = self.start.ok_or_else(incomplete)?;
+        let deadline = self.deadline.ok_or_else(incomplete)?;
+        if args.mode != RunMode::Supervise {
+            return Err("Error: an --expect-* identity needs --supervise.".to_owned());
+        }
+        let [confirmed] = args.confirmed.as_slice() else {
+            return Err("Error: an --expect-* identity needs one carried plan.".to_owned());
+        };
+        if confirmed.name != args.target {
+            return Err(format!(
+                "Error: the carried end plan does not match '{}'.",
+                args.target
+            ));
+        }
+        if confirmed.plan.action == Action::Unavailable || confirmed.tmux == FrozenTmux::Unobserved
+        {
+            return Err("Error: a confirmed end needs a plan it can carry out.".to_owned());
+        }
+        let server = server_from_words(&kind, &server).ok_or(
+            "Error: --expect-server-kind is 'name' with a name, or 'socket' with an absolute path.",
+        )?;
+        let uuid = archive::canonical_uuid(&uuid);
+        if uuid.is_empty() {
+            return Err("Error: --expect-uuid is not a session uuid.".to_owned());
+        }
+        let deadline = deadline
+            .parse::<i64>()
+            .map_err(|_| "Error: --expect-deadline is not an epoch second.".to_owned())?;
+        let live = matches!(confirmed.tmux, FrozenTmux::Live { .. });
+        let identity = match (pid.as_str(), start.as_str(), live) {
+            ("", "", false) => None,
+            (pid, start, true)
+                if crate::tmux::is_decimal(pid) && crate::tmux::is_decimal(start) =>
+            {
+                Some(crate::tmux::ServerIdentity {
+                    pid: pid.to_owned(),
+                    start: start.to_owned(),
+                })
+            }
+            _ => {
+                return Err(
+                    "Error: --expect-server-pid and --expect-server-start are decimals for a live target and empty otherwise."
+                        .to_owned(),
+                );
+            }
+        };
+        Ok(EndExpectation {
+            uuid,
+            server,
+            identity,
+            deadline,
+            confirmed: confirmed.clone(),
+            assume_stopped: args.assume_stopped,
+            pushes: false,
+        })
+    }
+}
+
 /// What the argv said.
 #[derive(Clone)]
 struct Args {
@@ -317,6 +673,9 @@ struct Args {
     /// `None` when the caller passed neither and each session's OWN config
     /// decides.
     purge_cli: Option<bool>,
+    /// What a supervisor must prove under the lock before it touches `target`,
+    /// which it then treats as one literal session name.
+    expect: Option<EndExpectation>,
 }
 
 /// Which process owns the destructive sequence.
@@ -559,8 +918,10 @@ fn parse(tail: &[String]) -> Result<Args, String> {
         pane: None,
         confirmed: Vec::new(),
         purge_cli: None,
+        expect: None,
     };
     let mut confirmed = Vec::<ConfirmedParts>::new();
+    let mut expect = ExpectWords::default();
     for arg in tail {
         match arg.as_str() {
             "-f" | "--force" => args.force = true,
@@ -621,6 +982,7 @@ fn parse(tail: &[String]) -> Result<Args, String> {
                 };
                 last_confirmed(&mut confirmed, flag)?.tmux = Some(tmux);
             }
+            flag if flag.starts_with("--expect-") => expect.take(flag)?,
             flag if flag.starts_with('-') => {
                 return Err(format!(
                     "Error: unknown flag '{flag}'. Use -f, --purge-history, --keep-history, --assume-stopped."
@@ -662,6 +1024,9 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    if expect.any() {
+        args.expect = Some(expect.build(&args)?);
+    }
     Ok(args)
 }
 
@@ -843,6 +1208,9 @@ fn run_supervised(
         )?;
         return Ok(EXIT_USAGE);
     }
+    if let Some(expect) = &args.expect {
+        return run_expected(root, args, expect, out, err);
+    }
     let notices = notices(root, args);
     let mut tail = vec!["-f".to_owned(), args.target.clone()];
     for confirmed in &args.confirmed {
@@ -855,27 +1223,71 @@ fn run_supervised(
     let mut captured_err = Vec::new();
     let code = match run(root, &tail, None, &mut captured_out, &mut captured_err) {
         Ok(code) => code,
-        Err(why) => {
-            let summary = format!("FAILED: end supervisor I/O: {why}");
-            for notice in &notices {
-                if dir_exists(&notice.dir) {
-                    transaction::emit(
-                        &notice.dir,
-                        &notice.name,
-                        if notice.purge { "" } else { &notice.archive_id },
-                        END_RESULT_ACTION,
-                        &summary,
-                    );
-                    transaction::notice(root, notice, &summary);
-                }
-            }
-            writeln!(err, "Error: end supervisor I/O failed: {why}")?;
-            return Ok(EXIT_FAILED);
-        }
+        Err(why) => return supervisor_io_failed(root, &notices, &why, err),
     };
+    settle(
+        root,
+        &notices,
+        &Supervised {
+            code,
+            out: captured_out,
+            err: captured_err,
+            stopped: false,
+        },
+        out,
+        err,
+    )
+}
 
-    if code == 0 {
-        for notice in &notices {
+/// What a supervised end left behind, to report.
+struct Supervised {
+    code: u8,
+    out: Vec<u8>,
+    err: Vec<u8>,
+    /// The session is stopped and was not ended: the failure line says so
+    /// first, whatever the owner's own first error line was.
+    stopped: bool,
+}
+
+/// The owner itself failed on I/O: every target still there records it.
+fn supervisor_io_failed(
+    root: &Path,
+    notices: &[Notice],
+    why: &io::Error,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    record_failure(root, notices, &format!("FAILED: end supervisor I/O: {why}"));
+    writeln!(err, "Error: end supervisor I/O failed: {why}")?;
+    Ok(EXIT_FAILED)
+}
+
+/// Record `summary` in every target still on disk, and tell its clients.
+fn record_failure(root: &Path, notices: &[Notice], summary: &str) {
+    for notice in notices {
+        if dir_exists(&notice.dir) {
+            transaction::emit(
+                &notice.dir,
+                &notice.name,
+                if notice.purge { "" } else { &notice.archive_id },
+                END_RESULT_ACTION,
+                summary,
+            );
+            transaction::notice(root, notice, summary);
+        }
+    }
+}
+
+/// Report a finished supervised end: announced when it worked, recorded when
+/// it failed, its captured streams passed on either way.
+fn settle(
+    root: &Path,
+    notices: &[Notice],
+    ran: &Supervised,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    if ran.code == 0 {
+        for notice in notices {
             let line = if !notice.purge && !notice.archive_id.is_empty() {
                 format!("Ended {} — archived {}", notice.name, notice.archive_id)
             } else {
@@ -886,30 +1298,130 @@ fn run_supervised(
             }
         }
     } else {
-        let reason = String::from_utf8_lossy(&captured_err);
+        let reason = String::from_utf8_lossy(&ran.err);
         let reason = reason
             .lines()
             .find(|line| line.starts_with("Error:"))
             .or_else(|| reason.lines().find(|line| !line.is_empty()))
             .unwrap_or("end failed");
-        let summary = format!("FAILED: {reason}");
-        for notice in &notices {
-            if dir_exists(&notice.dir) {
-                transaction::emit(
-                    &notice.dir,
-                    &notice.name,
-                    if notice.purge { "" } else { &notice.archive_id },
-                    END_RESULT_ACTION,
-                    &summary,
-                );
-                transaction::notice(root, notice, &summary);
-            }
-        }
+        let summary = if ran.stopped {
+            format!("FAILED: session STOPPED, not ended: {reason}")
+        } else {
+            format!("FAILED: {reason}")
+        };
+        record_failure(root, notices, &summary);
     }
-    let output = crate::error::with_status(code, out.write_all(&captured_out));
-    err.write_all(&captured_err)?;
+    let output = crate::error::with_status(ran.code, out.write_all(&ran.out));
+    err.write_all(&ran.err)?;
     output?;
-    Ok(code)
+    Ok(ran.code)
+}
+
+/// `_end --supervise` carrying an [`EndExpectation`]: the whole end of ONE
+/// literal session. `run` is not re-entered, because it reads the operand
+/// `all` as the fleet and a session may be named that. Under the lock the
+/// expectation is proven first; until it holds nothing is written to the
+/// target, not even the record of this refusal.
+fn run_expected(
+    root: &Path,
+    args: &Args,
+    expect: &EndExpectation,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let name = args.target.as_str();
+    if !name_is_usable(root, name) {
+        writeln!(err, "Error: '{name}' is not a usable session name.")?;
+        return Ok(EXIT_FAILED);
+    }
+    if let Some(blocked) = crate::rename::intent_blocks(root, name) {
+        writeln!(err, "Error: {blocked}. Nothing was ended.")?;
+        return Ok(EXIT_FAILED);
+    }
+    let Ok(_guard) = lock(root, name) else {
+        writeln!(err, "{}", locked_out(name))?;
+        return Ok(EXIT_FAILED);
+    };
+    let dir = sessions_dir(root).join(name);
+    if let Err(why) = expect.check(root, &dir, name, Timestamp::now().epoch()) {
+        writeln!(
+            err,
+            "Error: {why} — nothing was stopped and nothing was deleted."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    let notices = notices(root, args);
+    let plan = &expect.confirmed.plan;
+    let id = if plan.action == Action::Keep {
+        expect.uuid.as_str()
+    } else {
+        ""
+    };
+    transaction::emit(
+        &dir,
+        name,
+        id,
+        END_REQUEST_ACTION,
+        "end requested from ae app",
+    );
+    let contract = (plan, &expect.confirmed.tmux);
+    let (mut captured_out, mut captured_err) = (Vec::new(), Vec::new());
+    let ended = end_locked(
+        root,
+        name,
+        args,
+        Some(contract),
+        &mut captured_out,
+        &mut captured_err,
+    );
+    let code = match ended {
+        Ok(true) => 0,
+        Ok(false) => EXIT_FAILED,
+        Err(why) => return supervisor_io_failed(root, &notices, &why, err),
+    };
+    let stopped = code != 0
+        && (expect.confirmed.tmux == FrozenTmux::Unknown
+            || sight(&expect.server, name) == TmuxSight::Absent);
+    settle(
+        root,
+        &notices,
+        &Supervised {
+            code,
+            out: captured_out,
+            err: captured_err,
+            stopped,
+        },
+        out,
+        err,
+    )
+}
+
+/// Hand a confirmed End to its detached owner. This writes NOTHING to the
+/// target: it does not hold the target's lock, so it cannot yet know the
+/// directory is the one that was confirmed. The owner records the human's
+/// answer once its proof has passed.
+pub(crate) fn end_confirmed_via(
+    root: &Path,
+    expect: &EndExpectation,
+    name: &str,
+    detach: impl FnOnce(&DetachedArgv) -> bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    if !name_is_usable(root, name) {
+        writeln!(err, "'{name}' is not a usable session name")?;
+        return Ok(EXIT_FAILED);
+    }
+    let Some(own) = crate::shape::resolved_exe() else {
+        writeln!(err, "ae cannot name its own executable")?;
+        return Ok(EXIT_FAILED);
+    };
+    if !detach(&expect.argv(own.to_string_lossy().into_owned())) {
+        writeln!(err, "ae could not start the End job")?;
+        return Ok(EXIT_FAILED);
+    }
+    writeln!(out, "Ending '{name}'.")?;
+    Ok(0)
 }
 
 /// Hand an already-authorized end to a detached process.
@@ -1193,11 +1705,14 @@ pub(crate) fn boot_proved_stopped(dir: &Path, server: &ServerId, name: &str) -> 
     crate::tmux::classify_absence(probe, evidence, boot, now) == StopProbe::Absent
 }
 
+/// The refusal of a target whose lifecycle lock is held elsewhere.
+fn locked_out(name: &str) -> String {
+    format!(
+        "Error: another lifecycle operation (start/resume/end) is in progress for '{name}' — retry shortly. State preserved."
+    )
+}
+
 /// End one session, under its lifecycle lock.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the frozen order IS the contract; splitting it would put the sequence in two places"
-)]
 fn end_one(
     root: &Path,
     name: &str,
@@ -1207,12 +1722,25 @@ fn end_one(
     err: &mut impl Write,
 ) -> io::Result<bool> {
     let Ok(_guard) = lock(root, name) else {
-        writeln!(
-            err,
-            "Error: another lifecycle operation (start/resume/end) is in progress for '{name}' — retry shortly. State preserved."
-        )?;
+        writeln!(err, "{}", locked_out(name))?;
         return Ok(false);
     };
+    end_locked(root, name, args, contract, out, err)
+}
+
+/// End one session whose lifecycle lock the caller holds.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the frozen order IS the contract; splitting it would put the sequence in two places"
+)]
+fn end_locked(
+    root: &Path,
+    name: &str,
+    args: &Args,
+    contract: Option<(&Plan, &FrozenTmux)>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<bool> {
     let dir = sessions_dir(root).join(name);
     let current_purge = confirmed_for(args, name).map_or(args.purge_cli, |confirmed| {
         if confirmed.from_default {
@@ -2437,11 +2965,212 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, ConfirmedPlan, FrozenTarget, FrozenTmux, Plan, Reproof, TmuxSight, end_prompt,
-        freeze_target, parse, path_exists, purge_conversation_files, reprove, sanitize_branch_name,
+        Action, ConfirmedPlan, EndExpectation, ExpectWords, FrozenTarget, FrozenTmux, Git, Plan,
+        Reproof, TmuxSight, archive_step, end_prompt, freeze_target, parse, path_exists,
+        purge_conversation_files, reprove, sanitize_branch_name, server_from_words,
         supervisor_args,
     };
     use std::path::{Path, PathBuf};
+
+    const UUID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
+    const NOW: i64 = 1_700_000_000;
+    const WINDOW: i64 = crate::session_menu::CONFIRM_WINDOW_SECS;
+
+    /// A fresh private state root holding the record of session `alpha`.
+    fn planted(tag: &str, meta: Option<&str>) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("ae-end-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("alpha");
+        std::fs::create_dir_all(&dir).expect("a session dir");
+        if let Some(meta) = meta {
+            std::fs::write(dir.join("meta"), meta).expect("a meta");
+        }
+        (root, dir)
+    }
+
+    fn expectation(plan: Plan, deadline: i64) -> EndExpectation {
+        EndExpectation {
+            uuid: UUID.to_owned(),
+            server: server_from_words("socket", "/nowhere/ae.sock").expect("a socket"),
+            identity: None,
+            deadline,
+            confirmed: ConfirmedPlan {
+                name: "alpha".to_owned(),
+                plan,
+                from_default: true,
+                tmux: FrozenTmux::Unknown,
+            },
+            assume_stopped: false,
+            pushes: false,
+        }
+    }
+
+    fn keep() -> Plan {
+        Plan {
+            action: Action::Keep,
+            detail: "/archive/id".to_owned(),
+            purge: false,
+        }
+    }
+
+    #[test]
+    fn a_confirmation_is_refused_on_its_stamp_and_record_before_tmux_is_asked() {
+        let record = |rows: &str| {
+            Some(format!(
+                "{rows}tmux_server_kind=socket\ntmux_server=/nowhere/ae.sock\n"
+            ))
+        };
+        let sole = format!("session_id={UUID}\n");
+        let table: [(&str, i64, Option<String>, &str); 9] = [
+            ("expired", NOW - 1, record(&sole), "expired"),
+            ("deadline", NOW, None, "cannot read the metadata"),
+            ("future", NOW + WINDOW + 1, record(&sole), "in the future"),
+            ("window", NOW + WINDOW, None, "cannot read the metadata"),
+            ("no-uuid", NOW, record(""), "was replaced"),
+            (
+                "double",
+                NOW,
+                record(&format!("{sole}{sole}")),
+                "was replaced",
+            ),
+            (
+                "other",
+                NOW,
+                record("session_id=0199c0de-bbbb-4890-abcd-ef0123456789\n"),
+                "was replaced",
+            ),
+            (
+                "no-server",
+                NOW,
+                Some(sole.clone()),
+                "no positive server record",
+            ),
+            (
+                "elsewhere",
+                NOW,
+                Some(format!(
+                    "{sole}tmux_server_kind=socket\ntmux_server=/nowhere/other.sock\n"
+                )),
+                "different tmux server",
+            ),
+        ];
+        for (tag, deadline, meta, want) in table {
+            let (root, dir) = planted(&format!("check-{tag}"), meta.as_deref());
+            let refused = expectation(keep(), deadline)
+                .check(&root, &dir, "alpha", NOW)
+                .expect_err(tag);
+            assert!(refused.contains(want), "{tag}: {refused}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn a_question_says_what_its_frozen_plan_will_do() {
+        let purge = Plan {
+            action: Action::Purge,
+            detail: "/archive/id".to_owned(),
+            purge: true,
+        };
+        let nothing = Plan {
+            action: Action::Nothing,
+            detail: String::new(),
+            purge: false,
+        };
+        let archive = "Archives it, then deletes its state.";
+        let kept = "Its agents' conversation files are kept.";
+        let gone = "Its agents' conversation files are DELETED.";
+        let table: [(Plan, bool, bool, Vec<&str>); 5] = [
+            (keep(), false, false, vec![archive, kept]),
+            (
+                keep(),
+                true,
+                false,
+                vec![archive, kept, "Commits and pushes its work first."],
+            ),
+            (
+                keep(),
+                false,
+                true,
+                vec![
+                    archive,
+                    kept,
+                    "Server gone; proven stopped by the host reboot.",
+                ],
+            ),
+            (
+                purge,
+                false,
+                false,
+                vec!["NO archive, and any archive of it is DELETED.", gone],
+            ),
+            (
+                nothing,
+                false,
+                false,
+                vec!["Nothing to archive; its state is deleted.", kept],
+            ),
+        ];
+        for (plan, pushes, assume_stopped, want) in table {
+            let mut expect = expectation(plan, NOW);
+            (expect.pushes, expect.assume_stopped) = (pushes, assume_stopped);
+            assert_eq!(expect.lines(), want);
+        }
+    }
+
+    #[test]
+    fn an_expect_word_is_taken_once_with_a_value_or_refused() {
+        let mut words = ExpectWords::default();
+        assert!(!words.any());
+        words.take("--expect-uuid=u").expect("a word");
+        assert!(words.any());
+        for (word, want) in [
+            ("--expect-uuid=v", "may be given only once"),
+            ("--expect-deadline", "requires a value"),
+            ("--expect-other=1", "unknown flag"),
+        ] {
+            let refused = words.take(word).expect_err(word);
+            assert!(refused.contains(want), "{word}: {refused}");
+        }
+    }
+
+    #[test]
+    fn a_purge_deletes_the_archive_the_session_already_had() {
+        let meta = format!("session={0}\nsession_id={UUID}\nmode=local\n", "alpha");
+        let (root, dir) = planted("purge-prior", Some(&meta));
+        std::fs::write(dir.join("memory.md"), "kept history\n").expect("a memory");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let keep = Plan {
+            detail: root.join("archive").join(UUID).display().to_string(),
+            ..keep()
+        };
+        let archived = archive_step(&root, "alpha", &keep, &Git::none(), &mut out, &mut err);
+        assert!(
+            archived.expect("the keep ran"),
+            "{}",
+            String::from_utf8_lossy(&err)
+        );
+        let prior = root.join("archive").join(UUID);
+        assert!(
+            path_exists(&prior),
+            "the fixture needs a real prior archive"
+        );
+        let purge = Plan {
+            action: Action::Purge,
+            detail: keep.detail.clone(),
+            purge: true,
+        };
+        out.clear();
+        let purged = archive_step(&root, "alpha", &purge, &Git::none(), &mut out, &mut err);
+        assert!(
+            purged.expect("the purge ran"),
+            "{}",
+            String::from_utf8_lossy(&err)
+        );
+        assert!(!path_exists(&prior), "the prior archive outlived the purge");
+        let told = String::from_utf8_lossy(&out);
+        assert!(told.contains(&format!("Purged archive {UUID}")), "{told}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn frozen(name: &str, purge: bool) -> FrozenTarget {
         FrozenTarget {
