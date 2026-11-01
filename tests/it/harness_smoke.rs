@@ -237,8 +237,10 @@ struct Outcome {
     ae_turns: u8,
     /// The harness session id(s) this run left in the vendor's store.
     strays: Vec<String>,
-    /// The last pane frame of a ready timeout, already neutralised and bounded
-    /// ([`frame_evidence`]): the one witness of why the tool never drew its box.
+    /// The newest pane frame a readiness wait saw, already neutralised and
+    /// bounded ([`frame_evidence`]), published as it is seen and cleared when the
+    /// wait passes: what is left on a failed run is the one witness of why the
+    /// tool never drew its box.
     frame: Option<String>,
 }
 
@@ -258,7 +260,7 @@ impl Outcome {
         }
     }
 
-    /// Keep the pane as it stood when a ready wait ran out.
+    /// Keep the pane as a readiness wait last saw it.
     fn keep_frame(&mut self, capture: &str) {
         self.frame = Some(frame_evidence(capture));
     }
@@ -1010,18 +1012,44 @@ impl Run {
         }
     }
 
+    /// One look of a READINESS wait (the tool has drawn its box and is quiet):
+    /// the frame is published to the shared outcome as the evidence a timeout
+    /// needs. It is published as it is seen, not at the miss, because the outer
+    /// bound cancels the run and snapshots the outcome before this thread can
+    /// react. [`Self::ready_passed`] clears it again.
+    fn sight(&self, pane: &str, publish: bool) -> Result<Option<String>, Stop> {
+        let capture = self.look(pane)?;
+        if publish && let Some(text) = &capture {
+            self.gate.with(|out| out.keep_frame(text));
+        }
+        Ok(capture)
+    }
+
+    /// A readiness wait passed: the frames it published on the way are no
+    /// evidence of anything, and a passing run keeps none.
+    fn ready_passed(&self) {
+        self.gate.with(|out| out.frame = None);
+    }
+
     /// The frame test `want` names, twice [`FRAME_GAP`] apart: a frame that
-    /// flickers through the state proves nothing.
+    /// flickers through the state proves nothing. Waiting for [`Want::Drawn`]
+    /// is the readiness wait (the first frame, the frame after a resume and the
+    /// quiet before each send): it publishes what it sees. [`Want::Idle`], the
+    /// wait after a turn, publishes nothing.
     fn frame_twice(&self, pane: &str, bound: Duration, want: Want) -> Result<bool, Stop> {
+        let publish = matches!(want, Want::Drawn);
         let deadline = Instant::now() + bound;
         loop {
-            let first = self.look(pane)?;
+            let first = self.sight(pane, publish)?;
             if first.is_some_and(|text| want.holds(&text, self.kind)) {
                 self.nap(FRAME_GAP)?;
                 if self
-                    .look(pane)?
+                    .sight(pane, publish)?
                     .is_some_and(|text| want.holds(&text, self.kind))
                 {
+                    if publish {
+                        self.ready_passed();
+                    }
                     return Ok(true);
                 }
             }
@@ -1033,14 +1061,16 @@ impl Run {
     }
 
     /// The pane stopped changing across two reads: the precondition for typing
-    /// at a tool ae has no frame grammar for.
+    /// at a tool ae has no frame grammar for. A readiness wait too, so it
+    /// publishes what it sees like [`Self::frame_twice`] does.
     fn settled(&self, pane: &str, bound: Duration) -> Result<bool, Stop> {
         let deadline = Instant::now() + bound;
         loop {
-            let first = self.look(pane)?;
+            let first = self.sight(pane, true)?;
             self.nap(FRAME_GAP)?;
-            let second = self.look(pane)?;
+            let second = self.sight(pane, true)?;
             if first.as_ref().is_some_and(|text| !text.trim().is_empty()) && first == second {
+                self.ready_passed();
                 return Ok(true);
             }
             if Instant::now() >= deadline {
@@ -1055,14 +1085,6 @@ impl Run {
 
     fn miss_in(what: &str, bound: Duration) -> Stop {
         Stop::Fail(format!("{what} within {}s", bound.as_secs()))
-    }
-
-    /// A wait for the tool's first drawn frame ran out: the miss, with the pane as
-    /// it last stood kept as the evidence, because a smoke that fails blind
-    /// cannot say why the tool never drew its box.
-    fn miss_blind(&self, what: &str, bound: Duration) -> Stop {
-        self.gate.with(|out| out.keep_frame(&self.last.borrow()));
-        Self::miss_in(what, bound)
     }
 
     /// How long the first idle frame may take. With the watchdog running, a
@@ -1158,12 +1180,12 @@ impl Run {
             if self.frame_twice(pane, bound, Want::Drawn)? {
                 Ok(())
             } else {
-                Err(self.miss_blind("no idle input frame", bound))
+                Err(Self::miss_in("no idle input frame", bound))
             }
         } else if self.settled(pane, bound)? {
             Err(Stop::Skip("no frame grammar"))
         } else {
-            Err(self.miss_blind("pane never settled", bound))
+            Err(Self::miss_in("pane never settled", bound))
         }
     }
 
@@ -1298,12 +1320,12 @@ impl Run {
             if self.frame_twice(&pane, self.step, Want::Drawn)? {
                 Ok(())
             } else {
-                Err(self.miss_blind("no idle input frame after resume", self.step))
+                Err(self.miss("no idle input frame after resume"))
             }
         } else if self.settled(&pane, self.step)? {
             Ok(())
         } else {
-            Err(self.miss_blind("pane never settled after resume", self.step))
+            Err(self.miss("pane never settled after resume"))
         }
     }
 
@@ -1741,6 +1763,12 @@ fn keep_frames(dir: Option<&Path>, stamp: u64, rows: &[Row]) -> (Vec<String>, Ve
         let Some(frame) = &row.outcome.frame else {
             continue;
         };
+        // A readiness wait that passes clears its frame, so one left on a PASS row
+        // is a wiring fault, never evidence.
+        if row.outcome.verdict() == "PASS" {
+            problems.push(format!("{} kept a frame but read PASS", row.tool));
+            continue;
+        }
         match dir {
             Some(dir) => match write_frame(dir, stamp, &row.tool, frame) {
                 Ok(file) => notes.push(format!("frame: {}", file.display())),
