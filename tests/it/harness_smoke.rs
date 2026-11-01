@@ -511,6 +511,12 @@ fn holds(row: &str, token: &str) -> bool {
     count(row, token) > 0
 }
 
+/// How many rows of `capture` are the answer `token` and nothing else. (Skeleton: the
+/// whole-run count; the answer-shaped rule follows.)
+fn answer_rows(capture: &str, token: &str) -> usize {
+    count(capture, token)
+}
+
 /// The version a tool printed, reduced to the ONE shape that cannot carry a path
 /// or a token: the first word of the first line that begins with 2-4 dotted
 /// numbers (`1.2`, `2.1.4`), cut at the first character that is not a digit or a
@@ -1181,7 +1187,7 @@ impl Run {
         if !quiet {
             return Err(self.miss("frame never quiet before the send"));
         }
-        let baseline = count(&self.last.borrow(), &self.token);
+        let baseline = answer_rows(&self.last.borrow(), &self.token);
         self.gate.with(|out| out.runner_turns += 1);
         let helper = self.session_dir().join("send");
         let mut runner = cli::helper(&helper);
@@ -1754,7 +1760,7 @@ mod pins {
                 "the prompt must not hold the answer: {prompt}"
             );
             assert!(
-                holds(&prompt, &a.to_string()) && holds(&prompt, &b.to_string()),
+                prompt.contains(&a.to_string()) && prompt.contains(&b.to_string()),
                 "{prompt}"
             );
         }
@@ -1789,29 +1795,69 @@ mod pins {
     }
 
     #[test]
-    fn a_sum_counts_only_as_a_whole_run_of_digits() {
-        for row in ["● 6912", "6912.", "│ 6912 │", "> 6912\n", "sum: 6912"] {
-            assert!(holds(row, "6912"), "{row}");
+    fn only_a_row_that_is_the_answer_alone_counts_as_the_sum() {
+        for row in [
+            "● 6912",
+            "• 6912",
+            "⏺ 6912",
+            "6912",
+            "6912.",
+            "│ 6912 │",
+            "> 6912",
+            "  ●   6912  ",
+        ] {
+            assert_eq!(answer_rows(row, "6912"), 1, "{row}");
         }
         for row in [
             "● 16912",
             "● 69123",
             "● a6912",
             "● 6912th",
-            "● 1691",
             "● 6 912",
+            "● 6,912",
+            "6912 tokens · idle",
+            "gpt-6 · 6912 left",
+            "● sum: 6912",
+            "● 6912 + 1",
         ] {
-            assert!(!holds(row, "6912"), "{row}");
+            assert_eq!(answer_rows(row, "6912"), 0, "{row}");
         }
-        assert_eq!(count("6912 and 6912 and 16912", "6912"), 2);
-        let marker = "ref abcdef";
-        let echo = "> Automated harness smoke test. What is 1234 + 5678? (ref abcdef)\n";
-        assert!(
-            !answered(echo, marker, "6912", 0),
-            "operands are not the sum"
-        );
-        assert!(answered(&format!("{echo}● 6912\n"), marker, "6912", 0));
-        assert!(!answered(&format!("{echo}● 16912\n"), marker, "6912", 0));
+        assert_eq!(answer_rows("● 6912\n\n6912 tokens\n• 6912\n", "6912"), 2);
+    }
+
+    #[test]
+    fn a_status_row_carrying_the_digits_is_never_the_answer_to_either_turn() {
+        let echo1 = "> Automated harness smoke test. What is 3456 + 3456? (ref abcdef)\n";
+        let footer = "6912 tokens · idle\n";
+        // Turn 1, anchored on its echo: baseline zero and baseline one alike.
+        for baseline in [0, 1] {
+            assert!(!answered(
+                &format!("{echo1}{footer}"),
+                "ref abcdef",
+                "6912",
+                baseline
+            ));
+        }
+        // Turn 1 with no echo to anchor on (scrolled away or wrapped).
+        assert!(!answered(footer, "ref abcdef", "6912", 0));
+        // Turn 2: the replayed history holds the real answer above the new echo,
+        // and a status row below the echo must not stand in for a new one.
+        let echo2 = "> Automated harness smoke test. Which number did you reply with before? (ref uvwxyz)\n";
+        let history = format!("{echo1}● 6912\n{echo2}{footer}");
+        assert!(!answered(&history, "ref uvwxyz", "6912", 1));
+        // A real answer row still counts when a status row follows it.
+        assert!(answered(
+            &format!("{echo1}● 6912\n{footer}"),
+            "ref abcdef",
+            "6912",
+            0
+        ));
+        assert!(answered(
+            &format!("{history}● 6912\n{footer}"),
+            "ref uvwxyz",
+            "6912",
+            1
+        ));
     }
 
     /// The frame a real claude 2.1.314 draws once its trust block is answered
