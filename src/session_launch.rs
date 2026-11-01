@@ -715,7 +715,7 @@ fn run_with_expected(
             )?;
             return Ok(EXIT_FAILED);
         };
-        env.local = crate::doors::local_config(&origin);
+        env.local = crate::doors::local_config(&origin, env.global.as_deref());
         env.cwd = origin;
     }
     if let Some(attach) = plan.attach {

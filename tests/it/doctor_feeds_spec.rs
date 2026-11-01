@@ -293,3 +293,106 @@ fn an_explicit_override_the_reader_read_is_named_by_path() {
     assert_eq!(found.len(), 1, "{report}");
     assert!(found[0].2.contains(&file.display().to_string()), "{report}");
 }
+
+/// The INSTALLED shape's layout inside a rig: `$HOME/.ae` is the state root, so
+/// `$HOME/.ae/config` IS the global config, and `ae doctor` takes no `--global`.
+impl Rig {
+    fn home_global(&self) -> PathBuf {
+        let global = self.0.join("home/.ae/config");
+        std::fs::create_dir_all(global.parent().expect("state root")).expect("state root");
+        std::fs::copy(self.0.join("config"), &global).expect("global config");
+        global
+    }
+
+    /// `ae doctor` from `dir`, state root `$HOME/.ae`, global named by `flag` or
+    /// defaulted to `$HOME/.ae/config`.
+    fn doctor_installed_layout(&self, dir: &Path, flag: Option<&Path>) -> String {
+        let mut command = self.command();
+        command
+            .env("AE_HOME", self.0.join("home/.ae"))
+            .current_dir(dir)
+            .arg(ae::cli::DOCTOR);
+        if let Some(global) = flag {
+            command.arg("--global").arg(global);
+        }
+        let output = command.output().expect("doctor child");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+}
+
+fn local_config_rows(report: &str) -> Vec<(String, String, String)> {
+    rows(report)
+        .into_iter()
+        .filter(|(_, label, _)| label == "local-config")
+        .collect()
+}
+
+/// #266: from `$HOME` the project-local lookup lands on `$HOME/.ae/config`,
+/// which is the global config itself — not an override of anything.
+#[test]
+fn the_global_config_read_from_home_is_not_a_local_override() {
+    let rig = Rig::new("homeglobal", "base = claude");
+    rig.home_global();
+    let report = rig.doctor_installed_layout(&rig.0.join("home"), None);
+    assert!(
+        rows(&report).iter().any(|(_, label, _)| label == "config"),
+        "the config row is still printed: {report}"
+    );
+    assert!(
+        local_config_rows(&report).is_empty(),
+        "the global config is no override of itself: {report}"
+    );
+}
+
+/// The same file under another spelling is the same file: a symlinked cwd, a
+/// symlinked global and a `..` path each resolve to one canonical config.
+#[test]
+fn an_alias_of_the_global_config_is_not_a_local_override_either() {
+    let rig = Rig::new("homealias", "base = claude");
+    let global = rig.home_global();
+    let home = rig.0.join("home");
+    std::fs::create_dir_all(home.join("sub")).expect("sub dir");
+    let cwd_link = rig.0.join("home-link");
+    std::os::unix::fs::symlink(&home, &cwd_link).expect("cwd link");
+    let global_link = rig.0.join("global-link");
+    std::os::unix::fs::symlink(&global, &global_link).expect("global link");
+    let dotted = home.join("sub/../.ae/config");
+    for (case, dir, flag) in [
+        ("symlinked cwd", cwd_link.as_path(), None),
+        (
+            "symlinked global",
+            home.as_path(),
+            Some(global_link.as_path()),
+        ),
+        ("dotted global", home.as_path(), Some(dotted.as_path())),
+    ] {
+        let report = rig.doctor_installed_layout(dir, flag);
+        assert!(
+            local_config_rows(&report).is_empty(),
+            "{case}: the global config is no override of itself: {report}"
+        );
+    }
+}
+
+/// A real project file under `$HOME` is still an override: only the global
+/// config's own file is excused.
+#[test]
+fn a_project_override_under_home_still_warns_beside_the_home_global() {
+    let rig = Rig::new("homeproject", "base = claude");
+    rig.home_global();
+    let project = rig.0.join("home/project");
+    std::fs::create_dir_all(project.join(".ae")).expect("project dir");
+    std::fs::write(project.join(".ae/config"), "[workspace]\nworkers = \n")
+        .expect("project config");
+    let report = rig.doctor_installed_layout(&project, None);
+    let found = local_config_rows(&report);
+    assert_eq!(found.len(), 1, "one extra file, one row: {report}");
+    assert_eq!(found[0].0, "WARN", "{report}");
+    let want = std::fs::canonicalize(&project)
+        .expect("canonical project")
+        .join(".ae/config");
+    assert!(
+        found[0].2.contains(&want.display().to_string()),
+        "the row names the project file: {report}"
+    );
+}

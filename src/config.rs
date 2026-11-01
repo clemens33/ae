@@ -51,19 +51,28 @@ pub(crate) const LOCAL_CONFIG_KEY: &str = "local_config";
 ///
 /// A recorded nonstandard path wins. Sessions without that row keep the
 /// historical `<origin>/.ae/config` lookup, selected only while it exists.
+/// Either way the file is no overlay when it is the session's recorded global
+/// config: from `$HOME` that lookup lands on the global file itself.
 #[must_use]
 pub(crate) fn local_overlay(meta_dir: &Path, origin: &str) -> Option<PathBuf> {
-    let recorded = crate::meta::read_bytes(meta_dir)
-        .ok()
-        .map(|bytes| crate::lifecycle::meta_value(&bytes, LOCAL_CONFIG_KEY))
-        .unwrap_or_default();
-    if !recorded.is_empty() {
-        return Some(PathBuf::from(recorded));
-    }
-    let local = Path::new(if origin.is_empty() { "." } else { origin })
-        .join(".ae")
-        .join("config");
-    crate::lifecycle::path_exists(&local).then_some(local)
+    let bytes = crate::meta::read_bytes(meta_dir).ok();
+    let row = |key: &str| {
+        bytes
+            .as_deref()
+            .map(|bytes| crate::lifecycle::meta_value(bytes, key))
+            .unwrap_or_default()
+    };
+    let recorded = row(LOCAL_CONFIG_KEY);
+    let local = if recorded.is_empty() {
+        let local = Path::new(if origin.is_empty() { "." } else { origin })
+            .join(".ae")
+            .join("config");
+        crate::lifecycle::path_exists(&local).then_some(local)?
+    } else {
+        PathBuf::from(recorded)
+    };
+    let global = row("config");
+    (global.is_empty() || !crate::doors::same_path(&local, Path::new(&global))).then_some(local)
 }
 
 /// The config files a context render reads, in layering order: the recorded
@@ -2301,6 +2310,94 @@ mod tests {
             local_overlay(&absent_session, &absent_origin.display().to_string()),
             None
         );
+    }
+
+    /// #266: a session launched from `$HOME` finds `<origin>/.ae/config`, which
+    /// is the global config its own meta records. That file is not an overlay of
+    /// itself, whichever way the record or the origin spells it, and a recorded
+    /// `local_config` row naming it is no overlay either.
+    #[test]
+    fn local_overlay_is_absent_when_it_is_the_recorded_global_config() {
+        let tree = NamedDir::new("overlay-global");
+        let home = tree.path().join("home");
+        let global = home.join(".ae/config");
+        std::fs::create_dir_all(global.parent().expect("state root")).expect("state root");
+        std::fs::create_dir_all(home.join("sub")).expect("sub dir");
+        std::fs::write(&global, "").expect("global config");
+        let link = tree.path().join("global-link");
+        std::os::unix::fs::symlink(&global, &link).expect("global link");
+        let home_link = tree.path().join("home-link");
+        std::os::unix::fs::symlink(&home, &home_link).expect("home link");
+        let session = tree.path().join("session");
+        std::fs::create_dir_all(&session).expect("session dir");
+        let origin = home.display().to_string();
+        let dotted = home.join("sub/../.ae/config");
+        for (case, recorded, origin) in [
+            ("equal", global.clone(), origin.clone()),
+            ("symlinked record", link.clone(), origin.clone()),
+            ("dotted record", dotted, origin.clone()),
+            (
+                "symlinked origin",
+                global.clone(),
+                home_link.display().to_string(),
+            ),
+        ] {
+            std::fs::write(
+                session.join("meta"),
+                format!("config={}\norigin={origin}\n", recorded.display()),
+            )
+            .expect("meta");
+            assert_eq!(local_overlay(&session, &origin), None, "{case}");
+        }
+        std::fs::write(
+            session.join("meta"),
+            format!(
+                "config={}\nlocal_config={}\norigin=/elsewhere\n",
+                global.display(),
+                link.display()
+            ),
+        )
+        .expect("meta");
+        assert_eq!(
+            local_overlay(&session, "/elsewhere"),
+            None,
+            "a recorded overlay row naming the global config is no overlay"
+        );
+    }
+
+    /// #266: only the global config's own file is excused. A project file is
+    /// still an overlay, with or without a recorded global to compare against.
+    #[test]
+    fn local_overlay_keeps_a_project_file_distinct_from_the_recorded_global() {
+        let tree = NamedDir::new("overlay-project");
+        let global = tree.path().join("home/.ae/config");
+        std::fs::create_dir_all(global.parent().expect("state root")).expect("state root");
+        std::fs::write(&global, "").expect("global config");
+        let project = tree.path().join("home/project");
+        let project_config = project.join(".ae/config");
+        std::fs::create_dir_all(project_config.parent().expect("project .ae")).expect("project");
+        std::fs::write(&project_config, "").expect("project config");
+        let session = tree.path().join("session");
+        std::fs::create_dir_all(&session).expect("session dir");
+        for (case, meta) in [
+            ("global recorded", format!("config={}\n", global.display())),
+            ("global missing", String::from("config=\n")),
+            (
+                "global unreadable",
+                format!("config={}\n", tree.path().join("absent").display()),
+            ),
+        ] {
+            std::fs::write(
+                session.join("meta"),
+                format!("{meta}origin={}\n", project.display()),
+            )
+            .expect("meta");
+            assert_eq!(
+                local_overlay(&session, &project.display().to_string()),
+                Some(project_config.clone()),
+                "{case}"
+            );
+        }
     }
 
     /// PIN: `fleet_order` reads through the list grammar `workers` already

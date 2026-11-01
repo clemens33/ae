@@ -55,15 +55,15 @@ pub fn cwd() -> PathBuf {
     let Some(logical) = raw.map(PathBuf::from).filter(|path| path.is_absolute()) else {
         return physical;
     };
-    if same_directory(&logical, &physical) {
+    if same_path(&logical, &physical) {
         logical
     } else {
         physical
     }
 }
 
-/// Whether two spellings name the same directory.
-fn same_directory(left: &Path, right: &Path) -> bool {
+/// Whether two spellings name the same node once resolved.
+pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
@@ -109,16 +109,21 @@ pub fn declared_config_file(shape: &Shape) -> Option<PathBuf> {
     raw.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
-/// The project-local config override at `<cwd>/.ae/config`, when there is one.
+/// The project-local config override at `<cwd>/.ae/config`, when there is one
+/// and it is not the `global` config itself: from `$HOME` that path IS the
+/// global file, which overrides nothing, however either is spelled.
 #[must_use]
-pub fn local_config(cwd: &Path) -> Option<PathBuf> {
+pub fn local_config(cwd: &Path, global: Option<&Path>) -> Option<PathBuf> {
     let path = cwd.join(".ae").join("config");
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: a project's own .ae/config overrides the global one, and whether it exists is the whole question"
     )]
     let probe = std::fs::metadata(&path);
-    probe.is_ok_and(|meta| meta.is_file()).then_some(path)
+    probe
+        .is_ok_and(|meta| meta.is_file())
+        .then_some(path)
+        .filter(|path| !global.is_some_and(|global| same_path(path, global)))
 }
 
 /// How a strict directory read treats a path that is not there.
@@ -991,5 +996,41 @@ mod tests {
             "a proven host value must not shadow a later override"
         );
         assert_eq!(resolve_boot(None, &slot, no_host), Some(100));
+    }
+
+    /// #266: `<cwd>/.ae/config` is no override when it is the global config
+    /// itself, however either is spelled; a distinct file stays one.
+    #[test]
+    fn the_global_config_is_not_its_own_local_override() {
+        let scratch = Scratch::new("local-config");
+        let home = scratch.0.join("home");
+        let global = home.join(".ae/config");
+        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(home.join("sub")).unwrap();
+        std::fs::write(&global, "").unwrap();
+        let link = scratch.0.join("global-link");
+        std::os::unix::fs::symlink(&global, &link).unwrap();
+        let home_link = scratch.0.join("home-link");
+        std::os::unix::fs::symlink(&home, &home_link).unwrap();
+        let dotted = home.join("sub/../.ae/config");
+        for (case, cwd, global) in [
+            ("equal", &home, &global),
+            ("symlinked global", &home, &link),
+            ("dotted global", &home, &dotted),
+            ("symlinked cwd", &home_link, &global),
+        ] {
+            assert_eq!(local_config(cwd, Some(global)), None, "{case}");
+        }
+        let project = scratch.0.join("home/project");
+        std::fs::create_dir_all(project.join(".ae")).unwrap();
+        std::fs::write(project.join(".ae/config"), "").unwrap();
+        let want = Some(project.join(".ae/config"));
+        assert_eq!(local_config(&project, Some(&global)), want);
+        assert_eq!(
+            local_config(&project, None),
+            want,
+            "no global, nothing to excuse"
+        );
+        assert_eq!(local_config(&home, None), Some(global.clone()));
     }
 }

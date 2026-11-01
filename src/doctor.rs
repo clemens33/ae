@@ -1477,10 +1477,11 @@ pub fn run(
 
     // The override a launch from here reads, found as every other reader finds
     // it — `--local` names one explicitly.
+    let global = args.global.clone().unwrap_or_else(|| root.join("config"));
     let local = args
         .local
         .clone()
-        .or_else(|| crate::doors::local_config(&crate::doors::cwd()));
+        .or_else(|| crate::doors::local_config(&crate::doors::cwd(), Some(&global)));
     let facts = gather(root, args.global.as_deref(), local.as_deref());
     let mut document = report(&facts);
     append_autoupgrade_status(crate::shape::current(), &mut document);

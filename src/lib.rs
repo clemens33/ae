@@ -430,7 +430,7 @@ fn run_public_quota(
     };
     let cwd = doors::cwd();
     let global = doors::config_file(shape, &root);
-    let local = doors::local_config(&cwd);
+    let local = doors::local_config(&cwd, Some(&global));
     let home = doors::home();
     let roots = inventory::Roots::under(&root);
     if profiles {
@@ -511,7 +511,7 @@ fn run_public_usage(
     }
     let cwd = doors::cwd();
     let global = doors::config_file(shape, &root);
-    let local = doors::local_config(&cwd);
+    let local = doors::local_config(&cwd, Some(&global));
     let prices = match usage::prices::read(Some(&global), local.as_deref()) {
         Ok(prices) => prices,
         Err(error) => {
@@ -573,9 +573,10 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
     let launch_target = doors::launch_target(declared.as_ref());
     let caller_server = doors::caller_server();
     let inside_tmux = doors::inside_tmux(caller_server.as_ref(), err)?;
+    let global = doors::config_file(shape, &home);
     Ok(Some(entry::Preamble {
-        global: Some(doors::config_file(shape, &home)),
-        local: doors::local_config(&cwd),
+        local: doors::local_config(&cwd, Some(&global)),
+        global: Some(global),
         home,
         cwd,
         server_kind,

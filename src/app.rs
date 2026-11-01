@@ -4289,10 +4289,11 @@ fn reader_of(
     let declared = doors::declared_server(crate::shape::current());
     let server = doors::launch_target(declared.as_ref());
     let mut reader = loader::Reader::new(root.to_path_buf(), home, server);
+    let global = doors::config_file(crate::shape::current(), root);
     reader.settings_paths(loader::SettingsPaths {
         home: doors::home(),
-        global: doors::config_file(crate::shape::current(), root),
-        local: doors::local_config(&doors::cwd()),
+        local: doors::local_config(&doors::cwd(), Some(&global)),
+        global,
     });
     reader.own_pane(own.0, own.1).landed(landed);
     reader
