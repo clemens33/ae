@@ -104,11 +104,7 @@ impl Rig {
     fn agents(&self) {
         let mut raw = format!("v2;{};300", ae::time::Timestamp::now().epoch());
         for at in 0..40 {
-            write!(
-                raw,
-                ";seat{at:02}:sonnet55x:working::claude:Sonnet 5.5:xhigh:"
-            )
-            .expect("seat fact");
+            write!(raw, ";seat{at:02}:sonnet55x:working::cc:Sonnet 5.5:xhigh:").expect("seat fact");
         }
         assert_eq!(
             ae::tmux::parse_picker_agents(&raw, ae::time::Timestamp::now().epoch())
@@ -397,8 +393,8 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
             "GUARD seat row order"
         );
         assert!(
-            row.contains("Sonnet 5.5 xhigh"),
-            "GUARD the seat's model and effort share its one row: {row}"
+            row.contains("cc Sonnet 5.5 xhigh"),
+            "GUARD the seat's client, model and effort share its one row: {row}"
         );
     }
     let visible = if first.contains("more rows") { 18 } else { 19 };
@@ -439,7 +435,7 @@ fn guard_complete_drawn_rows_prove_agents_and_resize_oracles() {
         );
         assert_eq!(
             label.trim(),
-            "Sonnet 5.5 xhigh",
+            "cc Sonnet 5.5 xhigh",
             "GUARD the complete label alone on its row: {label}"
         );
     }

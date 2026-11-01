@@ -1495,8 +1495,9 @@ impl Cells {
 /// fit beside its name and state, and a dim detail row under them for its
 /// newest declaration's own reason and age (`no reason given` when it left
 /// none, `reason unavailable` when the journal could not be read). The label
-/// row carries its mark, name, the model its frame drew (the client when none
-/// was) and the effort, each only when known and never the profile, and its
+/// row carries its mark, name, the client label and the model its frame drew
+/// (a missing one is left out, never guessed) and the effort, each only when
+/// known and never the profile, and its
 /// state word at the right end, in the human words
 /// ([`crate::theme::seat_word`]), never the verdict word. The seat's open
 /// REQUEST text stays in the chat header, not under the seat; only its own
@@ -1527,11 +1528,13 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
         rows.push(Cells::of(vec![Span::styled(fit(&words, "", room), dim)]));
     }
     for agent in agents {
-        let model = if agent.model.is_empty() {
-            agent.client.as_str()
-        } else {
-            agent.model.as_str()
-        };
+        // The client label, then the model, each only when known: two seats
+        // on one model under different clients read apart.
+        let label = [agent.client.as_str(), agent.model.as_str()]
+            .into_iter()
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         // A typed wait names its target in place of the generic wait word;
         // what the narrow row would cut rides its declaration row.
         let typed = entry
@@ -1546,7 +1549,7 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
             state: typed
                 .as_deref()
                 .unwrap_or_else(|| crate::theme::seat_word(&agent.state)),
-            meta: [model, agent.effort.as_str()],
+            meta: [label.as_str(), agent.effort.as_str()],
         };
         rows.extend(seat_rows(ctx, &seat, column, room));
         rows.extend(declaration_row(ctx, entry, &agent.name, room));
@@ -1579,15 +1582,15 @@ struct Seat<'a> {
     mark: Mark,
     /// The state word, drawn at the right end.
     state: &'a str,
-    /// The model (or client) and the effort; empty when unknown.
+    /// The client and model label and the effort; empty when unknown.
     meta: [&'a str; 2],
 }
 
 /// `seat`'s rows in `room` cells: its mark, its name and its state word at the
-/// right end, and its whole label (model and effort) aligned at `column` when
-/// it fits there; else a second row carries the label under the name, the
-/// effort left off only when that row cannot hold both and the model cut on
-/// `…` only past it. Short of room the name's tail goes down to [`NAME_MIN`]
+/// right end, and its whole label (client, model and effort) aligned at
+/// `column` when it fits there; else a second row carries the label under the
+/// name, the effort left off only when that row cannot hold both and the
+/// client and model cut on `…` only past it. Short of room the name's tail goes down to [`NAME_MIN`]
 /// cells, and last the state word. A state word's parenthetical gives way
 /// BEFORE any of that: when the full word would be left off, or would push the
 /// label to a second row, its head word (`needs you (blocked)` → `needs you`)
@@ -1634,8 +1637,8 @@ fn seat_row(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Vec<C
     let named = drawn_cols(&name);
     let start = lead + column.max(named) + 2;
     let free = room.saturating_sub(start + tail);
-    let [model, effort] = seat.meta;
-    let both = [model, effort]
+    let [label, effort] = seat.meta;
+    let both = [label, effort]
         .into_iter()
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
@@ -1660,10 +1663,10 @@ fn seat_row(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Vec<C
         let width = room.saturating_sub(lead);
         let words = if drawn_cols(&both) <= width {
             both
-        } else if model.is_empty() {
+        } else if label.is_empty() {
             fit(&both, "", width)
         } else {
-            fit(model, "", width)
+            fit(label, "", width)
         };
         rows.push(Cells {
             left: Line::from(vec![
@@ -3526,7 +3529,7 @@ mod tests {
             profile: "sonnet55x".to_owned(),
             state: "waiting-agent".to_owned(),
             pane: "%7".to_owned(),
-            client: "claude".to_owned(),
+            client: String::new(),
             model: "Sonnet 5.5".to_owned(),
             effort: "xhigh".to_owned(),
             drift: false,
@@ -6041,8 +6044,7 @@ mod tests {
                 (44, "m12345678901234567890123456789", "xhigh", true, true),
             ] {
                 let mut shot = Shot::new();
-                let mut facts =
-                    label_facts(&[("colead", model, effort, "atlas"), ("next", "", "", "")]);
+                let mut facts = label_facts(&[("colead", model, effort, ""), ("next", "", "", "")]);
                 let Facts::Seats { agents, .. } = &mut facts else {
                     unreachable!("synthetic seat facts");
                 };
@@ -6078,10 +6080,6 @@ mod tests {
                     assert!(
                         label.contains(model) && label.contains(effort),
                         "{sidebar}: {label}"
-                    );
-                    assert!(
-                        !label.contains("atlas"),
-                        "observed model replaces client: {label}"
                     );
                     if wrapped {
                         assert!(!first.contains(model), "label belongs on row two: {first}");
@@ -6192,8 +6190,8 @@ mod tests {
     }
 
     /// R1/R4: a seat's one row carries its model, the client when its frame
-    /// drew none, and the effort, each only when known and never its profile
-    /// name.
+    /// drew none (see the client-beside-the-model test for both), and the
+    /// effort, each only when known and never its profile name.
     #[test]
     fn the_agents_row_is_model_and_effort_never_the_profile() {
         let mut shot = Shot::new();
@@ -6210,7 +6208,10 @@ mod tests {
         shot.agents = Some(Facts::Seats {
             id: "$1".to_owned(),
             agents: vec![
-                seat("seat-a", "Sonnet 5.5", "xhigh"),
+                PickerAgent {
+                    client: String::new(),
+                    ..seat("seat-a", "Sonnet 5.5", "xhigh")
+                },
                 seat("seat-b", "", ""),
                 seat("seat-c", "", "max"),
                 PickerAgent {
@@ -6239,6 +6240,94 @@ mod tests {
         );
         let frame: String = (0..45).map(|y| line(&buf, y).concat()).collect();
         assert!(!frame.contains("sonnet55x"), "the profile is not drawn");
+    }
+
+    /// #286: two seats on one model under different `[clients]` labels read
+    /// apart — each row names its client label beside its model (and effort),
+    /// a client the fact does not carry is left out, never invented from the
+    /// profile, and a seat with no model keeps its client alone.
+    #[test]
+    fn the_agents_row_names_the_client_beside_the_model() {
+        let mut shot = Shot::new();
+        let seat = |name: &str, client: &str, model: &str, effort: &str| PickerAgent {
+            name: name.to_owned(),
+            profile: "sonnet55x".to_owned(),
+            state: "working".to_owned(),
+            pane: "%7".to_owned(),
+            client: client.to_owned(),
+            model: model.to_owned(),
+            effort: effort.to_owned(),
+            drift: false,
+        };
+        shot.agents = Some(Facts::Seats {
+            id: "$1".to_owned(),
+            agents: vec![
+                seat("seat-a", "claude", "Sonnet 5.5", "xhigh"),
+                seat("seat-b", "claude-p", "Sonnet 5.5", "xhigh"),
+                seat("seat-c", "", "Sonnet 5.5", ""),
+                seat("seat-d", "codex", "", "max"),
+            ],
+        });
+        with_sidebar(&mut shot, 60);
+        let (buf, _) = framed(&shot, 160, None);
+        let between = |name: &str| {
+            let y = spot(&buf, name).expect(name).0;
+            let row = line(&buf, y)[..60].concat();
+            let (from, to) = (
+                row.find(name).expect(name) + name.len(),
+                row.find("working"),
+            );
+            row[from..to.expect("its state")].trim().to_owned()
+        };
+        assert_eq!(between("seat-a"), "claude Sonnet 5.5 xhigh");
+        assert_eq!(between("seat-b"), "claude-p Sonnet 5.5 xhigh");
+        assert_eq!(between("seat-c"), "Sonnet 5.5", "no client is invented");
+        assert_eq!(between("seat-d"), "codex max");
+        let frame: String = (0..45).map(|y| line(&buf, y).concat()).collect();
+        assert!(!frame.contains("sonnet55x"), "the profile is not drawn");
+    }
+
+    /// #286: the client-and-model label degrades by the same cut rules as the
+    /// model alone did. Past the row it wraps whole under the name; past that
+    /// the effort goes first and the label is cut on `…` at its tail, so the
+    /// client — what tells two seats on one model apart — is the last to go.
+    #[test]
+    fn the_client_and_model_label_keeps_todays_cut_rules() {
+        let mut shot = Shot::new();
+        // 25 cells > free 20, but within the second row's 38.
+        shot.agents = Some(label_facts(&[
+            ("aa", "Sonnet 5.5", "xhigh", "claude-p"),
+            ("bb", "", "", ""),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        assert!(
+            !line(&buf, rule + 1).concat().contains("claude-p"),
+            "no label on row one"
+        );
+        assert!(
+            line(&buf, rule + 2)
+                .concat()
+                .contains("claude-p Sonnet 5.5 xhigh"),
+            "the whole label on row two"
+        );
+        // 8 + 1 + 40 > 38: the effort is left off and the tail is cut.
+        let model = "m".repeat(40);
+        let mut shot = Shot::new();
+        shot.agents = Some(label_facts(&[
+            ("aa", &model, "xhigh", "claude-p"),
+            ("bb", "", "", ""),
+        ]));
+        with_sidebar(&mut shot, 44);
+        let (buf, _) = framed(&shot, 160, None);
+        let rule = horizontal(&buf).expect("the Agents rule");
+        let tail = line(&buf, rule + 2).concat();
+        assert!(
+            tail.contains(&format!("claude-p {}…", "m".repeat(28))),
+            "the client survives the cut: {tail}"
+        );
+        assert!(!tail.contains("xhigh"), "the effort goes first: {tail}");
     }
 
     /// R7: a seat that waits on the human is told in the chat header, never
@@ -7141,7 +7230,7 @@ mod tests {
         let mut shot = Shot::new();
         // free = 20; 14 + 1 + 5 = 20.
         shot.agents = Some(label_facts(&[
-            ("aa", "m-model-fourte", "e1234", "claude"),
+            ("aa", "m-model-fourte", "e1234", ""),
             ("bb", "", "", "claude"),
             ("cc", "", "", "claude"),
         ]));
@@ -7168,7 +7257,7 @@ mod tests {
         let mut shot = Shot::new();
         // free = 20; 15 + 1 + 5 = 21 = free + 1.
         shot.agents = Some(label_facts(&[
-            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("aa", "m-model-fifteen", "e1234", ""),
             ("bb", "", "", "claude"),
             ("cc", "", "", "claude"),
         ]));
@@ -7212,7 +7301,7 @@ mod tests {
         let mut shot = Shot::new();
         // model 21 cells > free 20; effort empty.
         shot.agents = Some(label_facts(&[
-            ("aa", "m12345678901234567890", "", "claude"),
+            ("aa", "m12345678901234567890", "", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 44);
@@ -7240,12 +7329,7 @@ mod tests {
         let mut shot = Shot::new();
         // model 12, effort 30 -> joined 43 > 38 = row-2 capacity; model 12 <= 38.
         shot.agents = Some(label_facts(&[
-            (
-                "aa",
-                "m12cellwords",
-                "e12345678901234567890123456789",
-                "claude",
-            ),
+            ("aa", "m12cellwords", "e12345678901234567890123456789", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 44);
@@ -7271,7 +7355,7 @@ mod tests {
         // model 41 cells > 38.
         let model = "m1234567890123456789012345678901234567890";
         shot.agents = Some(label_facts(&[
-            ("aa", model, "", "claude"),
+            ("aa", model, "", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 44);
@@ -7371,7 +7455,7 @@ mod tests {
         // Wrap half: 9 wide chars = 18 cells; 18 + 1 + 5 = 24 > 20.
         let model = "モデルモデルモデル";
         shot.agents = Some(label_facts(&[
-            ("aa", model, "e1234", "claude"),
+            ("aa", model, "e1234", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 44);
@@ -7407,7 +7491,7 @@ mod tests {
         // exact-fit case, separator x 22, effort x 23..27.
         let mut shot = Shot::new();
         let model = "モデルモデルモ";
-        shot.agents = Some(label_facts(&[("aa", model, "e1234", "claude")]));
+        shot.agents = Some(label_facts(&[("aa", model, "e1234", "")]));
         with_sidebar(&mut shot, 44);
         let (buf, _) = framed(&shot, 160, None);
         let rule = horizontal(&buf).expect("the Agents rule");
@@ -7442,7 +7526,7 @@ mod tests {
         let mut shot = Shot::new();
         // "e" + U+0301 = 1 cell, plus 11 digits = 12 cells; 12 + 1 + 7 = 20 = free.
         shot.agents = Some(label_facts(&[
-            ("aa", "e\u{301}23456789012", "e123456", "claude"),
+            ("aa", "e\u{301}23456789012", "e123456", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 44);
@@ -7462,7 +7546,7 @@ mod tests {
     fn names_stay_aligned_and_the_continuation_starts_at_abs_x_four() {
         let mut shot = Shot::new();
         shot.agents = Some(label_facts(&[
-            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("aa", "m-model-fifteen", "e1234", ""),
             ("bb", "", "", "claude"),
             ("cc", "", "", "claude"),
         ]));
@@ -7487,7 +7571,7 @@ mod tests {
     fn cursor_and_lift_cover_the_wrapped_seat() {
         let mut shot = Shot::new();
         shot.agents = Some(label_facts(&[
-            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("aa", "m-model-fifteen", "e1234", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 44);
@@ -7547,7 +7631,7 @@ mod tests {
                     _ => Box::leak(format!("s{at:02}").into_boxed_str()),
                 };
                 let model = if at == 0 || at == 39 { WRAP } else { "" };
-                (name, model, "", "claude")
+                (name, model, "", "")
             })
             .collect();
         shot.agents = Some(label_facts(&specs));
@@ -7598,7 +7682,7 @@ mod tests {
                     _ => Box::leak(format!("s{at:02}").into_boxed_str()),
                 };
                 let model = if at == 0 || at == 39 { WRAP } else { "" };
-                (name, model, "", "claude")
+                (name, model, "", "")
             })
             .collect();
         shot.agents = Some(label_facts(&specs));
@@ -7635,7 +7719,7 @@ mod tests {
                     _ => Box::leak(format!("s{at:02}").into_boxed_str()),
                 };
                 let model = if at == 0 || at == 39 { WRAP } else { "" };
-                (name, model, "", "claude")
+                (name, model, "", "")
             })
             .collect();
         shot.agents = Some(label_facts(&specs));
@@ -7710,7 +7794,7 @@ mod tests {
         let mut wrapped = Shot::new();
         wrapped.fleet = frame_fleet();
         wrapped.agents = Some(label_facts(&[
-            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("aa", "m-model-fifteen", "e1234", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut wrapped, 44);
@@ -7719,7 +7803,7 @@ mod tests {
         let mut fitting = Shot::new();
         fitting.fleet = frame_fleet();
         fitting.agents = Some(label_facts(&[
-            ("aa", "m-model-fourte", "e1234", "claude"),
+            ("aa", "m-model-fourte", "e1234", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut fitting, 44);
@@ -7744,7 +7828,7 @@ mod tests {
     fn wrapped_cells_stay_inside_the_body() {
         let mut wrapped = Shot::new();
         wrapped.agents = Some(label_facts(&[
-            ("aa", "m-model-fifteen", "e1234", "claude"),
+            ("aa", "m-model-fifteen", "e1234", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut wrapped, 44);
@@ -7818,7 +7902,7 @@ mod tests {
         let full = "m12345678901234567890123";
         let mut shot = Shot::new();
         shot.agents = Some(label_facts(&[
-            ("aa", full, "", "claude"),
+            ("aa", full, "", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 30);
@@ -7835,7 +7919,7 @@ mod tests {
         let over = "m123456789012345678901234";
         let mut shot = Shot::new();
         shot.agents = Some(label_facts(&[
-            ("aa", over, "", "claude"),
+            ("aa", over, "", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 30);
@@ -7853,7 +7937,7 @@ mod tests {
         );
         let mut shot = Shot::new();
         shot.agents = Some(label_facts(&[
-            ("aa", "m12345", "", "claude"),
+            ("aa", "m12345", "", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 30);
@@ -7871,7 +7955,7 @@ mod tests {
         // capacity-24 whole fit still holds after requesting 20.
         let mut shot = Shot::new();
         shot.agents = Some(label_facts(&[
-            ("aa", full, "", "claude"),
+            ("aa", full, "", ""),
             ("bb", "", "", "claude"),
         ]));
         with_sidebar(&mut shot, 20);

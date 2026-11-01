@@ -72,7 +72,7 @@ fn picker(name: &str, state: &str) -> PickerAgent {
         profile: "sonnet55x".to_owned(),
         state: state.to_owned(),
         pane: "%7".to_owned(),
-        client: "claude".to_owned(),
+        client: "cc".to_owned(),
         model: "Sonnet 5.5".to_owned(),
         effort: "xhigh".to_owned(),
         drift: false,
@@ -1579,7 +1579,7 @@ fn app_draw_agents_tab_and_gaps() {
     let text = all_text(&buf);
     assert!(text.contains("builder"), "seats list");
     assert!(
-        !text.contains("claude · Sonnet 5.5 · xhigh"),
+        !text.contains("cc · Sonnet 5.5 · xhigh"),
         "no facts row under a seat"
     );
     let state_row = (0..buf.area.height)
@@ -1587,8 +1587,8 @@ fn app_draw_agents_tab_and_gaps() {
         .find(|row| row.contains("builder"))
         .expect("the builder row");
     assert!(
-        state_row.contains("Sonnet 5.5 xhigh"),
-        "model and effort on the seat's one row: {state_row:?}"
+        state_row.contains("cc Sonnet 5.5 xhigh"),
+        "client, model and effort on the seat's one row: {state_row:?}"
     );
     assert!(state_row.ends_with("working"), "state right: {state_row:?}");
     assert!(

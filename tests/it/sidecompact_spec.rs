@@ -67,8 +67,8 @@ fn seats() -> Facts {
     Facts::Seats {
         id: "$7".to_owned(),
         agents: vec![
-            agent("lead", "working", "atlas", "Opus 5.5", "high"),
-            agent("colead", "waiting-user", "atlas", "gpt-6.1-sol", "xhigh"),
+            agent("lead", "working", "cc", "Opus 5.5", "high"),
+            agent("colead", "waiting-user", "cc", "gpt-6.1-sol", "xhigh"),
         ],
     }
 }
@@ -447,9 +447,8 @@ fn stopped_session_is_one_row() {
 // RED: single-line agent rows (A5)
 // ---------------------------------------------------------------------------
 
-/// RED A5: each agent is one row with mark, name, model, effort and state;
-/// the client word is gone when a model is drawn; an unlisted ask seat is
-/// one `needs you` row.
+/// RED A5: each agent is one row with mark, name, client, model, effort and
+/// state; an unlisted ask seat is one `needs you` row.
 #[test]
 fn agent_rows_are_single_line_without_client_or_reason_rows() {
     let fleet = fleet3("platform");
@@ -483,7 +482,7 @@ fn agent_rows_are_single_line_without_client_or_reason_rows() {
     let side = sidebar(&shot);
     let lead = lines_with(&side, "lead");
     assert_eq!(lead.len(), 1, "lead on one row");
-    for word in ["lead", "Opus 5.5", "high", "working"] {
+    for word in ["lead", "cc Opus 5.5 high", "working"] {
         assert!(
             lead[0].contains(word),
             "lead row keeps {word}:\n{}",
@@ -492,17 +491,13 @@ fn agent_rows_are_single_line_without_client_or_reason_rows() {
     }
     let colead = lines_with(&side, "colead");
     assert_eq!(colead.len(), 1, "colead on one row");
-    for word in ["colead", "gpt-6.1-sol", "needs you"] {
+    for word in ["colead", "cc gpt-6.1-sol xhigh", "needs you"] {
         assert!(
             colead[0].contains(word),
             "colead row keeps {word}:\n{}",
             colead[0]
         );
     }
-    assert!(
-        !side.join("\n").contains("atlas"),
-        "client word dropped when a model is drawn"
-    );
     let ghost = lines_with(&side, "ghost");
     assert_eq!(ghost.len(), 1, "unlisted ask seat on one row");
     assert!(

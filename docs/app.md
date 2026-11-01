@@ -86,14 +86,15 @@ recorded config first.
   selection key brings the selection back into view, a click keeps the list
   where it is.
 - **Agents** under the list: every seat of the selected session: its mark, its
-  name, the model its own frame drew (the client when none was) and the effort
-  that frame drew, each only when known, never the profile name, and its state
+  name, its client (the `[clients]` label, so two seats on one model under
+  different subscriptions read apart), the model its own frame drew and the
+  effort that frame drew, each only when known, never the profile name, and its state
   at the right end (from the watchdog's published roster), in words a person
   reads: `working`, `finished` (only a seat that declared done), `waiting on an
   agent`, `needs you (waiting on you)` / `(blocked)` / `(throttled)` / `(usage
   limit)` / `(prompt)`, `unknown` and `dead`. In a narrow sidebar the
   parenthetical goes first (`needs you (blocked)` reads `needs you`) so the
-  model and effort keep their row, and the head word stays. A seat whose input box is empty
+  client, model and effort keep their row, and the head word stays. A seat whose input box is empty
   with no current done, waiting or blocked declaration reads `no current status`: an
   empty box is a fact about the harness, not that the seat finished. A dim row
   under each seat carries its newest declaration's own reason and the age of the
