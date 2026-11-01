@@ -94,6 +94,10 @@ pub struct Event {
     /// ungrammatical one, or one on any other record, reads as `None` and
     /// never costs the record.
     pub wait_on: Option<String>,
+    /// The worker birth family's members, repeats included. LENIENT like
+    /// `wait_on`, so outside [`KNOWN_KEYS`]: no value costs the record, and
+    /// [`crate::birth::decode`] is its one reader.
+    pub birth: Option<crate::birth::Raw>,
 }
 
 /// One half of a routing key, exactly as the record carries it.
@@ -510,10 +514,12 @@ impl Event {
             identity_gap: optional(value, "identity_gap")?,
             body_file: optional(value, "body_file")?,
             wait_on: None,
+            birth: None,
         };
         if event.action == "state" && event.reference.as_deref() == Some("waiting-agent") {
             event.wait_on = wait_on_of(fields);
         }
+        event.birth = crate::birth::Raw::of(&event.action, fields);
         Ok(event)
     }
 

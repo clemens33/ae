@@ -342,7 +342,12 @@ impl SessionRead {
     #[must_use]
     pub fn from_drain_in(drain: &Drain, session: SessionKey<'_>) -> Self {
         Self {
-            last_active: drain.events.iter().map(|event| event.ts).max(),
+            last_active: drain
+                .events
+                .iter()
+                .filter(|event| !crate::birth::is_family(&event.action))
+                .map(|event| event.ts)
+                .max(),
             pending: pending_requests(&drain.events, session),
             cursor: drain.cursor,
             skipped: drain.skipped.clone(),

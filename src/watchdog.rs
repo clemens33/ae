@@ -1206,6 +1206,7 @@ pub(crate) const HUMAN_BRIDGE_ACTORS: [&str; 2] = ["telegram:", "discord:"];
 pub fn ends_quiet(state: &str, event: &Event, is_own: bool, own_requests: &[&str]) -> bool {
     if event.actor == WATCHDOG_ACTOR
         || event.action == crate::session_launch::capture::SESSION_ID_REPLACED_ACTION
+        || crate::birth::is_family(&event.action)
     {
         return false;
     }

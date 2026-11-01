@@ -184,5 +184,6 @@ mod waiton_spec;
 mod watchdog_glue;
 mod watchdog_spacing_spec;
 mod weeklyroom_spec;
+mod worker_birth_decode_spec;
 mod worker_birth_folds_spec;
 mod worker_birth_retention_spec;

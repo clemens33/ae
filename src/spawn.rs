@@ -452,6 +452,27 @@ fn run_spawn_inner(
         &pane,
         &crate::run::pane_command_with_snapshot(&core, dir, slot, command.as_str()),
     );
+    // THE COMMIT: no rollback follows a dispatched launch, so this is the one
+    // birth of this worker, whatever the tool and the brief go on to do. A lost
+    // certificate is said and stops nothing; the `spawn` link shows the gap.
+    let certificate = crate::birth::certificate_line(
+        now,
+        actor_of(caller),
+        &crate::birth::Seat {
+            name: &parsed.name,
+            slot,
+            session: &meta::session_id_in(dir),
+            birth: &staged.launch_id,
+        },
+        &crate::birth::configured(command, tool, &parsed.profile),
+    );
+    if let Err(why) = store::open(dir).append_event(&certificate) {
+        let _ = writeln!(
+            err,
+            "ae: '{}' birth record not journaled ({why}); the spawn goes on.",
+            parsed.name
+        );
+    }
     crate::session_launch::wait_for_agent_start(&facts.server, &pane, tool, "");
     // Preserve the post-exec lifecycle stamp separately from the pre-exec
     // capture floor, then start the detached capture.
@@ -506,7 +527,7 @@ fn run_spawn_inner(
             &refusal,
             err,
         )?;
-        record_spawn(dir, now, caller, &parsed.name, &parsed.prompt);
+        record_spawn(dir, now, caller, staged.birth_of(), &parsed.prompt);
         let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
             ts: now,
             actor: actor_of(caller),
@@ -532,7 +553,7 @@ fn run_spawn_inner(
         return Ok(EXIT_FAILED);
     }
     writeln!(out, "Spawned {} in pane {pane}", parsed.name)?;
-    record_spawn(dir, now, caller, &parsed.name, &parsed.prompt);
+    record_spawn(dir, now, caller, staged.birth_of(), &parsed.prompt);
     Ok(0)
 }
 
@@ -549,6 +570,11 @@ struct StagedSeat {
 }
 
 impl StagedSeat {
+    /// The name and birth id a `spawn` record carries.
+    fn birth_of(&self) -> (&str, &str) {
+        (&self.argv.name, &self.launch_id)
+    }
+
     /// What a cleanup may remove: this incarnation, never a successor.
     fn proven(&self) -> ProvenSeat {
         ProvenSeat {
@@ -1097,9 +1123,16 @@ fn start_spawned_pane(
     Ok((pane, spelling, held))
 }
 
-/// Record the seat a live pane opened, whether its first brief landed or not.
-fn record_spawn(dir: &Path, now: Timestamp, caller: &str, name: &str, prompt: &str) {
-    let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
+/// Record the seat a live pane opened, whether its first brief landed or not,
+/// linked to its birth so a lost certificate reads apart from a legacy spawn.
+fn record_spawn(
+    dir: &Path,
+    now: Timestamp,
+    caller: &str,
+    (name, birth): (&str, &str),
+    prompt: &str,
+) {
+    let fields = EventFields {
         ts: now,
         actor: actor_of(caller),
         action: SPAWN_ACTION,
@@ -1120,7 +1153,9 @@ fn record_spawn(dir: &Path, now: Timestamp, caller: &str, name: &str, prompt: &s
         identity_gap: "",
         summary: prompt,
         body_file: "",
-    }));
+    };
+    let line = tracked::event_line_with(&fields, "", &[("birth", birth)]);
+    let _ = store::open(dir).append_event(&line);
 }
 
 /// The event's actor: the caller's stamp, or the human.

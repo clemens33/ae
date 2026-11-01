@@ -15,6 +15,7 @@ pub mod attention;
 pub mod autoreseat;
 pub mod autotrust;
 pub mod autoupgrade;
+pub mod birth;
 pub mod board;
 pub mod brief;
 pub mod brief_retry;

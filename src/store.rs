@@ -1235,7 +1235,9 @@ impl SessionStore {
     /// Cap the event container to its newest `keep` lines on resume.
     ///
     /// `pin` names a line a cut may not take: when the cut drops every one, the
-    /// newest dropped is kept in front.
+    /// newest dropped is kept in front. A line of the worker birth family
+    /// ([`crate::birth::durable_line`]) is kept whatever the cut, so history
+    /// outlives the window; both keep their original order.
     ///
     /// The lock is held from the read through the staged sibling's rename, so
     /// an appender cannot land bytes between the snapshot and replacement. A
@@ -1263,10 +1265,14 @@ impl SessionStore {
         let pinned = dropped
             .iter()
             .rposition(|line| pin(line))
-            .filter(|_| !window.iter().any(|line| pin(line)))
-            .map(|at| dropped[at]);
+            .filter(|_| !window.iter().any(|line| pin(line)));
+        let kept = dropped
+            .iter()
+            .enumerate()
+            .filter(|(at, line)| Some(*at) == pinned || crate::birth::durable_line(line))
+            .map(|(_, line)| *line);
         let mut retained = String::new();
-        for line in pinned.into_iter().chain(window.iter().copied()) {
+        for line in kept.chain(window.iter().copied()) {
             retained.push_str(line);
             retained.push('\n');
         }

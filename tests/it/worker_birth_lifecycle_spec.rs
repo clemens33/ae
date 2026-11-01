@@ -8,6 +8,7 @@
 
 use super::Rig;
 use ae::json::Value;
+use std::fmt::Write as _;
 
 const SID: &str = "11111111-1111-4111-8111-111111111111";
 const CANARY: &str = "PRIVATE_BRIEF_CANARY_wb287";
@@ -15,7 +16,7 @@ const CANARY: &str = "PRIVATE_BRIEF_CANARY_wb287";
 fn rig(tag: &str) -> Rig {
     let rig = Rig::new(tag);
     let mut meta = rig.meta();
-    meta.push_str(&format!("session_id={SID}\n"));
+    writeln!(meta, "session_id={SID}").expect("fixture UUID row");
     std::fs::write(rig.dir.join("meta"), meta).expect("fixture UUID");
     assert!(
         rig.tmux(&[
@@ -252,11 +253,13 @@ fn resolved_clients_and_direct_commands_preserve_birth_selection_without_the_pro
     rig.enable_codex_profile();
     let config_path = rig.scratch.join("config");
     let mut config = std::fs::read_to_string(&config_path).expect("fixture config");
-    config.push_str(&format!(
+    write!(
+        config,
         "\n[clients]\nroute-a = {} config_home={}\nroute-b = {} config_home={}\n\n[profiles]\nvia-a = \"route-a --model sonnet --effort high\"\nvia-b = \"route-b --model sonnet --effort high\"\nvia-a-alt = \"route-a --model opus --effort max\"\nvia-codex = \"codex-test --model gpt-6.1-sol -c model_reasoning_effort=xhigh\"\n",
         rig.scratch.join("claude").display(), rig.scratch.join("home-a").display(),
         rig.scratch.join("claude").display(), rig.scratch.join("home-b").display()
-    ));
+    )
+    .expect("route configuration");
     std::fs::write(config_path, config).expect("two routes");
     let a = committed(&rig, "one", "via-a");
     let b = committed(&rig, "two", "via-b");
@@ -289,7 +292,29 @@ fn resolved_clients_and_direct_commands_preserve_birth_selection_without_the_pro
 
 #[test]
 fn fixed_seats_restart_reseat_and_session_resume_do_not_create_new_births() {
+    use std::os::unix::fs::PermissionsExt;
+
     let rig = rig("wblifetime");
+    // A shebang fake runs as perl. Relaunch and reseat prove the adapter by
+    // executable name, so this fixture needs a genuinely claude-named process.
+    // This is the existing seat_relaunch fixture's named-interpreter pattern.
+    let binary = rig.scratch.join("claude");
+    let script = rig.scratch.join("claude.pl");
+    std::fs::rename(&binary, &script).expect("keep the existing fake body");
+    std::fs::copy("/usr/bin/perl", &binary).expect("named interpreter");
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+        .expect("executable named fake");
+    let path = rig.scratch.join("config");
+    let home = rig.scratch.join("home").display().to_string();
+    std::fs::write(
+        &path,
+        format!(
+            "[profiles]\nfake = \"CLAUDE_CONFIG_DIR={home} {} {}\"\n\n[roster]\nlead = fake\n\n[workspace]\nmain = lead\nlayout = vertical\n",
+            binary.display(),
+            script.display()
+        ),
+    )
+    .expect("named fake profile for initial start and resume");
     assert!(
         records(&rig, "worker-birth").is_empty(),
         "the fixed lead is excluded"
@@ -309,17 +334,27 @@ fn fixed_seats_restart_reseat_and_session_resume_do_not_create_new_births() {
     assert_eq!(code, Some(0), "relaunch: {out}\n{err}");
     assert_eq!(records(&rig, "worker-birth").len(), 1);
 
-    let path = rig.scratch.join("config");
     let mut config = std::fs::read_to_string(&path).expect("config");
-    config.push_str(&format!(
-        "\n[profiles]\nother = \"{} --model sonnet --effort high\"\n",
-        rig.scratch.join("claude").display()
-    ));
+    write!(
+        config,
+        "\n[profiles]\nother = \"CLAUDE_CONFIG_DIR={home} {} {} --model sonnet --effort high\"\n",
+        binary.display(),
+        script.display()
+    )
+    .expect("second profile configuration");
     std::fs::write(&path, config).expect("second resolved profile");
     let output = super::super::cli::ae()
         .env("AE_HOME", &rig.scratch)
         .env("CONFIG_FILE", &path)
-        .args(["reseat", &rig.session, "scout", "--using", "other"])
+        // The owned synthetic frame has no supported idle/busy marker.
+        .args([
+            "reseat",
+            &rig.session,
+            "scout",
+            "--using",
+            "other",
+            "--stop-unknown",
+        ])
         .output()
         .expect("real reseat");
     assert!(
@@ -349,6 +384,7 @@ fn fixed_seats_restart_reseat_and_session_resume_do_not_create_new_births() {
         .env("AE_HOME", &rig.scratch)
         .env("CONFIG_FILE", &path)
         .env("AE_NO_AUTOSTART", "1")
+        .env("AE_TMUX_SERVER", &rig.sock)
         .args([&rig.session, "--no-attach"])
         .output()
         .expect("real session resume");

@@ -152,7 +152,9 @@ older core steps over the additive key as unknown data.
 | `done` | `mark-done` helper | Completion / pause signal. `mark-done` is an alias for `state done`; both are read as `done`. |
 | `chat` | `say` helper | Agent's free-text line to the human, forwarded by the Telegram bridge when a lead-pair seat (or the watchdog) wrote it. Text in `summary`. |
 | `memo` | `memo add` helper | Append to shared session memory. |
-| `spawn` | ae internal | A new agent joined the workspace. |
+| `spawn` | ae internal | A new agent joined the workspace. `summary` is its task text. A modern record carries `birth`, the link to its certificate. |
+| `worker-birth` | ae internal | The durable birth certificate of one committed new worker. No summary; see [Worker birth records](#worker-birth-records). |
+| `worker-fact` | reserved | A later fact about a birth. The wire is defined and read; no writer ships yet. |
 | `retire` | ae internal | A spawned agent was removed. |
 | `focus` | `focus` helper | tmux focus switch (informational). |
 | `interrupt` | `interrupt` helper | Cancel signal sent. |
@@ -231,12 +233,42 @@ Adding new optional keys is fine — readers ignore unknown ones. Renaming or re
 
 ### Schema version
 
-Every record ae appends ends in `"schema_version":1`. A record without it is **v0**, written before the field existed. Existing records are never migrated: a resume's trim only drops older lines (re-terminating each kept one with LF) and the archive copies bytes. One journal therefore holds v0 and v1 side by side, and every reader, ae's or a bridge's, accepts both.
+Every record ae appends ends in `"schema_version":1`. A record without it is **v0**, written before the field existed. Existing records are never migrated: a resume's trim only drops older lines (re-terminating each kept one with LF, and never dropping a [worker birth record](#worker-birth-records)) and the archive copies bytes. One journal therefore holds v0 and v1 side by side, and every reader, ae's or a bridge's, accepts both.
 
 - **One writer.** The store's two append functions stamp each complete LF-terminated record that is one JSON object without the member, by inserting it before the closing brace; every other byte passes through unchanged (torn tail, blank or non-object line, a record that already has it). A mirror repair copies a persisted original into the other ledger verbatim, unstamped, so both ledgers keep the same bytes.
 - **Absent or `0` is v0.** One integer in `0..=4294967295` is that version. A string, float, negative, larger number, `null`, array, object, a repeated key or a non-object line reads *unreadable*. None of these costs the record: `schema_version` is not part of `Event`, no ae reader routes on it, and its presence or value never changes what a record means or whether a strict reader accepts the journal (`events::schema_version` is the reference reader).
 - **A newer number is read, not rejected.** Within a version, changes are additive. A consumer that meets a version it does not know keeps reading the keys it knows and reports the version as unsupported instead of guessing.
 - **Not the digest's number.** `ae list --json` has its own `schema_version` (the snapshot's shape, currently 2); the two move independently.
+
+## Worker birth records
+
+`spawn` carries the task and ages out of the trim like any other line. `worker-birth` is what stays: one short record per committed new worker, written right after the launch is dispatched, where no rollback can follow.
+
+```json
+{"ts":"2026-11-01T10:00:00Z","actor":"lead","action":"worker-birth","target":"scout","target_slot":"spawned.3",
+ "target_session_id":"<session uuid>","birth_v":1,"birth":"<first launch_id>","birth_tool":"claude",
+ "birth_client":"claude-p","birth_model":"sonnet","birth_effort":"high","birth_profile":"sonnet5h","schema_version":1}
+```
+
+- **`birth`** is the seat's first `launch_id`. A journal record never rotates it, and a reseat's new launch id matches no birth.
+- **Absent is a fact.** No `birth_client` means no `[clients]` label expanded; no `birth_model` or `birth_effort` means the command set no flag. Values are as written, so an alias stays an alias. A vendor default is never filled in.
+- **`birth_profile` is diagnostic.** Profiles are presets that change; they are not an identity to aggregate on.
+- **Facts about the seat at birth, not today.** Later config edits, reseats and `/model` changes do not touch the record.
+- **No task text.** No summary, body file, command, argv or path, ever.
+
+`worker-fact` shares the frozen identity members and adds `fact` (`brief-failed`, `start-attempted`, `start-failed`, `observed`), `start`, `observed_source`, `observed_model` and `observed_effort`. No writer ships yet.
+
+`birth_v` is the family's own version. `birth_v`, `birth`, `target_session_id`, `target` and `target_slot` are frozen across versions; additive optional members keep `birth_v=1`, unknown members are inert, and a change of meaning bumps it. `events::schema_version` is not consulted.
+
+| Record | Reads as |
+|---|---|
+| Supported version | `Birth` / `Fact` |
+| Higher `birth_v`, valid `birth` | `Unsupported`, its identity usable |
+| Absent, non-integer, below 1 or repeated `birth_v`; a repeated, wrong-typed, oversized or control-character member; an unknown v1 `fact` | `Damage`, with whatever identity it still proves |
+| `spawn` with a malformed `birth` | `Damage`, not legacy |
+| `spawn` with no `birth` | not classified: legacy |
+
+The resume trim keeps every parsed record of the family by action alone, so a newer core's record survives an older core's trim. The family is not activity: `last_active` steps over it, and it is not news against a quiet state.
 
 ## Consuming the stream: snapshot + cursor
 
