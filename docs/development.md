@@ -268,7 +268,7 @@ claude login, for example `~/.claude-p`), `AE_HARNESS_SMOKE_STEP_SECS`, `_TOOL_S
 printed: a version is reduced to its numeric token and a refused verb to its exit code. The one
 thing kept is the last pane frame of a `ready` timeout, so a smoke never fails blind: with the
 report directory set it is written there as `frame-<stamp>-<tool>.txt` (owner-only, created
-exclusively, at most 80 rows of 240 columns and 16 KiB, every control character but the row break
+exclusively, at most 80 rows of 240 characters and 16 KiB, every control character but the row break
 and tab shown as U+FFFD), and without one the report says none was kept.
 `just harness-smoke control` runs the hang control: a `claude` shim that answers `--version` and
 then hangs must read `FAIL(ready)` inside its bound; it spends nothing and ignores every command

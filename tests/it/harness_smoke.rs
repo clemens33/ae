@@ -38,8 +38,10 @@
 //! scratch `AE_HOME` / `CONFIG_FILE` / tmux server socket, `TMUX` and
 //! `TMUX_PANE` removed. The fixed work directory is one canonical path with an
 //! exclusive lock, so a vendor's trust list gains ONE entry, not one per run.
-//! Pane text is read in memory through the product's own capture leg and only
-//! ever feeds a decision: it is never written or printed.
+//! Pane text is read in memory through the product's own capture leg and feeds a
+//! decision. The one thing ever written is the last frame of a readiness wait that
+//! failed: bounded, neutralised, owner-only, and only in the report directory a
+//! human asked for. It is never printed.
 //!
 //! WHAT A VENDOR WRITES TO ITS REAL CONFIG (documented, never cleaned): claude
 //! records the folder trust in `<config_home>/.claude.json` and the
@@ -1653,9 +1655,10 @@ fn write_report(dir: &Path, stamp: u64, tsv: &str) -> Result<PathBuf, String> {
     Ok(file)
 }
 
-/// The most rows, columns and bytes of a pane frame the report keeps.
+/// The most rows, characters (Unicode scalars, not terminal cells) per row and
+/// bytes of a pane frame the report keeps.
 const FRAME_ROWS: usize = 80;
-const FRAME_COLS: usize = 240;
+const FRAME_CHARS: usize = 240;
 const FRAME_BYTES: usize = 16 * 1024;
 
 /// A pane frame fit for a file a human opens in a terminal: every control
@@ -1677,9 +1680,9 @@ fn frame_evidence(capture: &str) -> String {
     let mut rows: Vec<String> = neutral
         .lines()
         .map(|row| {
-            if row.chars().count() > FRAME_COLS {
+            if row.chars().count() > FRAME_CHARS {
                 row.chars()
-                    .take(FRAME_COLS - 1)
+                    .take(FRAME_CHARS - 1)
                     .chain(std::iter::once('…'))
                     .collect()
             } else {
@@ -1873,6 +1876,28 @@ fn live_harness_smoke_hang_control() {
         "hang control: wall {:?}, cleanup {:?}",
         row.wall, row.cleanup
     );
+
+    // The same hang under an OUTER bound shorter than the ready wait: the run is
+    // cancelled mid-wait and snapshotted before the worker can react, so the
+    // frame must already be published, and the verdict still names the step.
+    let mut tight = Plan::control();
+    tight.per_tool = Duration::from_secs(6);
+    let rows = run_plan(&tight);
+    let (table, _) = render(&rows);
+    println!("\n{table}");
+    let outcome = &rows[0].outcome;
+    assert_eq!(
+        outcome.verdict(),
+        "FAIL(ready)",
+        "the outer bound names the step it cut\n{table}"
+    );
+    assert_eq!(outcome.detail, "outer bound reached", "{table}");
+    let frame = outcome.frame.as_deref().unwrap_or("");
+    assert!(
+        !frame.is_empty(),
+        "an outer bound during ready keeps the last frame\n{table}"
+    );
+    assert!(!rows[0].root.exists(), "the scratch root is gone");
 }
 
 #[cfg(test)]
@@ -2364,7 +2389,7 @@ mod pins {
         let wide = format!("{}\nshort\n", "x".repeat(10_000));
         let kept = frame_evidence(&wide);
         assert!(
-            kept.lines().all(|row| row.chars().count() <= FRAME_COLS),
+            kept.lines().all(|row| row.chars().count() <= FRAME_CHARS),
             "no row outgrows the column bound"
         );
         assert!(
@@ -2374,7 +2399,7 @@ mod pins {
         assert!(kept.ends_with("short\n"));
 
         let heavy = (0..FRAME_ROWS).fold(String::new(), |mut text, n| {
-            let _ = writeln!(text, "{n:02}{}", "█".repeat(FRAME_COLS - 2));
+            let _ = writeln!(text, "{n:02}{}", "█".repeat(FRAME_CHARS - 2));
             text
         });
         assert!(
@@ -2483,6 +2508,149 @@ mod pins {
             notes.is_empty() && problems.is_empty(),
             "{notes:?} {problems:?}"
         );
+    }
+
+    /// A driver over a private tmux server whose one pane (`%0`) runs `script`:
+    /// no ae and no vendor, only the real capture leg and the real waits.
+    fn run_over(script: &str, tag: &str) -> (Run, OwnedScratch) {
+        let mut scratch = OwnedScratch::root("hs", tag);
+        let root = scratch.path().to_owned();
+        let sock = root.join("sock");
+        scratch.add_tmux_server(sock.clone());
+        let gate = Gate::new();
+        let mut tmux = cli::helper_by_name("tmux");
+        tmux.env("TMUX_TMPDIR", &root).env_remove("TMUX").args([
+            "-S",
+            &sock.display().to_string(),
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "hs",
+            "-x",
+            "100",
+            "-y",
+            "30",
+            "sh",
+            "-c",
+            script,
+        ]);
+        let done = run_bounded(&gate, &mut tmux, Duration::from_secs(10)).expect("tmux starts");
+        assert_eq!(done.code, Some(0), "a private pane: {}", done.stderr);
+        let run = Run {
+            gate,
+            tool: &TOOLS[0],
+            kind: ToolKind::Claude,
+            session: "hs".to_owned(),
+            state: root.join("state"),
+            config: root.join("config"),
+            server: ServerId::Selected(Selector::Socket(sock.clone())),
+            sock,
+            scratch: root.clone(),
+            work: root.clone(),
+            path_env: String::new(),
+            home: String::new(),
+            step: Duration::from_secs(2),
+            watchdog: false,
+            last: RefCell::new(String::new()),
+            token: "0".to_owned(),
+            operands: (0, 0),
+        };
+        (run, scratch)
+    }
+
+    #[test]
+    fn a_readiness_wait_that_runs_out_leaves_its_last_frame_even_if_the_run_is_cut_at_once() {
+        let (run, _scratch) = run_over(
+            "printf 'Do you trust this folder? (y/n)\\n'; sleep 120",
+            "wait-miss",
+        );
+        let two = Duration::from_secs(2);
+        assert!(!run.frame_twice("%0", two, Want::Drawn).expect("a wait"));
+        let kept = run
+            .gate
+            .snapshot()
+            .frame
+            .expect("the last frame is published");
+        assert!(kept.contains("trust this folder"), "{kept:?}");
+        // The outer bound cancels and snapshots before the worker reacts: the
+        // frame was published during the wait, so that snapshot still has it.
+        run.gate.cancel();
+        assert!(
+            run.gate
+                .snapshot()
+                .frame
+                .is_some_and(|f| f.contains("trust this folder"))
+        );
+
+        // The pre-send quiet wait on a tool with no frame grammar is the other
+        // readiness wait: a pane that never settles leaves its frame too.
+        let (run, _scratch) = run_over(
+            "i=0; while :; do i=$((i+1)); echo tick $i; sleep 0.2; done",
+            "settle-miss",
+        );
+        assert!(!run.settled("%0", two).expect("a wait"));
+        let kept = run
+            .gate
+            .snapshot()
+            .frame
+            .expect("the last frame is published");
+        assert!(kept.contains("tick"), "{kept:?}");
+    }
+
+    #[test]
+    fn a_readiness_wait_that_passes_clears_the_frame_it_published_on_the_way() {
+        // The pane is blank first, so the wait publishes a frame on the way, then
+        // draws a real fresh claude start and must clear it.
+        let files = OwnedScratch::root("hs", "fresh");
+        let fresh = files.path().join("fresh.txt");
+        std::fs::write(&fresh, FRESH).expect("the fresh frame");
+        let script = format!("sleep 1.5; cat {}; sleep 120", fresh.display());
+        let (run, _scratch) = run_over(&script, "wait-pass");
+        let bound = Duration::from_secs(8);
+        assert!(run.frame_twice("%0", bound, Want::Drawn).expect("a wait"));
+        assert!(
+            run.gate.snapshot().frame.is_none(),
+            "a pass leaves no frame"
+        );
+
+        let (run, _scratch) = run_over("printf 'quiet\\n'; sleep 120", "settle-pass");
+        assert!(run.settled("%0", bound).expect("a wait"));
+        assert!(
+            run.gate.snapshot().frame.is_none(),
+            "a pass leaves no frame"
+        );
+    }
+
+    #[test]
+    fn a_wait_for_idle_after_a_turn_publishes_nothing() {
+        let (run, _scratch) = run_over("printf 'Working...\\n'; sleep 120", "idle-miss");
+        let two = Duration::from_secs(2);
+        assert!(!run.frame_twice("%0", two, Want::Idle).expect("a wait"));
+        assert!(
+            run.gate.snapshot().frame.is_none(),
+            "only readiness waits publish"
+        );
+    }
+
+    #[test]
+    fn a_frame_kept_by_a_run_that_read_pass_is_a_problem_not_evidence() {
+        // A frame is the witness of a readiness wait that failed; a wait that
+        // passed clears it, so one still standing on a PASS row is a wiring bug.
+        let scratch = OwnedScratch::root("hs", "frames-pass");
+        let dir = scratch.path().join("reports");
+        let mut row = row_with_frame("claude", Some("left behind\n"));
+        row.outcome.marks = [Mark::Ok; 10];
+        assert_eq!(row.outcome.verdict(), "PASS");
+        let (notes, problems) = keep_frames(Some(&dir), 9, &[row]);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("claude") && problems[0].contains("PASS"),
+            "{problems:?}"
+        );
+        assert!(!dir.join("frame-9-claude.txt").exists());
     }
 
     #[test]
