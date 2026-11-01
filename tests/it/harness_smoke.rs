@@ -39,7 +39,7 @@
 //! `TMUX_PANE` removed. The fixed work directory is one canonical path with an
 //! exclusive lock, so a vendor's trust list gains ONE entry, not one per run.
 //! Pane text is read in memory through the product's own capture leg and feeds a
-//! decision. The one thing ever written is the last frame of a readiness wait that
+//! decision. The one thing ever written is the last frame of a wait on the pane that
 //! failed: bounded, neutralised, owner-only, and only in the report directory a
 //! human asked for. It is never printed.
 //!
@@ -237,7 +237,7 @@ struct Outcome {
     ae_turns: u8,
     /// The harness session id(s) this run left in the vendor's store.
     strays: Vec<String>,
-    /// The newest pane frame a readiness wait saw, already neutralised and
+    /// The newest pane frame a wait on the pane saw, already neutralised and
     /// bounded ([`frame_evidence`]), published as it is seen and cleared when the
     /// wait passes: what is left on a failed run is the one witness of why the
     /// tool never drew its box.
@@ -260,7 +260,7 @@ impl Outcome {
         }
     }
 
-    /// Keep the pane as a readiness wait last saw it.
+    /// Keep the pane as a wait on the pane last saw it.
     fn keep_frame(&mut self, capture: &str) {
         self.frame = Some(frame_evidence(capture));
     }
@@ -1004,18 +1004,49 @@ impl Run {
         Ok(capture)
     }
 
-    /// Re-read until `ready` holds or `bound` passes; `Ok(false)` on timeout.
+    /// One look of a WAIT on the pane (a readiness wait, the answer wait, the
+    /// idle wait): the frame is published to the shared outcome as the evidence a
+    /// timeout needs. It is published as it is seen, not at the miss, because the
+    /// outer bound cancels the run and snapshots the outcome before this thread
+    /// can react. [`Self::wait_passed`] clears it again.
+    fn sight(&self, pane: &str) -> Result<Option<String>, Stop> {
+        let capture = self.look(pane)?;
+        if let Some(text) = &capture {
+            self.gate.with_live(|out| out.keep_frame(text));
+        }
+        Ok(capture)
+    }
+
+    /// A wait passed: the frames it published on the way are no evidence of
+    /// anything, and a passing run keeps none.
+    fn wait_passed(&self) {
+        self.gate.with_live(|out| out.frame = None);
+    }
+
+    /// A wait begins: until a capture succeeds the evidence is the placeholder,
+    /// published before the first (possibly blocked) capture, so a pane or server
+    /// that never answers, or an outer cut before the first read returns, still
+    /// leaves a frame that says so. Later failed captures leave the last good
+    /// frame alone.
+    fn wait_begins(&self) {
+        self.gate.with_live(|out| out.keep_frame(""));
+    }
+
+    /// Re-read until `ready` holds or `bound` passes; `Ok(false)` on timeout. A
+    /// wait on the pane: it leaves its last frame on a miss.
     fn until(
         &self,
         pane: &str,
         bound: Duration,
         mut ready: impl FnMut(&str) -> bool,
     ) -> Result<bool, Stop> {
+        self.wait_begins();
         let deadline = Instant::now() + bound;
         loop {
-            if let Some(text) = self.look(pane)?
+            if let Some(text) = self.sight(pane)?
                 && ready(&text)
             {
+                self.wait_passed();
                 return Ok(true);
             }
             if Instant::now() >= deadline {
@@ -1025,56 +1056,23 @@ impl Run {
         }
     }
 
-    /// One look of a READINESS wait (the tool has drawn its box and is quiet):
-    /// the frame is published to the shared outcome as the evidence a timeout
-    /// needs. It is published as it is seen, not at the miss, because the outer
-    /// bound cancels the run and snapshots the outcome before this thread can
-    /// react. [`Self::ready_passed`] clears it again.
-    fn sight(&self, pane: &str, publish: bool) -> Result<Option<String>, Stop> {
-        let capture = self.look(pane)?;
-        if publish && let Some(text) = &capture {
-            self.gate.with_live(|out| out.keep_frame(text));
-        }
-        Ok(capture)
-    }
-
-    /// A readiness wait passed: the frames it published on the way are no
-    /// evidence of anything, and a passing run keeps none.
-    fn ready_passed(&self) {
-        self.gate.with_live(|out| out.frame = None);
-    }
-
-    /// A readiness wait begins: until a capture succeeds the evidence is the
-    /// placeholder, published before the first (possibly blocked) capture, so a
-    /// pane or server that never answers, or an outer cut before the first read
-    /// returns, still leaves a frame that says so. Later failed captures leave
-    /// the last good frame alone.
-    fn ready_begins(&self) {
-        self.gate.with_live(|out| out.keep_frame(""));
-    }
-
     /// The frame test `want` names, twice [`FRAME_GAP`] apart: a frame that
-    /// flickers through the state proves nothing. Waiting for [`Want::Drawn`]
-    /// is the readiness wait (the first frame, the frame after a resume and the
-    /// quiet before each send): it publishes what it sees. [`Want::Idle`], the
-    /// wait after a turn, publishes nothing.
+    /// flickers through the state proves nothing. Every wait on the pane leaves
+    /// its last frame on a miss: [`Want::Drawn`] is the readiness wait (the first
+    /// frame, the frame after a resume, the quiet before each send), [`Want::Idle`]
+    /// the wait after a turn.
     fn frame_twice(&self, pane: &str, bound: Duration, want: Want) -> Result<bool, Stop> {
-        let publish = matches!(want, Want::Drawn);
-        if publish {
-            self.ready_begins();
-        }
+        self.wait_begins();
         let deadline = Instant::now() + bound;
         loop {
-            let first = self.sight(pane, publish)?;
+            let first = self.sight(pane)?;
             if first.is_some_and(|text| want.holds(&text, self.kind)) {
                 self.nap(FRAME_GAP)?;
                 if self
-                    .sight(pane, publish)?
+                    .sight(pane)?
                     .is_some_and(|text| want.holds(&text, self.kind))
                 {
-                    if publish {
-                        self.ready_passed();
-                    }
+                    self.wait_passed();
                     return Ok(true);
                 }
             }
@@ -1086,17 +1084,17 @@ impl Run {
     }
 
     /// The pane stopped changing across two reads: the precondition for typing
-    /// at a tool ae has no frame grammar for. A readiness wait too, so it
+    /// at a tool ae has no frame grammar for. A wait on the pane too, so it
     /// publishes what it sees like [`Self::frame_twice`] does.
     fn settled(&self, pane: &str, bound: Duration) -> Result<bool, Stop> {
-        self.ready_begins();
+        self.wait_begins();
         let deadline = Instant::now() + bound;
         loop {
-            let first = self.sight(pane, true)?;
+            let first = self.sight(pane)?;
             self.nap(FRAME_GAP)?;
-            let second = self.sight(pane, true)?;
+            let second = self.sight(pane)?;
             if first.as_ref().is_some_and(|text| !text.trim().is_empty()) && first == second {
-                self.ready_passed();
+                self.wait_passed();
                 return Ok(true);
             }
             if Instant::now() >= deadline {
@@ -1789,7 +1787,7 @@ fn keep_frames(dir: Option<&Path>, stamp: u64, rows: &[Row]) -> (Vec<String>, Ve
         let Some(frame) = &row.outcome.frame else {
             continue;
         };
-        // A readiness wait that passes clears its frame, so one left on a PASS row
+        // A wait that passes clears its frame, so one left on a PASS row
         // is a wiring fault, never evidence.
         if row.outcome.verdict() == "PASS" {
             problems.push(format!("{} kept a frame but read PASS", row.tool));
@@ -2740,7 +2738,7 @@ mod pins {
         // The outer bound cancels; the snapshot is taken a lock later. A pass
         // (or a late look) in between must change nothing the snapshot sees.
         run.gate.cancel();
-        run.ready_passed();
+        run.wait_passed();
         run.gate.with_live(|out| out.keep_frame("a later frame\n"));
         let kept = run
             .gate
@@ -2795,7 +2793,7 @@ mod pins {
             .expect("the last frame is published");
         assert!(kept.contains("thinking about it"), "{kept:?}");
         run.gate.cancel();
-        run.ready_passed();
+        run.wait_passed();
         assert!(run.gate.snapshot().frame.is_some(), "a cut run keeps it");
 
         // The echoed prompt first, then the answer row claude draws (a bullet, the
@@ -2814,7 +2812,7 @@ mod pins {
 
     #[test]
     fn a_frame_kept_by_a_run_that_read_pass_is_a_problem_not_evidence() {
-        // A frame is the witness of a readiness wait that failed; a wait that
+        // A frame is the witness of a wait that failed; a wait that
         // passed clears it, so one still standing on a PASS row is a wiring bug.
         let scratch = OwnedScratch::root("hs", "frames-pass");
         let dir = scratch.path().join("reports");

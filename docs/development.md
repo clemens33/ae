@@ -266,12 +266,12 @@ claude login, for example `~/.claude-p`), `AE_HARNESS_SMOKE_STEP_SECS`, `_TOOL_S
 `_TOTAL_SECS` (a tool started late gets only what is left of the total), `AE_HARNESS_SMOKE_REPORT`
 (a directory for the TSV report; asked for and unwritable is a failure). Raw tool output is never
 printed: a version is reduced to its numeric token and a refused verb to its exit code. The one
-thing kept is the last pane frame a readiness wait saw (the first frame, the frame after a
-resume, the quiet before a send) when that wait failed, an outer bound cutting it included, so a
-smoke never fails blind: with the report directory set it is written there as
-`frame-<stamp>-<tool>.txt` (owner-only, created exclusively, at most 80 rows of 240 characters and
-16 KiB, every control character but the row break and tab shown as U+FFFD), and without one the
-report says none was kept.
+thing kept is the last pane frame a wait on the pane saw (the first frame, the frame after a
+resume, the quiet before a send, the answer, the idle frame after it) when that wait failed, an
+outer bound cutting it included, so a smoke never fails blind: with the report directory set it
+is written there as `frame-<stamp>-<tool>.txt` (owner-only, created exclusively, at most 80 rows
+of 240 characters and 16 KiB, every control character but the row break and tab shown as U+FFFD),
+and without one the report says none was kept.
 `just harness-smoke control` runs the hang control: a `claude` shim that answers `--version` and
 then hangs must read `FAIL(ready)` inside its bound, with its last frame kept, and again under an
 outer bound shorter than the wait; it spends nothing and ignores every command
