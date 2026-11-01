@@ -23,7 +23,7 @@
 //! wrong reads FAIL naming the step. Never green by omission.
 //!
 //! WHY the answer cannot be forged by an echo. Turn 1 asks the model to join
-//! hyphen-separated letters; the joined token never occurs in the prompt, so
+//! two whole halves of the token; the joined token never occurs in the prompt, so
 //! the token on a row AFTER the row echoing the prompt's marker is the model's
 //! answer. Turn 2 (after the resume) asks which word it replied with; its
 //! prompt holds no token, so a blank or stale conversation cannot pass, and
@@ -452,17 +452,6 @@ fn letters(mut seed: u64, len: usize) -> String {
     out
 }
 
-/// The letters separated by spaces: the form the prompt carries, never the
-/// token. A hyphen separator would let a model "join with no spaces" and still
-/// answer with hyphens (measured live: codex did), which is not the token.
-fn spaced(token: &str) -> String {
-    token
-        .chars()
-        .map(String::from)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Whether `token` is on a row AFTER the last row echoing `marker`: the model's
 /// answer, not the echoed prompt. With no echo to anchor on, a token that was
 /// absent before the send (`baseline` zero) and is present now is the answer.
@@ -474,13 +463,15 @@ fn answered(capture: &str, marker: &str, token: &str, baseline: usize) -> bool {
     }
 }
 
-/// The first turn: the letters of `token` apart, to be written together as one
-/// word. The token itself is never in the prompt, so an echo cannot answer it.
+/// The first turn: the two halves of `token`, to be joined into one word. The token
+/// itself is never in the prompt, so an echo cannot answer it. Eight letters spaced
+/// apart came back hyphenated and with a space inside (measured live, codex), so
+/// the model gets two whole halves and a single join to make.
 fn turn1_prompt(token: &str, marker: &str) -> String {
+    let (first, second) = token.split_at(token.len() / 2);
     format!(
-        "Write these letters together as one lowercase word, with nothing between them, \
-         and reply with only that word: {} ({marker})",
-        spaced(token)
+        "Join these two parts into one lowercase word, with nothing between them, \
+         and reply with only that word: {first} and {second} ({marker})"
     )
 }
 
