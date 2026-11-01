@@ -5993,7 +5993,7 @@ fn lane_lock_env(
     run_in_env(scratch, cwd, "just", &words, env)
 }
 
-/// The claim is one atomic `mkdir`, so a worktree meets the main checkout's
+/// The claim is one exclusive create of the owner line, so a worktree meets the main checkout's
 /// lock; only the recorded owner releases it, by exact name; nothing in the
 /// recipe clears a lock it did not write.
 #[test]
@@ -6261,6 +6261,170 @@ fn a_stalled_lane_lock_release_cannot_remove_the_lock_the_recipe_gave_to_the_nex
 #[test]
 fn a_stalled_lane_lock_release_cannot_remove_the_lock_a_hand_release_gave_to_the_next_holder() {
     stalled_release_meets_a_new_holder("stallh", true);
+}
+
+/// The `PATH` that puts a `mkdir` shim first. Ubuntu 26.04 ships uutils 0.10.0, whose `mkdir`
+/// is not atomic: 1686 of 3000 two-way races of `mkdir t` both exited 0. The shim runs `hook`
+/// (shell, the target in `$last`) for every `mkdir` that is not `-p`, then falls through to the
+/// real one, so a hook that ends in `exit 0` is that defect, deterministically.
+fn mkdir_shim_path(scratch: &Path, hook: &str) -> String {
+    let shim = scratch.join("mkdir-shim");
+    assert!(std::fs::create_dir_all(&shim).is_ok(), "a shim directory");
+    let body = format!(
+        "#!/bin/sh\ncase \"$1\" in -p) exec /bin/mkdir \"$@\" ;; esac\n\
+         for last; do :; done\n{hook}\nexec /bin/mkdir \"$@\"\n"
+    );
+    assert!(
+        std::fs::write(shim.join("mkdir"), body).is_ok(),
+        "the mkdir shim"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            std::fs::set_permissions(shim.join("mkdir"), std::fs::Permissions::from_mode(0o755))
+                .is_ok(),
+            "an executable mkdir shim"
+        );
+    }
+    format!(
+        "{}:{}",
+        shim.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// The measured defect itself: `mkdir` of a directory that exists reports success.
+const MKDIR_SUCCEEDS_ON_AN_EXISTING_DIRECTORY: &str = "[ -d \"$last\" ] && exit 0";
+
+/// On a host whose `mkdir` is not atomic, a claim over a gate that is already held is refused,
+/// and the holder's owner line is never touched: not by another name, not by the holder's own,
+/// and not when the gate stands with no owner line.
+#[test]
+fn a_lane_lock_claim_over_a_standing_gate_is_refused_where_mkdir_is_not_atomic() {
+    let (scratch, main, linked) = lane_lock_checkouts("naheld");
+    let owner = main.join(".local/locks/gate/owner");
+    let path = mkdir_shim_path(&scratch, MKDIR_SUCCEEDS_ON_AN_EXISTING_DIRECTORY);
+    let env = [("PATH", path.as_str())];
+
+    assert_eq!(lane_lock(&scratch, &main, &["claim", "alpha"]).0, 0);
+    let held = read(&owner);
+    assert!(held.starts_with("alpha "), "alpha holds: {held:?}");
+
+    let (code, out, err) = lane_lock_env(&scratch, &linked, &["claim", "beta"], &env);
+    assert_eq!(code, 1, "beta must not take alpha's gate: {out}{err}");
+    assert!(err.contains("held by alpha"), "the holder is named: {err}");
+    assert_eq!(read(&owner), held, "alpha's owner line is untouched");
+
+    let (code, out, err) = lane_lock_env(&scratch, &main, &["claim", "alpha"], &env);
+    assert_eq!(code, 1, "the holder's own name is refused too: {out}{err}");
+    assert!(err.contains("already holds"), "{err}");
+    assert_eq!(read(&owner), held, "alpha's owner line is untouched");
+
+    // A gate with no owner line is held, not free: the recipe never claims it.
+    assert!(std::fs::remove_file(&owner).is_ok());
+    let (code, out, err) = lane_lock_env(&scratch, &linked, &["claim", "beta"], &env);
+    assert_eq!(code, 1, "an ownerless gate is not claimed: {out}{err}");
+    assert!(err.contains("no owner"), "{err}");
+    assert!(
+        main.join(".local/locks/gate").is_dir() && !owner.exists(),
+        "the ownerless gate is left as it was"
+    );
+}
+
+/// The race the defect opens: another claimant creates the gate and its owner line between
+/// this claim's look and its `mkdir`, and `mkdir` still reports success. The owner line is
+/// created exclusively, so the later claimant loses, exits 1 and leaves the winner's line alone.
+#[test]
+fn a_lane_lock_claim_that_loses_the_race_is_refused_where_mkdir_is_not_atomic() {
+    let (scratch, main, _linked) = lane_lock_checkouts("narace");
+    let owner = main.join(".local/locks/gate/owner");
+    let rival = "alpha 2000-01-01T00:00:00Z\n";
+    let hook = format!(
+        "if [ ! -d \"$last\" ]; then /bin/mkdir \"$last\" && printf '%s' '{rival}' >\"$last/owner\"; fi\n{MKDIR_SUCCEEDS_ON_AN_EXISTING_DIRECTORY}"
+    );
+    let path = mkdir_shim_path(&scratch, &hook);
+
+    let (code, out, err) = lane_lock_env(&scratch, &main, &["claim", "beta"], &[("PATH", &path)]);
+    assert_eq!(code, 1, "the later claimant must lose: {out}{err}");
+    assert!(!out.contains("claimed"), "{out}");
+    assert!(err.contains("held by alpha"), "the winner is named: {err}");
+    assert_eq!(read(&owner), rival, "the winner's owner line is untouched");
+}
+
+/// `mkdir` reports success, the holder releases before the claim can write its owner line, so the
+/// gate is gone: that is a free lock, and the claim takes it. It is never `could not create`.
+#[test]
+fn a_lane_lock_claim_retries_when_the_gate_vanishes_under_it() {
+    let (scratch, main, _linked) = lane_lock_checkouts("navanish");
+    let once = scratch.join("once");
+    let hook = format!(
+        "if [ ! -e '{once}' ]; then : >'{once}'; exit 0; fi",
+        once = once.display()
+    );
+    let path = mkdir_shim_path(&scratch, &hook);
+
+    let (code, out, err) = lane_lock_env(&scratch, &main, &["claim", "beta"], &[("PATH", &path)]);
+    assert_eq!(
+        code, 0,
+        "a vanished gate is a retry, not a refusal: {out}{err}"
+    );
+    assert!(once.exists(), "the shim reported its one false success");
+    assert!(!err.contains("could not create"), "{err}");
+    let recorded = read(&main.join(".local/locks/gate/owner"));
+    assert!(recorded.starts_with("beta 20"), "beta holds: {recorded:?}");
+}
+
+/// Two claimants at the same instant under a `mkdir` that always reports success: still exactly
+/// one winner per round, and the owner line is the winner's, whole.
+#[test]
+fn two_simultaneous_lane_lock_claims_have_exactly_one_winner_where_mkdir_is_not_atomic() {
+    let (scratch, main, linked) = lane_lock_checkouts("narace2");
+    let path = mkdir_shim_path(&scratch, "/bin/mkdir -p \"$last\"; exit 0");
+    for round in 0..8 {
+        let start = std::sync::Barrier::new(2);
+        let (first, second) = std::thread::scope(|scope| {
+            let race = |cwd: &Path, name: &'static str| {
+                let (scratch, start, path) = (&scratch, &start, &path);
+                let cwd = cwd.to_path_buf();
+                scope.spawn(move || {
+                    start.wait();
+                    let env = [("PATH", path.as_str())];
+                    (name, lane_lock_env(scratch, &cwd, &["claim", name], &env).0)
+                })
+            };
+            let (a, b) = (race(&main, "left"), race(&linked, "right"));
+            (a.join().unwrap_or(("", -1)), b.join().unwrap_or(("", -1)))
+        });
+        let winners: Vec<&str> = [first, second]
+            .into_iter()
+            .filter(|(_, code)| *code == 0)
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(winners.len(), 1, "round {round}: {first:?} {second:?}");
+        let recorded = read(&main.join(".local/locks/gate/owner"));
+        assert!(
+            recorded.starts_with(&format!("{} 20", winners[0])) && recorded.ends_with("Z\n"),
+            "round {round}: {recorded:?}"
+        );
+        assert_eq!(lane_lock(&scratch, &main, &["release", winners[0]]).0, 0);
+    }
+}
+
+/// A `mkdir` that fails with no gate standing is still the refusal it always was, at once.
+#[test]
+fn a_lane_lock_claim_refuses_when_mkdir_fails_and_no_gate_stands() {
+    let (scratch, main, _linked) = lane_lock_checkouts("nafail");
+    let path = mkdir_shim_path(&scratch, "echo 'mkdir: simulated failure' >&2; exit 1");
+
+    let (code, out, err) = lane_lock_env(&scratch, &main, &["claim", "beta"], &[("PATH", &path)]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.contains("could not create"), "{err}");
+    assert!(
+        err.contains("simulated failure"),
+        "mkdir's own words: {err}"
+    );
+    assert!(!main.join(".local/locks/gate").exists(), "no gate was made");
 }
 
 // ── the on-demand live harness smoke ─────────────────────────────────────

@@ -104,8 +104,11 @@ nothing, and a green `just pre` is never cited as a green gate: only `just test`
 **The lane lock.** One machine runs one gate at a time. `just lane-lock claim <name> [secs]`
 takes the lock (waiting up to `secs`, printing the holder every 30 s), `release <name>` gives it
 back, `status` names the holder and its age. The lock is the main checkout's
-`.local/locks/gate` directory, taken by an atomic `mkdir` and holding one `owner` line
-(`<name> <UTC timestamp>`); `.local/locks/next` is the queue (empty = anyone). Resolved from a
+`.local/locks/gate` directory holding one `owner` line (`<name> <UTC timestamp>`), which the
+recipe creates exclusively: that create is the claim, not the `mkdir` before it, because a
+`mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that
+exists, so two claimants can both get past it). The hand-typed `mkdir` has no such proof there;
+on such a host only the recipe is exclusive. `.local/locks/next` is the queue (empty = anyone). Resolved from a
 linked worktree, so every checkout meets the same lock, and the same protocol as the hand-typed
 one, so a holder on either spelling blocks the other. `release` refuses any owner but `<name>`
 and leaves the lock intact, and works inside the directory it checked: a release that stalls

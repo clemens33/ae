@@ -106,9 +106,12 @@ _pre-test:
 # One machine runs one gate at a time, so a slice takes the LANE LOCK before it
 # runs `just test` and gives it back after. This recipe is that protocol, byte
 # for byte what the hand-typed version did, so a holder on one spelling blocks
-# a claimant on the other: the lock is the directory `<main checkout>/.local/locks/gate`,
-# taken by an atomic `mkdir` and recording its holder as one `owner` line,
-# `<name> <UTC timestamp>`; `<main checkout>/.local/locks/next` is the queue, a file naming
+# a claimant on the other: the lock is the directory `<main checkout>/.local/locks/gate`
+# recording its holder as one `owner` line, `<name> <UTC timestamp>`, which the recipe
+# creates EXCLUSIVELY (noclobber, O_EXCL): that create is the claim, because `mkdir` is not
+# atomic everywhere (uutils 0.10.0, Ubuntu 26.04, reports success for a directory that exists,
+# so two claimants both "win" it). The hand protocol has no owner proof on such a host, the
+# recipe has. `<main checkout>/.local/locks/next` is the queue, a file naming
 # the one slice that may claim next (empty = anyone). The main checkout is
 # resolved from `git rev-parse --git-common-dir`, so a linked worktree meets the
 # same lock. `.local` is untracked: claim creates what it needs.
@@ -126,7 +129,7 @@ _pre-test:
 # ("suspect") and left standing: a human or the lead clears it, by hand, after
 # asking the holder. A stale-lock cleanup once removed an ACTIVE gate. Age alone
 # cannot prove a holder dead, so nothing here acts on it. The queue check and the
-# `mkdir` are two steps, as they were by hand: `next` is a courtesy, `mkdir` is the lock.
+# claim are two steps, as they were by hand: `next` is a courtesy, the owner create is the lock.
 
 # Claim, release or inspect the gate lane lock: claim NAME [WAIT-SECS] | release NAME | status
 [no-exit-message]
@@ -169,6 +172,9 @@ lane-lock verb name="" wait="0":
     # The inode of directory $1. `ls -di` is the one spelling BSD and GNU share (`stat` differs).
     # shellcheck disable=SC2012
     inode_of() { ls -di "$1" | awk '{print $1}'; }
+    # The claim: the owner line created EXCLUSIVELY. Noclobber makes bash open it with O_EXCL; the
+    # subshell keeps it from reaching anything else in the recipe. Fails when the line exists.
+    claim_owner() { ( set -C; printf '%s %s\n' "$name" "$(date -u +%FT%TZ)" >"$owner_file" ) 2>/dev/null; }
     span() {
         local s=$1
         (( s >= 0 )) || s=0
@@ -255,15 +261,27 @@ lane-lock verb name="" wait="0":
         claim)
             mkdir -p "$locks"
             start="$(date +%s)"
+            vanished=0
             while :; do
                 if [[ ! -s "$next_file" || "$(cat "$next_file")" == "$name" ]]; then
-                    if err="$(mkdir "$gate" 2>&1)"; then
-                        printf '%s %s\n' "$name" "$(date -u +%FT%TZ)" >"$owner_file"
+                    # A standing gate is held and is not asked about: a `mkdir` that is not atomic reports
+                    # success for it. Two claimants can still both pass this look and both `mkdir`; the
+                    # exclusive owner create picks one, and the other reads it like any holder.
+                    made=skip
+                    if [[ ! -e "$gate" && ! -L "$gate" ]]; then
+                        if err="$(mkdir "$gate" 2>&1)"; then made=yes; else made=no; fi
+                    fi
+                    if [[ "$made" == yes ]] && claim_owner; then
                         echo "lane-lock: claimed by $name"
                         [[ ! -s "$next_file" ]] || echo "note: $next_file still names $(cat "$next_file"); the lead clears it"
                         exit 0
                     fi
-                    [[ -e "$gate" || -L "$gate" ]] || refuse "could not create $gate: $err"
+                    if [[ ! -e "$gate" && ! -L "$gate" ]]; then
+                        [[ "$made" != no ]] || refuse "could not create $gate: $err"
+                        # Released between the look or `mkdir` and the owner create: the lock is free, try again.
+                        (( ++vanished <= 5 )) || refuse "$gate keeps vanishing under this claim"
+                        continue
+                    fi
                     if [[ -d "$gate" && ! -L "$gate" ]]; then
                         read_holder
                         [[ "$h_name" != "$name" ]] || refuse "$name already holds the gate ($h_line); release it first, or this is another session on the same name"
