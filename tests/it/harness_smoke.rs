@@ -22,11 +22,11 @@
 //! longer read PASS; a vendor usage limit reads LIMIT; anything else that goes
 //! wrong reads FAIL naming the step. Never green by omission.
 //!
-//! WHY the answer cannot be forged by an echo. Turn 1 asks the model to join
-//! two whole halves of the token; the joined token never occurs in the prompt, so
-//! the token on a row AFTER the row echoing the prompt's marker is the model's
-//! answer. Turn 2 (after the resume) asks which word it replied with; its
-//! prompt holds no token, so a blank or stale conversation cannot pass, and
+//! WHY the answer cannot be forged by an echo. Turn 1 asks for the sum of two
+//! random four-digit numbers; the sum never occurs in the prompt, so the sum, as a
+//! whole run of digits, on a row AFTER the row echoing the prompt's marker is the
+//! model's answer. Turn 2 (after the resume) asks which number it replied with; its
+//! prompt holds no number, so a blank or stale conversation cannot pass, and
 //! ae's metadata and journal alone cannot pass either.
 //!
 //! SPEND. At most two turns are sent by this runner per tool, never retried. A
@@ -473,28 +473,42 @@ fn operands(seed: u64) -> (u32, u32) {
 /// being tested has no reason to refuse a harmless question.
 const PREFACE: &str = "Automated harness smoke test: harmless, no files and no commands.";
 
-/// The first turn: join two parts. (Skeleton: the arithmetic prompt follows.)
+/// The first turn: the sum of two numbers, asked for as bare digits. The sum is
+/// never in the prompt, so an echo cannot answer it, and a digit total is one token
+/// to write, where eight letters to join came back hyphenated, with a space inside
+/// and as a refusal (measured live, codex).
 fn turn1_prompt(operands: (u32, u32), marker: &str) -> String {
-    let token = (operands.0 + operands.1).to_string();
-    let (first, second) = token.split_at(token.len() / 2);
+    let (a, b) = operands;
     format!(
-        "Join these two parts into one lowercase word, with nothing between them, \
-         and reply with only that word: {first} and {second} ({marker})"
+        "{PREFACE} What is {a} + {b}? Reply with only the digits of the sum, \
+         no commas and no other text. ({marker})"
     )
 }
 
-/// The recall turn. (Skeleton: the arithmetic wording follows.)
+/// The recall turn: the number back, asked for without naming any number.
 fn turn2_prompt(marker: &str) -> String {
-    format!("Which word did you reply with before? Reply with only that word. ({marker})")
+    format!(
+        "{PREFACE} Which number did you reply with before? Reply with only the digits \
+         of that number, no other text. ({marker})"
+    )
 }
 
+/// How often `token` stands in `capture` as a whole run: not glued to a letter or a
+/// digit on either side, so 6912 is not found inside 16912.
 fn count(capture: &str, token: &str) -> usize {
-    capture.matches(token).count()
+    capture
+        .match_indices(token)
+        .filter(|&(at, _)| {
+            let before = capture[..at].chars().next_back();
+            let after = capture[at + token.len()..].chars().next();
+            !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+        })
+        .count()
 }
 
-/// Whether `row` holds `token`. (Skeleton: a substring; the whole-run rule follows.)
+/// Whether `row` holds `token` as a whole run.
 fn holds(row: &str, token: &str) -> bool {
-    row.contains(token)
+    count(row, token) > 0
 }
 
 /// The version a tool printed, reduced to the ONE shape that cannot carry a path
