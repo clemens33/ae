@@ -1687,6 +1687,17 @@ fn wait_ended_note(ended: WaitEnded) -> String {
     )
 }
 
+/// STUB (red): the clause a stale nudge quotes from the seat's newest declaration.
+#[must_use]
+pub fn declared_clause(
+    _events: &[Event],
+    _session: &str,
+    _slot: &str,
+    _agent: &str,
+) -> Option<String> {
+    None
+}
+
 /// The text and the journal summary of one nudge: which of the three
 /// generators speaks, and the ended-wait note that rides it. ONE owner, so
 /// what the seat reads and what the journal keeps cannot disagree about why
@@ -1698,8 +1709,10 @@ pub fn nudge_words(
     idle_age: Option<u64>,
     display: &str,
     waiting: Option<&str>,
+    task: Option<&str>,
     ended: Option<WaitEnded>,
 ) -> (String, String) {
+    let _ = task;
     let note = ended.map(wait_ended_note);
     let text = match (idle_age.is_some(), waiting) {
         (true, Some(reason)) => idle_nudge_text_waiting(goal, meta_dir, reason, note.as_deref()),
@@ -6820,6 +6833,7 @@ impl Cycle<'_> {
                     idle_age,
                     &display,
                     waiting.as_deref(),
+                    None,
                     on.seen.ended_wait,
                 );
                 let code = self.deliver(agent, &text, "nudge", &summary, None).code;
@@ -16172,11 +16186,11 @@ mod tests {
             input_age_secs: 300,
         };
         assert_eq!(
-            super::nudge_words(None, meta, None, "idle 449m", None, Some(ended)).0,
+            super::nudge_words(None, meta, None, "idle 449m", None, None, Some(ended)).0,
             "Continue working; do not re-plan or ask unless blocked. Client input in your pane ended your waiting-user 5m ago (keypress, click, scroll or switch — not proof of an answer). Still waiting: re-declare waiting-user with the current reason. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         assert_eq!(
-            super::nudge_words(None, meta, Some(300), "idle 5m", None, Some(ended)).0,
+            super::nudge_words(None, meta, Some(300), "idle 5m", None, None, Some(ended)).0,
             "You look idle. Continue working; do not re-plan or ask unless blocked. Client input in your pane ended your waiting-user 5m ago (keypress, click, scroll or switch — not proof of an answer). Still waiting: re-declare waiting-user with the current reason. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
     }
@@ -16237,11 +16251,11 @@ mod tests {
             for (label, (text, summary)) in [
                 (
                     "plain",
-                    nudge_words(None, meta, None, "idle 449m", None, ended),
+                    nudge_words(None, meta, None, "idle 449m", None, None, ended),
                 ),
                 (
                     "idle",
-                    nudge_words(None, meta, Some(300), "idle 5m", None, ended),
+                    nudge_words(None, meta, Some(300), "idle 5m", None, None, ended),
                 ),
                 (
                     "idle-waiting",
@@ -16251,6 +16265,7 @@ mod tests {
                         Some(300),
                         "idle 5m",
                         Some("waiting on 1 request"),
+                        None,
                         ended,
                     ),
                 ),
@@ -16326,7 +16341,7 @@ mod tests {
         ];
         for ((idle_age, waiting, display, text), summary) in cases.into_iter().zip(summaries) {
             assert_eq!(
-                nudge_words(None, meta, idle_age, display, waiting, None),
+                nudge_words(None, meta, idle_age, display, waiting, None, None),
                 (text, summary.to_owned()),
                 "{display}/{waiting:?}"
             );

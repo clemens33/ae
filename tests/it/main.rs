@@ -69,6 +69,7 @@ mod console_p3_spec;
 mod console_replies_spec;
 mod copilot_spec;
 mod daemons;
+mod declared_task_spec;
 mod deliver;
 mod doctor;
 mod doctor_feeds_spec;

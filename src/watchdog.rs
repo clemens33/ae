@@ -4697,6 +4697,7 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
             None,
             "idle 5m",
             None,
+            None,
             Some(crate::watchdog_daemon::WaitEnded {
                 kind: QuietKind::WaitingUser,
                 input_age_secs: 120,
@@ -4943,12 +4944,12 @@ tail line
                 ("nudge", nudge_text(goal, meta, None)),
                 (
                     "nudge noted",
-                    nudge_words(goal, meta, None, "idle 449m", None, Some(ended)).0,
+                    nudge_words(goal, meta, None, "idle 449m", None, None, Some(ended)).0,
                 ),
                 ("idle", idle_nudge_text(goal, meta, None)),
                 (
                     "idle noted",
-                    nudge_words(goal, meta, Some(300), "idle 5m", None, Some(ended)).0,
+                    nudge_words(goal, meta, Some(300), "idle 5m", None, None, Some(ended)).0,
                 ),
                 (
                     "idle waiting",
@@ -4956,7 +4957,16 @@ tail line
                 ),
                 (
                     "idle waiting noted",
-                    nudge_words(goal, meta, Some(300), "idle 5m", Some(reason), Some(ended)).0,
+                    nudge_words(
+                        goal,
+                        meta,
+                        Some(300),
+                        "idle 5m",
+                        Some(reason),
+                        None,
+                        Some(ended),
+                    )
+                    .0,
                 ),
                 ("done", done_challenge_text(goal, meta, 300, 0, 2)),
                 (
@@ -4984,7 +4994,16 @@ tail line
                 );
                 check(
                     &format!("waiting reason {reason:?} noted"),
-                    &nudge_words(goal, meta, Some(300), "idle 5m", Some(reason), Some(ended)).0,
+                    &nudge_words(
+                        goal,
+                        meta,
+                        Some(300),
+                        "idle 5m",
+                        Some(reason),
+                        None,
+                        Some(ended),
+                    )
+                    .0,
                 );
             }
         }
@@ -5026,12 +5045,12 @@ tail line
                 (
                     "status",
                     nudge_text(goal, meta, None),
-                    nudge_words(goal, meta, None, "idle 449m", None, Some(ended)).0,
+                    nudge_words(goal, meta, None, "idle 449m", None, None, Some(ended)).0,
                 ),
                 (
                     "idle",
                     idle_nudge_text(goal, meta, None),
-                    nudge_words(goal, meta, Some(300), "idle 5m", None, Some(ended)).0,
+                    nudge_words(goal, meta, Some(300), "idle 5m", None, None, Some(ended)).0,
                 ),
             ] {
                 assert_ne!(plain, noted, "{label}/{goal:?}: the note is really there");
