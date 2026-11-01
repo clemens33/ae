@@ -243,3 +243,81 @@ fn envelope_versions_and_inert_extensions_never_change_family_decisions() {
         );
     }
 }
+
+fn observed_fact() -> String {
+    format!(
+        "{{\"ts\":\"2026-11-01T10:00:00Z\",\"actor\":\"watchdog\",\"action\":\"worker-fact\",\"target_session_id\":\"{SID}\",\"birth_v\":1,\"birth\":\"{BID}\",\"fact\":\"observed\",\"start\":\"spawned.0:{BID}:41\",\"observed_source\":\"frame\",\"observed_model\":\"sonnet\",\"observed_effort\":\"high\"}}"
+    )
+}
+
+fn with_members(line: &str, extra: &str) -> String {
+    format!("{}{extra}}}", &line[..line.len() - 1])
+}
+
+fn known_member_damage_on_other_shape(line: &str, family: Family, members: &[(&str, &str)]) {
+    for (key, value) in members {
+        for extra in [
+            format!(",\"{key}\":\"{value}\",\"{key}\":\"{value}\""),
+            format!(",\"{key}\":7"),
+            format!(",\"{key}\":\"bad\\ncell\""),
+            format!(",\"{key}\":\"{}\"", "x".repeat(1_048_577)),
+        ] {
+            let changed = with_members(line, &extra);
+            let event = Event::parse_line(&changed).expect("the old envelope remains usable");
+            let damage = decode(&event)
+                .expect("known family")
+                .expect_err("known members obey Damage rules on either shape");
+            assert_eq!(damage.family, family, "{key}");
+            assert_eq!(damage.birth.as_deref(), Some(BID), "{key}");
+            assert_eq!(damage.session.as_deref(), Some(SID), "{key}");
+            assert!(durable_line(&changed), "retain damaged {key} evidence");
+        }
+    }
+}
+
+#[test]
+fn fact_fields_on_a_birth_still_obey_known_member_damage_rules() {
+    let start = format!("spawned.0:{BID}:41");
+    known_member_damage_on_other_shape(
+        &certificate(),
+        Family::Birth,
+        &[
+            ("fact", "observed"),
+            ("start", &start),
+            ("observed_source", "frame"),
+            ("observed_model", "sonnet"),
+            ("observed_effort", "high"),
+        ],
+    );
+}
+
+#[test]
+fn birth_fields_on_a_fact_still_obey_known_member_damage_rules() {
+    known_member_damage_on_other_shape(
+        &observed_fact(),
+        Family::Fact,
+        &[
+            ("birth_tool", "claude"),
+            ("birth_client", "claude-p"),
+            ("birth_model", "sonnet"),
+            ("birth_effort", "high"),
+            ("birth_profile", "preset"),
+        ],
+    );
+}
+
+#[test]
+fn unknown_family_extensions_remain_inert_on_both_shapes() {
+    for line in [certificate(), observed_fact()] {
+        let clean = read(&line).expect("supported family");
+        for extra in [
+            ",\"future_extension\":7,\"future_extension\":8",
+            ",\"future_extension\":\"bad\\ncell\"",
+            ",\"future_extension\":{\"unexpected\":true}",
+        ] {
+            let changed = with_members(&line, extra);
+            assert_eq!(read(&changed).expect("unknown is inert"), clean);
+            assert!(durable_line(&changed));
+        }
+    }
+}

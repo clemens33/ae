@@ -415,3 +415,71 @@ fn retiring_then_spawning_the_same_name_is_a_distinct_birth() {
     );
     assert_eq!(records(&rig, "worker-birth").len(), 2);
 }
+
+#[test]
+fn committed_certificates_keep_value_absent_and_unproved_flag_states_apart() {
+    let rig = rig("wbflagstates");
+    let path = rig.scratch.join("config");
+    let mut config = std::fs::read_to_string(&path).expect("fixture config");
+    let fake = rig.scratch.join("claude");
+    write!(
+        config,
+        "\n[profiles]\nwire-none = \"{0}\"\nwire-value = \"{0} --model sonnet --effort high\"\nwire-duplicate = \"{0} --model sonnet --model opus --effort high --effort max\"\nwire-model-missing = \"{0} --model --effort high\"\nwire-effort-missing = \"{0} --model sonnet --effort\"\nwire-unknown = \"{0} --effort PRIVATE_FLAG_VALUE_CANARY\"\nwire-env = \"CLAUDE_CODE_EFFORT_LEVEL=medium {0} --model sonnet --effort high\"\nwire-model-env = \"MODEL=PRIVATE_MODEL_ENV_CANARY {0}\"\n",
+        fake.display()
+    )
+    .expect("flag-state profiles");
+    std::fs::write(&path, config).expect("profiles installed");
+    for (index, (profile, model, model_unproved, effort, effort_unproved)) in [
+        ("wire-none", None, None, None, None),
+        ("wire-value", Some("sonnet"), None, Some("high"), None),
+        (
+            "wire-duplicate",
+            None,
+            Some("ambiguous-model"),
+            None,
+            Some("ambiguous-effort"),
+        ),
+        (
+            "wire-model-missing",
+            None,
+            Some("model-missing-value"),
+            Some("high"),
+            None,
+        ),
+        (
+            "wire-effort-missing",
+            Some("sonnet"),
+            None,
+            None,
+            Some("effort-missing-value"),
+        ),
+        ("wire-unknown", None, None, None, Some("unknown-effort")),
+        ("wire-env", Some("sonnet"), None, None, Some("env-effort")),
+        ("wire-model-env", None, None, None, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let record = committed(&rig, &format!("flags{index}"), profile);
+        assert_eq!(text(&record, "birth_model"), model, "{profile}");
+        assert_eq!(
+            text(&record, "birth_model_unproved"),
+            model_unproved,
+            "{profile}"
+        );
+        assert_eq!(text(&record, "birth_effort"), effort, "{profile}");
+        assert_eq!(
+            text(&record, "birth_effort_unproved"),
+            effort_unproved,
+            "{profile}"
+        );
+        assert_eq!(text(&record, "birth_tool"), Some("claude"));
+        assert_eq!(text(&record, "birth_profile"), Some(profile));
+    }
+    assert_eq!(records(&rig, "worker-birth").len(), 8);
+    for record in records(&rig, "worker-birth") {
+        let projection = record.render();
+        assert!(!projection.contains("PRIVATE_FLAG_VALUE_CANARY"));
+        assert!(!projection.contains("PRIVATE_MODEL_ENV_CANARY"));
+    }
+}
