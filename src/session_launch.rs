@@ -26,6 +26,8 @@ pub(crate) mod capture;
 pub(crate) mod name;
 #[cfg(test)]
 mod start_spec;
+#[cfg(test)]
+mod start_wiring_spec;
 
 pub use capture::developer_record_carries;
 
