@@ -65,11 +65,11 @@ fn every_session_card_offers_both_read_only_items_and_the_orchestrator_none() {
     let card = |name: &str, status| Card::new(name, ID, Some(ID), Some(status), None);
     assert_eq!(
         card("api", Status::Running).items(),
-        [Item::Stop, Item::Activity, Item::Memos]
+        [Item::Stop, Item::Activity, Item::Memos, Item::End]
     );
     assert_eq!(
         card("api", Status::Stopped).items(),
-        [Item::Start, Item::Activity, Item::Memos]
+        [Item::Start, Item::Activity, Item::Memos, Item::End]
     );
     let lead = card(crate::orchestrator::ORCHESTRATOR_SESSION, Status::Running);
     assert!(lead.items().is_empty());
