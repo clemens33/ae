@@ -24,11 +24,12 @@
 //!
 //! WHY the answer cannot be forged by an echo. Turn 1 asks for the sum of two
 //! random four-digit numbers; the sum never occurs in the prompt, so a row that is
-//! the sum ALONE (bullet or box decoration aside, never a status row that merely
-//! holds the digits) AFTER the row echoing the prompt's marker is the model's
-//! answer. Turn 2 (after the resume) asks which number it replied with; its
-//! prompt holds no number, so a blank or stale conversation cannot pass, and
-//! ae's metadata and journal alone cannot pass either.
+//! the sum ALONE (or the equation that gives it; bullet, box decoration and claude's
+//! clock stamp aside, never a status row that merely holds the digits) AFTER the
+//! row echoing the prompt's marker is the model's answer. Turn 2 (after the resume)
+//! asks which number it replied with; its prompt holds no number, so a blank or
+//! stale conversation cannot pass, and ae's metadata and journal alone cannot pass
+//! either.
 //!
 //! SPEND. At most two turns are sent by this runner per tool, never retried. A
 //! tool whose adapter has a launch turn (codex's registration turn) also gets
@@ -522,15 +523,61 @@ fn turn2_prompt(marker: &str) -> String {
 }
 
 /// Whether `row` is the answer `token` and nothing else: only whitespace, a bullet, a
-/// prompt mark or a box edge around it, and at most a closing full stop. A status or
+/// prompt mark or a box edge around it, claude's clock stamp before it, and at most a
+/// closing full stop. The answer is the bare sum or the equation that gives it
+/// (`a + b = sum`, the arithmetic checked), because a model told to reply with
+/// digits only sometimes shows its working (measured live, claude). A status or
 /// footer row that merely holds the same digits ("6912 tokens", a context count) is
 /// not an answer, and neither is a number glued to other text.
 fn is_answer_row(row: &str, token: &str) -> bool {
     const DECORATION: &[char] = &[
         '•', '●', '⏺', '◦', '○', '▪', '▌', '│', '┃', '>', '❯', '›', '|', '*',
     ];
-    let bare = row.trim_matches(|c: char| c.is_whitespace() || DECORATION.contains(&c));
-    bare.strip_suffix('.').unwrap_or(bare) == token
+    let frame = |text: &str| -> String {
+        text.trim_matches(|c: char| c.is_whitespace() || DECORATION.contains(&c))
+            .to_owned()
+    };
+    let bare = frame(row);
+    let bare = frame(without_clock_stamp(&bare));
+    let bare = bare.strip_suffix('.').unwrap_or(&bare);
+    bare == token || equation_gives(bare, token)
+}
+
+/// `row` without a leading `[H:MM]` / `[HH:MM]` clock stamp: claude's UI draws one
+/// before every answer (`⏺ [03:12] 6042`, as in every claude frame this repo
+/// keeps), and it is not part of the model's text. Anything else stays as it was.
+fn without_clock_stamp(row: &str) -> &str {
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    row.strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .and_then(|(stamp, after)| {
+            let (hours, minutes) = stamp.split_once(':')?;
+            (digits(hours) && hours.len() <= 2 && digits(minutes) && minutes.len() == 2)
+                .then_some(after)
+        })
+        .unwrap_or(row)
+}
+
+/// Whether `text` is exactly `a + b = token` with `a + b == token`: the sum shown
+/// with its working. The echoed prompt cannot be one (it never holds the sum).
+fn equation_gives(text: &str, token: &str) -> bool {
+    let number = |part: &str| {
+        part.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| part.parse::<u64>().ok())
+            .flatten()
+    };
+    let Some((working, result)) = text.split_once(" = ") else {
+        return false;
+    };
+    let Some((left, right)) = working.split_once(" + ") else {
+        return false;
+    };
+    result == token
+        && matches!(
+            (number(left), number(right)),
+            (Some(a), Some(b)) if a.checked_add(b).is_some_and(|sum| sum.to_string() == token)
+        )
 }
 
 /// How many rows of `capture` are the answer `token` and nothing else.
@@ -2057,11 +2104,7 @@ mod pins {
     #[test]
     fn the_answer_a_live_claude_drew_is_found_behind_its_clock_stamp() {
         let frame = live_answered();
-        let echo_only: String = frame
-            .lines()
-            .take(5)
-            .map(|row| format!("{row}\n"))
-            .collect();
+        let echo_only = frame.lines().take(5).collect::<Vec<_>>().join("\n");
         assert!(answered(&frame, "ref dferes", "6042", 0));
         assert!(
             !answered(&echo_only, "ref dferes", "6042", 0),
