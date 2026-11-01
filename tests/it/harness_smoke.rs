@@ -235,6 +235,9 @@ struct Outcome {
     ae_turns: u8,
     /// The harness session id(s) this run left in the vendor's store.
     strays: Vec<String>,
+    /// The last pane frame of a ready timeout, already neutralised and bounded
+    /// ([`frame_evidence`]): the one witness of why the tool never drew its box.
+    frame: Option<String>,
 }
 
 impl Outcome {
@@ -249,8 +252,12 @@ impl Outcome {
             runner_turns: 0,
             ae_turns: 0,
             strays: Vec::new(),
+            frame: None,
         }
     }
+
+    /// Keep the pane as it stood when a ready wait ran out.
+    fn keep_frame(&mut self, _capture: &str) {}
 
     /// FAIL > LIMIT > SKIP > PASS, each naming its step.
     fn verdict(&self) -> String {
@@ -1636,21 +1643,50 @@ fn write_report(dir: &Path, stamp: u64, tsv: &str) -> Result<PathBuf, String> {
     Ok(file)
 }
 
+/// The most rows, columns and bytes of a pane frame the report keeps.
+const FRAME_ROWS: usize = 80;
+const FRAME_COLS: usize = 240;
+const FRAME_BYTES: usize = 16 * 1024;
+
+/// A pane frame fit for a file a human opens in a terminal: bounded, with every
+/// control character neutralised.
+fn frame_evidence(capture: &str) -> String {
+    capture.to_owned()
+}
+
+/// Write one kept frame into `dir`; an error names why, never the content.
+fn write_frame(dir: &Path, stamp: u64, tool: &str, frame: &str) -> Result<PathBuf, String> {
+    let _ = (dir, stamp, tool, frame);
+    Err("not written".to_owned())
+}
+
+/// Keep every frame the rows carry: the lines to print, and the problems.
+fn keep_frames(dir: Option<&Path>, stamp: u64, rows: &[Row]) -> (Vec<String>, Vec<String>) {
+    let _ = (dir, stamp, rows);
+    (Vec::new(), Vec::new())
+}
+
 /// Print the table, keep the report, and fail the test on any FAIL or on a
-/// report that was asked for and could not be written.
+/// report or a frame that was asked for and could not be written.
 fn conclude(rows: &[Row]) {
     let (table, tsv) = render(rows);
     println!("\n{table}");
     let mut problems: Vec<String> = Vec::new();
-    if let Some(dir) = env_text("AE_HARNESS_SMOKE_REPORT").map(PathBuf::from) {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs());
-        match write_report(&dir, stamp, &tsv) {
+    let dir = env_text("AE_HARNESS_SMOKE_REPORT").map(PathBuf::from);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    if let Some(dir) = &dir {
+        match write_report(dir, stamp, &tsv) {
             Ok(file) => println!("report: {}", file.display()),
             Err(why) => problems.push(format!("AE_HARNESS_SMOKE_REPORT was set but {why}")),
         }
     }
+    let (notes, trouble) = keep_frames(dir.as_deref(), stamp, rows);
+    for note in notes {
+        println!("{note}");
+    }
+    problems.extend(trouble);
     problems.extend(
         rows.iter()
             .filter(|row| row.outcome.is_fail())
@@ -1710,6 +1746,18 @@ fn live_harness_smoke_hang_control() {
         &outcome.marks[..4],
         &[Mark::Ok, Mark::Ok, Mark::Ok, Mark::Fail],
         "version answered, launch worked, ready failed\n{table}"
+    );
+    // A smoke that fails blind is the gap: the hang must leave its last frame.
+    let frame = outcome.frame.as_deref().unwrap_or("");
+    assert!(
+        !frame.is_empty(),
+        "a ready timeout keeps the last frame\n{table}"
+    );
+    assert!(
+        frame
+            .chars()
+            .all(|c| c == '\n' || c == '\t' || !c.is_control()),
+        "the kept frame is neutralised: {frame:?}"
     );
     assert!(
         row.wall < Duration::from_secs(45),
@@ -2166,6 +2214,196 @@ mod pins {
         );
         assert!(table.contains(&format!("stray vendor conversation: claude {ID}")));
         assert!(table.contains("runner=2 ae=1"));
+    }
+
+    fn row_with_frame(tool: &str, frame: Option<&str>) -> Row {
+        let mut outcome = Outcome::new();
+        if let Some(frame) = frame {
+            outcome.keep_frame(frame);
+        }
+        Row {
+            root: PathBuf::new(),
+            tool: tool.to_owned(),
+            outcome,
+            cleanup: Duration::ZERO,
+            wall: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn a_plain_frame_is_kept_as_it_was_drawn() {
+        let drawn = " ▐▛███▛█   Claude Code v2.1.314\n  Welcome back\n\n❯ \n";
+        assert_eq!(frame_evidence(drawn), drawn);
+        assert_eq!(frame_evidence("a\nb"), "a\nb\n", "ends on a row break");
+    }
+
+    #[test]
+    fn a_frame_with_no_text_says_so_instead_of_being_blank() {
+        for blank in ["", "\n", "   \n \n"] {
+            assert_eq!(frame_evidence(blank), "(no text captured)\n", "{blank:?}");
+        }
+    }
+
+    #[test]
+    fn a_frame_never_carries_a_control_character_but_the_row_break_and_tab() {
+        let hostile = "ok\u{1b}[2J\u{1b}]52;c;aGk=\u{7}tail\r\nrow\u{0}two\u{9b}31m\u{7f}\tkept\n";
+        let kept = frame_evidence(hostile);
+        assert!(
+            kept.chars()
+                .all(|c| c == '\n' || c == '\t' || !c.is_control()),
+            "{kept:?}"
+        );
+        for word in ["ok", "tail", "row", "two", "kept"] {
+            assert!(kept.contains(word), "{word} survives as text: {kept:?}");
+        }
+        assert!(kept.contains('\t'), "a tab is layout, not a control");
+    }
+
+    #[test]
+    fn a_frame_is_bounded_in_rows_columns_and_bytes_and_keeps_its_newest_rows() {
+        let tall: String = (0..500).map(|n| format!("row {n}\n")).collect();
+        let kept = frame_evidence(&tall);
+        assert!(
+            kept.lines().count() <= FRAME_ROWS,
+            "{}",
+            kept.lines().count()
+        );
+        assert_eq!(kept.lines().last(), Some("row 499"), "the newest row stays");
+        assert_ne!(kept.lines().next(), Some("row 0"), "the oldest rows go");
+
+        let wide = format!("{}\nshort\n", "x".repeat(10_000));
+        let kept = frame_evidence(&wide);
+        assert!(
+            kept.lines().all(|row| row.chars().count() <= FRAME_COLS),
+            "no row outgrows the column bound"
+        );
+        assert!(
+            kept.starts_with("xxx") && kept.contains("…\n"),
+            "a clipped row is marked"
+        );
+        assert!(kept.ends_with("short\n"));
+
+        let heavy: String = (0..FRAME_ROWS)
+            .map(|n| format!("{n:02}{}\n", "█".repeat(FRAME_COLS - 2)))
+            .collect();
+        assert!(
+            heavy.len() > FRAME_BYTES,
+            "the fixture outgrows the byte bound"
+        );
+        let kept = frame_evidence(&heavy);
+        assert!(kept.len() <= FRAME_BYTES, "{}", kept.len());
+        assert!(
+            kept.lines().last().is_some_and(|row| row.starts_with("79")),
+            "the newest row stays under the byte bound too"
+        );
+    }
+
+    #[test]
+    fn a_kept_frame_is_the_neutralised_evidence_and_leaves_the_verdict_alone() {
+        let mut outcome = Outcome::new();
+        assert!(
+            outcome.frame.is_none(),
+            "a run keeps nothing until a wait runs out"
+        );
+        outcome.keep_frame("hello\u{1b}[31m red\n");
+        let frame = outcome.frame.clone().expect("a kept frame");
+        assert!(
+            frame.contains("hello") && !frame.contains('\u{1b}'),
+            "{frame:?}"
+        );
+        assert_eq!(
+            outcome.verdict(),
+            "FAIL(incomplete)",
+            "keeping a frame is no pass"
+        );
+    }
+
+    #[test]
+    fn a_frame_file_is_private_named_for_its_tool_and_never_overwritten_or_followed() {
+        let scratch = OwnedScratch::root("hs", "frame");
+        let dir = scratch.path().join("reports");
+        let file = write_frame(&dir, 7, "claude", "box\n")
+            .unwrap_or_else(|why| panic!("a writable frame: {why}"));
+        assert!(file.ends_with("frame-7-claude.txt"), "{}", file.display());
+        assert_eq!(std::fs::read_to_string(&file).expect("the file"), "box\n");
+        let mode = std::fs::metadata(&file)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "a frame can show an account: owner only"
+        );
+
+        let why = write_frame(&dir, 7, "claude", "OTHER\n").expect_err("no overwrite");
+        assert!(
+            !why.contains("OTHER"),
+            "an error never carries the content: {why}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).expect("the file"), "box\n");
+
+        let target = scratch.path().join("target");
+        std::fs::write(&target, "keep").expect("a target");
+        std::os::unix::fs::symlink(&target, dir.join("frame-8-claude.txt")).expect("a link");
+        assert!(
+            write_frame(&dir, 8, "claude", "x\n").is_err(),
+            "a link is not followed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("the target"),
+            "keep"
+        );
+
+        let blocker = scratch.path().join("a-file");
+        std::fs::write(&blocker, "x").expect("a plain file");
+        assert!(write_frame(&blocker.join("reports"), 1, "claude", "x\n").is_err());
+    }
+
+    #[test]
+    fn only_a_row_that_kept_a_frame_gets_a_frame_file_and_a_line_naming_it() {
+        let scratch = OwnedScratch::root("hs", "frames");
+        let dir = scratch.path().join("reports");
+        let rows = [
+            row_with_frame("claude", Some("trust this folder?\n")),
+            row_with_frame("codex", None),
+        ];
+        let (notes, problems) = keep_frames(Some(&dir), 9, &rows);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("frame-9-claude.txt"), "{notes:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("frame-9-claude.txt")).expect("the frame"),
+            "trust this folder?\n"
+        );
+        assert!(!dir.join("frame-9-codex.txt").exists());
+    }
+
+    #[test]
+    fn a_frame_with_no_report_directory_says_it_was_not_kept_and_never_prints_it() {
+        let rows = [row_with_frame("claude", Some("SECRET-LOOKING\n"))];
+        let (notes, problems) = keep_frames(None, 9, &rows);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("AE_HARNESS_SMOKE_REPORT"), "{notes:?}");
+        assert!(!notes[0].contains("SECRET-LOOKING"), "{notes:?}");
+        let (notes, problems) = keep_frames(None, 9, &[row_with_frame("claude", None)]);
+        assert!(
+            notes.is_empty() && problems.is_empty(),
+            "{notes:?} {problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_written_is_a_problem_that_names_why_and_not_the_frame() {
+        let scratch = OwnedScratch::root("hs", "frames-bad");
+        let blocker = scratch.path().join("a-file");
+        std::fs::write(&blocker, "x").expect("a plain file");
+        let rows = [row_with_frame("claude", Some("SECRET-LOOKING\n"))];
+        let (_, problems) = keep_frames(Some(&blocker.join("reports")), 9, &rows);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("claude"), "{problems:?}");
+        assert!(!problems[0].contains("SECRET-LOOKING"), "{problems:?}");
     }
 
     #[test]
