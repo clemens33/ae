@@ -45,6 +45,10 @@ fn with_members(line: &str, extra: &str) -> String {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one independent oracle table keeps the model and effort states visible together"
+)]
 fn configured_flag_states_are_independent_and_never_fabricate_absence() {
     for (command, tool, model, model_unproved, effort, effort_unproved) in [
         ("claude", ToolKind::Claude, None, None, None, None),
