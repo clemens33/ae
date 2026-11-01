@@ -26,6 +26,8 @@ pub(crate) mod source_view;
 )]
 mod source_view_spec;
 
+mod pane_command_spec;
+
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -36,6 +38,11 @@ const POLL: Duration = Duration::from_millis(50);
 /// `Instant::now() + SETUP_WAIT`. A passing read costs one tmux call; the
 /// budget only buys time for a failed read to recover (#293).
 pub(crate) const SETUP_WAIT: Duration = Duration::from_secs(10);
+
+/// The budget of a wait for a pane's own command. tmux answers a pane start
+/// before the pane's child has exec'd, and on a host where that child stalls
+/// the pane reads `tmux` for a second or more (#267), longer under load.
+pub(crate) const PANE_WAIT: Duration = Duration::from_mins(1);
 
 /// What the last read said when no read satisfied the predicate in time.
 #[derive(Debug)]
@@ -103,6 +110,50 @@ pub(crate) fn observe(
         Ok(out) => out,
         Err(why) => panic!("{why}"),
     }
+}
+
+/// A pane's foreground command, once a successful read shows one `accepts`
+/// takes. Trimmed; `accepts` sees it trimmed.
+pub(crate) fn try_pane_command(
+    tmux: impl Fn(&[&str]) -> (bool, String),
+    pane: &str,
+    deadline: Instant,
+    accepts: impl Fn(&str) -> bool,
+) -> Result<String, Unmet> {
+    let args = [
+        "display-message",
+        "-p",
+        "-t",
+        pane,
+        "#{pane_current_command}",
+    ];
+    try_observe(tmux, &args, deadline, |out| accepts(out.trim())).map(|out| out.trim().to_owned())
+}
+
+/// [`try_pane_command`], failing the test with the last read's status and output.
+#[track_caller]
+pub(crate) fn pane_command(
+    tmux: impl Fn(&[&str]) -> (bool, String),
+    pane: &str,
+    deadline: Instant,
+    accepts: impl Fn(&str) -> bool,
+) -> String {
+    match try_pane_command(tmux, pane, deadline, accepts) {
+        Ok(command) => command,
+        Err(why) => panic!("{why}"),
+    }
+}
+
+/// Whether a foreground command is a shell. The names are written out because
+/// the product's classifier also calls an empty command a shell.
+pub(crate) fn is_shell(command: &str) -> bool {
+    matches!(command, "sh" | "bash" | "dash" | "zsh" | "fish")
+}
+
+/// Whether a pane's child has exec'd: until then the pane reads `tmux`, the
+/// forked server's own name. Says nothing about which command runs now.
+pub(crate) fn has_execed(command: &str) -> bool {
+    !command.is_empty() && command != "tmux"
 }
 
 /// The first `list-panes` line of a session, from a successful read.

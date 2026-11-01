@@ -30,11 +30,7 @@ use ae::tool::{Composed, InputModel};
 
 use super::cli::ae;
 use super::phase2::run_tmux;
-use super::support::{SETUP_WAIT, first_pane, observe};
-
-/// The bound of the shell witness. A passing run spends almost none of it, and
-/// a slow exec must not be a new way to fail.
-const SHELL_WAIT: Duration = Duration::from_mins(1);
+use super::support::{PANE_WAIT, SETUP_WAIT, first_pane, is_shell, observe, pane_command};
 
 /// The fake TUI.
 const FAKE_TUI: &str = r#"#!/usr/bin/perl
@@ -145,6 +141,11 @@ my $stalled = 0;
 my $human_done = 0;
 $marker_secs > 0 ? markers() : draw($buf);
 system('tmux', 'wait-for', '-S', "$control.ready") if $mode eq 'frame';
+if ($control) {
+    open(my $drawn, '>>', "$control.drawn") or die;
+    print $drawn "$$\n";
+    close($drawn);
+}
 my $ch;
 while (1) {
     if ($mode eq 'frame' && -e "$control.drain") {
@@ -253,6 +254,27 @@ while (1) {
     draw($buf) if $marker_secs == 0 && !$pasting && !$paste_prefix;
 }
 "#;
+
+/// Wait until the [`FAKE_TUI`] now running in `pane` has drawn, by its own
+/// receipt: `control.drawn` holds the pid of each start that drew. A pid is one
+/// start's, so a frame an earlier start left on the screen proves nothing, and
+/// `pane_pid` is the fake's own because every caller's command ends in `exec`.
+pub(crate) fn wait_fake_drawn(
+    tmux: impl Fn(&[&str]) -> (bool, String),
+    pane: &str,
+    control: &Path,
+) {
+    let receipt = control.with_extension("drawn");
+    observe(
+        tmux,
+        &["display-message", "-p", "-t", pane, "#{pane_pid}"],
+        Instant::now() + PANE_WAIT,
+        |pid| {
+            std::fs::read_to_string(&receipt)
+                .is_ok_and(|drawn| drawn.lines().any(|line| line == pid.trim()))
+        },
+    );
+}
 
 /// One isolated server, one stamped pane running [`FAKE_TUI`], and a session
 /// directory whose meta names the tool.
@@ -394,20 +416,13 @@ impl Rig {
     /// its child has exec'd, so the pane can still read `tmux`, and a delivery
     /// sees a live pane with a blank composer rather than a dead one. Only
     /// `pane_current_command` is read, never the frame the refusal is decided
-    /// on, and the names are written out because the product's classifier
-    /// also calls an empty command a shell.
+    /// on.
     fn wait_for_shell(&self) {
-        observe(
+        pane_command(
             |args| self.tmux(args),
-            &[
-                "display-message",
-                "-p",
-                "-t",
-                &self.pane,
-                "#{pane_current_command}",
-            ],
-            Instant::now() + SHELL_WAIT,
-            |command| matches!(command.trim(), "sh" | "bash" | "dash" | "zsh" | "fish"),
+            &self.pane,
+            Instant::now() + PANE_WAIT,
+            is_shell,
         );
     }
 
