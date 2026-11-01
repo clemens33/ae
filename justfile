@@ -1980,8 +1980,8 @@ rust-build-release:
 # ── Linux container gate (local; CI stays off) ───────────────────────
 
 # THE GATE ON REAL LINUX, on this machine, NATIVE arm64. `just rust-linux` (Ubuntu
-# 24.04) and `just rust-linux-26` (Ubuntu 26.04, behind a stalling session bus,
-# below) run the whole gate (`just rust-setup`, then `just test`) inside a local
+# 24.04) and `just rust-linux-26` (Ubuntu 26.04, with or without a stalling
+# session bus, below) run the whole gate (`just rust-setup`, then `just test`) inside a local
 # Linux container. Both are ON DEMAND: `just test`, `just pre` and `just release`
 # never reach them. An amd64 gate was tried and DROPPED (under QEMU user emulation
 # rust-setup cannot build cargo-nextest — aws-lc-sys's cc segfaults — and six
@@ -2009,25 +2009,30 @@ rust-build-release:
 # tree is identified by HEAD and that count only, never by its content, so exact
 # evidence needs a clean checkout.
 #
-# `just rust-linux-26` adds a STALLING session bus. A private dbus-daemon is the
-# session bus and the activation of org.freedesktop.systemd1 never completes, so
-# tmux 3.6 waits out its transient-scope timeout at every pane child spawn or
-# respawn, as it does on a host whose user manager answers slowly. The lane PROVES the stall
-# before it builds anything: a method call to that name must end in a reply
-# timeout (NoReply) after at least two seconds, else the run stops with exit 4.
-# This is an arm64 lane. The x86_64 proof of Ubuntu 26.04 is a human run on an
+# `just rust-linux-26` takes a `bus`: `off` (the default) is the validated-host
+# arm, the 26.04 image with the container's own session; `stall` adds a STALLING
+# session bus. A private dbus-daemon is the session bus and the activation of
+# org.freedesktop.systemd1 never completes, so tmux 3.6 waits out its
+# transient-scope timeout at every pane child spawn or respawn, as it does on a
+# host whose user manager answers slowly. The stall arm PROVES the stall before
+# it builds anything: a method call to that name must end in a reply timeout
+# (NoReply) after at least two seconds, else the run stops with exit 4. The stall
+# arm is known RED today: 31 tests fail behind it (#267; their fixtures are the
+# separate slice u26c). The default flips to `stall` when that arm is green.
+# These are arm64 lanes. The x86_64 proof of Ubuntu 26.04 is a human run on an
 # x86_64 host; nothing here claims it.
 # The gate on Ubuntu 24.04, native arm64, in a local container.
 rust-linux: (_linux-gate "linux" LINUX_IMAGE "off")
 
-# The gate on Ubuntu 26.04 behind a stalling session bus, native arm64.
-rust-linux-26: (_linux-gate "linux26" LINUX_IMAGE_26 "stall")
+# The gate on Ubuntu 26.04, native arm64: `just rust-linux-26` is the validated-host arm, `just rust-linux-26 stall` the stalling-bus arm (known red, #267).
+rust-linux-26 bus="off": (_linux-gate "linux26" LINUX_IMAGE_26 bus)
 
 # The one body behind both lanes: `flavor` names the image and the cache
 # volumes, `image` is the pinned base, `bus` is off or stall.
 _linux-gate flavor image bus:
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{ bus }}" in off|stall) ;; *) echo "Error: bus must be off or stall, not {{ bus }}" >&2; exit 2 ;; esac
     # The gate is a NATIVE arm64 container. On a non-arm64 daemon the fetched
     # aarch64 binaries would die in a cryptic exec format error, so the daemon
     # is probed first and anything else refuses with the reason.

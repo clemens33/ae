@@ -2281,11 +2281,15 @@ fn the_fuzz_lane_bounds_every_duration_it_hands_libfuzzer() {
 ///
 /// The gate body lives ONCE, in `_linux-gate`, and two thin recipes hand it an
 /// image and a bus: `rust-linux` (Ubuntu 24.04, no bus) and `rust-linux-26`
-/// (Ubuntu 26.04 with a user bus whose systemd never answers, so tmux 3.6's
-/// `StartTransientUnit` waits out its 1 s timeout before every pane child execs).
-/// A lane that cannot prove its bus stalls would pass whatever the tests do, so
-/// the stall is a PROVEN fact, set up and checked before anything is built, and
-/// a mismatch between the host's source and the mount is fatal.
+/// (Ubuntu 26.04), whose `bus` parameter defaults to `off`, the validated-host
+/// arm, and takes `stall` for the other arm: a user bus whose systemd never
+/// answers, so tmux 3.6's `StartTransientUnit` waits out its 1 s timeout before
+/// every pane child execs. The default flips to `stall` only when that arm is
+/// green, and that flip is an edit of this guard. A lane that cannot prove its
+/// bus stalls would pass whatever the tests do, so on the stall arm the stall is
+/// a PROVEN fact, set up and checked before anything is built; the bus kind is
+/// validated on the host before any container starts, and a mismatch between the
+/// host's source and the mount is fatal.
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered rule list over one recipe"
@@ -2302,10 +2306,12 @@ fn linux_lanes_ok(justfile: &str) -> bool {
         return false;
     }
     // Two thin entry points, each handing the body its own pinned image and
-    // bus: the 24.04 lane never grows a bus and the 26.04 lane never loses its.
+    // bus: the 24.04 lane never grows a bus, and the 26.04 lane takes its bus
+    // as a parameter that defaults to `off` (the validated-host arm) and is
+    // forwarded as given, so `stall` stays reachable and nothing else decides it.
     let has_line = |wanted: &str| justfile.lines().any(|line| line == wanted);
     if !has_line("rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"off\")")
-        || !has_line("rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"stall\")")
+        || !has_line("rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)")
     {
         return false;
     }
@@ -2384,6 +2390,18 @@ fn linux_lanes_ok(justfile: &str) -> bool {
     // the container rebuilds that package from the mounted checkout before the
     // gate runs, while dependency artifacts stay shared and warm.
     let joined = lines.join("\n");
+    // The bus kind is validated on the HOST, before the first docker call: only
+    // `off` and `stall` pass, anything else exits 2 and starts nothing.
+    let (Some(check), Some(first_docker)) = (
+        joined.find("case \"{{ bus }}\" in off|stall) ;; *)"),
+        joined.find("docker "),
+    ) else {
+        return false;
+    };
+    match joined[check..].find("exit 2 ;; esac") {
+        Some(found) if check + found < first_docker => {}
+        _ => return false,
+    }
     let Some(container_at) = joined.find("bash -c") else {
         return false;
     };
@@ -2411,23 +2429,25 @@ fn linux_lanes_ok(justfile: &str) -> bool {
     {
         return false;
     }
-    // The bus: handed in as data, set up and PROVEN to stall before the first
-    // build step, fatal when the proof does not hold. The proof is a real method
-    // call to the very name tmux asks, and it must end in a reply timeout
-    // (`NoReply`) after at least two seconds: an immediate ServiceUnknown (no
-    // stall at all), a connection error or any other slow failure cannot pass.
+    // The bus: handed in as data, and on the stall arm set up and PROVEN to
+    // stall before the first build step, fatal when the proof does not hold.
+    // The proof is a real method call to the very name tmux asks, and it must
+    // end in a reply timeout (`NoReply`) after at least two seconds: an
+    // immediate ServiceUnknown (no stall at all), a connection error or any
+    // other slow failure cannot pass. The off arm runs none of it.
     if !contains("-e AE_LANE_BUS={{ bus }}") {
         return false;
     }
     // Each needle must appear AFTER the one before it, so the order is the rule:
-    // the fatal source check, then the service file, the daemon, the address, a reset
-    // clock, the call and its timeout, the error kind it must end in, the
-    // elapsed bound and the exit that makes the proof fatal, and only then the
-    // first build step and the suite.
+    // the fatal source check, then the stall arm's own condition, the service
+    // file, the daemon, the address, a reset clock, the call and its timeout,
+    // the error kind it must end in, the elapsed bound and the exit that makes
+    // the proof fatal, and only then the first build step and the suite.
     let mut at = 0;
     for needle in [
         "GIT_CONFIG_GLOBAL=",
         "|| exit 3",
+        "if [ \"$AE_LANE_BUS\" = stall ]; then",
         "Name=org.freedesktop.systemd1",
         "dbus-daemon --session --fork",
         "export DBUS_SESSION_BUS_ADDRESS=",
@@ -2466,6 +2486,7 @@ const LINUX_IDENT: &str = concat!(
     "        [ \"$got\" = \"$AE_LANE_HEAD\" ] || exit 3\n",
 );
 const LINUX_BUS: &str = concat!(
+    "        if [ \"$AE_LANE_BUS\" = stall ]; then\n",
     "        printf \"Name=org.freedesktop.systemd1\\n\" > \"$svc\"\n",
     "        dbus-daemon --session --fork --address=unix:path=/tmp/ae-lane-bus\n",
     "        export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/ae-lane-bus\n",
@@ -2473,6 +2494,7 @@ const LINUX_BUS: &str = concat!(
     "        err=\"$(dbus-send --session --print-reply --dest=org.freedesktop.systemd1 --reply-timeout=2500 /org/freedesktop/systemd1 org.freedesktop.DBus.Peer.Ping 2>&1 || true)\"\n",
     "        case \"$err\" in *DBus.Error.NoReply*) ;; *) exit 4 ;; esac\n",
     "        if [ \"$SECONDS\" -lt 2 ]; then exit 4; fi\n",
+    "        fi\n",
 );
 const LINUX_BUILD: &str = concat!(
     "        /stage/rustup-init -y\n",
@@ -2497,8 +2519,9 @@ fn linux_lanes_green() -> String {
             "    just test\n",
             "\n",
             "rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"off\")\n",
-            "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"stall\")\n",
+            "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)\n",
             "_linux-gate flavor image bus:\n",
+            "    case \"{{ bus }}\" in off|stall) ;; *) echo \"Error: bus must be off or stall\" >&2; exit 2 ;; esac\n",
             "    daemon_arch=\"$(docker run --rm --label ae.lane=linux {{ image }} uname -m)\"\n",
             "    for v in cargo rustup target; do docker volume create \"ae-{{ flavor }}-arm64-$v\" >/dev/null; done\n",
             "    curl -o \"$lane/rustup-init\" https://static.rust-lang.org/rustup/archive/{{ RUSTUP_VERSION }}/rustup-init\n",
@@ -2654,7 +2677,7 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
         assert!(!linux_lanes_ok(&mutated), "guard failed to reject: {name}");
         println!("rejected: {name}");
     };
-    let wrapper = "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"stall\")";
+    let wrapper = "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)";
     rejected(
         "26.04 base image pinned by tag",
         green.replace(
@@ -2670,14 +2693,42 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
         "rust-linux-26 wired to the 24.04 image",
         green.replace(
             wrapper,
-            "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE \"stall\")",
+            "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE bus)",
         ),
     );
     rejected(
-        "rust-linux-26 loses its stalling bus",
+        "rust-linux-26 loses its bus parameter, the stall arm is unreachable",
         green.replace(
             wrapper,
             "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"off\")",
+        ),
+    );
+    rejected(
+        "rust-linux-26 is hard-wired to stall, the validated-host arm is gone",
+        green.replace(
+            wrapper,
+            "rust-linux-26: (_linux-gate \"linux26\" LINUX_IMAGE_26 \"stall\")",
+        ),
+    );
+    rejected(
+        "rust-linux-26 defaults to stall",
+        green.replace(
+            wrapper,
+            "rust-linux-26 bus=\"stall\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)",
+        ),
+    );
+    rejected(
+        "rust-linux-26 ignores its bus parameter",
+        green.replace(
+            wrapper,
+            "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 \"off\")",
+        ),
+    );
+    rejected(
+        "rust-linux-26 has no default, a bare run is a usage error",
+        green.replace(
+            wrapper,
+            "rust-linux-26 bus: (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)",
         ),
     );
     rejected(
@@ -2691,8 +2742,43 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
         "26.04 lane shares the 24.04 caches",
         green.replace(
             wrapper,
-            "rust-linux-26: (_linux-gate \"linux\" LINUX_IMAGE_26 \"stall\")",
+            "rust-linux-26 bus=\"off\": (_linux-gate \"linux\" LINUX_IMAGE_26 bus)",
         ),
+    );
+    rejected(
+        "bus kind not validated on the host",
+        green.replace(
+            "    case \"{{ bus }}\" in off|stall) ;; *) echo \"Error: bus must be off or stall\" >&2; exit 2 ;; esac\n",
+            "",
+        ),
+    );
+    rejected(
+        "bus kind validated only after docker has started",
+        green
+            .replace(
+                "    case \"{{ bus }}\" in off|stall) ;; *) echo \"Error: bus must be off or stall\" >&2; exit 2 ;; esac\n",
+                "",
+            )
+            .replace(
+                "    for v in cargo",
+                "    case \"{{ bus }}\" in off|stall) ;; *) echo \"Error: bus must be off or stall\" >&2; exit 2 ;; esac\n    for v in cargo",
+            ),
+    );
+    rejected(
+        "unknown bus kind is not fatal",
+        green.replace("exit 2 ;; esac", "true ;; esac"),
+    );
+    rejected(
+        "an unknown bus kind is accepted",
+        green.replace("in off|stall) ;; *)", "in off|stall|*) ;; *)"),
+    );
+    rejected(
+        "stall proof runs on the wrong bus kind",
+        green.replace("\"$AE_LANE_BUS\" = stall ]", "\"$AE_LANE_BUS\" = off ]"),
+    );
+    rejected(
+        "stall proof not conditioned on the bus kind",
+        green.replace("        if [ \"$AE_LANE_BUS\" = stall ]; then\n", ""),
     );
     rejected(
         "build FROM a fixed image instead of the caller's",
