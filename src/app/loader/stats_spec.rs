@@ -568,3 +568,108 @@ fn archive_validation_content_charges_survive_the_next_source_step() {
         assert!(view.all.balanced());
     }
 }
+
+#[test]
+fn absent_archive_root_and_real_empty_archive_directory_are_healthy_empty() {
+    for exists in [false, true] {
+        let root = Scratch::new("archive-root-empty");
+        if exists {
+            std::fs::create_dir(root.0.join("archive")).expect("own empty archive root");
+        }
+        let before = snapshot(&root.0);
+        let view = drain(&mut Scan::new(
+            root.0.clone(),
+            BTreeMap::new(),
+            true,
+            1,
+            None,
+        ));
+        assert_eq!(view.all.total, 0);
+        assert_eq!((view.all.sources_read, view.all.sources_total), (0, 0));
+        assert!(view.all.gaps.is_empty(), "proved empty history: {view:?}");
+        assert!(!view.all.partial());
+        assert!(view.all.balanced());
+        assert_eq!(snapshot(&root.0), before, "no store or root is created");
+    }
+}
+
+#[test]
+fn regular_file_archive_root_is_unreadable_history_not_healthy_empty() {
+    let root = Scratch::new("archive-root-file");
+    let live = root.live("live", f::S, &cert(1));
+    std::fs::write(root.0.join("archive"), b"this is not an archive directory")
+        .expect("own regular-file root fixture");
+    let before = snapshot(&root.0);
+    let view = drain(&mut Scan::new(
+        root.0.clone(),
+        BTreeMap::from([("live".into(), live)]),
+        true,
+        1,
+        Some(f::S.into()),
+    ));
+    assert_eq!(view.all.total, 1, "live history still counts");
+    assert_eq!((view.all.sources_read, view.all.sources_total), (1, 2));
+    assert_eq!(view.all.gaps.len(), 1);
+    let refusal = &view.all.gaps[0];
+    assert_eq!(refusal.source.as_deref(), Some("archive"));
+    assert_eq!(refusal.reason, Reason::Source(SourceGap::Unreadable));
+    assert_eq!(refusal.count, 1);
+    assert_eq!(refusal.line(), "archive: unreadable");
+    assert!(view.all.partial());
+    assert!(view.all.balanced());
+    let ThisSession::Ready(current) = &view.this else {
+        panic!("live session UUID is known")
+    };
+    assert_eq!(current.total, 1);
+    assert!(
+        current.partial(),
+        "unattributed missing history affects either scope"
+    );
+    assert_eq!(snapshot(&root.0), before, "invalid root is never repaired");
+}
+
+#[test]
+fn symlink_archive_root_is_refused_even_when_target_has_valid_history() {
+    let root = Scratch::new("archive-root-link");
+    let target = Scratch::new("archive-root-link-target");
+    target.archived(f::S, &cert(1));
+    let readable = drain(&mut Scan::new(
+        target.0.clone(),
+        BTreeMap::new(),
+        true,
+        1,
+        None,
+    ));
+    assert_eq!(
+        readable.all.total, 1,
+        "target is independently valid retained history"
+    );
+    assert!(readable.all.gaps.is_empty());
+    let live = root.live("live", f::S, &cert(2));
+    std::os::unix::fs::symlink(target.0.join("archive"), root.0.join("archive"))
+        .expect("own archive-root link");
+    let before = snapshot(&root.0);
+    let target_before = snapshot(&target.0);
+    let view = drain(&mut Scan::new(
+        root.0.clone(),
+        BTreeMap::from([("live".into(), live)]),
+        true,
+        2,
+        None,
+    ));
+    assert_eq!(
+        view.all.total, 1,
+        "link target must not contribute its birth"
+    );
+    assert_eq!((view.all.sources_read, view.all.sources_total), (1, 2));
+    assert_eq!(view.all.gaps.len(), 1);
+    let refusal = &view.all.gaps[0];
+    assert_eq!(refusal.source.as_deref(), Some("archive"));
+    assert_eq!(refusal.reason, Reason::Source(SourceGap::Unreadable));
+    assert_eq!(refusal.count, 1);
+    assert_eq!(refusal.line(), "archive: unreadable");
+    assert!(view.all.partial());
+    assert!(view.all.balanced());
+    assert_eq!(snapshot(&root.0), before, "link is never replaced");
+    assert_eq!(snapshot(&target.0), target_before, "target bytes unchanged");
+}
