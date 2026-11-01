@@ -7,7 +7,7 @@
 //!
 //! The guarded argv is the pair's agreed serialization (plan-s6b.md), not a
 //! second product API: `_end --supervise <literal-name> --confirmed-*=...`
-//! with all six `--expect-*=...` words. No force flag or real session is used.
+//! with all seven `--expect-*=...` words. No force flag or real session is used.
 
 #![allow(
     clippy::disallowed_methods,
@@ -318,6 +318,21 @@ impl Rig {
         self.command(env!("CARGO_BIN_EXE_ae"), words, extra)
     }
 
+    fn git(&self, dir: &Path, args: &[&str]) -> String {
+        let mut words = vec!["-C".to_owned(), dir.display().to_string()];
+        words.extend(args.iter().map(|word| (*word).to_owned()));
+        let (code, out, err) = self.command(
+            "git",
+            &words,
+            &[
+                ("GIT_CONFIG_GLOBAL", "/dev/null".to_owned()),
+                ("GIT_CONFIG_NOSYSTEM", "1".to_owned()),
+            ],
+        );
+        assert_eq!(code, 0, "git {args:?}: {err}");
+        out.trim().to_owned()
+    }
+
     fn frozen(&self, name: &str, live: bool) -> Vec<String> {
         let (tmux, pid, start) = if live {
             let tmux = self.must_tmux(&[
@@ -350,6 +365,7 @@ impl Rig {
             format!("--expect-server-pid={pid}"),
             format!("--expect-server-start={start}"),
             format!("--expect-deadline={}", epoch() + 60),
+            "--expect-pushes=off".into(),
         ]
     }
 }
@@ -791,6 +807,9 @@ fn guarded_end_rejects_incomplete_duplicate_or_unattended_identity_grammar() {
         "duplicate",
         "half-process",
         "ambient",
+        "missing-pushes",
+        "duplicate-pushes",
+        "invalid-pushes",
         "not-supervised",
     ] {
         let rig = Rig::new(tag);
@@ -801,6 +820,9 @@ fn guarded_end_rejects_incomplete_duplicate_or_unattended_identity_grammar() {
             "duplicate" => words.push(format!("--expect-uuid={UUID}")),
             "half-process" => change(&mut words, "--expect-server-start", ""),
             "ambient" => change(&mut words, "--expect-server-kind", "ambient"),
+            "missing-pushes" => words.retain(|word| !word.starts_with("--expect-pushes=")),
+            "duplicate-pushes" => words.push("--expect-pushes=off".into()),
+            "invalid-pushes" => change(&mut words, "--expect-pushes", "maybe"),
             _ => words.retain(|word| word != "--supervise"),
         }
         let before = snapshot(&rig.dir("alpha"));
@@ -1068,4 +1090,163 @@ fn unavailable_corrupt_state_has_no_affirmable_end_and_preserves_the_tree() {
     assert_eq!(snapshot(&rig.dir("alpha")), before);
     assert!(rig.live("alpha"));
     assert!(!rig.archive().exists());
+}
+
+#[test]
+fn a_changed_commit_push_consequence_is_refused_before_any_target_write() {
+    for (tag, shown, now) in [
+        ("local-to-git", "off", "git"),
+        ("local-to-full", "off", "full"),
+        ("git-to-local", "on", "local"),
+        ("unrecognised-mode", "off", "unrecognised"),
+    ] {
+        let rig = Rig::new(tag);
+        rig.plant("alpha", UUID, true);
+        let mut words = rig.frozen("alpha", true);
+        change(&mut words, "--expect-pushes", shown);
+        let path = rig.dir("alpha").join("meta");
+        let meta = fs::read_to_string(&path)
+            .unwrap()
+            .replace("mode=local\n", &format!("mode={now}\n"));
+        fs::write(path, meta).unwrap();
+        let before = snapshot(&rig.dir("alpha"));
+        let (code, out, err) = rig.run_end(&words, &[]);
+        assert_eq!(code, 1, "{tag}: proof refusal, not usage: {out}\n{err}");
+        let why = err.to_lowercase();
+        assert!(
+            why.contains("changed") || why.contains("mode") || why.contains("push"),
+            "{tag}: missing consequence refusal: {err}"
+        );
+        assert_eq!(
+            snapshot(&rig.dir("alpha")),
+            before,
+            "{tag}: wrote before proof"
+        );
+        assert!(rig.live("alpha"), "{tag}: killed before proof");
+        assert!(!rig.archive().exists());
+    }
+}
+
+#[test]
+fn the_commit_push_consequence_is_reproved_after_waiting_for_the_lock() {
+    let rig = Rig::new("lock-mode");
+    rig.plant("alpha", UUID, true);
+    let words = rig.frozen("alpha", true);
+    let lock = fs::File::create(rig.state.join("sessions/.lifecycle.alpha.lock")).unwrap();
+    lock.lock().unwrap();
+    thread::scope(|scope| {
+        let result = scope.spawn(|| rig.run_end(&words, &[]));
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            !result.is_finished(),
+            "End did not wait for its lifecycle lock"
+        );
+        let path = rig.dir("alpha").join("meta");
+        let meta = fs::read_to_string(&path)
+            .unwrap()
+            .replace("mode=local\n", "mode=git\n");
+        fs::write(path, meta).unwrap();
+        let before = snapshot(&rig.dir("alpha"));
+        lock.unlock().unwrap();
+        let (code, out, err) = result.join().unwrap();
+        assert_eq!(code, 1, "under-lock consequence refusal: {out}\n{err}");
+        assert!(
+            err.contains("changed") || err.contains("mode") || err.contains("push"),
+            "{err}"
+        );
+        assert_eq!(
+            snapshot(&rig.dir("alpha")),
+            before,
+            "wrote before mode proof"
+        );
+    });
+    assert!(rig.live("alpha"));
+    assert!(!rig.archive().exists());
+}
+
+#[test]
+fn git_mode_app_end_shows_the_push_then_commits_to_the_remote_and_archives() {
+    let rig = Rig::new("app-git-push");
+    rig.plant("alpha", UUID, true);
+    rig.plant("sibling", OTHER, true);
+    let sibling = snapshot(&rig.dir("sibling"));
+    let remote = rig.root.join("remote.git");
+    let project = rig.root.join("project");
+    let worktree = rig.state.join("worktrees/alpha");
+    fs::create_dir_all(&remote).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(rig.state.join("worktrees")).unwrap();
+    rig.git(&remote, &["init", "-q", "--bare"]);
+    rig.git(&project, &["init", "-q", "-b", "main"]);
+    rig.git(&project, &["config", "user.name", "fixture"]);
+    rig.git(
+        &project,
+        &["config", "user.email", "fixture@example.invalid"],
+    );
+    rig.git(&project, &["config", "commit.gpgsign", "false"]);
+    fs::write(project.join("work.txt"), "before End\n").unwrap();
+    rig.git(&project, &["add", "work.txt"]);
+    rig.git(&project, &["commit", "-q", "-m", "base"]);
+    let base = rig.git(&project, &["rev-parse", "HEAD"]);
+    rig.git(
+        &project,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    );
+    rig.git(&project, &["push", "-q", "origin", "main"]);
+    rig.git(
+        &project,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "ae/alpha",
+            &worktree.display().to_string(),
+            "main",
+        ],
+    );
+    let path = rig.dir("alpha").join("meta");
+    let meta = fs::read_to_string(&path)
+        .unwrap()
+        .replace("mode=local\n", "mode=git\n")
+        .replace(
+            &format!("work_dir={}\n", rig.root.display()),
+            &format!("work_dir={}\n", worktree.display()),
+        );
+    fs::write(
+        path,
+        format!(
+            "{meta}origin={}\ngit_base_commit={base}\n",
+            project.display()
+        ),
+    )
+    .unwrap();
+    fs::write(worktree.join("work.txt"), "S6B_PUSHED_BY_END\n").unwrap();
+    let pane = rig.app("alpha", false);
+    let question = rig.question(&pane, "alpha");
+    assert!(
+        question.contains("Commits and pushes its work first."),
+        "{question}"
+    );
+    rig.key(&pane, "y");
+    rig.wait(&pane, "git End completed", |screen| {
+        screen.contains("Ended alpha") && !rig.dir("alpha").exists()
+    });
+    assert!(!rig.live("alpha"));
+    assert!(
+        !worktree.exists(),
+        "managed worktree survived successful End"
+    );
+    assert_archive(&rig);
+    assert_eq!(
+        rig.git(&remote, &["show", "refs/heads/ae/alpha:work.txt"]),
+        "S6B_PUSHED_BY_END",
+        "the changed file must reach the actual bare remote"
+    );
+    assert_ne!(
+        rig.git(&remote, &["rev-parse", "refs/heads/ae/alpha"]),
+        base
+    );
+    assert!(rig.live("sibling"));
+    assert_eq!(snapshot(&rig.dir("sibling")), sibling);
 }

@@ -468,7 +468,7 @@ carry out (`Archives it, then deletes its state.`, or the purge, which names any
 archive of the session as deleted), what happens to its agents' conversation
 files, the commit and push of a git-mode session, and on the app's own session
 that this app closes. A record naming no tmux server refuses, as does one that
-no longer names the session the card drew. A server that does not answer
+no longer names the session the card drew or names a `mode` ae does not know. A server that does not answer
 refuses with `its tmux server did not answer; if it is stopped: ae end
 --assume-stopped <name>`, except on a stopped card whose server is proved gone
 by the host's reboot: that question says `Server gone; proven stopped by the
@@ -477,8 +477,8 @@ host reboot.`. `Cancel` is focused. `e` / `c`, `←` / `→` or `Tab` move the f
 
 The answer hands the end to a detached owner, so it finishes after this app's
 own pane is gone; `Ending '<name>'.` means it was handed over. Everything the question froze travels with it (the session's
-`session_id`, its server and that server's process, the plan, the deadline) and
-is proved again under the session's lifecycle lock before anything is written; a
+`session_id`, its server and that server's process, the plan, whether it
+commits and pushes, the deadline) and is proved again under the session's lifecycle lock before anything is written; a
 session that changed is refused and left running. The target is that one
 session: one named `all` ends only itself. The order is `ae end`'s: stop, git,
 archive, delete. When the archive cannot be published after the session has
@@ -486,7 +486,9 @@ stopped, nothing is deleted and the journal says `FAILED: session STOPPED, not
 ended: <reason>`; the session is resumable. The hint row is what comes back:
 `Ended <name>`, `End <name>: <that line>`, or, two minutes on with neither seen,
 `End of <name>: no result yet; see ae list`. That last line claims nothing: it
-also stands for a refusal that wrote no journal line.
+also stands for a refusal that wrote no journal line. `Ended` means its record
+directory is positively gone; a directory that was replaced or cannot be read
+tells nothing.
 
 A menu or question takes only input made after a frame showing it was written:
 a key typed before then is dropped and the hint row says to press again. One

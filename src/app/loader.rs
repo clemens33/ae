@@ -30,6 +30,8 @@ use crate::session_menu::{self, CellRow};
 use crate::time::Timestamp;
 use crate::{theme, tmux, transport};
 
+#[cfg(test)]
+mod end_reader_spec;
 mod ending;
 #[cfg(test)]
 mod peek_spec;
@@ -754,12 +756,15 @@ impl Reader {
     }
 
     /// What each pending End's records say now, carried by the fleet read: no
-    /// pending End, no read. A watch that told or was replaced is over.
+    /// pending End, no read. A watch that told or was replaced is over. Only
+    /// a stat that says `NotFound` is gone: any other failure proves nothing
+    /// of a directory that may still hold the session.
     fn ended(&mut self) -> Vec<Answer> {
         let mut answers = Vec::new();
         self.endings.retain(|ask| {
             let events = crate::store::open(&ask.dir).events_source();
-            let gone = !crate::lifecycle::dir_exists(&ask.dir);
+            let gone = crate::lifecycle::path_metadata(&ask.dir)
+                .is_err_and(|why| why.kind() == std::io::ErrorKind::NotFound);
             let uuid = sole_uuid(&ask.dir);
             match ending::seen(ask, &events, gone, uuid.as_deref(), ask.asked.elapsed()) {
                 ending::Seen::Pending => true,

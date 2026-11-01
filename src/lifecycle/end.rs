@@ -30,6 +30,8 @@ use super::{
 const USAGE: &str =
     "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>";
 
+#[cfg(test)]
+mod end_expect_spec;
 pub(crate) mod transaction;
 
 const END_REQUEST_ACTION: &str = "end-request";
@@ -121,6 +123,17 @@ fn sight(server: &ServerId, name: &str) -> TmuxSight {
         TmuxSight::Absent
     } else {
         TmuxSight::Unknown
+    }
+}
+
+/// Whether ending a session of `mode` commits and pushes its work, as
+/// [`end_locked`] branches on it. `None` is a mode that would reach its git
+/// branch without being one: no question can say what ending it does.
+fn pushes_of(mode: &str) -> Option<bool> {
+    match mode {
+        "local" | "" => Some(false),
+        "git" | "full" => Some(true),
+        _ => None,
     }
 }
 
@@ -331,7 +344,8 @@ pub(crate) struct EndExpectation {
     /// asked, so the question said so: the flag of invariant (b). The proof
     /// itself is never carried, only re-proven.
     assume_stopped: bool,
-    /// The session's mode commits and pushes its work on the way out.
+    /// The session's mode commits and pushes its work on the way out: what
+    /// the question said, carried, and proven again against the record.
     pushes: bool,
 }
 
@@ -352,6 +366,9 @@ impl EndExpectation {
         if plan.action == Action::Unavailable {
             return Err(format!("it cannot be archived: {}", plan.detail));
         }
+        let bytes = meta::read_bytes(&dir).unwrap_or_default();
+        let pushes = pushes_of(&meta_value(&bytes, "mode"))
+            .ok_or("its record names a mode ae does not know")?;
         let (tmux, identity, assume_stopped) = match sight(&server, name) {
             TmuxSight::Live { id, created } => {
                 let identity = transport::observe_server_identity(&server)
@@ -368,7 +385,6 @@ impl EndExpectation {
                 ));
             }
         };
-        let bytes = meta::read_bytes(&dir).unwrap_or_default();
         Ok(Self {
             uuid: uuid.to_owned(),
             server,
@@ -381,7 +397,7 @@ impl EndExpectation {
                 tmux,
             },
             assume_stopped,
-            pushes: matches!(meta_value(&bytes, "mode").as_str(), "git" | "full"),
+            pushes,
         })
     }
 
@@ -460,6 +476,7 @@ impl EndExpectation {
             format!("--expect-server-pid={pid}"),
             format!("--expect-server-start={start}"),
             format!("--expect-deadline={}", self.deadline),
+            format!("--expect-pushes={}", if self.pushes { "on" } else { "off" }),
         ]);
         DetachedArgv(command)
     }
@@ -490,6 +507,11 @@ impl EndExpectation {
         if uuid.as_deref() != Some(self.uuid.as_str()) {
             return Err(format!(
                 "the state directory of '{name}' was replaced since it was confirmed"
+            ));
+        }
+        if pushes_of(&meta_value(&bytes, "mode")) != Some(self.pushes) {
+            return Err(format!(
+                "whether ending '{name}' commits and pushes changed between the confirmation and now"
             ));
         }
         let ServerSelector::Positive(selector) = server_of(&bytes) else {
@@ -547,7 +569,7 @@ impl EndExpectation {
     }
 }
 
-/// The `--expect-*=` words of one `_end` argv, as typed: all six, or none.
+/// The `--expect-*=` words of one `_end` argv, as typed: all seven, or none.
 #[derive(Default)]
 struct ExpectWords {
     uuid: Option<String>,
@@ -556,6 +578,7 @@ struct ExpectWords {
     pid: Option<String>,
     start: Option<String>,
     deadline: Option<String>,
+    pushes: Option<String>,
 }
 
 impl ExpectWords {
@@ -569,6 +592,7 @@ impl ExpectWords {
             "--expect-server-pid" => &mut self.pid,
             "--expect-server-start" => &mut self.start,
             "--expect-deadline" => &mut self.deadline,
+            "--expect-pushes" => &mut self.pushes,
             _ => return Err(format!("Error: unknown flag '{flag}'.")),
         };
         if !flag.contains('=') {
@@ -589,6 +613,7 @@ impl ExpectWords {
             &self.pid,
             &self.start,
             &self.deadline,
+            &self.pushes,
         ]
         .iter()
         .any(|slot| slot.is_some())
@@ -597,13 +622,15 @@ impl ExpectWords {
     /// The expectation these words and `args` name, proven well formed: it
     /// belongs to a supervisor with exactly one carried plan, for its operand.
     fn build(self, args: &Args) -> Result<EndExpectation, String> {
-        let incomplete = || "Error: an --expect-* identity is incomplete; all six travel together.";
+        let incomplete =
+            || "Error: an --expect-* identity is incomplete; all seven travel together.";
         let uuid = self.uuid.ok_or_else(incomplete)?;
         let kind = self.kind.ok_or_else(incomplete)?;
         let server = self.server.ok_or_else(incomplete)?;
         let pid = self.pid.ok_or_else(incomplete)?;
         let start = self.start.ok_or_else(incomplete)?;
         let deadline = self.deadline.ok_or_else(incomplete)?;
+        let pushes = self.pushes.ok_or_else(incomplete)?;
         if args.mode != RunMode::Supervise {
             return Err("Error: an --expect-* identity needs --supervise.".to_owned());
         }
@@ -630,6 +657,11 @@ impl ExpectWords {
         let deadline = deadline
             .parse::<i64>()
             .map_err(|_| "Error: --expect-deadline is not an epoch second.".to_owned())?;
+        let pushes = match pushes.as_str() {
+            "on" => true,
+            "off" => false,
+            _ => return Err("Error: --expect-pushes is on or off.".to_owned()),
+        };
         let live = matches!(confirmed.tmux, FrozenTmux::Live { .. });
         let identity = match (pid.as_str(), start.as_str(), live) {
             ("", "", false) => None,
@@ -655,7 +687,7 @@ impl ExpectWords {
             deadline,
             confirmed: confirmed.clone(),
             assume_stopped: args.assume_stopped,
-            pushes: false,
+            pushes,
         })
     }
 }
@@ -3021,7 +3053,7 @@ mod tests {
             ))
         };
         let sole = format!("session_id={UUID}\n");
-        let table: [(&str, i64, Option<String>, &str); 9] = [
+        let table: [(&str, i64, Option<String>, &str); 11] = [
             ("expired", NOW - 1, record(&sole), "expired"),
             ("deadline", NOW, None, "cannot read the metadata"),
             ("future", NOW + WINDOW + 1, record(&sole), "in the future"),
@@ -3038,6 +3070,18 @@ mod tests {
                 NOW,
                 record("session_id=0199c0de-bbbb-4890-abcd-ef0123456789\n"),
                 "was replaced",
+            ),
+            (
+                "pushes",
+                NOW,
+                record(&format!("{sole}mode=git\n")),
+                "changed",
+            ),
+            (
+                "mode",
+                NOW,
+                record(&format!("{sole}mode=other\n")),
+                "changed",
             ),
             (
                 "no-server",
@@ -3114,6 +3158,40 @@ mod tests {
             let mut expect = expectation(plan, NOW);
             (expect.pushes, expect.assume_stopped) = (pushes, assume_stopped);
             assert_eq!(expect.lines(), want);
+        }
+    }
+
+    #[test]
+    fn unattended_derives_pushes_from_real_metadata_for_every_mode() {
+        let push = "Commits and pushes its work first.";
+        for (tag, mode, shown) in [
+            ("local", "mode=local\n", Some(false)),
+            ("git", "mode=git\n", Some(true)),
+            ("full", "mode=full\n", Some(true)),
+            ("legacy", "", Some(false)),
+            ("unknown", "mode=other\n", None),
+        ] {
+            // A stopped card on a server that never existed, last alive long
+            // before this host booted: the capture needs no tmux server.
+            let (root, dir) = planted(&format!("derive-{tag}"), None);
+            let socket = root.join("never.sock").display().to_string();
+            let meta = format!(
+                "session=alpha\nsession_id={UUID}\n{mode}started=1\n\
+                 tmux_server_kind=socket\ntmux_server={socket}\n"
+            );
+            std::fs::write(dir.join("meta"), meta).expect("a meta");
+            std::fs::write(dir.join("memory.md"), "history\n").expect("a memory");
+            let server = server_from_words("socket", &socket).expect("a socket");
+            let asked = EndExpectation::unattended(&root, "alpha", UUID, server, true, NOW);
+            if let Some(pushes) = shown {
+                let lines = asked.expect(tag).lines();
+                let said = lines.iter().any(|line| line == push);
+                assert_eq!(said, pushes, "{tag}: {lines:?}");
+            } else {
+                let refused = asked.expect_err(tag);
+                assert!(refused.contains("mode"), "{tag}: {refused}");
+            }
+            let _ = std::fs::remove_dir_all(&root);
         }
     }
 
