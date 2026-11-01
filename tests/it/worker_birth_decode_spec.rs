@@ -321,3 +321,64 @@ fn unknown_family_extensions_remain_inert_on_both_shapes() {
         }
     }
 }
+
+#[test]
+fn malformed_session_identity_is_damage_with_birth_salvaged_on_both_family_shapes() {
+    for (line, family) in [
+        (certificate(), Family::Birth),
+        (observed_fact(), Family::Fact),
+    ] {
+        let missing = line.replace(&format!(",\"target_session_id\":\"{SID}\""), "");
+        match read(&missing).expect("absent session identity is supported") {
+            Record::Birth(record) => assert!(record.session.is_none()),
+            Record::Fact(record) => assert!(record.session.is_none()),
+            other => panic!("supported birth or fact: {other:?}"),
+        }
+        for invalid in [
+            "not-a-session-id",
+            "11111111-1111-4111-8111-11111111111z",
+            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        ] {
+            let changed = line.replace(SID, invalid);
+            assert_eq!(
+                read(&changed),
+                Err(Damage {
+                    family,
+                    birth: Some(BID.to_owned()),
+                    session: None
+                }),
+                "present malformed session must not become a trusted identity: {invalid}"
+            );
+            assert!(
+                durable_line(&changed),
+                "retain the damaged identity evidence"
+            );
+        }
+    }
+}
+
+#[test]
+fn hostile_certificate_target_and_slot_are_damage_with_both_ids_salvaged() {
+    let good = certificate();
+    for (member, original) in [("target", "scout"), ("target_slot", "spawned.0")] {
+        let needle = format!("\"{member}\":\"{original}\"");
+        for (kind, cell) in [
+            ("newline", "bad\\ncell".to_owned()),
+            ("DEL", "bad\\u007fcell".to_owned()),
+            ("escape", "bad\\u001bcell".to_owned()),
+            ("oversized", "x".repeat(1_048_577)),
+        ] {
+            let changed = good.replace(&needle, &format!("\"{member}\":\"{cell}\""));
+            assert_eq!(
+                read(&changed),
+                Err(Damage {
+                    family: Family::Birth,
+                    birth: Some(BID.to_owned()),
+                    session: Some(SID.to_owned())
+                }),
+                "{member}, {kind}: hostile envelope cell must not become a table value"
+            );
+            assert!(durable_line(&changed), "retain damaged {member} evidence");
+        }
+    }
+}
