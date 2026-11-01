@@ -2929,7 +2929,7 @@ mod tests {
                 assert!(flat.contains(&line), "{slot} misses {line:?}: {document}");
             }
             for sentence in [
-                "To agents: helpers only, never raw tmux keys; destructive tmux from your shell needs -S <private socket>, never -L.",
+                "To agents: helpers only, never raw tmux keys; destructive tmux needs -S <private socket>, never -L or TMUX_TMPDIR.",
                 "Use your session; another session requires explicit human authorization naming its target and --cross-session.",
                 "Need an answer to go on? ask, then declare waiting-agent.",
                 "The request id the helper prints is not the answer; the reply arrives later as a new message.",
