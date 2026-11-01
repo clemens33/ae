@@ -2751,13 +2751,64 @@ mod pins {
     }
 
     #[test]
-    fn a_wait_for_idle_after_a_turn_publishes_nothing() {
-        let (run, _scratch) = run_over("printf 'Working...\\n'; sleep 120", "idle-miss");
+    fn a_wait_for_idle_after_a_turn_leaves_its_last_frame_and_a_pass_clears_it() {
         let two = Duration::from_secs(2);
+        let (run, _scratch) = run_over("printf 'Working...\\n'; sleep 120", "idle-miss");
         assert!(!run.frame_twice("%0", two, Want::Idle).expect("a wait"));
+        let kept = run
+            .gate
+            .snapshot()
+            .frame
+            .expect("the last frame is published");
+        assert!(kept.contains("Working"), "{kept:?}");
+
+        // A finished turn, drawn after a blank start: the wait passes and clears.
+        let files = OwnedScratch::root("hs", "idle");
+        let idle = files.path().join("idle.txt");
+        std::fs::write(
+            &idle,
+            include_str!("../fixtures/harness-state/claude-idle-167x40.txt"),
+        )
+        .expect("the idle frame");
+        let script = format!("sleep 1.5; cat {}; sleep 120", shell_quoted(&idle));
+        let (run, _scratch) = run_over(&script, "idle-pass");
+        let bound = Duration::from_secs(8);
+        assert!(run.frame_twice("%0", bound, Want::Idle).expect("a wait"));
         assert!(
             run.gate.snapshot().frame.is_none(),
-            "only readiness waits publish"
+            "a pass leaves no frame"
+        );
+    }
+
+    #[test]
+    fn an_answer_wait_leaves_its_last_frame_and_a_pass_clears_it() {
+        let ask = |text: &str| answered(text, "ref abcdef", "6212", 0);
+        let one = Duration::from_secs(1);
+        // No answer ever comes: the frame the wait last saw is the evidence, even
+        // if the run is cut at once.
+        let (run, _scratch) = run_over("printf 'thinking about it\\n'; sleep 120", "answer-miss");
+        assert!(!run.until("%0", one, ask).expect("a wait"));
+        let kept = run
+            .gate
+            .snapshot()
+            .frame
+            .expect("the last frame is published");
+        assert!(kept.contains("thinking about it"), "{kept:?}");
+        run.gate.cancel();
+        run.ready_passed();
+        assert!(run.gate.snapshot().frame.is_some(), "a cut run keeps it");
+
+        // The echoed prompt first, then the answer row claude draws (a bullet, the
+        // bare sum): the wait passes and clears.
+        let (run, _scratch) = run_over(
+            "printf '❯ the prompt (ref abcdef)\\n'; sleep 1.5; printf '⏺ 6212\\n'; sleep 120",
+            "answer-pass",
+        );
+        let bound = Duration::from_secs(8);
+        assert!(run.until("%0", bound, ask).expect("a wait"));
+        assert!(
+            run.gate.snapshot().frame.is_none(),
+            "a pass leaves no frame"
         );
     }
 
