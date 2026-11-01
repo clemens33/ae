@@ -12,11 +12,13 @@
 )]
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ae::cli::{ACCEPT, ASK, GOAL, INTERRUPT, REPLY, REVIEW, SEND, SPAWN, WITHDRAW};
 
+use super::deliver::wait_fake_drawn;
 use super::o2guard_p2_spec::{Seat, World, ledger, opening, received, uuid_of};
+use super::support::{PANE_WAIT, pane_command};
 
 const ROLE: &str = "orchestrator role";
 const OWNER: [&str; 3] = ["ae chat", "ae app", "Telegram"];
@@ -50,6 +52,12 @@ fn tmux(world: &World, words: &str, tail: &[&str]) -> String {
 fn pane_in(world: &World, seat: &Seat, slot: &str, agent: &str) -> String {
     let split = "split-window -d -P -F #{pane_id} -t";
     let pane = tmux(world, split, &[&seat.pane, "sleep 600"]);
+    pane_command(
+        |args| world.tmux_args(args),
+        &pane,
+        Instant::now() + PANE_WAIT,
+        |command| command == "sleep",
+    );
     if !agent.is_empty() {
         world.stamp(&pane, slot, agent);
     }
@@ -390,8 +398,13 @@ fn a_target_that_changes_inside_the_delivery_wait_gets_no_further_key() {
     for (label, (from, to), phrase, keys) in [("token", tok, "", 0), ("role", role, ROLE, 1)] {
         assert!(std::fs::write(&enters, "").is_ok());
         let tui = format!("exec perl {r}/faketui.pl {r}/received {r}/enters 400 muse 0 staged");
+        let tui = format!("{tui} {r}/control");
         tmux(&chip, "respawn-pane -k -t", &[&rig.pane, &tui]);
-        std::thread::sleep(Duration::from_millis(800));
+        wait_fake_drawn(
+            |args| chip.tmux_args(args),
+            &rig.pane,
+            &chip.root.join("control"),
+        );
         let argv = [SEND, &cd, XS, "dlo2chip:tui", label];
         let before = audits(&caller.dir);
         let out = std::thread::scope(|scope| {
@@ -430,6 +443,11 @@ fn escape_cell() -> Vec<String> {
     let tui = format!("exec perl {r}/faketui.pl {r}/received {r}/enters 400 claude 0 frame");
     let tui = format!("{tui} {r}/control");
     tmux(&esc, "respawn-pane -k -t", &[&rig.pane, &tui]);
+    wait_fake_drawn(
+        |args| esc.tmux_args(args),
+        &rig.pane,
+        &esc.root.join("control"),
+    );
     add_meta(&rig.dir, &format!("session_id={}\n", uuid_of("dlo2esc")));
     set_uuid(&esc, &rig.pane, "dlo2esc");
     let caller = esc.session("cal", "cal", "");

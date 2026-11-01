@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use super::cli::ae;
 use super::phase2::run_tmux;
-use super::support::{SETUP_WAIT, first_pane, try_first_pane};
+use super::support::{PANE_WAIT, SETUP_WAIT, first_pane, pane_command, try_first_pane};
 
 /// The fake agent: it records the argv and working directory it was launched
 /// with, logs everything the pane sends it, and EXITS on demand.
@@ -414,6 +414,12 @@ impl Rig {
                     .0
             );
         }
+        pane_command(
+            |args| self.tmux(args),
+            &pane,
+            Instant::now() + PANE_WAIT,
+            super::support::is_shell,
+        );
         pane
     }
 

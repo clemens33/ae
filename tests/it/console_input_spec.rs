@@ -215,11 +215,15 @@ impl ConsoleRig {
     }
 
     fn tmux(&self, tail: &[&str]) -> String {
-        let mut args = vec!["-S".to_owned(), self.socket.display().to_string()];
-        args.extend(tail.iter().map(|word| (*word).to_owned()));
-        let (ok, output) = super::phase2::run_tmux(&args, &self.root);
+        let (ok, output) = self.try_tmux(tail);
         assert!(ok, "private tmux {tail:?}: {output}");
         output
+    }
+
+    fn try_tmux(&self, tail: &[&str]) -> (bool, String) {
+        let mut args = vec!["-S".to_owned(), self.socket.display().to_string()];
+        args.extend(tail.iter().map(|word| (*word).to_owned()));
+        super::phase2::run_tmux(&args, &self.root)
     }
 
     fn toggle(&self) -> String {
@@ -341,6 +345,7 @@ impl ConsoleRig {
         let pane = pane.trim();
         self.tmux(&["set-option", "-p", "-t", pane, "@ae_slot", "worker.0"]);
         self.tmux(&["set-option", "-p", "-t", pane, "@ae_agent", "colead"]);
+        super::deliver::wait_fake_drawn(|args| self.try_tmux(args), pane, &control);
         received
     }
 }

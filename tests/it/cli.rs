@@ -16,7 +16,7 @@ use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
 use crate::phase2::run_tmux;
-use crate::support::{SETUP_WAIT, first_pane, observe};
+use crate::support::{PANE_WAIT, SETUP_WAIT, first_pane, is_shell, observe, pane_command};
 use ae::tool::ToolKind;
 
 /// ae's own doors that a hermetic run must NOT inherit.
@@ -729,6 +729,18 @@ fn scratch_owner_panic_child() {
     )
     .expect("the child's server starts");
     assert!(matches!(started.outcome(), ExitOutcome::Code(0)));
+    // The pin is about what a panic leaves behind, so the server's pane is past
+    // tmux's forked child first: that child outlives the server until it can
+    // take its signals, under the server's own argv (#267).
+    let name = name.to_string_lossy();
+    let read = |args: &[&str]| {
+        let mut words = vec!["-L".to_owned(), name.clone().into_owned()];
+        words.extend(args.iter().map(|arg| (*arg).to_owned()));
+        run_tmux(&words, &scratch)
+    };
+    let deadline = Instant::now() + PANE_WAIT;
+    let pane = first_pane(read, &["-a"], deadline);
+    pane_command(read, &pane, deadline, is_shell);
     panic!("the injected panic");
 }
 
@@ -2623,6 +2635,8 @@ impl Tracked {
         let ids: Vec<&str> = panes.lines().collect();
         assert_eq!(ids.len(), 2, "{panes}");
         let (main, worker) = (ids[0].to_owned(), ids[1].to_owned());
+        fixture.wait_for_recorder(&main);
+        fixture.wait_for_recorder(&worker);
         for (pane, slot, agent) in [(&main, "main", "lead"), (&worker, "worker.0", "worker")] {
             assert!(
                 fixture
@@ -2779,6 +2793,17 @@ exit 0
         (path, content)
     }
 
+    /// Wait until `pane`'s `cat` runs: a pane reads `tmux` until its child has
+    /// exec'd, and anything typed before that is not recorded by a live tool.
+    fn wait_for_recorder(&self, pane: &str) {
+        pane_command(
+            |args| self.tmux(args),
+            pane,
+            Instant::now() + PANE_WAIT,
+            |command| command == "cat",
+        );
+    }
+
     /// A second session directory on this server whose only agent is a pane
     /// running a plain shell while the roster records `binary` for its seat —
     /// the shape the dead-pane guard exists for.
@@ -2800,6 +2825,12 @@ exit 0
             |args| self.tmux(args),
             &["-s", "-t", session],
             Instant::now() + SETUP_WAIT,
+        );
+        pane_command(
+            |args| self.tmux(args),
+            &pane,
+            Instant::now() + PANE_WAIT,
+            is_shell,
         );
         assert!(
             self.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"])
@@ -2849,6 +2880,7 @@ exit 0
             &["-s", "-t", session],
             Instant::now() + SETUP_WAIT,
         );
+        self.wait_for_recorder(&pane);
         assert!(
             self.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"])
                 .0

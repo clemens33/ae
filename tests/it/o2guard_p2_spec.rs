@@ -11,6 +11,9 @@
 )]
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use super::support::{PANE_WAIT, pane_command};
 
 /// One private tmux server and one scratch state root (`AE_HOME`) holding
 /// `sessions/<name>/meta` for every session started on it.
@@ -57,6 +60,11 @@ impl World {
         super::phase2::run_tmux(&args, &self.root)
     }
 
+    /// tmux on this world's socket, with `args` as they are.
+    pub(crate) fn tmux_args(&self, args: &[&str]) -> (bool, String) {
+        self.tmux(args[0], &args[1..])
+    }
+
     /// Start session `name` whose `main` seat is stamped `agent`, an unmodelled
     /// (gemini) tool, `extra` appended to its meta.
     pub(crate) fn session(&self, name: &str, agent: &str, extra: &str) -> Seat {
@@ -71,6 +79,12 @@ impl World {
         let (ok, pane) = self.tmux(&new, &[&shell]);
         let pane = pane.trim().to_owned();
         assert!(ok && pane.starts_with('%'), "session {name} starts");
+        pane_command(
+            |args| self.tmux_args(args),
+            &pane,
+            Instant::now() + PANE_WAIT,
+            |command| command == "cat",
+        );
         self.stamp(&pane, "main", agent);
         let uuid = uuid_of(name);
         assert!(
