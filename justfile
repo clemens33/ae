@@ -2017,8 +2017,7 @@ rust-build-release:
 # host whose user manager answers slowly. The stall arm PROVES the stall before
 # it builds anything: a method call to that name must end in a reply timeout
 # (NoReply) after at least two seconds, else the run stops with exit 4. The stall
-# arm is known RED today: 31 tests fail behind it (#267; their fixtures are the
-# separate slice u26c). The default flips to `stall` when that arm is green.
+# arm is known RED today: 31 tests fail behind it (#267). The default flips to `stall` when that arm is green.
 # These are arm64 lanes. The x86_64 proof of Ubuntu 26.04 is a human run on an
 # x86_64 host; nothing here claims it.
 # The gate on Ubuntu 24.04, native arm64, in a local container.

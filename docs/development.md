@@ -100,9 +100,7 @@ activation of `org.freedesktop.systemd1` never completes. The stall is PROVEN
 before the first build step: a method call to that name must end in a reply timeout
 (`NoReply`) after at least two seconds, otherwise the run stops with exit 4, so a
 green stall run cannot silently have run without it. **The stall arm is known red
-today:** 31 tests fail behind it (#267; their fixtures belong to the separate slice
-u26c), and on this image the lane-lock race test can fail on either arm (a separate hazard, slice lane-excl). The
-default flips to `stall` once that arm is green. The 24.04 lane runs with no bus at
+today:** 31 tests fail behind it (#267). The default flips to `stall` once that arm is green. The 24.04 lane runs with no bus at
 all. Both lanes are on demand: `just test`, `just pre` and `just release` never run
 them. They are arm64 only; the x86_64 proof of Ubuntu 26.04 is a human run on
 x86_64 hardware, and nothing here claims it.
