@@ -92,8 +92,8 @@ cargo-nextest, whose aws-lc-sys build script segfaults.)
 **Ubuntu 26.04, two arms.** `just rust-linux-26 [bus]` is the same gate on a
 digest-pinned Ubuntu 26.04 image, with its own cache volumes
 (`ae-linux26-arm64-*`; it never shares a cache with the 24.04 lane). The `bus`
-parameter is `off` by default (the validated-host arm: the container as it is, no
-bus set up) or `stall`; anything else exits 2 on the host before Docker starts.
+parameter is `stall` by default, or `off` (the validated-host arm: the container as
+it is, no bus set up); anything else exits 2 on the host before Docker starts.
 The `stall` arm reproduces a slow host: 26.04 ships tmux 3.6, which asks the
 session bus for a systemd transient scope whenever it spawns or respawns a pane
 child, and where the user manager answers slowly each of those waits out that
@@ -101,8 +101,8 @@ timeout. On that arm a private `dbus-daemon` is the only session bus and the
 activation of `org.freedesktop.systemd1` never completes. The stall is PROVEN
 before the first build step: a method call to that name must end in a reply timeout
 (`NoReply`) after at least two seconds, otherwise the run stops with exit 4, so a
-green stall run cannot silently have run without it. **The stall arm is known red
-today:** 31 tests fail behind it (#267). The default flips to `stall` once that arm is green. The 24.04 lane runs with no bus at
+green stall run cannot silently have run without it. The stall arm is the default
+since it went green (#267). The 24.04 lane runs with no bus at
 all. Both lanes are on demand: `just test`, `just pre` and `just release` never run
 them. They are arm64 only; the x86_64 proof of Ubuntu 26.04 is a human run on
 x86_64 hardware, and nothing here claims it.

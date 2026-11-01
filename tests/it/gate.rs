@@ -2281,11 +2281,11 @@ fn the_fuzz_lane_bounds_every_duration_it_hands_libfuzzer() {
 ///
 /// The gate body lives ONCE, in `_linux-gate`, and two thin recipes hand it an
 /// image and a bus: `rust-linux` (Ubuntu 24.04, no bus) and `rust-linux-26`
-/// (Ubuntu 26.04), whose `bus` parameter defaults to `off`, the validated-host
-/// arm, and takes `stall` for the other arm: a user bus whose systemd never
-/// answers, so tmux 3.6's `StartTransientUnit` waits out its 1 s timeout before
-/// every pane child execs. The default flips to `stall` only when that arm is
-/// green, and that flip is an edit of this guard. A lane that cannot prove its
+/// (Ubuntu 26.04), whose `bus` parameter defaults to `stall`: a user bus whose
+/// systemd never answers, so tmux 3.6's `StartTransientUnit` waits out its 1 s
+/// timeout before every pane child execs. It takes `off` for the validated-host
+/// arm. The default is `stall` because that arm went green; moving it back is an
+/// edit of this guard. A lane that cannot prove its
 /// bus stalls would pass whatever the tests do, so on the stall arm the stall is
 /// a PROVEN fact, set up and checked before anything is built; the bus kind is
 /// validated on the host before any container starts, and a mismatch between the
@@ -2307,11 +2307,11 @@ fn linux_lanes_ok(justfile: &str) -> bool {
     }
     // Two thin entry points, each handing the body its own pinned image and
     // bus: the 24.04 lane never grows a bus, and the 26.04 lane takes its bus
-    // as a parameter that defaults to `off` (the validated-host arm) and is
-    // forwarded as given, so `stall` stays reachable and nothing else decides it.
+    // as a parameter that defaults to `stall` and is forwarded as given, so `off`
+    // (the validated-host arm) stays reachable and nothing else decides it.
     let has_line = |wanted: &str| justfile.lines().any(|line| line == wanted);
     if !has_line("rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"off\")")
-        || !has_line("rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)")
+        || !has_line("rust-linux-26 bus=\"stall\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)")
     {
         return false;
     }
@@ -2519,7 +2519,7 @@ fn linux_lanes_green() -> String {
             "    just test\n",
             "\n",
             "rust-linux: (_linux-gate \"linux\" LINUX_IMAGE \"off\")\n",
-            "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)\n",
+            "rust-linux-26 bus=\"stall\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)\n",
             "_linux-gate flavor image bus:\n",
             "    case \"{{ bus }}\" in off|stall) ;; *) echo \"Error: bus must be off or stall\" >&2; exit 2 ;; esac\n",
             "    daemon_arch=\"$(docker run --rm --label ae.lane=linux {{ image }} uname -m)\"\n",
@@ -2677,7 +2677,7 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
         assert!(!linux_lanes_ok(&mutated), "guard failed to reject: {name}");
         println!("rejected: {name}");
     };
-    let wrapper = "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)";
+    let wrapper = "rust-linux-26 bus=\"stall\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)";
     rejected(
         "26.04 base image pinned by tag",
         green.replace(
@@ -2693,7 +2693,7 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
         "rust-linux-26 wired to the 24.04 image",
         green.replace(
             wrapper,
-            "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE bus)",
+            "rust-linux-26 bus=\"stall\": (_linux-gate \"linux26\" LINUX_IMAGE bus)",
         ),
     );
     rejected(
@@ -2711,17 +2711,17 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
         ),
     );
     rejected(
-        "rust-linux-26 defaults to stall",
+        "rust-linux-26 defaults to off",
         green.replace(
             wrapper,
-            "rust-linux-26 bus=\"stall\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)",
+            "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 bus)",
         ),
     );
     rejected(
         "rust-linux-26 ignores its bus parameter",
         green.replace(
             wrapper,
-            "rust-linux-26 bus=\"off\": (_linux-gate \"linux26\" LINUX_IMAGE_26 \"off\")",
+            "rust-linux-26 bus=\"stall\": (_linux-gate \"linux26\" LINUX_IMAGE_26 \"stall\")",
         ),
     );
     rejected(
@@ -2742,7 +2742,7 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
         "26.04 lane shares the 24.04 caches",
         green.replace(
             wrapper,
-            "rust-linux-26 bus=\"off\": (_linux-gate \"linux\" LINUX_IMAGE_26 bus)",
+            "rust-linux-26 bus=\"stall\": (_linux-gate \"linux\" LINUX_IMAGE_26 bus)",
         ),
     );
     rejected(
