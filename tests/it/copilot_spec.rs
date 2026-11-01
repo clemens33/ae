@@ -1155,8 +1155,11 @@ fn the_hermetic_baseline_pins_the_copilot_seam_to_a_refused_loopback() {
         line.contains("http://127.0.0.1:9/"),
         "refused loopback, never api.github.com: {line}"
     );
-    let agents = product_text("AGENTS.md");
-    assert!(agents.contains(SEAM), "AGENTS.md Environment doors row");
+    let reference = product_text("docs/reference/contract.md");
+    assert!(
+        reference.contains(SEAM),
+        "docs/reference/contract.md Environment doors row"
+    );
 }
 
 #[test]

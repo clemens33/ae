@@ -61,4 +61,5 @@ How this project is built, reviewed, and handed off:
 
 - [Gatekeeping](gatekeeping.md) — how changes are reviewed and gated before they land
 - [Design patterns](design-patterns.md) — the recurring patterns behind ae's design (including the agent-identity model)
+- [Contract reference](reference/contract.md) — the detail behind AGENTS.md: module map, helper semantics, tool capabilities, environment doors, invariants and config
 - [Lead handover](lead-handover.md) — historical: how a lead agent carried a session across context, from before the Rust core owned `list`

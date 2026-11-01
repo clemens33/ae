@@ -24,7 +24,7 @@ listed in AGENTS.md and has not changed.
 
 ## What does not change
 
-- **Simplicity is the feature.** The whole tool must stay understandable in one sitting.
+- **Simplicity is the feature.** The ownership map fits in one sitting.
 - **Daily productivity over feature completeness.** If it does not save time on every use,
   it does not belong. Resisting features is the work.
 - **One command to install after prerequisites.** A checksum-verified three-member bundle
@@ -74,8 +74,8 @@ current machine.
 
 - **The Bash remainder stays minimal.** It is policy-frozen — no new Bash features — and a
   pane-side block retires as soon as the core can own it outright. What still binds the
-  installer and the ad-hoc shell is the GNU/BSD table in AGENTS.md plus the export-expansion
-  rule beside it; the full hazards checklist is docs/history.md §14.
+  installer and the ad-hoc shell is the GNU/BSD table in docs/reference/contract.md plus the
+  export-expansion rule in AGENTS.md; the full hazards checklist is docs/history.md §14.
 - **Upgrading carries running sessions across — shipped.** `ae upgrade` installs a release,
   then migrates, repoints and relinks every placeable session before it moves
   `~/.local/bin/ae` to the new `ae-core`: helper links re-render, and the watchdog and the

@@ -19,7 +19,9 @@ src/                — Rust core sources
 README.md           — user-facing intro
 AGENTS.md           — project-level rules for agents working in this repo
 CLAUDE.md           — symlink to AGENTS.md for Claude Code
-docs/               — this site (MkDocs Material)
+docs/               — this site (MkDocs Material); `docs/reference/contract.md` holds the
+                      detail AGENTS.md indexes (module map, helpers, tool notes, doors,
+                      invariants, config)
 mkdocs.yml          — docs site config
 ```
 

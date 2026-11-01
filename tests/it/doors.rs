@@ -1125,3 +1125,6 @@ fn open_popup_and_run_shell_line_have_only_their_named_product_caller_and_pure_s
         );
     }
 }
+// Contract/reference owners, index, and startup budget share this door's reads.
+#[path = "doors/contract_spec.rs"]
+mod contract_spec;
