@@ -15,8 +15,11 @@
 
 use std::path::PathBuf;
 
+use std::time::Instant;
+
 use super::cli::{ae, helper};
 use super::phase2::run_tmux;
+use super::support::{PANE_WAIT, observe};
 
 /// One isolated ae home with its own tmux socket.
 struct Rig {
@@ -365,6 +368,19 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
             "seeding {name}"
         );
     }
+    // The rename opens a monitor window here too, whose helper this session
+    // lacks, so the window closes by itself once its pane's child has failed to
+    // run it. That can take a second or more (#267): the hook names the close.
+    let unlinked = rig.home.join("window-unlinked");
+    let note = format!(
+        "run-shell \"printf '%s\\n' '#{{hook_session_name}}|#{{hook_window_name}}' >> {}\"",
+        unlinked.display()
+    );
+    assert!(
+        rig.tmux(&["set-hook", "-t", "before", "window-unlinked", &note])
+            .0,
+        "a hook naming each closed window"
+    );
 
     let (code, stdout, stderr) = rig.run(&[ae::cli::RENAME, "before", "after"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
@@ -384,7 +400,18 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
     assert!(manifest.contains("Session: after"), "{manifest}");
     // Windows are named for their first agent, not the session. Renaming the
     // session must leave that stable identity alone.
-    let (_, windows) = rig.tmux(&["list-windows", "-t", "after", "-F", "#{window_name}"]);
+    let closed = format!("after|{}", ae::theme::MONITOR_WINDOW);
+    observe(
+        |_| {
+            std::fs::read_to_string(&unlinked)
+                .map_or_else(|_| (false, String::new()), |text| (true, text))
+        },
+        &[],
+        Instant::now() + PANE_WAIT,
+        |text| text.lines().any(|line| line == closed),
+    );
+    let (listed, windows) = rig.tmux(&["list-windows", "-t", "after", "-F", "#{window_name}"]);
+    assert!(listed, "{windows}");
     assert_eq!(windows.trim(), "lead", "{windows}");
     let (_, line) = rig.tmux(&["show-options", "-v", "-t", "after", "status-format[0]"]);
     assert!(!line.contains(ae::theme::ATTENTION_GLYPH_OPTION), "{line}");

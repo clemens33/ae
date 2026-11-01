@@ -673,8 +673,27 @@ fn rename_respawns_both_monitor_panes_against_the_new_session_directory() {
 
 #[test]
 fn rename_reports_a_missing_watchdog_instead_of_claiming_success() {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
     let rig = Rig::new("renamefail");
     let new = format!("{}new", rig.name);
+    // An events pane that stays up and a watchdog that exits, so the rename
+    // reaches the watchdog's own start and that start fails. With no helpers
+    // the outcome is a race: the events pane's death has to beat the split that
+    // would start a real daemon, and a slow pane start loses it (#267).
+    for (helper, script) in [
+        ("events-tail", "#!/bin/sh\nexec sleep 60\n"),
+        ("watchdog", "#!/bin/sh\nexit 1\n"),
+    ] {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o755)
+            .open(rig.dir.join(helper))
+            .and_then(|mut file| file.write_all(script.as_bytes()))
+            .expect("a monitor helper, at a path nothing holds");
+    }
 
     let (code, out, err) = rig.run(&["rename", &rig.name, &new]);
 

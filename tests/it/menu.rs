@@ -16,7 +16,7 @@ use ae::tmux::{PickerPane, PickerSession, display_menu_for_client_args};
 
 use super::cli::{OwnedChild, ae, helper_by_name};
 use super::phase2::{run_tmux, tmux_present};
-use super::support::{SETUP_WAIT, observe, try_first_pane};
+use super::support::{PANE_WAIT, SETUP_WAIT, observe, try_first_pane};
 
 /// How long a poll waits for tmux (or a child process) to catch up before the
 /// arm fails. These polls await an external process, they are not speed
@@ -7149,6 +7149,15 @@ fn a_replaced_state_directory_cannot_re_stamp_the_uuid_fact() {
     .trim()
     .to_owned();
     assert!(!seeded.is_empty(), "the launch seeded the UUID fact");
+    // The chat's first line follows its read of the meta it binds, so a later
+    // replacement ends that chat and draws nothing of the new directory on the
+    // screen this test reads.
+    observe(
+        |args| tmux(&socket, &scratch, args),
+        &["capture-pane", "-p", "-t", &format!("={session}:0.0")],
+        Instant::now() + PANE_WAIT,
+        |screen| screen.contains(&format!("chat: {session} — lead pair")),
+    );
     // The state directory is replaced by another incarnation's.
     let meta = fixture_text(&dir.join("meta"));
     fs::write(
