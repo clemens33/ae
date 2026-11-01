@@ -3196,6 +3196,29 @@ mod tests {
     }
 
     #[test]
+    fn a_question_on_the_default_is_refused_when_the_default_changed_under_it() {
+        let (root, dir) = planted("default-moved", None);
+        let socket = root.join("never.sock").display().to_string();
+        let policy = root.join("policy");
+        std::fs::write(&policy, "[workspace]\npurge_agent_history = off\n").expect("a policy");
+        let meta = format!(
+            "session=alpha\nsession_id={UUID}\nmode=local\nstarted=1\n\
+             tmux_server_kind=socket\ntmux_server={socket}\nconfig={}\n",
+            policy.display()
+        );
+        std::fs::write(dir.join("meta"), meta).expect("a meta");
+        std::fs::write(dir.join("memory.md"), "history\n").expect("a memory");
+        let server = server_from_words("socket", &socket).expect("a socket");
+        let expect = EndExpectation::unattended(&root, "alpha", UUID, server, true, NOW)
+            .expect("a question on the default");
+        (expect.check(&root, &dir, "alpha", NOW)).expect("nothing changed yet");
+        std::fs::write(&policy, "[workspace]\npurge_agent_history = on\n").expect("a policy");
+        let refused = (expect.check(&root, &dir, "alpha", NOW)).expect_err("the default moved");
+        assert!(refused.contains("changed"), "{refused}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn an_expect_word_is_taken_once_with_a_value_or_refused() {
         let mut words = ExpectWords::default();
         assert!(!words.any());
