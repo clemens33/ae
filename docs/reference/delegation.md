@@ -120,7 +120,9 @@ Verification plan: named checkpoint and candidate; required commands; who runs
 them; reviewer's independent checks; runtime/resource owner; evidence path and
 what invalidates it. Reuse a run only where repo policy explicitly permits. A
 seat change alone is no new checkpoint; changed inputs or a required gate may
-need a new run. Never omit a task or shipping gate.
+need a new run. Never omit a task or shipping gate. Name who owns the final
+gate, and mark each required command scoped (a targeted check) or final (the
+gate itself).
 
 **Result** (what the worker replies): `Outcome / Changed / Verified (command +
 result) / Risks / Need from spawner`. No raw logs unless asked.

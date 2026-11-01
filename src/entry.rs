@@ -137,15 +137,14 @@ gemini = gemini
 # a glance. STRICT pins (never --model best) — a model-named alias must not silently run a
 # different model; that would make the name lie and blind the model-drift alarm. Exact IDs
 # beat family aliases where they would drift: --model opus moved to Opus 5 the day it shipped.
-# STRONG DEV (build slices): gpt56sol xhigh or opus5 xhigh.
+# These seeded profiles are install-time defaults, not a statement of which models are current.
+# Which profile fills which role is your spend policy (see [prompt] below); check each pin
+# against what your harnesses serve today.
 opus5 = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
 gpt56sol = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
-# BRAINPOWER (lead/colead seats, plans, rulings, hard debugging): fable5 xhigh or gpt6astra xhigh.
 fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 gpt6astra = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
-# CHORES/tests/simple slices: gpt56luna xhigh; it also runs the orchestrator seat.
 gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
-# REVIEWER when usage allows: grok46.
 grok46 = "grok --always-approve -m grok-4.6 --effort high"
 gpt56terra = "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh"
 opencode = "opencode"
@@ -179,8 +178,8 @@ orchestrator = gpt56luna
 # is the COLEAD seat — an EQUAL leadership peer of the lead (interchangeable, same level,
 # sharing the leads window); main stays the technical lifecycle anchor (reboot
 # handover), which is infrastructure, not seniority. Builders and reviewers are NOT
-# standing seats: either peer spawns them per slice (spawn builder --using opus5 / spawn
-# reviewer --using grok46) and retires its own spawns when the work is verified — every spawn
+# standing seats: either peer spawns them per slice (spawn builder --using <build-profile> / spawn
+# reviewer --using <review-profile>) and retires its own spawns when the work is verified — every spawn
 # ends in a retire. This keeps idle panes at zero, makes the retire contract do real
 # work, and still keeps judgment (the pair) separate from review (a spawned seat) on
 # every slice.
@@ -1321,5 +1320,33 @@ mod tests {
             DEFAULT_CONFIG.ends_with("# \"\"\"\n"),
             "the seeded config ends on the block example's closer"
         );
+    }
+
+    /// #280: the seeded comments recommend no retired profile and grade none
+    /// into tiers; the tiers belong to the spend policy. The profile lines
+    /// themselves are shipped defaults and stay.
+    #[test]
+    fn seeded_comments_name_no_retired_profile_and_no_tier() {
+        let comments: Vec<&str> = DEFAULT_CONFIG
+            .lines()
+            .filter(|line| line.starts_with('#'))
+            .collect();
+        assert!(!comments.is_empty());
+        for comment in comments {
+            for banned in [
+                "opus5",
+                "fable5",
+                "gpt56sol",
+                "gpt6astra",
+                "gpt56luna",
+                "grok46",
+                "STRONG DEV",
+                "BRAINPOWER",
+                "CHORES",
+                "REVIEWER",
+            ] {
+                assert!(!comment.contains(banned), "`{banned}` in: {comment}");
+            }
+        }
     }
 }

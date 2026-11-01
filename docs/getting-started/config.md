@@ -678,18 +678,23 @@ keeps its recorded value, so config changes apply on relaunch; a session without
 
 ## Model tiers (recommended profiles)
 
-- **STRONG DEV (build slices):** use `gpt56sol` xhigh or `opus5` xhigh.
-- **BRAINPOWER (lead/colead seats, plans, rulings, hard debugging):** use `fable5` xhigh or `gpt6astra` xhigh.
-- **CHORES/tests/simple slices:** use `gpt56luna` xhigh; it also runs the orchestrator seat.
-- **REVIEWER:** use `grok46` when usage allows.
+ae names roles here, never concrete profiles. Which profile fills each role comes
+from your spend policy (`[prompt] instructions`) and the Available profiles list in
+`workspace.md` (from your `[profiles]`); the profiles seeded into a new config are
+install-time defaults, not a statement of which models are current.
+
+- **STRONG DEV (build slices):** a strong build profile.
+- **BRAINPOWER (lead/colead seats, plans, rulings, hard debugging):** a judgment-tier profile.
+- **CHORES/tests/simple slices:** a chore-tier profile; it also runs the orchestrator seat.
+- **REVIEWER:** a profile from a different provider than the builder (rule 11) when usage allows.
 
 **OpenCode Go seats (only if listed in workspace.md Available profiles or
-configured [profiles]):** `spark13gom` (Meta-served Muse Spark 1.3 Contributor)
-ranks as a peer of `gpt56solx`/`opus5x` for strong build slices and judgment
-work; `deepseek41flashgom` (DeepSeek-served DeepSeek V4.1 Flash) is the fast
-alternative for bounded build slices and review lanes. A shared OpenCode scope
-proves nothing about provider — declare the served provider for rule 11.
-Chores still go to `gpt56luna`; simple work never takes `fablex`/`astrax`.
+configured [profiles]):** such a profile ranks by the model it serves, not by the
+client. A strong served model is a peer of the strong build profiles for build
+slices and judgment work; a fast served model is the fast alternative for bounded
+build slices and review lanes. A shared OpenCode scope proves nothing about
+provider — declare the served provider for rule 11. Chores still go to the
+chore-tier profile; simple work never takes a judgment-tier profile.
 
 ## Where state lives
 
